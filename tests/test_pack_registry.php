@@ -19,9 +19,17 @@ hub_test('catalog and required packs are readable', function (): void {
         }
     }
 
-    hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['runtime_level'] === 'L2-deps-import', 'OCR runtime level mismatch');
-    hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['runtime_ready'] === true, 'OCR runtime ready mismatch');
-    hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
+    $ocr = hub_get_pack('ocr-ppocrv5')['manifest'];
+    hub_test_assert($ocr['runtime_level'] === 'L3-storage-mount', 'OCR runtime level mismatch');
+    hub_test_assert($ocr['runtime_ready'] === true, 'OCR runtime ready mismatch');
+    hub_test_assert($ocr['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
+    $ocrMounts = [];
+    foreach ($ocr['storage']['mounts'] as $mount) {
+        $ocrMounts[(string)$mount['type']] = (string)$mount['container_path'];
+    }
+    hub_test_assert(($ocrMounts['models'] ?? '') === '/models/paddleocr', 'OCR models mount mismatch');
+    hub_test_assert(($ocrMounts['cache'] ?? '') === '/cache/paddleocr', 'OCR cache mount mismatch');
+    hub_test_assert(($ocrMounts['service_data'] ?? '') === '/data/service', 'OCR service data mount mismatch');
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L1-ollama-adapter', 'Translate runtime level mismatch');
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_ready'] === true, 'Translate runtime ready mismatch');
     hub_test_assert(hub_get_pack('yolo')['manifest']['runtime_level'] === 'L1-ultralytics-yolo', 'YOLO runtime level mismatch');

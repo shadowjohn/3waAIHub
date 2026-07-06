@@ -17,7 +17,21 @@ hub_test('service instance uniqueness checks reject collisions', function (): vo
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
     hub_test_assert(str_contains($compose, 'gpus: all'), 'OCR generated compose must request GPU access');
     hub_test_assert(str_contains($compose, 'NVIDIA_VISIBLE_DEVICES'), 'OCR generated compose must set NVIDIA_VISIBLE_DEVICES');
-    hub_test_assert(str_contains($compose, '/models/paddleocr'), 'OCR generated compose must mount model storage');
+    hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/paddleocr:/models/paddleocr'), 'OCR generated compose must mount model storage');
+    hub_test_assert(str_contains($compose, '${AIHUB_CACHE_DIR}/paddleocr:/cache/paddleocr'), 'OCR generated compose must mount cache storage');
+    hub_test_assert(str_contains($compose, '${SERVICE_DATA_DIR}:/data/service'), 'OCR generated compose must mount service data storage');
+
+    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    foreach ([
+        'OCR_MODEL_DIR=/models/paddleocr',
+        'OCR_CACHE_DIR=/cache/paddleocr',
+        'OCR_SERVICE_DATA_DIR=/data/service',
+        'XDG_CACHE_HOME=/cache/paddleocr/xdg',
+        'HOME=/cache/paddleocr/home',
+        'PADDLEOCR_HOME=/models/paddleocr',
+    ] as $needle) {
+        hub_test_assert(str_contains($env, $needle), 'OCR env missing ' . $needle);
+    }
 
     hub_test_assert(hub_test_throws(static fn () => hub_install_pack($db, 'ocr-ppocrv5', [
         'service_key' => 'ocr-test-main',

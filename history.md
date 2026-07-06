@@ -660,3 +660,35 @@ Skipped:
 - real OCR inference.
 - PDF OCR.
 - TranslateGemma changes.
+
+## PhaseM-2A-L3 PP-OCRv5 Storage Mount
+
+Advanced `ocr-ppocrv5` from L2 `deps_import` to L3 `storage_mount`.
+
+Implemented:
+
+- runtime_level = `L3-storage-mount`.
+- `OCR_MODEL_DIR` / `OCR_CACHE_DIR` / `OCR_SERVICE_DATA_DIR`.
+- `XDG_CACHE_HOME` / `HOME` / `PADDLEOCR_HOME`.
+- model/cache/service_data volume mounts.
+- `/health` storage exists/readable/writable checks.
+- `/ocr/image` remains mock JSON with runtime_level.
+- `storage_smoke.py`.
+
+Verified:
+
+- Docker build PASS.
+- PaddleOCR import smoke PASS.
+- `ocr-main` restart PASS.
+- `/health` PASS.
+- `storage_smoke.py` PASS.
+- direct `/ocr/image` PASS.
+- gateway `api.php?mode=ocr` PASS.
+- `token_api_smoke.php` PASS.
+
+Skipped:
+
+- model init.
+- model download.
+- real OCR inference.
+- PDF OCR.

@@ -6,10 +6,10 @@
   "category": "ocr",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L2-deps-import",
+  "runtime_level": "L3-storage-mount",
   "runtime_ready": true,
   "default_mode": "ocr",
-  "description": "GPU-ready OCR mock service with PaddleOCR dependency import smoke.",
+  "description": "GPU-ready OCR mock service with PaddleOCR dependency and storage mount smoke.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -48,7 +48,7 @@
         "read_only": false
       },
       {
-        "type": "service",
+        "type": "service_data",
         "host_subdir": "",
         "container_path": "/data/service",
         "read_only": false

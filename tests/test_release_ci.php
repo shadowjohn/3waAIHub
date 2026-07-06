@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-hub_test('release banner docs ci and OCR L2 import smoke files exist', function (): void {
+hub_test('release banner docs ci and OCR L3 storage smoke files exist', function (): void {
     hub_test_assert(defined('HUB_VERSION') && str_starts_with(HUB_VERSION, 'v0.2.'), 'HUB_VERSION missing');
     hub_test_assert(defined('HUB_RELEASE_LABEL') && str_contains(HUB_RELEASE_LABEL, 'Local Catalog'), 'HUB_RELEASE_LABEL missing');
 
@@ -14,14 +14,15 @@ hub_test('release banner docs ci and OCR L2 import smoke files exist', function 
     hub_test_assert(str_contains($layout, 'HUB_RELEASE_LABEL'), 'admin banner must display HUB_RELEASE_LABEL');
 
     $requirements = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/requirements.txt');
-    hub_test_assert(str_contains($requirements, 'paddleocr'), 'OCR L2 must install PaddleOCR dependency');
-    hub_test_assert(!str_contains($requirements, 'paddlepaddle-gpu'), 'OCR L2 import smoke must not install heavy PaddlePaddle GPU dependency');
+    hub_test_assert(str_contains($requirements, 'paddleocr'), 'OCR L3 must keep PaddleOCR dependency');
+    hub_test_assert(!str_contains($requirements, 'paddlepaddle-gpu'), 'OCR L3 storage smoke must not install heavy PaddlePaddle GPU dependency');
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/smoke.py'), 'OCR smoke.py missing');
+    hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/storage_smoke.py'), 'OCR storage_smoke.py missing');
 
     $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/Dockerfile');
     hub_test_assert(str_contains($dockerfile, 'nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04'), 'OCR GPU mock should use NVIDIA CUDA 12.9 runtime base image');
     hub_test_assert(str_contains($dockerfile, 'python3 -m pip check'), 'Dockerfile must validate Python dependency metadata at build time');
-    hub_test_assert(str_contains($dockerfile, 'RUN python3 smoke.py'), 'OCR L2 build must run smoke.py');
+    hub_test_assert(str_contains($dockerfile, 'RUN python3 smoke.py'), 'OCR L3 build must keep dependency smoke.py');
 
     $smoke = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/smoke.py');
     hub_test_assert(str_contains($smoke, 'paddleocr'), 'smoke.py must import paddleocr');
@@ -30,7 +31,17 @@ hub_test('release banner docs ci and OCR L2 import smoke files exist', function 
     }
 
     $app = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/app.py');
-    hub_test_assert(str_contains($app, '"runtime_level": "L2-deps-import"'), 'health must report L2 runtime level');
+    hub_test_assert(str_contains($app, 'return "L3-storage-mount"'), 'health must report L3 runtime level');
+    hub_test_assert(str_contains($app, '"storage"'), 'health must report storage status');
+    hub_test_assert(str_contains($app, '"runtime_level": runtime_level()'), 'OCR mock response must include runtime level');
+
+    $storageSmoke = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/storage_smoke.py');
+    foreach (['/models/paddleocr', '/cache/paddleocr', '/data/service'] as $needle) {
+        hub_test_assert(str_contains($storageSmoke, $needle), 'storage_smoke.py missing ' . $needle);
+    }
+    foreach (['PaddleOCR(', '.ocr(', 'download', 'predict', 'inference', 'from paddleocr import PaddleOCR'] as $needle) {
+        hub_test_assert(!str_contains($storageSmoke, $needle), 'storage_smoke.py must not initialize model or run inference: ' . $needle);
+    }
 
     $workflow = HUB_ROOT . '/.github/workflows/ci.yml';
     hub_test_assert(is_file($workflow), 'GitHub Actions workflow missing');

@@ -348,7 +348,7 @@ function hub_generate_service_env(array $manifest, array $envValues, string $por
         'AIHUB_UPLOADS_DIR' => $storage['AIHUB_UPLOADS_DIR'],
         'AIHUB_RESULTS_DIR' => $storage['AIHUB_RESULTS_DIR'],
         'AIHUB_LOGS_DIR' => $storage['AIHUB_LOGS_DIR'],
-    ] + $envValues;
+    ] + hub_pack_storage_runtime_env($manifest) + $envValues;
 
     $lines = [];
     foreach ($values as $key => $value) {
@@ -356,6 +356,37 @@ function hub_generate_service_env(array $manifest, array $envValues, string $por
     }
 
     return implode(PHP_EOL, $lines) . PHP_EOL;
+}
+
+function hub_pack_storage_runtime_env(array $manifest): array
+{
+    if (($manifest['id'] ?? '') !== 'ocr-ppocrv5') {
+        return [];
+    }
+
+    $paths = [];
+    foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
+        if (!is_array($mount) || empty($mount['container_path'])) {
+            continue;
+        }
+        $paths[(string)($mount['type'] ?? '')] = (string)$mount['container_path'];
+    }
+
+    $modelDir = $paths['models'] ?? '';
+    $cacheDir = $paths['cache'] ?? '';
+    $serviceDataDir = $paths['service_data'] ?? ($paths['service'] ?? '');
+    if ($modelDir === '' || $cacheDir === '' || $serviceDataDir === '') {
+        return [];
+    }
+
+    return [
+        'OCR_MODEL_DIR' => $modelDir,
+        'OCR_CACHE_DIR' => $cacheDir,
+        'OCR_SERVICE_DATA_DIR' => $serviceDataDir,
+        'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+        'HOME' => $cacheDir . '/home',
+        'PADDLEOCR_HOME' => $modelDir,
+    ];
 }
 
 function hub_port_is_usable_for_install(PDO $db, int $port, ?int $exceptServiceId = null): bool
@@ -485,6 +516,7 @@ function hub_ensure_pack_storage_dirs(array $manifest, string $serviceKey, array
         'uploads' => $storage['AIHUB_UPLOADS_DIR'],
         'results' => $storage['AIHUB_RESULTS_DIR'],
         'service' => $serviceDir ?? HUB_SERVICE_DIR . '/' . $serviceKey,
+        'service_data' => $serviceDir ?? HUB_SERVICE_DIR . '/' . $serviceKey,
     ];
     foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
         if (!is_array($mount) || empty($prefix[$mount['type'] ?? ''])) {
@@ -506,6 +538,7 @@ function hub_generate_pack_storage_volumes(array $manifest, string $serviceKey):
         'uploads' => '${AIHUB_UPLOADS_DIR}',
         'results' => '${AIHUB_RESULTS_DIR}',
         'service' => '${SERVICE_DATA_DIR}',
+        'service_data' => '${SERVICE_DATA_DIR}',
     ];
     $volumes = [];
     foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
