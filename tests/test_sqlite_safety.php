@@ -13,8 +13,10 @@ hub_test('sqlite connection applies write safety pragmas', function (): void {
 hub_test('sqlite safety storage defaults exist', function (): void {
     $db = hub_test_reset_db();
 
+    hub_test_assert(hub_default_storage_settings()['AIHUB_MODELS_DIR'] === '/DATA/models', 'product model dir default mismatch');
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_MODELS_DIR') === hub_test_models_dir(), 'test model dir override mismatch');
+
     $expected = [
-        'AIHUB_MODELS_DIR' => '/DATA/models',
         'AIHUB_CACHE_DIR' => HUB_DATA_DIR . '/cache',
         'AIHUB_UPLOADS_DIR' => HUB_DATA_DIR . '/uploads',
         'AIHUB_RESULTS_DIR' => HUB_DATA_DIR . '/results',

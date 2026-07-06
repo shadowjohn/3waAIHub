@@ -29,7 +29,9 @@ jobs:
         run: find . -path './data' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
 
       - name: Tests
-        run: php scripts/run_tests.php 2>&1 | tee run_tests.log
+        run: |
+          set -o pipefail
+          php scripts/run_tests.php 2>&1 | tee run_tests.log
 
       - name: Self check
         run: |

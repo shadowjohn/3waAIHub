@@ -34,6 +34,10 @@ assert(hub_docker_root_warning('/var/lib/docker', 50 * 1024 * 1024 * 1024) !== '
 assert(hub_docker_root_warning('/DATA/docker', 50 * 1024 * 1024 * 1024) === '');
 assert(hub_storage_settings_warnings(['AIHUB_MODELS_DIR' => HUB_DATA_DIR . '/models']) !== []);
 
+$testModelsDir = hub_self_check_models_dir();
+hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', $testModelsDir);
+assert(hub_get_storage_setting($db, 'AIHUB_MODELS_DIR') === $testModelsDir);
+
 $packs = hub_list_packs();
 $helloPack = null;
 foreach ($packs as $pack) {
@@ -329,4 +333,14 @@ function hub_self_check_throws(callable $fn): bool
     }
 
     return false;
+}
+
+function hub_self_check_models_dir(): string
+{
+    $dir = getenv('AIHUB_TEST_MODELS_DIR') ?: sys_get_temp_dir() . '/3waaihub_self_check_models_' . getmypid();
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create self_check models directory: ' . $dir);
+    }
+
+    return $dir;
 }

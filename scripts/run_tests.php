@@ -27,8 +27,22 @@ function hub_test_reset_db(): PDO
     hub_seed_admin_user($db);
     hub_seed_hello_service($db);
     hub_ensure_default_storage_settings($db);
+    hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', hub_test_models_dir());
 
     return $db;
+}
+
+function hub_test_models_dir(): string
+{
+    static $dir = null;
+    if ($dir === null) {
+        $dir = getenv('AIHUB_TEST_MODELS_DIR') ?: sys_get_temp_dir() . '/3waaihub_test_models_' . getmypid();
+    }
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create test models directory: ' . $dir);
+    }
+
+    return $dir;
 }
 
 function hub_test_assert(bool $ok, string $message): void

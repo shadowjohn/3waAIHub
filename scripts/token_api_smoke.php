@@ -39,6 +39,7 @@ try {
     hub_migrate($db);
     hub_seed_admin_user($db);
     hub_ensure_default_storage_settings($db);
+    hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', hub_token_smoke_models_dir());
     hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
     hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
     hub_set_storage_setting($db, 'AIHUB_DOCKER_PORT_START', '1024');
@@ -129,6 +130,16 @@ function hub_token_smoke_require_curl(): void
     if ($code !== 0 || $output === []) {
         throw new RuntimeException('curl command is required');
     }
+}
+
+function hub_token_smoke_models_dir(): string
+{
+    $dir = getenv('AIHUB_TEST_MODELS_DIR') ?: sys_get_temp_dir() . '/3waaihub_token_smoke_models_' . getmypid();
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create token smoke models directory: ' . $dir);
+    }
+
+    return $dir;
 }
 
 function hub_token_smoke_free_port(): int
