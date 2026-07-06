@@ -1,0 +1,8 @@
+services:
+  hello:
+    build:
+      context: ./service
+    container_name: 3waaihub-hello
+    ports:
+      - "127.0.0.1:${HELLO_LOCAL_PORT:-18100}:8000"
+    restart: unless-stopped

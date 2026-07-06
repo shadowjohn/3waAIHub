@@ -1,0 +1,15 @@
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^(?:app|data|packs|scripts)(?:/|$) - [F,L]
+RewriteRule ^(?:\.git|\.github|vendor|node_modules)(?:/|$) - [F,L]
+RewriteRule ^(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|package(?:-lock)?\.json)$ - [F,L]
+</IfModule>
+
+<FilesMatch "(^\.|\.sqlite(?:-.+)?$|\.db$|\.env$|\.log$|\.sh$|\.bak$|~$)">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Deny from all
+    </IfModule>
+</FilesMatch>

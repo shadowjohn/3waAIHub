@@ -1,0 +1,12 @@
+{
+  "id": "hello",
+  "name": "hello-service",
+  "type": "api_service",
+  "version": "0.1.0",
+  "mode": "hello",
+  "gpu_required": false,
+  "default_port": 18100,
+  "health_path": "/health",
+  "benchmark_supported": false,
+  "supports_hot_reload": false
+}
