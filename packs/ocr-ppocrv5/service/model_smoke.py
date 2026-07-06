@@ -106,7 +106,7 @@ def main() -> None:
 
     result = {
         "ok": not suspicious,
-        "runtime_level": "L4b-real-inference",
+        "runtime_level": "L5-benchmark-ready",
         "init_kwargs": kwargs,
         "env": env,
         "allowed_changed": allowed_changed,

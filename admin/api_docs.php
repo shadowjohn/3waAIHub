@@ -76,10 +76,16 @@ hub_admin_header('API Docs', $user);
 </section>
 <section class="panel">
     <h2>POST OCR</h2>
-    <p class="muted">Status: Pack contract ready; current OCR service still returns mock JSON until real inference lands.</p>
+    <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code> or service setting <code>OCR_REAL_INFERENCE=1</code>.</p>
+    <h3>Mock mode</h3>
     <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"</pre>
+    <h3>Real inference mode</h3>
+    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -F "image=@sample.png" \
+  -F "real_inference=1"</pre>
 </section>
 <section class="panel">
     <h2>POST Translate</h2>

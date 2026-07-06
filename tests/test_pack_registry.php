@@ -20,7 +20,7 @@ hub_test('catalog and required packs are readable', function (): void {
     }
 
     $ocr = hub_get_pack('ocr-ppocrv5')['manifest'];
-    hub_test_assert($ocr['runtime_level'] === 'L4b-real-inference', 'OCR runtime level mismatch');
+    hub_test_assert($ocr['runtime_level'] === 'L5-benchmark-ready', 'OCR runtime level mismatch');
     hub_test_assert($ocr['runtime_ready'] === true, 'OCR runtime ready mismatch');
     hub_test_assert(($ocr['target_level'] ?? '') === 'L5-benchmark-ready', 'OCR target level mismatch');
     hub_test_assert($ocr['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
@@ -48,6 +48,8 @@ hub_test('catalog and required packs are readable', function (): void {
             hub_test_assert(!empty($case['real_inference']), 'OCR real benchmark must be marked real_inference');
         }
     }
+    $inputFields = $contract['input']['fields'] ?? [];
+    hub_test_assert(in_array('real_inference', array_column($inputFields, 'name'), true), 'OCR contract must document real_inference form field');
 
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L1-ollama-adapter', 'Translate runtime level mismatch');
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_ready'] === true, 'Translate runtime ready mismatch');

@@ -13,7 +13,7 @@ _OCR_ENGINE: Any | None = None
 
 
 def runtime_level() -> str:
-    return "L4b-real-inference"
+    return "L5-benchmark-ready"
 
 
 def env_enabled(value: str | None) -> bool:

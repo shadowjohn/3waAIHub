@@ -6,7 +6,7 @@
   "category": "ocr",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L4b-real-inference",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "ocr",
@@ -34,6 +34,13 @@
           "type": "file",
           "required": true,
           "max_mb": 50
+        },
+        {
+          "name": "real_inference",
+          "type": "boolean",
+          "required": false,
+          "default": "0",
+          "description": "Set to 1 to run PaddleOCR real image inference for this request."
         }
       ]
     },

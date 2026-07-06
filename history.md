@@ -784,3 +784,21 @@ Skipped:
 - batch OCR.
 - startup preload.
 - benchmark tuning.
+
+## PhaseM-2A-L5 PP-OCRv5 Benchmark Ready Promotion
+
+Promoted `ocr-ppocrv5` to the first L5 benchmark-ready Pack.
+
+Implemented:
+
+- runtime_level = `L5-benchmark-ready`.
+- Kept mock fallback and `real_inference=1` real OCR path.
+- Documented `real_inference` in the OCR API contract.
+- Updated README / API docs for L5 status.
+- Pack Readiness can show OCR as 11/11 after `ocr_mock_image` and `ocr_real_image` pass.
+
+Skipped:
+
+- PDF OCR.
+- batch OCR.
+- UI redesign.

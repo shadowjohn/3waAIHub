@@ -39,7 +39,7 @@ Response:
 
 ## POST OCR
 
-Status: L4b real image inference. 預設仍回 mock JSON；設定 `OCR_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行 PaddleOCR。
+Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `OCR_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行 PaddleOCR。
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \

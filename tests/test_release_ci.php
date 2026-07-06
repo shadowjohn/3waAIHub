@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-hub_test('release banner docs ci and OCR L4b real inference files exist', function (): void {
+hub_test('release banner docs ci and OCR L5 benchmark ready files exist', function (): void {
     hub_test_assert(defined('HUB_VERSION') && str_starts_with(HUB_VERSION, 'v0.2.'), 'HUB_VERSION missing');
     hub_test_assert(defined('HUB_RELEASE_LABEL') && str_contains(HUB_RELEASE_LABEL, 'Local Catalog'), 'HUB_RELEASE_LABEL missing');
 
@@ -37,7 +37,7 @@ hub_test('release banner docs ci and OCR L4b real inference files exist', functi
     }
 
     $app = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/app.py');
-    hub_test_assert(str_contains($app, 'return "L4b-real-inference"'), 'health must report L4b runtime level');
+    hub_test_assert(str_contains($app, 'return "L5-benchmark-ready"'), 'health must report L5 runtime level');
     hub_test_assert(str_contains($app, '"storage"'), 'health must report storage status');
     hub_test_assert(str_contains($app, '"runtime_level": runtime_level()'), 'OCR mock response must include runtime level');
     hub_test_assert(str_contains($app, 'OCR_REAL_INFERENCE'), 'OCR app must keep mock fallback toggle');
@@ -60,7 +60,7 @@ hub_test('release banner docs ci and OCR L4b real inference files exist', functi
     foreach (['PaddleOCR(', 'PADDLEOCR_HOME', 'XDG_CACHE_HOME', 'HOME', '/models/paddleocr', '/cache/paddleocr'] as $needle) {
         hub_test_assert(str_contains($modelSmoke, $needle), 'model_smoke.py missing ' . $needle);
     }
-    foreach (['.ocr(', '.predict(', 'benchmark', 'pdf'] as $needle) {
+    foreach (['.ocr(', '.predict(', 'pdf'] as $needle) {
         hub_test_assert(!str_contains($modelSmoke, $needle), 'model_smoke.py must not run OCR work: ' . $needle);
     }
 

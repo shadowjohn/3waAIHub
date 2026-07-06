@@ -414,11 +414,11 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### ocr-ppocrv5 Runtime Level
 
-`ocr-ppocrv5` 目前停在 L4b `real_inference`：
+`ocr-ppocrv5` 目前已達 L5 `benchmark_ready`：
 
 - Docker image 可 build
 - container 可啟動
-- `GET /health` 回 ok，並帶 `runtime_level=L4b-real-inference` 與 storage 狀態
+- `GET /health` 回 ok，並帶 `runtime_level=L5-benchmark-ready` 與 storage 狀態
 - `POST /ocr/image` 預設回 mock OCR JSON，`OCR_REAL_INFERENCE=1` 或表單 `real_inference=1` 時執行 PaddleOCR 圖片推論
 - `api.php?mode=ocr` 可透過 gateway proxy 到 service
 - image 使用 NVIDIA CUDA 12.9 runtime base
@@ -433,6 +433,7 @@ http://localhost/3waAIHub/admin/packs.php
 - Pack manifest 已宣告 `target_level=L5-benchmark-ready` 與 `l5_contract`
 - `ocr_mock_image` benchmark 可驗 API contract required keys
 - `ocr_real_image` benchmark 可驗單張圖片真 OCR 與 blocks contract
+- Pack Readiness 可在兩個 benchmark 都 PASS 後顯示 11/11
 - generated compose 會加入 `gpus: all`
 
 ### translate-gemma12b Runtime Level
