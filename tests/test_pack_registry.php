@@ -53,8 +53,13 @@ hub_test('catalog and required packs are readable', function (): void {
 
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L1-ollama-adapter', 'Translate runtime level mismatch');
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_ready'] === true, 'Translate runtime ready mismatch');
-    hub_test_assert(hub_get_pack('yolo')['manifest']['runtime_level'] === 'L1-ultralytics-yolo', 'YOLO runtime level mismatch');
-    hub_test_assert(hub_get_pack('yolo')['manifest']['runtime_ready'] === true, 'YOLO runtime ready mismatch');
+    $yolo = hub_get_pack('yolo')['manifest'];
+    hub_test_assert($yolo['runtime_level'] === 'L2-deps-import', 'YOLO runtime level mismatch');
+    hub_test_assert(($yolo['target_level'] ?? '') === 'L5-benchmark-ready', 'YOLO target level mismatch');
+    hub_test_assert($yolo['runtime_ready'] === true, 'YOLO runtime ready mismatch');
+    foreach (['YOLO_MODEL', 'YOLO_CONF', 'YOLO_IOU', 'YOLO_USE_GPU', 'KEEP_WARM'] as $key) {
+        hub_test_assert(isset(hub_get_pack_settings_schema('yolo')[$key]), 'YOLO settings_schema missing ' . $key);
+    }
     hub_test_assert(hub_get_pack('sam3')['manifest']['runtime_level'] === 'L1-ultralytics-sam3', 'SAM3 runtime level mismatch');
     hub_test_assert(hub_get_pack('sam3')['manifest']['runtime_ready'] === true, 'SAM3 runtime ready mismatch');
 });

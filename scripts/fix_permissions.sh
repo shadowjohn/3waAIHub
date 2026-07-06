@@ -25,8 +25,13 @@ detect_web_group() {
   done
 }
 
-for dir in data data/models data/cache data/uploads data/results data/logs data/logs/jobs data/logs/tasks data/logs/install data/jobs data/services; do
+for dir in data data/cache data/uploads data/results data/logs data/logs/jobs data/logs/tasks data/logs/install data/jobs data/services; do
   mkdir -p "$dir"
+done
+
+for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/ollama /DATA/models/sam3; do
+  mkdir -p "$dir" 2>/dev/null || true
+  chmod u+rwx,g+rwx,o+rx "$dir" 2>/dev/null || true
 done
 
 if [ "$(id -u)" = "0" ]; then

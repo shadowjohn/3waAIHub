@@ -14,6 +14,11 @@ hub_test('sqlite safety storage defaults exist', function (): void {
     $db = hub_test_reset_db();
 
     $expected = [
+        'AIHUB_MODELS_DIR' => '/DATA/models',
+        'AIHUB_CACHE_DIR' => HUB_DATA_DIR . '/cache',
+        'AIHUB_UPLOADS_DIR' => HUB_DATA_DIR . '/uploads',
+        'AIHUB_RESULTS_DIR' => HUB_DATA_DIR . '/results',
+        'AIHUB_LOGS_DIR' => HUB_LOG_DIR,
         'AIHUB_DB_MAX_SIZE_MB' => '1024',
         'AIHUB_LOG_RETENTION_DAYS' => '14',
         'AIHUB_METRIC_RETENTION_DAYS' => '14',
@@ -24,6 +29,15 @@ hub_test('sqlite safety storage defaults exist', function (): void {
     foreach ($expected as $key => $value) {
         hub_test_assert(hub_get_storage_setting($db, $key) === $value, $key . ' default mismatch');
     }
+    hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', HUB_DATA_DIR . '/models');
+    hub_ensure_default_storage_settings($db);
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_MODELS_DIR') === HUB_DATA_DIR . '/models', 'existing model dir setting must not be overwritten');
+    hub_test_assert(hub_storage_settings_warnings(hub_get_storage_paths($db)) !== [], 'old in-repo model dir should warn');
+
+    $envExample = (string)file_get_contents(HUB_ROOT . '/.env.example');
+    hub_test_assert(str_contains($envExample, 'AIHUB_MODELS_DIR=/DATA/models'), '.env.example model dir default mismatch');
+    $install = (string)file_get_contents(HUB_ROOT . '/install.sh');
+    hub_test_assert(str_contains($install, '/DATA/models/paddleocr'), 'install.sh must create host model subdirs');
 });
 
 hub_test('large task result_json is stored as an artifact', function (): void {

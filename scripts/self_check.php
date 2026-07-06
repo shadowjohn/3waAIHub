@@ -17,7 +17,7 @@ hub_seed_hello_service($db);
 hub_ensure_default_storage_settings($db);
 
 $storage = hub_get_storage_paths($db);
-assert($storage['AIHUB_MODELS_DIR'] === HUB_DATA_DIR . '/models');
+assert($storage['AIHUB_MODELS_DIR'] === '/DATA/models');
 assert($storage['AIHUB_CACHE_DIR'] === HUB_DATA_DIR . '/cache');
 assert($storage['AIHUB_UPLOADS_DIR'] === HUB_DATA_DIR . '/uploads');
 assert($storage['AIHUB_RESULTS_DIR'] === HUB_DATA_DIR . '/results');
@@ -32,6 +32,7 @@ assert(hub_is_safe_absolute_path('relative/path') === false);
 assert(hub_is_safe_absolute_path("/DATA/bad\0path") === false);
 assert(hub_docker_root_warning('/var/lib/docker', 50 * 1024 * 1024 * 1024) !== '');
 assert(hub_docker_root_warning('/DATA/docker', 50 * 1024 * 1024 * 1024) === '');
+assert(hub_storage_settings_warnings(['AIHUB_MODELS_DIR' => HUB_DATA_DIR . '/models']) !== []);
 
 $packs = hub_list_packs();
 $helloPack = null;
@@ -299,6 +300,20 @@ assert(hub_artifact_safe_path(HUB_ROOT . '/README.md') === null);
 unlink($artifactPath);
 
 unlink($tmp);
+
+if (is_file(HUB_DB_PATH)) {
+    $runtimeDb = hub_db();
+    hub_migrate($runtimeDb);
+    hub_ensure_default_storage_settings($runtimeDb);
+    foreach (hub_storage_settings_warnings(hub_get_storage_paths($runtimeDb)) as $warning) {
+        echo "WARNING: {$warning}\n";
+        echo "Manual migration:\n";
+        echo "  sudo mkdir -p /DATA/models\n";
+        echo "  sudo rsync -aHAX " . HUB_DATA_DIR . "/models/ /DATA/models/\n";
+        echo "Then update AIHUB_MODELS_DIR=/DATA/models in Settings.\n";
+    }
+}
+
 echo "self_check ok\n";
 
 function hub_self_check_throws(callable $fn): bool

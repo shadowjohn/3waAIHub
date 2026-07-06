@@ -92,7 +92,7 @@ Response:
 
 ## POST YOLO
 
-Status: L1 Ultralytics YOLO adapter.
+Status: L2 dependency/import smoke. The endpoint still returns mock JSON; real detection is not enabled yet.
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \

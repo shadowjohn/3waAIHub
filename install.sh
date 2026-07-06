@@ -114,6 +114,22 @@ install_command_worker_cron() {
   fi
 }
 
+ensure_host_models_dir() {
+  local dirs=(
+    "/DATA/models"
+    "/DATA/models/paddleocr"
+    "/DATA/models/yolo"
+    "/DATA/models/ollama"
+    "/DATA/models/sam3"
+  )
+  if mkdir -p "${dirs[@]}" 2>/dev/null; then
+    echo "[3waAIHub] Host models dir: /DATA/models"
+  else
+    echo "[3waAIHub] WARNING: cannot create /DATA/models."
+    echo "[3waAIHub] Run: sudo mkdir -p /DATA/models/{paddleocr,yolo,ollama,sam3}"
+  fi
+}
+
 confirm_bootstrap() {
   [ "$YES" = "1" ] && return 0
   echo "[3waAIHub] Host bootstrap will install or verify system packages."
@@ -147,7 +163,8 @@ if [ "$BOOTSTRAP_HOST" = "1" ]; then
   exit 0
 fi
 
-mkdir -p data/models data/cache data/uploads data/results data/logs data/logs/jobs data/logs/install data/jobs data/services
+mkdir -p data/cache data/uploads data/results data/logs data/logs/jobs data/logs/install data/jobs data/services
+ensure_host_models_dir
 fix_runtime_permissions
 
 echo "[3waAIHub] Checking environment..."

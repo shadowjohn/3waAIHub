@@ -5,7 +5,7 @@ function hub_default_storage_settings(): array
 {
     return [
         'AIHUB_DATA_DIR' => HUB_DATA_DIR,
-        'AIHUB_MODELS_DIR' => HUB_DATA_DIR . '/models',
+        'AIHUB_MODELS_DIR' => '/DATA/models',
         'AIHUB_CACHE_DIR' => HUB_DATA_DIR . '/cache',
         'AIHUB_UPLOADS_DIR' => HUB_DATA_DIR . '/uploads',
         'AIHUB_RESULTS_DIR' => HUB_DATA_DIR . '/results',
@@ -27,6 +27,19 @@ function hub_default_storage_settings(): array
         'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST' => '1',
         'AIHUB_TOKEN_DEFAULT_VALID_DAYS' => '0',
     ];
+}
+
+function hub_storage_settings_warnings(array $storage): array
+{
+    $warnings = [];
+    $modelsDir = rtrim((string)($storage['AIHUB_MODELS_DIR'] ?? ''), '/');
+    $projectDataDir = rtrim(HUB_DATA_DIR, '/');
+
+    if ($modelsDir === $projectDataDir || str_starts_with($modelsDir, $projectDataDir . '/')) {
+        $warnings[] = 'AIHUB_MODELS_DIR is inside project data dir. Recommended: /DATA/models';
+    }
+
+    return $warnings;
 }
 
 function hub_ensure_default_storage_settings(PDO $db): void

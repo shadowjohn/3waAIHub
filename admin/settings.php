@@ -53,6 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $storage = hub_get_storage_paths($db);
+$storageWarnings = hub_storage_settings_warnings($storage);
 
 function hub_settings_format_bytes(int|float $bytes): string
 {
@@ -82,6 +83,7 @@ hub_admin_header('設定', $user);
 ?>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
+<?php foreach ($storageWarnings as $warning): ?><div class="notice"><?= hub_h($warning) ?></div><?php endforeach; ?>
 <section class="panel">
     <h1>設定</h1>
     <form method="post">

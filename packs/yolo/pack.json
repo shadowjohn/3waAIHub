@@ -6,10 +6,11 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L1-ultralytics-yolo",
+  "runtime_level": "L2-deps-import",
+  "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "yolo",
-  "description": "Object detection API backed by Ultralytics YOLO.",
+  "description": "YOLO object detection API with Ultralytics dependency/import smoke.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -23,7 +24,7 @@
     "max_upload_mb": 50
   },
   "hardware": {
-    "gpu_required": true,
+    "gpu_required": false,
     "gpu_supported": true,
     "min_vram_mb": 0,
     "min_compute_capability": "8.0"
@@ -48,13 +49,59 @@
         "read_only": false
       },
       {
-        "type": "service",
+        "type": "service_data",
         "host_subdir": "",
         "container_path": "/data/service",
         "read_only": false
       }
     ]
   },
+  "settings_schema": [
+    {
+      "key": "YOLO_MODEL",
+      "label": "YOLO model",
+      "type": "text",
+      "default": "yolo11n.pt",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "YOLO_CONF",
+      "label": "Confidence threshold",
+      "type": "number",
+      "default": "0.25",
+      "min": 0,
+      "max": 1,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "YOLO_IOU",
+      "label": "IoU threshold",
+      "type": "number",
+      "default": "0.7",
+      "min": 0,
+      "max": 1,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "YOLO_USE_GPU",
+      "label": "Use GPU",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "KEEP_WARM",
+      "label": "Keep model warm",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true
+    }
+  ],
   "env": [
     {
       "name": "YOLO_MODEL_PATH",

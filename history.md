@@ -1,5 +1,24 @@
 # 3waAIHub History
 
+## Storage Policy: Host-level Models Directory
+
+Moved the default model storage policy to host-level storage.
+
+Implemented:
+
+- Default `AIHUB_MODELS_DIR=/DATA/models`.
+- Kept cache/uploads/results/logs under `/DATA/3waAIHub/data`.
+- `install.sh` creates `/DATA/models` plus `paddleocr`, `yolo`, `ollama`, and `sam3` subdirectories when permitted.
+- `.env.example` and README document `/DATA/models` as the model asset home.
+- `self_check.php` warns when an existing install still points `AIHUB_MODELS_DIR` at the project data directory.
+- Pack compose fallbacks continue to use `AIHUB_MODELS_DIR` instead of hardcoding repo-local model storage.
+
+Skipped:
+
+- Automatic model migration.
+- Docker data-root changes.
+- Cache/results/uploads default relocation.
+
 ## 2026-07-06
 
 Initialized 3waAIHub Local MVP.
@@ -485,7 +504,7 @@ Implemented:
 - Added `packs/translate-gemma12b/service/` FastAPI adapter.
 - Adapter starts Ollama inside the container and calls `/api/generate`.
 - Translate image uses multi-stage Docker build and copies Ollama runtime libraries without apt in the Ollama base image.
-- `OLLAMA_AUTO_PULL=1` pulls `translategemma:12b-it-q4_K_M` into `data/models/ollama`.
+- `OLLAMA_AUTO_PULL=1` pulls `translategemma:12b-it-q4_K_M` into `AIHUB_MODELS_DIR/ollama`.
 - `zh-TW` prompt maps to Traditional Chinese / Taiwan wording.
 - Test DB pack installs write to `data/test_services/{hash}` instead of overwriting runtime services.
 - Added `docker_builder_prune` command worker action for explicit Docker build cache cleanup.
@@ -517,8 +536,8 @@ Implemented:
 - Generated runtime files for `yolo-main` on port `18105`.
 - Generated runtime files for `sam3-main` on port `18106`.
 - Copied local runtime model files into:
-  - `data/models/yolo/yolo11n.pt`
-  - `data/models/sam3/sam3.pt`
+  - `AIHUB_MODELS_DIR/yolo/yolo11n.pt`
+  - `AIHUB_MODELS_DIR/sam3/sam3.pt`
 
 Verified:
 
@@ -802,3 +821,25 @@ Skipped:
 - PDF OCR.
 - batch OCR.
 - UI redesign.
+
+## PhaseM-2B-L2 YOLO Dependency Import Smoke
+
+Advanced `yolo` from L1 `ultralytics-yolo` to L2 `deps_import`.
+
+Implemented:
+
+- runtime_level = `L2-deps-import`.
+- target_level = `L5-benchmark-ready`.
+- Added YOLO `settings_schema` for model/conf/iou/GPU/keep warm.
+- Added `smoke.py` import smoke for `ultralytics` / `fastapi`.
+- Docker build runs `python3 smoke.py`.
+- `/health` returns `runtime_level=L2-deps-import`.
+- `/detect/image` remains mock JSON with empty `detections`.
+
+Skipped:
+
+- YOLO model download.
+- `YOLO(...)` initialization.
+- real detection.
+- GPU tuning.
+- SAM3 / TranslateGemma.

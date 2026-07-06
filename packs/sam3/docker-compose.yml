@@ -11,5 +11,5 @@ services:
       NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     volumes:
-      - "${AIHUB_MODELS_DIR:-../../data/models}/sam3:/models/sam3"
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/sam3:/models/sam3"
       - "${AIHUB_CACHE_DIR:-../../data/cache}/ultralytics:/cache/ultralytics"

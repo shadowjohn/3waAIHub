@@ -458,12 +458,14 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 
 ### yolo Runtime Level
 
-`yolo` 目前是 L1 `ultralytics-yolo`：
+`yolo` 目前是 L2 `deps_import`：
 
 - `POST /detect/image` 支援 multipart 圖片上傳
-- 預設模型路徑是 `AIHUB_MODELS_DIR/yolo/yolo11n.pt`
-- 回傳 bbox、class、confidence
-- generated compose 會加入 `gpus: all`
+- Docker build 階段安裝 FastAPI runtime 與 `ultralytics`
+- Docker build 階段執行 `python3 smoke.py`，只驗證 `ultralytics` / `fastapi` import 成功
+- `GET /health` 回 `runtime_level=L2-deps-import`
+- `POST /detect/image` 目前仍回 mock JSON 與空 `detections`
+- 尚未下載模型、初始化 `YOLO(...)`、或執行真 detection
 
 ### sam3 Runtime Level
 
@@ -526,24 +528,43 @@ generated compose 只 bind `127.0.0.1`，local port 使用 `18100-18999`。
 
 ## Storage Settings
 
-大型模型、cache、upload、result 不放 `packs/`，也不包進 Docker image。預設路徑：
+大型模型、cache、upload、result 不放 `packs/`，也不包進 Docker image。模型是主機級大型資產，預設放在 repo 外的 `/DATA/models`，不進 git，也不跟 `3waAIHub` repo runtime 綁死；repo 搬家或重裝時可保留模型倉。
+
+預設路徑：
 
 ```text
-AIHUB_MODELS_DIR=/DATA/3waAIHub/data/models
+AIHUB_MODELS_DIR=/DATA/models
 AIHUB_CACHE_DIR=/DATA/3waAIHub/data/cache
 AIHUB_UPLOADS_DIR=/DATA/3waAIHub/data/uploads
 AIHUB_RESULTS_DIR=/DATA/3waAIHub/data/results
 AIHUB_LOGS_DIR=/DATA/3waAIHub/data/logs
 ```
 
-後台「設定」可改 Models / Cache / Uploads / Results / Logs 目錄，以及 Docker local port 範圍。大型模型建議放大硬碟，例如：
+常用模型子目錄：
 
 ```text
-AIHUB_MODELS_DIR=/DATA/aihub_models
-AIHUB_CACHE_DIR=/DATA/aihub_cache
+/DATA/models/paddleocr
+/DATA/models/yolo
+/DATA/models/ollama
+/DATA/models/sam3
 ```
 
+後台「設定」可改 Models / Cache / Uploads / Results / Logs 目錄，以及 Docker local port 範圍。
+
 若設定成不存在的 root-level 目錄，Web UI 不會自動建立；請用 CLI 建目錄並修權限。Docker data-root 只做偵測與警告，不由 Web 搬移。
+
+既有安裝若仍使用 `/DATA/3waAIHub/data/models`，不會被自動覆蓋，也不會自動搬模型。建議人工搬移：
+
+```bash
+sudo mkdir -p /DATA/models
+sudo rsync -aHAX /DATA/3waAIHub/data/models/ /DATA/models/
+```
+
+搬完後到後台「設定」改成：
+
+```text
+AIHUB_MODELS_DIR=/DATA/models
+```
 
 範例設定檔：
 
@@ -624,11 +645,14 @@ curl 'http://localhost/3waAIHub/api.php?mode=task_log&task_id=1'
 - `data/3waaihub.sqlite`
 - `data/logs/`
 - `data/jobs/`
-- `data/models/`
 - `data/results/`
 - `data/uploads/`
 - `data/cache/`
 - `data/services/`
+
+模型主倉預設在 repo 外：
+
+- `/DATA/models/`
 
 此 repo 是公開 GitHub repo，請勿 commit：
 
