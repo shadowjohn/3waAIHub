@@ -36,6 +36,27 @@
   "storage": {
     "mounts": []
   },
+  "settings_schema": [
+    {
+      "key": "HELLO_MESSAGE",
+      "label": "Hello message",
+      "type": "text",
+      "default": "3waAIHub service is running",
+      "required": true,
+      "restart_required": true,
+      "help": "Message returned by hello-service."
+    },
+    {
+      "key": "PORT",
+      "label": "Container port",
+      "type": "integer",
+      "default": "8000",
+      "min": 1,
+      "max": 65535,
+      "required": true,
+      "restart_required": true
+    }
+  ],
   "env": [],
   "preflight": {
     "checks": [

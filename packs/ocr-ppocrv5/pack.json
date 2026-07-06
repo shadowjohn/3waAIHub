@@ -55,6 +55,52 @@
       }
     ]
   },
+  "settings_schema": [
+    {
+      "key": "OCR_MAX_UPLOAD_MB",
+      "label": "Max upload MB",
+      "type": "integer",
+      "default": "50",
+      "min": 1,
+      "max": 1024,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "OCR_MOCK_TEXT",
+      "label": "Mock OCR text",
+      "type": "text",
+      "default": "3waAIHub OCR mock",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_USE_GPU",
+      "label": "Use GPU",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_LANG",
+      "label": "OCR language",
+      "type": "select",
+      "default": "ch",
+      "options": ["ch", "en", "japan", "korean", "auto"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "KEEP_WARM",
+      "label": "Keep model warm",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true,
+      "help": "Preload model at service startup when supported."
+    }
+  ],
   "env": [
     {
       "name": "OCR_USE_GPU",

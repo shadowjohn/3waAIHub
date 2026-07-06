@@ -368,6 +368,22 @@ php /DATA/3waAIHub/scripts/token_api_smoke.php
 
 這支 smoke 會用臨時 SQLite DB、臨時 PHP app server 與 OCR mock server，建立 member/token、授權 `mode=ocr`、設定 token IP whitelist，然後用 `curl` 帶 Bearer token 呼叫 `api.php?mode=ocr`，最後檢查 Log Explorer 查詢資料與 daily usage aggregate。
 
+## Service Runtime Settings
+
+PhaseP-2 起，Pack 可用 `settings_schema` 宣告可調 runtime/model 設定；安裝後的 service instance 會把實際值存在 `service_settings`，後台 `admin/service_settings.php?service_id=ID` 可編輯並重新產生 `.env`。
+
+目前支援型別：
+
+- `text`
+- `integer`
+- `number`
+- `boolean`
+- `select`
+- `path`
+- `secret`
+
+`.env` 只輸出 storage/global settings、service fixed info，以及 Pack schema 宣告過的 settings，不提供任意 env key editor。若異動欄位標記 `restart_required=true`，服務列表會顯示需 Restart。
+
 ## Local HubPack Catalog
 
 HubPack 是模板，HubService 是安裝後的 service instance。同一個 pack 可以安裝多次，每次使用不同的 `service_key` / `mode` / `local_port`。

@@ -602,3 +602,28 @@ Skipped:
 
 - browser admin form automation.
 - live Docker OCR dependency.
+
+## PhaseP-2 Service Runtime Settings
+
+Added Pack-declared runtime settings for installed service instances.
+
+Implemented:
+
+- Added `service_settings` table.
+- Added `services.config_dirty` and `services.restart_required`.
+- Added `settings_schema` to hello, OCR, and TranslateGemma packs.
+- Added service settings helpers for schema defaults, validation, updates, and `.env` regeneration.
+- Added `admin/service_settings.php`.
+- Added Settings link and config/restart status on services list.
+- `.env` generation now uses storage/global settings, fixed service info, and schema-declared settings only.
+- Legacy services backfill missing settings when opened or regenerated.
+- Validation covers integer, number, boolean, select, path, text, and secret.
+
+Skipped:
+
+- hot reload.
+- secret vault.
+- arbitrary env / Docker args / volume editor.
+- real PaddleOCR.
+- TranslateGemma adapter changes.
+- multi-host config sync.

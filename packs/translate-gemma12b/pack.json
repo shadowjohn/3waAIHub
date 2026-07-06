@@ -43,6 +43,62 @@
       }
     ]
   },
+  "settings_schema": [
+    {
+      "key": "OLLAMA_MODEL",
+      "label": "Ollama model",
+      "type": "text",
+      "default": "translategemma:12b-it-q4_K_M",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "KEEP_WARM",
+      "label": "Keep model warm",
+      "type": "boolean",
+      "default": "1",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "MAX_INPUT_CHARS",
+      "label": "Max input chars",
+      "type": "integer",
+      "default": "12000",
+      "min": 100,
+      "max": 100000,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "TEMPERATURE",
+      "label": "Temperature",
+      "type": "number",
+      "default": "0",
+      "min": 0,
+      "max": 2,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "OLLAMA_NUM_CTX",
+      "label": "Context window",
+      "type": "integer",
+      "default": "4096",
+      "min": 512,
+      "max": 32768,
+      "required": false,
+      "restart_required": true
+    },
+    {
+      "key": "GPU_VISIBLE_DEVICES",
+      "label": "GPU visible devices",
+      "type": "text",
+      "default": "all",
+      "required": false,
+      "restart_required": true
+    }
+  ],
   "env": [
     {
       "name": "OLLAMA_MODEL",

@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS services (
     hot_reload INTEGER NOT NULL DEFAULT 0,
     environment TEXT NOT NULL DEFAULT 'production',
     execution_type TEXT NOT NULL DEFAULT 'sync_api',
+    config_dirty INTEGER NOT NULL DEFAULT 0,
+    restart_required INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 0,
     status TEXT NOT NULL DEFAULT 'stopped',
     created_at TEXT NOT NULL,
@@ -186,6 +188,20 @@ CREATE TABLE IF NOT EXISTS service_ip_whitelists (
     FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS service_settings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    value_type TEXT NOT NULL DEFAULT 'text',
+    is_secret INTEGER NOT NULL DEFAULT 0,
+    restart_required INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(service_id, key),
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS api_members (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -295,6 +311,8 @@ SQL);
     hub_add_column_if_missing($db, 'services', 'install_status', "TEXT NOT NULL DEFAULT 'installed'");
     hub_add_column_if_missing($db, 'services', 'runtime_status', "TEXT NOT NULL DEFAULT 'stopped'");
     hub_add_column_if_missing($db, 'services', 'environment_json', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'services', 'config_dirty', 'INTEGER NOT NULL DEFAULT 0');
+    hub_add_column_if_missing($db, 'services', 'restart_required', 'INTEGER NOT NULL DEFAULT 0');
     hub_add_column_if_missing($db, 'api_access_logs', 'request_id', 'TEXT NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'member_id', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'token_id', 'INTEGER NULL');
@@ -322,6 +340,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_ip_rules_token_id ON api_token_ip_whitelists(token_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_member_date ON api_token_usage_daily(member_id, usage_date)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token_date ON api_token_usage_daily(token_id, usage_date)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_service_settings_service_id ON service_settings(service_id)');
 }
 
 function hub_add_column_if_missing(PDO $db, string $table, string $column, string $definition): void

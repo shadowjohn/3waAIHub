@@ -251,9 +251,15 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         $stmt->execute($values);
     }
 
+    $service = hub_get_service_by_key($db, $serviceKey);
+    if ($service) {
+        hub_ensure_service_settings($db, $service);
+        hub_write_service_env($db, $service);
+    }
+
     return [
         'pack' => $pack,
-        'service' => hub_get_service_by_key($db, $serviceKey),
+        'service' => $service,
     ];
 }
 

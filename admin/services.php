@@ -5,6 +5,8 @@ require __DIR__ . '/../app/bootstrap.php';
 require __DIR__ . '/_layout.php';
 
 $db = hub_db();
+hub_migrate($db);
+hub_ensure_default_storage_settings($db);
 $user = hub_require_login($db);
 $message = '';
 
@@ -108,6 +110,7 @@ hub_admin_header('服務管理', $user);
             <th>狀態</th>
             <th>啟用</th>
             <th>本機 Port</th>
+            <th>設定狀態</th>
             <th>熱更新</th>
             <th>API 入口</th>
             <th>操作</th>
@@ -123,6 +126,10 @@ hub_admin_header('服務管理', $user);
                 <td class="<?= hub_status_class($service['status']) ?>"><?= hub_h(hub_status_label($service['status'])) ?></td>
                 <td><?= (int)$service['enabled'] === 1 ? '是' : '否' ?></td>
                 <td><?= hub_h((string)$service['local_port']) ?> / <?= hub_h($service['port_mode']) ?></td>
+                <td>
+                    <?php if ((int)($service['restart_required'] ?? 0) === 1): ?><span class="bad">需 Restart</span><?php else: ?><span class="ok">已套用</span><?php endif; ?><br>
+                    <?php if ((int)($service['config_dirty'] ?? 0) === 1): ?><span class="bad">Config dirty</span><?php else: ?><span class="muted">config clean</span><?php endif; ?>
+                </td>
                 <td><?= (int)$service['hot_reload'] === 1 ? '開發模式' : '關閉' ?></td>
                 <td><code><?= hub_h('../api.php?mode=' . $service['mode']) ?></code></td>
                 <td class="actions">
@@ -135,6 +142,7 @@ hub_admin_header('服務管理', $user);
                         <button name="action" value="restart" type="submit">重啟</button>
                         <button name="action" value="rebuild" type="submit">Rebuild</button>
                         <button name="action" value="refresh" type="submit">刷新</button>
+                        <a class="button" href="service_settings.php?service_id=<?= (int)$service['id'] ?>">Settings</a>
                         <a class="button" href="service_logs.php?id=<?= (int)$service['id'] ?>">Log</a>
                         <a class="button" href="service_whitelist.php?service_id=<?= (int)$service['id'] ?>">Whitelist</a>
                         <a class="button" href="log_explorer.php?service_id=<?= (int)$service['id'] ?>">Access Logs</a>
