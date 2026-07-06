@@ -51,8 +51,23 @@ hub_test('catalog and required packs are readable', function (): void {
     $inputFields = $contract['input']['fields'] ?? [];
     hub_test_assert(in_array('real_inference', array_column($inputFields, 'name'), true), 'OCR contract must document real_inference form field');
 
-    hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L1-ollama-adapter', 'Translate runtime level mismatch');
-    hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_ready'] === true, 'Translate runtime ready mismatch');
+    $translate = hub_get_pack('translate-gemma12b')['manifest'];
+    hub_test_assert($translate['runtime_level'] === 'L3-storage-mount', 'Translate runtime level mismatch');
+    hub_test_assert($translate['runtime_ready'] === true, 'Translate runtime ready mismatch');
+    $translateMounts = [];
+    foreach ($translate['storage']['mounts'] as $mount) {
+        $translateMounts[(string)$mount['type']] = [
+            'container_path' => (string)$mount['container_path'],
+            'target_service' => (string)($mount['target_service'] ?? ''),
+        ];
+    }
+    hub_test_assert(($translateMounts['models']['container_path'] ?? '') === '/root/.ollama', 'Translate Ollama models mount mismatch');
+    hub_test_assert(($translateMounts['models']['target_service'] ?? '') === 'ollama', 'Translate Ollama models target service mismatch');
+    hub_test_assert(($translateMounts['cache']['container_path'] ?? '') === '/cache/translate', 'Translate cache mount mismatch');
+    hub_test_assert(($translateMounts['service_data']['container_path'] ?? '') === '/data/service', 'Translate service data mount mismatch');
+    foreach (['OLLAMA_MODEL', 'KEEP_WARM', 'MAX_INPUT_CHARS', 'TEMPERATURE', 'OLLAMA_NUM_CTX', 'GPU_VISIBLE_DEVICES', 'TRANSLATE_REAL_INFERENCE', 'OLLAMA_KEEP_ALIVE'] as $key) {
+        hub_test_assert(isset(hub_get_pack_settings_schema('translate-gemma12b')[$key]), 'Translate settings_schema missing ' . $key);
+    }
     $yolo = hub_get_pack('yolo')['manifest'];
     hub_test_assert($yolo['runtime_level'] === 'L5-benchmark-ready', 'YOLO runtime level mismatch');
     hub_test_assert(($yolo['target_level'] ?? '') === 'L5-benchmark-ready', 'YOLO target level mismatch');

@@ -381,7 +381,7 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'OCR_CACHE_DIR' => $cacheDir,
             'OCR_SERVICE_DATA_DIR' => $serviceDataDir,
             'XDG_CACHE_HOME' => $cacheDir . '/xdg',
-            'HOME' => $cacheDir . '/home',
+            'HOME' => $modelDir . '/home',
             'PADDLEOCR_HOME' => $modelDir,
         ],
         'yolo' => [
@@ -392,6 +392,12 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'HOME' => $cacheDir . '/home',
             'ULTRALYTICS_SETTINGS_DIR' => $cacheDir . '/ultralytics',
             'YOLO_CONFIG_DIR' => $cacheDir . '/ultralytics',
+        ],
+        'translate-gemma12b' => [
+            'TRANSLATE_MODEL_DIR' => '/models/ollama',
+            'TRANSLATE_CACHE_DIR' => $cacheDir,
+            'TRANSLATE_SERVICE_DATA_DIR' => $serviceDataDir,
+            'OLLAMA_BASE_URL' => 'http://ollama:11434',
         ],
         default => [],
     };
@@ -474,6 +480,10 @@ function hub_pack_requests_gpu(array $manifest): bool
 function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort): string
 {
     $manifest = $pack['manifest'];
+    if (($manifest['id'] ?? '') === 'translate-gemma12b') {
+        return hub_generate_translate_gemma_compose($pack, $serviceKey, $localPort);
+    }
+
     $composeService = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? 'hello' : $serviceKey;
     $containerName = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? '3waaihub-hello' : '3waaihub-' . $serviceKey;
     $portEnv = hub_pack_port_env($manifest);
@@ -508,6 +518,45 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     }
 
     return $compose;
+}
+
+function hub_generate_translate_gemma_compose(array $pack, string $serviceKey, int $localPort): string
+{
+    $manifest = $pack['manifest'];
+    $portEnv = hub_pack_port_env($manifest);
+    $buildContext = $pack['dir'] . '/service';
+    $imageTag = hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
+    $internalPort = (int)($manifest['runtime']['default_internal_port'] ?? 8000);
+
+    return "services:\n"
+        . "  ollama:\n"
+        . "    image: ollama/ollama:latest\n"
+        . "    container_name: 3waaihub-{$serviceKey}-ollama\n"
+        . "    env_file:\n"
+        . "      - .env\n"
+        . "    environment:\n"
+        . '      OLLAMA_HOST: "0.0.0.0:11434"' . "\n"
+        . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+        . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n"
+        . "    gpus: all\n"
+        . "    restart: unless-stopped\n"
+        . "    volumes:\n"
+        . '      - "${AIHUB_MODELS_DIR}/ollama:/root/.ollama"' . "\n"
+        . "  translator-api:\n"
+        . "    image: {$imageTag}\n"
+        . "    build:\n"
+        . "      context: {$buildContext}\n"
+        . "    container_name: 3waaihub-{$serviceKey}\n"
+        . "    env_file:\n"
+        . "      - .env\n"
+        . "    depends_on:\n"
+        . "      - ollama\n"
+        . "    ports:\n"
+        . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . $internalPort . '"' . "\n"
+        . "    restart: unless-stopped\n"
+        . "    volumes:\n"
+        . '      - "${AIHUB_CACHE_DIR}/translate:/cache/translate"' . "\n"
+        . '      - "${SERVICE_DATA_DIR}:/data/service"' . "\n";
 }
 
 function hub_pack_image_tag(string $serviceKey, string $packVersion): string

@@ -6,12 +6,13 @@
   "category": "translation",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L1-ollama-adapter",
+  "runtime_level": "L3-storage-mount",
+  "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "translate",
-  "description": "Translation API adapter backed by Ollama and translategemma:12b-it-q4_K_M.",
+  "description": "Translation API adapter with an Ollama sidecar and host-level model storage mount.",
   "runtime": {
-    "kind": "ollama-adapter",
+    "kind": "docker",
     "compose_file": "docker-compose.yml",
     "default_internal_port": 8000
   },
@@ -39,7 +40,22 @@
         "type": "models",
         "host_subdir": "ollama",
         "container_path": "/root/.ollama",
-        "read_only": false
+        "read_only": false,
+        "target_service": "ollama"
+      },
+      {
+        "type": "cache",
+        "host_subdir": "translate",
+        "container_path": "/cache/translate",
+        "read_only": false,
+        "target_service": "translator-api"
+      },
+      {
+        "type": "service_data",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false,
+        "target_service": "translator-api"
       }
     ]
   },
@@ -56,7 +72,7 @@
       "key": "KEEP_WARM",
       "label": "Keep model warm",
       "type": "boolean",
-      "default": "1",
+      "default": "0",
       "required": true,
       "restart_required": true
     },
@@ -97,6 +113,22 @@
       "default": "all",
       "required": false,
       "restart_required": true
+    },
+    {
+      "key": "TRANSLATE_REAL_INFERENCE",
+      "label": "Enable real translation",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "OLLAMA_KEEP_ALIVE",
+      "label": "Ollama keep alive",
+      "type": "text",
+      "default": "5m",
+      "required": false,
+      "restart_required": true
     }
   ],
   "env": [
@@ -106,24 +138,44 @@
       "required": true
     },
     {
-      "name": "OLLAMA_HOST",
-      "default": "127.0.0.1:11434",
+      "name": "OLLAMA_BASE_URL",
+      "default": "http://ollama:11434",
       "required": true
     },
     {
       "name": "OLLAMA_KEEP_ALIVE",
-      "default": "10m",
+      "default": "5m",
       "required": false
     },
     {
-      "name": "OLLAMA_AUTO_PULL",
-      "default": "1",
-      "required": false
-    },
-    {
-      "name": "TRANSLATE_MAX_CHARS",
-      "default": "8000",
+      "name": "MAX_INPUT_CHARS",
+      "default": "12000",
       "required": true
+    },
+    {
+      "name": "TEMPERATURE",
+      "default": "0",
+      "required": false
+    },
+    {
+      "name": "OLLAMA_NUM_CTX",
+      "default": "4096",
+      "required": false
+    },
+    {
+      "name": "KEEP_WARM",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "TRANSLATE_REAL_INFERENCE",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "GPU_VISIBLE_DEVICES",
+      "default": "all",
+      "required": false
     }
   ],
   "models": [
@@ -131,8 +183,7 @@
       "id": "translategemma-12b-q4km",
       "runtime": "ollama",
       "model": "translategemma:12b-it-q4_K_M",
-      "pull_command": "ollama pull translategemma:12b-it-q4_K_M",
-      "required": true
+      "required": false
     }
   ],
   "preflight": {

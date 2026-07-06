@@ -27,7 +27,7 @@ hub_test('service instance uniqueness checks reject collisions', function (): vo
         'OCR_CACHE_DIR=/cache/paddleocr',
         'OCR_SERVICE_DATA_DIR=/data/service',
         'XDG_CACHE_HOME=/cache/paddleocr/xdg',
-        'HOME=/cache/paddleocr/home',
+        'HOME=/models/paddleocr/home',
         'PADDLEOCR_HOME=/models/paddleocr',
     ] as $needle) {
         hub_test_assert(str_contains($env, $needle), 'OCR env missing ' . $needle);

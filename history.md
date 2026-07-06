@@ -1,5 +1,68 @@
 # 3waAIHub History
 
+## PaddleOCR Model Location Normalization
+
+Moved PaddleOCR / PaddleX model-home writes to host-level model storage.
+
+Implemented:
+
+- Generated OCR env now sets `HOME=/models/paddleocr/home`.
+- Kept `XDG_CACHE_HOME=/cache/paddleocr/xdg` for framework cache.
+- Kept `PADDLEOCR_HOME=/models/paddleocr`.
+- Updated `model_smoke.py` and OCR app fallback to use the same model-home path.
+
+Verified:
+
+- `model_smoke.py` created `/DATA/models/paddleocr/home/.paddlex`.
+- `/root` and `/app` did not receive new files during model smoke.
+- OCR mock gateway PASS.
+- OCR real gateway PASS.
+- OCR mock / real benchmarks PASS.
+
+Skipped:
+
+- Deleting old `/DATA/3waAIHub/data/cache/paddleocr/home/.paddlex`.
+
+## PhaseM-2C-L1-L3 TranslateGemma Ollama Adapter / Storage Mount
+
+Advanced `translate-gemma12b` to L3 storage-mount runtime.
+
+Implemented:
+
+- `runtime_level = L3-storage-mount`.
+- Split runtime into `ollama` sidecar and `translator-api` FastAPI adapter.
+- Mounted `${AIHUB_MODELS_DIR}/ollama` into Ollama `/root/.ollama`.
+- Mounted translator cache and service data into `/cache/translate` and `/data/service`.
+- Added adapter import smoke for `fastapi` / `requests`.
+- Added translator storage smoke.
+- `/health` checks Ollama `/api/tags` and adapter storage without exposing Ollama host port.
+- `/translate` remains mock JSON by default.
+- Real inference requests return `runtime_not_ready`.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS.
+- `php scripts/self_check.php` PASS.
+- `php scripts/token_api_smoke.php` PASS.
+- Docker build PASS with `smoke.py` importing adapter routes.
+- `translate-main` start PASS with `ollama` and `translator-api` containers.
+- Direct `/health` PASS with `runtime_level=L3-storage-mount`.
+- Direct `/translate` mock PASS.
+- Direct real inference request returns `runtime_not_ready`.
+- Gateway `api.php?mode=translate` mock PASS.
+- Translator `storage_smoke.py` PASS.
+- Ollama `/root/.ollama` mount writable.
+- OCR and YOLO mock / real benchmark regressions PASS.
+
+Skipped:
+
+- Model pull.
+- Model initialization.
+- Real translation.
+- Keep-warm loading.
+- Streaming.
+- Benchmark-ready promotion.
+
 ## Storage Policy: Host-level Models Directory
 
 Moved the default model storage policy to host-level storage.

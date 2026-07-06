@@ -27,7 +27,7 @@ def configure_ocr_env() -> None:
     os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
     os.environ.setdefault("PADDLEOCR_HOME", model_dir)
     os.environ.setdefault("XDG_CACHE_HOME", f"{cache_dir}/xdg")
-    os.environ.setdefault("HOME", f"{cache_dir}/home")
+    os.environ.setdefault("HOME", f"{model_dir}/home")
 
     for path in [
         model_dir,

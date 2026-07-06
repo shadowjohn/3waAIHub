@@ -60,6 +60,8 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     foreach (['PaddleOCR(', 'PADDLEOCR_HOME', 'XDG_CACHE_HOME', 'HOME', '/models/paddleocr', '/cache/paddleocr'] as $needle) {
         hub_test_assert(str_contains($modelSmoke, $needle), 'model_smoke.py missing ' . $needle);
     }
+    hub_test_assert(str_contains($modelSmoke, 'f"{model_dir}/home"'), 'model_smoke.py must put PaddleX HOME under model storage');
+    hub_test_assert(!str_contains($modelSmoke, 'f"{cache_dir}/home"'), 'model_smoke.py must not put PaddleX HOME under cache storage');
     foreach (['.ocr(', '.predict(', 'pdf'] as $needle) {
         hub_test_assert(!str_contains($modelSmoke, $needle), 'model_smoke.py must not run OCR work: ' . $needle);
     }

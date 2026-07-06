@@ -1,14 +1,27 @@
 services:
+  ollama:
+    image: ollama/ollama:latest
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    gpus: all
+    restart: unless-stopped
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/ollama:/root/.ollama"
+
   translator-api:
     build:
       context: ./service
     env_file:
       - .env
+    depends_on:
+      - ollama
     ports:
       - "127.0.0.1:${TRANSLATE_LOCAL_PORT:-18102}:8000"
-    gpus: all
-    environment:
-      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
-      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    restart: unless-stopped
     volumes:
-      - "${AIHUB_MODELS_DIR:-/DATA/models}/ollama:/root/.ollama"
+      - "${AIHUB_CACHE_DIR:-/DATA/3waAIHub/data/cache}/translate:/cache/translate"
+      - "${SERVICE_DATA_DIR:-/DATA/3waAIHub/data/services/translate-main}:/data/service"

@@ -65,7 +65,7 @@ php scripts/benchmark.php --service=ocr-main --case=ocr_real_image
 
 ## POST Translate
 
-Status: L1 Ollama adapter. First run pulls `translategemma:12b-it-q4_K_M` into `AIHUB_MODELS_DIR/ollama`.
+Status: L3 storage-mount Ollama adapter. The adapter uses an internal Ollama sidecar and returns mock translation by default; this phase does not pull models or run real translation.
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
@@ -83,10 +83,37 @@ Response:
 ```json
 {
   "ok": true,
-  "text": "那是一段美好的時光。",
+  "mock": true,
+  "runtime_level": "L3-storage-mount",
+  "text": "mock translation",
   "model": "translategemma:12b-it-q4_K_M",
   "source_lang": "en",
   "target_lang": "zh-TW"
+}
+```
+
+Real inference is intentionally gated for now:
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_lang": "en",
+    "target_lang": "zh-TW",
+    "text": "That was a wonderful time.",
+    "real_inference": true
+  }'
+```
+
+Response:
+
+```json
+{
+  "ok": false,
+  "error": "runtime_not_ready",
+  "message": "real translation is not implemented in this runtime level",
+  "runtime_level": "L3-storage-mount"
 }
 ```
 

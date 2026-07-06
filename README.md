@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` GPU-ready L4a model-init mock API，以及 `translate-gemma12b` Ollama L1 adapter。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` / `yolo` L5 benchmark-ready Pack，以及 `translate-gemma12b` Ollama sidecar L3 storage-mount adapter。
 
 ## 功能
 
@@ -441,15 +441,18 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### translate-gemma12b Runtime Level
 
-`translate-gemma12b` 目前是 L1 `ollama-adapter`：
+`translate-gemma12b` 目前是 L3 `storage-mount` adapter：
 
-- Docker image 可 build
-- container 內啟動 Ollama 與 FastAPI adapter
-- `GET /health` 回 adapter 與 model ready 狀態
-- `POST /translate` 透過 Ollama `/api/generate` 呼叫 `translategemma:12b-it-q4_K_M`
-- 模型放在 `AIHUB_MODELS_DIR/ollama`
-- 預設 `OLLAMA_AUTO_PULL=1`，container 啟動後背景 pull 模型
-- `zh-TW` 會明確要求繁體中文與台灣用語
+- generated compose 拆成 `ollama` sidecar 與 `translator-api`
+- Ollama 模型主倉掛載 `${AIHUB_MODELS_DIR}/ollama:/root/.ollama`
+- adapter 掛載 `${AIHUB_CACHE_DIR}/translate:/cache/translate`
+- adapter 掛載 `${SERVICE_DATA_DIR}:/data/service`
+- Docker build 階段執行 `python3 smoke.py`，只驗證 `fastapi` / `requests` import
+- `GET /health` 只檢查 Ollama `/api/tags` 與 adapter storage 狀態
+- `POST /translate` 預設回 mock translation JSON
+- `real_inference=1` 或 `TRANSLATE_REAL_INFERENCE=1` 目前會回 `runtime_not_ready`
+
+本階段不 pull `translategemma:12b-it-q4_K_M`、不初始化模型、也不做真翻譯。
 
 測試：
 

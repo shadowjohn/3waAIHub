@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import json
 import os
-import urllib.error
-import urllib.request
+import tempfile
+from pathlib import Path
 from typing import Any
 
+import requests
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="3waAIHub TranslateGemma Adapter")
@@ -16,89 +17,144 @@ class TranslateRequest(BaseModel):
     text: str = Field(min_length=1)
     source_lang: str = "auto"
     target_lang: str = "zh-TW"
+    real_inference: bool = False
+
+
+def runtime_level() -> str:
+    return "L3-storage-mount"
+
+
+def env_enabled(value: str | None) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
 
 
 def ollama_base_url() -> str:
-    host = os.getenv("OLLAMA_HOST", "127.0.0.1:11434")
-    if host.startswith("http://") or host.startswith("https://"):
-        return host.rstrip("/")
-    return "http://" + host.rstrip("/")
+    return os.getenv("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
 
 
-def ollama_json(path: str, payload: dict[str, Any] | None = None, timeout: int = 180) -> dict[str, Any]:
-    data = None if payload is None else json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        ollama_base_url() + path,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="GET" if payload is None else "POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=exc.read().decode("utf-8", errors="replace")) from exc
-    except OSError as exc:
-        raise HTTPException(status_code=503, detail="ollama is not available") from exc
+def ensure_runtime_dirs() -> None:
+    for path in [
+        os.getenv("TRANSLATE_CACHE_DIR", "/cache/translate"),
+        os.getenv("TRANSLATE_SERVICE_DATA_DIR", "/data/service"),
+    ]:
+        Path(path).mkdir(parents=True, exist_ok=True)
 
 
-def model_available(model: str) -> bool:
-    tags = ollama_json("/api/tags", timeout=5).get("models", [])
-    return any(item.get("name") == model for item in tags if isinstance(item, dict))
+def storage_path_status(path: str) -> dict[str, Any]:
+    target = Path(path)
+    exists = target.is_dir()
+    readable = exists and os.access(target, os.R_OK)
+    writable = False
+    error = ""
 
+    if exists and readable:
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".3waaihub-write-", dir=target, delete=False) as handle:
+                test_path = Path(handle.name)
+            test_path.unlink(missing_ok=True)
+            writable = True
+        except OSError as exc:
+            error = str(exc)
+    elif not exists:
+        error = "directory missing"
+    else:
+        error = "directory not readable"
 
-def language_label(code: str) -> str:
-    labels = {
-        "zh-TW": "Traditional Chinese (Taiwan), using Traditional Chinese characters and Taiwan wording",
-        "zh-Hant": "Traditional Chinese, using Traditional Chinese characters",
-        "zh-CN": "Simplified Chinese",
-        "en": "English",
-        "ja": "Japanese",
-        "ko": "Korean",
+    status: dict[str, Any] = {
+        "path": path,
+        "exists": exists,
+        "readable": readable,
+        "writable": writable,
     }
-    return labels.get(code, code)
+    if error:
+        status["error"] = error
+    return status
+
+
+def storage_status() -> tuple[dict[str, Any], list[str]]:
+    ensure_runtime_dirs()
+    storage = {
+        "cache": storage_path_status(os.getenv("TRANSLATE_CACHE_DIR", "/cache/translate")),
+        "service_data": storage_path_status(os.getenv("TRANSLATE_SERVICE_DATA_DIR", "/data/service")),
+        "ollama_models": {
+            "path": "/root/.ollama",
+            "target_service": "ollama",
+            "checked_by": "ollama",
+        },
+    }
+    errors = []
+    for name in ("cache", "service_data"):
+        status = storage[name]
+        for key in ("exists", "readable", "writable"):
+            if not status[key]:
+                errors.append(f"{name} {key} failed: {status['path']}")
+    return storage, errors
+
+
+def ollama_status() -> tuple[dict[str, Any], list[str]]:
+    base_url = ollama_base_url()
+    status: dict[str, Any] = {
+        "base_url": base_url,
+        "available": False,
+    }
+    try:
+        response = requests.get(f"{base_url}/api/tags", timeout=2)
+        status["status_code"] = response.status_code
+        status["available"] = response.ok
+        if response.ok:
+            payload = response.json()
+            models = payload.get("models", []) if isinstance(payload, dict) else []
+            status["model_count"] = len(models) if isinstance(models, list) else 0
+    except requests.RequestException as exc:
+        status["error"] = str(exc).splitlines()[0][:240]
+
+    return status, [] if status["available"] else ["ollama unavailable"]
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    model = os.getenv("OLLAMA_MODEL", "translategemma:12b-it-q4_K_M")
-    try:
-        available = model_available(model)
-    except HTTPException as exc:
-        return {"ok": False, "service": "translate-gemma12b", "ready": False, "model": model, "error": exc.detail}
-
-    return {"ok": True, "service": "translate-gemma12b", "ready": available, "model": model}
+    storage, storage_errors = storage_status()
+    ollama, ollama_errors = ollama_status()
+    errors = storage_errors + ollama_errors
+    return {
+        "ok": True,
+        "service": "translate-gemma12b",
+        "ready": not errors,
+        "runtime_level": runtime_level(),
+        "model": os.getenv("OLLAMA_MODEL", "translategemma:12b-it-q4_K_M"),
+        "ollama": ollama,
+        "storage": storage,
+        "errors": errors,
+    }
 
 
 @app.post("/translate")
-def translate(request: TranslateRequest) -> dict[str, Any]:
-    max_chars = int(os.getenv("TRANSLATE_MAX_CHARS", "8000"))
+def translate(request: TranslateRequest) -> Any:
+    try:
+        max_chars = int(os.getenv("MAX_INPUT_CHARS", "12000"))
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="MAX_INPUT_CHARS must be an integer") from exc
+
     if len(request.text) > max_chars:
         raise HTTPException(status_code=413, detail="text is too large")
 
-    model = os.getenv("OLLAMA_MODEL", "translategemma:12b-it-q4_K_M")
-    if not model_available(model):
-        raise HTTPException(status_code=503, detail=f"model not installed: {model}")
+    if env_enabled(os.getenv("TRANSLATE_REAL_INFERENCE")) or request.real_inference:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "ok": False,
+                "error": "runtime_not_ready",
+                "message": "real translation is not implemented in this runtime level",
+                "runtime_level": runtime_level(),
+            },
+        )
 
-    prompt = (
-        "Translate the following text from "
-        f"{language_label(request.source_lang)} to {language_label(request.target_lang)}. "
-        "Return only the translated text.\n\n"
-        f"{request.text}"
-    )
-    result = ollama_json(
-        "/api/generate",
-        {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-            "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "10m"),
-        },
-    )
     return {
         "ok": True,
-        "text": result.get("response", "").strip(),
-        "model": model,
+        "mock": True,
+        "runtime_level": runtime_level(),
         "source_lang": request.source_lang,
         "target_lang": request.target_lang,
+        "text": "mock translation",
+        "model": os.getenv("OLLAMA_MODEL", "translategemma:12b-it-q4_K_M"),
     }

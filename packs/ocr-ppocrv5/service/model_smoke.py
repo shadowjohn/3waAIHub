@@ -24,7 +24,7 @@ def configure_env() -> dict[str, str]:
     env = {
         "PADDLEOCR_HOME": model_dir,
         "XDG_CACHE_HOME": f"{cache_dir}/xdg",
-        "HOME": f"{cache_dir}/home",
+        "HOME": f"{model_dir}/home",
     }
     os.environ.update(env)
 
