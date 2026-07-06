@@ -64,6 +64,7 @@ function hub_execute_command_job(PDO $db, array $job): array
         'env_probe' => hub_run_env_probe_job($db),
         'permissions_fix' => hub_run_command(['bash', HUB_ROOT . '/scripts/fix_permissions.sh'], 60),
         'docker_prune_check' => hub_run_command(['docker', 'system', 'df'], 30),
+        'docker_builder_prune' => hub_run_command(['docker', 'builder', 'prune', '-af'], 900),
         'benchmark_run' => ['exit_code' => 4, 'stdout' => '', 'stderr' => 'benchmark_run is not implemented in PhaseB local hardening.'],
         default => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Unhandled action.'],
     };

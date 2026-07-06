@@ -15,6 +15,7 @@ function hub_allowed_job_actions(): array
         'env_probe',
         'permissions_fix',
         'docker_prune_check',
+        'docker_builder_prune',
     ];
 }
 

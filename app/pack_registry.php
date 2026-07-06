@@ -186,20 +186,20 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     $existing = $idempotent ? ($existingByKey ?: $existingByMode) : null;
 
     $localPort = hub_resolve_install_port($db, $manifest, $portMode, $options['local_port'] ?? null, $existing ? (int)$existing['id'] : null);
-    $runtimeDir = HUB_SERVICE_DIR . '/' . $serviceKey;
+    $runtimeDir = hub_pack_runtime_dir($db, $serviceKey);
     if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)) {
         throw new RuntimeException('Cannot create service runtime directory.');
     }
 
     $storage = hub_get_storage_paths($db);
-    hub_ensure_pack_storage_dirs($manifest, $serviceKey, $storage);
-    $composeFile = 'data/services/' . $serviceKey . '/docker-compose.generated.yml';
+    hub_ensure_pack_storage_dirs($manifest, $serviceKey, $storage, $runtimeDir);
+    $composeFile = hub_pack_compose_file($db, $serviceKey);
     $envFile = $runtimeDir . '/.env';
     $portEnv = hub_pack_port_env($manifest);
     file_put_contents($envFile, hub_generate_service_env($manifest, $envValues, $portEnv, $localPort, $runtimeDir, $storage));
-    file_put_contents(HUB_ROOT . '/' . $composeFile, hub_generate_pack_compose($pack, $serviceKey, $localPort));
+    file_put_contents(hub_path($composeFile), hub_generate_pack_compose($pack, $serviceKey, $localPort));
     chmod($envFile, 0664);
-    chmod(HUB_ROOT . '/' . $composeFile, 0664);
+    chmod(hub_path($composeFile), 0664);
 
     $now = hub_now();
     $composeProject = hub_compose_project_for_instance($manifest, $serviceKey);
@@ -364,12 +364,44 @@ function hub_port_is_usable_for_install(PDO $db, int $port, ?int $exceptServiceI
     return true;
 }
 
-function hub_db_is_runtime_db(PDO $db): bool
+function hub_db_file(PDO $db): string
 {
     $rows = $db->query('PRAGMA database_list')->fetchAll();
-    $path = (string)($rows[0]['file'] ?? '');
+    return (string)($rows[0]['file'] ?? '');
+}
 
-    return $path !== '' && realpath($path) === realpath(HUB_DB_PATH);
+function hub_db_is_runtime_db(PDO $db): bool
+{
+    $path = hub_db_file($db);
+    $runtimeDb = HUB_DATA_DIR . '/3waaihub.sqlite';
+
+    return $path !== '' && realpath($path) === realpath($runtimeDb);
+}
+
+function hub_pack_runtime_base_dir(PDO $db): string
+{
+    if (hub_db_is_runtime_db($db)) {
+        return HUB_SERVICE_DIR;
+    }
+
+    $dbFile = hub_db_file($db);
+    $suffix = substr(sha1($dbFile !== '' ? $dbFile : spl_object_id($db)), 0, 12);
+
+    return HUB_DATA_DIR . '/test_services/' . $suffix;
+}
+
+function hub_pack_runtime_dir(PDO $db, string $serviceKey): string
+{
+    return hub_pack_runtime_base_dir($db) . '/' . $serviceKey;
+}
+
+function hub_pack_compose_file(PDO $db, string $serviceKey): string
+{
+    if (hub_db_is_runtime_db($db)) {
+        return 'data/services/' . $serviceKey . '/docker-compose.generated.yml';
+    }
+
+    return 'data/test_services/' . basename(hub_pack_runtime_base_dir($db)) . '/' . $serviceKey . '/docker-compose.generated.yml';
 }
 
 function hub_pack_requests_gpu(array $manifest): bool
@@ -431,14 +463,14 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     return $compose;
 }
 
-function hub_ensure_pack_storage_dirs(array $manifest, string $serviceKey, array $storage): void
+function hub_ensure_pack_storage_dirs(array $manifest, string $serviceKey, array $storage, ?string $serviceDir = null): void
 {
     $prefix = [
         'models' => $storage['AIHUB_MODELS_DIR'],
         'cache' => $storage['AIHUB_CACHE_DIR'],
         'uploads' => $storage['AIHUB_UPLOADS_DIR'],
         'results' => $storage['AIHUB_RESULTS_DIR'],
-        'service' => HUB_SERVICE_DIR . '/' . $serviceKey,
+        'service' => $serviceDir ?? HUB_SERVICE_DIR . '/' . $serviceKey,
     ];
     foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
         if (!is_array($mount) || empty($prefix[$mount['type'] ?? ''])) {

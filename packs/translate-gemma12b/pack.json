@@ -6,10 +6,10 @@
   "category": "translation",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L0-manifest-only",
-  "runtime_ready": false,
+  "runtime_level": "L1-ollama-adapter",
+  "runtime_ready": true,
   "default_mode": "translate",
-  "description": "Translation API backed by Ollama and translategemma:12b-it-q4_K_M.",
+  "description": "Translation API adapter backed by Ollama and translategemma:12b-it-q4_K_M.",
   "runtime": {
     "kind": "ollama-adapter",
     "compose_file": "docker-compose.yml",
@@ -47,6 +47,26 @@
     {
       "name": "OLLAMA_MODEL",
       "default": "translategemma:12b-it-q4_K_M",
+      "required": true
+    },
+    {
+      "name": "OLLAMA_HOST",
+      "default": "127.0.0.1:11434",
+      "required": true
+    },
+    {
+      "name": "OLLAMA_KEEP_ALIVE",
+      "default": "10m",
+      "required": false
+    },
+    {
+      "name": "OLLAMA_AUTO_PULL",
+      "default": "1",
+      "required": false
+    },
+    {
+      "name": "TRANSLATE_MAX_CHARS",
+      "default": "8000",
       "required": true
     }
   ],

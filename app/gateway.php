@@ -28,10 +28,14 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if (!hub_service_method_allowed($service, (string)($_SERVER['REQUEST_METHOD'] ?? 'GET'))) {
         return hub_gateway_finish($db, $service, $mode, hub_gateway_error(405, 'method_not_allowed', 'HTTP method is not allowed for this mode'), $started, $requestId);
     }
+    if (!hub_service_upload_size_allowed($service, (string)($_SERVER['CONTENT_LENGTH'] ?? ''))) {
+        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows'), $started, $requestId);
+    }
 
-    $requester ??= static fn (): array => hub_proxy_request($service['internal_url']);
+    $timeoutSec = hub_service_gateway_timeout_sec($service);
+    $requester ??= static fn (array $service, int $timeoutSec): array => hub_proxy_request($service['internal_url'], $timeoutSec);
 
-    return hub_gateway_finish($db, $service, $mode, $requester($service), $started, $requestId);
+    return hub_gateway_finish($db, $service, $mode, $requester($service, $timeoutSec), $started, $requestId);
 }
 
 function hub_is_task_api_mode(string $mode): bool
@@ -174,7 +178,7 @@ function hub_api_load_task(PDO $db): ?array
     return $taskId > 0 ? hub_get_task($db, $taskId) : null;
 }
 
-function hub_proxy_request(string $url): array
+function hub_proxy_request(string $url, int $timeoutSec = 60): array
 {
     $ch = curl_init($url);
     if ($ch === false) {
@@ -194,7 +198,7 @@ function hub_proxy_request(string $url): array
         CURLOPT_HEADER => true,
         CURLOPT_HTTPHEADER => $headers,
         CURLOPT_CONNECTTIMEOUT => 3,
-        CURLOPT_TIMEOUT => 60,
+        CURLOPT_TIMEOUT => max(1, $timeoutSec),
     ]);
     if (!in_array($method, ['GET', 'HEAD'], true)) {
         curl_setopt($ch, CURLOPT_POSTFIELDS, $hasUploads ? hub_proxy_post_fields($_POST, $_FILES) : file_get_contents('php://input'));
@@ -322,6 +326,33 @@ function hub_service_gateway_methods(array $service): array
     }
 
     return array_values(array_filter(array_map(static fn ($method): string => strtoupper((string)$method), $methods)));
+}
+
+function hub_service_upload_size_allowed(array $service, string $contentLength): bool
+{
+    $maxUploadMb = hub_service_gateway_int($service, 'max_upload_mb', 0);
+    if ($maxUploadMb <= 0 || trim($contentLength) === '') {
+        return true;
+    }
+
+    return (float)$contentLength <= $maxUploadMb * 1024 * 1024;
+}
+
+function hub_service_gateway_timeout_sec(array $service): int
+{
+    return max(1, hub_service_gateway_int($service, 'timeout_sec', 60));
+}
+
+function hub_service_gateway_int(array $service, string $key, int $default): int
+{
+    $packId = (string)($service['pack_id'] ?? '');
+    if ($packId === '') {
+        return $default;
+    }
+    $pack = hub_get_pack($packId);
+    $value = $pack['manifest']['gateway'][$key] ?? null;
+
+    return is_numeric($value) ? (int)$value : $default;
 }
 
 function hub_send_gateway_response(array $response): never

@@ -474,3 +474,60 @@ Skipped:
 - Web request host command execution
 - deviceQuery
 - hard-blocking install on preflight failure
+
+## PhaseM-2B TranslateGemma Ollama Adapter L1
+
+Completed `translate-gemma12b` L1 runtime.
+
+Implemented:
+
+- Gateway now applies manifest `timeout_sec` and `max_upload_mb`.
+- Added `packs/translate-gemma12b/service/` FastAPI adapter.
+- Adapter starts Ollama inside the container and calls `/api/generate`.
+- Translate image uses multi-stage Docker build and copies Ollama runtime libraries without apt in the Ollama base image.
+- `OLLAMA_AUTO_PULL=1` pulls `translategemma:12b-it-q4_K_M` into `data/models/ollama`.
+- `zh-TW` prompt maps to Traditional Chinese / Taiwan wording.
+- Test DB pack installs write to `data/test_services/{hash}` instead of overwriting runtime services.
+- Added `docker_builder_prune` command worker action for explicit Docker build cache cleanup.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS.
+- `GET http://127.0.0.1:18102/health` returns `ready:true`.
+- `POST api.php?mode=translate` returns translated Traditional Chinese text.
+- Docker builder cache prune recovered root filesystem space.
+
+Skipped:
+
+- Translate async queue.
+- Model management UI.
+- Streaming translate responses.
+
+## PhaseV-1 YOLO / SAM3 HubPacks
+
+Added first Ultralytics vision HubPacks.
+
+Implemented:
+
+- Added `yolo` HubPack.
+- Added `sam3` HubPack.
+- Added FastAPI runtime adapter files for both packs.
+- YOLO endpoint: `POST /detect/image`.
+- SAM3 endpoint: `POST /segment/image` with `points` / `labels` / `bboxes` form JSON.
+- Generated runtime files for `yolo-main` on port `18105`.
+- Generated runtime files for `sam3-main` on port `18106`.
+- Copied local runtime model files into:
+  - `data/models/yolo/yolo11n.pt`
+  - `data/models/sam3/sam3.pt`
+
+Verified:
+
+- `php scripts/run_tests.php` PASS.
+- `/DATA/conda_vm/sam3/models/sam3.pt` loads with `ultralytics.SAM`.
+- Local SAM3 point prompt smoke produced one mask and one box.
+
+Skipped:
+
+- Building and starting the YOLO / SAM3 Docker images.
+- Async queue.
+- Mask artifact export.

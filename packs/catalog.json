@@ -18,6 +18,24 @@
       "description": "Local translation service powered by Ollama TranslateGemma 12B Q4_K_M.",
       "path": "packs/translate-gemma12b",
       "featured": true
+    },
+    {
+      "id": "yolo",
+      "name": "YOLO Object Detection Service",
+      "version": "0.1.0",
+      "category": "vision",
+      "description": "Local object detection service powered by Ultralytics YOLO.",
+      "path": "packs/yolo",
+      "featured": true
+    },
+    {
+      "id": "sam3",
+      "name": "SAM3 Segmentation Service",
+      "version": "0.1.0",
+      "category": "segmentation",
+      "description": "Local promptable segmentation service powered by Ultralytics SAM3.",
+      "path": "packs/sam3",
+      "featured": true
     }
   ]
 }

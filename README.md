@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + OCR GPU L1 + Pack Preflight.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、SQLite retention guard、Dashboard metrics、Pack hardware preflight，以及 `ocr-ppocrv5` GPU-ready L1 mock API。TranslateGemma 目前仍是 manifest-only skeleton，尚未提供真實推論。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` GPU-ready L1 mock API，以及 `translate-gemma12b` Ollama L1 adapter。
 
 ## 功能
 
@@ -332,6 +332,8 @@ http://localhost/3waAIHub/admin/packs.php
 
 - `ocr-ppocrv5`
 - `translate-gemma12b`
+- `yolo`
+- `sam3`
 
 ### ocr-ppocrv5 Runtime Level
 
@@ -348,6 +350,45 @@ http://localhost/3waAIHub/admin/packs.php
 - generated compose 會加入 `gpus: all`
 
 這一版尚未安裝 PaddleOCR、尚未下載模型、尚未做真實 OCR 推論；L2 會改用可快取的 PaddleOCR dependency/base image。
+
+### translate-gemma12b Runtime Level
+
+`translate-gemma12b` 目前是 L1 `ollama-adapter`：
+
+- Docker image 可 build
+- container 內啟動 Ollama 與 FastAPI adapter
+- `GET /health` 回 adapter 與 model ready 狀態
+- `POST /translate` 透過 Ollama `/api/generate` 呼叫 `translategemma:12b-it-q4_K_M`
+- 模型放在 `AIHUB_MODELS_DIR/ollama`
+- 預設 `OLLAMA_AUTO_PULL=1`，container 啟動後背景 pull 模型
+- `zh-TW` 會明確要求繁體中文與台灣用語
+
+測試：
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Hello, this is a local translation test.","source_lang":"en","target_lang":"zh-TW"}'
+```
+
+### yolo Runtime Level
+
+`yolo` 目前是 L1 `ultralytics-yolo`：
+
+- `POST /detect/image` 支援 multipart 圖片上傳
+- 預設模型路徑是 `AIHUB_MODELS_DIR/yolo/yolo11n.pt`
+- 回傳 bbox、class、confidence
+- generated compose 會加入 `gpus: all`
+
+### sam3 Runtime Level
+
+`sam3` 目前是 L1 `ultralytics-sam3`：
+
+- `POST /segment/image` 支援 multipart 圖片上傳
+- prompt 使用 `points` / `labels` / `bboxes` JSON form 欄位
+- 預設模型路徑是 `AIHUB_MODELS_DIR/sam3/sam3.pt`
+- 回傳 bbox 與簡化 polygon
+- generated compose 會加入 `gpus: all`
 
 ### Pack Preflight
 

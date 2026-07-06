@@ -1,0 +1,98 @@
+{
+  "schema_version": "0.1",
+  "id": "sam3",
+  "name": "SAM3 Segmentation Service",
+  "version": "0.1.0",
+  "category": "segmentation",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L1-ultralytics-sam3",
+  "runtime_ready": true,
+  "default_mode": "sam3",
+  "description": "Promptable segmentation API backed by Ultralytics SAM3.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/segment/image",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 50
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 0,
+    "min_compute_capability": "8.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "sam3",
+        "container_path": "/models/sam3",
+        "read_only": false
+      },
+      {
+        "type": "cache",
+        "host_subdir": "ultralytics",
+        "container_path": "/cache/ultralytics",
+        "read_only": false
+      },
+      {
+        "type": "service",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false
+      }
+    ]
+  },
+  "env": [
+    {
+      "name": "SAM3_MODEL_PATH",
+      "default": "/models/sam3/sam3.pt",
+      "required": true
+    },
+    {
+      "name": "ULTRALYTICS_DEVICE",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "SAM3_IMGSZ",
+      "default": "1024",
+      "required": true
+    },
+    {
+      "name": "SAM3_MAX_POLYGON_POINTS",
+      "default": "200",
+      "required": true
+    }
+  ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "nvidia_smi",
+      "docker_gpus",
+      "compute_capability",
+      "storage"
+    ]
+  },
+  "service": {
+    "default_local_port": 18106,
+    "local_port_env": "SAM3_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "sam3-main",
+    "compose_project": "3waaihub_sam3_main"
+  }
+}

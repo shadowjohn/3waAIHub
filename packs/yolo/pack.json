@@ -1,0 +1,98 @@
+{
+  "schema_version": "0.1",
+  "id": "yolo",
+  "name": "YOLO Object Detection Service",
+  "version": "0.1.0",
+  "category": "vision",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L1-ultralytics-yolo",
+  "runtime_ready": true,
+  "default_mode": "yolo",
+  "description": "Object detection API backed by Ultralytics YOLO.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/detect/image",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 50
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 0,
+    "min_compute_capability": "8.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "yolo",
+        "container_path": "/models/yolo",
+        "read_only": false
+      },
+      {
+        "type": "cache",
+        "host_subdir": "ultralytics",
+        "container_path": "/cache/ultralytics",
+        "read_only": false
+      },
+      {
+        "type": "service",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false
+      }
+    ]
+  },
+  "env": [
+    {
+      "name": "YOLO_MODEL_PATH",
+      "default": "/models/yolo/yolo11n.pt",
+      "required": true
+    },
+    {
+      "name": "ULTRALYTICS_DEVICE",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "YOLO_CONF",
+      "default": "0.25",
+      "required": true
+    },
+    {
+      "name": "YOLO_IMGSZ",
+      "default": "640",
+      "required": true
+    }
+  ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "nvidia_smi",
+      "docker_gpus",
+      "compute_capability",
+      "storage"
+    ]
+  },
+  "service": {
+    "default_local_port": 18105,
+    "local_port_env": "YOLO_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "yolo-main",
+    "compose_project": "3waaihub_yolo_main"
+  }
+}

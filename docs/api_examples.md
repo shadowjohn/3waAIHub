@@ -35,7 +35,7 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
 
 ## POST Translate
 
-Status: Runtime adapter pending.
+Status: L1 Ollama adapter. First run pulls `translategemma:12b-it-q4_K_M` into `AIHUB_MODELS_DIR/ollama`.
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
@@ -45,6 +45,38 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
     "target_lang": "zh-TW",
     "text": "That was a wonderful time."
   }'
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "text": "那是一段美好的時光。",
+  "model": "translategemma:12b-it-q4_K_M",
+  "source_lang": "en",
+  "target_lang": "zh-TW"
+}
+```
+
+## POST YOLO
+
+Status: L1 Ultralytics YOLO adapter.
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
+  -F "image=@sample.jpg"
+```
+
+## POST SAM3
+
+Status: L1 Ultralytics SAM3 adapter.
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+  -F "image=@sample.jpg" \
+  -F 'points=[[150,120]]' \
+  -F 'labels=[1]'
 ```
 
 ## Unknown Mode
