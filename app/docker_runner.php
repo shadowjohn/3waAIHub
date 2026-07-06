@@ -71,7 +71,18 @@ function hub_compose_command(array $service, array $args): array
 
 function hub_compose_env(array $service): array
 {
-    return ['HELLO_LOCAL_PORT' => (string)((int)($service['local_port'] ?? 18100) ?: 18100)];
+    $env = [];
+    $envFile = dirname(hub_path($service['compose_file'])) . '/.env';
+    if (is_file($envFile)) {
+        foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+            if (preg_match('/^([A-Z][A-Z0-9_]*)=(.*)$/', $line, $matches)) {
+                $env[$matches[1]] = $matches[2];
+            }
+        }
+    }
+    $env['HELLO_LOCAL_PORT'] = (string)((int)($service['local_port'] ?? 18100) ?: 18100);
+
+    return $env;
 }
 
 function hub_compose_status_from_ps(string $output): string
@@ -109,7 +120,7 @@ function hub_start_service(PDO $db, array $service): array
     }
 
     $port = (int)($service['local_port'] ?? 0);
-    if (!hub_validate_service_port($port)) {
+    if (!hub_validate_service_port($port, $db)) {
         $result = ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Invalid local port.', 'output' => 'Invalid local port.'];
         hub_add_service_log($db, (int)$service['id'], 'start', $result['output'], (int)$result['exit_code']);
         hub_update_service_status($db, (int)$service['id'], 'error');

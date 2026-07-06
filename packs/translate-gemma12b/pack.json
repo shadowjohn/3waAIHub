@@ -1,0 +1,67 @@
+{
+  "schema_version": "0.1",
+  "id": "translate-gemma12b",
+  "name": "TranslateGemma 12B Translation Service",
+  "version": "0.1.0",
+  "category": "translation",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "default_mode": "translate",
+  "description": "Translation API backed by Ollama and translategemma:12b-it-q4_K_M.",
+  "runtime": {
+    "kind": "ollama-adapter",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/translate",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 2
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 10000
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "ollama",
+        "container_path": "/root/.ollama",
+        "read_only": false
+      }
+    ]
+  },
+  "env": [
+    {
+      "name": "OLLAMA_MODEL",
+      "default": "translategemma:12b-it-q4_K_M",
+      "required": true
+    }
+  ],
+  "models": [
+    {
+      "id": "translategemma-12b-q4km",
+      "runtime": "ollama",
+      "model": "translategemma:12b-it-q4_K_M",
+      "pull_command": "ollama pull translategemma:12b-it-q4_K_M",
+      "required": true
+    }
+  ],
+  "service": {
+    "default_local_port": 18102,
+    "local_port_env": "TRANSLATE_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "translate-main",
+    "compose_project": "3waaihub_translate_main"
+  }
+}

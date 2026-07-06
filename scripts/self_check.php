@@ -14,6 +14,53 @@ $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 hub_migrate($db);
 hub_seed_admin_user($db);
 hub_seed_hello_service($db);
+hub_ensure_default_storage_settings($db);
+
+$storage = hub_get_storage_paths($db);
+assert($storage['AIHUB_MODELS_DIR'] === HUB_DATA_DIR . '/models');
+assert($storage['AIHUB_CACHE_DIR'] === HUB_DATA_DIR . '/cache');
+assert($storage['AIHUB_UPLOADS_DIR'] === HUB_DATA_DIR . '/uploads');
+assert($storage['AIHUB_RESULTS_DIR'] === HUB_DATA_DIR . '/results');
+assert($storage['AIHUB_LOGS_DIR'] === HUB_LOG_DIR);
+assert(hub_get_storage_setting($db, 'AIHUB_DOCKER_PORT_START') === '18100');
+assert(hub_get_storage_setting($db, 'AIHUB_DOCKER_PORT_END') === '18999');
+assert(hub_is_safe_absolute_path('/DATA/aihub_models') === true);
+assert(hub_is_safe_absolute_path('/') === false);
+assert(hub_is_safe_absolute_path('/etc') === false);
+assert(hub_is_safe_absolute_path('/var/lib/docker') === false);
+assert(hub_is_safe_absolute_path('relative/path') === false);
+assert(hub_is_safe_absolute_path("/DATA/bad\0path") === false);
+assert(hub_docker_root_warning('/var/lib/docker', 50 * 1024 * 1024 * 1024) !== '');
+assert(hub_docker_root_warning('/DATA/docker', 50 * 1024 * 1024 * 1024) === '');
+
+$packs = hub_list_packs();
+$helloPack = null;
+foreach ($packs as $pack) {
+    if (($pack['id'] ?? '') === 'hello') {
+        $helloPack = $pack;
+        break;
+    }
+}
+assert($helloPack !== null);
+assert($helloPack['status'] === 'ok');
+assert($helloPack['manifest']['schema_version'] === '0.1');
+
+$installed = hub_install_pack($db, 'hello', 'hello-main');
+assert($installed['service']['service_key'] === 'hello-main');
+assert($installed['service']['pack_id'] === 'hello');
+assert($installed['service']['pack_version'] === '0.1.0');
+assert($installed['service']['compose_file'] === 'data/services/hello-main/docker-compose.generated.yml');
+assert($installed['service']['install_status'] === 'installed');
+assert(is_dir(HUB_DATA_DIR . '/services/hello-main'));
+assert(is_file(HUB_DATA_DIR . '/services/hello-main/.env'));
+assert(is_file(HUB_DATA_DIR . '/services/hello-main/docker-compose.generated.yml'));
+assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/hello-main/.env'), 'HELLO_LOCAL_PORT=18100'));
+assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/hello-main/.env'), 'AIHUB_MODELS_DIR='));
+assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/hello-main/docker-compose.generated.yml'), '127.0.0.1:${HELLO_LOCAL_PORT:-18100}:8000'));
+
+hub_install_pack($db, 'hello', 'hello-main');
+$stmt = $db->query("SELECT COUNT(*) FROM services WHERE service_key = 'hello-main'");
+assert((int)$stmt->fetchColumn() === 1);
 
 $user = $db->query("SELECT id, password_hash FROM users WHERE username = 'admin'")->fetch(PDO::FETCH_ASSOC);
 assert($user !== false);
@@ -115,6 +162,89 @@ assert($gpuRow['vram_total_mb'] === '32607');
 assert($gpuRow['utilization_percent'] === '7');
 assert($gpuRow['temperature_c'] === '42');
 
+$cron = hub_parse_command_worker_cron("* * * * * root cd /DATA/3waAIHub && /DATA/3waAIHub/crontab/1min.sh >> /DATA/3waAIHub/data/logs/command_worker_1min.log 2>&1\n");
+assert($cron['installed'] === true);
+assert($cron['user'] === 'root');
+assert($cron['line'] !== '');
+$cronMissing = hub_parse_command_worker_cron("# no worker here\n");
+assert($cronMissing['installed'] === false);
+assert($cronMissing['user'] === '');
+
+$catalog = hub_load_pack_catalog();
+assert($catalog['schema_version'] === '0.1');
+assert(count($catalog['packs']) >= 2);
+$catalogPacks = hub_list_catalog_packs();
+$catalogIds = array_column($catalogPacks, 'id');
+assert(in_array('ocr-ppocrv5', $catalogIds, true));
+assert(in_array('translate-gemma12b', $catalogIds, true));
+
+$ocr = hub_install_pack($db, 'ocr-ppocrv5', [
+    'service_key' => 'ocr-main',
+    'name' => 'PP-OCRv5 OCR Main',
+    'mode' => 'ocr',
+    'port_mode' => 'auto',
+    'environment' => 'production',
+]);
+assert($ocr['service']['service_key'] === 'ocr-main');
+assert($ocr['service']['mode'] === 'ocr');
+assert($ocr['service']['pack_id'] === 'ocr-ppocrv5');
+assert(is_dir(HUB_DATA_DIR . '/services/ocr-main'));
+assert(is_file(HUB_DATA_DIR . '/services/ocr-main/.env'));
+assert(is_file(HUB_DATA_DIR . '/services/ocr-main/docker-compose.generated.yml'));
+
+$ocrGpu = hub_install_pack($db, 'ocr-ppocrv5', [
+    'service_key' => 'ocr-gpu',
+    'name' => 'PP-OCRv5 OCR GPU',
+    'mode' => 'ocr_gpu',
+    'port_mode' => 'manual',
+    'local_port' => 18103,
+    'environment' => 'production',
+]);
+assert($ocrGpu['service']['service_key'] === 'ocr-gpu');
+assert($ocrGpu['service']['mode'] === 'ocr_gpu');
+assert((int)$ocrGpu['service']['local_port'] === 18103);
+assert(is_file(HUB_DATA_DIR . '/services/ocr-gpu/.env'));
+assert(is_file(HUB_DATA_DIR . '/services/ocr-gpu/docker-compose.generated.yml'));
+
+$translate = hub_install_pack($db, 'translate-gemma12b', [
+    'service_key' => 'translate-main',
+    'name' => 'TranslateGemma Main',
+    'mode' => 'translate',
+    'port_mode' => 'auto',
+    'environment' => 'production',
+]);
+assert($translate['service']['service_key'] === 'translate-main');
+assert($translate['service']['mode'] === 'translate');
+assert($translate['service']['pack_id'] === 'translate-gemma12b');
+assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/translate-main/.env'), 'OLLAMA_MODEL=translategemma:12b-it-q4_K_M'));
+assert(is_file(HUB_DATA_DIR . '/services/translate-main/docker-compose.generated.yml'));
+
+assert(hub_self_check_throws(static fn () => hub_install_pack($db, 'ocr-ppocrv5', [
+    'service_key' => 'ocr-main',
+    'name' => 'Duplicate Key',
+    'mode' => 'ocr_dup_key',
+    'port_mode' => 'auto',
+    'environment' => 'production',
+])));
+assert(hub_self_check_throws(static fn () => hub_install_pack($db, 'ocr-ppocrv5', [
+    'service_key' => 'ocr-new',
+    'name' => 'Duplicate Mode',
+    'mode' => 'ocr',
+    'port_mode' => 'auto',
+    'environment' => 'production',
+])));
+assert(hub_self_check_throws(static fn () => hub_install_pack($db, 'ocr-ppocrv5', [
+    'service_key' => 'ocr-port',
+    'name' => 'Duplicate Port',
+    'mode' => 'ocr_port',
+    'port_mode' => 'manual',
+    'local_port' => 18103,
+    'environment' => 'production',
+])));
+assert((int)$db->query("SELECT COUNT(*) FROM services WHERE service_key = 'ocr-main'")->fetchColumn() === 1);
+assert((int)$db->query("SELECT COUNT(*) FROM services WHERE service_key = 'ocr-gpu'")->fetchColumn() === 1);
+assert((int)$db->query("SELECT COUNT(*) FROM services WHERE service_key = 'translate-main'")->fetchColumn() === 1);
+
 $artifactDir = hub_task_result_dir($highTaskId);
 if (!is_dir($artifactDir)) {
     mkdir($artifactDir, 0775, true);
@@ -130,3 +260,14 @@ unlink($artifactPath);
 
 unlink($tmp);
 echo "self_check ok\n";
+
+function hub_self_check_throws(callable $fn): bool
+{
+    try {
+        $fn();
+    } catch (Throwable) {
+        return true;
+    }
+
+    return false;
+}

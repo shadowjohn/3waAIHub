@@ -34,6 +34,8 @@ function hub_collect_env_snapshot(): array
     $composeVersion = hub_run_command(['docker', 'compose', 'version'], 10);
     $dockerInfo = hub_run_command(['docker', 'info'], 15);
     $dockerDisk = hub_run_command(['docker', 'system', 'df'], 20);
+    $dockerRootDir = $dockerInfo['exit_code'] === 0 ? hub_parse_docker_root_dir($dockerInfo['stdout']) : '';
+    $dockerRootFree = $dockerRootDir !== '' ? @disk_free_space($dockerRootDir) : null;
     return [
         'host' => [
             'hostname' => gethostname() ?: '',
@@ -53,12 +55,17 @@ function hub_collect_env_snapshot(): array
             'docker_version' => $dockerVersion['stdout'],
             'compose_version' => $composeVersion['stdout'],
             'daemon_reachable' => $dockerInfo['exit_code'] === 0,
+            'docker_root_dir' => $dockerRootDir,
+            'docker_root_free_bytes' => $dockerRootFree,
+            'docker_root_warning' => hub_docker_root_warning($dockerRootDir, $dockerRootFree),
+            'docker_root_status' => $dockerRootDir === '/DATA/docker' ? 'PASS' : '',
             'docker_error' => $dockerVersion['exit_code'] === 0 ? null : hub_command_error_summary($dockerVersion),
             'compose_error' => $composeVersion['exit_code'] === 0 ? null : hub_command_error_summary($composeVersion),
             'daemon_error' => $dockerInfo['exit_code'] === 0 ? null : hub_command_error_summary($dockerInfo),
             'disk_usage' => $dockerDisk['stdout'],
         ],
         'gpu_cuda' => hub_collect_gpu_status(),
+        'storage' => hub_collect_storage_status(),
         'memory' => hub_memory_status(),
         'disk' => [
             'project_total_bytes' => disk_total_space(HUB_ROOT),
@@ -68,7 +75,39 @@ function hub_collect_env_snapshot(): array
             'logs_writable' => is_writable(HUB_LOG_DIR),
             'packs_readable' => is_readable(HUB_ROOT . '/packs'),
         ],
+        'command_worker' => hub_collect_command_worker_status(),
     ];
+}
+
+function hub_collect_storage_status(): array
+{
+    $db = hub_db();
+    $paths = hub_get_storage_paths($db);
+    $status = [];
+    foreach (['AIHUB_MODELS_DIR', 'AIHUB_CACHE_DIR', 'AIHUB_UPLOADS_DIR', 'AIHUB_RESULTS_DIR', 'AIHUB_LOGS_DIR'] as $key) {
+        $usage = hub_get_disk_usage_for_path($paths[$key]);
+        $status[$key] = $paths[$key];
+        $status[$key . '_exists'] = $usage['exists'];
+        $status[$key . '_readable'] = $usage['readable'];
+        $status[$key . '_writable'] = $usage['writable'];
+        $status[$key . '_total_bytes'] = $usage['total_bytes'];
+        $status[$key . '_free_bytes'] = $usage['free_bytes'];
+    }
+    $status['AIHUB_DOCKER_PORT_START'] = $paths['AIHUB_DOCKER_PORT_START'];
+    $status['AIHUB_DOCKER_PORT_END'] = $paths['AIHUB_DOCKER_PORT_END'];
+
+    return $status;
+}
+
+function hub_parse_docker_root_dir(string $dockerInfo): string
+{
+    foreach (preg_split('/\R/', $dockerInfo) ?: [] as $line) {
+        if (preg_match('/^\s*Docker Root Dir:\s*(.+)\s*$/i', $line, $matches)) {
+            return trim($matches[1]);
+        }
+    }
+
+    return '';
 }
 
 function hub_collect_gpu_status(): array
@@ -155,4 +194,53 @@ function hub_current_user_in_group(string $groupName): bool
     }
 
     return false;
+}
+
+function hub_collect_command_worker_status(): array
+{
+    $cronFile = '/etc/cron.d/3waaihub-command-worker';
+    $cronContents = is_readable($cronFile) ? (string)file_get_contents($cronFile) : '';
+    $cron = hub_parse_command_worker_cron($cronContents);
+    $loopScript = HUB_ROOT . '/crontab/1min.sh';
+    $logPath = HUB_LOG_DIR . '/command_worker_1min.log';
+
+    return [
+        'cron_installed' => $cron['installed'],
+        'cron_file' => $cronFile,
+        'cron_user' => $cron['user'],
+        'cron_line' => $cron['line'],
+        'loop_script_exists' => is_file($loopScript),
+        'loop_script_executable' => is_executable($loopScript),
+        'flock_available' => is_executable('/usr/bin/flock') || is_executable('/bin/flock'),
+        'log_path' => $logPath,
+        'log_exists' => is_file($logPath),
+        'last_log_at' => is_file($logPath) ? date('Y-m-d H:i:s', (int)filemtime($logPath)) : '',
+        'install_command' => 'sudo ' . HUB_ROOT . '/scripts/install_command_worker_cron.sh',
+    ];
+}
+
+function hub_parse_command_worker_cron(string $cronContents): array
+{
+    foreach (preg_split('/\R/', $cronContents) ?: [] as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#')) {
+            continue;
+        }
+        if (!str_contains($line, 'crontab/1min.sh') && !str_contains($line, 'command_worker_loop.sh')) {
+            continue;
+        }
+
+        $parts = preg_split('/\s+/', $line, 7) ?: [];
+        return [
+            'installed' => true,
+            'user' => (string)($parts[5] ?? ''),
+            'line' => $line,
+        ];
+    }
+
+    return [
+        'installed' => false,
+        'user' => '',
+        'line' => '',
+    ];
 }

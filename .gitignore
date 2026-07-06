@@ -10,14 +10,19 @@ data/logs/jobs/*
 !data/logs/install/
 data/logs/install/*
 data/jobs/*
+data/models/*
 data/results/*
+data/uploads/*
 data/cache/*
+data/services/*
 !data/.gitkeep
 !data/logs/.gitkeep
 !data/logs/jobs/.gitkeep
 !data/logs/install/.gitkeep
 !data/jobs/.gitkeep
+!data/models/.gitkeep
 !data/results/.gitkeep
+!data/uploads/.gitkeep
 !data/cache/.gitkeep
 
 .env

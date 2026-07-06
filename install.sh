@@ -77,6 +77,13 @@ print_check() {
   status_line "Docker Compose" docker compose version
   status_line "nvidia-smi" nvidia-smi --query-gpu=name --format=csv,noheader
   status_line "nvidia-ctk" nvidia-ctk --version
+  status_line "flock" flock --version
+  if [ -f /etc/cron.d/3waaihub-command-worker ] && grep -q 'crontab/1min.sh' /etc/cron.d/3waaihub-command-worker; then
+    echo "Command worker cron: OK (/etc/cron.d/3waaihub-command-worker)"
+  else
+    echo "Command worker cron: MISSING"
+    echo "Command worker cron install: sudo $(pwd)/scripts/install_command_worker_cron.sh"
+  fi
 }
 
 check_app_dependencies() {
@@ -95,6 +102,16 @@ check_app_dependencies() {
 fix_runtime_permissions() {
   echo "[3waAIHub] Fixing runtime permissions..."
   ./scripts/fix_permissions.sh
+}
+
+install_command_worker_cron() {
+  if [ "$(id -u)" = "0" ]; then
+    echo "[3waAIHub] Installing command worker cron..."
+    ./scripts/install_command_worker_cron.sh
+  else
+    echo "[3waAIHub] Command worker cron not installed: root required."
+    echo "[3waAIHub] Run: sudo $(pwd)/scripts/install_command_worker_cron.sh"
+  fi
 }
 
 confirm_bootstrap() {
@@ -130,7 +147,7 @@ if [ "$BOOTSTRAP_HOST" = "1" ]; then
   exit 0
 fi
 
-mkdir -p data/logs/jobs data/logs/install data/jobs data/results data/cache
+mkdir -p data/models data/cache data/uploads data/results data/logs data/logs/jobs data/logs/install data/jobs data/services
 fix_runtime_permissions
 
 echo "[3waAIHub] Checking environment..."
@@ -148,9 +165,11 @@ fi
 echo "[3waAIHub] Initializing SQLite..."
 php scripts/init_db.php
 fix_runtime_permissions
+install_command_worker_cron
 
 echo "[3waAIHub] Done."
 echo "Login URL: http://localhost/3waAIHub/login.php"
 echo "Admin URL: http://localhost/3waAIHub/admin/"
 echo "Default login: admin / admin123"
-echo "Crontab worker: * * * * * php $(pwd)/scripts/command_worker.php --limit=5 >> $(pwd)/data/logs/command_worker.log 2>&1"
+echo "Command worker cron: sudo $(pwd)/scripts/install_command_worker_cron.sh"
+echo "Command worker loop: $(pwd)/crontab/1min.sh"

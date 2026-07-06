@@ -116,3 +116,90 @@ Added a low-dependency admin login captcha.
 - Environment diagnostics now show command suggestions for Docker daemon permission failures.
 - Services page now explains that Docker actions are executed by `command_worker.php` and shows a worker command when jobs are queued.
 - Services page actions now submit through jQuery AJAX and prepend queued command jobs without a full page reload.
+- Added `crontab/1min.sh` with `flock` protection for command worker cron execution.
+- Added root-only `scripts/install_command_worker_cron.sh` to install `/etc/cron.d/3waaihub-command-worker`.
+- `install.sh --check` now reports command worker cron status; root app install auto-installs the cron entry, while non-root install prints the root command.
+- Environment diagnostics now show live command worker cron status even before a full worker-generated snapshot exists.
+
+## 2026-07-06 PhaseC-1
+
+Standardized the first HubPack flow.
+
+- Added HubPack manifest schema v0.1 validation in `app/pack_registry.php`.
+- Updated `packs/hello/pack.json` to the standard manifest shape.
+- Added `admin/packs.php` to list available packs and install valid packs.
+- Installing hello creates service instance `hello-main`.
+- Generated runtime files now live under `data/services/hello-main/`.
+- Hello service Docker operations now use `data/services/hello-main/docker-compose.generated.yml`.
+- `api.php?mode=hello` remains a sync API gateway.
+
+Still deferred:
+
+- SAM3 / OCR / Translate / LLM
+- OpenMVS / 3DGS
+- Redis / marketplace / multi-node
+
+## 2026-07-06 Host Maintenance
+
+Moved Docker data-root from `/var/lib/docker` to `/DATA/docker`.
+
+- Preserved Docker data with `rsync -aHAX --numeric-ids`.
+- Backed up daemon config to `/etc/docker/daemon.json.bak.20260706_160821`.
+- Preserved NVIDIA Container Toolkit runtime config.
+- Renamed old Docker root to `/var/lib/docker.bak.20260706_160821`; not deleted.
+- Docker hello-world PASS.
+- NVIDIA GPU container `nvidia-smi` PASS with `nvidia/cuda:12.9.0-base-ubuntu22.04`.
+- Operation log: `data/logs/install/move_docker_data_root_20260706_160821.log`.
+
+## 2026-07-06 PhaseC-0
+
+Storage Settings / Model Directory.
+
+- Added global storage settings in SQLite.
+- Added default models/cache/uploads/results/logs directories.
+- Added `.env.example`.
+- Added storage diagnostics.
+- Added Docker Root Dir warning.
+
+## PhaseM-1 HubPack Kit MVP
+
+Completed Local HubPack Catalog and multi Service Instance model.
+
+Added:
+
+- `packs/catalog.json`
+- `ocr-ppocrv5` HubPack manifest
+- `translate-gemma12b` HubPack manifest
+- `app/pack_registry.php`
+- `admin/marketplace.php`
+
+Implemented:
+
+- HubPack as template
+- HubService as installable instance
+- multi instance installation from the same Pack
+- service_key / mode / local_port uniqueness checks
+- generated service runtime directory:
+  - `data/services/{service_key}/.env`
+  - `data/services/{service_key}/docker-compose.generated.yml`
+
+Verified:
+
+- `ocr-main` -> `mode=ocr`, `port=18101`
+- `ocr-gpu` -> `mode=ocr_gpu`, `port=18103`
+- `services.php` shows multiple instances
+- `api.php?mode=hello` still works
+- unknown mode returns 404
+- duplicate service_key / mode / local_port checks pass
+- PHP lint PASS
+- `scripts/self_check.php` PASS
+- `git diff --check` PASS
+
+Skipped:
+
+- remote marketplace
+- Pack download/signature
+- real OCR runtime
+- real TranslateGemma runtime
+- Redis/SSE
+- multi-host Hub

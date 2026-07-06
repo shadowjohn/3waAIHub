@@ -22,6 +22,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $snapshot = hub_latest_env_snapshot($db);
+$liveWorkerStatus = hub_collect_command_worker_status();
+if ($snapshot) {
+    $snapshot['data']['command_worker'] = $liveWorkerStatus;
+}
 
 function hub_env_section_label(string $section): string
 {
@@ -29,8 +33,10 @@ function hub_env_section_label(string $section): string
         'host' => '主機',
         'docker' => 'Docker',
         'gpu_cuda' => 'GPU / CUDA',
+        'storage' => 'Storage',
         'memory' => '記憶體',
         'disk' => '磁碟與資料目錄',
+        'command_worker' => '背景 Worker',
     ][$section] ?? $section;
 }
 
@@ -52,6 +58,10 @@ function hub_env_key_label(string $key): string
         'docker_version' => 'Docker 版本',
         'compose_version' => 'Docker Compose 版本',
         'daemon_reachable' => 'Docker daemon 可連線',
+        'docker_root_dir' => 'Docker Root Dir',
+        'docker_root_free_bytes' => 'Docker Root Dir 可用空間',
+        'docker_root_warning' => 'Docker Root Dir 警告',
+        'docker_root_status' => 'Docker Root Dir 狀態',
         'docker_error' => 'Docker 錯誤',
         'compose_error' => 'Compose 錯誤',
         'daemon_error' => 'Docker daemon 錯誤',
@@ -78,6 +88,49 @@ function hub_env_key_label(string $key): string
         'data_writable' => 'data/ 可寫',
         'logs_writable' => 'logs/ 可寫',
         'packs_readable' => 'packs/ 可讀',
+        'AIHUB_MODELS_DIR' => 'Models Dir',
+        'AIHUB_CACHE_DIR' => 'Cache Dir',
+        'AIHUB_UPLOADS_DIR' => 'Uploads Dir',
+        'AIHUB_RESULTS_DIR' => 'Results Dir',
+        'AIHUB_LOGS_DIR' => 'Logs Dir',
+        'AIHUB_DOCKER_PORT_START' => 'Docker Port 起始',
+        'AIHUB_DOCKER_PORT_END' => 'Docker Port 結束',
+        'AIHUB_MODELS_DIR_exists' => 'Models Dir 存在',
+        'AIHUB_MODELS_DIR_readable' => 'Models Dir 可讀',
+        'AIHUB_MODELS_DIR_writable' => 'Models Dir 可寫',
+        'AIHUB_MODELS_DIR_total_bytes' => 'Models Dir 總空間',
+        'AIHUB_MODELS_DIR_free_bytes' => 'Models Dir 可用空間',
+        'AIHUB_CACHE_DIR_exists' => 'Cache Dir 存在',
+        'AIHUB_CACHE_DIR_readable' => 'Cache Dir 可讀',
+        'AIHUB_CACHE_DIR_writable' => 'Cache Dir 可寫',
+        'AIHUB_CACHE_DIR_total_bytes' => 'Cache Dir 總空間',
+        'AIHUB_CACHE_DIR_free_bytes' => 'Cache Dir 可用空間',
+        'AIHUB_UPLOADS_DIR_exists' => 'Uploads Dir 存在',
+        'AIHUB_UPLOADS_DIR_readable' => 'Uploads Dir 可讀',
+        'AIHUB_UPLOADS_DIR_writable' => 'Uploads Dir 可寫',
+        'AIHUB_UPLOADS_DIR_total_bytes' => 'Uploads Dir 總空間',
+        'AIHUB_UPLOADS_DIR_free_bytes' => 'Uploads Dir 可用空間',
+        'AIHUB_RESULTS_DIR_exists' => 'Results Dir 存在',
+        'AIHUB_RESULTS_DIR_readable' => 'Results Dir 可讀',
+        'AIHUB_RESULTS_DIR_writable' => 'Results Dir 可寫',
+        'AIHUB_RESULTS_DIR_total_bytes' => 'Results Dir 總空間',
+        'AIHUB_RESULTS_DIR_free_bytes' => 'Results Dir 可用空間',
+        'AIHUB_LOGS_DIR_exists' => 'Logs Dir 存在',
+        'AIHUB_LOGS_DIR_readable' => 'Logs Dir 可讀',
+        'AIHUB_LOGS_DIR_writable' => 'Logs Dir 可寫',
+        'AIHUB_LOGS_DIR_total_bytes' => 'Logs Dir 總空間',
+        'AIHUB_LOGS_DIR_free_bytes' => 'Logs Dir 可用空間',
+        'cron_installed' => 'command worker cron 已掛載',
+        'cron_file' => 'cron 設定檔',
+        'cron_user' => 'cron 執行使用者',
+        'cron_line' => 'cron 指令',
+        'loop_script_exists' => 'crontab/1min.sh 存在',
+        'loop_script_executable' => 'crontab/1min.sh 可執行',
+        'flock_available' => 'flock 可用',
+        'log_path' => 'worker log',
+        'log_exists' => 'worker log 已產生',
+        'last_log_at' => '最後 log 時間',
+        'install_command' => '掛載指令',
     ][$key] ?? $key;
 }
 
@@ -128,6 +181,16 @@ function hub_env_false_reason(string $key, array $values): string
     if ($key === 'daemon_reachable') {
         $candidates[] = 'daemon_error';
     }
+    $knownReasons = [
+        'cron_installed' => '尚未掛載 command worker cron。請以 root 執行安裝指令。',
+        'loop_script_exists' => '找不到 crontab/1min.sh。',
+        'loop_script_executable' => 'crontab/1min.sh 尚未設為可執行。',
+        'flock_available' => '找不到 flock，請安裝 util-linux。',
+        'log_exists' => 'worker 尚未執行或尚未寫入 log。',
+    ];
+    if (isset($knownReasons[$key])) {
+        return $knownReasons[$key];
+    }
 
     foreach ($candidates as $candidate) {
         if (!empty($values[$candidate]) && is_scalar($values[$candidate])) {
@@ -139,6 +202,9 @@ function hub_env_false_reason(string $key, array $values): string
     }
     if (str_ends_with($key, '_readable')) {
         return '目前執行使用者沒有讀取權限。';
+    }
+    if (str_ends_with($key, '_exists')) {
+        return '目錄不存在，請用 CLI 建立並修正權限。';
     }
 
     return '';
@@ -195,10 +261,27 @@ function hub_env_fix_suggestions(array $data): array
     $host = $data['host'] ?? [];
     $docker = $data['docker'] ?? [];
     $disk = $data['disk'] ?? [];
+    $worker = $data['command_worker'] ?? [];
     $workerUser = (string)($host['server_user'] ?? '');
     $displayUser = $workerUser !== '' ? $workerUser : 'COMMAND_WORKER_USER';
     $safeUser = escapeshellarg($displayUser);
     $suggestions = [];
+
+    if (($worker['cron_installed'] ?? null) === false) {
+        $suggestions[] = [
+            'title' => '掛載 command worker cron',
+            'body' => '後台啟停服務會先排入 command_jobs，再由 crontab/1min.sh 消化。掛載 cron 需 root；一般 install 非 root 時只會提示。',
+            'commands' => "cd " . escapeshellarg(HUB_ROOT) . "\nsudo ./scripts/install_command_worker_cron.sh\n# 指定可信任本機帳號：sudo WORKER_USER=john ./scripts/install_command_worker_cron.sh",
+        ];
+    }
+
+    if (($worker['flock_available'] ?? true) === false) {
+        $suggestions[] = [
+            'title' => '安裝 flock',
+            'body' => 'crontab/1min.sh 使用 flock 防止同一分鐘內重複執行 worker。',
+            'commands' => "sudo apt-get update\nsudo apt-get install -y util-linux",
+        ];
+    }
 
     if (($docker['docker_installed'] ?? null) === false) {
         $suggestions[] = [
@@ -216,8 +299,8 @@ function hub_env_fix_suggestions(array $data): array
                 'title' => '讓 command worker 可操作 Docker',
                 'body' => '不要把 www-data 加進 docker 群組。建議用本機帳號執行 command worker，並只把該帳號加入 docker 群組。docker 群組等同 root 權限，請只給可信任帳號。',
                 'commands' => $isWebUser
-                    ? "id 3waaihub-worker >/dev/null 2>&1 || sudo useradd -m -s /bin/bash -G docker 3waaihub-worker\nsudo -iu 3waaihub-worker docker info\nsudo -iu 3waaihub-worker php " . escapeshellarg(HUB_ROOT . '/scripts/command_worker.php') . " --limit=1"
-                    : "sudo usermod -aG docker {$safeUser}\nsudo -iu {$safeUser} docker info\nsudo -iu {$safeUser} php " . escapeshellarg(HUB_ROOT . '/scripts/command_worker.php') . " --limit=1",
+                    ? "id 3waaihub-worker >/dev/null 2>&1 || sudo useradd -m -s /bin/bash -G docker 3waaihub-worker\nsudo -iu 3waaihub-worker docker info\ncd " . escapeshellarg(HUB_ROOT) . "\nsudo env WORKER_USER=3waaihub-worker ./scripts/install_command_worker_cron.sh"
+                    : "sudo usermod -aG docker {$safeUser}\nsudo -iu {$safeUser} docker info\ncd " . escapeshellarg(HUB_ROOT) . "\nsudo env WORKER_USER={$safeUser} ./scripts/install_command_worker_cron.sh",
             ];
         } else {
             $suggestions[] = [
@@ -251,6 +334,29 @@ hub_admin_header('環境診斷', $user);
 </section>
 <?php if (!$snapshot): ?>
     <section class="panel muted">尚無環境快照，請先排程環境檢測並執行 command worker。</section>
+    <section class="panel">
+        <h2><?= hub_h(hub_env_section_label('command_worker')) ?></h2>
+        <table>
+            <?php foreach ($liveWorkerStatus as $key => $value): ?>
+                <?php if (hub_env_should_skip((string)$key, $value, $liveWorkerStatus)) { continue; } ?>
+                <tr>
+                    <th><?= hub_h(hub_env_key_label((string)$key)) ?></th>
+                    <td><?= hub_env_render_value((string)$key, $value, $liveWorkerStatus) ?></td>
+                </tr>
+            <?php endforeach; ?>
+        </table>
+    </section>
+    <?php $suggestions = hub_env_fix_suggestions(['command_worker' => $liveWorkerStatus]); ?>
+    <?php if ($suggestions): ?>
+        <section class="panel">
+            <h2>修正建議</h2>
+            <?php foreach ($suggestions as $suggestion): ?>
+                <h3><?= hub_h($suggestion['title']) ?></h3>
+                <p><?= hub_h($suggestion['body']) ?></p>
+                <pre class="inline-pre"><?= hub_h($suggestion['commands']) ?></pre>
+            <?php endforeach; ?>
+        </section>
+    <?php endif; ?>
 <?php else: ?>
     <section class="panel">
         <h2>最新快照</h2>

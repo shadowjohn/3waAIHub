@@ -25,7 +25,8 @@ function hub_admin_header(string $title, array $user): void
         button, .button { border: 1px solid var(--line); background: #fff; border-radius: 6px; color: var(--text); cursor: pointer; display: inline-block; font: inherit; padding: 7px 11px; text-decoration: none; }
         button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
         button.danger { border-color: #fecdca; color: var(--red); }
-        input { border: 1px solid var(--line); border-radius: 6px; box-sizing: border-box; font: inherit; padding: 8px 10px; width: 100%; }
+        input, select { border: 1px solid var(--line); border-radius: 6px; box-sizing: border-box; font: inherit; padding: 8px 10px; width: 100%; }
+        input[type="checkbox"] { width: auto; }
         label { display: block; font-weight: 600; margin: 12px 0 6px; }
         pre { background: #101828; color: #f2f4f7; overflow: auto; padding: 12px; border-radius: 6px; white-space: pre-wrap; }
         .inline-pre { margin: 0; }
@@ -43,6 +44,8 @@ function hub_admin_header(string $title, array $user): void
     <div><strong>3waAIHub Local</strong></div>
     <nav>
         <a href="index.php">儀表板</a>
+        <a href="marketplace.php">Marketplace</a>
+        <a href="packs.php">HubPack</a>
         <a href="services.php">服務管理</a>
         <a href="environment.php">環境診斷</a>
         <a href="settings.php">設定</a>

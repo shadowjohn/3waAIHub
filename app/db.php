@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS services (
     health_url TEXT NOT NULL,
     compose_project TEXT NOT NULL,
     compose_file TEXT NOT NULL,
+    pack_id TEXT NULL,
+    pack_version TEXT NULL,
+    service_key TEXT NULL,
+    install_status TEXT NOT NULL DEFAULT 'installed',
+    runtime_status TEXT NOT NULL DEFAULT 'stopped',
+    environment_json TEXT NULL,
     local_port INTEGER NULL,
     port_mode TEXT NOT NULL DEFAULT 'auto',
     hot_reload INTEGER NOT NULL DEFAULT 0,
@@ -143,6 +149,14 @@ SQL);
     hub_add_column_if_missing($db, 'services', 'hot_reload', 'INTEGER NOT NULL DEFAULT 0');
     hub_add_column_if_missing($db, 'services', 'environment', "TEXT NOT NULL DEFAULT 'production'");
     hub_add_column_if_missing($db, 'services', 'execution_type', "TEXT NOT NULL DEFAULT 'sync_api'");
+    hub_add_column_if_missing($db, 'services', 'pack_id', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'services', 'pack_version', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'services', 'service_key', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'services', 'install_status', "TEXT NOT NULL DEFAULT 'installed'");
+    hub_add_column_if_missing($db, 'services', 'runtime_status', "TEXT NOT NULL DEFAULT 'stopped'");
+    hub_add_column_if_missing($db, 'services', 'environment_json', 'TEXT NULL');
+    $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_service_key ON services(service_key) WHERE service_key IS NOT NULL');
+    $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_local_port ON services(local_port) WHERE local_port IS NOT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
 }
 
@@ -181,40 +195,5 @@ function hub_seed_admin_user(PDO $db): void
 
 function hub_seed_hello_service(PDO $db): void
 {
-    $now = hub_now();
-    $stmt = $db->prepare(
-        'INSERT INTO services
-            (name, mode, type, internal_url, health_url, compose_project, compose_file, local_port, port_mode, hot_reload, environment, execution_type, enabled, status, created_at, updated_at)
-         VALUES
-            (:name, :mode, :type, :internal_url, :health_url, :compose_project, :compose_file, :local_port, :port_mode, 0, :environment, :execution_type, 0, :status, :created_at, :updated_at)
-         ON CONFLICT(mode) DO UPDATE SET
-            name = excluded.name,
-            type = excluded.type,
-            internal_url = excluded.internal_url,
-            health_url = excluded.health_url,
-            compose_project = excluded.compose_project,
-            compose_file = excluded.compose_file,
-            local_port = COALESCE(services.local_port, excluded.local_port),
-            port_mode = COALESCE(services.port_mode, excluded.port_mode),
-            hot_reload = COALESCE(services.hot_reload, excluded.hot_reload),
-            environment = COALESCE(services.environment, excluded.environment),
-            execution_type = COALESCE(services.execution_type, excluded.execution_type),
-            updated_at = excluded.updated_at'
-    );
-    $stmt->execute([
-        ':name' => 'hello-service',
-        ':mode' => 'hello',
-        ':type' => 'api_service',
-        ':internal_url' => 'http://127.0.0.1:18100/',
-        ':health_url' => 'http://127.0.0.1:18100/health',
-        ':compose_project' => '3waaihub_hello',
-        ':compose_file' => 'packs/hello/docker-compose.yml',
-        ':local_port' => 18100,
-        ':port_mode' => 'auto',
-        ':environment' => 'production',
-        ':execution_type' => 'sync_api',
-        ':status' => 'stopped',
-        ':created_at' => $now,
-        ':updated_at' => $now,
-    ]);
+    hub_install_pack($db, 'hello', 'hello-main');
 }

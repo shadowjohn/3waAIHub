@@ -11,17 +11,64 @@ $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     hub_check_csrf();
-    $newPassword = (string)($_POST['new_password'] ?? '');
-    $confirmPassword = (string)($_POST['confirm_password'] ?? '');
-    if ($newPassword !== $confirmPassword) {
-        $error = '兩次新密碼不一致。';
+    if (($_POST['form_type'] ?? '') === 'storage') {
+        $input = [
+            'AIHUB_MODELS_DIR' => trim((string)($_POST['AIHUB_MODELS_DIR'] ?? '')),
+            'AIHUB_CACHE_DIR' => trim((string)($_POST['AIHUB_CACHE_DIR'] ?? '')),
+            'AIHUB_UPLOADS_DIR' => trim((string)($_POST['AIHUB_UPLOADS_DIR'] ?? '')),
+            'AIHUB_RESULTS_DIR' => trim((string)($_POST['AIHUB_RESULTS_DIR'] ?? '')),
+            'AIHUB_LOGS_DIR' => trim((string)($_POST['AIHUB_LOGS_DIR'] ?? '')),
+            'AIHUB_DOCKER_PORT_START' => trim((string)($_POST['AIHUB_DOCKER_PORT_START'] ?? '')),
+            'AIHUB_DOCKER_PORT_END' => trim((string)($_POST['AIHUB_DOCKER_PORT_END'] ?? '')),
+        ];
+        $errors = hub_validate_storage_input($input);
+        if ($errors) {
+            $error = implode("\n", $errors);
+        } else {
+            foreach ($input as $key => $value) {
+                hub_set_storage_setting($db, $key, $value);
+            }
+            $message = 'Storage settings 已更新。';
+        }
     } else {
-        $error = hub_update_password($db, (int)$user['id'], (string)($_POST['current_password'] ?? ''), $newPassword) ?? '';
-        if ($error === '') {
-            $message = '密碼已更新。';
-            $user = hub_require_login($db);
+        $newPassword = (string)($_POST['new_password'] ?? '');
+        $confirmPassword = (string)($_POST['confirm_password'] ?? '');
+        if ($newPassword !== $confirmPassword) {
+            $error = '兩次新密碼不一致。';
+        } else {
+            $error = hub_update_password($db, (int)$user['id'], (string)($_POST['current_password'] ?? ''), $newPassword) ?? '';
+            if ($error === '') {
+                $message = '密碼已更新。';
+                $user = hub_require_login($db);
+            }
         }
     }
+}
+
+$storage = hub_get_storage_paths($db);
+
+function hub_settings_format_bytes(int|float $bytes): string
+{
+    $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    $value = (float)$bytes;
+    $unit = 0;
+    while ($value >= 1024 && $unit < count($units) - 1) {
+        $value /= 1024;
+        $unit++;
+    }
+
+    return number_format($value, $unit === 0 ? 0 : 2) . ' ' . $units[$unit];
+}
+
+function hub_settings_path_status(string $path): string
+{
+    $usage = hub_get_disk_usage_for_path($path);
+    if (!$usage['exists']) {
+        return '目錄不存在，請用 CLI 建立並設定權限。';
+    }
+
+    $free = is_numeric($usage['free_bytes']) ? hub_settings_format_bytes((float)$usage['free_bytes']) : '未知';
+    return '存在 / 可讀：' . ($usage['readable'] ? '是' : '否') . ' / 可寫：' . ($usage['writable'] ? '是' : '否') . ' / 可用：' . $free;
 }
 
 hub_admin_header('設定', $user);
@@ -39,6 +86,23 @@ hub_admin_header('設定', $user);
         <label>確認新密碼</label>
         <input name="confirm_password" type="password" autocomplete="new-password" required>
         <p><button class="primary" type="submit">更新密碼</button></p>
+    </form>
+</section>
+<section class="panel">
+    <h2>Storage Settings</h2>
+    <form method="post">
+        <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
+        <input type="hidden" name="form_type" value="storage">
+        <?php foreach (['AIHUB_MODELS_DIR' => 'Models Dir', 'AIHUB_CACHE_DIR' => 'Cache Dir', 'AIHUB_UPLOADS_DIR' => 'Uploads Dir', 'AIHUB_RESULTS_DIR' => 'Results Dir', 'AIHUB_LOGS_DIR' => 'Logs Dir'] as $key => $label): ?>
+            <label><?= hub_h($label) ?></label>
+            <input name="<?= hub_h($key) ?>" value="<?= hub_h($storage[$key]) ?>" required>
+            <p class="muted"><?= hub_h(hub_settings_path_status($storage[$key])) ?></p>
+        <?php endforeach; ?>
+        <label>Docker local port start</label>
+        <input name="AIHUB_DOCKER_PORT_START" value="<?= hub_h($storage['AIHUB_DOCKER_PORT_START']) ?>" required>
+        <label>Docker local port end</label>
+        <input name="AIHUB_DOCKER_PORT_END" value="<?= hub_h($storage['AIHUB_DOCKER_PORT_END']) ?>" required>
+        <p><button class="primary" type="submit">儲存 Storage Settings</button></p>
     </form>
 </section>
 <?php hub_admin_footer(); ?>

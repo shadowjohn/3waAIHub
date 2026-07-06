@@ -24,6 +24,15 @@ function hub_get_service_by_mode(PDO $db, string $mode): ?array
     return $service ?: null;
 }
 
+function hub_get_service_by_key(PDO $db, string $serviceKey): ?array
+{
+    $stmt = $db->prepare('SELECT * FROM services WHERE service_key = :service_key');
+    $stmt->execute([':service_key' => $serviceKey]);
+    $service = $stmt->fetch();
+
+    return $service ?: null;
+}
+
 function hub_set_service_enabled(PDO $db, string $mode, bool $enabled): void
 {
     $stmt = $db->prepare('UPDATE services SET enabled = :enabled, updated_at = :updated_at WHERE mode = :mode');
@@ -36,7 +45,7 @@ function hub_set_service_enabled(PDO $db, string $mode, bool $enabled): void
 
 function hub_update_service_status(PDO $db, int $id, string $status): void
 {
-    $stmt = $db->prepare('UPDATE services SET status = :status, updated_at = :updated_at WHERE id = :id');
+    $stmt = $db->prepare('UPDATE services SET status = :status, runtime_status = :status, updated_at = :updated_at WHERE id = :id');
     $stmt->execute([
         ':status' => $status,
         ':updated_at' => hub_now(),

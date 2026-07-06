@@ -17,6 +17,7 @@ check_output="$(./install.sh --check)"
 printf '%s\n' "$check_output" | grep -q "Mode: check" || fail "--check did not print check mode"
 printf '%s\n' "$check_output" | grep -q "PHP:" || fail "--check did not print PHP status"
 printf '%s\n' "$check_output" | grep -q "Docker:" || fail "--check did not print Docker status"
+printf '%s\n' "$check_output" | grep -q "Command worker cron:" || fail "--check did not print command worker cron status"
 
 after=""
 if [ -f data/3waaihub.sqlite ]; then
@@ -52,6 +53,13 @@ if [ "$(id -u)" != "0" ]; then
   set -e
   [ "$nvidia_code" -ne 0 ] || fail "NVIDIA installer succeeded without root"
   printf '%s\n' "$nvidia_output" | grep -q "ERROR: root required." || fail "NVIDIA installer missing root guard"
+
+  set +e
+  cron_output="$(./scripts/install_command_worker_cron.sh 2>&1)"
+  cron_code=$?
+  set -e
+  [ "$cron_code" -ne 0 ] || fail "command worker cron installer succeeded without root"
+  printf '%s\n' "$cron_output" | grep -q "ERROR: root required to install command worker cron." || fail "command worker cron installer missing root guard"
 fi
 
 echo "bootstrap_self_check ok"

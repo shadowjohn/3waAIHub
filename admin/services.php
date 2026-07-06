@@ -88,6 +88,8 @@ hub_admin_header('服務管理', $user);
     <table>
         <tr>
             <th>名稱</th>
+            <th>Service Key</th>
+            <th>Pack</th>
             <th>模式</th>
             <th>類型</th>
             <th>狀態</th>
@@ -100,6 +102,8 @@ hub_admin_header('服務管理', $user);
         <?php foreach ($services as $service): ?>
             <tr>
                 <td><?= hub_h($service['name']) ?></td>
+                <td><code><?= hub_h((string)($service['service_key'] ?? '')) ?></code></td>
+                <td><?= hub_h((string)($service['pack_id'] ?? '')) ?></td>
                 <td><code><?= hub_h($service['mode']) ?></code></td>
                 <td><?= hub_h($service['type']) ?></td>
                 <td class="<?= hub_status_class($service['status']) ?>"><?= hub_h(hub_status_label($service['status'])) ?></td>

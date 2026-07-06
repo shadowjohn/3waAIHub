@@ -1,0 +1,431 @@
+<?php
+declare(strict_types=1);
+
+function hub_list_packs(): array
+{
+    $packs = [];
+    $seen = [];
+    foreach (hub_load_pack_catalog()['packs'] as $entry) {
+        $pack = hub_read_pack_from_catalog_entry($entry);
+        $packs[] = $pack;
+        $seen[$pack['id']] = true;
+    }
+
+    foreach (glob(HUB_ROOT . '/packs/*/pack.json') ?: [] as $manifestPath) {
+        $fallbackId = basename(dirname($manifestPath));
+        if (isset($seen[$fallbackId])) {
+            continue;
+        }
+        $manifest = json_decode((string)file_get_contents($manifestPath), true);
+        $errors = is_array($manifest) ? hub_validate_pack_manifest($manifest, dirname($manifestPath)) : ['pack.json is not valid JSON.'];
+        $packs[] = hub_pack_record($fallbackId, dirname($manifestPath), $manifestPath, is_array($manifest) ? $manifest : [], $errors);
+    }
+
+    usort($packs, static fn (array $a, array $b): int => strcmp((string)$a['id'], (string)$b['id']));
+    return $packs;
+}
+
+function hub_load_pack_catalog(): array
+{
+    $path = HUB_ROOT . '/packs/catalog.json';
+    if (!is_file($path)) {
+        return ['schema_version' => '0.1', 'packs' => []];
+    }
+
+    $catalog = json_decode((string)file_get_contents($path), true);
+    if (!is_array($catalog)) {
+        return ['schema_version' => '', 'packs' => []];
+    }
+    $catalog['packs'] = is_array($catalog['packs'] ?? null) ? $catalog['packs'] : [];
+
+    return $catalog;
+}
+
+function hub_list_catalog_packs(): array
+{
+    $packs = [];
+    foreach (hub_load_pack_catalog()['packs'] as $entry) {
+        $packs[] = hub_read_pack_from_catalog_entry($entry);
+    }
+
+    return $packs;
+}
+
+function hub_read_pack_from_catalog_entry(array $entry): array
+{
+    $packDir = HUB_ROOT . '/' . trim((string)($entry['path'] ?? ''), '/');
+    $manifestPath = $packDir . '/pack.json';
+    $manifest = is_file($manifestPath) ? json_decode((string)file_get_contents($manifestPath), true) : null;
+    $errors = is_array($manifest) ? hub_validate_pack_manifest($manifest, $packDir) : ['pack.json not found or invalid JSON.'];
+    if (is_array($manifest)) {
+        $manifest['category'] = (string)($manifest['category'] ?? $entry['category'] ?? '');
+        $manifest['description'] = (string)($manifest['description'] ?? $entry['description'] ?? '');
+    }
+
+    return hub_pack_record((string)($entry['id'] ?? ''), $packDir, $manifestPath, is_array($manifest) ? $manifest : [], $errors, $entry);
+}
+
+function hub_pack_record(string $fallbackId, string $packDir, string $manifestPath, array $manifest, array $errors, array $catalog = []): array
+{
+    return [
+        'id' => (string)($manifest['id'] ?? $fallbackId),
+        'category' => (string)($manifest['category'] ?? $catalog['category'] ?? ''),
+        'description' => (string)($manifest['description'] ?? $catalog['description'] ?? ''),
+        'catalog' => $catalog,
+        'dir' => $packDir,
+        'manifest_path' => $manifestPath,
+        'manifest' => $manifest,
+        'status' => $errors ? 'error' : 'ok',
+        'errors' => $errors,
+    ];
+}
+
+function hub_get_pack(string $packId): ?array
+{
+    foreach (hub_list_packs() as $pack) {
+        if (($pack['id'] ?? '') === $packId) {
+            return $pack;
+        }
+    }
+
+    return null;
+}
+
+function hub_validate_pack_manifest(array $manifest, string $packDir): array
+{
+    $errors = [];
+    foreach (['schema_version', 'id', 'name', 'version', 'category', 'type', 'execution_type', 'default_mode', 'description', 'runtime', 'gateway', 'hardware', 'queue', 'storage', 'env'] as $field) {
+        if (!array_key_exists($field, $manifest)) {
+            $errors[] = 'Missing required field: ' . $field;
+        }
+    }
+    if (($manifest['schema_version'] ?? '') !== '0.1') {
+        $errors[] = 'Unsupported schema_version.';
+    }
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', (string)($manifest['id'] ?? ''))) {
+        $errors[] = 'Invalid id.';
+    }
+    if (!preg_match('/^[a-z0-9][a-z0-9_]*$/', (string)($manifest['default_mode'] ?? ''))) {
+        $errors[] = 'Invalid default_mode.';
+    }
+    if (!in_array((string)($manifest['execution_type'] ?? ''), ['sync_api', 'async_task', 'long_job'], true)) {
+        $errors[] = 'Invalid execution_type.';
+    }
+
+    $runtime = is_array($manifest['runtime'] ?? null) ? $manifest['runtime'] : [];
+    if (!is_file($packDir . '/' . (string)($runtime['compose_file'] ?? ''))) {
+        $errors[] = 'runtime.compose_file not found.';
+    }
+    if ((int)($runtime['default_internal_port'] ?? 0) <= 0) {
+        $errors[] = 'runtime.default_internal_port is required.';
+    }
+
+    $gateway = is_array($manifest['gateway'] ?? null) ? $manifest['gateway'] : [];
+    foreach (['health_path', 'invoke_path'] as $field) {
+        if (($gateway[$field] ?? '') === '') {
+            $errors[] = 'Missing required gateway field: ' . $field;
+        }
+    }
+
+    $hardware = is_array($manifest['hardware'] ?? null) ? $manifest['hardware'] : [];
+    if (!is_bool($hardware['gpu_required'] ?? null)) {
+        $errors[] = 'hardware.gpu_required must be boolean.';
+    }
+
+    $service = is_array($manifest['service'] ?? null) ? $manifest['service'] : [];
+    if (isset($service['default_local_port']) && !hub_validate_service_port((int)$service['default_local_port'])) {
+        $errors[] = 'service.default_local_port must be in configured Docker port range.';
+    }
+    if (!preg_match('/^[A-Z][A-Z0-9_]*$/', (string)($service['local_port_env'] ?? hub_default_port_env((string)($manifest['id'] ?? 'PACK'))))) {
+        $errors[] = 'service.local_port_env must be an env var name.';
+    }
+
+    return $errors;
+}
+
+function hub_install_pack(PDO $db, string $packId, array|string|null $options = null): array
+{
+    hub_ensure_default_storage_settings($db);
+    $pack = hub_get_pack($packId);
+    if (!$pack || $pack['status'] !== 'ok') {
+        throw new RuntimeException('HubPack is not available or has validation errors.');
+    }
+
+    $legacyIdempotent = is_string($options);
+    $options = is_string($options) ? ['service_key' => $options, 'idempotent' => true] : ($options ?? []);
+    $manifest = $pack['manifest'];
+    $serviceKey = trim((string)($options['service_key'] ?? $manifest['install']['default_service_key'] ?? ($manifest['id'] . '-main')));
+    $mode = trim((string)($options['mode'] ?? $manifest['default_mode']));
+    $name = trim((string)($options['name'] ?? $manifest['name']));
+    $portMode = (string)($options['port_mode'] ?? 'auto');
+    $environment = (string)($options['environment'] ?? 'production');
+    $hotReload = !empty($options['hot_reload']) ? 1 : 0;
+    $idempotent = !empty($options['idempotent']) || $legacyIdempotent;
+    $envValues = hub_pack_env_values($manifest, is_array($options['env'] ?? null) ? $options['env'] : []);
+
+    hub_validate_service_instance_input($serviceKey, $mode, $name, $portMode, $environment);
+    $existingByKey = hub_get_service_by_key($db, $serviceKey);
+    $existingByMode = hub_get_service_by_mode($db, $mode);
+    if ($existingByKey && !$idempotent) {
+        throw new RuntimeException('service_key already exists.');
+    }
+    if ($existingByMode && (!$idempotent || ($existingByKey && (int)$existingByMode['id'] !== (int)$existingByKey['id']))) {
+        throw new RuntimeException('mode already exists.');
+    }
+    $existing = $idempotent ? ($existingByKey ?: $existingByMode) : null;
+
+    $localPort = hub_resolve_install_port($db, $manifest, $portMode, $options['local_port'] ?? null, $existing ? (int)$existing['id'] : null);
+    $runtimeDir = HUB_SERVICE_DIR . '/' . $serviceKey;
+    if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)) {
+        throw new RuntimeException('Cannot create service runtime directory.');
+    }
+
+    $storage = hub_get_storage_paths($db);
+    $composeFile = 'data/services/' . $serviceKey . '/docker-compose.generated.yml';
+    $envFile = $runtimeDir . '/.env';
+    $portEnv = hub_pack_port_env($manifest);
+    file_put_contents($envFile, hub_generate_service_env($manifest, $envValues, $portEnv, $localPort, $runtimeDir, $storage));
+    file_put_contents(HUB_ROOT . '/' . $composeFile, hub_generate_pack_compose($pack, $serviceKey, $localPort));
+    chmod($envFile, 0664);
+    chmod(HUB_ROOT . '/' . $composeFile, 0664);
+
+    $now = hub_now();
+    $composeProject = hub_compose_project_for_instance($manifest, $serviceKey);
+    $values = [
+        ':name' => $name,
+        ':mode' => $mode,
+        ':type' => (string)$manifest['type'],
+        ':internal_url' => 'http://127.0.0.1:' . $localPort . (string)$manifest['gateway']['invoke_path'],
+        ':health_url' => 'http://127.0.0.1:' . $localPort . (string)$manifest['gateway']['health_path'],
+        ':compose_project' => $composeProject,
+        ':compose_file' => $composeFile,
+        ':local_port' => $localPort,
+        ':port_mode' => $portMode,
+        ':hot_reload' => $hotReload,
+        ':environment' => $environment,
+        ':execution_type' => (string)$manifest['execution_type'],
+        ':environment_json' => json_encode($envValues, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ':pack_id' => (string)$manifest['id'],
+        ':pack_version' => (string)$manifest['version'],
+        ':service_key' => $serviceKey,
+        ':install_status' => 'installed',
+        ':runtime_status' => (string)($existing['runtime_status'] ?? $existing['status'] ?? 'stopped'),
+        ':status' => (string)($existing['status'] ?? 'stopped'),
+        ':created_at' => $now,
+        ':updated_at' => $now,
+    ];
+
+    if ($existing) {
+        $values[':id'] = (int)$existing['id'];
+        $stmt = $db->prepare(
+            'UPDATE services SET
+                name = :name, mode = :mode, type = :type, internal_url = :internal_url, health_url = :health_url,
+                compose_project = :compose_project, compose_file = :compose_file, local_port = :local_port,
+                port_mode = :port_mode, hot_reload = :hot_reload, environment = :environment,
+                execution_type = :execution_type, environment_json = :environment_json, pack_id = :pack_id,
+                pack_version = :pack_version, service_key = :service_key, install_status = :install_status,
+                runtime_status = :runtime_status, updated_at = :updated_at
+             WHERE id = :id'
+        );
+        unset($values[':status'], $values[':created_at']);
+        $stmt->execute($values);
+    } else {
+        $stmt = $db->prepare(
+            'INSERT INTO services
+                (name, mode, type, internal_url, health_url, compose_project, compose_file, local_port, port_mode, hot_reload, environment, execution_type, environment_json, pack_id, pack_version, service_key, install_status, runtime_status, enabled, status, created_at, updated_at)
+             VALUES
+                (:name, :mode, :type, :internal_url, :health_url, :compose_project, :compose_file, :local_port, :port_mode, :hot_reload, :environment, :execution_type, :environment_json, :pack_id, :pack_version, :service_key, :install_status, :runtime_status, 0, :status, :created_at, :updated_at)'
+        );
+        $stmt->execute($values);
+    }
+
+    return [
+        'pack' => $pack,
+        'service' => hub_get_service_by_key($db, $serviceKey),
+    ];
+}
+
+function hub_validate_service_instance_input(string $serviceKey, string $mode, string $name, string $portMode, string $environment): void
+{
+    if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey)) {
+        throw new RuntimeException('Invalid service_key.');
+    }
+    if (!preg_match('/^[a-z0-9][a-z0-9_]*$/', $mode)) {
+        throw new RuntimeException('Invalid mode.');
+    }
+    if ($name === '') {
+        throw new RuntimeException('Display name is required.');
+    }
+    if (!in_array($portMode, ['auto', 'manual'], true)) {
+        throw new RuntimeException('Invalid port_mode.');
+    }
+    if (!in_array($environment, ['production', 'development'], true)) {
+        throw new RuntimeException('Invalid environment.');
+    }
+}
+
+function hub_resolve_install_port(PDO $db, array $manifest, string $portMode, mixed $requestedPort, ?int $existingId): int
+{
+    if ($portMode === 'manual') {
+        $port = (int)$requestedPort;
+        if (!hub_validate_service_port($port, $db)) {
+            throw new RuntimeException('Invalid local_port.');
+        }
+        if (hub_local_port_is_used($db, $port, $existingId)) {
+            throw new RuntimeException('local_port already exists.');
+        }
+        return $port;
+    }
+
+    if ($existingId) {
+        $stmt = $db->prepare('SELECT local_port FROM services WHERE id = :id');
+        $stmt->execute([':id' => $existingId]);
+        $existingPort = (int)$stmt->fetchColumn();
+        if ($existingPort > 0) {
+            return $existingPort;
+        }
+    }
+
+    $defaultPort = (int)($manifest['service']['default_local_port'] ?? 0);
+    if ($defaultPort > 0 && hub_port_is_usable_for_install($db, $defaultPort, $existingId)) {
+        return $defaultPort;
+    }
+
+    return hub_allocate_local_port($db);
+}
+
+function hub_local_port_is_used(PDO $db, int $port, ?int $exceptServiceId = null): bool
+{
+    $sql = 'SELECT COUNT(*) FROM services WHERE local_port = :local_port';
+    $params = [':local_port' => $port];
+    if ($exceptServiceId !== null) {
+        $sql .= ' AND id != :id';
+        $params[':id'] = $exceptServiceId;
+    }
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+
+    return (int)$stmt->fetchColumn() > 0;
+}
+
+function hub_pack_env_values(array $manifest, array $overrides = []): array
+{
+    $values = [];
+    foreach (($manifest['env'] ?? []) as $item) {
+        if (is_array($item) && !empty($item['name'])) {
+            $values[(string)$item['name']] = (string)($overrides[$item['name']] ?? $item['default'] ?? '');
+        }
+    }
+
+    return $values;
+}
+
+function hub_generate_service_env(array $manifest, array $envValues, string $portEnv, int $localPort, string $runtimeDir, array $storage): string
+{
+    $values = [
+        $portEnv => (string)$localPort,
+        'SERVICE_DATA_DIR' => $runtimeDir,
+        'AIHUB_MODELS_DIR' => $storage['AIHUB_MODELS_DIR'],
+        'AIHUB_CACHE_DIR' => $storage['AIHUB_CACHE_DIR'],
+        'AIHUB_UPLOADS_DIR' => $storage['AIHUB_UPLOADS_DIR'],
+        'AIHUB_RESULTS_DIR' => $storage['AIHUB_RESULTS_DIR'],
+        'AIHUB_LOGS_DIR' => $storage['AIHUB_LOGS_DIR'],
+    ] + $envValues;
+
+    $lines = [];
+    foreach ($values as $key => $value) {
+        $lines[] = $key . '=' . $value;
+    }
+
+    return implode(PHP_EOL, $lines) . PHP_EOL;
+}
+
+function hub_port_is_usable_for_install(PDO $db, int $port, ?int $exceptServiceId = null): bool
+{
+    if (!hub_validate_service_port($port, $db) || hub_local_port_is_used($db, $port, $exceptServiceId)) {
+        return false;
+    }
+    if (hub_db_is_runtime_db($db) && hub_port_is_busy($port)) {
+        return false;
+    }
+
+    return true;
+}
+
+function hub_db_is_runtime_db(PDO $db): bool
+{
+    $rows = $db->query('PRAGMA database_list')->fetchAll();
+    $path = (string)($rows[0]['file'] ?? '');
+
+    return $path !== '' && realpath($path) === realpath(HUB_DB_PATH);
+}
+
+function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort): string
+{
+    $manifest = $pack['manifest'];
+    $composeService = $serviceKey;
+    $containerName = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? '3waaihub-hello' : '3waaihub-' . $serviceKey;
+    $portEnv = hub_pack_port_env($manifest);
+    $buildContext = $pack['dir'] . '/service';
+
+    $compose = "services:\n"
+        . "  {$composeService}:\n"
+        . "    build:\n"
+        . "      context: {$buildContext}\n"
+        . "    container_name: {$containerName}\n"
+        . "    ports:\n"
+        . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . (int)$manifest['runtime']['default_internal_port'] . '"' . "\n"
+        . "    restart: unless-stopped\n";
+
+    $volumes = hub_generate_pack_storage_volumes($manifest, $serviceKey);
+    if ($volumes) {
+        $compose .= "    volumes:\n";
+        foreach ($volumes as $volume) {
+            $compose .= '      - "' . $volume . '"' . "\n";
+        }
+    }
+
+    return $compose;
+}
+
+function hub_generate_pack_storage_volumes(array $manifest, string $serviceKey): array
+{
+    $prefix = [
+        'models' => '${AIHUB_MODELS_DIR}',
+        'cache' => '${AIHUB_CACHE_DIR}',
+        'uploads' => '${AIHUB_UPLOADS_DIR}',
+        'results' => '${AIHUB_RESULTS_DIR}',
+        'service' => '${SERVICE_DATA_DIR}',
+    ];
+    $volumes = [];
+    foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
+        if (!is_array($mount) || empty($prefix[$mount['type'] ?? '']) || empty($mount['container_path'])) {
+            continue;
+        }
+        $hostSubdir = trim((string)($mount['host_subdir'] ?? $serviceKey), '/');
+        $host = $prefix[(string)$mount['type']] . ($hostSubdir !== '' ? '/' . $hostSubdir : '');
+        $mode = !empty($mount['read_only']) ? ':ro' : '';
+        $volumes[] = $host . ':' . (string)$mount['container_path'] . $mode;
+    }
+
+    return $volumes;
+}
+
+function hub_pack_port_env(array $manifest): string
+{
+    return (string)($manifest['service']['local_port_env'] ?? hub_default_port_env((string)$manifest['id']));
+}
+
+function hub_default_port_env(string $packId): string
+{
+    return strtoupper(str_replace('-', '_', $packId)) . '_LOCAL_PORT';
+}
+
+function hub_compose_project_for_instance(array $manifest, string $serviceKey): string
+{
+    if (($manifest['install']['default_service_key'] ?? '') === $serviceKey && !empty($manifest['install']['compose_project'])) {
+        return (string)$manifest['install']['compose_project'];
+    }
+
+    return '3waaihub_' . str_replace('-', '_', $serviceKey);
+}

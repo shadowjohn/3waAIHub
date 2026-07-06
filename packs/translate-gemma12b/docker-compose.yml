@@ -1,0 +1,6 @@
+services:
+  translator-api:
+    build:
+      context: ./service
+    ports:
+      - "127.0.0.1:${TRANSLATE_LOCAL_PORT:-18102}:8000"

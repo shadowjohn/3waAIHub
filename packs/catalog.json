@@ -1,0 +1,23 @@
+{
+  "schema_version": "0.1",
+  "packs": [
+    {
+      "id": "ocr-ppocrv5",
+      "name": "PP-OCRv5 OCR Service",
+      "version": "0.1.0",
+      "category": "ocr",
+      "description": "OCR service powered by PaddleOCR PP-OCRv5.",
+      "path": "packs/ocr-ppocrv5",
+      "featured": true
+    },
+    {
+      "id": "translate-gemma12b",
+      "name": "TranslateGemma 12B Service",
+      "version": "0.1.0",
+      "category": "translation",
+      "description": "Local translation service powered by Ollama TranslateGemma 12B Q4_K_M.",
+      "path": "packs/translate-gemma12b",
+      "featured": true
+    }
+  ]
+}

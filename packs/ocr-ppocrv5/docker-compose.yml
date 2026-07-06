@@ -1,0 +1,6 @@
+services:
+  ocr-ppocrv5:
+    build:
+      context: ./service
+    ports:
+      - "127.0.0.1:${OCR_LOCAL_PORT:-18101}:8000"

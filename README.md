@@ -13,6 +13,8 @@
 - 服務 log 檢視
 - `api.php?mode=hello` sync API gateway
 - SQLite-backed demo task queue
+- HubPack registry 與 hello pack 安裝
+- Storage settings / model directory
 - 環境診斷與修正建議
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
 
@@ -69,6 +71,12 @@ http://localhost/3waAIHub/admin/
 
 ## 啟動 hello-service
 
+`hello-service` 由 `packs/hello/pack.json` 安裝成 service instance，runtime 檔案產生在：
+
+```text
+data/services/hello-main/
+```
+
 後台按鈕只會排入 `command_jobs`，真正 Docker 指令由 CLI worker 執行。
 
 1. 進入後台服務頁：
@@ -101,18 +109,106 @@ curl http://localhost/3waAIHub/api.php?mode=hello
 
 不要把 `www-data` 加進 docker 群組。Docker group 等同 root 權限。
 
-建議用可信任的本機帳號執行 `command_worker.php`。若使用 `john`：
+`./install.sh` 若以 root 執行，會自動掛載 command worker cron。若以非 root 執行，請手動掛載：
+
+```bash
+cd /DATA/3waAIHub
+sudo ./scripts/install_command_worker_cron.sh
+```
+
+系統 cron 會每分鐘呼叫專案內的 `crontab/1min.sh`。這支 script 自己使用 `flock` 防重入，並在同一分鐘內用短 delay loop 執行 `scripts/command_worker.php --limit=5`。
+
+預設 cron 使用 `root` 執行，最穩定。若要改用可信任本機帳號，例如 `john`：
 
 ```bash
 sudo usermod -aG docker john
 sudo -iu john docker info
-sudo -iu john php /DATA/3waAIHub/scripts/command_worker.php --limit=5
+sudo WORKER_USER=john ./scripts/install_command_worker_cron.sh
 ```
 
-cron 範例：
+安裝後會產生：
 
-```cron
-* * * * * php /DATA/3waAIHub/scripts/command_worker.php --limit=5 >> /DATA/3waAIHub/data/logs/command_worker.log 2>&1
+```text
+/etc/cron.d/3waaihub-command-worker
+```
+
+worker log 會寫到 `data/logs/command_worker_1min.log`。
+
+## Local HubPack Catalog
+
+HubPack 是模板，HubService 是安裝後的 service instance。同一個 pack 可以安裝多次，每次使用不同的 `service_key` / `mode` / `local_port`。
+
+Local Catalog 會掃描：
+
+```text
+packs/catalog.json
+packs/*/pack.json
+```
+
+後台入口：
+
+```text
+http://localhost/3waAIHub/admin/marketplace.php
+http://localhost/3waAIHub/admin/packs.php
+```
+
+第一批 catalog：
+
+- `ocr-ppocrv5`
+- `translate-gemma12b`
+
+`pack.json` schema v0.1 必要欄位：
+
+- `schema_version`
+- `id`
+- `name`
+- `version`
+- `category`
+- `type`
+- `execution_type`
+- `default_mode`
+- `description`
+- `runtime`
+- `gateway`
+- `hardware`
+- `queue`
+- `storage`
+- `env`
+
+安裝 service instance 會產生：
+
+```text
+data/services/{service_key}/.env
+data/services/{service_key}/docker-compose.generated.yml
+```
+
+generated compose 只 bind `127.0.0.1`，local port 使用 `18100-18999`。
+
+## Storage Settings
+
+大型模型、cache、upload、result 不放 `packs/`，也不包進 Docker image。預設路徑：
+
+```text
+AIHUB_MODELS_DIR=/DATA/3waAIHub/data/models
+AIHUB_CACHE_DIR=/DATA/3waAIHub/data/cache
+AIHUB_UPLOADS_DIR=/DATA/3waAIHub/data/uploads
+AIHUB_RESULTS_DIR=/DATA/3waAIHub/data/results
+AIHUB_LOGS_DIR=/DATA/3waAIHub/data/logs
+```
+
+後台「設定」可改 Models / Cache / Uploads / Results / Logs 目錄，以及 Docker local port 範圍。大型模型建議放大硬碟，例如：
+
+```text
+AIHUB_MODELS_DIR=/DATA/aihub_models
+AIHUB_CACHE_DIR=/DATA/aihub_cache
+```
+
+若設定成不存在的 root-level 目錄，Web UI 不會自動建立；請用 CLI 建目錄並修權限。Docker data-root 只做偵測與警告，不由 Web 搬移。
+
+範例設定檔：
+
+```text
+.env.example
 ```
 
 ## 權限修復
@@ -188,8 +284,11 @@ curl 'http://localhost/3waAIHub/api.php?mode=task_log&task_id=1'
 - `data/3waaihub.sqlite`
 - `data/logs/`
 - `data/jobs/`
+- `data/models/`
 - `data/results/`
+- `data/uploads/`
 - `data/cache/`
+- `data/services/`
 
 此 repo 是公開 GitHub repo，請勿 commit：
 
@@ -221,6 +320,6 @@ AllowOverride FileInfo AuthConfig Limit
 ```bash
 find . -path './data' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
 php -d assert.exception=1 scripts/self_check.php
-bash -n install.sh scripts/fix_permissions.sh scripts/bootstrap_self_check.sh
+bash -n install.sh scripts/*.sh crontab/*.sh
 git diff --check
 ```
