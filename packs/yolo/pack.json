@@ -6,11 +6,11 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L2-deps-import",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "yolo",
-  "description": "YOLO object detection API with Ultralytics dependency/import smoke.",
+  "description": "YOLO object detection API with storage mount, model init smoke, real inference, and benchmark contract.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -22,6 +22,80 @@
     "methods": ["POST"],
     "timeout_sec": 180,
     "max_upload_mb": 50
+  },
+  "l5_contract": {
+    "endpoint": "/detect/image",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {
+          "name": "image",
+          "type": "file",
+          "required": true,
+          "max_mb": 50
+        },
+        {
+          "name": "real_inference",
+          "type": "boolean",
+          "required": false,
+          "default": "0",
+          "description": "Set to 1 to run YOLO real image detection for this request."
+        },
+        {
+          "name": "conf",
+          "type": "number",
+          "required": false,
+          "default": "0.25"
+        },
+        {
+          "name": "iou",
+          "type": "number",
+          "required": false,
+          "default": "0.7"
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "detections"],
+      "detection_keys": ["class_id", "label", "confidence", "bbox"]
+    },
+    "errors": [
+      "bad_request",
+      "file_too_large",
+      "runtime_not_ready",
+      "inference_failed",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 180,
+      "max_upload_mb": 50,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "yolo_mock_image",
+          "name": "YOLO mock image smoke",
+          "type": "api",
+          "mode": "yolo",
+          "method": "POST",
+          "fixture": "packs/yolo/demo/sample.jpg",
+          "expected_keys": ["ok", "detections"]
+        },
+        {
+          "id": "yolo_real_image",
+          "name": "YOLO real image detection smoke",
+          "type": "api",
+          "mode": "yolo",
+          "method": "POST",
+          "fixture": "packs/yolo/demo/real_sample.jpg",
+          "expected_keys": ["ok", "detections"],
+          "real_inference": true
+        }
+      ]
+    }
   },
   "hardware": {
     "gpu_required": false,
@@ -44,8 +118,8 @@
       },
       {
         "type": "cache",
-        "host_subdir": "ultralytics",
-        "container_path": "/cache/ultralytics",
+        "host_subdir": "yolo",
+        "container_path": "/cache/yolo",
         "read_only": false
       },
       {
@@ -100,16 +174,25 @@
       "default": "0",
       "required": true,
       "restart_required": true
+    },
+    {
+      "key": "YOLO_REAL_INFERENCE",
+      "label": "Enable real YOLO detection",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true,
+      "help": "Default to mock mode unless this is enabled or a request explicitly sets real_inference=1."
     }
   ],
   "env": [
     {
-      "name": "YOLO_MODEL_PATH",
-      "default": "/models/yolo/yolo11n.pt",
+      "name": "YOLO_MODEL",
+      "default": "yolo11n.pt",
       "required": true
     },
     {
-      "name": "ULTRALYTICS_DEVICE",
+      "name": "YOLO_REAL_INFERENCE",
       "default": "0",
       "required": true
     },
@@ -119,8 +202,13 @@
       "required": true
     },
     {
-      "name": "YOLO_IMGSZ",
-      "default": "640",
+      "name": "YOLO_IOU",
+      "default": "0.7",
+      "required": true
+    },
+    {
+      "name": "YOLO_USE_GPU",
+      "default": "0",
       "required": true
     }
   ],

@@ -54,11 +54,39 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L1-ollama-adapter', 'Translate runtime level mismatch');
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_ready'] === true, 'Translate runtime ready mismatch');
     $yolo = hub_get_pack('yolo')['manifest'];
-    hub_test_assert($yolo['runtime_level'] === 'L2-deps-import', 'YOLO runtime level mismatch');
+    hub_test_assert($yolo['runtime_level'] === 'L5-benchmark-ready', 'YOLO runtime level mismatch');
     hub_test_assert(($yolo['target_level'] ?? '') === 'L5-benchmark-ready', 'YOLO target level mismatch');
     hub_test_assert($yolo['runtime_ready'] === true, 'YOLO runtime ready mismatch');
-    foreach (['YOLO_MODEL', 'YOLO_CONF', 'YOLO_IOU', 'YOLO_USE_GPU', 'KEEP_WARM'] as $key) {
+    foreach (['YOLO_MODEL', 'YOLO_CONF', 'YOLO_IOU', 'YOLO_USE_GPU', 'KEEP_WARM', 'YOLO_REAL_INFERENCE'] as $key) {
         hub_test_assert(isset(hub_get_pack_settings_schema('yolo')[$key]), 'YOLO settings_schema missing ' . $key);
+    }
+    $yoloMounts = [];
+    foreach ($yolo['storage']['mounts'] as $mount) {
+        $yoloMounts[(string)$mount['type']] = (string)$mount['container_path'];
+    }
+    hub_test_assert(($yoloMounts['models'] ?? '') === '/models/yolo', 'YOLO models mount mismatch');
+    hub_test_assert(($yoloMounts['cache'] ?? '') === '/cache/yolo', 'YOLO cache mount mismatch');
+    hub_test_assert(($yoloMounts['service_data'] ?? '') === '/data/service', 'YOLO service data mount mismatch');
+
+    $yoloContract = $yolo['l5_contract'] ?? [];
+    hub_test_assert(is_array($yoloContract), 'YOLO l5_contract missing');
+    foreach (['endpoint', 'method', 'content_type', 'input', 'output', 'errors', 'limits', 'benchmark'] as $field) {
+        hub_test_assert(array_key_exists($field, $yoloContract), 'YOLO l5_contract missing ' . $field);
+    }
+    hub_test_assert(($yoloContract['endpoint'] ?? '') === '/detect/image', 'YOLO contract endpoint mismatch');
+    foreach (['ok', 'detections'] as $key) {
+        hub_test_assert(in_array($key, $yoloContract['output']['required_keys'] ?? [], true), 'YOLO contract output missing ' . $key);
+    }
+    foreach (['class_id', 'label', 'confidence', 'bbox'] as $key) {
+        hub_test_assert(in_array($key, $yoloContract['output']['detection_keys'] ?? [], true), 'YOLO contract detection missing ' . $key);
+    }
+    $yoloBenchmarkCases = $yoloContract['benchmark']['cases'] ?? [];
+    hub_test_assert(in_array('yolo_mock_image', array_column($yoloBenchmarkCases, 'id'), true), 'YOLO mock benchmark case missing');
+    hub_test_assert(in_array('yolo_real_image', array_column($yoloBenchmarkCases, 'id'), true), 'YOLO real benchmark case missing');
+    foreach ($yoloBenchmarkCases as $case) {
+        if (($case['id'] ?? '') === 'yolo_real_image') {
+            hub_test_assert(!empty($case['real_inference']), 'YOLO real benchmark must be marked real_inference');
+        }
     }
     hub_test_assert(hub_get_pack('sam3')['manifest']['runtime_level'] === 'L1-ultralytics-sam3', 'SAM3 runtime level mismatch');
     hub_test_assert(hub_get_pack('sam3')['manifest']['runtime_ready'] === true, 'SAM3 runtime ready mismatch');

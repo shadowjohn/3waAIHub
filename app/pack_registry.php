@@ -360,10 +360,6 @@ function hub_generate_service_env(array $manifest, array $envValues, string $por
 
 function hub_pack_storage_runtime_env(array $manifest): array
 {
-    if (($manifest['id'] ?? '') !== 'ocr-ppocrv5') {
-        return [];
-    }
-
     $paths = [];
     foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
         if (!is_array($mount) || empty($mount['container_path'])) {
@@ -379,14 +375,26 @@ function hub_pack_storage_runtime_env(array $manifest): array
         return [];
     }
 
-    return [
-        'OCR_MODEL_DIR' => $modelDir,
-        'OCR_CACHE_DIR' => $cacheDir,
-        'OCR_SERVICE_DATA_DIR' => $serviceDataDir,
-        'XDG_CACHE_HOME' => $cacheDir . '/xdg',
-        'HOME' => $cacheDir . '/home',
-        'PADDLEOCR_HOME' => $modelDir,
-    ];
+    return match ((string)($manifest['id'] ?? '')) {
+        'ocr-ppocrv5' => [
+            'OCR_MODEL_DIR' => $modelDir,
+            'OCR_CACHE_DIR' => $cacheDir,
+            'OCR_SERVICE_DATA_DIR' => $serviceDataDir,
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $cacheDir . '/home',
+            'PADDLEOCR_HOME' => $modelDir,
+        ],
+        'yolo' => [
+            'YOLO_MODEL_DIR' => $modelDir,
+            'YOLO_CACHE_DIR' => $cacheDir,
+            'YOLO_SERVICE_DATA_DIR' => $serviceDataDir,
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $cacheDir . '/home',
+            'ULTRALYTICS_SETTINGS_DIR' => $cacheDir . '/ultralytics',
+            'YOLO_CONFIG_DIR' => $cacheDir . '/ultralytics',
+        ],
+        default => [],
+    };
 }
 
 function hub_port_is_usable_for_install(PDO $db, int $port, ?int $exceptServiceId = null): bool

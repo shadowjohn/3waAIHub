@@ -91,13 +91,7 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         $response = hub_gateway_dispatch(
             $db,
             $mode,
-            $realInference ? null : static fn (): array => hub_gateway_json(200, [
-                'ok' => true,
-                'text' => '3waAIHub OCR mock',
-                'blocks' => [['text' => '3waAIHub OCR mock', 'bbox' => [0, 0, 0, 0], 'confidence' => 1.0]],
-                'mock' => true,
-                'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
-            ])
+            $realInference ? null : static fn (): array => hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest']))
         );
     } finally {
         $_SERVER = $oldServer;
@@ -115,7 +109,9 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     }
     $minBlocks = (int)($case['expected_min_blocks'] ?? 0);
     $blockCount = is_array($payload['blocks'] ?? null) ? count($payload['blocks']) : 0;
-    if ((int)$response['status'] !== 200 || $missing !== [] || $blockCount < $minBlocks) {
+    $minDetections = (int)($case['expected_min_detections'] ?? 0);
+    $detectionCount = is_array($payload['detections'] ?? null) ? count($payload['detections']) : 0;
+    if ((int)$response['status'] !== 200 || $missing !== [] || $blockCount < $minBlocks || $detectionCount < $minDetections) {
         throw new RuntimeException('benchmark contract check failed.');
     }
 
@@ -128,8 +124,30 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         'expected_keys_pass' => true,
         'real_inference' => $realInference,
         'block_count' => $blockCount,
+        'detection_count' => $detectionCount,
         'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
         'fixture' => (string)($case['fixture'] ?? ''),
+    ];
+}
+
+function hub_benchmark_mock_payload(array $manifest): array
+{
+    $runtimeLevel = (string)($manifest['runtime_level'] ?? '');
+    if (($manifest['id'] ?? '') === 'yolo') {
+        return [
+            'ok' => true,
+            'mock' => true,
+            'runtime_level' => $runtimeLevel,
+            'detections' => [],
+        ];
+    }
+
+    return [
+        'ok' => true,
+        'text' => '3waAIHub OCR mock',
+        'blocks' => [['text' => '3waAIHub OCR mock', 'bbox' => [0, 0, 0, 0], 'confidence' => 1.0]],
+        'mock' => true,
+        'runtime_level' => $runtimeLevel,
     ];
 }
 

@@ -347,6 +347,8 @@ php /DATA/3waAIHub/scripts/benchmark.php --case=pack_catalog_scan
 php /DATA/3waAIHub/scripts/benchmark.php --case=hello_api
 php /DATA/3waAIHub/scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image
 php /DATA/3waAIHub/scripts/benchmark.php --service=ocr-main --case=ocr_real_image
+php /DATA/3waAIHub/scripts/benchmark.php --pack=yolo --case=yolo_mock_image
+php /DATA/3waAIHub/scripts/benchmark.php --service=yolo-main --case=yolo_real_image
 ```
 
 後台頁：
@@ -355,6 +357,7 @@ php /DATA/3waAIHub/scripts/benchmark.php --service=ocr-main --case=ocr_real_imag
 http://localhost/3waAIHub/admin/benchmarks.php
 http://localhost/3waAIHub/admin/api_docs.php
 http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=ocr-ppocrv5
+http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=yolo
 ```
 
 API 範例文件：
@@ -458,14 +461,23 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 
 ### yolo Runtime Level
 
-`yolo` 目前是 L2 `deps_import`：
+`yolo` 目前已達 L5 `benchmark_ready`：
 
 - `POST /detect/image` 支援 multipart 圖片上傳
 - Docker build 階段安裝 FastAPI runtime 與 `ultralytics`
 - Docker build 階段執行 `python3 smoke.py`，只驗證 `ultralytics` / `fastapi` import 成功
-- `GET /health` 回 `runtime_level=L2-deps-import`
-- `POST /detect/image` 目前仍回 mock JSON 與空 `detections`
-- 尚未下載模型、初始化 `YOLO(...)`、或執行真 detection
+- `GET /health` 回 `runtime_level=L5-benchmark-ready` 與 storage 狀態
+- `POST /detect/image` 預設仍回 mock JSON 與空 `detections`
+- `YOLO_REAL_INFERENCE=1` 或表單 `real_inference=1` 時執行單張圖片真 detection
+- runtime 掛載 `${AIHUB_MODELS_DIR}/yolo:/models/yolo`
+- runtime 掛載 `${AIHUB_CACHE_DIR}/yolo:/cache/yolo`
+- runtime 掛載 `${SERVICE_DATA_DIR}:/data/service`
+- `storage_smoke.py` 可在 container 內檢查三個目錄是否存在、可讀、可寫
+- `model_smoke.py` 可手動初始化 YOLO，確認模型/cache 不落在 image layer
+- `inference_smoke.py` 可手動驗證單張圖片 detection 呼叫
+- `yolo_mock_image` / `yolo_real_image` benchmark 可驗 contract
+- Pack Readiness 可在兩個 benchmark 都 PASS 後顯示 11/11
+- 預設 `YOLO_USE_GPU=0`，先以 CPU 跑通真 detection
 
 ### sam3 Runtime Level
 

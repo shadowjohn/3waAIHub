@@ -92,12 +92,19 @@ Response:
 
 ## POST YOLO
 
-Status: L2 dependency/import smoke. The endpoint still returns mock JSON; real detection is not enabled yet.
+Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `YOLO_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行單張圖片 detection。
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.jpg"
+```
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -F "image=@sample.jpg" \
+  -F "real_inference=1"
 ```
 
 ## POST SAM3

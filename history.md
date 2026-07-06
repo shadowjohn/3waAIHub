@@ -843,3 +843,42 @@ Skipped:
 - real detection.
 - GPU tuning.
 - SAM3 / TranslateGemma.
+
+## PhaseM-2B YOLO L5 Benchmark Ready
+
+Promoted YOLO Pack to L5 benchmark-ready.
+
+Implemented:
+
+- YOLO storage mount.
+- YOLO model init smoke.
+- YOLO real image detection.
+- YOLO mock / real benchmark cases.
+- L5 readiness contract.
+
+Verified:
+
+- Docker build PASS.
+- build smoke uses `/tmp/ultralytics` and does not pollute runtime cache.
+- `yolo-main` start PASS.
+- `/health` PASS with `runtime_level=L5-benchmark-ready`.
+- `storage_smoke.py` PASS.
+- `model_smoke.py` PASS.
+- model stored at `/DATA/models/yolo/yolo11n.pt`.
+- `inference_smoke.py` PASS.
+- direct `/detect/image` mock PASS.
+- direct `/detect/image real_inference=1` PASS.
+- gateway `api.php?mode=yolo` mock PASS.
+- gateway `api.php?mode=yolo real_inference=1` PASS.
+- `yolo_mock_image` benchmark PASS.
+- `yolo_real_image` benchmark PASS.
+- readiness 11/11.
+
+Skipped:
+
+- GPU tuning.
+- batch detection.
+- video detection.
+- segmentation.
+- tracking.
+- custom trained YOLO upload.

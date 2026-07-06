@@ -12,11 +12,13 @@ hub_admin_header('Benchmark', $user);
 ?>
 <section class="panel">
     <h1>Benchmark</h1>
-    <p class="muted">Benchmark 可跑 host smoke、Pack catalog，以及 Pack l5_contract 宣告的 mock / real OCR contract cases。</p>
+    <p class="muted">Benchmark 可跑 host smoke、Pack catalog，以及 Pack l5_contract 宣告的 mock / real contract cases。</p>
     <pre class="inline-pre">php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --case=pack_catalog_scan
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=ocr-ppocrv5 --case=ocr_mock_image
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=ocr-main --case=ocr_mock_image
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=ocr-main --case=ocr_real_image
+php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=yolo --case=yolo_mock_image
+php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=yolo-main --case=yolo_real_image
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --case=hello_api
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --case=host_smoke</pre>
 </section>
