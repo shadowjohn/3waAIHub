@@ -52,7 +52,7 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(in_array('real_inference', array_column($inputFields, 'name'), true), 'OCR contract must document real_inference form field');
 
     $translate = hub_get_pack('translate-gemma12b')['manifest'];
-    hub_test_assert($translate['runtime_level'] === 'L4a-model-present-smoke', 'Translate runtime level mismatch');
+    hub_test_assert($translate['runtime_level'] === 'L4b-real-translation', 'Translate runtime level mismatch');
     hub_test_assert($translate['runtime_ready'] === true, 'Translate runtime ready mismatch');
     $translateMounts = [];
     foreach ($translate['storage']['mounts'] as $mount) {

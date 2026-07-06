@@ -69,7 +69,7 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     $workflow = HUB_ROOT . '/.github/workflows/ci.yml';
     hub_test_assert(is_file($workflow), 'GitHub Actions workflow missing');
     $ci = (string)file_get_contents($workflow);
-    foreach (['php scripts/run_tests.php', 'php -d assert.exception=1 scripts/self_check.php', 'git diff --check', 'bash -n'] as $needle) {
+    foreach (['php scripts/run_tests.php', 'zend.assertions=1', 'assert.exception=1', 'self_check.log', 'actions/upload-artifact@v4', 'git diff --check', 'bash -n'] as $needle) {
         hub_test_assert(str_contains($ci, $needle), 'CI missing: ' . $needle);
     }
 });

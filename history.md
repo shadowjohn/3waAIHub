@@ -1,5 +1,29 @@
 # 3waAIHub History
 
+## PhaseM-2C-L4b TranslateGemma Real Translation
+
+Advanced `translate-gemma12b` to L4b real translation.
+
+Implemented:
+
+- `runtime_level = L4b-real-translation`.
+- `/translate` keeps mock mode by default.
+- `/translate real_inference=1` calls Ollama `/api/generate` with `stream=false`.
+- Added prompt template with source/target language and Taiwan Traditional Chinese preference for `zh-TW`.
+- Added non-streaming response normalization.
+- Added stable real inference error codes: `ollama_unavailable`, `model_not_present`, `input_too_long`, `ollama_timeout`, `ollama_bad_response`, and `translation_failed`.
+- Added `inference_smoke.py` for real translation smoke.
+- Fixed `self_check.php` runtime path assertions for temp DB test services.
+
+Skipped:
+
+- Streaming.
+- Chat / multi-turn translation.
+- Batch translation.
+- File translation.
+- Keep warm UI.
+- Benchmark-ready promotion.
+
 ## PhaseM-2C-L4a TranslateGemma Ollama Model Smoke
 
 Advanced `translate-gemma12b` to L4a model-present smoke.

@@ -50,14 +50,15 @@ $installed = hub_install_pack($db, 'hello', 'hello-main');
 assert($installed['service']['service_key'] === 'hello-main');
 assert($installed['service']['pack_id'] === 'hello');
 assert($installed['service']['pack_version'] === '0.1.0');
-assert($installed['service']['compose_file'] === 'data/services/hello-main/docker-compose.generated.yml');
 assert($installed['service']['install_status'] === 'installed');
-assert(is_dir(HUB_DATA_DIR . '/services/hello-main'));
-assert(is_file(HUB_DATA_DIR . '/services/hello-main/.env'));
-assert(is_file(HUB_DATA_DIR . '/services/hello-main/docker-compose.generated.yml'));
-assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/hello-main/.env'), 'HELLO_LOCAL_PORT=18100'));
-assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/hello-main/.env'), 'AIHUB_MODELS_DIR='));
-assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/hello-main/docker-compose.generated.yml'), '127.0.0.1:${HELLO_LOCAL_PORT:-18100}:8000'));
+$helloRuntimeDir = dirname(hub_path((string)$installed['service']['compose_file']));
+assert(str_contains((string)$installed['service']['compose_file'], 'data/test_services/'));
+assert(is_dir($helloRuntimeDir));
+assert(is_file($helloRuntimeDir . '/.env'));
+assert(is_file($helloRuntimeDir . '/docker-compose.generated.yml'));
+assert(str_contains((string)file_get_contents($helloRuntimeDir . '/.env'), 'HELLO_LOCAL_PORT=18100'));
+assert(str_contains((string)file_get_contents($helloRuntimeDir . '/.env'), 'AIHUB_MODELS_DIR='));
+assert(str_contains((string)file_get_contents($helloRuntimeDir . '/docker-compose.generated.yml'), '127.0.0.1:${HELLO_LOCAL_PORT:-18100}:8000'));
 
 hub_install_pack($db, 'hello', 'hello-main');
 $stmt = $db->query("SELECT COUNT(*) FROM services WHERE service_key = 'hello-main'");
@@ -216,12 +217,13 @@ $ocr = hub_install_pack($db, 'ocr-ppocrv5', [
 assert($ocr['service']['service_key'] === 'ocr-main');
 assert($ocr['service']['mode'] === 'ocr');
 assert($ocr['service']['pack_id'] === 'ocr-ppocrv5');
-assert(is_dir(HUB_DATA_DIR . '/services/ocr-main'));
-assert(is_file(HUB_DATA_DIR . '/services/ocr-main/.env'));
-assert(is_file(HUB_DATA_DIR . '/services/ocr-main/docker-compose.generated.yml'));
-assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/ocr-main/.env'), 'OCR_MOCK_TEXT=3waAIHub OCR mock'));
-assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/ocr-main/docker-compose.generated.yml'), 'env_file:'));
-assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/ocr-main/docker-compose.generated.yml'), '127.0.0.1:${OCR_LOCAL_PORT:-18101}:8000'));
+$ocrRuntimeDir = dirname(hub_path((string)$ocr['service']['compose_file']));
+assert(is_dir($ocrRuntimeDir));
+assert(is_file($ocrRuntimeDir . '/.env'));
+assert(is_file($ocrRuntimeDir . '/docker-compose.generated.yml'));
+assert(str_contains((string)file_get_contents($ocrRuntimeDir . '/.env'), 'OCR_MOCK_TEXT=3waAIHub OCR mock'));
+assert(str_contains((string)file_get_contents($ocrRuntimeDir . '/docker-compose.generated.yml'), 'env_file:'));
+assert(str_contains((string)file_get_contents($ocrRuntimeDir . '/docker-compose.generated.yml'), '127.0.0.1:${OCR_LOCAL_PORT:-18101}:8000'));
 
 $ocrGpu = hub_install_pack($db, 'ocr-ppocrv5', [
     'service_key' => 'ocr-gpu',
@@ -234,8 +236,9 @@ $ocrGpu = hub_install_pack($db, 'ocr-ppocrv5', [
 assert($ocrGpu['service']['service_key'] === 'ocr-gpu');
 assert($ocrGpu['service']['mode'] === 'ocr_gpu');
 assert((int)$ocrGpu['service']['local_port'] === 18103);
-assert(is_file(HUB_DATA_DIR . '/services/ocr-gpu/.env'));
-assert(is_file(HUB_DATA_DIR . '/services/ocr-gpu/docker-compose.generated.yml'));
+$ocrGpuRuntimeDir = dirname(hub_path((string)$ocrGpu['service']['compose_file']));
+assert(is_file($ocrGpuRuntimeDir . '/.env'));
+assert(is_file($ocrGpuRuntimeDir . '/docker-compose.generated.yml'));
 
 $uploadTmp = tempnam(sys_get_temp_dir(), '3waaihub_upload_');
 file_put_contents($uploadTmp, 'image-bytes');
@@ -257,8 +260,9 @@ $translate = hub_install_pack($db, 'translate-gemma12b', [
 assert($translate['service']['service_key'] === 'translate-main');
 assert($translate['service']['mode'] === 'translate');
 assert($translate['service']['pack_id'] === 'translate-gemma12b');
-assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/translate-main/.env'), 'OLLAMA_MODEL=translategemma:12b-it-q4_K_M'));
-assert(is_file(HUB_DATA_DIR . '/services/translate-main/docker-compose.generated.yml'));
+$translateRuntimeDir = dirname(hub_path((string)$translate['service']['compose_file']));
+assert(str_contains((string)file_get_contents($translateRuntimeDir . '/.env'), 'OLLAMA_MODEL=translategemma:12b-it-q4_K_M'));
+assert(is_file($translateRuntimeDir . '/docker-compose.generated.yml'));
 
 assert(hub_self_check_throws(static fn () => hub_install_pack($db, 'ocr-ppocrv5', [
     'service_key' => 'ocr-main',

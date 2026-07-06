@@ -6,7 +6,7 @@
   "category": "translation",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L4a-model-present-smoke",
+  "runtime_level": "L4b-real-translation",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "translate",

@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): void {
     $base = HUB_ROOT . '/packs/translate-gemma12b/service';
-    foreach (['Dockerfile', 'requirements.txt', 'app.py', 'smoke.py', 'storage_smoke.py', 'model_smoke.py'] as $file) {
+    foreach (['Dockerfile', 'requirements.txt', 'app.py', 'smoke.py', 'storage_smoke.py', 'model_smoke.py', 'inference_smoke.py'] as $file) {
         hub_test_assert(is_file($base . '/' . $file), 'Translate service missing ' . $file);
     }
 
@@ -13,19 +13,24 @@ hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): v
 
     $app = (string)file_get_contents($base . '/app.py');
     hub_test_assert(str_contains($app, '@app.post("/translate")'), 'Translate adapter must expose POST /translate');
-    hub_test_assert(str_contains($app, 'return "L4a-model-present-smoke"'), 'Translate health must expose L4a runtime level');
+    hub_test_assert(str_contains($app, 'return "L4b-real-translation"'), 'Translate health must expose L4b runtime level');
     hub_test_assert(str_contains($app, '/api/tags'), 'Translate health must check Ollama tags API');
+    hub_test_assert(str_contains($app, '/api/generate'), 'Translate real inference must call Ollama generate API');
+    hub_test_assert(str_contains($app, '"stream": False'), 'Translate generate payload must be non-streaming');
+    hub_test_assert(str_contains($app, 'You are a professional translation engine.'), 'Translate prompt template missing');
     hub_test_assert(str_contains($app, '"present"'), 'Translate health must report model present status');
     hub_test_assert(str_contains($app, 'model_not_present'), 'Translate health must warn when model is missing');
     hub_test_assert(!str_contains($app, '/api/pull'), 'Translate adapter must not pull models');
-    hub_test_assert(!str_contains($app, '/api/generate'), 'Translate L3 adapter must not call real generate API yet');
     hub_test_assert(str_contains($app, 'mock translation'), 'Translate adapter must keep mock translation response');
+    foreach (['ollama_unavailable', 'model_not_present', 'input_too_long', 'ollama_timeout', 'ollama_bad_response', 'translation_failed'] as $errorCode) {
+        hub_test_assert(str_contains($app, $errorCode), 'Translate real inference missing error code ' . $errorCode);
+    }
 
     $smoke = (string)file_get_contents($base . '/smoke.py');
     foreach (['fastapi', 'requests'] as $needle) {
         hub_test_assert(str_contains($smoke, $needle), 'Translate smoke.py must import ' . $needle);
     }
-    hub_test_assert(str_contains($smoke, 'L4a-model-present-smoke'), 'Translate smoke.py runtime level must match L4a');
+    hub_test_assert(str_contains($smoke, 'L4b-real-translation'), 'Translate smoke.py runtime level must match L4b');
     foreach (['/api/pull', 'ollama pull', 'download', '/api/generate'] as $needle) {
         hub_test_assert(!str_contains($smoke, $needle), 'Translate smoke.py must not pull or translate: ' . $needle);
     }
@@ -44,6 +49,11 @@ hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): v
     }
     foreach (['/api/pull', 'ollama pull', 'download', '/api/generate'] as $needle) {
         hub_test_assert(!str_contains($modelSmoke, $needle), 'Translate model_smoke.py must only check model presence: ' . $needle);
+    }
+
+    $inferenceSmoke = (string)file_get_contents($base . '/inference_smoke.py');
+    foreach (['/translate', 'real_inference', 'That was a wonderful time.', 'mock'] as $needle) {
+        hub_test_assert(str_contains($inferenceSmoke, $needle), 'Translate inference_smoke.py missing ' . $needle);
     }
 });
 

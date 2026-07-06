@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import time
 import tempfile
 from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -21,7 +22,7 @@ class TranslateRequest(BaseModel):
 
 
 def runtime_level() -> str:
-    return "L4a-model-present-smoke"
+    return "L4b-real-translation"
 
 
 def env_enabled(value: str | None) -> bool:
@@ -34,6 +35,32 @@ def ollama_base_url() -> str:
 
 def ollama_model_name() -> str:
     return os.getenv("OLLAMA_MODEL", "translategemma:12b-it-q4_K_M").strip()
+
+
+def json_error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "ok": False,
+            "error": code,
+            "message": message,
+            "runtime_level": runtime_level(),
+        },
+    )
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except ValueError:
+        return default
 
 
 def ensure_runtime_dirs() -> None:
@@ -128,6 +155,78 @@ def ollama_status() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     return status, model, errors
 
 
+def build_prompt(request: TranslateRequest) -> str:
+    target_note = (
+        "\nWhen target_lang is zh-TW, use Traditional Chinese used in Taiwan."
+        if request.target_lang == "zh-TW"
+        else ""
+    )
+    return (
+        "You are a professional translation engine.\n\n"
+        f"Translate the following text from {request.source_lang} to {request.target_lang}.\n"
+        "Preserve meaning, tone, paragraph breaks, numbers, technical terms, and names.\n"
+        "Do not add explanations.\n"
+        "Return only the translated text."
+        f"{target_note}\n\n"
+        "Text:\n"
+        f"{request.text}"
+    )
+
+
+def translate_with_ollama(request: TranslateRequest) -> Any:
+    ollama, model, errors = ollama_status()
+    if errors:
+        return json_error(503, "ollama_unavailable", "Ollama is not available.")
+    if not model["present"]:
+        return json_error(503, "model_not_present", "Ollama model is not present.")
+
+    started = time.monotonic()
+    payload = {
+        "model": model["name"],
+        "prompt": build_prompt(request),
+        "stream": False,
+        "options": {
+            "temperature": env_float("TEMPERATURE", 0.0),
+            "num_ctx": env_int("OLLAMA_NUM_CTX", 4096),
+        },
+        "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "5m"),
+    }
+    try:
+        response = requests.post(
+            f"{ollama_base_url()}/api/generate",
+            json=payload,
+            timeout=env_int("OLLAMA_TIMEOUT_SEC", 180),
+        )
+    except requests.Timeout:
+        return json_error(504, "ollama_timeout", "Ollama generate request timed out.")
+    except requests.RequestException as exc:
+        return json_error(502, "translation_failed", str(exc).splitlines()[0][:240])
+
+    if not response.ok:
+        return json_error(502, "translation_failed", f"Ollama returned HTTP {response.status_code}.")
+    try:
+        payload = response.json()
+    except ValueError:
+        return json_error(502, "ollama_bad_response", "Ollama response was not valid JSON.")
+    if not isinstance(payload, dict):
+        return json_error(502, "ollama_bad_response", "Ollama response payload was invalid.")
+
+    text = str(payload.get("response", "")).strip()
+    if text == "":
+        return json_error(502, "ollama_bad_response", "Ollama returned an empty translation.")
+
+    return {
+        "ok": True,
+        "mock": False,
+        "runtime_level": runtime_level(),
+        "model": model["name"],
+        "source_lang": request.source_lang,
+        "target_lang": request.target_lang,
+        "text": text,
+        "elapsed_ms": int((time.monotonic() - started) * 1000),
+    }
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     storage, storage_errors = storage_status()
@@ -157,18 +256,10 @@ def translate(request: TranslateRequest) -> Any:
         raise HTTPException(status_code=500, detail="MAX_INPUT_CHARS must be an integer") from exc
 
     if len(request.text) > max_chars:
-        raise HTTPException(status_code=413, detail="text is too large")
+        return json_error(413, "input_too_long", "Text is too large.")
 
     if env_enabled(os.getenv("TRANSLATE_REAL_INFERENCE")) or request.real_inference:
-        return JSONResponse(
-            status_code=503,
-            content={
-                "ok": False,
-                "error": "runtime_not_ready",
-                "message": "real translation is not implemented in this runtime level",
-                "runtime_level": runtime_level(),
-            },
-        )
+        return translate_with_ollama(request)
 
     return {
         "ok": True,

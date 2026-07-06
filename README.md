@@ -441,7 +441,7 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### translate-gemma12b Runtime Level
 
-`translate-gemma12b` 目前是 L4a `model-present-smoke` adapter：
+`translate-gemma12b` 目前是 L4b `real-translation` adapter：
 
 - generated compose 拆成 `ollama` sidecar 與 `translator-api`
 - Ollama 模型主倉掛載 `${AIHUB_MODELS_DIR}/ollama:/root/.ollama`
@@ -450,11 +450,12 @@ http://localhost/3waAIHub/admin/packs.php
 - Docker build 階段執行 `python3 smoke.py`，只驗證 `fastapi` / `requests` import
 - `scripts/ollama_model_pull.php` 可手動拉取 service 設定的 Ollama model
 - `model_smoke.py` 可在 `translator-api` container 內檢查 `OLLAMA_MODEL` 是否存在
+- `inference_smoke.py` 可在 `translator-api` container 內驗證單句真翻譯
 - `GET /health` 檢查 Ollama `/api/tags`、model present 與 adapter storage 狀態
 - `POST /translate` 預設回 mock translation JSON
-- `real_inference=1` 或 `TRANSLATE_REAL_INFERENCE=1` 目前會回 `runtime_not_ready`
+- `real_inference=1` 或 `TRANSLATE_REAL_INFERENCE=1` 會呼叫 Ollama `/api/generate`
 
-本階段只做 model pull / present smoke，不接 `/api/generate`，也不做真翻譯。
+本階段只做 non-streaming 單次翻譯，不做 streaming、batch、文件翻譯或 L5 benchmark promotion。
 
 手動拉模型：
 
@@ -469,12 +470,22 @@ php scripts/ollama_model_pull.php --service=translate-main --model=translategemm
 docker compose -f data/services/translate-main/docker-compose.generated.yml exec translator-api python3 /app/model_smoke.py
 ```
 
+真翻譯 smoke：
+
+```bash
+docker compose -f data/services/translate-main/docker-compose.generated.yml exec translator-api python3 /app/inference_smoke.py
+```
+
 測試：
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
   -H "Content-Type: application/json" \
   -d '{"text":"Hello, this is a local translation test.","source_lang":"en","target_lang":"zh-TW"}'
+
+curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"That was a wonderful time.","source_lang":"en","target_lang":"zh-TW","real_inference":1}'
 ```
 
 ### yolo Runtime Level
