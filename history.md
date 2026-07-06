@@ -584,20 +584,21 @@ Skipped:
 
 ## PhaseS-4.1 Token API Smoke
 
-Added a small repeatable smoke for the token-auth API path.
+Added end-to-end token API smoke coverage.
 
 Implemented:
 
-- Added `scripts/token_api_smoke.php`.
-- Smoke creates an API member and token.
-- Smoke grants token permission for `mode=ocr`.
-- Smoke adds token IP whitelist for local curl.
-- Smoke starts temporary PHP app and OCR mock servers with a temporary SQLite DB.
-- Smoke calls `api.php?mode=ocr` with `curl` and Bearer token.
-- Smoke verifies Log Explorer member/token query data.
-- Smoke verifies daily usage aggregate.
+- temporary SQLite DB.
+- temporary PHP app server.
+- temporary OCR mock upstream.
+- API member/token setup.
+- mode=ocr permission setup.
+- token IP whitelist setup.
+- real curl Bearer token request to api.php?mode=ocr.
+- Log Explorer data verification.
+- daily usage aggregate verification.
 
 Skipped:
 
-- browser automation for admin forms.
+- browser admin form automation.
 - live Docker OCR dependency.
