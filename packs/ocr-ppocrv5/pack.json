@@ -6,10 +6,10 @@
   "category": "ocr",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L2-deps-import",
+  "runtime_level": "L1-gpu-api-mock",
   "runtime_ready": true,
   "default_mode": "ocr",
-  "description": "GPU-ready OCR service powered by PP-OCRv5.",
+  "description": "GPU-ready OCR mock service for PP-OCRv5 runtime bring-up.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",

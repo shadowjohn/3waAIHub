@@ -1,10 +1,10 @@
 # 3waAIHub
 
-Current: `v0.2.x` / Local Catalog + OCR GPU L2 + Pack Preflight.
+Current: `v0.2.x` / Local Catalog + OCR GPU L1 + Pack Preflight.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、SQLite retention guard、Dashboard metrics、Pack hardware preflight，以及 `ocr-ppocrv5` L1 mock API / GPU-ready L2 dependency import smoke。TranslateGemma 目前仍是 manifest-only skeleton，尚未提供真實推論。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、SQLite retention guard、Dashboard metrics、Pack hardware preflight，以及 `ocr-ppocrv5` GPU-ready L1 mock API。TranslateGemma 目前仍是 manifest-only skeleton，尚未提供真實推論。
 
 ## 功能
 
@@ -335,7 +335,7 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### ocr-ppocrv5 Runtime Level
 
-`ocr-ppocrv5` 目前停在 L2 `deps_import`：
+`ocr-ppocrv5` 目前停在 L1 `gpu_api_mock`：
 
 - Docker image 可 build
 - container 可啟動
@@ -343,11 +343,11 @@ http://localhost/3waAIHub/admin/packs.php
 - `POST /ocr/image` 支援圖片上傳並回 mock OCR JSON
 - `api.php?mode=ocr` 可透過 gateway proxy 到 service
 - image 使用 NVIDIA CUDA 12.9 runtime base
-- 安裝 PaddlePaddle GPU wheel 與 PaddleOCR
-- `smoke.py` 驗證 Paddle / PaddleOCR import 與 CUDA compile capability
+- Docker build 階段只安裝 FastAPI runtime 並執行 `pip check`
+- `smoke.py` 留給 container runtime 檢查 mock API runtime env
 - generated compose 會加入 `gpus: all`
 
-這一版尚未下載模型、尚未做真實 OCR 推論；L4 才會接 PP-OCRv5 inference。
+這一版尚未安裝 PaddleOCR、尚未下載模型、尚未做真實 OCR 推論；L2 會改用可快取的 PaddleOCR dependency/base image。
 
 ### Pack Preflight
 

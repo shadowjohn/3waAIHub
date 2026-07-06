@@ -19,7 +19,7 @@ hub_test('catalog and required packs are readable', function (): void {
         }
     }
 
-    hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['runtime_level'] === 'L2-deps-import', 'OCR runtime level mismatch');
+    hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['runtime_level'] === 'L1-gpu-api-mock', 'OCR runtime level mismatch');
     hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['runtime_ready'] === true, 'OCR runtime ready mismatch');
     hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L0-manifest-only', 'Translate runtime level mismatch');

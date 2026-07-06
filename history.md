@@ -432,10 +432,15 @@ Implemented:
 - `ocr-ppocrv5` runtime level set to `L2-deps-import`
 - `translate-gemma12b` marked `L0-manifest-only` / not runtime ready
 - OCR Dockerfile switched to NVIDIA CUDA 12.9 runtime base
-- OCR dependencies use PaddlePaddle GPU package index `cu129`
+- OCR Docker build uses `pip check`
 - OCR generated compose requests `gpus: all`
 - OCR services mount models/cache/service data paths
 - Existing `ocr-main` and `ocr-gpu` runtime files regenerated under `data/services/`
+
+Correction:
+
+- OCR runtime level was reduced to `L1-gpu-api-mock` after Docker build showed GPU Paddle import requires runtime-mounted `libcuda.so.1`.
+- PaddleOCR / PaddlePaddle GPU dependencies are deferred to L2 with a cached/base-image strategy.
 
 Skipped:
 

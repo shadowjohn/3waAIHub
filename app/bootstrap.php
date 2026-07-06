@@ -10,7 +10,7 @@ define('HUB_JOB_LOG_DIR', HUB_LOG_DIR . '/jobs');
 define('HUB_TASK_LOG_DIR', HUB_LOG_DIR . '/tasks');
 define('HUB_SERVICE_DIR', HUB_DATA_DIR . '/services');
 define('HUB_VERSION', 'v0.2.x');
-define('HUB_RELEASE_LABEL', 'Local Catalog + OCR GPU L2 + Pack Preflight');
+define('HUB_RELEASE_LABEL', 'Local Catalog + OCR GPU L1 + Pack Preflight');
 
 date_default_timezone_set('Asia/Taipei');
 
