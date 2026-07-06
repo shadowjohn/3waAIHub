@@ -6,6 +6,8 @@
   "category": "translation",
   "type": "api_service",
   "execution_type": "sync_api",
+  "runtime_level": "L0-manifest-only",
+  "runtime_ready": false,
   "default_mode": "translate",
   "description": "Translation API backed by Ollama and translategemma:12b-it-q4_K_M.",
   "runtime": {
@@ -23,7 +25,8 @@
   "hardware": {
     "gpu_required": true,
     "gpu_supported": true,
-    "min_vram_mb": 10000
+    "min_vram_mb": 10000,
+    "min_compute_capability": "8.0"
   },
   "queue": {
     "supported": true,
@@ -56,6 +59,17 @@
       "required": true
     }
   ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "nvidia_smi",
+      "docker_gpus",
+      "vram",
+      "compute_capability",
+      "storage"
+    ]
+  },
   "service": {
     "default_local_port": 18102,
     "local_port_env": "TRANSLATE_LOCAL_PORT"

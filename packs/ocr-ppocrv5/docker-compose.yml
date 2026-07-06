@@ -6,6 +6,10 @@ services:
       - .env
     ports:
       - "127.0.0.1:${OCR_LOCAL_PORT:-18101}:8000"
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     volumes:
       - "${AIHUB_MODELS_DIR}/paddleocr:/models/paddleocr"
       - "${AIHUB_CACHE_DIR}/paddleocr:/cache/paddleocr"

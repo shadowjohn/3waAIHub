@@ -13,6 +13,11 @@ hub_test('service instance uniqueness checks reject collisions', function (): vo
         'environment' => 'production',
     ]);
 
+    $compose = (string)file_get_contents(HUB_ROOT . '/data/services/ocr-test-main/docker-compose.generated.yml');
+    hub_test_assert(str_contains($compose, 'gpus: all'), 'OCR generated compose must request GPU access');
+    hub_test_assert(str_contains($compose, 'NVIDIA_VISIBLE_DEVICES'), 'OCR generated compose must set NVIDIA_VISIBLE_DEVICES');
+    hub_test_assert(str_contains($compose, '/models/paddleocr'), 'OCR generated compose must mount model storage');
+
     hub_test_assert(hub_test_throws(static fn () => hub_install_pack($db, 'ocr-ppocrv5', [
         'service_key' => 'ocr-test-main',
         'name' => 'Duplicate Key',

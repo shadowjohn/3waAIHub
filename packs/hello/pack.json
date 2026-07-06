@@ -6,6 +6,8 @@
   "category": "demo",
   "type": "api_service",
   "execution_type": "sync_api",
+  "runtime_level": "L1-api-mock",
+  "runtime_ready": true,
   "default_mode": "hello",
   "description": "Minimal hello service for 3waAIHub smoke tests.",
   "gpu_required": false,
@@ -35,6 +37,12 @@
     "mounts": []
   },
   "env": [],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose"
+    ]
+  },
   "service": {
     "internal_port": 8000,
     "health_path": "/health",

@@ -1,8 +1,10 @@
 # 3waAIHub
 
+Current: `v0.2.x` / Local Catalog + OCR GPU L2 + Pack Preflight.
+
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前 MVP 只內建 `hello-service`，不包含 SAM3 / OCR / 翻譯 / OpenMVS / 3DGS。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、SQLite retention guard、Dashboard metrics、Pack hardware preflight，以及 `ocr-ppocrv5` L1 mock API / GPU-ready L2 dependency import smoke。TranslateGemma 目前仍是 manifest-only skeleton，尚未提供真實推論。
 
 ## 功能
 
@@ -18,6 +20,7 @@
 - 環境診斷與修正建議
 - Service IP whitelist 與 API access logs
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
+- Marketplace Pack preflight，依最新 host metrics 判斷 Docker / GPU / VRAM / compute capability / storage
 
 ## 安裝
 
@@ -332,15 +335,40 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### ocr-ppocrv5 Runtime Level
 
-`ocr-ppocrv5` 目前停在 L1 `api_mock`：
+`ocr-ppocrv5` 目前停在 L2 `deps_import`：
 
 - Docker image 可 build
 - container 可啟動
 - `GET /health` 回 ok
 - `POST /ocr/image` 支援圖片上傳並回 mock OCR JSON
 - `api.php?mode=ocr` 可透過 gateway proxy 到 service
+- image 使用 NVIDIA CUDA 12.9 runtime base
+- 安裝 PaddlePaddle GPU wheel 與 PaddleOCR
+- `smoke.py` 驗證 Paddle / PaddleOCR import 與 CUDA compile capability
+- generated compose 會加入 `gpus: all`
 
-這一版尚未安裝 PaddleOCR、尚未下載模型、尚未做真實 OCR 推論。
+這一版尚未下載模型、尚未做真實 OCR 推論；L4 才會接 PP-OCRv5 inference。
+
+### Pack Preflight
+
+Marketplace 會從最新 `host_metric_snapshots` 讀取 Station Hardware Profile，不在 Web request 直接執行 `nvidia-smi` 或 `docker info`。
+
+先收集一次：
+
+```bash
+php scripts/collect_host_metrics.php --force
+```
+
+第一版檢查：
+
+- Docker / Docker Compose
+- `nvidia-smi`
+- NVIDIA Container Toolkit
+- VRAM
+- GPU compute capability
+- storage writable
+
+compute capability 目前使用簡單 map，已涵蓋 RTX 5090 / RTX 5060 Ti / RTX 40/30 系與 GTX 1080 Ti；之後需要更準再接 deviceQuery。
 
 `pack.json` schema v0.1 必要欄位：
 
@@ -359,6 +387,7 @@ http://localhost/3waAIHub/admin/packs.php
 - `queue`
 - `storage`
 - `env`
+- `preflight`
 
 安裝 service instance 會產生：
 

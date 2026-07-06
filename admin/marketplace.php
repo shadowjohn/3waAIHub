@@ -32,6 +32,15 @@ foreach ($db->query('SELECT pack_id, COUNT(*) AS count FROM services WHERE pack_
     $counts[(string)$row['pack_id']] = (int)$row['count'];
 }
 $packs = hub_list_catalog_packs();
+$preflightLabels = [
+    'docker' => 'Docker',
+    'docker_compose' => 'Docker Compose',
+    'nvidia_smi' => 'GPU',
+    'docker_gpus' => 'NVIDIA Container',
+    'vram' => 'VRAM',
+    'compute_capability' => 'Compute Capability',
+    'storage' => 'Storage',
+];
 
 hub_admin_header('Marketplace', $user);
 ?>
@@ -59,6 +68,7 @@ hub_admin_header('Marketplace', $user);
             $defaultMode = (string)($manifest['default_mode'] ?? '');
             $defaultPort = (string)($manifest['service']['default_local_port'] ?? '');
             $gpuRequired = !empty($manifest['hardware']['gpu_required']);
+            $preflight = hub_pack_preflight($db, $manifest);
             ?>
             <tr>
                 <td>
@@ -74,11 +84,30 @@ hub_admin_header('Marketplace', $user);
                     category: <?= hub_h((string)($manifest['category'] ?? '')) ?><br>
                     type: <?= hub_h((string)($manifest['type'] ?? '')) ?><br>
                     execution: <?= hub_h((string)($manifest['execution_type'] ?? '')) ?><br>
+                    runtime: <code><?= hub_h((string)($manifest['runtime_level'] ?? '')) ?></code>
+                    <span class="<?= !empty($manifest['runtime_ready']) ? 'ok' : 'bad' ?>"><?= !empty($manifest['runtime_ready']) ? 'ready' : 'not ready' ?></span><br>
                     default mode: <code><?= hub_h($defaultMode) ?></code>
                 </td>
                 <td>
                     GPU: <?= $gpuRequired ? '需要' : '不需要' ?><br>
                     queue: <?= hub_h((string)($manifest['queue']['default_queue'] ?? '')) ?>
+                    <?php if ($preflight['summary']['total'] > 0): ?>
+                        <p><strong>Preflight</strong>
+                            <span class="<?= hub_status_class($preflight['summary']['status']) ?>">
+                                <?= hub_status_label($preflight['summary']['status']) ?>
+                            </span>
+                        </p>
+                        <?php if ($preflight['snapshot_at'] === ''): ?>
+                            <p class="muted"><code>php scripts/collect_host_metrics.php --force</code></p>
+                        <?php endif; ?>
+                        <?php foreach ($preflight['checks'] as $check): ?>
+                            <div>
+                                <?= hub_h($preflightLabels[$check['key']] ?? $check['key']) ?>:
+                                <span class="<?= hub_status_class($check['status']) ?>"><?= hub_status_label($check['status']) ?></span>
+                                <span class="muted"><?= hub_h($check['detail']) ?></span>
+                            </div>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </td>
                 <td><?= (int)($counts[$packId] ?? 0) ?></td>
                 <td>

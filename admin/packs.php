@@ -42,6 +42,7 @@ hub_admin_header('HubPack', $user);
             <th>版本</th>
             <th>類型</th>
             <th>執行型態</th>
+            <th>Runtime</th>
             <th>GPU</th>
             <th>狀態</th>
             <th>操作</th>
@@ -58,6 +59,10 @@ hub_admin_header('HubPack', $user);
                 <td><?= hub_h((string)($manifest['version'] ?? '')) ?></td>
                 <td><?= hub_h((string)($manifest['type'] ?? '')) ?></td>
                 <td><?= hub_h((string)($manifest['execution_type'] ?? '')) ?></td>
+                <td>
+                    <code><?= hub_h((string)($manifest['runtime_level'] ?? '')) ?></code><br>
+                    <span class="<?= !empty($manifest['runtime_ready']) ? 'ok' : 'bad' ?>"><?= !empty($manifest['runtime_ready']) ? 'ready' : 'not ready' ?></span>
+                </td>
                 <td><?= !empty($manifest['hardware']['gpu_required']) ? '需要' : '不需要' ?></td>
                 <td class="<?= $pack['status'] === 'ok' ? 'ok' : 'bad' ?>">
                     <?= $pack['status'] === 'ok' ? ($installedKey !== '' ? '已安裝：' . hub_h($installedKey) : '可安裝') : '錯誤' ?>

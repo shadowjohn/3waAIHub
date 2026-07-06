@@ -94,7 +94,7 @@ function hub_get_pack(string $packId): ?array
 function hub_validate_pack_manifest(array $manifest, string $packDir): array
 {
     $errors = [];
-    foreach (['schema_version', 'id', 'name', 'version', 'category', 'type', 'execution_type', 'default_mode', 'description', 'runtime', 'gateway', 'hardware', 'queue', 'storage', 'env'] as $field) {
+    foreach (['schema_version', 'id', 'name', 'version', 'category', 'type', 'execution_type', 'runtime_level', 'runtime_ready', 'default_mode', 'description', 'runtime', 'gateway', 'hardware', 'queue', 'storage', 'env', 'preflight'] as $field) {
         if (!array_key_exists($field, $manifest)) {
             $errors[] = 'Missing required field: ' . $field;
         }
@@ -110,6 +110,12 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     }
     if (!in_array((string)($manifest['execution_type'] ?? ''), ['sync_api', 'async_task', 'long_job'], true)) {
         $errors[] = 'Invalid execution_type.';
+    }
+    if (!is_string($manifest['runtime_level'] ?? null) || trim((string)$manifest['runtime_level']) === '') {
+        $errors[] = 'runtime_level must be a non-empty string.';
+    }
+    if (!is_bool($manifest['runtime_ready'] ?? null)) {
+        $errors[] = 'runtime_ready must be boolean.';
     }
 
     $runtime = is_array($manifest['runtime'] ?? null) ? $manifest['runtime'] : [];
@@ -130,6 +136,11 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     $hardware = is_array($manifest['hardware'] ?? null) ? $manifest['hardware'] : [];
     if (!is_bool($hardware['gpu_required'] ?? null)) {
         $errors[] = 'hardware.gpu_required must be boolean.';
+    }
+
+    $preflight = is_array($manifest['preflight'] ?? null) ? $manifest['preflight'] : [];
+    if (!is_array($preflight['checks'] ?? null)) {
+        $errors[] = 'preflight.checks must be an array.';
     }
 
     $service = is_array($manifest['service'] ?? null) ? $manifest['service'] : [];
@@ -361,6 +372,28 @@ function hub_db_is_runtime_db(PDO $db): bool
     return $path !== '' && realpath($path) === realpath(HUB_DB_PATH);
 }
 
+function hub_pack_requests_gpu(array $manifest): bool
+{
+    if (!empty($manifest['hardware']['gpu_required'])) {
+        return true;
+    }
+
+    foreach (($manifest['env'] ?? []) as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $name = strtoupper((string)($item['name'] ?? ''));
+        if ($name !== 'USE_GPU' && !str_ends_with($name, '_USE_GPU')) {
+            continue;
+        }
+        $default = strtolower(trim((string)($item['default'] ?? '0')));
+
+        return !in_array($default, ['', '0', 'false', 'no', 'off'], true);
+    }
+
+    return false;
+}
+
 function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort): string
 {
     $manifest = $pack['manifest'];
@@ -379,6 +412,13 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
         . "    ports:\n"
         . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . (int)$manifest['runtime']['default_internal_port'] . '"' . "\n"
         . "    restart: unless-stopped\n";
+
+    if (hub_pack_requests_gpu($manifest)) {
+        $compose .= "    gpus: all\n"
+            . "    environment:\n"
+            . '      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"' . "\n"
+            . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n";
+    }
 
     $volumes = hub_generate_pack_storage_volumes($manifest, $serviceKey);
     if ($volumes) {

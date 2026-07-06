@@ -1,3 +1,6 @@
+--extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu129/
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
+paddlepaddle-gpu==3.3.1
+paddleocr==3.3.0

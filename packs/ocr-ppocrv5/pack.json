@@ -6,8 +6,10 @@
   "category": "ocr",
   "type": "api_service",
   "execution_type": "sync_api",
+  "runtime_level": "L2-deps-import",
+  "runtime_ready": true,
   "default_mode": "ocr",
-  "description": "OCR service powered by PP-OCRv5.",
+  "description": "GPU-ready OCR service powered by PP-OCRv5.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -23,7 +25,8 @@
   "hardware": {
     "gpu_required": false,
     "gpu_supported": true,
-    "min_vram_mb": 0
+    "min_vram_mb": 0,
+    "min_compute_capability": "8.0"
   },
   "queue": {
     "supported": true,
@@ -31,9 +34,38 @@
     "max_concurrency": 1
   },
   "storage": {
-    "mounts": []
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "paddleocr",
+        "container_path": "/models/paddleocr",
+        "read_only": false
+      },
+      {
+        "type": "cache",
+        "host_subdir": "paddleocr",
+        "container_path": "/cache/paddleocr",
+        "read_only": false
+      },
+      {
+        "type": "service",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false
+      }
+    ]
   },
   "env": [
+    {
+      "name": "OCR_USE_GPU",
+      "default": "1",
+      "required": true
+    },
+    {
+      "name": "NVIDIA_VISIBLE_DEVICES",
+      "default": "all",
+      "required": false
+    },
     {
       "name": "OCR_MAX_UPLOAD_MB",
       "default": "50",
@@ -45,6 +77,16 @@
       "required": true
     }
   ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "nvidia_smi",
+      "docker_gpus",
+      "compute_capability",
+      "storage"
+    ]
+  },
   "service": {
     "default_local_port": 18101,
     "local_port_env": "OCR_LOCAL_PORT"

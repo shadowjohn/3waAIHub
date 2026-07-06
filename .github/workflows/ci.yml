@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          extensions: sqlite3, pdo_sqlite, curl
+
+      - name: PHP lint
+        run: find . -path './data' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Tests
+        run: php scripts/run_tests.php
+
+      - name: Self check
+        run: php -d assert.exception=1 scripts/self_check.php
+
+      - name: Shell syntax
+        run: bash -n install.sh scripts/*.sh crontab/*.sh
+
+      - name: Diff check
+        run: git diff --check

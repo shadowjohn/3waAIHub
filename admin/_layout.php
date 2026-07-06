@@ -14,7 +14,8 @@ function hub_admin_header(string $title, array $user): void
     <style>
         :root { color-scheme: light; --bg: #f6f7f9; --panel: #fff; --line: #d9dee7; --text: #1d2430; --muted: #667085; --blue: #1769e0; --red: #b42318; --green: #067647; }
         body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-        header { background: #182230; color: #fff; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; }
+        header { background: #182230; color: #fff; padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; gap: 18px; }
+        .brand small { color: #98a2b3; display: block; font-size: 12px; font-weight: 500; margin-top: 2px; }
         nav a { color: #d0d5dd; margin-right: 16px; text-decoration: none; }
         nav a:hover { color: #fff; }
         main { max-width: 1120px; margin: 24px auto; padding: 0 16px; }
@@ -41,7 +42,7 @@ function hub_admin_header(string $title, array $user): void
 </head>
 <body>
 <header>
-    <div><strong>3waAIHub Local</strong></div>
+    <div class="brand"><strong>3waAIHub Local</strong><small><?= hub_h(HUB_VERSION . ' / ' . HUB_RELEASE_LABEL) ?></small></div>
     <nav>
         <a href="index.php">儀表板</a>
         <a href="marketplace.php">Marketplace</a>

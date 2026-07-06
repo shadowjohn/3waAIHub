@@ -22,6 +22,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $snapshot = hub_latest_env_snapshot($db);
+$hostMetricSnapshot = hub_latest_host_metric_snapshot($db);
+$hostMetricData = is_array($hostMetricSnapshot['data'] ?? null) ? $hostMetricSnapshot['data'] : [];
 $liveWorkerStatus = hub_collect_command_worker_status();
 if ($snapshot) {
     $snapshot['data']['command_worker'] = $liveWorkerStatus;
@@ -183,6 +185,7 @@ function hub_env_false_reason(string $key, array $values): string
     }
     $knownReasons = [
         'cron_installed' => '尚未掛載 command worker cron。請以 root 執行安裝指令。',
+        'current_user_in_docker_group' => '不一定要修。若 Docker 操作由 root cron/command worker 執行，這是安全狀態；若要讓目前帳號手動跑 Docker，再參考下方修正建議。',
         'loop_script_exists' => '找不到 crontab/1min.sh。',
         'loop_script_executable' => 'crontab/1min.sh 尚未設為可執行。',
         'flock_available' => '找不到 flock，請安裝 util-linux。',
@@ -291,10 +294,21 @@ function hub_env_fix_suggestions(array $data): array
         ];
     }
 
+    $dockerGroupMissing = ($host['current_user_in_docker_group'] ?? null) === false;
+    $isWebUser = in_array($workerUser, ['www-data', 'apache', 'nginx'], true);
+    if ($dockerGroupMissing) {
+        $suggestions[] = [
+            'title' => 'Docker 操作帳號建議',
+            'body' => '目前執行使用者不在 docker 群組。不要把 www-data 加進 docker 群組；Docker group 等同 root 權限。建議讓 command worker 用 root cron，或建立可信任本機帳號專門跑 worker。',
+            'commands' => $isWebUser
+                ? "cd " . escapeshellarg(HUB_ROOT) . "\nsudo ./scripts/install_command_worker_cron.sh\n# 或建立專用帳號：\nid 3waaihub-worker >/dev/null 2>&1 || sudo useradd -m -s /bin/bash -G docker 3waaihub-worker\nsudo -iu 3waaihub-worker docker info\nsudo env WORKER_USER=3waaihub-worker ./scripts/install_command_worker_cron.sh"
+                : "# 若你要讓 {$safeUser} 直接操作 Docker：\nsudo usermod -aG docker {$safeUser}\n# 重新登入後驗證：\nsudo -iu {$safeUser} docker info\n# 讓 command worker 使用此帳號：\ncd " . escapeshellarg(HUB_ROOT) . "\nsudo env WORKER_USER={$safeUser} ./scripts/install_command_worker_cron.sh",
+        ];
+    }
+
     if (($docker['daemon_reachable'] ?? null) === false) {
         $reason = (string)($docker['daemon_error'] ?? '');
-        if (str_contains($reason, 'permission denied') || ($host['current_user_in_docker_group'] ?? null) === false) {
-            $isWebUser = in_array($workerUser, ['www-data', 'apache', 'nginx'], true);
+        if (str_contains($reason, 'permission denied')) {
             $suggestions[] = [
                 'title' => '讓 command worker 可操作 Docker',
                 'body' => '不要把 www-data 加進 docker 群組。建議用本機帳號執行 command worker，並只把該帳號加入 docker 群組。docker 群組等同 root 權限，請只給可信任帳號。',
@@ -346,7 +360,7 @@ hub_admin_header('環境診斷', $user);
             <?php endforeach; ?>
         </table>
     </section>
-    <?php $suggestions = hub_env_fix_suggestions(['command_worker' => $liveWorkerStatus]); ?>
+    <?php $suggestions = array_merge(hub_env_fix_suggestions(['command_worker' => $liveWorkerStatus]), hub_host_metric_fix_suggestions($hostMetricData)); ?>
     <?php if ($suggestions): ?>
         <section class="panel">
             <h2>修正建議</h2>
@@ -364,7 +378,7 @@ hub_admin_header('環境診斷', $user);
         <p>建立時間：<?= hub_h($snapshot['created_at']) ?></p>
         <?php if ($snapshot['error_message']): ?><p class="bad"><?= hub_h($snapshot['error_message']) ?></p><?php endif; ?>
     </section>
-    <?php $suggestions = hub_env_fix_suggestions($snapshot['data']); ?>
+    <?php $suggestions = array_merge(hub_env_fix_suggestions($snapshot['data']), hub_host_metric_fix_suggestions($hostMetricData, (string)($snapshot['data']['host']['server_user'] ?? ''))); ?>
     <?php if ($suggestions): ?>
         <section class="panel">
             <h2>修正建議</h2>

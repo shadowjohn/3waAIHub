@@ -14,8 +14,14 @@ hub_test('catalog and required packs are readable', function (): void {
         hub_test_assert(in_array($id, $ids, true), 'missing pack: ' . $id);
         $pack = hub_get_pack($id);
         hub_test_assert($pack !== null && $pack['status'] === 'ok', 'pack invalid: ' . $id);
-        foreach (['schema_version', 'id', 'name', 'version', 'category', 'type', 'execution_type', 'default_mode', 'runtime', 'gateway', 'hardware', 'queue', 'storage', 'env'] as $field) {
+        foreach (['schema_version', 'id', 'name', 'version', 'category', 'type', 'execution_type', 'default_mode', 'runtime_level', 'runtime_ready', 'runtime', 'gateway', 'hardware', 'queue', 'storage', 'env', 'preflight'] as $field) {
             hub_test_assert(array_key_exists($field, $pack['manifest']), 'missing field ' . $field . ' in ' . $id);
         }
     }
+
+    hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['runtime_level'] === 'L2-deps-import', 'OCR runtime level mismatch');
+    hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['runtime_ready'] === true, 'OCR runtime ready mismatch');
+    hub_test_assert(hub_get_pack('ocr-ppocrv5')['manifest']['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
+    hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L0-manifest-only', 'Translate runtime level mismatch');
+    hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_ready'] === false, 'Translate runtime ready mismatch');
 });

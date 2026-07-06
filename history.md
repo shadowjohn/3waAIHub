@@ -415,3 +415,57 @@ Today locked the 3waAIHub Local service model:
 - API access uses service-level IP whitelist.
 - Logs / audit record `request_id`, IP, mode, and `error_code`.
 - SQLite stores metadata only; large logs / results go to files under `data/`.
+
+## PhaseM-2A OCR GPU L2 Runtime Prep
+
+Prepared `ocr-ppocrv5` for GPU-backed runtime without enabling real OCR inference yet.
+
+Added:
+
+- Version banner constants: `HUB_VERSION`, `HUB_RELEASE_LABEL`
+- Runtime readiness fields in HubPack manifests
+- OCR `smoke.py` dependency import check
+- Minimal GitHub Actions CI
+
+Implemented:
+
+- `ocr-ppocrv5` runtime level set to `L2-deps-import`
+- `translate-gemma12b` marked `L0-manifest-only` / not runtime ready
+- OCR Dockerfile switched to NVIDIA CUDA 12.9 runtime base
+- OCR dependencies use PaddlePaddle GPU package index `cu129`
+- OCR generated compose requests `gpus: all`
+- OCR services mount models/cache/service data paths
+- Existing `ocr-main` and `ocr-gpu` runtime files regenerated under `data/services/`
+
+Skipped:
+
+- real OCR inference
+- model download
+- PDF OCR
+- benchmark tuning
+
+## PhaseH-1 Station Hardware Profile / Pack Preflight
+
+Added lightweight hardware compatibility checks for Marketplace installs.
+
+Implemented:
+
+- Station Hardware Profile derived from latest `host_metric_snapshots`
+- GPU compute capability map for common cards:
+  - RTX 5090 / 5080 / 5070 / 5060 Ti / 5060 => 12.0
+  - RTX 4090 / 4080 / 4070 / 4060 Ti / 4060 => 8.9
+  - RTX 3090 / 3080 / 3070 / 3060 => 8.6
+  - GTX 1080 Ti => 6.1
+- Docker metric now records Docker Compose, NVIDIA Container Toolkit, and Docker NVIDIA runtime availability
+- Pack manifest `preflight.checks`
+- Marketplace preflight display for Docker, Compose, GPU, Docker GPU runtime, VRAM, compute capability, and storage
+- Environment diagnostics now surfaces repair commands from Marketplace host metric failures
+- TranslateGemma requires VRAM >= 10000MB and compute capability >= 8.0
+- OCR GPU L2 requires compute capability >= 8.0
+
+Skipped:
+
+- new `station_hardware_profile` table
+- Web request host command execution
+- deviceQuery
+- hard-blocking install on preflight failure
