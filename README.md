@@ -16,6 +16,7 @@
 - HubPack registry 與 hello pack 安裝
 - Storage settings / model directory
 - 環境診斷與修正建議
+- Service IP whitelist 與 API access logs
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
 
 ## 安裝
@@ -134,6 +135,178 @@ sudo WORKER_USER=john ./scripts/install_command_worker_cron.sh
 
 worker log 會寫到 `data/logs/command_worker_1min.log`。
 
+## Dashboard Metrics
+
+後台首頁會讀取 SQLite 最新 host metrics snapshot，顯示 GPU、VRAM、RAM、Disk、服務統計與待處理項。Web request 不會直接執行 `nvidia-smi` 或 `docker info`。
+
+RAM 判斷使用 `/proc/meminfo` 的 `MemAvailable`，不是 `MemFree`。Dashboard 會分開顯示 Used / BuffCache / Available / SwapUsed，記憶體告警以 MemAvailable 百分比與 `vmstat si/so` 為準。
+
+手動收集：
+
+```bash
+php /DATA/3waAIHub/scripts/collect_host_metrics.php
+```
+
+預設 30 秒內不重複寫入 snapshot；需要強制收集時：
+
+```bash
+php /DATA/3waAIHub/scripts/collect_host_metrics.php --force
+```
+
+可用 cron 每分鐘收集一次：
+
+```cron
+* * * * * php /DATA/3waAIHub/scripts/collect_host_metrics.php >/dev/null 2>&1
+```
+
+Dashboard 圖表使用 ECharts CDN；離線環境可能只能看到文字卡片，圖表不會載入。
+
+## API Access Control
+
+`api.php?mode=xxx` 會依 service instance 做 IP whitelist 檢查，預設只允許 localhost：
+
+- `127.0.0.1`
+- `::1`
+
+外部 IP 需要到服務列的 `Whitelist` 明確新增。支援單一 IP 與 CIDR，例如：
+
+```text
+192.168.1.10
+192.168.1.0/24
+::1
+```
+
+目前不信任 `X-Forwarded-For`，避免來源 IP 被偽造。若未來要接 reverse proxy，再另外加 trusted proxy setting。
+
+後台入口：
+
+```text
+admin/services.php          每列 Whitelist / Access Logs
+admin/log_explorer.php      Log Explorer / API Trace
+admin/ip_profile.php        單一 IP 行為摘要
+```
+
+GET URL 裡不裸放 IP / CIDR。後台產生的 IP filter link 會使用 base64url：
+
+```text
+admin/log_explorer.php?client_ip_b64=MTkyLjE2OC4xLjEw
+admin/ip_profile.php?ip_b64=MjAwMTpkYjg6OjE
+```
+
+錯誤會分開記錄，例如：
+
+- `unknown_mode`
+- `service_disabled`
+- `ip_not_allowed`
+- `method_not_allowed`
+- `runtime_not_ready`
+- `service_unavailable`
+- `gateway_timeout`
+- `proxy_error`
+
+access log 不記 request body，不記 token，只記 metadata。保留天數由 `AIHUB_API_ACCESS_LOG_RETENTION_DAYS=30` 控制，並由 `scripts/prune_db.php --apply` 清理。
+
+每次 gateway request 會產生 `request_id`，回應 header 會帶：
+
+```text
+X-3waAIHub-Request-Id: req_...
+```
+
+錯誤 JSON 也會包含 `request_id`，方便回報後直接到 Log Explorer 查。
+
+## SQLite Safety / Retention
+
+SQLite 只用來存本機狀態、索引與摘要，不當大量 log sink。大型 task result 會寫到 `data/results/task_{task_id}/`，大量 task log 會寫到 `data/logs/tasks/task_{task_id}.log`，DB 只保留 artifact path 或最後摘要。
+
+DB 連線預設使用：
+
+- `PRAGMA journal_mode=WAL`
+- `PRAGMA busy_timeout=5000`
+- `PRAGMA foreign_keys=ON`
+- `PRAGMA synchronous=NORMAL`
+
+預設保留設定：
+
+- `AIHUB_DB_MAX_SIZE_MB=1024`
+- `AIHUB_LOG_RETENTION_DAYS=14`
+- `AIHUB_METRIC_RETENTION_DAYS=14`
+- `AIHUB_TASK_RETENTION_DAYS=30`
+- `AIHUB_MAX_TASK_LOG_ROWS=1000`
+- `AIHUB_MAX_RESULT_JSON_BYTES=262144`
+
+查看 DB / WAL 狀態：
+
+```bash
+php /DATA/3waAIHub/scripts/db_maintenance.php --status
+```
+
+若 CLI 或 Web 寫入出現 `readonly database`，先修 runtime 權限：
+
+```bash
+sudo WEB_GROUP=www-data /DATA/3waAIHub/scripts/fix_permissions.sh
+```
+
+手動 WAL checkpoint：
+
+```bash
+php /DATA/3waAIHub/scripts/db_maintenance.php --checkpoint
+```
+
+先看 prune 會清什麼：
+
+```bash
+php /DATA/3waAIHub/scripts/prune_db.php --dry-run
+```
+
+正式清理並執行 `wal_checkpoint(TRUNCATE)`：
+
+```bash
+php /DATA/3waAIHub/scripts/prune_db.php --apply
+```
+
+建議加入 cron，每天跑一次：
+
+```cron
+17 3 * * * php /DATA/3waAIHub/scripts/prune_db.php --apply >/dev/null 2>&1
+```
+
+## Tests / Benchmark / API Examples
+
+PhaseM-1.1 先測 HubPack Kit 本身，不測真實 OCR / TranslateGemma 推論。
+
+執行 CLI tests：
+
+```bash
+php /DATA/3waAIHub/scripts/run_tests.php
+```
+
+可指定測試 DB，避免污染正式 SQLite：
+
+```bash
+AIHUB_TEST_DB=/tmp/3waaihub_test.sqlite php /DATA/3waAIHub/scripts/run_tests.php
+```
+
+Benchmark skeleton：
+
+```bash
+php /DATA/3waAIHub/scripts/benchmark.php --case=host_smoke
+php /DATA/3waAIHub/scripts/benchmark.php --case=pack_catalog_scan
+php /DATA/3waAIHub/scripts/benchmark.php --case=hello_api
+```
+
+後台頁：
+
+```text
+http://localhost/3waAIHub/admin/benchmarks.php
+http://localhost/3waAIHub/admin/api_docs.php
+```
+
+API 範例文件：
+
+```text
+docs/api_examples.md
+```
+
 ## Local HubPack Catalog
 
 HubPack 是模板，HubService 是安裝後的 service instance。同一個 pack 可以安裝多次，每次使用不同的 `service_key` / `mode` / `local_port`。
@@ -156,6 +329,18 @@ http://localhost/3waAIHub/admin/packs.php
 
 - `ocr-ppocrv5`
 - `translate-gemma12b`
+
+### ocr-ppocrv5 Runtime Level
+
+`ocr-ppocrv5` 目前停在 L1 `api_mock`：
+
+- Docker image 可 build
+- container 可啟動
+- `GET /health` 回 ok
+- `POST /ocr/image` 支援圖片上傳並回 mock OCR JSON
+- `api.php?mode=ocr` 可透過 gateway proxy 到 service
+
+這一版尚未安裝 PaddleOCR、尚未下載模型、尚未做真實 OCR 推論。
 
 `pack.json` schema v0.1 必要欄位：
 

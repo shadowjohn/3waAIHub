@@ -133,7 +133,7 @@ function hub_start_service(PDO $db, array $service): array
         return $result;
     }
 
-    $result = hub_run_command(hub_compose_command($service, ['up', '-d', '--build']), 180, hub_compose_env($service));
+    $result = hub_run_command(hub_compose_command($service, ['up', '-d', '--build']), 900, hub_compose_env($service));
     hub_add_service_log($db, (int)$service['id'], 'start', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_set_service_enabled($db, $service['mode'], true);

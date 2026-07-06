@@ -181,6 +181,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     }
 
     $storage = hub_get_storage_paths($db);
+    hub_ensure_pack_storage_dirs($manifest, $serviceKey, $storage);
     $composeFile = 'data/services/' . $serviceKey . '/docker-compose.generated.yml';
     $envFile = $runtimeDir . '/.env';
     $portEnv = hub_pack_port_env($manifest);
@@ -373,6 +374,8 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
         . "    build:\n"
         . "      context: {$buildContext}\n"
         . "    container_name: {$containerName}\n"
+        . "    env_file:\n"
+        . "      - .env\n"
         . "    ports:\n"
         . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . (int)$manifest['runtime']['default_internal_port'] . '"' . "\n"
         . "    restart: unless-stopped\n";
@@ -386,6 +389,27 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     }
 
     return $compose;
+}
+
+function hub_ensure_pack_storage_dirs(array $manifest, string $serviceKey, array $storage): void
+{
+    $prefix = [
+        'models' => $storage['AIHUB_MODELS_DIR'],
+        'cache' => $storage['AIHUB_CACHE_DIR'],
+        'uploads' => $storage['AIHUB_UPLOADS_DIR'],
+        'results' => $storage['AIHUB_RESULTS_DIR'],
+        'service' => HUB_SERVICE_DIR . '/' . $serviceKey,
+    ];
+    foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
+        if (!is_array($mount) || empty($prefix[$mount['type'] ?? ''])) {
+            continue;
+        }
+        $hostSubdir = trim((string)($mount['host_subdir'] ?? ''), '/');
+        $dir = $prefix[(string)$mount['type']] . ($hostSubdir !== '' ? '/' . $hostSubdir : '');
+        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new RuntimeException('Cannot create pack storage directory: ' . $dir);
+        }
+    }
 }
 
 function hub_generate_pack_storage_volumes(array $manifest, string $serviceKey): array

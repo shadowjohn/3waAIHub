@@ -31,25 +31,17 @@
     "max_concurrency": 1
   },
   "storage": {
-    "mounts": [
-      {
-        "type": "models",
-        "host_subdir": "paddleocr",
-        "container_path": "/models/paddleocr",
-        "read_only": false
-      },
-      {
-        "type": "cache",
-        "host_subdir": "paddleocr",
-        "container_path": "/cache/paddleocr",
-        "read_only": false
-      }
-    ]
+    "mounts": []
   },
   "env": [
     {
-      "name": "OCR_LANG",
-      "default": "ch",
+      "name": "OCR_MAX_UPLOAD_MB",
+      "default": "50",
+      "required": true
+    },
+    {
+      "name": "OCR_MOCK_TEXT",
+      "default": "3waAIHub OCR mock",
       "required": true
     }
   ],

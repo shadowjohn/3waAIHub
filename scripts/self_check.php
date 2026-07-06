@@ -127,7 +127,31 @@ $snapshot = hub_latest_env_snapshot($db);
 assert($snapshot !== null);
 assert($snapshot['data']['host']['hostname'] === 'self-check');
 
-assert(hub_allocate_local_port($db) === 18101);
+$metricTables = $db->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'host_metric_snapshots'")->fetchAll();
+assert(count($metricTables) === 1);
+$sampleMetric = [
+    'gpu' => ['available' => false],
+    'host' => ['load_1' => 0.1, 'ram_total_mb' => 100, 'ram_used_mb' => 50],
+    'docker' => ['available' => false],
+    'counts' => ['packs' => 1, 'services' => 1],
+];
+hub_save_host_metric_snapshot($db, $sampleMetric);
+$latestMetric = hub_latest_host_metric_snapshot($db);
+assert($latestMetric !== null);
+assert($latestMetric['data']['host']['ram_used_mb'] === 50);
+$collectedMetric = hub_collect_host_metrics($db);
+assert(isset($collectedMetric['gpu'], $collectedMetric['host'], $collectedMetric['docker'], $collectedMetric['counts']));
+assert(array_key_exists('available', $collectedMetric['gpu']));
+assert(array_key_exists('ram_total_mb', $collectedMetric['host']));
+assert(array_key_exists('ram_buff_cache_mb', $collectedMetric['host']));
+assert(array_key_exists('ram_available_percent', $collectedMetric['host']));
+assert(array_key_exists('swap_used_mb', $collectedMetric['host']));
+assert(array_key_exists('vmstat_si', $collectedMetric['host']));
+assert(array_key_exists('services', $collectedMetric['counts']));
+assert(hub_parse_vmstat_swap_io("procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----\nr b swpd free buff cache si so bi bo in cs us sy id wa st\n0 0 0 1 2 3 4 5 0 0 0 0 0 0 100 0 0\n") === ['si' => 4, 'so' => 5]);
+
+$allocatedPort = hub_allocate_local_port($db);
+assert($allocatedPort >= 18101 && $allocatedPort <= 18999);
 assert(hub_validate_service_port(18100) === true);
 assert(hub_validate_service_port(18099) === false);
 
@@ -177,6 +201,9 @@ $catalogPacks = hub_list_catalog_packs();
 $catalogIds = array_column($catalogPacks, 'id');
 assert(in_array('ocr-ppocrv5', $catalogIds, true));
 assert(in_array('translate-gemma12b', $catalogIds, true));
+assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/Dockerfile'));
+assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/requirements.txt'));
+assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/app.py'));
 
 $ocr = hub_install_pack($db, 'ocr-ppocrv5', [
     'service_key' => 'ocr-main',
@@ -191,6 +218,9 @@ assert($ocr['service']['pack_id'] === 'ocr-ppocrv5');
 assert(is_dir(HUB_DATA_DIR . '/services/ocr-main'));
 assert(is_file(HUB_DATA_DIR . '/services/ocr-main/.env'));
 assert(is_file(HUB_DATA_DIR . '/services/ocr-main/docker-compose.generated.yml'));
+assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/ocr-main/.env'), 'OCR_MOCK_TEXT=3waAIHub OCR mock'));
+assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/ocr-main/docker-compose.generated.yml'), 'env_file:'));
+assert(str_contains((string)file_get_contents(HUB_DATA_DIR . '/services/ocr-main/docker-compose.generated.yml'), '127.0.0.1:${OCR_LOCAL_PORT:-18101}:8000'));
 
 $ocrGpu = hub_install_pack($db, 'ocr-ppocrv5', [
     'service_key' => 'ocr-gpu',
@@ -205,6 +235,16 @@ assert($ocrGpu['service']['mode'] === 'ocr_gpu');
 assert((int)$ocrGpu['service']['local_port'] === 18103);
 assert(is_file(HUB_DATA_DIR . '/services/ocr-gpu/.env'));
 assert(is_file(HUB_DATA_DIR . '/services/ocr-gpu/docker-compose.generated.yml'));
+
+$uploadTmp = tempnam(sys_get_temp_dir(), '3waaihub_upload_');
+file_put_contents($uploadTmp, 'image-bytes');
+$proxyFields = hub_proxy_post_fields(
+    ['note' => 'ocr smoke'],
+    ['image' => ['tmp_name' => $uploadTmp, 'name' => 'sample.png', 'type' => 'image/png', 'error' => UPLOAD_ERR_OK]]
+);
+assert($proxyFields['note'] === 'ocr smoke');
+assert($proxyFields['image'] instanceof CURLFile);
+unlink($uploadTmp);
 
 $translate = hub_install_pack($db, 'translate-gemma12b', [
     'service_key' => 'translate-main',

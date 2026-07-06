@@ -4,9 +4,16 @@ declare(strict_types=1);
 function hub_db(): PDO
 {
     hub_ensure_runtime_dirs();
+    $dbDir = dirname(HUB_DB_PATH);
+    if (!is_dir($dbDir) && !mkdir($dbDir, 0775, true) && !is_dir($dbDir)) {
+        throw new RuntimeException('Cannot create database directory.');
+    }
     $db = new PDO('sqlite:' . HUB_DB_PATH);
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $db->exec('PRAGMA busy_timeout = 5000');
+    $db->exec('PRAGMA journal_mode = WAL');
+    $db->exec('PRAGMA synchronous = NORMAL');
     $db->exec('PRAGMA foreign_keys = ON');
 
     return $db;
@@ -103,6 +110,25 @@ CREATE TABLE IF NOT EXISTS env_snapshots (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS host_metric_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    snapshot_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS benchmark_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    benchmark_key TEXT NOT NULL,
+    service_id INTEGER NULL,
+    mode TEXT NULL,
+    status TEXT NOT NULL,
+    elapsed_ms INTEGER NULL,
+    result_json TEXT NULL,
+    error_message TEXT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     task_type TEXT NOT NULL,
@@ -142,6 +168,38 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
     created_at TEXT NOT NULL,
     FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS service_ip_whitelists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL,
+    ip_rule TEXT NOT NULL,
+    rule_type TEXT NOT NULL DEFAULT 'cidr',
+    label TEXT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+    FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_access_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id TEXT NULL,
+    service_id INTEGER NULL,
+    mode TEXT NULL,
+    client_ip TEXT NOT NULL,
+    method TEXT NOT NULL,
+    request_uri TEXT NOT NULL,
+    status_code INTEGER NOT NULL,
+    ok INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT NULL,
+    reason TEXT NULL,
+    user_agent TEXT NULL,
+    elapsed_ms INTEGER NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
+);
 SQL);
 
     hub_add_column_if_missing($db, 'services', 'local_port', 'INTEGER NULL');
@@ -155,9 +213,18 @@ SQL);
     hub_add_column_if_missing($db, 'services', 'install_status', "TEXT NOT NULL DEFAULT 'installed'");
     hub_add_column_if_missing($db, 'services', 'runtime_status', "TEXT NOT NULL DEFAULT 'stopped'");
     hub_add_column_if_missing($db, 'services', 'environment_json', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'api_access_logs', 'request_id', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_service_key ON services(service_key) WHERE service_key IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_local_port ON services(local_port) WHERE local_port IS NOT NULL');
-    hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
+    $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_service_ip_whitelists_unique ON service_ip_whitelists(service_id, ip_rule)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_created_at ON api_access_logs(created_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_client_ip ON api_access_logs(client_ip)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_mode ON api_access_logs(mode)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_service_id ON api_access_logs(service_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_ok ON api_access_logs(ok)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_error_code ON api_access_logs(error_code)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_request_id ON api_access_logs(request_id)');
 }
 
 function hub_add_column_if_missing(PDO $db, string $table, string $column, string $definition): void

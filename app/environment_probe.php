@@ -176,6 +176,16 @@ function hub_memory_status(): array
         'total_bytes' => $values['MemTotal'] ?? null,
         'free_bytes' => $values['MemFree'] ?? null,
         'available_bytes' => $values['MemAvailable'] ?? null,
+        'buffers_bytes' => $values['Buffers'] ?? null,
+        'cached_bytes' => $values['Cached'] ?? null,
+        'sreclaimable_bytes' => $values['SReclaimable'] ?? null,
+        'shmem_bytes' => $values['Shmem'] ?? null,
+        'buff_cache_bytes' => isset($values['Buffers'], $values['Cached'], $values['SReclaimable'], $values['Shmem'])
+            ? max(0, $values['Buffers'] + $values['Cached'] + $values['SReclaimable'] - $values['Shmem'])
+            : null,
+        'swap_total_bytes' => $values['SwapTotal'] ?? null,
+        'swap_free_bytes' => $values['SwapFree'] ?? null,
+        'swap_used_bytes' => isset($values['SwapTotal'], $values['SwapFree']) ? max(0, $values['SwapTotal'] - $values['SwapFree']) : null,
         'used_bytes' => isset($values['MemTotal'], $values['MemAvailable']) ? $values['MemTotal'] - $values['MemAvailable'] : null,
     ];
 }

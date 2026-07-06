@@ -120,6 +120,8 @@ hub_admin_header('服務管理', $user);
                         <button name="action" value="restart" type="submit">重啟</button>
                         <button name="action" value="refresh" type="submit">刷新</button>
                         <a class="button" href="service_logs.php?id=<?= (int)$service['id'] ?>">Log</a>
+                        <a class="button" href="service_whitelist.php?service_id=<?= (int)$service['id'] ?>">Whitelist</a>
+                        <a class="button" href="log_explorer.php?service_id=<?= (int)$service['id'] ?>">Access Logs</a>
                     </form>
                 </td>
             </tr>

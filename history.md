@@ -203,3 +203,215 @@ Skipped:
 - real TranslateGemma runtime
 - Redis/SSE
 - multi-host Hub
+
+## PhaseM-2A PP-OCRv5 Runtime Adapter L1
+
+Completed `ocr-ppocrv5` L1 `api_mock` runtime.
+
+Added:
+
+- `packs/ocr-ppocrv5/service/Dockerfile`
+- `packs/ocr-ppocrv5/service/requirements.txt`
+- `packs/ocr-ppocrv5/service/app.py`
+
+Implemented:
+
+- `GET /health`
+- `POST /ocr/image`
+- mock OCR JSON response
+- multipart upload forwarding in `api.php` gateway
+- generated compose `env_file` support
+
+Verified:
+
+- Docker build `ocr-main` PASS
+- Start `ocr-main` PASS
+- `GET http://127.0.0.1:18101/health` PASS
+- `POST http://127.0.0.1:18101/ocr/image` PASS
+- `POST api.php?mode=ocr` PASS
+- `api.php?mode=hello` still works
+
+Skipped:
+
+- PaddleOCR install
+- model download
+- real OCR inference
+- PDF OCR
+- async task
+- benchmark
+
+## PhaseD-0 Dashboard Metrics / ECharts Host Monitor
+
+Added first host dashboard snapshot flow.
+
+Added:
+
+- `host_metric_snapshots` SQLite table
+- `app/host_metrics.php`
+- `scripts/collect_host_metrics.php`
+- ECharts dashboard in `admin/index.php`
+
+Implemented:
+
+- CLI-only metrics collection
+- GPU / VRAM / temperature snapshot
+- host load / RAM / disk snapshot
+- Docker availability / Docker root snapshot
+- pack / service / task / command job counts
+- dashboard cards and charts reading SQLite only
+
+Skipped:
+
+- Prometheus
+- Grafana
+- SSE realtime streaming
+- multi-host monitoring
+- web request shell execution
+- automatic host repair
+
+## PhaseM-1.1 Unit Test / Benchmark / API Examples
+
+Added basic HubPack Kit verification framework.
+
+Added:
+
+- `scripts/run_tests.php`
+- `tests/test_pack_registry.php`
+- `tests/test_service_instance.php`
+- `tests/test_gateway.php`
+- `tests/test_api_examples.php`
+- `scripts/benchmark.php`
+- `admin/benchmarks.php`
+- `admin/api_docs.php`
+- `docs/api_examples.md`
+
+Implemented:
+
+- test DB override with `AIHUB_TEST_DB`
+- catalog / pack manifest checks
+- service_key / mode / local_port collision tests
+- hello gateway and unknown mode tests
+- `benchmark_runs` SQLite table
+- benchmark cases: `host_smoke`, `pack_catalog_scan`, `hello_api`
+- API examples for hello / OCR / Translate / unknown mode
+
+Skipped:
+
+- PP-OCRv5 real inference benchmark
+- TranslateGemma real inference benchmark
+- PHPUnit
+- Redis / SSE
+- multi-host benchmark
+
+## Dashboard RAM Metric Correction
+
+Adjusted dashboard memory metrics to use Linux `MemAvailable` instead of free memory.
+
+- Displayed Used / BuffCache / Available / SwapUsed separately.
+- Added `vmstat si/so` to host metrics.
+- Memory pressure now follows MemAvailable percentage and swap in/out activity.
+
+## PhaseS-1 SQLite Write Guard / Retention / Prune
+
+Added SQLite write safety and retention controls.
+
+Added:
+
+- `scripts/prune_db.php`
+- `scripts/db_maintenance.php`
+- SQLite safety tests in `tests/test_sqlite_safety.php`
+
+Implemented:
+
+- SQLite PRAGMAs: WAL, busy timeout, foreign keys, synchronous NORMAL
+- default retention / size settings
+- large task result spillover to `data/results/task_{task_id}/`
+- large task log spillover to `data/logs/tasks/task_{task_id}.log`
+- bounded task log rows via `AIHUB_MAX_TASK_LOG_ROWS`
+- host metrics 30-second write throttle with `--force`
+- DB prune for old metrics, benchmark runs, command jobs, task logs, and terminal task records
+- WAL checkpoint truncate after prune apply
+- DB status / checkpoint / explicit VACUUM maintenance CLI
+- runtime permission repair includes `data/logs/tasks`
+
+Skipped:
+
+- MySQL / PostgreSQL migration
+- Redis
+- high-frequency monitoring
+- docker logs ingestion into SQLite
+- Web UI VACUUM
+
+## PhaseS-2 Service IP Whitelist / API Access Audit
+
+Added service-level API access control.
+
+Added:
+
+- `app/api_access.php`
+- `admin/service_whitelist.php`
+- `admin/api_access_logs.php`
+- `service_ip_whitelists` table
+- `api_access_logs` table
+- whitelist / access log links in `admin/services.php`
+
+Implemented:
+
+- localhost auto allow
+- exact IP and CIDR whitelist rules
+- default external API deny via `AIHUB_DEFAULT_ALLOW_EXTERNAL_API=0`
+- API access logs for success and failures
+- distinct gateway error codes for unknown mode, disabled service, IP denied, wrong method, runtime pending, unavailable runtime, timeout, and proxy errors
+- Top failed IPs summary
+- retention setting `AIHUB_API_ACCESS_LOG_RETENTION_DAYS=30`
+- `scripts/prune_db.php` cleanup for API access logs
+
+Skipped:
+
+- API keys
+- rate limit / ban
+- WAF / fail2ban integration
+- trusted reverse proxy headers
+- request body logging
+
+## PhaseS-3 Log Explorer / API Trace
+
+Added API trace lookup for admin.
+
+Added:
+
+- `admin/log_explorer.php`
+- `admin/log_detail.php`
+- `admin/ip_profile.php`
+- request_id support in `api_access_logs`
+- base64url helpers for IP/CIDR GET filters
+
+Implemented:
+
+- `X-3waAIHub-Request-Id` response header
+- JSON error `request_id`
+- Log Explorer filters for time, IP, mode, service, ok, status, error_code, method, request_id, and keyword
+- keyword search via prepared statements
+- log detail page with service whitelist context and related requests
+- IP profile page using `ip_b64`
+- last-24h failed IPs, error codes, unknown modes, and denied IP summaries
+- IP/CIDR GET links generated with base64url helpers only
+
+Skipped:
+
+- CSV export
+- fail2ban / auto-ban
+- Elasticsearch / Loki / Grafana
+
+## Architecture Decisions
+
+Today locked the 3waAIHub Local service model:
+
+- Pack = template.
+- Service = instance.
+- Mode = public API route.
+- Models / cache / results use global storage paths.
+- Docker ports bind to `127.0.0.1` only.
+- API access uses service-level IP whitelist.
+- Logs / audit record `request_id`, IP, mode, and `error_code`.
+- SQLite stores metadata only; large logs / results go to files under `data/`.

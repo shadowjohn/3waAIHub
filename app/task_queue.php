@@ -105,6 +105,7 @@ function hub_claim_next_task(PDO $db): ?array
 
 function hub_add_task_log(PDO $db, int $taskId, string $level, string $message): void
 {
+    $message = hub_prepare_task_log_message($taskId, $message);
     $stmt = $db->prepare(
         'INSERT INTO task_logs (task_id, level, message, created_at)
          VALUES (:task_id, :level, :message, :created_at)'
@@ -115,6 +116,7 @@ function hub_add_task_log(PDO $db, int $taskId, string $level, string $message):
         ':message' => $message,
         ':created_at' => hub_now(),
     ]);
+    hub_prune_task_log_rows($db, $taskId);
 }
 
 function hub_list_task_logs(PDO $db, int $taskId): array
@@ -127,17 +129,100 @@ function hub_list_task_logs(PDO $db, int $taskId): array
 
 function hub_finish_task_success(PDO $db, array $task, array $result): void
 {
+    $taskId = (int)$task['id'];
+    $resultJson = json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($resultJson === false) {
+        throw new RuntimeException('Cannot encode task result.');
+    }
+    if (strlen($resultJson) > hub_max_result_json_bytes($db)) {
+        $resultJson = json_encode(hub_store_task_result_artifact($db, $taskId, $resultJson), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($resultJson === false) {
+            throw new RuntimeException('Cannot encode task artifact summary.');
+        }
+    }
+    $now = hub_now();
     $stmt = $db->prepare(
         "UPDATE tasks
          SET status = 'success', progress = 100, result_json = :result_json, finished_at = :finished_at, updated_at = :updated_at
          WHERE id = :id"
     );
     $stmt->execute([
-        ':result_json' => json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-        ':finished_at' => hub_now(),
-        ':updated_at' => hub_now(),
-        ':id' => (int)$task['id'],
+        ':result_json' => $resultJson,
+        ':finished_at' => $now,
+        ':updated_at' => $now,
+        ':id' => $taskId,
     ]);
+}
+
+function hub_max_result_json_bytes(PDO $db): int
+{
+    return max(1, (int)hub_get_storage_setting($db, 'AIHUB_MAX_RESULT_JSON_BYTES'));
+}
+
+function hub_max_task_log_rows(PDO $db): int
+{
+    return max(1, (int)hub_get_storage_setting($db, 'AIHUB_MAX_TASK_LOG_ROWS'));
+}
+
+function hub_store_task_result_artifact(PDO $db, int $taskId, string $resultJson): array
+{
+    $dir = hub_task_result_dir($taskId);
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create task result directory.');
+    }
+
+    $path = $dir . '/result_' . date('Ymd_His') . '_' . bin2hex(random_bytes(4)) . '.json';
+    if (file_put_contents($path, $resultJson, LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write task result artifact.');
+    }
+
+    $artifactId = hub_register_task_artifact($db, $taskId, basename($path), $path, 'application/json');
+    return [
+        'stored_as_artifact' => true,
+        'artifact_id' => $artifactId,
+        'path' => $path,
+        'bytes' => strlen($resultJson),
+    ];
+}
+
+function hub_prepare_task_log_message(int $taskId, string $message): string
+{
+    if (strlen($message) <= 4096) {
+        return $message;
+    }
+
+    if (!is_dir(HUB_TASK_LOG_DIR) && !mkdir(HUB_TASK_LOG_DIR, 0775, true) && !is_dir(HUB_TASK_LOG_DIR)) {
+        throw new RuntimeException('Cannot create task log directory.');
+    }
+
+    $relativePath = 'data/logs/tasks/task_' . $taskId . '.log';
+    $path = HUB_ROOT . '/' . $relativePath;
+    $line = '[' . hub_now() . '] ' . $message . PHP_EOL;
+    if (file_put_contents($path, $line, FILE_APPEND | LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write task log file.');
+    }
+
+    $excerpt = preg_replace('/\s+/', ' ', substr($message, 0, 240)) ?: '';
+    return 'log_path=' . $relativePath . ' excerpt=' . $excerpt;
+}
+
+function hub_prune_task_log_rows(PDO $db, int $taskId): void
+{
+    $limit = hub_max_task_log_rows($db);
+    $stmt = $db->prepare(
+        'DELETE FROM task_logs
+         WHERE task_id = :task_id
+           AND id NOT IN (
+               SELECT id FROM task_logs
+               WHERE task_id = :keep_task_id
+               ORDER BY id DESC
+               LIMIT :keep_limit
+           )'
+    );
+    $stmt->bindValue(':task_id', $taskId, PDO::PARAM_INT);
+    $stmt->bindValue(':keep_task_id', $taskId, PDO::PARAM_INT);
+    $stmt->bindValue(':keep_limit', $limit, PDO::PARAM_INT);
+    $stmt->execute();
 }
 
 function hub_finish_task_failed(PDO $db, array $task, string $errorMessage): void

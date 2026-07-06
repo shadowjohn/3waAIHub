@@ -25,7 +25,7 @@ detect_web_group() {
   done
 }
 
-for dir in data data/models data/cache data/uploads data/results data/logs data/logs/jobs data/logs/install data/jobs data/services; do
+for dir in data data/models data/cache data/uploads data/results data/logs data/logs/jobs data/logs/tasks data/logs/install data/jobs data/services; do
   mkdir -p "$dir"
 done
 

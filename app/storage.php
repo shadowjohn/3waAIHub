@@ -12,6 +12,15 @@ function hub_default_storage_settings(): array
         'AIHUB_LOGS_DIR' => HUB_LOG_DIR,
         'AIHUB_DOCKER_PORT_START' => '18100',
         'AIHUB_DOCKER_PORT_END' => '18999',
+        'AIHUB_DB_MAX_SIZE_MB' => '1024',
+        'AIHUB_LOG_RETENTION_DAYS' => '14',
+        'AIHUB_METRIC_RETENTION_DAYS' => '14',
+        'AIHUB_TASK_RETENTION_DAYS' => '30',
+        'AIHUB_MAX_TASK_LOG_ROWS' => '1000',
+        'AIHUB_MAX_RESULT_JSON_BYTES' => '262144',
+        'AIHUB_DEFAULT_ALLOW_EXTERNAL_API' => '0',
+        'AIHUB_API_ACCESS_LOG_RETENTION_DAYS' => '30',
+        'AIHUB_API_LOG_SUCCESS_SAMPLE_RATE' => '1',
     ];
 }
 

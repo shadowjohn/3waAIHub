@@ -47,6 +47,9 @@ function hub_admin_header(string $title, array $user): void
         <a href="marketplace.php">Marketplace</a>
         <a href="packs.php">HubPack</a>
         <a href="services.php">服務管理</a>
+        <a href="log_explorer.php">Log Explorer</a>
+        <a href="benchmarks.php">Benchmark</a>
+        <a href="api_docs.php">API Docs</a>
         <a href="environment.php">環境診斷</a>
         <a href="settings.php">設定</a>
         <a href="logout.php">登出 <?= hub_h($user['username']) ?></a>
@@ -70,7 +73,7 @@ function hub_admin_footer(): void
 
 function hub_status_class(string $status): string
 {
-    return in_array($status, ['running', 'success', 'ok'], true) ? 'ok' : 'bad';
+    return in_array($status, ['running', 'success', 'ok', 'pass'], true) ? 'ok' : 'bad';
 }
 
 function hub_status_label(string $status): string
@@ -84,5 +87,7 @@ function hub_status_label(string $status): string
         'running_job' => '執行中',
         'error' => '錯誤',
         'ok' => '正常',
+        'pass' => '通過',
+        'fail' => '失敗',
     ][$status] ?? $status;
 }
