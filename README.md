@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` / `yolo` L5 benchmark-ready Pack，以及 `translate-gemma12b` Ollama sidecar L3 storage-mount adapter。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` / `yolo` / `translate-gemma12b` L5 benchmark-ready Pack，以及 `sam3` L3 storage-mount adapter。
 
 ## 功能
 
@@ -519,13 +519,20 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 
 ### sam3 Runtime Level
 
-`sam3` 目前是 L1 `ultralytics-sam3`：
+`sam3` 目前是 L3 `storage-mount`：
 
 - `POST /segment/image` 支援 multipart 圖片上傳
-- prompt 使用 `points` / `labels` / `bboxes` JSON form 欄位
-- 預設模型路徑是 `AIHUB_MODELS_DIR/sam3/sam3.pt`
-- 回傳 bbox 與簡化 polygon
+- prompt 使用 `prompt_type` / `points_json` / `boxes_json` form 欄位
+- 預設回 mock segmentation JSON，`real_inference=1` 會回 `runtime_not_ready`
+- `GET /health` 回 `runtime_level=L3-storage-mount` 與 storage 狀態
+- runtime 掛載 `${AIHUB_MODELS_DIR}/sam3:/models/sam3`
+- runtime 掛載 `${AIHUB_CACHE_DIR}/sam3:/cache/sam3`
+- runtime 掛載 `${SERVICE_DATA_DIR}:/data/service`
+- `storage_smoke.py` 可在 container 內檢查 models/cache/service_data 與 HuggingFace/Torch cache 目錄
+- `SAM3_CHECKPOINT` 可從 `/DATA/models/sam3/*.pt` / `*.pth` / `*.safetensors` / `*.ckpt` 選用
 - generated compose 會加入 `gpus: all`
+
+本階段不下載 checkpoint、不做真 segmentation、不產生 mask。
 
 ### Pack Preflight
 
@@ -605,6 +612,7 @@ Service settings 支援 Pack 宣告的 model selector。第一版已支援：
 
 - `yolo`：`YOLO_MODEL` 可從 `/DATA/models/yolo/*.pt` / `*.onnx` 選用，仍保留文字輸入。
 - `translate-gemma12b`：`OLLAMA_MODEL` 維持 Ollama tag 文字設定，並顯示 `/DATA/models/ollama` 與 Ollama manifest present/missing 狀態。
+- `sam3`：`SAM3_CHECKPOINT` 可從 `/DATA/models/sam3/*.pt` / `*.pth` / `*.safetensors` / `*.ckpt` 選用，L3 缺 checkpoint 不會視為失敗。
 
 第一版不做模型 upload / download / delete / move，也不提供任意 host path picker。
 

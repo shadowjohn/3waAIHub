@@ -3,13 +3,14 @@
   "id": "sam3",
   "name": "SAM3 Segmentation Service",
   "version": "0.1.0",
-  "category": "segmentation",
+  "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L1-ultralytics-sam3",
+  "runtime_level": "L3-storage-mount",
+  "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "sam3",
-  "description": "Promptable segmentation API backed by Ultralytics SAM3.",
+  "description": "SAM3 segmentation API adapter with storage mount checks and mock segmentation response.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -25,7 +26,9 @@
   "hardware": {
     "gpu_required": true,
     "gpu_supported": true,
-    "min_vram_mb": 0,
+    "min_vram_mb": 16000,
+    "recommended_vram_mb": 24000,
+    "cpu_fallback": false,
     "min_compute_capability": "8.0"
   },
   "queue": {
@@ -43,37 +46,93 @@
       },
       {
         "type": "cache",
-        "host_subdir": "ultralytics",
-        "container_path": "/cache/ultralytics",
+        "host_subdir": "sam3",
+        "container_path": "/cache/sam3",
         "read_only": false
       },
       {
-        "type": "service",
+        "type": "service_data",
         "host_subdir": "",
         "container_path": "/data/service",
         "read_only": false
       }
     ]
   },
+  "settings_schema": [
+    {
+      "key": "SAM3_CHECKPOINT",
+      "label": "SAM3 checkpoint",
+      "type": "text",
+      "default": "",
+      "required": false,
+      "restart_required": true,
+      "model_selector": {
+        "type": "file",
+        "root_subdir": "sam3",
+        "extensions": [".pt", ".pth", ".safetensors", ".ckpt"]
+      }
+    },
+    {
+      "key": "SAM3_MODEL_ID",
+      "label": "SAM3 model id",
+      "type": "text",
+      "default": "",
+      "required": false,
+      "restart_required": true
+    },
+    {
+      "key": "SAM3_DEVICE",
+      "label": "Device",
+      "type": "select",
+      "default": "auto",
+      "options": ["auto", "cuda", "cpu"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "SAM3_MAX_UPLOAD_MB",
+      "label": "Max upload MB",
+      "type": "integer",
+      "default": "50",
+      "min": 1,
+      "max": 1024,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "SAM3_REAL_INFERENCE",
+      "label": "Enable real SAM3 inference",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true,
+      "help": "L3 keeps real inference disabled; L4a will add model-present smoke first."
+    }
+  ],
   "env": [
     {
-      "name": "SAM3_MODEL_PATH",
-      "default": "/models/sam3/sam3.pt",
+      "name": "SAM3_CHECKPOINT",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "SAM3_MODEL_ID",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "SAM3_DEVICE",
+      "default": "auto",
       "required": true
     },
     {
-      "name": "ULTRALYTICS_DEVICE",
+      "name": "SAM3_MAX_UPLOAD_MB",
+      "default": "50",
+      "required": true
+    },
+    {
+      "name": "SAM3_REAL_INFERENCE",
       "default": "0",
-      "required": true
-    },
-    {
-      "name": "SAM3_IMGSZ",
-      "default": "1024",
-      "required": true
-    },
-    {
-      "name": "SAM3_MAX_POLYGON_POINTS",
-      "default": "200",
       "required": true
     }
   ],
@@ -83,6 +142,7 @@
       "docker_compose",
       "nvidia_smi",
       "docker_gpus",
+      "vram",
       "compute_capability",
       "storage"
     ]

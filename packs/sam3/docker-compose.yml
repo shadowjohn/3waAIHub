@@ -12,4 +12,5 @@ services:
       NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     volumes:
       - "${AIHUB_MODELS_DIR:-/DATA/models}/sam3:/models/sam3"
-      - "${AIHUB_CACHE_DIR:-../../data/cache}/ultralytics:/cache/ultralytics"
+      - "${AIHUB_CACHE_DIR:-../../data/cache}/sam3:/cache/sam3"
+      - "${SERVICE_DATA_DIR:-../../data/services/sam3-main}:/data/service"

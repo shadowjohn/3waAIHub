@@ -1,84 +1,138 @@
 from __future__ import annotations
 
-import json
 import os
 import tempfile
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from ultralytics import SAM
+from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.responses import JSONResponse
 
-app = FastAPI(title="3waAIHub SAM3 Adapter")
-
-
-@lru_cache(maxsize=1)
-def model() -> SAM:
-    path = Path(os.getenv("SAM3_MODEL_PATH", "/models/sam3/sam3.pt"))
-    if not path.is_file():
-        raise HTTPException(status_code=503, detail=f"model not found: {path}")
-    return SAM(str(path))
+app = FastAPI(title="3waAIHub SAM3")
 
 
-def parse_json_list(value: str, fallback: Any) -> Any:
-    if value.strip() == "":
-        return fallback
-    try:
-        return json.loads(value)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="invalid JSON prompt") from exc
+def runtime_level() -> str:
+    return "L3-storage-mount"
+
+
+def env_enabled(value: str | None) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def configure_sam3_env() -> None:
+    model_dir = os.getenv("SAM3_MODEL_DIR", "/models/sam3")
+    cache_dir = os.getenv("SAM3_CACHE_DIR", "/cache/sam3")
+    env = {
+        "HF_HOME": os.getenv("HF_HOME", f"{model_dir}/huggingface"),
+        "TORCH_HOME": os.getenv("TORCH_HOME", f"{model_dir}/torch"),
+        "XDG_CACHE_HOME": os.getenv("XDG_CACHE_HOME", f"{cache_dir}/xdg"),
+        "HOME": os.getenv("HOME", f"{cache_dir}/home"),
+        "PYTHONUNBUFFERED": os.getenv("PYTHONUNBUFFERED", "1"),
+    }
+    os.environ.update(env)
+    for path in [
+        model_dir,
+        cache_dir,
+        os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service"),
+        env["HF_HOME"],
+        env["TORCH_HOME"],
+        env["XDG_CACHE_HOME"],
+        env["HOME"],
+    ]:
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def storage_path_status(path: str) -> dict[str, Any]:
+    target = Path(path)
+    exists = target.is_dir()
+    readable = exists and os.access(target, os.R_OK)
+    writable = False
+    error = ""
+    if exists and readable:
+        try:
+            with tempfile.NamedTemporaryFile(prefix=".3waaihub-write-", dir=target, delete=False) as handle:
+                test_path = Path(handle.name)
+            test_path.unlink(missing_ok=True)
+            writable = True
+        except OSError as exc:
+            error = str(exc)
+    elif not exists:
+        error = "directory missing"
+    else:
+        error = "directory not readable"
+
+    status: dict[str, Any] = {
+        "path": path,
+        "exists": exists,
+        "readable": readable,
+        "writable": writable,
+    }
+    if error:
+        status["error"] = error
+    return status
+
+
+def storage_status() -> tuple[dict[str, Any], list[str]]:
+    configure_sam3_env()
+    storage = {
+        "models": storage_path_status(os.getenv("SAM3_MODEL_DIR", "/models/sam3")),
+        "cache": storage_path_status(os.getenv("SAM3_CACHE_DIR", "/cache/sam3")),
+        "service_data": storage_path_status(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")),
+    }
+    errors = [
+        f"{name} {key} failed: {status['path']}"
+        for name, status in storage.items()
+        for key in ("exists", "readable", "writable")
+        if not status[key]
+    ]
+    return storage, errors
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    path = Path(os.getenv("SAM3_MODEL_PATH", "/models/sam3/sam3.pt"))
-    return {"ok": True, "service": "sam3", "ready": path.is_file(), "model": str(path)}
+    storage, errors = storage_status()
+    checkpoint = os.getenv("SAM3_CHECKPOINT", "")
+    return {
+        "ok": True,
+        "service": "sam3",
+        "ready": not errors,
+        "runtime_level": runtime_level(),
+        "real_inference": env_enabled(os.getenv("SAM3_REAL_INFERENCE")),
+        "storage": storage,
+        "gpu": {"checked": False},
+        "model": {
+            "present": bool(checkpoint),
+            "checkpoint": checkpoint,
+            "required_for_this_level": False,
+        },
+        "errors": errors,
+    }
 
 
 @app.post("/segment/image")
 async def segment_image(
     image: UploadFile = File(...),
-    points: str = Form("[]"),
-    labels: str = Form("[]"),
-    bboxes: str = Form("[]"),
-) -> dict[str, Any]:
+    prompt_type: str = Form("auto"),
+    points_json: str = Form(""),
+    boxes_json: str = Form(""),
+    real_inference: str = Form("0"),
+) -> JSONResponse:
     data = await image.read()
     if not data:
-        raise HTTPException(status_code=400, detail="image is required")
+        return JSONResponse(status_code=400, content={"ok": False, "error": "bad_request", "message": "image is required"})
+    if env_enabled(real_inference) or env_enabled(os.getenv("SAM3_REAL_INFERENCE")):
+        return JSONResponse(status_code=501, content={
+            "ok": False,
+            "error": "runtime_not_ready",
+            "message": "real SAM3 inference is not implemented in this runtime level",
+        })
 
-    parsed_points = parse_json_list(points, [])
-    parsed_labels = parse_json_list(labels, [])
-    parsed_bboxes = parse_json_list(bboxes, [])
-    if not parsed_points and not parsed_bboxes:
-        raise HTTPException(status_code=400, detail="points or bboxes are required")
-
-    args: dict[str, Any] = {
-        "imgsz": int(os.getenv("SAM3_IMGSZ", "1024")),
-        "device": os.getenv("ULTRALYTICS_DEVICE", "0"),
-        "verbose": False,
-    }
-    if parsed_points:
-        args["points"] = parsed_points
-        args["labels"] = parsed_labels or [1 for _ in parsed_points]
-    if parsed_bboxes:
-        args["bboxes"] = parsed_bboxes
-
-    with tempfile.NamedTemporaryFile(suffix=Path(image.filename or "image.jpg").suffix or ".jpg") as tmp:
-        tmp.write(data)
-        tmp.flush()
-        results = model()(tmp.name, **args)
-
-    result = results[0]
-    max_points = int(os.getenv("SAM3_MAX_POLYGON_POINTS", "200"))
-    masks = []
-    if result.masks is not None:
-        boxes = [] if result.boxes is None else result.boxes.xyxy.tolist()
-        for i, polygon in enumerate(result.masks.xy):
-            masks.append({
-                "bbox": [float(v) for v in boxes[i]] if i < len(boxes) else None,
-                "polygon": [[float(x), float(y)] for x, y in polygon[:max_points]],
-                "polygon_truncated": len(polygon) > max_points,
-            })
-
-    return {"ok": True, "masks": masks, "count": len(masks)}
+    return JSONResponse(content={
+        "ok": True,
+        "mock": True,
+        "runtime_level": runtime_level(),
+        "prompt_type": prompt_type or "auto",
+        "masks": [],
+        "boxes": [],
+        "message": "SAM3 mock segmentation",
+    })

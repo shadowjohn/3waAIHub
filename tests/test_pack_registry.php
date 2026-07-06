@@ -129,8 +129,23 @@ hub_test('catalog and required packs are readable', function (): void {
             hub_test_assert(!empty($case['real_inference']), 'YOLO real benchmark must be marked real_inference');
         }
     }
-    hub_test_assert(hub_get_pack('sam3')['manifest']['runtime_level'] === 'L1-ultralytics-sam3', 'SAM3 runtime level mismatch');
-    hub_test_assert(hub_get_pack('sam3')['manifest']['runtime_ready'] === true, 'SAM3 runtime ready mismatch');
+    $sam3 = hub_get_pack('sam3')['manifest'];
+    hub_test_assert($sam3['runtime_level'] === 'L3-storage-mount', 'SAM3 runtime level mismatch');
+    hub_test_assert(($sam3['target_level'] ?? '') === 'L5-benchmark-ready', 'SAM3 target level mismatch');
+    hub_test_assert($sam3['runtime_ready'] === true, 'SAM3 runtime ready mismatch');
+    hub_test_assert(($sam3['category'] ?? '') === 'vision', 'SAM3 category mismatch');
+    $sam3Mounts = [];
+    foreach ($sam3['storage']['mounts'] as $mount) {
+        $sam3Mounts[(string)$mount['type']] = (string)$mount['container_path'];
+    }
+    hub_test_assert(($sam3Mounts['models'] ?? '') === '/models/sam3', 'SAM3 models mount mismatch');
+    hub_test_assert(($sam3Mounts['cache'] ?? '') === '/cache/sam3', 'SAM3 cache mount mismatch');
+    hub_test_assert(($sam3Mounts['service_data'] ?? '') === '/data/service', 'SAM3 service data mount mismatch');
+    $sam3Schema = hub_get_pack_settings_schema('sam3');
+    foreach (['SAM3_CHECKPOINT', 'SAM3_MODEL_ID', 'SAM3_DEVICE', 'SAM3_MAX_UPLOAD_MB', 'SAM3_REAL_INFERENCE'] as $key) {
+        hub_test_assert(isset($sam3Schema[$key]), 'SAM3 settings_schema missing ' . $key);
+    }
+    hub_test_assert(($sam3Schema['SAM3_CHECKPOINT']['model_selector']['root_subdir'] ?? '') === 'sam3', 'SAM3_CHECKPOINT selector missing');
 
     $translateSchema = hub_get_pack_settings_schema('translate-gemma12b');
     hub_test_assert(($translateSchema['OLLAMA_MODEL']['model_selector']['type'] ?? '') === 'ollama_tag', 'OLLAMA_MODEL selector missing');

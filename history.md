@@ -1,5 +1,33 @@
 # 3waAIHub History
 
+## PhaseM-2D SAM3 L3 Storage Mount
+
+Advanced `sam3` from L1 skeleton to L3 storage-mount runtime.
+
+Implemented:
+
+- `runtime_level = L3-storage-mount`.
+- SAM3 adapter dependency import smoke.
+- SAM3 model/cache/service_data storage mounts.
+- HuggingFace and Torch cache locations under `/models/sam3`.
+- Runtime cache locations under `/cache/sam3`.
+- `/health` storage checks.
+- `/segment/image` mock segmentation JSON.
+- `real_inference=1` returns `runtime_not_ready`.
+- `storage_smoke.py`.
+- `SAM3_CHECKPOINT` model selector for `/DATA/models/sam3`.
+- Tiny demo PNG fixture.
+
+Skipped:
+
+- Checkpoint download.
+- HuggingFace model pull.
+- SAM3 real inference.
+- Mask generation.
+- Batch or video segmentation.
+- L4a model-present smoke.
+- L5 benchmark-ready promotion.
+
 ## PhaseM-2C-L5 TranslateGemma Benchmark Ready
 
 Promoted `translate-gemma12b` to L5 benchmark-ready.

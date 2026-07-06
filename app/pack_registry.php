@@ -399,6 +399,16 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'TRANSLATE_SERVICE_DATA_DIR' => $serviceDataDir,
             'OLLAMA_BASE_URL' => 'http://ollama:11434',
         ],
+        'sam3' => [
+            'SAM3_MODEL_DIR' => $modelDir,
+            'SAM3_CACHE_DIR' => $cacheDir,
+            'SAM3_SERVICE_DATA_DIR' => $serviceDataDir,
+            'HF_HOME' => $modelDir . '/huggingface',
+            'TORCH_HOME' => $modelDir . '/torch',
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $cacheDir . '/home',
+            'PYTHONUNBUFFERED' => '1',
+        ],
         default => [],
     };
 }
