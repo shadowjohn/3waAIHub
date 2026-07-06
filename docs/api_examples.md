@@ -39,12 +39,27 @@ Response:
 
 ## POST OCR
 
-Status: Runtime adapter pending / L1 mock only.
+Status: L4a model init smoke. `l5_contract` 已宣告，現在仍回 mock JSON；真 OCR inference 留到 L4b。
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"
+```
+
+Contract:
+
+- Method: `POST`
+- Content-Type: `multipart/form-data`
+- Input: `image` file, max `50 MB`
+- Required output keys: `ok`, `text`, `blocks`
+- Block keys: `text`, `bbox`, `confidence`
+- Errors: `bad_request`, `file_too_large`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image
 ```
 
 ## POST Translate

@@ -345,6 +345,7 @@ Benchmark skeleton：
 php /DATA/3waAIHub/scripts/benchmark.php --case=host_smoke
 php /DATA/3waAIHub/scripts/benchmark.php --case=pack_catalog_scan
 php /DATA/3waAIHub/scripts/benchmark.php --case=hello_api
+php /DATA/3waAIHub/scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image
 ```
 
 後台頁：
@@ -352,6 +353,7 @@ php /DATA/3waAIHub/scripts/benchmark.php --case=hello_api
 ```text
 http://localhost/3waAIHub/admin/benchmarks.php
 http://localhost/3waAIHub/admin/api_docs.php
+http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=ocr-ppocrv5
 ```
 
 API 範例文件：
@@ -426,6 +428,8 @@ http://localhost/3waAIHub/admin/packs.php
 - runtime 掛載 `${SERVICE_DATA_DIR}:/data/service`
 - `storage_smoke.py` 可在 container 內檢查三個目錄是否存在、可讀、可寫
 - `model_smoke.py` 可手動初始化 PaddleOCR，檢查模型/cache 是否落在掛載目錄，並偵測 `/root` / `/app` 可疑寫入
+- Pack manifest 已宣告 `target_level=L5-benchmark-ready` 與 `l5_contract`
+- `ocr_mock_image` benchmark 可驗 API contract required keys
 - generated compose 會加入 `gpus: all`
 
 這一版尚未做真實 OCR 推論；L4b 才處理圖片辨識與結果格式。

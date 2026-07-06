@@ -7,6 +7,7 @@ require __DIR__ . '/_layout.php';
 $db = hub_db();
 $user = hub_require_login($db);
 $services = hub_list_services($db);
+$contracts = hub_pack_api_contracts();
 $baseUrl = '../api.php';
 
 hub_admin_header('API Docs', $user);
@@ -38,6 +39,32 @@ hub_admin_header('API Docs', $user);
         <?php endforeach; ?>
     </table>
 </section>
+<?php if ($contracts): ?>
+<section class="panel">
+    <h2>Pack API Contracts</h2>
+    <?php foreach ($contracts as $packId => $item): ?>
+        <?php
+        $contract = $item['contract'];
+        $mode = (string)($item['pack']['manifest']['default_mode'] ?? $packId);
+        $method = (string)($contract['method'] ?? 'POST');
+        $endpoint = 'api.php?mode=' . $mode;
+        ?>
+        <h3><?= hub_h((string)($item['pack']['manifest']['name'] ?? $packId)) ?></h3>
+        <table>
+            <tr><th>Mode</th><td><code><?= hub_h($mode) ?></code></td></tr>
+            <tr><th>Method</th><td><code><?= hub_h($method) ?></code></td></tr>
+            <tr><th>Endpoint</th><td><code><?= hub_h($endpoint) ?></code></td></tr>
+            <tr><th>Content-Type</th><td><code><?= hub_h((string)($contract['content_type'] ?? '')) ?></code></td></tr>
+            <tr><th>Input</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['input']['fields'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
+            <tr><th>Output</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['output'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
+            <tr><th>Errors</th><td><code><?= hub_h(implode(', ', array_map('strval', $contract['errors'] ?? []))) ?></code></td></tr>
+        </table>
+        <pre>curl -X <?= hub_h($method) ?> "http://localhost/3waAIHub/<?= hub_h($endpoint) ?>" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -F "image=@sample.png"</pre>
+    <?php endforeach; ?>
+</section>
+<?php endif; ?>
 <section class="panel">
     <h2>GET hello</h2>
     <pre>curl "http://localhost/3waAIHub/api.php?mode=hello"</pre>
@@ -49,7 +76,7 @@ hub_admin_header('API Docs', $user);
 </section>
 <section class="panel">
     <h2>POST OCR</h2>
-    <p class="muted">Status: Runtime adapter pending / L1 mock only.</p>
+    <p class="muted">Status: Pack contract ready; current OCR service still returns mock JSON until real inference lands.</p>
     <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"</pre>

@@ -22,6 +22,7 @@ hub_test('catalog and required packs are readable', function (): void {
     $ocr = hub_get_pack('ocr-ppocrv5')['manifest'];
     hub_test_assert($ocr['runtime_level'] === 'L4a-model-init-smoke', 'OCR runtime level mismatch');
     hub_test_assert($ocr['runtime_ready'] === true, 'OCR runtime ready mismatch');
+    hub_test_assert(($ocr['target_level'] ?? '') === 'L5-benchmark-ready', 'OCR target level mismatch');
     hub_test_assert($ocr['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
     $ocrMounts = [];
     foreach ($ocr['storage']['mounts'] as $mount) {
@@ -30,6 +31,17 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(($ocrMounts['models'] ?? '') === '/models/paddleocr', 'OCR models mount mismatch');
     hub_test_assert(($ocrMounts['cache'] ?? '') === '/cache/paddleocr', 'OCR cache mount mismatch');
     hub_test_assert(($ocrMounts['service_data'] ?? '') === '/data/service', 'OCR service data mount mismatch');
+
+    $contract = $ocr['l5_contract'] ?? [];
+    hub_test_assert(is_array($contract), 'OCR l5_contract missing');
+    foreach (['endpoint', 'method', 'content_type', 'input', 'output', 'errors', 'limits', 'benchmark'] as $field) {
+        hub_test_assert(array_key_exists($field, $contract), 'OCR l5_contract missing ' . $field);
+    }
+    hub_test_assert(($contract['endpoint'] ?? '') === '/ocr/image', 'OCR contract endpoint mismatch');
+    hub_test_assert(($contract['method'] ?? '') === 'POST', 'OCR contract method mismatch');
+    hub_test_assert(in_array('ok', $contract['output']['required_keys'] ?? [], true), 'OCR contract output missing ok');
+    hub_test_assert(in_array('ocr_mock_image', array_column($contract['benchmark']['cases'] ?? [], 'id'), true), 'OCR benchmark case missing');
+
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L1-ollama-adapter', 'Translate runtime level mismatch');
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_ready'] === true, 'Translate runtime ready mismatch');
     hub_test_assert(hub_get_pack('yolo')['manifest']['runtime_level'] === 'L1-ultralytics-yolo', 'YOLO runtime level mismatch');

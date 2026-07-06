@@ -7,6 +7,7 @@
   "type": "api_service",
   "execution_type": "sync_api",
   "runtime_level": "L4a-model-init-smoke",
+  "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "ocr",
   "description": "GPU-ready OCR mock service with PaddleOCR model initialization smoke.",
@@ -21,6 +22,51 @@
     "methods": ["POST"],
     "timeout_sec": 60,
     "max_upload_mb": 50
+  },
+  "l5_contract": {
+    "endpoint": "/ocr/image",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {
+          "name": "image",
+          "type": "file",
+          "required": true,
+          "max_mb": 50
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "text", "blocks"],
+      "block_keys": ["text", "bbox", "confidence"]
+    },
+    "errors": [
+      "bad_request",
+      "file_too_large",
+      "runtime_not_ready",
+      "inference_failed",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 60,
+      "max_upload_mb": 50,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "ocr_mock_image",
+          "name": "OCR mock image smoke",
+          "type": "api",
+          "mode": "ocr",
+          "method": "POST",
+          "fixture": "packs/ocr-ppocrv5/demo/sample.png",
+          "expected_keys": ["ok", "text", "blocks"]
+        }
+      ]
+    }
   },
   "hardware": {
     "gpu_required": false,

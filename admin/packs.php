@@ -71,6 +71,7 @@ hub_admin_header('HubPack', $user);
                     <?php endif; ?>
                 </td>
                 <td>
+                    <a class="button" href="pack_readiness.php?pack_id=<?= urlencode($packId) ?>">Readiness</a>
                     <?php if ($pack['status'] === 'ok' && $installedKey === ''): ?>
                         <form method="post">
                             <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">

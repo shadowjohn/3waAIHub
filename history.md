@@ -727,3 +727,37 @@ Skipped:
 - HTTP model smoke endpoint.
 - real OCR inference.
 - PDF OCR.
+
+## PhasePack-L5 Benchmark Ready / Service Contract Standard
+
+Added L5 contract/readiness scaffolding without promoting OCR to L5.
+
+Implemented:
+
+- Added `target_level` and `l5_contract` to `ocr-ppocrv5`.
+- Added OCR input/output/error/limits/benchmark contract.
+- Added tiny OCR benchmark fixture at `packs/ocr-ppocrv5/demo/sample.png`.
+- Extended `scripts/benchmark.php` with `--pack` and `--service`.
+- Added l5_contract benchmark runner using existing gateway dispatch.
+- Added Pack L5 readiness helper and `admin/pack_readiness.php`.
+- Added Readiness link on HubPack page.
+- Extended API Docs to render Pack contracts.
+- Extended Benchmark admin page with Pack/Service context.
+
+Verified:
+
+- `php scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image` PASS.
+- `php scripts/benchmark.php --service=ocr-main --case=ocr_mock_image` PASS.
+- OCR readiness reports L5 contract checks while keeping real inference pending.
+- API Docs can read Pack contracts.
+- Benchmark admin can show Pack/Service context.
+- `api.php?mode=ocr` remains mock.
+- `api.php?mode=hello` remains unchanged.
+
+Skipped:
+
+- real OCR inference.
+- PaddleOCR predict.
+- model download.
+- PDF OCR.
+- TranslateGemma / SAM3 / YOLO L5.
