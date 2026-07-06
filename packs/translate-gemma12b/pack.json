@@ -6,7 +6,7 @@
   "category": "translation",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L3-storage-mount",
+  "runtime_level": "L4a-model-present-smoke",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "translate",

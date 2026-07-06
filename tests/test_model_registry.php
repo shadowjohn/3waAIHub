@@ -47,4 +47,12 @@ hub_test('model registry scans models root safely and skips symlinks', function 
         'extensions' => ['.pt'],
     ]);
     hub_test_assert(($options[0]['value'] ?? '') === 'yolo11n.pt', 'YOLO selector must expose model file relative to root_subdir');
+
+    mkdir($root . '/ollama/models/manifests/registry.ollama.ai/library/translategemma', 0775, true);
+    file_put_contents($root . '/ollama/models/manifests/registry.ollama.ai/library/translategemma/12b-it-q4_K_M', '{}');
+    $ollamaStatus = hub_model_selector_status($db, [
+        'type' => 'ollama_tag',
+        'root_subdir' => 'ollama',
+    ], 'translategemma:12b-it-q4_K_M');
+    hub_test_assert(($ollamaStatus['model_present'] ?? false) === true, 'Ollama selector must detect present model tag');
 });

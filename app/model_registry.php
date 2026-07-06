@@ -245,10 +245,13 @@ function hub_model_selector_status(PDO $db, array $selector, string $value): arr
     $type = (string)($selector['type'] ?? 'file');
     if ($type === 'ollama_tag') {
         $path = hub_models_root($db) . '/' . $rootSubdir;
+        $manifestPath = hub_ollama_model_manifest_path($path, $value);
         return [
             'label' => $rootSubdir . ' / tag: ' . $value,
             'path' => $path,
             'exists' => is_dir($path),
+            'model_present' => $manifestPath !== null && is_file($manifestPath),
+            'model_manifest_path' => $manifestPath,
             'size_bytes' => hub_model_asset_size($path),
         ];
     }
@@ -265,6 +268,32 @@ function hub_model_selector_status(PDO $db, array $selector, string $value): arr
         'exists' => $type === 'directory' ? is_dir($path) : is_file($path),
         'size_bytes' => hub_model_asset_size($path),
     ];
+}
+
+function hub_ollama_model_manifest_path(string $ollamaRoot, string $modelTag): ?string
+{
+    $modelTag = trim($modelTag);
+    if ($modelTag === '' || str_contains($modelTag, "\0")) {
+        return null;
+    }
+    [$name, $tag] = array_pad(explode(':', $modelTag, 2), 2, 'latest');
+    $name = trim($name, '/');
+    $tag = trim($tag, '/');
+    if ($name === '' || $tag === '') {
+        return null;
+    }
+    if (!str_contains($name, '/')) {
+        $name = 'library/' . $name;
+    }
+
+    try {
+        $safeName = hub_model_asset_safe_path($name);
+        $safeTag = hub_model_asset_safe_path($tag);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+
+    return rtrim($ollamaRoot, '/') . '/models/manifests/registry.ollama.ai/' . $safeName . '/' . $safeTag;
 }
 
 function hub_model_format_bytes(int|float|null $bytes): string

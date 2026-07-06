@@ -1,5 +1,27 @@
 # 3waAIHub History
 
+## PhaseM-2C-L4a TranslateGemma Ollama Model Smoke
+
+Advanced `translate-gemma12b` to L4a model-present smoke.
+
+Implemented:
+
+- `runtime_level = L4a-model-present-smoke`.
+- Added `scripts/ollama_model_pull.php` for explicit CLI model pull.
+- Added `ollama_model_pull` command worker action.
+- Added `model_smoke.py` to check Ollama `/api/tags` for `OLLAMA_MODEL`.
+- `/health` now reports model name, present status, and `model_not_present` warning.
+- Service settings can enqueue model pull through `command_jobs`.
+- Ollama tag selector can show manifest present/missing status under `/DATA/models/ollama`.
+
+Skipped:
+
+- `/api/generate`.
+- Real translation.
+- Streaming.
+- Keep warm.
+- Benchmark-ready promotion.
+
 ## PhaseP-3 Model Registry / Models Directory UI
 
 Added a read-only model registry for host-level model assets.

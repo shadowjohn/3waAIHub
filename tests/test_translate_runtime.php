@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): void {
     $base = HUB_ROOT . '/packs/translate-gemma12b/service';
-    foreach (['Dockerfile', 'requirements.txt', 'app.py', 'smoke.py', 'storage_smoke.py'] as $file) {
+    foreach (['Dockerfile', 'requirements.txt', 'app.py', 'smoke.py', 'storage_smoke.py', 'model_smoke.py'] as $file) {
         hub_test_assert(is_file($base . '/' . $file), 'Translate service missing ' . $file);
     }
 
@@ -13,8 +13,10 @@ hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): v
 
     $app = (string)file_get_contents($base . '/app.py');
     hub_test_assert(str_contains($app, '@app.post("/translate")'), 'Translate adapter must expose POST /translate');
-    hub_test_assert(str_contains($app, 'return "L3-storage-mount"'), 'Translate health must expose L3 runtime level');
+    hub_test_assert(str_contains($app, 'return "L4a-model-present-smoke"'), 'Translate health must expose L4a runtime level');
     hub_test_assert(str_contains($app, '/api/tags'), 'Translate health must check Ollama tags API');
+    hub_test_assert(str_contains($app, '"present"'), 'Translate health must report model present status');
+    hub_test_assert(str_contains($app, 'model_not_present'), 'Translate health must warn when model is missing');
     hub_test_assert(!str_contains($app, '/api/pull'), 'Translate adapter must not pull models');
     hub_test_assert(!str_contains($app, '/api/generate'), 'Translate L3 adapter must not call real generate API yet');
     hub_test_assert(str_contains($app, 'mock translation'), 'Translate adapter must keep mock translation response');
@@ -23,6 +25,7 @@ hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): v
     foreach (['fastapi', 'requests'] as $needle) {
         hub_test_assert(str_contains($smoke, $needle), 'Translate smoke.py must import ' . $needle);
     }
+    hub_test_assert(str_contains($smoke, 'L4a-model-present-smoke'), 'Translate smoke.py runtime level must match L4a');
     foreach (['/api/pull', 'ollama pull', 'download', '/api/generate'] as $needle) {
         hub_test_assert(!str_contains($smoke, $needle), 'Translate smoke.py must not pull or translate: ' . $needle);
     }
@@ -34,6 +37,29 @@ hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): v
     foreach (['/api/pull', 'ollama pull', 'download', '/api/generate'] as $needle) {
         hub_test_assert(!str_contains($storageSmoke, $needle), 'Translate storage_smoke.py must not pull or translate: ' . $needle);
     }
+
+    $modelSmoke = (string)file_get_contents($base . '/model_smoke.py');
+    foreach (['/api/tags', 'OLLAMA_MODEL', 'OLLAMA_BASE_URL'] as $needle) {
+        hub_test_assert(str_contains($modelSmoke, $needle), 'Translate model_smoke.py missing ' . $needle);
+    }
+    foreach (['/api/pull', 'ollama pull', 'download', '/api/generate'] as $needle) {
+        hub_test_assert(!str_contains($modelSmoke, $needle), 'Translate model_smoke.py must only check model presence: ' . $needle);
+    }
+});
+
+hub_test('TranslateGemma Ollama model pull CLI is explicit and allowlisted', function (): void {
+    $script = HUB_ROOT . '/scripts/ollama_model_pull.php';
+    hub_test_assert(is_file($script), 'ollama_model_pull.php must exist');
+    $text = (string)file_get_contents($script);
+    foreach (['hub_cli_only()', 'ollama pull', "HUB_LOG_DIR . '/models'", 'model_not_present_after_pull'] as $needle) {
+        hub_test_assert(str_contains($text, $needle), 'ollama_model_pull.php missing ' . $needle);
+    }
+    hub_test_assert(!str_contains($text, '/api/generate'), 'ollama_model_pull.php must not run real translation');
+    hub_test_assert(hub_is_valid_job_action('ollama_model_pull'), 'ollama_model_pull must be allowlisted');
+
+    $admin = (string)file_get_contents(HUB_ROOT . '/admin/service_settings.php');
+    hub_test_assert(str_contains($admin, "hub_enqueue_command_job(\n                \$db,\n                'ollama_model_pull'"), 'service settings must enqueue Ollama pull job');
+    hub_test_assert(!str_contains($admin, 'ollama pull'), 'service settings must not execute ollama pull directly');
 });
 
 hub_test('TranslateGemma service instance generates Ollama sidecar compose and storage env', function (): void {

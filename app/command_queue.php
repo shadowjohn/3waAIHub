@@ -17,6 +17,7 @@ function hub_allowed_job_actions(): array
         'permissions_fix',
         'docker_prune_check',
         'docker_builder_prune',
+        'ollama_model_pull',
     ];
 }
 

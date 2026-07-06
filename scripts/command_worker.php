@@ -66,9 +66,37 @@ function hub_execute_command_job(PDO $db, array $job): array
         'permissions_fix' => hub_run_command(['bash', HUB_ROOT . '/scripts/fix_permissions.sh'], 60),
         'docker_prune_check' => hub_run_command(['docker', 'system', 'df'], 30),
         'docker_builder_prune' => hub_run_command(['docker', 'builder', 'prune', '-af'], 900),
+        'ollama_model_pull' => hub_run_ollama_model_pull_job($db, $service, $job),
         'benchmark_run' => ['exit_code' => 4, 'stdout' => '', 'stderr' => 'benchmark_run is not implemented in PhaseB local hardening.'],
         default => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Unhandled action.'],
     };
+}
+
+function hub_run_ollama_model_pull_job(PDO $db, ?array $service, array $job): array
+{
+    hub_job_progress($db, $job, 'checking_service', 5, 'Checking TranslateGemma service.');
+    if (!$service) {
+        return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service id is required.'];
+    }
+    if ((string)($service['pack_id'] ?? '') !== 'translate-gemma12b') {
+        return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'pack_not_supported'];
+    }
+
+    $args = json_decode((string)($job['args_json'] ?? '{}'), true);
+    $model = trim((string)($args['model'] ?? ''));
+    $command = ['php', HUB_ROOT . '/scripts/ollama_model_pull.php', '--service=' . (string)$service['service_key']];
+    if ($model !== '') {
+        $command[] = '--model=' . $model;
+    }
+
+    hub_job_progress($db, $job, 'checking_ollama', 10, 'Checking Ollama container.');
+    hub_job_progress($db, $job, 'pulling_model', 20, 'Pulling Ollama model.');
+    $result = hub_run_service_command($db, $job, $command, 14400, [], 'pulling_model', 20, 85);
+    if ((int)$result['exit_code'] === 0) {
+        hub_job_progress($db, $job, 'verifying_model', 90, 'Ollama model present.');
+    }
+
+    return $result;
 }
 
 function hub_run_env_probe_job(PDO $db): array

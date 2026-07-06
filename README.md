@@ -441,18 +441,33 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### translate-gemma12b Runtime Level
 
-`translate-gemma12b` 目前是 L3 `storage-mount` adapter：
+`translate-gemma12b` 目前是 L4a `model-present-smoke` adapter：
 
 - generated compose 拆成 `ollama` sidecar 與 `translator-api`
 - Ollama 模型主倉掛載 `${AIHUB_MODELS_DIR}/ollama:/root/.ollama`
 - adapter 掛載 `${AIHUB_CACHE_DIR}/translate:/cache/translate`
 - adapter 掛載 `${SERVICE_DATA_DIR}:/data/service`
 - Docker build 階段執行 `python3 smoke.py`，只驗證 `fastapi` / `requests` import
-- `GET /health` 只檢查 Ollama `/api/tags` 與 adapter storage 狀態
+- `scripts/ollama_model_pull.php` 可手動拉取 service 設定的 Ollama model
+- `model_smoke.py` 可在 `translator-api` container 內檢查 `OLLAMA_MODEL` 是否存在
+- `GET /health` 檢查 Ollama `/api/tags`、model present 與 adapter storage 狀態
 - `POST /translate` 預設回 mock translation JSON
 - `real_inference=1` 或 `TRANSLATE_REAL_INFERENCE=1` 目前會回 `runtime_not_ready`
 
-本階段不 pull `translategemma:12b-it-q4_K_M`、不初始化模型、也不做真翻譯。
+本階段只做 model pull / present smoke，不接 `/api/generate`，也不做真翻譯。
+
+手動拉模型：
+
+```bash
+php scripts/ollama_model_pull.php --service=translate-main
+php scripts/ollama_model_pull.php --service=translate-main --model=translategemma:12b-it-q4_K_M
+```
+
+模型 smoke：
+
+```bash
+docker compose -f data/services/translate-main/docker-compose.generated.yml exec translator-api python3 /app/model_smoke.py
+```
 
 測試：
 
@@ -569,7 +584,7 @@ AIHUB_LOGS_DIR=/DATA/3waAIHub/data/logs
 Service settings 支援 Pack 宣告的 model selector。第一版已支援：
 
 - `yolo`：`YOLO_MODEL` 可從 `/DATA/models/yolo/*.pt` / `*.onnx` 選用，仍保留文字輸入。
-- `translate-gemma12b`：`OLLAMA_MODEL` 維持 Ollama tag 文字設定，並顯示 `/DATA/models/ollama` 狀態。
+- `translate-gemma12b`：`OLLAMA_MODEL` 維持 Ollama tag 文字設定，並顯示 `/DATA/models/ollama` 與 Ollama manifest present/missing 狀態。
 
 第一版不做模型 upload / download / delete / move，也不提供任意 host path picker。
 

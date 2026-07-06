@@ -21,7 +21,7 @@ class TranslateRequest(BaseModel):
 
 
 def runtime_level() -> str:
-    return "L3-storage-mount"
+    return "L4a-model-present-smoke"
 
 
 def env_enabled(value: str | None) -> bool:
@@ -30,6 +30,10 @@ def env_enabled(value: str | None) -> bool:
 
 def ollama_base_url() -> str:
     return os.getenv("OLLAMA_BASE_URL", "http://ollama:11434").rstrip("/")
+
+
+def ollama_model_name() -> str:
+    return os.getenv("OLLAMA_MODEL", "translategemma:12b-it-q4_K_M").strip()
 
 
 def ensure_runtime_dirs() -> None:
@@ -91,11 +95,16 @@ def storage_status() -> tuple[dict[str, Any], list[str]]:
     return storage, errors
 
 
-def ollama_status() -> tuple[dict[str, Any], list[str]]:
+def ollama_status() -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     base_url = ollama_base_url()
     status: dict[str, Any] = {
         "base_url": base_url,
         "available": False,
+    }
+    model = {
+        "name": ollama_model_name(),
+        "present": False,
+        "source": "ollama_tags",
     }
     try:
         response = requests.get(f"{base_url}/api/tags", timeout=2)
@@ -105,26 +114,38 @@ def ollama_status() -> tuple[dict[str, Any], list[str]]:
             payload = response.json()
             models = payload.get("models", []) if isinstance(payload, dict) else []
             status["model_count"] = len(models) if isinstance(models, list) else 0
+            if isinstance(models, list):
+                names = [
+                    str(item.get("name", ""))
+                    for item in models
+                    if isinstance(item, dict)
+                ]
+                model["present"] = model["name"] in names
     except requests.RequestException as exc:
         status["error"] = str(exc).splitlines()[0][:240]
 
-    return status, [] if status["available"] else ["ollama unavailable"]
+    errors = [] if status["available"] else ["ollama unavailable"]
+    return status, model, errors
 
 
 @app.get("/health")
 def health() -> dict[str, Any]:
     storage, storage_errors = storage_status()
-    ollama, ollama_errors = ollama_status()
+    ollama, model, ollama_errors = ollama_status()
     errors = storage_errors + ollama_errors
+    warnings = []
+    if ollama.get("available") and not model["present"]:
+        warnings.append("model_not_present")
     return {
         "ok": True,
         "service": "translate-gemma12b",
-        "ready": not errors,
+        "ready": not errors and model["present"],
         "runtime_level": runtime_level(),
-        "model": os.getenv("OLLAMA_MODEL", "translategemma:12b-it-q4_K_M"),
+        "model": model,
         "ollama": ollama,
         "storage": storage,
         "errors": errors,
+        "warnings": warnings,
     }
 
 
@@ -156,5 +177,5 @@ def translate(request: TranslateRequest) -> Any:
         "source_lang": request.source_lang,
         "target_lang": request.target_lang,
         "text": "mock translation",
-        "model": os.getenv("OLLAMA_MODEL", "translategemma:12b-it-q4_K_M"),
+        "model": ollama_model_name(),
     }

@@ -21,20 +21,34 @@ $settings = hub_ensure_service_settings($db, $service);
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     hub_check_csrf();
     try {
-        $values = [];
-        foreach ($schema as $key => $item) {
-            if (($item['type'] ?? 'text') === 'boolean') {
-                $values[$key] = isset($_POST[$key]) ? '1' : '0';
-            } else {
-                $values[$key] = (string)($_POST[$key] ?? '');
+        $action = (string)($_POST['action'] ?? 'save_settings');
+        if ($action === 'ollama_model_pull' && (string)($service['pack_id'] ?? '') === 'translate-gemma12b') {
+            $model = (string)($settings['OLLAMA_MODEL']['value'] ?? $schema['OLLAMA_MODEL']['default'] ?? '');
+            $jobId = hub_enqueue_command_job(
+                $db,
+                'ollama_model_pull',
+                (int)$service['id'],
+                ['model' => $model],
+                (int)$user['id'],
+                $_SERVER['REMOTE_ADDR'] ?? null
+            );
+            $message = '已排入 Ollama model pull 工作 #' . $jobId . '。';
+        } else {
+            $values = [];
+            foreach ($schema as $key => $item) {
+                if (($item['type'] ?? 'text') === 'boolean') {
+                    $values[$key] = isset($_POST[$key]) ? '1' : '0';
+                } else {
+                    $values[$key] = (string)($_POST[$key] ?? '');
+                }
             }
+            $result = hub_update_service_settings($db, (int)$service['id'], $values);
+            $service = hub_get_service($db, (int)$service['id']) ?: $service;
+            $settings = hub_ensure_service_settings($db, $service);
+            $message = !empty($result['changed'])
+                ? '設定已儲存，.env 已重新產生。' . (!empty($result['restart_required']) ? ' 此服務需要 Restart 才會套用新設定。' : '')
+                : '設定未變更。';
         }
-        $result = hub_update_service_settings($db, (int)$service['id'], $values);
-        $service = hub_get_service($db, (int)$service['id']) ?: $service;
-        $settings = hub_ensure_service_settings($db, $service);
-        $message = !empty($result['changed'])
-            ? '設定已儲存，.env 已重新產生。' . (!empty($result['restart_required']) ? ' 此服務需要 Restart 才會套用新設定。' : '')
-            : '設定未變更。';
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -74,6 +88,19 @@ hub_admin_header('Service Settings', $user);
         </form>
     <?php endif; ?>
 </section>
+<?php if ((string)($service['pack_id'] ?? '') === 'translate-gemma12b'): ?>
+<section class="panel">
+    <h2>Ollama Model</h2>
+    <p class="muted">Web UI 只排背景工作；實際 pull 由 command worker 執行。</p>
+    <form method="post">
+        <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
+        <input type="hidden" name="service_id" value="<?= (int)$service['id'] ?>">
+        <input type="hidden" name="action" value="ollama_model_pull">
+        <button type="submit">Pull model</button>
+        <a class="button" href="services.php">查看工作進度</a>
+    </form>
+</section>
+<?php endif; ?>
 <section class="panel">
     <h2>Generated Files</h2>
     <table>
@@ -116,6 +143,10 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $va
                 Model Root: <code><?= hub_h(hub_models_root($db)) ?></code><br>
                 <?= hub_h((string)$status['label']) ?>:
                 <span class="<?= $status['exists'] ? 'ok' : 'bad' ?>"><?= $status['exists'] ? 'exists' : 'missing' ?></span>
+                <?php if (array_key_exists('model_present', $status)): ?>
+                    <br>Model tag:
+                    <span class="<?= !empty($status['model_present']) ? 'ok' : 'bad' ?>"><?= !empty($status['model_present']) ? 'present' : 'missing' ?></span>
+                <?php endif; ?>
                 <?= $status['size_bytes'] !== null ? ' / ' . hub_h(hub_model_format_bytes((int)$status['size_bytes'])) : '' ?>
             </p>
         <?php else: ?>

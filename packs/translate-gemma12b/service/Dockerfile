@@ -11,7 +11,7 @@ RUN pip install --upgrade pip setuptools wheel \
     && pip install -r requirements.txt \
     && pip check
 
-COPY smoke.py storage_smoke.py app.py ./
+COPY smoke.py storage_smoke.py model_smoke.py app.py ./
 RUN python3 smoke.py
 
 EXPOSE 8000
