@@ -10,7 +10,7 @@ app = FastAPI(title="3waAIHub PP-OCRv5 Mock")
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"ok": True, "service": "ocr-ppocrv5", "ready": True}
+    return {"ok": True, "service": "ocr-ppocrv5", "ready": True, "runtime_level": "L2-deps-import"}
 
 
 @app.post("/ocr/image")

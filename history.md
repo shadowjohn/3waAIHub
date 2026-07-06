@@ -627,3 +627,36 @@ Skipped:
 - real PaddleOCR.
 - TranslateGemma adapter changes.
 - multi-host config sync.
+
+## PhaseM-2A-L2 PP-OCRv5 dependency/import smoke
+
+Advanced `ocr-ppocrv5` from L1 `api_mock` to L2 `deps_import`.
+
+Implemented:
+
+- Set `ocr-ppocrv5` runtime level to `L2-deps-import`.
+- Added `paddleocr` to the OCR service requirements.
+- Added Docker build-time `python3 smoke.py` verification.
+- Updated `smoke.py` to import `paddleocr` and `fastapi` only.
+- Added `/health` `runtime_level=L2-deps-import`.
+- Kept `/ocr/image` as mock OCR JSON.
+
+Verified:
+
+- Docker build PASS.
+- `smoke.py` import paddleocr OK.
+- `ocr-main` restart PASS.
+- direct `/health` PASS.
+- direct `/ocr/image` PASS.
+- `api.php?mode=ocr` PASS.
+- `token_api_smoke.php` PASS.
+- `run_tests.php` PASS.
+- `self_check.php` PASS.
+
+Skipped:
+
+- PaddleOCR model initialization.
+- PaddleOCR model download.
+- real OCR inference.
+- PDF OCR.
+- TranslateGemma changes.

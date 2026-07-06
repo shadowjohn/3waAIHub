@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` GPU-ready L1 mock API，以及 `translate-gemma12b` Ollama L1 adapter。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` GPU-ready L2 deps-import mock API，以及 `translate-gemma12b` Ollama L1 adapter。
 
 ## 功能
 
@@ -411,19 +411,19 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### ocr-ppocrv5 Runtime Level
 
-`ocr-ppocrv5` 目前停在 L1 `gpu_api_mock`：
+`ocr-ppocrv5` 目前停在 L2 `deps_import`：
 
 - Docker image 可 build
 - container 可啟動
-- `GET /health` 回 ok
+- `GET /health` 回 ok，並帶 `runtime_level=L2-deps-import`
 - `POST /ocr/image` 支援圖片上傳並回 mock OCR JSON
 - `api.php?mode=ocr` 可透過 gateway proxy 到 service
 - image 使用 NVIDIA CUDA 12.9 runtime base
-- Docker build 階段只安裝 FastAPI runtime 並執行 `pip check`
-- `smoke.py` 留給 container runtime 檢查 mock API runtime env
+- Docker build 階段安裝 FastAPI runtime、PaddleOCR dependency，並執行 `pip check`
+- Docker build 階段執行 `python3 smoke.py`，只驗證 `paddleocr` / `fastapi` import 成功
 - generated compose 會加入 `gpus: all`
 
-這一版尚未安裝 PaddleOCR、尚未下載模型、尚未做真實 OCR 推論；L2 會改用可快取的 PaddleOCR dependency/base image。
+這一版尚未下載模型、尚未初始化 PaddleOCR model、尚未做真實 OCR 推論；`/ocr/image` 仍維持 mock JSON。
 
 ### translate-gemma12b Runtime Level
 

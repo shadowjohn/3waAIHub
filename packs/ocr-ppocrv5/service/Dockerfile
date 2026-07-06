@@ -10,6 +10,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libglib2.0-0 \
         libgl1 \
+        libgomp1 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
         python3 \
         python3-pip \
         python3-venv \
@@ -21,6 +25,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel \
     && python3 -m pip check
 
 COPY smoke.py .
+RUN python3 smoke.py
 
 COPY app.py .
 
