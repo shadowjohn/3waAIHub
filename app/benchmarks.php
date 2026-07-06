@@ -66,16 +66,20 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     $mode = (string)($case['mode'] ?? $service['mode']);
     hub_set_service_enabled($db, $mode, true);
 
+    $bodyJson = $case['body_json'] ?? null;
+    $jsonBody = is_array($bodyJson) ? json_encode($bodyJson, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) : '';
     $fixture = HUB_ROOT . '/' . ltrim((string)($case['fixture'] ?? ''), '/');
-    if (!is_file($fixture)) {
+    $hasFixture = trim((string)($case['fixture'] ?? '')) !== '';
+    if ($hasFixture && !is_file($fixture)) {
         throw new RuntimeException('benchmark fixture missing.');
     }
 
     [$oldServer, $oldFiles, $oldPost] = [$_SERVER, $_FILES, $_POST];
     $_SERVER['REQUEST_METHOD'] = strtoupper((string)($case['method'] ?? $contract['method'] ?? 'POST'));
     $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
-    $_SERVER['CONTENT_LENGTH'] = (string)filesize($fixture);
-    $_FILES = [
+    $_SERVER['CONTENT_TYPE'] = (string)($case['content_type'] ?? $contract['content_type'] ?? '');
+    $_SERVER['CONTENT_LENGTH'] = $jsonBody !== '' ? (string)strlen($jsonBody) : ($hasFixture ? (string)filesize($fixture) : '0');
+    $_FILES = $hasFixture ? [
         'image' => [
             'name' => basename($fixture),
             'type' => 'image/png',
@@ -83,15 +87,17 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
             'error' => UPLOAD_ERR_OK,
             'size' => filesize($fixture),
         ],
-    ];
+    ] : [];
     $realInference = !empty($case['real_inference']);
-    $_POST = $realInference ? ['real_inference' => '1'] : [];
+    $_POST = $hasFixture && $realInference ? ['real_inference' => '1'] : [];
 
     try {
         $response = hub_gateway_dispatch(
             $db,
             $mode,
-            $realInference ? null : static fn (): array => hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest']))
+            $realInference
+                ? ($jsonBody !== '' ? static fn (array $service, int $timeoutSec): array => hub_benchmark_proxy_json($service, $timeoutSec, $jsonBody) : null)
+                : static fn (): array => hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest'], is_array($bodyJson) ? $bodyJson : []))
         );
     } finally {
         $_SERVER = $oldServer;
@@ -111,7 +117,29 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     $blockCount = is_array($payload['blocks'] ?? null) ? count($payload['blocks']) : 0;
     $minDetections = (int)($case['expected_min_detections'] ?? 0);
     $detectionCount = is_array($payload['detections'] ?? null) ? count($payload['detections']) : 0;
-    if ((int)$response['status'] !== 200 || $missing !== [] || $blockCount < $minBlocks || $detectionCount < $minDetections) {
+    $contractFailed = (int)$response['status'] !== 200 || $missing !== [] || $blockCount < $minBlocks || $detectionCount < $minDetections;
+    if (array_key_exists('expected_mock', $case) && is_array($payload) && (bool)($payload['mock'] ?? null) !== (bool)$case['expected_mock']) {
+        $contractFailed = true;
+    }
+    if (!empty($case['expected_text_non_empty']) && trim((string)($payload['text'] ?? '')) === '') {
+        $contractFailed = true;
+    }
+    if (!empty($case['expected_text_not_equal_input']) && trim((string)($payload['text'] ?? '')) === trim((string)($bodyJson['text'] ?? ''))) {
+        $contractFailed = true;
+    }
+    if (!empty($case['expected_cjk']) && !preg_match('/[\x{4E00}-\x{9FFF}]/u', (string)($payload['text'] ?? ''))) {
+        $contractFailed = true;
+    }
+    if (isset($case['expected_model']) && (string)($payload['model'] ?? '') !== (string)$case['expected_model']) {
+        $contractFailed = true;
+    }
+    if (isset($case['expected_target_lang']) && (string)($payload['target_lang'] ?? '') !== (string)$case['expected_target_lang']) {
+        $contractFailed = true;
+    }
+    if (isset($payload['elapsed_ms']) && (int)$payload['elapsed_ms'] < 0) {
+        $contractFailed = true;
+    }
+    if ($contractFailed) {
         throw new RuntimeException('benchmark contract check failed.');
     }
 
@@ -125,12 +153,51 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         'real_inference' => $realInference,
         'block_count' => $blockCount,
         'detection_count' => $detectionCount,
+        'mock' => is_array($payload) ? ($payload['mock'] ?? null) : null,
+        'text_length' => is_array($payload) ? strlen((string)($payload['text'] ?? '')) : 0,
         'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
         'fixture' => (string)($case['fixture'] ?? ''),
     ];
 }
 
-function hub_benchmark_mock_payload(array $manifest): array
+function hub_benchmark_proxy_json(array $service, int $timeoutSec, string $jsonBody): array
+{
+    $ch = curl_init((string)$service['internal_url']);
+    if ($ch === false) {
+        return hub_gateway_json(502, ['ok' => false, 'error' => 'curl unavailable']);
+    }
+
+    curl_setopt_array($ch, [
+        CURLOPT_CUSTOMREQUEST => 'POST',
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER => true,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_POSTFIELDS => $jsonBody,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_TIMEOUT => max(1, $timeoutSec),
+    ]);
+
+    $raw = curl_exec($ch);
+    if ($raw === false) {
+        $errno = curl_errno($ch);
+        curl_close($ch);
+        return match ($errno) {
+            CURLE_OPERATION_TIMEDOUT => hub_gateway_error(504, 'gateway_timeout', 'service gateway timeout'),
+            CURLE_COULDNT_CONNECT => hub_gateway_error(503, 'service_unavailable', 'service is unavailable'),
+            default => hub_gateway_error(502, 'proxy_error', 'service proxy error'),
+        };
+    }
+
+    $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 502;
+    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE) ?: 0;
+    $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: 'application/json';
+    $body = substr($raw, $headerSize);
+    curl_close($ch);
+
+    return ['status' => $status, 'headers' => ['Content-Type: ' . $contentType], 'body' => $body];
+}
+
+function hub_benchmark_mock_payload(array $manifest, array $input = []): array
 {
     $runtimeLevel = (string)($manifest['runtime_level'] ?? '');
     if (($manifest['id'] ?? '') === 'yolo') {
@@ -139,6 +206,18 @@ function hub_benchmark_mock_payload(array $manifest): array
             'mock' => true,
             'runtime_level' => $runtimeLevel,
             'detections' => [],
+        ];
+    }
+    if (($manifest['id'] ?? '') === 'translate-gemma12b') {
+        return [
+            'ok' => true,
+            'mock' => true,
+            'runtime_level' => $runtimeLevel,
+            'model' => 'translategemma:12b-it-q4_K_M',
+            'source_lang' => (string)($input['source_lang'] ?? 'auto'),
+            'target_lang' => (string)($input['target_lang'] ?? 'zh-TW'),
+            'text' => 'mock translation',
+            'elapsed_ms' => 0,
         ];
     }
 

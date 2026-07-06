@@ -22,7 +22,7 @@ class TranslateRequest(BaseModel):
 
 
 def runtime_level() -> str:
-    return "L4b-real-translation"
+    return "L5-benchmark-ready"
 
 
 def env_enabled(value: str | None) -> bool:
@@ -269,4 +269,5 @@ def translate(request: TranslateRequest) -> Any:
         "target_lang": request.target_lang,
         "text": "mock translation",
         "model": ollama_model_name(),
+        "elapsed_ms": 0,
     }

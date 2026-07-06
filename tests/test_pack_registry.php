@@ -52,8 +52,32 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(in_array('real_inference', array_column($inputFields, 'name'), true), 'OCR contract must document real_inference form field');
 
     $translate = hub_get_pack('translate-gemma12b')['manifest'];
-    hub_test_assert($translate['runtime_level'] === 'L4b-real-translation', 'Translate runtime level mismatch');
+    hub_test_assert($translate['runtime_level'] === 'L5-benchmark-ready', 'Translate runtime level mismatch');
     hub_test_assert($translate['runtime_ready'] === true, 'Translate runtime ready mismatch');
+    hub_test_assert(($translate['target_level'] ?? '') === 'L5-benchmark-ready', 'Translate target level mismatch');
+    $translateContract = $translate['l5_contract'] ?? [];
+    hub_test_assert(is_array($translateContract), 'Translate l5_contract missing');
+    foreach (['endpoint', 'method', 'content_type', 'input', 'output', 'errors', 'limits', 'benchmark'] as $field) {
+        hub_test_assert(array_key_exists($field, $translateContract), 'Translate l5_contract missing ' . $field);
+    }
+    hub_test_assert(($translateContract['endpoint'] ?? '') === '/translate', 'Translate contract endpoint mismatch');
+    hub_test_assert(($translateContract['content_type'] ?? '') === 'application/json', 'Translate contract content-type mismatch');
+    foreach (['ok', 'mock', 'runtime_level', 'model', 'source_lang', 'target_lang', 'text', 'elapsed_ms'] as $key) {
+        hub_test_assert(in_array($key, $translateContract['output']['required_keys'] ?? [], true), 'Translate contract output missing ' . $key);
+    }
+    foreach (['input_too_long', 'ollama_timeout', 'model_not_present'] as $errorCode) {
+        hub_test_assert(in_array($errorCode, $translateContract['errors'] ?? [], true), 'Translate contract errors missing ' . $errorCode);
+    }
+    $translateBenchmarkCases = $translateContract['benchmark']['cases'] ?? [];
+    hub_test_assert(in_array('translate_mock_text', array_column($translateBenchmarkCases, 'id'), true), 'Translate mock benchmark case missing');
+    hub_test_assert(in_array('translate_real_text', array_column($translateBenchmarkCases, 'id'), true), 'Translate real benchmark case missing');
+    foreach ($translateBenchmarkCases as $case) {
+        if (($case['id'] ?? '') === 'translate_real_text') {
+            hub_test_assert(!empty($case['real_inference']), 'Translate real benchmark must be marked real_inference');
+            hub_test_assert(!isset($case['expected_text']), 'Translate real benchmark must not assert exact output text');
+            hub_test_assert(!empty($case['expected_cjk']), 'Translate real benchmark must validate CJK output');
+        }
+    }
     $translateMounts = [];
     foreach ($translate['storage']['mounts'] as $mount) {
         $translateMounts[(string)$mount['type']] = [

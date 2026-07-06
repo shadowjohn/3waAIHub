@@ -48,20 +48,35 @@ hub_admin_header('API Docs', $user);
         $mode = (string)($item['pack']['manifest']['default_mode'] ?? $packId);
         $method = (string)($contract['method'] ?? 'POST');
         $endpoint = 'api.php?mode=' . $mode;
+        $contentType = (string)($contract['content_type'] ?? '');
+        $jsonExample = [];
+        foreach (($contract['benchmark']['cases'] ?? []) as $case) {
+            if (is_array($case) && is_array($case['body_json'] ?? null) && empty($case['real_inference'])) {
+                $jsonExample = $case['body_json'];
+                break;
+            }
+        }
         ?>
         <h3><?= hub_h((string)($item['pack']['manifest']['name'] ?? $packId)) ?></h3>
         <table>
             <tr><th>Mode</th><td><code><?= hub_h($mode) ?></code></td></tr>
             <tr><th>Method</th><td><code><?= hub_h($method) ?></code></td></tr>
             <tr><th>Endpoint</th><td><code><?= hub_h($endpoint) ?></code></td></tr>
-            <tr><th>Content-Type</th><td><code><?= hub_h((string)($contract['content_type'] ?? '')) ?></code></td></tr>
+            <tr><th>Content-Type</th><td><code><?= hub_h($contentType) ?></code></td></tr>
             <tr><th>Input</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['input']['fields'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
             <tr><th>Output</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['output'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
             <tr><th>Errors</th><td><code><?= hub_h(implode(', ', array_map('strval', $contract['errors'] ?? []))) ?></code></td></tr>
         </table>
+        <?php if ($contentType === 'application/json'): ?>
+        <pre>curl -X <?= hub_h($method) ?> "http://localhost/3waAIHub/<?= hub_h($endpoint) ?>" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '<?= hub_h(json_encode($jsonExample, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>'</pre>
+        <?php else: ?>
         <pre>curl -X <?= hub_h($method) ?> "http://localhost/3waAIHub/<?= hub_h($endpoint) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"</pre>
+        <?php endif; ?>
     <?php endforeach; ?>
 </section>
 <?php endif; ?>
@@ -89,7 +104,8 @@ hub_admin_header('API Docs', $user);
 </section>
 <section class="panel">
     <h2>POST Translate</h2>
-    <p class="muted">Status: Runtime adapter pending.</p>
+    <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code>.</p>
+    <h3>Mock mode</h3>
     <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \
@@ -97,6 +113,16 @@ hub_admin_header('API Docs', $user);
     "source_lang": "en",
     "target_lang": "zh-TW",
     "text": "That was a wonderful time."
+  }'</pre>
+    <h3>Real inference mode</h3>
+    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "source_lang": "en",
+    "target_lang": "zh-TW",
+    "text": "That was a wonderful time.",
+    "real_inference": 1
   }'</pre>
 </section>
 <section class="panel">

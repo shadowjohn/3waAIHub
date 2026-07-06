@@ -6,7 +6,7 @@
   "category": "translation",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L4b-real-translation",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "translate",
@@ -22,6 +22,98 @@
     "methods": ["POST"],
     "timeout_sec": 180,
     "max_upload_mb": 2
+  },
+  "l5_contract": {
+    "endpoint": "/translate",
+    "method": "POST",
+    "content_type": "application/json",
+    "input": {
+      "fields": [
+        {
+          "name": "source_lang",
+          "type": "string",
+          "required": false,
+          "default": "auto"
+        },
+        {
+          "name": "target_lang",
+          "type": "string",
+          "required": true,
+          "default": "zh-TW"
+        },
+        {
+          "name": "text",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "real_inference",
+          "type": "boolean",
+          "required": false,
+          "default": false
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mock", "runtime_level", "model", "source_lang", "target_lang", "text", "elapsed_ms"]
+    },
+    "errors": [
+      "bad_request",
+      "input_too_long",
+      "ollama_unavailable",
+      "model_not_present",
+      "ollama_timeout",
+      "ollama_bad_response",
+      "translation_failed"
+    ],
+    "limits": {
+      "max_input_chars": "MAX_INPUT_CHARS",
+      "default_timeout_seconds": 180,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "translate_mock_text",
+          "name": "TranslateGemma mock text smoke",
+          "type": "api",
+          "mode": "translate",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "source_lang": "en",
+            "target_lang": "zh-TW",
+            "text": "That was a wonderful time."
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "source_lang", "target_lang", "text", "elapsed_ms"],
+          "expected_mock": true,
+          "expected_text_non_empty": true
+        },
+        {
+          "id": "translate_real_text",
+          "name": "TranslateGemma real text inference smoke",
+          "type": "api",
+          "mode": "translate",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "source_lang": "en",
+            "target_lang": "zh-TW",
+            "text": "That was a wonderful time.",
+            "real_inference": 1
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "source_lang", "target_lang", "text", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_text_non_empty": true,
+          "expected_text_not_equal_input": true,
+          "expected_cjk": true,
+          "expected_model": "translategemma:12b-it-q4_K_M",
+          "expected_target_lang": "zh-TW",
+          "real_inference": true
+        }
+      ]
+    }
   },
   "hardware": {
     "gpu_required": true,

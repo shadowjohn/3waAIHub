@@ -1,5 +1,29 @@
 # 3waAIHub History
 
+## PhaseM-2C-L5 TranslateGemma Benchmark Ready
+
+Promoted `translate-gemma12b` to L5 benchmark-ready.
+
+Implemented:
+
+- `runtime_level = L5-benchmark-ready`.
+- Added TranslateGemma `l5_contract`.
+- Added `translate_mock_text` benchmark case.
+- Added `translate_real_text` benchmark case.
+- Extended L5 benchmark runner to support JSON request bodies.
+- API docs now show TranslateGemma mock and real inference curl examples.
+- Benchmark page now lists TranslateGemma benchmark commands.
+- Mock translation response now includes `elapsed_ms`.
+
+Skipped:
+
+- Streaming.
+- Chat / multi-turn translation.
+- Batch translation.
+- File translation.
+- Glossary / termbase.
+- Keep warm UI.
+
 ## PhaseM-2C-L4b TranslateGemma Real Translation
 
 Advanced `translate-gemma12b` to L4b real translation.

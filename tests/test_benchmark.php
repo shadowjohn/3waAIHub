@@ -69,3 +69,41 @@ hub_test('L5 YOLO contract benchmark records mock and real cases', function (): 
     hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'YOLO readiness must show promoted L5');
     hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'YOLO readiness must be fully green after real benchmark pass');
 });
+
+hub_test('L5 TranslateGemma contract benchmark records mock and real cases', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'translate-gemma12b', [
+        'service_key' => 'translate-main',
+        'name' => 'TranslateGemma Main',
+        'mode' => 'translate',
+        'port_mode' => 'manual',
+        'local_port' => 18102,
+        'environment' => 'production',
+        'idempotent' => true,
+    ]);
+
+    $contract = hub_pack_l5_contract(hub_get_pack('translate-gemma12b')['manifest']);
+    hub_test_assert(hub_l5_benchmark_case($contract, 'translate_mock_text') !== null, 'translate_mock_text case missing');
+    $realCase = hub_l5_benchmark_case($contract, 'translate_real_text');
+    hub_test_assert($realCase !== null, 'translate_real_text case missing');
+    hub_test_assert(!isset($realCase['expected_text']), 'translate_real_text must not assert exact text');
+    hub_test_assert(!empty($realCase['expected_cjk']), 'translate_real_text must validate CJK output');
+
+    $readiness = hub_pack_l5_readiness($db, 'translate-gemma12b');
+    hub_test_assert($readiness['checks']['has_l5_contract'] === true, 'Translate readiness must see l5_contract');
+    hub_test_assert($readiness['checks']['has_benchmark_cases'] === true, 'Translate readiness must see benchmark cases');
+    hub_test_assert($readiness['checks']['l4b_real_inference_complete'] === true, 'Translate readiness must see L5 runtime level');
+    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === false, 'Translate real benchmark must start pending');
+
+    $mock = hub_run_benchmark_case($db, 'translate_mock_text', 'translate-gemma12b');
+    hub_test_assert($mock['status'] === 'pass', 'translate_mock_text did not pass');
+    hub_test_assert(($mock['result']['expected_keys_pass'] ?? false) === true, 'Translate mock expected keys check failed');
+    hub_test_assert(($mock['result']['mock'] ?? null) === true, 'Translate mock benchmark must stay mock');
+
+    $service = hub_get_service_by_key($db, 'translate-main');
+    hub_save_benchmark_run($db, 'translate_real_text', (int)$service['id'], 'translate', 'pass', 123, ['ok' => true, 'mock' => false, 'text' => '美好的時光'], null);
+    $readiness = hub_pack_l5_readiness($db, 'translate-gemma12b');
+    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === true, 'Translate real benchmark pass must update readiness');
+    hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'Translate readiness must show promoted L5');
+    hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'Translate readiness must be fully green after real benchmark pass');
+});

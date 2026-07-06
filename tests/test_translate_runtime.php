@@ -13,7 +13,7 @@ hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): v
 
     $app = (string)file_get_contents($base . '/app.py');
     hub_test_assert(str_contains($app, '@app.post("/translate")'), 'Translate adapter must expose POST /translate');
-    hub_test_assert(str_contains($app, 'return "L4b-real-translation"'), 'Translate health must expose L4b runtime level');
+    hub_test_assert(str_contains($app, 'return "L5-benchmark-ready"'), 'Translate health must expose L5 runtime level');
     hub_test_assert(str_contains($app, '/api/tags'), 'Translate health must check Ollama tags API');
     hub_test_assert(str_contains($app, '/api/generate'), 'Translate real inference must call Ollama generate API');
     hub_test_assert(str_contains($app, '"stream": False'), 'Translate generate payload must be non-streaming');
@@ -30,7 +30,7 @@ hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): v
     foreach (['fastapi', 'requests'] as $needle) {
         hub_test_assert(str_contains($smoke, $needle), 'Translate smoke.py must import ' . $needle);
     }
-    hub_test_assert(str_contains($smoke, 'L4b-real-translation'), 'Translate smoke.py runtime level must match L4b');
+    hub_test_assert(str_contains($smoke, 'L5-benchmark-ready'), 'Translate smoke.py runtime level must match L5');
     foreach (['/api/pull', 'ollama pull', 'download', '/api/generate'] as $needle) {
         hub_test_assert(!str_contains($smoke, $needle), 'Translate smoke.py must not pull or translate: ' . $needle);
     }

@@ -14,7 +14,7 @@ def main() -> None:
         "fastapi": getattr(fastapi, "__version__", "unknown"),
         "requests": getattr(requests, "__version__", "unknown"),
         "routes": len(app.app.routes),
-        "runtime_level": "L4b-real-translation",
+        "runtime_level": "L5-benchmark-ready",
     }))
 
 

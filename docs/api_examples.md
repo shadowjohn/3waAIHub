@@ -65,7 +65,9 @@ php scripts/benchmark.php --service=ocr-main --case=ocr_real_image
 
 ## POST Translate
 
-Status: L3 storage-mount Ollama adapter. The adapter uses an internal Ollama sidecar and returns mock translation by default; this phase does not pull models or run real translation.
+Status: L5 benchmark ready. The adapter uses an internal Ollama sidecar, returns mock translation by default, and runs real translation when `real_inference=1`.
+
+Mock mode:
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
@@ -84,15 +86,16 @@ Response:
 {
   "ok": true,
   "mock": true,
-  "runtime_level": "L3-storage-mount",
+  "runtime_level": "L5-benchmark-ready",
   "text": "mock translation",
   "model": "translategemma:12b-it-q4_K_M",
   "source_lang": "en",
-  "target_lang": "zh-TW"
+  "target_lang": "zh-TW",
+  "elapsed_ms": 0
 }
 ```
 
-Real inference is intentionally gated for now:
+Real inference mode:
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
@@ -110,11 +113,22 @@ Response:
 
 ```json
 {
-  "ok": false,
-  "error": "runtime_not_ready",
-  "message": "real translation is not implemented in this runtime level",
-  "runtime_level": "L3-storage-mount"
+  "ok": true,
+  "mock": false,
+  "runtime_level": "L5-benchmark-ready",
+  "model": "translategemma:12b-it-q4_K_M",
+  "source_lang": "en",
+  "target_lang": "zh-TW",
+  "text": "那真是一個美好的時光。",
+  "elapsed_ms": 27000
 }
+```
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --pack=translate-gemma12b --case=translate_mock_text
+php scripts/benchmark.php --service=translate-main --case=translate_real_text
 ```
 
 ## POST YOLO

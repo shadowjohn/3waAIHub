@@ -441,7 +441,7 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### translate-gemma12b Runtime Level
 
-`translate-gemma12b` 目前是 L4b `real-translation` adapter：
+`translate-gemma12b` 目前已達 L5 `benchmark-ready`：
 
 - generated compose 拆成 `ollama` sidecar 與 `translator-api`
 - Ollama 模型主倉掛載 `${AIHUB_MODELS_DIR}/ollama:/root/.ollama`
@@ -454,8 +454,10 @@ http://localhost/3waAIHub/admin/packs.php
 - `GET /health` 檢查 Ollama `/api/tags`、model present 與 adapter storage 狀態
 - `POST /translate` 預設回 mock translation JSON
 - `real_inference=1` 或 `TRANSLATE_REAL_INFERENCE=1` 會呼叫 Ollama `/api/generate`
+- `translate_mock_text` / `translate_real_text` benchmark 可驗 JSON API contract
+- Pack Readiness 可在兩個 benchmark 都 PASS 後顯示 11/11
 
-本階段只做 non-streaming 單次翻譯，不做 streaming、batch、文件翻譯或 L5 benchmark promotion。
+本階段只做 non-streaming 單次翻譯，不做 streaming、batch、文件翻譯、chat 或 glossary。
 
 手動拉模型：
 
@@ -474,6 +476,13 @@ docker compose -f data/services/translate-main/docker-compose.generated.yml exec
 
 ```bash
 docker compose -f data/services/translate-main/docker-compose.generated.yml exec translator-api python3 /app/inference_smoke.py
+```
+
+Benchmark：
+
+```bash
+php scripts/benchmark.php --pack=translate-gemma12b --case=translate_mock_text
+php scripts/benchmark.php --service=translate-main --case=translate_real_text
 ```
 
 測試：
