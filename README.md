@@ -564,7 +564,14 @@ AIHUB_LOGS_DIR=/DATA/3waAIHub/data/logs
 /DATA/models/sam3
 ```
 
-後台「設定」可改 Models / Cache / Uploads / Results / Logs 目錄，以及 Docker local port 範圍。
+後台「設定」可改 Models / Cache / Uploads / Results / Logs 目錄，以及 Docker local port 範圍。後台 `Models` 可掃描 `AIHUB_MODELS_DIR` 底下的模型資產，顯示常見子目錄、檔案大小、修改時間與 symlink skip 狀態。
+
+Service settings 支援 Pack 宣告的 model selector。第一版已支援：
+
+- `yolo`：`YOLO_MODEL` 可從 `/DATA/models/yolo/*.pt` / `*.onnx` 選用，仍保留文字輸入。
+- `translate-gemma12b`：`OLLAMA_MODEL` 維持 Ollama tag 文字設定，並顯示 `/DATA/models/ollama` 狀態。
+
+第一版不做模型 upload / download / delete / move，也不提供任意 host path picker。
 
 若設定成不存在的 root-level 目錄，Web UI 不會自動建立；請用 CLI 建目錄並修權限。Docker data-root 只做偵測與警告，不由 Web 搬移。
 

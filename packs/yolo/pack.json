@@ -137,7 +137,12 @@
       "type": "text",
       "default": "yolo11n.pt",
       "required": true,
-      "restart_required": true
+      "restart_required": true,
+      "model_selector": {
+        "type": "file",
+        "root_subdir": "yolo",
+        "extensions": [".pt", ".onnx"]
+      }
     },
     {
       "key": "YOLO_CONF",

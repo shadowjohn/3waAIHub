@@ -2,13 +2,23 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Ref info
+        run: |
+          echo "GITHUB_REF=$GITHUB_REF"
+          echo "GITHUB_SHA=$GITHUB_SHA"
 
       - uses: shivammathur/setup-php@v2
         with:
@@ -19,7 +29,7 @@ jobs:
         run: find . -path './data' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
 
       - name: Tests
-        run: php scripts/run_tests.php
+        run: php scripts/run_tests.php 2>&1 | tee run_tests.log
 
       - name: Self check
         run: php -d assert.exception=1 scripts/self_check.php

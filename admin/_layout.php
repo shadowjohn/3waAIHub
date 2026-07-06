@@ -47,6 +47,7 @@ function hub_admin_header(string $title, array $user): void
         <a href="index.php">儀表板</a>
         <a href="marketplace.php">Marketplace</a>
         <a href="packs.php">HubPack</a>
+        <a href="models.php">Models</a>
         <a href="services.php">服務管理</a>
         <a href="api_members.php">API Members</a>
         <a href="api_usage.php">API Usage</a>

@@ -75,6 +75,8 @@ hub_test('catalog and required packs are readable', function (): void {
     foreach (['YOLO_MODEL', 'YOLO_CONF', 'YOLO_IOU', 'YOLO_USE_GPU', 'KEEP_WARM', 'YOLO_REAL_INFERENCE'] as $key) {
         hub_test_assert(isset(hub_get_pack_settings_schema('yolo')[$key]), 'YOLO settings_schema missing ' . $key);
     }
+    $yoloSchema = hub_get_pack_settings_schema('yolo');
+    hub_test_assert(($yoloSchema['YOLO_MODEL']['model_selector']['root_subdir'] ?? '') === 'yolo', 'YOLO_MODEL selector missing');
     $yoloMounts = [];
     foreach ($yolo['storage']['mounts'] as $mount) {
         $yoloMounts[(string)$mount['type']] = (string)$mount['container_path'];
@@ -105,4 +107,7 @@ hub_test('catalog and required packs are readable', function (): void {
     }
     hub_test_assert(hub_get_pack('sam3')['manifest']['runtime_level'] === 'L1-ultralytics-sam3', 'SAM3 runtime level mismatch');
     hub_test_assert(hub_get_pack('sam3')['manifest']['runtime_ready'] === true, 'SAM3 runtime ready mismatch');
+
+    $translateSchema = hub_get_pack_settings_schema('translate-gemma12b');
+    hub_test_assert(($translateSchema['OLLAMA_MODEL']['model_selector']['type'] ?? '') === 'ollama_tag', 'OLLAMA_MODEL selector missing');
 });

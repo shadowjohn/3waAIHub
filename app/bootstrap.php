@@ -17,6 +17,7 @@ date_default_timezone_set('Asia/Taipei');
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/storage.php';
+require_once __DIR__ . '/model_registry.php';
 require_once __DIR__ . '/service_repo.php';
 require_once __DIR__ . '/port_policy.php';
 require_once __DIR__ . '/pack_registry.php';

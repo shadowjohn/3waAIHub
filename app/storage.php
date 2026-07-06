@@ -101,6 +101,23 @@ function hub_is_safe_absolute_path(string $path): bool
     return !in_array($path, ['/', '/etc', '/bin', '/usr', '/var/lib/docker'], true);
 }
 
+function hub_is_safe_models_root(string $path): bool
+{
+    if (!hub_is_safe_absolute_path($path)) {
+        return false;
+    }
+
+    $path = rtrim(preg_replace('#/+#', '/', $path) ?? $path, '/') ?: '/';
+    foreach (['/etc', '/var/lib/docker', '/DATA/docker', HUB_ROOT, HUB_DATA_DIR] as $blocked) {
+        $blocked = rtrim($blocked, '/');
+        if ($path === $blocked || str_starts_with($path, $blocked . '/')) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 function hub_get_disk_usage_for_path(string $path): array
 {
     $probe = is_dir($path) ? $path : dirname($path);
@@ -129,7 +146,10 @@ function hub_docker_root_warning(string $dockerRootDir, int|float|null $rootFree
 function hub_validate_storage_input(array $input): array
 {
     $errors = [];
-    foreach (['AIHUB_MODELS_DIR', 'AIHUB_CACHE_DIR', 'AIHUB_UPLOADS_DIR', 'AIHUB_RESULTS_DIR', 'AIHUB_LOGS_DIR'] as $key) {
+    if (!hub_is_safe_models_root(trim((string)($input['AIHUB_MODELS_DIR'] ?? '')))) {
+        $errors[] = 'AIHUB_MODELS_DIR 必須是安全的 models root absolute path。';
+    }
+    foreach (['AIHUB_CACHE_DIR', 'AIHUB_UPLOADS_DIR', 'AIHUB_RESULTS_DIR', 'AIHUB_LOGS_DIR'] as $key) {
         if (!hub_is_safe_absolute_path(trim((string)($input[$key] ?? '')))) {
             $errors[] = $key . ' 必須是安全的 absolute path。';
         }

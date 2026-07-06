@@ -68,7 +68,7 @@ hub_admin_header('Service Settings', $user);
             <input type="hidden" name="service_id" value="<?= (int)$service['id'] ?>">
             <?php foreach ($schema as $key => $item): ?>
                 <?php $row = $settings[$key] ?? ['value' => (string)($item['default'] ?? '')]; ?>
-                <?= hub_service_setting_field($key, $item, (string)$row['value']) ?>
+                <?= hub_service_setting_field($db, $key, $item, (string)$row['value']) ?>
             <?php endforeach; ?>
             <p><button class="primary" type="submit">儲存設定並重新產生 .env</button> <a class="button" href="services.php">返回服務管理</a></p>
         </form>
@@ -83,12 +83,13 @@ hub_admin_header('Service Settings', $user);
 </section>
 <?php hub_admin_footer(); ?>
 <?php
-function hub_service_setting_field(string $key, array $item, string $value): string
+function hub_service_setting_field(PDO $db, string $key, array $item, string $value): string
 {
     $label = (string)($item['label'] ?? $key);
     $type = (string)($item['type'] ?? 'text');
     $required = !empty($item['required']) ? ' required' : '';
     $help = trim((string)($item['help'] ?? ''));
+    $selector = is_array($item['model_selector'] ?? null) ? $item['model_selector'] : null;
     ob_start();
     ?>
     <label><?= hub_h($label) ?> <code><?= hub_h($key) ?></code><?= !empty($item['restart_required']) ? ' <span class="bad">Restart</span>' : '' ?></label>
@@ -102,7 +103,24 @@ function hub_service_setting_field(string $key, array $item, string $value): str
         </select>
     <?php else: ?>
         <?php $inputType = in_array($type, ['integer', 'number'], true) ? 'number' : 'text'; ?>
-        <input name="<?= hub_h($key) ?>" type="<?= hub_h($inputType) ?>" value="<?= !empty($item['secret']) ? '' : hub_h($value) ?>"<?= $required ?>>
+        <?php if ($selector): ?>
+            <?php $listId = 'models-' . preg_replace('/[^A-Za-z0-9_-]/', '-', $key); ?>
+            <input name="<?= hub_h($key) ?>" list="<?= hub_h($listId) ?>" type="<?= hub_h($inputType) ?>" value="<?= !empty($item['secret']) ? '' : hub_h($value) ?>"<?= $required ?>>
+            <datalist id="<?= hub_h($listId) ?>">
+                <?php foreach (hub_model_selector_options($db, $selector) as $option): ?>
+                    <option value="<?= hub_h((string)$option['value']) ?>"><?= hub_h((string)$option['label']) ?></option>
+                <?php endforeach; ?>
+            </datalist>
+            <?php $status = hub_model_selector_status($db, $selector, $value); ?>
+            <p class="muted">
+                Model Root: <code><?= hub_h(hub_models_root($db)) ?></code><br>
+                <?= hub_h((string)$status['label']) ?>:
+                <span class="<?= $status['exists'] ? 'ok' : 'bad' ?>"><?= $status['exists'] ? 'exists' : 'missing' ?></span>
+                <?= $status['size_bytes'] !== null ? ' / ' . hub_h(hub_model_format_bytes((int)$status['size_bytes'])) : '' ?>
+            </p>
+        <?php else: ?>
+            <input name="<?= hub_h($key) ?>" type="<?= hub_h($inputType) ?>" value="<?= !empty($item['secret']) ? '' : hub_h($value) ?>"<?= $required ?>>
+        <?php endif; ?>
     <?php endif; ?>
     <?php if ($help !== ''): ?><p class="muted"><?= hub_h($help) ?></p><?php endif; ?>
     <?php

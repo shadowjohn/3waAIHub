@@ -1,5 +1,45 @@
 # 3waAIHub History
 
+## PhaseP-3 Model Registry / Models Directory UI
+
+Added a read-only model registry for host-level model assets.
+
+Implemented:
+
+- Added `admin/models.php`.
+- Added `app/model_registry.php`.
+- Models root stays controlled by `AIHUB_MODELS_DIR`.
+- Scanner only walks under the models root.
+- Path traversal is rejected.
+- Symlinks are listed as skipped and not followed.
+- Common model subdirs are shown: `paddleocr`, `yolo`, `ollama`, `sam3`, `huggingface`.
+- `YOLO_MODEL` has a model selector for `/DATA/models/yolo/*.pt` / `*.onnx`.
+- `OLLAMA_MODEL` remains a tag text field with `/DATA/models/ollama` status.
+- Service settings show model root and selected model exists/missing status.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS.
+- `php scripts/self_check.php` PASS.
+- `php scripts/token_api_smoke.php` PASS.
+- PHP lint PASS.
+- `bash -n` and `git diff --check` PASS.
+- Scan sees `/DATA/models`, `yolo/yolo11n.pt`, and `paddleocr/home/.paddlex`.
+- YOLO model selector exposes `yolo11n.pt`.
+- OCR mock / real PASS.
+- YOLO mock / real benchmarks PASS.
+- `api.php?mode=hello` PASS.
+
+Skipped:
+
+- Model upload.
+- Model download.
+- Model delete.
+- Model move.
+- Ollama pull UI.
+- Arbitrary host path picker.
+- Symlink-following scan.
+
 ## PaddleOCR Model Location Normalization
 
 Moved PaddleOCR / PaddleX model-home writes to host-level model storage.
