@@ -39,7 +39,7 @@ Response:
 
 ## POST OCR
 
-Status: L4a model init smoke. `l5_contract` 已宣告，現在仍回 mock JSON；真 OCR inference 留到 L4b。
+Status: L4b real image inference. 預設仍回 mock JSON；設定 `OCR_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行 PaddleOCR。
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
@@ -60,6 +60,7 @@ Benchmark:
 
 ```bash
 php scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image
+php scripts/benchmark.php --service=ocr-main --case=ocr_real_image
 ```
 
 ## POST Translate

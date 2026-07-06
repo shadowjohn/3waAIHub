@@ -84,16 +84,21 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
             'size' => filesize($fixture),
         ],
     ];
-    $_POST = [];
+    $realInference = !empty($case['real_inference']);
+    $_POST = $realInference ? ['real_inference' => '1'] : [];
 
     try {
-        $response = hub_gateway_dispatch($db, $mode, static fn (): array => hub_gateway_json(200, [
-            'ok' => true,
-            'text' => '3waAIHub OCR mock',
-            'blocks' => [['text' => '3waAIHub OCR mock', 'bbox' => [0, 0, 0, 0], 'confidence' => 1.0]],
-            'mock' => true,
-            'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
-        ]));
+        $response = hub_gateway_dispatch(
+            $db,
+            $mode,
+            $realInference ? null : static fn (): array => hub_gateway_json(200, [
+                'ok' => true,
+                'text' => '3waAIHub OCR mock',
+                'blocks' => [['text' => '3waAIHub OCR mock', 'bbox' => [0, 0, 0, 0], 'confidence' => 1.0]],
+                'mock' => true,
+                'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
+            ])
+        );
     } finally {
         $_SERVER = $oldServer;
         $_FILES = $oldFiles;
@@ -108,7 +113,9 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
             $missing[] = $key;
         }
     }
-    if ((int)$response['status'] !== 200 || $missing !== []) {
+    $minBlocks = (int)($case['expected_min_blocks'] ?? 0);
+    $blockCount = is_array($payload['blocks'] ?? null) ? count($payload['blocks']) : 0;
+    if ((int)$response['status'] !== 200 || $missing !== [] || $blockCount < $minBlocks) {
         throw new RuntimeException('benchmark contract check failed.');
     }
 
@@ -119,6 +126,8 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         'mode' => $mode,
         'http_status' => (int)$response['status'],
         'expected_keys_pass' => true,
+        'real_inference' => $realInference,
+        'block_count' => $blockCount,
         'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
         'fixture' => (string)($case['fixture'] ?? ''),
     ];
@@ -182,11 +191,24 @@ function hub_pack_l5_readiness(PDO $db, string $packId): array
     $contract = hub_pack_l5_contract($manifest);
     $caseIds = array_values(array_filter(array_map('strval', array_column($contract['benchmark']['cases'] ?? [], 'id'))));
     $latestPass = false;
+    $realInferencePass = false;
     if ($caseIds !== []) {
         $placeholders = implode(',', array_fill(0, count($caseIds), '?'));
         $stmt = $db->prepare("SELECT status FROM benchmark_runs WHERE benchmark_key IN ({$placeholders}) ORDER BY id DESC LIMIT 1");
         $stmt->execute($caseIds);
         $latestPass = (string)($stmt->fetchColumn() ?: '') === 'pass';
+    }
+    $realCaseIds = [];
+    foreach (($contract['benchmark']['cases'] ?? []) as $case) {
+        if (is_array($case) && !empty($case['real_inference']) && !empty($case['id'])) {
+            $realCaseIds[] = (string)$case['id'];
+        }
+    }
+    if ($realCaseIds !== []) {
+        $placeholders = implode(',', array_fill(0, count($realCaseIds), '?'));
+        $stmt = $db->prepare("SELECT status FROM benchmark_runs WHERE benchmark_key IN ({$placeholders}) ORDER BY id DESC LIMIT 1");
+        $stmt->execute($realCaseIds);
+        $realInferencePass = (string)($stmt->fetchColumn() ?: '') === 'pass';
     }
 
     $checks = [
@@ -199,7 +221,7 @@ function hub_pack_l5_readiness(PDO $db, string $packId): array
         'latest_benchmark_pass' => $latestPass,
         'has_runtime_level' => trim((string)($manifest['runtime_level'] ?? '')) !== '',
         'has_target_level' => trim((string)($manifest['target_level'] ?? '')) !== '',
-        'real_inference_benchmark_passed' => false,
+        'real_inference_benchmark_passed' => $realInferencePass,
         'l4b_real_inference_complete' => in_array((string)($manifest['runtime_level'] ?? ''), ['L4b-real-inference', 'L5-benchmark-ready'], true),
     ];
 

@@ -17,6 +17,8 @@ hub_test('service settings defaults are created from pack schema and write env',
     hub_test_assert(isset($settings['OCR_MOCK_TEXT']), 'OCR_MOCK_TEXT setting missing');
     hub_test_assert($settings['OCR_MOCK_TEXT']['value'] === '3waAIHub OCR mock', 'OCR_MOCK_TEXT default mismatch');
     hub_test_assert(isset($settings['OCR_LANG']), 'OCR_LANG setting missing');
+    hub_test_assert(isset($settings['OCR_REAL_INFERENCE']), 'OCR_REAL_INFERENCE setting missing');
+    hub_test_assert($settings['OCR_REAL_INFERENCE']['value'] === '0', 'OCR_REAL_INFERENCE default mismatch');
 
     $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
     hub_test_assert(str_contains($env, 'AIHUB_MODELS_DIR='), 'env missing AIHUB_MODELS_DIR');
@@ -24,6 +26,7 @@ hub_test('service settings defaults are created from pack schema and write env',
     hub_test_assert(str_contains($env, 'SERVICE_KEY=ocr-settings-main'), 'env missing SERVICE_KEY');
     hub_test_assert(str_contains($env, 'MODE=ocr_settings'), 'env missing MODE');
     hub_test_assert(str_contains($env, 'OCR_MOCK_TEXT=3waAIHub OCR mock'), 'env missing OCR_MOCK_TEXT');
+    hub_test_assert(str_contains($env, 'OCR_REAL_INFERENCE=0'), 'env missing OCR_REAL_INFERENCE');
     hub_test_assert(!str_contains($env, 'UNDECLARED_ENV='), 'env must not include arbitrary keys');
 });
 

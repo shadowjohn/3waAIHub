@@ -346,6 +346,7 @@ php /DATA/3waAIHub/scripts/benchmark.php --case=host_smoke
 php /DATA/3waAIHub/scripts/benchmark.php --case=pack_catalog_scan
 php /DATA/3waAIHub/scripts/benchmark.php --case=hello_api
 php /DATA/3waAIHub/scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image
+php /DATA/3waAIHub/scripts/benchmark.php --service=ocr-main --case=ocr_real_image
 ```
 
 後台頁：
@@ -413,12 +414,12 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### ocr-ppocrv5 Runtime Level
 
-`ocr-ppocrv5` 目前停在 L4a `model_init_smoke`：
+`ocr-ppocrv5` 目前停在 L4b `real_inference`：
 
 - Docker image 可 build
 - container 可啟動
-- `GET /health` 回 ok，並帶 `runtime_level=L4a-model-init-smoke` 與 storage 狀態
-- `POST /ocr/image` 支援圖片上傳並回 mock OCR JSON，仍不做真 OCR
+- `GET /health` 回 ok，並帶 `runtime_level=L4b-real-inference` 與 storage 狀態
+- `POST /ocr/image` 預設回 mock OCR JSON，`OCR_REAL_INFERENCE=1` 或表單 `real_inference=1` 時執行 PaddleOCR 圖片推論
 - `api.php?mode=ocr` 可透過 gateway proxy 到 service
 - image 使用 NVIDIA CUDA 12.9 runtime base
 - Docker build 階段安裝 FastAPI runtime、PaddleOCR / PaddlePaddle dependency，並執行 `pip check`
@@ -428,11 +429,11 @@ http://localhost/3waAIHub/admin/packs.php
 - runtime 掛載 `${SERVICE_DATA_DIR}:/data/service`
 - `storage_smoke.py` 可在 container 內檢查三個目錄是否存在、可讀、可寫
 - `model_smoke.py` 可手動初始化 PaddleOCR，檢查模型/cache 是否落在掛載目錄，並偵測 `/root` / `/app` 可疑寫入
+- `inference_smoke.py` 可手動驗證單張圖片真 OCR 推論
 - Pack manifest 已宣告 `target_level=L5-benchmark-ready` 與 `l5_contract`
 - `ocr_mock_image` benchmark 可驗 API contract required keys
+- `ocr_real_image` benchmark 可驗單張圖片真 OCR 與 blocks contract
 - generated compose 會加入 `gpus: all`
-
-這一版尚未做真實 OCR 推論；L4b 才處理圖片辨識與結果格式。
 
 ### translate-gemma12b Runtime Level
 

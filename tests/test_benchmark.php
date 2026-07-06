@@ -23,10 +23,17 @@ hub_test('L5 OCR contract benchmark records expected key check', function (): vo
     $readiness = hub_pack_l5_readiness($db, 'ocr-ppocrv5');
     hub_test_assert($readiness['checks']['has_l5_contract'] === true, 'readiness must see l5_contract');
     hub_test_assert($readiness['checks']['has_benchmark_cases'] === true, 'readiness must see benchmark cases');
+    hub_test_assert($readiness['checks']['l4b_real_inference_complete'] === true, 'readiness must see L4b runtime level');
+    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === false, 'real inference benchmark must start pending');
 
     $result = hub_run_benchmark_case($db, 'ocr_mock_image', 'ocr-ppocrv5');
     hub_test_assert($result['status'] === 'pass', 'ocr_mock_image did not pass');
     hub_test_assert(($result['result']['expected_keys_pass'] ?? false) === true, 'expected keys check failed');
-    hub_test_assert(($result['result']['runtime_level'] ?? '') === 'L4a-model-init-smoke', 'runtime level missing from benchmark');
+    hub_test_assert(($result['result']['runtime_level'] ?? '') === 'L4b-real-inference', 'runtime level missing from benchmark');
     hub_test_assert((int)$db->query("SELECT COUNT(*) FROM benchmark_runs WHERE benchmark_key = 'ocr_mock_image'")->fetchColumn() === 1, 'OCR benchmark run was not recorded');
+
+    $service = hub_get_service_by_key($db, 'ocr-main');
+    hub_save_benchmark_run($db, 'ocr_real_image', (int)$service['id'], 'ocr', 'pass', 123, ['ok' => true, 'real_inference' => true], null);
+    $readiness = hub_pack_l5_readiness($db, 'ocr-ppocrv5');
+    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === true, 'real inference benchmark pass must update readiness');
 });

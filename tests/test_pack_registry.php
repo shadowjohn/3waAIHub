@@ -20,7 +20,7 @@ hub_test('catalog and required packs are readable', function (): void {
     }
 
     $ocr = hub_get_pack('ocr-ppocrv5')['manifest'];
-    hub_test_assert($ocr['runtime_level'] === 'L4a-model-init-smoke', 'OCR runtime level mismatch');
+    hub_test_assert($ocr['runtime_level'] === 'L4b-real-inference', 'OCR runtime level mismatch');
     hub_test_assert($ocr['runtime_ready'] === true, 'OCR runtime ready mismatch');
     hub_test_assert(($ocr['target_level'] ?? '') === 'L5-benchmark-ready', 'OCR target level mismatch');
     hub_test_assert($ocr['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
@@ -40,7 +40,14 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(($contract['endpoint'] ?? '') === '/ocr/image', 'OCR contract endpoint mismatch');
     hub_test_assert(($contract['method'] ?? '') === 'POST', 'OCR contract method mismatch');
     hub_test_assert(in_array('ok', $contract['output']['required_keys'] ?? [], true), 'OCR contract output missing ok');
-    hub_test_assert(in_array('ocr_mock_image', array_column($contract['benchmark']['cases'] ?? [], 'id'), true), 'OCR benchmark case missing');
+    $benchmarkCases = $contract['benchmark']['cases'] ?? [];
+    hub_test_assert(in_array('ocr_mock_image', array_column($benchmarkCases, 'id'), true), 'OCR mock benchmark case missing');
+    hub_test_assert(in_array('ocr_real_image', array_column($benchmarkCases, 'id'), true), 'OCR real benchmark case missing');
+    foreach ($benchmarkCases as $case) {
+        if (($case['id'] ?? '') === 'ocr_real_image') {
+            hub_test_assert(!empty($case['real_inference']), 'OCR real benchmark must be marked real_inference');
+        }
+    }
 
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_level'] === 'L1-ollama-adapter', 'Translate runtime level mismatch');
     hub_test_assert(hub_get_pack('translate-gemma12b')['manifest']['runtime_ready'] === true, 'Translate runtime ready mismatch');

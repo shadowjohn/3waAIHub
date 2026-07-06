@@ -761,3 +761,26 @@ Skipped:
 - model download.
 - PDF OCR.
 - TranslateGemma / SAM3 / YOLO L5.
+
+## PhaseM-2A-L4b PP-OCRv5 Real Image OCR
+
+Advanced `ocr-ppocrv5` from L4a `model_init_smoke` to L4b `real_inference`.
+
+Implemented:
+
+- runtime_level = `L4b-real-inference`.
+- Added `OCR_REAL_INFERENCE` setting with mock fallback default.
+- `/ocr/image` keeps mock mode by default.
+- `/ocr/image` runs PaddleOCR real inference when `OCR_REAL_INFERENCE=1` or form `real_inference=1`.
+- Added result normalization to `text` / `blocks`.
+- Added `inference_smoke.py`.
+- Added real OCR fixture `packs/ocr-ppocrv5/demo/real_sample.png`.
+- Added `ocr_real_image` benchmark case without replacing `ocr_mock_image`.
+- L5 readiness can turn real inference benchmark green.
+
+Skipped:
+
+- PDF OCR.
+- batch OCR.
+- startup preload.
+- benchmark tuning.
