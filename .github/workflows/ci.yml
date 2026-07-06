@@ -32,10 +32,26 @@ jobs:
         run: php scripts/run_tests.php 2>&1 | tee run_tests.log
 
       - name: Self check
-        run: php -d assert.exception=1 scripts/self_check.php
+        run: |
+          set -o pipefail
+          php \
+            -d zend.assertions=1 \
+            -d assert.exception=1 \
+            -d display_errors=1 \
+            -d error_reporting=E_ALL \
+            scripts/self_check.php 2>&1 | tee self_check.log
 
       - name: Shell syntax
         run: bash -n install.sh scripts/*.sh crontab/*.sh
 
       - name: Diff check
         run: git diff --check
+
+      - name: Upload CI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            run_tests.log
+            self_check.log
