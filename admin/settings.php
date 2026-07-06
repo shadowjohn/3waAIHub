@@ -5,6 +5,8 @@ require __DIR__ . '/../app/bootstrap.php';
 require __DIR__ . '/_layout.php';
 
 $db = hub_db();
+hub_migrate($db);
+hub_ensure_default_storage_settings($db);
 $user = hub_require_login($db);
 $message = '';
 $error = '';
@@ -21,6 +23,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'AIHUB_DOCKER_PORT_START' => trim((string)($_POST['AIHUB_DOCKER_PORT_START'] ?? '')),
             'AIHUB_DOCKER_PORT_END' => trim((string)($_POST['AIHUB_DOCKER_PORT_END'] ?? '')),
             'AIHUB_AUTO_BUILD_MISSING_IMAGE' => trim((string)($_POST['AIHUB_AUTO_BUILD_MISSING_IMAGE'] ?? '1')),
+            'AIHUB_REQUIRE_API_TOKEN' => trim((string)($_POST['AIHUB_REQUIRE_API_TOKEN'] ?? '1')),
+            'AIHUB_LOCALHOST_BYPASS_TOKEN' => trim((string)($_POST['AIHUB_LOCALHOST_BYPASS_TOKEN'] ?? '1')),
+            'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST' => trim((string)($_POST['AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST'] ?? '1')),
+            'AIHUB_TOKEN_DEFAULT_VALID_DAYS' => trim((string)($_POST['AIHUB_TOKEN_DEFAULT_VALID_DAYS'] ?? '0')),
         ];
         $errors = hub_validate_storage_input($input);
         if ($errors) {
@@ -108,6 +114,25 @@ hub_admin_header('設定', $user);
             <option value="1"<?= $storage['AIHUB_AUTO_BUILD_MISSING_IMAGE'] === '1' ? ' selected' : '' ?>>是</option>
             <option value="0"<?= $storage['AIHUB_AUTO_BUILD_MISSING_IMAGE'] === '0' ? ' selected' : '' ?>>否</option>
         </select>
+        <h2>API Token Policy</h2>
+        <label>外部 API 必須使用 Bearer token</label>
+        <select name="AIHUB_REQUIRE_API_TOKEN">
+            <option value="1"<?= $storage['AIHUB_REQUIRE_API_TOKEN'] === '1' ? ' selected' : '' ?>>是</option>
+            <option value="0"<?= $storage['AIHUB_REQUIRE_API_TOKEN'] === '0' ? ' selected' : '' ?>>否</option>
+        </select>
+        <label>localhost 允許略過 token</label>
+        <select name="AIHUB_LOCALHOST_BYPASS_TOKEN">
+            <option value="1"<?= $storage['AIHUB_LOCALHOST_BYPASS_TOKEN'] === '1' ? ' selected' : '' ?>>是</option>
+            <option value="0"<?= $storage['AIHUB_LOCALHOST_BYPASS_TOKEN'] === '0' ? ' selected' : '' ?>>否</option>
+        </select>
+        <label>Token 驗證後仍套用舊 service IP whitelist</label>
+        <select name="AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST">
+            <option value="1"<?= $storage['AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST'] === '1' ? ' selected' : '' ?>>是</option>
+            <option value="0"<?= $storage['AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST'] === '0' ? ' selected' : '' ?>>否</option>
+        </select>
+        <label>Token 預設有效天數</label>
+        <input name="AIHUB_TOKEN_DEFAULT_VALID_DAYS" value="<?= hub_h($storage['AIHUB_TOKEN_DEFAULT_VALID_DAYS']) ?>" required>
+        <p class="muted">0 代表建立 token 時不自動設定 valid_until。</p>
         <p><button class="primary" type="submit">儲存 Storage Settings</button></p>
     </form>
 </section>

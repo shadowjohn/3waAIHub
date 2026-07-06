@@ -8,6 +8,13 @@ http://localhost/3waAIHub/api.php
 
 錯誤回應會包含 `request_id`。外部系統串接失敗時，請提供 `request_id`、`mode`、時間與來源 IP，方便後台 Log Explorer 查詢。
 
+外部 IP 預設需要 Bearer token。先在後台建立 API Member / Token，授權對應 mode，必要時再設定 token IP whitelist。
+
+```bash
+curl "http://localhost/3waAIHub/api.php?mode=hello" \
+  -H "Authorization: Bearer 3wa_live_xxx"
+```
+
 ## GET hello
 
 ```bash
@@ -30,6 +37,7 @@ Status: Runtime adapter pending / L1 mock only.
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"
 ```
 
@@ -39,6 +47,7 @@ Status: L1 Ollama adapter. First run pulls `translategemma:12b-it-q4_K_M` into `
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{
     "source_lang": "en",
@@ -65,6 +74,7 @@ Status: L1 Ultralytics YOLO adapter.
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.jpg"
 ```
 
@@ -74,6 +84,7 @@ Status: L1 Ultralytics SAM3 adapter.
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.jpg" \
   -F 'points=[[150,120]]' \
   -F 'labels=[1]'

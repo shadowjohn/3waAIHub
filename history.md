@@ -553,3 +553,31 @@ Skipped:
 - GHCR / local registry / registry mirror.
 - WebSocket / SSE.
 - real PaddleOCR / TranslateGemma changes.
+
+## PhaseS-4 Token Auth MVP
+
+Added API member and token authentication foundation.
+
+Implemented:
+
+- API members.
+- token hash / prefix storage.
+- token revoke.
+- valid_from / valid_until.
+- unlimited token support.
+- Bearer token gateway authentication.
+- token mode permissions.
+- token IP whitelist.
+- api_access_logs member_id / token_id / upload_bytes / response_bytes.
+- daily usage aggregate.
+- API member/token admin pages.
+- Log Explorer member/token visibility.
+- Authorization header preservation in .htaccess.
+
+Skipped:
+
+- quota.
+- rate limit.
+- billing.
+- OAuth.
+- auto ban.

@@ -5,6 +5,10 @@ RewriteRule ^(?:\.git|\.github|vendor|node_modules)(?:/|$) - [F,L]
 RewriteRule ^(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|package(?:-lock)?\.json)$ - [F,L]
 </IfModule>
 
+<IfModule mod_setenvif.c>
+SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
+</IfModule>
+
 <FilesMatch "(^\.|\.sqlite(?:-.+)?$|\.db$|\.env$|\.log$|\.sh$|\.bak$|~$)">
     <IfModule mod_authz_core.c>
         Require all denied

@@ -12,7 +12,7 @@ $user = hub_require_login($db);
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     hub_check_csrf();
     $query = [];
-    foreach (['time_from', 'time_to', 'mode', 'service_id', 'ok', 'status_code', 'error_code', 'method', 'request_id', 'keyword'] as $key) {
+    foreach (['time_from', 'time_to', 'mode', 'service_id', 'member_id', 'token_id', 'ok', 'status_code', 'error_code', 'method', 'request_id', 'keyword'] as $key) {
         $value = trim((string)($_POST[$key] ?? ''));
         if ($value !== '') {
             $query[$key] = $value;
@@ -26,6 +26,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 }
 
 $services = hub_list_services($db);
+$members = hub_list_api_members($db);
+$tokens = hub_list_all_api_tokens($db);
 $clientIp = hub_decode_ip_get_filter((string)($_GET['client_ip_b64'] ?? ''), false);
 $filters = [
     'time_from' => trim((string)($_GET['time_from'] ?? '')),
@@ -33,6 +35,8 @@ $filters = [
     'client_ip_b64' => $clientIp === null ? '' : (string)($_GET['client_ip_b64'] ?? ''),
     'mode' => hub_log_token((string)($_GET['mode'] ?? '')),
     'service_id' => (int)($_GET['service_id'] ?? 0),
+    'member_id' => (int)($_GET['member_id'] ?? 0),
+    'token_id' => (int)($_GET['token_id'] ?? 0),
     'ok' => in_array((string)($_GET['ok'] ?? ''), ['0', '1'], true) ? (string)$_GET['ok'] : '',
     'status_code' => ctype_digit((string)($_GET['status_code'] ?? '')) ? (string)$_GET['status_code'] : '',
     'error_code' => hub_log_token((string)($_GET['error_code'] ?? '')),
@@ -67,6 +71,24 @@ hub_admin_header('Log Explorer', $user);
             <?php foreach ($services as $service): ?>
                 <option value="<?= (int)$service['id'] ?>"<?= (int)$filters['service_id'] === (int)$service['id'] ? ' selected' : '' ?>>
                     <?= hub_h($service['name']) ?> / <?= hub_h($service['mode']) ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+        <label>API Member</label>
+        <select name="member_id">
+            <option value="">全部</option>
+            <?php foreach ($members as $member): ?>
+                <option value="<?= (int)$member['id'] ?>"<?= (int)$filters['member_id'] === (int)$member['id'] ? ' selected' : '' ?>>
+                    <?= hub_h($member['name']) ?>
+                </option>
+            <?php endforeach; ?>
+        </select>
+        <label>API Token</label>
+        <select name="token_id">
+            <option value="">全部</option>
+            <?php foreach ($tokens as $token): ?>
+                <option value="<?= (int)$token['id'] ?>"<?= (int)$filters['token_id'] === (int)$token['id'] ? ' selected' : '' ?>>
+                    <?= hub_h($token['member_name'] . ' / ' . $token['token_name'] . ' / ' . hub_mask_api_token($token)) ?>
                 </option>
             <?php endforeach; ?>
         </select>
@@ -120,12 +142,14 @@ hub_admin_header('Log Explorer', $user);
     <p class="muted">共 <?= (int)$total ?> 筆，Page <?= (int)$page ?>，每頁 <?= (int)$limit ?> 筆。</p>
     <table>
         <tr>
-            <th>Time</th><th>IP</th><th>Mode</th><th>Service</th><th>Method</th><th>Status</th><th>OK</th><th>Error</th><th>Reason</th><th>ms</th><th>Request ID</th><th>UA</th>
+            <th>Time</th><th>IP</th><th>Member</th><th>Token</th><th>Mode</th><th>Service</th><th>Method</th><th>Status</th><th>OK</th><th>Error</th><th>Reason</th><th>ms</th><th>Bytes</th><th>Request ID</th><th>UA</th>
         </tr>
         <?php foreach ($logs as $log): ?>
             <tr>
                 <td><?= hub_h($log['created_at']) ?></td>
                 <td><a href="ip_profile.php?<?= hub_h(hub_ip_filter_query('ip_b64', $log['client_ip'])) ?>"><code><?= hub_h($log['client_ip']) ?></code></a></td>
+                <td><?= hub_h((string)($log['member_name'] ?? '')) ?></td>
+                <td><code><?= hub_h((string)($log['token_prefix'] ?? '')) ?></code> <?= hub_h((string)($log['token_name'] ?? '')) ?></td>
                 <td><code><?= hub_h($log['mode']) ?></code></td>
                 <td><?= hub_h($log['service_name'] ?? '') ?></td>
                 <td><?= hub_h($log['method']) ?></td>
@@ -134,6 +158,7 @@ hub_admin_header('Log Explorer', $user);
                 <td><code><?= hub_h($log['error_code']) ?></code></td>
                 <td><?= hub_h(hub_short_text((string)($log['reason'] ?? ''), 80)) ?></td>
                 <td><?= $log['elapsed_ms'] === null ? '' : (int)$log['elapsed_ms'] ?></td>
+                <td><?= (int)($log['upload_bytes'] ?? 0) ?> / <?= (int)($log['response_bytes'] ?? 0) ?></td>
                 <td><a href="log_detail.php?id=<?= (int)$log['id'] ?>"><code><?= hub_h($log['request_id']) ?></code></a></td>
                 <td><?= hub_h(hub_short_text((string)($log['user_agent'] ?? ''), 80)) ?></td>
             </tr>

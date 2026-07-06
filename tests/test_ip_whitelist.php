@@ -5,6 +5,7 @@ hub_test('ip whitelist allows localhost exact ip and cidr but rejects invalid ru
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
     hub_set_service_enabled($db, 'hello', true);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '0');
 
     $_SERVER['REQUEST_METHOD'] = 'GET';
     $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
@@ -25,6 +26,7 @@ hub_test('ip whitelist allows localhost exact ip and cidr but rejects invalid ru
 hub_test('external IP is denied by default and X-Forwarded-For is ignored', function (): void {
     $db = hub_test_reset_db();
     hub_set_service_enabled($db, 'hello', true);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '0');
 
     $_SERVER['REQUEST_METHOD'] = 'GET';
     $_SERVER['REMOTE_ADDR'] = '203.0.113.99';

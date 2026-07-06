@@ -186,10 +186,85 @@ CREATE TABLE IF NOT EXISTS service_ip_whitelists (
     FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS api_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    contact_name TEXT NULL,
+    contact_email TEXT NULL,
+    note TEXT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    member_id INTEGER NOT NULL,
+    token_name TEXT NOT NULL,
+    token_prefix TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    valid_from TEXT NULL,
+    valid_until TEXT NULL,
+    last_used_at TEXT NULL,
+    last_used_ip TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    revoked_at TEXT NULL,
+    FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS api_token_service_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id INTEGER NOT NULL,
+    service_id INTEGER NULL,
+    mode TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(token_id, mode),
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE CASCADE,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS api_token_ip_whitelists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id INTEGER NOT NULL,
+    ip_rule TEXT NOT NULL,
+    rule_type TEXT NOT NULL DEFAULT 'cidr',
+    label TEXT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(token_id, ip_rule),
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS api_token_usage_daily (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_id INTEGER NOT NULL,
+    member_id INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    usage_date TEXT NOT NULL,
+    request_count INTEGER NOT NULL DEFAULT 0,
+    success_count INTEGER NOT NULL DEFAULT 0,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    total_elapsed_ms INTEGER NOT NULL DEFAULT 0,
+    total_upload_bytes INTEGER NOT NULL DEFAULT 0,
+    total_response_bytes INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(token_id, mode, usage_date),
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE CASCADE,
+    FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS api_access_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     request_id TEXT NULL,
     service_id INTEGER NULL,
+    member_id INTEGER NULL,
+    token_id INTEGER NULL,
     mode TEXT NULL,
     client_ip TEXT NOT NULL,
     method TEXT NOT NULL,
@@ -200,8 +275,12 @@ CREATE TABLE IF NOT EXISTS api_access_logs (
     reason TEXT NULL,
     user_agent TEXT NULL,
     elapsed_ms INTEGER NULL,
+    upload_bytes INTEGER NULL,
+    response_bytes INTEGER NULL,
     created_at TEXT NOT NULL,
-    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL,
+    FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
 );
 SQL);
 
@@ -217,6 +296,10 @@ SQL);
     hub_add_column_if_missing($db, 'services', 'runtime_status', "TEXT NOT NULL DEFAULT 'stopped'");
     hub_add_column_if_missing($db, 'services', 'environment_json', 'TEXT NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'request_id', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'api_access_logs', 'member_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'api_access_logs', 'token_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'api_access_logs', 'upload_bytes', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'api_access_logs', 'response_bytes', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'progress', 'INTEGER NOT NULL DEFAULT 0');
     hub_add_column_if_missing($db, 'command_jobs', 'stage', 'TEXT NULL');
@@ -231,6 +314,14 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_ok ON api_access_logs(ok)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_error_code ON api_access_logs(error_code)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_request_id ON api_access_logs(request_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_member_id ON api_access_logs(member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_token_id ON api_access_logs(token_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_tokens_member_id ON api_tokens(member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_permissions_token_id ON api_token_service_permissions(token_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_permissions_mode ON api_token_service_permissions(mode)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_ip_rules_token_id ON api_token_ip_whitelists(token_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_member_date ON api_token_usage_daily(member_id, usage_date)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token_date ON api_token_usage_daily(token_id, usage_date)');
 }
 
 function hub_add_column_if_missing(PDO $db, string $table, string $column, string $definition): void

@@ -17,6 +17,13 @@ hub_admin_header('API Docs', $user);
     <p class="muted">錯誤回應會包含 <code>request_id</code>，外部系統串接失敗時請提供 request_id、mode、時間與來源 IP。</p>
 </section>
 <section class="panel">
+    <h2>Bearer Token</h2>
+    <p class="muted">外部 IP 預設需要 Bearer token；localhost 可由 settings 略過 token。Token 明文只會在建立時顯示一次。</p>
+    <pre>curl "http://localhost/3waAIHub/api.php?mode=hello" \
+  -H "Authorization: Bearer 3wa_live_xxx"</pre>
+    <p><a class="button" href="api_members.php">API Members</a> <a class="button" href="api_usage.php">API Usage</a></p>
+</section>
+<section class="panel">
     <h2>Mode 對應 Service Instance</h2>
     <table>
         <tr><th>Mode</th><th>Service Key</th><th>Name</th><th>Pack</th><th>Status</th></tr>
@@ -44,12 +51,14 @@ hub_admin_header('API Docs', $user);
     <h2>POST OCR</h2>
     <p class="muted">Status: Runtime adapter pending / L1 mock only.</p>
     <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"</pre>
 </section>
 <section class="panel">
     <h2>POST Translate</h2>
     <p class="muted">Status: Runtime adapter pending.</p>
     <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{
     "source_lang": "en",

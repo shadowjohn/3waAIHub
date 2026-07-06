@@ -22,6 +22,10 @@ function hub_default_storage_settings(): array
         'AIHUB_API_ACCESS_LOG_RETENTION_DAYS' => '30',
         'AIHUB_API_LOG_SUCCESS_SAMPLE_RATE' => '1',
         'AIHUB_AUTO_BUILD_MISSING_IMAGE' => '1',
+        'AIHUB_REQUIRE_API_TOKEN' => '1',
+        'AIHUB_LOCALHOST_BYPASS_TOKEN' => '1',
+        'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST' => '1',
+        'AIHUB_TOKEN_DEFAULT_VALID_DAYS' => '0',
     ];
 }
 
@@ -125,6 +129,17 @@ function hub_validate_storage_input(array $input): array
     }
     if (isset($input['AIHUB_AUTO_BUILD_MISSING_IMAGE']) && !in_array((string)$input['AIHUB_AUTO_BUILD_MISSING_IMAGE'], ['0', '1'], true)) {
         $errors[] = 'AIHUB_AUTO_BUILD_MISSING_IMAGE 必須是 0 或 1。';
+    }
+    foreach (['AIHUB_REQUIRE_API_TOKEN', 'AIHUB_LOCALHOST_BYPASS_TOKEN', 'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST'] as $key) {
+        if (isset($input[$key]) && !in_array((string)$input[$key], ['0', '1'], true)) {
+            $errors[] = $key . ' 必須是 0 或 1。';
+        }
+    }
+    if (isset($input['AIHUB_TOKEN_DEFAULT_VALID_DAYS'])) {
+        $days = trim((string)$input['AIHUB_TOKEN_DEFAULT_VALID_DAYS']);
+        if ($days === '' || !ctype_digit($days) || (int)$days > 3650) {
+            $errors[] = 'AIHUB_TOKEN_DEFAULT_VALID_DAYS 必須是 0 到 3650 的整數。';
+        }
     }
 
     return $errors;

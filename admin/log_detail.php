@@ -27,8 +27,9 @@ hub_admin_header('Log Detail', $user);
     <table>
         <?php foreach ([
             'request_id', 'created_at', 'client_ip', 'mode', 'service_id', 'service_name', 'service_key',
+            'member_id', 'member_name', 'token_id', 'token_name', 'token_prefix',
             'method', 'request_uri', 'status_code', 'ok', 'error_code', 'reason', 'elapsed_ms', 'user_agent',
-            'service_status',
+            'upload_bytes', 'response_bytes', 'service_status',
         ] as $key): ?>
             <tr>
                 <th><?= hub_h($key) ?></th>

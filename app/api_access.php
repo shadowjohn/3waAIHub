@@ -187,18 +187,20 @@ function hub_new_request_id(): string
     return 'req_' . date('YmdHis') . '_' . bin2hex(random_bytes(3));
 }
 
-function hub_log_api_access(PDO $db, ?array $service, string $mode, int $status, bool $ok, ?string $errorCode, ?string $reason, int $elapsedMs, ?string $requestId = null): void
+function hub_log_api_access(PDO $db, ?array $service, string $mode, int $status, bool $ok, ?string $errorCode, ?string $reason, int $elapsedMs, ?string $requestId = null, array $authContext = [], int $uploadBytes = 0, int $responseBytes = 0): void
 {
     try {
         $stmt = $db->prepare(
             'INSERT INTO api_access_logs
-                (request_id, service_id, mode, client_ip, method, request_uri, status_code, ok, error_code, reason, user_agent, elapsed_ms, created_at)
+                (request_id, service_id, member_id, token_id, mode, client_ip, method, request_uri, status_code, ok, error_code, reason, user_agent, elapsed_ms, upload_bytes, response_bytes, created_at)
              VALUES
-                (:request_id, :service_id, :mode, :client_ip, :method, :request_uri, :status_code, :ok, :error_code, :reason, :user_agent, :elapsed_ms, :created_at)'
+                (:request_id, :service_id, :member_id, :token_id, :mode, :client_ip, :method, :request_uri, :status_code, :ok, :error_code, :reason, :user_agent, :elapsed_ms, :upload_bytes, :response_bytes, :created_at)'
         );
         $stmt->execute([
             ':request_id' => $requestId,
             ':service_id' => $service ? (int)$service['id'] : null,
+            ':member_id' => isset($authContext['member_id']) ? (int)$authContext['member_id'] : null,
+            ':token_id' => isset($authContext['token_id']) ? (int)$authContext['token_id'] : null,
             ':mode' => $mode,
             ':client_ip' => substr(hub_get_client_ip(), 0, 128),
             ':method' => substr((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'), 0, 16),
@@ -209,8 +211,11 @@ function hub_log_api_access(PDO $db, ?array $service, string $mode, int $status,
             ':reason' => $reason === null ? null : substr($reason, 0, 1024),
             ':user_agent' => substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 512),
             ':elapsed_ms' => $elapsedMs,
+            ':upload_bytes' => $uploadBytes,
+            ':response_bytes' => $responseBytes,
             ':created_at' => hub_now(),
         ]);
+        hub_record_api_token_usage($db, $authContext, $mode, $ok, $elapsedMs, $uploadBytes, $responseBytes);
     } catch (Throwable) {
         // ponytail: API logging must never break the API response.
     }
@@ -220,9 +225,11 @@ function hub_list_api_access_logs(PDO $db, array $filters = [], int $limit = 100
 {
     [$where, $params] = hub_api_access_log_where($filters);
     $stmt = $db->prepare(
-        'SELECT l.*, s.name AS service_name
+        'SELECT l.*, s.name AS service_name, m.name AS member_name, t.token_name, t.token_prefix
          FROM api_access_logs l
          LEFT JOIN services s ON s.id = l.service_id
+         LEFT JOIN api_members m ON m.id = l.member_id
+         LEFT JOIN api_tokens t ON t.id = l.token_id
          ' . $where . '
          ORDER BY l.id DESC
          LIMIT :limit OFFSET :offset'
@@ -240,9 +247,12 @@ function hub_list_api_access_logs(PDO $db, array $filters = [], int $limit = 100
 function hub_get_api_access_log(PDO $db, int $id): ?array
 {
     $stmt = $db->prepare(
-        'SELECT l.*, s.name AS service_name, s.service_key, s.status AS service_status, s.enabled AS service_enabled
+        'SELECT l.*, s.name AS service_name, s.service_key, s.status AS service_status, s.enabled AS service_enabled,
+                m.name AS member_name, t.token_name, t.token_prefix
          FROM api_access_logs l
          LEFT JOIN services s ON s.id = l.service_id
+         LEFT JOIN api_members m ON m.id = l.member_id
+         LEFT JOIN api_tokens t ON t.id = l.token_id
          WHERE l.id = :id'
     );
     $stmt->execute([':id' => $id]);
@@ -303,6 +313,14 @@ function hub_api_access_log_where(array $filters): array
     if ((int)($filters['service_id'] ?? 0) > 0) {
         $where[] = 'l.service_id = :service_id';
         $params[':service_id'] = (int)$filters['service_id'];
+    }
+    if ((int)($filters['member_id'] ?? 0) > 0) {
+        $where[] = 'l.member_id = :member_id';
+        $params[':member_id'] = (int)$filters['member_id'];
+    }
+    if ((int)($filters['token_id'] ?? 0) > 0) {
+        $where[] = 'l.token_id = :token_id';
+        $params[':token_id'] = (int)$filters['token_id'];
     }
     $keyword = trim((string)($filters['keyword'] ?? ''));
     if ($keyword !== '') {
