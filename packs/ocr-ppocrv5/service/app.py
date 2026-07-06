@@ -11,7 +11,7 @@ app = FastAPI(title="3waAIHub PP-OCRv5 Mock")
 
 
 def runtime_level() -> str:
-    return "L3-storage-mount"
+    return "L4a-model-init-smoke"
 
 
 def storage_path_status(path: str) -> dict[str, Any]:

@@ -692,3 +692,38 @@ Skipped:
 - model download.
 - real OCR inference.
 - PDF OCR.
+
+## PhaseM-2A-L4a PP-OCRv5 Model Init Smoke
+
+Advanced `ocr-ppocrv5` from L3 `storage_mount` to L4a `model_init_smoke`.
+
+Implemented:
+
+- runtime_level = `L4a-model-init-smoke`.
+- Added CPU `paddlepaddle` runtime dependency for PaddleOCR initialization.
+- Added manual `model_smoke.py`.
+- `model_smoke.py` initializes `PaddleOCR(...)` without OCR image work.
+- `model_smoke.py` pins `PADDLEOCR_HOME`, `XDG_CACHE_HOME`, and `HOME` to mounted storage.
+- `model_smoke.py` reports allowed model/cache/service_data writes and suspicious `/root` / `/app` writes.
+- `/health` remains lightweight storage health.
+- `/ocr/image` remains mock JSON with runtime_level.
+
+Verified:
+
+- Docker build PASS.
+- PaddleOCR import smoke PASS.
+- `ocr-main` restart PASS.
+- `/health` PASS.
+- `model_smoke.py` PASS.
+- PaddleOCR model files landed under `/cache/paddleocr/home/.paddlex`.
+- No new files under `/root` or `/app`.
+- direct `/ocr/image` PASS.
+- gateway `api.php?mode=ocr` PASS.
+- `token_api_smoke.php` PASS.
+
+Skipped:
+
+- startup preload.
+- HTTP model smoke endpoint.
+- real OCR inference.
+- PDF OCR.

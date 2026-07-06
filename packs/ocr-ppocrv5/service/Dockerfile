@@ -24,7 +24,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel \
     && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 
-COPY smoke.py storage_smoke.py .
+COPY smoke.py storage_smoke.py model_smoke.py .
 RUN python3 smoke.py
 
 COPY app.py .

@@ -6,10 +6,10 @@
   "category": "ocr",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L3-storage-mount",
+  "runtime_level": "L4a-model-init-smoke",
   "runtime_ready": true,
   "default_mode": "ocr",
-  "description": "GPU-ready OCR mock service with PaddleOCR dependency and storage mount smoke.",
+  "description": "GPU-ready OCR mock service with PaddleOCR model initialization smoke.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",

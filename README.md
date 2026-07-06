@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` GPU-ready L3 storage-mount mock API，以及 `translate-gemma12b` Ollama L1 adapter。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` GPU-ready L4a model-init mock API，以及 `translate-gemma12b` Ollama L1 adapter。
 
 ## 功能
 
@@ -411,23 +411,24 @@ http://localhost/3waAIHub/admin/packs.php
 
 ### ocr-ppocrv5 Runtime Level
 
-`ocr-ppocrv5` 目前停在 L3 `storage_mount`：
+`ocr-ppocrv5` 目前停在 L4a `model_init_smoke`：
 
 - Docker image 可 build
 - container 可啟動
-- `GET /health` 回 ok，並帶 `runtime_level=L3-storage-mount` 與 storage 狀態
+- `GET /health` 回 ok，並帶 `runtime_level=L4a-model-init-smoke` 與 storage 狀態
 - `POST /ocr/image` 支援圖片上傳並回 mock OCR JSON，仍不做真 OCR
 - `api.php?mode=ocr` 可透過 gateway proxy 到 service
 - image 使用 NVIDIA CUDA 12.9 runtime base
-- Docker build 階段安裝 FastAPI runtime、PaddleOCR dependency，並執行 `pip check`
+- Docker build 階段安裝 FastAPI runtime、PaddleOCR / PaddlePaddle dependency，並執行 `pip check`
 - Docker build 階段執行 `python3 smoke.py`，只驗證 `paddleocr` / `fastapi` import 成功
 - runtime 掛載 `${AIHUB_MODELS_DIR}/paddleocr:/models/paddleocr`
 - runtime 掛載 `${AIHUB_CACHE_DIR}/paddleocr:/cache/paddleocr`
 - runtime 掛載 `${SERVICE_DATA_DIR}:/data/service`
 - `storage_smoke.py` 可在 container 內檢查三個目錄是否存在、可讀、可寫
+- `model_smoke.py` 可手動初始化 PaddleOCR，檢查模型/cache 是否落在掛載目錄，並偵測 `/root` / `/app` 可疑寫入
 - generated compose 會加入 `gpus: all`
 
-這一版尚未下載模型、尚未初始化 PaddleOCR model、尚未做真實 OCR 推論；L4 才處理真實 OCR。
+這一版尚未做真實 OCR 推論；L4b 才處理圖片辨識與結果格式。
 
 ### translate-gemma12b Runtime Level
 

@@ -20,7 +20,7 @@ hub_test('catalog and required packs are readable', function (): void {
     }
 
     $ocr = hub_get_pack('ocr-ppocrv5')['manifest'];
-    hub_test_assert($ocr['runtime_level'] === 'L3-storage-mount', 'OCR runtime level mismatch');
+    hub_test_assert($ocr['runtime_level'] === 'L4a-model-init-smoke', 'OCR runtime level mismatch');
     hub_test_assert($ocr['runtime_ready'] === true, 'OCR runtime ready mismatch');
     hub_test_assert($ocr['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
     $ocrMounts = [];
