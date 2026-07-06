@@ -55,10 +55,11 @@ function hub_execute_command_job(PDO $db, array $job): array
     }
 
     return match ($action) {
-        'service_start', 'service_install' => hub_start_service($db, $service),
+        'service_start', 'service_install' => hub_start_service_with_job($db, $service, $job),
+        'service_build' => hub_build_service($db, $service, $job),
         'service_stop' => hub_stop_service($db, $service),
         'service_restart' => hub_restart_service($db, $service),
-        'service_rebuild' => hub_run_command(hub_compose_command($service, ['build', '--no-cache']), 900, hub_compose_env($service)),
+        'service_rebuild' => hub_build_service($db, $service, $job),
         'service_logs_collect' => hub_tail_service_logs($db, $service),
         'service_health_check' => ['exit_code' => 0, 'stdout' => 'status=' . hub_refresh_service_status($db, $service), 'stderr' => ''],
         'env_probe' => hub_run_env_probe_job($db),

@@ -20,6 +20,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'AIHUB_LOGS_DIR' => trim((string)($_POST['AIHUB_LOGS_DIR'] ?? '')),
             'AIHUB_DOCKER_PORT_START' => trim((string)($_POST['AIHUB_DOCKER_PORT_START'] ?? '')),
             'AIHUB_DOCKER_PORT_END' => trim((string)($_POST['AIHUB_DOCKER_PORT_END'] ?? '')),
+            'AIHUB_AUTO_BUILD_MISSING_IMAGE' => trim((string)($_POST['AIHUB_AUTO_BUILD_MISSING_IMAGE'] ?? '1')),
         ];
         $errors = hub_validate_storage_input($input);
         if ($errors) {
@@ -102,6 +103,11 @@ hub_admin_header('設定', $user);
         <input name="AIHUB_DOCKER_PORT_START" value="<?= hub_h($storage['AIHUB_DOCKER_PORT_START']) ?>" required>
         <label>Docker local port end</label>
         <input name="AIHUB_DOCKER_PORT_END" value="<?= hub_h($storage['AIHUB_DOCKER_PORT_END']) ?>" required>
+        <label>Start 時 image 不存在自動 Build</label>
+        <select name="AIHUB_AUTO_BUILD_MISSING_IMAGE">
+            <option value="1"<?= $storage['AIHUB_AUTO_BUILD_MISSING_IMAGE'] === '1' ? ' selected' : '' ?>>是</option>
+            <option value="0"<?= $storage['AIHUB_AUTO_BUILD_MISSING_IMAGE'] === '0' ? ' selected' : '' ?>>否</option>
+        </select>
         <p><button class="primary" type="submit">儲存 Storage Settings</button></p>
     </form>
 </section>

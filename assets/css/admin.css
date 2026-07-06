@@ -5,3 +5,32 @@
 .ajax-job-new {
     background: #f0f9ff;
 }
+
+.service-job {
+    margin-top: 10px;
+}
+
+.job-progress {
+    background: #e4e7ec;
+    border-radius: 999px;
+    height: 10px;
+    overflow: hidden;
+}
+
+.job-progress span {
+    background: #1769e0;
+    display: block;
+    height: 100%;
+    transition: width .2s ease;
+}
+
+.job-meta {
+    font-size: 12px;
+    margin-top: 6px;
+}
+
+.job-tail {
+    font-size: 12px;
+    max-height: 180px;
+    margin: 8px 0 0;
+}

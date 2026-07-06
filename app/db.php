@@ -87,6 +87,9 @@ CREATE TABLE IF NOT EXISTS command_jobs (
     service_id INTEGER NULL,
     args_json TEXT NULL,
     status TEXT NOT NULL DEFAULT 'queued',
+    progress INTEGER NOT NULL DEFAULT 0,
+    stage TEXT NULL,
+    current_message TEXT NULL,
     requested_by INTEGER NULL,
     requested_ip TEXT NULL,
     lock_token TEXT NULL,
@@ -215,6 +218,9 @@ SQL);
     hub_add_column_if_missing($db, 'services', 'environment_json', 'TEXT NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'request_id', 'TEXT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'command_jobs', 'progress', 'INTEGER NOT NULL DEFAULT 0');
+    hub_add_column_if_missing($db, 'command_jobs', 'stage', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'command_jobs', 'current_message', 'TEXT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_service_key ON services(service_key) WHERE service_key IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_local_port ON services(local_port) WHERE local_port IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_service_ip_whitelists_unique ON service_ip_whitelists(service_id, ip_rule)');

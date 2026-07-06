@@ -82,6 +82,29 @@ data/services/hello-main/
 ```
 
 後台按鈕只會排入 `command_jobs`，真正 Docker 指令由 CLI worker 執行。
+服務頁會每 2 秒輪詢 `admin/job_status.php`，顯示 queued / running job 的 progress、stage、current message 與 stdout/stderr tail。
+
+Docker 操作已拆分：
+
+- `Build`：只執行 `docker compose build --progress=plain`
+- `Start`：image 已存在時只執行 `docker compose up -d`，不會自動加 `--build`
+- `Rebuild`：明確重新 build image，目前不加 `--no-cache`
+- `Restart`：只執行 `docker compose restart`
+- `Stop`：沿用 compose down 策略
+
+generated compose 會使用固定 image tag：
+
+```text
+3waaihub-{service_key}:{pack_version}
+```
+
+例如：
+
+```text
+3waaihub-ocr-main:0.1.0
+```
+
+`Start` 會用 `docker image inspect <image>` 檢查 image 是否存在。若 image 不存在，`AIHUB_AUTO_BUILD_MISSING_IMAGE=1` 會在同一個 start job 先 Build 再 Start；設為 `0` 時，start job 會提示先 Build。
 
 1. 進入後台服務頁：
 

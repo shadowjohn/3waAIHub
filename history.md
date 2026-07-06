@@ -531,3 +531,25 @@ Skipped:
 - Building and starting the YOLO / SAM3 Docker images.
 - Async queue.
 - Mask artifact export.
+
+## PhaseP-1 Pack Build Progress
+
+Added command job progress for Docker pack installs/builds.
+
+Implemented:
+
+- Added `command_jobs.progress`, `stage`, and `current_message`.
+- Added `admin/job_status.php` JSON endpoint with stdout/stderr tail.
+- Added service build progress UI on `admin/services.php`.
+- Split Build / Start / Rebuild behavior.
+- Start no longer always rebuilds Docker image.
+- Added image exists check with fixed generated image tag.
+- Docker build uses `docker compose build --progress=plain`.
+- Added `AIHUB_AUTO_BUILD_MISSING_IMAGE=1`.
+
+Skipped:
+
+- prebuilt image fields.
+- GHCR / local registry / registry mirror.
+- WebSocket / SSE.
+- real PaddleOCR / TranslateGemma changes.

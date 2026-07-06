@@ -21,6 +21,7 @@ function hub_default_storage_settings(): array
         'AIHUB_DEFAULT_ALLOW_EXTERNAL_API' => '0',
         'AIHUB_API_ACCESS_LOG_RETENTION_DAYS' => '30',
         'AIHUB_API_LOG_SUCCESS_SAMPLE_RATE' => '1',
+        'AIHUB_AUTO_BUILD_MISSING_IMAGE' => '1',
     ];
 }
 
@@ -121,6 +122,9 @@ function hub_validate_storage_input(array $input): array
     $end = (int)($input['AIHUB_DOCKER_PORT_END'] ?? 0);
     if ($start < 1024 || $end > 65535 || $start >= $end) {
         $errors[] = 'Docker local port start/end 不合法。';
+    }
+    if (isset($input['AIHUB_AUTO_BUILD_MISSING_IMAGE']) && !in_array((string)$input['AIHUB_AUTO_BUILD_MISSING_IMAGE'], ['0', '1'], true)) {
+        $errors[] = 'AIHUB_AUTO_BUILD_MISSING_IMAGE 必須是 0 或 1。';
     }
 
     return $errors;

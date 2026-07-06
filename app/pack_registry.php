@@ -429,13 +429,15 @@ function hub_pack_requests_gpu(array $manifest): bool
 function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort): string
 {
     $manifest = $pack['manifest'];
-    $composeService = $serviceKey;
+    $composeService = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? 'hello' : $serviceKey;
     $containerName = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? '3waaihub-hello' : '3waaihub-' . $serviceKey;
     $portEnv = hub_pack_port_env($manifest);
     $buildContext = $pack['dir'] . '/service';
+    $imageTag = hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
 
     $compose = "services:\n"
         . "  {$composeService}:\n"
+        . "    image: {$imageTag}\n"
         . "    build:\n"
         . "      context: {$buildContext}\n"
         . "    container_name: {$containerName}\n"
@@ -461,6 +463,12 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     }
 
     return $compose;
+}
+
+function hub_pack_image_tag(string $serviceKey, string $packVersion): string
+{
+    $tag = preg_replace('/[^A-Za-z0-9_.-]/', '-', $packVersion) ?: 'latest';
+    return '3waaihub-' . $serviceKey . ':' . $tag;
 }
 
 function hub_ensure_pack_storage_dirs(array $manifest, string $serviceKey, array $storage, ?string $serviceDir = null): void
