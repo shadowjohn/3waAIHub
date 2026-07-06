@@ -15,6 +15,12 @@ curl "http://localhost/3waAIHub/api.php?mode=hello" \
   -H "Authorization: Bearer 3wa_live_xxx"
 ```
 
+可先跑 token API smoke，確認建立 token、授權 OCR、curl 呼叫、Log Explorer 查詢與 usage aggregate 都正常：
+
+```bash
+php scripts/token_api_smoke.php
+```
+
 ## GET hello
 
 ```bash

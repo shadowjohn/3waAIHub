@@ -360,6 +360,14 @@ API 範例文件：
 docs/api_examples.md
 ```
 
+PhaseS-4.1 token API smoke：
+
+```bash
+php /DATA/3waAIHub/scripts/token_api_smoke.php
+```
+
+這支 smoke 會用臨時 SQLite DB、臨時 PHP app server 與 OCR mock server，建立 member/token、授權 `mode=ocr`、設定 token IP whitelist，然後用 `curl` 帶 Bearer token 呼叫 `api.php?mode=ocr`，最後檢查 Log Explorer 查詢資料與 daily usage aggregate。
+
 ## Local HubPack Catalog
 
 HubPack 是模板，HubService 是安裝後的 service instance。同一個 pack 可以安裝多次，每次使用不同的 `service_key` / `mode` / `local_port`。
