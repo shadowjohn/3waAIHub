@@ -56,12 +56,20 @@
           "type": "boolean",
           "required": false,
           "default": "0"
+        },
+        {
+          "name": "output_format",
+          "type": "string",
+          "required": false,
+          "default": "metadata",
+          "enum": ["metadata", "polygon", "rle", "both"]
         }
       ]
     },
     "output": {
-      "required_keys": ["ok", "mock", "runtime_level", "prompt_type", "masks", "elapsed_ms"],
-      "mask_keys": ["id", "score", "bbox", "area"]
+      "required_keys": ["ok", "mock", "runtime_level", "prompt_type", "output_format", "masks", "elapsed_ms"],
+      "mask_keys": ["id", "score", "bbox", "area"],
+      "mask_optional_keys": ["polygon", "rle"]
     },
     "errors": [
       "bad_request",
@@ -70,6 +78,9 @@
       "runtime_dependency_missing",
       "bad_image",
       "invalid_prompt",
+      "invalid_output_format",
+      "polygon_extract_failed",
+      "rle_encode_failed",
       "gpu_unavailable",
       "inference_failed",
       "inference_timeout"
@@ -89,7 +100,7 @@
           "mode": "sam3",
           "method": "POST",
           "fixture": "packs/sam3/demo/camera_cat.png",
-          "expected_keys": ["ok", "mock", "runtime_level", "prompt_type", "masks", "elapsed_ms"],
+          "expected_keys": ["ok", "mock", "runtime_level", "prompt_type", "output_format", "masks", "elapsed_ms"],
           "expected_mock": true
         },
         {
@@ -99,10 +110,27 @@
           "mode": "sam3",
           "method": "POST",
           "fixture": "packs/sam3/demo/camera_cat.png",
-          "expected_keys": ["ok", "mock", "runtime_level", "model", "prompt_type", "masks", "elapsed_ms"],
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "prompt_type", "output_format", "masks", "elapsed_ms"],
           "expected_mock": false,
           "expected_elapsed_ms_positive": true,
           "expected_model_checkpoint": true,
+          "real_inference": true
+        },
+        {
+          "id": "sam3_real_polygon_image",
+          "name": "SAM3 real image polygon smoke",
+          "type": "api",
+          "mode": "sam3",
+          "method": "POST",
+          "fixture": "packs/sam3/demo/camera_cat.png",
+          "form": {
+            "output_format": "polygon"
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "prompt_type", "output_format", "masks", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_elapsed_ms_positive": true,
+          "expected_model_checkpoint": true,
+          "expected_mask_key": "polygon",
           "real_inference": true
         }
       ]
@@ -115,6 +143,9 @@
     "runtime_dependency_missing",
     "bad_image",
     "invalid_prompt",
+    "invalid_output_format",
+    "polygon_extract_failed",
+    "rle_encode_failed",
     "gpu_unavailable",
     "inference_failed",
     "inference_timeout"
@@ -203,6 +234,32 @@
       "required": true,
       "restart_required": true,
       "help": "Enable single-image SAM3 real inference smoke."
+    },
+    {
+      "key": "SAM3_POLYGON_EPSILON",
+      "label": "Polygon epsilon",
+      "type": "number",
+      "default": "2.0",
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "SAM3_MAX_POLYGON_POINTS",
+      "label": "Max polygon points",
+      "type": "integer",
+      "default": "2000",
+      "min": 10,
+      "max": 100000,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "SAM3_MIN_CONTOUR_AREA",
+      "label": "Min contour area",
+      "type": "number",
+      "default": "16",
+      "required": true,
+      "restart_required": false
     }
   ],
   "env": [
@@ -229,6 +286,21 @@
     {
       "name": "SAM3_REAL_INFERENCE",
       "default": "0",
+      "required": true
+    },
+    {
+      "name": "SAM3_POLYGON_EPSILON",
+      "default": "2.0",
+      "required": true
+    },
+    {
+      "name": "SAM3_MAX_POLYGON_POINTS",
+      "default": "2000",
+      "required": true
+    },
+    {
+      "name": "SAM3_MIN_CONTOUR_AREA",
+      "default": "16",
       "required": true
     }
   ],

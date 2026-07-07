@@ -1,5 +1,27 @@
 # 3waAIHub History
 
+## PhaseM-2D-L5.1 SAM3 Mask Geometry Output
+
+Added optional SAM3 mask geometry output without adding a viewer or artifacts.
+
+Implemented:
+
+- `/segment/image` now accepts `output_format=metadata|polygon|rle|both`.
+- Default output remains `metadata` to keep existing benchmarks small.
+- Real inference masks can include `polygon` and raw uncompressed RLE `rle`.
+- `prompt_type=points` now validates `points_json={"points":[[x,y]],"labels":[1]}`.
+- Playground adds `points_json` and `output_format` controls for SAM3.
+- API Docs and examples include polygon / points prompt curl examples.
+- Added `sam3_real_polygon_image` benchmark case.
+- Added `geometry.py` and `geometry_smoke.py` for mask geometry helpers.
+
+Skipped:
+
+- Mask PNG artifacts.
+- Overlay viewer.
+- Batch/video segmentation.
+- COCO compressed RLE / pycocotools.
+
 ## PhaseDX-2.3 API Docs Current Host and Real Inference UX
 
 Polished API onboarding examples and Playground defaults.

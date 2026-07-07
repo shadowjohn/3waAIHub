@@ -13,11 +13,14 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, UnidentifiedImageError
 
+from geometry import polygon_from_mask, rle_from_mask
+
 app = FastAPI(title="3waAIHub SAM3")
 MODEL_EXTENSIONS = {".pt", ".pth", ".safetensors", ".ckpt"}
 MIN_CHECKPOINT_BYTES = 1024 * 1024  # ponytail: catches fake smoke files; real validation happens at SAM load.
 _SAM_MODEL: Any | None = None
 _SAM_CHECKPOINT = ""
+OUTPUT_FORMATS = {"metadata", "polygon", "rle", "both"}
 
 
 class Sam3Error(Exception):
@@ -336,6 +339,43 @@ def parse_json(value: str, fallback: Any) -> Any:
         raise Sam3Error("invalid_prompt", "Prompt JSON is invalid.", 400) from exc
 
 
+def normalize_output_format(value: str) -> str:
+    output_format = (value or "metadata").strip().lower()
+    if output_format not in OUTPUT_FORMATS:
+        raise Sam3Error("invalid_output_format", "output_format must be metadata, polygon, rle, or both.", 400)
+    return output_format
+
+
+def parse_points_prompt(value: str) -> tuple[list[list[float]], list[int] | None]:
+    payload = parse_json(value, {})
+    if isinstance(payload, dict):
+        points = payload.get("points")
+        labels = payload.get("labels")
+    else:
+        points = payload
+        labels = None
+
+    if not isinstance(points, list) or not points:
+        raise Sam3Error("invalid_prompt", 'points prompt requires points_json like {"points":[[320,240]],"labels":[1]}.', 400)
+    normalized: list[list[float]] = []
+    for point in points:
+        if not isinstance(point, list) or len(point) != 2:
+            raise Sam3Error("invalid_prompt", "points_json points must be [x,y] pairs.", 400)
+        try:
+            normalized.append([float(point[0]), float(point[1])])
+        except (TypeError, ValueError) as exc:
+            raise Sam3Error("invalid_prompt", "points_json points must be numeric.", 400) from exc
+
+    if labels is None:
+        return normalized, None
+    if not isinstance(labels, list) or len(labels) != len(normalized):
+        raise Sam3Error("invalid_prompt", "points_json labels length must match points.", 400)
+    try:
+        return normalized, [int(label) for label in labels]
+    except (TypeError, ValueError) as exc:
+        raise Sam3Error("invalid_prompt", "points_json labels must be integers.", 400) from exc
+
+
 def to_numpy(value: Any) -> np.ndarray:
     if hasattr(value, "detach"):
         value = value.detach()
@@ -358,7 +398,7 @@ def score_at(result: Any, index: int) -> float:
         return 0.0
 
 
-def mask_items(results: Any) -> list[dict[str, Any]]:
+def mask_items(results: Any, output_format: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for result in results or []:
         masks = getattr(result, "masks", None)
@@ -375,16 +415,27 @@ def mask_items(results: Any) -> list[dict[str, Any]]:
                 continue
             x1, x2 = int(xs.min()), int(xs.max())
             y1, y2 = int(ys.min()), int(ys.max())
-            items.append({
+            item: dict[str, Any] = {
                 "id": len(items) + 1,
                 "score": score_at(result, index),
                 "bbox": [x1, y1, x2 - x1 + 1, y2 - y1 + 1],
                 "area": int(bitmap.sum()),
-            })
+            }
+            if output_format in {"polygon", "both"}:
+                try:
+                    item["polygon"] = polygon_from_mask(bitmap)
+                except Exception as exc:
+                    raise Sam3Error("polygon_extract_failed", safe_message(exc), 502) from exc
+            if output_format in {"rle", "both"}:
+                try:
+                    item["rle"] = rle_from_mask(bitmap)
+                except Exception as exc:
+                    raise Sam3Error("rle_encode_failed", safe_message(exc), 502) from exc
+            items.append(item)
     return items
 
 
-def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points_json: str, boxes_json: str) -> dict[str, Any]:
+def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points_json: str, boxes_json: str, output_format: str) -> dict[str, Any]:
     if prompt_type not in {"auto", "points", "boxes"}:
         raise Sam3Error("invalid_prompt", "prompt_type must be auto, points, or boxes.", 400)
 
@@ -392,10 +443,10 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
     model = sam_model(checkpoint)
     kwargs: dict[str, Any] = {"source": str(image_path), "device": effective_device(), "verbose": False}
     if prompt_type == "points":
-        points = parse_json(points_json, [])
-        if not points:
-            raise Sam3Error("invalid_prompt", "points prompt requires points_json.", 400)
+        points, labels = parse_points_prompt(points_json)
         kwargs["points"] = points
+        if labels is not None:
+            kwargs["labels"] = labels
     elif prompt_type == "boxes":
         boxes = parse_json(boxes_json, [])
         if not boxes:
@@ -421,8 +472,9 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
         "runtime_level": runtime_level(),
         "model": {"checkpoint": str(checkpoint)},
         "prompt_type": prompt_type,
+        "output_format": output_format,
         "image": {"width": width, "height": height},
-        "masks": mask_items(results),
+        "masks": mask_items(results, output_format),
         "elapsed_ms": int(round((time.perf_counter() - started) * 1000)),
     }
 
@@ -433,11 +485,16 @@ async def segment_image(
     prompt_type: str = Form("auto"),
     points_json: str = Form(""),
     boxes_json: str = Form(""),
+    output_format: str = Form("metadata"),
     real_inference: str = Form("0"),
 ) -> JSONResponse:
     data = await image.read()
     if not data:
         return error_response(400, "bad_image", "image is required")
+    try:
+        normalized_output_format = normalize_output_format(output_format)
+    except Sam3Error as exc:
+        return error_response(exc.status_code, exc.code, exc.message)
 
     if env_enabled(real_inference) or env_enabled(os.getenv("SAM3_REAL_INFERENCE")):
         image_path: Path | None = None
@@ -447,7 +504,7 @@ async def segment_image(
             with tempfile.NamedTemporaryFile(prefix="sam3-", suffix=suffix, delete=False) as handle:
                 handle.write(data)
                 image_path = Path(handle.name)
-            return JSONResponse(content=run_sam3(image_path, width, height, prompt_type or "auto", points_json, boxes_json))
+            return JSONResponse(content=run_sam3(image_path, width, height, prompt_type or "auto", points_json, boxes_json, normalized_output_format))
         except Sam3Error as exc:
             return error_response(exc.status_code, exc.code, exc.message)
         finally:
@@ -459,6 +516,7 @@ async def segment_image(
         "mock": True,
         "runtime_level": runtime_level(),
         "prompt_type": prompt_type or "auto",
+        "output_format": normalized_output_format,
         "masks": [],
         "boxes": [],
         "elapsed_ms": 0,

@@ -8,6 +8,9 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     foreach (['API 測試場', '選擇服務', '執行測試', '回應結果', '複製 curl', '複製 PHP', '複製 JS fetch'] as $label) {
         hub_test_assert(str_contains($page, $label), 'playground missing label ' . $label);
     }
+    foreach (['name="output_format"', 'metadata', 'polygon', 'rle', 'both', 'name="points_json"', '{"points":[[320,240]],"labels":[1]}'] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'playground missing SAM3 geometry control ' . $needle);
+    }
     foreach (['服務尚未執行', '服務健康檢查失敗', 'Gateway 呼叫逾時', 'Token 無效或無權限', '後端服務無法連線'] as $label) {
         hub_test_assert(str_contains($page, $label), 'playground readiness/error label missing ' . $label);
     }

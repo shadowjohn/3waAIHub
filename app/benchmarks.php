@@ -89,7 +89,11 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         ],
     ] : [];
     $realInference = !empty($case['real_inference']);
-    $_POST = $hasFixture && $realInference ? ['real_inference' => '1'] : [];
+    $form = is_array($case['form'] ?? null) ? array_map('strval', $case['form']) : [];
+    if ($hasFixture && $realInference) {
+        $form['real_inference'] = '1';
+    }
+    $_POST = $hasFixture ? $form : [];
 
     try {
         $response = hub_gateway_dispatch(
@@ -144,6 +148,9 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         $contractFailed = true;
     }
     if (!empty($case['expected_model_checkpoint']) && trim((string)($payload['model']['checkpoint'] ?? '')) === '') {
+        $contractFailed = true;
+    }
+    if (isset($case['expected_mask_key']) && $maskCount > 0 && !array_key_exists((string)$case['expected_mask_key'], $payload['masks'][0] ?? [])) {
         $contractFailed = true;
     }
     $device = is_array($payload['device'] ?? null) ? $payload['device'] : [];
@@ -233,6 +240,7 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
             'mock' => true,
             'runtime_level' => $runtimeLevel,
             'prompt_type' => 'auto',
+            'output_format' => 'metadata',
             'masks' => [],
             'elapsed_ms' => 0,
         ];

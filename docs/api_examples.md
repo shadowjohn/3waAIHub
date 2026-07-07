@@ -166,7 +166,7 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
 
 ## POST SAM3
 
-Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。
+Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。`output_format=metadata|polygon|rle|both` 可選 mask geometry；RLE 第一版是 raw uncompressed row-major counts。
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
@@ -180,7 +180,20 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto" \
-  -F "real_inference=1"
+  -F "real_inference=1" \
+  -F "output_format=polygon"
+```
+
+Points prompt:
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
+  -F "prompt_type=points" \
+  -F 'points_json={"points":[[320,240]],"labels":[1]}' \
+  -F "real_inference=1" \
+  -F "output_format=both"
 ```
 
 Benchmark:
@@ -188,6 +201,7 @@ Benchmark:
 ```bash
 php scripts/benchmark.php --pack=sam3 --case=sam3_mock_image
 php scripts/benchmark.php --service=sam3-main --case=sam3_real_image
+php scripts/benchmark.php --service=sam3-main --case=sam3_real_polygon_image
 ```
 
 ## Unknown Mode

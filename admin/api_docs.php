@@ -123,7 +123,7 @@ hub_admin_header('API 文件', $user);
 </section>
 <section class="panel">
     <h2>POST Translate</h2>
-    <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code>.</p>
+    <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code>. Geometry output uses <code>output_format=metadata|polygon|rle|both</code>.</p>
     <h3>Mock mode</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
@@ -157,7 +157,16 @@ hub_admin_header('API 文件', $user);
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto" \
-  -F "real_inference=1"</pre>
+  -F "real_inference=1" \
+  -F "output_format=polygon"</pre>
+    <h3>Points prompt</h3>
+    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
+  -F "prompt_type=points" \
+  -F 'points_json={"points":[[320,240]],"labels":[1]}' \
+  -F "real_inference=1" \
+  -F "output_format=both"</pre>
 </section>
 <section class="panel">
     <h2>Unknown Mode</h2>

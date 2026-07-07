@@ -97,6 +97,8 @@ function hub_playground_request_payload(string $mode): array
     if ($mode === 'sam3') {
         return [
             'prompt_type' => trim((string)($_POST['prompt_type'] ?? 'auto')) ?: 'auto',
+            'points_json' => trim((string)($_POST['points_json'] ?? '')),
+            'output_format' => trim((string)($_POST['output_format'] ?? 'metadata')) ?: 'metadata',
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
     }
@@ -373,7 +375,7 @@ JS;
     }
 
     $field = 'image';
-    $extra = $mode === 'sam3' ? " \\\n  -F prompt_type=auto" : '';
+    $extra = $mode === 'sam3' ? " \\\n  -F prompt_type=auto \\\n  -F output_format=metadata" : '';
     $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: multipart/form-data\" \\\n  -F {$field}=@sample.png \\\n  -F real_inference=0{$extra}";
     $php = <<<PHP
 \$ch = curl_init($phpUrl);
@@ -385,6 +387,7 @@ curl_setopt_array(\$ch, [
         '$field' => new CURLFile('/path/to/sample.png'),
         'real_inference' => '0',
         'prompt_type' => 'auto',
+        'output_format' => 'metadata',
     ],
 ]);
 echo curl_exec(\$ch);
@@ -394,6 +397,7 @@ const form = new FormData();
 form.append('$field', fileInput.files[0]);
 form.append('real_inference', '0');
 form.append('prompt_type', 'auto');
+form.append('output_format', 'metadata');
 const res = await fetch($jsUrl, {
   method: 'POST',
   headers: { Authorization: 'Bearer <TOKEN>' },
@@ -524,6 +528,16 @@ hub_admin_header('API 測試場', $user);
                 <input name="image" type="file" accept="image/*">
                 <label>prompt_type</label>
                 <input name="prompt_type" value="auto">
+                <label>points_json</label>
+                <textarea name="points_json" rows="3" placeholder='{"points":[[320,240]],"labels":[1]}'></textarea>
+                <p class="muted">prompt_type=points 時填入，例如 <code>{"points":[[320,240]],"labels":[1]}</code></p>
+                <label>output_format</label>
+                <select name="output_format">
+                    <option value="metadata">metadata</option>
+                    <option value="polygon">polygon</option>
+                    <option value="rle">rle</option>
+                    <option value="both">both</option>
+                </select>
                 <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
             <?php else: ?>
                 <p class="muted">hello 使用 GET，不需要欄位。</p>

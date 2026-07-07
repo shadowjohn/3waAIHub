@@ -17,6 +17,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - API Members / Bearer token / mode permission / usage tracking
 - 後台 API 測試場，可用本機 gateway server-side 測 API，並產生目前 host 的 curl / PHP / JS fetch 範例
 - API 文件頁會依目前後台 host 產生 curl 範例，避免公開站仍顯示 localhost
+- SAM3 real inference 支援 `output_format=metadata|polygon|rle|both`
 - SQLite-backed demo task queue
 - HubPack registry 與 hello pack 安裝
 - Storage settings / model directory
@@ -369,6 +370,7 @@ php /DATA/3waAIHub/scripts/benchmark.php --pack=yolo --case=yolo_mock_image
 php /DATA/3waAIHub/scripts/benchmark.php --service=yolo-main --case=yolo_real_image
 php /DATA/3waAIHub/scripts/benchmark.php --pack=sam3 --case=sam3_mock_image
 php /DATA/3waAIHub/scripts/benchmark.php --service=sam3-main --case=sam3_real_image
+php /DATA/3waAIHub/scripts/benchmark.php --service=sam3-main --case=sam3_real_polygon_image
 ```
 
 後台頁：
@@ -559,6 +561,8 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 - `POST /segment/image` 支援 multipart 圖片上傳
 - prompt 使用 `prompt_type` / `points_json` / `boxes_json` form 欄位
 - 預設回 mock segmentation JSON，`real_inference=1` 會執行單張圖片真 inference smoke
+- `output_format=metadata|polygon|rle|both` 可選 mask metadata、polygon 或 raw uncompressed RLE
+- `prompt_type=points` 需提供 `points_json`，例如 `{"points":[[320,240]],"labels":[1]}`
 - `GET /health` 回 `runtime_level=L5-benchmark-ready`、storage 狀態、model present 狀態與 runtime dependency 狀態
 - runtime 掛載 `${AIHUB_MODELS_DIR}/sam3:/models/sam3`
 - runtime 掛載 `${AIHUB_CACHE_DIR}/sam3:/cache/sam3`
@@ -566,7 +570,7 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 - `storage_smoke.py` 可在 container 內檢查 models/cache/service_data 與 HuggingFace/Torch cache 目錄
 - `model_smoke.py` 可在 container 內檢查 `/models/sam3` checkpoint 是否存在且尺寸不像 smoke fake file
 - `inference_smoke.py` 可在 container 內驗證 `real_inference=1` 的單張圖片 smoke
-- `sam3_mock_image` / `sam3_real_image` benchmark 可驗 contract
+- `sam3_mock_image` / `sam3_real_image` / `sam3_real_polygon_image` benchmark 可驗 contract
 - `SAM3_CHECKPOINT` 可從 `/DATA/models/sam3/*.pt` / `*.pth` / `*.safetensors` / `*.ckpt` 選用
 - generated compose 會加入 `gpus: all`
 

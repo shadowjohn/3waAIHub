@@ -57,13 +57,15 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'sam3 target_level must be L5-benchmark-ready');
             hub_test_assert(($manifest['category'] ?? '') === 'vision', 'sam3 category must be vision');
             hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/segment/image', 'sam3 gateway endpoint mismatch');
-            foreach (['model_not_present', 'model_load_failed', 'runtime_dependency_missing', 'bad_image', 'invalid_prompt', 'gpu_unavailable', 'inference_failed', 'inference_timeout'] as $errorCode) {
+            foreach (['model_not_present', 'model_load_failed', 'runtime_dependency_missing', 'bad_image', 'invalid_prompt', 'invalid_output_format', 'polygon_extract_failed', 'rle_encode_failed', 'gpu_unavailable', 'inference_failed', 'inference_timeout'] as $errorCode) {
                 hub_test_assert(in_array($errorCode, $manifest['error_codes'] ?? [], true), 'sam3 error_codes missing ' . $errorCode);
             }
             hub_test_assert(is_file($base . '/smoke.py'), 'sam3 service missing smoke.py');
             hub_test_assert(is_file($base . '/storage_smoke.py'), 'sam3 service missing storage_smoke.py');
             hub_test_assert(is_file($base . '/model_smoke.py'), 'sam3 service missing model_smoke.py');
             hub_test_assert(is_file($base . '/inference_smoke.py'), 'sam3 service missing inference_smoke.py');
+            hub_test_assert(is_file($base . '/geometry.py'), 'sam3 service missing geometry.py');
+            hub_test_assert(is_file($base . '/geometry_smoke.py'), 'sam3 service missing geometry_smoke.py');
             foreach (['fastapi', 'python-multipart', 'pillow', 'numpy', 'requests'] as $needle) {
                 hub_test_assert(str_contains($requirements, $needle), 'sam3 requirements missing ' . $needle);
             }
@@ -80,6 +82,9 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             hub_test_assert(!str_contains($app, 'runtime_not_ready'), 'sam3 L5 real inference must not return runtime_not_ready');
             foreach (['SAM(', 'predict', 'run_sam3', 'MIN_CHECKPOINT_BYTES', 'checkpoint is too small'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 L5 app missing real inference path: ' . $needle);
+            }
+            foreach (['output_format', 'invalid_output_format', 'polygon_from_mask', 'rle_from_mask'] as $needle) {
+                hub_test_assert(str_contains($app, $needle), 'sam3 L5.1 app missing geometry output path: ' . $needle);
             }
             foreach (['YOLO(', 'download'] as $needle) {
                 hub_test_assert(!str_contains($app, $needle), 'sam3 app must not use YOLO/download: ' . $needle);
@@ -113,6 +118,11 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             foreach (['/segment/image', 'real_inference', 'mock', 'masks'] as $needle) {
                 hub_test_assert(str_contains($inferenceSmoke, $needle), 'sam3 inference_smoke.py missing ' . $needle);
             }
+
+            $geometryOutput = [];
+            $geometryExit = 0;
+            exec('cd ' . escapeshellarg($base) . ' && python3 geometry_smoke.py', $geometryOutput, $geometryExit);
+            hub_test_assert($geometryExit === 0, 'sam3 geometry_smoke.py must pass');
         }
     }
 });
