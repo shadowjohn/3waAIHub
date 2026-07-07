@@ -1,5 +1,26 @@
 # 3waAIHub History
 
+## PhaseUI-0 Pack Catalog Tabs + Localization
+
+Upgraded `admin/packs.php` from a single long table into a localized Pack Catalog view.
+
+Implemented:
+
+- Query-string tabs: `all`, `reference`, `vision`, `language`, `audio`, `utility`, `experimental`.
+- Traditional Chinese tab labels and card labels while keeping technical values such as `pack_id`, `mode`, `endpoint`, `runtime_level`, and `execution_type` in English.
+- Card layout showing runtime level, target level, endpoint, GPU/model requirement, installed service count, modes, and L5 readiness.
+- Reference Pack callout for `hello`.
+- Empty tab states in Traditional Chinese.
+- Links for API docs, Benchmark, Readiness, installed services, settings, logs, and health check entry points.
+- UI contract test for localized tabs, card render, helper labels, and pack tab classification.
+
+Skipped:
+
+- i18n framework.
+- AJAX.
+- Pack install wizard rewrite.
+- Runtime / gateway / benchmark logic changes.
+
 ## PhaseM-2D-L5 SAM3 Benchmark Ready
 
 Promoted `sam3` from L4b real-inference smoke to L5 benchmark-ready.
