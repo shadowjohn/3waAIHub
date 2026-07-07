@@ -1,5 +1,27 @@
 # 3waAIHub History
 
+## PhaseDX-2.2 Playground Local Gateway Execution
+
+Fixed API Playground server-side execution after current-host examples were added.
+
+Root cause:
+
+- The generated examples correctly used the current public host.
+- The server-side Playground test reused the same URL, so public deployments could timeout when the host called its own public domain.
+
+Implemented:
+
+- Added `hub_playground_local_api_url()` for Playground execution.
+- `hub_playground_execute()` now calls local `127.0.0.1` gateway.
+- Generated curl / PHP / JS fetch examples still use the current page host.
+- Added regression coverage for public example URLs vs local execution URL.
+
+Skipped:
+
+- Gateway rewrite.
+- Direct PHP dispatch.
+- Token/auth behavior changes.
+
 ## PhaseDX-2.1 Playground Current Host Examples
 
 Updated API Playground examples to use the current request host instead of hardcoded `localhost`.

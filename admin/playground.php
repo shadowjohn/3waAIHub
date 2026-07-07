@@ -54,14 +54,24 @@ function hub_playground_runtime_level(array $service): string
     return (string)($pack['manifest']['runtime_level'] ?? '');
 }
 
+function hub_playground_base_path(): string
+{
+    $adminDir = rtrim(dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/3waAIHub/admin/playground.php')), '/');
+    return preg_replace('#/admin$#', '', $adminDir) ?: '';
+}
+
 function hub_playground_api_url(string $mode): string
 {
     $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
     $host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
-    $adminDir = rtrim(dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/3waAIHub/admin/playground.php')), '/');
-    $basePath = preg_replace('#/admin$#', '', $adminDir) ?: '';
+    $basePath = hub_playground_base_path();
 
     return ($https ? 'https' : 'http') . '://' . $host . $basePath . '/api.php?mode=' . rawurlencode($mode);
+}
+
+function hub_playground_local_api_url(string $mode): string
+{
+    return 'http://127.0.0.1' . hub_playground_base_path() . '/api.php?mode=' . rawurlencode($mode);
 }
 
 function hub_playground_mask_token(string $token): string
@@ -205,7 +215,7 @@ function hub_playground_execute(string $mode, string $token): array
         return ['ok' => false, 'error' => 'curl_unavailable'];
     }
 
-    $url = hub_playground_api_url($mode);
+    $url = hub_playground_local_api_url($mode);
     $started = microtime(true);
     $headers = ['Accept: application/json'];
     $token = trim($token);

@@ -54,4 +54,15 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
         hub_test_assert(str_contains($examples[$kind], 'https://nature.focusit.tw/3waAIHub/api.php?mode=hello'), 'playground ' . $kind . ' example must use current host');
         hub_test_assert(!str_contains($examples[$kind], 'http://localhost/3waAIHub/api.php?mode=hello'), 'playground ' . $kind . ' example must not hardcode localhost');
     }
+    hub_test_assert(function_exists('hub_playground_local_api_url'), 'playground must have local gateway execution URL helper');
+    if (function_exists('hub_playground_local_api_url')) {
+        hub_test_assert(
+            hub_playground_local_api_url('hello') === 'http://127.0.0.1/3waAIHub/api.php?mode=hello',
+            'playground server-side execution must use local loopback gateway URL'
+        );
+    }
+    hub_test_assert(
+        str_contains($page, '$url = hub_playground_local_api_url($mode);'),
+        'playground execute must not call the public/current-host example URL'
+    );
 });
