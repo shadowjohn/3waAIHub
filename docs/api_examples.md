@@ -12,8 +12,16 @@ http://localhost/3waAIHub/api.php
 
 ```bash
 curl "http://localhost/3waAIHub/api.php?mode=hello" \
-  -H "Authorization: Bearer 3wa_live_xxx"
+  -H "Authorization: Bearer <TOKEN>"
 ```
+
+第一次介接流程：
+
+1. 建立 API token。
+2. 開啟後台 `API 測試場`。
+3. 選 service mode 並執行測試。
+4. 用 `request_id` 查 API 記錄。
+5. 複製 curl / PHP / JS fetch 範例到外部系統。
 
 可先跑 token API smoke，確認建立 token、授權 OCR、curl 呼叫、Log Explorer 查詢與 usage aggregate 都正常：
 
@@ -51,7 +59,7 @@ Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `OCR_REAL_INFERENCE=
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Authorization: Bearer <TOKEN>" \
   -F "image=@sample.png"
 ```
 
@@ -79,7 +87,7 @@ Mock mode:
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "source_lang": "en",
@@ -107,7 +115,7 @@ Real inference mode:
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
     "source_lang": "en",
@@ -145,13 +153,13 @@ Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `YOLO_REAL_INFERENCE
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/yolo/demo/camera_cat.png"
 ```
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/yolo/demo/camera_cat.png" \
   -F "real_inference=1"
 ```
@@ -162,14 +170,14 @@ Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto"
 ```
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+  -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto" \
   -F "real_inference=1"

@@ -209,8 +209,16 @@ admin/api_usage.php        每日 usage aggregate
 
 ```bash
 curl "http://localhost/3waAIHub/api.php?mode=hello" \
-  -H "Authorization: Bearer 3wa_live_xxx"
+  -H "Authorization: Bearer <TOKEN>"
 ```
+
+第一次介接建議流程：
+
+1. 到 `admin/api_members.php` 建立 API member / token。
+2. 到 `admin/api_token_permissions.php` 授權可用 `mode`。
+3. 開 `admin/playground.php`，選 service mode 並貼上 token。
+4. 執行測試，確認 response 與 `request_id`。
+5. 複製 curl / PHP / JS fetch 範例到外部系統。
 
 Token 儲存只保留 `sha256` hash 與 prefix，不保存明文。可設定 `valid_from`、`valid_until`、revoke、停用，並以 mode permission 控制可呼叫的服務。
 

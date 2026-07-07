@@ -1,5 +1,29 @@
 # 3waAIHub History
 
+## PhaseDX-2 API Client Onboarding Polish
+
+Improved the API Playground for first-time client integration.
+
+Implemented:
+
+- Playground now shows a Bearer token hint and API key creation link.
+- Added Authorization header example with `<TOKEN>` placeholder.
+- Added show/hide token toggle.
+- Added copy buttons for Authorization header, curl, PHP, and JS fetch examples.
+- Added quick links from the selected service to API docs, benchmarks, readiness, and API logs.
+- `request_id` links continue to open Log Explorer without requiring a matching log row.
+- README and API examples now document the onboarding flow.
+
+Skipped:
+
+- SDK package.
+- Saved token storage.
+- Token dropdown with plaintext tokens.
+- Public playground.
+- Gateway / token auth rewrite.
+- Request replay DB.
+- Streaming / batch workflow.
+
 ## PhaseDX-1 API Integration Playground
 
 Added the first admin-side API integration playground.

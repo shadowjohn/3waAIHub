@@ -309,12 +309,14 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['action'] ?? '')
     $result = hub_playground_execute($selectedMode, $token);
 }
 $examples = hub_playground_examples($selectedMode);
+$authHeaderExample = 'Authorization: Bearer <TOKEN>';
 
 hub_admin_header('API 測試場', $user);
 ?>
 <section class="panel">
     <h1>API 測試場</h1>
     <p class="muted">後台 server side 呼叫本機 <code>api.php</code>。Bearer token 只用於本次測試，不保存；範例固定使用 <code>&lt;TOKEN&gt;</code>。</p>
+    <p><strong>需要 Bearer Token</strong>。還沒有 token 時，請先 <a href="api_members.php">前往 API 金鑰建立</a>。</p>
     <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code></p>
 </section>
 
@@ -350,6 +352,14 @@ hub_admin_header('API 測試場', $user);
                 <div class="hub-meta-value"><code><?= hub_h(hub_playground_runtime_level($selectedService)) ?></code></div>
                 <div class="hub-meta-label">enabled</div>
                 <div class="hub-meta-value"><span class="<?= (int)$selectedService['enabled'] === 1 ? 'ok' : 'bad' ?>"><?= (int)$selectedService['enabled'] === 1 ? 'yes' : 'no' ?></span></div>
+                <div class="hub-meta-label">token required</div>
+                <div class="hub-meta-value">需要 Bearer Token</div>
+            </div>
+            <div class="hub-actions">
+                <a class="button" href="api_docs.php">API 文件</a>
+                <a class="button" href="benchmarks.php">Benchmark 測試</a>
+                <a class="button" href="pack_readiness.php?pack_id=<?= urlencode((string)$selectedService['pack_id']) ?>">準備狀態</a>
+                <a class="button" href="log_explorer.php?mode=<?= urlencode($selectedMode) ?>">API 記錄</a>
             </div>
         <?php endif; ?>
     </section>
@@ -361,7 +371,12 @@ hub_admin_header('API 測試場', $user);
             <input type="hidden" name="action" value="execute">
             <input type="hidden" name="mode" value="<?= hub_h($selectedMode) ?>">
             <label>Bearer token</label>
-            <input name="bearer_token" type="password" placeholder="<TOKEN>">
+            <input id="bearer-token-input" name="bearer_token" type="password" placeholder="<TOKEN>">
+            <div class="hub-actions">
+                <button type="button" data-token-toggle data-target="bearer-token-input">顯示 token</button>
+                <button type="button" data-copy-target="copy-auth-header">複製 Authorization header</button>
+            </div>
+            <p class="muted">Authorization header：<code id="copy-auth-header"><?= hub_h($authHeaderExample) ?></code></p>
             <?php if ($token !== ''): ?><p class="muted">本次使用 token：<code><?= hub_h(hub_playground_mask_token($token)) ?></code></p><?php endif; ?>
 
             <?php if ($selectedMode === 'translate'): ?>
@@ -404,6 +419,7 @@ hub_admin_header('API 測試場', $user);
             <div class="hub-meta-value">
                 <?php if ((string)($result['request_id'] ?? '') !== ''): ?>
                     <a href="log_explorer.php?request_id=<?= urlencode((string)$result['request_id']) ?>"><code><?= hub_h((string)$result['request_id']) ?></code></a>
+                    <a class="button" href="log_explorer.php?request_id=<?= urlencode((string)$result['request_id']) ?>">查看 API 記錄</a>
                 <?php else: ?>
                     -
                 <?php endif; ?>
@@ -422,16 +438,46 @@ hub_admin_header('API 測試場', $user);
     <div class="hub-card-grid">
         <article class="hub-card">
             <h3>複製 curl</h3>
-            <pre><?= hub_h($examples['curl']) ?></pre>
+            <button type="button" data-copy-target="copy-curl">複製 curl</button>
+            <pre id="copy-curl"><?= hub_h($examples['curl']) ?></pre>
         </article>
         <article class="hub-card">
             <h3>複製 PHP</h3>
-            <pre><?= hub_h($examples['php']) ?></pre>
+            <button type="button" data-copy-target="copy-php">複製 PHP</button>
+            <pre id="copy-php"><?= hub_h($examples['php']) ?></pre>
         </article>
         <article class="hub-card">
             <h3>複製 JS fetch</h3>
-            <pre><?= hub_h($examples['js']) ?></pre>
+            <button type="button" data-copy-target="copy-js">複製 JS fetch</button>
+            <pre id="copy-js"><?= hub_h($examples['js']) ?></pre>
         </article>
     </div>
+    <p id="playground-copy-status" class="muted"></p>
 </section>
+<script>
+document.querySelectorAll('[data-token-toggle]').forEach((button) => {
+    button.addEventListener('click', () => {
+        const input = document.getElementById(button.dataset.target || '');
+        if (!input) return;
+        input.type = input.type === 'password' ? 'text' : 'password';
+        button.textContent = input.type === 'password' ? '顯示 token' : '隱藏 token';
+    });
+});
+document.querySelectorAll('[data-copy-target]').forEach((button) => {
+    button.addEventListener('click', async () => {
+        const target = document.getElementById(button.dataset.copyTarget || '');
+        const status = document.getElementById('playground-copy-status');
+        if (!target || !navigator.clipboard) {
+            if (status) status.textContent = '請手動複製。';
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(target.textContent || '');
+            if (status) status.textContent = '已複製。';
+        } catch (e) {
+            if (status) status.textContent = '請手動複製。';
+        }
+    });
+});
+</script>
 <?php hub_admin_footer(); ?>
