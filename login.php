@@ -1,16 +1,18 @@
 <?php
 declare(strict_types=1);
 
-require __DIR__ . '/app/bootstrap.php';
+require_once __DIR__ . '/app/bootstrap.php';
 
 $db = hub_db();
 $error = '';
+$siteTitle = hub_site_title($db);
+$siteSubtitle = hub_site_subtitle($db);
 if (hub_current_user($db)) {
     hub_redirect('admin/');
 }
 
 $captchaCode = hub_login_captcha_code();
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     if (!hub_verify_login_captcha((string)($_POST['captcha'] ?? ''))) {
         $error = '驗證碼錯誤。';
     } elseif (hub_login($db, trim((string)($_POST['username'] ?? '')), (string)($_POST['password'] ?? ''))) {
@@ -26,7 +28,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Login - 3waAIHub</title>
+    <title>登入 - <?= hub_h($siteTitle) ?></title>
     <style>
         body { align-items: center; background: #f6f7f9; display: flex; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; justify-content: center; min-height: 100vh; margin: 0; }
         form { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; padding: 24px; width: min(360px, calc(100vw - 32px)); }
@@ -41,8 +43,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 </head>
 <body>
 <form method="post">
-    <h1>3waAIHub</h1>
-    <p class="muted">本機管理後台</p>
+    <h1><?= hub_h($siteTitle) ?></h1>
+    <p class="muted"><?= hub_h($siteSubtitle) ?></p>
     <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
     <label>帳號</label>
     <input name="username" autocomplete="username" required>

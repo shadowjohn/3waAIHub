@@ -248,7 +248,7 @@ foreach ($packs as $pack) {
     }
 }
 
-hub_admin_header('HubPack', $user);
+hub_admin_header('HubPack 套件', $user);
 ?>
 <style>
     .pack-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
@@ -279,7 +279,7 @@ hub_admin_header('HubPack', $user);
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <section class="panel">
-    <h1>HubPack Catalog</h1>
+    <h1>HubPack 套件</h1>
     <p class="muted">本機 HubPack 依能力分頁整理；技術識別字如 <code>pack_id</code>、<code>mode</code>、<code>runtime_level</code>、<code>endpoint</code> 保留英文，避免和 API contract 對不起來。</p>
     <div class="pack-tabs" aria-label="HubPack 分類">
         <?php foreach ($tabs as $tab): ?>

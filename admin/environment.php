@@ -336,11 +336,11 @@ function hub_env_fix_suggestions(array $data): array
     return $suggestions;
 }
 
-hub_admin_header('環境診斷', $user);
+hub_admin_header('系統環境', $user);
 ?>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <section class="panel">
-    <h1>環境診斷</h1>
+    <h1>系統環境</h1>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <button class="primary" type="submit">執行環境檢測</button>

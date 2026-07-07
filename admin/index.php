@@ -1,11 +1,13 @@
 <?php
 declare(strict_types=1);
 
-require __DIR__ . '/../app/bootstrap.php';
-require __DIR__ . '/_layout.php';
+require_once __DIR__ . '/../app/bootstrap.php';
+require_once __DIR__ . '/_layout.php';
 
 $db = hub_db();
 $user = hub_require_login($db);
+$siteTitle = hub_site_title($db);
+$siteSubtitle = hub_site_subtitle($db);
 $snapshot = hub_latest_host_metric_snapshot($db);
 $metrics = $snapshot['data'] ?? null;
 
@@ -69,8 +71,8 @@ hub_admin_header('儀表板', $user);
     @media (max-width: 900px) { .dash-card { grid-column: span 12; } .dash-memory { grid-template-columns: repeat(2, 1fr); } }
 </style>
 <section class="panel">
-    <h1>3waAIHub Dashboard</h1>
-    <p class="muted">Dashboard 只讀 SQLite 最新 metrics snapshot；主機探測請由 CLI / cron 執行。</p>
+    <h1><?= hub_h($siteTitle) ?> 控制台</h1>
+    <p class="muted"><?= hub_h($siteSubtitle) ?>。Dashboard 只讀 SQLite 最新 metrics snapshot；主機探測請由 CLI / cron 執行。</p>
 </section>
 
 <?php if (!$metrics): ?>

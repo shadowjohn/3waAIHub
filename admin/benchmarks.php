@@ -8,10 +8,10 @@ $db = hub_db();
 $user = hub_require_login($db);
 $runs = hub_list_benchmark_runs($db, 100);
 
-hub_admin_header('Benchmark', $user);
+hub_admin_header('Benchmark 測試', $user);
 ?>
 <section class="panel">
-    <h1>Benchmark</h1>
+    <h1>Benchmark 測試</h1>
     <p class="muted">Benchmark 可跑 host smoke、Pack catalog，以及 Pack l5_contract 宣告的 mock / real contract cases。</p>
     <pre class="inline-pre">php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --case=pack_catalog_scan
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=ocr-ppocrv5 --case=ocr_mock_image

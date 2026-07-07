@@ -33,12 +33,12 @@ $usage = hub_get_disk_usage_for_path($root);
 $scan = hub_scan_model_assets($db, ['max_depth' => 5, 'limit' => 300]);
 $commonDirs = ['paddleocr', 'yolo', 'ollama', 'sam3', 'huggingface'];
 
-hub_admin_header('Model Registry', $user);
+hub_admin_header('模型倉庫', $user);
 ?>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <section class="panel">
-    <h1>Model Registry</h1>
+    <h1>模型倉庫</h1>
     <table>
         <tr><th>Models Root</th><td><code><?= hub_h($root) ?></code></td></tr>
         <tr><th>Exists</th><td><?= $usage['exists'] ? 'yes' : 'no' ?></td></tr>

@@ -42,12 +42,12 @@ $preflightLabels = [
     'storage' => 'Storage',
 ];
 
-hub_admin_header('Marketplace', $user);
+hub_admin_header('HubPack 套件', $user);
 ?>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <section class="panel">
-    <h1>Marketplace</h1>
+    <h1>HubPack 套件</h1>
     <p class="muted">Local HubPack Catalog，只掃描本機 packs/catalog.json，不做遠端下載。</p>
 </section>
 <section class="panel">

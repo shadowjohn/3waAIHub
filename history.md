@@ -1,5 +1,33 @@
 # 3waAIHub History
 
+## PhaseUI-2 Admin Shell Localization / Brand Settings / Settings Tabs
+
+Localized the admin shell and organized system settings without adding an i18n framework.
+
+Implemented:
+
+- Top navigation now uses Traditional Chinese labels while keeping technical values in English.
+- Added `AIHUB_SITE_TITLE` and `AIHUB_SITE_SUBTITLE` settings.
+- Top bar, login page, dashboard heading, and admin HTML title use the configurable site title.
+- `admin/settings.php` now uses query-string tabs:
+  - `basic`
+  - `appearance`
+  - `storage`
+  - `api`
+  - `docker`
+  - `maintenance`
+  - `account`
+- Settings remain stored in the existing `settings` table.
+- Main page titles were localized for services, HubPack, models, API docs, API usage, benchmarks, environment, and settings.
+
+Skipped:
+
+- i18n framework.
+- language files.
+- SPA / AJAX rewrite.
+- Marketplace or Models card redesign.
+- Gateway / runtime / worker changes.
+
 ## PhaseUI-1 Admin AJAX Micro Interactions
 
 Improved the existing admin AJAX flow without turning the backend into a SPA.

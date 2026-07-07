@@ -10,10 +10,10 @@ hub_ensure_default_storage_settings($db);
 $user = hub_require_login($db);
 $members = hub_list_api_members($db);
 
-hub_admin_header('API Members', $user);
+hub_admin_header('API 金鑰', $user);
 ?>
 <section class="panel">
-    <h1>API Members</h1>
+    <h1>API 金鑰</h1>
     <p><a class="button primary" href="api_member_edit.php">新增會員</a> <a class="button" href="api_usage.php">Usage</a></p>
     <table>
         <tr><th>ID</th><th>會員</th><th>聯絡人</th><th>Email</th><th>Enabled</th><th>Tokens</th><th>今日用量</th><th>最後使用</th><th>操作</th></tr>

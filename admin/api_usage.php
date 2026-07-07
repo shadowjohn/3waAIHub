@@ -16,10 +16,10 @@ $rows = hub_list_api_usage_daily($db, $filters);
 $members = hub_list_api_members($db);
 $tokens = hub_list_all_api_tokens($db);
 
-hub_admin_header('API Usage', $user);
+hub_admin_header('API 記錄', $user);
 ?>
 <section class="panel">
-    <h1>API Usage</h1>
+    <h1>API 記錄</h1>
     <form method="get">
         <label>Member</label>
         <select name="member_id">

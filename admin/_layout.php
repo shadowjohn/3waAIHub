@@ -3,13 +3,15 @@ declare(strict_types=1);
 
 function hub_admin_header(string $title, array $user): void
 {
+    $siteTitle = hub_site_title();
+    $siteSubtitle = hub_site_subtitle();
     ?>
 <!doctype html>
 <html lang="zh-Hant">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= hub_h($title) ?> - 3waAIHub</title>
+    <title><?= hub_h($title) ?> - <?= hub_h($siteTitle) ?></title>
     <link rel="stylesheet" href="../assets/css/admin.css">
     <style>
         :root { color-scheme: light; --bg: #f6f7f9; --panel: #fff; --line: #d9dee7; --text: #1d2430; --muted: #667085; --blue: #1769e0; --red: #b42318; --green: #067647; }
@@ -42,20 +44,20 @@ function hub_admin_header(string $title, array $user): void
 </head>
 <body>
 <header>
-    <div class="brand"><strong>3waAIHub Local</strong><small><?= hub_h(HUB_VERSION . ' / ' . HUB_RELEASE_LABEL) ?></small></div>
+    <div class="brand"><strong><?= hub_h($siteTitle) ?></strong><small><?= hub_h($siteSubtitle . ' / ' . HUB_VERSION . ' / ' . HUB_RELEASE_LABEL) ?></small></div>
     <nav>
-        <a href="index.php">儀表板</a>
-        <a href="marketplace.php">Marketplace</a>
-        <a href="packs.php">HubPack</a>
-        <a href="models.php">Models</a>
+        <a href="index.php">控制台</a>
+        <a href="marketplace.php">安裝套件</a>
+        <a href="packs.php">HubPack 套件</a>
+        <a href="models.php">模型倉庫</a>
         <a href="services.php">服務管理</a>
-        <a href="api_members.php">API Members</a>
-        <a href="api_usage.php">API Usage</a>
+        <a href="api_members.php">API 金鑰</a>
+        <a href="api_usage.php">API 記錄</a>
         <a href="log_explorer.php">Log Explorer</a>
-        <a href="benchmarks.php">Benchmark</a>
-        <a href="api_docs.php">API Docs</a>
-        <a href="environment.php">環境診斷</a>
-        <a href="settings.php">設定</a>
+        <a href="benchmarks.php">Benchmark 測試</a>
+        <a href="api_docs.php">API 文件</a>
+        <a href="environment.php">系統環境</a>
+        <a href="settings.php">系統設定</a>
         <a href="logout.php">登出 <?= hub_h($user['username']) ?></a>
     </nav>
 </header>

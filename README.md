@@ -18,6 +18,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - SQLite-backed demo task queue
 - HubPack registry 與 hello pack 安裝
 - Storage settings / model directory
+- 後台 shell 中文化、站台標題設定、設定頁分頁
 - 環境診斷與修正建議
 - Service IP whitelist 與 API access logs
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
@@ -642,7 +643,7 @@ AIHUB_LOGS_DIR=/DATA/3waAIHub/data/logs
 /DATA/models/sam3
 ```
 
-後台「設定」可改 Models / Cache / Uploads / Results / Logs 目錄，以及 Docker local port 範圍。後台 `Models` 可掃描 `AIHUB_MODELS_DIR` 底下的模型資產，顯示常見子目錄、檔案大小、修改時間與 symlink skip 狀態。
+後台「系統設定」分成基本設定、介面顯示、儲存與模型、API 與安全、Docker 與背景工作、維護與保留、帳號密碼。可調整 `AIHUB_SITE_TITLE` / `AIHUB_SITE_SUBTITLE`、Models / Cache / Uploads / Results / Logs 目錄，以及 Docker local port 範圍。後台 `模型倉庫` 可掃描 `AIHUB_MODELS_DIR` 底下的模型資產，顯示常見子目錄、檔案大小、修改時間與 symlink skip 狀態。
 
 Service settings 支援 Pack 宣告的 model selector。第一版已支援：
 

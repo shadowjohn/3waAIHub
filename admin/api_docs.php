@@ -10,10 +10,10 @@ $services = hub_list_services($db);
 $contracts = hub_pack_api_contracts();
 $baseUrl = '../api.php';
 
-hub_admin_header('API Docs', $user);
+hub_admin_header('API 文件', $user);
 ?>
 <section class="panel">
-    <h1>API Docs</h1>
+    <h1>API 文件</h1>
     <p class="muted">Base URL: <code><?= hub_h($baseUrl) ?></code></p>
     <p class="muted">錯誤回應會包含 <code>request_id</code>，外部系統串接失敗時請提供 request_id、mode、時間與來源 IP。</p>
 </section>
