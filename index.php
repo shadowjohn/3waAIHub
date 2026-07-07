@@ -1,5 +1,19 @@
 <?php
 declare(strict_types=1);
+
+$publicDocsLabel = '需設定開啟或僅本機可讀';
+$manifestLabel = '本機可讀';
+try {
+    require_once __DIR__ . '/app/bootstrap.php';
+    $db = hub_db();
+    hub_migrate($db);
+    hub_ensure_default_storage_settings($db);
+    $localOnly = hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY') === '1';
+    $publicDocsLabel = hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS') === '1' ? ($localOnly ? '本機可讀' : '可讀') : '需設定開啟或僅本機可讀';
+    $manifestLabel = hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_MANIFEST') === '1' ? ($localOnly ? '本機可讀' : '可讀') : '需設定開啟';
+} catch (Throwable) {
+    // ponytail: 首頁不能因 SQLite 尚未初始化而掛掉；安裝後會顯示真實設定。
+}
 ?><!doctype html>
 <html lang="zh-Hant">
 <head>
@@ -78,10 +92,17 @@ declare(strict_types=1);
             text-decoration: none;
             text-transform: uppercase;
         }
+        .button.secondary {
+            background: transparent;
+            color: var(--green-soft);
+        }
         .button:focus, .button:hover {
             box-shadow: 0 0 24px rgba(57, 255, 136, .5);
             outline: 2px solid transparent;
         }
+        .links { border-top: 1px solid var(--line); margin-top: 28px; padding-top: 20px; }
+        .hint { color: var(--green-dim); font-size: 13px; margin: 12px 0 0; }
+        .status { color: var(--green-soft); font-size: 12px; margin: 6px 0 0; }
         .cursor::after {
             animation: blink 1s steps(2, start) infinite;
             color: var(--green);
@@ -108,6 +129,15 @@ declare(strict_types=1);
             <p class="slogan cursor">Install. Enable. Expose AI services.</p>
             <div class="actions">
                 <a class="button" href="login.php">Enter Admin Console</a>
+            </div>
+            <div class="links">
+                <div class="actions">
+                    <a class="button secondary" href="public_api_docs.php">公開 API 文件</a>
+                    <a class="button secondary" href="api_manifest.json.php">Agent Manifest</a>
+                    <a class="button secondary" href="admin/">後台管理</a>
+                </div>
+                <p class="status">公開 API 文件：<?= hub_h($publicDocsLabel) ?> / Agent Manifest：<?= hub_h($manifestLabel) ?></p>
+                <p class="hint">依系統設定，公開 API 文件可能僅允許本機讀取。</p>
             </div>
         </div>
     </section>

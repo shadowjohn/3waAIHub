@@ -18,6 +18,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - 後台 API 測試場，可用本機 gateway server-side 測 API，並產生目前 host 的 curl / PHP / JS fetch 範例
 - API 文件頁會依目前後台 host 產生 curl 範例，避免公開站仍顯示 localhost
 - 未登入公開 API 文件與 Agent Manifest，可用 settings 控制是否啟用與是否 local-only
+- 根目錄首頁與後台 dashboard 都提供 Public API Docs / Agent Manifest 入口
 - SAM3 real inference 支援 `output_format=metadata|polygon|rle|both`
 - SQLite-backed demo task queue
 - HubPack registry 與 hello pack 安裝

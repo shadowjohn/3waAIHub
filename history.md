@@ -1,5 +1,22 @@
 # 3waAIHub History
 
+## PhaseDX-3.1 Home Public API Docs Links
+
+Added public integration entry points to the root home page and dashboard.
+
+Implemented:
+
+- Root `index.php` now links to `public_api_docs.php`, `api_manifest.json.php`, and `admin/`.
+- Root home shows a short setting-aware hint for public docs / manifest availability.
+- Dashboard quick links now include `admin/api_docs.php`, public API docs, and Agent Manifest.
+- Kept public docs permissions, admin API docs login, gateway, runtime, and token auth unchanged.
+
+Skipped:
+
+- Public playground.
+- Permission logic changes.
+- Dashboard redesign.
+
 ## PhaseUI-6.2 Dashboard Public Integration Status
 
 Added DX-3 public integration visibility to the dashboard.

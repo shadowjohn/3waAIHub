@@ -214,6 +214,7 @@ hub_admin_header('儀表板', $user);
     <div class="hub-actions">
         <a class="button" href="services.php">服務管理</a>
         <a class="button" href="playground.php">API 測試場</a>
+        <a class="button" href="api_docs.php">後台 API 文件</a>
         <a class="button" href="packs.php">HubPack 套件</a>
         <a class="button" href="models.php">模型倉庫</a>
         <a class="button" href="api_members.php">API 金鑰</a>
