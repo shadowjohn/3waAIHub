@@ -17,6 +17,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - API Members / Bearer token / mode permission / usage tracking
 - 後台 API 測試場，可用本機 gateway server-side 測 API，並產生目前 host 的 curl / PHP / JS fetch 範例
 - API 文件頁會依目前後台 host 產生 curl 範例，避免公開站仍顯示 localhost
+- 未登入公開 API 文件與 Agent Manifest，可用 settings 控制是否啟用與是否 local-only
 - SAM3 real inference 支援 `output_format=metadata|polygon|rle|both`
 - SQLite-backed demo task queue
 - HubPack registry 與 hello pack 安裝
@@ -226,6 +227,21 @@ curl "http://localhost/3waAIHub/api.php?mode=hello" \
 3. 開 `admin/playground.php`，選 service mode 並貼上 token。
 4. 執行測試。Playground 會先檢查服務是否啟用、容器是否執行、health 是否可用，再顯示 response 與 `request_id`。
 5. 複製 curl / PHP / JS fetch 範例到外部系統；API 測試場與 API 文件的範例網址會使用目前後台頁面的 host。後台實測本身會走本機 `127.0.0.1` gateway，避免主機打自己的公開網域時遇到 hairpin timeout。
+
+未登入介接文件：
+
+- `public_api_docs.php`：公開 API 文件，預設停用。
+- `api_manifest.json.php`：給 AI agent / Codex / MCP 讀取的 machine-readable contract，預設啟用但僅允許本機讀取。
+
+公開文件與 manifest 只提供外部介接資訊：`mode`、`pack_id`、`method`、`content-type`、request fields、response keys、error codes 與 `<TOKEN>` 範例。它們不顯示 admin links、local_port、Docker compose path、host model path、log path、SQLite path 或 token 明文。
+
+相關設定位於「系統設定 / API 與安全」：
+
+```text
+AIHUB_PUBLIC_API_DOCS=0
+AIHUB_PUBLIC_API_MANIFEST=1
+AIHUB_PUBLIC_API_LOCAL_ONLY=1
+```
 
 Token 儲存只保留 `sha256` hash 與 prefix，不保存明文。可設定 `valid_from`、`valid_until`、revoke、停用，並以 mode permission 控制可呼叫的服務。
 

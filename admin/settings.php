@@ -122,7 +122,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $message = '儲存與模型設定已更新。';
         }
     } elseif ($formType === 'api') {
-        $keys = ['AIHUB_REQUIRE_API_TOKEN', 'AIHUB_LOCALHOST_BYPASS_TOKEN', 'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST', 'AIHUB_TOKEN_DEFAULT_VALID_DAYS'];
+        $keys = ['AIHUB_REQUIRE_API_TOKEN', 'AIHUB_LOCALHOST_BYPASS_TOKEN', 'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST', 'AIHUB_TOKEN_DEFAULT_VALID_DAYS', 'AIHUB_PUBLIC_API_DOCS', 'AIHUB_PUBLIC_API_MANIFEST', 'AIHUB_PUBLIC_API_LOCAL_ONLY'];
         $input = $settings;
         foreach ($keys as $key) {
             $input[$key] = trim((string)($_POST[$key] ?? ''));
@@ -276,6 +276,28 @@ hub_admin_header('系統設定', $user);
         <label>Token 預設有效天數 / <code>AIHUB_TOKEN_DEFAULT_VALID_DAYS</code></label>
         <input name="AIHUB_TOKEN_DEFAULT_VALID_DAYS" value="<?= hub_h($settings['AIHUB_TOKEN_DEFAULT_VALID_DAYS']) ?>" required>
         <p class="form-help">0 代表建立 token 時不自動設定 valid_until。</p>
+        <div class="setting-card">
+            <h3>未登入介接文件</h3>
+            <p class="form-help">建議維持僅本機可讀，提供 AI agent / Codex / MCP 介接使用。</p>
+            <label>未登入 API 文件 / <code>AIHUB_PUBLIC_API_DOCS</code></label>
+            <select name="AIHUB_PUBLIC_API_DOCS">
+                <option value="1"<?= $settings['AIHUB_PUBLIC_API_DOCS'] === '1' ? ' selected' : '' ?>>啟用</option>
+                <option value="0"<?= $settings['AIHUB_PUBLIC_API_DOCS'] === '0' ? ' selected' : '' ?>>停用</option>
+            </select>
+            <p class="form-help">控制根目錄 <code>public_api_docs.php</code> 是否允許未登入讀取。</p>
+            <label>未登入 Agent Manifest / <code>AIHUB_PUBLIC_API_MANIFEST</code></label>
+            <select name="AIHUB_PUBLIC_API_MANIFEST">
+                <option value="1"<?= $settings['AIHUB_PUBLIC_API_MANIFEST'] === '1' ? ' selected' : '' ?>>啟用</option>
+                <option value="0"<?= $settings['AIHUB_PUBLIC_API_MANIFEST'] === '0' ? ' selected' : '' ?>>停用</option>
+            </select>
+            <p class="form-help">控制根目錄 <code>api_manifest.json.php</code> 是否允許 AI agent 讀取 machine-readable contract。</p>
+            <label>僅允許本機讀取 / <code>AIHUB_PUBLIC_API_LOCAL_ONLY</code></label>
+            <select name="AIHUB_PUBLIC_API_LOCAL_ONLY">
+                <option value="1"<?= $settings['AIHUB_PUBLIC_API_LOCAL_ONLY'] === '1' ? ' selected' : '' ?>>是</option>
+                <option value="0"<?= $settings['AIHUB_PUBLIC_API_LOCAL_ONLY'] === '0' ? ' selected' : '' ?>>否</option>
+            </select>
+            <p class="form-help">啟用時僅允許 <code>127.0.0.1</code>、<code>::1</code> 或 localhost request 讀取公開文件與 manifest。</p>
+        </div>
         <p><button class="primary" type="submit">儲存 API 與安全</button></p>
     </form>
 </section>

@@ -1,5 +1,30 @@
 # 3waAIHub History
 
+## PhaseDX-3 Public API Docs / Agent Manifest
+
+Added unauthenticated API integration docs and a machine-readable agent manifest while keeping admin API docs protected.
+
+Implemented:
+
+- Added `public_api_docs.php` for public-facing integration docs.
+- Added `api_manifest.json.php` for AI agent / Codex / MCP machine-readable API contracts.
+- Added shared `app/public_api_docs.php` helpers to generate docs and manifest from HubPack `l5_contract`, gateway metadata, and `pack.json`.
+- Added settings:
+  - `AIHUB_PUBLIC_API_DOCS=0`
+  - `AIHUB_PUBLIC_API_MANIFEST=1`
+  - `AIHUB_PUBLIC_API_LOCAL_ONLY=1`
+- Added API settings UI for public docs, public manifest, and local-only policy.
+- Kept `admin/api_docs.php` behind admin login.
+- Public docs / manifest use `<TOKEN>` placeholders and avoid admin links, local ports, Docker paths, model host paths, log paths, SQLite paths, and plaintext tokens.
+
+Skipped:
+
+- OpenAPI generator.
+- SDK package.
+- Public playground.
+- Token auto-listing.
+- Gateway/runtime changes.
+
 ## PhaseM-2D-L5.1 SAM3 Mask Geometry Output
 
 Added optional SAM3 mask geometry output without adding a viewer or artifacts.
