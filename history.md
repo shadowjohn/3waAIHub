@@ -1784,3 +1784,34 @@ Skipped:
 
 - New customer portal features.
 - Registration / forgot password / OAuth / billing / quota.
+
+## PhaseAuth-2A Customer Portal Read-only Hardening
+
+Hardened the customer read-only portal and profile/password boundaries.
+
+Added:
+
+- `tests/test_phase_auth2a.php`
+- `hub_user_token_allowed_modes()`
+
+Implemented:
+
+- Customer services visibility test for own `user_mode_permissions`.
+- Customer usage visibility test scoped to own `api_member`.
+- Profile update test proving only `display_name`, `email`, and `company` change.
+- Password change flow test with old-password rejection and new-password login.
+- `my_services.php` sensitive field source audit.
+- Playground customer filter now requires:
+  - admin-granted mode permission.
+  - own enabled, non-revoked token permission for that mode.
+  - valid own API member.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS with 80 tests.
+
+Skipped:
+
+- Token lifecycle hardening.
+- IP whitelist lifecycle hardening.
+- Registration / forgot password / OAuth / billing / quota.

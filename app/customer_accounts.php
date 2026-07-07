@@ -225,6 +225,28 @@ function hub_user_allowed_modes(PDO $db, int $userId): array
     return array_map('strval', array_column($stmt->fetchAll(), 'mode'));
 }
 
+function hub_user_token_allowed_modes(PDO $db, int $userId): array
+{
+    $stmt = $db->prepare(
+        'SELECT DISTINCT p.mode
+         FROM users u
+         JOIN api_members m ON m.id = u.api_member_id
+         JOIN api_tokens t ON t.member_id = m.id
+         JOIN api_token_service_permissions p ON p.token_id = t.id
+         WHERE u.id = :user_id
+           AND m.enabled = 1
+           AND t.enabled = 1
+           AND t.revoked_at IS NULL
+           AND (t.valid_from IS NULL OR t.valid_from <= :now)
+           AND (t.valid_until IS NULL OR t.valid_until >= :now)
+           AND p.enabled = 1
+         ORDER BY p.mode'
+    );
+    $stmt->execute([':user_id' => $userId, ':now' => hub_now()]);
+
+    return array_map('strval', array_column($stmt->fetchAll(), 'mode'));
+}
+
 function hub_user_allowed_services(PDO $db, int $userId): array
 {
     $stmt = $db->prepare(
@@ -304,7 +326,9 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
     $supported = array_fill_keys(hub_playground_supported_modes(), true);
     $allowedModes = null;
     if ($user && hub_is_customer($user)) {
-        $allowedModes = array_fill_keys(hub_user_allowed_modes($db, (int)$user['id']), true);
+        $grantedModes = hub_user_allowed_modes($db, (int)$user['id']);
+        $tokenModes = hub_user_token_allowed_modes($db, (int)$user['id']);
+        $allowedModes = array_fill_keys(array_values(array_intersect($grantedModes, $tokenModes)), true);
     }
 
     $services = [];

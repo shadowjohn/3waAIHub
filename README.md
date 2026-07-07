@@ -82,6 +82,7 @@ admin/customer_edit.php?action=create
 ```
 
 建立 customer 時會連結一筆 `api_members`，之後 customer 建立的 Token 會掛在自己的 API Member 下。管理員指派 customer 可用的 `mode` 後，customer 建立 Token 時只會取得那些 mode permission。
+Customer 的 API 測試場只顯示「管理員授權 mode」且「自己的有效 Token 已授權」的交集，其他客戶的 Token permission 不會影響可見 mode。
 
 Customer Portal 入口：
 

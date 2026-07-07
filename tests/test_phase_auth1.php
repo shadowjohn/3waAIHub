@@ -92,6 +92,7 @@ hub_test('PhaseAuth-1 playground filters customer modes', function (): void {
         'display_name' => '客戶二號',
         'modes' => ['hello'],
     ]);
+    hub_create_customer_token($db, $customerId, 'Playground token');
     $customer = hub_get_user($db, $customerId);
     hub_test_assert($customer !== null, 'customer2 missing');
 
