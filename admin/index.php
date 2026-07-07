@@ -21,6 +21,11 @@ function hub_dash_percent(mixed $value): float
     return is_numeric($value) ? max(0, min(100, (float)$value)) : 0.0;
 }
 
+function hub_dash_gb_value(mixed $value): string
+{
+    return is_numeric($value) ? (string)round((float)$value, 1) . ' GB' : 'N/A';
+}
+
 function hub_dash_pending_items(array $metrics): array
 {
     $counts = $metrics['counts'] ?? [];
@@ -67,10 +72,14 @@ function hub_dash_control_center(PDO $db): array
     $free = is_numeric($modelUsage['free_bytes']) ? (float)$modelUsage['free_bytes'] : null;
     $used = $total !== null && $free !== null ? max(0, $total - $free) : null;
 
+    $l5PackCount = 0;
     $readinessReady = 0;
     $readinessTotal = 0;
     foreach (hub_list_packs() as $pack) {
         $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
+        if ((string)($manifest['runtime_level'] ?? '') === 'L5-benchmark-ready') {
+            $l5PackCount++;
+        }
         if (!is_array($manifest['l5_contract'] ?? null)) {
             continue;
         }
@@ -90,6 +99,7 @@ function hub_dash_control_center(PDO $db): array
         'services_running' => hub_dash_scalar($db, "SELECT COUNT(*) FROM services WHERE status = 'running'"),
         'services_stopped' => hub_dash_scalar($db, "SELECT COUNT(*) FROM services WHERE status != 'running'"),
         'services_disabled' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM services WHERE enabled != 1'),
+        'l5_pack_count' => $l5PackCount,
         'api_calls_24h' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM api_access_logs WHERE created_at >= :since', [':since' => $since]),
         'api_failed_24h' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM api_access_logs WHERE ok = 0 AND created_at >= :since', [':since' => $since]),
         'running_jobs' => hub_dash_scalar($db, "SELECT COUNT(*) FROM command_jobs WHERE status IN ('queued', 'running')"),
@@ -148,21 +158,25 @@ hub_admin_header('儀表板', $user);
         <span class="muted">最近 24 小時與目前服務狀態</span>
     </div>
     <div class="hub-card-grid">
-        <article class="hub-card"><h3>目前服務</h3><div class="dash-number"><?= (int)$control['services_total'] ?></div></article>
-        <article class="hub-card"><h3>Services running</h3><div class="dash-number ok"><?= (int)$control['services_running'] ?></div></article>
-        <article class="hub-card"><h3>Services stopped</h3><div class="dash-number"><?= (int)$control['services_stopped'] ?></div></article>
-        <article class="hub-card"><h3>Services disabled</h3><div class="dash-number bad"><?= (int)$control['services_disabled'] ?></div></article>
-        <article class="hub-card"><h3>API calls last 24h</h3><div class="dash-number"><?= (int)$control['api_calls_24h'] ?></div></article>
-        <article class="hub-card"><h3>Failed API calls last 24h</h3><div class="dash-number bad"><?= (int)$control['api_failed_24h'] ?></div></article>
-        <article class="hub-card"><h3>背景工作狀態</h3><div class="dash-number"><?= (int)$control['running_jobs'] ?></div><p class="muted">failed <?= (int)$control['failed_jobs'] ?></p></article>
+        <article class="hub-card"><h3>服務總數</h3><div class="dash-number"><?= (int)$control['services_total'] ?></div></article>
+        <article class="hub-card"><h3>執行中</h3><div class="dash-number ok"><?= (int)$control['services_running'] ?></div><p class="muted">Services running</p></article>
+        <article class="hub-card"><h3>已停止</h3><div class="dash-number"><?= (int)$control['services_stopped'] ?></div><p class="muted">Services stopped</p></article>
+        <article class="hub-card"><h3>已停用</h3><div class="dash-number bad"><?= (int)$control['services_disabled'] ?></div><p class="muted">Services disabled</p></article>
+        <article class="hub-card"><h3>L5 Pack 數</h3><div class="dash-number"><?= (int)$control['l5_pack_count'] ?></div></article>
+        <article class="hub-card"><h3>API 24h 呼叫數</h3><div class="dash-number"><?= (int)$control['api_calls_24h'] ?></div><p class="muted">API calls last 24h</p></article>
+        <article class="hub-card"><h3>API 24h 失敗數</h3><div class="dash-number bad"><?= (int)$control['api_failed_24h'] ?></div><p class="muted">Failed API calls last 24h</p></article>
+        <article class="hub-card"><h3>背景工作執行中</h3><div class="dash-number"><?= (int)$control['running_jobs'] ?></div></article>
+        <article class="hub-card"><h3>最近失敗工作</h3><div class="dash-number bad"><?= (int)$control['failed_jobs'] ?></div></article>
         <article class="hub-card"><h3>Pack readiness</h3><div class="dash-number"><?= (int)$control['pack_readiness_ready'] ?>/<?= (int)$control['pack_readiness_total'] ?></div></article>
         <article class="hub-card"><h3>Model storage usage</h3><div class="dash-number"><?= hub_h((string)$control['models_used_percent']) ?>%</div><p class="muted">Free / Total <?= hub_h((string)$control['models_free']) ?> / <?= hub_h((string)$control['models_total']) ?></p></article>
     </div>
     <div class="hub-actions">
         <a class="button" href="services.php">服務管理</a>
         <a class="button" href="playground.php">API 測試場</a>
+        <a class="button" href="packs.php">HubPack 套件</a>
         <a class="button" href="models.php">模型倉庫</a>
         <a class="button" href="api_members.php">API 金鑰</a>
+        <a class="button" href="log_explorer.php">Log Explorer</a>
     </div>
 </section>
 
@@ -192,7 +206,7 @@ hub_admin_header('儀表板', $user);
             <ul class="dash-list">
                 <?php foreach ($control['recent_failed_api'] as $log): ?>
                     <li>
-                        <a href="log_explorer.php?request_id=<?= urlencode((string)$log['request_id']) ?>"><code><?= hub_h((string)$log['request_id']) ?></code></a>
+                        <a href="log_explorer.php?tab=api&amp;request_id=<?= urlencode((string)$log['request_id']) ?>"><code><?= hub_h((string)$log['request_id']) ?></code></a>
                         / mode <code><?= hub_h((string)$log['mode']) ?></code>
                         / <?= (int)$log['status_code'] ?>
                         / <code><?= hub_h((string)$log['error_code']) ?></code>
@@ -286,6 +300,11 @@ hub_admin_header('儀表板', $user);
             <p class="muted">
                 Docker Root: <?= hub_h((string)($docker['root_dir'] ?? 'N/A')) ?>　
                 Models: <?= hub_h((string)($storage['models_dir'] ?? 'N/A')) ?>
+            </p>
+            <p class="muted">
+                Docker root free: <?= hub_h(hub_dash_gb_value($docker['root_free_gb'] ?? null)) ?>　
+                Models Root free: <?= hub_h(hub_dash_gb_value($storage['models_free_gb'] ?? null)) ?> /
+                <?= hub_h(hub_dash_gb_value($storage['models_total_gb'] ?? null)) ?>
             </p>
             <?php if (!empty($docker['reason'])): ?><p class="bad">Docker daemon 目前不可用，請查看環境診斷。</p><?php endif; ?>
             <div id="diskChart" class="dash-chart"></div>

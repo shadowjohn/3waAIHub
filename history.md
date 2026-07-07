@@ -1,5 +1,24 @@
 # 3waAIHub History
 
+## PhaseUI-6 Dashboard Control Center Polish
+
+Tightened the admin dashboard into a clearer first-screen control center.
+
+Implemented:
+
+- Localized dashboard summary cards for service totals, running services, disabled services, API 24h calls, API 24h failures, active background jobs, and recent failed jobs.
+- Added an explicit L5 Pack count card.
+- Added quick links for HubPack 套件 and Log Explorer.
+- Added Docker root free and Models Root free / total text to the storage section.
+- Updated recent failed API links to open Log Explorer `tab=api`.
+
+Skipped:
+
+- metrics collector changes.
+- large chart redesign.
+- SPA work.
+- runtime / gateway / worker changes.
+
 ## PhaseUI-5 Log Explorer Tabs / Background Jobs
 
 Consolidated operational logs into a single Log Explorer entry point.
