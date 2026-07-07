@@ -129,6 +129,21 @@ hub_admin_header('API Docs', $user);
   }'</pre>
 </section>
 <section class="panel">
+    <h2>POST SAM3</h2>
+    <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code>.</p>
+    <h3>Mock mode</h3>
+    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -F "image=@sample.png" \
+  -F "prompt_type=auto"</pre>
+    <h3>Real inference mode</h3>
+    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -F "image=@sample.png" \
+  -F "prompt_type=auto" \
+  -F "real_inference=1"</pre>
+</section>
+<section class="panel">
     <h2>Unknown Mode</h2>
     <pre>curl "http://localhost/3waAIHub/api.php?mode=unknown"</pre>
     <pre>{

@@ -117,6 +117,7 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     $blockCount = is_array($payload['blocks'] ?? null) ? count($payload['blocks']) : 0;
     $minDetections = (int)($case['expected_min_detections'] ?? 0);
     $detectionCount = is_array($payload['detections'] ?? null) ? count($payload['detections']) : 0;
+    $maskCount = is_array($payload['masks'] ?? null) ? count($payload['masks']) : 0;
     $contractFailed = (int)$response['status'] !== 200 || $missing !== [] || $blockCount < $minBlocks || $detectionCount < $minDetections;
     if (array_key_exists('expected_mock', $case) && is_array($payload) && (bool)($payload['mock'] ?? null) !== (bool)$case['expected_mock']) {
         $contractFailed = true;
@@ -139,6 +140,12 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     if (isset($payload['elapsed_ms']) && (int)$payload['elapsed_ms'] < 0) {
         $contractFailed = true;
     }
+    if (!empty($case['expected_elapsed_ms_positive']) && (int)($payload['elapsed_ms'] ?? 0) <= 0) {
+        $contractFailed = true;
+    }
+    if (!empty($case['expected_model_checkpoint']) && trim((string)($payload['model']['checkpoint'] ?? '')) === '') {
+        $contractFailed = true;
+    }
     $device = is_array($payload['device'] ?? null) ? $payload['device'] : [];
     if ($contractFailed) {
         throw new RuntimeException('benchmark contract check failed.');
@@ -154,7 +161,9 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         'real_inference' => $realInference,
         'block_count' => $blockCount,
         'detection_count' => $detectionCount,
+        'mask_count' => $maskCount,
         'mock' => is_array($payload) ? ($payload['mock'] ?? null) : null,
+        'model_checkpoint' => is_array($payload['model'] ?? null) ? (string)($payload['model']['checkpoint'] ?? '') : '',
         'text_length' => is_array($payload) ? strlen((string)($payload['text'] ?? '')) : 0,
         'requested_device' => (string)($device['requested'] ?? ''),
         'effective_device' => (string)($device['effective'] ?? ''),
@@ -216,6 +225,16 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
             'mock' => true,
             'runtime_level' => $runtimeLevel,
             'detections' => [],
+        ];
+    }
+    if (($manifest['id'] ?? '') === 'sam3') {
+        return [
+            'ok' => true,
+            'mock' => true,
+            'runtime_level' => $runtimeLevel,
+            'prompt_type' => 'auto',
+            'masks' => [],
+            'elapsed_ms' => 0,
         ];
     }
     if (($manifest['id'] ?? '') === 'translate-gemma12b') {

@@ -1,5 +1,26 @@
 # 3waAIHub History
 
+## PhaseM-2D-L5 SAM3 Benchmark Ready
+
+Promoted `sam3` from L4b real-inference smoke to L5 benchmark-ready.
+
+Implemented:
+
+- `runtime_level = L5-benchmark-ready`.
+- Added SAM3 `l5_contract`.
+- Added `sam3_mock_image` and `sam3_real_image` benchmark cases.
+- Benchmark contract checks mask list, positive elapsed time, and model checkpoint presence without asserting mask count.
+- API Docs and API examples now include SAM3 mock and real curl examples.
+
+Skipped:
+
+- Mask PNG artifact.
+- RLE / polygon output.
+- Mask viewer.
+- Batch or video segmentation.
+- Interactive prompt UI.
+- Quality tuning.
+
 ## PhaseM-2D-L4b SAM3 Real Inference Smoke
 
 Advanced `sam3` from L4a model-present smoke to L4b real-inference smoke.

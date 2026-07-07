@@ -154,10 +154,31 @@ hub_test('catalog and required packs are readable', function (): void {
         }
     }
     $sam3 = hub_get_pack('sam3')['manifest'];
-    hub_test_assert($sam3['runtime_level'] === 'L4b-real-inference-smoke', 'SAM3 runtime level mismatch');
+    hub_test_assert($sam3['runtime_level'] === 'L5-benchmark-ready', 'SAM3 runtime level mismatch');
     hub_test_assert(($sam3['target_level'] ?? '') === 'L5-benchmark-ready', 'SAM3 target level mismatch');
     hub_test_assert($sam3['runtime_ready'] === true, 'SAM3 runtime ready mismatch');
     hub_test_assert(($sam3['category'] ?? '') === 'vision', 'SAM3 category mismatch');
+    $sam3Contract = $sam3['l5_contract'] ?? [];
+    hub_test_assert(is_array($sam3Contract), 'SAM3 l5_contract missing');
+    foreach (['endpoint', 'method', 'content_type', 'input', 'output', 'errors', 'limits', 'benchmark'] as $field) {
+        hub_test_assert(array_key_exists($field, $sam3Contract), 'SAM3 l5_contract missing ' . $field);
+    }
+    hub_test_assert(($sam3Contract['endpoint'] ?? '') === '/segment/image', 'SAM3 contract endpoint mismatch');
+    foreach (['ok', 'mock', 'runtime_level', 'prompt_type', 'masks', 'elapsed_ms'] as $key) {
+        hub_test_assert(in_array($key, $sam3Contract['output']['required_keys'] ?? [], true), 'SAM3 contract output missing ' . $key);
+    }
+    foreach (['model_not_present', 'model_load_failed', 'runtime_dependency_missing', 'bad_image', 'invalid_prompt', 'gpu_unavailable', 'inference_failed', 'inference_timeout'] as $errorCode) {
+        hub_test_assert(in_array($errorCode, $sam3Contract['errors'] ?? [], true), 'SAM3 contract errors missing ' . $errorCode);
+    }
+    $sam3BenchmarkCases = $sam3Contract['benchmark']['cases'] ?? [];
+    hub_test_assert(in_array('sam3_mock_image', array_column($sam3BenchmarkCases, 'id'), true), 'SAM3 mock benchmark case missing');
+    hub_test_assert(in_array('sam3_real_image', array_column($sam3BenchmarkCases, 'id'), true), 'SAM3 real benchmark case missing');
+    foreach ($sam3BenchmarkCases as $case) {
+        if (($case['id'] ?? '') === 'sam3_real_image') {
+            hub_test_assert(!empty($case['real_inference']), 'SAM3 real benchmark must be marked real_inference');
+            hub_test_assert(!isset($case['expected_min_masks']), 'SAM3 real benchmark must not assert mask count');
+        }
+    }
     $sam3Mounts = [];
     foreach ($sam3['storage']['mounts'] as $mount) {
         $sam3Mounts[(string)$mount['type']] = (string)$mount['container_path'];

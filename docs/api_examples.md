@@ -158,14 +158,28 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
 
 ## POST SAM3
 
-Status: L1 Ultralytics SAM3 adapter.
+Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
   -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.jpg" \
-  -F 'points=[[150,120]]' \
-  -F 'labels=[1]'
+  -F "image=@sample.png" \
+  -F "prompt_type=auto"
+```
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -F "image=@sample.png" \
+  -F "prompt_type=auto" \
+  -F "real_inference=1"
+```
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --pack=sam3 --case=sam3_mock_image
+php scripts/benchmark.php --service=sam3-main --case=sam3_real_image
 ```
 
 ## Unknown Mode

@@ -6,11 +6,11 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L4b-real-inference-smoke",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "sam3",
-  "description": "SAM3 segmentation API adapter with model-present checks and single-image real inference smoke.",
+  "description": "SAM3 segmentation API adapter with single-image real inference smoke and benchmark contract.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -23,7 +23,93 @@
     "timeout_sec": 180,
     "max_upload_mb": 50
   },
+  "l5_contract": {
+    "endpoint": "/segment/image",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {
+          "name": "image",
+          "type": "file",
+          "required": true,
+          "max_mb": 50
+        },
+        {
+          "name": "prompt_type",
+          "type": "string",
+          "required": false,
+          "default": "auto"
+        },
+        {
+          "name": "points_json",
+          "type": "json",
+          "required": false
+        },
+        {
+          "name": "boxes_json",
+          "type": "json",
+          "required": false
+        },
+        {
+          "name": "real_inference",
+          "type": "boolean",
+          "required": false,
+          "default": "0"
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mock", "runtime_level", "prompt_type", "masks", "elapsed_ms"],
+      "mask_keys": ["id", "score", "bbox", "area"]
+    },
+    "errors": [
+      "bad_request",
+      "model_not_present",
+      "model_load_failed",
+      "runtime_dependency_missing",
+      "bad_image",
+      "invalid_prompt",
+      "gpu_unavailable",
+      "inference_failed",
+      "inference_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 180,
+      "max_upload_mb": 50,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "sam3_mock_image",
+          "name": "SAM3 mock image segmentation smoke",
+          "type": "api",
+          "mode": "sam3",
+          "method": "POST",
+          "fixture": "packs/sam3/demo/sample.png",
+          "expected_keys": ["ok", "mock", "runtime_level", "prompt_type", "masks", "elapsed_ms"],
+          "expected_mock": true
+        },
+        {
+          "id": "sam3_real_image",
+          "name": "SAM3 real image segmentation smoke",
+          "type": "api",
+          "mode": "sam3",
+          "method": "POST",
+          "fixture": "packs/sam3/demo/sample.png",
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "prompt_type", "masks", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_elapsed_ms_positive": true,
+          "expected_model_checkpoint": true,
+          "real_inference": true
+        }
+      ]
+    }
+  },
   "error_codes": [
+    "bad_request",
     "model_not_present",
     "model_load_failed",
     "runtime_dependency_missing",

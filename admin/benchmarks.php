@@ -19,6 +19,8 @@ php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=ocr-main --case=
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=ocr-main --case=ocr_real_image
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=yolo --case=yolo_mock_image
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=yolo-main --case=yolo_real_image
+php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=sam3 --case=sam3_mock_image
+php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=sam3-main --case=sam3_real_image
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=translate-gemma12b --case=translate_mock_text
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=translate-main --case=translate_real_text
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --case=hello_api

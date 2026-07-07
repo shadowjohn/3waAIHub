@@ -53,7 +53,7 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             $manifest = hub_get_pack('sam3')['manifest'];
             $requirements = (string)file_get_contents($base . '/requirements.txt');
             $dockerfile = (string)file_get_contents($base . '/Dockerfile');
-            hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4b-real-inference-smoke', 'sam3 runtime_level must be L4b-real-inference-smoke');
+            hub_test_assert(($manifest['runtime_level'] ?? '') === 'L5-benchmark-ready', 'sam3 runtime_level must be L5-benchmark-ready');
             hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'sam3 target_level must be L5-benchmark-ready');
             hub_test_assert(($manifest['category'] ?? '') === 'vision', 'sam3 category must be vision');
             hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/segment/image', 'sam3 gateway endpoint mismatch');
@@ -67,19 +67,19 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             foreach (['fastapi', 'python-multipart', 'pillow', 'numpy', 'requests'] as $needle) {
                 hub_test_assert(str_contains($requirements, $needle), 'sam3 requirements missing ' . $needle);
             }
-            hub_test_assert(str_contains($requirements, 'ultralytics'), 'sam3 L4b requirements must include Ultralytics');
+            hub_test_assert(str_contains($requirements, 'ultralytics'), 'sam3 L5 requirements must include Ultralytics');
             hub_test_assert(str_contains($dockerfile, 'python3 /app/smoke.py'), 'sam3 Dockerfile must run smoke.py at build time');
             hub_test_assert(str_contains($dockerfile, 'inference_smoke.py'), 'sam3 Dockerfile must copy inference_smoke.py');
             hub_test_assert(str_contains($dockerfile, '/tmp/home'), 'sam3 Dockerfile build smoke must use temp HOME');
-            hub_test_assert(str_contains($app, 'return "L4b-real-inference-smoke"'), 'sam3 app must expose L4b runtime_level');
+            hub_test_assert(str_contains($app, 'return "L5-benchmark-ready"'), 'sam3 app must expose L5 runtime_level');
             hub_test_assert(str_contains($app, '"storage"'), 'sam3 health must report storage');
             hub_test_assert(str_contains($app, '"model": model'), 'sam3 health must report model status');
             hub_test_assert(str_contains($app, '"runtime": runtime'), 'sam3 health must report runtime status');
             hub_test_assert(str_contains($app, 'dependency_available'), 'sam3 health must report dependency availability');
             hub_test_assert(str_contains($app, 'model_not_present'), 'sam3 health must warn when model is missing');
-            hub_test_assert(!str_contains($app, 'runtime_not_ready'), 'sam3 L4b real inference must not return runtime_not_ready');
+            hub_test_assert(!str_contains($app, 'runtime_not_ready'), 'sam3 L5 real inference must not return runtime_not_ready');
             foreach (['SAM(', 'predict', 'run_sam3', 'MIN_CHECKPOINT_BYTES', 'checkpoint is too small'] as $needle) {
-                hub_test_assert(str_contains($app, $needle), 'sam3 L4b app missing real inference path: ' . $needle);
+                hub_test_assert(str_contains($app, $needle), 'sam3 L5 app missing real inference path: ' . $needle);
             }
             foreach (['YOLO(', 'download'] as $needle) {
                 hub_test_assert(!str_contains($app, $needle), 'sam3 app must not use YOLO/download: ' . $needle);
@@ -182,7 +182,7 @@ hub_test('YOLO and SAM3 service instances generate GPU model mounts', function (
     }
 });
 
-hub_test('SAM3 model selector and gateway mode support L4b real smoke contract', function (): void {
+hub_test('SAM3 model selector and gateway mode support L5 real smoke contract', function (): void {
     $db = hub_test_reset_db();
     $root = hub_test_models_dir();
     if (!is_dir($root . '/sam3')) {
@@ -214,7 +214,7 @@ hub_test('SAM3 model selector and gateway mode support L4b real smoke contract',
         return hub_gateway_json(200, [
             'ok' => true,
             'mock' => true,
-            'runtime_level' => 'L4b-real-inference-smoke',
+            'runtime_level' => 'L5-benchmark-ready',
             'masks' => [],
             'boxes' => [],
         ]);
@@ -225,7 +225,7 @@ hub_test('SAM3 model selector and gateway mode support L4b real smoke contract',
     $realResponse = hub_gateway_dispatch($db, 'sam3', static fn (): array => hub_gateway_json(200, [
         'ok' => true,
         'mock' => false,
-        'runtime_level' => 'L4b-real-inference-smoke',
+        'runtime_level' => 'L5-benchmark-ready',
         'masks' => [],
         'elapsed_ms' => 1,
     ]));

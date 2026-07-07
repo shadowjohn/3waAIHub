@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`hello` L5 reference Pack、`ocr-ppocrv5` / `yolo` / `translate-gemma12b` L5 benchmark-ready Pack、`sam3` L4b real-inference smoke adapter，以及 `whisper-asr` L3 storage-mount Pack。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`hello` L5 reference Pack、`ocr-ppocrv5` / `yolo` / `sam3` / `translate-gemma12b` L5 benchmark-ready Pack，以及 `whisper-asr` L3 storage-mount Pack。
 
 ## 功能
 
@@ -350,6 +350,8 @@ php /DATA/3waAIHub/scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_imag
 php /DATA/3waAIHub/scripts/benchmark.php --service=ocr-main --case=ocr_real_image
 php /DATA/3waAIHub/scripts/benchmark.php --pack=yolo --case=yolo_mock_image
 php /DATA/3waAIHub/scripts/benchmark.php --service=yolo-main --case=yolo_real_image
+php /DATA/3waAIHub/scripts/benchmark.php --pack=sam3 --case=sam3_mock_image
+php /DATA/3waAIHub/scripts/benchmark.php --service=sam3-main --case=sam3_real_image
 ```
 
 後台頁：
@@ -360,6 +362,7 @@ http://localhost/3waAIHub/admin/api_docs.php
 http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=hello
 http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=ocr-ppocrv5
 http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=yolo
+http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=sam3
 ```
 
 API 範例文件：
@@ -534,22 +537,23 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 
 ### sam3 Runtime Level
 
-`sam3` 目前是 L4b `real-inference-smoke`：
+`sam3` 目前是 L5 `benchmark-ready`：
 
 - `POST /segment/image` 支援 multipart 圖片上傳
 - prompt 使用 `prompt_type` / `points_json` / `boxes_json` form 欄位
 - 預設回 mock segmentation JSON，`real_inference=1` 會執行單張圖片真 inference smoke
-- `GET /health` 回 `runtime_level=L4b-real-inference-smoke`、storage 狀態、model present 狀態與 runtime dependency 狀態
+- `GET /health` 回 `runtime_level=L5-benchmark-ready`、storage 狀態、model present 狀態與 runtime dependency 狀態
 - runtime 掛載 `${AIHUB_MODELS_DIR}/sam3:/models/sam3`
 - runtime 掛載 `${AIHUB_CACHE_DIR}/sam3:/cache/sam3`
 - runtime 掛載 `${SERVICE_DATA_DIR}:/data/service`
 - `storage_smoke.py` 可在 container 內檢查 models/cache/service_data 與 HuggingFace/Torch cache 目錄
 - `model_smoke.py` 可在 container 內檢查 `/models/sam3` checkpoint 是否存在且尺寸不像 smoke fake file
 - `inference_smoke.py` 可在 container 內驗證 `real_inference=1` 的單張圖片 smoke
+- `sam3_mock_image` / `sam3_real_image` benchmark 可驗 contract
 - `SAM3_CHECKPOINT` 可從 `/DATA/models/sam3/*.pt` / `*.pth` / `*.safetensors` / `*.ckpt` 選用
 - generated compose 會加入 `gpus: all`
 
-L4b 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；本階段不下載 checkpoint、不產生 mask artifact，也不做批次或影片 segmentation。
+L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；本階段不下載 checkpoint、不產生 mask artifact，也不做批次或影片 segmentation。
 
 ### whisper-asr Runtime Level
 
@@ -644,7 +648,7 @@ Service settings 支援 Pack 宣告的 model selector。第一版已支援：
 
 - `yolo`：`YOLO_MODEL` 可從 `/DATA/models/yolo/*.pt` / `*.onnx` 選用，仍保留文字輸入。
 - `translate-gemma12b`：`OLLAMA_MODEL` 維持 Ollama tag 文字設定，並顯示 `/DATA/models/ollama` 與 Ollama manifest present/missing 狀態。
-- `sam3`：`SAM3_CHECKPOINT` 可從 `/DATA/models/sam3/*.pt` / `*.pth` / `*.safetensors` / `*.ckpt` 選用，L4b 缺 checkpoint 會在 health 顯示 `model_not_present`。
+- `sam3`：`SAM3_CHECKPOINT` 可從 `/DATA/models/sam3/*.pt` / `*.pth` / `*.safetensors` / `*.ckpt` 選用，L5 缺 checkpoint 會在 health 顯示 `model_not_present`。
 
 第一版不做模型 upload / download / delete / move，也不提供任意 host path picker。
 

@@ -123,3 +123,46 @@ hub_test('L5 TranslateGemma contract benchmark records mock and real cases', fun
     hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'Translate readiness must show promoted L5');
     hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'Translate readiness must be fully green after real benchmark pass');
 });
+
+hub_test('L5 SAM3 contract benchmark records mock and real cases', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'sam3', [
+        'service_key' => 'sam3-main',
+        'name' => 'SAM3 Main',
+        'mode' => 'sam3',
+        'port_mode' => 'manual',
+        'local_port' => 18106,
+        'environment' => 'production',
+        'idempotent' => true,
+    ]);
+
+    $contract = hub_pack_l5_contract(hub_get_pack('sam3')['manifest']);
+    hub_test_assert(hub_l5_benchmark_case($contract, 'sam3_mock_image') !== null, 'sam3_mock_image case missing');
+    $realCase = hub_l5_benchmark_case($contract, 'sam3_real_image');
+    hub_test_assert($realCase !== null, 'sam3_real_image case missing');
+    hub_test_assert(!empty($realCase['real_inference']), 'SAM3 real benchmark must be marked real_inference');
+    hub_test_assert(!isset($realCase['expected_min_masks']), 'SAM3 real benchmark must not assert mask count');
+
+    $readiness = hub_pack_l5_readiness($db, 'sam3');
+    hub_test_assert($readiness['checks']['has_l5_contract'] === true, 'SAM3 readiness must see l5_contract');
+    hub_test_assert($readiness['checks']['has_benchmark_cases'] === true, 'SAM3 readiness must see benchmark cases');
+    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === false, 'SAM3 real benchmark must start pending');
+
+    $mock = hub_run_benchmark_case($db, 'sam3_mock_image', 'sam3');
+    hub_test_assert($mock['status'] === 'pass', 'sam3_mock_image did not pass');
+    hub_test_assert(($mock['result']['expected_keys_pass'] ?? false) === true, 'SAM3 mock expected keys check failed');
+    hub_test_assert(($mock['result']['mock'] ?? null) === true, 'SAM3 mock benchmark must stay mock');
+
+    $service = hub_get_service_by_key($db, 'sam3-main');
+    hub_save_benchmark_run($db, 'sam3_real_image', (int)$service['id'], 'sam3', 'pass', 123, [
+        'ok' => true,
+        'mock' => false,
+        'masks' => [],
+        'elapsed_ms' => 1,
+        'model' => ['checkpoint' => '/models/sam3/sam3.pt'],
+    ], null);
+    $readiness = hub_pack_l5_readiness($db, 'sam3');
+    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === true, 'SAM3 real benchmark pass must update readiness');
+    hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'SAM3 readiness must show promoted L5');
+    hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'SAM3 readiness must be fully green after real benchmark pass');
+});

@@ -29,7 +29,7 @@ class Sam3Error(Exception):
 
 
 def runtime_level() -> str:
-    return "L4b-real-inference-smoke"
+    return "L5-benchmark-ready"
 
 
 def env_enabled(value: str | None) -> bool:
@@ -461,5 +461,6 @@ async def segment_image(
         "prompt_type": prompt_type or "auto",
         "masks": [],
         "boxes": [],
+        "elapsed_ms": 0,
         "message": "SAM3 mock segmentation",
     })
