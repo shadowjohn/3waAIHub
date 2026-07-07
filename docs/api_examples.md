@@ -3,7 +3,7 @@
 Base URL:
 
 ```text
-http://localhost/3waAIHub/api.php
+<BASE_URL>
 ```
 
 錯誤回應會包含 `request_id`。外部系統串接失敗時，請提供 `request_id`、`mode`、時間與來源 IP，方便後台 Log Explorer 查詢。
@@ -11,7 +11,7 @@ http://localhost/3waAIHub/api.php
 外部 IP 預設需要 Bearer token。先在後台建立 API Member / Token，授權對應 mode，必要時再設定 token IP whitelist。
 
 ```bash
-curl "http://localhost/3waAIHub/api.php?mode=hello" \
+curl "<BASE_URL>?mode=hello" \
   -H "Authorization: Bearer <TOKEN>"
 ```
 
@@ -34,7 +34,7 @@ php scripts/token_api_smoke.php
 Status: Hello L5 Reference Pack. 這是最小 sync API contract 範本。
 
 ```bash
-curl "http://localhost/3waAIHub/api.php?mode=hello"
+curl "<BASE_URL>?mode=hello"
 ```
 
 Response:
@@ -58,7 +58,7 @@ php scripts/benchmark.php --pack=hello --case=hello_api
 Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `OCR_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行 PaddleOCR。
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
+curl -X POST "<BASE_URL>?mode=ocr" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "image=@sample.png"
 ```
@@ -86,7 +86,7 @@ Status: L5 benchmark ready. The adapter uses an internal Ollama sidecar, returns
 Mock mode:
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+curl -X POST "<BASE_URL>?mode=translate" \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -114,7 +114,7 @@ Response:
 Real inference mode:
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+curl -X POST "<BASE_URL>?mode=translate" \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{
@@ -152,13 +152,13 @@ php scripts/benchmark.php --service=translate-main --case=translate_real_text
 Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `YOLO_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行單張圖片 detection。
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
+curl -X POST "<BASE_URL>?mode=yolo" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/yolo/demo/camera_cat.png"
 ```
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
+curl -X POST "<BASE_URL>?mode=yolo" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/yolo/demo/camera_cat.png" \
   -F "real_inference=1"
@@ -169,14 +169,14 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
 Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。`output_format=metadata|polygon|rle|both` 可選 mask geometry；RLE 第一版是 raw uncompressed row-major counts。
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+curl -X POST "<BASE_URL>?mode=sam3" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto"
 ```
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+curl -X POST "<BASE_URL>?mode=sam3" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto" \
@@ -187,7 +187,7 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
 Points prompt:
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+curl -X POST "<BASE_URL>?mode=sam3" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=points" \
@@ -209,7 +209,7 @@ php scripts/benchmark.php --service=sam3-main --case=sam3_real_polygon_image
 unknown mode 代表 `mode` 尚未註冊到任何 service instance。
 
 ```bash
-curl "http://localhost/3waAIHub/api.php?mode=unknown"
+curl "<BASE_URL>?mode=unknown"
 ```
 
 Response:

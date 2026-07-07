@@ -1,0 +1,140 @@
+# 3waAIHub Client Quickstart
+
+Public Docs 是說明書，Bearer Token 才是鑰匙。
+
+建議交付流程：
+
+1. 系統管理員建立客戶。
+2. 建立或交付 API token。
+3. 開啟 `public_api_docs.php` 查看人類可讀文件。
+4. 開啟 `api_manifest.json.php` 給 agent / client generator 讀 contract。
+5. 執行 `scripts/api_smoke_client.php` 驗證 token、mode、gateway、runtime 都可用。
+6. 外部系統複製 curl / PHP / JS fetch 範例開始介接。
+
+## Base URL
+
+公開文件與 Playground 會依目前網頁 host 產生 URL，例如：
+
+```text
+https://nature.focusit.tw/3waAIHub/api.php
+```
+
+文件裡用：
+
+```text
+<BASE_URL>
+```
+
+代表你的實際 API endpoint。
+
+## Auth
+
+所有外部 API request 使用 Bearer Token：
+
+```text
+Authorization: Bearer <TOKEN>
+```
+
+不要把真 token 寫進文件、前端 repo 或 log。
+
+## Smoke Client
+
+先用 mock / lightweight path 驗證介接：
+
+```bash
+php scripts/api_smoke_client.php \
+  --base-url=https://nature.focusit.tw/3waAIHub/api.php \
+  --token=<TOKEN>
+```
+
+指定 mode：
+
+```bash
+php scripts/api_smoke_client.php \
+  --base-url=https://nature.focusit.tw/3waAIHub/api.php \
+  --token=<TOKEN> \
+  --modes=hello,ocr,yolo,translate,sam3
+```
+
+預設 `real_inference=0`。要測真推論時再加：
+
+```bash
+php scripts/api_smoke_client.php \
+  --base-url=https://nature.focusit.tw/3waAIHub/api.php \
+  --token=<TOKEN> \
+  --modes=ocr,yolo,sam3,translate \
+  --real
+```
+
+## Minimal Examples
+
+### curl
+
+```bash
+curl -H "Authorization: Bearer <TOKEN>" \
+  "<BASE_URL>?mode=hello"
+```
+
+### PHP
+
+```php
+$ch = curl_init('<BASE_URL>?mode=hello');
+curl_setopt_array($ch, [
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>'],
+]);
+echo curl_exec($ch);
+```
+
+### JS fetch
+
+```js
+const res = await fetch('<BASE_URL>?mode=hello', {
+  headers: { Authorization: 'Bearer <TOKEN>' }
+});
+console.log(await res.json());
+```
+
+## Mode Contracts
+
+### `mode=hello`
+
+- request contract: `GET`
+- response contract: JSON with `ok`, `service`, `message`
+- error contract: `missing_token`, `invalid_token`, `token_mode_denied`, `unknown_mode`
+
+### `mode=ocr`
+
+- request contract: `POST multipart/form-data`, field `image`, optional `real_inference`
+- response contract: JSON with `ok`, `text`, `blocks`
+- error contract: `bad_request`, `file_too_large`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
+
+### `mode=yolo`
+
+- request contract: `POST multipart/form-data`, field `image`, optional `real_inference`
+- response contract: JSON with `ok`, `detections`, `elapsed_ms`
+- error contract: `bad_request`, `file_too_large`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
+
+### `mode=translate`
+
+- request contract: `POST application/json`, fields `source_lang`, `target_lang`, `text`, optional `real_inference`
+- response contract: JSON with `ok`, `text`, `source_lang`, `target_lang`, `elapsed_ms`
+- error contract: `bad_request`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
+
+### `mode=sam3`
+
+- request contract: `POST multipart/form-data`, field `image`, optional `prompt_type`, `points_json`, `output_format`, `real_inference`
+- response contract: JSON with `ok`, `masks`, `prompt_type`, `elapsed_ms`
+- error contract: `bad_request`, `model_not_present`, `invalid_prompt`, `inference_failed`, `inference_timeout`
+
+## Debug
+
+API 錯誤回應通常會有 `request_id`。回報問題時帶：
+
+- `request_id`
+- `mode`
+- HTTP status
+- 呼叫時間
+- 來源 IP
+
+管理者可到後台 Log Explorer 追 API 記錄。

@@ -1856,3 +1856,29 @@ Skipped:
 - trusted proxy parser.
 - account-level lockout.
 - permanent ban.
+
+## PhaseDX-4 Client Integration Starter Kit
+
+Added the first external client onboarding kit.
+
+Added:
+
+- `docs/client_quickstart.md`
+- `scripts/api_smoke_client.php`
+- `tests/test_phase_dx4_client_starter.php`
+
+Implemented:
+
+- Quickstart flow: create customer, create token, read public docs, read agent manifest, run smoke client, then integrate.
+- Minimal curl / PHP / JS fetch examples.
+- Mode contract summary for `hello`, `ocr`, `yolo`, `translate`, and `sam3`.
+- API examples now use `<BASE_URL>` instead of hardcoded localhost.
+- Smoke client supports `--base-url`, `--token`, `--modes`, `--image`, and `--real`.
+- Playground and public docs examples remain current-host based.
+
+Skipped:
+
+- SDK package.
+- Token storage in client tooling.
+- Gateway/runtime changes.
+- New platform features.

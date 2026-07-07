@@ -268,7 +268,7 @@ admin/api_usage.php        每日 usage aggregate
 外部呼叫：
 
 ```bash
-curl "http://localhost/3waAIHub/api.php?mode=hello" \
+curl "<BASE_URL>?mode=hello" \
   -H "Authorization: Bearer <TOKEN>"
 ```
 
@@ -284,6 +284,7 @@ curl "http://localhost/3waAIHub/api.php?mode=hello" \
 
 - `public_api_docs.php`：公開 API 文件，預設允許未登入讀取。
 - `api_manifest.json.php`：給 AI agent / Codex / MCP 讀取的 machine-readable contract，預設允許未登入讀取。
+- `docs/client_quickstart.md`：Client Integration Starter Kit，整理交付流程、最小 curl / PHP / JS fetch 範例與 smoke client。
 
 公開文件與 manifest 只提供外部介接資訊：`mode`、`pack_id`、`method`、`content-type`、request fields、response keys、error codes 與 `<TOKEN>` 範例。它們不顯示 admin links、local_port、Docker compose path、host model path、log path、SQLite path 或 token 明文。
 
@@ -465,6 +466,16 @@ php /DATA/3waAIHub/scripts/token_api_smoke.php
 ```
 
 這支 smoke 會用臨時 SQLite DB、臨時 PHP app server 與 OCR mock server，建立 member/token、授權 `mode=ocr`、設定 token IP whitelist，然後用 `curl` 帶 Bearer token 呼叫 `api.php?mode=ocr`，最後檢查 Log Explorer 查詢資料與 daily usage aggregate。
+
+外部 client smoke：
+
+```bash
+php /DATA/3waAIHub/scripts/api_smoke_client.php \
+  --base-url=https://nature.focusit.tw/3waAIHub/api.php \
+  --token=<TOKEN>
+```
+
+這支 smoke 使用既有服務與真實 Bearer token 呼叫 `hello,ocr,yolo,translate,sam3`，預設走 mock / lightweight path；需要真推論再加 `--real`。
 
 ## Service Runtime Settings
 
