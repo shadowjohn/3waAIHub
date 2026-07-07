@@ -1,5 +1,15 @@
 # 3waAIHub History
 
+## PhaseDX-2.1 Playground Current Host Examples
+
+Updated API Playground examples to use the current request host instead of hardcoded `localhost`.
+
+Implemented:
+
+- `curl`, PHP, and JS fetch examples now reuse `hub_playground_api_url()`.
+- Examples render as `http://localhost/...` locally and `https://nature.focusit.tw/...` behind the public host.
+- Added a regression test for current-host example generation.
+
 ## PhaseUI-6.1 Dashboard Health Summary
 
 Added service health truthfulness to the dashboard without changing collectors or schemas.

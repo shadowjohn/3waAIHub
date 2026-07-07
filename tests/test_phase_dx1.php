@@ -45,4 +45,13 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     foreach (['hello', 'ocr', 'OCR Main', 'name="image"', 'real_inference', 'api.php?mode=ocr', '<TOKEN>', '服務尚未執行'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered playground missing ' . $needle);
     }
+
+    $_SERVER['HTTPS'] = 'on';
+    $_SERVER['HTTP_HOST'] = 'nature.focusit.tw';
+    $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/playground.php';
+    $examples = hub_playground_examples('hello');
+    foreach (['curl', 'php', 'js'] as $kind) {
+        hub_test_assert(str_contains($examples[$kind], 'https://nature.focusit.tw/3waAIHub/api.php?mode=hello'), 'playground ' . $kind . ' example must use current host');
+        hub_test_assert(!str_contains($examples[$kind], 'http://localhost/3waAIHub/api.php?mode=hello'), 'playground ' . $kind . ' example must not hardcode localhost');
+    }
 });

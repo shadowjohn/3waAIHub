@@ -300,19 +300,21 @@ function hub_playground_pretty_json(string $body): string
 
 function hub_playground_examples(string $mode): array
 {
-    $url = 'http://localhost/3waAIHub/api.php?mode=' . $mode;
+    $url = hub_playground_api_url($mode);
+    $phpUrl = var_export($url, true);
+    $jsUrl = json_encode($url, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     if ($mode === 'hello') {
         $curl = 'curl -H "Authorization: Bearer <TOKEN>" "' . $url . '"';
-        $php = <<<'PHP'
-$ch = curl_init('http://localhost/3waAIHub/api.php?mode=hello');
-curl_setopt_array($ch, [
+        $php = <<<PHP
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>'],
 ]);
-echo curl_exec($ch);
+echo curl_exec(\$ch);
 PHP;
-        $js = <<<'JS'
-const res = await fetch('http://localhost/3waAIHub/api.php?mode=hello', {
+        $js = <<<JS
+const res = await fetch($jsUrl, {
   headers: { Authorization: 'Bearer <TOKEN>' }
 });
 console.log(await res.json());
@@ -322,27 +324,27 @@ JS;
     if ($mode === 'translate') {
         $json = '{"source_lang":"en","target_lang":"zh-TW","text":"That was a wonderful time.","real_inference":0}';
         $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
-        $php = <<<'PHP'
-$payload = [
+        $php = <<<PHP
+\$payload = [
     'source_lang' => 'en',
     'target_lang' => 'zh-TW',
     'text' => 'That was a wonderful time.',
     'real_inference' => 0,
 ];
-$ch = curl_init('http://localhost/3waAIHub/api.php?mode=translate');
-curl_setopt_array($ch, [
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
     CURLOPT_POST => true,
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_HTTPHEADER => [
         'Authorization: Bearer <TOKEN>',
         'Content-Type: application/json',
     ],
-    CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+    CURLOPT_POSTFIELDS => json_encode(\$payload, JSON_UNESCAPED_UNICODE),
 ]);
-echo curl_exec($ch);
+echo curl_exec(\$ch);
 PHP;
-        $js = <<<'JS'
-const res = await fetch('http://localhost/3waAIHub/api.php?mode=translate', {
+        $js = <<<JS
+const res = await fetch($jsUrl, {
   method: 'POST',
   headers: {
     Authorization: 'Bearer <TOKEN>',
@@ -364,7 +366,7 @@ JS;
     $extra = $mode === 'sam3' ? " \\\n  -F prompt_type=auto" : '';
     $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: multipart/form-data\" \\\n  -F {$field}=@sample.png \\\n  -F real_inference=0{$extra}";
     $php = <<<PHP
-\$ch = curl_init('$url');
+\$ch = curl_init($phpUrl);
 curl_setopt_array(\$ch, [
     CURLOPT_POST => true,
     CURLOPT_RETURNTRANSFER => true,
@@ -382,7 +384,7 @@ const form = new FormData();
 form.append('$field', fileInput.files[0]);
 form.append('real_inference', '0');
 form.append('prompt_type', 'auto');
-const res = await fetch('$url', {
+const res = await fetch($jsUrl, {
   method: 'POST',
   headers: { Authorization: 'Bearer <TOKEN>' },
   body: form

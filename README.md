@@ -223,7 +223,7 @@ curl "http://localhost/3waAIHub/api.php?mode=hello" \
 2. 到 `admin/api_token_permissions.php` 授權可用 `mode`。
 3. 開 `admin/playground.php`，選 service mode 並貼上 token。
 4. 執行測試。Playground 會先檢查服務是否啟用、容器是否執行、health 是否可用，再顯示 response 與 `request_id`。
-5. 複製 curl / PHP / JS fetch 範例到外部系統。
+5. 複製 curl / PHP / JS fetch 範例到外部系統；範例網址會使用目前後台頁面的 host。
 
 Token 儲存只保留 `sha256` hash 與 prefix，不保存明文。可設定 `valid_from`、`valid_until`、revoke、停用，並以 mode permission 控制可呼叫的服務。
 
