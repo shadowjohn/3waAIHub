@@ -1,5 +1,28 @@
 # 3waAIHub History
 
+## PhaseUI-5 Log Explorer Tabs / Background Jobs
+
+Consolidated operational logs into a single Log Explorer entry point.
+
+Implemented:
+
+- Added `admin/log_explorer.php` tabs for API 記錄, 背景工作, 服務記錄, and 系統記錄.
+- Kept existing API access log filters as the default `tab=api` behavior.
+- Added `tab=jobs` command job filters for status, action, service, keyword, and time range.
+- Added command job rows with localized status/action labels, service name/key, progress, stage, requested info, error summary, and bounded stdout/stderr tail.
+- Removed the full recent background jobs history table from `admin/services.php`.
+- Added service-level job links from service cards to Log Explorer.
+- Kept services page focused on current status, actions, and the latest/current job summary.
+- Added PhaseUI-5 log explorer tab tests.
+
+Skipped:
+
+- Large log viewer.
+- log streaming / SSE.
+- command worker changes.
+- API access schema changes.
+- runtime / gateway changes.
+
 ## PhaseUI-5 Dashboard Control Center Polish
 
 Polished the admin dashboard into a clearer control center.

@@ -105,8 +105,12 @@ $summary = [
     'failed_jobs' => count(array_filter($jobs, static fn (array $job): bool => (string)$job['status'] === 'failed')),
 ];
 $activeJobsByService = [];
+$lastJobsByService = [];
 foreach ($jobs as $job) {
     $serviceId = (int)($job['service_id'] ?? 0);
+    if ($serviceId > 0 && !isset($lastJobsByService[$serviceId])) {
+        $lastJobsByService[$serviceId] = $job;
+    }
     if ($serviceId > 0 && in_array((string)$job['status'], ['queued', 'running'], true) && !isset($activeJobsByService[$serviceId])) {
         $activeJobsByService[$serviceId] = $job;
     }
@@ -135,6 +139,7 @@ hub_admin_header('服務管理', $user);
         <article class="hub-card"><h2>背景工作執行中</h2><strong><?= (int)$summary['running_jobs'] ?></strong></article>
         <article class="hub-card"><h2>最近失敗工作</h2><strong><?= (int)$summary['failed_jobs'] ?></strong></article>
     </div>
+    <p><a class="button" href="log_explorer.php?tab=jobs">查看背景工作</a></p>
 </section>
 <section class="panel">
     <div class="hub-section-title">
@@ -146,6 +151,7 @@ hub_admin_header('服務管理', $user);
             <?php
             $serviceId = (int)$service['id'];
             $activeJob = $activeJobsByService[$serviceId] ?? null;
+            $lastJob = $lastJobsByService[$serviceId] ?? null;
             $apiUrl = hub_services_api_url($service);
             $runtimeLevel = hub_services_runtime_level($service);
             $endpoint = hub_services_endpoint_label($service);
@@ -189,6 +195,17 @@ hub_admin_header('服務管理', $user);
                     <div class="hub-meta-value"><code><?= hub_h($service['mode']) ?></code></div>
                     <div class="hub-meta-label">API 入口</div>
                     <div class="hub-meta-value"><code id="service-api-url-<?= $serviceId ?>"><?= hub_h($apiUrl) ?></code></div>
+                    <div class="hub-meta-label">最後工作</div>
+                    <div class="hub-meta-value">
+                        <?php if ($lastJob): ?>
+                            <?= hub_h(hub_command_action_label((string)$lastJob['action'])) ?>
+                            <code><?= hub_h((string)$lastJob['action']) ?></code>
+                            <span class="<?= hub_h(hub_command_status_class((string)$lastJob['status'])) ?>"><?= hub_h(hub_command_status_label((string)$lastJob['status'])) ?></span>
+                            <span class="muted"><?= hub_h((string)($lastJob['updated_at'] ?? $lastJob['created_at'] ?? '')) ?></span>
+                        <?php else: ?>
+                            <span class="muted">尚無背景工作</span>
+                        <?php endif; ?>
+                    </div>
                 </div>
                 <form class="service-action-form" method="post" data-service-refresh-form="<?= $serviceId ?>">
                     <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
@@ -206,6 +223,7 @@ hub_admin_header('服務管理', $user);
                     <a class="button" href="service_settings.php?service_id=<?= $serviceId ?>">設定</a>
                     <a class="button" href="service_logs.php?id=<?= $serviceId ?>">服務記錄</a>
                     <a class="button" href="log_explorer.php?service_id=<?= $serviceId ?>">API 記錄</a>
+                    <a class="button" href="log_explorer.php?tab=jobs&amp;service_id=<?= $serviceId ?>">查看此服務工作</a>
                     <a class="button" href="benchmarks.php">Benchmark</a>
                     <a class="button" href="playground.php?mode=<?= urlencode((string)$service['mode']) ?>">到 API 測試場</a>
                     <button type="button" data-copy-target="service-api-url-<?= $serviceId ?>">複製 API URL</button>
@@ -228,32 +246,6 @@ hub_admin_header('服務管理', $user);
             </article>
         <?php endforeach; ?>
     </div>
-</section>
-<section class="panel">
-    <h2>近期背景工作</h2>
-    <table>
-        <thead>
-            <tr><th>ID</th><th>動作</th><th>服務</th><th>狀態</th><th>進度</th><th>Stage</th><th>Exit</th><th>建立時間</th><th>錯誤</th></tr>
-        </thead>
-        <tbody id="command-job-rows">
-        <?php foreach ($jobs as $job): ?>
-            <tr data-job-row-id="<?= (int)$job['id'] ?>">
-                <td>#<?= (int)$job['id'] ?></td>
-                <td><?= hub_h(hub_command_action_label((string)$job['action'])) ?> <code><?= hub_h($job['action']) ?></code></td>
-                <td><?= hub_h($job['service_name'] ?? '') ?></td>
-                <td data-job-row-status class="<?= hub_status_class($job['status']) ?>"><?= hub_h(hub_status_label($job['status'])) ?></td>
-                <td>
-                    <div class="job-progress job-row-progress-bar"><span style="width: <?= (int)($job['progress'] ?? 0) ?>%"></span></div>
-                    <span class="job-row-progress"><?= (int)($job['progress'] ?? 0) ?></span>%
-                </td>
-                <td><code class="job-row-stage"><?= hub_h((string)($job['stage'] ?? '')) ?></code><br><span class="muted job-row-message"><?= hub_h((string)($job['current_message'] ?? '')) ?></span></td>
-                <td data-job-row-exit><?= $job['exit_code'] === null ? '' : (int)$job['exit_code'] ?></td>
-                <td><?= hub_h($job['created_at']) ?></td>
-                <td data-job-row-error><?= hub_h($job['error_message']) ?></td>
-            </tr>
-        <?php endforeach; ?>
-        </tbody>
-    </table>
 </section>
 <script src="../assets/js/jquery.min.js"></script>
 <script>
