@@ -6,11 +6,11 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L4a-model-present-smoke",
+  "runtime_level": "L4b-real-inference-smoke",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "sam3",
-  "description": "SAM3 segmentation API adapter with storage mount checks and mock segmentation response.",
+  "description": "SAM3 segmentation API adapter with model-present checks and single-image real inference smoke.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -23,6 +23,16 @@
     "timeout_sec": 180,
     "max_upload_mb": 50
   },
+  "error_codes": [
+    "model_not_present",
+    "model_load_failed",
+    "runtime_dependency_missing",
+    "bad_image",
+    "invalid_prompt",
+    "gpu_unavailable",
+    "inference_failed",
+    "inference_timeout"
+  ],
   "hardware": {
     "gpu_required": true,
     "gpu_supported": true,
@@ -106,7 +116,7 @@
       "default": "0",
       "required": true,
       "restart_required": true,
-      "help": "L4a checks model presence only; real inference remains disabled."
+      "help": "Enable single-image SAM3 real inference smoke."
     }
   ],
   "env": [

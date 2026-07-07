@@ -14,6 +14,7 @@ def main() -> None:
     pillow = importlib.import_module("PIL")
     numpy = importlib.import_module("numpy")
     requests = importlib.import_module("requests")
+    ultralytics = importlib.import_module("ultralytics")
     print(json.dumps({
         "ok": True,
         "message": "smoke.py import SAM3 adapter deps OK",
@@ -22,6 +23,7 @@ def main() -> None:
         "PIL": version(pillow, "pillow"),
         "numpy": version(numpy, "numpy"),
         "requests": version(requests, "requests"),
+        "ultralytics": version(ultralytics, "ultralytics"),
     }, ensure_ascii=False))
 
 

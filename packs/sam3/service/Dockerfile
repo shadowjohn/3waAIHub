@@ -19,7 +19,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel \
     && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 
-COPY smoke.py storage_smoke.py model_smoke.py .
+COPY smoke.py storage_smoke.py model_smoke.py inference_smoke.py .
 RUN mkdir -p /tmp/home /tmp/xdg \
     && HOME=/tmp/home \
        XDG_CACHE_HOME=/tmp/xdg \

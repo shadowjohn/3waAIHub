@@ -154,7 +154,7 @@ hub_test('catalog and required packs are readable', function (): void {
         }
     }
     $sam3 = hub_get_pack('sam3')['manifest'];
-    hub_test_assert($sam3['runtime_level'] === 'L4a-model-present-smoke', 'SAM3 runtime level mismatch');
+    hub_test_assert($sam3['runtime_level'] === 'L4b-real-inference-smoke', 'SAM3 runtime level mismatch');
     hub_test_assert(($sam3['target_level'] ?? '') === 'L5-benchmark-ready', 'SAM3 target level mismatch');
     hub_test_assert($sam3['runtime_ready'] === true, 'SAM3 runtime ready mismatch');
     hub_test_assert(($sam3['category'] ?? '') === 'vision', 'SAM3 category mismatch');

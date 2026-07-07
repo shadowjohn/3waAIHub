@@ -1,5 +1,55 @@
 # 3waAIHub History
 
+## PhaseM-2D-L4b SAM3 Real Inference Smoke
+
+Advanced `sam3` from L4a model-present smoke to L4b real-inference smoke.
+
+Implemented:
+
+- `runtime_level = L4b-real-inference-smoke`.
+- Added `ultralytics` runtime dependency import smoke.
+- Added lightweight runtime dependency status to `/health`.
+- Added safe checkpoint loadability guard so tiny fake smoke files are not treated as inference-ready.
+- Added `inference_smoke.py` for single-image `real_inference=1` validation.
+- Kept mock mode as the default `/segment/image` behavior.
+- Added fixed error code contract for model/runtime/image/inference failures.
+
+Verified:
+
+- SAM3 Docker build PASS after moving containerd data root off `/`.
+- `sam3-main` start PASS.
+- `/health` PASS with `/models/sam3/sam3.pt`.
+- `model_smoke.py` PASS and selects the real checkpoint instead of `sam3-smoke.pt`.
+- `inference_smoke.py` PASS with `mock=false`.
+- Gateway `api.php?mode=sam3` real inference smoke PASS.
+
+Skipped:
+
+- L5 benchmark-ready promotion.
+- Mask artifact output.
+- RLE / polygon export.
+- Batch or video segmentation.
+- Advanced prompt UI.
+
+## Host Maintenance: containerd Root Move
+
+Moved containerd state from `/var/lib/containerd` to `/DATA/containerd` so heavy Docker builds do not fill the root filesystem.
+
+Recorded:
+
+- Docker Root Dir remains `/DATA/docker`.
+- containerd root is now `/DATA/containerd`.
+- Previous containerd data kept at `/DATA/containerd.varlib.bak.20260707_092343`.
+- containerd config backup: `/etc/containerd/config.toml.bak.20260707_092343`.
+- Install log: `data/logs/install/move_containerd_root_20260707_092343.log`.
+
+Verified:
+
+- `containerd` active.
+- `docker` active.
+- Running containers restored.
+- `/` free space recovered to about 68G.
+
 ## PhaseM-0 Hello L5 Reference Pack
 
 Promoted `hello` to the minimal L5 reference HubPack.
