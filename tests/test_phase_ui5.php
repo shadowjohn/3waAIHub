@@ -4,13 +4,13 @@ declare(strict_types=1);
 hub_test('PhaseUI-6 dashboard control center polish contract is present and renders', function (): void {
     $page = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
 
-    foreach (['總覽中控台', 'Dashboard summary cards', '服務總數', '健康正常', '健康異常 / 未檢查', 'L5 Pack 數', 'API 24h 呼叫數', 'API 24h 失敗數', '背景工作執行中', '最近失敗工作', 'Recent command jobs', 'Pack readiness', 'Model storage usage'] as $needle) {
+    foreach (['總覽中控台', 'Dashboard summary cards', '服務總數', '健康正常', '健康異常 / 未檢查', 'L5 Pack 數', 'API 24h 呼叫數', 'API 24h 失敗數', '背景工作執行中', '最近失敗工作', 'Recent command jobs', 'Pack readiness', 'Model storage usage', '介接公開狀態', '未登入 API 文件', 'Agent Manifest', '僅本機'] as $needle) {
         hub_test_assert(str_contains($page, $needle), 'dashboard missing ' . $needle);
     }
-    foreach (['服務管理', 'API 測試場', 'HubPack 套件', '模型倉庫', 'API 金鑰', 'Log Explorer'] as $label) {
+    foreach (['服務管理', 'API 測試場', 'HubPack 套件', '模型倉庫', 'API 金鑰', 'Log Explorer', '公開 API 文件', 'Agent Manifest'] as $label) {
         hub_test_assert(str_contains($page, $label), 'dashboard quick link missing ' . $label);
     }
-    foreach (['services.php', 'playground.php', 'packs.php', 'models.php', 'api_members.php', 'log_explorer.php'] as $href) {
+    foreach (['services.php', 'playground.php', 'packs.php', 'models.php', 'api_members.php', 'log_explorer.php', '../public_api_docs.php', '../api_manifest.json.php'] as $href) {
         hub_test_assert(str_contains($page, $href), 'dashboard quick href missing ' . $href);
     }
     foreach (['GPU', 'RAM', 'Disk', '/ disk free', 'Docker root free', 'Models Root free', 'Services running', 'Services stopped', 'Services disabled'] as $label) {
@@ -42,7 +42,7 @@ hub_test('PhaseUI-6 dashboard control center polish contract is present and rend
     require HUB_ROOT . '/admin/index.php';
     $html = (string)ob_get_clean();
 
-    foreach (['總覽中控台', 'Test GPU', '健康正常', '健康異常 / 未檢查', 'API 24h 呼叫數', 'API 24h 失敗數', '/ disk free', 'Docker root free', 'Models Root free', 'req_ui5_fail', 'Recent command jobs', 'Pack readiness', 'Model storage usage', 'playground.php', 'log_explorer.php'] as $needle) {
+    foreach (['總覽中控台', 'Test GPU', '健康正常', '健康異常 / 未檢查', 'API 24h 呼叫數', 'API 24h 失敗數', '/ disk free', 'Docker root free', 'Models Root free', 'req_ui5_fail', 'Recent command jobs', 'Pack readiness', 'Model storage usage', 'playground.php', 'log_explorer.php', '介接公開狀態', '../api_manifest.json.php'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered dashboard missing ' . $needle);
     }
 });

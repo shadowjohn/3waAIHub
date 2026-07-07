@@ -86,6 +86,11 @@ function hub_dash_service_health_counts(PDO $db): array
     return ['ok' => $ok, 'attention' => max(0, count($services) - $ok)];
 }
 
+function hub_dash_enabled_label(string $value): string
+{
+    return $value === '1' ? '啟用' : '停用';
+}
+
 function hub_dash_control_center(PDO $db): array
 {
     $since = date('Y-m-d H:i:s', time() - 86400);
@@ -136,6 +141,9 @@ function hub_dash_control_center(PDO $db): array
         'models_total' => hub_model_format_bytes($total),
         'models_free' => hub_model_format_bytes($free),
         'models_used_percent' => $used !== null && $total !== null && $total > 0 ? round(($used / $total) * 100, 1) : 0,
+        'public_api_docs' => hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS'),
+        'public_api_manifest' => hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_MANIFEST'),
+        'public_api_local_only' => hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY'),
     ];
 }
 
@@ -196,6 +204,12 @@ hub_admin_header('儀表板', $user);
         <article class="hub-card"><h3>最近失敗工作</h3><div class="dash-number bad"><?= (int)$control['failed_jobs'] ?></div></article>
         <article class="hub-card"><h3>Pack readiness</h3><div class="dash-number"><?= (int)$control['pack_readiness_ready'] ?>/<?= (int)$control['pack_readiness_total'] ?></div></article>
         <article class="hub-card"><h3>Model storage usage</h3><div class="dash-number"><?= hub_h((string)$control['models_used_percent']) ?>%</div><p class="muted">Free / Total <?= hub_h((string)$control['models_free']) ?> / <?= hub_h((string)$control['models_total']) ?></p></article>
+        <article class="hub-card">
+            <h3>介接公開狀態</h3>
+            <p class="muted">未登入 API 文件：<strong><?= hub_h(hub_dash_enabled_label((string)$control['public_api_docs'])) ?></strong></p>
+            <p class="muted">Agent Manifest：<strong><?= hub_h(hub_dash_enabled_label((string)$control['public_api_manifest'])) ?></strong></p>
+            <p class="muted">僅本機：<strong><?= (string)$control['public_api_local_only'] === '1' ? '是' : '否' ?></strong></p>
+        </article>
     </div>
     <div class="hub-actions">
         <a class="button" href="services.php">服務管理</a>
@@ -204,6 +218,8 @@ hub_admin_header('儀表板', $user);
         <a class="button" href="models.php">模型倉庫</a>
         <a class="button" href="api_members.php">API 金鑰</a>
         <a class="button" href="log_explorer.php">Log Explorer</a>
+        <a class="button" href="../public_api_docs.php">公開 API 文件</a>
+        <a class="button" href="../api_manifest.json.php">Agent Manifest</a>
     </div>
 </section>
 

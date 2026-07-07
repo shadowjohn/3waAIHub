@@ -1,5 +1,21 @@
 # 3waAIHub History
 
+## PhaseUI-6.2 Dashboard Public Integration Status
+
+Added DX-3 public integration visibility to the dashboard.
+
+Implemented:
+
+- Dashboard now shows `介接公開狀態` for public API docs, Agent Manifest, and local-only policy.
+- Added quick links to `public_api_docs.php` and `api_manifest.json.php`.
+- Kept metrics collector, gateway, runtime, and admin auth unchanged.
+
+Skipped:
+
+- Dashboard redesign.
+- New charts.
+- Public playground.
+
 ## PhaseDX-3 Public API Docs / Agent Manifest
 
 Added unauthenticated API integration docs and a machine-readable agent manifest while keeping admin API docs protected.
