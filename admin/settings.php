@@ -278,7 +278,7 @@ hub_admin_header('系統設定', $user);
         <p class="form-help">0 代表建立 token 時不自動設定 valid_until。</p>
         <div class="setting-card">
             <h3>未登入介接文件</h3>
-            <p class="form-help">建議維持僅本機可讀，提供 AI agent / Codex / MCP 介接使用。</p>
+            <p class="form-help">公開 API 文件只包含介接 contract，不包含 token、管理連結、內部路徑或 runtime secrets。API 實際呼叫仍需 Bearer Token。</p>
             <label>未登入 API 文件 / <code>AIHUB_PUBLIC_API_DOCS</code></label>
             <select name="AIHUB_PUBLIC_API_DOCS">
                 <option value="1"<?= $settings['AIHUB_PUBLIC_API_DOCS'] === '1' ? ' selected' : '' ?>>啟用</option>

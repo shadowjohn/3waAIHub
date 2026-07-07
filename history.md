@@ -1,5 +1,23 @@
 # 3waAIHub History
 
+## PhaseDX-3.1 Public API Docs Open Access
+
+Changed public API docs and Agent Manifest defaults to open access.
+
+Implemented:
+
+- Default `AIHUB_PUBLIC_API_DOCS=1`.
+- Default `AIHUB_PUBLIC_API_MANIFEST=1`.
+- Default `AIHUB_PUBLIC_API_LOCAL_ONLY=0`.
+- Settings copy now clarifies that public docs are only API contracts and API calls still require Bearer Token.
+- Kept `admin/api_docs.php` login-protected and gateway token auth unchanged.
+
+Skipped:
+
+- Public Playground.
+- Admin docs open access.
+- Gateway auth changes.
+
 ## PhaseDX-3.1 Home Public API Docs Links
 
 Added public integration entry points to the root home page and dashboard.

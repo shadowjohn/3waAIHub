@@ -231,17 +231,17 @@ curl "http://localhost/3waAIHub/api.php?mode=hello" \
 
 未登入介接文件：
 
-- `public_api_docs.php`：公開 API 文件，預設停用。
-- `api_manifest.json.php`：給 AI agent / Codex / MCP 讀取的 machine-readable contract，預設啟用但僅允許本機讀取。
+- `public_api_docs.php`：公開 API 文件，預設允許未登入讀取。
+- `api_manifest.json.php`：給 AI agent / Codex / MCP 讀取的 machine-readable contract，預設允許未登入讀取。
 
 公開文件與 manifest 只提供外部介接資訊：`mode`、`pack_id`、`method`、`content-type`、request fields、response keys、error codes 與 `<TOKEN>` 範例。它們不顯示 admin links、local_port、Docker compose path、host model path、log path、SQLite path 或 token 明文。
 
 相關設定位於「系統設定 / API 與安全」：
 
 ```text
-AIHUB_PUBLIC_API_DOCS=0
+AIHUB_PUBLIC_API_DOCS=1
 AIHUB_PUBLIC_API_MANIFEST=1
-AIHUB_PUBLIC_API_LOCAL_ONLY=1
+AIHUB_PUBLIC_API_LOCAL_ONLY=0
 ```
 
 Token 儲存只保留 `sha256` hash 與 prefix，不保存明文。可設定 `valid_from`、`valid_until`、revoke、停用，並以 mode permission 控制可呼叫的服務。

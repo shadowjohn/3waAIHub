@@ -282,7 +282,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
 <main>
     <section class="panel">
         <h1>3waAIHub API 介接文件</h1>
-        <p class="muted">這份文件只提供外部介接所需資訊，不包含後台管理連結、local_port、Docker path、model host path、log path 或 token 明文。</p>
+        <p class="muted">這份文件只提供外部介接所需資訊，不包含後台管理連結、內部部署資訊、主機檔案路徑或 token 明文。</p>
         <p>認證方式：<code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
         <p>API Endpoint：<code><?= hub_h(hub_public_api_base_url()) ?>?mode=&lt;mode&gt;</code></p>
         <?php if ($user !== null): ?>

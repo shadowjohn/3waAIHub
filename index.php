@@ -1,8 +1,8 @@
 <?php
 declare(strict_types=1);
 
-$publicDocsLabel = '需設定開啟或僅本機可讀';
-$manifestLabel = '本機可讀';
+$publicDocsLabel = '可讀';
+$manifestLabel = '可讀';
 try {
     require_once __DIR__ . '/app/bootstrap.php';
     $db = hub_db();

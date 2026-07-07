@@ -8,21 +8,19 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
 
     $db = hub_test_reset_db();
 
-    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS') === '0', 'public docs default must be disabled');
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS') === '1', 'public docs default must be enabled');
     hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_MANIFEST') === '1', 'public manifest default must be enabled');
-    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY') === '1', 'public API docs default must be local-only');
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY') === '0', 'public API docs default must be open access');
 
     $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
     hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_MANIFEST') === true, 'local manifest should be allowed by default');
-    hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS') === false, 'public docs should be disabled by default');
-
-    hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS', '1');
-    hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS') === true, 'enabled public docs should allow localhost');
+    hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS') === true, 'public docs should be allowed by default');
 
     $_SERVER['REMOTE_ADDR'] = '203.0.113.7';
-    hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS') === false, 'local-only docs must block external IP');
-    hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY', '0');
-    hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS') === true, 'public docs should allow external IP when local-only is disabled');
+    hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS') === true, 'public docs should allow external IP by default');
+    hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_MANIFEST') === true, 'manifest should allow external IP by default');
+    hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY', '1');
+    hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS') === false, 'local-only docs must block external IP when enabled');
 
     $manifest = hub_public_api_manifest($db);
     $json = json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -31,7 +29,7 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
         hub_test_assert(in_array($mode, array_column($manifest['services'], 'mode'), true), 'manifest missing mode ' . $mode);
     }
     hub_test_assert(str_contains($json, '<TOKEN>'), 'manifest examples must use token placeholder');
-    foreach (['local_port', 'docker-compose.generated.yml', '/DATA/models', '3waaihub.sqlite', 'admin/', '3wa_live_'] as $secret) {
+    foreach (['local_port', 'docker-compose.generated.yml', '/DATA/models', 'data/logs', '3waaihub.sqlite', 'admin/', 'command_worker', '3wa_live_'] as $secret) {
         hub_test_assert(!str_contains($json, $secret), 'manifest must not leak ' . $secret);
     }
 
@@ -40,6 +38,9 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     hub_test_assert(str_contains($docsHtml, 'Authorization: Bearer &lt;TOKEN&gt;'), 'public docs token placeholder missing');
     hub_test_assert(str_contains($docsHtml, 'mode'), 'public docs must keep technical values');
     hub_test_assert(!str_contains($docsHtml, 'admin/'), 'public docs must not include admin links when not logged in');
+    foreach (['local_port', 'docker-compose.generated.yml', '/DATA/models', 'data/logs', '3waaihub.sqlite', 'command_worker', '3wa_live_'] as $secret) {
+        hub_test_assert(!str_contains($docsHtml, $secret), 'public docs must not leak ' . $secret);
+    }
 });
 
 hub_test('PhaseDX-3 public API docs files and settings UI contract are present', function (): void {
@@ -53,4 +54,22 @@ hub_test('PhaseDX-3 public API docs files and settings UI contract are present',
     foreach (['AIHUB_PUBLIC_API_DOCS', 'AIHUB_PUBLIC_API_MANIFEST', 'AIHUB_PUBLIC_API_LOCAL_ONLY', '未登入 API 文件', '未登入 Agent Manifest', '僅允許本機讀取'] as $needle) {
         hub_test_assert(str_contains($settingsPage, $needle), 'settings API tab missing ' . $needle);
     }
+});
+
+hub_test('PhaseDX-3.1 old public docs defaults migrate once only', function (): void {
+    $db = hub_test_reset_db();
+    hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS', '0');
+    hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_MANIFEST', '1');
+    hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY', '1');
+    $db->exec("DELETE FROM settings WHERE key = 'AIHUB_PUBLIC_API_OPEN_ACCESS_MIGRATED'");
+
+    hub_ensure_default_storage_settings($db);
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS') === '1', 'old public docs default must migrate to enabled');
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY') === '0', 'old local-only default must migrate to disabled');
+
+    hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS', '0');
+    hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY', '1');
+    hub_ensure_default_storage_settings($db);
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS') === '0', 'migration marker must preserve later admin docs setting');
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY') === '1', 'migration marker must preserve later admin local-only setting');
 });

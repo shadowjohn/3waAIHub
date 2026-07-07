@@ -28,9 +28,9 @@ function hub_default_storage_settings(): array
         'AIHUB_LOCALHOST_BYPASS_TOKEN' => '1',
         'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST' => '1',
         'AIHUB_TOKEN_DEFAULT_VALID_DAYS' => '0',
-        'AIHUB_PUBLIC_API_DOCS' => '0',
+        'AIHUB_PUBLIC_API_DOCS' => '1',
         'AIHUB_PUBLIC_API_MANIFEST' => '1',
-        'AIHUB_PUBLIC_API_LOCAL_ONLY' => '1',
+        'AIHUB_PUBLIC_API_LOCAL_ONLY' => '0',
     ];
 }
 
@@ -79,6 +79,26 @@ function hub_ensure_default_storage_settings(PDO $db): void
             ':updated_at' => hub_now(),
         ]);
     }
+    hub_migrate_public_api_open_access_defaults($db);
+}
+
+function hub_migrate_public_api_open_access_defaults(PDO $db): void
+{
+    $marker = 'AIHUB_PUBLIC_API_OPEN_ACCESS_MIGRATED';
+    $stmt = $db->prepare('SELECT value FROM settings WHERE key = :key');
+    $stmt->execute([':key' => $marker]);
+    if ($stmt->fetchColumn() !== false) {
+        return;
+    }
+
+    $docs = hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS');
+    $manifest = hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_MANIFEST');
+    $localOnly = hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY');
+    if ($docs === '0' && $manifest === '1' && $localOnly === '1') {
+        hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS', '1');
+        hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY', '0');
+    }
+    hub_set_storage_setting($db, $marker, '1');
 }
 
 function hub_get_storage_setting(PDO $db, string $key): string
