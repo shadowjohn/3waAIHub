@@ -28,6 +28,10 @@ hub_test('model registry scans models root safely and skips symlinks', function 
     hub_test_assert(!hub_is_safe_models_root('/var/lib/docker'), 'docker root accepted as models root');
     hub_test_assert(!hub_is_safe_models_root(HUB_ROOT), 'repo root accepted as models root');
 
+    $modelsPage = (string)file_get_contents(HUB_ROOT . '/admin/models.php');
+    hub_test_assert(str_contains($modelsPage, '<tr><th>Free / Total</th>'), 'models page must show Free / Total heading');
+    hub_test_assert(strpos($modelsPage, "usage['free_bytes']") < strpos($modelsPage, "usage['total_bytes']"), 'models page must render free bytes before total bytes');
+
     $scan = hub_scan_model_assets($db, ['max_depth' => 4, 'limit' => 50]);
     $paths = array_column($scan['assets'], 'relative_path');
     hub_test_assert(in_array('yolo/yolo11n.pt', $paths, true), 'YOLO model file missing from scan');

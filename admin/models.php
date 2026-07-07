@@ -43,7 +43,7 @@ hub_admin_header('Model Registry', $user);
         <tr><th>Models Root</th><td><code><?= hub_h($root) ?></code></td></tr>
         <tr><th>Exists</th><td><?= $usage['exists'] ? 'yes' : 'no' ?></td></tr>
         <tr><th>Readable / Writable</th><td><?= $usage['readable'] ? 'readable' : 'not readable' ?> / <?= $usage['writable'] ? 'writable' : 'not writable' ?></td></tr>
-        <tr><th>Total / Free</th><td><?= hub_h(hub_model_format_bytes(is_numeric($usage['total_bytes']) ? (float)$usage['total_bytes'] : null)) ?> / <?= hub_h(hub_model_format_bytes(is_numeric($usage['free_bytes']) ? (float)$usage['free_bytes'] : null)) ?></td></tr>
+        <tr><th>Free / Total</th><td><?= hub_h(hub_model_format_bytes(is_numeric($usage['free_bytes']) ? (float)$usage['free_bytes'] : null)) ?> / <?= hub_h(hub_model_format_bytes(is_numeric($usage['total_bytes']) ? (float)$usage['total_bytes'] : null)) ?></td></tr>
     </table>
     <p>
         <a class="button" href="models.php">Refresh</a>
