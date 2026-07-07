@@ -1,5 +1,27 @@
 # 3waAIHub History
 
+## PhaseUI-4.1 Service Status Truthfulness / Playground Readiness Guard
+
+Made service status labels more explicit without adding a new health schema.
+
+Implemented:
+
+- Split service cards into enabled, container, health, config, and last job status.
+- Health status is derived from the latest `service_health_check` command job.
+- Unknown health now renders as `健康未檢查`; failed health renders as `健康異常`.
+- Service AJAX polling updates container status, health status, and last job summary.
+- Auto health refresh after start/restart/build/rebuild now excludes stop jobs.
+- Playground checks selected service enabled/running state before executing.
+- Playground performs a short `health_url` check before API execution and reports health failure instead of waiting for timeout.
+- Playground error messages now map common request failures to Chinese explanations.
+
+Skipped:
+
+- new DB health status schema.
+- command worker rewrite.
+- gateway/token auth changes.
+- SPA work.
+
 ## PhaseUI-6 Dashboard Control Center Polish
 
 Tightened the admin dashboard into a clearer first-screen control center.

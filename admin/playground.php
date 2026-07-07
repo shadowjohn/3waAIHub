@@ -97,6 +97,103 @@ function hub_playground_request_payload(string $mode): array
     return [];
 }
 
+function hub_playground_basic_readiness(array $service): ?array
+{
+    if ((int)($service['enabled'] ?? 0) !== 1) {
+        return [
+            'error' => 'service_disabled',
+            'message' => '服務已停用，請先啟用服務。',
+        ];
+    }
+    if ((string)($service['status'] ?? '') !== 'running') {
+        return [
+            'error' => 'service_not_running',
+            'message' => '服務尚未執行，請先啟動服務。',
+        ];
+    }
+
+    return null;
+}
+
+function hub_playground_health_error(array $service): ?string
+{
+    $url = trim((string)($service['health_url'] ?? ''));
+    if ($url === '' || !function_exists('curl_init')) {
+        return null;
+    }
+
+    $ch = curl_init($url);
+    if ($ch === false) {
+        return 'health curl unavailable';
+    }
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => 2,
+        CURLOPT_TIMEOUT => 3,
+    ]);
+    $raw = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 0;
+    $error = $raw === false ? curl_error($ch) : '';
+    curl_close($ch);
+    if ($raw !== false && $status >= 200 && $status < 400) {
+        $payload = json_decode((string)$raw, true);
+        if (is_array($payload) && ((isset($payload['ok']) && $payload['ok'] === false) || (isset($payload['ready']) && $payload['ready'] === false))) {
+            return 'health payload not ready';
+        }
+
+        return null;
+    }
+
+    return trim($error . ' HTTP ' . $status);
+}
+
+function hub_playground_readiness_guard(array $service): ?array
+{
+    $basic = hub_playground_basic_readiness($service);
+    if ($basic !== null) {
+        return $basic;
+    }
+
+    $healthError = hub_playground_health_error($service);
+    if ($healthError !== null) {
+        return [
+            'error' => 'service_health_failed',
+            'message' => '服務容器正在執行，但服務健康檢查失敗，API 可能無法使用。',
+            'detail' => $healthError,
+        ];
+    }
+
+    return null;
+}
+
+function hub_playground_guard_result(array $guard): array
+{
+    return [
+        'ok' => false,
+        'status' => '-',
+        'elapsed_ms' => 0,
+        'request_id' => '',
+        'error' => (string)$guard['error'],
+        'message' => (string)$guard['message'],
+        'pretty_body' => json_encode($guard, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+    ];
+}
+
+function hub_playground_error_message(int $status, string $curlError = '', string $gatewayError = ''): string
+{
+    if (stripos($curlError, 'timed out') !== false || $status === 504 || $gatewayError === 'gateway_timeout') {
+        return 'Gateway 呼叫逾時。';
+    }
+    if (in_array($status, [401, 403], true) || in_array($gatewayError, ['missing_token', 'invalid_token', 'token_mode_denied', 'token_ip_denied'], true)) {
+        return 'Token 無效或無權限。';
+    }
+    if ($curlError !== '' || in_array($gatewayError, ['service_unavailable', 'proxy_error'], true)) {
+        return '後端服務無法連線。';
+    }
+
+    return 'Gateway 回傳錯誤。';
+}
+
 function hub_playground_execute(string $mode, string $token): array
 {
     $profiles = hub_playground_profiles();
@@ -158,7 +255,7 @@ function hub_playground_execute(string $mode, string $token): array
     if ($raw === false) {
         $error = curl_error($ch);
         curl_close($ch);
-        return ['ok' => false, 'error' => 'request_failed', 'message' => $error, 'elapsed_ms' => $elapsedMs];
+        return ['ok' => false, 'error' => 'request_failed', 'message' => hub_playground_error_message(0, $error), 'detail' => $error, 'elapsed_ms' => $elapsedMs];
     }
 
     $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 0;
@@ -176,12 +273,16 @@ function hub_playground_execute(string $mode, string $token): array
     if ($requestId === '' && is_array($payload) && is_string($payload['request_id'] ?? null)) {
         $requestId = $payload['request_id'];
     }
+    $gatewayError = is_array($payload) ? (string)($payload['error'] ?? $payload['error_code'] ?? '') : '';
+    $ok = $status >= 200 && $status < 400;
 
     return [
-        'ok' => $status >= 200 && $status < 400,
+        'ok' => $ok,
         'status' => $status,
         'elapsed_ms' => $elapsedMs,
         'request_id' => $requestId,
+        'error' => $ok ? '' : ($gatewayError ?: 'request_failed'),
+        'message' => $ok ? '' : hub_playground_error_message((int)$status, '', $gatewayError),
         'body' => $body,
         'pretty_body' => hub_playground_pretty_json($body),
     ];
@@ -303,10 +404,12 @@ $profiles = hub_playground_profiles();
 $profile = $profiles[$selectedMode] ?? $profiles['hello'];
 $result = null;
 $token = '';
+$readinessNotice = $selectedService ? hub_playground_basic_readiness($selectedService) : null;
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['action'] ?? '') === 'execute') {
     hub_check_csrf();
     $token = trim((string)($_POST['bearer_token'] ?? ''));
-    $result = hub_playground_execute($selectedMode, $token);
+    $guard = $selectedService ? hub_playground_readiness_guard($selectedService) : ['error' => 'service_not_found', 'message' => '找不到可測試的服務。'];
+    $result = $guard === null ? hub_playground_execute($selectedMode, $token) : hub_playground_guard_result($guard);
 }
 $examples = hub_playground_examples($selectedMode);
 $authHeaderExample = 'Authorization: Bearer <TOKEN>';
@@ -339,6 +442,19 @@ hub_admin_header('API 測試場', $user);
             </form>
         <?php endif; ?>
         <?php if ($selectedService): ?>
+            <?php if ($readinessNotice !== null): ?>
+                <div class="notice">
+                    <?= hub_h((string)$readinessNotice['message']) ?>
+                    <div class="hub-actions">
+                        <a class="button" href="services.php">前往服務管理</a>
+                    </div>
+                    <p class="muted">
+                        mode=<code><?= hub_h((string)$selectedService['mode']) ?></code>
+                        service_key=<code><?= hub_h((string)($selectedService['service_key'] ?? '')) ?></code>
+                        local_port=<code><?= hub_h((string)($selectedService['local_port'] ?? '')) ?></code>
+                    </p>
+                </div>
+            <?php endif; ?>
             <div class="hub-meta">
                 <div class="hub-meta-label">service</div>
                 <div class="hub-meta-value"><?= hub_h((string)$selectedService['name']) ?></div>

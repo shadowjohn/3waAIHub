@@ -14,6 +14,10 @@ hub_test('PhaseUI-4 services management card UI contract is present', function (
     foreach (['啟動', '停止', '重啟', '建置', '重新建置', '刷新狀態', '設定', '服務記錄', 'API 記錄', 'Benchmark', '健康檢查'] as $label) {
         hub_test_assert(str_contains($page, $label), 'localized service action missing ' . $label);
     }
+    foreach (['啟用狀態', '容器狀態', '健康狀態', '設定狀態', '服務狀態：', '健康未檢查', '健康正常', '健康異常'] as $label) {
+        hub_test_assert(str_contains($page, $label), 'truthful status label missing ' . $label);
+    }
+    hub_test_assert(str_contains($page, '容器：'), 'top status must say it is container state');
     hub_test_assert(str_contains($page, '舊版 IP 白名單'), 'legacy whitelist link missing');
     hub_test_assert(str_contains($page, '僅保留相容用途'), 'legacy whitelist warning missing');
     hub_test_assert(!str_contains($page, '>Whitelist<'), 'Whitelist must not be a primary action label');
@@ -29,14 +33,17 @@ hub_test('PhaseUI-4 services management card UI contract is present', function (
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
     hub_test_assert($service !== null, 'hello service missing');
-    hub_enqueue_command_job($db, 'service_start', (int)$service['id'], ['reason' => 'ui4-test'], null, '127.0.0.1');
+    hub_update_service_status($db, (int)$service['id'], 'running');
+    $jobId = hub_enqueue_command_job($db, 'service_health_check', (int)$service['id'], ['reason' => 'ui4-test'], null, '127.0.0.1');
+    $db->prepare("UPDATE command_jobs SET status = 'failed', error_message = 'health failed', updated_at = :updated_at WHERE id = :id")
+        ->execute([':updated_at' => hub_now(), ':id' => $jobId]);
     $_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];
     $_SERVER['REQUEST_METHOD'] = 'GET';
     $_GET = [];
     ob_start();
     require HUB_ROOT . '/admin/services.php';
     $html = (string)ob_get_clean();
-    foreach (['全部服務', 'service-card', 'hello-main', 'playground.php?mode=hello', '舊版 IP 白名單', '啟動服務'] as $needle) {
+    foreach (['全部服務', 'service-card', 'hello-main', 'playground.php?mode=hello', '舊版 IP 白名單', '健康異常', '容器執行中', '最後工作', '失敗'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered services page missing ' . $needle);
     }
 });

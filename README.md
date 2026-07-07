@@ -22,6 +22,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - 後台 shell 中文化、站台標題設定、設定頁分頁
 - Marketplace 與模型倉庫卡片式後台 UI
 - 服務管理卡片式 UI、狀態摘要與舊版白名單退場提示
+- 服務狀態拆分：啟用 / 容器 / 健康 / 設定 / 最後工作
 - Dashboard 總覽中控台、API 24h 統計、L5 Pack 數、Pack readiness、模型/Docker 空間與 quick links
 - Log Explorer 記錄中心：API 記錄、背景工作、服務記錄、系統記錄分頁
 - 環境診斷與修正建議
@@ -90,7 +91,7 @@ data/services/hello-main/
 
 後台按鈕只會排入 `command_jobs`，真正 Docker 指令由 CLI worker 執行。
 服務頁會每 2 秒輪詢 `admin/job_status.php`，顯示 queued / running job 的 progress、stage、current message 與 stdout/stderr tail。
-完整背景工作歷史集中在 `admin/log_explorer.php?tab=jobs`，服務頁只保留目前狀態、操作入口與最後一筆工作摘要。
+完整背景工作歷史集中在 `admin/log_explorer.php?tab=jobs`，服務頁只保留目前狀態、操作入口與最後一筆工作摘要。服務卡片會分開顯示啟用狀態、容器狀態、健康狀態、設定狀態與最後工作；容器 `running` 不代表 health 一定正常。
 
 Docker 操作已拆分：
 
@@ -221,7 +222,7 @@ curl "http://localhost/3waAIHub/api.php?mode=hello" \
 1. 到 `admin/api_members.php` 建立 API member / token。
 2. 到 `admin/api_token_permissions.php` 授權可用 `mode`。
 3. 開 `admin/playground.php`，選 service mode 並貼上 token。
-4. 執行測試，確認 response 與 `request_id`。
+4. 執行測試。Playground 會先檢查服務是否啟用、容器是否執行、health 是否可用，再顯示 response 與 `request_id`。
 5. 複製 curl / PHP / JS fetch 範例到外部系統。
 
 Token 儲存只保留 `sha256` hash 與 prefix，不保存明文。可設定 `valid_from`、`valid_until`、revoke、停用，並以 mode permission 控制可呼叫的服務。

@@ -8,6 +8,9 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     foreach (['API 測試場', '選擇服務', '執行測試', '回應結果', '複製 curl', '複製 PHP', '複製 JS fetch'] as $label) {
         hub_test_assert(str_contains($page, $label), 'playground missing label ' . $label);
     }
+    foreach (['服務尚未執行', '服務健康檢查失敗', 'Gateway 呼叫逾時', 'Token 無效或無權限', '後端服務無法連線'] as $label) {
+        hub_test_assert(str_contains($page, $label), 'playground readiness/error label missing ' . $label);
+    }
     foreach (['mode', 'endpoint', 'request_id', 'runtime_level', 'error_code', 'execution_type'] as $technical) {
         hub_test_assert(str_contains($page, $technical), 'technical value should stay English ' . $technical);
     }
@@ -39,7 +42,7 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     require HUB_ROOT . '/admin/playground.php';
     $html = (string)ob_get_clean();
 
-    foreach (['hello', 'ocr', 'OCR Main', 'name="image"', 'real_inference', 'api.php?mode=ocr', '<TOKEN>'] as $needle) {
+    foreach (['hello', 'ocr', 'OCR Main', 'name="image"', 'real_inference', 'api.php?mode=ocr', '<TOKEN>', '服務尚未執行'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered playground missing ' . $needle);
     }
 });

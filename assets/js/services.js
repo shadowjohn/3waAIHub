@@ -33,15 +33,54 @@
         }
         var $row = $('[data-service-row-id="' + job.service.id + '"]');
         var $status = $row.find('[data-service-status]');
+        var containerOk = job.service.status === 'running';
         $status
             .removeClass('ok bad')
-            .addClass(job.service.status_class || 'bad')
+            .addClass(containerOk ? 'ok' : 'bad')
             .find('[data-service-status-label]')
-            .text(job.service.status_label || job.service.status || '');
+            .text(containerOk ? '執行中' : (job.service.status === 'stopped' ? '已停止' : '未知'));
+    }
+
+    function updateHealthBadge(job) {
+        if (!job || job.action !== 'service_health_check' || !job.service_id) {
+            return;
+        }
+        var $badge = $('[data-service-row-id="' + job.service_id + '"]').find('[data-service-health]');
+        var label = '健康異常';
+        var cls = 'hub-badge-bad';
+        if (job.status === 'success') {
+            label = '健康正常';
+            cls = 'hub-badge-ok';
+        } else if (job.status === 'queued' || job.status === 'running') {
+            label = '健康檢查中';
+            cls = 'hub-badge-warn';
+        }
+        $badge
+            .removeClass('hub-badge-ok hub-badge-warn hub-badge-bad hub-badge-muted')
+            .addClass(cls)
+            .find('[data-service-health-label]')
+            .text(label);
+    }
+
+    function updateLastJob(job) {
+        if (!job || !job.service_id) {
+            return;
+        }
+        var $last = $('[data-service-row-id="' + job.service_id + '"]').find('[data-service-last-job]');
+        if (!$last.length) {
+            return;
+        }
+        $last.empty()
+            .append(document.createTextNode((job.action_label || job.action || '') + ' '))
+            .append($('<code>').text(job.action || ''))
+            .append(document.createTextNode(' '))
+            .append($('<span data-service-last-job-status>').addClass(job.status_class || 'bad').text(job.status_label || job.status || ''))
+            .append(document.createTextNode(' '))
+            .append($('<span class="muted">').text(job.updated_at || job.created_at || ''));
     }
 
     function triggerServiceRefresh(job) {
-        if (!job || !job.service_id || job.action === 'service_health_check') {
+        if (!job || !job.service_id || ['service_start', 'service_restart', 'service_build', 'service_rebuild'].indexOf(job.action) === -1) {
             return;
         }
         var $box = $('.service-job[data-service-id="' + job.service_id + '"]');
@@ -66,6 +105,8 @@
         $box.find('.job-message').text(job.current_message || job.error_message || '');
         $box.find('.job-tail').text(tail);
         updateServiceRow(job);
+        updateHealthBadge(job);
+        updateLastJob(job);
 
         if (['success', 'failed', 'cancelled', 'timeout'].indexOf(job.status) !== -1) {
             $box.attr('data-job-id', '');

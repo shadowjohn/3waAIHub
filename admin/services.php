@@ -42,6 +42,42 @@ function hub_services_api_url(array $service): string
     return '../api.php?mode=' . rawurlencode((string)$service['mode']);
 }
 
+function hub_services_container_state(array $service): array
+{
+    $status = (string)($service['status'] ?? '');
+    if ($status === 'running') {
+        return ['label' => '執行中', 'badge' => '容器執行中', 'class' => 'hub-badge-ok', 'text_class' => 'ok'];
+    }
+    if ($status === 'stopped') {
+        return ['label' => '已停止', 'badge' => '容器已停止', 'class' => 'hub-badge-muted', 'text_class' => 'bad'];
+    }
+
+    return ['label' => '未知', 'badge' => '容器未知', 'class' => 'hub-badge-muted', 'text_class' => 'bad'];
+}
+
+function hub_services_health_state(?array $healthJob): array
+{
+    if (!$healthJob) {
+        return ['label' => '未檢查', 'badge' => '健康未檢查', 'class' => 'hub-badge-muted', 'text_class' => ''];
+    }
+    $status = (string)$healthJob['status'];
+    if ($status === 'success') {
+        return ['label' => '正常', 'badge' => '健康正常', 'class' => 'hub-badge-ok', 'text_class' => 'ok'];
+    }
+    if (in_array($status, ['queued', 'running'], true)) {
+        return ['label' => '檢查中', 'badge' => '健康檢查中', 'class' => 'hub-badge-warn', 'text_class' => ''];
+    }
+
+    return ['label' => '異常', 'badge' => '健康異常', 'class' => 'hub-badge-bad', 'text_class' => 'bad'];
+}
+
+function hub_services_config_state(array $service): array
+{
+    return (int)($service['restart_required'] ?? 0) === 1
+        ? ['label' => '需重啟', 'class' => 'hub-badge-warn']
+        : ['label' => '已套用', 'class' => 'hub-badge-ok'];
+}
+
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     hub_check_csrf();
     $isAjax = hub_services_is_ajax();
@@ -87,6 +123,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     'stage' => (string)($job['stage'] ?? ''),
                     'current_message' => (string)($job['current_message'] ?? ''),
                     'created_at' => $job['created_at'] ?? hub_now(),
+                    'updated_at' => $job['updated_at'] ?? hub_now(),
                 ],
             ]);
         }
@@ -106,10 +143,14 @@ $summary = [
 ];
 $activeJobsByService = [];
 $lastJobsByService = [];
+$lastHealthJobsByService = [];
 foreach ($jobs as $job) {
     $serviceId = (int)($job['service_id'] ?? 0);
     if ($serviceId > 0 && !isset($lastJobsByService[$serviceId])) {
         $lastJobsByService[$serviceId] = $job;
+    }
+    if ($serviceId > 0 && (string)$job['action'] === 'service_health_check' && !isset($lastHealthJobsByService[$serviceId])) {
+        $lastHealthJobsByService[$serviceId] = $job;
     }
     if ($serviceId > 0 && in_array((string)$job['status'], ['queued', 'running'], true) && !isset($activeJobsByService[$serviceId])) {
         $activeJobsByService[$serviceId] = $job;
@@ -152,9 +193,13 @@ hub_admin_header('服務管理', $user);
             $serviceId = (int)$service['id'];
             $activeJob = $activeJobsByService[$serviceId] ?? null;
             $lastJob = $lastJobsByService[$serviceId] ?? null;
+            $lastHealthJob = $lastHealthJobsByService[$serviceId] ?? null;
             $apiUrl = hub_services_api_url($service);
             $runtimeLevel = hub_services_runtime_level($service);
             $endpoint = hub_services_endpoint_label($service);
+            $containerState = hub_services_container_state($service);
+            $healthState = hub_services_health_state($lastHealthJob);
+            $configState = hub_services_config_state($service);
             ?>
             <article class="hub-card service-card" data-service-row-id="<?= $serviceId ?>">
                 <div class="hub-section-title">
@@ -162,14 +207,16 @@ hub_admin_header('服務管理', $user);
                         <h2><?= hub_h($service['name']) ?></h2>
                         <p class="muted">service_key: <code><?= hub_h((string)($service['service_key'] ?? '')) ?></code></p>
                     </div>
-                    <span data-service-status class="<?= hub_status_class($service['status']) ?>">
-                        <span data-service-status-label><?= hub_h(hub_status_label($service['status'])) ?></span>
+                    <span data-service-status class="<?= hub_h($containerState['text_class']) ?>">
+                        容器：<span data-service-status-label><?= hub_h($containerState['label']) ?></span>
                     </span>
                 </div>
                 <p>
-                    <span class="hub-badge <?= (int)$service['enabled'] === 1 ? 'hub-badge-ok' : 'hub-badge-muted' ?>"><?= (int)$service['enabled'] === 1 ? '已啟用' : '已停用' ?></span>
-                    <span class="hub-badge <?= (string)$service['status'] === 'running' ? 'hub-badge-ok' : 'hub-badge-muted' ?>"><?= (string)$service['status'] === 'running' ? '執行中' : '已停止' ?></span>
-                    <span class="hub-badge <?= (int)($service['restart_required'] ?? 0) === 1 ? 'hub-badge-warn' : 'hub-badge-ok' ?>"><?= (int)($service['restart_required'] ?? 0) === 1 ? '需重啟' : '設定已套用' ?></span>
+                    <span class="hub-badge <?= hub_h($containerState['class']) ?>">服務狀態：<?= hub_h($containerState['label']) ?></span>
+                    <span class="hub-badge <?= (int)$service['enabled'] === 1 ? 'hub-badge-ok' : 'hub-badge-muted' ?>">啟用狀態：<?= (int)$service['enabled'] === 1 ? '已啟用' : '已停用' ?></span>
+                    <span class="hub-badge <?= hub_h($containerState['class']) ?>">容器狀態：<?= hub_h($containerState['badge']) ?></span>
+                    <span data-service-health class="hub-badge <?= hub_h($healthState['class']) ?>">健康狀態：<span data-service-health-label><?= hub_h($healthState['badge']) ?></span></span>
+                    <span class="hub-badge <?= hub_h($configState['class']) ?>">設定狀態：<?= hub_h($configState['label']) ?></span>
                     <?php if ($activeJob): ?><span class="hub-badge hub-badge-warn">建置中</span><?php endif; ?>
                 </p>
                 <div class="hub-meta">
@@ -196,11 +243,11 @@ hub_admin_header('服務管理', $user);
                     <div class="hub-meta-label">API 入口</div>
                     <div class="hub-meta-value"><code id="service-api-url-<?= $serviceId ?>"><?= hub_h($apiUrl) ?></code></div>
                     <div class="hub-meta-label">最後工作</div>
-                    <div class="hub-meta-value">
+                    <div class="hub-meta-value" data-service-last-job>
                         <?php if ($lastJob): ?>
                             <?= hub_h(hub_command_action_label((string)$lastJob['action'])) ?>
                             <code><?= hub_h((string)$lastJob['action']) ?></code>
-                            <span class="<?= hub_h(hub_command_status_class((string)$lastJob['status'])) ?>"><?= hub_h(hub_command_status_label((string)$lastJob['status'])) ?></span>
+                            <span data-service-last-job-status class="<?= hub_h(hub_command_status_class((string)$lastJob['status'])) ?>"><?= hub_h(hub_command_status_label((string)$lastJob['status'])) ?></span>
                             <span class="muted"><?= hub_h((string)($lastJob['updated_at'] ?? $lastJob['created_at'] ?? '')) ?></span>
                         <?php else: ?>
                             <span class="muted">尚無背景工作</span>
