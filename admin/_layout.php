@@ -68,6 +68,7 @@ function hub_admin_header(string $title, array $user): void
         <a href="services.php">服務管理</a>
         <a href="api_members.php">API 金鑰</a>
         <a href="api_usage.php">API 記錄</a>
+        <a href="playground.php">API 測試場</a>
         <a href="log_explorer.php">Log Explorer</a>
         <a href="benchmarks.php">Benchmark 測試</a>
         <a href="api_docs.php">API 文件</a>

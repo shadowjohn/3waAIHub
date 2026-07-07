@@ -1,5 +1,28 @@
 # 3waAIHub History
 
+## PhaseDX-1 API Integration Playground
+
+Added the first admin-side API integration playground.
+
+Implemented:
+
+- Added `admin/playground.php`.
+- Admin nav now links to `API 測試場`.
+- Playground can select installed service modes for `hello`, `translate`, `ocr`, `yolo`, and `sam3`.
+- Requests are executed server-side against local `api.php?mode=...`.
+- Bearer token is accepted only for the current request, masked after submit, and never saved.
+- Response panel shows HTTP status, `elapsed_ms`, `request_id`, formatted JSON, and a log explorer link.
+- Generated curl / PHP / JS fetch examples use `<TOKEN>` placeholders.
+- Added PhaseDX-1 UI contract tests.
+
+Skipped:
+
+- Public playground.
+- Saved tokens.
+- SDK package.
+- Batch / streaming workflow.
+- Gateway / runtime / worker changes.
+
 ## PhaseUI-3 Marketplace / Models Card UI
 
 Aligned `admin/marketplace.php` and `admin/models.php` with the HubPack card-style admin UI.

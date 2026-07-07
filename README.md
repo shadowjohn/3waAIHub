@@ -15,6 +15,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - 服務 log 檢視
 - `api.php?mode=hello` sync API gateway
 - API Members / Bearer token / mode permission / usage tracking
+- 後台 API 測試場，可 server-side 測 API 並產生 curl / PHP / JS fetch 範例
 - SQLite-backed demo task queue
 - HubPack registry 與 hello pack 安裝
 - Storage settings / model directory
