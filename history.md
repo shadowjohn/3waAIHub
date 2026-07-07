@@ -1,5 +1,27 @@
 # 3waAIHub History
 
+## PhaseUI-4 Services Management Card UI
+
+Redesigned the services management page while preserving the existing AJAX command flow.
+
+Implemented:
+
+- Added service summary cards for total, running, stopped, disabled, active jobs, and failed jobs.
+- Replaced the wide services table with service cards.
+- Localized primary service actions: start, stop, restart, build, rebuild, and refresh/health check.
+- Kept PhaseUI-1 AJAX hooks: `data-service-row-id`, `data-service-status`, `data-service-refresh-form`, and service job polling.
+- Added clearer API entry display and links to API Playground by `mode`.
+- Moved service-level whitelist out of primary actions as `舊版 IP 白名單`.
+- Added command action labels for job rows and AJAX-prepended jobs.
+
+Skipped:
+
+- SPA rewrite.
+- command worker changes.
+- gateway changes.
+- service whitelist backend removal.
+- token/member permission model changes.
+
 ## PhaseDX-2 API Client Onboarding Polish
 
 Improved the API Playground for first-time client integration.

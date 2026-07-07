@@ -48,6 +48,26 @@ function hub_command_status_class(string $status): string
     return in_array($status, ['running', 'success', 'ok', 'pass'], true) ? 'ok' : 'bad';
 }
 
+function hub_command_action_label(string $action): string
+{
+    return [
+        'service_start' => '啟動服務',
+        'service_stop' => '停止服務',
+        'service_restart' => '重啟服務',
+        'service_build' => '建置服務',
+        'service_rebuild' => '重新建置',
+        'service_health_check' => '健康檢查',
+        'benchmark_run' => 'Benchmark 測試',
+        'ollama_model_pull' => 'Ollama 模型拉取',
+        'service_install' => '安裝服務',
+        'service_logs_collect' => '收集服務記錄',
+        'env_probe' => '環境檢測',
+        'permissions_fix' => '權限修正',
+        'docker_prune_check' => 'Docker 清理檢查',
+        'docker_builder_prune' => 'Docker builder 清理',
+    ][$action] ?? $action;
+}
+
 function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array $args, ?int $requestedBy, ?string $requestedIp): int
 {
     if (!hub_is_valid_job_action($action)) {
@@ -253,6 +273,7 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
     return [
         'id' => (int)$job['id'],
         'action' => (string)$job['action'],
+        'action_label' => hub_command_action_label((string)$job['action']),
         'service_id' => $service ? (int)$service['id'] : null,
         'service_name' => $service ? (string)$service['name'] : '',
         'status' => (string)$job['status'],

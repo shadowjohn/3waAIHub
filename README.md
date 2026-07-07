@@ -21,6 +21,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - Storage settings / model directory
 - 後台 shell 中文化、站台標題設定、設定頁分頁
 - Marketplace 與模型倉庫卡片式後台 UI
+- 服務管理卡片式 UI、狀態摘要與舊版白名單退場提示
 - 環境診斷與修正建議
 - Service IP whitelist 與 API access logs
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案

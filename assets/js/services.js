@@ -16,7 +16,7 @@
 
         var $row = $('<tr class="ajax-job-new">').attr('data-job-row-id', job.id);
         $('<td>').text('#' + job.id).appendTo($row);
-        $('<td>').append($('<code>').text(job.action)).appendTo($row);
+        $('<td>').append($('<span>').text(job.action_label || job.action)).append(' ').append($('<code>').text(job.action)).appendTo($row);
         $('<td>').text(job.service_name || '').appendTo($row);
         $('<td>').attr('data-job-row-status', '').addClass(job.status_class || 'bad').text(job.status_label || job.status || '').appendTo($row);
         $('<td>').append($('<span class="job-row-progress">').text(job.progress || 0)).append('%').appendTo($row);
@@ -83,6 +83,7 @@
             .addClass(job.status_class || 'bad')
             .text(job.status_label || job.status || '');
         $row.find('.job-row-progress').text(job.progress || 0);
+        $row.find('.job-row-progress-bar span').css('width', (job.progress || 0) + '%');
         $row.find('.job-row-stage').text(job.stage || '');
         $row.find('.job-row-message').text(job.current_message || job.error_message || '');
         $row.find('[data-job-row-exit]').text(job.exit_code === null || job.exit_code === undefined ? '' : job.exit_code);
