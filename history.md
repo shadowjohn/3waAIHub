@@ -1,5 +1,27 @@
 # 3waAIHub History
 
+## PhaseUI-3 Marketplace / Models Card UI
+
+Aligned `admin/marketplace.php` and `admin/models.php` with the HubPack card-style admin UI.
+
+Implemented:
+
+- Marketplace now uses card layout for local HubPacks.
+- Marketplace keeps the existing Install as Service form and POST flow.
+- Marketplace cards show `pack_id`, version, type, `runtime_level`, `target_level`, default `mode`, API `endpoint`, `execution_type`, GPU/model requirement, installed count, and install status.
+- Models page now shows card sections for Models Root, disk usage, linked services, common model subdirectories, Model Inventory, and Create Subdir.
+- Added common lightweight admin UI classes: `hub-card`, `hub-card-grid`, `hub-badge`, `hub-meta`, `hub-actions`, `hub-empty-state`, and `hub-section-title`.
+- Added PhaseUI-3 UI contract tests and kept model inventory symlink behavior visible as `symlink skipped`.
+
+Skipped:
+
+- SPA / AJAX additions.
+- i18n framework.
+- Pack install wizard rewrite.
+- Model upload / download / delete / move.
+- Runtime / gateway / worker changes.
+- Remote marketplace.
+
 ## PhaseUI-2 Admin Shell Localization / Brand Settings / Settings Tabs
 
 Localized the admin shell and organized system settings without adding an i18n framework.

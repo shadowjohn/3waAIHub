@@ -40,6 +40,21 @@ function hub_admin_header(string $title, array $user): void
         .actions form { display: inline; margin-right: 4px; }
         .notice { background: #fff8db; border: 1px solid #f3cc62; border-radius: 8px; margin-bottom: 16px; padding: 12px; }
         .error { background: #fff1f0; border: 1px solid #fecdca; border-radius: 8px; margin-bottom: 16px; padding: 12px; }
+        .hub-card-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+        .hub-card { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+        .hub-card h2, .hub-card h3 { margin-top: 0; }
+        .hub-tabs { display: flex; flex-wrap: wrap; gap: 8px; }
+        .hub-badge { border-radius: 999px; display: inline-block; font-size: 12px; font-weight: 700; padding: 3px 8px; }
+        .hub-badge-ok { background: #dcfae6; color: #067647; }
+        .hub-badge-warn { background: #fff6d7; color: #854a0e; }
+        .hub-badge-bad { background: #fee4e2; color: #b42318; }
+        .hub-badge-muted { background: #f2f4f7; color: #475467; }
+        .hub-meta { display: grid; gap: 7px 12px; grid-template-columns: minmax(108px, 0.42fr) 1fr; margin-top: 12px; }
+        .hub-meta-label { color: var(--muted); font-size: 13px; }
+        .hub-meta-value { min-width: 0; overflow-wrap: anywhere; }
+        .hub-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+        .hub-empty-state { border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); padding: 18px; text-align: center; }
+        .hub-section-title { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; }
     </style>
 </head>
 <body>

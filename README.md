@@ -19,6 +19,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - HubPack registry 與 hello pack 安裝
 - Storage settings / model directory
 - 後台 shell 中文化、站台標題設定、設定頁分頁
+- Marketplace 與模型倉庫卡片式後台 UI
 - 環境診斷與修正建議
 - Service IP whitelist 與 API access logs
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
