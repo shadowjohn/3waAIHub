@@ -1815,3 +1815,40 @@ Skipped:
 - Token lifecycle hardening.
 - IP whitelist lifecycle hardening.
 - Registration / forgot password / OAuth / billing / quota.
+
+## PhaseAuth-1A.2 Login IP Lockout
+
+Added login brute-force protection by client IP.
+
+Added:
+
+- `login_attempts`
+- `login_ip_locks`
+- `AIHUB_LOGIN_MAX_FAILED_ATTEMPTS=3`
+- `AIHUB_LOGIN_LOCK_MINUTES=5`
+- `AIHUB_LOGIN_FAIL_WINDOW_MINUTES=10`
+- `tests/test_phase_auth1a2_login_lockout.php`
+
+Implemented:
+
+- Login IP is resolved from `REMOTE_ADDR` only.
+- `X-Forwarded-For`, `X-Real-IP`, and similar headers are not trusted.
+- 3 failed login attempts within the configured window lock the IP.
+- Locked IPs are not allowed to verify credentials.
+- Expired locks clear automatically.
+- Successful login resets the IP failed count.
+- Disabled-user login attempts count as generic failed logins.
+- Login attempts are audited with success/failure, reason, username, IP, user agent, and timestamp.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS with 85 tests.
+
+Skipped:
+
+- CAPTCHA changes.
+- 2FA.
+- email notification.
+- trusted proxy parser.
+- account-level lockout.
+- permanent ban.

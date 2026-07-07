@@ -31,6 +31,9 @@ function hub_default_storage_settings(): array
         'AIHUB_PUBLIC_API_DOCS' => '1',
         'AIHUB_PUBLIC_API_MANIFEST' => '1',
         'AIHUB_PUBLIC_API_LOCAL_ONLY' => '0',
+        'AIHUB_LOGIN_MAX_FAILED_ATTEMPTS' => '3',
+        'AIHUB_LOGIN_LOCK_MINUTES' => '5',
+        'AIHUB_LOGIN_FAIL_WINDOW_MINUTES' => '10',
     ];
 }
 

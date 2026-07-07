@@ -97,6 +97,25 @@ admin/change_password.php
 
 Customer 頁面不顯示 `local_port`、Docker compose 路徑、host model path、SQLite path、worker path 或其他客戶資料。舊版 service-level whitelist 仍保留給 `system_admin` 相容使用，customer 只能管理自己的 token IP whitelist。
 
+## Login Protection
+
+登入頁有 IP lockout 保護：
+
+- 同一 `REMOTE_ADDR` 在 10 分鐘內登入失敗 3 次，鎖定 5 分鐘。
+- 鎖定期間不驗證帳密。
+- 成功登入會重置該 IP 的失敗次數。
+- 第一版只信任 `REMOTE_ADDR`，不使用 `X-Forwarded-For` / `X-Real-IP` / `CF-Connecting-IP`。
+
+預設設定：
+
+```text
+AIHUB_LOGIN_MAX_FAILED_ATTEMPTS=3
+AIHUB_LOGIN_LOCK_MINUTES=5
+AIHUB_LOGIN_FAIL_WINDOW_MINUTES=10
+```
+
+登入稽核資料寫入 `login_attempts`，目前不在後台 UI 展示；之後可接 Login Audit UI。
+
 ## 入口
 
 首頁：

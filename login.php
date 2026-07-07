@@ -4,6 +4,8 @@ declare(strict_types=1);
 require_once __DIR__ . '/app/bootstrap.php';
 
 $db = hub_db();
+hub_migrate($db);
+hub_ensure_default_storage_settings($db);
 $error = '';
 $siteTitle = hub_site_title($db);
 $siteSubtitle = hub_site_subtitle($db);
@@ -13,12 +15,21 @@ if (hub_current_user($db)) {
 
 $captchaCode = hub_login_captcha_code();
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
-    if (!hub_verify_login_captcha((string)($_POST['captcha'] ?? ''))) {
-        $error = '驗證碼錯誤。';
-    } elseif (hub_login($db, trim((string)($_POST['username'] ?? '')), (string)($_POST['password'] ?? ''))) {
+    $ip = hub_client_ip();
+    $username = trim((string)($_POST['username'] ?? ''));
+    $lock = hub_login_lock_status($db, $ip);
+    if ($lock['locked']) {
+        hub_record_login_failure($db, $ip, $username, 'ip_locked', (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
+        $error = '登入嘗試過多，請稍後再試。';
+    } elseif (!hub_verify_login_captcha((string)($_POST['captcha'] ?? ''))) {
+        hub_record_login_failure($db, $ip, $username, 'invalid_login', (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
+        $error = '帳號或密碼錯誤，或目前無法登入。';
+    } elseif (hub_login_with_lockout($db, $username, (string)($_POST['password'] ?? ''), $ip, (string)($_SERVER['HTTP_USER_AGENT'] ?? ''))['ok']) {
         hub_redirect(hub_login_redirect_path($db));
     } else {
-        $error = '帳號或密碼錯誤。';
+        $error = hub_login_lock_status($db, $ip)['locked']
+            ? '登入嘗試過多，請稍後再試。'
+            : '帳號或密碼錯誤，或目前無法登入。';
     }
     $captchaCode = hub_login_captcha_code();
 }

@@ -92,6 +92,24 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL,
+    username TEXT NULL,
+    success INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NULL,
+    user_agent TEXT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS login_ip_locks (
+    ip TEXT PRIMARY KEY,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    locked_until TEXT NULL,
+    last_failed_at TEXT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS command_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     action TEXT NOT NULL,
@@ -364,6 +382,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_request_id ON api_access_logs(request_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_member_id ON api_access_logs(member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_token_id ON api_access_logs(token_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_created ON login_attempts(ip, created_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_tokens_member_id ON api_tokens(member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_permissions_token_id ON api_token_service_permissions(token_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_permissions_mode ON api_token_service_permissions(mode)');
