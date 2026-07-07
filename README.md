@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` / `yolo` / `translate-gemma12b` L5 benchmark-ready Pack，以及 `sam3` L4a model-present smoke adapter。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` / `yolo` / `translate-gemma12b` L5 benchmark-ready Pack、`sam3` L4a model-present smoke adapter，以及 `whisper-asr` L3 storage-mount Pack。
 
 ## 功能
 
@@ -414,6 +414,7 @@ http://localhost/3waAIHub/admin/packs.php
 - `translate-gemma12b`
 - `yolo`
 - `sam3`
+- `whisper-asr`
 
 ### ocr-ppocrv5 Runtime Level
 
@@ -536,6 +537,21 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 - generated compose 會加入 `gpus: all`
 
 L4a 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；本階段不下載 checkpoint、不做真 segmentation、不產生 mask。
+
+### whisper-asr Runtime Level
+
+`whisper-asr` 目前是 L3 `storage-mount`：
+
+- `POST /asr/audio` 支援 multipart 音訊上傳
+- 預設回 mock transcription JSON，`real_inference=1` 會回 `runtime_not_ready`
+- `GET /health` 回 `runtime_level=L3-storage-mount` 與 storage 狀態
+- runtime 掛載 `${AIHUB_MODELS_DIR}/whisper:/models/whisper`
+- runtime 掛載 `${AIHUB_CACHE_DIR}/whisper:/cache/whisper`
+- runtime 掛載 `${SERVICE_DATA_DIR}:/data/service`
+- `smoke.py` 只驗證 `fastapi` / `faster_whisper` import 成功，不載模型、不下載、不推論
+- `storage_smoke.py` 可在 container 內檢查 models/cache/service_data 與 HuggingFace cache 目錄
+
+本階段不做真 transcription、不下載模型、不做 VAD、diarization、subtitle 或 streaming。
 
 ### Pack Preflight
 

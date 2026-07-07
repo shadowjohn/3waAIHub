@@ -1,0 +1,12 @@
+services:
+  whisper-asr:
+    build:
+      context: ./service
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${ASR_LOCAL_PORT:-18107}:8000"
+    volumes:
+      - "${AIHUB_MODELS_DIR}/whisper:/models/whisper"
+      - "${AIHUB_CACHE_DIR}/whisper:/cache/whisper"
+      - "${SERVICE_DATA_DIR}:/data/service"

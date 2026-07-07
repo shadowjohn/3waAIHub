@@ -1,5 +1,50 @@
 # 3waAIHub History
 
+## PhaseM-3A Whisper ASR L3 Storage Mount
+
+Added `whisper-asr` as the first audio-to-text HubPack.
+
+Base:
+
+- Previous commit: `9dad562 feat: add SAM3 model present smoke`.
+- Previous tag: `phase-m2d-sam3-l4a-model-smoke-v0.1.0`.
+
+Implemented:
+
+- Added `whisper-asr` to local catalog.
+- Added Pack manifest with `runtime_level = L3-storage-mount`.
+- Added `/health`.
+- Added `POST /asr/audio` mock transcription endpoint.
+- Added `smoke.py` for FastAPI / faster-whisper import only.
+- Added `storage_smoke.py`.
+- Added demo `sample.wav`.
+- Added storage mounts for `/models/whisper`, `/cache/whisper`, and `/data/service`.
+- Added gateway mode `asr` through service instance install.
+
+Verified:
+
+- `asr-main` Docker build PASS.
+- `asr-main` start PASS.
+- `GET /health` PASS.
+- `storage_smoke.py` PASS.
+- Direct `POST /asr/audio` mock PASS.
+- Gateway `api.php?mode=asr` mock PASS.
+- `api.php?mode=hello` PASS.
+- `php scripts/run_tests.php` PASS.
+- `php scripts/self_check.php` PASS.
+- `php scripts/token_api_smoke.php` PASS.
+- PHP lint / shell syntax / Python compile / `git diff --check` PASS.
+
+Skipped:
+
+- Real transcription.
+- Model download/load.
+- GPU runtime.
+- VAD.
+- Diarization.
+- Subtitle export.
+- Streaming.
+
 ## PhaseM-2D-L4a SAM3 Model Present Smoke
 
 Advanced `sam3` from L3 storage mount to L4a model-present smoke.

@@ -10,7 +10,7 @@ hub_test('catalog and required packs are readable', function (): void {
 
     $packs = hub_list_packs();
     $ids = array_column($packs, 'id');
-    foreach (['hello', 'ocr-ppocrv5', 'translate-gemma12b', 'yolo', 'sam3'] as $id) {
+    foreach (['hello', 'ocr-ppocrv5', 'translate-gemma12b', 'yolo', 'sam3', 'whisper-asr'] as $id) {
         hub_test_assert(in_array($id, $ids, true), 'missing pack: ' . $id);
         $pack = hub_get_pack($id);
         hub_test_assert($pack !== null && $pack['status'] === 'ok', 'pack invalid: ' . $id);
@@ -159,4 +159,13 @@ hub_test('catalog and required packs are readable', function (): void {
 
     $translateSchema = hub_get_pack_settings_schema('translate-gemma12b');
     hub_test_assert(($translateSchema['OLLAMA_MODEL']['model_selector']['type'] ?? '') === 'ollama_tag', 'OLLAMA_MODEL selector missing');
+
+    $whisper = hub_get_pack('whisper-asr')['manifest'];
+    hub_test_assert($whisper['runtime_level'] === 'L3-storage-mount', 'Whisper ASR runtime level mismatch');
+    hub_test_assert(($whisper['target_level'] ?? '') === 'L5-benchmark-ready', 'Whisper ASR target level mismatch');
+    hub_test_assert(($whisper['gateway']['invoke_path'] ?? '') === '/asr/audio', 'Whisper ASR gateway endpoint mismatch');
+    $whisperSchema = hub_get_pack_settings_schema('whisper-asr');
+    foreach (['WHISPER_MODEL', 'WHISPER_DEVICE', 'WHISPER_COMPUTE_TYPE', 'WHISPER_REAL_INFERENCE', 'WHISPER_MAX_UPLOAD_MB'] as $key) {
+        hub_test_assert(isset($whisperSchema[$key]), 'Whisper ASR settings_schema missing ' . $key);
+    }
 });

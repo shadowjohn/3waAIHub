@@ -36,6 +36,15 @@
       "description": "Local promptable segmentation service powered by Ultralytics SAM3.",
       "path": "packs/sam3",
       "featured": true
+    },
+    {
+      "id": "whisper-asr",
+      "name": "Whisper ASR Service",
+      "version": "0.1.0",
+      "category": "asr",
+      "description": "Local audio transcription service with Whisper-compatible storage mounts.",
+      "path": "packs/whisper-asr",
+      "featured": true
     }
   ]
 }
