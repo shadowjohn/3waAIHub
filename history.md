@@ -1,5 +1,26 @@
 # 3waAIHub History
 
+## PhaseUI-1 Admin AJAX Micro Interactions
+
+Improved the existing admin AJAX flow without turning the backend into a SPA.
+
+Implemented:
+
+- `admin/services.php` service rows now expose stable `data-service-*` hooks.
+- `job_status.php` payload now includes command action, localized job status, and latest service status.
+- `assets/js/services.js` updates service status cells and command job rows during polling.
+- Finished service jobs enqueue one follow-up health/status refresh job, except for health-check jobs themselves.
+- Polling and action failures keep a visible error message instead of failing silently.
+- `admin/packs.php` exposes a lightweight `ajax=readiness` JSON branch.
+- `assets/js/packs.js` refreshes Pack readiness text in place.
+
+Skipped:
+
+- SPA rewrite.
+- command worker changes.
+- runtime changes.
+- install wizard changes.
+
 ## PhaseUI-0 Pack Catalog Tabs + Localization
 
 Upgraded `admin/packs.php` from a single long table into a localized Pack Catalog view.

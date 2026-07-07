@@ -117,13 +117,13 @@ hub_admin_header('服務管理', $user);
         </tr>
         <?php foreach ($services as $service): ?>
             <?php $activeJob = $activeJobsByService[(int)$service['id']] ?? null; ?>
-            <tr>
+            <tr data-service-row-id="<?= (int)$service['id'] ?>">
                 <td><?= hub_h($service['name']) ?></td>
                 <td><code><?= hub_h((string)($service['service_key'] ?? '')) ?></code></td>
                 <td><?= hub_h((string)($service['pack_id'] ?? '')) ?></td>
                 <td><code><?= hub_h($service['mode']) ?></code></td>
                 <td><?= hub_h($service['type']) ?></td>
-                <td class="<?= hub_status_class($service['status']) ?>"><?= hub_h(hub_status_label($service['status'])) ?></td>
+                <td data-service-status class="<?= hub_status_class($service['status']) ?>"><span data-service-status-label><?= hub_h(hub_status_label($service['status'])) ?></span></td>
                 <td><?= (int)$service['enabled'] === 1 ? '是' : '否' ?></td>
                 <td><?= hub_h((string)$service['local_port']) ?> / <?= hub_h($service['port_mode']) ?></td>
                 <td>
@@ -133,7 +133,7 @@ hub_admin_header('服務管理', $user);
                 <td><?= (int)$service['hot_reload'] === 1 ? '開發模式' : '關閉' ?></td>
                 <td><code><?= hub_h('../api.php?mode=' . $service['mode']) ?></code></td>
                 <td class="actions">
-                    <form class="service-action-form" method="post">
+                    <form class="service-action-form" method="post" data-service-refresh-form="<?= (int)$service['id'] ?>">
                         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
                         <input type="hidden" name="service_id" value="<?= (int)$service['id'] ?>">
                         <button name="action" value="build" type="submit">Build</button>
@@ -174,12 +174,12 @@ hub_admin_header('服務管理', $user);
                 <td>#<?= (int)$job['id'] ?></td>
                 <td><code><?= hub_h($job['action']) ?></code></td>
                 <td><?= hub_h($job['service_name'] ?? '') ?></td>
-                <td class="<?= hub_status_class($job['status']) ?>"><?= hub_h(hub_status_label($job['status'])) ?></td>
+                <td data-job-row-status class="<?= hub_status_class($job['status']) ?>"><?= hub_h(hub_status_label($job['status'])) ?></td>
                 <td><span class="job-row-progress"><?= (int)($job['progress'] ?? 0) ?></span>%</td>
                 <td><code class="job-row-stage"><?= hub_h((string)($job['stage'] ?? '')) ?></code><br><span class="muted job-row-message"><?= hub_h((string)($job['current_message'] ?? '')) ?></span></td>
-                <td><?= $job['exit_code'] === null ? '' : (int)$job['exit_code'] ?></td>
+                <td data-job-row-exit><?= $job['exit_code'] === null ? '' : (int)$job['exit_code'] ?></td>
                 <td><?= hub_h($job['created_at']) ?></td>
-                <td><?= hub_h($job['error_message']) ?></td>
+                <td data-job-row-error><?= hub_h($job['error_message']) ?></td>
             </tr>
         <?php endforeach; ?>
         </tbody>

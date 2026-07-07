@@ -26,6 +26,28 @@ function hub_is_valid_job_action(string $action): bool
     return in_array($action, hub_allowed_job_actions(), true);
 }
 
+function hub_command_status_label(string $status): string
+{
+    return [
+        'running' => '執行中',
+        'stopped' => '已停止',
+        'success' => '成功',
+        'failed' => '失敗',
+        'queued' => '排隊中',
+        'cancelled' => '已取消',
+        'timeout' => '逾時',
+        'error' => '錯誤',
+        'ok' => '正常',
+        'pass' => '通過',
+        'fail' => '失敗',
+    ][$status] ?? $status;
+}
+
+function hub_command_status_class(string $status): string
+{
+    return in_array($status, ['running', 'success', 'ok', 'pass'], true) ? 'ok' : 'bad';
+}
+
 function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array $args, ?int $requestedBy, ?string $requestedIp): int
 {
     if (!hub_is_valid_job_action($action)) {
@@ -226,10 +248,16 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
     if (!$job) {
         return null;
     }
+    $service = (int)($job['service_id'] ?? 0) > 0 ? hub_get_service($db, (int)$job['service_id']) : null;
 
     return [
         'id' => (int)$job['id'],
+        'action' => (string)$job['action'],
+        'service_id' => $service ? (int)$service['id'] : null,
+        'service_name' => $service ? (string)$service['name'] : '',
         'status' => (string)$job['status'],
+        'status_label' => hub_command_status_label((string)$job['status']),
+        'status_class' => hub_command_status_class((string)$job['status']),
         'progress' => (int)($job['progress'] ?? 0),
         'stage' => (string)($job['stage'] ?? ''),
         'current_message' => (string)($job['current_message'] ?? ''),
@@ -237,6 +265,13 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
         'error_message' => (string)($job['error_message'] ?? ''),
         'stdout_tail' => hub_tail_file((string)($job['stdout_path'] ?? '')),
         'stderr_tail' => hub_tail_file((string)($job['stderr_path'] ?? '')),
+        'service' => $service ? [
+            'id' => (int)$service['id'],
+            'status' => (string)$service['status'],
+            'status_label' => hub_command_status_label((string)$service['status']),
+            'status_class' => hub_command_status_class((string)$service['status']),
+            'runtime_status' => (string)($service['runtime_status'] ?? $service['status']),
+        ] : null,
     ];
 }
 

@@ -198,10 +198,28 @@ function hub_pack_empty_state(string $tab): string
     ][$tab] ?? '目前沒有 HubPack。';
 }
 
+function hub_packs_json(int $status, array $payload): never
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
 $db = hub_db();
 $user = hub_require_login($db);
 $message = '';
 $error = '';
+
+if (($_GET['ajax'] ?? '') === 'readiness') {
+    $packId = (string)($_GET['pack_id'] ?? '');
+    $pack = hub_get_pack($packId);
+    if (!$pack || $pack['status'] !== 'ok') {
+        hub_packs_json(404, ['ok' => false, 'error' => '找不到 HubPack。']);
+    }
+    $label = hub_pack_readiness_label($db, $packId, is_array($pack['manifest'] ?? null) ? $pack['manifest'] : []);
+    hub_packs_json(200, ['ok' => true, 'pack_id' => $packId, 'readiness' => $label]);
+}
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     hub_check_csrf();
@@ -339,7 +357,10 @@ hub_admin_header('HubPack', $user);
                         <div class="pack-field-label">已安裝服務</div>
                         <div class="pack-field-value">Installed: <?= (int)$stats['count'] ?><?php if ((string)$stats['modes'] !== ''): ?> / modes: <code><?= hub_h((string)$stats['modes']) ?></code><?php endif; ?></div>
                         <div class="pack-field-label">L5 準備狀態</div>
-                        <div class="pack-field-value"><?= hub_h(hub_pack_readiness_label($db, $packId, $manifest)) ?></div>
+                        <div class="pack-field-value" data-readiness-url="packs.php?ajax=readiness">
+                            <span class="pack-readiness-value" data-pack-id="<?= hub_h($packId) ?>"><?= hub_h(hub_pack_readiness_label($db, $packId, $manifest)) ?></span>
+                            <button class="pack-readiness-refresh" type="button" data-pack-id="<?= hub_h($packId) ?>">刷新</button>
+                        </div>
                     </div>
                     <?php if (!empty($pack['errors'])): ?>
                         <pre class="inline-pre"><?= hub_h(implode("\n", $pack['errors'])) ?></pre>
@@ -373,4 +394,6 @@ hub_admin_header('HubPack', $user);
         </div>
     <?php endif; ?>
 </section>
+<script src="../assets/js/jquery.min.js"></script>
+<script src="../assets/js/packs.js"></script>
 <?php hub_admin_footer(); ?>
