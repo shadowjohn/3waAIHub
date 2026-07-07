@@ -1,5 +1,25 @@
 # 3waAIHub History
 
+## PhaseUI-5 Dashboard Control Center Polish
+
+Polished the admin dashboard into a clearer control center.
+
+Implemented:
+
+- Added dashboard summary cards for services, API calls last 24h, failed API calls last 24h, background jobs, Pack readiness, and model storage usage.
+- Added quick links to services, API Playground, models, and API keys.
+- Added Recent command jobs and recent failed API request summaries.
+- Kept the existing host metrics snapshot and ECharts flow.
+- Added PhaseUI-5 dashboard render contract test.
+
+Skipped:
+
+- SPA rewrite.
+- ECharts rewrite.
+- metrics collector changes.
+- runtime / gateway changes.
+- new Pack work.
+
 ## PhaseUI-4 Services Management Card UI
 
 Redesigned the services management page while preserving the existing AJAX command flow.

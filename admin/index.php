@@ -52,6 +52,73 @@ function hub_dash_pending_items(array $metrics): array
     return $items ?: ['目前沒有明顯待處理項。'];
 }
 
+function hub_dash_scalar(PDO $db, string $sql, array $params = []): int
+{
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    return (int)$stmt->fetchColumn();
+}
+
+function hub_dash_control_center(PDO $db): array
+{
+    $since = date('Y-m-d H:i:s', time() - 86400);
+    $modelUsage = hub_get_disk_usage_for_path(hub_models_root($db));
+    $total = is_numeric($modelUsage['total_bytes']) ? (float)$modelUsage['total_bytes'] : null;
+    $free = is_numeric($modelUsage['free_bytes']) ? (float)$modelUsage['free_bytes'] : null;
+    $used = $total !== null && $free !== null ? max(0, $total - $free) : null;
+
+    $readinessReady = 0;
+    $readinessTotal = 0;
+    foreach (hub_list_packs() as $pack) {
+        $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
+        if (!is_array($manifest['l5_contract'] ?? null)) {
+            continue;
+        }
+        $readinessTotal++;
+        try {
+            $readiness = hub_pack_l5_readiness($db, (string)$pack['id']);
+            if ((int)$readiness['total_count'] > 0 && (int)$readiness['pass_count'] === (int)$readiness['total_count']) {
+                $readinessReady++;
+            }
+        } catch (Throwable) {
+            continue;
+        }
+    }
+
+    return [
+        'services_total' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM services'),
+        'services_running' => hub_dash_scalar($db, "SELECT COUNT(*) FROM services WHERE status = 'running'"),
+        'services_stopped' => hub_dash_scalar($db, "SELECT COUNT(*) FROM services WHERE status != 'running'"),
+        'services_disabled' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM services WHERE enabled != 1'),
+        'api_calls_24h' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM api_access_logs WHERE created_at >= :since', [':since' => $since]),
+        'api_failed_24h' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM api_access_logs WHERE ok = 0 AND created_at >= :since', [':since' => $since]),
+        'running_jobs' => hub_dash_scalar($db, "SELECT COUNT(*) FROM command_jobs WHERE status IN ('queued', 'running')"),
+        'failed_jobs' => hub_dash_scalar($db, "SELECT COUNT(*) FROM command_jobs WHERE status = 'failed'"),
+        'recent_jobs' => hub_list_command_jobs($db, 5),
+        'recent_failed_api' => hub_dash_recent_failed_api($db, $since),
+        'pack_readiness_ready' => $readinessReady,
+        'pack_readiness_total' => $readinessTotal,
+        'models_total' => hub_model_format_bytes($total),
+        'models_free' => hub_model_format_bytes($free),
+        'models_used_percent' => $used !== null && $total !== null && $total > 0 ? round(($used / $total) * 100, 1) : 0,
+    ];
+}
+
+function hub_dash_recent_failed_api(PDO $db, string $since): array
+{
+    $stmt = $db->prepare(
+        'SELECT request_id, mode, status_code, error_code, created_at
+         FROM api_access_logs
+         WHERE ok = 0 AND created_at >= :since
+         ORDER BY id DESC
+         LIMIT 5'
+    );
+    $stmt->execute([':since' => $since]);
+    return $stmt->fetchAll();
+}
+
+$control = hub_dash_control_center($db);
+
 hub_admin_header('儀表板', $user);
 ?>
 <style>
@@ -71,8 +138,69 @@ hub_admin_header('儀表板', $user);
     @media (max-width: 900px) { .dash-card { grid-column: span 12; } .dash-memory { grid-template-columns: repeat(2, 1fr); } }
 </style>
 <section class="panel">
-    <h1><?= hub_h($siteTitle) ?> 控制台</h1>
+    <h1><?= hub_h($siteTitle) ?> 總覽中控台</h1>
     <p class="muted"><?= hub_h($siteSubtitle) ?>。Dashboard 只讀 SQLite 最新 metrics snapshot；主機探測請由 CLI / cron 執行。</p>
+</section>
+
+<section class="panel">
+    <div class="hub-section-title">
+        <h2>Dashboard summary cards</h2>
+        <span class="muted">最近 24 小時與目前服務狀態</span>
+    </div>
+    <div class="hub-card-grid">
+        <article class="hub-card"><h3>目前服務</h3><div class="dash-number"><?= (int)$control['services_total'] ?></div></article>
+        <article class="hub-card"><h3>Services running</h3><div class="dash-number ok"><?= (int)$control['services_running'] ?></div></article>
+        <article class="hub-card"><h3>Services stopped</h3><div class="dash-number"><?= (int)$control['services_stopped'] ?></div></article>
+        <article class="hub-card"><h3>Services disabled</h3><div class="dash-number bad"><?= (int)$control['services_disabled'] ?></div></article>
+        <article class="hub-card"><h3>API calls last 24h</h3><div class="dash-number"><?= (int)$control['api_calls_24h'] ?></div></article>
+        <article class="hub-card"><h3>Failed API calls last 24h</h3><div class="dash-number bad"><?= (int)$control['api_failed_24h'] ?></div></article>
+        <article class="hub-card"><h3>背景工作狀態</h3><div class="dash-number"><?= (int)$control['running_jobs'] ?></div><p class="muted">failed <?= (int)$control['failed_jobs'] ?></p></article>
+        <article class="hub-card"><h3>Pack readiness</h3><div class="dash-number"><?= (int)$control['pack_readiness_ready'] ?>/<?= (int)$control['pack_readiness_total'] ?></div></article>
+        <article class="hub-card"><h3>Model storage usage</h3><div class="dash-number"><?= hub_h((string)$control['models_used_percent']) ?>%</div><p class="muted">Free / Total <?= hub_h((string)$control['models_free']) ?> / <?= hub_h((string)$control['models_total']) ?></p></article>
+    </div>
+    <div class="hub-actions">
+        <a class="button" href="services.php">服務管理</a>
+        <a class="button" href="playground.php">API 測試場</a>
+        <a class="button" href="models.php">模型倉庫</a>
+        <a class="button" href="api_members.php">API 金鑰</a>
+    </div>
+</section>
+
+<section class="dash-grid">
+    <div class="dash-card dash-span-6">
+        <h3>Recent command jobs</h3>
+        <?php if ($control['recent_jobs'] === []): ?>
+            <p class="muted">尚無背景工作。</p>
+        <?php else: ?>
+            <ul class="dash-list">
+                <?php foreach ($control['recent_jobs'] as $job): ?>
+                    <li>
+                        <?= hub_h(hub_command_action_label((string)$job['action'])) ?>
+                        <code><?= hub_h((string)$job['action']) ?></code>
+                        / <?= hub_h((string)($job['service_name'] ?? '')) ?>
+                        / <span class="<?= hub_status_class((string)$job['status']) ?>"><?= hub_h(hub_status_label((string)$job['status'])) ?></span>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </div>
+    <div class="dash-card dash-span-6">
+        <h3>最近失敗</h3>
+        <?php if ($control['recent_failed_api'] === []): ?>
+            <p class="muted">最近 24 小時沒有 API 失敗紀錄。</p>
+        <?php else: ?>
+            <ul class="dash-list">
+                <?php foreach ($control['recent_failed_api'] as $log): ?>
+                    <li>
+                        <a href="log_explorer.php?request_id=<?= urlencode((string)$log['request_id']) ?>"><code><?= hub_h((string)$log['request_id']) ?></code></a>
+                        / mode <code><?= hub_h((string)$log['mode']) ?></code>
+                        / <?= (int)$log['status_code'] ?>
+                        / <code><?= hub_h((string)$log['error_code']) ?></code>
+                    </li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
+    </div>
 </section>
 
 <?php if (!$metrics): ?>
