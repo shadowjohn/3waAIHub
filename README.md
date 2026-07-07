@@ -9,6 +9,8 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 ## 功能
 
 - 本機管理後台登入
+- Role-based login：`system_admin` / `customer`
+- Customer Portal：我的服務、我的 Token、Token IP 白名單、用量統計、帳號資料與變更密碼
 - SQLite metadata
 - `hello-service` Docker 啟動 / 停用 / 重啟
 - 背景 command worker 執行 host 操作
@@ -63,7 +65,36 @@ cd /DATA/3waAIHub
 - 帳號：`admin`
 - 密碼：`admin123`
 
-登入後請到「設定」修改密碼。
+登入後請到「設定」修改密碼。預設 `admin` 會標記為 `role=system_admin` 與 `is_protected=1`，不可停用、不可降級，也不可把系統改到沒有任何啟用中的 `system_admin`。
+
+## 角色與客戶 Portal
+
+3waAIHub 目前有兩種登入角色：
+
+- `system_admin`：可管理服務、HubPack、模型、客戶、API Member / Token、設定、Log 與 Benchmark。
+- `customer`：只能看自己的可用服務、自己的 Token、自己的 Token IP 白名單、自己的用量與帳號資料。
+
+客戶帳號由系統管理員建立，不開放自助註冊。管理入口：
+
+```text
+admin/customers.php
+admin/customer_edit.php?action=create
+```
+
+建立 customer 時會連結一筆 `api_members`，之後 customer 建立的 Token 會掛在自己的 API Member 下。管理員指派 customer 可用的 `mode` 後，customer 建立 Token 時只會取得那些 mode permission。
+
+Customer Portal 入口：
+
+```text
+admin/my_services.php
+admin/my_tokens.php
+admin/my_ip_whitelist.php
+admin/my_usage.php
+admin/my_profile.php
+admin/change_password.php
+```
+
+Customer 頁面不顯示 `local_port`、Docker compose 路徑、host model path、SQLite path、worker path 或其他客戶資料。舊版 service-level whitelist 仍保留給 `system_admin` 相容使用，customer 只能管理自己的 token IP whitelist。
 
 ## 入口
 

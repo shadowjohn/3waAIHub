@@ -87,7 +87,7 @@ function hub_settings_validate_unsigned_ints(array $input, array $keys): array
 $db = hub_db();
 hub_migrate($db);
 hub_ensure_default_storage_settings($db);
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $message = '';
 $error = '';
 $activeTab = hub_settings_tab((string)($_POST['tab'] ?? $_GET['tab'] ?? 'basic'));
@@ -176,7 +176,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $error = hub_update_password($db, (int)$user['id'], (string)($_POST['current_password'] ?? ''), $newPassword) ?? '';
             if ($error === '') {
                 $message = '密碼已更新。';
-                $user = hub_require_login($db);
+                $user = hub_require_system_admin($db);
             }
         }
     }

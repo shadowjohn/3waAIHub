@@ -7,7 +7,7 @@ require __DIR__ . '/_layout.php';
 $db = hub_db();
 hub_migrate($db);
 hub_ensure_default_storage_settings($db);
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $ip = hub_decode_ip_get_filter((string)($_GET['ip_b64'] ?? ''), false);
 if ($ip === null) {
     http_response_code(400);

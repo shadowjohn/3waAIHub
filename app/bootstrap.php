@@ -26,6 +26,7 @@ require_once __DIR__ . '/command_queue.php';
 require_once __DIR__ . '/task_queue.php';
 require_once __DIR__ . '/api_access.php';
 require_once __DIR__ . '/api_tokens.php';
+require_once __DIR__ . '/customer_accounts.php';
 require_once __DIR__ . '/environment_probe.php';
 require_once __DIR__ . '/host_metrics.php';
 require_once __DIR__ . '/benchmarks.php';

@@ -66,7 +66,7 @@ function hub_marketplace_runtime_label(string $runtimeLevel): string
 }
 
 $db = hub_db();
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $message = '';
 $error = '';
 

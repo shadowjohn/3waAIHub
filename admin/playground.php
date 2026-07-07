@@ -15,20 +15,6 @@ function hub_playground_profiles(): array
     ];
 }
 
-function hub_playground_service_options(PDO $db): array
-{
-    $profiles = hub_playground_profiles();
-    $services = [];
-    foreach (hub_list_services($db) as $service) {
-        $mode = (string)($service['mode'] ?? '');
-        if (isset($profiles[$mode])) {
-            $services[] = $service;
-        }
-    }
-
-    return $services;
-}
-
 function hub_playground_selected_service(array $services, string $mode): ?array
 {
     foreach ($services as $service) {
@@ -410,7 +396,8 @@ JS;
 
 $db = hub_db();
 $user = hub_require_login($db);
-$services = hub_playground_service_options($db);
+$isAdminUser = hub_is_system_admin($user);
+$services = hub_playground_service_options($db, $user);
 $selectedMode = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($_POST['mode'] ?? $_GET['mode'] ?? '')) ?: 'hello';
 $selectedService = hub_playground_selected_service($services, $selectedMode);
 if ($selectedService) {
@@ -435,7 +422,7 @@ hub_admin_header('API 測試場', $user);
 <section class="panel">
     <h1>API 測試場</h1>
     <p class="muted">後台 server side 呼叫本機 <code>api.php</code>。Bearer token 只用於本次測試，不保存；範例固定使用 <code>&lt;TOKEN&gt;</code>。</p>
-    <p><strong>需要 Bearer Token</strong>。還沒有 token 時，請先 <a href="api_members.php">前往 API 金鑰建立</a>。</p>
+    <p><strong>需要 Bearer Token</strong>。還沒有 token 時，請先 <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>">前往 API 金鑰建立</a>。</p>
     <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code></p>
 </section>
 
@@ -462,12 +449,12 @@ hub_admin_header('API 測試場', $user);
                 <div class="notice">
                     <?= hub_h((string)$readinessNotice['message']) ?>
                     <div class="hub-actions">
-                        <a class="button" href="services.php">前往服務管理</a>
+                        <a class="button" href="<?= $isAdminUser ? 'services.php' : 'my_services.php' ?>"><?= $isAdminUser ? '前往服務管理' : '查看我的服務' ?></a>
                     </div>
                     <p class="muted">
                         mode=<code><?= hub_h((string)$selectedService['mode']) ?></code>
                         service_key=<code><?= hub_h((string)($selectedService['service_key'] ?? '')) ?></code>
-                        local_port=<code><?= hub_h((string)($selectedService['local_port'] ?? '')) ?></code>
+                        <?php if ($isAdminUser): ?>local_port=<code><?= hub_h((string)($selectedService['local_port'] ?? '')) ?></code><?php endif; ?>
                     </p>
                 </div>
             <?php endif; ?>
@@ -488,10 +475,14 @@ hub_admin_header('API 測試場', $user);
                 <div class="hub-meta-value">需要 Bearer Token</div>
             </div>
             <div class="hub-actions">
-                <a class="button" href="api_docs.php">API 文件</a>
-                <a class="button" href="benchmarks.php">Benchmark 測試</a>
-                <a class="button" href="pack_readiness.php?pack_id=<?= urlencode((string)$selectedService['pack_id']) ?>">準備狀態</a>
-                <a class="button" href="log_explorer.php?mode=<?= urlencode($selectedMode) ?>">API 記錄</a>
+                <a class="button" href="<?= $isAdminUser ? 'api_docs.php' : '../public_api_docs.php' ?>">API 文件</a>
+                <?php if ($isAdminUser): ?>
+                    <a class="button" href="benchmarks.php">Benchmark 測試</a>
+                    <a class="button" href="pack_readiness.php?pack_id=<?= urlencode((string)$selectedService['pack_id']) ?>">準備狀態</a>
+                    <a class="button" href="log_explorer.php?mode=<?= urlencode($selectedMode) ?>">API 記錄</a>
+                <?php else: ?>
+                    <a class="button" href="my_usage.php">用量統計</a>
+                <?php endif; ?>
             </div>
         <?php endif; ?>
     </section>

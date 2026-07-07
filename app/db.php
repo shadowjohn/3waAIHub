@@ -27,8 +27,17 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     must_change_password INTEGER NOT NULL DEFAULT 1,
+    role TEXT NOT NULL DEFAULT 'system_admin',
+    api_member_id INTEGER NULL,
+    display_name TEXT NULL,
+    email TEXT NULL,
+    company TEXT NULL,
+    is_protected INTEGER NOT NULL DEFAULT 0,
+    is_enabled INTEGER NOT NULL DEFAULT 1,
+    last_login_at TEXT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(api_member_id) REFERENCES api_members(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS services (
@@ -298,8 +307,29 @@ CREATE TABLE IF NOT EXISTS api_access_logs (
     FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE SET NULL,
     FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS user_mode_permissions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    service_id INTEGER NULL,
+    mode TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, mode),
+    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
+);
 SQL);
 
+    hub_add_column_if_missing($db, 'users', 'role', "TEXT NOT NULL DEFAULT 'system_admin'");
+    hub_add_column_if_missing($db, 'users', 'api_member_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'users', 'display_name', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'users', 'email', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'users', 'company', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'users', 'is_protected', 'INTEGER NOT NULL DEFAULT 0');
+    hub_add_column_if_missing($db, 'users', 'is_enabled', 'INTEGER NOT NULL DEFAULT 1');
+    hub_add_column_if_missing($db, 'users', 'last_login_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'services', 'local_port', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'services', 'port_mode', "TEXT NOT NULL DEFAULT 'auto'");
     hub_add_column_if_missing($db, 'services', 'hot_reload', 'INTEGER NOT NULL DEFAULT 0');
@@ -341,6 +371,10 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_member_date ON api_token_usage_daily(member_id, usage_date)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token_date ON api_token_usage_daily(token_id, usage_date)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_service_settings_service_id ON service_settings(service_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_users_api_member_id ON users(api_member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_user_mode_permissions_user_id ON user_mode_permissions(user_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_user_mode_permissions_mode ON user_mode_permissions(mode)');
 }
 
 function hub_add_column_if_missing(PDO $db, string $table, string $column, string $definition): void
@@ -359,18 +393,30 @@ function hub_seed_admin_user(PDO $db): void
 {
     $stmt = $db->prepare('SELECT id FROM users WHERE username = :username');
     $stmt->execute([':username' => 'admin']);
-    if ($stmt->fetch()) {
+    $existing = $stmt->fetch();
+    if ($existing) {
+        $db->prepare(
+            "UPDATE users
+             SET role = 'system_admin', is_protected = 1, is_enabled = 1,
+                 display_name = COALESCE(NULLIF(display_name, ''), username),
+                 updated_at = :updated_at
+             WHERE id = :id"
+        )->execute([':updated_at' => hub_now(), ':id' => (int)$existing['id']]);
         return;
     }
 
     $now = hub_now();
     $stmt = $db->prepare(
-        'INSERT INTO users (username, password_hash, must_change_password, created_at, updated_at)
-         VALUES (:username, :password_hash, 1, :created_at, :updated_at)'
+        'INSERT INTO users
+            (username, password_hash, must_change_password, role, display_name, is_protected, is_enabled, created_at, updated_at)
+         VALUES
+            (:username, :password_hash, 1, :role, :display_name, 1, 1, :created_at, :updated_at)'
     );
     $stmt->execute([
         ':username' => 'admin',
         ':password_hash' => password_hash('admin123', PASSWORD_DEFAULT),
+        ':role' => 'system_admin',
+        ':display_name' => 'admin',
         ':created_at' => $now,
         ':updated_at' => $now,
     ]);

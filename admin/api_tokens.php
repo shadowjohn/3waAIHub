@@ -7,7 +7,7 @@ require __DIR__ . '/_layout.php';
 $db = hub_db();
 hub_migrate($db);
 hub_ensure_default_storage_settings($db);
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $member = hub_get_api_member($db, (int)($_GET['member_id'] ?? $_POST['member_id'] ?? 0));
 if (!$member) {
     http_response_code(404);

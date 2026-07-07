@@ -6,7 +6,7 @@ require __DIR__ . '/_layout.php';
 
 $db = hub_db();
 hub_migrate($db);
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $member = ((int)($_GET['id'] ?? $_POST['id'] ?? 0)) > 0 ? hub_get_api_member($db, (int)($_GET['id'] ?? $_POST['id'])) : null;
 $message = '';
 $error = '';

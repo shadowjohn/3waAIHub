@@ -5,6 +5,7 @@ function hub_admin_header(string $title, array $user): void
 {
     $siteTitle = hub_site_title();
     $siteSubtitle = hub_site_subtitle();
+    $isAdmin = hub_is_system_admin($user);
     ?>
 <!doctype html>
 <html lang="zh-Hant">
@@ -28,7 +29,7 @@ function hub_admin_header(string $title, array $user): void
         button, .button { border: 1px solid var(--line); background: #fff; border-radius: 6px; color: var(--text); cursor: pointer; display: inline-block; font: inherit; padding: 7px 11px; text-decoration: none; }
         button.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
         button.danger { border-color: #fecdca; color: var(--red); }
-        input, select { border: 1px solid var(--line); border-radius: 6px; box-sizing: border-box; font: inherit; padding: 8px 10px; width: 100%; }
+        input, select, textarea { border: 1px solid var(--line); border-radius: 6px; box-sizing: border-box; font: inherit; padding: 8px 10px; width: 100%; }
         input[type="checkbox"] { width: auto; }
         label { display: block; font-weight: 600; margin: 12px 0 6px; }
         pre { background: #101828; color: #f2f4f7; overflow: auto; padding: 12px; border-radius: 6px; white-space: pre-wrap; }
@@ -61,19 +62,31 @@ function hub_admin_header(string $title, array $user): void
 <header>
     <div class="brand"><strong><?= hub_h($siteTitle) ?></strong><small><?= hub_h($siteSubtitle . ' / ' . HUB_VERSION . ' / ' . HUB_RELEASE_LABEL) ?></small></div>
     <nav>
-        <a href="index.php">控制台</a>
-        <a href="marketplace.php">安裝套件</a>
-        <a href="packs.php">HubPack 套件</a>
-        <a href="models.php">模型倉庫</a>
-        <a href="services.php">服務管理</a>
-        <a href="api_members.php">API 金鑰</a>
-        <a href="api_usage.php">API 記錄</a>
-        <a href="playground.php">API 測試場</a>
-        <a href="log_explorer.php">Log Explorer</a>
-        <a href="benchmarks.php">Benchmark 測試</a>
-        <a href="api_docs.php">API 文件</a>
-        <a href="environment.php">系統環境</a>
-        <a href="settings.php">系統設定</a>
+        <?php if ($isAdmin): ?>
+            <a href="index.php">控制台</a>
+            <a href="marketplace.php">安裝套件</a>
+            <a href="packs.php">HubPack 套件</a>
+            <a href="models.php">模型倉庫</a>
+            <a href="services.php">服務管理</a>
+            <a href="customers.php">客戶管理</a>
+            <a href="api_members.php">API 金鑰</a>
+            <a href="api_usage.php">API 記錄</a>
+            <a href="playground.php">API 測試場</a>
+            <a href="log_explorer.php">Log Explorer</a>
+            <a href="benchmarks.php">Benchmark 測試</a>
+            <a href="api_docs.php">API 文件</a>
+            <a href="environment.php">系統環境</a>
+            <a href="settings.php">系統設定</a>
+        <?php else: ?>
+            <a href="my_services.php">我的服務</a>
+            <a href="my_tokens.php">我的 Token</a>
+            <a href="my_ip_whitelist.php">IP 白名單</a>
+            <a href="my_usage.php">用量統計</a>
+            <a href="my_profile.php">帳號資料</a>
+            <a href="change_password.php">變更密碼</a>
+            <a href="playground.php">API 測試場</a>
+            <a href="../public_api_docs.php">API 文件</a>
+        <?php endif; ?>
         <a href="logout.php">登出 <?= hub_h($user['username']) ?></a>
     </nav>
 </header>

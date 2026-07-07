@@ -7,7 +7,7 @@ require __DIR__ . '/_layout.php';
 $db = hub_db();
 hub_migrate($db);
 hub_ensure_default_storage_settings($db);
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $members = hub_list_api_members($db);
 
 hub_admin_header('API 金鑰', $user);

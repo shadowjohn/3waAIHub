@@ -4,7 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/../app/bootstrap.php';
 
 $db = hub_db();
-hub_require_login($db);
+hub_require_system_admin($db);
 
 header('Content-Type: application/json; charset=utf-8');
 $payload = hub_command_job_status_payload($db, (int)($_GET['job_id'] ?? 0));

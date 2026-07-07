@@ -1701,3 +1701,55 @@ Skipped:
 - segmentation.
 - tracking.
 - custom trained YOLO upload.
+
+## PhaseAuth-1 Customer Portal / Role-based Login
+
+Implemented role-based login for `system_admin` and `customer`.
+
+Added:
+
+- `users.role`
+- `users.api_member_id`
+- `users.display_name`
+- `users.email`
+- `users.company`
+- `users.is_protected`
+- `users.is_enabled`
+- `users.last_login_at`
+- `user_mode_permissions`
+- `app/customer_accounts.php`
+- `admin/customers.php`
+- `admin/customer_edit.php`
+- `admin/my_services.php`
+- `admin/my_tokens.php`
+- `admin/my_ip_whitelist.php`
+- `admin/my_usage.php`
+- `admin/my_profile.php`
+- `admin/change_password.php`
+
+Implemented:
+
+- default `admin` is `system_admin`, `is_protected=1`, `is_enabled=1`.
+- protected admin cannot be disabled or downgraded.
+- system cannot be left with zero enabled `system_admin` accounts.
+- customer login redirects to Customer Portal.
+- system admin pages now require `hub_require_system_admin`.
+- customer nav only shows own service/token/IP/usage/profile/password pages.
+- customer accounts link to `api_members`.
+- customer-created tokens inherit only admin-granted service modes.
+- customer IP whitelist manages only own token rules.
+- Playground filters customer-visible modes by `user_mode_permissions`.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS with PhaseAuth-1 tests.
+
+Skipped:
+
+- self registration.
+- email verification.
+- forgot password.
+- OAuth.
+- billing / subscription.
+- quota enforcement.
+- organization/team hierarchy.

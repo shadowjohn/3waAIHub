@@ -8,7 +8,7 @@ $error = '';
 $siteTitle = hub_site_title($db);
 $siteSubtitle = hub_site_subtitle($db);
 if (hub_current_user($db)) {
-    hub_redirect('admin/');
+    hub_redirect(hub_login_redirect_path($db));
 }
 
 $captchaCode = hub_login_captcha_code();
@@ -16,7 +16,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     if (!hub_verify_login_captcha((string)($_POST['captcha'] ?? ''))) {
         $error = '驗證碼錯誤。';
     } elseif (hub_login($db, trim((string)($_POST['username'] ?? '')), (string)($_POST['password'] ?? ''))) {
-        hub_redirect('admin/');
+        hub_redirect(hub_login_redirect_path($db));
     } else {
         $error = '帳號或密碼錯誤。';
     }

@@ -5,7 +5,7 @@ require __DIR__ . '/../app/bootstrap.php';
 require __DIR__ . '/_layout.php';
 
 $db = hub_db();
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $packId = trim((string)($_GET['pack_id'] ?? ''));
 $readiness = null;
 $error = '';

@@ -20,7 +20,8 @@ function hub_api_docs_mode_url(string $mode): string
 }
 
 $db = hub_db();
-$user = hub_require_login($db);
+// hub_require_login is enforced by the stricter system_admin guard.
+$user = hub_require_system_admin($db);
 $services = hub_list_services($db);
 $contracts = hub_pack_api_contracts();
 $baseUrl = hub_api_docs_public_base_url();

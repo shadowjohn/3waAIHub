@@ -207,7 +207,7 @@ function hub_packs_json(int $status, array $payload): never
 }
 
 $db = hub_db();
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $message = '';
 $error = '';
 

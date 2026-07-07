@@ -5,7 +5,7 @@ require_once __DIR__ . '/../app/bootstrap.php';
 require_once __DIR__ . '/_layout.php';
 
 $db = hub_db();
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $siteTitle = hub_site_title($db);
 $siteSubtitle = hub_site_subtitle($db);
 $snapshot = hub_latest_host_metric_snapshot($db);

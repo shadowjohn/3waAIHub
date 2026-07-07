@@ -6,7 +6,7 @@ require __DIR__ . '/_layout.php';
 
 $db = hub_db();
 hub_migrate($db);
-$user = hub_require_login($db);
+$user = hub_require_system_admin($db);
 $filters = [
     'member_id' => (int)($_GET['member_id'] ?? 0),
     'token_id' => (int)($_GET['token_id'] ?? 0),
