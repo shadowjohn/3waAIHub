@@ -1844,6 +1844,10 @@ Verified:
 
 - `php scripts/run_tests.php` PASS with 85 tests.
 
+Follow-up fix:
+
+- Captcha failures are audited as `captcha_failed` but do not increment IP lockout failed count.
+
 Skipped:
 
 - CAPTCHA changes.

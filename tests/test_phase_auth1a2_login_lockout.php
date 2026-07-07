@@ -78,6 +78,22 @@ hub_test('PhaseAuth-1A.2 disabled user counts as generic login failure', functio
     hub_test_assert((int)$attempt['success'] === 0 && (string)$attempt['reason'] === 'invalid_login', 'disabled user attempt should be audited generically');
 });
 
+hub_test('PhaseAuth-1A.2 captcha failures are audited but do not lock IP', function (): void {
+    $db = hub_test_reset_db();
+    hub_ensure_default_storage_settings($db);
+    $ip = '203.0.113.80';
+
+    for ($i = 0; $i < 3; $i++) {
+        hub_record_login_attempt($db, $ip, 'admin', false, 'captcha_failed', 'ua-captcha');
+    }
+
+    hub_test_assert(hub_login_lock_status($db, $ip)['locked'] === false, 'captcha failures must not lock IP');
+    $attempts = (int)$db->query("SELECT COUNT(*) FROM login_attempts WHERE ip = '203.0.113.80' AND reason = 'captcha_failed'")->fetchColumn();
+    hub_test_assert($attempts === 3, 'captcha failures should still be audited');
+    $loginSource = (string)file_get_contents(HUB_ROOT . '/login.php');
+    hub_test_assert(str_contains($loginSource, "'captcha_failed'"), 'login page should audit captcha failures separately');
+});
+
 hub_test('PhaseAuth-1A.2 login lockout defaults and schema exist', function (): void {
     $db = hub_test_reset_db();
     hub_ensure_default_storage_settings($db);

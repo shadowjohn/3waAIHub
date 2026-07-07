@@ -22,7 +22,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         hub_record_login_failure($db, $ip, $username, 'ip_locked', (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
         $error = '登入嘗試過多，請稍後再試。';
     } elseif (!hub_verify_login_captcha((string)($_POST['captcha'] ?? ''))) {
-        hub_record_login_failure($db, $ip, $username, 'invalid_login', (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
+        hub_record_login_attempt($db, $ip, $username, false, 'captcha_failed', (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
         $error = '帳號或密碼錯誤，或目前無法登入。';
     } elseif (hub_login_with_lockout($db, $username, (string)($_POST['password'] ?? ''), $ip, (string)($_SERVER['HTTP_USER_AGENT'] ?? ''))['ok']) {
         hub_redirect(hub_login_redirect_path($db));
