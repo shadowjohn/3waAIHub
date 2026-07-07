@@ -23,7 +23,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - Marketplace 與模型倉庫卡片式後台 UI
 - 服務管理卡片式 UI、狀態摘要與舊版白名單退場提示
 - 服務狀態拆分：啟用 / 容器 / 健康 / 設定 / 最後工作
-- Dashboard 總覽中控台、API 24h 統計、L5 Pack 數、Pack readiness、模型/Docker 空間與 quick links
+- Dashboard 總覽中控台、服務健康摘要、API 24h 統計、L5 Pack 數、Pack readiness、模型/Docker 空間與 quick links
 - Log Explorer 記錄中心：API 記錄、背景工作、服務記錄、系統記錄分頁
 - 環境診斷與修正建議
 - Service IP whitelist 與 API access logs

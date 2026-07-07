@@ -1,5 +1,21 @@
 # 3waAIHub History
 
+## PhaseUI-6.1 Dashboard Health Summary
+
+Added service health truthfulness to the dashboard without changing collectors or schemas.
+
+Implemented:
+
+- Dashboard summary cards now include `健康正常` and `健康異常 / 未檢查`.
+- Health counts are derived from the latest `service_health_check` command job per service.
+- Storage text now includes `/ disk free` alongside Docker root and Models Root free space.
+
+Skipped:
+
+- metrics collector changes.
+- new health persistence schema.
+- chart redesign / SPA work.
+
 ## PhaseUI-4.1 Service Status Truthfulness / Playground Readiness Guard
 
 Made service status labels more explicit without adding a new health schema.

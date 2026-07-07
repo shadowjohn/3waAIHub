@@ -64,6 +64,28 @@ function hub_dash_scalar(PDO $db, string $sql, array $params = []): int
     return (int)$stmt->fetchColumn();
 }
 
+function hub_dash_service_health_counts(PDO $db): array
+{
+    $services = hub_list_services($db);
+    $latest = [];
+    $stmt = $db->query("SELECT service_id, status FROM command_jobs WHERE action = 'service_health_check' AND service_id IS NOT NULL ORDER BY id DESC");
+    foreach ($stmt->fetchAll() as $job) {
+        $serviceId = (int)$job['service_id'];
+        if ($serviceId > 0 && !isset($latest[$serviceId])) {
+            $latest[$serviceId] = (string)$job['status'];
+        }
+    }
+
+    $ok = 0;
+    foreach ($services as $service) {
+        if (($latest[(int)$service['id']] ?? '') === 'success') {
+            $ok++;
+        }
+    }
+
+    return ['ok' => $ok, 'attention' => max(0, count($services) - $ok)];
+}
+
 function hub_dash_control_center(PDO $db): array
 {
     $since = date('Y-m-d H:i:s', time() - 86400);
@@ -93,12 +115,15 @@ function hub_dash_control_center(PDO $db): array
             continue;
         }
     }
+    $health = hub_dash_service_health_counts($db);
 
     return [
         'services_total' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM services'),
         'services_running' => hub_dash_scalar($db, "SELECT COUNT(*) FROM services WHERE status = 'running'"),
         'services_stopped' => hub_dash_scalar($db, "SELECT COUNT(*) FROM services WHERE status != 'running'"),
         'services_disabled' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM services WHERE enabled != 1'),
+        'services_health_ok' => $health['ok'],
+        'services_health_attention' => $health['attention'],
         'l5_pack_count' => $l5PackCount,
         'api_calls_24h' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM api_access_logs WHERE created_at >= :since', [':since' => $since]),
         'api_failed_24h' => hub_dash_scalar($db, 'SELECT COUNT(*) FROM api_access_logs WHERE ok = 0 AND created_at >= :since', [':since' => $since]),
@@ -160,6 +185,8 @@ hub_admin_header('儀表板', $user);
     <div class="hub-card-grid">
         <article class="hub-card"><h3>服務總數</h3><div class="dash-number"><?= (int)$control['services_total'] ?></div></article>
         <article class="hub-card"><h3>執行中</h3><div class="dash-number ok"><?= (int)$control['services_running'] ?></div><p class="muted">Services running</p></article>
+        <article class="hub-card"><h3>健康正常</h3><div class="dash-number ok"><?= (int)$control['services_health_ok'] ?></div></article>
+        <article class="hub-card"><h3>健康異常 / 未檢查</h3><div class="dash-number bad"><?= (int)$control['services_health_attention'] ?></div></article>
         <article class="hub-card"><h3>已停止</h3><div class="dash-number"><?= (int)$control['services_stopped'] ?></div><p class="muted">Services stopped</p></article>
         <article class="hub-card"><h3>已停用</h3><div class="dash-number bad"><?= (int)$control['services_disabled'] ?></div><p class="muted">Services disabled</p></article>
         <article class="hub-card"><h3>L5 Pack 數</h3><div class="dash-number"><?= (int)$control['l5_pack_count'] ?></div></article>
@@ -302,6 +329,8 @@ hub_admin_header('儀表板', $user);
                 Models: <?= hub_h((string)($storage['models_dir'] ?? 'N/A')) ?>
             </p>
             <p class="muted">
+                / disk free: <?= hub_h(hub_dash_gb_value($host['disk_root']['free_gb'] ?? null)) ?> /
+                <?= hub_h(hub_dash_gb_value($host['disk_root']['total_gb'] ?? null)) ?>　
                 Docker root free: <?= hub_h(hub_dash_gb_value($docker['root_free_gb'] ?? null)) ?>　
                 Models Root free: <?= hub_h(hub_dash_gb_value($storage['models_free_gb'] ?? null)) ?> /
                 <?= hub_h(hub_dash_gb_value($storage['models_total_gb'] ?? null)) ?>
