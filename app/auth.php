@@ -212,6 +212,39 @@ function hub_user_admin_update_error(PDO $db, int $userId, array $changes): ?str
     return null;
 }
 
+function hub_count_enabled_system_admins(PDO $db): int
+{
+    return (int)$db->query("SELECT COUNT(*) FROM users WHERE role = 'system_admin' AND is_enabled = 1")->fetchColumn();
+}
+
+function hub_can_modify_user_role(PDO $db, int $userId, string $newRole): ?string
+{
+    return hub_user_admin_update_error($db, $userId, ['role' => $newRole]);
+}
+
+function hub_can_disable_user(PDO $db, int $userId): ?string
+{
+    return hub_user_admin_update_error($db, $userId, ['is_enabled' => 0]);
+}
+
+function hub_can_delete_user(PDO $db, int $userId): ?string
+{
+    $stmt = $db->prepare('SELECT role, is_protected FROM users WHERE id = :id');
+    $stmt->execute([':id' => $userId]);
+    $user = $stmt->fetch();
+    if (!$user) {
+        return '找不到帳號。';
+    }
+    if ((int)$user['is_protected'] === 1) {
+        return '受保護 admin 帳號不可刪除。';
+    }
+    if ((string)$user['role'] === 'system_admin' && hub_count_enabled_system_admins($db) <= 1) {
+        return '不可刪除最後一個啟用中的 system_admin。';
+    }
+
+    return null;
+}
+
 function hub_csrf_token(): string
 {
     hub_start_session();

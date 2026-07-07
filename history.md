@@ -1753,3 +1753,34 @@ Skipped:
 - billing / subscription.
 - quota enforcement.
 - organization/team hierarchy.
+
+## PhaseAuth-1A.1 RBAC Hardening Audit
+
+Hardened and tested the PhaseAuth-1A role boundary.
+
+Added:
+
+- `tests/test_phase_auth1a_hardening.php`
+- `hub_count_enabled_system_admins()`
+- `hub_can_modify_user_role()`
+- `hub_can_disable_user()`
+- `hub_can_delete_user()`
+
+Implemented:
+
+- Direct `system_admin` guard on legacy `admin/api_access_logs.php`.
+- Customer nav label aligned to "我的用量" while keeping "用量統計" compatibility text.
+- Source-level guard audit for admin-only GET pages.
+- Source-level guard audit for admin-only POST action pages.
+- Command job enqueue guard audit.
+- Protected admin delete / disable / downgrade guard coverage.
+- Disabled user login rejection and `last_login_at` update coverage.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS with 76 tests.
+
+Skipped:
+
+- New customer portal features.
+- Registration / forgot password / OAuth / billing / quota.

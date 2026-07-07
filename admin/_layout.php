@@ -81,7 +81,7 @@ function hub_admin_header(string $title, array $user): void
             <a href="my_services.php">我的服務</a>
             <a href="my_tokens.php">我的 Token</a>
             <a href="my_ip_whitelist.php">IP 白名單</a>
-            <a href="my_usage.php">用量統計</a>
+            <a href="my_usage.php" title="用量統計">我的用量</a>
             <a href="my_profile.php">帳號資料</a>
             <a href="change_password.php">變更密碼</a>
             <a href="playground.php">API 測試場</a>
