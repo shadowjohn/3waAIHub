@@ -6,10 +6,12 @@
   "category": "demo",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L1-api-mock",
+  "runtime_level": "L5-benchmark-ready",
+  "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
+  "role": "reference",
   "default_mode": "hello",
-  "description": "Minimal hello service for 3waAIHub smoke tests.",
+  "description": "Minimal L5 reference service for 3waAIHub smoke tests.",
   "gpu_required": false,
   "runtime": {
     "kind": "docker",
@@ -22,6 +24,48 @@
     "methods": ["GET"],
     "timeout_sec": 10,
     "max_upload_mb": 1
+  },
+  "l5_contract": {
+    "endpoint": "/",
+    "method": "GET",
+    "content_type": "",
+    "input": {
+      "fields": [
+        {
+          "name": "mode",
+          "type": "query",
+          "required": true,
+          "default": "hello"
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "service", "message"]
+    },
+    "errors": [
+      "unknown_mode",
+      "service_disabled",
+      "service_unavailable",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 10,
+      "max_upload_mb": 1,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "hello_api",
+          "name": "Hello API reference smoke",
+          "type": "api",
+          "mode": "hello",
+          "method": "GET",
+          "expected_keys": ["ok", "service", "message"]
+        }
+      ]
+    }
   },
   "hardware": {
     "gpu_required": false,
@@ -75,7 +119,7 @@
     "compose_project": "3waaihub_hello"
   },
   "capabilities": {
-    "benchmark_supported": false,
+    "benchmark_supported": true,
     "supports_hot_reload": false
   }
 }

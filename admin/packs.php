@@ -61,6 +61,9 @@ hub_admin_header('HubPack', $user);
                 <td><?= hub_h((string)($manifest['execution_type'] ?? '')) ?></td>
                 <td>
                     <code><?= hub_h((string)($manifest['runtime_level'] ?? '')) ?></code><br>
+                    <?php if (($manifest['role'] ?? '') === 'reference'): ?>
+                        <span class="ok">Reference Pack</span><br>
+                    <?php endif; ?>
                     <span class="<?= !empty($manifest['runtime_ready']) ? 'ok' : 'bad' ?>"><?= !empty($manifest['runtime_ready']) ? 'ready' : 'not ready' ?></span>
                 </td>
                 <td><?= !empty($manifest['hardware']['gpu_required']) ? '需要' : '不需要' ?></td>

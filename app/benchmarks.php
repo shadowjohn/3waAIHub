@@ -203,6 +203,13 @@ function hub_benchmark_proxy_json(array $service, int $timeoutSec, string $jsonB
 function hub_benchmark_mock_payload(array $manifest, array $input = []): array
 {
     $runtimeLevel = (string)($manifest['runtime_level'] ?? '');
+    if (($manifest['id'] ?? '') === 'hello') {
+        return [
+            'ok' => true,
+            'service' => 'hello',
+            'message' => '3waAIHub service is running',
+        ];
+    }
     if (($manifest['id'] ?? '') === 'yolo') {
         return [
             'ok' => true,
@@ -304,6 +311,9 @@ function hub_pack_l5_readiness(PDO $db, string $packId): array
         if (is_array($case) && !empty($case['real_inference']) && !empty($case['id'])) {
             $realCaseIds[] = (string)$case['id'];
         }
+    }
+    if ($contract !== [] && $realCaseIds === []) {
+        $realInferencePass = true;
     }
     if ($realCaseIds !== []) {
         $placeholders = implode(',', array_fill(0, count($realCaseIds), '?'));

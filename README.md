@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 3waAIHub Local 是一個本機 AI 服務管理入口。目標是讓一台新主機安裝後，可以用 SQLite 管理服務、用後台排程啟停 Docker 服務，並透過 `api.php` 對外提供 API。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`ocr-ppocrv5` / `yolo` / `translate-gemma12b` L5 benchmark-ready Pack、`sam3` L4a model-present smoke adapter，以及 `whisper-asr` L3 storage-mount Pack。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`hello` L5 reference Pack、`ocr-ppocrv5` / `yolo` / `translate-gemma12b` L5 benchmark-ready Pack、`sam3` L4a model-present smoke adapter，以及 `whisper-asr` L3 storage-mount Pack。
 
 ## 功能
 
@@ -345,6 +345,7 @@ Benchmark skeleton：
 php /DATA/3waAIHub/scripts/benchmark.php --case=host_smoke
 php /DATA/3waAIHub/scripts/benchmark.php --case=pack_catalog_scan
 php /DATA/3waAIHub/scripts/benchmark.php --case=hello_api
+php /DATA/3waAIHub/scripts/benchmark.php --pack=hello --case=hello_api
 php /DATA/3waAIHub/scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image
 php /DATA/3waAIHub/scripts/benchmark.php --service=ocr-main --case=ocr_real_image
 php /DATA/3waAIHub/scripts/benchmark.php --pack=yolo --case=yolo_mock_image
@@ -356,6 +357,7 @@ php /DATA/3waAIHub/scripts/benchmark.php --service=yolo-main --case=yolo_real_im
 ```text
 http://localhost/3waAIHub/admin/benchmarks.php
 http://localhost/3waAIHub/admin/api_docs.php
+http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=hello
 http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=ocr-ppocrv5
 http://localhost/3waAIHub/admin/pack_readiness.php?pack_id=yolo
 ```
@@ -415,6 +417,16 @@ http://localhost/3waAIHub/admin/packs.php
 - `yolo`
 - `sam3`
 - `whisper-asr`
+
+### hello Reference Pack
+
+`hello` 目前是 L5 `benchmark-ready` reference Pack：
+
+- `runtime_level=L5-benchmark-ready`
+- `target_level=L5-benchmark-ready`
+- Pack manifest 宣告 `l5_contract`
+- `hello_api` benchmark 可驗最小 sync API contract
+- Pack Readiness 在 `hello_api` PASS 後可顯示 11/11
 
 ### ocr-ppocrv5 Runtime Level
 

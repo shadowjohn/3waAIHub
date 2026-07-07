@@ -57,7 +57,7 @@ hub_admin_header('API Docs', $user);
             }
         }
         ?>
-        <h3><?= hub_h((string)($item['pack']['manifest']['name'] ?? $packId)) ?></h3>
+        <h3><?= hub_h((string)($item['pack']['manifest']['name'] ?? $packId)) ?><?= (($item['pack']['manifest']['role'] ?? '') === 'reference') ? ' / Reference Pack' : '' ?></h3>
         <table>
             <tr><th>Mode</th><td><code><?= hub_h($mode) ?></code></td></tr>
             <tr><th>Method</th><td><code><?= hub_h($method) ?></code></td></tr>
@@ -67,7 +67,10 @@ hub_admin_header('API Docs', $user);
             <tr><th>Output</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['output'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
             <tr><th>Errors</th><td><code><?= hub_h(implode(', ', array_map('strval', $contract['errors'] ?? []))) ?></code></td></tr>
         </table>
-        <?php if ($contentType === 'application/json'): ?>
+        <?php if ($method === 'GET'): ?>
+        <pre>curl "http://localhost/3waAIHub/<?= hub_h($endpoint) ?>" \
+  -H "Authorization: Bearer 3wa_live_xxx"</pre>
+        <?php elseif ($contentType === 'application/json'): ?>
         <pre>curl -X <?= hub_h($method) ?> "http://localhost/3waAIHub/<?= hub_h($endpoint) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \

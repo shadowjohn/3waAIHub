@@ -23,6 +23,8 @@ php scripts/token_api_smoke.php
 
 ## GET hello
 
+Status: Hello L5 Reference Pack. 這是最小 sync API contract 範本。
+
 ```bash
 curl "http://localhost/3waAIHub/api.php?mode=hello"
 ```
@@ -35,6 +37,12 @@ Response:
   "service": "hello",
   "message": "3waAIHub service is running"
 }
+```
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --pack=hello --case=hello_api
 ```
 
 ## POST OCR

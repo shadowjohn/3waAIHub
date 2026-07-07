@@ -1,5 +1,26 @@
 # 3waAIHub History
 
+## PhaseM-0 Hello L5 Reference Pack
+
+Promoted `hello` to the minimal L5 reference HubPack.
+
+Implemented:
+
+- `runtime_level = L5-benchmark-ready`.
+- `target_level = L5-benchmark-ready`.
+- `role = reference`.
+- Added `l5_contract` for `GET /`.
+- Added `hello_api` L5 benchmark case.
+- Pack Readiness can report `hello` as 11/11 after `hello_api` PASS.
+- `admin/packs.php` marks reference packs.
+- `admin/api_docs.php` renders GET contract examples without fake upload fields.
+
+Skipped:
+
+- Docker runtime changes.
+- New features.
+- GPU/model/storage behavior.
+
 ## PhaseM-3A Whisper ASR L3 Storage Mount
 
 Added `whisper-asr` as the first audio-to-text HubPack.

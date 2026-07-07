@@ -19,6 +19,23 @@ hub_test('catalog and required packs are readable', function (): void {
         }
     }
 
+    $hello = hub_get_pack('hello')['manifest'];
+    hub_test_assert($hello['runtime_level'] === 'L5-benchmark-ready', 'Hello runtime level mismatch');
+    hub_test_assert(($hello['target_level'] ?? '') === 'L5-benchmark-ready', 'Hello target level mismatch');
+    hub_test_assert(($hello['role'] ?? '') === 'reference', 'Hello must be marked reference');
+    $helloContract = $hello['l5_contract'] ?? [];
+    hub_test_assert(is_array($helloContract), 'Hello l5_contract missing');
+    foreach (['endpoint', 'method', 'content_type', 'input', 'output', 'errors', 'limits', 'benchmark'] as $field) {
+        hub_test_assert(array_key_exists($field, $helloContract), 'Hello l5_contract missing ' . $field);
+    }
+    hub_test_assert(($helloContract['endpoint'] ?? '') === '/', 'Hello contract endpoint mismatch');
+    hub_test_assert(($helloContract['method'] ?? '') === 'GET', 'Hello contract method mismatch');
+    foreach (['ok', 'service', 'message'] as $key) {
+        hub_test_assert(in_array($key, $helloContract['output']['required_keys'] ?? [], true), 'Hello contract output missing ' . $key);
+    }
+    $helloBenchmarkCases = $helloContract['benchmark']['cases'] ?? [];
+    hub_test_assert(in_array('hello_api', array_column($helloBenchmarkCases, 'id'), true), 'Hello benchmark case missing');
+
     $ocr = hub_get_pack('ocr-ppocrv5')['manifest'];
     hub_test_assert($ocr['runtime_level'] === 'L5-benchmark-ready', 'OCR runtime level mismatch');
     hub_test_assert($ocr['runtime_ready'] === true, 'OCR runtime ready mismatch');

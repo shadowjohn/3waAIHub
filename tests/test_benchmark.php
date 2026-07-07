@@ -8,6 +8,20 @@ hub_test('benchmark skeleton records pack catalog scan', function (): void {
     hub_test_assert((int)$db->query('SELECT COUNT(*) FROM benchmark_runs')->fetchColumn() === 1, 'benchmark run was not recorded');
 });
 
+hub_test('Hello L5 reference contract readiness and benchmark pass', function (): void {
+    $db = hub_test_reset_db();
+    $contract = hub_pack_l5_contract(hub_get_pack('hello')['manifest']);
+    hub_test_assert(hub_l5_benchmark_case($contract, 'hello_api') !== null, 'hello_api l5 benchmark case missing');
+
+    $result = hub_run_benchmark_case($db, 'hello_api', 'hello');
+    hub_test_assert($result['status'] === 'pass', 'hello_api L5 benchmark did not pass');
+    hub_test_assert(($result['result']['expected_keys_pass'] ?? false) === true, 'Hello expected keys check failed');
+
+    $readiness = hub_pack_l5_readiness($db, 'hello');
+    hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'Hello readiness runtime mismatch');
+    hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'Hello readiness must be fully green');
+});
+
 hub_test('L5 OCR contract benchmark records expected key check', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'ocr-ppocrv5', [

@@ -5,7 +5,7 @@ hub_test('api examples documentation exists', function (): void {
     $path = HUB_ROOT . '/docs/api_examples.md';
     hub_test_assert(is_file($path), 'docs/api_examples.md missing');
     $docs = (string)file_get_contents($path);
-    foreach (['mode=hello', 'mode=ocr', 'mode=translate', 'unknown mode'] as $needle) {
+    foreach (['mode=hello', 'mode=ocr', 'mode=translate', 'unknown mode', 'Hello L5 Reference Pack'] as $needle) {
         hub_test_assert(str_contains($docs, $needle), 'api docs missing ' . $needle);
     }
     hub_test_assert(str_contains($docs, 'real_inference'), 'api docs missing real_inference');
@@ -19,6 +19,7 @@ hub_test('api examples documentation exists', function (): void {
     hub_test_assert(is_file(HUB_ROOT . '/admin/pack_readiness.php'), 'pack readiness page missing');
     $apiDocsPage = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
     hub_test_assert(str_contains($apiDocsPage, 'hub_pack_api_contracts'), 'admin API docs must read pack contracts');
+    hub_test_assert(str_contains($apiDocsPage, 'Reference Pack'), 'admin API docs must show hello reference pack');
     hub_test_assert(str_contains($apiDocsPage, 'Mock mode'), 'admin API docs must show OCR mock mode');
     hub_test_assert(str_contains($apiDocsPage, 'Real inference mode'), 'admin API docs must show OCR real inference mode');
     hub_test_assert(str_contains($apiDocsPage, 'mode=translate'), 'admin API docs must show translate mode');
