@@ -146,13 +146,13 @@ Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `YOLO_REAL_INFERENCE
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
   -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.jpg"
+  -F "image=@packs/yolo/demo/camera_cat.png"
 ```
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo" \
   -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.jpg" \
+  -F "image=@packs/yolo/demo/camera_cat.png" \
   -F "real_inference=1"
 ```
 
@@ -163,14 +163,14 @@ Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
   -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.png" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto"
 ```
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
   -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.png" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto" \
   -F "real_inference=1"
 ```

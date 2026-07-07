@@ -81,7 +81,7 @@
           "type": "api",
           "mode": "yolo",
           "method": "POST",
-          "fixture": "packs/yolo/demo/sample.jpg",
+          "fixture": "packs/yolo/demo/camera_cat.png",
           "expected_keys": ["ok", "detections"]
         },
         {
@@ -90,7 +90,7 @@
           "type": "api",
           "mode": "yolo",
           "method": "POST",
-          "fixture": "packs/yolo/demo/real_sample.jpg",
+          "fixture": "packs/yolo/demo/camera_cat.png",
           "expected_keys": ["ok", "detections"],
           "real_inference": true
         }

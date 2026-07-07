@@ -88,7 +88,7 @@
           "type": "api",
           "mode": "sam3",
           "method": "POST",
-          "fixture": "packs/sam3/demo/sample.png",
+          "fixture": "packs/sam3/demo/camera_cat.png",
           "expected_keys": ["ok", "mock", "runtime_level", "prompt_type", "masks", "elapsed_ms"],
           "expected_mock": true
         },
@@ -98,7 +98,7 @@
           "type": "api",
           "mode": "sam3",
           "method": "POST",
-          "fixture": "packs/sam3/demo/sample.png",
+          "fixture": "packs/sam3/demo/camera_cat.png",
           "expected_keys": ["ok", "mock", "runtime_level", "model", "prompt_type", "masks", "elapsed_ms"],
           "expected_mock": false,
           "expected_elapsed_ms_positive": true,

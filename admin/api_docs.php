@@ -134,12 +134,12 @@ hub_admin_header('API Docs', $user);
     <h3>Mock mode</h3>
     <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
   -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.png" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto"</pre>
     <h3>Real inference mode</h3>
     <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
   -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.png" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto" \
   -F "real_inference=1"</pre>
 </section>

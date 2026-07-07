@@ -12,6 +12,10 @@ Implemented:
 - Benchmark contract checks mask list, positive elapsed time, and model checkpoint presence without asserting mask count.
 - API Docs and API examples now include SAM3 mock and real curl examples.
 
+Updated:
+
+- SAM3 and YOLO benchmark fixtures now use `camera_cat.png`, a real 1280x720 camera frame.
+
 Skipped:
 
 - Mask PNG artifact.
