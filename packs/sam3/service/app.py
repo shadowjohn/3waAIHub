@@ -9,10 +9,11 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 
 app = FastAPI(title="3waAIHub SAM3")
+MODEL_EXTENSIONS = {".pt", ".pth", ".safetensors", ".ckpt"}
 
 
 def runtime_level() -> str:
-    return "L3-storage-mount"
+    return "L4a-model-present-smoke"
 
 
 def env_enabled(value: str | None) -> bool:
@@ -88,23 +89,118 @@ def storage_status() -> tuple[dict[str, Any], list[str]]:
     return storage, errors
 
 
+def is_path_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        return True
+    except ValueError:
+        return False
+
+
+def safe_checkpoint_path(raw: str, model_root: Path) -> tuple[Path | None, str]:
+    value = raw.strip()
+    if value == "":
+        return None, "scan"
+    if "\x00" in value:
+        return None, "invalid_checkpoint_path"
+
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = model_root / candidate
+    if not is_path_under(candidate, model_root):
+        return None, "invalid_checkpoint_path"
+
+    return candidate, "SAM3_CHECKPOINT"
+
+
+def is_safe_model_file(path: Path, model_root: Path) -> bool:
+    if path.suffix.lower() not in MODEL_EXTENSIONS or path.is_dir():
+        return False
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(model_root.resolve(strict=True))
+    except (OSError, ValueError):
+        return False
+
+    return path.is_file()
+
+
+def model_candidates(model_root: Path) -> list[Path]:
+    candidates: list[Path] = []
+    if not model_root.is_dir():
+        return candidates
+
+    for current_root, dirs, files in os.walk(model_root):
+        root_path = Path(current_root)
+        dirs[:] = [name for name in dirs if not (root_path / name).is_symlink()]
+        for filename in files:
+            candidate = root_path / filename
+            if is_safe_model_file(candidate, model_root):
+                candidates.append(candidate)
+
+    return sorted(candidates, key=lambda path: str(path))
+
+
+def model_status() -> dict[str, Any]:
+    model_root = Path(os.getenv("SAM3_MODEL_DIR", "/models/sam3"))
+    raw_checkpoint = os.getenv("SAM3_CHECKPOINT", "")
+    candidates = model_candidates(model_root)
+    checkpoint, source = safe_checkpoint_path(raw_checkpoint, model_root)
+
+    error = ""
+    if source == "invalid_checkpoint_path":
+        error = "invalid_checkpoint_path"
+        checkpoint = None
+    elif checkpoint is not None and is_safe_model_file(checkpoint, model_root):
+        return {
+            "present": True,
+            "checkpoint": str(checkpoint.resolve(strict=True)),
+            "source": source,
+            "required_for_real_inference": True,
+            "candidates_count": len(candidates),
+        }
+    elif checkpoint is None and candidates:
+        return {
+            "present": True,
+            "checkpoint": str(candidates[0].resolve(strict=True)),
+            "source": "scan",
+            "required_for_real_inference": True,
+            "candidates_count": len(candidates),
+        }
+
+    status: dict[str, Any] = {
+        "present": False,
+        "checkpoint": str(checkpoint) if checkpoint is not None else "",
+        "source": source,
+        "required_for_real_inference": True,
+        "candidates_count": len(candidates),
+    }
+    if error:
+        status["error"] = error
+
+    return status
+
+
 @app.get("/health")
 def health() -> dict[str, Any]:
     storage, errors = storage_status()
-    checkpoint = os.getenv("SAM3_CHECKPOINT", "")
+    model = model_status()
+    warnings = []
+    if not model["present"]:
+        warnings.append("model_not_present")
+    if "error" in model:
+        warnings.append((str(model["error"])))
+
     return {
         "ok": True,
         "service": "sam3",
-        "ready": not errors,
+        "ready": not errors and bool(model["present"]),
         "runtime_level": runtime_level(),
         "real_inference": env_enabled(os.getenv("SAM3_REAL_INFERENCE")),
         "storage": storage,
         "gpu": {"checked": False},
-        "model": {
-            "present": bool(checkpoint),
-            "checkpoint": checkpoint,
-            "required_for_this_level": False,
-        },
+        "model": model,
+        "warnings": warnings,
         "errors": errors,
     }
 

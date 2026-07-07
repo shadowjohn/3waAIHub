@@ -53,23 +53,26 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             $manifest = hub_get_pack('sam3')['manifest'];
             $requirements = (string)file_get_contents($base . '/requirements.txt');
             $dockerfile = (string)file_get_contents($base . '/Dockerfile');
-            hub_test_assert(($manifest['runtime_level'] ?? '') === 'L3-storage-mount', 'sam3 runtime_level must be L3-storage-mount');
+            hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4a-model-present-smoke', 'sam3 runtime_level must be L4a-model-present-smoke');
             hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'sam3 target_level must be L5-benchmark-ready');
             hub_test_assert(($manifest['category'] ?? '') === 'vision', 'sam3 category must be vision');
             hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/segment/image', 'sam3 gateway endpoint mismatch');
             hub_test_assert(is_file($base . '/smoke.py'), 'sam3 service missing smoke.py');
             hub_test_assert(is_file($base . '/storage_smoke.py'), 'sam3 service missing storage_smoke.py');
+            hub_test_assert(is_file($base . '/model_smoke.py'), 'sam3 service missing model_smoke.py');
             foreach (['fastapi', 'python-multipart', 'pillow', 'numpy', 'requests'] as $needle) {
                 hub_test_assert(str_contains($requirements, $needle), 'sam3 requirements missing ' . $needle);
             }
-            hub_test_assert(!str_contains($requirements, 'ultralytics'), 'sam3 L3 requirements must not depend on Ultralytics yet');
+            hub_test_assert(!str_contains($requirements, 'ultralytics'), 'sam3 L4a requirements must not depend on Ultralytics yet');
             hub_test_assert(str_contains($dockerfile, 'python3 /app/smoke.py'), 'sam3 Dockerfile must run smoke.py at build time');
             hub_test_assert(str_contains($dockerfile, '/tmp/home'), 'sam3 Dockerfile build smoke must use temp HOME');
-            hub_test_assert(str_contains($app, 'return "L3-storage-mount"'), 'sam3 app must expose L3 runtime_level');
+            hub_test_assert(str_contains($app, 'return "L4a-model-present-smoke"'), 'sam3 app must expose L4a runtime_level');
             hub_test_assert(str_contains($app, '"storage"'), 'sam3 health must report storage');
-            hub_test_assert(str_contains($app, 'runtime_not_ready'), 'sam3 real inference must return runtime_not_ready at L3');
+            hub_test_assert(str_contains($app, '"model": model'), 'sam3 health must report model status');
+            hub_test_assert(str_contains($app, 'model_not_present'), 'sam3 health must warn when model is missing');
+            hub_test_assert(str_contains($app, 'runtime_not_ready'), 'sam3 real inference must return runtime_not_ready at L4a');
             foreach (['SAM(', 'YOLO(', 'predict', 'download'] as $needle) {
-                hub_test_assert(!str_contains($app, $needle), 'sam3 L3 app must not initialize model or infer: ' . $needle);
+                hub_test_assert(!str_contains($app, $needle), 'sam3 L4a app must not initialize model or infer: ' . $needle);
             }
 
             $smoke = (string)file_get_contents($base . '/smoke.py');
@@ -86,6 +89,14 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             }
             foreach (['SAM(', 'YOLO(', 'predict', 'download', 'inference'] as $needle) {
                 hub_test_assert(!str_contains($storageSmoke, $needle), 'sam3 storage_smoke.py must not initialize model or infer: ' . $needle);
+            }
+
+            $modelSmoke = (string)file_get_contents($base . '/model_smoke.py');
+            foreach (['SAM3_CHECKPOINT', '/models/sam3', '.safetensors', 'candidates_count'] as $needle) {
+                hub_test_assert(str_contains($modelSmoke, $needle), 'sam3 model_smoke.py missing ' . $needle);
+            }
+            foreach (['torch', 'SAM(', 'predict', 'download', 'inference'] as $needle) {
+                hub_test_assert(!str_contains($modelSmoke, $needle), 'sam3 model_smoke.py must not import or infer: ' . $needle);
             }
         }
     }
@@ -134,6 +145,7 @@ hub_test('YOLO and SAM3 service instances generate GPU model mounts', function (
         } else {
             hub_test_assert(str_contains($compose, 'gpus: all'), $installed['service']['service_key'] . ' compose must request GPU');
             foreach ([
+                'SAM3_CHECKPOINT=',
                 'SAM3_MODEL_DIR=/models/sam3',
                 'SAM3_CACHE_DIR=/cache/sam3',
                 'SAM3_SERVICE_DATA_DIR=/data/service',
@@ -155,7 +167,7 @@ hub_test('YOLO and SAM3 service instances generate GPU model mounts', function (
     }
 });
 
-hub_test('SAM3 model selector and gateway mode stay mock at L3', function (): void {
+hub_test('SAM3 model selector and gateway mode stay mock at L4a', function (): void {
     $db = hub_test_reset_db();
     $root = hub_test_models_dir();
     if (!is_dir($root . '/sam3')) {
@@ -187,10 +199,34 @@ hub_test('SAM3 model selector and gateway mode stay mock at L3', function (): vo
         return hub_gateway_json(200, [
             'ok' => true,
             'mock' => true,
-            'runtime_level' => 'L3-storage-mount',
+            'runtime_level' => 'L4a-model-present-smoke',
             'masks' => [],
             'boxes' => [],
         ]);
     });
     hub_test_assert($response['status'] === 200, 'SAM3 gateway mock should pass');
+});
+
+hub_test('SAM3 model smoke rejects traversal and scans checkpoints', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_sam3_model_smoke_' . getmypid();
+    $modelDir = $root . '/sam3';
+    if (!is_dir($modelDir . '/checkpoints') && !mkdir($modelDir . '/checkpoints', 0775, true) && !is_dir($modelDir . '/checkpoints')) {
+        throw new RuntimeException('Cannot create SAM3 test model dir.');
+    }
+    file_put_contents($root . '/outside.pt', 'outside');
+    file_put_contents($modelDir . '/checkpoints/sam3-smoke.pt', 'checkpoint');
+
+    $serviceDir = HUB_ROOT . '/packs/sam3/service';
+    $badOutput = [];
+    $badExit = 0;
+    exec('cd ' . escapeshellarg($serviceDir) . ' && SAM3_MODEL_DIR=' . escapeshellarg($modelDir) . ' SAM3_CHECKPOINT=' . escapeshellarg('../outside.pt') . ' python3 model_smoke.py', $badOutput, $badExit);
+    hub_test_assert($badExit === 2, 'SAM3 model_smoke must reject traversal checkpoint');
+
+    $scanOutput = [];
+    $scanExit = 0;
+    exec('cd ' . escapeshellarg($serviceDir) . ' && SAM3_MODEL_DIR=' . escapeshellarg($modelDir) . ' SAM3_CHECKPOINT= python3 model_smoke.py', $scanOutput, $scanExit);
+    $payload = json_decode(implode("\n", $scanOutput), true);
+    hub_test_assert($scanExit === 0, 'SAM3 model_smoke scan must pass when checkpoint exists');
+    hub_test_assert(is_array($payload) && ($payload['present'] ?? false) === true, 'SAM3 model_smoke must report present model');
+    hub_test_assert(str_ends_with((string)($payload['checkpoint'] ?? ''), 'checkpoints/sam3-smoke.pt'), 'SAM3 model_smoke checkpoint mismatch');
 });

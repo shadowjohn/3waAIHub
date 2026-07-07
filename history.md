@@ -1,5 +1,42 @@
 # 3waAIHub History
 
+## PhaseM-2D-L4a SAM3 Model Present Smoke
+
+Advanced `sam3` from L3 storage mount to L4a model-present smoke.
+
+Implemented:
+
+- `runtime_level = L4a-model-present-smoke`.
+- `/health` model-present section with `present`, `checkpoint`, `source`, and `candidates_count`.
+- Missing model reports `ready=false` with `model_not_present` warning.
+- Safe `SAM3_CHECKPOINT` resolution under `/models/sam3` only.
+- Recursive checkpoint scan for `.pt`, `.pth`, `.safetensors`, and `.ckpt`.
+- `model_smoke.py` for checkpoint presence validation without torch/SAM3 import.
+- Docker image now copies `model_smoke.py`.
+
+Verified:
+
+- `sam3-main` Docker build PASS.
+- `sam3-main` start PASS.
+- `GET /health` PASS with model present from `/models/sam3/sam3-smoke.pt`.
+- `model_smoke.py` PASS.
+- Direct `/segment/image` mock PASS.
+- Gateway `api.php?mode=sam3` mock PASS.
+- `real_inference=1` still returns `runtime_not_ready`.
+- `php scripts/run_tests.php` PASS.
+- `php scripts/self_check.php` PASS.
+- `php scripts/token_api_smoke.php` PASS.
+- PHP lint / shell syntax / Python compile / `git diff --check` PASS.
+
+Skipped:
+
+- Checkpoint download.
+- HuggingFace pull.
+- Torch / SAM3 import.
+- Real segmentation.
+- Mask generation.
+- L4b / L5 promotion.
+
 ## PhaseM-2A-GPU OCR GPU Runtime Stabilization
 
 Stabilized `ocr-ppocrv5` CPU/GPU service behavior.

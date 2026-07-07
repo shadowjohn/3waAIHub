@@ -137,7 +137,7 @@ hub_test('catalog and required packs are readable', function (): void {
         }
     }
     $sam3 = hub_get_pack('sam3')['manifest'];
-    hub_test_assert($sam3['runtime_level'] === 'L3-storage-mount', 'SAM3 runtime level mismatch');
+    hub_test_assert($sam3['runtime_level'] === 'L4a-model-present-smoke', 'SAM3 runtime level mismatch');
     hub_test_assert(($sam3['target_level'] ?? '') === 'L5-benchmark-ready', 'SAM3 target level mismatch');
     hub_test_assert($sam3['runtime_ready'] === true, 'SAM3 runtime ready mismatch');
     hub_test_assert(($sam3['category'] ?? '') === 'vision', 'SAM3 category mismatch');
@@ -153,6 +153,9 @@ hub_test('catalog and required packs are readable', function (): void {
         hub_test_assert(isset($sam3Schema[$key]), 'SAM3 settings_schema missing ' . $key);
     }
     hub_test_assert(($sam3Schema['SAM3_CHECKPOINT']['model_selector']['root_subdir'] ?? '') === 'sam3', 'SAM3_CHECKPOINT selector missing');
+    foreach (['.pt', '.pth', '.safetensors', '.ckpt'] as $extension) {
+        hub_test_assert(in_array($extension, $sam3Schema['SAM3_CHECKPOINT']['model_selector']['extensions'] ?? [], true), 'SAM3_CHECKPOINT selector missing ' . $extension);
+    }
 
     $translateSchema = hub_get_pack_settings_schema('translate-gemma12b');
     hub_test_assert(($translateSchema['OLLAMA_MODEL']['model_selector']['type'] ?? '') === 'ollama_tag', 'OLLAMA_MODEL selector missing');
