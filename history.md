@@ -1,5 +1,36 @@
 # 3waAIHub History
 
+## PhaseM-2A-GPU OCR GPU Runtime Stabilization
+
+Stabilized `ocr-ppocrv5` CPU/GPU service behavior.
+
+Implemented:
+
+- Added OCR GPU settings: `OCR_DEVICE`, `GPU_VISIBLE_DEVICES`, `OCR_GPU_FALLBACK_TO_CPU`, `OCR_GPU_REQUIRED`.
+- Split generated compose behavior: CPU OCR instances do not force GPU; `ocr-gpu` style instances request `gpus: all`.
+- Added `/health` GPU diagnostics and requested/effective device reporting.
+- Added `device` to OCR mock and real inference responses.
+- Added `gpu_smoke.py` for Paddle CUDA availability checks without model download or inference.
+- Added benchmark result device fields for L5 OCR contract cases.
+- Regenerated local `ocr-main` / `ocr-gpu` runtime files.
+
+Verified:
+
+- `ocr-gpu` Docker build PASS.
+- `ocr-gpu` start PASS.
+- `GET /health` PASS.
+- Direct `POST /ocr/image` mock PASS.
+- Direct `POST /ocr/image real_inference=1` PASS with CPU fallback.
+- `api.php?mode=ocr_gpu` gateway PASS.
+- `api.php?mode=hello` PASS.
+- `php scripts/run_tests.php` PASS.
+- `php scripts/self_check.php` PASS.
+- `git diff --check` PASS.
+
+Known:
+
+- NVIDIA runtime is visible, but current `paddlepaddle` package is CPU build, so OCR GPU requests fallback to CPU unless `OCR_GPU_REQUIRED=1`.
+
 ## PhaseM-2D SAM3 L3 Storage Mount
 
 Advanced `sam3` from L1 skeleton to L3 storage-mount runtime.

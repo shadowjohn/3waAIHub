@@ -433,11 +433,13 @@ http://localhost/3waAIHub/admin/packs.php
 - `storage_smoke.py` 可在 container 內檢查三個目錄是否存在、可讀、可寫
 - `model_smoke.py` 可手動初始化 PaddleOCR，檢查模型/cache 是否落在掛載目錄，並偵測 `/root` / `/app` 可疑寫入
 - `inference_smoke.py` 可手動驗證單張圖片真 OCR 推論
+- `gpu_smoke.py` 可手動檢查 Paddle CUDA compile/device 狀態，不下載模型、不跑推論
 - Pack manifest 已宣告 `target_level=L5-benchmark-ready` 與 `l5_contract`
 - `ocr_mock_image` benchmark 可驗 API contract required keys
 - `ocr_real_image` benchmark 可驗單張圖片真 OCR 與 blocks contract
 - Pack Readiness 可在兩個 benchmark 都 PASS 後顯示 11/11
-- generated compose 會加入 `gpus: all`
+- 一般 `ocr-main` 不強制 GPU；`ocr-gpu` 這類 service key 才會在 generated compose 加入 `gpus: all`
+- `/health` 會回報 GPU requested / available / effective device；目前預設 `paddlepaddle` 為 CPU build，GPU 不可用時會依 `OCR_GPU_FALLBACK_TO_CPU=1` fallback 到 CPU
 
 ### translate-gemma12b Runtime Level
 

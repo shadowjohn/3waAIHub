@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import tempfile
 import json
 from pathlib import Path
@@ -18,6 +20,75 @@ def runtime_level() -> str:
 
 def env_enabled(value: str | None) -> bool:
     return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def requested_device() -> str:
+    device = str(os.getenv("OCR_DEVICE", "auto")).lower()
+    if device in {"cpu", "gpu"}:
+        return device
+    return "gpu" if env_enabled(os.getenv("OCR_USE_GPU")) else "auto"
+
+
+def paddle_gpu_diagnostics() -> dict[str, Any]:
+    compiled = False
+    device_count = 0
+    error = ""
+    try:
+        import paddle
+
+        compiled = bool(paddle.device.is_compiled_with_cuda())
+        if compiled:
+            device_count = int(paddle.device.cuda.device_count())
+    except Exception as exc:
+        error = str(exc)
+
+    nvidia_smi = False
+    if shutil.which("nvidia-smi"):
+        try:
+            completed = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=2, check=False)
+            nvidia_smi = completed.returncode == 0
+        except Exception:
+            nvidia_smi = False
+
+    diagnostics: dict[str, Any] = {
+        "nvidia_smi": nvidia_smi,
+        "paddle_cuda_compiled": compiled,
+        "paddle_cuda_available": compiled and device_count > 0,
+        "cuda_device_count": device_count,
+    }
+    if error:
+        diagnostics["error"] = error
+
+    return diagnostics
+
+
+def gpu_status() -> dict[str, Any]:
+    requested = requested_device()
+    diagnostics = paddle_gpu_diagnostics()
+    available = bool(diagnostics["paddle_cuda_available"])
+    fallback = env_enabled(os.getenv("OCR_GPU_FALLBACK_TO_CPU", "1"))
+    required = env_enabled(os.getenv("OCR_GPU_REQUIRED", "0"))
+    wants_gpu = requested == "gpu" or (requested == "auto" and env_enabled(os.getenv("OCR_USE_GPU")))
+    effective = "gpu" if wants_gpu and available else "cpu"
+
+    return {
+        "requested": wants_gpu,
+        "available": available,
+        "device": requested,
+        "fallback_to_cpu": fallback,
+        "required": required,
+        "effective_device": effective,
+        "diagnostics": diagnostics,
+    }
+
+
+def device_status() -> dict[str, Any]:
+    gpu = gpu_status()
+    return {
+        "requested": gpu["device"],
+        "effective": gpu["effective_device"],
+        "fallback_to_cpu": gpu["fallback_to_cpu"],
+    }
 
 
 def configure_ocr_env() -> None:
@@ -50,8 +121,11 @@ def paddleocr_init_kwargs(cls: type[Any]) -> dict[str, Any]:
     for key in ["use_doc_orientation_classify", "use_doc_unwarping", "use_textline_orientation", "use_angle_cls"]:
         if key in params:
             kwargs[key] = False
-    if "use_gpu" in params:
-        kwargs["use_gpu"] = env_enabled(os.getenv("OCR_USE_GPU"))
+    effective_device = gpu_status()["effective_device"]
+    if "device" in params:
+        kwargs["device"] = effective_device
+    elif "use_gpu" in params:
+        kwargs["use_gpu"] = effective_device == "gpu"
 
     return kwargs
 
@@ -118,12 +192,21 @@ def storage_status() -> tuple[dict[str, Any], list[str]]:
 @app.get("/health")
 def health() -> dict[str, Any]:
     storage, errors = storage_status()
+    gpu = gpu_status()
+    warnings = []
+    if gpu["requested"] and not gpu["available"] and gpu["fallback_to_cpu"]:
+        warnings.append("gpu_unavailable_fallback_to_cpu")
+    if gpu["required"] and not gpu["available"]:
+        errors.append("gpu_required_but_unavailable")
+
     return {
         "ok": True,
         "service": "ocr-ppocrv5",
         "ready": not errors,
         "runtime_level": runtime_level(),
         "storage": storage,
+        "gpu": gpu,
+        "warnings": warnings,
         "errors": errors,
     }
 
@@ -217,6 +300,7 @@ def run_paddleocr(image_path: Path) -> dict[str, Any]:
         "mock": False,
         "real_inference": True,
         "runtime_level": runtime_level(),
+        "device": device_status(),
     }
 
 
@@ -252,6 +336,7 @@ async def ocr_image(image: UploadFile = File(...), real_inference: str = Form("0
         "blocks": [{"text": text, "bbox": [0, 0, 0, 0], "confidence": 1.0}],
         "mock": True,
         "runtime_level": runtime_level(),
+        "device": device_status(),
         "filename": image.filename,
         "bytes": len(data),
     }

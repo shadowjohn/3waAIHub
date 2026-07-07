@@ -465,10 +465,18 @@ function hub_pack_compose_file(PDO $db, string $serviceKey): string
     return 'data/test_services/' . basename(hub_pack_runtime_base_dir($db)) . '/' . $serviceKey . '/docker-compose.generated.yml';
 }
 
-function hub_pack_requests_gpu(array $manifest): bool
+function hub_service_key_requests_gpu(string $serviceKey): bool
+{
+    return preg_match('/(^|[-_])gpu($|[-_])/', strtolower($serviceKey)) === 1;
+}
+
+function hub_pack_requests_gpu(array $manifest, string $serviceKey = ''): bool
 {
     if (!empty($manifest['hardware']['gpu_required'])) {
         return true;
+    }
+    if (($manifest['id'] ?? '') === 'ocr-ppocrv5') {
+        return hub_service_key_requests_gpu($serviceKey);
     }
 
     foreach (($manifest['env'] ?? []) as $item) {
@@ -512,10 +520,10 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
         . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . (int)$manifest['runtime']['default_internal_port'] . '"' . "\n"
         . "    restart: unless-stopped\n";
 
-    if (hub_pack_requests_gpu($manifest)) {
+    if (hub_pack_requests_gpu($manifest, $serviceKey)) {
         $compose .= "    gpus: all\n"
             . "    environment:\n"
-            . '      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"' . "\n"
+            . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
             . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n";
     }
 

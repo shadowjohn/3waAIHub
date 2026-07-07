@@ -45,7 +45,7 @@
       ]
     },
     "output": {
-      "required_keys": ["ok", "text", "blocks"],
+      "required_keys": ["ok", "text", "blocks", "device"],
       "block_keys": ["text", "bbox", "confidence"]
     },
     "errors": [
@@ -156,6 +156,39 @@
       "restart_required": true
     },
     {
+      "key": "OCR_DEVICE",
+      "label": "OCR device",
+      "type": "select",
+      "default": "auto",
+      "options": ["auto", "cpu", "gpu"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "GPU_VISIBLE_DEVICES",
+      "label": "GPU visible devices",
+      "type": "text",
+      "default": "all",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_GPU_FALLBACK_TO_CPU",
+      "label": "GPU fallback to CPU",
+      "type": "boolean",
+      "default": "1",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_GPU_REQUIRED",
+      "label": "GPU required",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true
+    },
+    {
       "key": "OCR_LANG",
       "label": "OCR language",
       "type": "select",
@@ -177,13 +210,28 @@
   "env": [
     {
       "name": "OCR_USE_GPU",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "GPU_VISIBLE_DEVICES",
+      "default": "all",
+      "required": false
+    },
+    {
+      "name": "OCR_DEVICE",
+      "default": "auto",
+      "required": true
+    },
+    {
+      "name": "OCR_GPU_FALLBACK_TO_CPU",
       "default": "1",
       "required": true
     },
     {
-      "name": "NVIDIA_VISIBLE_DEVICES",
-      "default": "all",
-      "required": false
+      "name": "OCR_GPU_REQUIRED",
+      "default": "0",
+      "required": true
     },
     {
       "name": "OCR_MAX_UPLOAD_MB",

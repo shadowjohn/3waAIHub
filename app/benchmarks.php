@@ -139,6 +139,7 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     if (isset($payload['elapsed_ms']) && (int)$payload['elapsed_ms'] < 0) {
         $contractFailed = true;
     }
+    $device = is_array($payload['device'] ?? null) ? $payload['device'] : [];
     if ($contractFailed) {
         throw new RuntimeException('benchmark contract check failed.');
     }
@@ -155,6 +156,8 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         'detection_count' => $detectionCount,
         'mock' => is_array($payload) ? ($payload['mock'] ?? null) : null,
         'text_length' => is_array($payload) ? strlen((string)($payload['text'] ?? '')) : 0,
+        'requested_device' => (string)($device['requested'] ?? ''),
+        'effective_device' => (string)($device['effective'] ?? ''),
         'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
         'fixture' => (string)($case['fixture'] ?? ''),
     ];
@@ -227,6 +230,7 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
         'blocks' => [['text' => '3waAIHub OCR mock', 'bbox' => [0, 0, 0, 0], 'confidence' => 1.0]],
         'mock' => true,
         'runtime_level' => $runtimeLevel,
+        'device' => ['requested' => 'auto', 'effective' => 'cpu', 'fallback_to_cpu' => true],
     ];
 }
 

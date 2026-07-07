@@ -30,6 +30,8 @@ hub_test('L5 OCR contract benchmark records expected key check', function (): vo
     hub_test_assert($result['status'] === 'pass', 'ocr_mock_image did not pass');
     hub_test_assert(($result['result']['expected_keys_pass'] ?? false) === true, 'expected keys check failed');
     hub_test_assert(($result['result']['runtime_level'] ?? '') === 'L5-benchmark-ready', 'runtime level missing from benchmark');
+    hub_test_assert(($result['result']['requested_device'] ?? '') === 'auto', 'requested device missing from benchmark');
+    hub_test_assert(($result['result']['effective_device'] ?? '') === 'cpu', 'effective device missing from benchmark');
     hub_test_assert((int)$db->query("SELECT COUNT(*) FROM benchmark_runs WHERE benchmark_key = 'ocr_mock_image'")->fetchColumn() === 1, 'OCR benchmark run was not recorded');
 
     $service = hub_get_service_by_key($db, 'ocr-main');

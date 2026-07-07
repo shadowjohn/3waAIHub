@@ -21,11 +21,14 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/storage_smoke.py'), 'OCR storage_smoke.py missing');
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/model_smoke.py'), 'OCR model_smoke.py missing');
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/inference_smoke.py'), 'OCR inference_smoke.py missing');
+    hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/gpu_smoke.py'), 'OCR gpu_smoke.py missing');
 
     $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/Dockerfile');
     hub_test_assert(str_contains($dockerfile, 'nvidia/cuda:12.9.0-cudnn-runtime-ubuntu22.04'), 'OCR GPU mock should use NVIDIA CUDA 12.9 runtime base image');
     hub_test_assert(str_contains($dockerfile, 'python3 -m pip check'), 'Dockerfile must validate Python dependency metadata at build time');
     hub_test_assert(str_contains($dockerfile, 'RUN python3 smoke.py'), 'OCR L4a build must keep dependency smoke.py');
+    hub_test_assert(str_contains($dockerfile, 'gpu_smoke.py'), 'Dockerfile must copy gpu_smoke.py');
+    hub_test_assert(!str_contains($dockerfile, 'RUN python3 gpu_smoke.py'), 'gpu_smoke.py must not run during Docker build');
     hub_test_assert(str_contains($dockerfile, 'model_smoke.py'), 'Dockerfile must copy model_smoke.py');
     hub_test_assert(str_contains($dockerfile, 'PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT=0'), 'Dockerfile must disable PaddleX MKLDNN CPU path');
     hub_test_assert(!str_contains($dockerfile, 'RUN python3 model_smoke.py'), 'model_smoke.py must not run during Docker build');
@@ -39,13 +42,20 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     $app = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/app.py');
     hub_test_assert(str_contains($app, 'return "L5-benchmark-ready"'), 'health must report L5 runtime level');
     hub_test_assert(str_contains($app, '"storage"'), 'health must report storage status');
+    hub_test_assert(str_contains($app, '"gpu": gpu'), 'health must report GPU status');
     hub_test_assert(str_contains($app, '"runtime_level": runtime_level()'), 'OCR mock response must include runtime level');
+    hub_test_assert(str_contains($app, '"device": device_status()'), 'OCR responses must include device status');
     hub_test_assert(str_contains($app, 'OCR_REAL_INFERENCE'), 'OCR app must keep mock fallback toggle');
     hub_test_assert(str_contains($app, 'PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT'), 'OCR app must disable PaddleX MKLDNN CPU path');
 
     $inferenceSmoke = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/inference_smoke.py');
     foreach (['OCR_REAL_INFERENCE', '/ocr/image', 'runtime_level', 'real_inference'] as $needle) {
         hub_test_assert(str_contains($inferenceSmoke, $needle), 'inference_smoke.py missing ' . $needle);
+    }
+
+    $gpuSmoke = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/gpu_smoke.py');
+    foreach (['paddle', 'is_compiled_with_cuda', 'OCR_GPU_REQUIRED'] as $needle) {
+        hub_test_assert(str_contains($gpuSmoke, $needle), 'gpu_smoke.py missing ' . $needle);
     }
 
     $storageSmoke = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/storage_smoke.py');

@@ -81,7 +81,7 @@ function hub_ensure_service_settings(PDO $db, array $service): array
         $stmt->execute([
             ':service_id' => (int)$service['id'],
             ':key' => $key,
-            ':value' => (string)($item['default'] ?? ''),
+            ':value' => hub_service_setting_default($service, $key, $item),
             ':value_type' => (string)$item['type'],
             ':is_secret' => !empty($item['secret']) ? 1 : 0,
             ':restart_required' => !empty($item['restart_required']) ? 1 : 0,
@@ -91,6 +91,21 @@ function hub_ensure_service_settings(PDO $db, array $service): array
     }
 
     return hub_list_service_settings($db, (int)$service['id']);
+}
+
+function hub_service_setting_default(array $service, string $key, array $item): string
+{
+    if ((string)($service['pack_id'] ?? '') === 'ocr-ppocrv5' && hub_service_key_requests_gpu((string)($service['service_key'] ?? ''))) {
+        return match ($key) {
+            'OCR_USE_GPU' => '1',
+            'OCR_DEVICE' => 'gpu',
+            'GPU_VISIBLE_DEVICES' => 'all',
+            'OCR_GPU_FALLBACK_TO_CPU' => '1',
+            default => (string)($item['default'] ?? ''),
+        };
+    }
+
+    return (string)($item['default'] ?? '');
 }
 
 function hub_list_service_settings(PDO $db, int $serviceId): array

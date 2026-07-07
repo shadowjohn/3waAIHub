@@ -24,6 +24,12 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert($ocr['runtime_ready'] === true, 'OCR runtime ready mismatch');
     hub_test_assert(($ocr['target_level'] ?? '') === 'L5-benchmark-ready', 'OCR target level mismatch');
     hub_test_assert($ocr['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
+    $ocrSchema = hub_get_pack_settings_schema('ocr-ppocrv5');
+    foreach (['OCR_USE_GPU', 'OCR_DEVICE', 'GPU_VISIBLE_DEVICES', 'OCR_GPU_FALLBACK_TO_CPU', 'OCR_GPU_REQUIRED'] as $key) {
+        hub_test_assert(isset($ocrSchema[$key]), 'OCR settings_schema missing ' . $key);
+    }
+    hub_test_assert(($ocrSchema['OCR_DEVICE']['default'] ?? '') === 'auto', 'OCR_DEVICE default mismatch');
+    hub_test_assert(in_array('gpu', $ocrSchema['OCR_DEVICE']['options'] ?? [], true), 'OCR_DEVICE must allow gpu');
     $ocrMounts = [];
     foreach ($ocr['storage']['mounts'] as $mount) {
         $ocrMounts[(string)$mount['type']] = (string)$mount['container_path'];
@@ -40,6 +46,7 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(($contract['endpoint'] ?? '') === '/ocr/image', 'OCR contract endpoint mismatch');
     hub_test_assert(($contract['method'] ?? '') === 'POST', 'OCR contract method mismatch');
     hub_test_assert(in_array('ok', $contract['output']['required_keys'] ?? [], true), 'OCR contract output missing ok');
+    hub_test_assert(in_array('device', $contract['output']['required_keys'] ?? [], true), 'OCR contract output missing device');
     $benchmarkCases = $contract['benchmark']['cases'] ?? [];
     hub_test_assert(in_array('ocr_mock_image', array_column($benchmarkCases, 'id'), true), 'OCR mock benchmark case missing');
     hub_test_assert(in_array('ocr_real_image', array_column($benchmarkCases, 'id'), true), 'OCR real benchmark case missing');
