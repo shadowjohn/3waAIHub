@@ -4,11 +4,26 @@ declare(strict_types=1);
 require __DIR__ . '/../app/bootstrap.php';
 require __DIR__ . '/_layout.php';
 
+function hub_api_docs_public_base_url(): string
+{
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
+    $host = (string)($_SERVER['HTTP_HOST'] ?? 'localhost');
+    $adminDir = rtrim(dirname((string)($_SERVER['SCRIPT_NAME'] ?? '/3waAIHub/admin/api_docs.php')), '/');
+    $basePath = preg_replace('#/admin$#', '', $adminDir) ?: '';
+
+    return ($https ? 'https' : 'http') . '://' . $host . $basePath . '/api.php';
+}
+
+function hub_api_docs_mode_url(string $mode): string
+{
+    return hub_api_docs_public_base_url() . '?mode=' . rawurlencode($mode);
+}
+
 $db = hub_db();
 $user = hub_require_login($db);
 $services = hub_list_services($db);
 $contracts = hub_pack_api_contracts();
-$baseUrl = '../api.php';
+$baseUrl = hub_api_docs_public_base_url();
 
 hub_admin_header('API 文件', $user);
 ?>
@@ -20,7 +35,7 @@ hub_admin_header('API 文件', $user);
 <section class="panel">
     <h2>Bearer Token</h2>
     <p class="muted">外部 IP 預設需要 Bearer token；localhost 可由 settings 略過 token。Token 明文只會在建立時顯示一次。</p>
-    <pre>curl "http://localhost/3waAIHub/api.php?mode=hello" \
+    <pre>curl "<?= hub_h(hub_api_docs_mode_url('hello')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx"</pre>
     <p><a class="button" href="api_members.php">API Members</a> <a class="button" href="api_usage.php">API Usage</a></p>
 </section>
@@ -48,6 +63,7 @@ hub_admin_header('API 文件', $user);
         $mode = (string)($item['pack']['manifest']['default_mode'] ?? $packId);
         $method = (string)($contract['method'] ?? 'POST');
         $endpoint = 'api.php?mode=' . $mode;
+        $contractUrl = hub_api_docs_mode_url($mode);
         $contentType = (string)($contract['content_type'] ?? '');
         $jsonExample = [];
         foreach (($contract['benchmark']['cases'] ?? []) as $case) {
@@ -68,15 +84,15 @@ hub_admin_header('API 文件', $user);
             <tr><th>Errors</th><td><code><?= hub_h(implode(', ', array_map('strval', $contract['errors'] ?? []))) ?></code></td></tr>
         </table>
         <?php if ($method === 'GET'): ?>
-        <pre>curl "http://localhost/3waAIHub/<?= hub_h($endpoint) ?>" \
+        <pre>curl "<?= hub_h($contractUrl) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx"</pre>
         <?php elseif ($contentType === 'application/json'): ?>
-        <pre>curl -X <?= hub_h($method) ?> "http://localhost/3waAIHub/<?= hub_h($endpoint) ?>" \
+        <pre>curl -X <?= hub_h($method) ?> "<?= hub_h($contractUrl) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \
   -d '<?= hub_h(json_encode($jsonExample, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>'</pre>
         <?php else: ?>
-        <pre>curl -X <?= hub_h($method) ?> "http://localhost/3waAIHub/<?= hub_h($endpoint) ?>" \
+        <pre>curl -X <?= hub_h($method) ?> "<?= hub_h($contractUrl) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"</pre>
         <?php endif; ?>
@@ -85,7 +101,7 @@ hub_admin_header('API 文件', $user);
 <?php endif; ?>
 <section class="panel">
     <h2>GET hello</h2>
-    <pre>curl "http://localhost/3waAIHub/api.php?mode=hello"</pre>
+    <pre>curl "<?= hub_h(hub_api_docs_mode_url('hello')) ?>"</pre>
     <pre>{
   "ok": true,
   "service": "hello",
@@ -96,11 +112,11 @@ hub_admin_header('API 文件', $user);
     <h2>POST OCR</h2>
     <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code> or service setting <code>OCR_REAL_INFERENCE=1</code>.</p>
     <h3>Mock mode</h3>
-    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
+    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('ocr')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"</pre>
     <h3>Real inference mode</h3>
-    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=ocr" \
+    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('ocr')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png" \
   -F "real_inference=1"</pre>
@@ -109,7 +125,7 @@ hub_admin_header('API 文件', $user);
     <h2>POST Translate</h2>
     <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code>.</p>
     <h3>Mock mode</h3>
-    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -118,7 +134,7 @@ hub_admin_header('API 文件', $user);
     "text": "That was a wonderful time."
   }'</pre>
     <h3>Real inference mode</h3>
-    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
+    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \
   -d '{
@@ -132,12 +148,12 @@ hub_admin_header('API 文件', $user);
     <h2>POST SAM3</h2>
     <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code>.</p>
     <h3>Mock mode</h3>
-    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto"</pre>
     <h3>Real inference mode</h3>
-    <pre>curl -X POST "http://localhost/3waAIHub/api.php?mode=sam3" \
+    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto" \
@@ -145,7 +161,7 @@ hub_admin_header('API 文件', $user);
 </section>
 <section class="panel">
     <h2>Unknown Mode</h2>
-    <pre>curl "http://localhost/3waAIHub/api.php?mode=unknown"</pre>
+    <pre>curl "<?= hub_h(hub_api_docs_mode_url('unknown')) ?>"</pre>
     <pre>{
   "ok": false,
   "error": "unknown_mode",

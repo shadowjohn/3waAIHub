@@ -45,6 +45,8 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     foreach (['hello', 'ocr', 'OCR Main', 'name="image"', 'real_inference', 'api.php?mode=ocr', '<TOKEN>', '服務尚未執行'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered playground missing ' . $needle);
     }
+    hub_test_assert(str_contains($html, '真實推論'), 'real_inference label should be localized');
+    hub_test_assert(str_contains($html, 'name="real_inference" type="checkbox" value="1" checked'), 'real_inference should be checked by default');
 
     $_SERVER['HTTPS'] = 'on';
     $_SERVER['HTTP_HOST'] = 'nature.focusit.tw';

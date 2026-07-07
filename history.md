@@ -1,5 +1,23 @@
 # 3waAIHub History
 
+## PhaseDX-2.3 API Docs Current Host and Real Inference UX
+
+Polished API onboarding examples and Playground defaults.
+
+Implemented:
+
+- `admin/api_docs.php` now generates API example URLs from the current admin request host.
+- API Docs examples no longer hardcode `http://localhost/3waAIHub/...`.
+- Playground `real_inference` checkbox is checked by default.
+- Playground `real_inference` label now displays as `真實推論`.
+- Added regression coverage for API Docs URL generation and Playground default real inference UI.
+
+Skipped:
+
+- Static `docs/api_examples.md` URL rewrite.
+- Gateway/runtime changes.
+- Token/auth behavior changes.
+
 ## PhaseDX-2.2 Playground Local Gateway Execution
 
 Fixed API Playground server-side execution after current-host examples were added.

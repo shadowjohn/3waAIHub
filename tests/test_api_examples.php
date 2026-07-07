@@ -21,11 +21,13 @@ hub_test('api examples documentation exists', function (): void {
     hub_test_assert(is_file(HUB_ROOT . '/admin/pack_readiness.php'), 'pack readiness page missing');
     $apiDocsPage = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
     hub_test_assert(str_contains($apiDocsPage, 'hub_pack_api_contracts'), 'admin API docs must read pack contracts');
+    hub_test_assert(str_contains($apiDocsPage, 'hub_api_docs_mode_url'), 'admin API docs must generate URLs from current host');
+    hub_test_assert(!str_contains($apiDocsPage, 'http://localhost/3waAIHub/api.php'), 'admin API docs must not hardcode localhost API URLs');
     hub_test_assert(str_contains($apiDocsPage, 'Reference Pack'), 'admin API docs must show hello reference pack');
     hub_test_assert(str_contains($apiDocsPage, 'Mock mode'), 'admin API docs must show OCR mock mode');
     hub_test_assert(str_contains($apiDocsPage, 'Real inference mode'), 'admin API docs must show OCR real inference mode');
-    hub_test_assert(str_contains($apiDocsPage, 'mode=translate'), 'admin API docs must show translate mode');
-    hub_test_assert(str_contains($apiDocsPage, 'mode=sam3'), 'admin API docs must show sam3 mode');
+    hub_test_assert(str_contains($apiDocsPage, "hub_api_docs_mode_url('translate')"), 'admin API docs must show translate mode');
+    hub_test_assert(str_contains($apiDocsPage, "hub_api_docs_mode_url('sam3')"), 'admin API docs must show sam3 mode');
     hub_test_assert(str_contains($apiDocsPage, 'Content-Type: application/json'), 'admin API docs must show JSON curl');
     $benchmarkPage = (string)file_get_contents(HUB_ROOT . '/admin/benchmarks.php');
     hub_test_assert(str_contains($benchmarkPage, 'ocr_mock_image'), 'benchmark page must show OCR mock benchmark');

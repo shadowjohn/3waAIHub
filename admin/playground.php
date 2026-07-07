@@ -514,17 +514,17 @@ hub_admin_header('API 測試場', $user);
                 <input name="target_lang" value="zh-TW">
                 <label>text</label>
                 <textarea name="text" rows="5">That was a wonderful time.</textarea>
-                <label><input name="real_inference" type="checkbox" value="1"> real_inference</label>
+                <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
             <?php elseif (in_array($selectedMode, ['ocr', 'yolo'], true)): ?>
                 <label>image</label>
                 <input name="image" type="file" accept="image/*">
-                <label><input name="real_inference" type="checkbox" value="1"> real_inference</label>
+                <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
             <?php elseif ($selectedMode === 'sam3'): ?>
                 <label>image</label>
                 <input name="image" type="file" accept="image/*">
                 <label>prompt_type</label>
                 <input name="prompt_type" value="auto">
-                <label><input name="real_inference" type="checkbox" value="1"> real_inference</label>
+                <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
             <?php else: ?>
                 <p class="muted">hello 使用 GET，不需要欄位。</p>
             <?php endif; ?>
