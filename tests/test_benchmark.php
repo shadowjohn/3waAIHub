@@ -166,3 +166,46 @@ hub_test('L5 SAM3 contract benchmark records mock and real cases', function (): 
     hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'SAM3 readiness must show promoted L5');
     hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'SAM3 readiness must be fully green after real benchmark pass');
 });
+
+hub_test('L5 VoxCPM2 contract benchmark records mock and real cases', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'tts-voxcpm2', [
+        'service_key' => 'voxcpm2-main',
+        'name' => 'VoxCPM2 Main',
+        'mode' => 'tts',
+        'port_mode' => 'manual',
+        'local_port' => 18108,
+        'environment' => 'production',
+        'idempotent' => true,
+    ]);
+
+    $contract = hub_pack_l5_contract(hub_get_pack('tts-voxcpm2')['manifest']);
+    hub_test_assert(hub_l5_benchmark_case($contract, 'tts_mock_wav') !== null, 'tts_mock_wav case missing');
+    $realCase = hub_l5_benchmark_case($contract, 'tts_real_wav');
+    hub_test_assert($realCase !== null, 'tts_real_wav case missing');
+    hub_test_assert(!empty($realCase['real_inference']), 'TTS real benchmark must be marked real_inference');
+
+    $readiness = hub_pack_l5_readiness($db, 'tts-voxcpm2');
+    hub_test_assert($readiness['checks']['has_l5_contract'] === true, 'TTS readiness must see l5_contract');
+    hub_test_assert($readiness['checks']['has_benchmark_cases'] === true, 'TTS readiness must see benchmark cases');
+    hub_test_assert($readiness['checks']['l4b_real_inference_complete'] === true, 'TTS readiness must see L5 runtime level');
+    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === false, 'TTS real benchmark must start pending');
+
+    $mock = hub_run_benchmark_case($db, 'tts_mock_wav', 'tts-voxcpm2');
+    hub_test_assert($mock['status'] === 'pass', 'tts_mock_wav did not pass');
+    hub_test_assert(($mock['result']['expected_keys_pass'] ?? false) === true, 'TTS mock expected keys check failed');
+    hub_test_assert(($mock['result']['mock'] ?? null) === true, 'TTS mock benchmark must stay mock');
+
+    $service = hub_get_service_by_key($db, 'voxcpm2-main');
+    hub_save_benchmark_run($db, 'tts_real_wav', (int)$service['id'], 'tts', 'pass', 123, [
+        'success' => true,
+        'mock' => false,
+        'artifact_url' => '/artifacts/tts_test.wav',
+        'sample_rate' => 48000,
+        'duration_ms' => 1000,
+    ], null);
+    $readiness = hub_pack_l5_readiness($db, 'tts-voxcpm2');
+    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === true, 'TTS real benchmark pass must update readiness');
+    hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'TTS readiness must show promoted L5');
+    hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'TTS readiness must be fully green after real benchmark pass');
+});

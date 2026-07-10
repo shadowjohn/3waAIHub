@@ -1,0 +1,7 @@
+{
+  "mode": "design",
+  "text": "RC 閥是用來控制二行程引擎排氣時機的重要機構。",
+  "voice_prompt": "沉穩的台灣男性技師，語速稍慢，清楚自然",
+  "seed": 42,
+  "format": "wav"
+}

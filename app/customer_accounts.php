@@ -318,7 +318,7 @@ function hub_list_customer_usage(PDO $db, int $userId): array
 
 function hub_playground_supported_modes(): array
 {
-    return ['hello', 'translate', 'ocr', 'yolo', 'sam3'];
+    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'tts'];
 }
 
 function hub_playground_service_options(PDO $db, ?array $user = null): array

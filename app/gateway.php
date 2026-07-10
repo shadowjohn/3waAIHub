@@ -46,9 +46,92 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     }
 
     $timeoutSec = hub_service_gateway_timeout_sec($service);
-    $requester ??= static fn (array $service, int $timeoutSec): array => hub_proxy_request($service['internal_url'], $timeoutSec);
+    $prepared = [];
+    if ($requester === null) {
+        $prepared = hub_gateway_prepare_service_request($db, $service, $authContext);
+        if (isset($prepared['response'])) {
+            return hub_gateway_finish($db, $service, $mode, $prepared['response'], $started, $requestId, $authContext);
+        }
+    }
+    $requester ??= static fn (array $service, int $timeoutSec): array => hub_proxy_request(
+        $service['internal_url'],
+        $timeoutSec,
+        is_string($prepared['body'] ?? null) ? (string)$prepared['body'] : null,
+        is_string($prepared['content_type'] ?? null) ? (string)$prepared['content_type'] : null
+    );
 
     return hub_gateway_finish($db, $service, $mode, $requester($service, $timeoutSec), $started, $requestId, $authContext);
+}
+
+function hub_gateway_prepare_service_request(PDO $db, array $service, array $authContext): array
+{
+    return match ((string)($service['pack_id'] ?? '')) {
+        'tts-voxcpm2' => hub_prepare_tts_voxcpm2_payload($db, $service, $authContext, (string)file_get_contents('php://input')),
+        default => [],
+    };
+}
+
+function hub_prepare_tts_voxcpm2_payload(PDO $db, array $service, array $authContext, string $rawBody): array
+{
+    if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'POST')) !== 'POST' && trim($rawBody) === '') {
+        return [];
+    }
+    $payload = json_decode($rawBody, true);
+    if (!is_array($payload)) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'JSON body is required')];
+    }
+    foreach (['reference_audio_path', 'prompt_wav_path', 'prompt_audio_path'] as $blockedKey) {
+        if (array_key_exists($blockedKey, $payload)) {
+            return ['response' => hub_gateway_error(400, 'bad_request', 'server-side audio paths are not accepted')];
+        }
+    }
+
+    $ttsMode = trim((string)($payload['mode'] ?? 'design')) ?: 'design';
+    if ($ttsMode === 'ultimate_clone') {
+        return ['response' => hub_gateway_error(501, 'ultimate_clone_not_ready', 'Ultimate clone will be added in a later phase')];
+    }
+    if (!in_array($ttsMode, ['design', 'clone'], true)) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'mode must be design or clone')];
+    }
+
+    if ($ttsMode === 'clone') {
+        if (empty($authContext['member_id'])) {
+            return ['response' => hub_gateway_error(403, 'voice_profile_forbidden', 'Voice clone requires an owned voice profile')];
+        }
+        try {
+            $profileId = hub_normalize_voice_profile_ref($payload['voice_profile_id'] ?? $payload['reference_audio_id'] ?? '');
+            $profile = hub_get_voice_profile_for_member($db, $profileId, (int)$authContext['member_id']);
+            if (!$profile) {
+                return ['response' => hub_gateway_error(403, 'voice_profile_forbidden', 'Voice profile is not available for this member')];
+            }
+            $payload['reference_wav_path'] = hub_voice_profile_container_path($profile);
+            $payload['voice_profile_id'] = (int)$profile['id'];
+            $payload['reference_audio_sha256'] = (string)$profile['reference_audio_sha256'];
+            unset($payload['reference_audio_id']);
+            hub_record_voice_profile_audit(
+                $db,
+                (int)$profile['id'],
+                (int)$profile['owner_member_id'],
+                isset($authContext['token_id']) ? (int)$authContext['token_id'] : null,
+                'use',
+                'clone',
+                [
+                    'service_id' => (int)($service['id'] ?? 0),
+                    'mode' => (string)($service['mode'] ?? 'tts'),
+                    'text_chars' => function_exists('mb_strlen') ? mb_strlen((string)($payload['text'] ?? ''), 'UTF-8') : strlen((string)($payload['text'] ?? '')),
+                ]
+            );
+        } catch (InvalidArgumentException) {
+            return ['response' => hub_gateway_error(400, 'voice_profile_required', 'reference_audio_id or voice_profile_id is required')];
+        } catch (Throwable) {
+            return ['response' => hub_gateway_error(403, 'voice_profile_forbidden', 'Voice profile could not be used')];
+        }
+    }
+
+    return [
+        'body' => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        'content_type' => 'application/json',
+    ];
 }
 
 function hub_gateway_service_ip_allowed_after_auth(PDO $db, array $service, string $clientIp, array $authContext): bool
@@ -215,7 +298,7 @@ function hub_api_load_task(PDO $db): ?array
     return $taskId > 0 ? hub_get_task($db, $taskId) : null;
 }
 
-function hub_proxy_request(string $url, int $timeoutSec = 60): array
+function hub_proxy_request(string $url, int $timeoutSec = 60, ?string $bodyOverride = null, ?string $contentTypeOverride = null): array
 {
     $ch = curl_init($url);
     if ($ch === false) {
@@ -225,7 +308,9 @@ function hub_proxy_request(string $url, int $timeoutSec = 60): array
     $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $headers = [];
     $hasUploads = !empty($_FILES);
-    if (!$hasUploads && !empty($_SERVER['CONTENT_TYPE'])) {
+    if (!$hasUploads && $contentTypeOverride !== null) {
+        $headers[] = 'Content-Type: ' . $contentTypeOverride;
+    } elseif (!$hasUploads && !empty($_SERVER['CONTENT_TYPE'])) {
         $headers[] = 'Content-Type: ' . $_SERVER['CONTENT_TYPE'];
     }
 
@@ -238,7 +323,7 @@ function hub_proxy_request(string $url, int $timeoutSec = 60): array
         CURLOPT_TIMEOUT => max(1, $timeoutSec),
     ]);
     if (!in_array($method, ['GET', 'HEAD'], true)) {
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $hasUploads ? hub_proxy_post_fields($_POST, $_FILES) : file_get_contents('php://input'));
+        curl_setopt($ch, CURLOPT_POSTFIELDS, $hasUploads ? hub_proxy_post_fields($_POST, $_FILES) : ($bodyOverride ?? file_get_contents('php://input')));
     }
 
     $raw = curl_exec($ch);

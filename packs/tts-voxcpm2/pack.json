@@ -1,0 +1,369 @@
+{
+  "schema_version": "0.1",
+  "id": "tts-voxcpm2",
+  "name": "VoxCPM2 Experimental TTS Service",
+  "version": "0.1.0",
+  "category": "audio",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L5-benchmark-ready",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": true,
+  "default_mode": "tts",
+  "capability": "text_to_speech",
+  "experimental": true,
+  "model": "openbmb/VoxCPM2",
+  "tts_modes": ["design", "clone"],
+  "description": "Experimental VoxCPM2 text-to-speech adapter with real inference smoke, benchmark contract, voice design, and governed controllable cloning; ultimate clone and streaming are intentionally deferred.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/v1/tts",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 2
+  },
+  "l5_contract": {
+    "endpoint": "/v1/tts",
+    "method": "POST",
+    "content_type": "application/json",
+    "input": {
+      "fields": [
+        {
+          "name": "text",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "mode",
+          "type": "string",
+          "required": false,
+          "default": "design",
+          "enum": ["design", "clone"]
+        },
+        {
+          "name": "voice_prompt",
+          "type": "string",
+          "required": false,
+          "default": "沉穩的台灣男性技師，語速稍慢，清楚自然"
+        },
+        {
+          "name": "seed",
+          "type": "integer",
+          "required": false,
+          "default": 42
+        },
+        {
+          "name": "format",
+          "type": "string",
+          "required": false,
+          "default": "wav"
+        },
+        {
+          "name": "real_inference",
+          "type": "boolean",
+          "required": false,
+          "default": false
+        },
+        {
+          "name": "reference_audio_id",
+          "type": "string",
+          "required": false,
+          "mode": "clone"
+        },
+        {
+          "name": "control",
+          "type": "string",
+          "required": false,
+          "mode": "clone"
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["success", "mock", "real_inference_requested", "runtime_level", "artifact_url", "sample_rate", "duration_ms", "model", "seed", "elapsed_ms"]
+    },
+    "errors": [
+      "bad_request",
+      "format_not_supported",
+      "input_too_long",
+      "runtime_dependency_missing",
+      "model_load_failed",
+      "tts_failed",
+      "artifact_write_failed",
+      "voice_profile_required",
+      "voice_profile_forbidden",
+      "ultimate_clone_not_ready",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 180,
+      "max_input_chars": 6000,
+      "chunk_chars": 260,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "tts_mock_wav",
+          "name": "VoxCPM2 mock WAV smoke",
+          "type": "api",
+          "mode": "tts",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "mode": "design",
+            "text": "RC 閥是用來控制二行程引擎排氣時機的重要機構。",
+            "voice_prompt": "沉穩的台灣男性技師，語速稍慢，清楚自然",
+            "seed": 42,
+            "format": "wav"
+          },
+          "expected_keys": ["success", "mock", "real_inference_requested", "runtime_level", "artifact_url", "sample_rate", "duration_ms", "model", "seed", "elapsed_ms"],
+          "expected_mock": true
+        },
+        {
+          "id": "tts_real_wav",
+          "name": "VoxCPM2 real WAV inference smoke",
+          "type": "api",
+          "mode": "tts",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "mode": "design",
+            "text": "RC 閥是用來控制二行程引擎排氣時機的重要機構。",
+            "voice_prompt": "沉穩的台灣男性技師，語速稍慢，清楚自然",
+            "seed": 42,
+            "format": "wav",
+            "real_inference": 1
+          },
+          "expected_keys": ["success", "mock", "real_inference_requested", "runtime_level", "artifact_url", "sample_rate", "duration_ms", "model", "seed", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_elapsed_ms_positive": true,
+          "expected_model": "VoxCPM2",
+          "real_inference": true
+        }
+      ]
+    }
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 16000,
+    "recommended_vram_mb": 24000,
+    "cpu_fallback": false,
+    "min_compute_capability": "8.0"
+  },
+  "lifecycle": {
+    "lifecycle": "on_demand",
+    "gpu_policy": "exclusive_gpu",
+    "idle_unload_seconds": 900
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "voxcpm2",
+        "container_path": "/models/voxcpm2",
+        "read_only": false
+      },
+      {
+        "type": "cache",
+        "host_subdir": "voxcpm2",
+        "container_path": "/cache/voxcpm2",
+        "read_only": false
+      },
+      {
+        "type": "service_data",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false
+      },
+      {
+        "type": "uploads",
+        "host_subdir": "voice_profiles",
+        "container_path": "/data/voice_profiles",
+        "read_only": true
+      }
+    ]
+  },
+  "settings_schema": [
+    {
+      "key": "VOXCPM2_MODEL_ID",
+      "label": "VoxCPM2 model",
+      "type": "text",
+      "default": "openbmb/VoxCPM2",
+      "required": true,
+      "restart_required": true,
+      "model_selector": {
+        "type": "directory",
+        "root_subdir": "voxcpm2"
+      }
+    },
+    {
+      "key": "VOXCPM2_REAL_INFERENCE",
+      "label": "Enable real VoxCPM2 inference",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true,
+      "help": "Default keeps the experimental adapter on deterministic mock WAV output until the model is installed and validated."
+    },
+    {
+      "key": "VOXCPM2_DEFAULT_VOICE_PROMPT",
+      "label": "Default voice prompt",
+      "type": "text",
+      "default": "沉穩的台灣男性技師，語速稍慢，清楚自然",
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "VOXCPM2_DEFAULT_SEED",
+      "label": "Default seed",
+      "type": "integer",
+      "default": "42",
+      "min": 0,
+      "max": 2147483647,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "VOXCPM2_SAMPLE_RATE",
+      "label": "Output sample rate",
+      "type": "integer",
+      "default": "48000",
+      "min": 16000,
+      "max": 48000,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "VOXCPM2_MAX_INPUT_CHARS",
+      "label": "Max input chars",
+      "type": "integer",
+      "default": "6000",
+      "min": 100,
+      "max": 50000,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "VOXCPM2_CHUNK_CHARS",
+      "label": "Chunk chars",
+      "type": "integer",
+      "default": "260",
+      "min": 80,
+      "max": 1000,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "VOXCPM2_IDLE_UNLOAD_SECONDS",
+      "label": "Idle unload seconds",
+      "type": "integer",
+      "default": "900",
+      "min": 60,
+      "max": 86400,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "VOXCPM2_GPU_POLICY",
+      "label": "GPU policy",
+      "type": "text",
+      "default": "exclusive_gpu",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "GPU_VISIBLE_DEVICES",
+      "label": "GPU visible devices",
+      "type": "text",
+      "default": "all",
+      "required": false,
+      "restart_required": true
+    }
+  ],
+  "env": [
+    {
+      "name": "VOXCPM2_MODEL_ID",
+      "default": "openbmb/VoxCPM2",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_REAL_INFERENCE",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_DEFAULT_VOICE_PROMPT",
+      "default": "沉穩的台灣男性技師，語速稍慢，清楚自然",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_DEFAULT_SEED",
+      "default": "42",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_SAMPLE_RATE",
+      "default": "48000",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_MAX_INPUT_CHARS",
+      "default": "6000",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_CHUNK_CHARS",
+      "default": "260",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_GPU_POLICY",
+      "default": "exclusive_gpu",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_IDLE_UNLOAD_SECONDS",
+      "default": "900",
+      "required": true
+    },
+    {
+      "name": "GPU_VISIBLE_DEVICES",
+      "default": "all",
+      "required": false
+    }
+  ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "nvidia_smi",
+      "docker_gpus",
+      "vram",
+      "compute_capability",
+      "storage"
+    ]
+  },
+  "service": {
+    "default_local_port": 18108,
+    "local_port_env": "TTS_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "voxcpm2-main",
+    "compose_project": "3waaihub_voxcpm2_main"
+  },
+  "acceptance": {
+    "zh_tw_cases": "acceptance/zh_tw_tts_cases.json"
+  }
+}

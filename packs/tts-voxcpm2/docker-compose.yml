@@ -1,0 +1,6 @@
+services:
+  app:
+    build:
+      context: ./service
+    ports:
+      - "127.0.0.1:${TTS_LOCAL_PORT:-18108}:8000"

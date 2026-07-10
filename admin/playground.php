@@ -12,6 +12,7 @@ function hub_playground_profiles(): array
         'ocr' => ['label' => 'OCR', 'method' => 'POST', 'kind' => 'image'],
         'yolo' => ['label' => 'YOLO', 'method' => 'POST', 'kind' => 'image'],
         'sam3' => ['label' => 'SAM3', 'method' => 'POST', 'kind' => 'sam3'],
+        'tts' => ['label' => 'TTS', 'method' => 'POST', 'kind' => 'json'],
     ];
 }
 
@@ -77,6 +78,18 @@ function hub_playground_request_payload(string $mode): array
             'source_lang' => trim((string)($_POST['source_lang'] ?? 'en')),
             'target_lang' => trim((string)($_POST['target_lang'] ?? 'zh-TW')),
             'text' => trim((string)($_POST['text'] ?? 'That was a wonderful time.')),
+            'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
+        ];
+    }
+    if ($mode === 'tts') {
+        return [
+            'mode' => trim((string)($_POST['tts_mode'] ?? 'design')) ?: 'design',
+            'text' => trim((string)($_POST['text'] ?? 'RC 閥是用來控制二行程引擎排氣時機的重要機構。')),
+            'voice_prompt' => trim((string)($_POST['voice_prompt'] ?? '沉穩的台灣男性技師，語速稍慢，清楚自然')),
+            'reference_audio_id' => trim((string)($_POST['reference_audio_id'] ?? '')),
+            'control' => trim((string)($_POST['control'] ?? '沉穩、稍慢、像技師解說')),
+            'seed' => (int)($_POST['seed'] ?? 42),
+            'format' => 'wav',
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
     }
@@ -296,6 +309,33 @@ function hub_playground_pretty_json(string $body): string
     return (string)json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 }
 
+function hub_playground_tts_artifact_file(array $result): string
+{
+    $payload = json_decode((string)($result['body'] ?? ''), true);
+    $artifactUrl = is_array($payload) ? (string)($payload['artifact_url'] ?? '') : '';
+    if ($artifactUrl === '' || !str_starts_with($artifactUrl, '/artifacts/')) {
+        return '';
+    }
+    $file = basename($artifactUrl);
+    return preg_match('/^tts_[A-Za-z0-9_-]+\.wav$/', $file) === 1 ? $file : '';
+}
+
+function hub_playground_tts_audio_url(array $service, ?array $result): string
+{
+    if ($result === null || empty($result['ok'])) {
+        return '';
+    }
+    $file = hub_playground_tts_artifact_file($result);
+    if ($file === '') {
+        return '';
+    }
+
+    return 'playground_artifact.php?' . http_build_query([
+        'service_id' => (int)$service['id'],
+        'file' => $file,
+    ]);
+}
+
 function hub_playground_examples(string $mode): array
 {
     $url = hub_playground_api_url($mode);
@@ -359,6 +399,48 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'tts') {
+        $json = '{"mode":"design","text":"RC 閥是用來控制二行程引擎排氣時機的重要機構。","voice_prompt":"沉穩的台灣男性技師，語速稍慢，清楚自然","seed":42,"format":"wav"}';
+        $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
+        $php = <<<PHP
+\$payload = [
+    'mode' => 'design',
+    'text' => 'RC 閥是用來控制二行程引擎排氣時機的重要機構。',
+    'voice_prompt' => '沉穩的台灣男性技師，語速稍慢，清楚自然',
+    'seed' => 42,
+    'format' => 'wav',
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer <TOKEN>',
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode(\$payload, JSON_UNESCAPED_UNICODE),
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer <TOKEN>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    mode: 'design',
+    text: 'RC 閥是用來控制二行程引擎排氣時機的重要機構。',
+    voice_prompt: '沉穩的台灣男性技師，語速稍慢，清楚自然',
+    seed: 42,
+    format: 'wav'
+  })
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
 
     $field = 'image';
     $extra = $mode === 'sam3' ? " \\\n  -F prompt_type=auto \\\n  -F output_format=metadata" : '';
@@ -415,6 +497,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['action'] ?? '')
     $result = $guard === null ? hub_playground_execute($selectedMode, $token) : hub_playground_guard_result($guard);
 }
 $examples = hub_playground_examples($selectedMode);
+$audioUrl = $selectedService && $selectedMode === 'tts' ? hub_playground_tts_audio_url($selectedService, $result) : '';
 $authHeaderExample = 'Authorization: Bearer <TOKEN>';
 
 hub_admin_header('API 測試場', $user);
@@ -423,7 +506,7 @@ hub_admin_header('API 測試場', $user);
     <h1>API 測試場</h1>
     <p class="muted">後台 server side 呼叫本機 <code>api.php</code>。Bearer token 只用於本次測試，不保存；範例固定使用 <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong>需要 Bearer Token</strong>。還沒有 token 時，請先 <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>">前往 API 金鑰建立</a>。</p>
-    <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code></p>
+    <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -510,6 +593,24 @@ hub_admin_header('API 測試場', $user);
                 <label>text</label>
                 <textarea name="text" rows="5">That was a wonderful time.</textarea>
                 <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
+            <?php elseif ($selectedMode === 'tts'): ?>
+                <label>TTS mode</label>
+                <select name="tts_mode">
+                    <option value="design">design</option>
+                    <option value="clone">clone</option>
+                </select>
+                <label>text</label>
+                <textarea name="text" rows="5">RC 閥是用來控制二行程引擎排氣時機的重要機構。</textarea>
+                <label>voice_prompt</label>
+                <input name="voice_prompt" value="沉穩的台灣男性技師，語速稍慢，清楚自然">
+                <label>reference_audio_id</label>
+                <input name="reference_audio_id" placeholder="voice_profile_1">
+                <p class="muted">clone mode 需填入自己擁有的 Voice Profile，例如 <code>voice_profile_1</code>。第一版不接受任意伺服器檔案路徑。</p>
+                <label>control</label>
+                <input name="control" value="沉穩、稍慢、像技師解說">
+                <label>seed</label>
+                <input name="seed" type="number" value="42">
+                <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
             <?php elseif (in_array($selectedMode, ['ocr', 'yolo'], true)): ?>
                 <label>image</label>
                 <input name="image" type="file" accept="image/*">
@@ -562,6 +663,13 @@ hub_admin_header('API 測試場', $user);
                 <div class="hub-meta-value"><code><?= hub_h((string)$result['error']) ?></code> <?= hub_h((string)($result['message'] ?? '')) ?></div>
             <?php endif; ?>
         </div>
+        <?php if ($audioUrl !== ''): ?>
+            <div class="hub-card">
+                <h3>語音預覽</h3>
+                <audio controls src="<?= hub_h($audioUrl) ?>"></audio>
+                <p><a class="button" href="<?= hub_h($audioUrl) ?>">下載 WAV</a></p>
+            </div>
+        <?php endif; ?>
         <pre><?= hub_h((string)($result['pretty_body'] ?? json_encode($result, JSON_UNESCAPED_UNICODE))) ?></pre>
     <?php endif; ?>
 </section>

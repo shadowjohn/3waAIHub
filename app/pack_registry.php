@@ -418,6 +418,15 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'HOME' => $cacheDir . '/home',
             'PYTHONUNBUFFERED' => '1',
         ],
+        'tts-voxcpm2' => [
+            'VOXCPM2_MODEL_DIR' => $modelDir,
+            'VOXCPM2_CACHE_DIR' => $cacheDir,
+            'VOXCPM2_SERVICE_DATA_DIR' => $serviceDataDir,
+            'HF_HOME' => $modelDir . '/huggingface',
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $cacheDir . '/home',
+            'PYTHONUNBUFFERED' => '1',
+        ],
         default => [],
     };
 }

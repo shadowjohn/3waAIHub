@@ -45,6 +45,15 @@
       "description": "Local audio transcription service with Whisper-compatible storage mounts.",
       "path": "packs/whisper-asr",
       "featured": true
+    },
+    {
+      "id": "tts-voxcpm2",
+      "name": "VoxCPM2 Experimental TTS Service",
+      "version": "0.1.0",
+      "category": "audio",
+      "description": "Experimental local text-to-speech service powered by OpenBMB VoxCPM2.",
+      "path": "packs/tts-voxcpm2",
+      "featured": true
     }
   ]
 }

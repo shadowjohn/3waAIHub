@@ -1882,3 +1882,138 @@ Skipped:
 - Token storage in client tooling.
 - Gateway/runtime changes.
 - New platform features.
+
+## PhaseTTS-1 VoxCPM2 Experimental Pack
+
+Added the first experimental text-to-speech HubPack.
+
+Added:
+
+- `tts-voxcpm2` HubPack manifest.
+- VoxCPM2 service skeleton:
+  - `GET /health`
+  - `GET /v1/models`
+  - `POST /v1/voice-design`
+  - `POST /v1/tts`
+- Lightweight Docker runtime for install/build smoke.
+- `packs/tts-voxcpm2/acceptance/zh_tw_tts_cases.json`
+- Voice Profile DB foundation:
+  - `voice_profiles`
+  - `voice_profile_audit_logs`
+  - `app/voice_profiles.php`
+- Gateway rewrite for governed clone mode.
+- Playground support for `mode=tts`.
+- Playground TTS result now renders an authenticated WAV audio player.
+
+Implemented:
+
+- `mode=design` for natural-language voice design.
+- `mode=clone` for controllable clone through managed Voice Profiles.
+- Public API rejects direct server-side audio paths.
+- Gateway maps owned `voice_profile_id` / `reference_audio_id` to container `/data/voice_profiles/...`.
+- Voice Profile ownership is scoped to `api_member`.
+- Customer Playground shows `tts` only when both user mode permission and owned token permission allow it.
+- Generated TTS WAV files are served to logged-in users through `admin/playground_artifact.php`, scoped by service permission.
+- Voice Profile create/use/delete actions are audited.
+- Generated compose mounts:
+  - `${AIHUB_MODELS_DIR}/voxcpm2:/models/voxcpm2`
+  - `${AIHUB_CACHE_DIR}/voxcpm2:/cache/voxcpm2`
+  - `${SERVICE_DATA_DIR}:/data/service`
+  - `${AIHUB_UPLOADS_DIR}/voice_profiles:/data/voice_profiles:ro`
+- Default runtime uses deterministic mock WAV output with `VOXCPM2_REAL_INFERENCE=0`.
+- Real VoxCPM2 runtime is lazy-loaded only when `VOXCPM2_REAL_INFERENCE=1`.
+- Output manifest records `ai_generated`, `model`, `seed`, `voice_profile_id`, `reference_audio_sha256`, `duration_ms`, and chunk count.
+- GPU lifecycle metadata added:
+  - `lifecycle=on_demand`
+  - `gpu_policy=exclusive_gpu`
+  - `idle_unload_seconds=900`
+
+Verified:
+
+- `php scripts/run_tests.php` PASS with 95 tests.
+- Follow-up after install: `php scripts/run_tests.php` PASS with 96 tests.
+- `python3 -m py_compile packs/tts-voxcpm2/service/*.py` PASS.
+- PHP lint for modified PHP files PASS.
+
+Skipped:
+
+- Ultimate Clone.
+- ASR transcript confirmation.
+- LoRA training.
+- Podcast generation.
+- Streaming / WebSocket.
+- vLLM-Omni.
+- OpenAI-compatible API.
+- Voice asset management UI.
+- Public anonymous clone access.
+
+## PhaseTTS-1 Runtime Fix
+
+Fixed VoxCPM2 Playground output using mock audio when real inference was requested.
+
+Root cause:
+
+- `POST /v1/tts` accepted Playground requests but did not honor request-level `real_inference=1`.
+- The runtime image did not include the official `voxcpm` package, `soundfile`, or the C/C++ compiler needed by Torch / Triton warmup.
+- The first real runtime call passed `seed` into `VoxCPM.generate()`, but the official API expects deterministic behavior to be handled outside the generate kwargs.
+
+Changed:
+
+- `packs/tts-voxcpm2/service/requirements.txt` now pins `voxcpm==2.0.3` and includes `soundfile`.
+- `packs/tts-voxcpm2/service/Dockerfile` installs `libsndfile1`, `ffmpeg`, `gcc`, and `g++`.
+- `packs/tts-voxcpm2/service/app.py` now honors request-level `real_inference=1`.
+- VoxCPM2 seed is applied through Python / NumPy / Torch seed setup before generation, not passed as an unsupported generate argument.
+- Tests now cover the real-inference request flag and unsupported seed regression.
+- Existing `3WA專用` and customer tokens were granted `tts` mode permission for local validation.
+
+Verified:
+
+- `docker compose -f data/services/voxcpm2-main/docker-compose.generated.yml build --progress=plain` PASS.
+- `GET http://127.0.0.1:18108/health` reports `voxcpm=true` and `soundfile=true`.
+- Direct `POST /v1/tts` with `real_inference=1` returns `mock=false`.
+- Gateway `POST http://localhost/3waAIHub/api.php?mode=tts` returns `mock=false`.
+- Generated WAV verified as 16-bit mono 48kHz PCM.
+- `php scripts/run_tests.php` PASS with 98 tests.
+
+## PhaseTTS-1 L5 Benchmark Ready
+
+Promoted VoxCPM2 TTS from `L3-storage-mount` to `L5-benchmark-ready`.
+
+Changed:
+
+- `packs/tts-voxcpm2/pack.json` runtime level is now `L5-benchmark-ready`.
+- `packs/tts-voxcpm2/service/app.py` reports `runtime_level=L5-benchmark-ready`.
+- Added L5 benchmark cases:
+  - `tts_mock_wav`
+  - `tts_real_wav`
+- Benchmark mock payload now supports the VoxCPM2 TTS response contract.
+
+Verified:
+
+- `/health` returns `runtime_level=L5-benchmark-ready`.
+- `php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_mock_wav` PASS.
+- `php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_real_wav` PASS.
+- `hub_pack_l5_readiness(..., tts-voxcpm2)` reports `11/11`.
+- `php scripts/run_tests.php` PASS with 99 tests.
+
+## PhaseTTS-1 Playground Real Inference Fix
+
+Fixed the TTS Playground request form so `mode=tts` sends real inference by default.
+
+Root cause:
+
+- The TTS form did not include the checked `real_inference` field.
+- The TTS request payload builder did not forward `real_inference` into the JSON body.
+- Latest generated Playground artifact was therefore `mock=true`.
+
+Changed:
+
+- `admin/playground.php` now includes checked `real_inference` for TTS.
+- TTS Playground payload now forwards `real_inference`.
+- `tests/test_tts_voxcpm2.php` checks only the TTS branch, avoiding false positives from OCR/YOLO controls.
+
+Verified:
+
+- Gateway TTS request returned `mock=false` and `real_inference_requested=true`.
+- Generated WAV verified as 16-bit mono 48kHz PCM.
+- `php scripts/run_tests.php` PASS with 99 tests.

@@ -326,6 +326,39 @@ CREATE TABLE IF NOT EXISTS api_access_logs (
     FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS voice_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_member_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    reference_audio_path TEXT NOT NULL,
+    reference_audio_sha256 TEXT NOT NULL,
+    prompt_text TEXT NULL,
+    language TEXT NULL,
+    consent_type TEXT NOT NULL,
+    usage_scope TEXT NOT NULL DEFAULT 'private',
+    visibility TEXT NOT NULL DEFAULT 'private',
+    retain_original_audio INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT NULL,
+    deleted_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS voice_profile_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    voice_profile_id INTEGER NULL,
+    owner_member_id INTEGER NULL,
+    token_id INTEGER NULL,
+    action TEXT NOT NULL,
+    mode TEXT NULL,
+    details_json TEXT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE SET NULL,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_mode_permissions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -366,6 +399,8 @@ SQL);
     hub_add_column_if_missing($db, 'api_access_logs', 'token_id', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'upload_bytes', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'response_bytes', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'voice_profiles', 'usage_scope', "TEXT NOT NULL DEFAULT 'private'");
+    hub_add_column_if_missing($db, 'voice_profiles', 'retain_original_audio', 'INTEGER NOT NULL DEFAULT 1');
     hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'progress', 'INTEGER NOT NULL DEFAULT 0');
     hub_add_column_if_missing($db, 'command_jobs', 'stage', 'TEXT NULL');
@@ -389,6 +424,10 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_ip_rules_token_id ON api_token_ip_whitelists(token_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_member_date ON api_token_usage_daily(member_id, usage_date)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token_date ON api_token_usage_daily(token_id, usage_date)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner ON voice_profiles(owner_member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_deleted ON voice_profiles(deleted_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_profile ON voice_profile_audit_logs(voice_profile_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_owner ON voice_profile_audit_logs(owner_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_service_settings_service_id ON service_settings(service_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_users_api_member_id ON users(api_member_id)');

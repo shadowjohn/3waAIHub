@@ -257,6 +257,20 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
             'elapsed_ms' => 0,
         ];
     }
+    if (($manifest['id'] ?? '') === 'tts-voxcpm2') {
+        return [
+            'success' => true,
+            'mock' => true,
+            'real_inference_requested' => false,
+            'runtime_level' => $runtimeLevel,
+            'artifact_url' => '/artifacts/tts_mock.wav',
+            'sample_rate' => 48000,
+            'duration_ms' => 1000,
+            'model' => 'VoxCPM2',
+            'seed' => (int)($input['seed'] ?? 42),
+            'elapsed_ms' => 0,
+        ];
+    }
 
     return [
         'ok' => true,
