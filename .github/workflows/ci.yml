@@ -25,6 +25,9 @@ jobs:
           php-version: "8.3"
           extensions: sqlite3, pdo_sqlite, curl
 
+      - name: Python smoke dependencies
+        run: sudo apt-get update && sudo apt-get install -y python3 python3-numpy
+
       - name: PHP lint
         run: find . -path './data' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
 
