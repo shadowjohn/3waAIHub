@@ -289,6 +289,32 @@ function hub_store_docparser_task_artifacts(PDO $db, int $taskId, array $result)
         ];
     }
 
+    $figureAssets = [];
+    foreach (($result['docir']['figures'] ?? []) as $figure) {
+        if (!is_array($figure)) {
+            continue;
+        }
+        $relative = (string)($figure['asset_path'] ?? '');
+        if ($relative === '' || str_contains($relative, '..')) {
+            continue;
+        }
+        $path = $base . '/' . ltrim($relative, '/');
+        if (!is_file($path)) {
+            continue;
+        }
+        $figureAssets[] = [
+            'artifact_id' => hub_register_task_artifact($db, $taskId, 'docparser/' . ltrim($relative, '/'), $path, 'image/png'),
+            'path' => $path,
+            'bytes' => filesize($path) ?: 0,
+        ];
+    }
+    if ($figureAssets !== []) {
+        $summary['figure_assets'] = [
+            'count' => count($figureAssets),
+            'bytes' => array_sum(array_column($figureAssets, 'bytes')),
+        ];
+    }
+
     return $summary;
 }
 

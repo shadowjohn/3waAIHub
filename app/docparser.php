@@ -64,6 +64,21 @@ function hub_docparser_build_docir(array $structurePayload, array $options): arr
     }
     unset($block);
 
+    $figures = [];
+    foreach ($blocks as $block) {
+        if (($block['type'] ?? '') !== 'figure') {
+            continue;
+        }
+        $figures[] = [
+            'id' => 'fig-p' . (int)$block['page'] . '-' . (count($figures) + 1),
+            'page' => (int)$block['page'],
+            'block_id' => (string)$block['id'],
+            'bbox' => $block['bbox'] ?? [0.0, 0.0, 0.0, 0.0],
+            'caption' => (string)($block['source_text'] ?? ''),
+            'source' => 'docir_figure_block',
+        ];
+    }
+
     $knownPages = [];
     foreach ($pages as $page) {
         $knownPages[(int) $page['page']] = true;
@@ -85,8 +100,147 @@ function hub_docparser_build_docir(array $structurePayload, array $options): arr
         'structure_mock' => !empty($structurePayload['mock']),
         'pages' => $pages,
         'blocks' => $blocks,
-        'figures' => is_array($structurePayload['figures'] ?? null) ? $structurePayload['figures'] : [],
+        'figures' => $figures !== [] ? $figures : (is_array($structurePayload['figures'] ?? null) ? $structurePayload['figures'] : []),
     ];
+}
+
+function hub_docparser_extract_figure_assets(string $inputFile, array $docir, string $figureDir): array
+{
+    if (!is_file($inputFile) || ($docir['figures'] ?? []) === [] || trim((string)shell_exec('command -v pdftoppm 2>/dev/null')) === '') {
+        return $docir;
+    }
+    if (!is_dir($figureDir) && !mkdir($figureDir, 0775, true) && !is_dir($figureDir)) {
+        return $docir;
+    }
+
+    $pages = [];
+    foreach ($docir['pages'] ?? [] as $page) {
+        if (!is_array($page)) {
+            continue;
+        }
+        $pageNo = (int)($page['page'] ?? 0);
+        if ($pageNo > 0) {
+            $pages[$pageNo] = [
+                'width' => max(1, (int)round((float)($page['width'] ?? 0))),
+                'height' => max(1, (int)round((float)($page['height'] ?? 0))),
+            ];
+        }
+    }
+
+    $figuresByPage = [];
+    foreach ($docir['figures'] as $index => $figure) {
+        if (!is_array($figure)) {
+            continue;
+        }
+        $pageNo = (int)($figure['page'] ?? 0);
+        if ($pageNo > 0) {
+            $figuresByPage[$pageNo][] = $index;
+        }
+    }
+
+    $tmpBase = rtrim(sys_get_temp_dir(), '/') . '/3wa-docparser-figures-' . getmypid() . '-' . bin2hex(random_bytes(4));
+    if (!mkdir($tmpBase, 0700, true) && !is_dir($tmpBase)) {
+        return $docir;
+    }
+
+    foreach ($figuresByPage as $pageNo => $indexes) {
+        $pageSize = $pages[$pageNo] ?? ['width' => 1600, 'height' => 2200];
+        $prefix = $tmpBase . '/page-' . $pageNo;
+        $exitCode = hub_docparser_run_command([
+            'pdftoppm',
+            '-q',
+            '-f',
+            (string)$pageNo,
+            '-l',
+            (string)$pageNo,
+            '-singlefile',
+            '-png',
+            '-scale-to-x',
+            (string)$pageSize['width'],
+            '-scale-to-y',
+            (string)$pageSize['height'],
+            $inputFile,
+            $prefix,
+        ]);
+        $pageImage = $prefix . '.png';
+        if ($exitCode !== 0 || !is_file($pageImage)) {
+            continue;
+        }
+        $image = @imagecreatefrompng($pageImage);
+        if (!$image) {
+            @unlink($pageImage);
+            continue;
+        }
+        $actualWidth = imagesx($image);
+        $actualHeight = imagesy($image);
+        $scaleX = $pageSize['width'] > 0 ? $actualWidth / $pageSize['width'] : 1.0;
+        $scaleY = $pageSize['height'] > 0 ? $actualHeight / $pageSize['height'] : 1.0;
+
+        foreach ($indexes as $index) {
+            $figure = $docir['figures'][$index] ?? [];
+            $bbox = is_array($figure['bbox'] ?? null) ? $figure['bbox'] : [0, 0, 0, 0];
+            $x1 = max(0, min($actualWidth - 1, (int)floor(((float)($bbox[0] ?? 0)) * $scaleX)));
+            $y1 = max(0, min($actualHeight - 1, (int)floor(((float)($bbox[1] ?? 0)) * $scaleY)));
+            $x2 = max($x1 + 1, min($actualWidth, (int)ceil(((float)($bbox[2] ?? 0)) * $scaleX)));
+            $y2 = max($y1 + 1, min($actualHeight, (int)ceil(((float)($bbox[3] ?? 0)) * $scaleY)));
+            $crop = imagecrop($image, ['x' => $x1, 'y' => $y1, 'width' => $x2 - $x1, 'height' => $y2 - $y1]);
+            if (!$crop) {
+                continue;
+            }
+            $safeId = preg_replace('/[^a-zA-Z0-9_-]+/', '-', (string)($figure['id'] ?? ('figure-' . ($index + 1)))) ?: ('figure-' . ($index + 1));
+            $assetRelative = 'assets/figures/' . $safeId . '.png';
+            $assetPath = rtrim(dirname($figureDir), '/') . '/figures/' . $safeId . '.png';
+            if (imagepng($crop, $assetPath)) {
+                $docir['figures'][$index]['asset_path'] = $assetRelative;
+                $docir['figures'][$index]['asset_bytes'] = filesize($assetPath) ?: 0;
+                $docir['figures'][$index]['image_width'] = imagesx($crop);
+                $docir['figures'][$index]['image_height'] = imagesy($crop);
+            }
+            imagedestroy($crop);
+        }
+        imagedestroy($image);
+        @unlink($pageImage);
+    }
+    @rmdir($tmpBase);
+
+    $assetByBlock = [];
+    foreach ($docir['figures'] as $figure) {
+        if (!is_array($figure)) {
+            continue;
+        }
+        $blockId = (string)($figure['block_id'] ?? '');
+        $assetPath = (string)($figure['asset_path'] ?? '');
+        if ($blockId !== '' && $assetPath !== '') {
+            $assetByBlock[$blockId] = $assetPath;
+        }
+    }
+    foreach ($docir['blocks'] as &$block) {
+        $blockId = (string)($block['id'] ?? '');
+        if (isset($assetByBlock[$blockId])) {
+            $block['asset_path'] = $assetByBlock[$blockId];
+        }
+    }
+    unset($block);
+
+    return $docir;
+}
+
+function hub_docparser_run_command(array $command): int
+{
+    $process = proc_open($command, [
+        0 => ['pipe', 'r'],
+        1 => ['pipe', 'w'],
+        2 => ['pipe', 'w'],
+    ], $pipes);
+    if (!is_resource($process)) {
+        return 127;
+    }
+    fclose($pipes[0]);
+    stream_get_contents($pipes[1]);
+    stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    return proc_close($process);
 }
 
 function hub_docparser_section_path(string $type, string $text): array
@@ -124,6 +278,7 @@ function hub_docparser_structure_from_document_json(array $document): array
 {
     $blocks = [];
     $pages = [];
+    $figures = [];
     $documents = hub_docparser_document_pages($document);
 
     foreach ($documents as $pageIndex => $pagePayload) {
@@ -131,7 +286,7 @@ function hub_docparser_structure_from_document_json(array $document): array
             continue;
         }
         $pageNo = hub_docparser_page_number($pagePayload, $pageIndex + 1);
-        $pageBlocks = $pagePayload['blocks'] ?? $pagePayload['res'] ?? [];
+        $pageBlocks = $pagePayload['blocks'] ?? $pagePayload['res'] ?? $pagePayload['parsing_res_list'] ?? [];
         if (!is_array($pageBlocks)) {
             continue;
         }
@@ -144,14 +299,30 @@ function hub_docparser_structure_from_document_json(array $document): array
             if (!is_array($block)) {
                 continue;
             }
+            $type = hub_docparser_block_type($block);
+            $text = hub_docparser_block_text($block);
+            $bbox = hub_docparser_normalize_bbox($block['bbox'] ?? $block['poly'] ?? $block['block_bbox'] ?? null);
+            $rawId = (string)($block['id'] ?? $block['block_id'] ?? ('raw-' . $pageNo . '-' . ($index + 1)));
+            $orderValue = $block['order'] ?? $block['block_order'] ?? null;
+            $order = $orderValue === null || $orderValue === '' ? 1 : max(1, (int)$orderValue);
             $blocks[] = [
-                'id' => (string)($block['id'] ?? ('raw-' . $pageNo . '-' . ($index + 1))),
+                'id' => $rawId,
                 'page' => hub_docparser_page_number($block, $pageNo),
-                'order' => max(1, (int)($block['order'] ?? 1)),
-                'type' => hub_docparser_block_type($block),
-                'text' => hub_docparser_block_text($block),
-                'bbox' => hub_docparser_normalize_bbox($block['bbox'] ?? $block['poly'] ?? null),
+                'order' => $order,
+                'type' => $type,
+                'text' => $text,
+                'bbox' => $bbox,
             ];
+            if ($type === 'figure') {
+                $figures[] = [
+                    'id' => 'fig-p' . $pageNo . '-' . (count($figures) + 1),
+                    'page' => $pageNo,
+                    'block_id' => $rawId,
+                    'bbox' => $bbox,
+                    'caption' => $text,
+                    'source' => 'ppstructure_parsing_res_list',
+                ];
+            }
         }
     }
 
@@ -174,7 +345,7 @@ function hub_docparser_structure_from_document_json(array $document): array
     return [
         'pages' => $pages,
         'blocks' => $blocks,
-        'figures' => [],
+        'figures' => $figures,
         'source_kind' => 'ppstructure_document_json',
     ];
 }
@@ -187,7 +358,7 @@ function hub_docparser_document_pages(array $document): array
     if (isset($document['document']) && is_array($document['document'])) {
         return $document['document'];
     }
-    if (isset($document['blocks']) || isset($document['res'])) {
+    if (isset($document['blocks']) || isset($document['res']) || isset($document['parsing_res_list'])) {
         return [$document];
     }
     if (hub_docparser_is_list($document)) {
@@ -208,7 +379,7 @@ function hub_docparser_is_list(array $value): bool
 
 function hub_docparser_block_type(array $block): string
 {
-    $type = strtolower(trim((string)($block['type'] ?? $block['block_type'] ?? $block['label'] ?? 'paragraph')));
+    $type = strtolower(trim((string)($block['type'] ?? $block['block_type'] ?? $block['label'] ?? $block['block_label'] ?? 'paragraph')));
     if (str_contains($type, 'title') || str_contains($type, 'heading') || $type === 'header') {
         return 'heading';
     }
@@ -274,7 +445,7 @@ function hub_docparser_normalize_bbox(mixed $bbox): array
 
 function hub_docparser_block_text(array $block): string
 {
-    foreach (['text', 'content', 'html', 'res_text'] as $key) {
+    foreach (['text', 'content', 'html', 'res_text', 'block_content'] as $key) {
         $value = trim((string) ($block[$key] ?? ''));
         if ($value !== '') {
             return strip_tags($value);
@@ -284,7 +455,7 @@ function hub_docparser_block_text(array $block): string
     return '';
 }
 
-function hub_docparser_translate_blocks(PDO $db, array $docir, array $input): array
+function hub_docparser_translate_blocks(PDO $db, array $docir, array $input, ?int $taskId = null): array
 {
     $required = (string)($input['translation_required'] ?? '1') !== '0';
     $target = (string)($input['target_language'] ?? 'zh-TW');
@@ -300,6 +471,19 @@ function hub_docparser_translate_blocks(PDO $db, array $docir, array $input): ar
         return $docir;
     }
 
+    $translatableIndexes = [];
+    foreach ($docir['blocks'] as $index => $block) {
+        $text = trim((string)($block['source_text'] ?? ''));
+        if ($text !== '' && in_array((string)$block['type'], ['paragraph', 'heading', 'caption', 'list'], true)) {
+            $translatableIndexes[] = $index;
+        }
+    }
+    $total = count($translatableIndexes);
+    if ($taskId !== null) {
+        hub_add_task_log($db, $taskId, 'info', 'docparser_translate started blocks=' . $total);
+    }
+
+    $done = 0;
     foreach ($docir['blocks'] as &$block) {
         $text = trim((string)($block['source_text'] ?? ''));
         if ($text === '' || !in_array((string)$block['type'], ['paragraph', 'heading', 'caption', 'list'], true)) {
@@ -311,16 +495,34 @@ function hub_docparser_translate_blocks(PDO $db, array $docir, array $input): ar
             'text' => hub_docparser_translate_text($service, $text, $target),
             'source_block_id' => (string)($block['id'] ?? ''),
         ];
+        $done++;
+        if ($taskId !== null && ($done === $total || $done % 10 === 0)) {
+            $progress = 55 + (int)floor(($done / max(1, $total)) * 25);
+            hub_update_task_progress($db, $taskId, min(80, $progress));
+        }
     }
     unset($block);
+    if ($taskId !== null) {
+        hub_add_task_log($db, $taskId, 'info', 'docparser_translate finished blocks=' . $done);
+    }
 
     return $docir;
 }
 
 function hub_docparser_translate_text(array $service, string $text, string $target): string
 {
+    $chunks = hub_docparser_split_translation_text($text);
+    if (count($chunks) > 1) {
+        $translated = [];
+        foreach ($chunks as $chunk) {
+            $translated[] = hub_docparser_translate_text($service, $chunk, $target);
+        }
+
+        return trim(implode("\n\n", array_filter($translated, static fn(string $value): bool => trim($value) !== '')));
+    }
+
     $payload = json_encode([
-        'text' => $text,
+        'text' => $chunks[0] ?? $text,
         'source_lang' => 'auto',
         'target_lang' => $target,
         'real_inference' => true,
@@ -336,6 +538,51 @@ function hub_docparser_translate_text(array $service, string $text, string $targ
     }
 
     return trim((string)($body['text'] ?? $body['translated_text'] ?? ''));
+}
+
+function hub_docparser_split_translation_text(string $text, int $maxChars = 8000): array
+{
+    $text = trim($text);
+    if ($text === '') {
+        return [];
+    }
+    if (strlen($text) <= $maxChars) {
+        return [$text];
+    }
+
+    $chunks = [];
+    $current = '';
+    foreach (preg_split('/\R/u', $text) ?: [$text] as $line) {
+        $line = trim((string)$line);
+        if ($line === '') {
+            continue;
+        }
+        if (strlen($line) > $maxChars) {
+            if ($current !== '') {
+                $chunks[] = $current;
+                $current = '';
+            }
+            $parts = [];
+            preg_match_all('/.{1,' . $maxChars . '}/us', $line, $parts);
+            foreach ($parts[0] ?? [] as $part) {
+                $chunks[] = trim((string)$part);
+            }
+            continue;
+        }
+
+        $candidate = $current === '' ? $line : $current . "\n" . $line;
+        if (strlen($candidate) > $maxChars) {
+            $chunks[] = $current;
+            $current = $line;
+        } else {
+            $current = $candidate;
+        }
+    }
+    if ($current !== '') {
+        $chunks[] = $current;
+    }
+
+    return array_values(array_filter($chunks, static fn(string $chunk): bool => trim($chunk) !== ''));
 }
 
 function hub_docparser_post_json(string $url, int $timeoutSec, string $payload): array
@@ -383,6 +630,16 @@ function hub_docparser_render_outputs(array $docir, array $options): array
     $bilingual = ['<!doctype html><html><head><meta charset="utf-8"><title>DocParser Bilingual</title></head><body>'];
     $markdown = [];
     $chunks = [];
+    $figuresByBlock = [];
+    foreach ($docir['figures'] ?? [] as $figure) {
+        if (!is_array($figure)) {
+            continue;
+        }
+        $blockId = (string)($figure['block_id'] ?? '');
+        if ($blockId !== '') {
+            $figuresByBlock[$blockId] = $figure;
+        }
+    }
 
     foreach ($docir['blocks'] ?? [] as $block) {
         $id = (string) ($block['id'] ?? '');
@@ -391,7 +648,21 @@ function hub_docparser_render_outputs(array $docir, array $options): array
         $translated = hub_docparser_valid_translation_text($block);
         $readerText = $translated !== '' ? $translated : $source;
         $markdownText = $translated;
-        if (($block['type'] ?? '') === 'heading') {
+        $type = (string)($block['type'] ?? '');
+        if ($type === 'figure') {
+            $figure = $figuresByBlock[$id] ?? [];
+            $assetPath = (string)($block['asset_path'] ?? $figure['asset_path'] ?? '');
+            $assetHref = $assetPath !== '' ? '../' . ltrim($assetPath, '/') : '';
+            $caption = $readerText !== '' ? $readerText : (string)($figure['caption'] ?? '');
+            if ($assetHref !== '') {
+                $reader[] = '<figure id="' . hub_h($id) . '" data-page="' . $page . '"><img src="' . hub_h($assetHref) . '" alt="' . hub_h($caption) . '"><figcaption>' . hub_h($caption) . '</figcaption></figure>';
+                $bilingual[] = '<figure id="' . hub_h($id) . '" data-page="' . $page . '"><img src="' . hub_h($assetHref) . '" alt="' . hub_h($caption) . '"><figcaption>' . hub_h($source) . '</figcaption></figure>';
+                $markdown[] = '![' . str_replace(["\r", "\n"], ' ', $caption) . '](' . $assetHref . ')';
+            } elseif ($caption !== '') {
+                $reader[] = '<p id="' . hub_h($id) . '" data-page="' . $page . '">' . hub_h($caption) . '</p>';
+                $bilingual[] = '<section id="' . hub_h($id) . '" data-page="' . $page . '"><p>' . hub_h($source) . '</p></section>';
+            }
+        } elseif ($type === 'heading') {
             $toc[] = ['title' => $source, 'level' => 1, 'page' => $page, 'block_id' => $id, 'anchor' => $id];
             $reader[] = '<h1 id="' . hub_h($id) . '">' . hub_h($readerText) . '</h1>';
             $bilingual[] = '<section id="' . hub_h($id) . '" data-page="' . $page . '"><h1>' . hub_h($source) . '</h1><p lang="' . hub_h($targetLanguage) . '">' . hub_h($translated) . '</p></section>';
@@ -456,7 +727,7 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
         if ($target !== '' && in_array($type, ['paragraph', 'heading', 'caption', 'list'], true)) {
             $translated++;
         }
-        if ($source !== '' && $target !== '' && $source === $target && in_array($type, ['paragraph', 'heading', 'caption', 'list'], true)) {
+        if ($source !== '' && $target !== '' && $source === $target && in_array($type, ['paragraph', 'heading', 'caption', 'list'], true) && hub_docparser_counts_as_identity_translation($source, (string)($docir['target_language'] ?? ''))) {
             $identity++;
         }
     }
@@ -594,6 +865,15 @@ function hub_docparser_provenance_coverage(array $blocks): float
     return $ok / count($blocks);
 }
 
+function hub_docparser_counts_as_identity_translation(string $source, string $targetLanguage): bool
+{
+    if ($targetLanguage === 'zh-TW' || $targetLanguage === 'zh-Hant' || str_starts_with($targetLanguage, 'zh')) {
+        return preg_match('/\p{Han}/u', $source) !== 1;
+    }
+
+    return true;
+}
+
 function hub_docparser_page_record_coverage(array $docir): float
 {
     $pages = is_array($docir['pages'] ?? null) ? $docir['pages'] : [];
@@ -712,6 +992,9 @@ function hub_docparser_broken_asset_links(string $readerHtml, string $bilingualH
     foreach ($matches[1] ?? [] as $link) {
         $link = trim((string) $link);
         if ($link === '' || str_starts_with($link, '#') || preg_match('/^(https?:|data:|mailto:)/i', $link)) {
+            continue;
+        }
+        if (preg_match('#^(\.\./)?assets/figures/[a-zA-Z0-9_.-]+\.png$#', $link)) {
             continue;
         }
         $count++;

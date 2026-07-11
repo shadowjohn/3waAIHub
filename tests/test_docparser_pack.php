@@ -320,6 +320,16 @@ hub_test('DocParser worker translation helper posts JSON explicitly', function (
     hub_test_assert(str_contains($source, 'CURLOPT_POSTFIELDS => $payload'), 'DocParser translation helper must send JSON payload');
 });
 
+hub_test('DocParser splits oversized translation blocks before calling TranslateGemma', function (): void {
+    $text = str_repeat("line one\n", 900) . str_repeat('A', 9000);
+    $chunks = hub_docparser_split_translation_text($text, 4000);
+    hub_test_assert(count($chunks) >= 4, 'oversized translation text must be split into multiple chunks');
+    foreach ($chunks as $chunk) {
+        hub_test_assert(strlen($chunk) <= 4000, 'translation chunk exceeds max length');
+        hub_test_assert(trim($chunk) !== '', 'translation chunk must not be empty');
+    }
+});
+
 hub_test('DocParser structure payload flattens multi-page document_json arrays', function (): void {
     $payload = hub_docparser_structure_payload([
         'markdown' => "# 備援內容\n",
@@ -395,6 +405,49 @@ hub_test('DocParser structure payload normalizes PP-StructureV3 page and block v
     hub_test_assert(($payload['blocks'][0]['bbox'] ?? []) === [10.0, 20.0, 200.0, 50.0], 'poly must normalize to bbox');
 });
 
+hub_test('DocParser structure payload reads real PP-StructureV3 parsing_res_list blocks', function (): void {
+    $payload = hub_docparser_structure_payload([
+        'document_json' => [
+            'page_index' => 0,
+            'page_count' => 1,
+            'width' => 1191,
+            'height' => 1684,
+            'parsing_res_list' => [
+                [
+                    'block_label' => 'header',
+                    'block_content' => '光陽機車HONDA',
+                    'block_bbox' => [58, 70, 270, 138],
+                    'block_id' => 0,
+                    'block_order' => null,
+                ],
+                [
+                    'block_label' => 'text',
+                    'block_content' => '服務指引',
+                    'block_bbox' => [309, 389, 935, 505],
+                    'block_id' => 1,
+                    'block_order' => 1,
+                ],
+                [
+                    'block_label' => 'image',
+                    'block_content' => "光陽工業股份有限公司\n",
+                    'block_bbox' => [0, 729, 1181, 1679],
+                    'block_id' => 3,
+                    'block_order' => null,
+                ],
+            ],
+        ],
+    ]);
+
+    hub_test_assert(($payload['source_kind'] ?? '') === 'ppstructure_document_json', 'real PP-StructureV3 JSON must not fall back to markdown');
+    hub_test_assert(count($payload['pages'] ?? []) === 1, 'PP-StructureV3 page metadata missing');
+    hub_test_assert(($payload['pages'][0]['width'] ?? 0) === 1191.0, 'PP-StructureV3 page width mismatch');
+    hub_test_assert(count($payload['blocks'] ?? []) === 3, 'PP-StructureV3 parsing_res_list blocks missing');
+    hub_test_assert(($payload['blocks'][0]['type'] ?? '') === 'heading', 'PP-StructureV3 header must map to heading');
+    hub_test_assert(trim((string)($payload['blocks'][1]['text'] ?? '')) === '服務指引', 'PP-StructureV3 block_content must become text');
+    hub_test_assert(($payload['blocks'][2]['type'] ?? '') === 'figure', 'PP-StructureV3 image block must map to figure');
+    hub_test_assert(count($payload['figures'] ?? []) === 1, 'PP-StructureV3 image block must become figure metadata');
+});
+
 hub_test('DocParser builds DocIR renders outputs and catches fake translation', function (): void {
     $structure = [
         'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
@@ -429,6 +482,32 @@ hub_test('DocParser builds DocIR renders outputs and catches fake translation', 
     $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
     hub_test_assert(($quality['status'] ?? '') !== 'completed', 'fake translation must not complete');
     hub_test_assert(($quality['metrics']['protected_token_preservation'] ?? 0) === 1.0, 'protected tokens should be preserved');
+});
+
+hub_test('DocParser render outputs include extracted figure asset links', function (): void {
+    $docir = hub_docparser_build_docir([
+        'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
+        'blocks' => [
+            ['id' => 'raw-figure', 'page' => 1, 'order' => 1, 'type' => 'figure', 'text' => 'RC 閥示意圖', 'bbox' => [10, 20, 300, 240]],
+        ],
+        'figures' => [],
+    ], [
+        'target_language' => 'zh-TW',
+    ]);
+    $docir['figures'] = [[
+        'id' => 'fig-p1-1',
+        'page' => 1,
+        'block_id' => 'p1-b1',
+        'asset_path' => 'assets/figures/fig-p1-1.png',
+        'caption' => 'RC 閥示意圖',
+    ]];
+    $docir['blocks'][0]['asset_path'] = 'assets/figures/fig-p1-1.png';
+
+    $outputs = hub_docparser_render_outputs($docir, ['target_language' => 'zh-TW']);
+    hub_test_assert(str_contains($outputs['reader_html'], '../assets/figures/fig-p1-1.png'), 'reader html must link extracted figure asset');
+    hub_test_assert(str_contains($outputs['bilingual_html'], '../assets/figures/fig-p1-1.png'), 'bilingual html must link extracted figure asset');
+    hub_test_assert(str_contains($outputs['markdown'], '![RC 閥示意圖](../assets/figures/fig-p1-1.png)'), 'markdown must link extracted figure asset');
+    hub_test_assert(hub_docparser_broken_asset_links($outputs['reader_html'], $outputs['bilingual_html']) === 0, 'quality checker must allow exported figure asset links');
 });
 
 hub_test('DocParser ignores misaligned translations for zh-TW markdown and quality coverage', function (): void {
@@ -493,6 +572,46 @@ hub_test('DocParser counts short English identity translations in quality gate',
 
     hub_test_assert(abs((float) ($quality['metrics']['translation_identity_ratio'] ?? 0) - 1.0) < 0.00001, 'short English identity must count toward identity ratio');
     hub_test_assert(($quality['status'] ?? '') !== 'completed', 'short English identity must keep quality gate non-completed');
+});
+
+hub_test('DocParser does not penalize Chinese source text that remains unchanged for zh-TW output', function (): void {
+    $docir = hub_docparser_build_docir([
+        'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
+        'blocks' => [
+            ['id' => 'raw-1', 'page' => 1, 'order' => 1, 'type' => 'paragraph', 'text' => '前言', 'bbox' => [10, 10, 80, 30]],
+        ],
+        'figures' => [],
+    ], [
+        'target_language' => 'zh-TW',
+        'translation_required' => true,
+    ]);
+    $docir['blocks'][0]['translation'] = [
+        'language' => 'zh-TW',
+        'text' => '前言',
+        'source_block_id' => 'p1-b1',
+    ];
+
+    $outputs = hub_docparser_render_outputs($docir, ['target_language' => 'zh-TW']);
+    $fixture = [
+        'expected_page_count_min' => 1,
+        'minimum_heading_count' => 0,
+        'minimum_table_count' => 0,
+        'expected_figure_count_min' => 0,
+        'required_toc_titles' => [],
+        'required_translations' => [],
+        'protected_tokens' => [],
+        'quality_thresholds' => [
+            'page_record_coverage' => 1.0,
+            'block_provenance_coverage' => 1.0,
+            'required_artifact_integrity' => 1.0,
+            'translation_block_coverage' => 1.0,
+            'translation_identity_ratio_max' => 0.10,
+            'protected_token_preservation' => 1.0,
+        ],
+    ];
+    $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
+
+    hub_test_assert((float)($quality['metrics']['translation_identity_ratio'] ?? 1) === 0.0, 'Chinese identity text should not count as fake translation for zh-TW');
 });
 
 hub_test('DocParser quality gate keeps fallback markdown output out of completed status', function (): void {

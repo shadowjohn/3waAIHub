@@ -129,9 +129,10 @@ function hub_run_docparser_parse_task(PDO $db, array $task): void
         'profile' => $profile,
         'target_language' => $targetLanguage,
     ]);
+    $docir = hub_docparser_extract_figure_assets($inputFile, $docir, hub_task_result_dir($taskId) . '/docparser/assets/figures');
     hub_update_task_progress($db, $taskId, 55);
 
-    $docir = hub_docparser_translate_blocks($db, $docir, $input);
+    $docir = hub_docparser_translate_blocks($db, $docir, $input, $taskId);
     $outputs = hub_docparser_render_outputs($docir, ['target_language' => $targetLanguage]);
     $fixture = json_decode((string)file_get_contents(HUB_ROOT . '/packs/docparser/acceptance/' . $profile . '_v0.1.json'), true) ?: [];
     $quality = hub_docparser_quality_report($docir, $outputs, $fixture);

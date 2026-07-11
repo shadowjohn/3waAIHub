@@ -4,11 +4,8 @@
   "minimum_heading_count": 1,
   "expected_figure_count_min": 0,
   "minimum_table_count": 0,
-  "required_toc_titles": ["General Information"],
-  "required_translations": {
-    "Inspection": "檢查",
-    "Main Jet": "主噴油嘴"
-  },
+  "required_toc_titles": [],
+  "required_translations": {},
   "protected_tokens": ["FZR150", "M.J.", "#97.5", "N·m", "rpm", "91201-KV3-831"],
   "quality_thresholds": {
     "page_record_coverage": 1.0,

@@ -20,7 +20,7 @@
     "health_path": "/health",
     "invoke_path": "/v1/parse",
     "methods": ["POST"],
-    "timeout_sec": 180,
+    "timeout_sec": 1800,
     "max_upload_mb": 100
   },
   "hardware": {

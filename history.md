@@ -2093,3 +2093,49 @@ Verified:
 - Gateway TTS request returned `mock=false` and `real_inference_requested=true`.
 - Generated WAV verified as 16-bit mono 48kHz PCM.
 - `php scripts/run_tests.php` PASS with 99 tests.
+
+## PhaseDoc-1B DocParser Real-Service Readiness
+
+Validated DocParser against a real NSR maintenance manual under `/DATA/docs/`.
+
+Fixed real-service issues found during the run:
+
+- Increased `structure-ppstructurev3` gateway timeout from 180s to 1800s for real multi-page manuals.
+- Added DocParser support for PP-StructureV3 real JSON shape:
+  - `parsing_res_list`
+  - `block_label`
+  - `block_content`
+  - `block_bbox`
+  - `block_order`
+- Added oversized translation block splitting before calling TranslateGemma to avoid 413 responses.
+- Added worker progress updates during long DocParser translation runs.
+- Made the default `technical_manual` acceptance fixture generic instead of tied to a fixed English `General Information` sample.
+- Adjusted translation identity quality logic so Chinese source text kept as zh-TW is not treated as fake translation.
+- Added PDF figure crop extraction from DocIR bbox via `pdftoppm` + GD.
+- Linked extracted figure PNG assets from DocParser HTML / Markdown exports.
+- Registered figure PNGs as task artifacts.
+- Fixed local DocParser asset link quality checks for `assets/figures/*.png`.
+
+Verified:
+
+- Input: `/DATA/docs/NSR維修手冊.pdf`
+- Successful task: `10`
+- Pages: 79
+- DocIR blocks: 852
+- Headings: 194
+- Tables: 23
+- Figure assets: 144
+- `source_kind=ppstructure_document_json`
+- `structure_mock=false`
+- `translation_block_coverage=0.997080291970803`
+- `translation_identity_ratio=0.09635036496350365`
+- `php scripts/docparser_acceptance.php --task-id=10` PASS.
+- `php scripts/run_tests.php` PASS with 126 tests.
+
+Not completed in this phase:
+
+- FZR 335-page full-manual run.
+- Image OCR overlay.
+- Technical drawing understanding.
+- VLM review.
+- Manual correction UI.

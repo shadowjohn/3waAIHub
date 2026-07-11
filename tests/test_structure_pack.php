@@ -10,6 +10,7 @@ hub_test('PP-StructureV3 pack exposes L4 document parser contract', function ():
     hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'PP-StructureV3 target level mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'structure', 'PP-StructureV3 default mode mismatch');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/v1/parse', 'PP-StructureV3 gateway endpoint mismatch');
+    hub_test_assert((int)($manifest['gateway']['timeout_sec'] ?? 0) >= 1800, 'PP-StructureV3 gateway timeout must allow long PDF manuals');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'async_task', 'PP-StructureV3 should declare async_task execution');
 
     $base = HUB_ROOT . '/packs/structure-ppstructurev3/service';
