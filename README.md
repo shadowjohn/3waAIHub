@@ -207,7 +207,7 @@ cd /DATA/3waAIHub
 sudo ./scripts/install_command_worker_cron.sh
 ```
 
-系統 cron 會每分鐘呼叫專案內的 `crontab/1min.sh`。這支 script 自己使用 `flock` 防重入，並在同一分鐘內用短 delay loop 執行 `scripts/command_worker.php --limit=5`。
+系統 cron 會每分鐘呼叫專案內的 `crontab/1min.sh`。這支 script 自己使用 `flock` 防重入，並在同一分鐘內用短 delay loop 執行 `scripts/command_worker.php --limit=5` 與 `scripts/task_worker.php --limit=5`。
 
 預設 cron 使用 `root` 執行，最穩定。若要改用可信任本機帳號，例如 `john`：
 

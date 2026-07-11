@@ -1,5 +1,22 @@
 # 3waAIHub History
 
+## Task Worker Cron Enablement
+
+Fixed queued async AI tasks not being consumed by the installed 1-minute worker loop.
+
+Implemented:
+
+- `crontab/1min.sh` now runs both:
+  - `scripts/command_worker.php`
+  - `scripts/task_worker.php`
+- Added `TASK_WORKER_LIMIT` support to the cron installer.
+- Updated README worker description.
+
+Reason:
+
+- Docker/service background jobs used `command_worker.php`.
+- DocParser / Structure async API tasks use `tasks` and require `task_worker.php`.
+
 ## DocParser Async API DX Fix
 
 Fixed external DocParser integration discoverability after real cross-host testing.
