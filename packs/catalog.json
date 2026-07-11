@@ -4,7 +4,7 @@
     {
       "id": "ocr-ppocrv5",
       "name": "PP-OCRv5 OCR Service",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "ocr",
       "description": "OCR service powered by PaddleOCR PP-OCRv5.",
       "path": "packs/ocr-ppocrv5",
@@ -53,6 +53,15 @@
       "category": "audio",
       "description": "Experimental local text-to-speech service powered by OpenBMB VoxCPM2.",
       "path": "packs/tts-voxcpm2",
+      "featured": true
+    },
+    {
+      "id": "structure-ppstructurev3",
+      "name": "PP-StructureV3 Document Parser",
+      "version": "0.1.0",
+      "category": "document",
+      "description": "Experimental document parsing pack for PDF and document image to Markdown/JSON workflows.",
+      "path": "packs/structure-ppstructurev3",
       "featured": true
     }
   ]

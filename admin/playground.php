@@ -13,6 +13,7 @@ function hub_playground_profiles(): array
         'yolo' => ['label' => 'YOLO', 'method' => 'POST', 'kind' => 'image'],
         'sam3' => ['label' => 'SAM3', 'method' => 'POST', 'kind' => 'sam3'],
         'tts' => ['label' => 'TTS', 'method' => 'POST', 'kind' => 'json'],
+        'structure' => ['label' => 'Structure', 'method' => 'POST', 'kind' => 'document'],
     ];
 }
 
@@ -103,6 +104,12 @@ function hub_playground_request_payload(string $mode): array
     }
     if (in_array($mode, ['ocr', 'yolo'], true)) {
         return ['real_inference' => !empty($_POST['real_inference']) ? 1 : 0];
+    }
+    if ($mode === 'structure') {
+        return [
+            'output_format' => trim((string)($_POST['output_format'] ?? 'both')) ?: 'both',
+            'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
+        ];
     }
 
     return [];
@@ -245,11 +252,11 @@ function hub_playground_execute(string $mode, string $token): array
             $options[CURLOPT_HTTPHEADER] = $headers;
             $options[CURLOPT_POSTFIELDS] = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         } else {
-            $fieldName = $mode === 'sam3' ? 'image' : 'image';
+            $fieldName = $mode === 'structure' ? 'file' : 'image';
             $file = $_FILES[$fieldName] ?? null;
             if (!is_array($file) || (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
                 curl_close($ch);
-                return ['ok' => false, 'error' => 'missing_image', 'message' => '請選擇圖片檔。'];
+                return ['ok' => false, 'error' => 'missing_file', 'message' => $mode === 'structure' ? '請選擇 PDF 或文件圖片。' : '請選擇圖片檔。'];
             }
             $payload[$fieldName] = new CURLFile(
                 (string)$file['tmp_name'],
@@ -442,9 +449,17 @@ JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
 
-    $field = 'image';
+    $field = $mode === 'structure' ? 'file' : 'image';
     $extra = $mode === 'sam3' ? " \\\n  -F prompt_type=auto \\\n  -F output_format=metadata" : '';
-    $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: multipart/form-data\" \\\n  -F {$field}=@sample.png \\\n  -F real_inference=0{$extra}";
+    $sampleFile = $mode === 'structure' ? 'sample.pdf' : 'sample.png';
+    $outputFormat = $mode === 'structure' ? 'both' : 'metadata';
+    $realInference = $mode === 'structure' ? '1' : '0';
+    $phpExtra = $mode === 'sam3' ? "        'prompt_type' => 'auto',\n" : '';
+    $jsExtra = $mode === 'sam3' ? "form.append('prompt_type', 'auto');\n" : '';
+    $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: multipart/form-data\" \\\n  -F {$field}=@sample.png \\\n  -F real_inference={$realInference}{$extra}";
+    if ($mode === 'structure') {
+        $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: multipart/form-data\" \\\n  -F {$field}=@{$sampleFile} \\\n  -F output_format=both \\\n  -F real_inference=1";
+    }
     $php = <<<PHP
 \$ch = curl_init($phpUrl);
 curl_setopt_array(\$ch, [
@@ -452,10 +467,9 @@ curl_setopt_array(\$ch, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>'],
     CURLOPT_POSTFIELDS => [
-        '$field' => new CURLFile('/path/to/sample.png'),
-        'real_inference' => '0',
-        'prompt_type' => 'auto',
-        'output_format' => 'metadata',
+        '$field' => new CURLFile('/path/to/$sampleFile'),
+        'real_inference' => '$realInference',
+{$phpExtra}        'output_format' => '$outputFormat',
     ],
 ]);
 echo curl_exec(\$ch);
@@ -463,9 +477,8 @@ PHP;
     $js = <<<JS
 const form = new FormData();
 form.append('$field', fileInput.files[0]);
-form.append('real_inference', '0');
-form.append('prompt_type', 'auto');
-form.append('output_format', 'metadata');
+form.append('real_inference', '$realInference');
+{$jsExtra}form.append('output_format', '$outputFormat');
 const res = await fetch($jsUrl, {
   method: 'POST',
   headers: { Authorization: 'Bearer <TOKEN>' },
@@ -506,7 +519,7 @@ hub_admin_header('API 測試場', $user);
     <h1>API 測試場</h1>
     <p class="muted">後台 server side 呼叫本機 <code>api.php</code>。Bearer token 只用於本次測試，不保存；範例固定使用 <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong>需要 Bearer Token</strong>。還沒有 token 時，請先 <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>">前往 API 金鑰建立</a>。</p>
-    <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code></p>
+    <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -615,6 +628,17 @@ hub_admin_header('API 測試場', $user);
                 <label>image</label>
                 <input name="image" type="file" accept="image/*">
                 <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
+            <?php elseif ($selectedMode === 'structure'): ?>
+                <label>file</label>
+                <input name="file" type="file" accept="application/pdf,image/*">
+                <label>output_format</label>
+                <select name="output_format">
+                    <option value="both">both</option>
+                    <option value="markdown">markdown</option>
+                    <option value="json">json</option>
+                </select>
+                <label><input name="real_inference" type="checkbox" value="1" checked> 真實解析</label>
+                <p class="muted">L4 支援真 PP-StructureV3 解析 PDF 或文件圖片；大型 PDF 建議走 task_submit 的 structure_parse 佇列。</p>
             <?php elseif ($selectedMode === 'sam3'): ?>
                 <label>image</label>
                 <input name="image" type="file" accept="image/*">

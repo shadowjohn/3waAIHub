@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 function hub_allowed_task_types(): array
 {
-    return ['demo_task'];
+    return ['demo_task', 'structure_parse'];
 }
 
 function hub_default_task_queues(): array
@@ -50,6 +50,31 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
     ]);
 
     return (int)$db->lastInsertId();
+}
+
+function hub_update_task_input(PDO $db, int $taskId, array $input): void
+{
+    $inputJson = json_encode($input, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($inputJson === false) {
+        throw new RuntimeException('Cannot encode task input.');
+    }
+
+    $stmt = $db->prepare('UPDATE tasks SET input_json = :input_json, updated_at = :updated_at WHERE id = :id');
+    $stmt->execute([
+        ':input_json' => $inputJson,
+        ':updated_at' => hub_now(),
+        ':id' => $taskId,
+    ]);
+}
+
+function hub_update_task_progress(PDO $db, int $taskId, int $progress): void
+{
+    $stmt = $db->prepare('UPDATE tasks SET progress = :progress, updated_at = :updated_at WHERE id = :id');
+    $stmt->execute([
+        ':progress' => max(0, min(99, $progress)),
+        ':updated_at' => hub_now(),
+        ':id' => $taskId,
+    ]);
 }
 
 function hub_get_task(PDO $db, int $taskId): ?array
@@ -183,6 +208,43 @@ function hub_store_task_result_artifact(PDO $db, int $taskId, string $resultJson
         'path' => $path,
         'bytes' => strlen($resultJson),
     ];
+}
+
+function hub_store_structure_task_artifacts(PDO $db, int $taskId, array $result): array
+{
+    $dir = hub_task_result_dir($taskId);
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create task result directory.');
+    }
+
+    $summary = [];
+    if (array_key_exists('markdown', $result)) {
+        $markdownPath = $dir . '/structure_result.md';
+        if (file_put_contents($markdownPath, (string)$result['markdown'], LOCK_EX) === false) {
+            throw new RuntimeException('Cannot write structure markdown artifact.');
+        }
+        $summary['markdown'] = [
+            'artifact_id' => hub_register_task_artifact($db, $taskId, 'structure_result.md', $markdownPath, 'text/markdown'),
+            'bytes' => filesize($markdownPath) ?: 0,
+        ];
+    }
+
+    if (array_key_exists('document_json', $result)) {
+        $json = json_encode($result['document_json'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        if ($json === false) {
+            throw new RuntimeException('Cannot encode structure JSON artifact.');
+        }
+        $jsonPath = $dir . '/structure_result.json';
+        if (file_put_contents($jsonPath, $json . PHP_EOL, LOCK_EX) === false) {
+            throw new RuntimeException('Cannot write structure JSON artifact.');
+        }
+        $summary['json'] = [
+            'artifact_id' => hub_register_task_artifact($db, $taskId, 'structure_result.json', $jsonPath, 'application/json'),
+            'bytes' => filesize($jsonPath) ?: 0,
+        ];
+    }
+
+    return $summary;
 }
 
 function hub_prepare_task_log_message(int $taskId, string $message): string

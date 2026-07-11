@@ -1,0 +1,16 @@
+services:
+  structure-ppstructurev3:
+    build:
+      context: ./service
+    ports:
+      - "127.0.0.1:${STRUCTURE_LOCAL_PORT:-18109}:8000"
+    environment:
+      STRUCTURE_MODEL_DIR: /models/ppstructurev3
+      STRUCTURE_CACHE_DIR: /cache/ppstructurev3
+      STRUCTURE_SERVICE_DATA_DIR: /data/service
+      STRUCTURE_REAL_INFERENCE: "0"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - "${AIHUB_MODELS_DIR}/ppstructurev3:/models/ppstructurev3"
+      - "${AIHUB_CACHE_DIR}/ppstructurev3:/cache/ppstructurev3"
+      - "${SERVICE_DATA_DIR}:/data/service"

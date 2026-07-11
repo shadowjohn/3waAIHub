@@ -187,18 +187,68 @@ function hub_api_task_submit(PDO $db): array
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown task_type']);
     }
 
-    $queueName = trim((string)($_POST['queue'] ?? 'default'));
+    $queueName = trim((string)($_POST['queue'] ?? ($taskType === 'structure_parse' ? 'ocr' : 'default')));
     if (!hub_is_valid_task_queue($queueName)) {
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown queue']);
     }
 
     $priority = max(0, min(100, (int)($_POST['priority'] ?? 0)));
+    if ($taskType === 'structure_parse') {
+        return hub_api_structure_task_submit($db, $queueName, $priority);
+    }
+
     $input = $_POST;
     unset($input['task_type'], $input['queue'], $input['priority']);
 
     $taskId = hub_enqueue_task($db, $taskType, $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
 
     return hub_gateway_json(200, ['ok' => true, 'task_id' => $taskId, 'status' => 'queued']);
+}
+
+function hub_api_structure_task_submit(PDO $db, string $queueName, int $priority): array
+{
+    $file = $_FILES['file'] ?? null;
+    if (!is_array($file) || (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_file((string)($file['tmp_name'] ?? ''))) {
+        return hub_gateway_json(400, ['ok' => false, 'error' => 'file_required', 'message' => 'file upload is required']);
+    }
+
+    $filename = basename((string)($file['name'] ?? 'input.pdf'));
+    $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    if (!in_array($extension, ['pdf', 'png', 'jpg', 'jpeg', 'tif', 'tiff', 'bmp', 'webp'], true)) {
+        return hub_gateway_json(400, ['ok' => false, 'error' => 'unsupported_file_type']);
+    }
+
+    $input = [
+        'mode' => preg_match('/^[a-zA-Z0-9_-]+$/', (string)($_POST['mode'] ?? 'structure')) ? (string)($_POST['mode'] ?? 'structure') : 'structure',
+        'output_format' => in_array((string)($_POST['output_format'] ?? 'both'), ['markdown', 'json', 'both'], true) ? (string)($_POST['output_format'] ?? 'both') : 'both',
+        'real_inference' => '1',
+        'original_filename' => $filename,
+    ];
+
+    $taskId = hub_enqueue_task($db, 'structure_parse', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
+    $input['input_file'] = hub_store_task_upload_file($taskId, $file, $extension);
+    hub_update_task_input($db, $taskId, $input);
+
+    return hub_gateway_json(200, ['ok' => true, 'task_id' => $taskId, 'status' => 'queued']);
+}
+
+function hub_store_task_upload_file(int $taskId, array $file, string $extension): string
+{
+    $dir = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId;
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create task upload directory.');
+    }
+
+    $path = $dir . '/input.' . $extension;
+    $tmpName = (string)$file['tmp_name'];
+    $ok = is_uploaded_file($tmpName)
+        ? move_uploaded_file($tmpName, $path)
+        : copy($tmpName, $path);
+    if (!$ok) {
+        throw new RuntimeException('Cannot store task upload.');
+    }
+
+    return $path;
 }
 
 function hub_api_task_status(PDO $db): array

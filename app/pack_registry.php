@@ -427,6 +427,15 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'HOME' => $cacheDir . '/home',
             'PYTHONUNBUFFERED' => '1',
         ],
+        'structure-ppstructurev3' => [
+            'STRUCTURE_MODEL_DIR' => $modelDir,
+            'STRUCTURE_CACHE_DIR' => $cacheDir,
+            'STRUCTURE_SERVICE_DATA_DIR' => $serviceDataDir,
+            'STRUCTURE_DEVICE' => 'cpu',
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $modelDir . '/home',
+            'PYTHONUNBUFFERED' => '1',
+        ],
         default => [],
     };
 }

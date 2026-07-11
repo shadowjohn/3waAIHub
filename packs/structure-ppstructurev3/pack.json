@@ -1,0 +1,156 @@
+{
+  "schema_version": "0.1",
+  "id": "structure-ppstructurev3",
+  "name": "PP-StructureV3 Document Parser",
+  "version": "0.2.0",
+  "category": "document",
+  "type": "api_service",
+  "execution_type": "async_task",
+  "runtime_level": "L4-real-inference",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": true,
+  "default_mode": "structure",
+  "description": "L4 real inference document parser pack for PP-StructureV3 with async PDF artifact output.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/v1/parse",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 100
+  },
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": true,
+    "min_vram_mb": 0,
+    "cpu_fallback": true,
+    "min_compute_capability": "0.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "ocr",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "ppstructurev3",
+        "container_path": "/models/ppstructurev3",
+        "read_only": false
+      },
+      {
+        "type": "cache",
+        "host_subdir": "ppstructurev3",
+        "container_path": "/cache/ppstructurev3",
+        "read_only": false
+      },
+      {
+        "type": "service_data",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false
+      }
+    ]
+  },
+  "settings_schema": [
+    {
+      "key": "STRUCTURE_REAL_INFERENCE",
+      "label": "Enable real PP-StructureV3 parsing",
+      "type": "boolean",
+      "default": "1",
+      "required": true,
+      "restart_required": true,
+      "help": "L4 uses pinned PaddleOCR/PP-StructureV3 runtime for real document parsing."
+    },
+    {
+      "key": "STRUCTURE_OUTPUT_FORMAT",
+      "label": "Default output format",
+      "type": "select",
+      "default": "both",
+      "options": ["markdown", "json", "both"],
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "STRUCTURE_MAX_UPLOAD_MB",
+      "label": "Max upload MB",
+      "type": "integer",
+      "default": "100",
+      "min": 1,
+      "max": 1024,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "STRUCTURE_DEVICE",
+      "label": "PaddleOCR device",
+      "type": "select",
+      "default": "cpu",
+      "options": ["cpu", "gpu"],
+      "required": true,
+      "restart_required": true
+    }
+  ],
+  "env": [
+    {
+      "name": "STRUCTURE_MODEL_DIR",
+      "default": "/models/ppstructurev3",
+      "required": true
+    },
+    {
+      "name": "STRUCTURE_CACHE_DIR",
+      "default": "/cache/ppstructurev3",
+      "required": true
+    },
+    {
+      "name": "STRUCTURE_SERVICE_DATA_DIR",
+      "default": "/data/service",
+      "required": true
+    },
+    {
+      "name": "STRUCTURE_REAL_INFERENCE",
+      "default": "1",
+      "required": true
+    },
+    {
+      "name": "STRUCTURE_OUTPUT_FORMAT",
+      "default": "both",
+      "required": true
+    },
+    {
+      "name": "STRUCTURE_MAX_UPLOAD_MB",
+      "default": "100",
+      "required": true
+    },
+    {
+      "name": "STRUCTURE_DEVICE",
+      "default": "cpu",
+      "required": true
+    },
+    {
+      "name": "PYTHONUNBUFFERED",
+      "default": "1",
+      "required": true
+    }
+  ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "storage"
+    ]
+  },
+  "service": {
+    "default_local_port": 18109,
+    "local_port_env": "STRUCTURE_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "structure-main",
+    "compose_project": "3waaihub_structure_main"
+  }
+}

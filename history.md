@@ -1,5 +1,58 @@
 # 3waAIHub History
 
+## PhaseM-4B PP-StructureV3 L4 Real Inference Pipeline
+
+Promoted `structure-ppstructurev3` from L3 storage/mock to L4 real inference.
+
+Implemented:
+
+- Set `runtime_level=L4-real-inference`.
+- Pinned PP-StructureV3 runtime dependencies:
+  - `paddleocr[doc-parser]==3.7.0`
+  - `paddlepaddle==3.2.0`
+- Added lazy `PPStructureV3` adapter for `POST /v1/parse`.
+- Added health dependency reporting for PaddleOCR / PaddlePaddle.
+- Kept model/cache/service data mounted outside the image.
+- Added `structure_parse` task type.
+- Added PDF / document image upload storage under `data/uploads/tasks/task_{id}/`.
+- Added task worker path that calls `structure-main` and stores Markdown / JSON artifacts under `data/results/task_{id}/`.
+- Added tests for L4 manifest, version pins, task allowlist, and artifact registration.
+
+Skipped:
+
+- L5 benchmark-ready contract.
+- GPU tuning.
+- Viewer / overlay UI.
+- Batch management UI.
+
+## PhaseM-4A PP-StructureV3 L3 Storage Mock Pack
+
+Added a PP-StructureV3 document parsing HubPack entry without enabling real parsing yet.
+
+Implemented:
+
+- Added `structure-ppstructurev3` to Local HubPack Catalog.
+- Added L3 mock/storage service files:
+  - `Dockerfile`
+  - `requirements.txt`
+  - `app.py`
+  - `smoke.py`
+  - `storage_smoke.py`
+- Added `POST /v1/parse` mock contract for PDF / document image uploads.
+- Added `GET /health` storage readiness.
+- Generated service env/compose support for:
+  - `/models/ppstructurev3`
+  - `/cache/ppstructurev3`
+  - `/data/service`
+- Added `mode=structure` support to API Playground.
+
+Skipped:
+
+- Real PP-StructureV3 inference.
+- PaddleOCR version pinning.
+- PDF async task pipeline.
+- Markdown/JSON artifact workflow.
+
 ## PhaseDX-3.1 Public API Docs Open Access
 
 Changed public API docs and Agent Manifest defaults to open access.
