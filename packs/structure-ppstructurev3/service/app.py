@@ -37,11 +37,18 @@ def dependency_status() -> dict[str, Any]:
         "paddleocr_available": util.find_spec("paddleocr") is not None,
         "paddle_available": util.find_spec("paddle") is not None,
     }
-    for package in ("paddleocr", "paddlepaddle"):
+    for package in ("paddleocr",):
         try:
             status[package] = metadata.version(package)
         except metadata.PackageNotFoundError:
             status[package] = None
+    try:
+        status["paddlepaddle"] = metadata.version("paddlepaddle")
+    except metadata.PackageNotFoundError:
+        try:
+            status["paddlepaddle"] = metadata.version("paddlepaddle-gpu")
+        except metadata.PackageNotFoundError:
+            status["paddlepaddle"] = None
     return status
 
 

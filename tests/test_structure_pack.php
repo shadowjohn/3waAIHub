@@ -24,7 +24,7 @@ hub_test('PP-StructureV3 pack exposes L4 document parser contract', function ():
     }
 
     $requirements = (string)file_get_contents($base . '/requirements.txt');
-    foreach (['paddleocr[doc-parser]==3.7.0', 'paddlepaddle==3.2.0'] as $needle) {
+    foreach (['paddleocr[doc-parser]==3.7.0', 'paddlepaddle_gpu-3.3.1-cp311-cp311-linux_x86_64.whl', 'numpy>=1.24,<2.4'] as $needle) {
         hub_test_assert(str_contains($requirements, $needle), 'PP-StructureV3 requirements must pin ' . $needle);
     }
 

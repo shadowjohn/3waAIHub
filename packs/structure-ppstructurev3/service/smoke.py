@@ -5,6 +5,15 @@ import importlib.util
 import json
 
 
+def package_version(*names: str) -> str | None:
+    for name in names:
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return None
+
+
 def main() -> None:
     if importlib.util.find_spec("paddleocr") is None:
         raise SystemExit("paddleocr import spec missing")
@@ -14,9 +23,9 @@ def main() -> None:
         "ok": True,
         "service": "structure-ppstructurev3",
         "runtime_level": "L4-real-inference",
-        "fastapi": importlib.metadata.version("fastapi"),
-        "paddleocr": importlib.metadata.version("paddleocr"),
-        "paddlepaddle": importlib.metadata.version("paddlepaddle"),
+        "fastapi": package_version("fastapi"),
+        "paddleocr": package_version("paddleocr"),
+        "paddlepaddle": package_version("paddlepaddle", "paddlepaddle-gpu"),
     }, ensure_ascii=False))
 
 

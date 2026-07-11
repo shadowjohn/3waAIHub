@@ -1,5 +1,41 @@
 # 3waAIHub History
 
+## Structure-main GPU Runtime Enablement
+
+Enabled GPU runtime for the existing `structure-main` PP-StructureV3 service on the RTX 5090 host.
+
+Implemented:
+
+- Switched `structure-ppstructurev3` Docker runtime from CPU PaddlePaddle to CUDA 12.9 PaddlePaddle GPU wheel.
+- Pinned:
+  - `paddleocr[doc-parser]==3.7.0`
+  - `paddlepaddle-gpu==3.3.1` CUDA 12.9 wheel
+  - `numpy>=1.24,<2.4`
+- Updated build smoke and health reporting to accept both `paddlepaddle` and `paddlepaddle-gpu` package metadata.
+- Updated the existing runtime instance:
+  - `STRUCTURE_DEVICE=gpu`
+  - `GPU_VISIBLE_DEVICES=all`
+  - generated compose `gpus: all`
+
+Verified:
+
+- Docker GPU device request present on `3waaihub-structure-main`.
+- Paddle reports `compiled_cuda=true` and `device=gpu:0`.
+- `PPStructureV3(device="gpu")` initializes on RTX 5090 / compute capability 12.0.
+- `GET /health` returns ready with PaddlePaddle `3.3.1`.
+- NSR manual page 1 real parse PASS on GPU:
+  - first warm-up parse: about 22.7s
+  - warm parse: about 0.3s
+- NSR manual pages 1-10 real parse PASS on GPU:
+  - result_count: 10
+  - elapsed: about 3.3s
+  - markdown output: 4285 chars
+
+Note:
+
+- The previous CUDA 12.6 Paddle wheel could import, but model load failed with `Unsupported GPU architecture` because it did not include SM120 support.
+- New installs still default `STRUCTURE_DEVICE=cpu`; switch service settings to GPU only on compatible hosts.
+
 ## PhaseDoc-1A DocParser Orchestrator L4
 
 Added the DocParser technical manual PDF complete delivery plan and implementation.

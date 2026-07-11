@@ -12,7 +12,7 @@ RUN apt-get update \
 
 COPY requirements.txt .
 RUN python3 -m pip install --upgrade pip setuptools wheel \
-    && python3 -m pip install --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cpu/ -r requirements.txt \
+    && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 
 COPY smoke.py storage_smoke.py .
