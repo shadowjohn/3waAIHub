@@ -21,6 +21,8 @@ php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=yolo --case=yolo_mo
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=yolo-main --case=yolo_real_image
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=sam3 --case=sam3_mock_image
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=sam3-main --case=sam3_real_image
+php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=structure-main --case=structure_page_pdf
+php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=structure-main --case=structure_10page_pdf
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=translate-gemma12b --case=translate_mock_text
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=translate-main --case=translate_real_text
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --case=hello_api

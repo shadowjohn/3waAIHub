@@ -73,6 +73,8 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     if ($hasFixture && !is_file($fixture)) {
         throw new RuntimeException('benchmark fixture missing.');
     }
+    $fixtureField = preg_match('/^[a-zA-Z0-9_-]+$/', (string)($case['fixture_field'] ?? 'image')) ? (string)($case['fixture_field'] ?? 'image') : 'image';
+    $fixtureMime = str_ends_with(strtolower($fixture), '.pdf') ? 'application/pdf' : 'image/png';
 
     [$oldServer, $oldFiles, $oldPost] = [$_SERVER, $_FILES, $_POST];
     $_SERVER['REQUEST_METHOD'] = strtoupper((string)($case['method'] ?? $contract['method'] ?? 'POST'));
@@ -80,9 +82,9 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     $_SERVER['CONTENT_TYPE'] = (string)($case['content_type'] ?? $contract['content_type'] ?? '');
     $_SERVER['CONTENT_LENGTH'] = $jsonBody !== '' ? (string)strlen($jsonBody) : ($hasFixture ? (string)filesize($fixture) : '0');
     $_FILES = $hasFixture ? [
-        'image' => [
+        $fixtureField => [
             'name' => basename($fixture),
-            'type' => 'image/png',
+            'type' => $fixtureMime,
             'tmp_name' => $fixture,
             'error' => UPLOAD_ERR_OK,
             'size' => filesize($fixture),
@@ -122,7 +124,14 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     $minDetections = (int)($case['expected_min_detections'] ?? 0);
     $detectionCount = is_array($payload['detections'] ?? null) ? count($payload['detections']) : 0;
     $maskCount = is_array($payload['masks'] ?? null) ? count($payload['masks']) : 0;
+    $resultCount = (int)($payload['result_count'] ?? 0);
     $contractFailed = (int)$response['status'] !== 200 || $missing !== [] || $blockCount < $minBlocks || $detectionCount < $minDetections;
+    if ((int)($case['expected_min_result_count'] ?? 0) > 0 && $resultCount < (int)$case['expected_min_result_count']) {
+        $contractFailed = true;
+    }
+    if (!empty($case['expected_markdown_non_empty']) && trim((string)($payload['markdown'] ?? '')) === '') {
+        $contractFailed = true;
+    }
     if (array_key_exists('expected_mock', $case) && is_array($payload) && (bool)($payload['mock'] ?? null) !== (bool)$case['expected_mock']) {
         $contractFailed = true;
     }
@@ -169,6 +178,7 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         'block_count' => $blockCount,
         'detection_count' => $detectionCount,
         'mask_count' => $maskCount,
+        'result_count' => $resultCount,
         'mock' => is_array($payload) ? ($payload['mock'] ?? null) : null,
         'model_checkpoint' => is_array($payload['model'] ?? null) ? (string)($payload['model']['checkpoint'] ?? '') : '',
         'text_length' => is_array($payload) ? strlen((string)($payload['text'] ?? '')) : 0,

@@ -6,11 +6,11 @@
   "category": "document",
   "type": "api_service",
   "execution_type": "async_task",
-  "runtime_level": "L4-real-inference",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "structure",
-  "description": "L4 real inference document parser pack for PP-StructureV3 with async PDF artifact output.",
+  "description": "L5 benchmark-ready document parser pack for PP-StructureV3 with async PDF artifact output.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -22,6 +22,93 @@
     "methods": ["POST"],
     "timeout_sec": 1800,
     "max_upload_mb": 100
+  },
+  "l5_contract": {
+    "endpoint": "/v1/parse",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {
+          "name": "file",
+          "type": "file",
+          "required": true,
+          "max_mb": 100
+        },
+        {
+          "name": "output_format",
+          "type": "string",
+          "required": false,
+          "default": "both",
+          "enum": ["markdown", "json", "both"]
+        },
+        {
+          "name": "real_inference",
+          "type": "boolean",
+          "required": false,
+          "default": "1"
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mock", "runtime_level", "output_format", "result_count", "model", "engine", "device", "elapsed_ms"],
+      "optional_keys": ["markdown", "document_json"]
+    },
+    "errors": [
+      "bad_request",
+      "file_too_large",
+      "invalid_output_format",
+      "runtime_dependency_missing",
+      "model_load_failed",
+      "parse_failed",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 1800,
+      "max_upload_mb": 100,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "structure_page_pdf",
+          "name": "PP-StructureV3 single page PDF smoke",
+          "type": "api",
+          "mode": "structure",
+          "method": "POST",
+          "fixture": "packs/structure-ppstructurev3/demo/sample.pdf",
+          "fixture_field": "file",
+          "form": {
+            "output_format": "both"
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "output_format", "result_count", "model", "engine", "device", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_elapsed_ms_positive": true,
+          "expected_min_result_count": 1,
+          "expected_markdown_non_empty": true,
+          "real_inference": true
+        },
+        {
+          "id": "structure_10page_pdf",
+          "name": "PP-StructureV3 10 page PDF smoke",
+          "type": "api",
+          "mode": "structure",
+          "method": "POST",
+          "fixture": "packs/structure-ppstructurev3/demo/sample-10-pages.pdf",
+          "fixture_field": "file",
+          "form": {
+            "output_format": "both"
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "output_format", "result_count", "model", "engine", "device", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_elapsed_ms_positive": true,
+          "expected_min_result_count": 10,
+          "expected_markdown_non_empty": true,
+          "real_inference": true
+        }
+      ]
+    }
   },
   "hardware": {
     "gpu_required": false,
@@ -65,7 +152,7 @@
       "default": "1",
       "required": true,
       "restart_required": true,
-      "help": "L4 uses pinned PaddleOCR/PP-StructureV3 runtime for real document parsing."
+      "help": "L5 uses pinned PaddleOCR/PP-StructureV3 runtime for real document parsing."
     },
     {
       "key": "STRUCTURE_OUTPUT_FORMAT",

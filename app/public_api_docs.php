@@ -172,7 +172,7 @@ function hub_public_api_multipart_fields(array $service): array
         }
         $type = (string)($field['type'] ?? '');
         if ($type === 'file') {
-            $sample = $name === 'audio' ? 'sample.wav' : 'sample.png';
+            $sample = $name === 'audio' ? 'sample.wav' : ($name === 'file' ? 'sample.pdf' : 'sample.png');
             $fields[] = $name . '=@' . $sample;
             continue;
         }

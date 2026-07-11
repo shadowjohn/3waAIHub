@@ -1,12 +1,12 @@
 <?php
 declare(strict_types=1);
 
-hub_test('PP-StructureV3 pack exposes L4 document parser contract', function (): void {
+hub_test('PP-StructureV3 pack exposes L5 document parser contract', function (): void {
     $pack = hub_get_pack('structure-ppstructurev3');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'PP-StructureV3 pack must be valid');
 
     $manifest = $pack['manifest'];
-    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4-real-inference', 'PP-StructureV3 runtime level mismatch');
+    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L5-benchmark-ready', 'PP-StructureV3 runtime level mismatch');
     hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'PP-StructureV3 target level mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'structure', 'PP-StructureV3 default mode mismatch');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/v1/parse', 'PP-StructureV3 gateway endpoint mismatch');
@@ -19,13 +19,32 @@ hub_test('PP-StructureV3 pack exposes L4 document parser contract', function ():
     }
 
     $app = (string)file_get_contents($base . '/app.py');
-    foreach (['@app.get("/health")', '@app.post("/v1/parse")', 'PPStructureV3', 'save_to_json', 'save_to_markdown', 'runtime_dependency_missing', 'L4-real-inference'] as $needle) {
+    foreach (['@app.get("/health")', '@app.post("/v1/parse")', 'PPStructureV3', 'save_to_json', 'save_to_markdown', 'runtime_dependency_missing', 'L5-benchmark-ready'] as $needle) {
         hub_test_assert(str_contains($app, $needle), 'PP-StructureV3 app missing ' . $needle);
     }
 
     $requirements = (string)file_get_contents($base . '/requirements.txt');
     foreach (['paddleocr[doc-parser]==3.7.0', 'paddlepaddle_gpu-3.3.1-cp311-cp311-linux_x86_64.whl', 'numpy>=1.24,<2.4'] as $needle) {
         hub_test_assert(str_contains($requirements, $needle), 'PP-StructureV3 requirements must pin ' . $needle);
+    }
+
+    $contract = $manifest['l5_contract'] ?? [];
+    hub_test_assert(is_array($contract), 'PP-StructureV3 l5_contract missing');
+    foreach (['endpoint', 'method', 'content_type', 'input', 'output', 'errors', 'limits', 'benchmark'] as $field) {
+        hub_test_assert(array_key_exists($field, $contract), 'PP-StructureV3 l5_contract missing ' . $field);
+    }
+    hub_test_assert(($contract['endpoint'] ?? '') === '/v1/parse', 'PP-StructureV3 contract endpoint mismatch');
+    foreach (['ok', 'mock', 'runtime_level', 'output_format', 'result_count', 'elapsed_ms'] as $key) {
+        hub_test_assert(in_array($key, $contract['output']['required_keys'] ?? [], true), 'PP-StructureV3 contract output missing ' . $key);
+    }
+    $cases = $contract['benchmark']['cases'] ?? [];
+    hub_test_assert(in_array('structure_page_pdf', array_column($cases, 'id'), true), 'structure_page_pdf benchmark missing');
+    hub_test_assert(in_array('structure_10page_pdf', array_column($cases, 'id'), true), 'structure_10page_pdf benchmark missing');
+    foreach ($cases as $case) {
+        if (in_array($case['id'] ?? '', ['structure_page_pdf', 'structure_10page_pdf'], true)) {
+            hub_test_assert(!empty($case['real_inference']), 'Structure PDF benchmark must be real inference');
+            hub_test_assert(($case['fixture_field'] ?? '') === 'file', 'Structure PDF benchmark must upload using file field');
+        }
     }
 
     $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
@@ -37,6 +56,11 @@ hub_test('PP-StructureV3 pack exposes L4 document parser contract', function ():
 
     $worker = (string)file_get_contents(HUB_ROOT . '/scripts/task_worker.php');
     hub_test_assert(str_contains($worker, "'structure-ppstructurev3'"), 'structure worker must restrict structure_parse to PP-StructureV3 service');
+
+    $benchmark = (string)file_get_contents(HUB_ROOT . '/app/benchmarks.php');
+    foreach (['fixture_field', 'expected_min_result_count', 'expected_markdown_non_empty'] as $needle) {
+        hub_test_assert(str_contains($benchmark, $needle), 'benchmark runner missing Structure support ' . $needle);
+    }
 });
 
 hub_test('PP-StructureV3 service instance generates storage env and compose', function (): void {

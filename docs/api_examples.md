@@ -204,6 +204,34 @@ php scripts/benchmark.php --service=sam3-main --case=sam3_real_image
 php scripts/benchmark.php --service=sam3-main --case=sam3_real_polygon_image
 ```
 
+## POST Structure
+
+Status: L5 benchmark ready. `structure` 直接呼叫 PP-StructureV3 解析 PDF / 文件圖片；大型文件建議改走 `task_submit` 的 `structure_parse` 佇列。
+
+```bash
+curl -X POST "<BASE_URL>?mode=structure" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@sample.pdf" \
+  -F "output_format=both" \
+  -F "real_inference=1"
+```
+
+Contract:
+
+- Method: `POST`
+- Content-Type: `multipart/form-data`
+- Input: `file` PDF / image, max `100 MB`
+- Required output keys: `ok`, `mock`, `runtime_level`, `output_format`, `result_count`, `model`, `engine`, `device`, `elapsed_ms`
+- Optional output keys: `markdown`, `document_json`
+- Errors: `bad_request`, `file_too_large`, `invalid_output_format`, `runtime_dependency_missing`, `model_load_failed`, `parse_failed`, `gateway_timeout`
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --service=structure-main --case=structure_page_pdf
+php scripts/benchmark.php --service=structure-main --case=structure_10page_pdf
+```
+
 ## Unknown Mode
 
 unknown mode 代表 `mode` 尚未註冊到任何 service instance。

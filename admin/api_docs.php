@@ -66,6 +66,14 @@ hub_admin_header('API 文件', $user);
         $endpoint = 'api.php?mode=' . $mode;
         $contractUrl = hub_api_docs_mode_url($mode);
         $contentType = (string)($contract['content_type'] ?? '');
+        $fileField = 'image';
+        foreach (($contract['input']['fields'] ?? []) as $field) {
+            if (is_array($field) && (string)($field['type'] ?? '') === 'file' && (string)($field['name'] ?? '') !== '') {
+                $fileField = (string)$field['name'];
+                break;
+            }
+        }
+        $sampleFile = $fileField === 'audio' ? 'sample.wav' : ($fileField === 'file' ? 'sample.pdf' : 'sample.png');
         $jsonExample = [];
         foreach (($contract['benchmark']['cases'] ?? []) as $case) {
             if (is_array($case) && is_array($case['body_json'] ?? null) && empty($case['real_inference'])) {
@@ -95,7 +103,7 @@ hub_admin_header('API 文件', $user);
         <?php else: ?>
         <pre>curl -X <?= hub_h($method) ?> "<?= hub_h($contractUrl) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.png"</pre>
+  -F "<?= hub_h($fileField) ?>=@<?= hub_h($sampleFile) ?>"</pre>
         <?php endif; ?>
     <?php endforeach; ?>
 </section>

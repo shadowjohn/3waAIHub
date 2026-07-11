@@ -16,7 +16,7 @@ PIPELINE: Any | None = None
 
 
 def runtime_level() -> str:
-    return "L4-real-inference"
+    return "L5-benchmark-ready"
 
 
 def env_enabled(value: str | None) -> bool:

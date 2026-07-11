@@ -1,5 +1,36 @@
 # 3waAIHub History
 
+## PhaseM-4C PP-StructureV3 L5 Benchmark Ready
+
+Promoted `structure-ppstructurev3` from L4 real inference to L5 benchmark-ready.
+
+Implemented:
+
+- Set `runtime_level=L5-benchmark-ready`.
+- Added `/v1/parse` L5 contract.
+- Added PDF benchmark cases:
+  - `structure_page_pdf`
+  - `structure_10page_pdf`
+- Added small PDF fixtures under `packs/structure-ppstructurev3/demo/`.
+- Updated generic benchmark runner to support multipart fixture field `file`.
+- Updated API docs examples to use `file=@sample.pdf` for document parser contracts.
+
+Verified:
+
+- `structure_page_pdf` benchmark PASS:
+  - result_count: 1
+  - elapsed: about 10.8s
+- `structure_10page_pdf` benchmark PASS:
+  - result_count: 10
+  - elapsed: about 10.8s
+- Pack readiness: 11/11.
+
+Skipped:
+
+- DocParser pipeline changes.
+- Viewer / overlay UI.
+- Batch management UI.
+
 ## Structure-main GPU Runtime Enablement
 
 Enabled GPU runtime for the existing `structure-main` PP-StructureV3 service on the RTX 5090 host.
