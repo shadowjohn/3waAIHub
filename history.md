@@ -1,5 +1,26 @@
 # 3waAIHub History
 
+## DocParser Async API DX Fix
+
+Fixed external DocParser integration discoverability after real cross-host testing.
+
+Implemented:
+
+- `task_submit` responses now include:
+  - `status_url`
+  - `result_url`
+  - `log_url`
+  - `artifact_url_template`
+- Added DocParser multipart upload contract to `packs/docparser/pack.json`.
+- Public API docs now show `docparser_parse`, `file=@manual.pdf`, and task status / result URLs.
+- Client quickstart and API examples now document the async submit / poll / artifact flow.
+
+Verified:
+
+- DocParser PDF submit returns follow-up URLs.
+- Public API docs render DocParser as multipart task API instead of empty JSON.
+- `php scripts/run_tests.php` targeted checks PASS.
+
 ## PhaseM-4C PP-StructureV3 L5 Benchmark Ready
 
 Promoted `structure-ppstructurev3` from L4 real inference to L5 benchmark-ready.

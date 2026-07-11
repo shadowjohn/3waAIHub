@@ -232,6 +232,44 @@ php scripts/benchmark.php --service=structure-main --case=structure_page_pdf
 php scripts/benchmark.php --service=structure-main --case=structure_10page_pdf
 ```
 
+## POST DocParser Async
+
+Status: L4 real-service readiness. `docparser` 是非同步文件交付流程，會產出 reader HTML、雙語 HTML、Markdown、DocIR、TOC、RAG chunks、quality report 與 manifest artifacts。
+
+Submit:
+
+```bash
+curl -X POST "<BASE_URL>?mode=docparser" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "file=@manual.pdf" \
+  -F "target_language=zh-TW" \
+  -F "translation_required=1"
+```
+
+Submit response:
+
+```json
+{
+  "ok": true,
+  "task_id": 11,
+  "status": "queued",
+  "status_url": "<BASE_URL>?mode=task_status&task_id=11",
+  "result_url": "<BASE_URL>?mode=task_result&task_id=11",
+  "log_url": "<BASE_URL>?mode=task_log&task_id=11",
+  "artifact_url_template": "<BASE_URL>?mode=artifact&artifact_id={artifact_id}"
+}
+```
+
+Poll / result:
+
+```bash
+curl -H "Authorization: Bearer <TOKEN>" \
+  "<BASE_URL>?mode=task_status&task_id=11"
+
+curl -H "Authorization: Bearer <TOKEN>" \
+  "<BASE_URL>?mode=task_result&task_id=11"
+```
+
 ## Unknown Mode
 
 unknown mode 代表 `mode` 尚未註冊到任何 service instance。

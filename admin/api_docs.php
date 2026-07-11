@@ -70,10 +70,14 @@ hub_admin_header('API 文件', $user);
         foreach (($contract['input']['fields'] ?? []) as $field) {
             if (is_array($field) && (string)($field['type'] ?? '') === 'file' && (string)($field['name'] ?? '') !== '') {
                 $fileField = (string)$field['name'];
+                $sampleFile = (string)($field['example'] ?? '');
                 break;
             }
         }
-        $sampleFile = $fileField === 'audio' ? 'sample.wav' : ($fileField === 'file' ? 'sample.pdf' : 'sample.png');
+        $sampleFile = $sampleFile ?? '';
+        if ($sampleFile === '') {
+            $sampleFile = $fileField === 'audio' ? 'sample.wav' : ($fileField === 'file' ? 'sample.pdf' : 'sample.png');
+        }
         $jsonExample = [];
         foreach (($contract['benchmark']['cases'] ?? []) as $case) {
             if (is_array($case) && is_array($case['body_json'] ?? null) && empty($case['real_inference'])) {

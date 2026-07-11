@@ -11,6 +11,22 @@ Public Docs 是說明書，Bearer Token 才是鑰匙。
 5. 執行 `scripts/api_smoke_client.php` 驗證 token、mode、gateway、runtime 都可用。
 6. 外部系統複製 curl / PHP / JS fetch 範例開始介接。
 
+非同步文件任務流程：
+
+1. `POST multipart/form-data` 上傳 PDF，取得 `task_id`。
+2. 輪詢 `status_url`。
+3. 成功後讀 `result_url`。
+4. 從 result 裡的 `artifact_summary.*.artifact_id` 組 `artifact_url_template` 下載 HTML / Markdown / DocIR / RAG chunks。
+
+查詢端點：
+
+```text
+<BASE_URL>?mode=task_status&task_id=<TASK_ID>
+<BASE_URL>?mode=task_result&task_id=<TASK_ID>
+<BASE_URL>?mode=task_log&task_id=<TASK_ID>
+<BASE_URL>?mode=artifact&artifact_id=<ARTIFACT_ID>
+```
+
 ## Base URL
 
 公開文件與 Playground 會依目前網頁 host 產生 URL，例如：
@@ -126,6 +142,13 @@ console.log(await res.json());
 - request contract: `POST multipart/form-data`, field `image`, optional `prompt_type`, `points_json`, `output_format`, `real_inference`
 - response contract: JSON with `ok`, `masks`, `prompt_type`, `elapsed_ms`
 - error contract: `bad_request`, `model_not_present`, `invalid_prompt`, `inference_failed`, `inference_timeout`
+
+### `mode=docparser`
+
+- request contract: `POST multipart/form-data`, field `file`, PDF only
+- response contract: JSON with `ok`, `task_id`, `status`, `status_url`, `result_url`, `log_url`, `artifact_url_template`
+- result contract: `task_result` returns artifact summary for `reader_html`, `bilingual_html`, `markdown`, `docir`, `toc`, `rag_chunks`, `quality_report`, `manifest`
+- error contract: `file_required`, `unsupported_file_type`, `invalid_pdf_file`, `missing_token`, `token_mode_not_allowed`
 
 ## Debug
 

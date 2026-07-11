@@ -243,7 +243,33 @@ function hub_api_task_submit(PDO $db): array
 
     $taskId = hub_enqueue_task($db, $taskType, $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
 
-    return hub_gateway_json(200, ['ok' => true, 'task_id' => $taskId, 'status' => 'queued']);
+    return hub_gateway_json(200, hub_task_submit_response($taskId));
+}
+
+function hub_gateway_api_base_url(): string
+{
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
+    $host = preg_replace('/[^A-Za-z0-9.:\-\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost')) ?: 'localhost';
+    $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/3waAIHub/api.php'));
+    if (!str_ends_with($script, '/api.php')) {
+        $script = rtrim(str_replace('\\', '/', dirname($script)), '/') . '/api.php';
+    }
+
+    return ($https ? 'https' : 'http') . '://' . $host . $script;
+}
+
+function hub_task_submit_response(int $taskId): array
+{
+    $base = hub_gateway_api_base_url();
+    return [
+        'ok' => true,
+        'task_id' => $taskId,
+        'status' => 'queued',
+        'status_url' => $base . '?mode=task_status&task_id=' . $taskId,
+        'result_url' => $base . '?mode=task_result&task_id=' . $taskId,
+        'log_url' => $base . '?mode=task_log&task_id=' . $taskId,
+        'artifact_url_template' => $base . '?mode=artifact&artifact_id={artifact_id}',
+    ];
 }
 
 function hub_api_structure_task_submit(PDO $db, string $queueName, int $priority): array
@@ -270,7 +296,7 @@ function hub_api_structure_task_submit(PDO $db, string $queueName, int $priority
     $input['input_file'] = hub_store_task_upload_file($taskId, $file, $extension);
     hub_update_task_input($db, $taskId, $input);
 
-    return hub_gateway_json(200, ['ok' => true, 'task_id' => $taskId, 'status' => 'queued']);
+    return hub_gateway_json(200, hub_task_submit_response($taskId));
 }
 
 function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority): array
@@ -305,7 +331,7 @@ function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority
     $input['input_file'] = hub_store_task_upload_file($taskId, $file, 'pdf');
     hub_update_task_input($db, $taskId, $input);
 
-    return hub_gateway_json(200, ['ok' => true, 'task_id' => $taskId, 'status' => 'queued']);
+    return hub_gateway_json(200, hub_task_submit_response($taskId));
 }
 
 function hub_file_has_pdf_magic(string $path): bool

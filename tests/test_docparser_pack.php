@@ -122,6 +122,9 @@ hub_test('DocParser PDF submit stores upload and enqueues ocr task with normaliz
     try {
         $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
         $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['HTTPS'] = 'on';
+        $_SERVER['HTTP_HOST'] = 'nature.focusit.tw';
+        $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
         $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=docparser_submit';
         unset($_SERVER['CONTENT_LENGTH']);
         $_POST = [
@@ -147,6 +150,10 @@ hub_test('DocParser PDF submit stores upload and enqueues ocr task with normaliz
 
         $taskId = (int)($payload['task_id'] ?? 0);
         hub_test_assert($taskId > 0, 'PDF submit must return task id');
+        hub_test_assert(($payload['status_url'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=task_status&task_id=' . $taskId, 'PDF submit must return status_url');
+        hub_test_assert(($payload['result_url'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=task_result&task_id=' . $taskId, 'PDF submit must return result_url');
+        hub_test_assert(($payload['log_url'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=task_log&task_id=' . $taskId, 'PDF submit must return log_url');
+        hub_test_assert(($payload['artifact_url_template'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=artifact&artifact_id={artifact_id}', 'PDF submit must return artifact URL template');
 
         $task = hub_get_task($db, $taskId);
         hub_test_assert($task !== null, 'queued PDF task missing');

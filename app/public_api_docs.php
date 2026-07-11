@@ -113,6 +113,7 @@ function hub_public_api_services(PDO $db): array
         $fields = is_array($contract['input']['fields'] ?? null) ? $contract['input']['fields'] : [];
         $outputKeys = array_values(array_map('strval', is_array($contract['output']['required_keys'] ?? null) ? $contract['output']['required_keys'] : []));
         $errors = array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : []));
+        $taskApi = is_array($contract['task_api'] ?? null) ? $contract['task_api'] : [];
         $service = [
             'mode' => $mode,
             'pack_id' => (string)($manifest['id'] ?? $pack['id'] ?? ''),
@@ -124,9 +125,11 @@ function hub_public_api_services(PDO $db): array
             'url' => hub_public_api_mode_url($mode),
             'execution_type' => (string)($manifest['execution_type'] ?? ''),
             'runtime_level' => (string)($manifest['runtime_level'] ?? ''),
+            'task_type' => (string)($contract['task_type'] ?? ''),
             'input_fields' => $fields,
             'output_keys' => $outputKeys,
             'error_codes' => $errors,
+            'task_api' => hub_public_api_task_api_refs($taskApi),
         ];
         $service['examples'] = hub_public_api_examples($service);
         $services[] = $service;
@@ -134,6 +137,20 @@ function hub_public_api_services(PDO $db): array
 
     usort($services, static fn (array $a, array $b): int => strcmp((string)$a['mode'], (string)$b['mode']));
     return $services;
+}
+
+function hub_public_api_task_api_refs(array $taskApi): array
+{
+    $refs = [];
+    foreach ($taskApi as $key => $value) {
+        $ref = (string)$value;
+        if ($ref === '') {
+            continue;
+        }
+        $refs[(string)$key] = str_replace('api.php?', hub_public_api_base_url() . '?', $ref);
+    }
+
+    return $refs;
 }
 
 function hub_public_api_json_body(array $service): array
@@ -172,7 +189,10 @@ function hub_public_api_multipart_fields(array $service): array
         }
         $type = (string)($field['type'] ?? '');
         if ($type === 'file') {
-            $sample = $name === 'audio' ? 'sample.wav' : ($name === 'file' ? 'sample.pdf' : 'sample.png');
+            $sample = (string)($field['example'] ?? '');
+            if ($sample === '') {
+                $sample = $name === 'audio' ? 'sample.wav' : ($name === 'file' ? 'sample.pdf' : 'sample.png');
+            }
             $fields[] = $name . '=@' . $sample;
             continue;
         }
@@ -305,11 +325,18 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
                     <tr><th>content-type</th><td><code><?= hub_h((string)$service['content_type']) ?></code></td></tr>
                     <tr><th>runtime_level</th><td><code><?= hub_h((string)$service['runtime_level']) ?></code></td></tr>
                     <tr><th>execution_type</th><td><code><?= hub_h((string)$service['execution_type']) ?></code></td></tr>
+                    <?php if (($service['task_type'] ?? '') !== ''): ?>
+                        <tr><th>task_type</th><td><code><?= hub_h((string)$service['task_type']) ?></code></td></tr>
+                    <?php endif; ?>
                 </table>
                 <h3>Request fields</h3>
                 <pre><?= hub_h(json_encode($service['input_fields'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <h3>Response keys</h3>
                 <pre><?= hub_h(json_encode($service['output_keys'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php if (($service['task_api'] ?? []) !== []): ?>
+                    <h3>Task status / result</h3>
+                    <pre><?= hub_h(json_encode($service['task_api'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php endif; ?>
                 <h3>Error codes</h3>
                 <pre><?= hub_h(implode(', ', $service['error_codes'])) ?></pre>
                 <h3>curl 範例</h3>

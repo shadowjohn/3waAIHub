@@ -22,6 +22,58 @@
     "timeout_sec": 1800,
     "max_upload_mb": 500
   },
+  "l5_contract": {
+    "endpoint": "POST api.php?mode=docparser",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "task_type": "docparser_parse",
+    "input": {
+      "fields": [
+        {
+          "name": "file",
+          "type": "file",
+          "required": true,
+          "extensions": ["pdf"],
+          "max_mb": 500,
+          "example": "manual.pdf"
+        },
+        {
+          "name": "target_language",
+          "type": "string",
+          "required": false,
+          "default": "zh-TW"
+        },
+        {
+          "name": "translation_required",
+          "type": "boolean",
+          "required": false,
+          "default": "1"
+        },
+        {
+          "name": "structure_mode",
+          "type": "string",
+          "required": false,
+          "default": "structure"
+        },
+        {
+          "name": "translate_mode",
+          "type": "string",
+          "required": false,
+          "default": "translate"
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "task_id", "status", "status_url", "result_url", "log_url", "artifact_url_template"]
+    },
+    "task_api": {
+      "status": "GET api.php?mode=task_status&task_id={task_id}",
+      "result": "GET api.php?mode=task_result&task_id={task_id}",
+      "log": "GET api.php?mode=task_log&task_id={task_id}",
+      "artifact": "GET api.php?mode=artifact&artifact_id={artifact_id}"
+    },
+    "errors": ["file_required", "unsupported_file_type", "invalid_pdf_file", "unknown_queue", "missing_token", "token_mode_not_allowed"]
+  },
   "hardware": {
     "gpu_required": false,
     "gpu_supported": false,

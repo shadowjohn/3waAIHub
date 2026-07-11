@@ -12,11 +12,16 @@ hub_test('PhaseDX-4 client quickstart and examples are integration ready', funct
         'public_api_docs.php',
         'api_manifest.json.php',
         'scripts/api_smoke_client.php',
+        '非同步文件任務流程',
         'curl',
         'PHP',
         'JS fetch',
         '<BASE_URL>',
         '<TOKEN>',
+        'mode=docparser',
+        'task_status',
+        'task_result',
+        'artifact_url_template',
     ] as $needle) {
         hub_test_assert(str_contains($quickstart, $needle), 'client quickstart missing ' . $needle);
     }
