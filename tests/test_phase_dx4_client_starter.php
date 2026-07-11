@@ -22,6 +22,7 @@ hub_test('PhaseDX-4 client quickstart and examples are integration ready', funct
         'task_status',
         'task_result',
         'artifact_url_template',
+        'figure_assets.items',
     ] as $needle) {
         hub_test_assert(str_contains($quickstart, $needle), 'client quickstart missing ' . $needle);
     }

@@ -17,6 +17,7 @@ Public Docs 是說明書，Bearer Token 才是鑰匙。
 2. 輪詢 `status_url`。
 3. 成功後讀 `result_url`。
 4. 從 result 裡的 `artifact_summary.*.artifact_id` 組 `artifact_url_template` 下載 HTML / Markdown / DocIR / RAG chunks。
+5. 圖片 crop 從 `artifact_summary.figure_assets.items[].artifact_id` 逐張下載。
 
 查詢端點：
 
@@ -148,6 +149,7 @@ console.log(await res.json());
 - request contract: `POST multipart/form-data`, field `file`, PDF only
 - response contract: JSON with `ok`, `task_id`, `status`, `status_url`, `result_url`, `log_url`, `artifact_url_template`
 - result contract: `task_result` returns artifact summary for `reader_html`, `bilingual_html`, `markdown`, `docir`, `toc`, `rag_chunks`, `quality_report`, `manifest`
+- figure contract: `artifact_summary.figure_assets.items[]` returns `figure_id`, `block_id`, `page`, `bbox`, `caption`, `asset_path`, `artifact_id`, `bytes`
 - error contract: `file_required`, `unsupported_file_type`, `invalid_pdf_file`, `missing_token`, `token_mode_not_allowed`
 
 ## Debug

@@ -320,6 +320,53 @@ hub_test('DocParser task artifacts store complete delivery outputs', function ()
     }
 });
 
+hub_test('DocParser figure assets expose per-crop artifact ids', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, [
+        'profile' => 'technical_manual',
+        'input_file' => '/tmp/input.pdf',
+    ], null, '127.0.0.1');
+
+    $figurePath = hub_task_result_dir($taskId) . '/docparser/assets/figures/fig-p1-1.png';
+    if (!is_dir(dirname($figurePath)) && !mkdir(dirname($figurePath), 0775, true) && !is_dir(dirname($figurePath))) {
+        throw new RuntimeException('Cannot create test figure directory.');
+    }
+    file_put_contents($figurePath, 'png-bytes');
+
+    $summary = hub_store_docparser_task_artifacts($db, $taskId, [
+        'manifest' => ['status' => 'completed'],
+        'reader_html' => '<html></html>',
+        'bilingual_html' => '<html></html>',
+        'markdown' => "![figure](../assets/figures/fig-p1-1.png)\n",
+        'docir' => [
+            'schema' => '3wa-docir-v0.1',
+            'pages' => [['page' => 1]],
+            'blocks' => [['id' => 'p1-b1', 'type' => 'figure', 'asset_path' => 'assets/figures/fig-p1-1.png']],
+            'figures' => [[
+                'id' => 'fig-p1-1',
+                'block_id' => 'p1-b1',
+                'page' => 1,
+                'bbox' => [1, 2, 3, 4],
+                'caption' => 'RC valve figure',
+                'asset_path' => 'assets/figures/fig-p1-1.png',
+            ]],
+        ],
+        'toc' => [],
+        'rag_chunks' => [],
+        'quality_report' => ['status' => 'completed'],
+    ]);
+
+    $items = $summary['figure_assets']['items'] ?? [];
+    hub_test_assert(count($items) === 1, 'figure_assets must include one item');
+    hub_test_assert((int)($items[0]['artifact_id'] ?? 0) > 0, 'figure item artifact_id missing');
+    hub_test_assert(($items[0]['figure_id'] ?? '') === 'fig-p1-1', 'figure item figure_id mismatch');
+    hub_test_assert(($items[0]['block_id'] ?? '') === 'p1-b1', 'figure item block_id mismatch');
+    hub_test_assert(($items[0]['asset_path'] ?? '') === 'assets/figures/fig-p1-1.png', 'figure item asset_path mismatch');
+
+    $docir = json_decode((string)file_get_contents((string)$summary['docir']['path']), true);
+    hub_test_assert((int)($docir['figures'][0]['artifact_id'] ?? 0) === (int)$items[0]['artifact_id'], 'DocIR figure artifact_id mismatch');
+});
+
 hub_test('DocParser worker translation helper posts JSON explicitly', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/app/docparser.php');
     hub_test_assert(str_contains($source, 'CURLOPT_POST => true'), 'DocParser translation helper must force POST');

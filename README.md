@@ -711,6 +711,7 @@ Submit response includes task follow-up links:
 - `result_url`
 - `log_url`
 - `artifact_url_template`
+- figure crops are listed at `artifact_summary.figure_assets.items[]` with per-image `artifact_id`
 
 PhaseDoc-1B real-service readiness adds:
 

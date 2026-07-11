@@ -1,5 +1,23 @@
 # 3waAIHub History
 
+## DocParser Figure Artifact IDs
+
+Exposed per-crop figure artifact IDs for downstream visual RAG.
+
+Implemented:
+
+- `artifact_summary.figure_assets.items[]` now includes:
+  - `figure_id`
+  - `block_id`
+  - `page`
+  - `bbox`
+  - `caption`
+  - `asset_path`
+  - `artifact_id`
+  - `bytes`
+- `normalized/docir-v0.1.json` figures now include the registered `artifact_id`.
+- Updated client quickstart and API examples.
+
 ## Task Worker Cron Enablement
 
 Fixed queued async AI tasks not being consumed by the installed 1-minute worker loop.

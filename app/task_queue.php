@@ -265,12 +265,40 @@ function hub_store_docparser_task_artifacts(PDO $db, int $taskId, array $result)
         return $json . "\n";
     };
 
+    $docir = is_array($result['docir'] ?? null) ? $result['docir'] : [];
+    $figureAssets = [];
+    foreach (($docir['figures'] ?? []) as $index => $figure) {
+        if (!is_array($figure)) {
+            continue;
+        }
+        $relative = (string)($figure['asset_path'] ?? '');
+        if ($relative === '' || str_contains($relative, '..')) {
+            continue;
+        }
+        $path = $base . '/' . ltrim($relative, '/');
+        if (!is_file($path)) {
+            continue;
+        }
+        $artifactId = hub_register_task_artifact($db, $taskId, 'docparser/' . ltrim($relative, '/'), $path, 'image/png');
+        $docir['figures'][$index]['artifact_id'] = $artifactId;
+        $figureAssets[] = [
+            'figure_id' => (string)($figure['id'] ?? ''),
+            'block_id' => (string)($figure['block_id'] ?? ''),
+            'page' => (int)($figure['page'] ?? 0),
+            'bbox' => is_array($figure['bbox'] ?? null) ? $figure['bbox'] : [],
+            'caption' => (string)($figure['caption'] ?? ''),
+            'asset_path' => $relative,
+            'artifact_id' => $artifactId,
+            'bytes' => filesize($path) ?: 0,
+        ];
+    }
+
     $files = [
         'manifest' => ['manifest.json', $encode($result['manifest'] ?? [], 'manifest'), 'application/json'],
         'reader_html' => ['exports/index.zh-TW.html', (string)($result['reader_html'] ?? ''), 'text/html'],
         'bilingual_html' => ['exports/index.bilingual.html', (string)($result['bilingual_html'] ?? ''), 'text/html'],
         'markdown' => ['exports/document.zh-TW.md', (string)($result['markdown'] ?? ''), 'text/markdown'],
-        'docir' => ['normalized/docir-v0.1.json', $encode($result['docir'] ?? [], 'docir'), 'application/json'],
+        'docir' => ['normalized/docir-v0.1.json', $encode($docir, 'docir'), 'application/json'],
         'toc' => ['normalized/toc.json', $encode($result['toc'] ?? [], 'toc'), 'application/json'],
         'rag_chunks' => ['exports/rag_chunks.json', $encode($result['rag_chunks'] ?? [], 'rag_chunks'), 'application/json'],
         'quality_report' => ['exports/quality-report.json', $encode($result['quality_report'] ?? [], 'quality_report'), 'application/json'],
@@ -289,29 +317,11 @@ function hub_store_docparser_task_artifacts(PDO $db, int $taskId, array $result)
         ];
     }
 
-    $figureAssets = [];
-    foreach (($result['docir']['figures'] ?? []) as $figure) {
-        if (!is_array($figure)) {
-            continue;
-        }
-        $relative = (string)($figure['asset_path'] ?? '');
-        if ($relative === '' || str_contains($relative, '..')) {
-            continue;
-        }
-        $path = $base . '/' . ltrim($relative, '/');
-        if (!is_file($path)) {
-            continue;
-        }
-        $figureAssets[] = [
-            'artifact_id' => hub_register_task_artifact($db, $taskId, 'docparser/' . ltrim($relative, '/'), $path, 'image/png'),
-            'path' => $path,
-            'bytes' => filesize($path) ?: 0,
-        ];
-    }
     if ($figureAssets !== []) {
         $summary['figure_assets'] = [
             'count' => count($figureAssets),
             'bytes' => array_sum(array_column($figureAssets, 'bytes')),
+            'items' => $figureAssets,
         ];
     }
 

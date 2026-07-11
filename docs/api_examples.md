@@ -270,6 +270,13 @@ curl -H "Authorization: Bearer <TOKEN>" \
   "<BASE_URL>?mode=task_result&task_id=11"
 ```
 
+Figure crop download:
+
+```text
+artifact_summary.figure_assets.items[].artifact_id
+<BASE_URL>?mode=artifact&artifact_id=<FIGURE_ARTIFACT_ID>
+```
+
 ## Unknown Mode
 
 unknown mode 代表 `mode` 尚未註冊到任何 service instance。
