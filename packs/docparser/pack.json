@@ -1,0 +1,55 @@
+{
+  "schema_version": "0.1",
+  "id": "docparser",
+  "name": "3waAIHub DocParser",
+  "version": "0.1.0",
+  "category": "document",
+  "type": "orchestrator",
+  "execution_type": "async_task",
+  "runtime_level": "L4-orchestrator-complete-delivery",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": true,
+  "default_mode": "docparser",
+  "description": "Technical manual PDF complete delivery orchestrator for DocIR, HTML, Markdown, RAG and quality reports.",
+  "runtime": {
+    "kind": "internal_task",
+    "default_internal_port": 0
+  },
+  "gateway": {
+    "health_path": "",
+    "invoke_path": "task_submit:docparser_parse",
+    "methods": ["POST"],
+    "timeout_sec": 1800,
+    "max_upload_mb": 500
+  },
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": false,
+    "min_vram_mb": 0,
+    "cpu_fallback": true,
+    "min_compute_capability": "0.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "ocr",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": []
+  },
+  "settings_schema": [
+    {"key": "DOCPARSER_STRUCTURE_MODE", "label": "Structure mode", "type": "text", "default": "structure", "required": true, "restart_required": false},
+    {"key": "DOCPARSER_TRANSLATE_MODE", "label": "Translate mode", "type": "text", "default": "translate", "required": false, "restart_required": false},
+    {"key": "DOCPARSER_TARGET_LANGUAGE", "label": "Target language", "type": "select", "default": "zh-TW", "options": ["zh-TW", "source"], "required": true, "restart_required": false},
+    {"key": "DOCPARSER_TRANSLATION_REQUIRED", "label": "Translation required", "type": "boolean", "default": "1", "required": true, "restart_required": false},
+    {"key": "DOCPARSER_PROFILE", "label": "Profile", "type": "select", "default": "technical_manual", "options": ["technical_manual"], "required": true, "restart_required": false}
+  ],
+  "env": [],
+  "preflight": {
+    "checks": ["storage"]
+  },
+  "install": {
+    "default_service_key": "docparser-main",
+    "compose_project": "3waaihub_docparser_main"
+  }
+}

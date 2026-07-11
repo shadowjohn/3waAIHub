@@ -171,6 +171,11 @@ function hub_service_image_tag(array $service): string
     return hub_pack_image_tag((string)($service['service_key'] ?? $service['mode']), (string)($service['pack_version'] ?? 'latest'));
 }
 
+function hub_internal_task_result(string $message): array
+{
+    return ['exit_code' => 0, 'stdout' => $message, 'stderr' => '', 'output' => $message];
+}
+
 function hub_service_build_command(array $service): array
 {
     return hub_compose_command($service, ['build', '--progress=plain']);
@@ -200,6 +205,12 @@ function hub_compose_status_from_ps(string $output): string
 
 function hub_refresh_service_status(PDO $db, array $service): string
 {
+    if (hub_service_is_internal_task($service)) {
+        $status = (int)($service['enabled'] ?? 0) === 1 ? 'running' : 'stopped';
+        hub_update_service_status($db, (int)$service['id'], $status);
+        return $status;
+    }
+
     $result = hub_run_command(hub_compose_command($service, ['ps']), 20, hub_compose_env($service));
     if ($result['exit_code'] !== 0) {
         hub_add_service_log($db, (int)$service['id'], 'status', $result['output'], (int)$result['exit_code']);
@@ -222,6 +233,13 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 {
     hub_job_progress($db, $job, 'prepare_service_dir', 5, 'Preparing service runtime.');
     $service = hub_refresh_service_runtime_files($db, $service);
+    if (hub_service_is_internal_task($service)) {
+        $result = hub_internal_task_result('internal_task start no-op');
+        hub_add_service_log($db, (int)$service['id'], 'start', $result['output'], 0);
+        hub_set_service_enabled($db, $service['mode'], true);
+        hub_update_service_status($db, (int)$service['id'], 'running');
+        return $result;
+    }
     hub_refresh_service_status($db, $service);
     $service = hub_get_service($db, (int)$service['id']) ?: $service;
     if (empty($service['local_port']) && ($service['port_mode'] ?? 'auto') === 'auto') {
@@ -273,6 +291,12 @@ function hub_build_service(PDO $db, array $service, ?array $job = null): array
 {
     hub_job_progress($db, $job, 'prepare_service_dir', 5, 'Preparing service runtime.');
     $service = hub_refresh_service_runtime_files($db, $service);
+    if (hub_service_is_internal_task($service)) {
+        $result = hub_internal_task_result('internal_task build no-op');
+        hub_add_service_log($db, (int)$service['id'], 'build', $result['output'], 0);
+        hub_job_progress($db, $job, 'docker_build', 70, 'internal_task build no-op.');
+        return $result;
+    }
     hub_job_progress($db, $job, 'docker_build', 20, 'Building image: ' . hub_service_image_tag($service));
     $result = hub_run_service_command($db, $job, hub_service_build_command($service), 900, hub_compose_env($service), 'docker_build', 20, 70);
     $summary = $result['exit_code'] === 0
@@ -310,6 +334,14 @@ function hub_refresh_service_runtime_files(PDO $db, array $service): array
 
 function hub_stop_service(PDO $db, array $service): array
 {
+    if (hub_service_is_internal_task($service)) {
+        $result = hub_internal_task_result('internal_task stop no-op');
+        hub_add_service_log($db, (int)$service['id'], 'stop', $result['output'], 0);
+        hub_set_service_enabled($db, $service['mode'], false);
+        hub_update_service_status($db, (int)$service['id'], 'stopped');
+        return $result;
+    }
+
     $result = hub_run_command(hub_compose_command($service, ['down']), 60, hub_compose_env($service));
     hub_add_service_log($db, (int)$service['id'], 'stop', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {

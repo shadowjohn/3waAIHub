@@ -35,3 +35,4 @@ __pycache__/
 .DS_Store
 vendor/
 node_modules/
+.superpowers/

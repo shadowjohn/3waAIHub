@@ -35,6 +35,11 @@ while ($processed < $limit) {
 
 function hub_run_task(PDO $db, array $task): void
 {
+    if ($task['task_type'] === 'docparser_parse') {
+        hub_run_docparser_parse_task($db, $task);
+        return;
+    }
+
     if ($task['task_type'] === 'structure_parse') {
         hub_run_structure_parse_task($db, $task);
         return;
@@ -97,6 +102,81 @@ function hub_run_structure_parse_task(PDO $db, array $task): void
         ],
     ]);
     hub_add_task_log($db, $taskId, 'info', 'structure_parse finished artifacts=' . count($artifacts));
+}
+
+function hub_run_docparser_parse_task(PDO $db, array $task): void
+{
+    $taskId = (int)$task['id'];
+    $input = $task['input'] ?? [];
+    $inputFile = hub_structure_task_input_file($input);
+    $profile = (string)($input['profile'] ?? 'technical_manual');
+    $targetLanguage = (string)($input['target_language'] ?? 'zh-TW');
+    $structureMode = preg_match('/^[a-zA-Z0-9_-]+$/', (string)($input['structure_mode'] ?? 'structure'))
+        ? (string)($input['structure_mode'] ?? 'structure')
+        : 'structure';
+    $structureService = hub_get_service_by_mode($db, $structureMode);
+    if (!$structureService || (int)($structureService['enabled'] ?? 0) !== 1) {
+        throw new RuntimeException('blocked_dependency: structure service is unavailable.');
+    }
+
+    hub_add_task_log($db, $taskId, 'info', 'docparser_parse started file=' . basename($inputFile));
+    hub_update_task_progress($db, $taskId, 10);
+
+    $structure = hub_structure_call_service($structureService, $inputFile, 'both');
+    hub_update_task_progress($db, $taskId, 35);
+
+    $docir = hub_docparser_build_docir(hub_docparser_structure_payload($structure['payload']), [
+        'profile' => $profile,
+        'target_language' => $targetLanguage,
+    ]);
+    hub_update_task_progress($db, $taskId, 55);
+
+    $docir = hub_docparser_translate_blocks($db, $docir, $input);
+    $outputs = hub_docparser_render_outputs($docir, ['target_language' => $targetLanguage]);
+    $fixture = json_decode((string)file_get_contents(HUB_ROOT . '/packs/docparser/acceptance/' . $profile . '_v0.1.json'), true) ?: [];
+    $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
+    hub_update_task_progress($db, $taskId, 85);
+
+    $toc = json_decode($outputs['toc_json'], true) ?: [];
+    $rag = json_decode($outputs['rag_chunks_json'], true) ?: [];
+    $manifest = [
+        'status' => $quality['status'],
+        'profile' => $profile,
+        'input_sha256' => hash_file('sha256', $inputFile),
+        'structure_mode' => $structureMode,
+        'target_language' => $targetLanguage,
+        'created_at' => hub_now(),
+    ];
+
+    $artifacts = hub_store_docparser_task_artifacts($db, $taskId, [
+        'manifest' => $manifest,
+        'reader_html' => $outputs['reader_html'],
+        'bilingual_html' => $outputs['bilingual_html'],
+        'markdown' => $outputs['markdown'],
+        'docir' => $docir,
+        'toc' => $toc,
+        'rag_chunks' => $rag,
+        'quality_report' => $quality,
+        'figures' => [],
+    ]);
+
+    if (($quality['status'] ?? 'needs_review') !== 'completed') {
+        $message = 'docparser_quality_gate_failed';
+        if (($quality['failures'] ?? []) !== []) {
+            $message .= ': ' . implode(',', $quality['failures']);
+        }
+        hub_add_task_log($db, $taskId, 'warning', $message);
+        throw new RuntimeException($message);
+    }
+
+    hub_finish_task_success($db, $task, [
+        'ok' => true,
+        'task_type' => 'docparser_parse',
+        'status' => $quality['status'],
+        'artifact_summary' => $artifacts,
+        'quality' => $quality,
+    ]);
+    hub_add_task_log($db, $taskId, 'info', 'docparser_parse finished status=' . $quality['status']);
 }
 
 function hub_structure_task_input_file(array $input): string

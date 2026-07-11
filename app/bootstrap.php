@@ -24,6 +24,7 @@ require_once __DIR__ . '/pack_registry.php';
 require_once __DIR__ . '/service_settings.php';
 require_once __DIR__ . '/command_queue.php';
 require_once __DIR__ . '/task_queue.php';
+require_once __DIR__ . '/docparser.php';
 require_once __DIR__ . '/api_access.php';
 require_once __DIR__ . '/api_tokens.php';
 require_once __DIR__ . '/voice_profiles.php';

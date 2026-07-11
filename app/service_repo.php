@@ -33,6 +33,11 @@ function hub_get_service_by_key(PDO $db, string $serviceKey): ?array
     return $service ?: null;
 }
 
+function hub_service_is_internal_task(array $service): bool
+{
+    return str_starts_with((string)($service['internal_url'] ?? ''), 'internal-task:');
+}
+
 function hub_set_service_enabled(PDO $db, string $mode, bool $enabled): void
 {
     $stmt = $db->prepare('UPDATE services SET enabled = :enabled, updated_at = :updated_at WHERE mode = :mode');

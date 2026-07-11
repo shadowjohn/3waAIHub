@@ -63,6 +63,12 @@
       "description": "Experimental document parsing pack for PDF and document image to Markdown/JSON workflows.",
       "path": "packs/structure-ppstructurev3",
       "featured": true
+    },
+    {
+      "id": "docparser",
+      "path": "packs/docparser",
+      "category": "document",
+      "description": "Technical manual PDF complete delivery orchestrator."
     }
   ]
 }

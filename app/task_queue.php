@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 function hub_allowed_task_types(): array
 {
-    return ['demo_task', 'structure_parse'];
+    return ['demo_task', 'structure_parse', 'docparser_parse'];
 }
 
 function hub_default_task_queues(): array
@@ -241,6 +241,51 @@ function hub_store_structure_task_artifacts(PDO $db, int $taskId, array $result)
         $summary['json'] = [
             'artifact_id' => hub_register_task_artifact($db, $taskId, 'structure_result.json', $jsonPath, 'application/json'),
             'bytes' => filesize($jsonPath) ?: 0,
+        ];
+    }
+
+    return $summary;
+}
+
+function hub_store_docparser_task_artifacts(PDO $db, int $taskId, array $result): array
+{
+    $base = hub_task_result_dir($taskId) . '/docparser';
+    foreach ([$base, $base . '/exports', $base . '/normalized', $base . '/assets/figures'] as $dir) {
+        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+            throw new RuntimeException('Cannot create DocParser artifact directory.');
+        }
+    }
+
+    $encode = static function ($value, string $label): string {
+        $json = json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($json === false) {
+            throw new RuntimeException('Cannot encode DocParser artifact: ' . $label);
+        }
+
+        return $json . "\n";
+    };
+
+    $files = [
+        'manifest' => ['manifest.json', $encode($result['manifest'] ?? [], 'manifest'), 'application/json'],
+        'reader_html' => ['exports/index.zh-TW.html', (string)($result['reader_html'] ?? ''), 'text/html'],
+        'bilingual_html' => ['exports/index.bilingual.html', (string)($result['bilingual_html'] ?? ''), 'text/html'],
+        'markdown' => ['exports/document.zh-TW.md', (string)($result['markdown'] ?? ''), 'text/markdown'],
+        'docir' => ['normalized/docir-v0.1.json', $encode($result['docir'] ?? [], 'docir'), 'application/json'],
+        'toc' => ['normalized/toc.json', $encode($result['toc'] ?? [], 'toc'), 'application/json'],
+        'rag_chunks' => ['exports/rag_chunks.json', $encode($result['rag_chunks'] ?? [], 'rag_chunks'), 'application/json'],
+        'quality_report' => ['exports/quality-report.json', $encode($result['quality_report'] ?? [], 'quality_report'), 'application/json'],
+    ];
+
+    $summary = [];
+    foreach ($files as $key => [$relative, $content, $mime]) {
+        $path = $base . '/' . $relative;
+        if (file_put_contents($path, $content, LOCK_EX) === false) {
+            throw new RuntimeException('Cannot write DocParser artifact: ' . $relative);
+        }
+        $summary[$key] = [
+            'artifact_id' => hub_register_task_artifact($db, $taskId, 'docparser/' . $relative, $path, $mime),
+            'path' => $path,
+            'bytes' => strlen($content),
         ];
     }
 

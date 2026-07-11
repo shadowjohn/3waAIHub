@@ -1,0 +1,24 @@
+{
+  "profile": "technical_manual",
+  "expected_page_count_min": 1,
+  "minimum_heading_count": 1,
+  "expected_figure_count_min": 0,
+  "minimum_table_count": 0,
+  "required_toc_titles": ["General Information"],
+  "required_translations": {
+    "Inspection": "檢查",
+    "Main Jet": "主噴油嘴"
+  },
+  "protected_tokens": ["FZR150", "M.J.", "#97.5", "N·m", "rpm", "91201-KV3-831"],
+  "quality_thresholds": {
+    "page_record_coverage": 1.0,
+    "block_provenance_coverage": 1.0,
+    "broken_asset_links": 0,
+    "orphan_figure_count": 0,
+    "toc_broken_anchor_count": 0,
+    "required_artifact_integrity": 1.0,
+    "translation_block_coverage": 0.98,
+    "translation_identity_ratio_max": 0.10,
+    "protected_token_preservation": 1.0
+  }
+}

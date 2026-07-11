@@ -91,6 +91,11 @@ function hub_get_pack(string $packId): ?array
     return null;
 }
 
+function hub_pack_is_internal_task(array $manifest): bool
+{
+    return (string)($manifest['runtime']['kind'] ?? '') === 'internal_task';
+}
+
 function hub_validate_pack_manifest(array $manifest, string $packDir): array
 {
     $errors = [];
@@ -119,18 +124,25 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     }
 
     $runtime = is_array($manifest['runtime'] ?? null) ? $manifest['runtime'] : [];
-    if (!is_file($packDir . '/' . (string)($runtime['compose_file'] ?? ''))) {
-        $errors[] = 'runtime.compose_file not found.';
-    }
-    if ((int)($runtime['default_internal_port'] ?? 0) <= 0) {
-        $errors[] = 'runtime.default_internal_port is required.';
+    if (hub_pack_is_internal_task($manifest)) {
+        if ((string)($manifest['execution_type'] ?? '') !== 'async_task') {
+            $errors[] = 'internal_task runtime requires async_task execution_type.';
+        }
+    } else {
+        if (!is_file($packDir . '/' . (string)($runtime['compose_file'] ?? ''))) {
+            $errors[] = 'runtime.compose_file not found.';
+        }
+        if ((int)($runtime['default_internal_port'] ?? 0) <= 0) {
+            $errors[] = 'runtime.default_internal_port is required.';
+        }
     }
 
     $gateway = is_array($manifest['gateway'] ?? null) ? $manifest['gateway'] : [];
-    foreach (['health_path', 'invoke_path'] as $field) {
-        if (($gateway[$field] ?? '') === '') {
-            $errors[] = 'Missing required gateway field: ' . $field;
-        }
+    if (($gateway['invoke_path'] ?? '') === '') {
+        $errors[] = 'Missing required gateway field: invoke_path';
+    }
+    if (!hub_pack_is_internal_task($manifest) && ($gateway['health_path'] ?? '') === '') {
+        $errors[] = 'Missing required gateway field: health_path';
     }
 
     $hardware = is_array($manifest['hardware'] ?? null) ? $manifest['hardware'] : [];
@@ -185,7 +197,10 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     }
     $existing = $idempotent ? ($existingByKey ?: $existingByMode) : null;
 
-    $localPort = hub_resolve_install_port($db, $manifest, $portMode, $options['local_port'] ?? null, $existing ? (int)$existing['id'] : null);
+    $isInternalTask = hub_pack_is_internal_task($manifest);
+    $localPort = $isInternalTask
+        ? null
+        : hub_resolve_install_port($db, $manifest, $portMode, $options['local_port'] ?? null, $existing ? (int)$existing['id'] : null);
     $runtimeDir = hub_pack_runtime_dir($db, $serviceKey);
     if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)) {
         throw new RuntimeException('Cannot create service runtime directory.');
@@ -196,8 +211,8 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     $composeFile = hub_pack_compose_file($db, $serviceKey);
     $envFile = $runtimeDir . '/.env';
     $portEnv = hub_pack_port_env($manifest);
-    file_put_contents($envFile, hub_generate_service_env($manifest, $envValues, $portEnv, $localPort, $runtimeDir, $storage));
-    file_put_contents(hub_path($composeFile), hub_generate_pack_compose($pack, $serviceKey, $localPort));
+    file_put_contents($envFile, hub_generate_service_env($manifest, $envValues, $portEnv, (int)($localPort ?? 0), $runtimeDir, $storage));
+    file_put_contents(hub_path($composeFile), $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort));
     chmod($envFile, 0664);
     chmod(hub_path($composeFile), 0664);
 
@@ -207,8 +222,8 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         ':name' => $name,
         ':mode' => $mode,
         ':type' => (string)$manifest['type'],
-        ':internal_url' => 'http://127.0.0.1:' . $localPort . (string)$manifest['gateway']['invoke_path'],
-        ':health_url' => 'http://127.0.0.1:' . $localPort . (string)$manifest['gateway']['health_path'],
+        ':internal_url' => $isInternalTask ? 'internal-task:' . (string)$manifest['gateway']['invoke_path'] : 'http://127.0.0.1:' . $localPort . (string)$manifest['gateway']['invoke_path'],
+        ':health_url' => $isInternalTask ? 'internal-task:health' : 'http://127.0.0.1:' . $localPort . (string)$manifest['gateway']['health_path'],
         ':compose_project' => $composeProject,
         ':compose_file' => $composeFile,
         ':local_port' => $localPort,
@@ -602,6 +617,13 @@ function hub_generate_translate_gemma_compose(array $pack, string $serviceKey, i
         . "    volumes:\n"
         . '      - "${AIHUB_CACHE_DIR}/translate:/cache/translate"' . "\n"
         . '      - "${SERVICE_DATA_DIR}:/data/service"' . "\n";
+}
+
+function hub_generate_internal_task_compose(array $manifest): string
+{
+    return "# 3waAIHub internal_task runtime\n"
+        . "# pack_id=" . (string)($manifest['id'] ?? '') . "\n"
+        . "# no Docker service is required; task_worker.php executes this orchestrator.\n";
 }
 
 function hub_pack_image_tag(string $serviceKey, string $packVersion): string

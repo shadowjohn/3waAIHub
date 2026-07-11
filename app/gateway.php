@@ -53,6 +53,9 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
             return hub_gateway_finish($db, $service, $mode, $prepared['response'], $started, $requestId, $authContext);
         }
     }
+    if (hub_service_is_internal_task($service)) {
+        return hub_gateway_finish($db, $service, $mode, hub_dispatch_internal_task_service($db, $service), $started, $requestId, $authContext);
+    }
     $requester ??= static fn (array $service, int $timeoutSec): array => hub_proxy_request(
         $service['internal_url'],
         $timeoutSec,
@@ -69,6 +72,41 @@ function hub_gateway_prepare_service_request(PDO $db, array $service, array $aut
         'tts-voxcpm2' => hub_prepare_tts_voxcpm2_payload($db, $service, $authContext, (string)file_get_contents('php://input')),
         default => [],
     };
+}
+
+function hub_dispatch_internal_task_service(PDO $db, array $service): array
+{
+    $internalUrl = (string)($service['internal_url'] ?? '');
+    if (!str_starts_with($internalUrl, 'internal-task:')) {
+        return hub_gateway_error(500, 'internal_task_invalid', 'internal_task service URL is invalid');
+    }
+
+    $route = substr($internalUrl, strlen('internal-task:'));
+    if (!str_starts_with($route, 'task_submit:')) {
+        return hub_gateway_error(501, 'internal_task_not_ready', 'internal_task route is not supported yet');
+    }
+
+    $taskType = substr($route, strlen('task_submit:'));
+    if (!hub_is_valid_task_type($taskType)) {
+        return hub_gateway_json(501, [
+            'ok' => false,
+            'error' => 'internal_task_not_ready',
+            'message' => 'internal task type is not allowlisted yet',
+            'task_type' => $taskType,
+        ]);
+    }
+
+    $previousTaskType = $_POST['task_type'] ?? null;
+    $_POST['task_type'] = $taskType;
+    try {
+        return hub_api_task_submit($db);
+    } finally {
+        if ($previousTaskType === null) {
+            unset($_POST['task_type']);
+        } else {
+            $_POST['task_type'] = $previousTaskType;
+        }
+    }
 }
 
 function hub_prepare_tts_voxcpm2_payload(PDO $db, array $service, array $authContext, string $rawBody): array
@@ -187,7 +225,7 @@ function hub_api_task_submit(PDO $db): array
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown task_type']);
     }
 
-    $queueName = trim((string)($_POST['queue'] ?? ($taskType === 'structure_parse' ? 'ocr' : 'default')));
+    $queueName = trim((string)($_POST['queue'] ?? (in_array($taskType, ['structure_parse', 'docparser_parse'], true) ? 'ocr' : 'default')));
     if (!hub_is_valid_task_queue($queueName)) {
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown queue']);
     }
@@ -195,6 +233,9 @@ function hub_api_task_submit(PDO $db): array
     $priority = max(0, min(100, (int)($_POST['priority'] ?? 0)));
     if ($taskType === 'structure_parse') {
         return hub_api_structure_task_submit($db, $queueName, $priority);
+    }
+    if ($taskType === 'docparser_parse') {
+        return hub_api_docparser_task_submit($db, $queueName, $priority);
     }
 
     $input = $_POST;
@@ -230,6 +271,51 @@ function hub_api_structure_task_submit(PDO $db, string $queueName, int $priority
     hub_update_task_input($db, $taskId, $input);
 
     return hub_gateway_json(200, ['ok' => true, 'task_id' => $taskId, 'status' => 'queued']);
+}
+
+function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority): array
+{
+    $file = $_FILES['file'] ?? null;
+    if (!is_array($file) || (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_file((string)($file['tmp_name'] ?? ''))) {
+        return hub_gateway_json(400, ['ok' => false, 'error' => 'file_required', 'message' => 'PDF upload is required']);
+    }
+
+    $filename = basename((string)($file['name'] ?? 'input.pdf'));
+    $extension = strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    if ($extension !== 'pdf') {
+        return hub_gateway_json(400, ['ok' => false, 'error' => 'unsupported_file_type', 'message' => 'DocParser PhaseDoc-1A accepts PDF only']);
+    }
+    if (!hub_file_has_pdf_magic((string)($file['tmp_name'] ?? ''))) {
+        return hub_gateway_json(400, ['ok' => false, 'error' => 'invalid_pdf_file', 'message' => 'Uploaded file is not a valid PDF']);
+    }
+
+    $structureMode = (string)($_POST['structure_mode'] ?? 'structure');
+    $translateMode = (string)($_POST['translate_mode'] ?? 'translate');
+    $input = [
+        'profile' => 'technical_manual',
+        'structure_mode' => preg_match('/^[a-zA-Z0-9_-]+$/', $structureMode) ? $structureMode : 'structure',
+        'translate_mode' => preg_match('/^[a-zA-Z0-9_-]+$/', $translateMode) ? $translateMode : 'translate',
+        'source_language' => (string)($_POST['source_language'] ?? 'auto'),
+        'target_language' => (string)($_POST['target_language'] ?? 'zh-TW'),
+        'translation_required' => (string)($_POST['translation_required'] ?? '1') !== '0' ? '1' : '0',
+        'original_filename' => $filename,
+    ];
+
+    $taskId = hub_enqueue_task($db, 'docparser_parse', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
+    $input['input_file'] = hub_store_task_upload_file($taskId, $file, 'pdf');
+    hub_update_task_input($db, $taskId, $input);
+
+    return hub_gateway_json(200, ['ok' => true, 'task_id' => $taskId, 'status' => 'queued']);
+}
+
+function hub_file_has_pdf_magic(string $path): bool
+{
+    if ($path === '' || !is_file($path)) {
+        return false;
+    }
+
+    $magic = file_get_contents($path, false, null, 0, 4);
+    return $magic === '%PDF';
 }
 
 function hub_store_task_upload_file(int $taskId, array $file, string $extension): string

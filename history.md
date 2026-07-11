@@ -1,5 +1,28 @@
 # 3waAIHub History
 
+## PhaseDoc-1A DocParser Orchestrator L4
+
+Added the DocParser technical manual PDF complete delivery plan and implementation.
+
+Implemented:
+
+- `docparser` internal async HubPack.
+- `docparser_parse` task type.
+- PDF intake through task_submit.
+- Structure service orchestration.
+- Block-level translation alignment.
+- DocIR v0.1.
+- Reader HTML, bilingual HTML, Markdown, TOC, RAG chunks, manifest and quality report artifacts.
+- Golden acceptance CLI.
+
+Skipped:
+
+- MinerU engine.
+- Image OCR overlay.
+- Technical drawing understanding.
+- VLM reviewer.
+- Manual correction UI.
+
 ## PhaseM-4B PP-StructureV3 L4 Real Inference Pipeline
 
 Promoted `structure-ppstructurev3` from L3 storage/mock to L4 real inference.
