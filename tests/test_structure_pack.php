@@ -11,7 +11,11 @@ hub_test('PP-StructureV3 pack exposes L5 document parser contract', function ():
     hub_test_assert(($manifest['default_mode'] ?? '') === 'structure', 'PP-StructureV3 default mode mismatch');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/v1/parse', 'PP-StructureV3 gateway endpoint mismatch');
     hub_test_assert((int)($manifest['gateway']['timeout_sec'] ?? 0) >= 1800, 'PP-StructureV3 gateway timeout must allow long PDF manuals');
+    hub_test_assert((int)($manifest['gateway']['max_upload_mb'] ?? 0) >= 512, 'PP-StructureV3 gateway upload limit must allow large manuals');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'async_task', 'PP-StructureV3 should declare async_task execution');
+    $structureSchema = hub_get_pack_settings_schema('structure-ppstructurev3');
+    hub_test_assert((int)($structureSchema['STRUCTURE_MAX_UPLOAD_MB']['default'] ?? 0) >= 512, 'PP-StructureV3 upload setting default must allow large manuals');
+    hub_test_assert(!empty($structureSchema['STRUCTURE_MAX_UPLOAD_MB']['restart_required']), 'PP-StructureV3 upload setting must require restart because it is process env');
 
     $base = HUB_ROOT . '/packs/structure-ppstructurev3/service';
     foreach (['Dockerfile', 'requirements.txt', 'app.py', 'smoke.py', 'storage_smoke.py'] as $file) {
@@ -85,6 +89,7 @@ hub_test('PP-StructureV3 service instance generates storage env and compose', fu
         'STRUCTURE_CACHE_DIR=/cache/ppstructurev3',
         'STRUCTURE_SERVICE_DATA_DIR=/data/service',
         'STRUCTURE_REAL_INFERENCE=1',
+        'STRUCTURE_MAX_UPLOAD_MB=512',
         'STRUCTURE_DEVICE=cpu',
         'HOME=/models/ppstructurev3/home',
         'PYTHONUNBUFFERED=1',

@@ -1,13 +1,13 @@
 <?php
 declare(strict_types=1);
 
-hub_test('DocParser pack exposes internal L4 orchestrator contract', function (): void {
+hub_test('DocParser pack exposes L5 orchestrator contract', function (): void {
     $pack = hub_get_pack('docparser');
     hub_test_assert($pack !== null, 'DocParser pack missing');
     hub_test_assert(($pack['status'] ?? '') === 'ok', 'DocParser pack must be valid');
 
     $manifest = $pack['manifest'];
-    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4-orchestrator-complete-delivery', 'DocParser runtime level mismatch');
+    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L5-benchmark-ready', 'DocParser runtime level mismatch');
     hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'DocParser target level mismatch');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'async_task', 'DocParser must be async_task');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'docparser', 'DocParser default mode mismatch');
@@ -15,6 +15,13 @@ hub_test('DocParser pack exposes internal L4 orchestrator contract', function ()
 
     foreach (['DOCPARSER_STRUCTURE_MODE', 'DOCPARSER_TRANSLATE_MODE', 'DOCPARSER_TARGET_LANGUAGE', 'DOCPARSER_TRANSLATION_REQUIRED', 'DOCPARSER_PROFILE'] as $key) {
         hub_test_assert(isset(hub_get_pack_settings_schema('docparser')[$key]), 'DocParser settings_schema missing ' . $key);
+    }
+    $contract = hub_pack_l5_contract($manifest);
+    hub_test_assert(($contract['task_type'] ?? '') === 'docparser_parse', 'DocParser L5 contract task_type mismatch');
+    hub_test_assert(hub_l5_benchmark_case($contract, 'docparser_submit_pdf') !== null, 'docparser_submit_pdf benchmark missing');
+    hub_test_assert(hub_l5_benchmark_case($contract, 'docparser_submit_10page_pdf') !== null, 'docparser_submit_10page_pdf benchmark missing');
+    foreach (['reader_html', 'bilingual_html', 'markdown', 'docir', 'toc', 'rag_chunks', 'quality_report', 'manifest', 'figure_assets'] as $key) {
+        hub_test_assert(in_array($key, $contract['task_result']['artifact_summary_keys'] ?? [], true), 'DocParser task_result contract missing ' . $key);
     }
 
     $db = hub_test_reset_db();
@@ -36,6 +43,23 @@ hub_test('DocParser pack exposes internal L4 orchestrator contract', function ()
     $fixture = json_decode((string)file_get_contents($fixturePath), true);
     hub_test_assert(($fixture['profile'] ?? '') === 'technical_manual', 'DocParser fixture profile mismatch');
     hub_test_assert(in_array('FZR150', $fixture['protected_tokens'] ?? [], true), 'DocParser fixture protected token missing');
+});
+
+hub_test('DocParser backend error summaries preserve actionable backend details', function (): void {
+    $summary = hub_backend_error_summary([
+        'error' => 'parse_failed',
+        'message' => 'ResourceExhaustedError: Out of memory error on GPU 0. Cannot allocate 2.531128GB memory.',
+    ], 'unknown_error', 120);
+
+    hub_test_assert(str_contains($summary, 'parse_failed'), 'backend summary must include error code');
+    hub_test_assert(str_contains($summary, 'ResourceExhaustedError'), 'backend summary must include backend message');
+    hub_test_assert(str_contains($summary, 'Out of memory'), 'backend summary must preserve actionable OOM detail');
+
+    $longSummary = hub_backend_error_summary([
+        'error' => 'translation_failed',
+        'message' => str_repeat('CUDA out of memory ', 80),
+    ], 'unknown_error', 80);
+    hub_test_assert(strlen($longSummary) <= 80, 'backend summary must be clipped');
 });
 
 hub_test('DocParser internal_task lifecycle is docker-free and stateful', function (): void {
@@ -153,6 +177,7 @@ hub_test('DocParser PDF submit stores upload and enqueues ocr task with normaliz
         hub_test_assert(($payload['status_url'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=task_status&task_id=' . $taskId, 'PDF submit must return status_url');
         hub_test_assert(($payload['result_url'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=task_result&task_id=' . $taskId, 'PDF submit must return result_url');
         hub_test_assert(($payload['log_url'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=task_log&task_id=' . $taskId, 'PDF submit must return log_url');
+        hub_test_assert(($payload['cancel_url'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=task_cancel&task_id=' . $taskId, 'PDF submit must return cancel_url');
         hub_test_assert(($payload['artifact_url_template'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=artifact&artifact_id={artifact_id}', 'PDF submit must return artifact URL template');
 
         $task = hub_get_task($db, $taskId);
@@ -167,6 +192,106 @@ hub_test('DocParser PDF submit stores upload and enqueues ocr task with normaliz
         hub_test_assert(($input['input_file'] ?? '') === HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId . '/input.pdf', 'input_file path mismatch');
         hub_test_assert(is_file((string)$input['input_file']), 'stored PDF upload missing');
         hub_test_assert((string)file_get_contents((string)$input['input_file']) === "%PDF-1.4\nDocParser test\n", 'stored PDF upload content mismatch');
+    } finally {
+        $_SERVER = $serverBackup;
+        $_POST = $postBackup;
+        $_FILES = $filesBackup;
+        if (is_file($tmpFile)) {
+            unlink($tmpFile);
+        }
+    }
+});
+
+hub_test('DocParser PDF submit reuses fresh completed artifact cache for identical input and rules', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'docparser', [
+        'service_key' => 'docparser-cache-main',
+        'mode' => 'docparser_cache',
+        'name' => 'DocParser Cache Main',
+        'port_mode' => 'auto',
+    ]);
+    $service = $installed['service'];
+    $start = hub_start_service($db, $service);
+    hub_test_assert((int)$start['exit_code'] === 0, 'internal_task start must succeed before cache test');
+
+    $tmpFile = tempnam(sys_get_temp_dir(), 'docparser_cache_pdf_');
+    hub_test_assert($tmpFile !== false, 'temp PDF file must be created');
+    file_put_contents($tmpFile, "%PDF-1.4\nDocParser cache test\n");
+    $hash = hash_file('sha256', $tmpFile);
+    $cacheKey = hash('sha256', implode('|', [
+        $hash,
+        'technical_manual',
+        'zh-TW',
+        '1',
+        'structure',
+        'translate',
+        'docparser-v0.1',
+    ]));
+
+    $cachedTaskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, [
+        'profile' => 'technical_manual',
+        'target_language' => 'zh-TW',
+        'translation_required' => '1',
+        'structure_mode' => 'structure',
+        'translate_mode' => 'translate',
+        'docparser_cache_key' => $cacheKey,
+        'docparser_cache_version' => 'docparser-v0.1',
+    ], null, '127.0.0.1');
+    hub_finish_task_success($db, hub_get_task($db, $cachedTaskId), [
+        'ok' => true,
+        'task_type' => 'docparser_parse',
+        'status' => 'completed',
+        'artifact_summary' => hub_store_docparser_task_artifacts($db, $cachedTaskId, [
+            'manifest' => ['status' => 'completed', 'input_sha256' => $hash],
+            'reader_html' => '<html><body>cached</body></html>',
+            'bilingual_html' => '<html><body>cached</body></html>',
+            'markdown' => "cached\n",
+            'docir' => ['schema' => '3wa-docir-v0.1', 'pages' => [['page' => 1]], 'blocks' => []],
+            'toc' => [],
+            'rag_chunks' => [],
+            'quality_report' => ['status' => 'completed'],
+            'figures' => [],
+        ]),
+        'quality' => ['status' => 'completed'],
+    ]);
+
+    $before = (int)$db->query('SELECT COUNT(*) FROM tasks WHERE task_type = \'docparser_parse\'')->fetchColumn();
+    $serverBackup = $_SERVER;
+    $postBackup = $_POST;
+    $filesBackup = $_FILES;
+    try {
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['HTTPS'] = 'on';
+        $_SERVER['HTTP_HOST'] = 'nature.focusit.tw';
+        $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
+        $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=docparser_cache';
+        unset($_SERVER['CONTENT_LENGTH']);
+        $_POST = [
+            'target_language' => 'zh-TW',
+            'translation_required' => '1',
+            'structure_mode' => 'structure',
+            'translate_mode' => 'translate',
+        ];
+        $_FILES = [
+            'file' => [
+                'name' => 'manual.pdf',
+                'type' => 'application/pdf',
+                'tmp_name' => $tmpFile,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($tmpFile),
+            ],
+        ];
+
+        $response = hub_gateway_dispatch($db, 'docparser_cache', static fn (): array => throw new RuntimeException('internal_task gateway must not proxy'));
+        $payload = json_decode((string)$response['body'], true);
+
+        hub_test_assert($response['status'] === 200, 'cached DocParser submit must return 200');
+        hub_test_assert(($payload['cached'] ?? false) === true, 'cached DocParser submit must mark cached=true');
+        hub_test_assert((int)($payload['task_id'] ?? 0) === $cachedTaskId, 'cached DocParser submit must return source task id');
+        hub_test_assert((int)($payload['cache_hit_task_id'] ?? 0) === $cachedTaskId, 'cached DocParser submit must expose cache_hit_task_id');
+        $after = (int)$db->query('SELECT COUNT(*) FROM tasks WHERE task_type = \'docparser_parse\'')->fetchColumn();
+        hub_test_assert($after === $before, 'cached DocParser submit must not enqueue another task');
     } finally {
         $_SERVER = $serverBackup;
         $_POST = $postBackup;

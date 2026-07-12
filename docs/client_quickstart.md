@@ -140,17 +140,19 @@ console.log(await res.json());
 
 ### `mode=sam3`
 
-- request contract: `POST multipart/form-data`, field `image`, optional `prompt_type`, `points_json`, `output_format`, `real_inference`
+- request contract: `POST multipart/form-data`, field `image`, optional `prompt_type`, `points_json`, `text`, `output_format`, `real_inference`
 - response contract: JSON with `ok`, `masks`, `prompt_type`, `elapsed_ms`
 - error contract: `bad_request`, `model_not_present`, `invalid_prompt`, `inference_failed`, `inference_timeout`
 
 ### `mode=docparser`
 
+- status: L5 benchmark ready
 - request contract: `POST multipart/form-data`, field `file`, PDF only
-- response contract: JSON with `ok`, `task_id`, `status`, `status_url`, `result_url`, `log_url`, `artifact_url_template`
+- response contract: JSON with `ok`, `task_id`, `status`, `status_url`, `result_url`, `log_url`, `cancel_url`, `artifact_url_template`
 - result contract: `task_result` returns artifact summary for `reader_html`, `bilingual_html`, `markdown`, `docir`, `toc`, `rag_chunks`, `quality_report`, `manifest`
 - figure contract: `artifact_summary.figure_assets.items[]` returns `figure_id`, `block_id`, `page`, `bbox`, `caption`, `asset_path`, `artifact_id`, `bytes`
 - error contract: `file_required`, `unsupported_file_type`, `invalid_pdf_file`, `missing_token`, `token_mode_not_allowed`
+- cancel contract: `POST task_cancel` cancels queued tasks immediately; running `docparser_parse` tasks stop cooperatively at the next worker checkpoint.
 
 ## Debug
 

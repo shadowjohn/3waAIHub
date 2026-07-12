@@ -196,6 +196,18 @@ curl -X POST "<BASE_URL>?mode=sam3" \
   -F "output_format=both"
 ```
 
+Semantic text prompt:
+
+```bash
+curl -X POST "<BASE_URL>?mode=sam3" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
+  -F "prompt_type=text" \
+  -F "text=mammal/insect/plant" \
+  -F "real_inference=1" \
+  -F "output_format=polygon"
+```
+
 Benchmark:
 
 ```bash
@@ -234,7 +246,7 @@ php scripts/benchmark.php --service=structure-main --case=structure_10page_pdf
 
 ## POST DocParser Async
 
-Status: L4 real-service readiness. `docparser` 是非同步文件交付流程，會產出 reader HTML、雙語 HTML、Markdown、DocIR、TOC、RAG chunks、quality report 與 manifest artifacts。
+Status: L5 benchmark ready. `docparser` 是非同步文件交付流程，會產出 reader HTML、雙語 HTML、Markdown、DocIR、TOC、RAG chunks、quality report 與 manifest artifacts。
 
 Submit:
 
@@ -256,6 +268,7 @@ Submit response:
   "status_url": "<BASE_URL>?mode=task_status&task_id=11",
   "result_url": "<BASE_URL>?mode=task_result&task_id=11",
   "log_url": "<BASE_URL>?mode=task_log&task_id=11",
+  "cancel_url": "<BASE_URL>?mode=task_cancel&task_id=11",
   "artifact_url_template": "<BASE_URL>?mode=artifact&artifact_id={artifact_id}"
 }
 ```
@@ -270,11 +283,28 @@ curl -H "Authorization: Bearer <TOKEN>" \
   "<BASE_URL>?mode=task_result&task_id=11"
 ```
 
+Cancel:
+
+```bash
+curl -X POST -H "Authorization: Bearer <TOKEN>" \
+  "<BASE_URL>?mode=task_cancel&task_id=11"
+```
+
+Queued tasks become `cancelled` immediately. Running `docparser_parse` tasks use cooperative cancel: the worker records `cancel_requested` and stops at the next DocParser checkpoint. Other running task types are not hard-killed.
+
 Figure crop download:
 
 ```text
 artifact_summary.figure_assets.items[].artifact_id
 <BASE_URL>?mode=artifact&artifact_id=<FIGURE_ARTIFACT_ID>
+```
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --pack=docparser --case=docparser_submit_pdf
+php scripts/benchmark.php --pack=docparser --case=docparser_submit_10page_pdf
+php scripts/docparser_acceptance.php --task-id=<SUCCESS_TASK_ID>
 ```
 
 ## Unknown Mode

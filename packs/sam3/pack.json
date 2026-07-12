@@ -52,6 +52,12 @@
           "required": false
         },
         {
+          "name": "text",
+          "type": "string",
+          "required": false,
+          "description": "Semantic concept prompt for SAM3, e.g. mammal/insect/plant. Use prompt_type=text."
+        },
+        {
           "name": "real_inference",
           "type": "boolean",
           "required": false,

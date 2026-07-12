@@ -259,7 +259,7 @@ function hub_generate_service_env_for_instance(PDO $db, array $service): string
     $storage = hub_get_storage_paths($db);
     $runtimeDir = dirname(hub_path((string)$service['compose_file']));
     $portEnv = hub_pack_port_env($manifest);
-    $values = [
+    $values = array_merge([
         'AIHUB_MODELS_DIR' => $storage['AIHUB_MODELS_DIR'],
         'AIHUB_CACHE_DIR' => $storage['AIHUB_CACHE_DIR'],
         'AIHUB_UPLOADS_DIR' => $storage['AIHUB_UPLOADS_DIR'],
@@ -270,7 +270,7 @@ function hub_generate_service_env_for_instance(PDO $db, array $service): string
         $portEnv => (string)$service['local_port'],
         'SERVICE_KEY' => (string)$service['service_key'],
         'MODE' => (string)$service['mode'],
-    ] + hub_pack_storage_runtime_env($manifest) + hub_service_settings_values($db, $service);
+    ], hub_pack_storage_runtime_env($manifest), hub_service_settings_values($db, $service));
 
     $lines = [];
     foreach ($values as $key => $value) {

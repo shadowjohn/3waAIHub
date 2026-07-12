@@ -80,6 +80,31 @@ hub_test('task logs keep DB rows bounded and spill large messages to file', func
     hub_test_assert(isset($matches[1]) && is_file(hub_path($matches[1])), 'large log file missing');
 });
 
+hub_test('running DocParser task can request cooperative cancel only', function (): void {
+    $db = hub_test_reset_db();
+    $docparserTaskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, [
+        'input_file' => HUB_DATA_DIR . '/uploads/tasks/task_999/input.pdf',
+    ], null, '127.0.0.1');
+    $docparserTask = hub_claim_next_task($db);
+    hub_test_assert((int)$docparserTask['id'] === $docparserTaskId, 'DocParser task must be claimed');
+
+    hub_test_assert(hub_cancel_task($db, $docparserTaskId) === true, 'running DocParser task should accept cancel request');
+    $cancelRequested = hub_get_task($db, $docparserTaskId);
+    hub_test_assert(($cancelRequested['status'] ?? '') === 'running', 'running DocParser task should stay running until worker checkpoint');
+    hub_test_assert(($cancelRequested['input']['cancel_requested'] ?? '') === '1', 'running DocParser task must store cancel_requested flag');
+    hub_test_assert(hub_task_cancel_requested($db, $docparserTaskId) === true, 'cancel_requested helper must see running DocParser flag');
+
+    hub_finish_task_cancelled($db, $cancelRequested, 'cancelled by test checkpoint');
+    $cancelled = hub_get_task($db, $docparserTaskId);
+    hub_test_assert(($cancelled['status'] ?? '') === 'cancelled', 'DocParser checkpoint should finish task as cancelled');
+    hub_test_assert(str_contains((string)($cancelled['error_message'] ?? ''), 'cancelled by test checkpoint'), 'cancelled reason should be stored');
+
+    $demoTaskId = hub_enqueue_task($db, 'demo_task', 'default', 0, ['name' => 'running-demo'], null, '127.0.0.1');
+    $demoTask = hub_claim_next_task($db);
+    hub_test_assert((int)$demoTask['id'] === $demoTaskId, 'demo task must be claimed');
+    hub_test_assert(hub_cancel_task($db, $demoTaskId) === false, 'running non-DocParser task must not accept cancel request');
+});
+
 hub_test('host metrics collection is throttled by latest snapshot age', function (): void {
     $db = hub_test_reset_db();
     hub_save_host_metric_snapshot($db, ['host' => ['load_1' => 0.1]]);

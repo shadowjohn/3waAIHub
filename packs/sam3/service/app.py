@@ -20,6 +20,8 @@ MODEL_EXTENSIONS = {".pt", ".pth", ".safetensors", ".ckpt"}
 MIN_CHECKPOINT_BYTES = 1024 * 1024  # ponytail: catches fake smoke files; real validation happens at SAM load.
 _SAM_MODEL: Any | None = None
 _SAM_CHECKPOINT = ""
+_SAM_SEMANTIC_PREDICTOR: Any | None = None
+_SAM_SEMANTIC_CHECKPOINT = ""
 OUTPUT_FORMATS = {"metadata", "polygon", "rle", "both"}
 
 
@@ -320,6 +322,32 @@ def sam_model(checkpoint: Path) -> Any:
         raise Sam3Error("model_load_failed", safe_message(exc), 503) from exc
 
 
+def sam_semantic_predictor(checkpoint: Path) -> Any:
+    global _SAM_SEMANTIC_PREDICTOR, _SAM_SEMANTIC_CHECKPOINT
+    configure_sam3_env()
+    checkpoint_key = str(checkpoint)
+    if _SAM_SEMANTIC_PREDICTOR is not None and _SAM_SEMANTIC_CHECKPOINT == checkpoint_key:
+        return _SAM_SEMANTIC_PREDICTOR
+    try:
+        from ultralytics.models.sam import SAM3SemanticPredictor
+    except Exception as exc:
+        raise Sam3Error("runtime_dependency_missing", "Ultralytics SAM3 semantic predictor is not available.", 503) from exc
+    try:
+        _SAM_SEMANTIC_PREDICTOR = SAM3SemanticPredictor(overrides={
+            "conf": float(os.getenv("SAM3_TEXT_CONF", "0.25")),
+            "task": "segment",
+            "mode": "predict",
+            "model": checkpoint_key,
+            "device": effective_device(),
+            "save": False,
+            "verbose": False,
+        })
+        _SAM_SEMANTIC_CHECKPOINT = checkpoint_key
+        return _SAM_SEMANTIC_PREDICTOR
+    except Exception as exc:
+        raise Sam3Error("model_load_failed", safe_message(exc), 503) from exc
+
+
 def image_info(data: bytes) -> tuple[int, int]:
     try:
         with Image.open(BytesIO(data)) as image:
@@ -374,6 +402,18 @@ def parse_points_prompt(value: str) -> tuple[list[list[float]], list[int] | None
         return normalized, [int(label) for label in labels]
     except (TypeError, ValueError) as exc:
         raise Sam3Error("invalid_prompt", "points_json labels must be integers.", 400) from exc
+
+
+def parse_text_prompt(value: str) -> list[str]:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise Sam3Error("invalid_prompt", "text prompt requires text, e.g. mammal/insect/plant.", 400)
+    prompts = [part.strip() for part in cleaned.replace(",", "/").split("/") if part.strip()]
+    if not prompts:
+        raise Sam3Error("invalid_prompt", "text prompt requires at least one concept.", 400)
+    if any(len(prompt) > 80 for prompt in prompts) or len(prompts) > 12:
+        raise Sam3Error("invalid_prompt", "text prompt should use short noun phrases.", 400)
+    return prompts
 
 
 def to_numpy(value: Any) -> np.ndarray:
@@ -435,27 +475,37 @@ def mask_items(results: Any, output_format: str) -> list[dict[str, Any]]:
     return items
 
 
-def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points_json: str, boxes_json: str, output_format: str) -> dict[str, Any]:
-    if prompt_type not in {"auto", "points", "boxes"}:
-        raise Sam3Error("invalid_prompt", "prompt_type must be auto, points, or boxes.", 400)
+def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points_json: str, boxes_json: str, text_prompt: str, output_format: str) -> dict[str, Any]:
+    if prompt_type not in {"auto", "points", "boxes", "text"}:
+        raise Sam3Error("invalid_prompt", "prompt_type must be auto, points, boxes, or text.", 400)
 
     checkpoint = current_checkpoint()
-    model = sam_model(checkpoint)
     kwargs: dict[str, Any] = {"source": str(image_path), "device": effective_device(), "verbose": False}
     if prompt_type == "points":
+        model = sam_model(checkpoint)
         points, labels = parse_points_prompt(points_json)
         kwargs["points"] = points
         if labels is not None:
             kwargs["labels"] = labels
     elif prompt_type == "boxes":
+        model = sam_model(checkpoint)
         boxes = parse_json(boxes_json, [])
         if not boxes:
             raise Sam3Error("invalid_prompt", "boxes prompt requires boxes_json.", 400)
         kwargs["bboxes"] = boxes
+    elif prompt_type == "text":
+        model = sam_semantic_predictor(checkpoint)
+        kwargs["text"] = parse_text_prompt(text_prompt)
+    else:
+        model = sam_model(checkpoint)
 
     started = time.perf_counter()
     try:
-        results = model.predict(**kwargs)
+        if prompt_type == "text":
+            model.set_image(str(image_path))
+            results = model(text=kwargs["text"])
+        else:
+            results = model.predict(**kwargs)
     except TimeoutError as exc:
         raise Sam3Error("inference_timeout", "SAM3 inference timed out.", 504) from exc
     except Sam3Error:
@@ -472,6 +522,8 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
         "runtime_level": runtime_level(),
         "model": {"checkpoint": str(checkpoint)},
         "prompt_type": prompt_type,
+        "text_prompt": text_prompt if prompt_type == "text" else "",
+        "text_prompts": kwargs.get("text", []),
         "output_format": output_format,
         "image": {"width": width, "height": height},
         "masks": mask_items(results, output_format),
@@ -485,6 +537,8 @@ async def segment_image(
     prompt_type: str = Form("auto"),
     points_json: str = Form(""),
     boxes_json: str = Form(""),
+    text: str = Form(""),
+    text_prompt: str = Form(""),
     output_format: str = Form("metadata"),
     real_inference: str = Form("0"),
 ) -> JSONResponse:
@@ -504,18 +558,28 @@ async def segment_image(
             with tempfile.NamedTemporaryFile(prefix="sam3-", suffix=suffix, delete=False) as handle:
                 handle.write(data)
                 image_path = Path(handle.name)
-            return JSONResponse(content=run_sam3(image_path, width, height, prompt_type or "auto", points_json, boxes_json, normalized_output_format))
+            semantic_text = text_prompt or text
+            return JSONResponse(content=run_sam3(image_path, width, height, prompt_type or "auto", points_json, boxes_json, semantic_text, normalized_output_format))
         except Sam3Error as exc:
             return error_response(exc.status_code, exc.code, exc.message)
         finally:
             if image_path is not None:
                 image_path.unlink(missing_ok=True)
 
+    mock_text_prompts: list[str] = []
+    if (prompt_type or "auto") == "text":
+        try:
+            mock_text_prompts = parse_text_prompt(text_prompt or text)
+        except Sam3Error as exc:
+            return error_response(exc.status_code, exc.code, exc.message)
+
     return JSONResponse(content={
         "ok": True,
         "mock": True,
         "runtime_level": runtime_level(),
         "prompt_type": prompt_type or "auto",
+        "text_prompt": text_prompt or text if (prompt_type or "auto") == "text" else "",
+        "text_prompts": mock_text_prompts,
         "output_format": normalized_output_format,
         "masks": [],
         "boxes": [],

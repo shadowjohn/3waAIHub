@@ -66,6 +66,30 @@ hub_test('service settings update validates values writes env and marks restart'
     ])), 'invalid select was accepted');
 });
 
+hub_test('service settings override pack runtime env defaults when writing env', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'structure-ppstructurev3', [
+        'service_key' => 'structure-settings-update',
+        'name' => 'Structure Settings Update',
+        'mode' => 'structure_settings_update',
+        'port_mode' => 'manual',
+        'local_port' => 18162,
+    ]);
+    $service = $installed['service'];
+
+    hub_update_service_settings($db, (int)$service['id'], [
+        'STRUCTURE_DEVICE' => 'gpu',
+        'STRUCTURE_MAX_UPLOAD_MB' => '512',
+    ]);
+    $service = hub_get_service($db, (int)$service['id']);
+    hub_test_assert($service !== null, 'updated structure service missing');
+
+    $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+    hub_test_assert(str_contains($env, 'STRUCTURE_DEVICE=gpu'), 'service setting must override runtime env default');
+    hub_test_assert(!str_contains($env, 'STRUCTURE_DEVICE=cpu'), 'runtime env default must not shadow updated service setting');
+    hub_test_assert(str_contains($env, 'STRUCTURE_MAX_UPLOAD_MB=512'), 'updated structure upload limit missing from env');
+});
+
 hub_test('service settings validate unsafe path and backfill legacy service', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');

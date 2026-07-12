@@ -113,7 +113,7 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(($translateMounts['models']['target_service'] ?? '') === 'ollama', 'Translate Ollama models target service mismatch');
     hub_test_assert(($translateMounts['cache']['container_path'] ?? '') === '/cache/translate', 'Translate cache mount mismatch');
     hub_test_assert(($translateMounts['service_data']['container_path'] ?? '') === '/data/service', 'Translate service data mount mismatch');
-    foreach (['OLLAMA_MODEL', 'KEEP_WARM', 'MAX_INPUT_CHARS', 'TEMPERATURE', 'OLLAMA_NUM_CTX', 'GPU_VISIBLE_DEVICES', 'TRANSLATE_REAL_INFERENCE', 'OLLAMA_KEEP_ALIVE'] as $key) {
+    foreach (['OLLAMA_MODEL', 'KEEP_WARM', 'MAX_INPUT_CHARS', 'TEMPERATURE', 'OLLAMA_NUM_CTX', 'OLLAMA_NUM_GPU', 'GPU_VISIBLE_DEVICES', 'TRANSLATE_REAL_INFERENCE', 'OLLAMA_KEEP_ALIVE'] as $key) {
         hub_test_assert(isset(hub_get_pack_settings_schema('translate-gemma12b')[$key]), 'Translate settings_schema missing ' . $key);
     }
     $yolo = hub_get_pack('yolo')['manifest'];
@@ -168,6 +168,7 @@ hub_test('catalog and required packs are readable', function (): void {
         hub_test_assert(in_array($key, $sam3Contract['output']['required_keys'] ?? [], true), 'SAM3 contract output missing ' . $key);
     }
     hub_test_assert(in_array('output_format', array_column($sam3Contract['input']['fields'] ?? [], 'name'), true), 'SAM3 contract must expose output_format');
+    hub_test_assert(in_array('text', array_column($sam3Contract['input']['fields'] ?? [], 'name'), true), 'SAM3 contract must expose semantic text prompt');
     hub_test_assert(in_array('polygon', $sam3Contract['output']['mask_optional_keys'] ?? [], true), 'SAM3 contract must expose polygon output');
     hub_test_assert(in_array('rle', $sam3Contract['output']['mask_optional_keys'] ?? [], true), 'SAM3 contract must expose rle output');
     foreach (['model_not_present', 'model_load_failed', 'runtime_dependency_missing', 'bad_image', 'invalid_prompt', 'invalid_output_format', 'polygon_extract_failed', 'rle_encode_failed', 'gpu_unavailable', 'inference_failed', 'inference_timeout'] as $errorCode) {

@@ -33,7 +33,25 @@ function hub_marketplace_model_label(PDO $db, array $manifest): array
             continue;
         }
         $required = $required || !empty($item['required']);
-        if (hub_model_selector_options($db, $item['model_selector']) !== []) {
+        $selector = $item['model_selector'];
+        $selectorType = (string)($selector['type'] ?? 'file');
+        $defaultValue = trim((string)($item['default'] ?? ''));
+        if ($defaultValue !== '') {
+            try {
+                $status = hub_model_selector_status($db, $selector, $defaultValue);
+                if (!empty($status['model_present']) || ($selectorType !== 'ollama_tag' && !empty($status['exists']))) {
+                    return ['label' => '模型已就緒', 'class' => 'hub-badge hub-badge-ok'];
+                }
+            } catch (Throwable) {
+                // Invalid pack selector settings should not break the marketplace page.
+            }
+        }
+        try {
+            $options = hub_model_selector_options($db, $selector);
+        } catch (Throwable) {
+            $options = [];
+        }
+        if ($options !== []) {
             return ['label' => '模型已就緒', 'class' => 'hub-badge hub-badge-ok'];
         }
     }

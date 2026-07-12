@@ -43,6 +43,15 @@ hub_test('API token gateway authenticates by Bearer token and records usage', fu
     hub_test_assert((int)$usage['success_count'] === 1, 'usage success count mismatch');
 });
 
+hub_test('admin API usage page renders byte totals and numeric columns for scanning', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/api_usage.php');
+
+    hub_test_assert(str_contains($source, 'hub_model_format_bytes'), 'api_usage.php must render byte totals as human readable sizes');
+    hub_test_assert(str_contains($source, '回應容量'), 'api_usage.php must label response bytes in Chinese');
+    hub_test_assert(str_contains($source, '回應時間 (ms)'), 'api_usage.php must label response time clearly');
+    hub_test_assert(str_contains($source, 'class="usage-num"'), 'api_usage.php numeric cells must be right-aligned');
+});
+
 hub_test('API token gateway rejects missing expired mode denied and IP denied tokens', function (): void {
     $db = hub_test_reset_db();
     hub_set_service_enabled($db, 'hello', true);

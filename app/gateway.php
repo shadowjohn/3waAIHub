@@ -260,14 +260,36 @@ function hub_gateway_api_base_url(): string
 
 function hub_task_submit_response(int $taskId): array
 {
-    $base = hub_gateway_api_base_url();
     return [
         'ok' => true,
         'task_id' => $taskId,
         'status' => 'queued',
+    ] + hub_task_response_links($taskId);
+}
+
+function hub_task_cached_response(array $task): array
+{
+    $taskId = (int)$task['id'];
+
+    return [
+        'ok' => true,
+        'task_id' => $taskId,
+        'status' => (string)($task['status'] ?? 'success'),
+        'cached' => true,
+        'cache_hit_task_id' => $taskId,
+        'cache_age_seconds' => (int)($task['cache_age_seconds'] ?? 0),
+    ] + hub_task_response_links($taskId);
+}
+
+function hub_task_response_links(int $taskId): array
+{
+    $base = hub_gateway_api_base_url();
+
+    return [
         'status_url' => $base . '?mode=task_status&task_id=' . $taskId,
         'result_url' => $base . '?mode=task_result&task_id=' . $taskId,
         'log_url' => $base . '?mode=task_log&task_id=' . $taskId,
+        'cancel_url' => $base . '?mode=task_cancel&task_id=' . $taskId,
         'artifact_url_template' => $base . '?mode=artifact&artifact_id={artifact_id}',
     ];
 }
@@ -327,6 +349,22 @@ function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority
         'original_filename' => $filename,
     ];
 
+    $inputSha256 = hash_file('sha256', (string)$file['tmp_name']);
+    if ($inputSha256 === false) {
+        return hub_gateway_json(500, ['ok' => false, 'error' => 'hash_failed', 'message' => 'Cannot hash uploaded PDF']);
+    }
+    $cacheVersion = hub_docparser_cache_version($db);
+    $input['input_sha256'] = $inputSha256;
+    $input['docparser_cache_version'] = $cacheVersion;
+    $input['docparser_cache_key'] = hub_docparser_cache_key($inputSha256, $input, $cacheVersion);
+
+    $cachedTask = hub_docparser_find_cached_task($db, $inputSha256, $input);
+    if ($cachedTask !== null) {
+        hub_add_task_log($db, (int)$cachedTask['id'], 'info', 'docparser_cache_hit age_seconds=' . (int)($cachedTask['cache_age_seconds'] ?? 0));
+
+        return hub_gateway_json(200, hub_task_cached_response($cachedTask));
+    }
+
     $taskId = hub_enqueue_task($db, 'docparser_parse', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
     $input['input_file'] = hub_store_task_upload_file($taskId, $file, 'pdf');
     hub_update_task_input($db, $taskId, $input);
@@ -378,6 +416,7 @@ function hub_api_task_status(PDO $db): array
         'priority' => (int)$task['priority'],
         'status' => $task['status'],
         'progress' => (int)$task['progress'],
+        'cancel_requested' => (string)($task['input']['cancel_requested'] ?? '') === '1',
         'error_message' => $task['error_message'],
         'created_at' => $task['created_at'],
         'started_at' => $task['started_at'],
@@ -424,11 +463,18 @@ function hub_api_task_cancel(PDO $db): array
         return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
     }
 
-    if (!hub_cancel_task($db, (int)$task['id'])) {
+    $taskId = (int)$task['id'];
+    if (!hub_cancel_task($db, $taskId)) {
         return hub_gateway_json(409, ['ok' => false, 'task_id' => (int)$task['id'], 'status' => $task['status'], 'error' => 'only queued tasks can be cancelled']);
     }
 
-    return hub_gateway_json(200, ['ok' => true, 'task_id' => (int)$task['id'], 'status' => 'cancelled']);
+    $updated = hub_get_task($db, $taskId);
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'task_id' => $taskId,
+        'status' => (string)($updated['status'] ?? 'cancelled'),
+        'cancel_requested' => (string)($updated['input']['cancel_requested'] ?? '') === '1',
+    ]);
 }
 
 function hub_api_artifact(PDO $db): array

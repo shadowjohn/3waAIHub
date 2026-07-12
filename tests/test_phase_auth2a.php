@@ -58,6 +58,9 @@ hub_test('PhaseAuth-2A customer usage is scoped to own api member', function ():
     $usageB = hub_list_customer_usage($db, $customerB);
     hub_test_assert(count($usageA) === 1 && (int)$usageA[0]['token_id'] === (int)$tokenA['token_id'], 'customer A usage must only include own token');
     hub_test_assert(count($usageB) === 1 && (int)$usageB[0]['token_id'] === (int)$tokenB['token_id'], 'customer B usage must only include own token');
+
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/my_usage.php');
+    hub_test_assert(str_contains($source, 'hub_model_format_bytes'), 'my_usage.php must render byte totals as human readable sizes');
 });
 
 hub_test('PhaseAuth-2A profile and password only change allowed account fields', function (): void {

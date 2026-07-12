@@ -355,7 +355,7 @@ function hub_pack_env_values(array $manifest, array $overrides = []): array
 
 function hub_generate_service_env(array $manifest, array $envValues, string $portEnv, int $localPort, string $runtimeDir, array $storage): string
 {
-    $values = [
+    $values = array_merge([
         $portEnv => (string)$localPort,
         'SERVICE_DATA_DIR' => $runtimeDir,
         'AIHUB_MODELS_DIR' => $storage['AIHUB_MODELS_DIR'],
@@ -363,7 +363,7 @@ function hub_generate_service_env(array $manifest, array $envValues, string $por
         'AIHUB_UPLOADS_DIR' => $storage['AIHUB_UPLOADS_DIR'],
         'AIHUB_RESULTS_DIR' => $storage['AIHUB_RESULTS_DIR'],
         'AIHUB_LOGS_DIR' => $storage['AIHUB_LOGS_DIR'],
-    ] + hub_pack_storage_runtime_env($manifest) + $envValues;
+    ], hub_pack_storage_runtime_env($manifest), $envValues);
 
     $lines = [];
     foreach ($values as $key => $value) {

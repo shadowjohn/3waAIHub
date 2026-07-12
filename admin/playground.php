@@ -98,6 +98,7 @@ function hub_playground_request_payload(string $mode): array
         return [
             'prompt_type' => trim((string)($_POST['prompt_type'] ?? 'auto')) ?: 'auto',
             'points_json' => trim((string)($_POST['points_json'] ?? '')),
+            'text' => trim((string)($_POST['text'] ?? '')),
             'output_format' => trim((string)($_POST['output_format'] ?? 'metadata')) ?: 'metadata',
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
@@ -647,6 +648,9 @@ hub_admin_header('API 測試場', $user);
                 <label>points_json</label>
                 <textarea name="points_json" rows="3" placeholder='{"points":[[320,240]],"labels":[1]}'></textarea>
                 <p class="muted">prompt_type=points 時填入，例如 <code>{"points":[[320,240]],"labels":[1]}</code></p>
+                <label>text</label>
+                <input name="text" value="<?= hub_h((string)($_POST['text'] ?? 'mammal/insect/plant')) ?>">
+                <p class="muted">prompt_type=text 時填入語意 prompt，例如 <code>mammal/insect/plant</code>。</p>
                 <label>output_format</label>
                 <select name="output_format">
                     <option value="metadata">metadata</option>

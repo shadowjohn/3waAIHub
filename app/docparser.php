@@ -1,6 +1,109 @@
 <?php
 declare(strict_types=1);
 
+function hub_docparser_cache_version(PDO $db): string
+{
+    $version = trim(hub_get_storage_setting($db, 'AIHUB_DOCPARSER_CACHE_VERSION'));
+
+    return $version !== '' ? $version : 'docparser-v0.1';
+}
+
+function hub_docparser_cache_ttl_days(PDO $db): int
+{
+    return max(0, (int)hub_get_storage_setting($db, 'AIHUB_DOCPARSER_CACHE_TTL_DAYS'));
+}
+
+function hub_docparser_cache_key(string $inputSha256, array $input, string $version): string
+{
+    return hash('sha256', implode('|', [
+        $inputSha256,
+        (string)($input['profile'] ?? 'technical_manual'),
+        (string)($input['target_language'] ?? 'zh-TW'),
+        (string)($input['translation_required'] ?? '1'),
+        (string)($input['structure_mode'] ?? 'structure'),
+        (string)($input['translate_mode'] ?? 'translate'),
+        $version,
+    ]));
+}
+
+function hub_docparser_find_cached_task(PDO $db, string $inputSha256, array $input): ?array
+{
+    $ttlDays = hub_docparser_cache_ttl_days($db);
+    if ($ttlDays <= 0) {
+        return null;
+    }
+
+    $version = hub_docparser_cache_version($db);
+    $cacheKey = hub_docparser_cache_key($inputSha256, $input, $version);
+    $cutoff = date('Y-m-d H:i:s', time() - ($ttlDays * 86400));
+    $stmt = $db->prepare(
+        "SELECT *
+         FROM tasks
+         WHERE task_type = 'docparser_parse'
+           AND status = 'success'
+           AND finished_at IS NOT NULL
+           AND finished_at >= :cutoff
+         ORDER BY finished_at DESC, id DESC
+         LIMIT 100"
+    );
+    $stmt->execute([':cutoff' => $cutoff]);
+
+    foreach ($stmt->fetchAll() as $task) {
+        $candidateInput = json_decode((string)($task['input_json'] ?? ''), true);
+        if (!is_array($candidateInput)) {
+            continue;
+        }
+        if ((string)($candidateInput['docparser_cache_key'] ?? '') !== $cacheKey) {
+            continue;
+        }
+        if ((string)($candidateInput['docparser_cache_version'] ?? '') !== $version) {
+            continue;
+        }
+        if (!hub_docparser_task_artifacts_complete($db, (int)$task['id'])) {
+            continue;
+        }
+
+        $task['input'] = $candidateInput;
+        $task['result'] = json_decode((string)($task['result_json'] ?? ''), true) ?: null;
+        $finishedAt = strtotime((string)($task['finished_at'] ?? '')) ?: time();
+        $task['cache_age_seconds'] = max(0, time() - $finishedAt);
+        $task['docparser_cache_key'] = $cacheKey;
+
+        return $task;
+    }
+
+    return null;
+}
+
+function hub_docparser_task_artifacts_complete(PDO $db, int $taskId): bool
+{
+    $required = [
+        'docparser/manifest.json',
+        'docparser/exports/index.zh-TW.html',
+        'docparser/exports/index.bilingual.html',
+        'docparser/exports/document.zh-TW.md',
+        'docparser/normalized/docir-v0.1.json',
+        'docparser/normalized/toc.json',
+        'docparser/exports/rag_chunks.json',
+        'docparser/exports/quality-report.json',
+    ];
+
+    $stmt = $db->prepare('SELECT name, path FROM task_artifacts WHERE task_id = :task_id');
+    $stmt->execute([':task_id' => $taskId]);
+    $artifacts = [];
+    foreach ($stmt->fetchAll() as $artifact) {
+        $artifacts[(string)$artifact['name']] = (string)$artifact['path'];
+    }
+
+    foreach ($required as $name) {
+        if (!isset($artifacts[$name]) || !is_file($artifacts[$name])) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 function hub_docparser_build_docir(array $structurePayload, array $options): array
 {
     $pages = [];
@@ -485,6 +588,9 @@ function hub_docparser_translate_blocks(PDO $db, array $docir, array $input, ?in
 
     $done = 0;
     foreach ($docir['blocks'] as &$block) {
+        if ($taskId !== null) {
+            hub_abort_if_task_cancel_requested($db, $taskId);
+        }
         $text = trim((string)($block['source_text'] ?? ''));
         if ($text === '' || !in_array((string)$block['type'], ['paragraph', 'heading', 'caption', 'list'], true)) {
             continue;
@@ -534,10 +640,36 @@ function hub_docparser_translate_text(array $service, string $text, string $targ
     $response = hub_docparser_post_json((string)$service['internal_url'], hub_service_gateway_timeout_sec($service), $payload);
     $body = json_decode((string)($response['body'] ?? ''), true);
     if (($response['status'] ?? 0) < 200 || ($response['status'] ?? 0) >= 300 || !is_array($body) || empty($body['ok'])) {
-        throw new RuntimeException('translation_failed');
+        $status = (int)($response['status'] ?? 0);
+        $detail = is_array($body)
+            ? hub_backend_error_summary($body, 'translation_failed')
+            : hub_backend_error_summary([
+                'error' => 'invalid_response',
+                'message' => substr(trim((string)($response['body'] ?? '')), 0, 240),
+            ], 'translation_failed');
+        throw new RuntimeException('translation_failed: HTTP ' . $status . ' ' . $detail);
     }
 
     return trim((string)($body['text'] ?? $body['translated_text'] ?? ''));
+}
+
+function hub_backend_error_summary(array $payload, string $fallback = 'unknown_error', int $maxBytes = 360): string
+{
+    $error = trim((string)($payload['error'] ?? $fallback));
+    if ($error === '') {
+        $error = $fallback;
+    }
+    $message = trim((string)($payload['message'] ?? $payload['detail'] ?? ''));
+    $summary = $error;
+    if ($message !== '') {
+        $summary .= ': ' . $message;
+    }
+    $summary = trim((string)preg_replace('/\s+/', ' ', $summary));
+    if ($maxBytes > 0 && strlen($summary) > $maxBytes) {
+        $summary = substr($summary, 0, max(0, $maxBytes - 3)) . '...';
+    }
+
+    return $summary;
 }
 
 function hub_docparser_split_translation_text(string $text, int $maxChars = 8000): array

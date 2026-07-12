@@ -17,6 +17,8 @@ hub_test('TranslateGemma pack has runnable Ollama adapter files', function (): v
     hub_test_assert(str_contains($app, '/api/tags'), 'Translate health must check Ollama tags API');
     hub_test_assert(str_contains($app, '/api/generate'), 'Translate real inference must call Ollama generate API');
     hub_test_assert(str_contains($app, '"stream": False'), 'Translate generate payload must be non-streaming');
+    hub_test_assert(str_contains($app, 'OLLAMA_NUM_GPU'), 'Translate adapter must expose optional Ollama GPU count override');
+    hub_test_assert(str_contains($app, '"num_gpu"'), 'Translate adapter must pass optional num_gpu to Ollama');
     hub_test_assert(str_contains($app, 'You are a professional translation engine.'), 'Translate prompt template missing');
     hub_test_assert(str_contains($app, '"present"'), 'Translate health must report model present status');
     hub_test_assert(str_contains($app, 'model_not_present'), 'Translate health must warn when model is missing');
@@ -97,6 +99,7 @@ hub_test('TranslateGemma service instance generates Ollama sidecar compose and s
         'MAX_INPUT_CHARS=12000',
         'TEMPERATURE=0',
         'OLLAMA_NUM_CTX=4096',
+        'OLLAMA_NUM_GPU=',
         'KEEP_WARM=0',
         'TRANSLATE_REAL_INFERENCE=0',
     ] as $needle) {

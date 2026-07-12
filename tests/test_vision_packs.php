@@ -86,6 +86,9 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             foreach (['output_format', 'invalid_output_format', 'polygon_from_mask', 'rle_from_mask'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 L5.1 app missing geometry output path: ' . $needle);
             }
+            foreach (['SAM3SemanticPredictor', 'prompt_type not in {"auto", "points", "boxes", "text"}', 'parse_text_prompt', 'text_prompt'] as $needle) {
+                hub_test_assert(str_contains($app, $needle), 'sam3 semantic prompt path missing ' . $needle);
+            }
             foreach (['YOLO(', 'download'] as $needle) {
                 hub_test_assert(!str_contains($app, $needle), 'sam3 app must not use YOLO/download: ' . $needle);
             }

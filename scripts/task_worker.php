@@ -23,6 +23,9 @@ while ($processed < $limit) {
 
     try {
         hub_run_task($db, $task);
+    } catch (HubTaskCancelled $e) {
+        hub_add_task_log($db, (int)$task['id'], 'warning', $e->getMessage());
+        hub_finish_task_cancelled($db, $task, $e->getMessage());
     } catch (Throwable $e) {
         hub_add_task_log($db, (int)$task['id'], 'error', $e->getMessage());
         hub_finish_task_failed($db, $task, $e->getMessage());
@@ -107,6 +110,7 @@ function hub_run_structure_parse_task(PDO $db, array $task): void
 function hub_run_docparser_parse_task(PDO $db, array $task): void
 {
     $taskId = (int)$task['id'];
+    hub_abort_if_task_cancel_requested($db, $taskId);
     $input = $task['input'] ?? [];
     $inputFile = hub_structure_task_input_file($input);
     $profile = (string)($input['profile'] ?? 'technical_manual');
@@ -121,9 +125,11 @@ function hub_run_docparser_parse_task(PDO $db, array $task): void
 
     hub_add_task_log($db, $taskId, 'info', 'docparser_parse started file=' . basename($inputFile));
     hub_update_task_progress($db, $taskId, 10);
+    hub_abort_if_task_cancel_requested($db, $taskId);
 
     $structure = hub_structure_call_service($structureService, $inputFile, 'both');
     hub_update_task_progress($db, $taskId, 35);
+    hub_abort_if_task_cancel_requested($db, $taskId);
 
     $docir = hub_docparser_build_docir(hub_docparser_structure_payload($structure['payload']), [
         'profile' => $profile,
@@ -131,12 +137,16 @@ function hub_run_docparser_parse_task(PDO $db, array $task): void
     ]);
     $docir = hub_docparser_extract_figure_assets($inputFile, $docir, hub_task_result_dir($taskId) . '/docparser/assets/figures');
     hub_update_task_progress($db, $taskId, 55);
+    hub_abort_if_task_cancel_requested($db, $taskId);
 
     $docir = hub_docparser_translate_blocks($db, $docir, $input, $taskId);
+    hub_abort_if_task_cancel_requested($db, $taskId);
     $outputs = hub_docparser_render_outputs($docir, ['target_language' => $targetLanguage]);
+    hub_abort_if_task_cancel_requested($db, $taskId);
     $fixture = json_decode((string)file_get_contents(HUB_ROOT . '/packs/docparser/acceptance/' . $profile . '_v0.1.json'), true) ?: [];
     $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
     hub_update_task_progress($db, $taskId, 85);
+    hub_abort_if_task_cancel_requested($db, $taskId);
 
     $toc = json_decode($outputs['toc_json'], true) ?: [];
     $rag = json_decode($outputs['rag_chunks_json'], true) ?: [];
@@ -229,7 +239,7 @@ function hub_structure_call_service(array $service, string $inputFile, string $o
         throw new RuntimeException('structure service returned invalid JSON.');
     }
     if ($status < 200 || $status >= 300 || empty($payload['ok'])) {
-        throw new RuntimeException('structure service failed: ' . (string)($payload['error'] ?? 'unknown_error'));
+        throw new RuntimeException('structure service failed: HTTP ' . $status . ' ' . hub_backend_error_summary($payload, 'unknown_error'));
     }
 
     return ['status' => $status, 'payload' => $payload];

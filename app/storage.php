@@ -20,6 +20,8 @@ function hub_default_storage_settings(): array
         'AIHUB_TASK_RETENTION_DAYS' => '30',
         'AIHUB_MAX_TASK_LOG_ROWS' => '1000',
         'AIHUB_MAX_RESULT_JSON_BYTES' => '262144',
+        'AIHUB_DOCPARSER_CACHE_TTL_DAYS' => '7',
+        'AIHUB_DOCPARSER_CACHE_VERSION' => 'docparser-v0.1',
         'AIHUB_DEFAULT_ALLOW_EXTERNAL_API' => '0',
         'AIHUB_API_ACCESS_LOG_RETENTION_DAYS' => '30',
         'AIHUB_API_LOG_SUCCESS_SAMPLE_RATE' => '1',

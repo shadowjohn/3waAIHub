@@ -1,5 +1,120 @@
 # 3waAIHub History
 
+## SAM3 Text Prompt Runtime Dependency
+
+Added the Ultralytics CLIP runtime dependency to the SAM3 service image so semantic `prompt_type=text` real inference can run inside Docker.
+
+Verified:
+
+- Rebuilt and restarted `sam3-main`.
+- NatureWeb black bear smoke call through `mode=sam3` returned HTTP 200, `ok=1`, `mock=0`, `prompt_type=text`, and 1 bbox.
+
+## PhaseTask-1 DocParser Cooperative Cancel
+
+Added safe cancel support for long DocParser tasks.
+
+Implemented:
+
+- `task_cancel` still cancels queued tasks immediately.
+- Running `docparser_parse` tasks now accept a cooperative cancel request.
+- Cancel request is stored in task input as `cancel_requested=1`.
+- `task_worker.php` checks cancellation at DocParser checkpoints:
+  - before structure parsing
+  - after structure parsing
+  - after figure extraction
+  - during translation blocks
+  - before render / quality / artifact write
+- Worker marks the task `cancelled` instead of `failed` when a checkpoint sees the request.
+- Submit response includes `cancel_url`.
+- Docs clarify that this does not hard-kill workers, Docker containers, or in-flight backend HTTP calls.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS with running DocParser cancel coverage.
+
+## SAM3 Semantic Text Prompt
+
+Added semantic text prompt support to the SAM3 API.
+
+Implemented:
+
+- `POST /segment/image` accepts `prompt_type=text`.
+- `text` / `text_prompt` can carry concepts such as `mammal/insect/plant`.
+- Real inference uses the SAM3 semantic predictor path.
+- Mock responses keep the same request contract and echo normalized text prompts.
+- Playground, admin API docs, public examples and client quickstart document the new field.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS.
+- `python3 -m py_compile packs/sam3/service/*.py` PASS.
+
+## DocParser Artifact Cache
+
+Added a lightweight DocParser submit cache to avoid repeating expensive PDF conversions.
+
+Implemented:
+
+- Same PDF SHA-256 + same conversion rules can reuse a fresh completed `docparser_parse` task.
+- Default cache TTL is `AIHUB_DOCPARSER_CACHE_TTL_DAYS=7`.
+- Cache version is `AIHUB_DOCPARSER_CACHE_VERSION=docparser-v0.1`.
+- Cache hit response returns `cached=true`, `cache_hit_task_id`, and the normal task follow-up URLs.
+- Cache reuse requires the registered DocParser artifacts to still exist on disk.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS with DocParser cache coverage.
+
+## DocParser GPU / VRAM Stability Fix
+
+Investigated document conversion failures on the RTX 5090 host.
+
+Root cause:
+
+- `structure-main` was GPU-capable and Paddle reported `device=gpu:0`; failures were caused by VRAM pressure, not CPU-only runtime.
+- SAM3 / VoxCPM2 / external NatureID services were occupying most VRAM, leaving only about 1-2GB for PP-StructureV3 temporary allocations.
+- Some 100MB+ PDFs were blocked by `structure-ppstructurev3` upload limit mismatch.
+- TranslateGemma could hit Ollama CUDA OOM during DocParser translation when GPU memory was full.
+- TranslateGemma model presence was verified through the Ollama sidecar and `scripts/ollama_model_pull.php`.
+
+Changed:
+
+- Raised `structure-ppstructurev3` upload contract/default from 100MB to 512MB.
+- Added `OLLAMA_NUM_GPU` setting/env support to TranslateGemma adapter so document batches can use CPU fallback with `OLLAMA_NUM_GPU=0`.
+- Fixed generated `.env` precedence so service settings override pack runtime defaults such as `STRUCTURE_DEVICE`.
+- Improved backend error summaries so task failures include clipped backend messages such as Paddle `ResourceExhaustedError`.
+- Updated the live host:
+  - `structure-main`: `STRUCTURE_DEVICE=gpu`, `STRUCTURE_MAX_UPLOAD_MB=512`
+  - `translate-main`: `OLLAMA_NUM_GPU=0`
+
+Verified:
+
+- `structure-main` container env reports `STRUCTURE_DEVICE=gpu`.
+- Paddle reports `compiled_cuda=true` and `device=gpu:0`.
+- Direct parse of failed 39MB / 335-page PDF returned HTTP 200 with `device=gpu`, `result_count=335`, `elapsed_ms=125204` after freeing 3waAIHub SAM3/VoxCPM2 VRAM.
+- TranslateGemma real inference returned zh-TW text with `OLLAMA_NUM_GPU=0`.
+- `ollama pull translategemma:12b-it-q4_K_M` verified the model is present in the Ollama volume.
+- `php scripts/run_tests.php` PASS with 131 tests.
+
+## PhaseDoc-1C DocParser L5 Benchmark Ready
+
+Promoted `docparser` from L4 orchestrator delivery to L5 benchmark-ready.
+
+Implemented:
+
+- `runtime_level=L5-benchmark-ready`
+- DocParser async submit benchmark cases:
+  - `docparser_submit_pdf`
+  - `docparser_submit_10page_pdf`
+- Task result contract for DocIR / reader HTML / bilingual HTML / Markdown / TOC / RAG chunks / quality report / manifest artifacts.
+- Figure crop contract with per-image `artifact_id`.
+- Benchmark page and client docs now include DocParser L5 commands.
+- Async submit benchmarks cancel their queued demo tasks after contract validation; full output quality remains covered by `docparser_acceptance.php --task-id=<SUCCESS_TASK_ID>`.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS.
+
 ## DocParser Figure Artifact IDs
 
 Exposed per-crop figure artifact IDs for downstream visual RAG.
@@ -25,10 +140,12 @@ Fixed queued async AI tasks not being consumed by the installed 1-minute worker 
 Implemented:
 
 - `crontab/1min.sh` now runs both:
+  - runtime permission guard, calling `scripts/fix_permissions.sh` only when key `data/` directories or SQLite/WAL files need repair
+  - `scripts/collect_host_metrics.php`
   - `scripts/command_worker.php`
   - `scripts/task_worker.php`
 - Added `TASK_WORKER_LIMIT` support to the cron installer.
-- Updated README worker description.
+- Updated README worker / dashboard metrics description.
 
 Reason:
 

@@ -18,6 +18,11 @@ hub_test('PhaseUI-3 marketplace card contract is present and renders', function 
     }
 
     $db = hub_test_reset_db();
+    $modelsDir = sys_get_temp_dir() . '/3waaihub_phase_ui3_marketplace_models_' . bin2hex(random_bytes(4));
+    mkdir($modelsDir . '/ollama/models/manifests/registry.ollama.ai/library/translategemma', 0775, true);
+    file_put_contents($modelsDir . '/ollama/models/manifests/registry.ollama.ai/library/translategemma/12b-it-q4_K_M', '{}');
+    hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', $modelsDir);
+
     $_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];
     $_SERVER['REQUEST_METHOD'] = 'GET';
     $_GET = [];
@@ -30,6 +35,11 @@ hub_test('PhaseUI-3 marketplace card contract is present and renders', function 
     }
     hub_test_assert(str_contains($html, 'name="service_key"'), 'install flow service_key input missing');
     hub_test_assert(str_contains($html, 'name="mode"'), 'install flow mode input missing');
+
+    $translatePos = strpos($html, 'translate-gemma12b');
+    hub_test_assert($translatePos !== false, 'rendered marketplace missing translate card');
+    $translateCard = substr($html, $translatePos, 5000);
+    hub_test_assert(str_contains($translateCard, '模型已就緒'), 'TranslateGemma Ollama tag model should render as ready');
 });
 
 hub_test('PhaseUI-3 models card contract is present and renders', function (): void {

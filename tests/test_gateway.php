@@ -39,3 +39,34 @@ hub_test('gateway applies manifest upload limit and timeout', function (): void 
     });
     hub_test_assert($response['status'] === 200, 'translate request should pass after content length is acceptable');
 });
+
+hub_test('task_cancel API requests cooperative cancel for running DocParser tasks', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, ['input_file' => HUB_DATA_DIR . '/uploads/tasks/task_1/input.pdf'], null, '127.0.0.1');
+    hub_claim_next_task($db);
+
+    $serverBackup = $_SERVER;
+    $getBackup = $_GET;
+    $postBackup = $_POST;
+    try {
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_GET = ['task_id' => (string)$taskId];
+        $_POST = [];
+
+        $cancel = hub_gateway_dispatch($db, 'task_cancel');
+        $cancelPayload = json_decode((string)$cancel['body'], true);
+        hub_test_assert($cancel['status'] === 200, 'running DocParser cancel must return 200');
+        hub_test_assert(($cancelPayload['status'] ?? '') === 'running', 'running DocParser cancel must keep status running until checkpoint');
+        hub_test_assert(($cancelPayload['cancel_requested'] ?? false) === true, 'running DocParser cancel must return cancel_requested=true');
+
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $status = hub_gateway_dispatch($db, 'task_status');
+        $statusPayload = json_decode((string)$status['body'], true);
+        hub_test_assert(($statusPayload['cancel_requested'] ?? false) === true, 'task_status must expose cancel_requested');
+    } finally {
+        $_SERVER = $serverBackup;
+        $_GET = $getBackup;
+        $_POST = $postBackup;
+    }
+});

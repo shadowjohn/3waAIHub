@@ -209,3 +209,34 @@ hub_test('L5 VoxCPM2 contract benchmark records mock and real cases', function (
     hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'TTS readiness must show promoted L5');
     hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'TTS readiness must be fully green after real benchmark pass');
 });
+
+hub_test('L5 DocParser contract benchmark submits async PDF tasks', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'docparser', [
+        'service_key' => 'docparser-main',
+        'name' => 'DocParser Main',
+        'mode' => 'docparser',
+        'port_mode' => 'auto',
+        'environment' => 'production',
+        'idempotent' => true,
+    ]);
+
+    $contract = hub_pack_l5_contract(hub_get_pack('docparser')['manifest']);
+    hub_test_assert(hub_l5_benchmark_case($contract, 'docparser_submit_pdf') !== null, 'docparser_submit_pdf case missing');
+    hub_test_assert(hub_l5_benchmark_case($contract, 'docparser_submit_10page_pdf') !== null, 'docparser_submit_10page_pdf case missing');
+
+    $result = hub_run_benchmark_case($db, 'docparser_submit_pdf', 'docparser');
+    hub_test_assert($result['status'] === 'pass', 'docparser_submit_pdf did not pass');
+    hub_test_assert(($result['result']['expected_keys_pass'] ?? false) === true, 'DocParser submit expected keys check failed');
+    hub_test_assert(($result['result']['runtime_level'] ?? '') === 'L5-benchmark-ready', 'DocParser runtime level missing from benchmark');
+
+    $task = $db->query("SELECT * FROM tasks WHERE task_type = 'docparser_parse' ORDER BY id DESC LIMIT 1")->fetch(PDO::FETCH_ASSOC);
+    hub_test_assert(is_array($task), 'DocParser benchmark must enqueue a task');
+    hub_test_assert(($task['status'] ?? '') === 'cancelled', 'DocParser submit benchmark must cancel its queued task after contract check');
+    hub_test_assert(($task['queue_name'] ?? '') === 'ocr', 'DocParser benchmark task queue mismatch');
+
+    $readiness = hub_pack_l5_readiness($db, 'docparser');
+    hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'DocParser readiness must show promoted L5');
+    hub_test_assert($readiness['checks']['latest_benchmark_pass'] === true, 'DocParser readiness must see latest benchmark pass');
+    hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'DocParser readiness must be fully green after submit benchmark pass');
+});

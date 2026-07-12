@@ -163,6 +163,12 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         $contractFailed = true;
     }
     $device = is_array($payload['device'] ?? null) ? $payload['device'] : [];
+    $submittedTaskId = is_array($payload) ? (int)($payload['task_id'] ?? 0) : 0;
+    $cancelledSubmittedTask = false;
+    if ((string)($case['type'] ?? '') === 'async_submit' && $submittedTaskId > 0) {
+        // ponytail: submit benchmarks verify gateway contract only; cancel queued demo tasks so cron does not process fixture PDFs.
+        $cancelledSubmittedTask = hub_cancel_task($db, $submittedTaskId);
+    }
     if ($contractFailed) {
         throw new RuntimeException('benchmark contract check failed.');
     }
@@ -179,6 +185,8 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         'detection_count' => $detectionCount,
         'mask_count' => $maskCount,
         'result_count' => $resultCount,
+        'task_id' => $submittedTaskId,
+        'cancelled_submitted_task' => $cancelledSubmittedTask,
         'mock' => is_array($payload) ? ($payload['mock'] ?? null) : null,
         'model_checkpoint' => is_array($payload['model'] ?? null) ? (string)($payload['model']['checkpoint'] ?? '') : '',
         'text_length' => is_array($payload) ? strlen((string)($payload['text'] ?? '')) : 0,

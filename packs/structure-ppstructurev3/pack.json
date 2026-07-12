@@ -21,7 +21,7 @@
     "invoke_path": "/v1/parse",
     "methods": ["POST"],
     "timeout_sec": 1800,
-    "max_upload_mb": 100
+    "max_upload_mb": 512
   },
   "l5_contract": {
     "endpoint": "/v1/parse",
@@ -33,7 +33,7 @@
           "name": "file",
           "type": "file",
           "required": true,
-          "max_mb": 100
+          "max_mb": 512
         },
         {
           "name": "output_format",
@@ -65,7 +65,7 @@
     ],
     "limits": {
       "timeout_sec": 1800,
-      "max_upload_mb": 100,
+      "max_upload_mb": 512,
       "max_concurrency": 1
     },
     "benchmark": {
@@ -167,11 +167,11 @@
       "key": "STRUCTURE_MAX_UPLOAD_MB",
       "label": "Max upload MB",
       "type": "integer",
-      "default": "100",
+      "default": "512",
       "min": 1,
       "max": 1024,
       "required": true,
-      "restart_required": false
+      "restart_required": true
     },
     {
       "key": "STRUCTURE_DEVICE",
@@ -211,7 +211,7 @@
     },
     {
       "name": "STRUCTURE_MAX_UPLOAD_MB",
-      "default": "100",
+      "default": "512",
       "required": true
     },
     {

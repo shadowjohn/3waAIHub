@@ -1,6 +1,10 @@
 <?php
 declare(strict_types=1);
 
+class HubTaskCancelled extends RuntimeException
+{
+}
+
 function hub_allowed_task_types(): array
 {
     return ['demo_task', 'structure_parse', 'docparser_parse'];
@@ -383,6 +387,21 @@ function hub_finish_task_failed(PDO $db, array $task, string $errorMessage): voi
     ]);
 }
 
+function hub_finish_task_cancelled(PDO $db, array $task, string $message = 'cancelled'): void
+{
+    $stmt = $db->prepare(
+        "UPDATE tasks
+         SET status = 'cancelled', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
+         WHERE id = :id"
+    );
+    $stmt->execute([
+        ':error_message' => $message,
+        ':finished_at' => hub_now(),
+        ':updated_at' => hub_now(),
+        ':id' => (int)$task['id'],
+    ]);
+}
+
 function hub_cancel_task(PDO $db, int $taskId): bool
 {
     $stmt = $db->prepare(
@@ -396,7 +415,39 @@ function hub_cancel_task(PDO $db, int $taskId): bool
         ':id' => $taskId,
     ]);
 
-    return $stmt->rowCount() === 1;
+    if ($stmt->rowCount() === 1) {
+        return true;
+    }
+
+    $task = hub_get_task($db, $taskId);
+    if (!$task || ($task['status'] ?? '') !== 'running' || ($task['task_type'] ?? '') !== 'docparser_parse') {
+        return false;
+    }
+
+    $input = is_array($task['input'] ?? null) ? $task['input'] : [];
+    $input['cancel_requested'] = '1';
+    $input['cancel_requested_at'] = hub_now();
+    hub_update_task_input($db, $taskId, $input);
+    hub_add_task_log($db, $taskId, 'warning', 'cancel_requested');
+
+    return true;
+}
+
+function hub_task_cancel_requested(PDO $db, int $taskId): bool
+{
+    $task = hub_get_task($db, $taskId);
+
+    return $task !== null
+        && ($task['status'] ?? '') === 'running'
+        && ($task['task_type'] ?? '') === 'docparser_parse'
+        && (string)($task['input']['cancel_requested'] ?? '') === '1';
+}
+
+function hub_abort_if_task_cancel_requested(PDO $db, int $taskId): void
+{
+    if (hub_task_cancel_requested($db, $taskId)) {
+        throw new HubTaskCancelled('cancel_requested');
+    }
 }
 
 function hub_task_result_dir(int $taskId): string

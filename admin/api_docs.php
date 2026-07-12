@@ -180,6 +180,14 @@ hub_admin_header('API 文件', $user);
   -F 'points_json={"points":[[320,240]],"labels":[1]}' \
   -F "real_inference=1" \
   -F "output_format=both"</pre>
+    <h3>Semantic text prompt</h3>
+    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
+  -H "Authorization: Bearer 3wa_live_xxx" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
+  -F "prompt_type=text" \
+  -F "text=mammal/insect/plant" \
+  -F "real_inference=1" \
+  -F "output_format=polygon"</pre>
 </section>
 <section class="panel">
     <h2>Unknown Mode</h2>

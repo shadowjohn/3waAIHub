@@ -56,6 +56,16 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_optional_int(name: str) -> int | None:
+    value = os.getenv(name, "").strip()
+    if value == "":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def env_float(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, str(default)))
@@ -181,14 +191,19 @@ def translate_with_ollama(request: TranslateRequest) -> Any:
         return json_error(503, "model_not_present", "Ollama model is not present.")
 
     started = time.monotonic()
+    options = {
+        "temperature": env_float("TEMPERATURE", 0.0),
+        "num_ctx": env_int("OLLAMA_NUM_CTX", 4096),
+    }
+    num_gpu = env_optional_int("OLLAMA_NUM_GPU")
+    if num_gpu is not None:
+        options["num_gpu"] = num_gpu
+
     payload = {
         "model": model["name"],
         "prompt": build_prompt(request),
         "stream": False,
-        "options": {
-            "temperature": env_float("TEMPERATURE", 0.0),
-            "num_ctx": env_int("OLLAMA_NUM_CTX", 4096),
-        },
+        "options": options,
         "keep_alive": os.getenv("OLLAMA_KEEP_ALIVE", "5m"),
     }
     try:

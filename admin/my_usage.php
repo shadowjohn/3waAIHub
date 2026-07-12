@@ -21,7 +21,7 @@ hub_admin_header('用量統計', $user);
         <div class="hub-empty-state">目前尚無用量紀錄。</div>
     <?php else: ?>
         <table>
-            <thead><tr><th>日期</th><th>Token</th><th>mode</th><th>請求</th><th>成功</th><th>失敗</th><th>總耗時 ms</th><th>上傳 bytes</th><th>回應 bytes</th></tr></thead>
+            <thead><tr><th>日期</th><th>Token</th><th>mode</th><th>請求</th><th>成功</th><th>失敗</th><th>總耗時 ms</th><th>上傳容量</th><th>回應容量</th></tr></thead>
             <tbody>
             <?php foreach ($usageRows as $row): ?>
                 <tr>
@@ -32,8 +32,8 @@ hub_admin_header('用量統計', $user);
                     <td><?= (int)$row['success_count'] ?></td>
                     <td><?= (int)$row['failed_count'] ?></td>
                     <td><?= (int)$row['total_elapsed_ms'] ?></td>
-                    <td><?= (int)$row['total_upload_bytes'] ?></td>
-                    <td><?= (int)$row['total_response_bytes'] ?></td>
+                    <td><?= hub_h(hub_model_format_bytes((int)$row['total_upload_bytes'])) ?></td>
+                    <td><?= hub_h(hub_model_format_bytes((int)$row['total_response_bytes'])) ?></td>
                 </tr>
             <?php endforeach; ?>
             </tbody>

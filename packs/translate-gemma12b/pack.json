@@ -203,6 +203,16 @@
       "restart_required": true
     },
     {
+      "key": "OLLAMA_NUM_GPU",
+      "label": "Ollama GPU layers",
+      "type": "integer",
+      "default": "",
+      "min": 0,
+      "max": 999,
+      "required": false,
+      "restart_required": true
+    },
+    {
       "key": "GPU_VISIBLE_DEVICES",
       "label": "GPU visible devices",
       "type": "text",
@@ -256,6 +266,11 @@
     {
       "name": "OLLAMA_NUM_CTX",
       "default": "4096",
+      "required": false
+    },
+    {
+      "name": "OLLAMA_NUM_GPU",
+      "default": "",
       "required": false
     },
     {

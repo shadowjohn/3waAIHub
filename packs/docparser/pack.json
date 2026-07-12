@@ -6,7 +6,7 @@
   "category": "document",
   "type": "orchestrator",
   "execution_type": "async_task",
-  "runtime_level": "L4-orchestrator-complete-delivery",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "docparser",
@@ -72,7 +72,60 @@
       "log": "GET api.php?mode=task_log&task_id={task_id}",
       "artifact": "GET api.php?mode=artifact&artifact_id={artifact_id}"
     },
-    "errors": ["file_required", "unsupported_file_type", "invalid_pdf_file", "unknown_queue", "missing_token", "token_mode_not_allowed"]
+    "task_result": {
+      "status": "GET api.php?mode=task_result&task_id={task_id}",
+      "queued_status_code": 409,
+      "artifact_summary_keys": [
+        "reader_html",
+        "bilingual_html",
+        "markdown",
+        "docir",
+        "toc",
+        "rag_chunks",
+        "quality_report",
+        "manifest",
+        "figure_assets"
+      ],
+      "figure_item_keys": ["figure_id", "block_id", "page", "bbox", "caption", "asset_path", "artifact_id", "bytes"]
+    },
+    "errors": ["file_required", "unsupported_file_type", "invalid_pdf_file", "unknown_queue", "missing_token", "token_mode_not_allowed"],
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "docparser_submit_pdf",
+          "name": "DocParser single PDF async submit smoke",
+          "type": "async_submit",
+          "mode": "docparser",
+          "method": "POST",
+          "fixture": "packs/structure-ppstructurev3/demo/sample.pdf",
+          "fixture_field": "file",
+          "form": {
+            "target_language": "zh-TW",
+            "translation_required": "1",
+            "structure_mode": "structure",
+            "translate_mode": "translate"
+          },
+          "expected_keys": ["ok", "task_id", "status", "status_url", "result_url", "log_url", "artifact_url_template"]
+        },
+        {
+          "id": "docparser_submit_10page_pdf",
+          "name": "DocParser 10 page PDF async submit smoke",
+          "type": "async_submit",
+          "mode": "docparser",
+          "method": "POST",
+          "fixture": "packs/structure-ppstructurev3/demo/sample-10-pages.pdf",
+          "fixture_field": "file",
+          "form": {
+            "target_language": "zh-TW",
+            "translation_required": "1",
+            "structure_mode": "structure",
+            "translate_mode": "translate"
+          },
+          "expected_keys": ["ok", "task_id", "status", "status_url", "result_url", "log_url", "artifact_url_template"]
+        }
+      ]
+    }
   },
   "hardware": {
     "gpu_required": false,
