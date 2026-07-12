@@ -305,6 +305,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
         <p class="muted">這份文件只提供外部介接所需資訊，不包含後台管理連結、內部部署資訊、主機檔案路徑或 token 明文。</p>
         <p>認證方式：<code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
         <p>API Endpoint：<code><?= hub_h(hub_public_api_base_url()) ?>?mode=&lt;mode&gt;</code></p>
+        <p>DocParser 局部補翻譯：看 <code>quality_report.missing_translation_blocks</code>，再送 <code>task_type=docparser_repair_translation</code>、<code>task_id</code>、<code>block_ids</code> 到 <code><?= hub_h(hub_public_api_base_url()) ?>?mode=task_submit</code>。此流程只重翻指定 block，不重跑 OCR / layout / figure extraction。</p>
         <?php if ($user !== null): ?>
             <p><a class="button" href="admin/playground.php">開啟 API 測試場</a></p>
         <?php endif; ?>

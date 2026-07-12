@@ -772,6 +772,145 @@ hub_test('DocParser quality gate reports missing table translations by block id'
     hub_test_assert((int)($quality['missing_translation_blocks'][0]['page'] ?? 0) === 1, 'missing table page must be reported');
 });
 
+hub_test('DocParser repair translation validates compact block id input', function (): void {
+    hub_test_assert(hub_is_valid_task_type('docparser_repair_translation'), 'repair task type must be allowlisted');
+    hub_test_assert(hub_docparser_parse_repair_block_ids('p1-b2, p14-b8,p1-b2') === ['p1-b2', 'p14-b8'], 'repair block ids must trim and dedupe');
+
+    foreach (['', 'p0-b1', 'p1-b0', 'p1-b2,../../etc/passwd', 'p1-b2;p2-b3', str_repeat('p1-b1,', 60)] as $badInput) {
+        hub_test_assert(hub_test_throws(fn () => hub_docparser_parse_repair_block_ids($badInput)), 'bad repair block ids must fail: ' . substr($badInput, 0, 40));
+    }
+});
+
+hub_test('DocParser repair translation fixes selected table blocks and recomputes quality', function (): void {
+    $db = hub_test_reset_db();
+    $docir = hub_docparser_build_docir([
+        'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
+        'blocks' => [
+            ['id' => 'raw-1', 'page' => 1, 'order' => 1, 'type' => 'paragraph', 'text' => 'Inspection notes', 'bbox' => [10, 10, 200, 40]],
+            ['id' => 'raw-table', 'page' => 1, 'order' => 2, 'type' => 'table', 'text' => "Part\nTorque\nBolt\n12 N m", 'bbox' => [10, 50, 500, 180]],
+        ],
+        'figures' => [],
+    ], [
+        'target_language' => 'zh-TW',
+    ]);
+    $docir['blocks'][0]['translation'] = [
+        'language' => 'zh-TW',
+        'text' => '檢查說明',
+        'source_block_id' => 'p1-b1',
+    ];
+
+    $repair = hub_docparser_repair_translation_docir(
+        $db,
+        $docir,
+        ['target_language' => 'zh-TW'],
+        ['p1-b1', 'p1-b2'],
+        0,
+        static fn (string $text, string $target): string => '已翻譯：' . $text . ' / ' . $target
+    );
+
+    hub_test_assert($repair['repaired_block_ids'] === ['p1-b2'], 'repair must only translate missing table block');
+    hub_test_assert($repair['skipped_block_ids'] === ['p1-b1'], 'repair must skip already translated block');
+    hub_test_assert(hub_docparser_valid_translation_text($repair['docir']['blocks'][1]) !== '', 'table block translation missing after repair');
+
+    $outputs = hub_docparser_render_outputs($repair['docir'], ['target_language' => 'zh-TW']);
+    $quality = hub_docparser_quality_report($repair['docir'], $outputs, [
+        'expected_page_count_min' => 1,
+        'minimum_heading_count' => 0,
+        'minimum_table_count' => 1,
+        'expected_figure_count_min' => 0,
+        'required_toc_titles' => [],
+        'required_translations' => [],
+        'protected_tokens' => [],
+        'quality_thresholds' => [
+            'page_record_coverage' => 1.0,
+            'block_provenance_coverage' => 1.0,
+            'required_artifact_integrity' => 1.0,
+            'translation_block_coverage' => 0.98,
+            'translation_identity_ratio_max' => 0.10,
+            'protected_token_preservation' => 1.0,
+        ],
+    ]);
+    hub_test_assert(($quality['status'] ?? '') === 'completed', 'repair must let table coverage complete');
+    hub_test_assert((float)($quality['metrics']['translation_coverage_by_type']['table'] ?? 0) === 1.0, 'table coverage must be full after repair');
+});
+
+hub_test('DocParser repair submit is owned by API member and rejects unsafe source tasks', function (): void {
+    $db = hub_test_reset_db();
+    $memberA = hub_create_api_member($db, 'Repair Owner');
+    $tokenA = hub_create_api_token($db, $memberA, 'repair owner token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$tokenA['token_id'], 'task_submit', null);
+    $memberB = hub_create_api_member($db, 'Repair Stranger');
+    $tokenB = hub_create_api_token($db, $memberB, 'repair stranger token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$tokenB['token_id'], 'task_submit', null);
+    hub_test_assert(!hub_docparser_repair_allowed_for_auth(['input' => []], ['member_id' => $memberA]), 'ownerless source task must reject external member repair');
+    hub_test_assert(hub_docparser_repair_allowed_for_auth(['input' => []], []), 'ownerless source task must allow internal repair');
+
+    $sourceTaskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, [
+        'profile' => 'technical_manual',
+        'target_language' => 'zh-TW',
+        'translation_required' => '1',
+        'api_member_id' => $memberA,
+        'api_token_id' => (int)$tokenA['token_id'],
+    ], null, '203.0.113.10');
+    hub_store_docparser_task_artifacts($db, $sourceTaskId, [
+        'manifest' => ['status' => 'needs_review'],
+        'reader_html' => '<html></html>',
+        'bilingual_html' => '<html></html>',
+        'markdown' => '',
+        'docir' => [
+            'schema' => '3wa-docir-v0.1',
+            'target_language' => 'zh-TW',
+            'pages' => [['page' => 1]],
+            'blocks' => [[
+                'id' => 'p1-b1',
+                'page' => 1,
+                'order' => 1,
+                'type' => 'paragraph',
+                'source_text' => 'Inspection notes',
+                'provenance' => ['source_block_id' => 'raw-1'],
+            ]],
+            'figures' => [],
+        ],
+        'toc' => [],
+        'rag_chunks' => [],
+        'quality_report' => ['status' => 'needs_review'],
+    ]);
+
+    $serverBackup = $_SERVER;
+    $postBackup = $_POST;
+    $filesBackup = $_FILES;
+    try {
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.20';
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=task_submit';
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $tokenB['plain_token'];
+        $_FILES = [];
+        $_POST = [
+            'task_type' => 'docparser_repair_translation',
+            'task_id' => (string)$sourceTaskId,
+            'block_ids' => 'p1-b1',
+        ];
+        $denied = hub_gateway_dispatch($db, 'task_submit');
+        hub_test_assert($denied['status'] === 403, 'repair submit must reject another member task');
+        hub_test_assert(str_contains((string)$denied['body'], 'task_forbidden'), 'repair submit forbidden error mismatch');
+
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $tokenA['plain_token'];
+        $accepted = hub_gateway_dispatch($db, 'task_submit');
+        hub_test_assert($accepted['status'] === 200, 'repair submit must accept owner member task');
+        $payload = json_decode((string)$accepted['body'], true);
+        $repairTask = hub_get_task($db, (int)($payload['task_id'] ?? 0));
+        hub_test_assert(($repairTask['task_type'] ?? '') === 'docparser_repair_translation', 'repair submit queued task type mismatch');
+        hub_test_assert(($repairTask['queue_name'] ?? '') === 'ocr', 'repair submit default queue must be ocr');
+        hub_test_assert(($repairTask['input']['source_task_id'] ?? 0) === $sourceTaskId, 'repair submit source task id mismatch');
+        hub_test_assert(($repairTask['input']['block_ids'] ?? []) === ['p1-b1'], 'repair submit sanitized block ids mismatch');
+        hub_test_assert((int)($repairTask['input']['api_member_id'] ?? 0) === $memberA, 'repair submit must store member ownership');
+    } finally {
+        $_SERVER = $serverBackup;
+        $_POST = $postBackup;
+        $_FILES = $filesBackup;
+    }
+});
+
 hub_test('DocParser counts natural English identity translations in quality gate', function (): void {
     $structure = [
         'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],

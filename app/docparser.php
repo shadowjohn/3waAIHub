@@ -59,6 +59,11 @@ function hub_docparser_find_cached_task(PDO $db, string $inputSha256, array $inp
         if ((string)($candidateInput['docparser_cache_version'] ?? '') !== $version) {
             continue;
         }
+        $inputMemberId = (int)($input['api_member_id'] ?? 0);
+        $candidateMemberId = (int)($candidateInput['api_member_id'] ?? 0);
+        if ($inputMemberId > 0 && $candidateMemberId !== $inputMemberId) {
+            continue;
+        }
         if (!hub_docparser_task_artifacts_complete($db, (int)$task['id'])) {
             continue;
         }
@@ -622,6 +627,121 @@ function hub_docparser_translate_blocks(PDO $db, array $docir, array $input, ?in
     }
 
     return $docir;
+}
+
+function hub_docparser_parse_repair_block_ids(string $value): array
+{
+    $value = trim($value);
+    if ($value === '' || strlen($value) > 4096) {
+        throw new InvalidArgumentException('invalid_block_ids');
+    }
+
+    $parts = array_values(array_filter(array_map('trim', explode(',', $value)), static fn(string $id): bool => $id !== ''));
+    if ($parts === [] || count($parts) > 50) {
+        throw new InvalidArgumentException('invalid_block_ids');
+    }
+
+    $ids = [];
+    foreach ($parts as $id) {
+        if (preg_match('/^p[1-9][0-9]*-b[1-9][0-9]*$/', $id) !== 1) {
+            throw new InvalidArgumentException('invalid_block_ids');
+        }
+        $ids[$id] = true;
+    }
+
+    return array_keys($ids);
+}
+
+function hub_docparser_load_registered_docir_artifact(PDO $db, int $taskId): array
+{
+    $stmt = $db->prepare(
+        'SELECT * FROM task_artifacts
+         WHERE task_id = :task_id AND name = :name
+         ORDER BY id DESC
+         LIMIT 1'
+    );
+    $stmt->execute([
+        ':task_id' => $taskId,
+        ':name' => 'docparser/normalized/docir-v0.1.json',
+    ]);
+    $artifact = $stmt->fetch();
+    if (!$artifact) {
+        throw new RuntimeException('docir_artifact_missing');
+    }
+
+    $path = hub_artifact_safe_path((string)$artifact['path']);
+    $taskRoot = realpath(hub_task_result_dir($taskId));
+    if ($path === null || $taskRoot === false || !str_starts_with($path, $taskRoot . DIRECTORY_SEPARATOR)) {
+        throw new RuntimeException('docir_artifact_rejected');
+    }
+
+    $docir = json_decode((string)file_get_contents($path), true);
+    if (!is_array($docir)) {
+        throw new RuntimeException('docir_artifact_invalid');
+    }
+
+    return $docir;
+}
+
+function hub_docparser_repair_translation_docir(PDO $db, array $docir, array $input, array $blockIds, ?int $taskId = null, ?callable $translator = null): array
+{
+    $target = (string)($input['target_language'] ?? $docir['target_language'] ?? 'zh-TW');
+    if ($translator === null) {
+        $service = hub_get_service_by_mode($db, (string)($input['translate_mode'] ?? 'translate'));
+        if (!$service || (int)($service['enabled'] ?? 0) !== 1) {
+            throw new RuntimeException('blocked_dependency: translate service is unavailable.');
+        }
+        $translator = static fn (string $text, string $targetLanguage): string => hub_docparser_translate_text($service, $text, $targetLanguage);
+    }
+
+    $blocks = is_array($docir['blocks'] ?? null) ? $docir['blocks'] : [];
+    $blockIndexById = [];
+    foreach ($blocks as $index => $block) {
+        if (is_array($block) && (string)($block['id'] ?? '') !== '') {
+            $blockIndexById[(string)$block['id']] = $index;
+        }
+    }
+
+    $repaired = [];
+    $skipped = [];
+    foreach ($blockIds as $blockId) {
+        if (!array_key_exists($blockId, $blockIndexById)) {
+            throw new RuntimeException('unknown_block_id: ' . $blockId);
+        }
+
+        $index = $blockIndexById[$blockId];
+        $block = is_array($blocks[$index] ?? null) ? $blocks[$index] : [];
+        $source = trim((string)($block['source_text'] ?? ''));
+        $type = (string)($block['type'] ?? '');
+        if ($source === '' || !in_array($type, hub_docparser_translatable_block_types(), true)) {
+            throw new RuntimeException('block_not_translatable: ' . $blockId);
+        }
+
+        if (hub_docparser_valid_translation_text($block) !== '') {
+            $skipped[] = $blockId;
+            continue;
+        }
+
+        $text = trim((string)$translator($source, $target));
+        if ($text === '') {
+            throw new RuntimeException('translation_empty: ' . $blockId);
+        }
+        $docir['blocks'][$index]['translation'] = [
+            'language' => $target,
+            'text' => $text,
+            'source_block_id' => $blockId,
+        ];
+        $repaired[] = $blockId;
+        if ($taskId !== null && $taskId > 0) {
+            hub_add_task_log($db, $taskId, 'info', 'docparser_repair_translation repaired block=' . $blockId);
+        }
+    }
+
+    return [
+        'docir' => $docir,
+        'repaired_block_ids' => $repaired,
+        'skipped_block_ids' => $skipped,
+    ];
 }
 
 function hub_docparser_translate_text(array $service, string $text, string $target): string

@@ -1,5 +1,28 @@
 # 3waAIHub History
 
+## PhaseDoc Repair Translation Slim
+
+Added a focused DocParser translation repair workflow.
+
+Implemented:
+
+- `docparser_repair_translation` async task type.
+- `task_submit` repair input: `task_id` plus comma-separated `block_ids`.
+- Block ID validation with strict `p{page}-b{block}` format and a 50-block limit.
+- API member ownership checks for repair tasks.
+- Registered DocIR artifact loading only from `data/results/task_{task_id}/`.
+- Selective retranslation of missing/invalid blocks while skipping already translated blocks.
+- Original DocParser artifacts are rewritten after repair and quality report is recomputed.
+- New DocParser tasks store API member/token ownership in task input.
+- DocParser cache now avoids cross-member cache hits.
+
+Skipped:
+
+- UI repair button.
+- repair all.
+- OCR/layout/figure reruns.
+- Webhook or quota accounting.
+
 ## DocParser Table Translation Quality Gate
 
 Fixed DocParser table translation coverage so table blocks are not silently accepted with empty translations.

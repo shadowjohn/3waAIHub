@@ -18,7 +18,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
             return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
         }
 
-        return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode), $started, $requestId, $authContext);
+        return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode, $authContext), $started, $requestId, $authContext);
     }
     if (!$service) {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId);
@@ -54,7 +54,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         }
     }
     if (hub_service_is_internal_task($service)) {
-        return hub_gateway_finish($db, $service, $mode, hub_dispatch_internal_task_service($db, $service), $started, $requestId, $authContext);
+        return hub_gateway_finish($db, $service, $mode, hub_dispatch_internal_task_service($db, $service, $authContext), $started, $requestId, $authContext);
     }
     $requester ??= static fn (array $service, int $timeoutSec): array => hub_proxy_request(
         $service['internal_url'],
@@ -74,7 +74,7 @@ function hub_gateway_prepare_service_request(PDO $db, array $service, array $aut
     };
 }
 
-function hub_dispatch_internal_task_service(PDO $db, array $service): array
+function hub_dispatch_internal_task_service(PDO $db, array $service, array $authContext = []): array
 {
     $internalUrl = (string)($service['internal_url'] ?? '');
     if (!str_starts_with($internalUrl, 'internal-task:')) {
@@ -99,7 +99,7 @@ function hub_dispatch_internal_task_service(PDO $db, array $service): array
     $previousTaskType = $_POST['task_type'] ?? null;
     $_POST['task_type'] = $taskType;
     try {
-        return hub_api_task_submit($db);
+        return hub_api_task_submit($db, $authContext);
     } finally {
         if ($previousTaskType === null) {
             unset($_POST['task_type']);
@@ -201,10 +201,10 @@ function hub_task_api_modes(): array
     ];
 }
 
-function hub_task_api_dispatch(PDO $db, string $mode): array
+function hub_task_api_dispatch(PDO $db, string $mode, array $authContext = []): array
 {
     return match ($mode) {
-        'task_submit' => hub_api_task_submit($db),
+        'task_submit' => hub_api_task_submit($db, $authContext),
         'task_status' => hub_api_task_status($db),
         'task_result' => hub_api_task_result($db),
         'task_log' => hub_api_task_log($db),
@@ -214,7 +214,7 @@ function hub_task_api_dispatch(PDO $db, string $mode): array
     };
 }
 
-function hub_api_task_submit(PDO $db): array
+function hub_api_task_submit(PDO $db, array $authContext = []): array
 {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
         return hub_gateway_json(405, ['ok' => false, 'error' => 'task_submit requires POST']);
@@ -225,7 +225,7 @@ function hub_api_task_submit(PDO $db): array
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown task_type']);
     }
 
-    $queueName = trim((string)($_POST['queue'] ?? (in_array($taskType, ['structure_parse', 'docparser_parse'], true) ? 'ocr' : 'default')));
+    $queueName = trim((string)($_POST['queue'] ?? (in_array($taskType, ['structure_parse', 'docparser_parse', 'docparser_repair_translation'], true) ? 'ocr' : 'default')));
     if (!hub_is_valid_task_queue($queueName)) {
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown queue']);
     }
@@ -235,7 +235,10 @@ function hub_api_task_submit(PDO $db): array
         return hub_api_structure_task_submit($db, $queueName, $priority);
     }
     if ($taskType === 'docparser_parse') {
-        return hub_api_docparser_task_submit($db, $queueName, $priority);
+        return hub_api_docparser_task_submit($db, $queueName, $priority, $authContext);
+    }
+    if ($taskType === 'docparser_repair_translation') {
+        return hub_api_docparser_repair_task_submit($db, $queueName, $priority, $authContext);
     }
 
     $input = $_POST;
@@ -321,7 +324,7 @@ function hub_api_structure_task_submit(PDO $db, string $queueName, int $priority
     return hub_gateway_json(200, hub_task_submit_response($taskId));
 }
 
-function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority): array
+function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority, array $authContext = []): array
 {
     $file = $_FILES['file'] ?? null;
     if (!is_array($file) || (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_file((string)($file['tmp_name'] ?? ''))) {
@@ -348,6 +351,12 @@ function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority
         'translation_required' => (string)($_POST['translation_required'] ?? '1') !== '0' ? '1' : '0',
         'original_filename' => $filename,
     ];
+    if (!empty($authContext['member_id'])) {
+        $input['api_member_id'] = (int)$authContext['member_id'];
+    }
+    if (!empty($authContext['token_id'])) {
+        $input['api_token_id'] = (int)$authContext['token_id'];
+    }
 
     $inputSha256 = hash_file('sha256', (string)$file['tmp_name']);
     if ($inputSha256 === false) {
@@ -370,6 +379,76 @@ function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority
     hub_update_task_input($db, $taskId, $input);
 
     return hub_gateway_json(200, hub_task_submit_response($taskId));
+}
+
+function hub_api_docparser_repair_task_submit(PDO $db, string $queueName, int $priority, array $authContext = []): array
+{
+    $rawTaskId = trim((string)($_POST['task_id'] ?? ''));
+    if ($rawTaskId === '' || !ctype_digit($rawTaskId) || (int)$rawTaskId <= 0) {
+        return hub_gateway_json(400, ['ok' => false, 'error' => 'invalid_task_id']);
+    }
+
+    try {
+        $blockIds = hub_docparser_parse_repair_block_ids((string)($_POST['block_ids'] ?? ''));
+    } catch (InvalidArgumentException) {
+        return hub_gateway_json(400, ['ok' => false, 'error' => 'invalid_block_ids']);
+    }
+
+    $sourceTaskId = (int)$rawTaskId;
+    $sourceTask = hub_get_task($db, $sourceTaskId);
+    if (!$sourceTask || (string)($sourceTask['task_type'] ?? '') !== 'docparser_parse') {
+        return hub_gateway_json(404, ['ok' => false, 'error' => 'task_not_found']);
+    }
+    if (!hub_docparser_repair_allowed_for_auth($sourceTask, $authContext)) {
+        return hub_gateway_json(403, ['ok' => false, 'error' => 'task_forbidden']);
+    }
+
+    try {
+        $docir = hub_docparser_load_registered_docir_artifact($db, $sourceTaskId);
+        hub_docparser_assert_repair_blocks_exist($docir, $blockIds);
+    } catch (Throwable $e) {
+        return hub_gateway_json(409, ['ok' => false, 'error' => $e->getMessage()]);
+    }
+
+    $input = [
+        'source_task_id' => $sourceTaskId,
+        'block_ids' => $blockIds,
+    ];
+    if (!empty($authContext['member_id'])) {
+        $input['api_member_id'] = (int)$authContext['member_id'];
+    }
+    if (!empty($authContext['token_id'])) {
+        $input['api_token_id'] = (int)$authContext['token_id'];
+    }
+
+    $taskId = hub_enqueue_task($db, 'docparser_repair_translation', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
+
+    return hub_gateway_json(200, hub_task_submit_response($taskId));
+}
+
+function hub_docparser_repair_allowed_for_auth(array $sourceTask, array $authContext): bool
+{
+    if (empty($authContext['member_id'])) {
+        return true;
+    }
+
+    $sourceMemberId = (int)($sourceTask['input']['api_member_id'] ?? 0);
+    return $sourceMemberId > 0 && $sourceMemberId === (int)$authContext['member_id'];
+}
+
+function hub_docparser_assert_repair_blocks_exist(array $docir, array $blockIds): void
+{
+    $known = [];
+    foreach (($docir['blocks'] ?? []) as $block) {
+        if (is_array($block) && (string)($block['id'] ?? '') !== '') {
+            $known[(string)$block['id']] = true;
+        }
+    }
+    foreach ($blockIds as $blockId) {
+        if (!isset($known[$blockId])) {
+            throw new RuntimeException('unknown_block_id');
+        }
+    }
 }
 
 function hub_file_has_pdf_magic(string $path): bool

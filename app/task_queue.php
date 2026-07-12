@@ -7,7 +7,7 @@ class HubTaskCancelled extends RuntimeException
 
 function hub_allowed_task_types(): array
 {
-    return ['demo_task', 'structure_parse', 'docparser_parse'];
+    return ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation'];
 }
 
 function hub_default_task_queues(): array
@@ -158,6 +158,14 @@ function hub_list_task_logs(PDO $db, int $taskId): array
 
 function hub_finish_task_success(PDO $db, array $task, array $result): void
 {
+    hub_finish_task_terminal_result($db, $task, 'success', $result, null);
+}
+
+function hub_finish_task_terminal_result(PDO $db, array $task, string $status, array $result, ?string $errorMessage): void
+{
+    if (!in_array($status, ['success', 'failed'], true)) {
+        throw new InvalidArgumentException('Invalid terminal task status.');
+    }
     $taskId = (int)$task['id'];
     $resultJson = json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     if ($resultJson === false) {
@@ -172,11 +180,13 @@ function hub_finish_task_success(PDO $db, array $task, array $result): void
     $now = hub_now();
     $stmt = $db->prepare(
         "UPDATE tasks
-         SET status = 'success', progress = 100, result_json = :result_json, error_message = NULL, finished_at = :finished_at, updated_at = :updated_at
+         SET status = :status, progress = 100, result_json = :result_json, error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
          WHERE id = :id"
     );
     $stmt->execute([
+        ':status' => $status,
         ':result_json' => $resultJson,
+        ':error_message' => $errorMessage,
         ':finished_at' => $now,
         ':updated_at' => $now,
         ':id' => $taskId,

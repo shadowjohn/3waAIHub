@@ -21,6 +21,8 @@ hub_test('PhaseDX-4 client quickstart and examples are integration ready', funct
         'mode=docparser',
         'task_status',
         'task_result',
+        'docparser_repair_translation',
+        'missing_translation_blocks',
         'artifact_url_template',
         'figure_assets.items',
     ] as $needle) {

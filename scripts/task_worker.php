@@ -38,6 +38,11 @@ while ($processed < $limit) {
 
 function hub_run_task(PDO $db, array $task): void
 {
+    if ($task['task_type'] === 'docparser_repair_translation') {
+        hub_run_docparser_repair_translation_task($db, $task);
+        return;
+    }
+
     if ($task['task_type'] === 'docparser_parse') {
         hub_run_docparser_parse_task($db, $task);
         return;
@@ -188,6 +193,96 @@ function hub_run_docparser_parse_task(PDO $db, array $task): void
         'quality' => $quality,
     ]);
     hub_add_task_log($db, $taskId, 'info', 'docparser_parse finished status=' . $quality['status']);
+}
+
+function hub_run_docparser_repair_translation_task(PDO $db, array $task): void
+{
+    $taskId = (int)$task['id'];
+    $input = $task['input'] ?? [];
+    $sourceTaskId = (int)($input['source_task_id'] ?? 0);
+    $blockIds = is_array($input['block_ids'] ?? null) ? array_values(array_map('strval', $input['block_ids'])) : [];
+    if ($sourceTaskId <= 0 || $blockIds === []) {
+        throw new RuntimeException('invalid_repair_input');
+    }
+
+    $sourceTask = hub_get_task($db, $sourceTaskId);
+    if (!$sourceTask || (string)($sourceTask['task_type'] ?? '') !== 'docparser_parse') {
+        throw new RuntimeException('source_task_not_found');
+    }
+
+    hub_add_task_log($db, $taskId, 'info', 'docparser_repair_translation started source_task_id=' . $sourceTaskId . ' blocks=' . implode(',', $blockIds));
+    hub_add_task_log($db, $sourceTaskId, 'info', 'docparser_repair_translation queued repair_task_id=' . $taskId . ' blocks=' . implode(',', $blockIds));
+    hub_update_task_progress($db, $taskId, 10);
+
+    $docir = hub_docparser_load_registered_docir_artifact($db, $sourceTaskId);
+    $sourceInput = is_array($sourceTask['input'] ?? null) ? $sourceTask['input'] : [];
+    $repair = hub_docparser_repair_translation_docir($db, $docir, $sourceInput, $blockIds, $taskId);
+    $docir = $repair['docir'];
+    hub_update_task_progress($db, $taskId, 60);
+
+    $targetLanguage = (string)($sourceInput['target_language'] ?? $docir['target_language'] ?? 'zh-TW');
+    $outputs = hub_docparser_render_outputs($docir, ['target_language' => $targetLanguage]);
+    $profile = (string)($sourceInput['profile'] ?? 'technical_manual');
+    $fixturePath = HUB_ROOT . '/packs/docparser/acceptance/' . $profile . '_v0.1.json';
+    $fixture = is_file($fixturePath) ? (json_decode((string)file_get_contents($fixturePath), true) ?: []) : [];
+    $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
+    $toc = json_decode($outputs['toc_json'], true) ?: [];
+    $rag = json_decode($outputs['rag_chunks_json'], true) ?: [];
+    $manifest = [
+        'status' => $quality['status'],
+        'profile' => $profile,
+        'input_sha256' => (string)($sourceInput['input_sha256'] ?? ''),
+        'structure_mode' => (string)($sourceInput['structure_mode'] ?? 'structure'),
+        'target_language' => $targetLanguage,
+        'repaired_at' => hub_now(),
+        'repair_task_id' => $taskId,
+    ];
+
+    $artifacts = hub_store_docparser_task_artifacts($db, $sourceTaskId, [
+        'manifest' => $manifest,
+        'reader_html' => $outputs['reader_html'],
+        'bilingual_html' => $outputs['bilingual_html'],
+        'markdown' => $outputs['markdown'],
+        'docir' => $docir,
+        'toc' => $toc,
+        'rag_chunks' => $rag,
+        'quality_report' => $quality,
+        'figures' => [],
+    ]);
+    hub_update_task_progress($db, $taskId, 90);
+
+    $sourceResult = [
+        'ok' => ($quality['status'] ?? '') === 'completed',
+        'task_type' => 'docparser_parse',
+        'status' => $quality['status'],
+        'artifact_summary' => $artifacts,
+        'quality' => $quality,
+        'repaired_by_task_id' => $taskId,
+        'repaired_block_ids' => $repair['repaired_block_ids'],
+        'skipped_block_ids' => $repair['skipped_block_ids'],
+    ];
+    $sourceError = null;
+    $sourceStatus = 'success';
+    if (($quality['status'] ?? 'needs_review') !== 'completed') {
+        $sourceStatus = 'failed';
+        $sourceError = 'docparser_quality_gate_failed';
+        if (($quality['failures'] ?? []) !== []) {
+            $sourceError .= ': ' . implode(',', $quality['failures']);
+        }
+    }
+    hub_finish_task_terminal_result($db, $sourceTask, $sourceStatus, $sourceResult, $sourceError);
+
+    hub_finish_task_success($db, $task, [
+        'ok' => true,
+        'task_type' => 'docparser_repair_translation',
+        'source_task_id' => $sourceTaskId,
+        'repaired_block_ids' => $repair['repaired_block_ids'],
+        'skipped_block_ids' => $repair['skipped_block_ids'],
+        'quality_status' => (string)($quality['status'] ?? 'needs_review'),
+        'artifact_summary' => $artifacts,
+    ]);
+    hub_add_task_log($db, $taskId, 'info', 'docparser_repair_translation finished status=' . ($quality['status'] ?? 'needs_review'));
+    hub_add_task_log($db, $sourceTaskId, 'info', 'docparser_repair_translation applied repair_task_id=' . $taskId . ' status=' . ($quality['status'] ?? 'needs_review'));
 }
 
 function hub_structure_task_input_file(array $input): string

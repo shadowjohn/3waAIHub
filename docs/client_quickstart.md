@@ -153,6 +153,19 @@ console.log(await res.json());
 - figure contract: `artifact_summary.figure_assets.items[]` returns `figure_id`, `block_id`, `page`, `bbox`, `caption`, `asset_path`, `artifact_id`, `bytes`
 - error contract: `file_required`, `unsupported_file_type`, `invalid_pdf_file`, `missing_token`, `token_mode_not_allowed`
 - cancel contract: `POST task_cancel` cancels queued tasks immediately; running `docparser_parse` tasks stop cooperatively at the next worker checkpoint.
+- repair contract: `POST task_submit` with `task_type=docparser_repair_translation`, `task_id`, and comma-separated `block_ids` from `quality_report.missing_translation_blocks`.
+
+Repair missing translations:
+
+```bash
+curl -X POST "<BASE_URL>?mode=task_submit" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "task_type=docparser_repair_translation" \
+  -F "task_id=11" \
+  -F "block_ids=p12-b4,p14-b8"
+```
+
+`docparser_repair_translation` rewrites the original task artifacts after repair. It only retranslates selected DocIR blocks and does not rerun OCR, layout parsing, image crops, or figure extraction. Already translated blocks are skipped.
 
 ## Debug
 

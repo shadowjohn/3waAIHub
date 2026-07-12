@@ -752,6 +752,18 @@ DocParser supports cooperative cancel. Queued tasks are cancelled immediately; r
 
 DocParser translation calls retry up to 3 attempts per block/chunk before failing the task.
 
+DocParser also supports a slim translation repair task for partial retry. Use it when `quality_report.missing_translation_blocks` lists missing block translations:
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=task_submit" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F task_type=docparser_repair_translation \
+  -F task_id=<SOURCE_TASK_ID> \
+  -F block_ids=p12-b4,p14-b8
+```
+
+`docparser_repair_translation` only reloads the registered DocIR artifact, translates the selected blocks, rewrites the original DocParser artifacts, and recomputes the quality report. It does not rerun OCR, PP-StructureV3 layout parsing, figure extraction, or image crops. Already translated blocks are skipped.
+
 L5 readiness covers:
 
 - PP-StructureV3 `parsing_res_list` normalization into DocIR blocks.

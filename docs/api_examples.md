@@ -331,6 +331,18 @@ curl -X POST -H "Authorization: Bearer <TOKEN>" \
 
 Queued tasks become `cancelled` immediately. Running `docparser_parse` tasks use cooperative cancel: the worker records `cancel_requested` and stops at the next DocParser checkpoint. Other running task types are not hard-killed.
 
+Repair missing translations:
+
+```bash
+curl -X POST "<BASE_URL>?mode=task_submit" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "task_type=docparser_repair_translation" \
+  -F "task_id=11" \
+  -F "block_ids=p12-b4,p14-b8"
+```
+
+Use block IDs from `quality_report.missing_translation_blocks` or `missing_translation_block_ids_by_type`. Repair only retranslates selected DocIR blocks, rewrites the original task artifacts, and skips blocks that already have valid translations.
+
 Figure crop download:
 
 ```text
