@@ -172,7 +172,7 @@ function hub_finish_task_success(PDO $db, array $task, array $result): void
     $now = hub_now();
     $stmt = $db->prepare(
         "UPDATE tasks
-         SET status = 'success', progress = 100, result_json = :result_json, finished_at = :finished_at, updated_at = :updated_at
+         SET status = 'success', progress = 100, result_json = :result_json, error_message = NULL, finished_at = :finished_at, updated_at = :updated_at
          WHERE id = :id"
     );
     $stmt->execute([

@@ -726,11 +726,11 @@ hub_test('DocParser ignores misaligned translations for zh-TW markdown and quali
     hub_test_assert(abs((float) ($quality['metrics']['translation_block_coverage'] ?? 0) - 0.5) < 0.00001, 'coverage must count only aligned translations');
 });
 
-hub_test('DocParser counts short English identity translations in quality gate', function (): void {
+hub_test('DocParser counts natural English identity translations in quality gate', function (): void {
     $structure = [
         'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
         'blocks' => [
-            ['id' => 'raw-1', 'page' => 1, 'order' => 1, 'type' => 'paragraph', 'text' => 'ABS', 'bbox' => [10, 10, 80, 30]],
+            ['id' => 'raw-1', 'page' => 1, 'order' => 1, 'type' => 'paragraph', 'text' => 'Inspection procedure', 'bbox' => [10, 10, 160, 30]],
         ],
         'figures' => [],
     ];
@@ -741,7 +741,7 @@ hub_test('DocParser counts short English identity translations in quality gate',
     ]);
     $docir['blocks'][0]['translation'] = [
         'language' => 'zh-TW',
-        'text' => 'ABS',
+        'text' => 'Inspection procedure',
         'source_block_id' => 'p1-b1',
     ];
 
@@ -749,8 +749,61 @@ hub_test('DocParser counts short English identity translations in quality gate',
     $fixture = json_decode((string) file_get_contents(HUB_ROOT . '/packs/docparser/acceptance/technical_manual_v0.1.json'), true);
     $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
 
-    hub_test_assert(abs((float) ($quality['metrics']['translation_identity_ratio'] ?? 0) - 1.0) < 0.00001, 'short English identity must count toward identity ratio');
-    hub_test_assert(($quality['status'] ?? '') !== 'completed', 'short English identity must keep quality gate non-completed');
+    hub_test_assert(abs((float) ($quality['metrics']['translation_identity_ratio'] ?? 0) - 1.0) < 0.00001, 'natural English identity must count toward identity ratio');
+    hub_test_assert(($quality['status'] ?? '') !== 'completed', 'natural English identity must keep quality gate non-completed');
+});
+
+hub_test('DocParser ignores part catalogue codes and page markers in identity ratio', function (): void {
+    $blocks = [];
+    foreach (['RT30AA', '- 11', 'E08', 'F23', '91201-KV3-831', 'ABS'] as $index => $text) {
+        $blocks[] = [
+            'id' => 'raw-' . ($index + 1),
+            'page' => 1,
+            'order' => $index + 1,
+            'type' => 'paragraph',
+            'text' => $text,
+            'bbox' => [10, 10 + ($index * 20), 200, 30 + ($index * 20)],
+        ];
+    }
+
+    $docir = hub_docparser_build_docir([
+        'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
+        'blocks' => $blocks,
+        'figures' => [],
+    ], [
+        'target_language' => 'zh-TW',
+        'translation_required' => true,
+    ]);
+    foreach ($docir['blocks'] as $index => $block) {
+        $docir['blocks'][$index]['translation'] = [
+            'language' => 'zh-TW',
+            'text' => (string)$block['source_text'],
+            'source_block_id' => (string)$block['id'],
+        ];
+    }
+
+    $outputs = hub_docparser_render_outputs($docir, ['target_language' => 'zh-TW']);
+    $fixture = [
+        'expected_page_count_min' => 1,
+        'minimum_heading_count' => 0,
+        'minimum_table_count' => 0,
+        'expected_figure_count_min' => 0,
+        'required_toc_titles' => [],
+        'required_translations' => [],
+        'protected_tokens' => [],
+        'quality_thresholds' => [
+            'page_record_coverage' => 1.0,
+            'block_provenance_coverage' => 1.0,
+            'required_artifact_integrity' => 1.0,
+            'translation_block_coverage' => 1.0,
+            'translation_identity_ratio_max' => 0.10,
+            'protected_token_preservation' => 1.0,
+        ],
+    ];
+    $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
+
+    hub_test_assert((float)($quality['metrics']['translation_identity_ratio'] ?? 1) === 0.0, 'part catalogue identifiers should not count as fake translation');
+    hub_test_assert(($quality['checks']['translation_identity_ratio'] ?? false) === true, 'identifier-only identity should pass identity gate');
 });
 
 hub_test('DocParser does not penalize Chinese source text that remains unchanged for zh-TW output', function (): void {

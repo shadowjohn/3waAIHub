@@ -1,0 +1,235 @@
+{
+  "schema_version": "0.1",
+  "id": "bioclip",
+  "name": "BioCLIP Species Classification Service",
+  "version": "0.1.0",
+  "category": "vision",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L5-benchmark-ready",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": true,
+  "default_mode": "bioclip",
+  "description": "BioCLIP species classification API with OpenCLIP model load and real inference smoke.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/classify/image",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 50
+  },
+  "l5_contract": {
+    "endpoint": "/classify/image",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {
+          "name": "image",
+          "type": "file",
+          "required": true,
+          "max_mb": 50
+        },
+        {
+          "name": "candidate_labels",
+          "type": "text",
+          "required": false,
+          "default": "species,plant,insect,bird,mammal",
+          "description": "Comma-separated labels or JSON array."
+        },
+        {
+          "name": "real_inference",
+          "type": "boolean",
+          "required": false,
+          "default": "0",
+          "description": "Set to 1 to run BioCLIP real inference for this request."
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "labels"],
+      "label_keys": ["label", "score"]
+    },
+    "errors": [
+      "bad_request",
+      "file_too_large",
+      "bad_image",
+      "gpu_unavailable",
+      "runtime_dependency_missing",
+      "model_load_failed",
+      "inference_failed",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 180,
+      "max_upload_mb": 50,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "bioclip_mock_image",
+          "name": "BioCLIP mock image classification smoke",
+          "type": "api",
+          "mode": "bioclip",
+          "method": "POST",
+          "fixture": "packs/yolo/demo/camera_cat.png",
+          "form": {
+            "candidate_labels": "plant,insect,bird,mammal"
+          },
+          "expected_keys": ["ok", "labels"],
+          "expected_mock": true
+        },
+        {
+          "id": "bioclip_real_image",
+          "name": "BioCLIP real image classification smoke",
+          "type": "api",
+          "mode": "bioclip",
+          "method": "POST",
+          "fixture": "packs/yolo/demo/camera_cat.png",
+          "form": {
+            "candidate_labels": "plant,insect,bird,mammal"
+          },
+          "expected_keys": ["ok", "labels"],
+          "expected_mock": false,
+          "expected_elapsed_ms_positive": true,
+          "real_inference": true
+        }
+      ]
+    }
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 4096,
+    "cpu_fallback": false,
+    "min_compute_capability": "8.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "bioclip",
+        "container_path": "/models/bioclip",
+        "read_only": false
+      },
+      {
+        "type": "cache",
+        "host_subdir": "bioclip",
+        "container_path": "/cache/bioclip",
+        "read_only": false
+      },
+      {
+        "type": "service_data",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false
+      }
+    ]
+  },
+  "settings_schema": [
+    {
+      "key": "BIOCLIP_MODEL",
+      "label": "BioCLIP model",
+      "type": "text",
+      "default": "hf-hub:imageomics/bioclip",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BIOCLIP_DEVICE",
+      "label": "Device",
+      "type": "select",
+      "default": "cuda",
+      "options": ["auto", "cpu", "cuda"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "BIOCLIP_REAL_INFERENCE",
+      "label": "Enable real BioCLIP inference",
+      "type": "boolean",
+      "default": "1",
+      "required": true,
+      "restart_required": true,
+      "help": "Set to 1 to run BioCLIP OpenCLIP real inference."
+    },
+    {
+      "key": "BIOCLIP_TOP_K",
+      "label": "Top K labels",
+      "type": "integer",
+      "default": "5",
+      "min": 1,
+      "max": 20,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "BIOCLIP_MAX_UPLOAD_MB",
+      "label": "Max upload MB",
+      "type": "integer",
+      "default": "50",
+      "min": 1,
+      "max": 512,
+      "required": true,
+      "restart_required": false
+    }
+  ],
+  "env": [
+    {
+      "name": "BIOCLIP_MODEL",
+      "default": "hf-hub:imageomics/bioclip",
+      "required": true
+    },
+    {
+      "name": "BIOCLIP_DEVICE",
+      "default": "cuda",
+      "required": true
+    },
+    {
+      "name": "BIOCLIP_REAL_INFERENCE",
+      "default": "1",
+      "required": true
+    },
+    {
+      "name": "BIOCLIP_TOP_K",
+      "default": "5",
+      "required": true
+    },
+    {
+      "name": "BIOCLIP_MAX_UPLOAD_MB",
+      "default": "50",
+      "required": true
+    }
+  ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "nvidia_smi",
+      "docker_gpus",
+      "vram",
+      "compute_capability",
+      "storage"
+    ]
+  },
+  "service": {
+    "default_local_port": 18111,
+    "local_port_env": "BIOCLIP_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "bioclip-main",
+    "compose_project": "3waaihub_bioclip_main"
+  }
+}

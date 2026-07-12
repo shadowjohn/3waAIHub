@@ -29,6 +29,15 @@
       "featured": true
     },
     {
+      "id": "bioclip",
+      "name": "BioCLIP Species Classification Service",
+      "version": "0.1.0",
+      "category": "vision",
+      "description": "Local species classification service powered by BioCLIP/OpenCLIP.",
+      "path": "packs/bioclip",
+      "featured": true
+    },
+    {
       "id": "sam3",
       "name": "SAM3 Segmentation Service",
       "version": "0.1.0",

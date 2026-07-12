@@ -5,7 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HUB_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$HUB_ROOT"
 
-LOCK_FILE="${WORKER_LOCK_FILE:-data/jobs/command_worker_1min.lock}"
+COMMAND_LOCK_FILE="${COMMAND_WORKER_LOCK_FILE:-data/jobs/command_worker_1min_command.lock}"
+TASK_LOCK_FILE="${TASK_WORKER_LOCK_FILE:-data/jobs/command_worker_1min.lock}"
 WORKER_LIMIT="${WORKER_LIMIT:-5}"
 TASK_WORKER_LIMIT="${TASK_WORKER_LIMIT:-5}"
 WORKER_TICKS="${WORKER_TICKS:-6}"
@@ -56,24 +57,37 @@ if ! command -v flock >/dev/null 2>&1; then
   exit 1
 fi
 
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-  echo "[3waAIHub] command worker already running; skip this minute."
+tick=1
+exec 9>"$COMMAND_LOCK_FILE"
+if flock -n 9; then
+  if needs_permission_fix; then
+    echo "[3waAIHub] runtime permissions need repair."
+    bash scripts/fix_permissions.sh || echo "[3waAIHub] runtime permissions repair failed."
+  fi
+
+  if ! php scripts/collect_host_metrics.php; then
+    echo "[3waAIHub] host metrics collection failed."
+  fi
+
+  while [ "$tick" -le "$WORKER_TICKS" ]; do
+    php scripts/command_worker.php --limit="$WORKER_LIMIT"
+    if [ "$tick" -lt "$WORKER_TICKS" ]; then
+      sleep "$WORKER_SLEEP"
+    fi
+    tick=$((tick + 1))
+  done
+else
+  echo "[3waAIHub] command worker already running; skip command jobs."
+fi
+
+exec 8>"$TASK_LOCK_FILE"
+if ! flock -n 8; then
+  echo "[3waAIHub] task worker already running; skip task jobs."
   exit 0
-fi
-
-if needs_permission_fix; then
-  echo "[3waAIHub] runtime permissions need repair."
-  bash scripts/fix_permissions.sh || echo "[3waAIHub] runtime permissions repair failed."
-fi
-
-if ! php scripts/collect_host_metrics.php; then
-  echo "[3waAIHub] host metrics collection failed."
 fi
 
 tick=1
 while [ "$tick" -le "$WORKER_TICKS" ]; do
-  php scripts/command_worker.php --limit="$WORKER_LIMIT"
   php scripts/task_worker.php --limit="$TASK_WORKER_LIMIT"
   if [ "$tick" -lt "$WORKER_TICKS" ]; then
     sleep "$WORKER_SLEEP"

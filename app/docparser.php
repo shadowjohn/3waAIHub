@@ -999,11 +999,44 @@ function hub_docparser_provenance_coverage(array $blocks): float
 
 function hub_docparser_counts_as_identity_translation(string $source, string $targetLanguage): bool
 {
+    $source = trim($source);
     if ($targetLanguage === 'zh-TW' || $targetLanguage === 'zh-Hant' || str_starts_with($targetLanguage, 'zh')) {
-        return preg_match('/\p{Han}/u', $source) !== 1;
+        if (preg_match('/\p{Han}/u', $source) === 1) {
+            return false;
+        }
+
+        return hub_docparser_identity_source_looks_translatable($source);
     }
 
-    return true;
+    return hub_docparser_identity_source_looks_translatable($source);
+}
+
+function hub_docparser_identity_source_looks_translatable(string $source): bool
+{
+    if ($source === '' || preg_match('/\p{L}/u', $source) !== 1) {
+        return false;
+    }
+    preg_match_all('/[A-Za-z]+/', $source, $matches);
+    $tokens = $matches[0] ?? [];
+    if ($tokens === []) {
+        return true;
+    }
+
+    $alphaLength = array_sum(array_map('strlen', $tokens));
+    if (count($tokens) >= 2 && $alphaLength >= 8) {
+        return true;
+    }
+    foreach ($tokens as $token) {
+        $length = strlen($token);
+        if ($length >= 5 && preg_match('/[a-z]/', $token) === 1) {
+            return true;
+        }
+        if ($length >= 8 && strtoupper($token) === $token) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function hub_docparser_page_record_coverage(array $docir): float

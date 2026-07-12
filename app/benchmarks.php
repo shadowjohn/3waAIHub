@@ -263,6 +263,15 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
             'elapsed_ms' => 0,
         ];
     }
+    if (($manifest['id'] ?? '') === 'bioclip') {
+        return [
+            'ok' => true,
+            'mock' => true,
+            'runtime_level' => $runtimeLevel,
+            'labels' => [['label' => 'mock species', 'score' => 1.0]],
+            'elapsed_ms' => 0,
+        ];
+    }
     if (($manifest['id'] ?? '') === 'translate-gemma12b') {
         return [
             'ok' => true,

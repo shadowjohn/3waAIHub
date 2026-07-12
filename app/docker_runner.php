@@ -273,7 +273,7 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
     }
 
     hub_job_progress($db, $job, 'docker_up', 80, 'Starting container.');
-    $result = hub_run_service_command($db, $job, hub_service_start_command($service), 900, hub_compose_env($service), 'docker_up', 80, 89);
+    $result = hub_run_service_command($db, $job, hub_service_start_command($service), 10, hub_compose_env($service), 'docker_up', 80, 89);
     hub_add_service_log($db, (int)$service['id'], 'start', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_set_service_enabled($db, $service['mode'], true);
@@ -342,7 +342,7 @@ function hub_stop_service(PDO $db, array $service): array
         return $result;
     }
 
-    $result = hub_run_command(hub_compose_command($service, ['down']), 60, hub_compose_env($service));
+    $result = hub_run_command(hub_compose_command($service, ['down', '--timeout', '5']), 10, hub_compose_env($service));
     hub_add_service_log($db, (int)$service['id'], 'stop', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_set_service_enabled($db, $service['mode'], false);
@@ -356,7 +356,7 @@ function hub_stop_service(PDO $db, array $service): array
 
 function hub_restart_service(PDO $db, array $service): array
 {
-    $result = hub_run_command(hub_compose_command($service, ['restart']), 120, hub_compose_env($service));
+    $result = hub_run_command(hub_compose_command($service, ['restart', '--timeout', '5']), 10, hub_compose_env($service));
     hub_add_service_log($db, (int)$service['id'], 'restart', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_refresh_service_status($db, $service);

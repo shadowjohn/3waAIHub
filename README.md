@@ -520,6 +520,7 @@ http://localhost/3waAIHub/admin/packs.php
 - `ocr-ppocrv5`
 - `translate-gemma12b`
 - `yolo`
+- `bioclip`
 - `sam3`
 - `whisper-asr`
 - `tts-voxcpm2`
@@ -661,6 +662,26 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 - generated compose 會加入 `gpus: all`
 
 L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；本階段不下載 checkpoint、不產生 mask artifact，也不做批次或影片 segmentation。
+
+### bioclip Runtime Level
+
+`bioclip` 目前是 L5 `benchmark-ready` 物種辨識評估 Pack：
+
+- `POST /classify/image` 支援 multipart 圖片上傳。
+- 預設 `BIOCLIP_REAL_INFERENCE=1`，使用 OpenCLIP 載入 `hf-hub:imageomics/bioclip` 跑 zero-shot classification。
+- `candidate_labels` 可傳逗號分隔文字或 JSON array。
+- `GET /health` 回 `runtime_level=L5-benchmark-ready`、dependency、CUDA 與 storage 狀態。
+- runtime 掛載 `${AIHUB_MODELS_DIR}/bioclip:/models/bioclip`。
+- runtime 掛載 `${AIHUB_CACHE_DIR}/bioclip:/cache/bioclip`。
+- runtime 掛載 `${SERVICE_DATA_DIR}:/data/service`。
+- `smoke.py` 驗證 FastAPI / Pillow / NumPy / Torch / OpenCLIP import 成功，不下載模型。
+- `storage_smoke.py` 可在 container 內檢查 models/cache/service_data 與 HuggingFace cache 目錄。
+- `model_smoke.py` 會下載/預熱模型到 `/models/bioclip/huggingface`。
+- `inference_smoke.py` 會跑一張 synthetic image 的真推論 smoke。
+- `bioclip_mock_image` / `bioclip_real_image` benchmark 可驗 contract。
+- Pack Readiness 可在 real benchmark PASS 後顯示 11/11。
+
+本階段不接 NatureID 既有 BioCLIP server、不做 taxonomy DB、不做批次分類。
 
 ### whisper-asr Runtime Level
 

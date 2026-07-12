@@ -62,6 +62,21 @@ hub_test('large task result_json is stored as an artifact', function (): void {
     hub_test_assert(is_file((string)$artifact['path']), 'artifact file missing');
 });
 
+hub_test('successful task completion clears stale error message', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, ['name' => 'retry-success'], null, '127.0.0.1');
+    $task = hub_claim_next_task($db);
+    $db->prepare('UPDATE tasks SET error_message = :error_message WHERE id = :id')->execute([
+        ':error_message' => 'old failure',
+        ':id' => $taskId,
+    ]);
+
+    hub_finish_task_success($db, $task, ['ok' => true]);
+    $finished = hub_get_task($db, $taskId);
+
+    hub_test_assert((string)($finished['error_message'] ?? '') === '', 'successful task must clear stale error_message');
+});
+
 hub_test('task logs keep DB rows bounded and spill large messages to file', function (): void {
     $db = hub_test_reset_db();
     hub_set_storage_setting($db, 'AIHUB_MAX_TASK_LOG_ROWS', '2');

@@ -5,13 +5,16 @@ hub_test('api examples documentation exists', function (): void {
     $path = HUB_ROOT . '/docs/api_examples.md';
     hub_test_assert(is_file($path), 'docs/api_examples.md missing');
     $docs = (string)file_get_contents($path);
-    foreach (['mode=hello', 'mode=ocr', 'mode=translate', 'mode=sam3', 'unknown mode', 'Hello L5 Reference Pack'] as $needle) {
+    foreach (['mode=hello', 'mode=ocr', 'mode=translate', 'mode=sam3', 'mode=bioclip', 'unknown mode', 'Hello L5 Reference Pack'] as $needle) {
         hub_test_assert(str_contains($docs, $needle), 'api docs missing ' . $needle);
     }
     hub_test_assert(str_contains($docs, 'real_inference'), 'api docs missing real_inference');
     hub_test_assert(str_contains($docs, 'translate_real_text'), 'api docs missing translate real benchmark');
     hub_test_assert(str_contains($docs, 'sam3_mock_image'), 'api docs missing sam3 mock benchmark');
     hub_test_assert(str_contains($docs, 'sam3_real_image'), 'api docs missing sam3 real benchmark');
+    hub_test_assert(str_contains($docs, 'bioclip_mock_image'), 'api docs missing BioCLIP mock benchmark');
+    hub_test_assert(str_contains($docs, 'bioclip_real_image'), 'api docs missing BioCLIP real benchmark');
+    hub_test_assert(str_contains($docs, 'candidate_labels=plant,insect,bird,mammal'), 'api docs missing BioCLIP labels example');
     hub_test_assert(str_contains($docs, 'text=mammal/insect/plant'), 'api docs missing SAM3 semantic prompt example');
     hub_test_assert(str_contains($docs, 'L5 benchmark ready'), 'api docs missing Translate L5 status');
 

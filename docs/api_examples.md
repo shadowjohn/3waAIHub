@@ -164,6 +164,45 @@ curl -X POST "<BASE_URL>?mode=yolo" \
   -F "real_inference=1"
 ```
 
+## POST BioCLIP
+
+Status: L5 benchmark ready. `bioclip` 用 OpenCLIP / BioCLIP 做圖片候選標籤分類；預設可先跑 mock contract，表單加 `real_inference=1` 時執行真實推論。
+
+Mock / contract smoke:
+
+```bash
+curl -X POST "<BASE_URL>?mode=bioclip" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@packs/yolo/demo/camera_cat.png" \
+  -F "candidate_labels=plant,insect,bird,mammal"
+```
+
+Real inference:
+
+```bash
+curl -X POST "<BASE_URL>?mode=bioclip" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@packs/yolo/demo/camera_cat.png" \
+  -F "candidate_labels=plant,insect,bird,mammal" \
+  -F "real_inference=1"
+```
+
+Contract:
+
+- Method: `POST`
+- Content-Type: `multipart/form-data`
+- Input: `image` file, `candidate_labels` comma-separated labels, optional `real_inference`
+- Required output keys: `ok`, `labels`
+- Label keys: `label`, `score`
+- Errors: `bad_request`, `file_too_large`, `bad_image`, `gpu_unavailable`, `runtime_dependency_missing`, `model_load_failed`, `inference_failed`, `gateway_timeout`
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --pack=bioclip --case=bioclip_mock_image
+php scripts/benchmark.php --service=bioclip-main --case=bioclip_real_image
+```
+
 ## POST SAM3
 
 Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。`output_format=metadata|polygon|rle|both` 可選 mask geometry；RLE 第一版是 raw uncompressed row-major counts。

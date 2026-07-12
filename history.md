@@ -1,5 +1,83 @@
 # 3waAIHub History
 
+## PhaseM BioCLIP L4 Real Inference Smoke
+
+Promoted `bioclip` from L3 storage/mock to L4 real inference smoke.
+
+Implemented:
+
+- `runtime_level=L4-real-inference-smoke`
+- GPU/CUDA default runtime for BioCLIP
+- Torch / OpenCLIP pinned runtime dependencies
+- `hf-hub:imageomics/bioclip` as the default model
+- Real `POST /classify/image` zero-shot classification path
+- `model_smoke.py` and `inference_smoke.py`
+
+Skipped:
+
+- Taxonomy database
+- Batch classification
+- NatureID server integration
+- L5 benchmark/readiness contract
+
+## PhaseM BioCLIP L5 Benchmark Ready
+
+Promoted `bioclip` to L5 benchmark-ready.
+
+Implemented:
+
+- `runtime_level=L5-benchmark-ready`
+- `l5_contract` for `POST /classify/image`
+- `bioclip_mock_image` benchmark case
+- `bioclip_real_image` benchmark case
+- Pack readiness support through existing L5 helpers
+
+Skipped:
+
+- Taxonomy database
+- Batch classification
+- NatureID server integration
+
+## PhaseM BioCLIP L2/L3 Evaluation Pack
+
+Added a minimal BioCLIP species classification HubPack for upcoming species-identification evaluation.
+
+Implemented:
+
+- `packs/bioclip/pack.json`
+- `packs/bioclip/service/` FastAPI mock adapter
+- `POST /classify/image` mock API contract
+- L2 import smoke for FastAPI / Pillow / NumPy
+- L3 storage mount smoke for models/cache/service data
+- Catalog entry and generated service env support
+
+Skipped:
+
+- Real BioCLIP inference
+- Model download
+- Torch / OpenCLIP pinning
+- NatureID server integration
+
+Verified:
+
+- BioCLIP pack tests PASS.
+
+## Worker Loop Responsiveness Fix
+
+Fixed the cron worker loop so long `task_worker.php` jobs no longer starve Docker command jobs.
+
+Changed:
+
+- `crontab/1min.sh` now uses separate locks for command jobs and user-facing tasks.
+- Long DocParser tasks can keep running while later service start/stop jobs are still consumed by the next cron tick.
+- Service `up -d`, `down`, and `restart` command timeouts were shortened for faster UI feedback.
+- Docker `down` / `restart` now use a 5 second compose timeout.
+
+Verified:
+
+- `service_stop` job for `sam3-main` completed successfully.
+- `bash -n crontab/1min.sh scripts/install_command_worker_cron.sh` PASS.
+
 ## SAM3 Text Prompt Runtime Dependency
 
 Added the Ultralytics CLIP runtime dependency to the SAM3 service image so semantic `prompt_type=text` real inference can run inside Docker.
