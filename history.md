@@ -1,5 +1,22 @@
 # 3waAIHub History
 
+## DocParser Table Translation Quality Gate
+
+Fixed DocParser table translation coverage so table blocks are not silently accepted with empty translations.
+
+Changed:
+
+- `table` blocks are now included in DocParser translation.
+- HTML table source is normalized with row/cell separators before plain-text extraction.
+- Quality report now includes `translation_coverage_by_type`.
+- Missing translations are reported by type and with page/block IDs.
+- Missing table translations fail quality gate with `translation_coverage_by_type.table`.
+- Translation calls now retry up to 3 attempts per block/chunk before failing the task.
+
+Skipped:
+
+- `repair_translation(task_id, block_ids)` endpoint; add as a follow-up repair workflow if partial reprocessing becomes common.
+
 ## PhaseM BioCLIP L4 Real Inference Smoke
 
 Promoted `bioclip` from L3 storage/mock to L4 real inference smoke.

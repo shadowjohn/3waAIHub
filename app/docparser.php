@@ -551,11 +551,20 @@ function hub_docparser_block_text(array $block): string
     foreach (['text', 'content', 'html', 'res_text', 'block_content'] as $key) {
         $value = trim((string) ($block[$key] ?? ''));
         if ($value !== '') {
+            if ($key === 'html' || str_contains($value, '<table') || str_contains($value, '<td') || str_contains($value, '<th')) {
+                $value = preg_replace('/<\/t[dh]>/i', "\t", $value) ?? $value;
+                $value = preg_replace('/<\/tr>/i', "\n", $value) ?? $value;
+            }
             return strip_tags($value);
         }
     }
 
     return '';
+}
+
+function hub_docparser_translatable_block_types(): array
+{
+    return ['paragraph', 'heading', 'caption', 'list', 'table'];
 }
 
 function hub_docparser_translate_blocks(PDO $db, array $docir, array $input, ?int $taskId = null): array
@@ -577,7 +586,7 @@ function hub_docparser_translate_blocks(PDO $db, array $docir, array $input, ?in
     $translatableIndexes = [];
     foreach ($docir['blocks'] as $index => $block) {
         $text = trim((string)($block['source_text'] ?? ''));
-        if ($text !== '' && in_array((string)$block['type'], ['paragraph', 'heading', 'caption', 'list'], true)) {
+        if ($text !== '' && in_array((string)$block['type'], hub_docparser_translatable_block_types(), true)) {
             $translatableIndexes[] = $index;
         }
     }
@@ -592,7 +601,7 @@ function hub_docparser_translate_blocks(PDO $db, array $docir, array $input, ?in
             hub_abort_if_task_cancel_requested($db, $taskId);
         }
         $text = trim((string)($block['source_text'] ?? ''));
-        if ($text === '' || !in_array((string)$block['type'], ['paragraph', 'heading', 'caption', 'list'], true)) {
+        if ($text === '' || !in_array((string)$block['type'], hub_docparser_translatable_block_types(), true)) {
             continue;
         }
         // ponytail: 先逐 block 翻譯，真的被延遲打到再補 batch。
@@ -637,9 +646,25 @@ function hub_docparser_translate_text(array $service, string $text, string $targ
         throw new RuntimeException('Cannot encode translation payload.');
     }
 
-    $response = hub_docparser_post_json((string)$service['internal_url'], hub_service_gateway_timeout_sec($service), $payload);
-    $body = json_decode((string)($response['body'] ?? ''), true);
-    if (($response['status'] ?? 0) < 200 || ($response['status'] ?? 0) >= 300 || !is_array($body) || empty($body['ok'])) {
+    $maxAttempts = hub_docparser_translation_max_attempts();
+    $lastError = 'translation_failed';
+    for ($attempt = 1; $attempt <= $maxAttempts; $attempt++) {
+        try {
+            $response = hub_docparser_post_json((string)$service['internal_url'], hub_service_gateway_timeout_sec($service), $payload);
+        } catch (RuntimeException $e) {
+            $lastError = 'translation_failed: ' . $e->getMessage();
+            if ($attempt < $maxAttempts) {
+                usleep(200000 * $attempt);
+                continue;
+            }
+            throw new RuntimeException($lastError, 0, $e);
+        }
+
+        $body = json_decode((string)($response['body'] ?? ''), true);
+        if (($response['status'] ?? 0) >= 200 && ($response['status'] ?? 0) < 300 && is_array($body) && !empty($body['ok'])) {
+            return trim((string)($body['text'] ?? $body['translated_text'] ?? ''));
+        }
+
         $status = (int)($response['status'] ?? 0);
         $detail = is_array($body)
             ? hub_backend_error_summary($body, 'translation_failed')
@@ -647,10 +672,19 @@ function hub_docparser_translate_text(array $service, string $text, string $targ
                 'error' => 'invalid_response',
                 'message' => substr(trim((string)($response['body'] ?? '')), 0, 240),
             ], 'translation_failed');
-        throw new RuntimeException('translation_failed: HTTP ' . $status . ' ' . $detail);
+        $lastError = 'translation_failed: HTTP ' . $status . ' ' . $detail;
+        if ($attempt < $maxAttempts) {
+            usleep(200000 * $attempt);
+        }
     }
 
-    return trim((string)($body['text'] ?? $body['translated_text'] ?? ''));
+    throw new RuntimeException($lastError);
+}
+
+function hub_docparser_translation_max_attempts(): int
+{
+    // ponytail: fixed 3 attempts; make configurable only if real ops needs per-pack tuning.
+    return 3;
 }
 
 function hub_backend_error_summary(array $payload, string $fallback = 'unknown_error', int $maxBytes = 360): string
@@ -842,6 +876,10 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
     $headingCount = 0;
     $tableCount = 0;
     $figureBlockCount = 0;
+    $coverageByType = [];
+    $missingByType = [];
+    $missingBlocks = [];
+    $translatableTypes = hub_docparser_translatable_block_types();
     foreach ($blocks as $block) {
         $source = trim((string) ($block['source_text'] ?? ''));
         $target = hub_docparser_valid_translation_text($block);
@@ -853,13 +891,24 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
         } elseif ($type === 'figure') {
             $figureBlockCount++;
         }
-        if (in_array($type, ['paragraph', 'heading', 'caption', 'list'], true)) {
+        if ($source !== '' && in_array($type, $translatableTypes, true)) {
             $translatableCount++;
+            $coverageByType[$type] ??= ['total' => 0, 'translated' => 0];
+            $coverageByType[$type]['total']++;
         }
-        if ($target !== '' && in_array($type, ['paragraph', 'heading', 'caption', 'list'], true)) {
+        if ($source !== '' && $target !== '' && in_array($type, $translatableTypes, true)) {
             $translated++;
+            $coverageByType[$type]['translated']++;
+        } elseif ($source !== '' && in_array($type, $translatableTypes, true)) {
+            $missingByType[$type][] = (string)($block['id'] ?? '');
+            $missingBlocks[] = [
+                'id' => (string)($block['id'] ?? ''),
+                'page' => (int)($block['page'] ?? 0),
+                'type' => $type,
+                'source_excerpt' => substr($source, 0, 120),
+            ];
         }
-        if ($source !== '' && $target !== '' && $source === $target && in_array($type, ['paragraph', 'heading', 'caption', 'list'], true) && hub_docparser_counts_as_identity_translation($source, (string)($docir['target_language'] ?? ''))) {
+        if ($source !== '' && $target !== '' && $source === $target && in_array($type, $translatableTypes, true) && hub_docparser_counts_as_identity_translation($source, (string)($docir['target_language'] ?? ''))) {
             $identity++;
         }
     }
@@ -867,6 +916,10 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
     $count = max(1, $translatableCount);
     $identityRatio = $identity / $count;
     $coverage = $translated / $count;
+    $coverageRatioByType = [];
+    foreach ($coverageByType as $type => $counts) {
+        $coverageRatioByType[$type] = $counts['total'] > 0 ? $counts['translated'] / $counts['total'] : 1.0;
+    }
     $protected = hub_docparser_protected_token_preservation($docir, $fixture['protected_tokens'] ?? [], $outputs);
     $toc = hub_docparser_quality_json_array((string) ($outputs['toc_json'] ?? ''));
     $ragChunks = hub_docparser_quality_json_array((string) ($outputs['rag_chunks_json'] ?? ''));
@@ -929,6 +982,7 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
         'toc_broken_anchor_count' => $tocBrokenAnchorCount,
         'required_artifact_integrity' => hub_docparser_required_artifact_integrity($outputs),
         'translation_block_coverage' => $coverage,
+        'translation_coverage_by_type' => $coverageRatioByType,
         'translation_identity_ratio' => $identityRatio,
         'protected_token_preservation' => $protected,
     ];
@@ -951,6 +1005,9 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
         'translation_identity_ratio' => $metrics['translation_identity_ratio'] <= (float) ($thresholds['translation_identity_ratio_max'] ?? 0.10),
         'protected_token_preservation' => $metrics['protected_token_preservation'] >= (float) ($thresholds['protected_token_preservation'] ?? 1.0),
     ];
+    foreach ($coverageRatioByType as $type => $ratio) {
+        $checks['translation_coverage_by_type.' . $type] = $ratio >= (float) ($thresholds['translation_block_coverage'] ?? 0.98);
+    }
     $failures = [];
     foreach ($checks as $name => $ok) {
         if (!$ok) {
@@ -965,6 +1022,8 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
         'failures' => $failures,
         'missing_toc_titles' => $missingTocTitles,
         'missing_translations' => $missingTranslations,
+        'missing_translation_block_ids_by_type' => $missingByType,
+        'missing_translation_blocks' => $missingBlocks,
         'warnings' => $failures === [] ? [] : array_map(static fn(string $code): array => ['code' => $code], $failures),
     ];
 }

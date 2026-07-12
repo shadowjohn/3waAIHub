@@ -750,6 +750,8 @@ DocParser submit has a lightweight artifact cache. When the uploaded PDF SHA-256
 
 DocParser supports cooperative cancel. Queued tasks are cancelled immediately; running `docparser_parse` tasks set `cancel_requested=1` and stop at the next worker checkpoint, such as after structure parsing or before the next translation block. The worker does not hard-kill PHP, Docker containers or backend HTTP requests.
 
+DocParser translation calls retry up to 3 attempts per block/chunk before failing the task.
+
 L5 readiness covers:
 
 - PP-StructureV3 `parsing_res_list` normalization into DocIR blocks.
@@ -759,6 +761,7 @@ L5 readiness covers:
 - Translation progress updates while worker processes long manuals.
 - Generic technical-manual quality gate that does not require a fixed English sample title.
 - Chinese-source identity handling so already-Chinese text is not misclassified as fake translation.
+- Table blocks are translated and quality reports include `translation_coverage_by_type.table`, `missing_translation_block_ids_by_type.table`, and page/block details for missing table translations.
 - Async submit benchmark cases:
   - `php scripts/benchmark.php --pack=docparser --case=docparser_submit_pdf`
   - `php scripts/benchmark.php --pack=docparser --case=docparser_submit_10page_pdf`

@@ -497,6 +497,8 @@ hub_test('DocParser worker translation helper posts JSON explicitly', function (
     hub_test_assert(str_contains($source, 'CURLOPT_POST => true'), 'DocParser translation helper must force POST');
     hub_test_assert(str_contains($source, "'Content-Type: application/json'"), 'DocParser translation helper must send JSON content type');
     hub_test_assert(str_contains($source, 'CURLOPT_POSTFIELDS => $payload'), 'DocParser translation helper must send JSON payload');
+    hub_test_assert(str_contains($source, 'hub_docparser_translation_max_attempts'), 'DocParser translation helper must expose retry attempts');
+    hub_test_assert(str_contains($source, '$attempt < $maxAttempts'), 'DocParser translation helper must retry failed calls');
 });
 
 hub_test('DocParser splits oversized translation blocks before calling TranslateGemma', function (): void {
@@ -724,6 +726,50 @@ hub_test('DocParser ignores misaligned translations for zh-TW markdown and quali
     $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
     hub_test_assert(($quality['status'] ?? '') !== 'completed', 'misaligned translation coverage must not complete quality gate');
     hub_test_assert(abs((float) ($quality['metrics']['translation_block_coverage'] ?? 0) - 0.5) < 0.00001, 'coverage must count only aligned translations');
+});
+
+hub_test('DocParser quality gate reports missing table translations by block id', function (): void {
+    $docir = hub_docparser_build_docir([
+        'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
+        'blocks' => [
+            ['id' => 'raw-1', 'page' => 1, 'order' => 1, 'type' => 'paragraph', 'text' => 'Inspection notes', 'bbox' => [10, 10, 200, 40]],
+            ['id' => 'raw-table', 'page' => 1, 'order' => 2, 'type' => 'table', 'text' => "Part\nTorque\nBolt\n12 N m", 'bbox' => [10, 50, 500, 180]],
+        ],
+        'figures' => [],
+    ], [
+        'target_language' => 'zh-TW',
+    ]);
+    $docir['blocks'][0]['translation'] = [
+        'language' => 'zh-TW',
+        'text' => '檢查說明',
+        'source_block_id' => 'p1-b1',
+    ];
+
+    $outputs = hub_docparser_render_outputs($docir, ['target_language' => 'zh-TW']);
+    $fixture = [
+        'expected_page_count_min' => 1,
+        'minimum_heading_count' => 0,
+        'minimum_table_count' => 1,
+        'expected_figure_count_min' => 0,
+        'required_toc_titles' => [],
+        'required_translations' => [],
+        'protected_tokens' => [],
+        'quality_thresholds' => [
+            'page_record_coverage' => 1.0,
+            'block_provenance_coverage' => 1.0,
+            'required_artifact_integrity' => 1.0,
+            'translation_block_coverage' => 0.98,
+            'translation_identity_ratio_max' => 0.10,
+            'protected_token_preservation' => 1.0,
+        ],
+    ];
+    $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
+
+    hub_test_assert(($quality['status'] ?? '') !== 'completed', 'missing table translation must not complete quality gate');
+    hub_test_assert((float)($quality['metrics']['translation_coverage_by_type']['table'] ?? 1) === 0.0, 'table coverage must be zero');
+    hub_test_assert(in_array('translation_coverage_by_type.table', $quality['failures'] ?? [], true), 'table coverage failure must be explicit');
+    hub_test_assert(($quality['missing_translation_block_ids_by_type']['table'][0] ?? '') === 'p1-b2', 'missing table block id must be reported');
+    hub_test_assert((int)($quality['missing_translation_blocks'][0]['page'] ?? 0) === 1, 'missing table page must be reported');
 });
 
 hub_test('DocParser counts natural English identity translations in quality gate', function (): void {
