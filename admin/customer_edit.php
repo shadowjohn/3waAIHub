@@ -141,6 +141,16 @@ hub_admin_header($isCreate ? '建立客戶' : '編輯客戶', $user);
                     <td><code><?= hub_h((string)($pack['manifest']['runtime_level'] ?? '')) ?></code></td>
                 </tr>
             <?php endforeach; ?>
+            <?php foreach (hub_photo_modes() as $mode => $label): ?>
+                <tr>
+                    <td><input name="modes[]" type="checkbox" value="<?= hub_h($mode) ?>" <?= isset($allowedModes[$mode]) ? 'checked' : '' ?>></td>
+                    <td><?= hub_h($label) ?></td>
+                    <td><code><?= hub_h($mode) ?></code></td>
+                    <td><code>llm-gemma4-12b</code></td>
+                    <td><code>internal photo API</code></td>
+                    <td><code>L5-benchmark-ready</code></td>
+                </tr>
+            <?php endforeach; ?>
             </tbody>
         </table>
 

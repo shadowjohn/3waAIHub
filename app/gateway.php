@@ -20,6 +20,19 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
 
         return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode, $authContext), $started, $requestId, $authContext);
     }
+    if (!$service && hub_is_photo_api_mode($mode)) {
+        $clientIp = hub_get_client_ip();
+        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
+        $authContext = $auth['context'] ?? [];
+        if (empty($auth['ok'])) {
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
+        }
+        $photoResponse = hub_photo_api_dispatch($db, $mode, $authContext);
+        $logService = is_array($photoResponse['service'] ?? null) ? $photoResponse['service'] : null;
+        unset($photoResponse['service']);
+
+        return hub_gateway_finish($db, $logService, $mode, $photoResponse, $started, $requestId, $authContext);
+    }
     if (!$service) {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId);
     }
@@ -189,6 +202,11 @@ function hub_is_task_api_mode(string $mode): bool
     return array_key_exists($mode, hub_task_api_modes());
 }
 
+function hub_is_photo_api_mode(string $mode): bool
+{
+    return array_key_exists($mode, hub_photo_modes());
+}
+
 function hub_task_api_modes(): array
 {
     return [
@@ -198,6 +216,133 @@ function hub_task_api_modes(): array
         'task_log' => 'Task Log',
         'task_cancel' => 'Task Cancel',
         'artifact' => 'Task Artifact',
+    ];
+}
+
+function hub_photo_api_dispatch(PDO $db, string $mode, array $authContext): array
+{
+    return match ($mode) {
+        'photo_upload' => hub_api_photo_upload($db, $authContext),
+        'photo' => hub_api_photo($db, $authContext),
+        default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown_mode']),
+    };
+}
+
+function hub_api_photo_upload(PDO $db, array $authContext): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'photo_upload requires POST');
+    }
+    try {
+        $asset = hub_photo_store_upload($db, is_array($_FILES['image'] ?? null) ? $_FILES['image'] : [], $authContext);
+    } catch (RuntimeException $e) {
+        return hub_gateway_error(match ($e->getMessage()) {
+            'payload_too_large' => 413,
+            'unsupported_media_type' => 415,
+            default => 400,
+        }, $e->getMessage(), $e->getMessage());
+    } catch (Throwable) {
+        return hub_gateway_error(500, 'storage_failed', 'photo storage failed');
+    }
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'image_id' => $asset['image_id'],
+        'mime' => $asset['mime'],
+        'size' => (int)$asset['byte_size'],
+        'width' => (int)$asset['width'],
+        'height' => (int)$asset['height'],
+        'expires_at' => $asset['expires_at'],
+    ]);
+}
+
+function hub_api_photo(PDO $db, array $authContext): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'photo requires POST');
+    }
+    $payload = json_decode((string)file_get_contents('php://input'), true);
+    if (!is_array($payload)) {
+        return hub_gateway_error(400, 'bad_request', 'JSON body is required');
+    }
+    $imageId = trim((string)($payload['image_id'] ?? ''));
+    if ($imageId === '') {
+        return hub_gateway_error(400, 'image_id_required', 'image_id is required');
+    }
+    $text = trim((string)($payload['text'] ?? ''));
+    if ($text === '') {
+        return hub_gateway_error(400, 'text_required', 'text is required');
+    }
+    if ((function_exists('mb_strlen') ? mb_strlen($text, 'UTF-8') : strlen($text)) > 12000) {
+        return hub_gateway_error(400, 'bad_request', 'text is too long');
+    }
+    foreach (['image_path', 'file_path', 'host_path', 'container_path', 'storage_relpath', 'image_url', 'image_internal_path'] as $blocked) {
+        if (array_key_exists($blocked, $payload)) {
+            return hub_gateway_error(400, 'bad_request', 'client image paths are not accepted');
+        }
+    }
+
+    $asset = hub_photo_get_asset_for_auth($db, $imageId, $authContext);
+    if (!$asset || hub_photo_asset_host_path($asset) === null) {
+        return hub_gateway_error(404, 'image_not_found', 'image was not found or is not available');
+    }
+    $settings = hub_photo_settings($db);
+    $service = hub_get_service_by_key($db, (string)$settings['vision_service_key']);
+    if (!$service || (int)$service['enabled'] !== 1 || (string)$service['runtime_status'] !== 'running') {
+        return hub_gateway_error(503, 'model_not_ready', 'photo vision service is not ready');
+    }
+
+    $url = preg_replace('#/chat$#', '/photo', (string)$service['internal_url']) ?: (string)$service['internal_url'];
+    $response = hub_proxy_request($url, hub_service_gateway_timeout_sec($service), json_encode(
+        hub_photo_request_payload($db, $asset, $payload),
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+    ), 'application/json');
+    $response = hub_photo_normalize_proxy_response($response, $imageId);
+    $response['service'] = $service;
+
+    return $response;
+}
+
+function hub_photo_normalize_proxy_response(array $response, string $imageId): array
+{
+    $status = (int)($response['status'] ?? 0);
+    if ($status < 200 || $status >= 400) {
+        return $response;
+    }
+    $payload = json_decode((string)($response['body'] ?? ''), true);
+    if (!is_array($payload) || ($payload['ok'] ?? null) === false) {
+        return $response;
+    }
+
+    $usage = is_array($payload['usage'] ?? null) ? $payload['usage'] : [];
+    $payload['ok'] = true;
+    $payload['mock'] = (bool)($payload['mock'] ?? false);
+    $payload['runtime_level'] = (string)($payload['runtime_level'] ?? 'L5-benchmark-ready');
+    $payload['model'] = (string)($payload['model'] ?? 'gemma4-12b');
+    $payload['image_id'] = (string)($payload['image_id'] ?? $imageId);
+    $payload['answer'] = (string)($payload['answer'] ?? '');
+    $payload['caption'] = (string)($payload['caption'] ?? '');
+    $payload['tags'] = is_array($payload['tags'] ?? null) ? array_values($payload['tags']) : [];
+    $payload['usage'] = [
+        'prompt_tokens' => (int)($usage['prompt_tokens'] ?? 0),
+        'completion_tokens' => (int)($usage['completion_tokens'] ?? 0),
+        'total_tokens' => (int)($usage['total_tokens'] ?? 0),
+    ];
+    $payload['elapsed_ms'] = (int)($payload['elapsed_ms'] ?? 0);
+
+    return hub_gateway_json($status, $payload);
+}
+
+function hub_photo_request_payload(PDO $db, array $asset, array $payload): array
+{
+    $settings = hub_photo_settings($db);
+
+    return [
+        'image_id' => (string)$asset['image_id'],
+        'image_internal_path' => hub_photo_asset_container_path($asset),
+        'text' => trim((string)($payload['text'] ?? '')),
+        'max_tokens' => max(32, min((int)$settings['max_tokens'], (int)($payload['max_tokens'] ?? 256))),
+        'real_inference' => (bool)($payload['real_inference'] ?? false),
     ];
 }
 

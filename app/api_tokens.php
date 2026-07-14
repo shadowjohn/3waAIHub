@@ -200,7 +200,7 @@ function hub_set_api_token_mode_permissions(PDO $db, int $tokenId, array $modes)
 {
     $db->prepare('UPDATE api_token_service_permissions SET enabled = 0, updated_at = :updated_at WHERE token_id = :token_id')
         ->execute([':updated_at' => hub_now(), ':token_id' => $tokenId]);
-    foreach ($modes as $mode) {
+    foreach (array_values(array_unique(array_map('strval', $modes))) as $mode) {
         $service = hub_get_service_by_mode($db, (string)$mode);
         hub_add_api_token_mode_permission($db, $tokenId, (string)$mode, $service ? (int)$service['id'] : null);
     }
