@@ -33,7 +33,6 @@
     "input": {
       "fields": [
         {"name": "text", "type": "string", "required": true},
-        {"name": "image_id", "type": "string", "required": false},
         {"name": "system_prompt", "type": "string", "required": false, "default": "你是 3waAIHub 本地 AI 助手，請使用正體中文回答。"},
         {"name": "temperature", "type": "number", "required": false, "default": 0.2},
         {"name": "max_tokens", "type": "integer", "required": false, "default": 1024},
@@ -51,14 +50,7 @@
       "model_not_present",
       "vllm_timeout",
       "vllm_bad_response",
-      "chat_failed",
-      "image_id_required",
-      "text_required",
-      "photo_forbidden",
-      "model_not_ready",
-      "vision_timeout",
-      "vision_bad_response",
-      "vision_failed"
+      "chat_failed"
     ],
     "limits": {
       "timeout_sec": 600,
@@ -104,7 +96,37 @@
           "expected_text_non_empty": true,
           "expected_model": "gemma4-12b",
           "real_inference": true
-        },
+        }
+      ]
+    }
+  },
+  "photo_contract": {
+    "endpoint": "/photo",
+    "method": "POST",
+    "content_type": "application/json",
+    "input": {
+      "fields": [
+        {"name": "image_id", "type": "string", "required": true},
+        {"name": "text", "type": "string", "required": true},
+        {"name": "max_tokens", "type": "integer", "required": false, "default": 256},
+        {"name": "real_inference", "type": "boolean", "required": false, "default": false}
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mock", "runtime_level", "model", "image_id", "answer", "caption", "tags", "usage", "elapsed_ms"]
+    },
+    "errors": [
+      "image_id_required",
+      "text_required",
+      "photo_forbidden",
+      "model_not_ready",
+      "vision_timeout",
+      "vision_bad_response",
+      "vision_failed"
+    ],
+    "benchmark": {
+      "supported": true,
+      "cases": [
         {
           "id": "gemma4_mock_photo",
           "name": "Gemma 4 mock photo smoke",

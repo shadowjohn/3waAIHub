@@ -37,6 +37,9 @@ hub_test('Gemma 4 LLM pack stays inside 3waAIHub sync API boundary', function ()
     foreach (['messages', 'stream', 'tools', 'response_format'] as $field) {
         hub_test_assert(!in_array($field, $inputFields, true), 'LLM contract must not expose OpenAI field ' . $field);
     }
+    foreach (['image_id', 'image_internal_path'] as $photoField) {
+        hub_test_assert(!in_array($photoField, $inputFields, true), 'LLM chat contract leaked photo input ' . $photoField);
+    }
     foreach (['ok', 'mock', 'runtime_level', 'model', 'text', 'usage', 'elapsed_ms'] as $key) {
         hub_test_assert(in_array($key, $contract['output']['required_keys'] ?? [], true), 'LLM contract output missing ' . $key);
     }
@@ -114,7 +117,8 @@ hub_test('Gemma 4 playground source uses Hub chat payload instead of OpenAI-comp
 
 hub_test('Gemma 4 photo adapter stays inside Hub image_id contract', function (): void {
     $manifest = hub_get_pack('llm-gemma4-12b')['manifest'];
-    $contract = $manifest['l5_contract'] ?? [];
+    $contract = $manifest['photo_contract'] ?? [];
+    hub_test_assert(is_array($contract), 'photo_contract missing');
     $inputFields = array_column($contract['input']['fields'] ?? [], 'name');
     foreach (['image_id', 'text', 'max_tokens', 'real_inference'] as $field) {
         hub_test_assert(in_array($field, $inputFields, true), 'photo contract missing ' . $field);

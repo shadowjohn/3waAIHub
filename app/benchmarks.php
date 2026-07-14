@@ -58,8 +58,12 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     }
     $contract = hub_pack_l5_contract($pack['manifest']);
     $case = hub_l5_benchmark_case($contract, $caseId);
+    if (!$case && is_array($pack['manifest']['photo_contract'] ?? null)) {
+        $contract = $pack['manifest']['photo_contract'];
+        $case = hub_l5_benchmark_case($contract, $caseId);
+    }
     if (!$case) {
-        throw new RuntimeException('benchmark case not declared in l5_contract.');
+        throw new RuntimeException('benchmark case not declared.');
     }
 
     $serviceId = (int)$service['id'];

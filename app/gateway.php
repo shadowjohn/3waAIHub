@@ -287,10 +287,11 @@ function hub_api_photo(PDO $db, array $authContext): array
         return hub_gateway_error(404, 'image_not_found', 'image was not found or is not available');
     }
     $settings = hub_photo_settings($db);
-    $service = hub_get_service_by_key($db, (string)$settings['vision_service_key']);
-    if (!$service || (int)$service['enabled'] !== 1 || (string)$service['runtime_status'] !== 'running') {
-        return hub_gateway_error(503, 'model_not_ready', 'photo vision service is not ready');
+    $serviceLookup = hub_photo_vision_service_for_request($db, hub_get_client_ip(), $authContext, (string)$settings['vision_service_key']);
+    if (isset($serviceLookup['response'])) {
+        return $serviceLookup['response'];
     }
+    $service = $serviceLookup['service'];
 
     $url = preg_replace('#/chat$#', '/photo', (string)$service['internal_url']) ?: (string)$service['internal_url'];
     $response = hub_proxy_request($url, hub_service_gateway_timeout_sec($service), json_encode(
@@ -342,8 +343,27 @@ function hub_photo_request_payload(PDO $db, array $asset, array $payload): array
         'image_internal_path' => hub_photo_asset_container_path($asset),
         'text' => trim((string)($payload['text'] ?? '')),
         'max_tokens' => max(32, min((int)$settings['max_tokens'], (int)($payload['max_tokens'] ?? 256))),
-        'real_inference' => (bool)($payload['real_inference'] ?? false),
+        'real_inference' => hub_photo_parse_bool($payload['real_inference'] ?? false),
     ];
+}
+
+function hub_photo_vision_service_for_request(PDO $db, string $clientIp, array $authContext, ?string $serviceKey = null): array
+{
+    $serviceKey ??= (string)hub_photo_settings($db)['vision_service_key'];
+    $service = hub_get_service_by_key($db, $serviceKey);
+    if (
+        !$service
+        || (int)$service['enabled'] !== 1
+        || (string)$service['install_status'] !== 'installed'
+        || (string)$service['runtime_status'] !== 'running'
+    ) {
+        return ['response' => hub_gateway_error(503, 'model_not_ready', 'photo vision service is not ready')];
+    }
+    if (!hub_gateway_service_ip_allowed_after_auth($db, $service, $clientIp, $authContext)) {
+        return ['service' => $service, 'response' => hub_gateway_error(403, 'ip_not_allowed', 'client IP is not allowed for this service')];
+    }
+
+    return ['service' => $service];
 }
 
 function hub_task_api_dispatch(PDO $db, string $mode, array $authContext = []): array

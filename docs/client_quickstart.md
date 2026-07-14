@@ -75,7 +75,7 @@ php scripts/api_smoke_client.php \
 
 `photo` 需要先 `photo_upload` 取得 `image_id`，再呼叫 `photo`；請用下方 curl 兩步驟範例驗證。
 
-預設 `real_inference=0`。要測真推論時再加：
+預設 `real_inference=false`。要測真推論時再加：
 
 ```bash
 php scripts/api_smoke_client.php \
@@ -125,19 +125,19 @@ console.log(await res.json());
 ### `mode=ocr`
 
 - request contract: `POST multipart/form-data`, field `image`, optional `real_inference`
-- response contract: JSON with `ok`, `text`, `blocks`
+- response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `text`, `blocks`
 - error contract: `bad_request`, `file_too_large`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
 
 ### `mode=yolo`
 
 - request contract: `POST multipart/form-data`, field `image`, optional `real_inference`
-- response contract: JSON with `ok`, `detections`, `elapsed_ms`
+- response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `detections`, `elapsed_ms`
 - error contract: `bad_request`, `file_too_large`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
 
 ### `mode=translate`
 
 - request contract: `POST application/json`, fields `source_lang`, `target_lang`, `text`, optional `real_inference`
-- response contract: JSON with `ok`, `text`, `source_lang`, `target_lang`, `elapsed_ms`
+- response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `text`, `source_lang`, `target_lang`, `elapsed_ms`
 - error contract: `bad_request`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
 
 ### `mode=chat`
@@ -167,14 +167,14 @@ curl -X POST "<BASE_URL>?mode=photo" \
 ```
 
 - request contract: `photo_upload` 使用 `POST multipart/form-data` 欄位 `image`；`photo` 使用 `POST application/json` 欄位 `image_id`, `text`, optional `max_tokens`, `real_inference`
-- response contract: `photo_upload` 回 JSON `ok`, `image_id`；`photo` 回 JSON `ok`, `image_id`, `answer`, `caption`, `tags`, `usage`, `elapsed_ms`
+- response contract: `photo_upload` 回 JSON `ok`, `image_id`；`photo` 回 JSON `ok`, `mock`, `runtime_level`, `model`, `image_id`, `answer`, `caption`, `tags`, `usage`, `elapsed_ms`
 - error contract: `image_id_required`, `text_required`, `photo_forbidden`, `model_not_ready`, `vision_timeout`, `vision_bad_response`, `vision_failed`
 - no server-side session；需要前文時請放在 `text`
 
 ### `mode=sam3`
 
 - request contract: `POST multipart/form-data`, field `image`, optional `prompt_type`, `points_json`, `text`, `output_format`, `real_inference`
-- response contract: JSON with `ok`, `masks`, `prompt_type`, `elapsed_ms`; each mask includes `bbox`, `score`, `confidence`, `label_name`, and optional legacy `polygon` plus `polygons[].outer/holes`
+- response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `masks`, `prompt_type`, `elapsed_ms`; each mask includes `bbox`, `score`, `confidence`, `label_name`, and optional legacy `polygon` plus `polygons[].outer/holes`
 - error contract: `bad_request`, `model_not_present`, `invalid_prompt`, `inference_failed`, `inference_timeout`
 
 ### `mode=docparser`

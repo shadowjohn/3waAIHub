@@ -91,13 +91,19 @@ function hub_photo_store_upload(PDO $db, array $file, array $authContext): array
         'expires_at' => $expiresAt,
         'created_at' => $createdAt,
     ];
-    $stmt = $db->prepare(
-        'INSERT INTO photo_assets
-            (image_id, owner_member_id, owner_token_id, mime, byte_size, width, height, sha256, storage_relpath, expires_at, created_at)
-         VALUES
-            (:image_id, :owner_member_id, :owner_token_id, :mime, :byte_size, :width, :height, :sha256, :storage_relpath, :expires_at, :created_at)'
-    );
-    $stmt->execute($row);
+    try {
+        $stmt = $db->prepare(
+            'INSERT INTO photo_assets
+                (image_id, owner_member_id, owner_token_id, mime, byte_size, width, height, sha256, storage_relpath, expires_at, created_at)
+             VALUES
+                (:image_id, :owner_member_id, :owner_token_id, :mime, :byte_size, :width, :height, :sha256, :storage_relpath, :expires_at, :created_at)'
+        );
+        $stmt->execute($row);
+    } catch (Throwable $e) {
+        @unlink($path);
+        @rmdir($dir);
+        throw $e;
+    }
 
     return $row + ['size' => $row['byte_size']];
 }
@@ -146,6 +152,18 @@ function hub_photo_asset_container_path(array $asset): string
     return '/data/photo/' . (string)$asset['image_id'] . '/original';
 }
 
+function hub_photo_parse_bool(mixed $value): bool
+{
+    if (is_bool($value)) {
+        return $value;
+    }
+    if (is_int($value)) {
+        return $value === 1;
+    }
+
+    return in_array(strtolower(trim((string)$value)), ['1', 'true', 'yes', 'on'], true);
+}
+
 function hub_photo_prune_expired(PDO $db, bool $dryRun, int $limit): array
 {
     $limit = max(1, min(1000, $limit));
@@ -165,6 +183,7 @@ function hub_photo_prune_expired(PDO $db, bool $dryRun, int $limit): array
                 $summary['files_deleted']++;
             } else {
                 $summary['errors']++;
+                continue;
             }
             @rmdir(dirname($path));
         }

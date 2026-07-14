@@ -264,7 +264,7 @@ hub_test('L5 Gemma4 photo contract benchmark records mock without GPU', function
         'idempotent' => true,
     ]);
 
-    $contract = hub_pack_l5_contract(hub_get_pack('llm-gemma4-12b')['manifest']);
+    $contract = hub_get_pack('llm-gemma4-12b')['manifest']['photo_contract'] ?? [];
     hub_test_assert(hub_l5_benchmark_case($contract, 'gemma4_mock_photo') !== null, 'gemma4_mock_photo case missing');
     foreach (['gemma4_real_photo_general', 'gemma4_real_photo_ui'] as $caseId) {
         $case = hub_l5_benchmark_case($contract, $caseId);
@@ -286,8 +286,7 @@ hub_test('L5 Gemma4 photo contract benchmark records mock without GPU', function
         'caption' => '測試圖片',
         'tags' => ['test'],
     ], null);
-    $readiness = hub_pack_l5_readiness($db, 'llm-gemma4-12b');
-    hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === true, 'Gemma4 real photo pass must update readiness');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM benchmark_runs WHERE benchmark_key = 'gemma4_real_photo_general'")->fetchColumn() === 1, 'Gemma4 real photo benchmark run must be recorded');
 });
 
 hub_test('L5 DocParser contract benchmark submits async PDF tasks', function (): void {

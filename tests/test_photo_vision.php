@@ -115,6 +115,9 @@ hub_test('Photo request payload uses server path and safe defaults', function ()
     hub_test_assert($payload['max_tokens'] === 256, 'max_tokens must default to 256');
     hub_test_assert($payload['real_inference'] === false, 'real_inference must default false');
     hub_test_assert($payload['text'] === 'describe this', 'text must be trimmed');
+
+    $falseString = hub_photo_request_payload($db, ['image_id' => 'img_payload_false'], ['text' => 'x', 'real_inference' => 'false']);
+    hub_test_assert($falseString['real_inference'] === false, 'JSON string false must not request real inference');
 });
 
 hub_test('Photo proxy success response is normalized and errors are preserved', function (): void {
@@ -167,4 +170,56 @@ hub_test('Photo prune dry-run does not delete active files and apply deletes exp
     $applied = hub_photo_prune_expired($db, false, 100);
     hub_test_assert((int)$applied['rows_deleted'] === 1, 'apply must delete expired row');
     hub_test_assert(!is_file(HUB_DATA_DIR . '/' . $asset['storage_relpath']), 'expired file must be deleted');
+});
+
+hub_test('Photo prune keeps row when unlink fails', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Prune Retry Owner', '', 'prune-retry@example.test', '');
+    $tmp = tempnam(sys_get_temp_dir(), 'photo_');
+    imagepng(imagecreatetruecolor(3, 3), $tmp);
+    $asset = hub_photo_store_upload($db, [
+        'name' => 'retry.png',
+        'type' => 'image/png',
+        'tmp_name' => $tmp,
+        'error' => UPLOAD_ERR_OK,
+        'size' => filesize($tmp),
+    ], ['member_id' => (int)$memberId]);
+    $db->prepare('UPDATE photo_assets SET expires_at = :expires_at WHERE image_id = :image_id')
+        ->execute([':expires_at' => '2000-01-01 00:00:00', ':image_id' => $asset['image_id']]);
+
+    $path = HUB_DATA_DIR . '/' . $asset['storage_relpath'];
+    chmod(dirname($path), 0555);
+    try {
+        $applied = hub_photo_prune_expired($db, false, 100);
+    } finally {
+        chmod(dirname($path), 0775);
+    }
+
+    hub_test_assert((int)$applied['errors'] === 1, 'unlink failure must be reported');
+    hub_test_assert((int)$applied['rows_deleted'] === 0, 'unlink failure must keep DB row for retry');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM photo_assets WHERE image_id = '" . $asset['image_id'] . "'")->fetchColumn() === 1, 'photo row must remain after unlink failure');
+});
+
+hub_test('Photo vision service lookup applies service IP policy after token auth', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'llm-gemma4-12b', [
+        'service_key' => 'gemma4-main',
+        'name' => 'Gemma 4 Main',
+        'mode' => 'chat',
+        'port_mode' => 'manual',
+        'local_port' => 18110,
+        'environment' => 'production',
+        'idempotent' => true,
+    ]);
+    $service = hub_get_service_by_key($db, 'gemma4-main');
+    hub_test_assert($service !== null, 'gemma4-main service missing');
+    hub_set_service_enabled($db, 'chat', true);
+    hub_update_service_status($db, (int)$service['id'], 'running');
+    hub_add_service_ip_rule($db, (int)$service['id'], '203.0.113.30', 'photo allow', null);
+    hub_set_storage_setting($db, 'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST', '1');
+
+    hub_test_assert(function_exists('hub_photo_vision_service_for_request'), 'photo service policy helper missing');
+    $denied = hub_photo_vision_service_for_request($db, '203.0.113.31', ['token_id' => 10]);
+    hub_test_assert(($denied['response']['status'] ?? null) === 403, 'photo service whitelist denial must return 403');
+    hub_test_assert(str_contains((string)($denied['response']['body'] ?? ''), 'ip_not_allowed'), 'photo service whitelist denial must name ip_not_allowed');
 });

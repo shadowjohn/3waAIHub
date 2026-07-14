@@ -41,6 +41,24 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     hub_test_assert(str_contains((string)$photoUpload['examples']['js_fetch'], "formData.append('image', fileInput.files[0])"), 'photo_upload JS example must define formData image upload');
     hub_test_assert(!str_contains((string)$photoUpload['examples']['php'], 'CURLFile here'), 'photo_upload PHP example must not use placeholder CURLFile text');
     hub_test_assert(!str_contains((string)$photoUpload['examples']['js_fetch'], 'undefined formData'), 'photo_upload JS example must not reference undefined formData');
+    $photo = null;
+    foreach ($manifest['services'] as $service) {
+        if (($service['mode'] ?? '') === 'photo') {
+            $photo = $service;
+            break;
+        }
+    }
+    hub_test_assert(is_array($photo), 'manifest missing photo mode');
+    $photoFields = [];
+    foreach ($photo['input_fields'] ?? [] as $field) {
+        if (is_array($field)) {
+            $photoFields[(string)($field['name'] ?? '')] = $field;
+        }
+    }
+    hub_test_assert(($photoFields['real_inference']['default'] ?? null) === false, 'photo public docs real_inference default must be false');
+    foreach (['mock', 'runtime_level', 'model'] as $key) {
+        hub_test_assert(in_array($key, $photo['output_keys'] ?? [], true), 'photo public docs response contract missing ' . $key);
+    }
     hub_test_assert(str_contains($json, '<TOKEN>'), 'manifest examples must use token placeholder');
     foreach (['local_port', 'docker-compose.generated.yml', '/DATA/models', 'data/logs', '3waaihub.sqlite', 'admin/', 'command_worker', '3wa_live_'] as $secret) {
         hub_test_assert(!str_contains($json, $secret), 'manifest must not leak ' . $secret);
@@ -73,6 +91,15 @@ hub_test('PhaseDX-3 public API docs files and settings UI contract are present',
     $settingsPage = (string)file_get_contents(HUB_ROOT . '/admin/settings.php');
     foreach (['AIHUB_PUBLIC_API_DOCS', 'AIHUB_PUBLIC_API_MANIFEST', 'AIHUB_PUBLIC_API_LOCAL_ONLY', '未登入 API 文件', '未登入 Agent Manifest', '僅允許本機讀取'] as $needle) {
         hub_test_assert(str_contains($settingsPage, $needle), 'settings API tab missing ' . $needle);
+    }
+});
+
+hub_test('Client quickstart documents mock defaults and response contract keys', function (): void {
+    $quickstart = (string)file_get_contents(HUB_ROOT . '/docs/client_quickstart.md');
+
+    hub_test_assert(str_contains($quickstart, '預設 `real_inference=false`'), 'client quickstart must document real_inference=false default');
+    foreach (['`mock`', '`runtime_level`', '`model`'] as $key) {
+        hub_test_assert(str_contains($quickstart, $key), 'client quickstart response contract missing ' . $key);
     }
 });
 
