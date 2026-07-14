@@ -1,6 +1,17 @@
 <?php
 declare(strict_types=1);
 
+function hub_process_exit_code(int $closedExitCode, ?int $observedExitCode): int
+{
+    return $closedExitCode === -1 && $observedExitCode !== null ? $observedExitCode : $closedExitCode;
+}
+
+function hub_observed_process_exit_code(array $status): ?int
+{
+    $exitCode = $status['exitcode'] ?? -1;
+    return !$status['running'] && is_int($exitCode) && $exitCode >= 0 ? $exitCode : null;
+}
+
 function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = []): array
 {
     hub_cli_only();
@@ -22,11 +33,13 @@ function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = 
     $stdout = '';
     $stderr = '';
     $startedAt = time();
+    $observedExitCode = null;
     do {
         $stdout .= stream_get_contents($pipes[1]);
         $stderr .= stream_get_contents($pipes[2]);
         $status = proc_get_status($process);
         if (!$status['running']) {
+            $observedExitCode = hub_observed_process_exit_code($status) ?? $observedExitCode;
             break;
         }
         if (time() - $startedAt > $timeoutSeconds) {
@@ -41,7 +54,7 @@ function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = 
     $stderr .= stream_get_contents($pipes[2]);
     fclose($pipes[1]);
     fclose($pipes[2]);
-    $exitCode = proc_close($process);
+    $exitCode = hub_process_exit_code(proc_close($process), $observedExitCode);
     $output = trim($stdout . ($stderr !== '' ? "\n" . $stderr : ''));
 
     return ['exit_code' => $exitCode, 'stdout' => trim($stdout), 'stderr' => trim($stderr), 'output' => $output];
@@ -69,6 +82,7 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
     $stdout = '';
     $stderr = '';
     $startedAt = time();
+    $observedExitCode = null;
     do {
         foreach ([1 => 'stdout', 2 => 'stderr'] as $idx => $stream) {
             $chunk = stream_get_contents($pipes[$idx]);
@@ -89,6 +103,7 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
 
         $status = proc_get_status($process);
         if (!$status['running']) {
+            $observedExitCode = hub_observed_process_exit_code($status) ?? $observedExitCode;
             break;
         }
         if (time() - $startedAt > $timeoutSeconds) {
@@ -117,7 +132,7 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
         fclose($pipes[$idx]);
     }
 
-    $exitCode = proc_close($process);
+    $exitCode = hub_process_exit_code(proc_close($process), $observedExitCode);
     $output = trim($stdout . ($stderr !== '' ? "\n" . $stderr : ''));
 
     return ['exit_code' => $exitCode, 'stdout' => trim($stdout), 'stderr' => trim($stderr), 'output' => $output];

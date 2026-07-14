@@ -6,6 +6,12 @@ hub_test('command worker allowlist includes Docker builder prune only as explici
     hub_test_assert(!hub_is_valid_job_action('docker system prune -af'), 'raw Docker commands must stay rejected');
 });
 
+hub_test('command runner preserves observed exit code when proc_close returns unknown', function (): void {
+    hub_test_assert(hub_process_exit_code(-1, 0) === 0, 'observed successful exit code must win over proc_close -1');
+    hub_test_assert(hub_process_exit_code(-1, 7) === 7, 'observed non-zero exit code must win over proc_close -1');
+    hub_test_assert(hub_process_exit_code(0, 7) === 0, 'proc_close exit code must win when it is known');
+});
+
 hub_test('cron loop runs both command and task workers', function (): void {
     $loop = (string)file_get_contents(HUB_ROOT . '/crontab/1min.sh');
     hub_test_assert(str_contains($loop, 'scripts/command_worker.php'), 'cron loop must run command worker');
