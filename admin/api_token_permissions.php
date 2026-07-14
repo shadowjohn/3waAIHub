@@ -21,6 +21,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $enabledModes = array_column(hub_list_api_token_permissions($db, (int)$token['id']), 'mode');
 $services = hub_list_services($db);
 $taskModes = hub_task_api_modes();
+$photoModes = hub_photo_modes();
 
 hub_admin_header('Token Mode Permissions', $user);
 ?>
@@ -36,6 +37,10 @@ hub_admin_header('Token Mode Permissions', $user);
         <?php endforeach; ?>
         <h2>System Task Modes</h2>
         <?php foreach ($taskModes as $mode => $label): ?>
+            <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
+        <?php endforeach; ?>
+        <h2>Photo Vision Modes</h2>
+        <?php foreach ($photoModes as $mode => $label): ?>
             <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
         <?php endforeach; ?>
         <p><button class="primary" type="submit">儲存</button> <a class="button" href="api_tokens.php?member_id=<?= (int)$token['member_id'] ?>">返回 Tokens</a></p>

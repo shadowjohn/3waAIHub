@@ -1,5 +1,24 @@
 # 3waAIHub History
 
+## PhaseL-1C Gemma 4 Photo Vision
+
+Implemented:
+
+- `photo_upload` internal Gateway mode.
+- `photo` internal Gateway mode using `image_id + text`.
+- Secure `photo_assets` storage with owner, TTL, SHA-256, dimensions, and prune support.
+- Gemma 4 Pack-local `/photo` adapter.
+- Playground and docs for upload-once / ask-many workflow.
+- Prune CLI and Gemma 4 photo benchmark cases.
+
+Skipped:
+
+- server-side sessions
+- multi-image prompts
+- album/RAG indexing
+- bbox/segmentation
+- streaming
+
 ## PhaseL-1A Gemma 4 12B Unified LLM Pack
 
 Added the first generic LLM HubPack while keeping the existing 3waAIHub boundary intact.

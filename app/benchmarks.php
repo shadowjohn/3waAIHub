@@ -58,13 +58,21 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     }
     $contract = hub_pack_l5_contract($pack['manifest']);
     $case = hub_l5_benchmark_case($contract, $caseId);
+    if (!$case && is_array($pack['manifest']['photo_contract'] ?? null)) {
+        $contract = $pack['manifest']['photo_contract'];
+        $case = hub_l5_benchmark_case($contract, $caseId);
+    }
     if (!$case) {
-        throw new RuntimeException('benchmark case not declared in l5_contract.');
+        throw new RuntimeException('benchmark case not declared.');
     }
 
     $serviceId = (int)$service['id'];
     $mode = (string)($case['mode'] ?? $service['mode']);
     hub_set_service_enabled($db, $mode, true);
+
+    if (($pack['id'] ?? '') === 'llm-gemma4-12b' && $mode === 'photo') {
+        return hub_benchmark_gemma4_photo_case($db, $pack, $case, $service, $serviceId, $mode);
+    }
 
     $bodyJson = $case['body_json'] ?? null;
     $jsonBody = is_array($bodyJson) ? json_encode($bodyJson, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) : '';
@@ -197,6 +205,85 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     ];
 }
 
+function hub_benchmark_gemma4_photo_case(PDO $db, array $pack, array $case, array $service, int $serviceId, string $mode): array
+{
+    $bodyJson = is_array($case['body_json'] ?? null) ? $case['body_json'] : [];
+    $realInference = !empty($case['real_inference']);
+    if ($realInference) {
+        $response = hub_benchmark_gemma4_photo_real_response($db, $case, $service, $bodyJson);
+    } else {
+        $response = hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest'], $bodyJson + ['photo' => true]));
+    }
+
+    $payload = json_decode((string)$response['body'], true);
+    $expectedKeys = array_map('strval', $case['expected_keys'] ?? $pack['manifest']['l5_contract']['output']['required_keys'] ?? []);
+    $missing = [];
+    foreach ($expectedKeys as $key) {
+        if (!is_array($payload) || !array_key_exists($key, $payload)) {
+            $missing[] = $key;
+        }
+    }
+
+    $bodyText = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
+    $contractFailed = (int)$response['status'] !== 200
+        || $missing !== []
+        || trim((string)($payload['answer'] ?? '')) === ''
+        || trim((string)($payload['caption'] ?? '')) === ''
+        || !is_array($payload['tags'] ?? null)
+        || str_contains($bodyText, HUB_DATA_DIR)
+        || str_contains($bodyText, 'storage_relpath')
+        || str_contains($bodyText, 'image_internal_path');
+    if (array_key_exists('expected_mock', $case) && is_array($payload) && (bool)($payload['mock'] ?? null) !== (bool)$case['expected_mock']) {
+        $contractFailed = true;
+    }
+    if ($contractFailed) {
+        throw new RuntimeException('benchmark contract check failed.');
+    }
+
+    return [
+        'case_id' => (string)$case['id'],
+        'pack_id' => (string)$pack['id'],
+        'service_id' => $serviceId,
+        'mode' => $mode,
+        'http_status' => (int)$response['status'],
+        'expected_keys_pass' => true,
+        'real_inference' => $realInference,
+        'mock' => is_array($payload) ? ($payload['mock'] ?? null) : null,
+        'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
+        'answer_length' => strlen((string)($payload['answer'] ?? '')),
+        'caption_length' => strlen((string)($payload['caption'] ?? '')),
+        'tag_count' => is_array($payload['tags'] ?? null) ? count($payload['tags']) : 0,
+        'fixture' => (string)($case['fixture'] ?? ''),
+    ];
+}
+
+function hub_benchmark_gemma4_photo_real_response(PDO $db, array $case, array $service, array $bodyJson): array
+{
+    $fixture = HUB_ROOT . '/' . ltrim((string)($case['fixture'] ?? ''), '/');
+    if (!is_file($fixture)) {
+        throw new RuntimeException('benchmark fixture missing.');
+    }
+
+    $memberId = hub_create_api_member($db, 'Gemma4 Photo Benchmark', '', 'gemma4-photo-benchmark@example.test', '');
+    $asset = hub_photo_store_upload($db, [
+        'name' => basename($fixture),
+        'type' => 'image/png',
+        'tmp_name' => $fixture,
+        'error' => UPLOAD_ERR_OK,
+        'size' => filesize($fixture),
+    ], ['member_id' => $memberId]);
+
+    $bodyJson['image_id'] = $asset['image_id'];
+    $bodyJson['real_inference'] = 1;
+    $url = preg_replace('#/chat$#', '/photo', (string)$service['internal_url']) ?: (string)$service['internal_url'];
+
+    return hub_photo_normalize_proxy_response(hub_benchmark_proxy_json(
+        ['internal_url' => $url],
+        hub_service_gateway_timeout_sec($service),
+        json_encode(hub_photo_request_payload($db, $asset, $bodyJson), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '{}'
+    ), (string)$asset['image_id']);
+}
+
 function hub_benchmark_proxy_json(array $service, int $timeoutSec, string $jsonBody): array
 {
     $ch = curl_init((string)$service['internal_url']);
@@ -285,6 +372,20 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
         ];
     }
     if (($manifest['id'] ?? '') === 'llm-gemma4-12b') {
+        if (!empty($input['photo'])) {
+            return [
+                'ok' => true,
+                'mock' => true,
+                'runtime_level' => $runtimeLevel,
+                'model' => 'gemma4-12b',
+                'image_id' => (string)($input['image_id'] ?? 'img_0123456789abcdefghij'),
+                'answer' => '這是一張 Gemma 4 photo benchmark mock 圖片。',
+                'caption' => 'Gemma 4 photo benchmark mock',
+                'tags' => ['mock', 'photo'],
+                'usage' => ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0],
+                'elapsed_ms' => 0,
+            ];
+        }
         return [
             'ok' => true,
             'mock' => true,

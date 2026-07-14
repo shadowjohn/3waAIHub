@@ -273,7 +273,11 @@ function hub_create_customer_token(PDO $db, int $userId, string $tokenName, ?str
 {
     $memberId = hub_ensure_user_api_member($db, $userId);
     $token = hub_create_api_token($db, $memberId, $tokenName, null, $validUntil);
-    foreach (hub_user_allowed_modes($db, $userId) as $mode) {
+    $modes = hub_user_allowed_modes($db, $userId);
+    if (in_array('photo', $modes, true) && !in_array('photo_upload', $modes, true)) {
+        $modes[] = 'photo_upload';
+    }
+    foreach ($modes as $mode) {
         $service = hub_get_service_by_mode($db, $mode);
         hub_add_api_token_mode_permission($db, (int)$token['token_id'], $mode, $service ? (int)$service['id'] : null);
     }
@@ -318,7 +322,7 @@ function hub_list_customer_usage(PDO $db, int $userId): array
 
 function hub_playground_supported_modes(): array
 {
-    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'tts', 'chat'];
+    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'tts', 'chat', 'photo'];
 }
 
 function hub_playground_service_options(PDO $db, ?array $user = null): array
@@ -332,6 +336,7 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
     }
 
     $services = [];
+    $hasPhoto = false;
     foreach (hub_list_services($db) as $service) {
         $mode = (string)($service['mode'] ?? '');
         if (!isset($supported[$mode])) {
@@ -340,7 +345,19 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
         if ($allowedModes !== null && !isset($allowedModes[$mode])) {
             continue;
         }
+        if ($mode === 'photo') {
+            $hasPhoto = true;
+        }
         $services[] = $service;
+    }
+    if (!$hasPhoto && ($allowedModes === null || isset($allowedModes['photo']))) {
+        $settings = hub_photo_settings($db);
+        $visionService = hub_get_service_by_key($db, (string)$settings['vision_service_key']);
+        if ($visionService) {
+            $visionService['mode'] = 'photo';
+            $visionService['name'] = 'Gemma 4 Photo Vision';
+            $services[] = $visionService;
+        }
     }
 
     return $services;

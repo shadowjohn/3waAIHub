@@ -687,7 +687,8 @@ function hub_generate_llm_gemma4_compose(array $pack, string $serviceKey, int $l
         . "    restart: unless-stopped\n"
         . "    volumes:\n"
         . '      - "${AIHUB_CACHE_DIR}/gemma4:/cache/gemma4"' . "\n"
-        . '      - "${SERVICE_DATA_DIR}:/data/service"' . "\n";
+        . '      - "${SERVICE_DATA_DIR}:/data/service"' . "\n"
+        . '      - "${AIHUB_UPLOADS_DIR}/photo:/data/photo:ro"' . "\n";
 }
 
 function hub_generate_internal_task_compose(array $manifest): string

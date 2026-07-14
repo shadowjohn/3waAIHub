@@ -35,3 +35,4 @@ services:
     volumes:
       - "${AIHUB_CACHE_DIR:-/DATA/3waAIHub/data/cache}/gemma4:/cache/gemma4"
       - "${SERVICE_DATA_DIR:-/DATA/3waAIHub/data/services/gemma4-main}:/data/service"
+      - "${AIHUB_UPLOADS_DIR:-/DATA/3waAIHub/data/uploads}/photo:/data/photo:ro"

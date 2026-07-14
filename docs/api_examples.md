@@ -194,6 +194,27 @@ php scripts/benchmark.php --pack=llm-gemma4-12b --case=gemma4_mock_chat
 php scripts/benchmark.php --service=gemma4-main --case=gemma4_real_chat
 ```
 
+## Photo Vision
+
+Upload once:
+
+```bash
+curl -X POST "<BASE_URL>?mode=photo_upload" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@example.jpg"
+```
+
+Ask many times:
+
+```bash
+curl -X POST "<BASE_URL>?mode=photo" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"image_id":"img_...","text":"這張圖裡有什麼？","max_tokens":256,"real_inference":true}'
+```
+
+No session is stored. Send prior context in `text` when needed.
+
 ## POST YOLO
 
 Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `YOLO_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行單張圖片 detection。

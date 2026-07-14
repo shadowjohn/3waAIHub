@@ -15,6 +15,7 @@ function hub_playground_profiles(): array
         'tts' => ['label' => 'TTS', 'method' => 'POST', 'kind' => 'json'],
         'structure' => ['label' => 'Structure', 'method' => 'POST', 'kind' => 'document'],
         'chat' => ['label' => 'Chat', 'method' => 'POST', 'kind' => 'json'],
+        'photo' => ['label' => '圖片問答', 'method' => 'POST', 'kind' => 'photo'],
     ];
 }
 
@@ -103,6 +104,14 @@ function hub_playground_request_payload(string $mode): array
             'max_tokens' => (int)($_POST['max_tokens'] ?? 256),
             'enable_thinking' => !empty($_POST['enable_thinking']),
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
+        ];
+    }
+    if ($mode === 'photo') {
+        return [
+            'image_id' => trim((string)($_POST['image_id'] ?? '')),
+            'text' => trim((string)($_POST['text'] ?? '這張圖裡有什麼？')),
+            'max_tokens' => (int)($_POST['max_tokens'] ?? 256),
+            'real_inference' => !empty($_POST['real_inference']),
         ];
     }
     if ($mode === 'sam3') {
@@ -224,6 +233,49 @@ function hub_playground_error_message(int $status, string $curlError = '', strin
     return 'Gateway 回傳錯誤。';
 }
 
+/**
+ * @param resource $ch
+ */
+function hub_playground_finish_curl($ch, float $started): array
+{
+    $raw = curl_exec($ch);
+    $elapsedMs = (int)round((microtime(true) - $started) * 1000);
+    if ($raw === false) {
+        $error = curl_error($ch);
+        curl_close($ch);
+        return ['ok' => false, 'error' => 'request_failed', 'message' => hub_playground_error_message(0, $error), 'detail' => $error, 'elapsed_ms' => $elapsedMs];
+    }
+
+    $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 0;
+    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE) ?: 0;
+    curl_close($ch);
+    $rawHeaders = substr($raw, 0, $headerSize);
+    $body = substr($raw, $headerSize);
+    $requestId = '';
+    foreach (preg_split('/\R/', $rawHeaders) ?: [] as $line) {
+        if (stripos($line, 'X-3waAIHub-Request-Id:') === 0) {
+            $requestId = trim(substr($line, strlen('X-3waAIHub-Request-Id:')));
+        }
+    }
+    $payload = json_decode($body, true);
+    if ($requestId === '' && is_array($payload) && is_string($payload['request_id'] ?? null)) {
+        $requestId = $payload['request_id'];
+    }
+    $gatewayError = is_array($payload) ? (string)($payload['error'] ?? $payload['error_code'] ?? '') : '';
+    $ok = $status >= 200 && $status < 400;
+
+    return [
+        'ok' => $ok,
+        'status' => $status,
+        'elapsed_ms' => $elapsedMs,
+        'request_id' => $requestId,
+        'error' => $ok ? '' : ($gatewayError ?: 'request_failed'),
+        'message' => $ok ? '' : hub_playground_error_message((int)$status, '', $gatewayError),
+        'body' => $body,
+        'pretty_body' => hub_playground_pretty_json($body),
+    ];
+}
+
 function hub_playground_execute(string $mode, string $token): array
 {
     $profiles = hub_playground_profiles();
@@ -241,6 +293,53 @@ function hub_playground_execute(string $mode, string $token): array
     $token = trim($token);
     if ($token !== '') {
         $headers[] = 'Authorization: Bearer ' . $token;
+    }
+
+    if ($mode === 'photo') {
+        $payload = hub_playground_request_payload($mode);
+        $file = $_FILES['image'] ?? null;
+        if (is_array($file) && (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+            $upload = curl_init(hub_playground_local_api_url('photo_upload'));
+            if ($upload === false) {
+                return ['ok' => false, 'error' => 'curl_unavailable'];
+            }
+            curl_setopt_array($upload, [
+                CURLOPT_POST => true,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HEADER => true,
+                CURLOPT_HTTPHEADER => $headers,
+                CURLOPT_CONNECTTIMEOUT => 3,
+                CURLOPT_TIMEOUT => 180,
+                CURLOPT_POSTFIELDS => [
+                    'image' => new CURLFile((string)$file['tmp_name'], (string)($file['type'] ?? 'application/octet-stream'), (string)($file['name'] ?? 'image')),
+                ],
+            ]);
+            $uploadResult = hub_playground_finish_curl($upload, $started);
+            if (empty($uploadResult['ok'])) {
+                return $uploadResult;
+            }
+            $uploadBody = json_decode((string)($uploadResult['body'] ?? ''), true);
+            $payload['image_id'] = is_array($uploadBody) ? (string)($uploadBody['image_id'] ?? '') : '';
+        }
+        if ((string)$payload['image_id'] === '') {
+            return ['ok' => false, 'error' => 'image_id_required', 'message' => '請上傳圖片或填入 image_id。', 'pretty_body' => json_encode(['ok' => false, 'error' => 'image_id_required'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)];
+        }
+
+        $headers[] = 'Content-Type: application/json';
+        $ch = curl_init($url);
+        if ($ch === false) {
+            return ['ok' => false, 'error' => 'curl_unavailable'];
+        }
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_HEADER => true,
+            CURLOPT_HTTPHEADER => $headers,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_TIMEOUT => 180,
+            CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ]);
+        return hub_playground_finish_curl($ch, $started);
     }
 
     $ch = curl_init($url);
@@ -280,42 +379,7 @@ function hub_playground_execute(string $mode, string $token): array
     }
 
     curl_setopt_array($ch, $options);
-    $raw = curl_exec($ch);
-    $elapsedMs = (int)round((microtime(true) - $started) * 1000);
-    if ($raw === false) {
-        $error = curl_error($ch);
-        curl_close($ch);
-        return ['ok' => false, 'error' => 'request_failed', 'message' => hub_playground_error_message(0, $error), 'detail' => $error, 'elapsed_ms' => $elapsedMs];
-    }
-
-    $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 0;
-    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE) ?: 0;
-    curl_close($ch);
-    $rawHeaders = substr($raw, 0, $headerSize);
-    $body = substr($raw, $headerSize);
-    $requestId = '';
-    foreach (preg_split('/\R/', $rawHeaders) ?: [] as $line) {
-        if (stripos($line, 'X-3waAIHub-Request-Id:') === 0) {
-            $requestId = trim(substr($line, strlen('X-3waAIHub-Request-Id:')));
-        }
-    }
-    $payload = json_decode($body, true);
-    if ($requestId === '' && is_array($payload) && is_string($payload['request_id'] ?? null)) {
-        $requestId = $payload['request_id'];
-    }
-    $gatewayError = is_array($payload) ? (string)($payload['error'] ?? $payload['error_code'] ?? '') : '';
-    $ok = $status >= 200 && $status < 400;
-
-    return [
-        'ok' => $ok,
-        'status' => $status,
-        'elapsed_ms' => $elapsedMs,
-        'request_id' => $requestId,
-        'error' => $ok ? '' : ($gatewayError ?: 'request_failed'),
-        'message' => $ok ? '' : hub_playground_error_message((int)$status, '', $gatewayError),
-        'body' => $body,
-        'pretty_body' => hub_playground_pretty_json($body),
-    ];
+    return hub_playground_finish_curl($ch, $started);
 }
 
 function hub_playground_pretty_json(string $body): string
@@ -502,6 +566,49 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'photo') {
+        $uploadUrl = hub_playground_api_url('photo_upload');
+        $json = '{"image_id":"img_...","text":"這張圖裡有什麼？","max_tokens":256,"real_inference":true}';
+        $curl = "curl -X POST \"$uploadUrl\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -F \"image=@example.jpg\"\n\ncurl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
+        $php = <<<PHP
+// 先用 photo_upload 取得 image_id，再用同一個 image_id 重複提問。
+\$payload = [
+    'image_id' => 'img_...',
+    'text' => '這張圖裡有什麼？',
+    'max_tokens' => 256,
+    'real_inference' => true,
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer <TOKEN>',
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode(\$payload, JSON_UNESCAPED_UNICODE),
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+// 先用 photo_upload 取得 image_id，再用同一個 image_id 重複提問。
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer <TOKEN>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    image_id: 'img_...',
+    text: '這張圖裡有什麼？',
+    max_tokens: 256,
+    real_inference: true
+  })
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
 
     $field = $mode === 'structure' ? 'file' : 'image';
     $extra = $mode === 'sam3' ? " \\\n  -F prompt_type=auto \\\n  -F output_format=metadata" : '';
@@ -573,7 +680,7 @@ hub_admin_header('API 測試場', $user);
     <h1>API 測試場</h1>
     <p class="muted">後台 server side 呼叫本機 <code>api.php</code>。Bearer token 只用於本次測試，不保存；範例固定使用 <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong>需要 Bearer Token</strong>。還沒有 token 時，請先 <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>">前往 API 金鑰建立</a>。</p>
-    <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code></p>
+    <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -705,6 +812,17 @@ hub_admin_header('API 測試場', $user);
                 <label><input name="enable_thinking" type="checkbox" value="1"> 深度思考</label>
                 <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
                 <p class="muted">第一刀 Playground 走 non-streaming JSON；SSE streaming passthrough 下一刀再接。</p>
+            <?php elseif ($selectedMode === 'photo'): ?>
+                <label>image</label>
+                <input name="image" type="file" accept="image/jpeg,image/png,image/webp">
+                <label>image_id</label>
+                <input name="image_id" value="<?= hub_h((string)($_POST['image_id'] ?? '')) ?>">
+                <label>問題</label>
+                <textarea name="text" rows="4">這張圖裡有什麼？</textarea>
+                <label>max_tokens</label>
+                <input name="max_tokens" type="number" min="32" max="2048" value="256">
+                <label><input name="real_inference" type="checkbox" value="1" checked> 真實圖片理解</label>
+                <p class="muted">先上傳圖片取得 image_id，再用 image_id 重複提問；不建立 server-side session。</p>
             <?php elseif ($selectedMode === 'sam3'): ?>
                 <label>image</label>
                 <input name="image" type="file" accept="image/*">

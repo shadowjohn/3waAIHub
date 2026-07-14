@@ -1,6 +1,9 @@
 {
   "cases": [
     "gemma4_mock_chat",
-    "gemma4_real_chat"
+    "gemma4_real_chat",
+    "gemma4_mock_photo",
+    "gemma4_real_photo_general",
+    "gemma4_real_photo_ui"
   ]
 }

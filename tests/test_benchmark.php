@@ -252,6 +252,43 @@ hub_test('L5 BioCLIP contract benchmark records mock and real cases', function (
     hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'BioCLIP readiness must be fully green after real benchmark pass');
 });
 
+hub_test('L5 Gemma4 photo contract benchmark records mock without GPU', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'llm-gemma4-12b', [
+        'service_key' => 'gemma4-main',
+        'name' => 'Gemma4 Main',
+        'mode' => 'chat',
+        'port_mode' => 'manual',
+        'local_port' => 18110,
+        'environment' => 'production',
+        'idempotent' => true,
+    ]);
+
+    $contract = hub_get_pack('llm-gemma4-12b')['manifest']['photo_contract'] ?? [];
+    hub_test_assert(hub_l5_benchmark_case($contract, 'gemma4_mock_photo') !== null, 'gemma4_mock_photo case missing');
+    foreach (['gemma4_real_photo_general', 'gemma4_real_photo_ui'] as $caseId) {
+        $case = hub_l5_benchmark_case($contract, $caseId);
+        hub_test_assert($case !== null, $caseId . ' case missing');
+        hub_test_assert(!empty($case['real_inference']), $caseId . ' must be marked real_inference');
+        hub_test_assert(trim((string)($case['fixture'] ?? '')) !== '', $caseId . ' must declare fixture');
+    }
+
+    $mock = hub_run_benchmark_case($db, 'gemma4_mock_photo', 'llm-gemma4-12b');
+    hub_test_assert($mock['status'] === 'pass', 'gemma4_mock_photo did not pass');
+    hub_test_assert(($mock['result']['expected_keys_pass'] ?? false) === true, 'Gemma4 photo mock expected keys check failed');
+    hub_test_assert(($mock['result']['mock'] ?? null) === true, 'Gemma4 photo mock benchmark must stay mock');
+
+    $service = hub_get_service_by_key($db, 'gemma4-main');
+    hub_save_benchmark_run($db, 'gemma4_real_photo_general', (int)$service['id'], 'photo', 'pass', 123, [
+        'ok' => true,
+        'mock' => false,
+        'answer' => '一張測試圖片',
+        'caption' => '測試圖片',
+        'tags' => ['test'],
+    ], null);
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM benchmark_runs WHERE benchmark_key = 'gemma4_real_photo_general'")->fetchColumn() === 1, 'Gemma4 real photo benchmark run must be recorded');
+});
+
 hub_test('L5 DocParser contract benchmark submits async PDF tasks', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'docparser', [
