@@ -1,0 +1,155 @@
+{
+  "schema_version": "0.1",
+  "id": "rag-nemotron",
+  "name": "Nemotron RAG Adapter",
+  "version": "0.1.0",
+  "category": "rag",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L3-adapter",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": true,
+  "default_mode": "rag",
+  "description": "Text-only RAG adapter for Nemotron embedding and reranking endpoints.",
+  "capabilities": ["embedding", "reranking"],
+  "provider": "nvidia-nemotron",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/rag",
+    "methods": ["POST"],
+    "timeout_sec": 120,
+    "max_upload_mb": 2
+  },
+  "l5_contract": {
+    "endpoint": "/rag",
+    "method": "POST",
+    "content_type": "application/json",
+    "input": {
+      "fields": [
+        {"name": "operation", "type": "string", "required": true, "default": "rerank"},
+        {"name": "texts", "type": "array", "required": false},
+        {"name": "query", "type": "string", "required": false},
+        {"name": "passages", "type": "array", "required": false},
+        {"name": "top_k", "type": "integer", "required": false, "default": 5},
+        {"name": "real_inference", "type": "boolean", "required": false, "default": false}
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mock", "runtime_level", "operation", "model", "elapsed_ms"]
+    },
+    "errors": [
+      "bad_request",
+      "input_too_long",
+      "runtime_not_configured",
+      "backend_timeout",
+      "backend_unavailable",
+      "backend_bad_response"
+    ],
+    "limits": {
+      "timeout_sec": 120,
+      "max_upload_mb": 2,
+      "max_texts": 64,
+      "max_chars_per_text": 4096
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "nemotron_rag_mock_rerank",
+          "name": "Nemotron RAG mock rerank smoke",
+          "type": "api",
+          "mode": "rag",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "operation": "rerank",
+            "query": "GPU OCR fallback",
+            "passages": ["OCR can run on GPU first.", "Unrelated note about billing."],
+            "top_k": 2,
+            "real_inference": 0
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "operation", "model", "results", "elapsed_ms"],
+          "expected_mock": true,
+          "expected_min_result_count": 1
+        },
+        {
+          "id": "nemotron_rag_mock_embed",
+          "name": "Nemotron RAG mock embedding smoke",
+          "type": "api",
+          "mode": "rag",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "operation": "embed",
+            "texts": ["3waAIHub OCR GPU first"],
+            "real_inference": 0
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "operation", "model", "embeddings", "elapsed_ms"],
+          "expected_mock": true,
+          "expected_min_result_count": 1
+        }
+      ]
+    }
+  },
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": true,
+    "min_vram_mb": 0,
+    "cpu_fallback": true,
+    "min_compute_capability": "8.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {"type": "models", "host_subdir": "nemotron", "container_path": "/models/nemotron", "read_only": false},
+      {"type": "cache", "host_subdir": "nemotron", "container_path": "/cache/nemotron", "read_only": false},
+      {"type": "service_data", "host_subdir": "", "container_path": "/data/service", "read_only": false}
+    ]
+  },
+  "settings_schema": [
+    {"key": "NEMOTRON_EMBED_MODEL", "label": "Embedding model", "type": "text", "default": "nvidia/llama-nemotron-embed-300m-v2", "required": true, "restart_required": true},
+    {"key": "NEMOTRON_RERANK_MODEL", "label": "Rerank model", "type": "text", "default": "nvidia/llama-nemotron-rerank-500m-v2", "required": true, "restart_required": true},
+    {"key": "NEMOTRON_EMBED_URL", "label": "Embedding endpoint URL", "type": "text", "default": "", "required": false, "restart_required": true},
+    {"key": "NEMOTRON_RERANK_URL", "label": "Rerank endpoint URL", "type": "text", "default": "", "required": false, "restart_required": true},
+    {"key": "NEMOTRON_API_KEY", "label": "NIM API key", "type": "secret", "default": "", "required": false, "restart_required": true},
+    {"key": "NEMOTRON_REAL_INFERENCE", "label": "Default real inference", "type": "boolean", "default": "0", "required": true, "restart_required": true},
+    {"key": "NEMOTRON_TIMEOUT_SEC", "label": "Backend timeout seconds", "type": "integer", "default": "120", "min": 1, "max": 1800, "required": true, "restart_required": false},
+    {"key": "NEMOTRON_MAX_TEXTS", "label": "Max texts", "type": "integer", "default": "64", "min": 1, "max": 512, "required": true, "restart_required": false},
+    {"key": "NEMOTRON_MOCK_DIM", "label": "Mock embedding dimensions", "type": "integer", "default": "8", "min": 2, "max": 64, "required": true, "restart_required": false}
+  ],
+  "env": [
+    {"name": "NEMOTRON_EMBED_MODEL", "default": "nvidia/llama-nemotron-embed-300m-v2", "required": true},
+    {"name": "NEMOTRON_RERANK_MODEL", "default": "nvidia/llama-nemotron-rerank-500m-v2", "required": true},
+    {"name": "NEMOTRON_EMBED_URL", "default": "", "required": false},
+    {"name": "NEMOTRON_RERANK_URL", "default": "", "required": false},
+    {"name": "NEMOTRON_API_KEY", "default": "", "required": false},
+    {"name": "NEMOTRON_REAL_INFERENCE", "default": "0", "required": true},
+    {"name": "NEMOTRON_TIMEOUT_SEC", "default": "120", "required": true},
+    {"name": "NEMOTRON_MAX_TEXTS", "default": "64", "required": true},
+    {"name": "NEMOTRON_MOCK_DIM", "default": "8", "required": true}
+  ],
+  "models": [
+    {"id": "nemotron-embed-300m-v2", "runtime": "nim-or-huggingface", "model": "nvidia/llama-nemotron-embed-300m-v2", "required": false},
+    {"id": "nemotron-rerank-500m-v2", "runtime": "nim-or-huggingface", "model": "nvidia/llama-nemotron-rerank-500m-v2", "required": false}
+  ],
+  "preflight": {
+    "checks": ["docker", "docker_compose", "storage"]
+  },
+  "service": {
+    "default_local_port": 18111,
+    "local_port_env": "NEMOTRON_RAG_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "nemotron-rag",
+    "compose_project": "3waaihub_nemotron_rag"
+  }
+}

@@ -74,6 +74,15 @@
       "featured": true
     },
     {
+      "id": "rag-nemotron",
+      "name": "Nemotron RAG Adapter",
+      "version": "0.1.0",
+      "category": "rag",
+      "description": "Text-only adapter for Nemotron embedding and reranking endpoints.",
+      "path": "packs/rag-nemotron",
+      "featured": true
+    },
+    {
       "id": "structure-ppstructurev3",
       "name": "PP-StructureV3 Document Parser",
       "version": "0.1.0",

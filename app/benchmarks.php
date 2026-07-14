@@ -295,6 +295,31 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
             'elapsed_ms' => 0,
         ];
     }
+    if (($manifest['id'] ?? '') === 'rag-nemotron') {
+        $operation = (string)($input['operation'] ?? 'rerank');
+        if ($operation === 'embed') {
+            return [
+                'ok' => true,
+                'mock' => true,
+                'runtime_level' => $runtimeLevel,
+                'operation' => 'embed',
+                'model' => 'nvidia/llama-nemotron-embed-300m-v2',
+                'embeddings' => [[0.1, 0.2, 0.3]],
+                'result_count' => 1,
+                'elapsed_ms' => 0,
+            ];
+        }
+        return [
+            'ok' => true,
+            'mock' => true,
+            'runtime_level' => $runtimeLevel,
+            'operation' => 'rerank',
+            'model' => 'nvidia/llama-nemotron-rerank-500m-v2',
+            'results' => [['index' => 0, 'score' => 1.0, 'text' => 'mock passage']],
+            'result_count' => 1,
+            'elapsed_ms' => 0,
+        ];
+    }
     if (($manifest['id'] ?? '') === 'tts-voxcpm2') {
         return [
             'success' => true,
