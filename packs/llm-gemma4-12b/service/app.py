@@ -45,6 +45,24 @@ def error_response(status: int, code: str, message: str, detail: str = "") -> JS
     return JSONResponse(status_code=status, content=payload)
 
 
+def vllm_backend_status() -> dict[str, Any]:
+    try:
+        response = requests.get(f"{vllm_base_url()}/v1/models", timeout=2.0)
+        if response.status_code >= 200 and response.status_code < 300:
+            return {"ready": True, "status_code": response.status_code}
+        return {
+            "ready": False,
+            "status_code": response.status_code,
+            "error": "vllm_bad_response",
+        }
+    except requests.RequestException as exc:
+        return {
+            "ready": False,
+            "error": "vllm_unavailable",
+            "detail": str(exc)[:300],
+        }
+
+
 class ChatRequest(BaseModel):
     text: str = Field(default="")
     system_prompt: str = Field(default="你是 3waAIHub 本地 AI 助手，請使用正體中文回答。")
@@ -59,16 +77,18 @@ app = FastAPI(title="3waAIHub Gemma 4 Chat Adapter")
 
 @app.get("/health")
 def health() -> dict[str, Any]:
+    backend = vllm_backend_status()
     return {
         "ok": True,
         "service": SERVICE,
-        "ready": True,
+        "ready": bool(backend.get("ready")),
         "runtime_level": RUNTIME_LEVEL,
         "model": {
             "name": served_model(),
             "provider": "gemma4",
             "backend": "vllm",
         },
+        "backend": backend,
         "adapter": {
             "endpoint": "/chat",
             "streaming_supported": False,

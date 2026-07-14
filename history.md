@@ -17,8 +17,14 @@ Implemented:
   - `storage_smoke.py`
   - `requirements.txt`
 - Generated compose now includes:
-  - `vllm` sidecar using `vllm/vllm-openai:gemma4`
+  - `vllm` sidecar using `vllm/vllm-openai:latest`
   - `chat-api` adapter bound to `127.0.0.1:${GEMMA4_LOCAL_PORT:-18110}:8000`
+- Default single-user tuning uses `VLLM_GPU_MEMORY_UTILIZATION=0.64`,
+  `VLLM_MAX_MODEL_LEN=16384`, and `VLLM_MAX_NUM_SEQS=1`.
+- Verified the previous `0.60` boot loop root cause: Gemma 4 needed about
+  18.81 GiB free VRAM at startup, but SAM3 plus TranslateGemma/Ollama can leave
+  less than that when both are GPU-resident. SAM3 remains a long-running service;
+  Translate/Gemma residency should be scheduled explicitly.
 - Added L5 benchmark cases:
   - `gemma4_mock_chat`
   - `gemma4_real_chat`

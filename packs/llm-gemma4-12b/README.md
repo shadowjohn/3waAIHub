@@ -15,6 +15,17 @@ for the `gemma4_unified` architecture and compressed-tensors path.
 
 PhaseL-1A keeps the Hub boundary small: text-only, non-streaming JSON, and Q4 real inference through a thin adapter. The adapter converts Hub `/chat` requests to vLLM `/v1/chat/completions` internally.
 
+Default single-user runtime tuning:
+
+- `VLLM_GPU_MEMORY_UTILIZATION=0.64`
+- `VLLM_MAX_MODEL_LEN=16384`
+- `VLLM_MAX_NUM_SEQS=1`
+
+This is a single-user development default that leaves more headroom for
+long-running vision services than the earlier `0.72` setting. Running Gemma 4,
+SAM3, and TranslateGemma/Ollama as GPU-resident services at the same time still
+requires explicit GPU residency scheduling.
+
 Example Hub payload:
 
 ```json

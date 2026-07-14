@@ -100,7 +100,7 @@ function hub_playground_request_payload(string $mode): array
             'text' => trim((string)($_POST['text'] ?? '請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。')),
             'system_prompt' => trim((string)($_POST['system_prompt'] ?? '你是 3waAIHub 本地 AI 助手，請使用正體中文回答。')),
             'temperature' => (float)($_POST['temperature'] ?? 0.2),
-            'max_tokens' => (int)($_POST['max_tokens'] ?? 1024),
+            'max_tokens' => (int)($_POST['max_tokens'] ?? 256),
             'enable_thinking' => !empty($_POST['enable_thinking']),
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
@@ -461,7 +461,7 @@ JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
     if ($mode === 'chat') {
-        $json = '{"text":"請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。","system_prompt":"你是 3waAIHub 本地 AI 助手，請簡潔回答。","real_inference":1,"enable_thinking":false,"max_tokens":512}';
+        $json = '{"text":"請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。","system_prompt":"你是 3waAIHub 本地 AI 助手，請簡潔回答。","real_inference":1,"enable_thinking":false,"max_tokens":256}';
         $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
         $php = <<<PHP
 \$payload = [
@@ -469,7 +469,7 @@ JS;
     'system_prompt' => '你是 3waAIHub 本地 AI 助手，請簡潔回答。',
     'real_inference' => 1,
     'enable_thinking' => false,
-    'max_tokens' => 512,
+    'max_tokens' => 256,
 ];
 \$ch = curl_init($phpUrl);
 curl_setopt_array(\$ch, [
@@ -495,7 +495,7 @@ const res = await fetch($jsUrl, {
     system_prompt: '你是 3waAIHub 本地 AI 助手，請簡潔回答。',
     real_inference: 1,
     enable_thinking: false,
-    max_tokens: 512
+    max_tokens: 256
   })
 });
 console.log(await res.json());
@@ -701,7 +701,7 @@ hub_admin_header('API 測試場', $user);
                 <label>temperature</label>
                 <input name="temperature" type="number" min="0" max="2" step="0.1" value="0.2">
                 <label>max_tokens</label>
-                <input name="max_tokens" type="number" min="1" max="4096" value="1024">
+                <input name="max_tokens" type="number" min="1" max="4096" value="256">
                 <label><input name="enable_thinking" type="checkbox" value="1"> 深度思考</label>
                 <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
                 <p class="muted">第一刀 Playground 走 non-streaming JSON；SSE streaming passthrough 下一刀再接。</p>
