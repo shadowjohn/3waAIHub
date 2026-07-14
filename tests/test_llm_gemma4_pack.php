@@ -40,6 +40,9 @@ hub_test('Gemma 4 LLM pack stays inside 3waAIHub sync API boundary', function ()
     foreach (['ok', 'mock', 'runtime_level', 'model', 'text', 'usage', 'elapsed_ms'] as $key) {
         hub_test_assert(in_array($key, $contract['output']['required_keys'] ?? [], true), 'LLM contract output missing ' . $key);
     }
+    foreach (['answer', 'caption', 'tags'] as $photoOnlyKey) {
+        hub_test_assert(!in_array($photoOnlyKey, $contract['output']['required_keys'] ?? [], true), 'LLM chat contract leaked photo output ' . $photoOnlyKey);
+    }
     foreach (['bad_request', 'input_too_long', 'vllm_unavailable', 'model_not_present', 'vllm_timeout', 'vllm_bad_response', 'chat_failed'] as $errorCode) {
         hub_test_assert(in_array($errorCode, $contract['errors'] ?? [], true), 'LLM contract errors missing ' . $errorCode);
     }
@@ -84,6 +87,7 @@ hub_test('Gemma 4 LLM install generates vLLM sidecar plus Hub chat adapter compo
         '${AIHUB_MODELS_DIR}/huggingface:/root/.cache/huggingface',
         '${AIHUB_CACHE_DIR}/gemma4:/cache/gemma4',
         '${SERVICE_DATA_DIR}:/data/service',
+        '${AIHUB_UPLOADS_DIR}/photo:/data/photo:ro',
     ] as $needle) {
         hub_test_assert(str_contains($compose, $needle), 'LLM generated compose missing ' . $needle);
     }
@@ -105,5 +109,27 @@ hub_test('Gemma 4 playground source uses Hub chat payload instead of OpenAI-comp
     }
     foreach (["'messages' =>", "'stream' => false", 'chat_template_kwargs', '/v1/chat/completions'] as $forbidden) {
         hub_test_assert(!str_contains($page, $forbidden), 'chat playground must not expose OpenAI payload piece ' . $forbidden);
+    }
+});
+
+hub_test('Gemma 4 photo adapter stays inside Hub image_id contract', function (): void {
+    $manifest = hub_get_pack('llm-gemma4-12b')['manifest'];
+    $contract = $manifest['l5_contract'] ?? [];
+    $inputFields = array_column($contract['input']['fields'] ?? [], 'name');
+    foreach (['image_id', 'text', 'max_tokens', 'real_inference'] as $field) {
+        hub_test_assert(in_array($field, $inputFields, true), 'photo contract missing ' . $field);
+    }
+    foreach (['image_path', 'host_path', 'container_path', 'storage_relpath', 'image_url'] as $field) {
+        hub_test_assert(!in_array($field, $inputFields, true), 'photo contract leaks path field ' . $field);
+    }
+    $app = (string)file_get_contents(HUB_ROOT . '/packs/llm-gemma4-12b/service/app.py');
+    foreach (['@app.post("/photo")', 'image_internal_path', '/data/photo', 'vision_failed'] as $needle) {
+        hub_test_assert(str_contains($app, $needle), 'Gemma photo adapter missing ' . $needle);
+    }
+    $photoCases = array_filter($contract['benchmark']['cases'] ?? [], fn (array $case): bool => ($case['mode'] ?? '') === 'photo');
+    foreach ($photoCases as $case) {
+        foreach (['answer', 'caption', 'tags'] as $key) {
+            hub_test_assert(in_array($key, $case['expected_keys'] ?? [], true), 'photo benchmark missing expected key ' . $key);
+        }
     }
 });

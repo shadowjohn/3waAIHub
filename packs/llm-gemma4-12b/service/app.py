@@ -1,5 +1,9 @@
+import base64
+import json
 import os
+import re
 import time
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -10,6 +14,7 @@ from pydantic import BaseModel, Field
 
 RUNTIME_LEVEL = "L5-benchmark-ready"
 SERVICE = "llm-gemma4-12b"
+PHOTO_ROOT = Path("/data/photo").resolve()
 
 
 def env_bool(name: str, default: str = "0") -> bool:
@@ -70,6 +75,46 @@ class ChatRequest(BaseModel):
     max_tokens: int = Field(default=1024, ge=1, le=8192)
     enable_thinking: bool = False
     real_inference: bool = False
+
+
+class PhotoRequest(BaseModel):
+    image_id: str
+    image_internal_path: str
+    text: str = Field(default="")
+    max_tokens: int = Field(default=256, ge=32, le=2048)
+    real_inference: bool = False
+
+
+def safe_photo_path(path: str) -> Path | None:
+    try:
+        resolved = Path(path).resolve()
+    except OSError:
+        return None
+    if not str(resolved).startswith(str(PHOTO_ROOT) + os.sep):
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def image_data_url(path: Path) -> str:
+    data = path.read_bytes()
+    mime = "image/png"
+    if data.startswith(b"\xff\xd8"):
+        mime = "image/jpeg"
+    elif data.startswith(b"RIFF") and b"WEBP" in data[:16]:
+        mime = "image/webp"
+    return f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+
+
+def parse_model_json(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.S)
+    if match:
+        stripped = match.group(1)
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 app = FastAPI(title="3waAIHub Gemma 4 Chat Adapter")
@@ -170,6 +215,106 @@ def chat(request: ChatRequest) -> JSONResponse:
         "runtime_level": RUNTIME_LEVEL,
         "model": served_model(),
         "text": output_text,
+        "usage": {
+            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "total_tokens": int(usage.get("total_tokens", 0) or 0),
+        },
+        "elapsed_ms": elapsed,
+    })
+
+
+@app.post("/photo")
+def photo(request: PhotoRequest) -> JSONResponse:
+    started = time.monotonic()
+    question = request.text.strip()
+    if not question:
+        return error_response(400, "text_required", "text is required.")
+    if not re.match(r"^img_[A-Za-z0-9_-]{20,64}$", request.image_id):
+        return error_response(400, "image_id_required", "valid image_id is required.")
+
+    path = safe_photo_path(request.image_internal_path)
+    if path is None:
+        return error_response(403, "photo_forbidden", "image path is not allowed.")
+
+    if not request.real_inference:
+        elapsed = int((time.monotonic() - started) * 1000)
+        return JSONResponse(content={
+            "ok": True,
+            "mock": True,
+            "runtime_level": RUNTIME_LEVEL,
+            "model": served_model(),
+            "image_id": request.image_id,
+            "answer": "這是一個 Gemma 4 Photo Vision mock answer。",
+            "caption": "一張上傳到 3waAIHub 的圖片。",
+            "tags": [],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "elapsed_ms": elapsed,
+        })
+
+    prompt = (
+        "請使用正體中文回答。請根據圖片與使用者問題輸出 JSON："
+        "{\"answer\":\"針對問題的完整回答\",\"caption\":\"一句客觀圖片描述\",\"tags\":[\"最多八個短標籤\"]}"
+        "不得猜測圖片中不可見的資訊。無法確認時必須明確說明不確定。"
+        f"\n使用者問題：{question}"
+    )
+    try:
+        image_url = image_data_url(path)
+    except OSError as exc:
+        return error_response(403, "photo_forbidden", "image path is not readable.", str(exc))
+
+    payload = {
+        "model": served_model(),
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }],
+        "temperature": 0.1,
+        "max_tokens": request.max_tokens,
+        "stream": False,
+    }
+    try:
+        response = requests.post(
+            f"{vllm_base_url()}/v1/chat/completions",
+            json=payload,
+            timeout=env_float("VLLM_TIMEOUT_SEC", 600.0),
+        )
+    except requests.Timeout:
+        return error_response(504, "vision_timeout", "Gemma 4 vision request timed out.")
+    except requests.RequestException as exc:
+        return error_response(503, "model_not_ready", "Gemma 4 vision backend is unavailable.", str(exc))
+    if response.status_code < 200 or response.status_code >= 300:
+        return error_response(502, "vision_bad_response", "Gemma 4 vision returned an error.", response.text)
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        return error_response(502, "vision_bad_response", "Gemma 4 vision response was not valid JSON.", str(exc))
+    choices = data.get("choices") if isinstance(data, dict) else None
+    message = choices[0].get("message", {}) if isinstance(choices, list) and choices else {}
+    parsed = parse_model_json(str(message.get("content") or ""))
+    if parsed is None:
+        return error_response(502, "vision_failed", "Gemma 4 vision response was not valid JSON.")
+    answer = str(parsed.get("answer") or "").strip()
+    caption = str(parsed.get("caption") or "").strip()
+    tags = parsed.get("tags") if isinstance(parsed.get("tags"), list) else []
+    tags = [str(tag).strip() for tag in tags if str(tag).strip()][:8]
+    if not answer:
+        return error_response(502, "vision_failed", "Gemma 4 vision answer was empty.")
+    usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
+    elapsed = int((time.monotonic() - started) * 1000)
+    return JSONResponse(content={
+        "ok": True,
+        "mock": False,
+        "runtime_level": RUNTIME_LEVEL,
+        "model": served_model(),
+        "image_id": request.image_id,
+        "answer": answer,
+        "caption": caption,
+        "tags": tags,
         "usage": {
             "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
             "completion_tokens": int(usage.get("completion_tokens", 0) or 0),

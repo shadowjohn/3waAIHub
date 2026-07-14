@@ -33,6 +33,7 @@
     "input": {
       "fields": [
         {"name": "text", "type": "string", "required": true},
+        {"name": "image_id", "type": "string", "required": false},
         {"name": "system_prompt", "type": "string", "required": false, "default": "你是 3waAIHub 本地 AI 助手，請使用正體中文回答。"},
         {"name": "temperature", "type": "number", "required": false, "default": 0.2},
         {"name": "max_tokens", "type": "integer", "required": false, "default": 1024},
@@ -50,7 +51,14 @@
       "model_not_present",
       "vllm_timeout",
       "vllm_bad_response",
-      "chat_failed"
+      "chat_failed",
+      "image_id_required",
+      "text_required",
+      "photo_forbidden",
+      "model_not_ready",
+      "vision_timeout",
+      "vision_bad_response",
+      "vision_failed"
     ],
     "limits": {
       "timeout_sec": 600,
@@ -95,6 +103,58 @@
           "expected_mock": false,
           "expected_text_non_empty": true,
           "expected_model": "gemma4-12b",
+          "real_inference": true
+        },
+        {
+          "id": "gemma4_mock_photo",
+          "name": "Gemma 4 mock photo smoke",
+          "type": "api",
+          "mode": "photo",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "image_id": "img_0123456789abcdefghij",
+            "text": "請描述這張圖片。",
+            "real_inference": 0,
+            "max_tokens": 128
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "image_id", "answer", "caption", "tags", "usage", "elapsed_ms"],
+          "expected_mock": true
+        },
+        {
+          "id": "gemma4_real_photo_general",
+          "name": "Gemma 4 real photo general smoke",
+          "type": "api",
+          "mode": "photo",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "image_id": "img_0123456789abcdefghij",
+            "text": "請用正體中文描述圖片重點。",
+            "real_inference": 1,
+            "max_tokens": 256
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "image_id", "answer", "caption", "tags", "usage", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_text_non_empty": true,
+          "real_inference": true
+        },
+        {
+          "id": "gemma4_real_photo_ui",
+          "name": "Gemma 4 real photo UI smoke",
+          "type": "api",
+          "mode": "photo",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "image_id": "img_0123456789abcdefghij",
+            "text": "請判讀這張 UI 截圖的主要畫面狀態。",
+            "real_inference": 1,
+            "max_tokens": 256
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "image_id", "answer", "caption", "tags", "usage", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_text_non_empty": true,
           "real_inference": true
         }
       ]
