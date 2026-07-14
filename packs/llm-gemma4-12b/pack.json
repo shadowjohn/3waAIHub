@@ -134,6 +134,7 @@
             "real_inference": 1,
             "max_tokens": 256
           },
+          "fixture": "packs/llm-gemma4-12b/demo/photo_general.png",
           "expected_keys": ["ok", "mock", "runtime_level", "model", "image_id", "answer", "caption", "tags", "usage", "elapsed_ms"],
           "expected_mock": false,
           "expected_text_non_empty": true,
@@ -152,6 +153,7 @@
             "real_inference": 1,
             "max_tokens": 256
           },
+          "fixture": "packs/llm-gemma4-12b/demo/photo_ui.png",
           "expected_keys": ["ok", "mock", "runtime_level", "model", "image_id", "answer", "caption", "tags", "usage", "elapsed_ms"],
           "expected_mock": false,
           "expected_text_non_empty": true,

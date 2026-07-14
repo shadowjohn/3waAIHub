@@ -145,3 +145,26 @@ hub_test('Photo proxy success response is normalized and errors are preserved', 
     $errorBody = json_decode((string)$error['body'], true);
     hub_test_assert($errorBody === ['ok' => false, 'error' => 'model_failed', 'message' => 'upstream failed'], 'ok=false response must be preserved');
 });
+
+hub_test('Photo prune dry-run does not delete active files and apply deletes expired rows', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Prune Owner', '', 'prune@example.test', '');
+    $tmp = tempnam(sys_get_temp_dir(), 'photo_');
+    imagepng(imagecreatetruecolor(3, 3), $tmp);
+    $asset = hub_photo_store_upload($db, [
+        'name' => 'a.png',
+        'type' => 'image/png',
+        'tmp_name' => $tmp,
+        'error' => UPLOAD_ERR_OK,
+        'size' => filesize($tmp),
+    ], ['member_id' => (int)$memberId]);
+    $db->prepare('UPDATE photo_assets SET expires_at = :expires_at WHERE image_id = :image_id')
+        ->execute([':expires_at' => '2000-01-01 00:00:00', ':image_id' => $asset['image_id']]);
+
+    $dry = hub_photo_prune_expired($db, true, 100);
+    hub_test_assert((int)$dry['matched'] === 1 && (int)$dry['rows_deleted'] === 0, 'dry run must not delete rows');
+    hub_test_assert(is_file(HUB_DATA_DIR . '/' . $asset['storage_relpath']), 'dry run must not delete file');
+    $applied = hub_photo_prune_expired($db, false, 100);
+    hub_test_assert((int)$applied['rows_deleted'] === 1, 'apply must delete expired row');
+    hub_test_assert(!is_file(HUB_DATA_DIR . '/' . $asset['storage_relpath']), 'expired file must be deleted');
+});

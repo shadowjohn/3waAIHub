@@ -152,21 +152,25 @@ function hub_photo_prune_expired(PDO $db, bool $dryRun, int $limit): array
     $stmt = $db->prepare('SELECT * FROM photo_assets WHERE expires_at < :now ORDER BY expires_at ASC LIMIT ' . $limit);
     $stmt->execute([':now' => hub_now()]);
     $assets = $stmt->fetchAll();
-    if ($dryRun) {
-        return ['matched' => count($assets), 'deleted' => 0];
-    }
+    $summary = ['ok' => true, 'dry_run' => $dryRun, 'matched' => count($assets), 'files_deleted' => 0, 'rows_deleted' => 0, 'errors' => 0];
 
-    $deleted = 0;
     $delete = $db->prepare('DELETE FROM photo_assets WHERE id = :id');
     foreach ($assets as $asset) {
         $path = hub_photo_asset_host_path($asset);
-        if ($path !== null) {
-            unlink($path);
+        if ($dryRun) {
+            continue;
+        }
+        if ($path !== null && is_file($path)) {
+            if (@unlink($path)) {
+                $summary['files_deleted']++;
+            } else {
+                $summary['errors']++;
+            }
             @rmdir(dirname($path));
         }
         $delete->execute([':id' => (int)$asset['id']]);
-        $deleted++;
+        $summary['rows_deleted']++;
     }
 
-    return ['matched' => count($assets), 'deleted' => $deleted];
+    return $summary;
 }
