@@ -1,0 +1,37 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:latest
+    env_file:
+      - .env
+    entrypoint: ["/bin/bash", "-lc"]
+    command:
+      - >-
+        exec vllm serve "${VLLM_MODEL}"
+        --served-model-name "${VLLM_SERVED_MODEL_NAME:-gemma4-12b}"
+        --host 0.0.0.0
+        --port 8000
+        --max-model-len "${VLLM_MAX_MODEL_LEN:-16384}"
+        --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.72}"
+        --max-num-seqs "${VLLM_MAX_NUM_SEQS:-2}"
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    restart: unless-stopped
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/huggingface:/root/.cache/huggingface"
+      - "${AIHUB_CACHE_DIR:-/DATA/3waAIHub/data/cache}/gemma4:/cache/gemma4"
+
+  chat-api:
+    build:
+      context: ./service
+    env_file:
+      - .env
+    depends_on:
+      - vllm
+    ports:
+      - "127.0.0.1:${GEMMA4_LOCAL_PORT:-18110}:8000"
+    restart: unless-stopped
+    volumes:
+      - "${AIHUB_CACHE_DIR:-/DATA/3waAIHub/data/cache}/gemma4:/cache/gemma4"
+      - "${SERVICE_DATA_DIR:-/DATA/3waAIHub/data/services/gemma4-main}:/data/service"

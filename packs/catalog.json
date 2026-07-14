@@ -65,6 +65,15 @@
       "featured": true
     },
     {
+      "id": "llm-gemma4-12b",
+      "name": "Gemma 4 12B Unified LLM Service",
+      "version": "0.1.0",
+      "category": "llm",
+      "description": "Local text chat service powered by an internal vLLM Gemma 4 12B Q4 runtime.",
+      "path": "packs/llm-gemma4-12b",
+      "featured": true
+    },
+    {
       "id": "structure-ppstructurev3",
       "name": "PP-StructureV3 Document Parser",
       "version": "0.1.0",

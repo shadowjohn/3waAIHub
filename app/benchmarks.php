@@ -284,6 +284,17 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
             'elapsed_ms' => 0,
         ];
     }
+    if (($manifest['id'] ?? '') === 'llm-gemma4-12b') {
+        return [
+            'ok' => true,
+            'mock' => true,
+            'runtime_level' => $runtimeLevel,
+            'model' => 'gemma4-12b',
+            'text' => '3waAIHub Gemma 4 mock response',
+            'usage' => ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0],
+            'elapsed_ms' => 0,
+        ];
+    }
     if (($manifest['id'] ?? '') === 'tts-voxcpm2') {
         return [
             'success' => true,

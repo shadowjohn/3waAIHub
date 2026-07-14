@@ -6,10 +6,10 @@ if (PHP_SAPI !== 'cli') {
     exit('CLI only');
 }
 
-$defaultModes = 'hello,ocr,yolo,translate,sam3';
+$defaultModes = 'hello,ocr,yolo,translate,sam3,chat';
 $options = getopt('', ['base-url:', 'token:', 'modes::', 'image::', 'timeout::', 'real', 'help']);
 if (isset($options['help'])) {
-    echo "Usage: php scripts/api_smoke_client.php --base-url=https://host/3waAIHub/api.php --token=<TOKEN> [--modes=hello,ocr,yolo,translate,sam3] [--image=sample.png] [--real]\n";
+    echo "Usage: php scripts/api_smoke_client.php --base-url=https://host/3waAIHub/api.php --token=<TOKEN> [--modes=hello,ocr,yolo,translate,sam3,chat] [--image=sample.png] [--real]\n";
     exit(0);
 }
 
@@ -70,6 +70,17 @@ function hub_client_smoke_call(string $baseUrl, string $token, string $mode, str
             'target_lang' => 'zh-TW',
             'text' => 'That was a wonderful time.',
             'real_inference' => $real ? 1 : 0,
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    } elseif ($mode === 'chat') {
+        $headers[] = 'Content-Type: application/json';
+        $options[CURLOPT_HTTPHEADER] = $headers;
+        $options[CURLOPT_POST] = true;
+        $options[CURLOPT_POSTFIELDS] = json_encode([
+            'text' => '請用一句正體中文介紹 3waAIHub。',
+            'system_prompt' => '你是 3waAIHub 本地 AI 助手，請簡潔回答。',
+            'real_inference' => $real ? 1 : 0,
+            'enable_thinking' => false,
+            'max_tokens' => 128,
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     } elseif (in_array($mode, ['ocr', 'yolo', 'sam3'], true)) {
         $sample = $image !== '' ? $image : hub_client_smoke_default_image($mode);

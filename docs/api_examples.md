@@ -147,6 +147,52 @@ php scripts/benchmark.php --pack=translate-gemma12b --case=translate_mock_text
 php scripts/benchmark.php --service=translate-main --case=translate_real_text
 ```
 
+## POST Chat
+
+Status: PhaseL-1A L5 benchmark ready. `llm-gemma4-12b` 以 Hub `/chat` adapter 包住內部 vLLM sidecar。第一版只支援文字、非串流 JSON；不要直接送 OpenAI-compatible `messages` / `stream` payload 給 Gateway。
+
+Mock / contract smoke:
+
+```bash
+curl -X POST "<BASE_URL>?mode=chat" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "請用一句正體中文介紹 3waAIHub。",
+    "real_inference": false
+  }'
+```
+
+Real Q4 inference:
+
+```bash
+curl -X POST "<BASE_URL>?mode=chat" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。",
+    "system_prompt": "你是 3waAIHub 本地 AI 助手，請簡潔回答。",
+    "real_inference": true,
+    "enable_thinking": false,
+    "max_tokens": 512
+  }'
+```
+
+Contract:
+
+- Method: `POST`
+- Content-Type: `application/json`
+- Input: `text`, optional `system_prompt`, `temperature`, `max_tokens`, `enable_thinking`, `real_inference`
+- Required output keys: `ok`, `mock`, `runtime_level`, `model`, `text`, `usage`, `elapsed_ms`
+- Errors: `bad_request`, `input_too_long`, `vllm_unavailable`, `model_not_present`, `vllm_timeout`, `vllm_bad_response`, `chat_failed`
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --pack=llm-gemma4-12b --case=gemma4_mock_chat
+php scripts/benchmark.php --service=gemma4-main --case=gemma4_real_chat
+```
+
 ## POST YOLO
 
 Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `YOLO_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行單張圖片 detection。

@@ -1,0 +1,6 @@
+{
+  "cases": [
+    "gemma4_mock_chat",
+    "gemma4_real_chat"
+  ]
+}

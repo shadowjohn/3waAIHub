@@ -1,5 +1,37 @@
 # 3waAIHub History
 
+## PhaseL-1A Gemma 4 12B Unified LLM Pack
+
+Added the first generic LLM HubPack while keeping the existing 3waAIHub boundary intact.
+
+Implemented:
+
+- Added `llm-gemma4-12b` catalog entry and Pack manifest.
+- Kept `schema_version=0.1`, `type=api_service`, `execution_type=sync_api`.
+- Exposed Hub adapter endpoint `POST /chat` through `api.php?mode=chat`.
+- Kept vLLM as an internal Docker sidecar instead of exposing OpenAI-compatible Gateway behavior.
+- Added adapter service files:
+  - `packs/llm-gemma4-12b/service/Dockerfile`
+  - `app.py`
+  - `smoke.py`
+  - `storage_smoke.py`
+  - `requirements.txt`
+- Generated compose now includes:
+  - `vllm` sidecar using `vllm/vllm-openai:gemma4`
+  - `chat-api` adapter bound to `127.0.0.1:${GEMMA4_LOCAL_PORT:-18110}:8000`
+- Added L5 benchmark cases:
+  - `gemma4_mock_chat`
+  - `gemma4_real_chat`
+- Playground `mode=chat` now sends Hub `/chat` payload fields, not OpenAI `messages` / `stream`.
+
+Deferred:
+
+- SSE streaming passthrough.
+- Vision / image input.
+- Tool calling.
+- Structured output.
+- OpenAI-compatible public Gateway surface.
+
 ## SAM3 Mask Client Contract Polish
 
 Improved SAM3 mask metadata for external clients.

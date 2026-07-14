@@ -70,7 +70,7 @@ php scripts/api_smoke_client.php \
 php scripts/api_smoke_client.php \
   --base-url=https://nature.focusit.tw/3waAIHub/api.php \
   --token=<TOKEN> \
-  --modes=hello,ocr,yolo,translate,sam3
+  --modes=hello,ocr,yolo,translate,sam3,chat
 ```
 
 預設 `real_inference=0`。要測真推論時再加：
@@ -79,7 +79,7 @@ php scripts/api_smoke_client.php \
 php scripts/api_smoke_client.php \
   --base-url=https://nature.focusit.tw/3waAIHub/api.php \
   --token=<TOKEN> \
-  --modes=ocr,yolo,sam3,translate \
+  --modes=ocr,yolo,sam3,translate,chat \
   --real
 ```
 
@@ -137,6 +137,13 @@ console.log(await res.json());
 - request contract: `POST application/json`, fields `source_lang`, `target_lang`, `text`, optional `real_inference`
 - response contract: JSON with `ok`, `text`, `source_lang`, `target_lang`, `elapsed_ms`
 - error contract: `bad_request`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
+
+### `mode=chat`
+
+- request contract: `POST application/json`, fields `text`, optional `system_prompt`, `temperature`, `max_tokens`, `enable_thinking`, `real_inference`
+- response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `text`, `usage`, `elapsed_ms`
+- error contract: `bad_request`, `input_too_long`, `vllm_unavailable`, `model_not_present`, `vllm_timeout`, `vllm_bad_response`, `chat_failed`
+- first slice: text-only, non-streaming JSON. Vision / streaming / tool calling are future phases.
 
 ### `mode=sam3`
 

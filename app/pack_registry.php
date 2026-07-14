@@ -451,6 +451,14 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'HOME' => $cacheDir . '/home',
             'PYTHONUNBUFFERED' => '1',
         ],
+        'llm-gemma4-12b' => [
+            'GEMMA4_CACHE_DIR' => $cacheDir,
+            'GEMMA4_SERVICE_DATA_DIR' => $serviceDataDir,
+            'HF_HOME' => $modelDir,
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $cacheDir . '/home',
+            'PYTHONUNBUFFERED' => '1',
+        ],
         'structure-ppstructurev3' => [
             'STRUCTURE_MODEL_DIR' => $modelDir,
             'STRUCTURE_CACHE_DIR' => $cacheDir,
@@ -552,6 +560,9 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     if (($manifest['id'] ?? '') === 'translate-gemma12b') {
         return hub_generate_translate_gemma_compose($pack, $serviceKey, $localPort);
     }
+    if (($manifest['id'] ?? '') === 'llm-gemma4-12b') {
+        return hub_generate_llm_gemma4_compose($pack, $serviceKey, $localPort);
+    }
 
     $composeService = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? 'hello' : $serviceKey;
     $containerName = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? '3waaihub-hello' : '3waaihub-' . $serviceKey;
@@ -625,6 +636,55 @@ function hub_generate_translate_gemma_compose(array $pack, string $serviceKey, i
         . "    restart: unless-stopped\n"
         . "    volumes:\n"
         . '      - "${AIHUB_CACHE_DIR}/translate:/cache/translate"' . "\n"
+        . '      - "${SERVICE_DATA_DIR}:/data/service"' . "\n";
+}
+
+function hub_generate_llm_gemma4_compose(array $pack, string $serviceKey, int $localPort): string
+{
+    $manifest = $pack['manifest'];
+    $portEnv = hub_pack_port_env($manifest);
+    $buildContext = $pack['dir'] . '/service';
+    $imageTag = hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
+    $internalPort = (int)($manifest['runtime']['default_internal_port'] ?? 8000);
+
+    return "services:\n"
+        . "  vllm:\n"
+        . "    image: vllm/vllm-openai:latest\n"
+        . "    container_name: 3waaihub-{$serviceKey}-vllm\n"
+        . "    env_file:\n"
+        . "      - .env\n"
+        . "    entrypoint: [\"/bin/bash\", \"-lc\"]\n"
+        . "    command:\n"
+        . "      - >-\n"
+        . '        exec vllm serve "${VLLM_MODEL}"' . "\n"
+        . '        --served-model-name "${VLLM_SERVED_MODEL_NAME:-gemma4-12b}"' . "\n"
+        . "        --host 0.0.0.0\n"
+        . "        --port 8000\n"
+        . '        --max-model-len "${VLLM_MAX_MODEL_LEN:-16384}"' . "\n"
+        . '        --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.72}"' . "\n"
+        . '        --max-num-seqs "${VLLM_MAX_NUM_SEQS:-2}"' . "\n"
+        . "    gpus: all\n"
+        . "    environment:\n"
+        . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+        . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n"
+        . "    restart: unless-stopped\n"
+        . "    volumes:\n"
+        . '      - "${AIHUB_MODELS_DIR}/huggingface:/root/.cache/huggingface"' . "\n"
+        . '      - "${AIHUB_CACHE_DIR}/gemma4:/cache/gemma4"' . "\n"
+        . "  chat-api:\n"
+        . "    image: {$imageTag}\n"
+        . "    build:\n"
+        . "      context: {$buildContext}\n"
+        . "    container_name: 3waaihub-{$serviceKey}\n"
+        . "    env_file:\n"
+        . "      - .env\n"
+        . "    depends_on:\n"
+        . "      - vllm\n"
+        . "    ports:\n"
+        . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . $internalPort . '"' . "\n"
+        . "    restart: unless-stopped\n"
+        . "    volumes:\n"
+        . '      - "${AIHUB_CACHE_DIR}/gemma4:/cache/gemma4"' . "\n"
         . '      - "${SERVICE_DATA_DIR}:/data/service"' . "\n";
 }
 

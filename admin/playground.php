@@ -14,6 +14,7 @@ function hub_playground_profiles(): array
         'sam3' => ['label' => 'SAM3', 'method' => 'POST', 'kind' => 'sam3'],
         'tts' => ['label' => 'TTS', 'method' => 'POST', 'kind' => 'json'],
         'structure' => ['label' => 'Structure', 'method' => 'POST', 'kind' => 'document'],
+        'chat' => ['label' => 'Chat', 'method' => 'POST', 'kind' => 'json'],
     ];
 }
 
@@ -91,6 +92,16 @@ function hub_playground_request_payload(string $mode): array
             'control' => trim((string)($_POST['control'] ?? '沉穩、稍慢、像技師解說')),
             'seed' => (int)($_POST['seed'] ?? 42),
             'format' => 'wav',
+            'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
+        ];
+    }
+    if ($mode === 'chat') {
+        return [
+            'text' => trim((string)($_POST['text'] ?? '請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。')),
+            'system_prompt' => trim((string)($_POST['system_prompt'] ?? '你是 3waAIHub 本地 AI 助手，請使用正體中文回答。')),
+            'temperature' => (float)($_POST['temperature'] ?? 0.2),
+            'max_tokens' => (int)($_POST['max_tokens'] ?? 1024),
+            'enable_thinking' => !empty($_POST['enable_thinking']),
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
     }
@@ -449,6 +460,48 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'chat') {
+        $json = '{"text":"請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。","system_prompt":"你是 3waAIHub 本地 AI 助手，請簡潔回答。","real_inference":1,"enable_thinking":false,"max_tokens":512}';
+        $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
+        $php = <<<PHP
+\$payload = [
+    'text' => '請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。',
+    'system_prompt' => '你是 3waAIHub 本地 AI 助手，請簡潔回答。',
+    'real_inference' => 1,
+    'enable_thinking' => false,
+    'max_tokens' => 512,
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer <TOKEN>',
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode(\$payload, JSON_UNESCAPED_UNICODE),
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer <TOKEN>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    text: '請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。',
+    system_prompt: '你是 3waAIHub 本地 AI 助手，請簡潔回答。',
+    real_inference: 1,
+    enable_thinking: false,
+    max_tokens: 512
+  })
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
 
     $field = $mode === 'structure' ? 'file' : 'image';
     $extra = $mode === 'sam3' ? " \\\n  -F prompt_type=auto \\\n  -F output_format=metadata" : '';
@@ -520,7 +573,7 @@ hub_admin_header('API 測試場', $user);
     <h1>API 測試場</h1>
     <p class="muted">後台 server side 呼叫本機 <code>api.php</code>。Bearer token 只用於本次測試，不保存；範例固定使用 <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong>需要 Bearer Token</strong>。還沒有 token 時，請先 <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>">前往 API 金鑰建立</a>。</p>
-    <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code></p>
+    <p class="muted">支援範例：<code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -640,6 +693,18 @@ hub_admin_header('API 測試場', $user);
                 </select>
                 <label><input name="real_inference" type="checkbox" value="1" checked> 真實解析</label>
                 <p class="muted">L4 支援真 PP-StructureV3 解析 PDF 或文件圖片；大型 PDF 建議走 task_submit 的 structure_parse 佇列。</p>
+            <?php elseif ($selectedMode === 'chat'): ?>
+                <label>system prompt</label>
+                <textarea name="system_prompt" rows="3">你是 3waAIHub 本地 AI 助手，請使用正體中文回答。</textarea>
+                <label>user message</label>
+                <textarea name="text" rows="5">請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。</textarea>
+                <label>temperature</label>
+                <input name="temperature" type="number" min="0" max="2" step="0.1" value="0.2">
+                <label>max_tokens</label>
+                <input name="max_tokens" type="number" min="1" max="4096" value="1024">
+                <label><input name="enable_thinking" type="checkbox" value="1"> 深度思考</label>
+                <label><input name="real_inference" type="checkbox" value="1" checked> 真實推論</label>
+                <p class="muted">第一刀 Playground 走 non-streaming JSON；SSE streaming passthrough 下一刀再接。</p>
             <?php elseif ($selectedMode === 'sam3'): ?>
                 <label>image</label>
                 <input name="image" type="file" accept="image/*">

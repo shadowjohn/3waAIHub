@@ -1,0 +1,162 @@
+{
+  "schema_version": "0.1",
+  "id": "llm-gemma4-12b",
+  "name": "Gemma 4 12B Unified LLM Service",
+  "version": "0.1.0",
+  "category": "llm",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L5-benchmark-ready",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": true,
+  "default_mode": "chat",
+  "description": "3waAIHub chat adapter backed by an internal vLLM Gemma 4 12B Q4 runtime.",
+  "capabilities": ["chat", "reasoning"],
+  "provider": "gemma4",
+  "runtime_driver": "vllm-sidecar",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/chat",
+    "methods": ["POST"],
+    "timeout_sec": 600,
+    "max_upload_mb": 2
+  },
+  "l5_contract": {
+    "endpoint": "/chat",
+    "method": "POST",
+    "content_type": "application/json",
+    "input": {
+      "fields": [
+        {"name": "text", "type": "string", "required": true},
+        {"name": "system_prompt", "type": "string", "required": false, "default": "你是 3waAIHub 本地 AI 助手，請使用正體中文回答。"},
+        {"name": "temperature", "type": "number", "required": false, "default": 0.2},
+        {"name": "max_tokens", "type": "integer", "required": false, "default": 1024},
+        {"name": "enable_thinking", "type": "boolean", "required": false, "default": false},
+        {"name": "real_inference", "type": "boolean", "required": false, "default": false}
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mock", "runtime_level", "model", "text", "usage", "elapsed_ms"]
+    },
+    "errors": [
+      "bad_request",
+      "input_too_long",
+      "vllm_unavailable",
+      "model_not_present",
+      "vllm_timeout",
+      "vllm_bad_response",
+      "chat_failed"
+    ],
+    "limits": {
+      "timeout_sec": 600,
+      "max_upload_mb": 2,
+      "max_concurrency": 1,
+      "max_input_chars": 12000,
+      "default_max_model_len": 16384
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "gemma4_mock_chat",
+          "name": "Gemma 4 mock chat smoke",
+          "type": "api",
+          "mode": "chat",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "text": "請用一句正體中文介紹 3waAIHub。",
+            "real_inference": 0,
+            "max_tokens": 128
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "text", "usage", "elapsed_ms"],
+          "expected_mock": true
+        },
+        {
+          "id": "gemma4_real_chat",
+          "name": "Gemma 4 real Q4 chat smoke",
+          "type": "api",
+          "mode": "chat",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "text": "請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。",
+            "system_prompt": "你是 3waAIHub 本地 AI 助手，請簡潔回答。",
+            "real_inference": 1,
+            "enable_thinking": false,
+            "max_tokens": 512
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "text", "usage", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_text_non_empty": true,
+          "expected_model": "gemma4-12b",
+          "real_inference": true
+        }
+      ]
+    }
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 16000,
+    "recommended_vram_mb": 24000,
+    "min_compute_capability": "8.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {"type": "models", "host_subdir": "huggingface", "container_path": "/root/.cache/huggingface", "target_service": "vllm", "read_only": false},
+      {"type": "cache", "host_subdir": "gemma4", "container_path": "/cache/gemma4", "read_only": false},
+      {"type": "service_data", "host_subdir": "", "container_path": "/data/service", "read_only": false}
+    ]
+  },
+  "settings_schema": [
+    {"key": "VLLM_MODEL", "label": "Hugging Face model", "type": "text", "default": "google/gemma-4-12B-it-qat-w4a16-ct", "required": true, "restart_required": true, "model_selector": {"type": "directory", "root_subdir": "huggingface"}},
+    {"key": "VLLM_SERVED_MODEL_NAME", "label": "Served model name", "type": "text", "default": "gemma4-12b", "required": true, "restart_required": true},
+    {"key": "VLLM_BASE_URL", "label": "Internal vLLM base URL", "type": "text", "default": "http://vllm:8000", "required": true, "restart_required": true},
+    {"key": "VLLM_MAX_MODEL_LEN", "label": "Context window", "type": "integer", "default": "16384", "min": 1024, "max": 32768, "required": true, "restart_required": true},
+    {"key": "VLLM_GPU_MEMORY_UTILIZATION", "label": "GPU memory utilization", "type": "number", "default": "0.72", "min": 0.1, "max": 0.95, "required": true, "restart_required": true},
+    {"key": "VLLM_MAX_NUM_SEQS", "label": "Max sequences", "type": "integer", "default": "2", "min": 1, "max": 4, "required": true, "restart_required": true},
+    {"key": "VLLM_TIMEOUT_SEC", "label": "vLLM request timeout seconds", "type": "integer", "default": "600", "min": 30, "max": 1800, "required": true, "restart_required": false},
+    {"key": "MAX_INPUT_CHARS", "label": "Max input characters", "type": "integer", "default": "12000", "min": 1000, "max": 100000, "required": true, "restart_required": false},
+    {"key": "GEMMA_DEFAULT_THINKING", "label": "Default thinking", "type": "boolean", "default": "0", "required": true, "restart_required": true},
+    {"key": "GEMMA4_REAL_INFERENCE", "label": "Default real inference", "type": "boolean", "default": "0", "required": true, "restart_required": true},
+    {"key": "GPU_VISIBLE_DEVICES", "label": "GPU visible devices", "type": "text", "default": "all", "required": false, "restart_required": true}
+  ],
+  "env": [
+    {"name": "VLLM_MODEL", "default": "google/gemma-4-12B-it-qat-w4a16-ct", "required": true},
+    {"name": "VLLM_SERVED_MODEL_NAME", "default": "gemma4-12b", "required": true},
+    {"name": "VLLM_BASE_URL", "default": "http://vllm:8000", "required": true},
+    {"name": "VLLM_MAX_MODEL_LEN", "default": "16384", "required": true},
+    {"name": "VLLM_GPU_MEMORY_UTILIZATION", "default": "0.72", "required": true},
+    {"name": "VLLM_MAX_NUM_SEQS", "default": "2", "required": true},
+    {"name": "VLLM_TIMEOUT_SEC", "default": "600", "required": true},
+    {"name": "MAX_INPUT_CHARS", "default": "12000", "required": true},
+    {"name": "GEMMA_DEFAULT_THINKING", "default": "0", "required": true},
+    {"name": "GEMMA4_REAL_INFERENCE", "default": "0", "required": true},
+    {"name": "GPU_VISIBLE_DEVICES", "default": "all", "required": false}
+  ],
+  "models": [
+    {"id": "gemma4-12b-qat-w4a16", "runtime": "huggingface", "model": "google/gemma-4-12B-it-qat-w4a16-ct", "required": true}
+  ],
+  "preflight": {
+    "checks": ["docker", "docker_compose", "nvidia_smi", "docker_gpus", "vram", "compute_capability", "storage"]
+  },
+  "service": {
+    "default_local_port": 18110,
+    "local_port_env": "GEMMA4_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "gemma4-main",
+    "compose_project": "3waaihub_gemma4_main"
+  }
+}
