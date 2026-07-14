@@ -15,11 +15,14 @@ hub_test('Nemotron RAG adapter pack exposes text-only embed and rerank contract'
     hub_test_assert(($manifest['hardware']['gpu_required'] ?? true) === false, 'Nemotron RAG adapter must keep CPU fallback available');
 
     $schema = hub_get_pack_settings_schema('rag-nemotron');
-    foreach (['NEMOTRON_EMBED_MODEL', 'NEMOTRON_RERANK_MODEL', 'NEMOTRON_EMBED_URL', 'NEMOTRON_RERANK_URL', 'NEMOTRON_API_KEY', 'NEMOTRON_REAL_INFERENCE'] as $key) {
+    foreach (['NEMOTRON_EMBED_MODEL', 'NEMOTRON_RERANK_MODEL', 'NEMOTRON_EMBED_URL', 'NEMOTRON_RERANK_URL', 'NEMOTRON_API_KEY', 'NEMOTRON_REAL_INFERENCE', 'NEMOTRON_EMBED_INPUT_TYPE'] as $key) {
         hub_test_assert(isset($schema[$key]), 'Nemotron RAG settings missing ' . $key);
     }
-    hub_test_assert(($schema['NEMOTRON_EMBED_MODEL']['default'] ?? '') === 'nvidia/llama-nemotron-embed-300m-v2', 'Nemotron embed model default mismatch');
-    hub_test_assert(($schema['NEMOTRON_RERANK_MODEL']['default'] ?? '') === 'nvidia/llama-nemotron-rerank-500m-v2', 'Nemotron rerank model default mismatch');
+    hub_test_assert(($schema['NEMOTRON_EMBED_MODEL']['default'] ?? '') === 'nvidia/llama-nemotron-embed-1b-v2', 'Nemotron embed model default mismatch');
+    hub_test_assert(($schema['NEMOTRON_RERANK_MODEL']['default'] ?? '') === 'nvidia/llama-nemotron-rerank-1b-v2', 'Nemotron rerank model default mismatch');
+    hub_test_assert(($schema['NEMOTRON_EMBED_URL']['default'] ?? '') === 'https://integrate.api.nvidia.com/v1/embeddings', 'Nemotron embed URL default mismatch');
+    hub_test_assert(($schema['NEMOTRON_RERANK_URL']['default'] ?? '') === 'https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking', 'Nemotron rerank URL default mismatch');
+    hub_test_assert(($schema['NEMOTRON_EMBED_INPUT_TYPE']['default'] ?? '') === 'query', 'Nemotron embed input_type default mismatch');
 
     $contract = $manifest['l5_contract'] ?? [];
     $inputFields = array_column($contract['input']['fields'] ?? [], 'name');
@@ -64,7 +67,7 @@ hub_test('Nemotron RAG adapter install generates compose env and mock benchmarks
     hub_test_assert(str_contains($compose, 'NVIDIA_VISIBLE_DEVICES'), 'Nemotron RAG compose must expose NVIDIA devices');
 
     $env = (string)file_get_contents(dirname(hub_path((string)$service['compose_file'])) . '/.env');
-    foreach (['NEMOTRON_EMBED_MODEL=nvidia/llama-nemotron-embed-300m-v2', 'NEMOTRON_RERANK_MODEL=nvidia/llama-nemotron-rerank-500m-v2', 'NEMOTRON_REAL_INFERENCE=0', 'NEMOTRON_USE_GPU=1', 'NEMOTRON_DEVICE=auto', 'GPU_VISIBLE_DEVICES=all', 'NEMOTRON_GPU_FALLBACK_TO_CPU=1'] as $needle) {
+    foreach (['NEMOTRON_EMBED_MODEL=nvidia/llama-nemotron-embed-1b-v2', 'NEMOTRON_RERANK_MODEL=nvidia/llama-nemotron-rerank-1b-v2', 'NEMOTRON_EMBED_URL=https://integrate.api.nvidia.com/v1/embeddings', 'NEMOTRON_RERANK_URL=https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking', 'NEMOTRON_EMBED_INPUT_TYPE=query', 'NEMOTRON_REAL_INFERENCE=0', 'NEMOTRON_USE_GPU=1', 'NEMOTRON_DEVICE=auto', 'GPU_VISIBLE_DEVICES=all', 'NEMOTRON_GPU_FALLBACK_TO_CPU=1'] as $needle) {
         hub_test_assert(str_contains($env, $needle), 'Nemotron RAG env missing ' . $needle);
     }
 
@@ -81,6 +84,9 @@ hub_test('Nemotron RAG service app keeps real inference behind configured backen
     $app = (string)file_get_contents(HUB_ROOT . '/packs/rag-nemotron/service/app.py');
     foreach (['@app.post("/rag")', '@app.post("/embed")', '@app.post("/rerank")', 'runtime_not_configured', 'NEMOTRON_EMBED_URL', 'NEMOTRON_RERANK_URL'] as $needle) {
         hub_test_assert(str_contains($app, $needle), 'Nemotron RAG app missing ' . $needle);
+    }
+    foreach (['"input_type": setting("NEMOTRON_EMBED_INPUT_TYPE", DEFAULT_EMBED_INPUT_TYPE)', '"query": {"text": query}', '"passages": [{"text": passage} for passage in passages]', 'data.get("data")'] as $needle) {
+        hub_test_assert(str_contains($app, $needle), 'Nemotron RAG app missing NVIDIA NIM payload support ' . $needle);
     }
     foreach (['sentence_transformers', 'AutoModel', 'from transformers', 'torch'] as $deferred) {
         hub_test_assert(!str_contains($app, $deferred), 'Nemotron RAG adapter must not bundle local model runtime yet: ' . $deferred);
