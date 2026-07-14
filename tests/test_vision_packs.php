@@ -83,10 +83,10 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             foreach (['SAM(', 'predict', 'run_sam3', 'MIN_CHECKPOINT_BYTES', 'checkpoint is too small'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 L5 app missing real inference path: ' . $needle);
             }
-            foreach (['output_format', 'invalid_output_format', 'polygon_from_mask', 'rle_from_mask'] as $needle) {
+            foreach (['output_format', 'invalid_output_format', 'polygon_from_mask', 'polygons_from_mask', 'rle_from_mask'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 L5.1 app missing geometry output path: ' . $needle);
             }
-            foreach (['"confidence"', '"label_name"'] as $needle) {
+            foreach (['"confidence"', '"label_name"', '"polygons"'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 mask contract missing ' . $needle);
             }
             foreach (['SAM3SemanticPredictor', 'prompt_type not in {"auto", "points", "boxes", "text"}', 'parse_text_prompt', 'text_prompt'] as $needle) {
@@ -97,7 +97,7 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             }
 
             $smoke = (string)file_get_contents($base . '/smoke.py');
-            foreach (['fastapi', 'PIL', 'numpy', 'requests', 'ultralytics'] as $needle) {
+            foreach (['fastapi', 'PIL', 'numpy', 'requests', 'ultralytics', 'cv2'] as $needle) {
                 hub_test_assert(str_contains($smoke, $needle), 'sam3 smoke.py missing ' . $needle);
             }
             foreach (['SAM(', 'YOLO(', 'predict', 'download'] as $needle) {

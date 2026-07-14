@@ -10,6 +10,8 @@ Changed:
 - Real SAM3 mask items now include `label_name`.
 - Semantic text prompt results use the submitted text prompt as a label fallback.
 - `polygon` output remains multi-contour `[[[x,y]...]]`.
+- Added frontend-friendly `polygons` output with `{outer, holes}` geometry.
+- SAM3 dependency smoke now imports `cv2` so container builds catch missing OpenCV early.
 - Updated SAM3 manifest contract and client docs.
 
 ## PhaseDoc Repair Translation Slim

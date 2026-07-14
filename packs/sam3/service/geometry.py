@@ -41,6 +41,15 @@ def _bbox_polygon(bitmap: np.ndarray) -> list[list[list[int]]]:
     return [[[x1, y1], [x2, y1], [x2, y2], [x1, y2]]]
 
 
+def _contour_points(contour: Any, cv2: Any, epsilon: float, max_points: int) -> list[list[int]]:
+    approx = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
+    points = [[int(x), int(y)] for x, y in approx]
+    if len(points) > max_points:
+        step = max(1, math.ceil(len(points) / max_points))
+        points = points[::step]
+    return points
+
+
 def polygon_from_mask(mask: Any) -> list[list[list[int]]]:
     bitmap = bool_mask(mask)
     if int(bitmap.sum()) < _int_env("SAM3_MIN_CONTOUR_AREA", 16):
@@ -57,16 +66,51 @@ def polygon_from_mask(mask: Any) -> list[list[list[int]]]:
         for contour in contours:
             if cv2.contourArea(contour) < min_area:
                 continue
-            approx = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
-            points = [[int(x), int(y)] for x, y in approx]
-            if len(points) > max_points:
-                step = max(1, math.ceil(len(points) / max_points))
-                points = points[::step]
+            points = _contour_points(contour, cv2, epsilon, max_points)
             if len(points) >= 3:
                 polygons.append(points)
         return polygons
     except Exception:
         return _bbox_polygon(bitmap)
+
+
+def polygons_from_mask(mask: Any) -> list[dict[str, Any]]:
+    bitmap = bool_mask(mask)
+    if int(bitmap.sum()) < _int_env("SAM3_MIN_CONTOUR_AREA", 16):
+        return []
+
+    try:
+        import cv2
+
+        contours, hierarchy = cv2.findContours(bitmap.astype("uint8"), cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+        if hierarchy is None:
+            return []
+        hierarchy_rows = hierarchy[0]
+        max_points = _int_env("SAM3_MAX_POLYGON_POINTS", 2000)
+        epsilon = _float_env("SAM3_POLYGON_EPSILON", 2.0)
+        min_area = _float_env("SAM3_MIN_CONTOUR_AREA", 16.0)
+        items: list[dict[str, Any]] = []
+        by_index: dict[int, dict[str, Any]] = {}
+        holes_by_parent: dict[int, list[list[list[int]]]] = {}
+        for index, contour in enumerate(contours):
+            if cv2.contourArea(contour) < min_area:
+                continue
+            points = _contour_points(contour, cv2, epsilon, max_points)
+            if len(points) < 3:
+                continue
+            parent = int(hierarchy_rows[index][3])
+            if parent < 0:
+                item = {"outer": points, "holes": []}
+                by_index[index] = item
+                items.append(item)
+            else:
+                holes_by_parent.setdefault(parent, []).append(points)
+        for parent, holes in holes_by_parent.items():
+            if parent in by_index:
+                by_index[parent]["holes"].extend(holes)
+        return items
+    except Exception:
+        return [{"outer": polygon, "holes": []} for polygon in _bbox_polygon(bitmap)]
 
 
 def _int_env(key: str, default: int) -> int:

@@ -15,6 +15,7 @@ def main() -> None:
     numpy = importlib.import_module("numpy")
     requests = importlib.import_module("requests")
     ultralytics = importlib.import_module("ultralytics")
+    cv2 = importlib.import_module("cv2")
     print(json.dumps({
         "ok": True,
         "message": "smoke.py import SAM3 adapter deps OK",
@@ -24,6 +25,7 @@ def main() -> None:
         "numpy": version(numpy, "numpy"),
         "requests": version(requests, "requests"),
         "ultralytics": version(ultralytics, "ultralytics"),
+        "cv2": version(cv2, "opencv-python-headless"),
     }, ensure_ascii=False))
 
 

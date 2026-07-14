@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image, UnidentifiedImageError
 
-from geometry import polygon_from_mask, rle_from_mask
+from geometry import polygon_from_mask, polygons_from_mask, rle_from_mask
 
 app = FastAPI(title="3waAIHub SAM3")
 MODEL_EXTENSIONS = {".pt", ".pth", ".safetensors", ".ckpt"}
@@ -489,6 +489,7 @@ def mask_items(results: Any, output_format: str, label_hints: list[str] | None =
             if output_format in {"polygon", "both"}:
                 try:
                     item["polygon"] = polygon_from_mask(bitmap)
+                    item["polygons"] = polygons_from_mask(bitmap)
                 except Exception as exc:
                     raise Sam3Error("polygon_extract_failed", safe_message(exc), 502) from exc
             if output_format in {"rle", "both"}:
