@@ -12,7 +12,7 @@ hub_test('Nemotron RAG adapter pack exposes text-only embed and rerank contract'
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/rag', 'Nemotron RAG gateway endpoint mismatch');
     hub_test_assert(in_array('embedding', $manifest['capabilities'] ?? [], true), 'Nemotron RAG embedding capability missing');
     hub_test_assert(in_array('reranking', $manifest['capabilities'] ?? [], true), 'Nemotron RAG reranking capability missing');
-    hub_test_assert(($manifest['hardware']['gpu_required'] ?? true) === false, 'Nemotron RAG adapter must not require local GPU');
+    hub_test_assert(($manifest['hardware']['gpu_required'] ?? true) === false, 'Nemotron RAG adapter must keep CPU fallback available');
 
     $schema = hub_get_pack_settings_schema('rag-nemotron');
     foreach (['NEMOTRON_EMBED_MODEL', 'NEMOTRON_RERANK_MODEL', 'NEMOTRON_EMBED_URL', 'NEMOTRON_RERANK_URL', 'NEMOTRON_API_KEY', 'NEMOTRON_REAL_INFERENCE'] as $key) {
@@ -32,6 +32,14 @@ hub_test('Nemotron RAG adapter pack exposes text-only embed and rerank contract'
     $caseIds = array_column($contract['benchmark']['cases'] ?? [], 'id');
     hub_test_assert(in_array('nemotron_rag_mock_rerank', $caseIds, true), 'Nemotron RAG rerank benchmark missing');
     hub_test_assert(in_array('nemotron_rag_mock_embed', $caseIds, true), 'Nemotron RAG embed benchmark missing');
+    hub_test_assert(in_array('nemotron_rag_real_rerank', $caseIds, true), 'Nemotron RAG real rerank benchmark missing');
+    hub_test_assert(in_array('nemotron_rag_real_embed', $caseIds, true), 'Nemotron RAG real embed benchmark missing');
+    foreach ($contract['benchmark']['cases'] ?? [] as $case) {
+        if (str_starts_with((string)($case['id'] ?? ''), 'nemotron_rag_real_')) {
+            hub_test_assert(!empty($case['real_inference']), 'Nemotron RAG real benchmark must be marked real_inference');
+            hub_test_assert(($case['expected_mock'] ?? null) === false, 'Nemotron RAG real benchmark must assert mock=false');
+        }
+    }
 });
 
 hub_test('Nemotron RAG adapter install generates compose env and mock benchmarks', function (): void {
@@ -52,9 +60,11 @@ hub_test('Nemotron RAG adapter install generates compose env and mock benchmarks
     foreach (['3waaihub-nemotron-rag:0.1.0', '127.0.0.1:${NEMOTRON_RAG_LOCAL_PORT:-18111}:8000', '${AIHUB_MODELS_DIR}/nemotron:/models/nemotron'] as $needle) {
         hub_test_assert(str_contains($compose, $needle), 'Nemotron RAG compose missing ' . $needle);
     }
+    hub_test_assert(str_contains($compose, 'gpus: all'), 'Nemotron RAG compose must request GPU by default');
+    hub_test_assert(str_contains($compose, 'NVIDIA_VISIBLE_DEVICES'), 'Nemotron RAG compose must expose NVIDIA devices');
 
     $env = (string)file_get_contents(dirname(hub_path((string)$service['compose_file'])) . '/.env');
-    foreach (['NEMOTRON_EMBED_MODEL=nvidia/llama-nemotron-embed-300m-v2', 'NEMOTRON_RERANK_MODEL=nvidia/llama-nemotron-rerank-500m-v2', 'NEMOTRON_REAL_INFERENCE=0'] as $needle) {
+    foreach (['NEMOTRON_EMBED_MODEL=nvidia/llama-nemotron-embed-300m-v2', 'NEMOTRON_RERANK_MODEL=nvidia/llama-nemotron-rerank-500m-v2', 'NEMOTRON_REAL_INFERENCE=0', 'NEMOTRON_USE_GPU=1', 'NEMOTRON_DEVICE=auto', 'GPU_VISIBLE_DEVICES=all', 'NEMOTRON_GPU_FALLBACK_TO_CPU=1'] as $needle) {
         hub_test_assert(str_contains($env, $needle), 'Nemotron RAG env missing ' . $needle);
     }
 

@@ -29,6 +29,18 @@ def setting(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def device_status() -> dict[str, Any]:
+    device = setting("NEMOTRON_DEVICE", "auto").lower()
+    if device not in {"auto", "cpu", "gpu"}:
+        device = "auto"
+    return {
+        "requested": device,
+        "use_gpu": env_bool("NEMOTRON_USE_GPU", "1"),
+        "visible_devices": setting("GPU_VISIBLE_DEVICES", "all"),
+        "fallback_to_cpu": env_bool("NEMOTRON_GPU_FALLBACK_TO_CPU", "1"),
+    }
+
+
 def error(status: int, code: str, message: str, detail: str = "") -> JSONResponse:
     payload: dict[str, Any] = {"ok": False, "error": code, "message": message}
     if detail:
@@ -63,6 +75,7 @@ def health() -> dict[str, Any]:
             "embed_configured": bool(setting("NEMOTRON_EMBED_URL")),
             "rerank_configured": bool(setting("NEMOTRON_RERANK_URL")),
         },
+        "device": device_status(),
     }
 
 
