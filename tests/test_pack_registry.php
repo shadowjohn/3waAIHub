@@ -169,6 +169,9 @@ hub_test('catalog and required packs are readable', function (): void {
     }
     hub_test_assert(in_array('output_format', array_column($sam3Contract['input']['fields'] ?? [], 'name'), true), 'SAM3 contract must expose output_format');
     hub_test_assert(in_array('text', array_column($sam3Contract['input']['fields'] ?? [], 'name'), true), 'SAM3 contract must expose semantic text prompt');
+    foreach (['confidence', 'label_name'] as $key) {
+        hub_test_assert(in_array($key, $sam3Contract['output']['mask_keys'] ?? [], true), 'SAM3 contract mask output missing ' . $key);
+    }
     hub_test_assert(in_array('polygon', $sam3Contract['output']['mask_optional_keys'] ?? [], true), 'SAM3 contract must expose polygon output');
     hub_test_assert(in_array('rle', $sam3Contract['output']['mask_optional_keys'] ?? [], true), 'SAM3 contract must expose rle output');
     foreach (['model_not_present', 'model_load_failed', 'runtime_dependency_missing', 'bad_image', 'invalid_prompt', 'invalid_output_format', 'polygon_extract_failed', 'rle_encode_failed', 'gpu_unavailable', 'inference_failed', 'inference_timeout'] as $errorCode) {

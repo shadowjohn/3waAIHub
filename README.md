@@ -647,7 +647,8 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=translate" \
 - `POST /segment/image` 支援 multipart 圖片上傳
 - prompt 使用 `prompt_type` / `points_json` / `boxes_json` / `text` form 欄位
 - 預設回 mock segmentation JSON，`real_inference=1` 會執行單張圖片真 inference smoke
-- `output_format=metadata|polygon|rle|both` 可選 mask metadata、polygon 或 raw uncompressed RLE
+- mask metadata 會回 `bbox`、`score`、`confidence`、`label_name`；`score` 與 `confidence` 目前同值，保留兩者方便不同 client 介接
+- `output_format=metadata|polygon|rle|both` 可選 mask metadata、多 contour polygon `[[[x,y]...]]` 或 raw uncompressed RLE
 - `prompt_type=points` 需提供 `points_json`，例如 `{"points":[[320,240]],"labels":[1]}`
 - `prompt_type=text` 需提供 `text`，例如 `mammal/insect/plant`；這會走 SAM3 semantic predictor，適合語意概念分割
 - `GET /health` 回 `runtime_level=L5-benchmark-ready`、storage 狀態、model present 狀態與 runtime dependency 狀態

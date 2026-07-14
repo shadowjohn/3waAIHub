@@ -1,5 +1,17 @@
 # 3waAIHub History
 
+## SAM3 Mask Client Contract Polish
+
+Improved SAM3 mask metadata for external clients.
+
+Changed:
+
+- Real SAM3 mask items now include `confidence` as a client-friendly alias of `score`.
+- Real SAM3 mask items now include `label_name`.
+- Semantic text prompt results use the submitted text prompt as a label fallback.
+- `polygon` output remains multi-contour `[[[x,y]...]]`.
+- Updated SAM3 manifest contract and client docs.
+
 ## PhaseDoc Repair Translation Slim
 
 Added a focused DocParser translation repair workflow.

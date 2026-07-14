@@ -205,7 +205,7 @@ php scripts/benchmark.php --service=bioclip-main --case=bioclip_real_image
 
 ## POST SAM3
 
-Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。`output_format=metadata|polygon|rle|both` 可選 mask geometry；RLE 第一版是 raw uncompressed row-major counts。
+Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。mask metadata 會回 `bbox`、`score`、`confidence`、`label_name`；`output_format=metadata|polygon|rle|both` 可選多 contour polygon `[[[x,y]...]]` 或 raw uncompressed row-major RLE。
 
 ```bash
 curl -X POST "<BASE_URL>?mode=sam3" \

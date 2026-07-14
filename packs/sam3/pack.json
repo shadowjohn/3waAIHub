@@ -74,7 +74,7 @@
     },
     "output": {
       "required_keys": ["ok", "mock", "runtime_level", "prompt_type", "output_format", "masks", "elapsed_ms"],
-      "mask_keys": ["id", "score", "bbox", "area"],
+      "mask_keys": ["id", "score", "confidence", "label_name", "bbox", "area"],
       "mask_optional_keys": ["polygon", "rle"]
     },
     "errors": [

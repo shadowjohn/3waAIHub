@@ -141,7 +141,7 @@ console.log(await res.json());
 ### `mode=sam3`
 
 - request contract: `POST multipart/form-data`, field `image`, optional `prompt_type`, `points_json`, `text`, `output_format`, `real_inference`
-- response contract: JSON with `ok`, `masks`, `prompt_type`, `elapsed_ms`
+- response contract: JSON with `ok`, `masks`, `prompt_type`, `elapsed_ms`; each mask includes `bbox`, `score`, `confidence`, `label_name`, and optional multi-contour `polygon`
 - error contract: `bad_request`, `model_not_present`, `invalid_prompt`, `inference_failed`, `inference_timeout`
 
 ### `mode=docparser`

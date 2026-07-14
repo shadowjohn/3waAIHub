@@ -438,7 +438,29 @@ def score_at(result: Any, index: int) -> float:
         return 0.0
 
 
-def mask_items(results: Any, output_format: str) -> list[dict[str, Any]]:
+def label_at(result: Any, index: int, label_hints: list[str]) -> str:
+    if index < len(label_hints):
+        return label_hints[index]
+    if label_hints:
+        return label_hints[0]
+    boxes = getattr(result, "boxes", None)
+    classes = getattr(boxes, "cls", None)
+    names = getattr(result, "names", None)
+    try:
+        if classes is not None and names:
+            value = classes[index]
+            class_id = int(value.item() if hasattr(value, "item") else value)
+            if isinstance(names, dict):
+                return str(names.get(class_id, ""))
+            if isinstance(names, list) and 0 <= class_id < len(names):
+                return str(names[class_id])
+    except Exception:
+        pass
+    return ""
+
+
+def mask_items(results: Any, output_format: str, label_hints: list[str] | None = None) -> list[dict[str, Any]]:
+    label_hints = label_hints or []
     items: list[dict[str, Any]] = []
     for result in results or []:
         masks = getattr(result, "masks", None)
@@ -455,9 +477,12 @@ def mask_items(results: Any, output_format: str) -> list[dict[str, Any]]:
                 continue
             x1, x2 = int(xs.min()), int(xs.max())
             y1, y2 = int(ys.min()), int(ys.max())
+            score = score_at(result, index)
             item: dict[str, Any] = {
                 "id": len(items) + 1,
-                "score": score_at(result, index),
+                "score": score,
+                "confidence": score,
+                "label_name": label_at(result, index, label_hints),
                 "bbox": [x1, y1, x2 - x1 + 1, y2 - y1 + 1],
                 "area": int(bitmap.sum()),
             }
@@ -516,6 +541,7 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
             raise Sam3Error("gpu_unavailable", message, 503) from exc
         raise Sam3Error("inference_failed", message, 502) from exc
 
+    text_prompts = kwargs.get("text", [])
     return {
         "ok": True,
         "mock": False,
@@ -523,10 +549,10 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
         "model": {"checkpoint": str(checkpoint)},
         "prompt_type": prompt_type,
         "text_prompt": text_prompt if prompt_type == "text" else "",
-        "text_prompts": kwargs.get("text", []),
+        "text_prompts": text_prompts,
         "output_format": output_format,
         "image": {"width": width, "height": height},
-        "masks": mask_items(results, output_format),
+        "masks": mask_items(results, output_format, text_prompts if prompt_type == "text" else []),
         "elapsed_ms": int(round((time.perf_counter() - started) * 1000)),
     }
 
