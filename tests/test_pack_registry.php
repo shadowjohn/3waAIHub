@@ -41,6 +41,7 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert($ocr['runtime_ready'] === true, 'OCR runtime ready mismatch');
     hub_test_assert(($ocr['target_level'] ?? '') === 'L5-benchmark-ready', 'OCR target level mismatch');
     hub_test_assert($ocr['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
+    hub_test_assert(($ocr['install']['default_service_key'] ?? '') === 'ocr-gpu', 'OCR install must default to GPU-first service key');
     $ocrSchema = hub_get_pack_settings_schema('ocr-ppocrv5');
     foreach ([
         'OCR_USE_GPU',
@@ -57,6 +58,7 @@ hub_test('catalog and required packs are readable', function (): void {
     ] as $key) {
         hub_test_assert(isset($ocrSchema[$key]), 'OCR settings_schema missing ' . $key);
     }
+    hub_test_assert(($ocrSchema['OCR_USE_GPU']['default'] ?? '') === '1', 'OCR must default to GPU-first with CPU fallback');
     hub_test_assert(($ocrSchema['OCR_DEVICE']['default'] ?? '') === 'auto', 'OCR_DEVICE default mismatch');
     hub_test_assert(in_array('gpu', $ocrSchema['OCR_DEVICE']['options'] ?? [], true), 'OCR_DEVICE must allow gpu');
     hub_test_assert(($ocrSchema['OCR_VERSION']['default'] ?? '') === 'PP-OCRv5', 'OCR_VERSION default mismatch');

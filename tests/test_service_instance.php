@@ -35,11 +35,22 @@ hub_test('service instance uniqueness checks reject collisions', function (): vo
         'OCR_TEXT_DET_LIMIT_SIDE_LEN=960',
         'OCR_TEXT_DET_LIMIT_TYPE=max',
         'OCR_TEXT_CONVERTER=opencc-s2twp',
-        'OCR_USE_GPU=0',
+        'OCR_USE_GPU=1',
         'OCR_DEVICE=auto',
+        'OCR_GPU_FALLBACK_TO_CPU=1',
     ] as $needle) {
         hub_test_assert(str_contains($env, $needle), 'OCR env missing ' . $needle);
     }
+
+    $defaultInstalled = hub_install_pack($db, 'ocr-ppocrv5', [
+        'name' => 'OCR Default GPU',
+        'port_mode' => 'manual',
+        'local_port' => 18154,
+        'environment' => 'production',
+    ]);
+    hub_test_assert($defaultInstalled['service']['service_key'] === 'ocr-gpu', 'OCR default install must use GPU-first service key');
+    $defaultCompose = (string)file_get_contents(hub_path($defaultInstalled['service']['compose_file']));
+    hub_test_assert(str_contains($defaultCompose, 'gpus: all'), 'OCR default install must request Docker GPU');
 
     $gpuInstalled = hub_install_pack($db, 'ocr-ppocrv5', [
         'service_key' => 'ocr-test-gpu',

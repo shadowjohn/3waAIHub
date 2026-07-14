@@ -165,7 +165,7 @@ generated compose 會使用固定 image tag：
 例如：
 
 ```text
-3waaihub-ocr-main:0.1.0
+3waaihub-ocr-gpu:0.1.0
 ```
 
 `Start` 會用 `docker image inspect <image>` 檢查 image 是否存在。若 image 不存在，`AIHUB_AUTO_BUILD_MISSING_IMAGE=1` 會在同一個 start job 先 Build 再 Start；設為 `0` 時，start job 會提示先 Build。
@@ -434,7 +434,7 @@ php /DATA/3waAIHub/scripts/benchmark.php --case=pack_catalog_scan
 php /DATA/3waAIHub/scripts/benchmark.php --case=hello_api
 php /DATA/3waAIHub/scripts/benchmark.php --pack=hello --case=hello_api
 php /DATA/3waAIHub/scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image
-php /DATA/3waAIHub/scripts/benchmark.php --service=ocr-main --case=ocr_real_image
+php /DATA/3waAIHub/scripts/benchmark.php --service=ocr-gpu --case=ocr_real_image
 php /DATA/3waAIHub/scripts/benchmark.php --pack=yolo --case=yolo_mock_image
 php /DATA/3waAIHub/scripts/benchmark.php --service=yolo-main --case=yolo_real_image
 php /DATA/3waAIHub/scripts/benchmark.php --pack=sam3 --case=sam3_mock_image
@@ -559,7 +559,7 @@ http://localhost/3waAIHub/admin/packs.php
 - `ocr_mock_image` benchmark 可驗 API contract required keys
 - `ocr_real_image` benchmark 可驗單張圖片真 OCR 與 blocks contract
 - Pack Readiness 可在兩個 benchmark 都 PASS 後顯示 11/11
-- 一般 `ocr-main` 不強制 GPU；`ocr-gpu` 這類 service key 才會在 generated compose 加入 `gpus: all`
+- 預設安裝為 `ocr-gpu`，先掛 Docker GPU；需要 CPU-only 安裝時可改用非 `gpu` service key
 - `/health` 會回報 GPU requested / available / effective device；GPU image 使用 CUDA 12.9 `paddlepaddle-gpu` wheel，GPU 不可用時會依 `OCR_GPU_FALLBACK_TO_CPU=1` fallback 到 CPU
 
 ### translate-gemma12b Runtime Level

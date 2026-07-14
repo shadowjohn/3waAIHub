@@ -158,7 +158,7 @@
       "key": "OCR_USE_GPU",
       "label": "Use GPU",
       "type": "boolean",
-      "default": "0",
+      "default": "1",
       "required": true,
       "restart_required": true
     },
@@ -285,7 +285,7 @@
   "env": [
     {
       "name": "OCR_USE_GPU",
-      "default": "0",
+      "default": "1",
       "required": true
     },
     {
@@ -379,7 +379,7 @@
     "local_port_env": "OCR_LOCAL_PORT"
   },
   "install": {
-    "default_service_key": "ocr-main",
-    "compose_project": "3waaihub_ocr_main"
+    "default_service_key": "ocr-gpu",
+    "compose_project": "3waaihub_ocr_gpu"
   }
 }
