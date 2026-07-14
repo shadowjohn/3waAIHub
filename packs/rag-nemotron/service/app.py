@@ -12,6 +12,9 @@ from pydantic import BaseModel, Field
 
 RUNTIME_LEVEL = "L3-adapter"
 SERVICE = "rag-nemotron"
+DEFAULT_EMBED_MODEL = "nvidia/llama-nemotron-embed-1b-v2"
+DEFAULT_RERANK_MODEL = "nvidia/llama-nemotron-rerank-1b-v2"
+DEFAULT_EMBED_INPUT_TYPE = "query"
 
 
 def env_bool(name: str, default: str = "0") -> bool:
@@ -27,6 +30,18 @@ def env_int(name: str, default: int) -> int:
 
 def setting(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
+
+
+def device_status() -> dict[str, Any]:
+    device = setting("NEMOTRON_DEVICE", "auto").lower()
+    if device not in {"auto", "cpu", "gpu"}:
+        device = "auto"
+    return {
+        "requested": device,
+        "use_gpu": env_bool("NEMOTRON_USE_GPU", "1"),
+        "visible_devices": setting("GPU_VISIBLE_DEVICES", "all"),
+        "fallback_to_cpu": env_bool("NEMOTRON_GPU_FALLBACK_TO_CPU", "1"),
+    }
 
 
 def error(status: int, code: str, message: str, detail: str = "") -> JSONResponse:
@@ -56,13 +71,14 @@ def health() -> dict[str, Any]:
         "ready": True,
         "runtime_level": RUNTIME_LEVEL,
         "models": {
-            "embed": setting("NEMOTRON_EMBED_MODEL", "nvidia/llama-nemotron-embed-300m-v2"),
-            "rerank": setting("NEMOTRON_RERANK_MODEL", "nvidia/llama-nemotron-rerank-500m-v2"),
+            "embed": setting("NEMOTRON_EMBED_MODEL", DEFAULT_EMBED_MODEL),
+            "rerank": setting("NEMOTRON_RERANK_MODEL", DEFAULT_RERANK_MODEL),
         },
         "backend": {
             "embed_configured": bool(setting("NEMOTRON_EMBED_URL")),
             "rerank_configured": bool(setting("NEMOTRON_RERANK_URL")),
         },
+        "device": device_status(),
     }
 
 
@@ -110,8 +126,9 @@ def post_json(url: str, payload: dict[str, Any]) -> dict[str, Any] | JSONRespons
 
 def real_embed(texts: list[str]) -> dict[str, Any] | JSONResponse:
     data = post_json(setting("NEMOTRON_EMBED_URL"), {
-        "model": setting("NEMOTRON_EMBED_MODEL", "nvidia/llama-nemotron-embed-300m-v2"),
+        "model": setting("NEMOTRON_EMBED_MODEL", DEFAULT_EMBED_MODEL),
         "input": texts,
+        "input_type": setting("NEMOTRON_EMBED_INPUT_TYPE", DEFAULT_EMBED_INPUT_TYPE),
     })
     if isinstance(data, JSONResponse):
         return data
@@ -133,14 +150,16 @@ def overlap_score(query: str, passage: str) -> float:
 
 def real_rerank(query: str, passages: list[str], top_k: int) -> dict[str, Any] | JSONResponse:
     data = post_json(setting("NEMOTRON_RERANK_URL"), {
-        "model": setting("NEMOTRON_RERANK_MODEL", "nvidia/llama-nemotron-rerank-500m-v2"),
-        "query": query,
-        "passages": passages,
-        "top_k": top_k,
+        "model": setting("NEMOTRON_RERANK_MODEL", DEFAULT_RERANK_MODEL),
+        "query": {"text": query},
+        "passages": [{"text": passage} for passage in passages],
+        "truncate": "END",
     })
     if isinstance(data, JSONResponse):
         return data
     rows = data.get("results") if isinstance(data.get("results"), list) else data.get("rankings")
+    if not isinstance(rows, list):
+        rows = data.get("data")
     if not isinstance(rows, list):
         return error(502, "backend_bad_response", "Rerank response missing results.")
     results = []
@@ -148,13 +167,13 @@ def real_rerank(query: str, passages: list[str], top_k: int) -> dict[str, Any] |
         if not isinstance(row, dict):
             continue
         index = int(row.get("index", row.get("passage_index", len(results))) or 0)
-        score = float(row.get("relevance_score", row.get("score", 0)) or 0)
+        score = float(row.get("relevance_score", row.get("score", row.get("logit", 0))) or 0)
         results.append({"index": index, "score": score, "text": passages[index] if 0 <= index < len(passages) else ""})
     return {"results": results}
 
 
 def embed_response(texts: list[str], real: bool, started: float) -> JSONResponse:
-    model = setting("NEMOTRON_EMBED_MODEL", "nvidia/llama-nemotron-embed-300m-v2")
+    model = setting("NEMOTRON_EMBED_MODEL", DEFAULT_EMBED_MODEL)
     if real:
         result = real_embed(texts)
         if isinstance(result, JSONResponse):
@@ -175,7 +194,7 @@ def embed_response(texts: list[str], real: bool, started: float) -> JSONResponse
 
 
 def rerank_response(query: str, passages: list[str], top_k: int, real: bool, started: float) -> JSONResponse:
-    model = setting("NEMOTRON_RERANK_MODEL", "nvidia/llama-nemotron-rerank-500m-v2")
+    model = setting("NEMOTRON_RERANK_MODEL", DEFAULT_RERANK_MODEL)
     if real:
         result = real_rerank(query, passages, top_k)
         if isinstance(result, JSONResponse):

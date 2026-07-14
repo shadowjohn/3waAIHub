@@ -92,6 +92,42 @@
           "expected_keys": ["ok", "mock", "runtime_level", "operation", "model", "embeddings", "elapsed_ms"],
           "expected_mock": true,
           "expected_min_result_count": 1
+        },
+        {
+          "id": "nemotron_rag_real_rerank",
+          "name": "Nemotron RAG real rerank smoke",
+          "type": "api",
+          "mode": "rag",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "operation": "rerank",
+            "query": "GPU OCR fallback",
+            "passages": ["OCR can run on GPU first.", "Unrelated note about billing."],
+            "top_k": 2,
+            "real_inference": 1
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "operation", "model", "results", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_min_result_count": 1,
+          "real_inference": true
+        },
+        {
+          "id": "nemotron_rag_real_embed",
+          "name": "Nemotron RAG real embedding smoke",
+          "type": "api",
+          "mode": "rag",
+          "method": "POST",
+          "content_type": "application/json",
+          "body_json": {
+            "operation": "embed",
+            "texts": ["3waAIHub OCR GPU first"],
+            "real_inference": 1
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "operation", "model", "embeddings", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_min_result_count": 1,
+          "real_inference": true
         }
       ]
     }
@@ -116,30 +152,40 @@
     ]
   },
   "settings_schema": [
-    {"key": "NEMOTRON_EMBED_MODEL", "label": "Embedding model", "type": "text", "default": "nvidia/llama-nemotron-embed-300m-v2", "required": true, "restart_required": true},
-    {"key": "NEMOTRON_RERANK_MODEL", "label": "Rerank model", "type": "text", "default": "nvidia/llama-nemotron-rerank-500m-v2", "required": true, "restart_required": true},
-    {"key": "NEMOTRON_EMBED_URL", "label": "Embedding endpoint URL", "type": "text", "default": "", "required": false, "restart_required": true},
-    {"key": "NEMOTRON_RERANK_URL", "label": "Rerank endpoint URL", "type": "text", "default": "", "required": false, "restart_required": true},
+    {"key": "NEMOTRON_EMBED_MODEL", "label": "Embedding model", "type": "text", "default": "nvidia/llama-nemotron-embed-1b-v2", "required": true, "restart_required": true},
+    {"key": "NEMOTRON_RERANK_MODEL", "label": "Rerank model", "type": "text", "default": "nvidia/llama-nemotron-rerank-1b-v2", "required": true, "restart_required": true},
+    {"key": "NEMOTRON_EMBED_URL", "label": "Embedding endpoint URL", "type": "text", "default": "https://integrate.api.nvidia.com/v1/embeddings", "required": false, "restart_required": true},
+    {"key": "NEMOTRON_RERANK_URL", "label": "Rerank endpoint URL", "type": "text", "default": "https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking", "required": false, "restart_required": true},
     {"key": "NEMOTRON_API_KEY", "label": "NIM API key", "type": "secret", "default": "", "required": false, "restart_required": true},
     {"key": "NEMOTRON_REAL_INFERENCE", "label": "Default real inference", "type": "boolean", "default": "0", "required": true, "restart_required": true},
+    {"key": "NEMOTRON_EMBED_INPUT_TYPE", "label": "Embedding input type", "type": "select", "default": "query", "options": ["query", "passage"], "required": true, "restart_required": true},
+    {"key": "NEMOTRON_USE_GPU", "label": "Use GPU", "type": "boolean", "default": "1", "required": true, "restart_required": true},
+    {"key": "NEMOTRON_DEVICE", "label": "Device", "type": "select", "default": "auto", "options": ["auto", "cpu", "gpu"], "required": true, "restart_required": true},
+    {"key": "GPU_VISIBLE_DEVICES", "label": "GPU visible devices", "type": "text", "default": "all", "required": true, "restart_required": true},
+    {"key": "NEMOTRON_GPU_FALLBACK_TO_CPU", "label": "GPU fallback to CPU", "type": "boolean", "default": "1", "required": true, "restart_required": true},
     {"key": "NEMOTRON_TIMEOUT_SEC", "label": "Backend timeout seconds", "type": "integer", "default": "120", "min": 1, "max": 1800, "required": true, "restart_required": false},
     {"key": "NEMOTRON_MAX_TEXTS", "label": "Max texts", "type": "integer", "default": "64", "min": 1, "max": 512, "required": true, "restart_required": false},
     {"key": "NEMOTRON_MOCK_DIM", "label": "Mock embedding dimensions", "type": "integer", "default": "8", "min": 2, "max": 64, "required": true, "restart_required": false}
   ],
   "env": [
-    {"name": "NEMOTRON_EMBED_MODEL", "default": "nvidia/llama-nemotron-embed-300m-v2", "required": true},
-    {"name": "NEMOTRON_RERANK_MODEL", "default": "nvidia/llama-nemotron-rerank-500m-v2", "required": true},
-    {"name": "NEMOTRON_EMBED_URL", "default": "", "required": false},
-    {"name": "NEMOTRON_RERANK_URL", "default": "", "required": false},
+    {"name": "NEMOTRON_EMBED_MODEL", "default": "nvidia/llama-nemotron-embed-1b-v2", "required": true},
+    {"name": "NEMOTRON_RERANK_MODEL", "default": "nvidia/llama-nemotron-rerank-1b-v2", "required": true},
+    {"name": "NEMOTRON_EMBED_URL", "default": "https://integrate.api.nvidia.com/v1/embeddings", "required": false},
+    {"name": "NEMOTRON_RERANK_URL", "default": "https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking", "required": false},
     {"name": "NEMOTRON_API_KEY", "default": "", "required": false},
     {"name": "NEMOTRON_REAL_INFERENCE", "default": "0", "required": true},
+    {"name": "NEMOTRON_EMBED_INPUT_TYPE", "default": "query", "required": true},
+    {"name": "NEMOTRON_USE_GPU", "default": "1", "required": true},
+    {"name": "NEMOTRON_DEVICE", "default": "auto", "required": true},
+    {"name": "GPU_VISIBLE_DEVICES", "default": "all", "required": true},
+    {"name": "NEMOTRON_GPU_FALLBACK_TO_CPU", "default": "1", "required": true},
     {"name": "NEMOTRON_TIMEOUT_SEC", "default": "120", "required": true},
     {"name": "NEMOTRON_MAX_TEXTS", "default": "64", "required": true},
     {"name": "NEMOTRON_MOCK_DIM", "default": "8", "required": true}
   ],
   "models": [
-    {"id": "nemotron-embed-300m-v2", "runtime": "nim-or-huggingface", "model": "nvidia/llama-nemotron-embed-300m-v2", "required": false},
-    {"id": "nemotron-rerank-500m-v2", "runtime": "nim-or-huggingface", "model": "nvidia/llama-nemotron-rerank-500m-v2", "required": false}
+    {"id": "nemotron-embed-1b-v2", "runtime": "nim-or-huggingface", "model": "nvidia/llama-nemotron-embed-1b-v2", "required": false},
+    {"id": "nemotron-rerank-1b-v2", "runtime": "nim-or-huggingface", "model": "nvidia/llama-nemotron-rerank-1b-v2", "required": false}
   ],
   "preflight": {
     "checks": ["docker", "docker_compose", "storage"]
