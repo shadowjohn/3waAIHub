@@ -301,14 +301,14 @@ function hub_bearer_token_from_request(): string
 
 function hub_gateway_authenticate_api_token(PDO $db, string $mode, string $clientIp): array
 {
-    if (hub_is_localhost_ip($clientIp) && hub_get_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN') === '1') {
+    $plainToken = hub_bearer_token_from_request();
+    if ($plainToken === '' && hub_is_localhost_ip($clientIp) && hub_get_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN') === '1') {
         return ['ok' => true, 'context' => []];
     }
-    if (hub_get_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN') !== '1') {
+    if ($plainToken === '' && hub_get_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN') !== '1') {
         return ['ok' => true, 'context' => []];
     }
 
-    $plainToken = hub_bearer_token_from_request();
     if ($plainToken === '') {
         return ['ok' => false, 'response' => hub_gateway_error(401, 'missing_token', 'API token is required'), 'context' => []];
     }

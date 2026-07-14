@@ -91,6 +91,39 @@ hub_test('Photo upload and ask are protected internal Gateway modes', function (
     hub_test_assert((int)$response['status'] === 400, 'photo gateway must be routable and validate JSON body');
 });
 
+hub_test('Photo upload uses Bearer owner even when localhost bypass is enabled', function (): void {
+    $db = hub_test_reset_db();
+    hub_ensure_default_storage_settings($db);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '1');
+    $memberId = hub_create_api_member($db, 'Local Photo API', '', 'local-photo@example.test', '');
+    $token = hub_create_api_token($db, $memberId, 'Local photo token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'photo_upload', null);
+
+    $tmp = tempnam(sys_get_temp_dir(), 'photo_');
+    imagepng(imagecreatetruecolor(4, 4), $tmp);
+    [$oldServer, $oldFiles, $oldPost] = [$_SERVER, $_FILES, $_POST];
+    $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+    $_SERVER['REQUEST_METHOD'] = 'POST';
+    $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=photo_upload';
+    $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $token['plain_token'];
+    $_FILES = ['image' => ['name' => 'ok.png', 'type' => 'image/png', 'tmp_name' => $tmp, 'error' => UPLOAD_ERR_OK, 'size' => filesize($tmp)]];
+    $_POST = [];
+    $upload = hub_gateway_dispatch($db, 'photo_upload');
+    $_SERVER = $oldServer; $_FILES = $oldFiles; $_POST = $oldPost;
+
+    $payload = json_decode((string)$upload['body'], true);
+    hub_test_assert((int)$upload['status'] === 200, 'localhost bearer photo_upload must not fall through to ownerless bypass');
+    $asset = $db->prepare('SELECT * FROM photo_assets WHERE image_id = :image_id LIMIT 1');
+    $asset->execute([':image_id' => (string)($payload['image_id'] ?? '')]);
+    $assetRow = $asset->fetch();
+    hub_test_assert($assetRow !== false && (int)$assetRow['owner_member_id'] === $memberId, 'photo asset must keep bearer member owner');
+    hub_test_assert((int)$assetRow['owner_token_id'] === (int)$token['token_id'], 'photo asset must keep bearer token owner');
+    $log = $db->query('SELECT member_id, token_id FROM api_access_logs ORDER BY id DESC LIMIT 1')->fetch();
+    hub_test_assert((int)$log['member_id'] === $memberId, 'photo upload log must keep bearer member_id');
+    hub_test_assert((int)$log['token_id'] === (int)$token['token_id'], 'photo upload log must keep bearer token_id');
+});
+
 hub_test('Photo customer permission grants upload helper mode with photo', function (): void {
     $db = hub_test_reset_db();
     $customerId = hub_create_customer_user($db, [
