@@ -336,6 +336,7 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
     }
 
     $services = [];
+    $hasPhoto = false;
     foreach (hub_list_services($db) as $service) {
         $mode = (string)($service['mode'] ?? '');
         if (!isset($supported[$mode])) {
@@ -344,7 +345,19 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
         if ($allowedModes !== null && !isset($allowedModes[$mode])) {
             continue;
         }
+        if ($mode === 'photo') {
+            $hasPhoto = true;
+        }
         $services[] = $service;
+    }
+    if (!$hasPhoto && ($allowedModes === null || isset($allowedModes['photo']))) {
+        $settings = hub_photo_settings($db);
+        $visionService = hub_get_service_by_key($db, (string)$settings['vision_service_key']);
+        if ($visionService) {
+            $visionService['mode'] = 'photo';
+            $visionService['name'] = 'Gemma 4 Photo Vision';
+            $services[] = $visionService;
+        }
     }
 
     return $services;

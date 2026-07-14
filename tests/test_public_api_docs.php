@@ -28,6 +28,19 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     foreach (['hello', 'ocr', 'yolo', 'translate', 'sam3'] as $mode) {
         hub_test_assert(in_array($mode, array_column($manifest['services'], 'mode'), true), 'manifest missing mode ' . $mode);
     }
+    $photoUpload = null;
+    foreach ($manifest['services'] as $service) {
+        if (($service['mode'] ?? '') === 'photo_upload') {
+            $photoUpload = $service;
+            break;
+        }
+    }
+    hub_test_assert(is_array($photoUpload), 'manifest missing photo_upload mode');
+    hub_test_assert(str_contains((string)$photoUpload['examples']['php'], "new CURLFile('/path/to/example.jpg'"), 'photo_upload PHP example must include usable CURLFile');
+    hub_test_assert(str_contains((string)$photoUpload['examples']['js_fetch'], 'const formData = new FormData()'), 'photo_upload JS example must define formData');
+    hub_test_assert(str_contains((string)$photoUpload['examples']['js_fetch'], "formData.append('image', fileInput.files[0])"), 'photo_upload JS example must define formData image upload');
+    hub_test_assert(!str_contains((string)$photoUpload['examples']['php'], 'CURLFile here'), 'photo_upload PHP example must not use placeholder CURLFile text');
+    hub_test_assert(!str_contains((string)$photoUpload['examples']['js_fetch'], 'undefined formData'), 'photo_upload JS example must not reference undefined formData');
     hub_test_assert(str_contains($json, '<TOKEN>'), 'manifest examples must use token placeholder');
     foreach (['local_port', 'docker-compose.generated.yml', '/DATA/models', 'data/logs', '3waaihub.sqlite', 'admin/', 'command_worker', '3wa_live_'] as $secret) {
         hub_test_assert(!str_contains($json, $secret), 'manifest must not leak ' . $secret);
@@ -44,6 +57,7 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     hub_test_assert(str_contains($docsHtml, 'mode=task_status&amp;task_id='), 'public docs must show task_status URL');
     hub_test_assert(str_contains($docsHtml, 'mode=task_result&amp;task_id='), 'public docs must show task_result URL');
     hub_test_assert(!str_contains($docsHtml, 'admin/'), 'public docs must not include admin links when not logged in');
+    hub_test_assert(!str_contains($docsHtml, 'CURLFile here'), 'public docs multipart PHP example must not use placeholder CURLFile text');
     foreach (['local_port', 'docker-compose.generated.yml', '/DATA/models', 'data/logs', '3waaihub.sqlite', 'command_worker', '3wa_live_'] as $secret) {
         hub_test_assert(!str_contains($docsHtml, $secret), 'public docs must not leak ' . $secret);
     }

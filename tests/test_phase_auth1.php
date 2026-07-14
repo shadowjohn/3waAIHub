@@ -103,3 +103,41 @@ hub_test('PhaseAuth-1 playground filters customer modes', function (): void {
     hub_test_assert(in_array('ocr', $adminModes, true), 'system_admin playground must see all supported modes');
     hub_test_assert($customerModes === ['hello'], 'customer playground must see only allowed modes');
 });
+
+hub_test('PhaseAuth-1 playground exposes photo pseudo mode with customer filtering', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'llm-gemma4-12b', [
+        'service_key' => 'gemma4-main',
+        'name' => 'Gemma 4 Main',
+        'mode' => 'chat',
+        'port_mode' => 'manual',
+        'local_port' => 18110,
+        'idempotent' => true,
+    ]);
+
+    $photoCustomerId = hub_create_customer_user($db, [
+        'username' => 'photo_playground',
+        'password' => 'customer123',
+        'modes' => ['photo'],
+    ]);
+    hub_create_customer_token($db, $photoCustomerId, 'Photo Playground token');
+    $photoCustomer = hub_get_user($db, $photoCustomerId);
+    hub_test_assert($photoCustomer !== null, 'photo customer missing');
+
+    $helloCustomerId = hub_create_customer_user($db, [
+        'username' => 'hello_playground',
+        'password' => 'customer123',
+        'modes' => ['hello'],
+    ]);
+    hub_create_customer_token($db, $helloCustomerId, 'Hello Playground token');
+    $helloCustomer = hub_get_user($db, $helloCustomerId);
+    hub_test_assert($helloCustomer !== null, 'hello customer missing');
+
+    $adminModes = array_map(static fn (array $service): string => (string)$service['mode'], hub_playground_service_options($db, ['role' => 'system_admin']));
+    $photoModes = array_map(static fn (array $service): string => (string)$service['mode'], hub_playground_service_options($db, $photoCustomer));
+    $helloModes = array_map(static fn (array $service): string => (string)$service['mode'], hub_playground_service_options($db, $helloCustomer));
+
+    hub_test_assert(in_array('photo', $adminModes, true), 'system_admin playground must include photo pseudo mode');
+    hub_test_assert($photoModes === ['photo'], 'photo customer playground must include only allowed photo pseudo mode');
+    hub_test_assert(!in_array('photo', $helloModes, true), 'customer without photo permission must not see photo pseudo mode');
+});

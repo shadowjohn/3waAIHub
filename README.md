@@ -751,6 +751,23 @@ curl -X POST "https://nature.focusit.tw/3waAIHub/api.php?mode=chat" \
 
 原則是模型適配 Hub，不讓 Hub Core 反過來遷就模型。
 
+### llm-gemma4-12b Photo Vision
+
+外部介接只使用 `photo_upload` 與 `photo`。先上傳圖片取得 `image_id`，再用同一個 `image_id` 重複提問；server 不保存對話 session。
+
+```bash
+curl -X POST "https://nature.focusit.tw/3waAIHub/api.php?mode=photo_upload" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@example.jpg"
+```
+
+```bash
+curl -X POST "https://nature.focusit.tw/3waAIHub/api.php?mode=photo" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"image_id":"img_...","text":"這張圖裡有什麼？","max_tokens":256,"real_inference":true}'
+```
+
 ### docparser Runtime Level
 
 `docparser` is PhaseDoc-1C `L5-benchmark-ready`.

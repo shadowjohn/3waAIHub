@@ -133,3 +133,17 @@ hub_test('Gemma 4 photo adapter stays inside Hub image_id contract', function ()
         }
     }
 });
+
+hub_test('Gemma 4 photo playground and docs expose image_id workflow', function (): void {
+    $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    foreach (['mode=photo', 'photo_upload', 'image_id', '圖片問答', 'max_tokens'] as $needle) {
+        hub_test_assert(str_contains($playground, $needle), 'photo playground missing ' . $needle);
+    }
+    foreach (['host_path', 'container_path', 'storage_relpath'] as $forbidden) {
+        hub_test_assert(!str_contains($playground, 'name="' . $forbidden . '"'), 'playground must not expose ' . $forbidden);
+    }
+    $examples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
+    foreach (['mode=photo_upload', 'mode=photo', 'image_id', '<TOKEN>'] as $needle) {
+        hub_test_assert(str_contains($examples, $needle), 'photo API examples missing ' . $needle);
+    }
+});

@@ -134,9 +134,60 @@ function hub_public_api_services(PDO $db): array
         $service['examples'] = hub_public_api_examples($service);
         $services[] = $service;
     }
+    if (hub_get_pack('llm-gemma4-12b') !== null) {
+        foreach (hub_public_api_photo_services() as $service) {
+            $service['examples'] = hub_public_api_examples($service);
+            $services[] = $service;
+        }
+    }
 
     usort($services, static fn (array $a, array $b): int => strcmp((string)$a['mode'], (string)$b['mode']));
     return $services;
+}
+
+function hub_public_api_photo_services(): array
+{
+    return [
+        [
+            'mode' => 'photo_upload',
+            'pack_id' => 'llm-gemma4-12b',
+            'name' => 'Gemma 4 Photo Upload',
+            'description' => 'Upload an image once and reuse image_id for photo questions.',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data',
+            'endpoint' => 'api.php?mode=photo_upload',
+            'url' => hub_public_api_mode_url('photo_upload'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L5-benchmark-ready',
+            'task_type' => '',
+            'input_fields' => [['name' => 'image', 'type' => 'file', 'required' => true, 'example' => 'example.jpg']],
+            'output_keys' => ['ok', 'image_id'],
+            'error_codes' => ['bad_request', 'file_too_large', 'bad_image', 'missing_token', 'token_mode_denied'],
+            'task_api' => [],
+        ],
+        [
+            'mode' => 'photo',
+            'pack_id' => 'llm-gemma4-12b',
+            'name' => 'Gemma 4 Photo Vision',
+            'description' => 'Ask questions by image_id; no server-side session is stored.',
+            'method' => 'POST',
+            'content_type' => 'application/json',
+            'endpoint' => 'api.php?mode=photo',
+            'url' => hub_public_api_mode_url('photo'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L5-benchmark-ready',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'image_id', 'type' => 'string', 'required' => true, 'default' => 'img_...'],
+                ['name' => 'text', 'type' => 'string', 'required' => true, 'default' => '這張圖裡有什麼？'],
+                ['name' => 'max_tokens', 'type' => 'integer', 'required' => false, 'default' => 256],
+                ['name' => 'real_inference', 'type' => 'boolean', 'required' => false, 'default' => true],
+            ],
+            'output_keys' => ['ok', 'image_id', 'answer', 'caption', 'tags', 'usage', 'elapsed_ms'],
+            'error_codes' => ['image_id_required', 'text_required', 'photo_forbidden', 'model_not_ready', 'vision_timeout', 'vision_bad_response', 'vision_failed'],
+            'task_api' => [],
+        ],
+    ];
 }
 
 function hub_public_api_task_api_refs(array $taskApi): array
@@ -166,6 +217,7 @@ function hub_public_api_json_body(array $service): array
         }
         $body[$name] = match ($name) {
             'text' => 'That was a wonderful time.',
+            'image_id' => 'img_...',
             'source_lang' => 'en',
             'target_lang' => 'zh-TW',
             'real_inference' => true,
@@ -211,6 +263,7 @@ function hub_public_api_examples(array $service): array
     $url = (string)$service['url'];
     $method = (string)$service['method'];
     $contentType = (string)$service['content_type'];
+    $jsPrefix = '';
     if ($method === 'GET') {
         $curl = 'curl -H "Authorization: Bearer <TOKEN>" ' . escapeshellarg($url);
         $phpBody = '';
@@ -230,8 +283,34 @@ function hub_public_api_examples(array $service): array
         foreach ($fields as $field) {
             $curl .= ' \\' . "\n" . '  -F ' . escapeshellarg($field);
         }
-        $phpBody = '$fields = [/* attach files with CURLFile here */];' . "\n";
+        $phpLines = ["\$fields = ["];
+        $jsLines = ["const formData = new FormData();"];
+        foreach ($service['input_fields'] as $field) {
+            if (!is_array($field)) {
+                continue;
+            }
+            $name = (string)($field['name'] ?? '');
+            if ($name === '' || $name === 'mode') {
+                continue;
+            }
+            if (($field['type'] ?? '') === 'file') {
+                $sample = (string)($field['example'] ?? '');
+                if ($sample === '') {
+                    $sample = $name === 'audio' ? 'sample.wav' : ($name === 'file' ? 'sample.pdf' : 'sample.png');
+                }
+                $phpLines[] = '    ' . var_export($name, true) . ' => new CURLFile(' . var_export('/path/to/' . $sample, true) . '),';
+                $jsLines[] = "const fileInput = document.querySelector('input[name=\"" . addcslashes($name, "\\'") . "\"]');";
+                $jsLines[] = 'formData.append(' . var_export($name, true) . ', fileInput.files[0]);';
+                continue;
+            }
+            $value = $name === 'points_json' ? '{"points":[[320,240]],"labels":[1]}' : (string)($field['default'] ?? ($name === 'real_inference' ? '1' : ''));
+            $phpLines[] = '    ' . var_export($name, true) . ' => ' . var_export($value, true) . ',';
+            $jsLines[] = 'formData.append(' . var_export($name, true) . ', ' . json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ');';
+        }
+        $phpLines[] = "];";
+        $phpBody = implode("\n", $phpLines) . "\n";
         $jsOptions = "{\n  method: '{$method}',\n  headers: { Authorization: 'Bearer <TOKEN>' },\n  body: formData\n}";
+        $jsPrefix = implode("\n", $jsLines) . "\n";
     }
 
     $headers = ["'Authorization: Bearer <TOKEN>'"];
@@ -251,7 +330,8 @@ function hub_public_api_examples(array $service): array
         . '    CURLOPT_HTTPHEADER => [' . implode(', ', $headers) . "],\n"
         . "]);\n"
         . 'echo curl_exec($ch);';
-    $js = "const res = await fetch(" . json_encode($url, JSON_UNESCAPED_SLASHES) . ", {$jsOptions});\n"
+    $js = $jsPrefix
+        . "const res = await fetch(" . json_encode($url, JSON_UNESCAPED_SLASHES) . ", {$jsOptions});\n"
         . 'console.log(await res.json());';
 
     return ['curl' => $curl, 'php' => $php, 'js_fetch' => $js];
