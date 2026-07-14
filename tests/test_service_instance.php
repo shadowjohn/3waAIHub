@@ -28,6 +28,13 @@ hub_test('service instance uniqueness checks reject collisions', function (): vo
         'XDG_CACHE_HOME=/cache/paddleocr/xdg',
         'HOME=/models/paddleocr/home',
         'PADDLEOCR_HOME=/models/paddleocr',
+        'PADDLE_PDX_CACHE_HOME=/models/paddleocr',
+        'OCR_VERSION=PP-OCRv5',
+        'OCR_TEXT_DETECTION_MODEL_NAME=PP-OCRv5_server_det',
+        'OCR_TEXT_RECOGNITION_MODEL_NAME=PP-OCRv5_server_rec',
+        'OCR_TEXT_DET_LIMIT_SIDE_LEN=960',
+        'OCR_TEXT_DET_LIMIT_TYPE=max',
+        'OCR_TEXT_CONVERTER=opencc-s2twp',
         'OCR_USE_GPU=0',
         'OCR_DEVICE=auto',
     ] as $needle) {

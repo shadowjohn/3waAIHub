@@ -16,6 +16,7 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     $requirements = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/requirements.txt');
     hub_test_assert(str_contains($requirements, 'paddleocr'), 'OCR L4b must keep PaddleOCR dependency');
     hub_test_assert(str_contains($requirements, 'paddlepaddle'), 'OCR L4b real inference must install PaddlePaddle runtime dependency');
+    hub_test_assert(str_contains($requirements, 'opencc-python-reimplemented'), 'OCR migration must keep OpenCC Taiwan Traditional conversion dependency');
     hub_test_assert(!str_contains($requirements, 'paddlepaddle-gpu'), 'OCR L4b real inference must not install PaddlePaddle GPU dependency');
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/smoke.py'), 'OCR smoke.py missing');
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/storage_smoke.py'), 'OCR storage_smoke.py missing');
@@ -47,6 +48,12 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     hub_test_assert(str_contains($app, '"device": device_status()'), 'OCR responses must include device status');
     hub_test_assert(str_contains($app, 'OCR_REAL_INFERENCE'), 'OCR app must keep mock fallback toggle');
     hub_test_assert(str_contains($app, 'PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT'), 'OCR app must disable PaddleX MKLDNN CPU path');
+    foreach (['PADDLE_PDX_CACHE_HOME', 'OCR_VERSION', 'OCR_TEXT_DETECTION_MODEL_NAME', 'OCR_TEXT_RECOGNITION_MODEL_NAME', 'OCR_TEXT_DET_LIMIT_SIDE_LEN', 'OCR_TEXT_DET_LIMIT_TYPE', 'OpenCC', '"text_converter"'] as $needle) {
+        hub_test_assert(str_contains($app, $needle), 'OCR app missing migration setting ' . $needle);
+    }
+    foreach (['image: UploadFile | None = File(None)', 'file: UploadFile | None = File(None)', '@app.post("/ocr/upload")'] as $needle) {
+        hub_test_assert(str_contains($app, $needle), 'OCR app missing legacy upload compatibility ' . $needle);
+    }
 
     $inferenceSmoke = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/inference_smoke.py');
     foreach (['OCR_REAL_INFERENCE', '/ocr/image', 'runtime_level', 'real_inference'] as $needle) {

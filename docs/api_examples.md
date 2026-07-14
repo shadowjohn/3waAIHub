@@ -67,7 +67,8 @@ Contract:
 
 - Method: `POST`
 - Content-Type: `multipart/form-data`
-- Input: `image` file, max `50 MB`
+- Input: `image` file, max `50 MB`; `file` is accepted as a legacy upload alias
+- Real inference: set `OCR_REAL_INFERENCE=1` on the service or submit `real_inference=1`
 - Required output keys: `ok`, `text`, `blocks`
 - Block keys: `text`, `bbox`, `confidence`
 - Errors: `bad_request`, `file_too_large`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`

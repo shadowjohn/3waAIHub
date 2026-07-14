@@ -398,6 +398,8 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'XDG_CACHE_HOME' => $cacheDir . '/xdg',
             'HOME' => $modelDir . '/home',
             'PADDLEOCR_HOME' => $modelDir,
+            'PADDLE_PDX_CACHE_HOME' => $modelDir,
+            'PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK' => 'True',
         ],
         'yolo' => [
             'YOLO_MODEL_DIR' => $modelDir,

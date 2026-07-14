@@ -12,6 +12,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 app = FastAPI(title="3waAIHub PP-OCRv5")
 _OCR_ENGINE: Any | None = None
+_TEXT_CONVERTER_NAME = ""
+_TEXT_CONVERTER: Any | None = None
 
 
 def runtime_level() -> str:
@@ -97,6 +99,8 @@ def configure_ocr_env() -> None:
     # PaddleOCR 3.7 + PaddlePaddle 3.3 CPU inference can trip PIR/oneDNN here.
     os.environ.setdefault("PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT", "0")
     os.environ.setdefault("PADDLEOCR_HOME", model_dir)
+    os.environ.setdefault("PADDLE_PDX_CACHE_HOME", model_dir)
+    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
     os.environ.setdefault("XDG_CACHE_HOME", f"{cache_dir}/xdg")
     os.environ.setdefault("HOME", f"{model_dir}/home")
 
@@ -104,30 +108,101 @@ def configure_ocr_env() -> None:
         model_dir,
         cache_dir,
         os.getenv("OCR_SERVICE_DATA_DIR", "/data/service"),
+        os.environ["PADDLE_PDX_CACHE_HOME"],
         os.environ["XDG_CACHE_HOME"],
         os.environ["HOME"],
     ]:
         Path(path).mkdir(parents=True, exist_ok=True)
 
 
+def env_text(name: str, default: str = "") -> str:
+    return str(os.getenv(name, default)).strip()
+
+
+def env_int(name: str, default: int) -> int:
+    try:
+        return int(env_text(name, str(default)))
+    except ValueError:
+        return default
+
+
 def paddleocr_init_kwargs(cls: type[Any]) -> dict[str, Any]:
     import inspect
 
     params = inspect.signature(cls).parameters
+    accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in params.values())
     kwargs: dict[str, Any] = {}
-    lang = os.getenv("OCR_LANG", "ch")
-    if "lang" in params and lang != "auto":
-        kwargs["lang"] = lang
+
+    def set_kwarg(key: str, value: Any, *, allow_kwargs: bool = False) -> None:
+        if key in params or (allow_kwargs and accepts_kwargs):
+            kwargs[key] = value
+
+    lang = env_text("OCR_LANG", "ch")
+    if lang != "auto":
+        set_kwarg("lang", lang)
+    for env_name, key in [
+        ("OCR_VERSION", "ocr_version"),
+        ("OCR_TEXT_DETECTION_MODEL_NAME", "text_detection_model_name"),
+        ("OCR_TEXT_RECOGNITION_MODEL_NAME", "text_recognition_model_name"),
+        ("OCR_TEXT_DETECTION_MODEL_DIR", "text_detection_model_dir"),
+        ("OCR_TEXT_RECOGNITION_MODEL_DIR", "text_recognition_model_dir"),
+        ("OCR_TEXT_DET_LIMIT_TYPE", "text_det_limit_type"),
+    ]:
+        value = env_text(env_name)
+        if value != "":
+            set_kwarg(key, value)
+    side_len = env_int("OCR_TEXT_DET_LIMIT_SIDE_LEN", 0)
+    if side_len > 0:
+        set_kwarg("text_det_limit_side_len", side_len)
     for key in ["use_doc_orientation_classify", "use_doc_unwarping", "use_textline_orientation", "use_angle_cls"]:
-        if key in params:
-            kwargs[key] = False
+        set_kwarg(key, False)
     effective_device = gpu_status()["effective_device"]
-    if "device" in params:
-        kwargs["device"] = effective_device
+    if "device" in params or accepts_kwargs:
+        set_kwarg("device", "gpu:0" if effective_device == "gpu" else "cpu", allow_kwargs=True)
     elif "use_gpu" in params:
         kwargs["use_gpu"] = effective_device == "gpu"
 
     return kwargs
+
+
+def text_converter_name() -> str:
+    return env_text("OCR_TEXT_CONVERTER", "opencc-s2twp").lower()
+
+
+def text_converter() -> Any | None:
+    global _TEXT_CONVERTER_NAME, _TEXT_CONVERTER
+    name = text_converter_name()
+    if name in {"", "0", "none", "off", "false"}:
+        _TEXT_CONVERTER_NAME = name
+        _TEXT_CONVERTER = None
+        return None
+    if _TEXT_CONVERTER_NAME == name:
+        return _TEXT_CONVERTER
+    if not name.startswith("opencc-"):
+        raise RuntimeError(f"unsupported OCR_TEXT_CONVERTER: {name}")
+
+    from opencc import OpenCC
+
+    _TEXT_CONVERTER = OpenCC(name.removeprefix("opencc-"))
+    _TEXT_CONVERTER_NAME = name
+    return _TEXT_CONVERTER
+
+
+def convert_text(text: Any) -> str:
+    value = str(text or "")
+    converter = text_converter()
+    return converter.convert(value) if converter is not None and value != "" else value
+
+
+def text_converter_status() -> dict[str, Any]:
+    name = text_converter_name()
+    if name in {"", "0", "none", "off", "false"}:
+        return {"name": name, "available": True, "enabled": False}
+    try:
+        text_converter()
+        return {"name": name, "available": True, "enabled": True}
+    except Exception as exc:
+        return {"name": name, "available": False, "enabled": True, "error": str(exc)}
 
 
 def ocr_engine() -> Any:
@@ -193,11 +268,14 @@ def storage_status() -> tuple[dict[str, Any], list[str]]:
 def health() -> dict[str, Any]:
     storage, errors = storage_status()
     gpu = gpu_status()
+    converter = text_converter_status()
     warnings = []
     if gpu["requested"] and not gpu["available"] and gpu["fallback_to_cpu"]:
         warnings.append("gpu_unavailable_fallback_to_cpu")
     if gpu["required"] and not gpu["available"]:
         errors.append("gpu_required_but_unavailable")
+    if converter["enabled"] and not converter["available"]:
+        errors.append("text_converter_unavailable")
 
     return {
         "ok": True,
@@ -206,6 +284,7 @@ def health() -> dict[str, Any]:
         "runtime_level": runtime_level(),
         "storage": storage,
         "gpu": gpu,
+        "text_converter": converter,
         "warnings": warnings,
         "errors": errors,
     }
@@ -236,7 +315,7 @@ def bbox_value(value: Any) -> Any:
 
 
 def add_block(blocks: list[dict[str, Any]], text: Any, bbox: Any = None, confidence: Any = 0.0) -> None:
-    text = str(text or "").strip()
+    text = convert_text(text).strip()
     if text == "":
         return
     try:
@@ -300,13 +379,23 @@ def run_paddleocr(image_path: Path) -> dict[str, Any]:
         "mock": False,
         "real_inference": True,
         "runtime_level": runtime_level(),
+        "ocr_version": env_text("OCR_VERSION", "PP-OCRv5"),
+        "text_converter": text_converter_name(),
         "device": device_status(),
     }
 
 
 @app.post("/ocr/image")
-async def ocr_image(image: UploadFile = File(...), real_inference: str = Form("0")) -> dict[str, Any]:
-    data = await image.read()
+async def ocr_image(
+    image: UploadFile | None = File(None),
+    file: UploadFile | None = File(None),
+    real_inference: str = Form("0"),
+) -> dict[str, Any]:
+    upload = image or file
+    if upload is None:
+        raise HTTPException(status_code=400, detail="image is required")
+
+    data = await upload.read()
     max_bytes = int(os.getenv("OCR_MAX_UPLOAD_MB", "50")) * 1024 * 1024
     if not data:
         raise HTTPException(status_code=400, detail="image is required")
@@ -314,7 +403,7 @@ async def ocr_image(image: UploadFile = File(...), real_inference: str = Form("0
         raise HTTPException(status_code=413, detail="image is too large")
 
     if env_enabled(os.getenv("OCR_REAL_INFERENCE")) or env_enabled(real_inference):
-        suffix = Path(image.filename or "upload.png").suffix or ".png"
+        suffix = Path(upload.filename or "upload.png").suffix or ".png"
         try:
             with tempfile.NamedTemporaryFile(prefix="ocr-", suffix=suffix, delete=False) as handle:
                 handle.write(data)
@@ -325,7 +414,7 @@ async def ocr_image(image: UploadFile = File(...), real_inference: str = Form("0
         finally:
             if "image_path" in locals():
                 image_path.unlink(missing_ok=True)
-        result["filename"] = image.filename
+        result["filename"] = upload.filename
         result["bytes"] = len(data)
         return result
 
@@ -336,7 +425,14 @@ async def ocr_image(image: UploadFile = File(...), real_inference: str = Form("0
         "blocks": [{"text": text, "bbox": [0, 0, 0, 0], "confidence": 1.0}],
         "mock": True,
         "runtime_level": runtime_level(),
+        "ocr_version": env_text("OCR_VERSION", "PP-OCRv5"),
+        "text_converter": text_converter_name(),
         "device": device_status(),
-        "filename": image.filename,
+        "filename": upload.filename,
         "bytes": len(data),
     }
+
+
+@app.post("/ocr/upload")
+async def ocr_upload(file: UploadFile = File(...), real_inference: str = Form("1")) -> dict[str, Any]:
+    return await ocr_image(image=file, real_inference=real_inference)

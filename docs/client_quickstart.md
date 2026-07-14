@@ -122,7 +122,7 @@ console.log(await res.json());
 
 ### `mode=ocr`
 
-- request contract: `POST multipart/form-data`, field `image`, optional `real_inference`
+- request contract: `POST multipart/form-data`, field `image` or legacy alias `file`, optional `real_inference`
 - response contract: JSON with `ok`, `text`, `blocks`
 - error contract: `bad_request`, `file_too_large`, `runtime_not_ready`, `inference_failed`, `gateway_timeout`
 

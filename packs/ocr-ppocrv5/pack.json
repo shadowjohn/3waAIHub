@@ -36,6 +36,13 @@
           "max_mb": 50
         },
         {
+          "name": "file",
+          "type": "file",
+          "required": false,
+          "max_mb": 50,
+          "description": "Legacy alias for existing /ocr/upload callers."
+        },
+        {
           "name": "real_inference",
           "type": "boolean",
           "required": false,
@@ -198,6 +205,74 @@
       "restart_required": true
     },
     {
+      "key": "OCR_VERSION",
+      "label": "OCR version",
+      "type": "text",
+      "default": "PP-OCRv5",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_TEXT_DETECTION_MODEL_NAME",
+      "label": "Text detection model",
+      "type": "text",
+      "default": "PP-OCRv5_server_det",
+      "required": false,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_TEXT_RECOGNITION_MODEL_NAME",
+      "label": "Text recognition model",
+      "type": "text",
+      "default": "PP-OCRv5_server_rec",
+      "required": false,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_TEXT_DETECTION_MODEL_DIR",
+      "label": "Text detection model dir",
+      "type": "path",
+      "default": "",
+      "required": false,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_TEXT_RECOGNITION_MODEL_DIR",
+      "label": "Text recognition model dir",
+      "type": "path",
+      "default": "",
+      "required": false,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_TEXT_DET_LIMIT_SIDE_LEN",
+      "label": "Text detection side length",
+      "type": "integer",
+      "default": "960",
+      "min": 320,
+      "max": 4096,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_TEXT_DET_LIMIT_TYPE",
+      "label": "Text detection limit type",
+      "type": "select",
+      "default": "max",
+      "options": ["max", "min", "resize_long"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "OCR_TEXT_CONVERTER",
+      "label": "Text converter",
+      "type": "select",
+      "default": "opencc-s2twp",
+      "options": ["opencc-s2twp", "opencc-s2t", "none"],
+      "required": true,
+      "restart_required": true
+    },
+    {
       "key": "KEEP_WARM",
       "label": "Keep model warm",
       "type": "boolean",
@@ -246,6 +321,46 @@
     {
       "name": "OCR_REAL_INFERENCE",
       "default": "0",
+      "required": true
+    },
+    {
+      "name": "OCR_VERSION",
+      "default": "PP-OCRv5",
+      "required": true
+    },
+    {
+      "name": "OCR_TEXT_DETECTION_MODEL_NAME",
+      "default": "PP-OCRv5_server_det",
+      "required": false
+    },
+    {
+      "name": "OCR_TEXT_RECOGNITION_MODEL_NAME",
+      "default": "PP-OCRv5_server_rec",
+      "required": false
+    },
+    {
+      "name": "OCR_TEXT_DETECTION_MODEL_DIR",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "OCR_TEXT_RECOGNITION_MODEL_DIR",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "OCR_TEXT_DET_LIMIT_SIDE_LEN",
+      "default": "960",
+      "required": true
+    },
+    {
+      "name": "OCR_TEXT_DET_LIMIT_TYPE",
+      "default": "max",
+      "required": true
+    },
+    {
+      "name": "OCR_TEXT_CONVERTER",
+      "default": "opencc-s2twp",
       "required": true
     }
   ],

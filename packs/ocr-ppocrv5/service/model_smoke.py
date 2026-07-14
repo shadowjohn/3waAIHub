@@ -23,6 +23,8 @@ def configure_env() -> dict[str, str]:
     cache_dir = os.environ["OCR_CACHE_DIR"]
     env = {
         "PADDLEOCR_HOME": model_dir,
+        "PADDLE_PDX_CACHE_HOME": model_dir,
+        "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK": "True",
         "XDG_CACHE_HOME": f"{cache_dir}/xdg",
         "HOME": f"{model_dir}/home",
     }
@@ -67,6 +69,17 @@ def init_kwargs(cls: type[Any]) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     if "lang" in params:
         kwargs["lang"] = os.getenv("OCR_LANG", "ch")
+    for env_name, key in [
+        ("OCR_VERSION", "ocr_version"),
+        ("OCR_TEXT_DETECTION_MODEL_NAME", "text_detection_model_name"),
+        ("OCR_TEXT_RECOGNITION_MODEL_NAME", "text_recognition_model_name"),
+        ("OCR_TEXT_DET_LIMIT_TYPE", "text_det_limit_type"),
+    ]:
+        value = os.getenv(env_name, "").strip()
+        if key in params and value:
+            kwargs[key] = value
+    if "text_det_limit_side_len" in params:
+        kwargs["text_det_limit_side_len"] = int(os.getenv("OCR_TEXT_DET_LIMIT_SIDE_LEN", "960"))
     for key in [
         "use_doc_orientation_classify",
         "use_doc_unwarping",

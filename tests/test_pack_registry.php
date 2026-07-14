@@ -42,11 +42,29 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(($ocr['target_level'] ?? '') === 'L5-benchmark-ready', 'OCR target level mismatch');
     hub_test_assert($ocr['hardware']['gpu_supported'] === true, 'OCR must advertise GPU support');
     $ocrSchema = hub_get_pack_settings_schema('ocr-ppocrv5');
-    foreach (['OCR_USE_GPU', 'OCR_DEVICE', 'GPU_VISIBLE_DEVICES', 'OCR_GPU_FALLBACK_TO_CPU', 'OCR_GPU_REQUIRED'] as $key) {
+    foreach ([
+        'OCR_USE_GPU',
+        'OCR_DEVICE',
+        'GPU_VISIBLE_DEVICES',
+        'OCR_GPU_FALLBACK_TO_CPU',
+        'OCR_GPU_REQUIRED',
+        'OCR_VERSION',
+        'OCR_TEXT_DETECTION_MODEL_NAME',
+        'OCR_TEXT_RECOGNITION_MODEL_NAME',
+        'OCR_TEXT_DET_LIMIT_SIDE_LEN',
+        'OCR_TEXT_DET_LIMIT_TYPE',
+        'OCR_TEXT_CONVERTER',
+    ] as $key) {
         hub_test_assert(isset($ocrSchema[$key]), 'OCR settings_schema missing ' . $key);
     }
     hub_test_assert(($ocrSchema['OCR_DEVICE']['default'] ?? '') === 'auto', 'OCR_DEVICE default mismatch');
     hub_test_assert(in_array('gpu', $ocrSchema['OCR_DEVICE']['options'] ?? [], true), 'OCR_DEVICE must allow gpu');
+    hub_test_assert(($ocrSchema['OCR_VERSION']['default'] ?? '') === 'PP-OCRv5', 'OCR_VERSION default mismatch');
+    hub_test_assert(($ocrSchema['OCR_TEXT_DETECTION_MODEL_NAME']['default'] ?? '') === 'PP-OCRv5_server_det', 'OCR det model default mismatch');
+    hub_test_assert(($ocrSchema['OCR_TEXT_RECOGNITION_MODEL_NAME']['default'] ?? '') === 'PP-OCRv5_server_rec', 'OCR rec model default mismatch');
+    hub_test_assert(($ocrSchema['OCR_TEXT_DET_LIMIT_SIDE_LEN']['default'] ?? '') === '960', 'OCR low VRAM side length default mismatch');
+    hub_test_assert(($ocrSchema['OCR_TEXT_DET_LIMIT_TYPE']['default'] ?? '') === 'max', 'OCR low VRAM limit type default mismatch');
+    hub_test_assert(($ocrSchema['OCR_TEXT_CONVERTER']['default'] ?? '') === 'opencc-s2twp', 'OCR text converter default mismatch');
     $ocrMounts = [];
     foreach ($ocr['storage']['mounts'] as $mount) {
         $ocrMounts[(string)$mount['type']] = (string)$mount['container_path'];
@@ -74,6 +92,7 @@ hub_test('catalog and required packs are readable', function (): void {
     }
     $inputFields = $contract['input']['fields'] ?? [];
     hub_test_assert(in_array('real_inference', array_column($inputFields, 'name'), true), 'OCR contract must document real_inference form field');
+    hub_test_assert(in_array('file', array_column($inputFields, 'name'), true), 'OCR contract must document legacy file upload alias');
 
     $translate = hub_get_pack('translate-gemma12b')['manifest'];
     hub_test_assert($translate['runtime_level'] === 'L5-benchmark-ready', 'Translate runtime level mismatch');
