@@ -560,7 +560,7 @@ http://localhost/3waAIHub/admin/packs.php
 - `ocr_real_image` benchmark 可驗單張圖片真 OCR 與 blocks contract
 - Pack Readiness 可在兩個 benchmark 都 PASS 後顯示 11/11
 - 一般 `ocr-main` 不強制 GPU；`ocr-gpu` 這類 service key 才會在 generated compose 加入 `gpus: all`
-- `/health` 會回報 GPU requested / available / effective device；目前預設 `paddlepaddle` 為 CPU build，GPU 不可用時會依 `OCR_GPU_FALLBACK_TO_CPU=1` fallback 到 CPU
+- `/health` 會回報 GPU requested / available / effective device；GPU image 使用 CUDA 12.9 `paddlepaddle-gpu` wheel，GPU 不可用時會依 `OCR_GPU_FALLBACK_TO_CPU=1` fallback 到 CPU
 
 ### translate-gemma12b Runtime Level
 

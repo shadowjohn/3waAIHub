@@ -10,6 +10,15 @@ def enabled(value: str | None) -> bool:
     return str(value or "").lower() in {"1", "true", "yes", "on"}
 
 
+def package_version(*names: str) -> str | None:
+    for name in names:
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return None
+
+
 def main() -> int:
     import paddle
 
@@ -20,7 +29,7 @@ def main() -> int:
 
     payload = {
         "ok": available or not required,
-        "paddle": importlib.metadata.version("paddlepaddle"),
+        "paddle": package_version("paddlepaddle", "paddlepaddle-gpu"),
         "paddle_cuda_compiled": compiled,
         "paddle_cuda_available": available,
         "cuda_device_count": device_count,

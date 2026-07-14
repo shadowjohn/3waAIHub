@@ -16,8 +16,9 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     $requirements = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/requirements.txt');
     hub_test_assert(str_contains($requirements, 'paddleocr'), 'OCR L4b must keep PaddleOCR dependency');
     hub_test_assert(str_contains($requirements, 'paddlepaddle'), 'OCR L4b real inference must install PaddlePaddle runtime dependency');
+    hub_test_assert(str_contains($requirements, 'paddlepaddle-gpu'), 'OCR GPU service must install PaddlePaddle GPU runtime dependency');
+    hub_test_assert(str_contains($requirements, 'cu129/paddlepaddle-gpu'), 'OCR GPU service must use CUDA 12.9 PaddlePaddle wheel');
     hub_test_assert(str_contains($requirements, 'opencc-python-reimplemented'), 'OCR migration must keep OpenCC Taiwan Traditional conversion dependency');
-    hub_test_assert(!str_contains($requirements, 'paddlepaddle-gpu'), 'OCR L4b real inference must not install PaddlePaddle GPU dependency');
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/smoke.py'), 'OCR smoke.py missing');
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/storage_smoke.py'), 'OCR storage_smoke.py missing');
     hub_test_assert(is_file(HUB_ROOT . '/packs/ocr-ppocrv5/service/model_smoke.py'), 'OCR model_smoke.py missing');
@@ -61,7 +62,7 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     }
 
     $gpuSmoke = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/gpu_smoke.py');
-    foreach (['paddle', 'is_compiled_with_cuda', 'OCR_GPU_REQUIRED'] as $needle) {
+    foreach (['paddle', 'paddlepaddle-gpu', 'is_compiled_with_cuda', 'OCR_GPU_REQUIRED'] as $needle) {
         hub_test_assert(str_contains($gpuSmoke, $needle), 'gpu_smoke.py missing ' . $needle);
     }
 
