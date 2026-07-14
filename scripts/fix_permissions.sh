@@ -29,6 +29,13 @@ for dir in data data/cache data/uploads data/results data/logs data/logs/jobs da
   mkdir -p "$dir"
 done
 
+# Git tracks executable bits but not read bits. A restrictive umask, archive
+# extraction, or root-side sync can leave PHP source as 600/700 and make Apache
+# fail during bootstrap before the app can log the error.
+find . \( -path './.git' -o -path './data' \) -prune -o -type d -exec chmod u+rwx,go+rx {} +
+find . \( -path './.git' -o -path './data' \) -prune -o -type f -exec chmod u+rw,go+r {} +
+find . \( -path './.git' -o -path './data' \) -prune -o -type f -perm -0100 -exec chmod go+rx {} +
+
 for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/ollama /DATA/models/sam3; do
   mkdir -p "$dir" 2>/dev/null || true
   chmod u+rwx,g+rwx,o+rx "$dir" 2>/dev/null || true

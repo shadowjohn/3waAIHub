@@ -996,6 +996,7 @@ sudo WEB_GROUP=www-data ./scripts/fix_permissions.sh
 
 腳本會使用：
 
+- 部署原始碼：目錄可進入、檔案可讀，避免 restrictive umask / archive extraction 造成 PHP bootstrap 空白 500
 - 目錄：`775` / 需要 web group 時使用 setgid
 - 檔案：`664`
 

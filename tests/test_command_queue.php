@@ -22,3 +22,12 @@ hub_test('cron loop runs both command and task workers', function (): void {
     hub_test_assert(str_contains($loop, "stat -c '%G'"), 'cron permission guard must detect wrong runtime group');
     hub_test_assert(str_contains($loop, 'TASK_WORKER_LIMIT'), 'cron loop must expose task worker limit');
 });
+
+hub_test('permission fixer repairs deployed source readability without touching runtime model', function (): void {
+    $script = (string)file_get_contents(HUB_ROOT . '/scripts/fix_permissions.sh');
+    hub_test_assert(str_contains($script, "-path './.git'"), 'permission fixer must skip .git');
+    hub_test_assert(str_contains($script, "-path './data'"), 'permission fixer must keep data runtime handling separate');
+    hub_test_assert(str_contains($script, '-type d -exec chmod u+rwx,go+rx'), 'permission fixer must make source directories traversable by PHP-FPM');
+    hub_test_assert(str_contains($script, '-type f -exec chmod u+rw,go+r'), 'permission fixer must make source files readable by PHP-FPM');
+    hub_test_assert(str_contains($script, '-perm -0100 -exec chmod go+rx'), 'permission fixer must preserve executable scripts for non-owner runners');
+});
