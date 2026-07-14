@@ -36,6 +36,14 @@ function hub_default_storage_settings(): array
         'AIHUB_LOGIN_MAX_FAILED_ATTEMPTS' => '3',
         'AIHUB_LOGIN_LOCK_MINUTES' => '5',
         'AIHUB_LOGIN_FAIL_WINDOW_MINUTES' => '10',
+        'PHOTO_TTL_DAYS' => '7',
+        'PHOTO_MAX_UPLOAD_MB' => '10',
+        'PHOTO_MAX_WIDTH' => '8192',
+        'PHOTO_MAX_HEIGHT' => '8192',
+        'PHOTO_MAX_PIXELS' => '25000000',
+        'PHOTO_MAX_TOKENS' => '2048',
+        'PHOTO_REAL_INFERENCE' => '0',
+        'PHOTO_VISION_SERVICE_KEY' => 'gemma4-main',
     ];
 }
 
