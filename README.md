@@ -84,8 +84,8 @@ cd /DATA/3waAIHub
 Windows 試水溫可用薄版 installer：
 
 ```powershell
-.\install.ps1
-.\install.ps1 -Check
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Check
 ```
 
 `install.ps1` 只做 Windows Control Plane preview：檢查 PHP / SQLite、建立 `data/` runtime 目錄、初始化 SQLite。它不安裝 Docker、NVIDIA、cron，也不承諾在 Windows 本機執行 Linux GPU Pack。啟動測試可用：
