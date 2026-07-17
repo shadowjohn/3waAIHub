@@ -37,6 +37,12 @@ hub_test('Pack Runtime Contract docs and YOLO local jobs are declared', function
         hub_test_assert(str_contains($source, '--user "$(id -u):$(id -g)"'), $jobKey . ' must not write root-owned workspace artifacts');
         hub_test_assert(str_contains($source, 'AIHUB_YOLO_MODELS_DIR'), $jobKey . ' must support the shared YOLO model directory');
         hub_test_assert(str_contains($source, '/models/yolo'), $jobKey . ' must mount models into the container at /models/yolo');
+        if ($jobKey === 'yolo_train') {
+            hub_test_assert(str_contains($source, '--shm-size "${AIHUB_YOLO_SHM_SIZE:-8g}"'), 'yolo_train must allocate Docker shm for PyTorch dataloader');
+            hub_test_assert(str_contains($source, 'best_model.predict('), 'yolo_train must generate validation predictions from best.pt');
+            hub_test_assert(str_contains($source, '"image_id"'), 'yolo_train validation predictions must use NatureWeb image_id format');
+            hub_test_assert(str_contains($source, '"category_id"'), 'yolo_train validation predictions must use NatureWeb category_id format');
+        }
     }
 
     $runtimeDoc = (string)file_get_contents(HUB_ROOT . '/docs/pack_runtime_contract_v0.1.md');

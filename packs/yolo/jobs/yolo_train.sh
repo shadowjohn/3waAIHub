@@ -60,7 +60,7 @@ fi
 
 models_dir="${AIHUB_YOLO_MODELS_DIR:-/DATA/models/yolo}"
 mkdir -p "$AIHUB_WORKSPACE/.cache/ultralytics" "$AIHUB_WORKSPACE/.cache/home" "$AIHUB_WORKSPACE/.cache/matplotlib"
-docker_args=(--rm -i --user "$(id -u):$(id -g)" -v "$AIHUB_WORKSPACE:/workspace" -w /workspace
+docker_args=(--rm -i --shm-size "${AIHUB_YOLO_SHM_SIZE:-8g}" --user "$(id -u):$(id -g)" -v "$AIHUB_WORKSPACE:/workspace" -w /workspace
   -e HOME=/workspace/.cache/home
   -e YOLO_CONFIG_DIR=/workspace/.cache/ultralytics
   -e ULTRALYTICS_SETTINGS_DIR=/workspace/.cache/ultralytics
@@ -149,7 +149,8 @@ for key in ("patience", "seed"):
 
 emit("running", f"Ultralytics train start model={model_name}")
 try:
-    YOLO(model_source).train(**kwargs)
+    model = YOLO(model_source)
+    model.train(**kwargs)
 except Exception as exc:
     fail(23, "train_failed", str(exc))
 
@@ -161,12 +162,30 @@ if results_csv.is_file():
         rows = list(csv.DictReader(fh))
     metrics = rows[-1] if rows else {}
 
-pred_path.parent.mkdir(parents=True, exist_ok=True)
-if not pred_path.exists():
-    pred_path.write_text(json.dumps({"ok": True, "source": "ultralytics_train", "predictions": []}, separators=(",", ":")) + "\n", encoding="utf-8")
-
 if not best.is_file():
     fail(24, "missing_best_weights", "Ultralytics completed but weights/best.pt was not produced.")
+
+pred_path.parent.mkdir(parents=True, exist_ok=True)
+val_images = workspace / "datasets/my_dataset/images/val"
+predictions = []
+if val_images.is_dir():
+    try:
+        best_model = YOLO(str(best))
+        for result in best_model.predict(source=str(val_images), imgsz=kwargs["imgsz"], device=device, save=False, verbose=False, stream=True):
+            image_id = Path(result.path).stem
+            boxes = getattr(result, "boxes", None)
+            if boxes is None:
+                continue
+            for box in boxes:
+                predictions.append({
+                    "image_id": image_id,
+                    "category_id": int(box.cls[0]),
+                    "bbox": [round(float(v), 3) for v in box.xyxy[0].tolist()],
+                    "score": round(float(box.conf[0]), 5),
+                })
+    except Exception as exc:
+        fail(25, "validation_predict_failed", str(exc))
+pred_path.write_text(json.dumps(predictions, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
 
 result_path.write_text(json.dumps({
     "ok": True,

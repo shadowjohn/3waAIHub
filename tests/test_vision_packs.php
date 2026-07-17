@@ -14,6 +14,7 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             $dockerfile = (string)file_get_contents($base . '/Dockerfile');
             hub_test_assert(is_file($base . '/smoke.py'), 'yolo service missing smoke.py');
             hub_test_assert(str_contains($requirements, 'ultralytics'), 'yolo requirements must include ultralytics');
+            hub_test_assert(str_contains($requirements, 'pi-heif'), 'yolo requirements must include pi-heif for Ultralytics image loading');
             hub_test_assert(str_contains($dockerfile, 'python3 /app/smoke.py') || str_contains($dockerfile, 'python3 smoke.py'), 'yolo Dockerfile must run smoke.py at build time');
             hub_test_assert(str_contains($app, 'return "L5-benchmark-ready"'), 'yolo app must expose L5 runtime_level');
             hub_test_assert(str_contains($app, '"storage"'), 'yolo health must report storage');
@@ -24,6 +25,7 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
 
             $smoke = (string)file_get_contents($base . '/smoke.py');
             hub_test_assert(str_contains($smoke, 'ultralytics'), 'yolo smoke.py must import ultralytics');
+            hub_test_assert(str_contains($smoke, 'pi_heif'), 'yolo smoke.py must import pi_heif');
             hub_test_assert(str_contains($smoke, 'fastapi'), 'yolo smoke.py must import fastapi');
             foreach (['YOLO(', 'predict', 'download'] as $needle) {
                 hub_test_assert(!str_contains($smoke, $needle), 'yolo smoke.py must not initialize model or detect: ' . $needle);
