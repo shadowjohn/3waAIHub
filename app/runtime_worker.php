@@ -26,7 +26,7 @@ function hub_runtime_claim_next(PDO $db, string $workerId, int $leaseSeconds): ?
     try {
         $run = $db->query("SELECT * FROM runtime_runs WHERE state = 'queued' ORDER BY id ASC LIMIT 1")->fetch();
         if ($run === false) {
-            $db->commit();
+            $db->exec('COMMIT');
             return null;
         }
 
@@ -46,17 +46,15 @@ function hub_runtime_claim_next(PDO $db, string $workerId, int $leaseSeconds): ?
             ':id' => (int)$run['id'],
         ]);
         if ($stmt->rowCount() !== 1) {
-            $db->commit();
+            $db->exec('COMMIT');
             return null;
         }
 
         $claimed = hub_runtime_fetch_run($db, (int)$run['id']);
-        $db->commit();
+        $db->exec('COMMIT');
         return $claimed;
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
-        }
+        $db->exec('ROLLBACK');
         throw $e;
     }
 }
@@ -139,7 +137,7 @@ function hub_runtime_takeover_stale(PDO $db, int $runId, string $workerId, int $
     try {
         $run = hub_runtime_fetch_run($db, $runId);
         if ($run === null) {
-            $db->commit();
+            $db->exec('COMMIT');
             return null;
         }
 
@@ -172,17 +170,15 @@ function hub_runtime_takeover_stale(PDO $db, int $runId, string $workerId, int $
         ]);
 
         if ($stmt->rowCount() !== 1) {
-            $db->commit();
+            $db->exec('COMMIT');
             return null;
         }
 
         $recovered = hub_runtime_fetch_run($db, $runId);
-        $db->commit();
+        $db->exec('COMMIT');
         return $recovered;
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
-        }
+        $db->exec('ROLLBACK');
         throw $e;
     }
 }
