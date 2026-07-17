@@ -102,13 +102,86 @@ function hub_runtime_finish(PDO $db, int $runId, string $leaseToken, string $sta
 
     $stmt = $db->prepare(
         "UPDATE runtime_runs
-         SET state = :state, finished_at = :finished_at, error_code = :error_code
-         WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')"
+         SET state = :state, finished_at = :finished_at, error_code = :error_code, lease_expires_at = NULL
+         WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')
+           AND (:state != 'succeeded' OR cancel_requested_at IS NULL)"
     );
     $stmt->execute([
         ':state' => $state,
         ':finished_at' => hub_now(),
         ':error_code' => isset($result['error']) ? (string)$result['error'] : null,
+        ':id' => $runId,
+        ':lease_token' => $leaseToken,
+    ]);
+
+    return $stmt->rowCount() === 1;
+}
+
+function hub_runtime_request_cancel(PDO $db, int $runId, ?string $reason = null): bool
+{
+    $reason = $reason === null ? null : substr(trim($reason), 0, 512);
+    $stmt = $db->prepare(
+        "UPDATE runtime_runs
+         SET cancel_requested_at = :now, cancel_reason = :reason
+         WHERE id = :id AND state IN ('claimed', 'running') AND cancel_requested_at IS NULL"
+    );
+    $stmt->execute([
+        ':now' => hub_now(),
+        ':reason' => $reason === '' ? null : $reason,
+        ':id' => $runId,
+    ]);
+    if ($stmt->rowCount() === 1) {
+        return true;
+    }
+
+    $row = hub_runtime_fetch_run($db, $runId);
+    return $row !== null
+        && in_array((string)$row['state'], ['claimed', 'running'], true)
+        && !empty($row['cancel_requested_at']);
+}
+
+function hub_runtime_is_cancel_requested(PDO $db, int $runId): bool
+{
+    $stmt = $db->prepare('SELECT cancel_requested_at FROM runtime_runs WHERE id = :id');
+    $stmt->execute([':id' => $runId]);
+    $value = $stmt->fetchColumn();
+
+    return is_string($value) && $value !== '';
+}
+
+function hub_runtime_mark_cancelled(PDO $db, int $runId, string $leaseToken): bool
+{
+    $stmt = $db->prepare(
+        "UPDATE runtime_runs
+         SET state = 'cancelled', cancelled_at = :now, finished_at = :now, lease_expires_at = NULL
+         WHERE id = :id
+           AND lease_token = :lease_token
+           AND state IN ('claimed', 'running')
+           AND cancel_requested_at IS NOT NULL"
+    );
+    $stmt->execute([
+        ':now' => hub_now(),
+        ':id' => $runId,
+        ':lease_token' => $leaseToken,
+    ]);
+
+    return $stmt->rowCount() === 1;
+}
+
+function hub_runtime_mark_timed_out(PDO $db, int $runId, string $leaseToken, ?string $now = null): bool
+{
+    $stmt = $db->prepare(
+        "UPDATE runtime_runs
+         SET state = 'timed_out', finished_at = :now, lease_expires_at = NULL
+         WHERE id = :id
+           AND lease_token = :lease_token
+           AND state IN ('claimed', 'running')
+           AND cancel_requested_at IS NULL
+           AND timeout_at IS NOT NULL
+           AND timeout_at <= :now"
+    );
+    $stmt->execute([
+        ':now' => $now ?? hub_now(),
         ':id' => $runId,
         ':lease_token' => $leaseToken,
     ]);
@@ -256,7 +329,7 @@ function hub_runtime_apply_recovery(PDO $db, int $runId, string $leaseToken, arr
     $stmt = $db->prepare(
         "UPDATE runtime_runs
          SET state = :state, finished_at = :now, error_code = :error_code,
-             last_recovered_at = :now, last_recovery_reason = :reason
+             lease_expires_at = NULL, last_recovered_at = :now, last_recovery_reason = :reason
          WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')"
     );
     $stmt->execute([

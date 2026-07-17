@@ -801,7 +801,7 @@ runtime/resource.ndjson
 runtime/events.ndjson
 ```
 
-Runner 也會寫入 SQLite `runtime_runs` 與 `runtime_resource_samples`。這是 L2 Local Execution 的薄觀測能力；排隊、取消、重試、timeout、concurrency 與 GPU lock 仍留給後續 Managed Job。
+Runner 也會寫入 SQLite `runtime_runs` 與 `runtime_resource_samples`。這是 L2 Local Execution 的薄觀測能力；Runtime 已有 ownership、recovery、cancel request 與 timeout final-state helper。真正的 worker 停止程序、重試、concurrency 與 GPU lock 仍留給後續 Managed Job。
 
 ### sam3 Runtime Level
 

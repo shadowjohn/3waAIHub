@@ -2900,3 +2900,38 @@ Kept intentionally small:
 - No resource lock.
 - No automatic container restart.
 - No `aihub-run` flow integration yet.
+
+## PhaseRuntime-2C1 Cancel / Timeout State Semantics
+
+Added the runtime state helpers for cooperative cancel requests and timeout finalization.
+
+Implemented:
+
+- `hub_runtime_request_cancel()`
+- `hub_runtime_is_cancel_requested()`
+- `hub_runtime_mark_cancelled()`
+- `hub_runtime_mark_timed_out()`
+- `cancel_requested_at`, `cancel_reason`, `timeout_at`, `cancelled_at` columns
+- `tests/test_runtime_cancel_timeout.php`
+
+Rules:
+
+- Cancel request is a signal, not a new state.
+- Cancel request only applies to `claimed` / `running`.
+- Duplicate cancel requests are idempotent and do not overwrite the first timestamp or reason.
+- Final states reject cancel requests.
+- Marking `cancelled` requires the owning `lease_token`.
+- Marking `cancelled` requires a prior cancel request.
+- `cancelled` and `timed_out` are final states and clear active lease expiry.
+- `timeout_at` must be due before `timed_out` can be applied.
+- Cancel requests win over timeout finalization.
+- Once cancel is requested, `finish(..., succeeded)` is rejected.
+
+Kept intentionally small:
+
+- No process signal.
+- No SIGTERM / SIGKILL.
+- No retry.
+- No requeue.
+- No resource lock.
+- No UI changes.
