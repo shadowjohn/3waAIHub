@@ -20,16 +20,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     $lock = hub_login_lock_status($db, $ip);
     if ($lock['locked']) {
         hub_record_login_failure($db, $ip, $username, 'ip_locked', (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
-        $error = '登入嘗試過多，請稍後再試。';
+        $error = __('登入嘗試過多，請稍後再試。');
     } elseif (!hub_verify_login_captcha((string)($_POST['captcha'] ?? ''))) {
         hub_record_login_attempt($db, $ip, $username, false, 'captcha_failed', (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
-        $error = '帳號或密碼錯誤，或目前無法登入。';
+        $error = __('帳號或密碼錯誤，或目前無法登入。');
     } elseif (hub_login_with_lockout($db, $username, (string)($_POST['password'] ?? ''), $ip, (string)($_SERVER['HTTP_USER_AGENT'] ?? ''))['ok']) {
         hub_redirect(hub_login_redirect_path($db));
     } else {
         $error = hub_login_lock_status($db, $ip)['locked']
-            ? '登入嘗試過多，請稍後再試。'
-            : '帳號或密碼錯誤，或目前無法登入。';
+            ? __('登入嘗試過多，請稍後再試。')
+            : __('帳號或密碼錯誤，或目前無法登入。');
     }
     $captchaCode = hub_login_captcha_code();
 }
@@ -39,7 +39,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>登入 - <?= hub_h($siteTitle) ?></title>
+    <title><?= hub_h(__('登入')) ?> - <?= hub_h($siteTitle) ?></title>
     <style>
         body { align-items: center; background: #f6f7f9; display: flex; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; justify-content: center; min-height: 100vh; margin: 0; }
         form { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; padding: 24px; width: min(360px, calc(100vw - 32px)); }
@@ -49,6 +49,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         .captcha-box { align-items: center; background: #0b1220; border: 1px solid #243b53; border-radius: 6px; color: #54e68b; display: flex; font-family: "SFMono-Regular", Consolas, monospace; justify-content: center; margin: 6px 0 10px; padding: 10px 12px; }
         .captcha-code { font-size: 20px; font-weight: 700; letter-spacing: 4px; user-select: none; }
         .error { color: #b42318; margin-bottom: 12px; }
+        .i18n-selector { display: block; margin: 0 0 14px; }
+        .i18n-selector select { border: 1px solid #d9dee7; border-radius: 6px; box-sizing: border-box; font: inherit; padding: 8px 10px; width: 100%; }
         .muted { color: #667085; }
     </style>
 </head>
@@ -56,17 +58,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 <form method="post">
     <h1><?= hub_h($siteTitle) ?></h1>
     <p class="muted"><?= hub_h($siteSubtitle) ?></p>
+    <?= hub_i18n_language_selector() ?>
     <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
-    <label>帳號</label>
+    <label><?= hub_h(__('帳號')) ?></label>
     <input name="username" autocomplete="username" required>
-    <label>密碼</label>
+    <label><?= hub_h(__('密碼')) ?></label>
     <input name="password" type="password" autocomplete="current-password" required>
-    <label>驗證碼</label>
-    <div class="captcha-box" aria-label="登入驗證碼">
+    <label><?= hub_h(__('驗證碼')) ?></label>
+    <div class="captcha-box" aria-label="<?= hub_h(__('登入驗證碼')) ?>">
         <span class="captcha-code"><?= hub_h($captchaCode) ?></span>
     </div>
     <input name="captcha" autocomplete="off" autocapitalize="characters" required>
-    <button type="submit">登入</button>
+    <button type="submit"><?= hub_h(__('登入')) ?></button>
 </form>
 </body>
 </html>

@@ -354,6 +354,7 @@ function hub_public_api_manifest(PDO $db): array
 function hub_public_api_docs_html(PDO $db, ?array $user = null): string
 {
     $services = hub_public_api_services($db);
+    $t = static fn (string $value): string => hub_h(__($value));
     ob_start();
     ?>
 <!doctype html>
@@ -361,7 +362,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>3waAIHub API 介接文件</title>
+    <title><?= $t('3waAIHub API 介接文件') ?></title>
     <style>
         :root { color-scheme: light; --bg: #f6f7f9; --panel: #fff; --line: #d9dee7; --text: #1d2430; --muted: #667085; --blue: #1769e0; }
         body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; }
@@ -381,27 +382,30 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
         th, td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; }
         th { color: var(--muted); width: 130px; }
         .button { border: 1px solid var(--line); border-radius: 6px; color: var(--text); display: inline-block; padding: 7px 11px; text-decoration: none; }
+        .i18n-selector { display: inline-block; margin-top: 8px; }
+        .i18n-selector select { border: 1px solid var(--line); border-radius: 6px; font: inherit; padding: 7px 10px; width: auto; }
     </style>
 </head>
 <body>
 <main>
     <section class="panel">
-        <h1>3waAIHub API 介接文件</h1>
-        <p class="muted">這份文件只提供外部介接所需資訊，不包含後台管理連結、內部部署資訊、主機檔案路徑或 token 明文。</p>
-        <p>認證方式：<code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
+        <h1><?= $t('3waAIHub API 介接文件') ?></h1>
+        <p class="muted"><?= $t('這份文件只提供外部介接所需資訊，不包含後台管理連結、內部部署資訊、主機檔案路徑或 token 明文。') ?></p>
+        <p><?= $t('認證方式') ?>：<code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
         <p>API Endpoint：<code><?= hub_h(hub_public_api_base_url()) ?>?mode=&lt;mode&gt;</code></p>
-        <p>DocParser 局部補翻譯：看 <code>quality_report.missing_translation_blocks</code>，再送 <code>task_type=docparser_repair_translation</code>、<code>task_id</code>、<code>block_ids</code> 到 <code><?= hub_h(hub_public_api_base_url()) ?>?mode=task_submit</code>。此流程只重翻指定 block，不重跑 OCR / layout / figure extraction。</p>
-        <nav class="tabs" aria-label="Public API docs sections">
-            <a class="tab" href="#api">API modes</a>
-            <a class="tab" href="#local-jobs">Local Jobs</a>
+        <p>DocParser <?= $t('局部補翻譯') ?>：<?= $t('看') ?> <code>quality_report.missing_translation_blocks</code>，<?= $t('再送') ?> <code>task_type=docparser_repair_translation</code>、<code>task_id</code>、<code>block_ids</code> <?= $t('到') ?> <code><?= hub_h(hub_public_api_base_url()) ?>?mode=task_submit</code>。<?= $t('此流程只重翻指定 block，不重跑 OCR / layout / figure extraction。') ?></p>
+        <nav class="tabs" aria-label="<?= $t('公開 API 文件區段') ?>">
+            <a class="tab" href="#api">API modes / <?= $t('API 模式') ?></a>
+            <a class="tab" href="#local-jobs">Local Jobs / <?= $t('本機工作') ?></a>
         </nav>
+        <?= hub_i18n_language_selector() ?>
         <?php if ($user !== null): ?>
-            <p><a class="button" href="admin/playground.php">開啟 API 測試場</a></p>
+            <p><a class="button" href="admin/playground.php"><?= $t('開啟 API 測試場') ?></a></p>
         <?php endif; ?>
     </section>
     <section id="api" class="panel">
         <div class="section-title">
-            <h2>API modes</h2>
+            <h2>API modes / <?= $t('API 模式') ?></h2>
             <span class="muted">HTTP Gateway</span>
         </div>
         <p><?php foreach ($services as $service): ?><code><?= hub_h((string)$service['mode']) ?></code> <?php endforeach; ?></p>
@@ -422,38 +426,38 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
                         <tr><th>task_type</th><td><code><?= hub_h((string)$service['task_type']) ?></code></td></tr>
                     <?php endif; ?>
                 </table>
-                <h3>Request fields</h3>
+                <h3><?= $t('Request 欄位') ?></h3>
                 <pre><?= hub_h(json_encode($service['input_fields'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
-                <h3>Response keys</h3>
+                <h3><?= $t('Response keys') ?></h3>
                 <pre><?= hub_h(json_encode($service['output_keys'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <?php if (($service['task_api'] ?? []) !== []): ?>
-                    <h3>Task status / result</h3>
+                    <h3><?= $t('Task 狀態 / 結果') ?></h3>
                     <pre><?= hub_h(json_encode($service['task_api'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <?php endif; ?>
-                <h3>Error codes</h3>
+                <h3><?= $t('錯誤碼') ?></h3>
                 <pre><?= hub_h(implode(', ', $service['error_codes'])) ?></pre>
-                <h3>curl 範例</h3>
+                <h3><?= $t('curl 範例') ?></h3>
                 <pre><?= hub_h((string)$service['examples']['curl']) ?></pre>
-                <h3>PHP 範例</h3>
+                <h3><?= $t('PHP 範例') ?></h3>
                 <pre><?= hub_h((string)$service['examples']['php']) ?></pre>
-                <h3>JS fetch 範例</h3>
+                <h3><?= $t('JS fetch 範例') ?></h3>
                 <pre><?= hub_h((string)$service['examples']['js_fetch']) ?></pre>
             </article>
         <?php endforeach; ?>
     </section>
     <section id="local-jobs" class="panel">
         <div class="section-title">
-            <h2>Local Jobs</h2>
+            <h2>Local Jobs / <?= $t('本機工作') ?></h2>
             <span class="muted">Local Job Contract v0.1</span>
         </div>
-        <p class="muted">Local Job 是本機 CLI / workspace contract，不是 <code>api.php?mode=...</code>。適合批次推論、訓練、模型匯出、GIS 批次處理等需要檔案工作區的任務。</p>
-        <p>薄呼叫入口：</p>
+        <p class="muted">Local Job <?= $t('是本機 CLI / workspace contract，不是') ?> <code>api.php?mode=...</code>。<?= $t('適合批次推論、訓練、模型匯出、GIS 批次處理等需要檔案工作區的任務。') ?></p>
+        <p><?= $t('薄呼叫入口') ?>：</p>
         <pre>bin/aihub-run yolo_predict --pack yolo --workspace &lt;WORKSPACE&gt;
 bin/aihub-run yolo_train --pack yolo --workspace &lt;WORKSPACE&gt; --gpu 0
 bin/aihub-run yolo_export_onnx --pack yolo --workspace &lt;WORKSPACE&gt;</pre>
         <div class="grid">
             <article class="card">
-                <h3>Workspace contract</h3>
+                <h3><?= $t('Workspace contract') ?></h3>
                 <pre>workspace/
 ├─ input/
 ├─ output/
@@ -468,21 +472,21 @@ bin/aihub-run yolo_export_onnx --pack yolo --workspace &lt;WORKSPACE&gt;</pre>
 └─ result.json</pre>
             </article>
             <article class="card">
-                <h3>Local jobs</h3>
+                <h3><?= $t('本機工作') ?></h3>
                 <ul class="job-list">
-                    <li><code>yolo_predict</code>：真實 Ultralytics batch predict runner</li>
-                    <li><code>yolo_train</code>：真實 Ultralytics training runner</li>
-                    <li><code>yolo_export_onnx</code>：真實 Ultralytics ONNX export runner</li>
+                    <li><code>yolo_predict</code>：<?= $t('真實 Ultralytics 批次 predict runner') ?></li>
+                    <li><code>yolo_train</code>：<?= $t('真實 Ultralytics training runner') ?></li>
+                    <li><code>yolo_export_onnx</code>：<?= $t('真實 Ultralytics ONNX export runner') ?></li>
                 </ul>
-                <p class="muted">Local Job 由受控本機環境執行；公開文件不提供內部 port、主機路徑、Docker 權限端點或敏感設定。</p>
+                <p class="muted">Local Job <?= $t('由受控本機環境執行；公開文件不提供內部 port、主機路徑、Docker 權限端點或敏感設定。') ?></p>
             </article>
             <article class="card">
-                <h3>Result rules</h3>
+                <h3><?= $t('結果規則') ?></h3>
                 <table>
-                    <tr><th>status.json</th><td>目前狀態、stage、progress、message。</td></tr>
-                    <tr><th>progress.ndjson</th><td>可串接 UI 的逐行進度事件。</td></tr>
-                    <tr><th>result.json</th><td>最終輸出摘要、artifacts、metrics、exit_code。</td></tr>
-                    <tr><th>exit code</th><td><code>0</code> 表示 success；非 <code>0</code> 表示 failed。</td></tr>
+                    <tr><th>status.json</th><td><?= $t('目前狀態、stage、progress、message。') ?></td></tr>
+                    <tr><th>progress.ndjson</th><td><?= $t('可串接 UI 的逐行進度事件。') ?></td></tr>
+                    <tr><th>result.json</th><td><?= $t('最終輸出摘要、artifacts、metrics、exit_code。') ?></td></tr>
+                    <tr><th>exit code</th><td><code>0</code> <?= $t('表示 success；非') ?> <code>0</code> <?= $t('表示 failed。') ?></td></tr>
                 </table>
             </article>
         </div>
