@@ -19,6 +19,27 @@ hub_test('i18n sqlite table helper and language cookie contract work', function 
     $_COOKIE['USER_LANG'] = 'zh_TW';
 });
 
+hub_test('i18n seed imports without overwriting local translations', function (): void {
+    $db = hub_test_reset_db();
+    $seed = sys_get_temp_dir() . '/3waaihub_i18n_seed_' . getmypid() . '.json';
+    file_put_contents($seed, json_encode([
+        ['title' => '控制台', 'lang' => 'en', 'trans' => 'Dashboard'],
+        ['title' => '服務管理', 'lang' => 'en', 'trans' => 'Services'],
+    ], JSON_UNESCAPED_UNICODE));
+
+    hub_test_assert(hub_i18n_import_seed($db, $seed) === 2, 'seed should import two rows');
+    hub_test_assert(__('控制台', 'en') === 'Dashboard', 'seed translation missing');
+
+    $db->prepare('UPDATE i18n SET trans = :trans WHERE title = :title AND lang = :lang')
+        ->execute([':trans' => 'Local Dashboard', ':title' => '控制台', ':lang' => 'en']);
+    hub_test_assert(hub_i18n_import_seed($db, $seed) === 0, 'seed import must not overwrite local rows');
+    hub_test_assert(__('控制台', 'en') === 'Local Dashboard', 'local translation must win');
+
+    $export = hub_i18n_export_seed($db);
+    hub_test_assert(count($export) >= 2, 'export seed should include imported rows');
+    hub_test_assert(is_file(HUB_ROOT . '/scripts/export_i18n_seed.php'), 'export_i18n_seed.php missing');
+});
+
 hub_test('admin i18n maintenance tab and language selectors are present', function (): void {
     foreach ([
         HUB_ROOT . '/admin/settings.php',

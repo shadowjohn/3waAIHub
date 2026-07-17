@@ -150,3 +150,63 @@ function hub_i18n_translate_google(string $text, string $targetLang, string $sou
 
     return trim(str_replace('null', '', $out));
 }
+
+function hub_i18n_seed_path(): string
+{
+    return HUB_ROOT . '/i18n/seed.json';
+}
+
+function hub_i18n_import_seed(PDO $db, ?string $path = null): int
+{
+    $path ??= hub_i18n_seed_path();
+    if (!is_file($path)) {
+        return 0;
+    }
+
+    $rows = json_decode((string)file_get_contents($path), true);
+    if (!is_array($rows)) {
+        throw new RuntimeException('Invalid i18n seed JSON.');
+    }
+
+    $insert = $db->prepare(
+        'INSERT INTO i18n (title, lang, trans)
+         SELECT :title, :lang, :trans
+         WHERE NOT EXISTS (
+             SELECT 1 FROM i18n WHERE title = :title AND lang = :lang
+         )'
+    );
+    $count = 0;
+    foreach ($rows as $row) {
+        $title = trim((string)($row['title'] ?? ''));
+        $lang = hub_i18n_normalize_lang((string)($row['lang'] ?? ''));
+        $trans = trim((string)($row['trans'] ?? ''));
+        if ($title === '' || $trans === '' || $lang === 'zh_TW') {
+            continue;
+        }
+        $insert->execute([':title' => $title, ':lang' => $lang, ':trans' => $trans]);
+        $count += $insert->rowCount();
+    }
+
+    return $count;
+}
+
+function hub_i18n_export_seed(PDO $db): array
+{
+    $rows = $db->query(
+        "SELECT i.title, i.lang, i.trans
+         FROM i18n i
+         INNER JOIN (
+             SELECT title, lang, MAX(id) AS id
+             FROM i18n
+             WHERE title != '' AND lang != '' AND lang != 'zh_TW' AND COALESCE(trans, '') != ''
+             GROUP BY title, lang
+         ) latest ON latest.id = i.id
+         ORDER BY i.lang ASC, i.title ASC"
+    )->fetchAll(PDO::FETCH_ASSOC);
+
+    return array_map(static fn (array $row): array => [
+        'title' => (string)$row['title'],
+        'lang' => hub_i18n_normalize_lang((string)$row['lang']),
+        'trans' => (string)$row['trans'],
+    ], $rows);
+}

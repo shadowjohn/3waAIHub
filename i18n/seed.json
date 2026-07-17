@@ -1,0 +1,2502 @@
+[
+    {
+        "title": "/ 可用空間",
+        "lang": "en",
+        "trans": "/available space"
+    },
+    {
+        "title": "24h 失敗 Runtime",
+        "lang": "en",
+        "trans": "24h failed Runtime"
+    },
+    {
+        "title": "API 24h 呼叫數",
+        "lang": "en",
+        "trans": "API 24h call count"
+    },
+    {
+        "title": "API 24h 失敗數",
+        "lang": "en",
+        "trans": "API 24h failure count"
+    },
+    {
+        "title": "API testing ground",
+        "lang": "en",
+        "trans": "API testing ground"
+    },
+    {
+        "title": "API 文件",
+        "lang": "en",
+        "trans": "API documentation"
+    },
+    {
+        "title": "API 測試場",
+        "lang": "en",
+        "trans": "API testing ground"
+    },
+    {
+        "title": "API 記錄",
+        "lang": "en",
+        "trans": "API records"
+    },
+    {
+        "title": "API 金鑰",
+        "lang": "en",
+        "trans": "API key"
+    },
+    {
+        "title": "Agent Manifest 文件",
+        "lang": "en",
+        "trans": "Agent Manifest file"
+    },
+    {
+        "title": "Bearer token 只用於本次測試，不保存；範例固定使用",
+        "lang": "en",
+        "trans": "Bearer token is only used for this test and will not be saved; the example is fixed for use."
+    },
+    {
+        "title": "Benchmark 測試",
+        "lang": "en",
+        "trans": "Benchmark test"
+    },
+    {
+        "title": "Buff/Cache",
+        "lang": "en",
+        "trans": "Buff/Cache"
+    },
+    {
+        "title": "Change password",
+        "lang": "en",
+        "trans": "Change password"
+    },
+    {
+        "title": "Docker 根目錄",
+        "lang": "en",
+        "trans": "Docker root directory"
+    },
+    {
+        "title": "Docker 根目錄可用",
+        "lang": "en",
+        "trans": "Docker root directory available"
+    },
+    {
+        "title": "GPU 使用率",
+        "lang": "en",
+        "trans": "GPU usage"
+    },
+    {
+        "title": "GPU 溫度",
+        "lang": "en",
+        "trans": "GPU temperature"
+    },
+    {
+        "title": "GPU 記憶體",
+        "lang": "en",
+        "trans": "GPU memory"
+    },
+    {
+        "title": "HubPack 套件",
+        "lang": "en",
+        "trans": "HubPack Kit"
+    },
+    {
+        "title": "IP whitelist",
+        "lang": "en",
+        "trans": "IP whitelist"
+    },
+    {
+        "title": "IP 白名單",
+        "lang": "en",
+        "trans": "IP whitelist"
+    },
+    {
+        "title": "L5 Pack 數",
+        "lang": "en",
+        "trans": "Number of L5 Packs"
+    },
+    {
+        "title": "My Token",
+        "lang": "en",
+        "trans": "My Token"
+    },
+    {
+        "title": "Pack 數",
+        "lang": "en",
+        "trans": "Pack number"
+    },
+    {
+        "title": "Pack 準備狀態",
+        "lang": "en",
+        "trans": "Pack readiness status"
+    },
+    {
+        "title": "RAM（以 MemAvailable 判斷）",
+        "lang": "en",
+        "trans": "RAM (judged by MemAvailable)"
+    },
+    {
+        "title": "Runtime 24h 執行數",
+        "lang": "en",
+        "trans": "Runtime 24h execution number"
+    },
+    {
+        "title": "Swap 已用",
+        "lang": "en",
+        "trans": "Swap used"
+    },
+    {
+        "title": "Token 列表",
+        "lang": "en",
+        "trans": "Token list"
+    },
+    {
+        "title": "Token 名稱",
+        "lang": "en",
+        "trans": "Token name"
+    },
+    {
+        "title": "Token 明文只會在建立當下顯示一次。新 Token 會自動套用管理員授權給你的 mode。",
+        "lang": "en",
+        "trans": "Token plain text will only be displayed once when it is created. The new Token will automatically apply the mode authorized to you by the administrator."
+    },
+    {
+        "title": "Token 權限",
+        "lang": "en",
+        "trans": "Token permissions"
+    },
+    {
+        "title": "Token 需求",
+        "lang": "en",
+        "trans": "Token requirements"
+    },
+    {
+        "title": "Usage statistics",
+        "lang": "en",
+        "trans": "Usage statistics"
+    },
+    {
+        "title": "VRAM 使用量",
+        "lang": "en",
+        "trans": "VRAM usage"
+    },
+    {
+        "title": "YYYY-MM-DD HH:MM:SS，留空表示不設定",
+        "lang": "en",
+        "trans": "YYYY-MM-DD HH:MM:SS, leave blank to not set"
+    },
+    {
+        "title": "my services",
+        "lang": "en",
+        "trans": "my services"
+    },
+    {
+        "title": "○ Controlled Volume Binding（受控 Volume 掛載）",
+        "lang": "en",
+        "trans": "○ Controlled Volume Binding (Controlled Volume Mounting)"
+    },
+    {
+        "title": "○ External Database Profile（外部資料庫設定）",
+        "lang": "en",
+        "trans": "○ External Database Profile"
+    },
+    {
+        "title": "○ Generic Service Publishing（通用服務發佈）",
+        "lang": "en",
+        "trans": "○ Generic Service Publishing"
+    },
+    {
+        "title": "● API Gateway（API 閘道）",
+        "lang": "en",
+        "trans": "● API Gateway"
+    },
+    {
+        "title": "● Service Runtime（常駐服務）",
+        "lang": "en",
+        "trans": "● Service Runtime (resident service)"
+    },
+    {
+        "title": "◐ Local Job Runtime（本機工作）",
+        "lang": "en",
+        "trans": "◐ Local Job Runtime (local job)"
+    },
+    {
+        "title": "◐ Run History（執行歷程）",
+        "lang": "en",
+        "trans": "◐ Run History (execution history)"
+    },
+    {
+        "title": "上傳容量",
+        "lang": "en",
+        "trans": "Upload capacity"
+    },
+    {
+        "title": "不支援萬用字元：",
+        "lang": "en",
+        "trans": "Wildcards are not supported:"
+    },
+    {
+        "title": "主機負載",
+        "lang": "en",
+        "trans": "Host load"
+    },
+    {
+        "title": "介接公開狀態",
+        "lang": "en",
+        "trans": "Intermediate public status"
+    },
+    {
+        "title": "介接範例",
+        "lang": "en",
+        "trans": "Interface example"
+    },
+    {
+        "title": "使用 GET，不需要欄位。",
+        "lang": "en",
+        "trans": "With GET, no fields are required."
+    },
+    {
+        "title": "依系統設定，公開 API 文件可能僅允許本機讀取。",
+        "lang": "en",
+        "trans": "Depending on system settings, public API files may only be read by the local machine."
+    },
+    {
+        "title": "停用",
+        "lang": "en",
+        "trans": "deactivate"
+    },
+    {
+        "title": "健康正常",
+        "lang": "en",
+        "trans": "healthy and normal"
+    },
+    {
+        "title": "健康異常 / 未檢查",
+        "lang": "en",
+        "trans": "Health Abnormal / Not Checked"
+    },
+    {
+        "title": "備註",
+        "lang": "en",
+        "trans": "Remark"
+    },
+    {
+        "title": "僅本機",
+        "lang": "en",
+        "trans": "This machine only"
+    },
+    {
+        "title": "儀表板",
+        "lang": "en",
+        "trans": "Dashboard"
+    },
+    {
+        "title": "儀表板只讀 SQLite 最新監測快照；主機探測請由 CLI / cron 執行。",
+        "lang": "en",
+        "trans": "Dashboard read-only latest SQLite monitoring snapshot; host probing should be performed by CLI/cron."
+    },
+    {
+        "title": "全部開放最簡單是不要設定任何規則。",
+        "lang": "en",
+        "trans": "The easiest way to open everything up is to not set any rules."
+    },
+    {
+        "title": "公開 API 文件",
+        "lang": "en",
+        "trans": "Public API documentation"
+    },
+    {
+        "title": "刪除",
+        "lang": "en",
+        "trans": "delete"
+    },
+    {
+        "title": "到 API 測試場",
+        "lang": "en",
+        "trans": "Go to the API test site"
+    },
+    {
+        "title": "前往 API 金鑰建立",
+        "lang": "en",
+        "trans": "Go to API key creation"
+    },
+    {
+        "title": "前綴",
+        "lang": "en",
+        "trans": "prefix"
+    },
+    {
+        "title": "只顯示你自己的 Token API 用量。",
+        "lang": "en",
+        "trans": "Only show your own Token API usage."
+    },
+    {
+        "title": "可用",
+        "lang": "en",
+        "trans": "Available"
+    },
+    {
+        "title": "可用 / 總量",
+        "lang": "en",
+        "trans": "available/total"
+    },
+    {
+        "title": "名稱",
+        "lang": "en",
+        "trans": "name"
+    },
+    {
+        "title": "否",
+        "lang": "en",
+        "trans": "no"
+    },
+    {
+        "title": "啟用",
+        "lang": "en",
+        "trans": "enable"
+    },
+    {
+        "title": "啟用狀態",
+        "lang": "en",
+        "trans": "Enabled status"
+    },
+    {
+        "title": "回應容量",
+        "lang": "en",
+        "trans": "response capacity"
+    },
+    {
+        "title": "回應結果",
+        "lang": "en",
+        "trans": "Response results"
+    },
+    {
+        "title": "執行中",
+        "lang": "en",
+        "trans": "Executing"
+    },
+    {
+        "title": "執行中 Runtime",
+        "lang": "en",
+        "trans": "Executing Runtime"
+    },
+    {
+        "title": "執行歷程",
+        "lang": "en",
+        "trans": "Execution process"
+    },
+    {
+        "title": "執行測試",
+        "lang": "en",
+        "trans": "Execute tests"
+    },
+    {
+        "title": "失敗",
+        "lang": "en",
+        "trans": "fail"
+    },
+    {
+        "title": "失敗 tasks：",
+        "lang": "en",
+        "trans": "Failed tasks:"
+    },
+    {
+        "title": "安裝、啟用、公開 AI 服務。",
+        "lang": "en",
+        "trans": "Install, enable, and expose AI services."
+    },
+    {
+        "title": "安裝套件",
+        "lang": "en",
+        "trans": "Installation kit"
+    },
+    {
+        "title": "客戶管理",
+        "lang": "en",
+        "trans": "Customer management"
+    },
+    {
+        "title": "尚未執行測試。",
+        "lang": "en",
+        "trans": "Testing has not been performed yet."
+    },
+    {
+        "title": "已停止",
+        "lang": "en",
+        "trans": "Stopped"
+    },
+    {
+        "title": "已停用",
+        "lang": "en",
+        "trans": "Deactivated"
+    },
+    {
+        "title": "已啟用",
+        "lang": "en",
+        "trans": "Enabled"
+    },
+    {
+        "title": "已完成：Docker 服務生命週期、健康檢查、Gateway。",
+        "lang": "en",
+        "trans": "Completed: Docker service life cycle, health check, Gateway."
+    },
+    {
+        "title": "已完成：mode route、Bearer Token、IP control、稽核記錄。",
+        "lang": "en",
+        "trans": "Completed: mode route, Bearer Token, IP control, audit records."
+    },
+    {
+        "title": "已有可用 Token",
+        "lang": "en",
+        "trans": "Token is already available"
+    },
+    {
+        "title": "已用",
+        "lang": "en",
+        "trans": "Used"
+    },
+    {
+        "title": "已複製。",
+        "lang": "en",
+        "trans": "Copied."
+    },
+    {
+        "title": "帳號資料",
+        "lang": "en",
+        "trans": "Account information"
+    },
+    {
+        "title": "平台能力矩陣",
+        "lang": "en",
+        "trans": "Platform capability matrix"
+    },
+    {
+        "title": "建立 Token",
+        "lang": "en",
+        "trans": "Create Token"
+    },
+    {
+        "title": "建立時間",
+        "lang": "en",
+        "trans": "Setup time"
+    },
+    {
+        "title": "待處理",
+        "lang": "en",
+        "trans": "Pending"
+    },
+    {
+        "title": "待處理項",
+        "lang": "en",
+        "trans": "Pending items"
+    },
+    {
+        "title": "後台 API 文件",
+        "lang": "en",
+        "trans": "Backend API files"
+    },
+    {
+        "title": "後台 server side 呼叫本機",
+        "lang": "en",
+        "trans": "The background server side calls this machine"
+    },
+    {
+        "title": "後台管理",
+        "lang": "en",
+        "trans": "Backend management"
+    },
+    {
+        "title": "成功",
+        "lang": "en",
+        "trans": "success"
+    },
+    {
+        "title": "我的 Token",
+        "lang": "en",
+        "trans": "My Token"
+    },
+    {
+        "title": "我的服務",
+        "lang": "en",
+        "trans": "my services"
+    },
+    {
+        "title": "我的用量",
+        "lang": "en",
+        "trans": "my dosage"
+    },
+    {
+        "title": "控制台",
+        "lang": "en",
+        "trans": "console"
+    },
+    {
+        "title": "撤銷",
+        "lang": "en",
+        "trans": "Cancel"
+    },
+    {
+        "title": "操作",
+        "lang": "en",
+        "trans": "operate"
+    },
+    {
+        "title": "支援 Job 的 Pack",
+        "lang": "en",
+        "trans": "Supports Job's Pack"
+    },
+    {
+        "title": "支援單一 IP 與 CIDR：",
+        "lang": "en",
+        "trans": "Supports single IP and CIDR:"
+    },
+    {
+        "title": "支援或預留",
+        "lang": "en",
+        "trans": "support or reserve"
+    },
+    {
+        "title": "支援範例：",
+        "lang": "en",
+        "trans": "Support examples:"
+    },
+    {
+        "title": "新增",
+        "lang": "en",
+        "trans": "New"
+    },
+    {
+        "title": "新增 IP / CIDR",
+        "lang": "en",
+        "trans": "Add IP/CIDR"
+    },
+    {
+        "title": "新密碼",
+        "lang": "en",
+        "trans": "New Password"
+    },
+    {
+        "title": "日期",
+        "lang": "en",
+        "trans": "date"
+    },
+    {
+        "title": "更新密碼",
+        "lang": "en",
+        "trans": "Update password"
+    },
+    {
+        "title": "最後使用",
+        "lang": "en",
+        "trans": "last used"
+    },
+    {
+        "title": "最新 snapshot",
+        "lang": "en",
+        "trans": "latest snapshot"
+    },
+    {
+        "title": "最近 24 小時 API 呼叫",
+        "lang": "en",
+        "trans": "API calls in the last 24 hours"
+    },
+    {
+        "title": "最近 24 小時 API 失敗",
+        "lang": "en",
+        "trans": "API failures in the last 24 hours"
+    },
+    {
+        "title": "最近 24 小時與目前服務狀態",
+        "lang": "en",
+        "trans": "Last 24 hours and current service status"
+    },
+    {
+        "title": "最近失敗",
+        "lang": "en",
+        "trans": "recent failure"
+    },
+    {
+        "title": "最近失敗工作",
+        "lang": "en",
+        "trans": "Recent job failure"
+    },
+    {
+        "title": "最近背景工作",
+        "lang": "en",
+        "trans": "Recent background work"
+    },
+    {
+        "title": "最高 GPU VRAM 使用",
+        "lang": "en",
+        "trans": "Maximum GPU VRAM usage"
+    },
+    {
+        "title": "最高 RAM 使用",
+        "lang": "en",
+        "trans": "Maximum RAM usage"
+    },
+    {
+        "title": "有效期限",
+        "lang": "en",
+        "trans": "Validity period"
+    },
+    {
+        "title": "服務",
+        "lang": "en",
+        "trans": "Serve"
+    },
+    {
+        "title": "服務執行中",
+        "lang": "en",
+        "trans": "Service is executing"
+    },
+    {
+        "title": "服務已停止",
+        "lang": "en",
+        "trans": "Service has stopped"
+    },
+    {
+        "title": "服務已停用",
+        "lang": "en",
+        "trans": "Service has been disabled"
+    },
+    {
+        "title": "服務數",
+        "lang": "en",
+        "trans": "Number of services"
+    },
+    {
+        "title": "服務狀態",
+        "lang": "en",
+        "trans": "Service status"
+    },
+    {
+        "title": "服務管理",
+        "lang": "en",
+        "trans": "Service management"
+    },
+    {
+        "title": "服務總數",
+        "lang": "en",
+        "trans": "Total number of services"
+    },
+    {
+        "title": "未提供",
+        "lang": "en",
+        "trans": "Not provided"
+    },
+    {
+        "title": "未登入 API 文件",
+        "lang": "en",
+        "trans": "Not logged in API file"
+    },
+    {
+        "title": "模型倉庫",
+        "lang": "en",
+        "trans": "model warehouse"
+    },
+    {
+        "title": "模型儲存使用率",
+        "lang": "en",
+        "trans": "Model storage usage"
+    },
+    {
+        "title": "模型目錄",
+        "lang": "en",
+        "trans": "Model catalog"
+    },
+    {
+        "title": "模型目錄可用",
+        "lang": "en",
+        "trans": "Model catalog available"
+    },
+    {
+        "title": "檔案上傳",
+        "lang": "en",
+        "trans": "File upload"
+    },
+    {
+        "title": "權限",
+        "lang": "en",
+        "trans": "Permissions"
+    },
+    {
+        "title": "溫度",
+        "lang": "en",
+        "trans": "temperature"
+    },
+    {
+        "title": "溫度上限以 100°C 顯示",
+        "lang": "en",
+        "trans": "The upper temperature limit is shown in 100°C"
+    },
+    {
+        "title": "狀態",
+        "lang": "en",
+        "trans": "state"
+    },
+    {
+        "title": "用量統計",
+        "lang": "en",
+        "trans": "Usage statistics"
+    },
+    {
+        "title": "登出",
+        "lang": "en",
+        "trans": "Sign out"
+    },
+    {
+        "title": "目前密碼",
+        "lang": "en",
+        "trans": "Current password"
+    },
+    {
+        "title": "目前規則",
+        "lang": "en",
+        "trans": "Current rules"
+    },
+    {
+        "title": "目前運算負載",
+        "lang": "en",
+        "trans": "Current computing load"
+    },
+    {
+        "title": "確認新密碼",
+        "lang": "en",
+        "trans": "Confirm new password"
+    },
+    {
+        "title": "磁碟 / 儲存",
+        "lang": "en",
+        "trans": "disk/storage"
+    },
+    {
+        "title": "磁碟使用率",
+        "lang": "en",
+        "trans": "Disk usage"
+    },
+    {
+        "title": "系統環境",
+        "lang": "en",
+        "trans": "System environment"
+    },
+    {
+        "title": "系統設定",
+        "lang": "en",
+        "trans": "System settings"
+    },
+    {
+        "title": "總耗時 ms",
+        "lang": "en",
+        "trans": "Total time taken ms"
+    },
+    {
+        "title": "總覽中控台",
+        "lang": "en",
+        "trans": "Overview center console"
+    },
+    {
+        "title": "總覽摘要",
+        "lang": "en",
+        "trans": "Overview summary"
+    },
+    {
+        "title": "背景工作執行中",
+        "lang": "en",
+        "trans": "Background work in progress"
+    },
+    {
+        "title": "薄版已完成：Local Job Contract、aihub-run、workspace。",
+        "lang": "en",
+        "trans": "Thin version completed: Local Job Contract, aihub-run, workspace."
+    },
+    {
+        "title": "薄版已完成：runtime_runs、資源取樣、logs/result index。",
+        "lang": "en",
+        "trans": "Thin version completed: runtime_runs, resource sampling, logs/result index."
+    },
+    {
+        "title": "複製 Authorization header",
+        "lang": "en",
+        "trans": "Copy Authorization header"
+    },
+    {
+        "title": "複製 JS fetch",
+        "lang": "en",
+        "trans": "Copy JS fetch"
+    },
+    {
+        "title": "複製 PHP",
+        "lang": "en",
+        "trans": "Copy PHP"
+    },
+    {
+        "title": "複製 curl",
+        "lang": "en",
+        "trans": "Copy curl"
+    },
+    {
+        "title": "規劃中。",
+        "lang": "en",
+        "trans": "Under planning."
+    },
+    {
+        "title": "記憶體壓力",
+        "lang": "en",
+        "trans": "memory pressure"
+    },
+    {
+        "title": "記錄中心",
+        "lang": "en",
+        "trans": "Record Center"
+    },
+    {
+        "title": "請手動複製。",
+        "lang": "en",
+        "trans": "Please copy manually."
+    },
+    {
+        "title": "請改用",
+        "lang": "en",
+        "trans": "Please use instead"
+    },
+    {
+        "title": "請求",
+        "lang": "en",
+        "trans": "ask"
+    },
+    {
+        "title": "變更密碼",
+        "lang": "en",
+        "trans": "Change password"
+    },
+    {
+        "title": "負載",
+        "lang": "en",
+        "trans": "load"
+    },
+    {
+        "title": "資源取樣",
+        "lang": "en",
+        "trans": "Resource sampling"
+    },
+    {
+        "title": "這裡只顯示你被授權可使用的 API mode。內部主機與 runtime 細節不會顯示。",
+        "lang": "en",
+        "trans": "Only the API modes you are authorized to use are displayed here. Internal host and runtime details are not shown."
+    },
+    {
+        "title": "這裡管理的是自己的 Token IP 白名單。未設定任何規則時，Token 不限制來源 IP；有設定時必須符合其中一條。",
+        "lang": "en",
+        "trans": "What is managed here is its own Token IP whitelist. When no rules are set, Token does not restrict the source IP; when set, it must comply with one of them."
+    },
+    {
+        "title": "進入後台管理",
+        "lang": "en",
+        "trans": "Enter background management"
+    },
+    {
+        "title": "選擇 Token",
+        "lang": "en",
+        "trans": "Select Token"
+    },
+    {
+        "title": "選擇服務",
+        "lang": "en",
+        "trans": "Select service"
+    },
+    {
+        "title": "還沒有 token 時，請先",
+        "lang": "en",
+        "trans": "If there is no token yet, please first"
+    },
+    {
+        "title": "錯誤",
+        "lang": "en",
+        "trans": "mistake"
+    },
+    {
+        "title": "隱藏 token",
+        "lang": "en",
+        "trans": "Hide token"
+    },
+    {
+        "title": "需要 / 支援上傳",
+        "lang": "en",
+        "trans": "Required/Supported for uploading"
+    },
+    {
+        "title": "需要 Bearer Token",
+        "lang": "en",
+        "trans": "Requires Bearer Token"
+    },
+    {
+        "title": "類型",
+        "lang": "en",
+        "trans": "type"
+    },
+    {
+        "title": "顯示 token",
+        "lang": "en",
+        "trans": "show token"
+    },
+    {
+        "title": "API 文件",
+        "lang": "es",
+        "trans": "Documentación API"
+    },
+    {
+        "title": "API 測試場",
+        "lang": "es",
+        "trans": "Campo de pruebas API"
+    },
+    {
+        "title": "API 記錄",
+        "lang": "es",
+        "trans": "Registros API"
+    },
+    {
+        "title": "API 金鑰",
+        "lang": "es",
+        "trans": "clave API"
+    },
+    {
+        "title": "Benchmark 測試",
+        "lang": "es",
+        "trans": "prueba de referencia"
+    },
+    {
+        "title": "HubPack 套件",
+        "lang": "es",
+        "trans": "Kit de paquete de cubos"
+    },
+    {
+        "title": "執行歷程",
+        "lang": "es",
+        "trans": "Proceso de ejecución"
+    },
+    {
+        "title": "安裝套件",
+        "lang": "es",
+        "trans": "kit de instalación"
+    },
+    {
+        "title": "客戶管理",
+        "lang": "es",
+        "trans": "Gestión de clientes"
+    },
+    {
+        "title": "控制台",
+        "lang": "es",
+        "trans": "consola"
+    },
+    {
+        "title": "服務管理",
+        "lang": "es",
+        "trans": "Gestión de servicios"
+    },
+    {
+        "title": "模型倉庫",
+        "lang": "es",
+        "trans": "almacén modelo"
+    },
+    {
+        "title": "登出",
+        "lang": "es",
+        "trans": "desconectar"
+    },
+    {
+        "title": "系統環境",
+        "lang": "es",
+        "trans": "Entorno del sistema"
+    },
+    {
+        "title": "系統設定",
+        "lang": "es",
+        "trans": "Configuración del sistema"
+    },
+    {
+        "title": "記錄中心",
+        "lang": "es",
+        "trans": "Centro de registro"
+    },
+    {
+        "title": "/ 可用空間",
+        "lang": "ja",
+        "trans": "/利用可能なスペース"
+    },
+    {
+        "title": "24h 失敗 Runtime",
+        "lang": "ja",
+        "trans": "24 時間のランタイム失敗"
+    },
+    {
+        "title": "API 24h 呼叫數",
+        "lang": "ja",
+        "trans": "API 24 時間コール数"
+    },
+    {
+        "title": "API 24h 失敗數",
+        "lang": "ja",
+        "trans": "API 24 時間の失敗数"
+    },
+    {
+        "title": "API 文件",
+        "lang": "ja",
+        "trans": "APIドキュメント"
+    },
+    {
+        "title": "API 測試場",
+        "lang": "ja",
+        "trans": "APIテスト場"
+    },
+    {
+        "title": "API 記錄",
+        "lang": "ja",
+        "trans": "APIレコード"
+    },
+    {
+        "title": "API 金鑰",
+        "lang": "ja",
+        "trans": "APIキー"
+    },
+    {
+        "title": "Agent Manifest 文件",
+        "lang": "ja",
+        "trans": "エージェントマニフェストファイル"
+    },
+    {
+        "title": "Benchmark 測試",
+        "lang": "ja",
+        "trans": "ベンチマークテスト"
+    },
+    {
+        "title": "Buff/Cache",
+        "lang": "ja",
+        "trans": "バフ/キャッシュ"
+    },
+    {
+        "title": "Docker 根目錄",
+        "lang": "ja",
+        "trans": "Docker のルート ディレクトリ"
+    },
+    {
+        "title": "Docker 根目錄可用",
+        "lang": "ja",
+        "trans": "Docker ルート ディレクトリが利用可能"
+    },
+    {
+        "title": "GPU 使用率",
+        "lang": "ja",
+        "trans": "GPUの使用率"
+    },
+    {
+        "title": "GPU 溫度",
+        "lang": "ja",
+        "trans": "GPU温度"
+    },
+    {
+        "title": "GPU 記憶體",
+        "lang": "ja",
+        "trans": "GPUメモリ"
+    },
+    {
+        "title": "HubPack 套件",
+        "lang": "ja",
+        "trans": "ハブパックキット"
+    },
+    {
+        "title": "L5 Pack 數",
+        "lang": "ja",
+        "trans": "L5 パックの数"
+    },
+    {
+        "title": "Pack 數",
+        "lang": "ja",
+        "trans": "パック番号"
+    },
+    {
+        "title": "Pack 準備狀態",
+        "lang": "ja",
+        "trans": "パックの準備状況"
+    },
+    {
+        "title": "RAM（以 MemAvailable 判斷）",
+        "lang": "ja",
+        "trans": "RAM (MemAvailable によって判断)"
+    },
+    {
+        "title": "Runtime 24h 執行數",
+        "lang": "ja",
+        "trans": "ランタイム 24 時間の実行数"
+    },
+    {
+        "title": "Swap 已用",
+        "lang": "ja",
+        "trans": "使用されるスワップ"
+    },
+    {
+        "title": "VRAM 使用量",
+        "lang": "ja",
+        "trans": "VRAMの使用量"
+    },
+    {
+        "title": "○ Controlled Volume Binding（受控 Volume 掛載）",
+        "lang": "ja",
+        "trans": "○ コントロールドボリュームバインディング（コントロールドボリュームマウント）"
+    },
+    {
+        "title": "○ External Database Profile（外部資料庫設定）",
+        "lang": "ja",
+        "trans": "○ 外部データベースプロファイル"
+    },
+    {
+        "title": "○ Generic Service Publishing（通用服務發佈）",
+        "lang": "ja",
+        "trans": "○ 汎用サービスの公開"
+    },
+    {
+        "title": "● API Gateway（API 閘道）",
+        "lang": "ja",
+        "trans": "● APIゲートウェイ"
+    },
+    {
+        "title": "● Service Runtime（常駐服務）",
+        "lang": "ja",
+        "trans": "● サービスランタイム（常駐サービス）"
+    },
+    {
+        "title": "◐ Local Job Runtime（本機工作）",
+        "lang": "ja",
+        "trans": "◐ ローカル ジョブ ランタイム (ローカル ジョブ)"
+    },
+    {
+        "title": "◐ Run History（執行歷程）",
+        "lang": "ja",
+        "trans": "◐ Run History（実行履歴）"
+    },
+    {
+        "title": "主機負載",
+        "lang": "ja",
+        "trans": "ホスト負荷"
+    },
+    {
+        "title": "介接公開狀態",
+        "lang": "ja",
+        "trans": "中程度の公的地位"
+    },
+    {
+        "title": "依系統設定，公開 API 文件可能僅允許本機讀取。",
+        "lang": "ja",
+        "trans": "システム設定によっては、パブリック API ファイルはローカル マシンでのみ読み取られる場合があります。"
+    },
+    {
+        "title": "健康正常",
+        "lang": "ja",
+        "trans": "健康で正常な"
+    },
+    {
+        "title": "健康異常 / 未檢查",
+        "lang": "ja",
+        "trans": "健康状態異常・未チェック"
+    },
+    {
+        "title": "僅本機",
+        "lang": "ja",
+        "trans": "このマシンのみ"
+    },
+    {
+        "title": "儀表板",
+        "lang": "ja",
+        "trans": "ダッシュボード"
+    },
+    {
+        "title": "儀表板只讀 SQLite 最新監測快照；主機探測請由 CLI / cron 執行。",
+        "lang": "ja",
+        "trans": "ダッシュボードの読み取り専用の最新 SQLite 監視スナップショット。ホストのプローブは CLI/cron によって実行する必要があります。"
+    },
+    {
+        "title": "公開 API 文件",
+        "lang": "ja",
+        "trans": "パブリック API ドキュメント"
+    },
+    {
+        "title": "可用",
+        "lang": "ja",
+        "trans": "利用可能"
+    },
+    {
+        "title": "可用 / 總量",
+        "lang": "ja",
+        "trans": "利用可能/合計"
+    },
+    {
+        "title": "否",
+        "lang": "ja",
+        "trans": "いいえ"
+    },
+    {
+        "title": "啟用",
+        "lang": "ja",
+        "trans": "有効にする"
+    },
+    {
+        "title": "執行中",
+        "lang": "ja",
+        "trans": "実行中"
+    },
+    {
+        "title": "執行中 Runtime",
+        "lang": "ja",
+        "trans": "ランタイムの実行"
+    },
+    {
+        "title": "執行歷程",
+        "lang": "ja",
+        "trans": "実行プロセス"
+    },
+    {
+        "title": "失敗 tasks：",
+        "lang": "ja",
+        "trans": "失敗したタスク:"
+    },
+    {
+        "title": "安裝、啟用、公開 AI 服務。",
+        "lang": "ja",
+        "trans": "AI サービスをインストール、有効化、公開します。"
+    },
+    {
+        "title": "安裝套件",
+        "lang": "ja",
+        "trans": "取り付けキット"
+    },
+    {
+        "title": "客戶管理",
+        "lang": "ja",
+        "trans": "顧客管理"
+    },
+    {
+        "title": "已停止",
+        "lang": "ja",
+        "trans": "停止しました"
+    },
+    {
+        "title": "已停用",
+        "lang": "ja",
+        "trans": "無効化されました"
+    },
+    {
+        "title": "已完成：Docker 服務生命週期、健康檢查、Gateway。",
+        "lang": "ja",
+        "trans": "完了: Docker サービスのライフサイクル、ヘルスチェック、ゲートウェイ。"
+    },
+    {
+        "title": "已完成：mode route、Bearer Token、IP control、稽核記錄。",
+        "lang": "ja",
+        "trans": "完了: モード ルート、ベアラー トークン、IP 制御、監査レコード。"
+    },
+    {
+        "title": "已用",
+        "lang": "ja",
+        "trans": "使用済み"
+    },
+    {
+        "title": "平台能力矩陣",
+        "lang": "ja",
+        "trans": "プラットフォーム機能マトリックス"
+    },
+    {
+        "title": "待處理",
+        "lang": "ja",
+        "trans": "保留中"
+    },
+    {
+        "title": "待處理項",
+        "lang": "ja",
+        "trans": "保留中のアイテム"
+    },
+    {
+        "title": "後台 API 文件",
+        "lang": "ja",
+        "trans": "バックエンド API ファイル"
+    },
+    {
+        "title": "後台管理",
+        "lang": "ja",
+        "trans": "バックエンド管理"
+    },
+    {
+        "title": "控制台",
+        "lang": "ja",
+        "trans": "コンソール"
+    },
+    {
+        "title": "支援 Job 的 Pack",
+        "lang": "ja",
+        "trans": "ジョブズパックに対応"
+    },
+    {
+        "title": "最新 snapshot",
+        "lang": "ja",
+        "trans": "最新のスナップショット"
+    },
+    {
+        "title": "最近 24 小時 API 呼叫",
+        "lang": "ja",
+        "trans": "過去 24 時間の API 呼び出し"
+    },
+    {
+        "title": "最近 24 小時 API 失敗",
+        "lang": "ja",
+        "trans": "過去 24 時間の API エラー"
+    },
+    {
+        "title": "最近 24 小時與目前服務狀態",
+        "lang": "ja",
+        "trans": "過去 24 時間と現在のサービス ステータス"
+    },
+    {
+        "title": "最近失敗",
+        "lang": "ja",
+        "trans": "最近の失敗"
+    },
+    {
+        "title": "最近失敗工作",
+        "lang": "ja",
+        "trans": "最近の仕事の失敗"
+    },
+    {
+        "title": "最近背景工作",
+        "lang": "ja",
+        "trans": "最近のバックグラウンド作業"
+    },
+    {
+        "title": "最高 GPU VRAM 使用",
+        "lang": "ja",
+        "trans": "GPU VRAM の最大使用量"
+    },
+    {
+        "title": "最高 RAM 使用",
+        "lang": "ja",
+        "trans": "最大RAM使用量"
+    },
+    {
+        "title": "服務執行中",
+        "lang": "ja",
+        "trans": "サービスが実行中です"
+    },
+    {
+        "title": "服務已停止",
+        "lang": "ja",
+        "trans": "サービスが停止されました"
+    },
+    {
+        "title": "服務已停用",
+        "lang": "ja",
+        "trans": "サービスが無効になっています"
+    },
+    {
+        "title": "服務數",
+        "lang": "ja",
+        "trans": "サービスの数"
+    },
+    {
+        "title": "服務狀態",
+        "lang": "ja",
+        "trans": "サービス状況"
+    },
+    {
+        "title": "服務管理",
+        "lang": "ja",
+        "trans": "サービス管理"
+    },
+    {
+        "title": "服務總數",
+        "lang": "ja",
+        "trans": "サービスの総数"
+    },
+    {
+        "title": "未登入 API 文件",
+        "lang": "ja",
+        "trans": "APIファイルにログインしていません"
+    },
+    {
+        "title": "模型倉庫",
+        "lang": "ja",
+        "trans": "模型倉庫"
+    },
+    {
+        "title": "模型儲存使用率",
+        "lang": "ja",
+        "trans": "モデルのストレージ使用量"
+    },
+    {
+        "title": "模型目錄",
+        "lang": "ja",
+        "trans": "モデルカタログ"
+    },
+    {
+        "title": "模型目錄可用",
+        "lang": "ja",
+        "trans": "モデルカタログあり"
+    },
+    {
+        "title": "溫度",
+        "lang": "ja",
+        "trans": "温度"
+    },
+    {
+        "title": "溫度上限以 100°C 顯示",
+        "lang": "ja",
+        "trans": "上限温度は100℃で表示されます。"
+    },
+    {
+        "title": "登出",
+        "lang": "ja",
+        "trans": "サインアウト"
+    },
+    {
+        "title": "目前運算負載",
+        "lang": "ja",
+        "trans": "現在の計算負荷"
+    },
+    {
+        "title": "磁碟 / 儲存",
+        "lang": "ja",
+        "trans": "ディスク/ストレージ"
+    },
+    {
+        "title": "磁碟使用率",
+        "lang": "ja",
+        "trans": "ディスク使用量"
+    },
+    {
+        "title": "系統環境",
+        "lang": "ja",
+        "trans": "システム環境"
+    },
+    {
+        "title": "系統設定",
+        "lang": "ja",
+        "trans": "システム設定"
+    },
+    {
+        "title": "總覽中控台",
+        "lang": "ja",
+        "trans": "センターコンソールの概要"
+    },
+    {
+        "title": "總覽摘要",
+        "lang": "ja",
+        "trans": "概要の概要"
+    },
+    {
+        "title": "背景工作執行中",
+        "lang": "ja",
+        "trans": "バックグラウンド作業が進行中です"
+    },
+    {
+        "title": "薄版已完成：Local Job Contract、aihub-run、workspace。",
+        "lang": "ja",
+        "trans": "シン バージョンが完成しました: ローカル ジョブ コントラクト、aihub-run、ワークスペース。"
+    },
+    {
+        "title": "薄版已完成：runtime_runs、資源取樣、logs/result index。",
+        "lang": "ja",
+        "trans": "シン バージョンが完成しました: runtime_runs、リソース サンプリング、ログ/結果インデックス。"
+    },
+    {
+        "title": "規劃中。",
+        "lang": "ja",
+        "trans": "計画中。"
+    },
+    {
+        "title": "記憶體壓力",
+        "lang": "ja",
+        "trans": "記憶のプレッシャー"
+    },
+    {
+        "title": "記錄中心",
+        "lang": "ja",
+        "trans": "レコードセンター"
+    },
+    {
+        "title": "負載",
+        "lang": "ja",
+        "trans": "負荷"
+    },
+    {
+        "title": "資源取樣",
+        "lang": "ja",
+        "trans": "リソースのサンプリング"
+    },
+    {
+        "title": "進入後台管理",
+        "lang": "ja",
+        "trans": "バックグラウンド管理に入る"
+    },
+    {
+        "title": "錯誤",
+        "lang": "ja",
+        "trans": "間違い"
+    },
+    {
+        "title": "API 文件",
+        "lang": "ko",
+        "trans": "API 문서"
+    },
+    {
+        "title": "API 測試場",
+        "lang": "ko",
+        "trans": "API 테스트 그라운드"
+    },
+    {
+        "title": "API 記錄",
+        "lang": "ko",
+        "trans": "API 레코드"
+    },
+    {
+        "title": "API 金鑰",
+        "lang": "ko",
+        "trans": "API 키"
+    },
+    {
+        "title": "Benchmark 測試",
+        "lang": "ko",
+        "trans": "벤치마크 테스트"
+    },
+    {
+        "title": "HubPack 套件",
+        "lang": "ko",
+        "trans": "허브팩 키트"
+    },
+    {
+        "title": "執行歷程",
+        "lang": "ko",
+        "trans": "실행과정"
+    },
+    {
+        "title": "安裝套件",
+        "lang": "ko",
+        "trans": "설치 키트"
+    },
+    {
+        "title": "客戶管理",
+        "lang": "ko",
+        "trans": "고객관리"
+    },
+    {
+        "title": "控制台",
+        "lang": "ko",
+        "trans": "콘솔"
+    },
+    {
+        "title": "服務管理",
+        "lang": "ko",
+        "trans": "서비스 관리"
+    },
+    {
+        "title": "模型倉庫",
+        "lang": "ko",
+        "trans": "모델 창고"
+    },
+    {
+        "title": "登出",
+        "lang": "ko",
+        "trans": "로그아웃"
+    },
+    {
+        "title": "系統環境",
+        "lang": "ko",
+        "trans": "시스템 환경"
+    },
+    {
+        "title": "系統設定",
+        "lang": "ko",
+        "trans": "시스템 설정"
+    },
+    {
+        "title": "記錄中心",
+        "lang": "ko",
+        "trans": "기록 센터"
+    },
+    {
+        "title": "API 文件",
+        "lang": "vi",
+        "trans": "Tài liệu API"
+    },
+    {
+        "title": "API 測試場",
+        "lang": "vi",
+        "trans": "Nơi thử nghiệm API"
+    },
+    {
+        "title": "API 記錄",
+        "lang": "vi",
+        "trans": "bản ghi API"
+    },
+    {
+        "title": "API 金鑰",
+        "lang": "vi",
+        "trans": "Khóa API"
+    },
+    {
+        "title": "Benchmark 測試",
+        "lang": "vi",
+        "trans": "Kiểm tra điểm chuẩn"
+    },
+    {
+        "title": "HubPack 套件",
+        "lang": "vi",
+        "trans": "Bộ HubPack"
+    },
+    {
+        "title": "儀表板",
+        "lang": "vi",
+        "trans": "Trang tổng quan"
+    },
+    {
+        "title": "執行歷程",
+        "lang": "vi",
+        "trans": "Quá trình thực hiện"
+    },
+    {
+        "title": "安裝套件",
+        "lang": "vi",
+        "trans": "Bộ lắp đặt"
+    },
+    {
+        "title": "客戶管理",
+        "lang": "vi",
+        "trans": "Quản lý khách hàng"
+    },
+    {
+        "title": "控制台",
+        "lang": "vi",
+        "trans": "bảng điều khiển"
+    },
+    {
+        "title": "服務管理",
+        "lang": "vi",
+        "trans": "Quản lý dịch vụ"
+    },
+    {
+        "title": "模型倉庫",
+        "lang": "vi",
+        "trans": "kho mô hình"
+    },
+    {
+        "title": "登出",
+        "lang": "vi",
+        "trans": "Đăng xuất"
+    },
+    {
+        "title": "系統環境",
+        "lang": "vi",
+        "trans": "Môi trường hệ thống"
+    },
+    {
+        "title": "系統設定",
+        "lang": "vi",
+        "trans": "Cài đặt hệ thống"
+    },
+    {
+        "title": "記錄中心",
+        "lang": "vi",
+        "trans": "Trung tâm ghi âm"
+    },
+    {
+        "title": "/ 可用空間",
+        "lang": "zh_CN",
+        "trans": "/ 可用空间"
+    },
+    {
+        "title": "24h 失敗 Runtime",
+        "lang": "zh_CN",
+        "trans": "24h 失败 Runtime"
+    },
+    {
+        "title": "API 24h 呼叫數",
+        "lang": "zh_CN",
+        "trans": "API 24h 呼叫数"
+    },
+    {
+        "title": "API 24h 失敗數",
+        "lang": "zh_CN",
+        "trans": "API 24h 失败数"
+    },
+    {
+        "title": "API 文件",
+        "lang": "zh_CN",
+        "trans": "API 文件"
+    },
+    {
+        "title": "API 测试场",
+        "lang": "zh_CN",
+        "trans": "API 测试场"
+    },
+    {
+        "title": "API 測試場",
+        "lang": "zh_CN",
+        "trans": "API 测试场"
+    },
+    {
+        "title": "API 記錄",
+        "lang": "zh_CN",
+        "trans": "API 记录"
+    },
+    {
+        "title": "API 金鑰",
+        "lang": "zh_CN",
+        "trans": "API 金钥"
+    },
+    {
+        "title": "Agent Manifest 文件",
+        "lang": "zh_CN",
+        "trans": "Agent Manifest 文件"
+    },
+    {
+        "title": "Bearer token 只用於本次測試，不保存；範例固定使用",
+        "lang": "zh_CN",
+        "trans": "Bearer token 只用于本次测试，不保存；范例固定使用"
+    },
+    {
+        "title": "Benchmark 測試",
+        "lang": "zh_CN",
+        "trans": "Benchmark 测试"
+    },
+    {
+        "title": "Buff/Cache",
+        "lang": "zh_CN",
+        "trans": "Buff/Cache"
+    },
+    {
+        "title": "Docker 根目錄",
+        "lang": "zh_CN",
+        "trans": "Docker 根目录"
+    },
+    {
+        "title": "Docker 根目錄可用",
+        "lang": "zh_CN",
+        "trans": "Docker 根目录可用"
+    },
+    {
+        "title": "GPU 使用率",
+        "lang": "zh_CN",
+        "trans": "GPU 使用率"
+    },
+    {
+        "title": "GPU 溫度",
+        "lang": "zh_CN",
+        "trans": "GPU 温度"
+    },
+    {
+        "title": "GPU 記憶體",
+        "lang": "zh_CN",
+        "trans": "GPU 记忆体"
+    },
+    {
+        "title": "HubPack 套件",
+        "lang": "zh_CN",
+        "trans": "HubPack 套件"
+    },
+    {
+        "title": "IP 白名單",
+        "lang": "zh_CN",
+        "trans": "IP 白名单"
+    },
+    {
+        "title": "L5 Pack 數",
+        "lang": "zh_CN",
+        "trans": "L5 Pack 数"
+    },
+    {
+        "title": "Pack 數",
+        "lang": "zh_CN",
+        "trans": "Pack 数"
+    },
+    {
+        "title": "Pack 準備狀態",
+        "lang": "zh_CN",
+        "trans": "Pack 准备状态"
+    },
+    {
+        "title": "RAM（以 MemAvailable 判斷）",
+        "lang": "zh_CN",
+        "trans": "RAM（以 MemAvailable 判断）"
+    },
+    {
+        "title": "Runtime 24h 執行數",
+        "lang": "zh_CN",
+        "trans": "Runtime 24h 执行数"
+    },
+    {
+        "title": "Swap 已用",
+        "lang": "zh_CN",
+        "trans": "Swap 已用"
+    },
+    {
+        "title": "Token 權限",
+        "lang": "zh_CN",
+        "trans": "Token 权限"
+    },
+    {
+        "title": "Token 需求",
+        "lang": "zh_CN",
+        "trans": "Token 需求"
+    },
+    {
+        "title": "VRAM 使用量",
+        "lang": "zh_CN",
+        "trans": "VRAM 使用量"
+    },
+    {
+        "title": "○ Controlled Volume Binding（受控 Volume 掛載）",
+        "lang": "zh_CN",
+        "trans": "○ Controlled Volume Binding（受控 Volume 挂载）"
+    },
+    {
+        "title": "○ External Database Profile（外部資料庫設定）",
+        "lang": "zh_CN",
+        "trans": "○ External Database Profile（外部资料库设定）"
+    },
+    {
+        "title": "○ Generic Service Publishing（通用服務發佈）",
+        "lang": "zh_CN",
+        "trans": "○ Generic Service Publishing（通用服务发布）"
+    },
+    {
+        "title": "● API Gateway（API 閘道）",
+        "lang": "zh_CN",
+        "trans": "● API Gateway（API 闸道）"
+    },
+    {
+        "title": "● Service Runtime（常駐服務）",
+        "lang": "zh_CN",
+        "trans": "● Service Runtime（常驻服务）"
+    },
+    {
+        "title": "◐ Local Job Runtime（本機工作）",
+        "lang": "zh_CN",
+        "trans": "◐ Local Job Runtime（本机工作）"
+    },
+    {
+        "title": "◐ Run History（執行歷程）",
+        "lang": "zh_CN",
+        "trans": "◐ Run History（执行历程）"
+    },
+    {
+        "title": "上傳容量",
+        "lang": "zh_CN",
+        "trans": "上传容量"
+    },
+    {
+        "title": "主機負載",
+        "lang": "zh_CN",
+        "trans": "主机负载"
+    },
+    {
+        "title": "介接公開狀態",
+        "lang": "zh_CN",
+        "trans": "介接公开状态"
+    },
+    {
+        "title": "介接範例",
+        "lang": "zh_CN",
+        "trans": "介接范例"
+    },
+    {
+        "title": "使用 GET，不需要欄位。",
+        "lang": "zh_CN",
+        "trans": "使用 GET，不需要栏位。"
+    },
+    {
+        "title": "依系統設定，公開 API 文件可能僅允許本機讀取。",
+        "lang": "zh_CN",
+        "trans": "依系统设定，公开 API 文件可能仅允许本机读取。"
+    },
+    {
+        "title": "健康正常",
+        "lang": "zh_CN",
+        "trans": "健康正常"
+    },
+    {
+        "title": "健康異常 / 未檢查",
+        "lang": "zh_CN",
+        "trans": "健康异常 / 未检查"
+    },
+    {
+        "title": "僅本機",
+        "lang": "zh_CN",
+        "trans": "仅本机"
+    },
+    {
+        "title": "儀表板",
+        "lang": "zh_CN",
+        "trans": "仪表板"
+    },
+    {
+        "title": "儀表板只讀 SQLite 最新監測快照；主機探測請由 CLI / cron 執行。",
+        "lang": "zh_CN",
+        "trans": "仪表板只读 SQLite 最新监测快照；主机探测请由 CLI / cron 执行。"
+    },
+    {
+        "title": "公開 API 文件",
+        "lang": "zh_CN",
+        "trans": "公开 API 文件"
+    },
+    {
+        "title": "到 API 測試場",
+        "lang": "zh_CN",
+        "trans": "到 API 测试场"
+    },
+    {
+        "title": "前往 API 金鑰建立",
+        "lang": "zh_CN",
+        "trans": "前往 API 金钥建立"
+    },
+    {
+        "title": "变更密码",
+        "lang": "zh_CN",
+        "trans": "变更密码"
+    },
+    {
+        "title": "只顯示你自己的 Token API 用量。",
+        "lang": "zh_CN",
+        "trans": "只显示你自己的 Token API 用量。"
+    },
+    {
+        "title": "可用",
+        "lang": "zh_CN",
+        "trans": "可用"
+    },
+    {
+        "title": "可用 / 總量",
+        "lang": "zh_CN",
+        "trans": "可用 / 总量"
+    },
+    {
+        "title": "否",
+        "lang": "zh_CN",
+        "trans": "否"
+    },
+    {
+        "title": "啟用",
+        "lang": "zh_CN",
+        "trans": "启用"
+    },
+    {
+        "title": "啟用狀態",
+        "lang": "zh_CN",
+        "trans": "启用状态"
+    },
+    {
+        "title": "回應容量",
+        "lang": "zh_CN",
+        "trans": "回应容量"
+    },
+    {
+        "title": "回應結果",
+        "lang": "zh_CN",
+        "trans": "回应结果"
+    },
+    {
+        "title": "執行中",
+        "lang": "zh_CN",
+        "trans": "执行中"
+    },
+    {
+        "title": "執行中 Runtime",
+        "lang": "zh_CN",
+        "trans": "执行中 Runtime"
+    },
+    {
+        "title": "執行歷程",
+        "lang": "zh_CN",
+        "trans": "执行历程"
+    },
+    {
+        "title": "執行測試",
+        "lang": "zh_CN",
+        "trans": "执行测试"
+    },
+    {
+        "title": "失敗",
+        "lang": "zh_CN",
+        "trans": "失败"
+    },
+    {
+        "title": "失敗 tasks：",
+        "lang": "zh_CN",
+        "trans": "失败 tasks："
+    },
+    {
+        "title": "安裝、啟用、公開 AI 服務。",
+        "lang": "zh_CN",
+        "trans": "安装、启用、公开 AI 服务。"
+    },
+    {
+        "title": "安裝套件",
+        "lang": "zh_CN",
+        "trans": "安装套件"
+    },
+    {
+        "title": "客戶管理",
+        "lang": "zh_CN",
+        "trans": "客户管理"
+    },
+    {
+        "title": "尚未執行測試。",
+        "lang": "zh_CN",
+        "trans": "尚未执行测试。"
+    },
+    {
+        "title": "已停止",
+        "lang": "zh_CN",
+        "trans": "已停止"
+    },
+    {
+        "title": "已停用",
+        "lang": "zh_CN",
+        "trans": "已停用"
+    },
+    {
+        "title": "已啟用",
+        "lang": "zh_CN",
+        "trans": "已启用"
+    },
+    {
+        "title": "已完成：Docker 服務生命週期、健康檢查、Gateway。",
+        "lang": "zh_CN",
+        "trans": "已完成：Docker 服务生命周期、健康检查、Gateway。"
+    },
+    {
+        "title": "已完成：mode route、Bearer Token、IP control、稽核記錄。",
+        "lang": "zh_CN",
+        "trans": "已完成：mode route、Bearer Token、IP control、稽核记录。"
+    },
+    {
+        "title": "已有可用 Token",
+        "lang": "zh_CN",
+        "trans": "已有可用 Token"
+    },
+    {
+        "title": "已用",
+        "lang": "zh_CN",
+        "trans": "已用"
+    },
+    {
+        "title": "已複製。",
+        "lang": "zh_CN",
+        "trans": "已复制。"
+    },
+    {
+        "title": "帳號資料",
+        "lang": "zh_CN",
+        "trans": "帐号资料"
+    },
+    {
+        "title": "平台能力矩陣",
+        "lang": "zh_CN",
+        "trans": "平台能力矩阵"
+    },
+    {
+        "title": "待處理",
+        "lang": "zh_CN",
+        "trans": "待处理"
+    },
+    {
+        "title": "待處理項",
+        "lang": "zh_CN",
+        "trans": "待处理项"
+    },
+    {
+        "title": "後台 API 文件",
+        "lang": "zh_CN",
+        "trans": "后台 API 文件"
+    },
+    {
+        "title": "後台 server side 呼叫本機",
+        "lang": "zh_CN",
+        "trans": "后台 server side 呼叫本机"
+    },
+    {
+        "title": "後台管理",
+        "lang": "zh_CN",
+        "trans": "后台管理"
+    },
+    {
+        "title": "成功",
+        "lang": "zh_CN",
+        "trans": "成功"
+    },
+    {
+        "title": "我的 Token",
+        "lang": "zh_CN",
+        "trans": "我的 Token"
+    },
+    {
+        "title": "我的服务",
+        "lang": "zh_CN",
+        "trans": "我的服务"
+    },
+    {
+        "title": "我的服務",
+        "lang": "zh_CN",
+        "trans": "我的服务"
+    },
+    {
+        "title": "我的用量",
+        "lang": "zh_CN",
+        "trans": "我的用量"
+    },
+    {
+        "title": "控制台",
+        "lang": "zh_CN",
+        "trans": "控制台"
+    },
+    {
+        "title": "支援 Job 的 Pack",
+        "lang": "zh_CN",
+        "trans": "支援 Job 的 Pack"
+    },
+    {
+        "title": "支援或預留",
+        "lang": "zh_CN",
+        "trans": "支援或预留"
+    },
+    {
+        "title": "支援範例：",
+        "lang": "zh_CN",
+        "trans": "支援范例："
+    },
+    {
+        "title": "新密碼",
+        "lang": "zh_CN",
+        "trans": "新密码"
+    },
+    {
+        "title": "日期",
+        "lang": "zh_CN",
+        "trans": "日期"
+    },
+    {
+        "title": "更新密碼",
+        "lang": "zh_CN",
+        "trans": "更新密码"
+    },
+    {
+        "title": "最新 snapshot",
+        "lang": "zh_CN",
+        "trans": "最新 snapshot"
+    },
+    {
+        "title": "最近 24 小時 API 呼叫",
+        "lang": "zh_CN",
+        "trans": "最近 24 小时 API 呼叫"
+    },
+    {
+        "title": "最近 24 小時 API 失敗",
+        "lang": "zh_CN",
+        "trans": "最近 24 小时 API 失败"
+    },
+    {
+        "title": "最近 24 小時與目前服務狀態",
+        "lang": "zh_CN",
+        "trans": "最近 24 小时与目前服务状态"
+    },
+    {
+        "title": "最近失敗",
+        "lang": "zh_CN",
+        "trans": "最近失败"
+    },
+    {
+        "title": "最近失敗工作",
+        "lang": "zh_CN",
+        "trans": "最近失败工作"
+    },
+    {
+        "title": "最近背景工作",
+        "lang": "zh_CN",
+        "trans": "最近背景工作"
+    },
+    {
+        "title": "最高 GPU VRAM 使用",
+        "lang": "zh_CN",
+        "trans": "最高 GPU VRAM 使用"
+    },
+    {
+        "title": "最高 RAM 使用",
+        "lang": "zh_CN",
+        "trans": "最高 RAM 使用"
+    },
+    {
+        "title": "服務",
+        "lang": "zh_CN",
+        "trans": "服务"
+    },
+    {
+        "title": "服務執行中",
+        "lang": "zh_CN",
+        "trans": "服务执行中"
+    },
+    {
+        "title": "服務已停止",
+        "lang": "zh_CN",
+        "trans": "服务已停止"
+    },
+    {
+        "title": "服務已停用",
+        "lang": "zh_CN",
+        "trans": "服务已停用"
+    },
+    {
+        "title": "服務數",
+        "lang": "zh_CN",
+        "trans": "服务数"
+    },
+    {
+        "title": "服務狀態",
+        "lang": "zh_CN",
+        "trans": "服务状态"
+    },
+    {
+        "title": "服務管理",
+        "lang": "zh_CN",
+        "trans": "服务管理"
+    },
+    {
+        "title": "服務總數",
+        "lang": "zh_CN",
+        "trans": "服务总数"
+    },
+    {
+        "title": "未提供",
+        "lang": "zh_CN",
+        "trans": "未提供"
+    },
+    {
+        "title": "未登入 API 文件",
+        "lang": "zh_CN",
+        "trans": "未登入 API 文件"
+    },
+    {
+        "title": "模型倉庫",
+        "lang": "zh_CN",
+        "trans": "模型仓库"
+    },
+    {
+        "title": "模型儲存使用率",
+        "lang": "zh_CN",
+        "trans": "模型储存使用率"
+    },
+    {
+        "title": "模型目錄",
+        "lang": "zh_CN",
+        "trans": "模型目录"
+    },
+    {
+        "title": "模型目錄可用",
+        "lang": "zh_CN",
+        "trans": "模型目录可用"
+    },
+    {
+        "title": "檔案上傳",
+        "lang": "zh_CN",
+        "trans": "档案上传"
+    },
+    {
+        "title": "溫度",
+        "lang": "zh_CN",
+        "trans": "温度"
+    },
+    {
+        "title": "溫度上限以 100°C 顯示",
+        "lang": "zh_CN",
+        "trans": "温度上限以 100°C 显示"
+    },
+    {
+        "title": "用量統計",
+        "lang": "zh_CN",
+        "trans": "用量统计"
+    },
+    {
+        "title": "用量统计",
+        "lang": "zh_CN",
+        "trans": "用量统计"
+    },
+    {
+        "title": "登出",
+        "lang": "zh_CN",
+        "trans": "登出"
+    },
+    {
+        "title": "目前密碼",
+        "lang": "zh_CN",
+        "trans": "目前密码"
+    },
+    {
+        "title": "目前運算負載",
+        "lang": "zh_CN",
+        "trans": "目前运算负载"
+    },
+    {
+        "title": "確認新密碼",
+        "lang": "zh_CN",
+        "trans": "确认新密码"
+    },
+    {
+        "title": "磁碟 / 儲存",
+        "lang": "zh_CN",
+        "trans": "磁碟 / 储存"
+    },
+    {
+        "title": "磁碟使用率",
+        "lang": "zh_CN",
+        "trans": "磁碟使用率"
+    },
+    {
+        "title": "系統環境",
+        "lang": "zh_CN",
+        "trans": "系统环境"
+    },
+    {
+        "title": "系統設定",
+        "lang": "zh_CN",
+        "trans": "系统设定"
+    },
+    {
+        "title": "總耗時 ms",
+        "lang": "zh_CN",
+        "trans": "总耗时 ms"
+    },
+    {
+        "title": "總覽中控台",
+        "lang": "zh_CN",
+        "trans": "总览中控台"
+    },
+    {
+        "title": "總覽摘要",
+        "lang": "zh_CN",
+        "trans": "总览摘要"
+    },
+    {
+        "title": "背景工作執行中",
+        "lang": "zh_CN",
+        "trans": "背景工作执行中"
+    },
+    {
+        "title": "薄版已完成：Local Job Contract、aihub-run、workspace。",
+        "lang": "zh_CN",
+        "trans": "薄版已完成：Local Job Contract、aihub-run、workspace。"
+    },
+    {
+        "title": "薄版已完成：runtime_runs、資源取樣、logs/result index。",
+        "lang": "zh_CN",
+        "trans": "薄版已完成：runtime_runs、资源取样、logs/result index。"
+    },
+    {
+        "title": "複製 Authorization header",
+        "lang": "zh_CN",
+        "trans": "复制 Authorization header"
+    },
+    {
+        "title": "複製 JS fetch",
+        "lang": "zh_CN",
+        "trans": "复制 JS fetch"
+    },
+    {
+        "title": "複製 PHP",
+        "lang": "zh_CN",
+        "trans": "复制 PHP"
+    },
+    {
+        "title": "複製 curl",
+        "lang": "zh_CN",
+        "trans": "复制 curl"
+    },
+    {
+        "title": "規劃中。",
+        "lang": "zh_CN",
+        "trans": "规划中。"
+    },
+    {
+        "title": "記憶體壓力",
+        "lang": "zh_CN",
+        "trans": "记忆体压力"
+    },
+    {
+        "title": "記錄中心",
+        "lang": "zh_CN",
+        "trans": "记录中心"
+    },
+    {
+        "title": "請手動複製。",
+        "lang": "zh_CN",
+        "trans": "请手动复制。"
+    },
+    {
+        "title": "請求",
+        "lang": "zh_CN",
+        "trans": "请求"
+    },
+    {
+        "title": "變更密碼",
+        "lang": "zh_CN",
+        "trans": "变更密码"
+    },
+    {
+        "title": "負載",
+        "lang": "zh_CN",
+        "trans": "负载"
+    },
+    {
+        "title": "資源取樣",
+        "lang": "zh_CN",
+        "trans": "资源取样"
+    },
+    {
+        "title": "這裡只顯示你被授權可使用的 API mode。內部主機與 runtime 細節不會顯示。",
+        "lang": "zh_CN",
+        "trans": "这里只显示你被授权可使用的 API mode。内部主机与 runtime 细节不会显示。"
+    },
+    {
+        "title": "進入後台管理",
+        "lang": "zh_CN",
+        "trans": "进入后台管理"
+    },
+    {
+        "title": "選擇服務",
+        "lang": "zh_CN",
+        "trans": "选择服务"
+    },
+    {
+        "title": "還沒有 token 時，請先",
+        "lang": "zh_CN",
+        "trans": "还没有 token 时，请先"
+    },
+    {
+        "title": "錯誤",
+        "lang": "zh_CN",
+        "trans": "错误"
+    },
+    {
+        "title": "隱藏 token",
+        "lang": "zh_CN",
+        "trans": "隐藏 token"
+    },
+    {
+        "title": "需要 / 支援上傳",
+        "lang": "zh_CN",
+        "trans": "需要 / 支援上传"
+    },
+    {
+        "title": "需要 Bearer Token",
+        "lang": "zh_CN",
+        "trans": "需要 Bearer Token"
+    },
+    {
+        "title": "顯示 token",
+        "lang": "zh_CN",
+        "trans": "显示 token"
+    }
+]

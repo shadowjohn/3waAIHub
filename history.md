@@ -2956,3 +2956,34 @@ Kept intentionally small:
 - No cron / scheduler setup.
 - No Windows native runtime support.
 - No promise that Linux GPU Packs run locally on Windows.
+
+## i18n Seed Export / Import
+
+Added a git-trackable translation seed so the current well-translated host can serve as the baseline export for fresh installs.
+
+Implemented:
+
+- `i18n/seed.json`
+- `scripts/export_i18n_seed.php`
+- `hub_i18n_seed_path()`
+- `hub_i18n_import_seed()`
+- `hub_i18n_export_seed()`
+- `scripts/init_db.php` seed import hook
+
+Rules:
+
+- Runtime SQLite remains the editable local translation cache.
+- `i18n/seed.json` stores reviewed baseline translations only.
+- Seed import only inserts missing `title/lang` rows.
+- Seed import does not overwrite local manual edits or later auto-translated rows.
+- Seed export keeps one latest translation per `title/lang`.
+
+Current seed summary:
+
+- `en`: 188
+- `es`: 16
+- `ja`: 104
+- `ko`: 16
+- `vi`: 17
+- `zh_CN`: 159
+- Total: 500
