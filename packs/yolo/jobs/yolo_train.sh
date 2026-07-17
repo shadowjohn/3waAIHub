@@ -72,6 +72,9 @@ fi
 if [[ -n "${AIHUB_GPU_INDEXES:-}" ]]; then
   docker_args+=(--gpus "device=${AIHUB_GPU_INDEXES}")
 fi
+container_name="aihub-${AIHUB_RUN_ID:-${AIHUB_JOB_KEY:-yolo}-$$}"
+trap 'docker rm -f "$container_name" >/dev/null 2>&1 || true' TERM INT EXIT
+docker_args+=(--name "$container_name")
 
 if ! docker run "${docker_args[@]}" "$image" python3 - <<'PY'
 import csv

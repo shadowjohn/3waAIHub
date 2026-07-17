@@ -239,18 +239,81 @@ if (!is_resource($process)) {
     fail('cannot start local job', 6);
 }
 
-$stdout = stream_get_contents($pipes[1]);
-$stderr = stream_get_contents($pipes[2]);
+$terminatedSignal = null;
+if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
+    pcntl_async_signals(true);
+    $forwardSignal = function (int $signal) use (&$process, &$terminatedSignal): void {
+        $terminatedSignal = $signal;
+        if (is_resource($process)) {
+            @proc_terminate($process, $signal);
+        }
+    };
+    pcntl_signal(SIGTERM, $forwardSignal);
+    pcntl_signal(SIGINT, $forwardSignal);
+}
+
+stream_set_blocking($pipes[1], false);
+stream_set_blocking($pipes[2], false);
+
+$stdout = '';
+$stderr = '';
+$observedExitCode = null;
+$terminationStartedAt = null;
+while (true) {
+    $chunk = stream_get_contents($pipes[1]);
+    if ($chunk !== false && $chunk !== '') {
+        $stdout .= $chunk;
+    }
+    $chunk = stream_get_contents($pipes[2]);
+    if ($chunk !== false && $chunk !== '') {
+        $stderr .= $chunk;
+    }
+    if (function_exists('pcntl_signal_dispatch')) {
+        pcntl_signal_dispatch();
+    }
+
+    $processStatus = proc_get_status($process);
+    if (!isset($processStatus['running']) || $processStatus['running'] !== true) {
+        $observedExitCode = isset($processStatus['exitcode']) ? (int)$processStatus['exitcode'] : null;
+        break;
+    }
+    if ($terminatedSignal !== null) {
+        if ($terminationStartedAt === null) {
+            $terminationStartedAt = microtime(true);
+        } elseif (microtime(true) - $terminationStartedAt > 5) {
+            @proc_terminate($process, 9);
+        }
+    }
+    usleep(100000);
+}
+$chunk = stream_get_contents($pipes[1]);
+if ($chunk !== false && $chunk !== '') {
+    $stdout .= $chunk;
+}
+$chunk = stream_get_contents($pipes[2]);
+if ($chunk !== false && $chunk !== '') {
+    $stderr .= $chunk;
+}
 fclose($pipes[1]);
 fclose($pipes[2]);
-$exitCode = proc_close($process);
+$closedExitCode = proc_close($process);
+$exitCode = ($closedExitCode === -1 && $observedExitCode !== null) ? $observedExitCode : $closedExitCode;
+if ($terminatedSignal !== null && $exitCode === 0) {
+    $exitCode = 128 + (int)$terminatedSignal;
+}
 
 file_put_contents($workspaceReal . '/logs/stdout.log', $stdout);
 file_put_contents($workspaceReal . '/logs/stderr.log', $stderr);
 insert_sample($db, $runId, local_sample($gpuIndexes), $resourcePath);
 
 $status = is_file($statusPath) ? read_json($statusPath) : [];
-if (($status['status'] ?? '') === 'running' || !isset($status['status'])) {
+if ($terminatedSignal !== null) {
+    $status['status'] = 'failed';
+    $status['finished_at'] = gmdate('c');
+    $status['exit_code'] = $exitCode;
+    $status['signal'] = $terminatedSignal;
+    file_put_contents($statusPath, json_encode($status, JSON_UNESCAPED_SLASHES) . "\n");
+} elseif (($status['status'] ?? '') === 'running' || !isset($status['status'])) {
     $status['status'] = $exitCode === 0 ? 'succeeded' : 'failed';
     $status['finished_at'] = gmdate('c');
     $status['exit_code'] = $exitCode;
@@ -269,6 +332,11 @@ if (!is_file($resultPath)) {
 $finishedAt = hub_now();
 $durationMs = max(0, (int)round(microtime(true) * 1000) - $startedMs);
 $result = read_json($resultPath);
+if ($terminatedSignal !== null) {
+    $result['ok'] = false;
+    $result['error'] = 'terminated';
+    $result['signal'] = $terminatedSignal;
+}
 $runtime = [
     'duration_ms' => $durationMs,
     'memory_peak_bytes' => memory_get_peak_usage(true),
