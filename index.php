@@ -68,6 +68,15 @@ try {
         }
         .dot { border: 1px solid var(--green-dim); border-radius: 50%; height: 10px; width: 10px; }
         .title { color: var(--green); margin-left: auto; text-transform: uppercase; }
+        .i18n-selector select {
+            background: #03110a;
+            border: 1px solid var(--line);
+            color: var(--green-soft);
+            font: inherit;
+            margin-left: 12px;
+            padding: 6px 8px;
+            width: auto;
+        }
         .content { padding: clamp(24px, 6vw, 56px); }
         h1 {
             color: var(--green);
@@ -123,21 +132,22 @@ try {
             <span class="dot" aria-hidden="true"></span>
             <span class="dot" aria-hidden="true"></span>
             <span class="title">3waAIHub</span>
+            <?= function_exists('hub_i18n_language_selector') ? hub_i18n_language_selector() : '' ?>
         </div>
         <div class="content">
             <h1>3waAIHub</h1>
-            <p class="slogan cursor">Install. Enable. Expose AI services.</p>
+            <p class="slogan cursor"><?= hub_h(function_exists('__') ? __('安裝、啟用、公開 AI 服務。') : '安裝、啟用、公開 AI 服務。') ?></p>
             <div class="actions">
-                <a class="button" href="login.php">Enter Admin Console</a>
+                <a class="button" href="login.php"><?= hub_h(function_exists('__') ? __('進入後台管理') : '進入後台管理') ?></a>
             </div>
             <div class="links">
                 <div class="actions">
-                    <a class="button secondary" href="public_api_docs.php">公開 API 文件</a>
-                    <a class="button secondary" href="api_manifest.json.php">Agent Manifest</a>
-                    <a class="button secondary" href="admin/">後台管理</a>
+                    <a class="button secondary" href="public_api_docs.php"><?= hub_h(function_exists('__') ? __('公開 API 文件') : '公開 API 文件') ?></a>
+                    <a class="button secondary" href="api_manifest.json.php"><?= hub_h(function_exists('__') ? __('Agent Manifest 文件') : 'Agent Manifest 文件') ?></a>
+                    <a class="button secondary" href="admin/"><?= hub_h(function_exists('__') ? __('後台管理') : '後台管理') ?></a>
                 </div>
-                <p class="status">公開 API 文件：<?= hub_h($publicDocsLabel) ?> / Agent Manifest：<?= hub_h($manifestLabel) ?></p>
-                <p class="hint">依系統設定，公開 API 文件可能僅允許本機讀取。</p>
+                <p class="status"><?= hub_h(function_exists('__') ? __('公開 API 文件') : '公開 API 文件') ?>：<?= hub_h($publicDocsLabel) ?> / <?= hub_h(function_exists('__') ? __('Agent Manifest 文件') : 'Agent Manifest 文件') ?>：<?= hub_h($manifestLabel) ?></p>
+                <p class="hint"><?= hub_h(function_exists('__') ? __('依系統設定，公開 API 文件可能僅允許本機讀取。') : '依系統設定，公開 API 文件可能僅允許本機讀取。') ?></p>
             </div>
         </div>
     </section>

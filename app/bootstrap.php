@@ -16,6 +16,7 @@ date_default_timezone_set('Asia/Taipei');
 
 require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/i18n.php';
 require_once __DIR__ . '/storage.php';
 require_once __DIR__ . '/model_registry.php';
 require_once __DIR__ . '/service_repo.php';
@@ -30,6 +31,7 @@ require_once __DIR__ . '/api_tokens.php';
 require_once __DIR__ . '/voice_profiles.php';
 require_once __DIR__ . '/photo_assets.php';
 require_once __DIR__ . '/customer_accounts.php';
+require_once __DIR__ . '/catalog_show.php';
 require_once __DIR__ . '/environment_probe.php';
 require_once __DIR__ . '/host_metrics.php';
 require_once __DIR__ . '/benchmarks.php';
@@ -84,3 +86,5 @@ function hub_cli_only(): void
         exit('CLI only');
     }
 }
+
+hub_i18n_apply_request_language();

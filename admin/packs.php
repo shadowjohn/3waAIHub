@@ -154,6 +154,28 @@ function hub_pack_endpoint_label(array $manifest): string
     return trim($methodLabel . ' ' . $path);
 }
 
+function hub_pack_runtime_modes(array $manifest): array
+{
+    $modes = is_array($manifest['runtime_modes'] ?? null) ? array_map('strval', $manifest['runtime_modes']) : [];
+    if ($modes === []) {
+        $modes[] = ((string)($manifest['runtime']['kind'] ?? 'docker') === 'internal_task') ? 'job' : 'service';
+    }
+
+    return array_values(array_unique($modes));
+}
+
+function hub_pack_local_job_keys(array $manifest): array
+{
+    $keys = [];
+    foreach (is_array($manifest['local_jobs'] ?? null) ? $manifest['local_jobs'] : [] as $job) {
+        if (is_array($job) && (string)($job['job_key'] ?? '') !== '') {
+            $keys[] = (string)$job['job_key'];
+        }
+    }
+
+    return $keys;
+}
+
 function hub_pack_installed_stats(PDO $db): array
 {
     $stats = [];
@@ -307,6 +329,8 @@ hub_admin_header('HubPack 套件', $user);
                 $isReference = (string)($manifest['role'] ?? '') === 'reference';
                 $endpoint = hub_pack_endpoint_label($manifest);
                 $firstServiceId = (int)($stats['first_service_id'] ?? 0);
+                $runtimeModes = hub_pack_runtime_modes($manifest);
+                $localJobs = hub_pack_local_job_keys($manifest);
                 ?>
                 <article class="pack-card">
                     <div class="pack-card-header">
@@ -326,6 +350,10 @@ hub_admin_header('HubPack 套件', $user);
                         <span class="<?= hub_h((string)$gpu['class']) ?>"><?= hub_h((string)$gpu['label']) ?></span>
                         <span class="<?= hub_h((string)$model['class']) ?>"><?= hub_h((string)$model['label']) ?></span>
                         <span class="<?= !empty($manifest['runtime_ready']) ? 'pack-badge pack-badge-ok' : 'pack-badge pack-badge-bad' ?>"><?= !empty($manifest['runtime_ready']) ? 'Runtime 可用' : 'Runtime 未就緒' ?></span>
+                        <?php foreach ($runtimeModes as $mode): ?>
+                            <span class="pack-badge pack-badge-blue"><?= hub_h(ucfirst($mode)) ?></span>
+                        <?php endforeach; ?>
+                        <?php if ($localJobs !== []): ?><span class="pack-badge pack-badge-warn">Preview Adapter</span><?php endif; ?>
                     </div>
                     <div class="pack-fields">
                         <div class="pack-field-label">套件名稱</div>
@@ -350,6 +378,21 @@ hub_admin_header('HubPack 套件', $user);
                         <div class="pack-field-value">endpoint: <code><?= hub_h($endpoint) ?></code></div>
                         <div class="pack-field-label">執行類型</div>
                         <div class="pack-field-value"><code><?= hub_h((string)($manifest['execution_type'] ?? '')) ?></code></div>
+                        <div class="pack-field-label">Runtime</div>
+                        <div class="pack-field-value">Runtime：<?= hub_h(implode(' + ', array_map(static fn (string $mode): string => ucfirst($mode), $runtimeModes))) ?> <span class="muted">runtime_modes</span></div>
+                        <div class="pack-field-label">Runtime Contract</div>
+                        <div class="pack-field-value"><code><?= hub_h((string)($manifest['runtime_contract'] ?? '')) ?></code></div>
+                        <div class="pack-field-label">Local Jobs</div>
+                        <div class="pack-field-value">
+                            <?php if ($localJobs === []): ?>
+                                <span class="muted">無</span> <span class="muted">local_jobs</span>
+                            <?php else: ?>
+                                <span class="muted">local_jobs</span>
+                                <ul>
+                                    <?php foreach ($localJobs as $jobKey): ?><li><code><?= hub_h($jobKey) ?></code></li><?php endforeach; ?>
+                                </ul>
+                            <?php endif; ?>
+                        </div>
                         <div class="pack-field-label">GPU 需求</div>
                         <div class="pack-field-value"><?= hub_h((string)$gpu['label']) ?></div>
                         <div class="pack-field-label">模型需求</div>

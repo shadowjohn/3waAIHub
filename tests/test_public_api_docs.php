@@ -66,6 +66,9 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
 
     $docsHtml = hub_public_api_docs_html($db);
     hub_test_assert(str_contains($docsHtml, '3waAIHub API 介接文件'), 'public docs title missing');
+    foreach (['API modes', 'Local Jobs', 'bin/aihub-run', 'yolo_train', 'request.json', 'progress.ndjson', 'result.json', 'Local Job Contract v0.1'] as $needle) {
+        hub_test_assert(str_contains($docsHtml, $needle), 'public docs local job section missing ' . $needle);
+    }
     hub_test_assert(str_contains($docsHtml, 'Authorization: Bearer &lt;TOKEN&gt;'), 'public docs token placeholder missing');
     hub_test_assert(str_contains($docsHtml, 'mode'), 'public docs must keep technical values');
     hub_test_assert(str_contains($docsHtml, 'docparser_parse'), 'public docs must document DocParser task type');
@@ -76,7 +79,7 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     hub_test_assert(str_contains($docsHtml, 'mode=task_result&amp;task_id='), 'public docs must show task_result URL');
     hub_test_assert(!str_contains($docsHtml, 'admin/'), 'public docs must not include admin links when not logged in');
     hub_test_assert(!str_contains($docsHtml, 'CURLFile here'), 'public docs multipart PHP example must not use placeholder CURLFile text');
-    foreach (['local_port', 'docker-compose.generated.yml', '/DATA/models', 'data/logs', '3waaihub.sqlite', 'command_worker', '3wa_live_'] as $secret) {
+    foreach (['local_port', 'docker-compose.generated.yml', '/DATA/models', 'data/logs', '3waaihub.sqlite', 'command_worker', '3wa_live_', '/DATA/jobs', 'Docker socket'] as $secret) {
         hub_test_assert(!str_contains($docsHtml, $secret), 'public docs must not leak ' . $secret);
     }
 });

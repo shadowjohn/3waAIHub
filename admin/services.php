@@ -271,7 +271,7 @@ hub_admin_header('服務管理', $user);
                     <a class="button" href="service_logs.php?id=<?= $serviceId ?>">服務記錄</a>
                     <a class="button" href="log_explorer.php?service_id=<?= $serviceId ?>">API 記錄</a>
                     <a class="button" href="log_explorer.php?tab=jobs&amp;service_id=<?= $serviceId ?>">查看此服務工作</a>
-                    <a class="button" href="benchmarks.php">Benchmark</a>
+                    <a class="button" href="benchmarks.php">Benchmark 測試</a>
                     <a class="button" href="playground.php?mode=<?= urlencode((string)$service['mode']) ?>">到 API 測試場</a>
                     <button type="button" data-copy-target="service-api-url-<?= $serviceId ?>">複製 API URL</button>
                 </div>

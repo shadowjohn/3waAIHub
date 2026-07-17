@@ -31,7 +31,7 @@ hub_admin_header('客戶管理', $user);
             <th>公司 / 單位</th>
             <th>角色</th>
             <th>狀態</th>
-            <th>API Member</th>
+            <th>API 會員</th>
             <th>Token</th>
             <th>最後登入</th>
             <th>操作</th>

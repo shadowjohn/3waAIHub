@@ -9,19 +9,19 @@ hub_migrate($db);
 $user = hub_require_customer_or_admin($db);
 $usageRows = hub_list_customer_usage($db, (int)$user['id']);
 
-hub_admin_header('用量統計', $user);
+hub_admin_header(__('用量統計'), $user);
 ?>
 <section class="panel">
-    <h1>用量統計</h1>
-    <p class="muted">只顯示你自己的 Token API 用量。</p>
+    <h1><?= hub_h(__('用量統計')) ?></h1>
+    <p class="muted"><?= hub_h(__('只顯示你自己的 Token API 用量。')) ?></p>
 </section>
 
 <section class="panel">
     <?php if ($usageRows === []): ?>
-        <div class="hub-empty-state">目前尚無用量紀錄。</div>
+        <div class="hub-empty-state"><?= hub_h(__('目前尚無用量紀錄。')) ?></div>
     <?php else: ?>
         <table>
-            <thead><tr><th>日期</th><th>Token</th><th>mode</th><th>請求</th><th>成功</th><th>失敗</th><th>總耗時 ms</th><th>上傳容量</th><th>回應容量</th></tr></thead>
+            <thead><tr><th><?= hub_h(__('日期')) ?></th><th>Token</th><th>mode</th><th><?= hub_h(__('請求')) ?></th><th><?= hub_h(__('成功')) ?></th><th><?= hub_h(__('失敗')) ?></th><th><?= hub_h(__('總耗時 ms')) ?></th><th><?= hub_h(__('上傳容量')) ?></th><th><?= hub_h(__('回應容量')) ?></th></tr></thead>
             <tbody>
             <?php foreach ($usageRows as $row): ?>
                 <tr>

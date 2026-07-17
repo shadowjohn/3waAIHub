@@ -15,20 +15,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $newPassword = (string)($_POST['new_password'] ?? '');
     $confirmPassword = (string)($_POST['confirm_password'] ?? '');
     if ($newPassword !== $confirmPassword) {
-        $error = '新密碼與確認密碼不一致。';
+        $error = __('新密碼與確認密碼不一致。');
     } else {
         $error = hub_update_password($db, (int)$user['id'], (string)($_POST['current_password'] ?? ''), $newPassword) ?? '';
         if ($error === '') {
-            $message = '密碼已更新。';
+            $message = __('密碼已更新。');
             $user = hub_current_user($db) ?: $user;
         }
     }
 }
 
-hub_admin_header('變更密碼', $user);
+hub_admin_header(__('變更密碼'), $user);
 ?>
 <section class="panel">
-    <h1>變更密碼</h1>
+    <h1><?= hub_h(__('變更密碼')) ?></h1>
     <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
     <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 </section>
@@ -36,13 +36,13 @@ hub_admin_header('變更密碼', $user);
 <section class="panel">
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
-        <label>目前密碼</label>
+        <label><?= hub_h(__('目前密碼')) ?></label>
         <input name="current_password" type="password" autocomplete="current-password" required>
-        <label>新密碼</label>
+        <label><?= hub_h(__('新密碼')) ?></label>
         <input name="new_password" type="password" autocomplete="new-password" required>
-        <label>確認新密碼</label>
+        <label><?= hub_h(__('確認新密碼')) ?></label>
         <input name="confirm_password" type="password" autocomplete="new-password" required>
-        <p><button class="primary" type="submit">更新密碼</button></p>
+        <p><button class="primary" type="submit"><?= hub_h(__('更新密碼')) ?></button></p>
     </form>
 </section>
 <?php hub_admin_footer(); ?>

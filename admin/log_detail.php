@@ -11,7 +11,7 @@ $user = hub_require_system_admin($db);
 $log = hub_get_api_access_log($db, (int)($_GET['id'] ?? 0));
 if (!$log) {
     http_response_code(404);
-    exit('Log not found');
+    exit('找不到記錄');
 }
 
 $service = $log['service_id'] ? hub_get_service($db, (int)$log['service_id']) : null;
@@ -19,11 +19,11 @@ $rules = $service ? hub_list_service_ip_rules($db, (int)$service['id']) : [];
 $sameIp = hub_list_api_access_logs($db, ['client_ip_b64' => aihub_b64url_encode((string)$log['client_ip'])], 20, 0);
 $sameMode = $log['mode'] ? hub_list_api_access_logs($db, ['mode' => (string)$log['mode']], 20, 0) : [];
 
-hub_admin_header('Log Detail', $user);
+hub_admin_header('API 記錄詳情', $user);
 ?>
 <section class="panel">
-    <h1>API Trace Detail</h1>
-    <p><a class="button" href="log_explorer.php">回 Log Explorer</a></p>
+    <h1>API 記錄詳情</h1>
+    <p><a class="button" href="log_explorer.php">回記錄中心</a></p>
     <table>
         <?php foreach ([
             'request_id', 'created_at', 'client_ip', 'mode', 'service_id', 'service_name', 'service_key',
@@ -40,9 +40,9 @@ hub_admin_header('Log Detail', $user);
 </section>
 <?php if ($rules): ?>
 <section class="panel">
-    <h2>Service Whitelist Rules</h2>
+    <h2>服務白名單規則</h2>
     <table>
-        <tr><th>Rule</th><th>Type</th><th>Label</th><th>Enabled</th></tr>
+        <tr><th>規則</th><th>類型</th><th>標籤</th><th>啟用</th></tr>
         <?php foreach ($rules as $rule): ?>
             <tr>
                 <td><code><?= hub_h($rule['ip_rule']) ?></code></td>
@@ -55,12 +55,12 @@ hub_admin_header('Log Detail', $user);
 </section>
 <?php endif; ?>
 <section class="panel">
-    <h2>Recent Same IP</h2>
+    <h2>相同 IP 的最近記錄</h2>
     <p><a class="button" href="log_explorer.php?<?= hub_h(hub_ip_filter_query('client_ip_b64', (string)$log['client_ip'])) ?>">用此 IP 篩選</a></p>
     <?= hub_log_detail_table($sameIp) ?>
 </section>
 <section class="panel">
-    <h2>Recent Same Mode</h2>
+    <h2>相同 mode 的最近記錄</h2>
     <?= hub_log_detail_table($sameMode) ?>
 </section>
 <?php hub_admin_footer(); ?>
@@ -70,14 +70,14 @@ function hub_log_detail_table(array $logs): string
     ob_start();
     ?>
     <table>
-        <tr><th>Time</th><th>IP</th><th>Mode</th><th>Status</th><th>OK</th><th>Error</th><th>Request ID</th></tr>
+        <tr><th>時間</th><th>IP</th><th>Mode</th><th>HTTP 狀態</th><th>結果</th><th>錯誤</th><th>Request ID</th></tr>
         <?php foreach ($logs as $row): ?>
             <tr>
                 <td><?= hub_h($row['created_at']) ?></td>
                 <td><code><?= hub_h($row['client_ip']) ?></code></td>
                 <td><code><?= hub_h($row['mode']) ?></code></td>
                 <td><?= (int)$row['status_code'] ?></td>
-                <td class="<?= (int)$row['ok'] === 1 ? 'ok' : 'bad' ?>"><?= (int)$row['ok'] === 1 ? 'OK' : 'FAIL' ?></td>
+                <td class="<?= (int)$row['ok'] === 1 ? 'ok' : 'bad' ?>"><?= (int)$row['ok'] === 1 ? '成功' : '失敗' ?></td>
                 <td><code><?= hub_h($row['error_code']) ?></code></td>
                 <td><a href="log_detail.php?id=<?= (int)$row['id'] ?>"><code><?= hub_h($row['request_id']) ?></code></a></td>
             </tr>

@@ -84,6 +84,13 @@ CREATE TABLE IF NOT EXISTS settings (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS i18n (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL DEFAULT '',
+    lang TEXT NOT NULL DEFAULT '',
+    trans TEXT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL,
@@ -389,6 +396,59 @@ CREATE TABLE IF NOT EXISTS user_mode_permissions (
     FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS runtime_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL UNIQUE,
+    pack_id TEXT NOT NULL,
+    task TEXT NOT NULL,
+    pack_version TEXT NULL,
+    runner_version TEXT NULL,
+    image_name TEXT NULL,
+    image_digest TEXT NULL,
+    container_id TEXT NULL,
+    caller TEXT NULL,
+    workspace TEXT NULL,
+    state TEXT NOT NULL,
+    exit_code INTEGER NULL,
+    error_code TEXT NULL,
+    started_at TEXT NOT NULL,
+    finished_at TEXT NULL,
+    duration_ms INTEGER NULL,
+    cpu_time_ms INTEGER NULL,
+    cpu_peak_percent REAL NULL,
+    memory_peak_bytes INTEGER NULL,
+    gpu_indexes TEXT NULL,
+    gpu_util_peak_percent REAL NULL,
+    gpu_util_avg_percent REAL NULL,
+    vram_peak_bytes INTEGER NULL,
+    disk_read_bytes INTEGER NULL,
+    disk_write_bytes INTEGER NULL,
+    network_rx_bytes INTEGER NULL,
+    network_tx_bytes INTEGER NULL,
+    artifact_count INTEGER NOT NULL DEFAULT 0,
+    log_size_bytes INTEGER NOT NULL DEFAULT 0,
+    result_json_path TEXT NULL,
+    stdout_log_path TEXT NULL,
+    stderr_log_path TEXT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runtime_resource_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    sampled_at TEXT NOT NULL,
+    cpu_percent REAL NULL,
+    cpu_time_ms INTEGER NULL,
+    memory_bytes INTEGER NULL,
+    process_count INTEGER NULL,
+    disk_read_bytes INTEGER NULL,
+    disk_write_bytes INTEGER NULL,
+    network_rx_bytes INTEGER NULL,
+    network_tx_bytes INTEGER NULL,
+    gpu_json TEXT NULL,
+    FOREIGN KEY(run_id) REFERENCES runtime_runs(run_id) ON DELETE CASCADE
+);
 SQL);
 
     hub_add_column_if_missing($db, 'users', 'role', "TEXT NOT NULL DEFAULT 'system_admin'");
@@ -433,6 +493,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_ok ON api_access_logs(ok)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_error_code ON api_access_logs(error_code)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_request_id ON api_access_logs(request_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_i18n_lookup ON i18n(lang, title, id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_member_id ON api_access_logs(member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_access_logs_token_id ON api_access_logs(token_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_created ON login_attempts(ip, created_at)');
@@ -455,6 +516,9 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_users_api_member_id ON users(api_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_user_mode_permissions_user_id ON user_mode_permissions(user_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_user_mode_permissions_mode ON user_mode_permissions(mode)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_samples_run_time ON runtime_resource_samples(run_id, sampled_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_started ON runtime_runs(started_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_pack ON runtime_runs(pack_id, started_at)');
 }
 
 function hub_add_column_if_missing(PDO $db, string $table, string $column, string $definition): void

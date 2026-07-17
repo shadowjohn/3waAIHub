@@ -1,0 +1,129 @@
+:root {
+    color-scheme: light;
+    --bg: #f3f6fb;
+    --panel: #ffffff;
+    --line: #d6deea;
+    --text: #172033;
+    --muted: #64748b;
+    --blue: #155eef;
+    --green: #047857;
+    --warn: #b45309;
+}
+
+* { box-sizing: border-box; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    margin: 0;
+}
+a { color: inherit; }
+.show-header {
+    align-items: center;
+    background: #111827;
+    color: #fff;
+    display: flex;
+    gap: 18px;
+    justify-content: space-between;
+    padding: 14px 24px;
+}
+.show-brand { font-size: 20px; font-weight: 800; text-decoration: none; }
+.show-header nav { display: flex; flex-wrap: wrap; gap: 12px; }
+.show-header nav a { color: #dbeafe; text-decoration: none; }
+.show-header .i18n-selector select { background: #111827; border-color: #374151; color: #fff; padding: 4px 8px; width: auto; }
+.show-main { margin: 0 auto; max-width: 1180px; padding: 22px 16px 40px; }
+.hero {
+    align-items: stretch;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    margin-bottom: 18px;
+}
+.hero h1 { font-size: clamp(34px, 5vw, 64px); letter-spacing: 0; line-height: 1; margin: 0 0 14px; }
+.hero p { color: var(--muted); font-size: 18px; line-height: 1.7; margin: 0; max-width: 760px; }
+.hero-panel, .panel, .workbench, .tool-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+.hero-panel { display: grid; padding: 18px; place-content: center; }
+.hero-panel strong { font-size: 24px; }
+.hero-panel span { color: var(--muted); margin-top: 8px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.tabs a {
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    padding: 8px 13px;
+    text-decoration: none;
+}
+.tabs a.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+.tool-shell { display: grid; gap: 14px; grid-template-columns: 260px minmax(0, 1fr); }
+.tool-list { display: grid; gap: 10px; align-content: start; }
+.tool-card { display: grid; gap: 4px; padding: 14px; text-decoration: none; }
+.tool-card.selected { border-color: var(--blue); box-shadow: inset 4px 0 0 var(--blue); }
+.tool-card span, .eyebrow, .muted { color: var(--muted); }
+.tool-card strong { font-size: 17px; }
+.tool-card small { color: var(--green); font-weight: 700; }
+.workbench { padding: 18px; }
+.workbench-head {
+    align-items: start;
+    display: flex;
+    gap: 14px;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+.workbench-head h2 { font-size: 30px; margin: 4px 0 8px; }
+.workbench-head p { margin: 0; }
+.status {
+    border-radius: 999px;
+    display: inline-block;
+    font-size: 13px;
+    font-weight: 800;
+    padding: 5px 10px;
+    white-space: nowrap;
+}
+.status.ok { background: #dcfce7; color: var(--green); }
+.status.muted { background: #e5e7eb; color: #475569; }
+.split { display: grid; gap: 14px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.panel { margin-bottom: 14px; padding: 16px; }
+.panel h3 { margin-top: 0; }
+label { display: block; font-weight: 700; margin: 12px 0 6px; }
+input, select, textarea {
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    font: inherit;
+    padding: 9px 10px;
+    width: 100%;
+}
+.check { align-items: center; display: flex; gap: 8px; }
+.check input { width: auto; }
+button {
+    background: var(--blue);
+    border: 1px solid var(--blue);
+    border-radius: 7px;
+    color: #fff;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 800;
+    margin-top: 12px;
+    padding: 9px 14px;
+}
+pre {
+    background: #0f172a;
+    border-radius: 7px;
+    color: #e5e7eb;
+    overflow: auto;
+    padding: 12px;
+    white-space: pre-wrap;
+}
+.notice {
+    background: #fffbeb;
+    border: 1px solid #fbbf24;
+    border-radius: 8px;
+    color: var(--warn);
+    padding: 12px;
+}
+@media (max-width: 820px) {
+    .hero, .tool-shell, .split { grid-template-columns: 1fr; }
+    .show-header { align-items: flex-start; flex-direction: column; }
+}

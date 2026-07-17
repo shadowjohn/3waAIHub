@@ -2568,3 +2568,234 @@ Not completed in this phase:
 - Technical drawing understanding.
 - VLM review.
 - Manual correction UI.
+
+## PhaseShow-1 Catalog Show / GIDAY Demo Surface
+
+Added a public showcase surface at `catalog_show/`.
+
+Implemented:
+
+- Public feature tabs for OCR, YOLO, SAM3, Gemma Chat, Photo Vision, and DocParser.
+- Consistent PHP SSR UI with `catalog_show/assets/catalog.css` and `catalog_show/assets/catalog.js`.
+- Logged-in API demo proxy at `catalog_show/api_proxy.php`.
+- Customer mode filtering through existing user/token permissions.
+- Session-scoped demo token creation for logged-in users who do not paste a token.
+- Current-host API examples while keeping formal `api.php` Bearer Token rules unchanged.
+
+Verified:
+
+- `php scripts/run_tests.php` PASS with 170 tests.
+
+## Token IP Whitelist CIDR Help
+
+Clarified token IP whitelist setup for customers and admins.
+
+Added:
+
+- README examples for single IP, private subnet CIDR, all IPv4, and all IPv6.
+- UI help in customer and admin token whitelist pages.
+- Explicit guidance that wildcard rules such as `192.168.*.*` and `*.*.*.*` are not supported; use `192.168.0.0/16` and `0.0.0.0/0` instead.
+- Note that leaving token IP rules empty is the simplest unrestricted mode.
+
+No validation logic changed.
+
+## PhaseRuntime-1A Pack Runtime Contract / Local Job Thin Runner
+
+Added the first thin local execution contract for non-API Pack usage.
+
+Implemented:
+
+- `docs/pack_runtime_contract_v0.1.md`
+- `docs/local_job_contract_v0.1.md`
+- `bin/aihub-run`
+- YOLO manifest `runtime_contract=0.1`
+- YOLO local job declarations:
+  - `yolo_predict`
+  - `yolo_train`
+  - `yolo_export_onnx`
+- YOLO local job wrapper scripts under `packs/yolo/jobs/`
+
+Runtime Observability v0.1 thin layer:
+
+- SQLite `runtime_runs`
+- SQLite `runtime_resource_samples`
+- workspace `runtime/run.json`
+- workspace `runtime/resource.ndjson`
+- workspace `runtime/events.ndjson`
+- `result.json.runtime` summary
+
+Scope intentionally kept small:
+
+- No managed scheduler.
+- No retry/cancel/timeout worker.
+- No GPU lock.
+- No multi-host routing.
+- No admin Run History UI yet.
+
+## PhaseRuntime-1B Runtime Visibility & Platform Positioning
+
+Made the PhaseRuntime-1A runner visible and explainable in the admin UI.
+
+Added:
+
+- `docs/service_platform_vision_v0.1.md`
+- Admin nav link: `執行歷程`
+- `admin/runtime_runs.php`
+- `admin/runtime_run.php`
+- `admin/_runtime.php`
+- Dashboard Runtime summary cards:
+  - Runtime Runs 24h
+  - 執行中 Runs
+  - 失敗 Runs 24h
+  - Job-enabled Packs
+  - 最高 RAM 使用
+  - 最高 GPU VRAM 使用
+- Dashboard platform capability matrix.
+- HubPack cards now show Service / Job runtime modes, Runtime Contract, Local Jobs, and Preview Adapter.
+
+Kept read-only:
+
+- No run retry.
+- No run cancel.
+- No run delete.
+- No run launch form.
+- No customer portal run history.
+
+## PhaseI18N-1 Multilingual Foundation
+
+Added the first thin multilingual layer.
+
+Implemented:
+
+- SQLite `i18n` table with `idx_i18n_lookup`.
+- `app/i18n.php` language helpers.
+- `USER_LANG` cookie language selection.
+- `__()` helper for future page strings.
+- Front page, admin shell, and catalog show language selectors.
+- Front page, admin shell, and catalog show chrome labels now call `__()` so missing translations can be generated on language switch.
+- `admin/i18n.php` maintenance page for add/edit/delete/search translations.
+
+Supported languages:
+
+- `zh_TW`
+- `zh_CN`
+- `en`
+- `ja`
+- `ko`
+- `es`
+- `vi`
+- `th`
+- `it`
+
+Kept intentionally small:
+
+- No full-site string wrapping yet.
+- No background translation queue.
+- No separate i18n framework.
+
+## PhaseDX-4.1 Public Docs API / Local Job Tabs
+
+Updated the public API documentation with a separate Local Jobs section.
+
+Added:
+
+- Public docs section tabs:
+  - API modes
+  - Local Jobs
+- Local Job thin call examples using `bin/aihub-run`.
+- YOLO preview job names:
+  - `yolo_predict`
+  - `yolo_train`
+  - `yolo_export_onnx`
+- Workspace contract summary:
+  - `request.json`
+  - `status.json`
+  - `progress.ndjson`
+  - `result.json`
+
+Kept public docs safe:
+
+- No internal host paths.
+- No local ports.
+- No generated compose paths.
+- No runtime secrets.
+- No command worker internals.
+
+## PhaseI18N-1.1 Customer Portal / Playground Labels
+
+Extended the thin i18n wrapper to customer-facing admin pages.
+
+Updated pages:
+
+- `admin/my_services.php`
+- `admin/my_tokens.php`
+- `admin/my_ip_whitelist.php`
+- `admin/my_usage.php`
+- `admin/change_password.php`
+- `admin/playground.php`
+
+Kept technical values untranslated:
+
+- `mode`
+- `pack_id`
+- `runtime_level`
+- `execution_type`
+- `endpoint`
+- `request_id`
+- `error_code`
+
+## PhaseRuntime-1C YOLO Train Local Job Runner
+
+Promoted `yolo_train` from smoke wrapper to a minimal real Ultralytics training runner.
+
+Implemented:
+
+- `packs/yolo/jobs/yolo_train.sh` validates:
+  - `workspace/data.yaml`
+  - `workspace/train_config.json`
+  - `workspace/datasets/`
+- `bin/aihub-run --gpu` now passes `AIHUB_GPU_INDEXES` into local job entrypoints.
+- Real runner uses Docker image `3waaihub-yolo-main:0.1.0` by default.
+- `AIHUB_YOLO_IMAGE=...` can override the image tag.
+- Outputs:
+  - `runs/train/output/results.csv`
+  - `runs/train/output/weights/best.pt`
+  - `runs/detect/val/predictions.json`
+  - `progress.ndjson`
+  - `result.json`
+
+Kept intentionally small:
+
+- No managed queue.
+- No GPU lock.
+- No automatic image build.
+
+## PhaseRuntime-1D YOLO Predict / Export Local Job Runners
+
+Promoted `yolo_predict` and `yolo_export_onnx` from smoke wrappers to minimal real Ultralytics runners.
+
+Implemented:
+
+- `packs/yolo/jobs/yolo_predict.sh` validates workspace-relative image inputs.
+- `packs/yolo/jobs/yolo_predict.sh` writes:
+  - `runs/predict/output/predictions.json`
+  - `runs/predict/output/labels/`
+  - `progress.ndjson`
+  - `result.json`
+- `packs/yolo/jobs/yolo_export_onnx.sh` validates workspace-relative model input.
+- `packs/yolo/jobs/yolo_export_onnx.sh` writes:
+  - `runs/export/output/model.onnx`
+  - `progress.ndjson`
+  - `result.json`
+- `yolo_predict` / `yolo_train` / `yolo_export_onnx` all support `AIHUB_YOLO_MODELS_DIR`, defaulting to `/DATA/models/yolo` mounted read-only as `/models/yolo`.
+- Pulled and retained YOLO baseline models under `/DATA/models/yolo`: `yolo11n.pt`, `yolo26n.pt`, `yolo26s.pt`, `yolo26m.pt`.
+- Verified `yolo_train` with `model=yolo26s.pt`, `epochs=1`, `imgsz=160`, `batch=1`, `workers=0`, `device=cpu`; artifacts were written as `john:john`.
+- Added `onnx` to the YOLO runtime image requirements for offline ONNX export readiness.
+- Updated public docs, README, and Local Job Contract to show all three YOLO jobs as real runners.
+
+Kept intentionally small:
+
+- No managed queue.
+- No GPU lock.
+- No automatic image build.
+- No training dataset wizard.

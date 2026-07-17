@@ -11,7 +11,7 @@ $user = hub_require_system_admin($db);
 $service = hub_get_service($db, (int)($_GET['service_id'] ?? $_POST['service_id'] ?? 0));
 if (!$service) {
     http_response_code(404);
-    exit('Service not found');
+    exit('找不到服務');
 }
 
 $message = '';
@@ -38,12 +38,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
 $rules = hub_list_service_ip_rules($db, (int)$service['id']);
 
-hub_admin_header('Service Whitelist', $user);
+hub_admin_header('服務 IP 白名單', $user);
 ?>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <section class="panel">
-    <h1>Service IP Whitelist</h1>
+    <h1>服務 IP 白名單</h1>
     <p><strong><?= hub_h($service['name']) ?></strong> / <code><?= hub_h($service['service_key'] ?? '') ?></code> / mode <code><?= hub_h($service['mode']) ?></code></p>
     <p class="muted">localhost / 127.0.0.1 / ::1 永遠允許。外部 IP 預設拒絕，需明確加入白名單。</p>
 </section>
@@ -55,15 +55,15 @@ hub_admin_header('Service Whitelist', $user);
         <input type="hidden" name="action" value="add">
         <label>IP / CIDR</label>
         <input name="ip_rule" placeholder="192.168.1.10 或 192.168.1.0/24 或 ::1" required>
-        <label>Label</label>
+        <label>標籤</label>
         <input name="label" placeholder="客戶、內網、測試機">
-        <p><button class="primary" type="submit">新增 Whitelist</button></p>
+        <p><button class="primary" type="submit">新增白名單</button></p>
     </form>
 </section>
 <section class="panel">
     <h2>目前規則</h2>
     <table>
-        <tr><th>ID</th><th>規則</th><th>類型</th><th>Label</th><th>狀態</th><th>建立時間</th><th>操作</th></tr>
+        <tr><th>ID</th><th>規則</th><th>類型</th><th>標籤</th><th>狀態</th><th>建立時間</th><th>操作</th></tr>
         <?php foreach ($rules as $rule): ?>
             <tr>
                 <td>#<?= (int)$rule['id'] ?></td>

@@ -11,17 +11,22 @@ function hub_marketplace_endpoint_label(array $manifest): string
     return trim(($methods === [] ? '' : implode('/', $methods)) . ' ' . (string)($gateway['invoke_path'] ?? ''));
 }
 
+function hub_marketplace_t(string $value): string
+{
+    return hub_h(__($value));
+}
+
 function hub_marketplace_gpu_label(array $manifest): array
 {
     $hardware = is_array($manifest['hardware'] ?? null) ? $manifest['hardware'] : [];
     if (!empty($hardware['gpu_required'])) {
-        return ['label' => '需要 GPU', 'class' => 'hub-badge hub-badge-warn'];
+        return ['label' => __('需要 GPU'), 'class' => 'hub-badge hub-badge-warn'];
     }
     if (!empty($hardware['gpu_supported'])) {
-        return ['label' => '可用 GPU', 'class' => 'hub-badge hub-badge-ok'];
+        return ['label' => __('可用 GPU'), 'class' => 'hub-badge hub-badge-ok'];
     }
 
-    return ['label' => '不使用 GPU', 'class' => 'hub-badge hub-badge-muted'];
+    return ['label' => __('不使用 GPU'), 'class' => 'hub-badge hub-badge-muted'];
 }
 
 function hub_marketplace_model_label(PDO $db, array $manifest): array
@@ -40,7 +45,7 @@ function hub_marketplace_model_label(PDO $db, array $manifest): array
             try {
                 $status = hub_model_selector_status($db, $selector, $defaultValue);
                 if (!empty($status['model_present']) || ($selectorType !== 'ollama_tag' && !empty($status['exists']))) {
-                    return ['label' => '模型已就緒', 'class' => 'hub-badge hub-badge-ok'];
+                    return ['label' => __('模型已就緒'), 'class' => 'hub-badge hub-badge-ok'];
                 }
             } catch (Throwable) {
                 // Invalid pack selector settings should not break the marketplace page.
@@ -52,35 +57,35 @@ function hub_marketplace_model_label(PDO $db, array $manifest): array
             $options = [];
         }
         if ($options !== []) {
-            return ['label' => '模型已就緒', 'class' => 'hub-badge hub-badge-ok'];
+            return ['label' => __('模型已就緒'), 'class' => 'hub-badge hub-badge-ok'];
         }
     }
 
     return $required
-        ? ['label' => '缺少模型', 'class' => 'hub-badge hub-badge-bad']
-        : ['label' => ($schema === [] ? '無模型需求' : '模型可選'), 'class' => 'hub-badge hub-badge-muted'];
+        ? ['label' => __('缺少模型'), 'class' => 'hub-badge hub-badge-bad']
+        : ['label' => ($schema === [] ? __('無模型需求') : __('模型可選')), 'class' => 'hub-badge hub-badge-muted'];
 }
 
 function hub_marketplace_runtime_label(string $runtimeLevel): string
 {
     $runtime = strtolower($runtimeLevel);
     if (str_contains($runtime, 'l5')) {
-        return 'L5 可驗收';
+        return __('L5 可驗收');
     }
     if (str_contains($runtime, 'l4b')) {
-        return 'L4b 真實推論';
+        return __('L4b 真實推論');
     }
     if (str_contains($runtime, 'l4a')) {
-        return 'L4a 模型檢查';
+        return __('L4a 模型檢查');
     }
     if (str_contains($runtime, 'l3')) {
-        return 'L3 儲存掛載';
+        return __('L3 儲存掛載');
     }
     if (str_contains($runtime, 'l2')) {
-        return 'L2 依賴檢查';
+        return __('L2 依賴檢查');
     }
 
-    return 'Runtime 未分級';
+    return __('Runtime 未分級');
 }
 
 $db = hub_db();
@@ -100,7 +105,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'environment' => (string)($_POST['environment'] ?? 'production'),
             'hot_reload' => !empty($_POST['hot_reload']),
         ]);
-        $message = '已安裝 Service Instance：' . $result['service']['service_key'];
+        $message = __('已安裝 Service Instance：') . $result['service']['service_key'];
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -126,16 +131,16 @@ hub_admin_header('HubPack 套件', $user);
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <section class="panel">
-    <h1>HubPack 套件</h1>
-    <p class="muted">Marketplace 是安裝入口；只讀本機 HubPack，不做遠端下載。技術值如 <code>pack_id</code>、<code>mode</code>、<code>runtime_level</code>、<code>endpoint</code> 保留英文。</p>
+    <h1><?= hub_h(__('HubPack 套件')) ?></h1>
+    <p class="muted">Marketplace <?= hub_marketplace_t('是安裝入口；只讀本機 HubPack，不做遠端下載。技術值如') ?> <code>pack_id</code>、<code>mode</code>、<code>runtime_level</code>、<code>endpoint</code> <?= hub_marketplace_t('保留英文。') ?></p>
 </section>
 <section class="panel">
     <div class="hub-section-title">
-        <h2>Local HubPack Marketplace</h2>
-        <span class="muted">共 <?= count($packs) ?> 個 Pack</span>
+        <h2><?= hub_h(__('本機 HubPack 安裝目錄')) ?></h2>
+        <span class="muted"><?= hub_marketplace_t('共') ?> <?= count($packs) ?> <?= hub_marketplace_t('個 Pack') ?></span>
     </div>
     <?php if ($packs === []): ?>
-        <div class="hub-empty-state">目前沒有可安裝的 HubPack。</div>
+        <div class="hub-empty-state"><?= hub_marketplace_t('目前沒有可安裝的 HubPack。') ?></div>
     <?php else: ?>
         <div class="hub-card-grid">
             <?php foreach ($packs as $pack): ?>
@@ -165,32 +170,32 @@ hub_admin_header('HubPack 套件', $user);
                         <span class="<?= hub_h((string)$model['class']) ?>"><?= hub_h((string)$model['label']) ?></span>
                     </p>
                     <div class="hub-meta">
-                        <div class="hub-meta-label">套件名稱</div>
+                        <div class="hub-meta-label"><?= hub_h(__('套件名稱')) ?></div>
                         <div class="hub-meta-value"><?= hub_h((string)($manifest['name'] ?? '')) ?></div>
-                        <div class="hub-meta-label">套件 ID</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('套件 ID') ?></div>
                         <div class="hub-meta-value"><code><?= hub_h($packId) ?></code></div>
-                        <div class="hub-meta-label">版本</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('版本') ?></div>
                         <div class="hub-meta-value"><code><?= hub_h((string)($manifest['version'] ?? '')) ?></code></div>
-                        <div class="hub-meta-label">類型</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('類型') ?></div>
                         <div class="hub-meta-value"><code><?= hub_h((string)($manifest['type'] ?? '')) ?></code></div>
-                        <div class="hub-meta-label">執行層級</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('執行層級') ?></div>
                         <div class="hub-meta-value">runtime_level: <code><?= hub_h($runtimeLevel) ?></code></div>
-                        <div class="hub-meta-label">目標層級</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('目標層級') ?></div>
                         <div class="hub-meta-value">target_level: <code><?= hub_h($targetLevel) ?></code></div>
-                        <div class="hub-meta-label">預設 mode</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('預設 mode') ?></div>
                         <div class="hub-meta-value">mode: <code><?= hub_h($defaultMode) ?></code></div>
                         <div class="hub-meta-label">API endpoint</div>
                         <div class="hub-meta-value">endpoint: <code><?= hub_h($endpoint) ?></code></div>
                         <div class="hub-meta-label">execution_type</div>
                         <div class="hub-meta-value"><code><?= hub_h((string)($manifest['execution_type'] ?? '')) ?></code></div>
-                        <div class="hub-meta-label">GPU 需求</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('GPU 需求') ?></div>
                         <div class="hub-meta-value"><?= hub_h((string)$gpu['label']) ?></div>
-                        <div class="hub-meta-label">模型需求</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('模型需求') ?></div>
                         <div class="hub-meta-value"><?= hub_h((string)$model['label']) ?></div>
-                        <div class="hub-meta-label">已安裝服務數</div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('已安裝服務數') ?></div>
                         <div class="hub-meta-value"><?= (int)$stats['count'] ?><?php if ((string)$stats['modes'] !== ''): ?> / modes: <code><?= hub_h((string)$stats['modes']) ?></code><?php endif; ?></div>
-                        <div class="hub-meta-label">安裝狀態</div>
-                        <div class="hub-meta-value"><span class="<?= $pack['status'] === 'ok' ? 'ok' : 'bad' ?>"><?= $pack['status'] === 'ok' ? '可安裝' : 'pack 驗證失敗' ?></span></div>
+                        <div class="hub-meta-label"><?= hub_marketplace_t('安裝狀態') ?></div>
+                        <div class="hub-meta-value"><span class="<?= $pack['status'] === 'ok' ? 'ok' : 'bad' ?>"><?= $pack['status'] === 'ok' ? hub_marketplace_t('可安裝') : hub_marketplace_t('pack 驗證失敗') ?></span></div>
                     </div>
                     <?php if ($preflight['summary']['total'] > 0): ?>
                         <p><strong>Preflight</strong>
@@ -214,31 +219,31 @@ hub_admin_header('HubPack 套件', $user);
                         <form method="post">
                             <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
                             <input type="hidden" name="pack_id" value="<?= hub_h($packId) ?>">
-                            <label>service_key</label>
+                            <label><?= hub_marketplace_t('服務 key') ?> / service_key</label>
                             <input name="service_key" value="<?= hub_h($defaultKey) ?>" required>
-                            <label>display name</label>
+                            <label><?= hub_marketplace_t('顯示名稱') ?></label>
                             <input name="name" value="<?= hub_h((string)($manifest['name'] ?? '')) ?>" required>
-                            <label>mode</label>
+                            <label>API mode</label>
                             <input name="mode" value="<?= hub_h($defaultMode) ?>" required>
-                            <label>local port mode</label>
+                            <label><?= hub_marketplace_t('本機 port 模式') ?></label>
                             <select name="port_mode">
                                 <option value="auto">auto</option>
                                 <option value="manual">manual</option>
                             </select>
-                            <label>local port</label>
+                            <label><?= hub_marketplace_t('本機 port') ?></label>
                             <input name="local_port" value="<?= hub_h($defaultPort) ?>">
-                            <label>environment</label>
+                            <label><?= hub_marketplace_t('環境') ?></label>
                             <select name="environment">
                                 <option value="production">production</option>
                                 <option value="development">development</option>
                             </select>
                             <label><input name="hot_reload" type="checkbox" value="1"> hot_reload</label>
                             <div class="hub-actions">
-                                <button class="primary" type="submit">安裝為服務</button>
-                                <a class="button" href="api_docs.php">查看 API 文件</a>
-                                <a class="button" href="benchmarks.php">Benchmark 測試</a>
-                                <a class="button" href="pack_readiness.php?pack_id=<?= urlencode($packId) ?>">準備狀態</a>
-                                <a class="button" href="services.php">已安裝服務</a>
+                                <button class="primary" type="submit"><?= hub_h(__('安裝為服務')) ?></button>
+                                <a class="button" href="api_docs.php"><?= hub_h(__('查看 API 文件')) ?></a>
+                                <a class="button" href="benchmarks.php"><?= hub_marketplace_t('Benchmark 測試') ?></a>
+                                <a class="button" href="pack_readiness.php?pack_id=<?= urlencode($packId) ?>"><?= hub_marketplace_t('準備狀態') ?></a>
+                                <a class="button" href="services.php"><?= hub_marketplace_t('已安裝服務') ?></a>
                             </div>
                         </form>
                     <?php endif; ?>

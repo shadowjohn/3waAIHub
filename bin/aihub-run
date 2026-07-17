@@ -1,0 +1,323 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+require __DIR__ . '/../app/bootstrap.php';
+hub_cli_only();
+
+const AIHUB_RUNNER_VERSION = '0.1';
+
+function fail(string $message, int $code = 2): never
+{
+    fwrite(STDERR, $message . PHP_EOL);
+    exit($code);
+}
+
+function usage(): never
+{
+    fail("Usage: bin/aihub-run <job_key> --workspace /DATA/jobs/name/001 [--pack pack_id] [--run-id id] [--caller shell] [--gpu 0]", 64);
+}
+
+function arg_value(array $args, string $name): ?string
+{
+    foreach ($args as $index => $arg) {
+        if ($arg === $name) {
+            return isset($args[$index + 1]) ? (string)$args[$index + 1] : null;
+        }
+        if (str_starts_with($arg, $name . '=')) {
+            return substr($arg, strlen($name) + 1);
+        }
+    }
+    return null;
+}
+
+function path_under(string $path, string $root): bool
+{
+    return $path === $root || str_starts_with($path . '/', rtrim($root, '/') . '/');
+}
+
+function read_json(string $path): array
+{
+    $data = json_decode((string)file_get_contents($path), true);
+    return is_array($data) ? $data : [];
+}
+
+function find_job(string $jobKey, ?string $packId): array
+{
+    foreach (glob(HUB_ROOT . '/packs/*/pack.json') ?: [] as $manifestPath) {
+        $packDir = dirname($manifestPath);
+        $manifest = read_json($manifestPath);
+        if ($packId !== null && (string)($manifest['id'] ?? '') !== $packId) {
+            continue;
+        }
+        foreach (($manifest['local_jobs'] ?? []) as $job) {
+            if ((string)($job['job_key'] ?? '') === $jobKey) {
+                return [$manifest, $packDir, $job];
+            }
+        }
+    }
+    fail('unknown local job: ' . $jobKey, 3);
+}
+
+function json_write(string $path, array $data): void
+{
+    file_put_contents($path, json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+}
+
+function local_sample(?string $gpuIndexes): array
+{
+    return [
+        'sampled_at' => gmdate('c'),
+        'cpu_percent' => null,
+        'cpu_time_ms' => null,
+        'memory_bytes' => memory_get_usage(true),
+        'process_count' => null,
+        'disk_read_bytes' => null,
+        'disk_write_bytes' => null,
+        'network_rx_bytes' => null,
+        'network_tx_bytes' => null,
+        'gpu' => $gpuIndexes === null || $gpuIndexes === '' ? null : [],
+    ];
+}
+
+function insert_sample(PDO $db, string $runId, array $sample, string $resourcePath): void
+{
+    file_put_contents($resourcePath, json_encode($sample, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n", FILE_APPEND);
+    $stmt = $db->prepare(
+        'INSERT INTO runtime_resource_samples
+            (run_id, sampled_at, cpu_percent, cpu_time_ms, memory_bytes, process_count, disk_read_bytes, disk_write_bytes, network_rx_bytes, network_tx_bytes, gpu_json)
+         VALUES
+            (:run_id, :sampled_at, :cpu_percent, :cpu_time_ms, :memory_bytes, :process_count, :disk_read_bytes, :disk_write_bytes, :network_rx_bytes, :network_tx_bytes, :gpu_json)'
+    );
+    $stmt->execute([
+        ':run_id' => $runId,
+        ':sampled_at' => (string)$sample['sampled_at'],
+        ':cpu_percent' => $sample['cpu_percent'],
+        ':cpu_time_ms' => $sample['cpu_time_ms'],
+        ':memory_bytes' => $sample['memory_bytes'],
+        ':process_count' => $sample['process_count'],
+        ':disk_read_bytes' => $sample['disk_read_bytes'],
+        ':disk_write_bytes' => $sample['disk_write_bytes'],
+        ':network_rx_bytes' => $sample['network_rx_bytes'],
+        ':network_tx_bytes' => $sample['network_tx_bytes'],
+        ':gpu_json' => json_encode($sample['gpu'], JSON_UNESCAPED_SLASHES),
+    ]);
+}
+
+$args = $argv;
+array_shift($args);
+$jobKey = array_shift($args);
+if (!is_string($jobKey) || !preg_match('/^[a-z0-9][a-z0-9_-]*$/', $jobKey)) {
+    usage();
+}
+
+$workspace = arg_value($args, '--workspace');
+if (!is_string($workspace) || $workspace === '') {
+    usage();
+}
+
+$jobRoot = getenv('AIHUB_LOCAL_JOB_ROOT') ?: '/DATA/jobs';
+if (!is_dir($jobRoot) && !mkdir($jobRoot, 0775, true) && !is_dir($jobRoot)) {
+    fail('cannot create local job root: ' . $jobRoot, 4);
+}
+$rootReal = realpath($jobRoot);
+$workspaceReal = realpath($workspace);
+if ($rootReal === false || $workspaceReal === false || !path_under($workspaceReal, $rootReal)) {
+    fail('workspace must be under ' . $jobRoot, 4);
+}
+
+$packId = arg_value($args, '--pack');
+[$manifest, $packDir, $job] = find_job($jobKey, $packId);
+$entrypoint = (string)($job['entrypoint'] ?? '');
+if ($entrypoint === '' || str_starts_with($entrypoint, '/') || str_contains($entrypoint, '..')) {
+    fail('invalid local job entrypoint', 5);
+}
+$entryReal = realpath($packDir . '/' . $entrypoint);
+$packReal = realpath($packDir);
+if ($entryReal === false || $packReal === false || !path_under($entryReal, $packReal) || !is_file($entryReal)) {
+    fail('local job entrypoint not found', 5);
+}
+
+foreach (['input', 'output', 'logs'] as $dir) {
+    if (!is_dir($workspaceReal . '/' . $dir)) {
+        mkdir($workspaceReal . '/' . $dir, 0775, true);
+    }
+}
+if (!is_dir($workspaceReal . '/runtime')) {
+    mkdir($workspaceReal . '/runtime', 0775, true);
+}
+
+$statusPath = $workspaceReal . '/status.json';
+$resultPath = $workspaceReal . '/result.json';
+$progressPath = $workspaceReal . '/progress.ndjson';
+$requestPath = $workspaceReal . '/request.json';
+$runJsonPath = $workspaceReal . '/runtime/run.json';
+$resourcePath = $workspaceReal . '/runtime/resource.ndjson';
+$eventsPath = $workspaceReal . '/runtime/events.ndjson';
+if (!is_file($requestPath)) {
+    file_put_contents($requestPath, "{}\n");
+}
+
+$runId = arg_value($args, '--run-id') ?: 'run_' . gmdate('YmdHis') . '_' . bin2hex(random_bytes(4));
+if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/', $runId)) {
+    fail('invalid run_id', 4);
+}
+$caller = arg_value($args, '--caller') ?: 'shell';
+$gpuIndexes = arg_value($args, '--gpu');
+$startedAt = hub_now();
+$startedMs = (int)round(microtime(true) * 1000);
+
+$db = hub_db();
+hub_migrate($db);
+$db->prepare(
+    'INSERT INTO runtime_runs
+        (run_id, pack_id, task, pack_version, runner_version, caller, workspace, state, started_at, gpu_indexes, result_json_path, stdout_log_path, stderr_log_path, created_at)
+     VALUES
+        (:run_id, :pack_id, :task, :pack_version, :runner_version, :caller, :workspace, :state, :started_at, :gpu_indexes, :result_json_path, :stdout_log_path, :stderr_log_path, :created_at)'
+)->execute([
+    ':run_id' => $runId,
+    ':pack_id' => (string)($manifest['id'] ?? ''),
+    ':task' => $jobKey,
+    ':pack_version' => (string)($manifest['version'] ?? ''),
+    ':runner_version' => AIHUB_RUNNER_VERSION,
+    ':caller' => $caller,
+    ':workspace' => $workspaceReal,
+    ':state' => 'running',
+    ':started_at' => $startedAt,
+    ':gpu_indexes' => $gpuIndexes,
+    ':result_json_path' => $resultPath,
+    ':stdout_log_path' => $workspaceReal . '/logs/stdout.log',
+    ':stderr_log_path' => $workspaceReal . '/logs/stderr.log',
+    ':created_at' => $startedAt,
+]);
+
+json_write($statusPath, [
+    'status' => 'running',
+    'run_id' => $runId,
+    'pack_id' => (string)($manifest['id'] ?? ''),
+    'job_key' => $jobKey,
+    'started_at' => $startedAt,
+]);
+json_write($runJsonPath, [
+    'run_id' => $runId,
+    'pack_id' => (string)($manifest['id'] ?? ''),
+    'job_key' => $jobKey,
+    'pack_version' => (string)($manifest['version'] ?? ''),
+    'runner_version' => AIHUB_RUNNER_VERSION,
+    'caller' => $caller,
+    'workspace' => $workspaceReal,
+    'state' => 'running',
+    'started_at' => $startedAt,
+    'gpu_indexes' => $gpuIndexes,
+]);
+file_put_contents($eventsPath, json_encode(['ts' => gmdate('c'), 'event' => 'run_started'], JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND);
+insert_sample($db, $runId, local_sample($gpuIndexes), $resourcePath);
+
+foreach ([
+    'AIHUB_ROOT' => HUB_ROOT,
+    'AIHUB_PACK_ID' => (string)($manifest['id'] ?? ''),
+    'AIHUB_PACK_DIR' => $packReal,
+    'AIHUB_JOB_KEY' => $jobKey,
+    'AIHUB_WORKSPACE' => $workspaceReal,
+    'AIHUB_REQUEST_JSON' => $requestPath,
+    'AIHUB_STATUS_JSON' => $statusPath,
+    'AIHUB_RESULT_JSON' => $resultPath,
+    'AIHUB_PROGRESS_NDJSON' => $progressPath,
+    'AIHUB_RUN_ID' => $runId,
+    'AIHUB_GPU_INDEXES' => (string)($gpuIndexes ?? ''),
+] as $name => $value) {
+    putenv($name . '=' . $value);
+}
+
+$process = proc_open([$entryReal], [
+    1 => ['pipe', 'w'],
+    2 => ['pipe', 'w'],
+], $pipes, $packReal);
+if (!is_resource($process)) {
+    $db->prepare("UPDATE runtime_runs SET state = 'failed', error_code = 'runner_start_failed', finished_at = :finished_at WHERE run_id = :run_id")
+        ->execute([':finished_at' => hub_now(), ':run_id' => $runId]);
+    fail('cannot start local job', 6);
+}
+
+$stdout = stream_get_contents($pipes[1]);
+$stderr = stream_get_contents($pipes[2]);
+fclose($pipes[1]);
+fclose($pipes[2]);
+$exitCode = proc_close($process);
+
+file_put_contents($workspaceReal . '/logs/stdout.log', $stdout);
+file_put_contents($workspaceReal . '/logs/stderr.log', $stderr);
+insert_sample($db, $runId, local_sample($gpuIndexes), $resourcePath);
+
+$status = is_file($statusPath) ? read_json($statusPath) : [];
+if (($status['status'] ?? '') === 'running' || !isset($status['status'])) {
+    $status['status'] = $exitCode === 0 ? 'success' : 'failed';
+    $status['finished_at'] = gmdate('c');
+    $status['exit_code'] = $exitCode;
+    file_put_contents($statusPath, json_encode($status, JSON_UNESCAPED_SLASHES) . "\n");
+}
+
+if (!is_file($resultPath)) {
+    file_put_contents($resultPath, json_encode([
+        'ok' => $exitCode === 0,
+        'pack_id' => (string)($manifest['id'] ?? ''),
+        'job_key' => $jobKey,
+        'exit_code' => $exitCode,
+    ], JSON_UNESCAPED_SLASHES) . "\n");
+}
+
+$finishedAt = hub_now();
+$durationMs = max(0, (int)round(microtime(true) * 1000) - $startedMs);
+$result = read_json($resultPath);
+$runtime = [
+    'duration_ms' => $durationMs,
+    'memory_peak_bytes' => memory_get_peak_usage(true),
+    'gpu' => $gpuIndexes === null || $gpuIndexes === '' ? null : [],
+];
+$result['runtime'] = $runtime;
+json_write($resultPath, $result);
+
+$logSize = (is_file($workspaceReal . '/logs/stdout.log') ? filesize($workspaceReal . '/logs/stdout.log') : 0)
+    + (is_file($workspaceReal . '/logs/stderr.log') ? filesize($workspaceReal . '/logs/stderr.log') : 0);
+$artifactCount = count(glob($workspaceReal . '/output/*') ?: []);
+$db->prepare(
+    'UPDATE runtime_runs
+     SET state = :state, exit_code = :exit_code, finished_at = :finished_at, duration_ms = :duration_ms,
+         memory_peak_bytes = :memory_peak_bytes, artifact_count = :artifact_count, log_size_bytes = :log_size_bytes
+     WHERE run_id = :run_id'
+)->execute([
+    ':state' => $exitCode === 0 ? 'success' : 'failed',
+    ':exit_code' => $exitCode,
+    ':finished_at' => $finishedAt,
+    ':duration_ms' => $durationMs,
+    ':memory_peak_bytes' => memory_get_peak_usage(true),
+    ':artifact_count' => $artifactCount,
+    ':log_size_bytes' => $logSize,
+    ':run_id' => $runId,
+]);
+json_write($runJsonPath, [
+    'run_id' => $runId,
+    'pack_id' => (string)($manifest['id'] ?? ''),
+    'job_key' => $jobKey,
+    'pack_version' => (string)($manifest['version'] ?? ''),
+    'runner_version' => AIHUB_RUNNER_VERSION,
+    'caller' => $caller,
+    'workspace' => $workspaceReal,
+    'state' => $exitCode === 0 ? 'success' : 'failed',
+    'exit_code' => $exitCode,
+    'started_at' => $startedAt,
+    'finished_at' => $finishedAt,
+    'duration_ms' => $durationMs,
+    'gpu_indexes' => $gpuIndexes,
+]);
+file_put_contents($eventsPath, json_encode(['ts' => gmdate('c'), 'event' => 'run_finished', 'exit_code' => $exitCode], JSON_UNESCAPED_SLASHES) . "\n", FILE_APPEND);
+
+echo json_encode([
+    'ok' => $exitCode === 0,
+    'run_id' => $runId,
+    'pack_id' => (string)($manifest['id'] ?? ''),
+    'job_key' => $jobKey,
+    'workspace' => $workspaceReal,
+    'exit_code' => $exitCode,
+], JSON_UNESCAPED_SLASHES) . PHP_EOL;
+exit(is_int($exitCode) ? $exitCode : 1);

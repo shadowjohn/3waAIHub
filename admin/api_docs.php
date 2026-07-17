@@ -38,12 +38,12 @@ hub_admin_header('API 文件', $user);
     <p class="muted">外部 IP 預設需要 Bearer token；localhost 可由 settings 略過 token。Token 明文只會在建立時顯示一次。</p>
     <pre>curl "<?= hub_h(hub_api_docs_mode_url('hello')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx"</pre>
-    <p><a class="button" href="api_members.php">API Members</a> <a class="button" href="api_usage.php">API Usage</a></p>
+    <p><a class="button" href="api_members.php">API 會員</a> <a class="button" href="api_usage.php">API 用量</a></p>
 </section>
 <section class="panel">
-    <h2>Mode 對應 Service Instance</h2>
+    <h2>Mode 對應服務實例</h2>
     <table>
-        <tr><th>Mode</th><th>Service Key</th><th>Name</th><th>Pack</th><th>Status</th></tr>
+        <tr><th>Mode</th><th>Service Key</th><th>服務名稱</th><th>Pack</th><th>狀態</th></tr>
         <?php foreach ($services as $service): ?>
             <tr>
                 <td><code><?= hub_h($service['mode']) ?></code></td>
@@ -57,7 +57,7 @@ hub_admin_header('API 文件', $user);
 </section>
 <?php if ($contracts): ?>
 <section class="panel">
-    <h2>Pack API Contracts</h2>
+    <h2>Pack API Contract</h2>
     <?php foreach ($contracts as $packId => $item): ?>
         <?php
         $contract = $item['contract'];
@@ -86,15 +86,15 @@ hub_admin_header('API 文件', $user);
             }
         }
         ?>
-        <h3><?= hub_h((string)($item['pack']['manifest']['name'] ?? $packId)) ?><?= (($item['pack']['manifest']['role'] ?? '') === 'reference') ? ' / Reference Pack' : '' ?></h3>
+        <h3><?= hub_h((string)($item['pack']['manifest']['name'] ?? $packId)) ?><?= (($item['pack']['manifest']['role'] ?? '') === 'reference') ? ' / 參考 Pack' : '' ?></h3>
         <table>
             <tr><th>Mode</th><td><code><?= hub_h($mode) ?></code></td></tr>
-            <tr><th>Method</th><td><code><?= hub_h($method) ?></code></td></tr>
-            <tr><th>Endpoint</th><td><code><?= hub_h($endpoint) ?></code></td></tr>
+            <tr><th>HTTP 方法</th><td><code><?= hub_h($method) ?></code></td></tr>
+            <tr><th>API 端點</th><td><code><?= hub_h($endpoint) ?></code></td></tr>
             <tr><th>Content-Type</th><td><code><?= hub_h($contentType) ?></code></td></tr>
-            <tr><th>Input</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['input']['fields'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
-            <tr><th>Output</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['output'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
-            <tr><th>Errors</th><td><code><?= hub_h(implode(', ', array_map('strval', $contract['errors'] ?? []))) ?></code></td></tr>
+            <tr><th>輸入欄位</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['input']['fields'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
+            <tr><th>輸出格式</th><td><pre class="inline-pre"><?= hub_h(json_encode($contract['output'] ?? [], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td></tr>
+            <tr><th>錯誤碼</th><td><code><?= hub_h(implode(', ', array_map('strval', $contract['errors'] ?? []))) ?></code></td></tr>
         </table>
         <?php if ($method === 'GET'): ?>
         <pre>curl "<?= hub_h($contractUrl) ?>" \
@@ -123,12 +123,12 @@ hub_admin_header('API 文件', $user);
 </section>
 <section class="panel">
     <h2>POST OCR</h2>
-    <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code> or service setting <code>OCR_REAL_INFERENCE=1</code>.</p>
-    <h3>Mock mode</h3>
+    <p class="muted">狀態：L5 可驗收。預設為 mock 模式；真實推論使用 <code>real_inference=1</code> 或服務設定 <code>OCR_REAL_INFERENCE=1</code>。</p>
+    <h3>Mock 模式</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('ocr')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png"</pre>
-    <h3>Real inference mode</h3>
+    <h3>真實推論模式</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('ocr')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@sample.png" \
@@ -136,8 +136,8 @@ hub_admin_header('API 文件', $user);
 </section>
 <section class="panel">
     <h2>POST Translate</h2>
-    <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code>. Geometry output uses <code>output_format=metadata|polygon|rle|both</code>.</p>
-    <h3>Mock mode</h3>
+    <p class="muted">狀態：L5 可驗收。預設為 mock 模式；真實推論使用 <code>real_inference=1</code>。幾何輸出使用 <code>output_format=metadata|polygon|rle|both</code>。</p>
+    <h3>Mock 模式</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \
@@ -146,7 +146,7 @@ hub_admin_header('API 文件', $user);
     "target_lang": "zh-TW",
     "text": "That was a wonderful time."
   }'</pre>
-    <h3>Real inference mode</h3>
+    <h3>真實推論模式</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -H "Content-Type: application/json" \
@@ -159,20 +159,20 @@ hub_admin_header('API 文件', $user);
 </section>
 <section class="panel">
     <h2>POST SAM3</h2>
-    <p class="muted">Status: L5 benchmark ready. Mock mode is the default; real inference mode uses <code>real_inference=1</code>.</p>
-    <h3>Mock mode</h3>
+    <p class="muted">狀態：L5 可驗收。預設為 mock 模式；真實推論使用 <code>real_inference=1</code>。</p>
+    <h3>Mock 模式</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto"</pre>
-    <h3>Real inference mode</h3>
+    <h3>真實推論模式</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
   -F "prompt_type=auto" \
   -F "real_inference=1" \
   -F "output_format=polygon"</pre>
-    <h3>Points prompt</h3>
+    <h3>點位 prompt</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
@@ -180,7 +180,7 @@ hub_admin_header('API 文件', $user);
   -F 'points_json={"points":[[320,240]],"labels":[1]}' \
   -F "real_inference=1" \
   -F "output_format=both"</pre>
-    <h3>Semantic text prompt</h3>
+    <h3>語意文字 prompt</h3>
     <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
   -H "Authorization: Bearer 3wa_live_xxx" \
   -F "image=@packs/sam3/demo/camera_cat.png" \
@@ -190,7 +190,7 @@ hub_admin_header('API 文件', $user);
   -F "output_format=polygon"</pre>
 </section>
 <section class="panel">
-    <h2>Unknown Mode</h2>
+    <h2>未知 Mode</h2>
     <pre>curl "<?= hub_h(hub_api_docs_mode_url('unknown')) ?>"</pre>
     <pre>{
   "ok": false,

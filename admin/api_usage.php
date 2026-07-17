@@ -49,7 +49,7 @@ hub_admin_header('API 用量統計', $user);
     <form method="get">
         <div class="usage-filter-grid">
             <div>
-                <label>Member</label>
+                <label>API 會員</label>
                 <select name="member_id">
                     <option value="">全部</option>
                     <?php foreach ($members as $member): ?>
@@ -93,7 +93,7 @@ hub_admin_header('API 用量統計', $user);
                 <thead>
                     <tr>
                         <th>日期</th>
-                        <th>Member</th>
+                        <th>API 會員</th>
                         <th>Token</th>
                         <th>Mode</th>
                         <th class="usage-num">請求</th>

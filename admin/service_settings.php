@@ -11,7 +11,7 @@ $user = hub_require_system_admin($db);
 $service = hub_get_service($db, (int)($_GET['service_id'] ?? $_POST['service_id'] ?? 0));
 if (!$service) {
     http_response_code(404);
-    exit('Service not found');
+    exit('找不到服務');
 }
 
 $message = '';
@@ -46,7 +46,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $service = hub_get_service($db, (int)$service['id']) ?: $service;
             $settings = hub_ensure_service_settings($db, $service);
             $message = !empty($result['changed'])
-                ? '設定已儲存，.env 已重新產生。' . (!empty($result['restart_required']) ? ' 此服務需要 Restart 才會套用新設定。' : '')
+                ? '設定已儲存，.env 已重新產生。' . (!empty($result['restart_required']) ? ' 此服務需要重啟才會套用新設定。' : '')
                 : '設定未變更。';
         }
     } catch (Throwable $e) {
@@ -57,12 +57,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $runtimeDir = dirname(hub_path((string)$service['compose_file']));
 $envPath = $runtimeDir . '/.env';
 
-hub_admin_header('Service Settings', $user);
+hub_admin_header('服務設定', $user);
 ?>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <section class="panel">
-    <h1>Service Settings</h1>
+    <h1>服務設定</h1>
     <table>
         <?php foreach ([
             'name', 'service_key', 'mode', 'pack_id', 'runtime_status', 'local_port',
@@ -73,7 +73,7 @@ hub_admin_header('Service Settings', $user);
     </table>
 </section>
 <section class="panel">
-    <h2>Runtime Settings</h2>
+    <h2>Runtime 設定</h2>
     <?php if ($schema === []): ?>
         <p class="muted">此 Pack 尚未宣告可調設定。</p>
     <?php else: ?>
@@ -90,22 +90,22 @@ hub_admin_header('Service Settings', $user);
 </section>
 <?php if ((string)($service['pack_id'] ?? '') === 'translate-gemma12b'): ?>
 <section class="panel">
-    <h2>Ollama Model</h2>
+    <h2>Ollama 模型</h2>
     <p class="muted">Web UI 只排背景工作；實際 pull 由 command worker 執行。</p>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="service_id" value="<?= (int)$service['id'] ?>">
         <input type="hidden" name="action" value="ollama_model_pull">
-        <button type="submit">Pull model</button>
+        <button type="submit">拉取模型</button>
         <a class="button" href="services.php">查看工作進度</a>
     </form>
 </section>
 <?php endif; ?>
 <section class="panel">
-    <h2>Generated Files</h2>
+    <h2>產生檔案</h2>
     <table>
         <tr><th>.env</th><td><code><?= hub_h($envPath) ?></code></td></tr>
-        <tr><th>Compose</th><td><code><?= hub_h(hub_path((string)$service['compose_file'])) ?></code></td></tr>
+        <tr><th>Compose 設定</th><td><code><?= hub_h(hub_path((string)$service['compose_file'])) ?></code></td></tr>
     </table>
 </section>
 <?php hub_admin_footer(); ?>
@@ -119,9 +119,9 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $va
     $selector = is_array($item['model_selector'] ?? null) ? $item['model_selector'] : null;
     ob_start();
     ?>
-    <label><?= hub_h($label) ?> <code><?= hub_h($key) ?></code><?= !empty($item['restart_required']) ? ' <span class="bad">Restart</span>' : '' ?></label>
+    <label><?= hub_h($label) ?> <code><?= hub_h($key) ?></code><?= !empty($item['restart_required']) ? ' <span class="bad">需重啟</span>' : '' ?></label>
     <?php if ($type === 'boolean'): ?>
-        <label><input type="checkbox" name="<?= hub_h($key) ?>" value="1"<?= $value === '1' ? ' checked' : '' ?>> Enabled</label>
+        <label><input type="checkbox" name="<?= hub_h($key) ?>" value="1"<?= $value === '1' ? ' checked' : '' ?>> 啟用</label>
     <?php elseif ($type === 'select'): ?>
         <select name="<?= hub_h($key) ?>"<?= $required ?>>
             <?php foreach ((array)($item['options'] ?? []) as $option): ?>
@@ -140,12 +140,12 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $va
             </datalist>
             <?php $status = hub_model_selector_status($db, $selector, $value); ?>
             <p class="muted">
-                Model Root: <code><?= hub_h(hub_models_root($db)) ?></code><br>
+                模型根目錄：<code><?= hub_h(hub_models_root($db)) ?></code><br>
                 <?= hub_h((string)$status['label']) ?>:
-                <span class="<?= $status['exists'] ? 'ok' : 'bad' ?>"><?= $status['exists'] ? 'exists' : 'missing' ?></span>
+                <span class="<?= $status['exists'] ? 'ok' : 'bad' ?>"><?= $status['exists'] ? '存在' : '缺少' ?></span>
                 <?php if (array_key_exists('model_present', $status)): ?>
-                    <br>Model tag:
-                    <span class="<?= !empty($status['model_present']) ? 'ok' : 'bad' ?>"><?= !empty($status['model_present']) ? 'present' : 'missing' ?></span>
+                    <br>模型標籤：
+                    <span class="<?= !empty($status['model_present']) ? 'ok' : 'bad' ?>"><?= !empty($status['model_present']) ? '已存在' : '缺少' ?></span>
                 <?php endif; ?>
                 <?= $status['size_bytes'] !== null ? ' / ' . hub_h(hub_model_format_bytes((int)$status['size_bytes'])) : '' ?>
             </p>

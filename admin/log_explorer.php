@@ -59,8 +59,8 @@ hub_admin_header('記錄中心', $user);
 ?>
 <section class="panel">
     <h1>記錄中心</h1>
-    <p class="muted">集中查 API 記錄、背景工作、服務記錄與系統記錄。IP filter 的 GET link 一律使用 base64url。</p>
-    <nav class="hub-tabs" aria-label="Log Explorer tabs">
+    <p class="muted">集中查 API 記錄、背景工作、服務記錄與系統記錄。IP 篩選的 GET link 一律使用 base64url。</p>
+    <nav class="hub-tabs" aria-label="記錄中心頁籤">
         <?php foreach (hub_log_explorer_tabs() as $tab => $label): ?>
             <a class="button<?= $activeTab === $tab ? ' primary' : '' ?>" href="log_explorer.php?tab=<?= hub_h($tab) ?>"><?= hub_h($label) ?></a>
         <?php endforeach; ?>
@@ -74,13 +74,13 @@ hub_admin_header('記錄中心', $user);
     <form method="post">
         <input type="hidden" name="tab" value="api">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
-        <label>Time from</label>
+        <label>開始時間</label>
         <input name="time_from" value="<?= hub_h($filters['time_from']) ?>" placeholder="2026-07-06 00:00:00">
-        <label>Time to</label>
+        <label>結束時間</label>
         <input name="time_to" value="<?= hub_h($filters['time_to']) ?>" placeholder="2026-07-06 23:59:59">
-        <label>Client IP</label>
+        <label>客戶端 IP</label>
         <input name="client_ip" value="<?= hub_h($clientIp ?? '') ?>" placeholder="192.168.1.10 或 2001:db8::1">
-        <label>Service</label>
+        <label>服務</label>
         <select name="service_id">
             <option value="">全部</option>
             <?php foreach ($services as $service): ?>
@@ -89,7 +89,7 @@ hub_admin_header('記錄中心', $user);
                 </option>
             <?php endforeach; ?>
         </select>
-        <label>API Member</label>
+        <label>API 會員</label>
         <select name="member_id">
             <option value="">全部</option>
             <?php foreach ($members as $member): ?>
@@ -109,29 +109,29 @@ hub_admin_header('記錄中心', $user);
         </select>
         <label>Mode</label>
         <input name="mode" value="<?= hub_h($filters['mode']) ?>">
-        <label>OK</label>
+        <label>結果</label>
         <select name="ok">
             <option value="">全部</option>
             <option value="1"<?= $filters['ok'] === '1' ? ' selected' : '' ?>>成功</option>
             <option value="0"<?= $filters['ok'] === '0' ? ' selected' : '' ?>>失敗</option>
         </select>
-        <label>Status Code</label>
+        <label>HTTP 狀態碼</label>
         <input name="status_code" value="<?= hub_h($filters['status_code']) ?>">
-        <label>Error Code</label>
+        <label>錯誤碼</label>
         <input name="error_code" value="<?= hub_h($filters['error_code']) ?>">
-        <label>Method</label>
+        <label>HTTP 方法</label>
         <input name="method" value="<?= hub_h($filters['method']) ?>">
         <label>Request ID</label>
         <input name="request_id" value="<?= hub_h($filters['request_id']) ?>">
-        <label>Keyword</label>
+        <label>關鍵字</label>
         <input name="keyword" value="<?= hub_h($filters['keyword']) ?>" placeholder="request_uri / reason / user_agent">
         <p><button class="primary" type="submit">查詢</button> <a class="button" href="log_explorer.php?tab=api">清除</a></p>
     </form>
 </section>
 <section class="panel">
-    <h2>Last 24h</h2>
+    <h2>最近 24 小時</h2>
     <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
-        <?php foreach (['failed_ips' => 'Top Failed IPs', 'error_codes' => 'Top Error Codes', 'unknown_modes' => 'Unknown Modes', 'denied_ips' => 'Denied IPs'] as $kind => $title): ?>
+        <?php foreach (['failed_ips' => '失敗最多 IP', 'error_codes' => '常見錯誤碼', 'unknown_modes' => '未知 Mode', 'denied_ips' => '被拒絕 IP'] as $kind => $title): ?>
             <div>
                 <h3><?= hub_h($title) ?></h3>
                 <table>
@@ -153,11 +153,11 @@ hub_admin_header('記錄中心', $user);
     </div>
 </section>
 <section class="panel">
-    <h2>Logs</h2>
-    <p class="muted">共 <?= (int)$total ?> 筆，Page <?= (int)$page ?>，每頁 <?= (int)$limit ?> 筆。</p>
+    <h2>記錄列表</h2>
+    <p class="muted">共 <?= (int)$total ?> 筆，第 <?= (int)$page ?> 頁，每頁 <?= (int)$limit ?> 筆。</p>
     <table>
         <tr>
-            <th>Time</th><th>IP</th><th>Member</th><th>Token</th><th>Mode</th><th>Service</th><th>Method</th><th>Status</th><th>OK</th><th>Error</th><th>Reason</th><th>ms</th><th>Bytes</th><th>Request ID</th><th>UA</th>
+            <th>時間</th><th>IP</th><th>會員</th><th>Token</th><th>Mode</th><th>服務</th><th>HTTP 方法</th><th>HTTP 狀態</th><th>結果</th><th>錯誤</th><th>原因</th><th>耗時 ms</th><th>容量</th><th>Request ID</th><th>UA</th>
         </tr>
         <?php foreach ($logs as $log): ?>
             <tr>
@@ -169,7 +169,7 @@ hub_admin_header('記錄中心', $user);
                 <td><?= hub_h($log['service_name'] ?? '') ?></td>
                 <td><?= hub_h($log['method']) ?></td>
                 <td><?= (int)$log['status_code'] ?></td>
-                <td class="<?= (int)$log['ok'] === 1 ? 'ok' : 'bad' ?>"><?= (int)$log['ok'] === 1 ? 'OK' : 'FAIL' ?></td>
+                <td class="<?= (int)$log['ok'] === 1 ? 'ok' : 'bad' ?>"><?= (int)$log['ok'] === 1 ? '成功' : '失敗' ?></td>
                 <td><code><?= hub_h($log['error_code']) ?></code></td>
                 <td><?= hub_h(hub_short_text((string)($log['reason'] ?? ''), 80)) ?></td>
                 <td><?= $log['elapsed_ms'] === null ? '' : (int)$log['elapsed_ms'] ?></td>
@@ -194,7 +194,7 @@ hub_admin_header('記錄中心', $user);
     <p class="muted">查 command_jobs 排程與執行結果。stdout_tail / stderr_tail 只顯示最後 6000 bytes。</p>
     <form method="get">
         <input type="hidden" name="tab" value="jobs">
-        <label>Status</label>
+        <label>狀態</label>
         <select name="status">
             <option value="">全部</option>
             <?php foreach (hub_log_job_statuses() as $status): ?>
@@ -203,7 +203,7 @@ hub_admin_header('記錄中心', $user);
                 </option>
             <?php endforeach; ?>
         </select>
-        <label>Action</label>
+        <label>動作</label>
         <select name="action">
             <option value="">全部</option>
             <?php foreach (hub_allowed_job_actions() as $action): ?>
@@ -212,7 +212,7 @@ hub_admin_header('記錄中心', $user);
                 </option>
             <?php endforeach; ?>
         </select>
-        <label>Service</label>
+        <label>服務</label>
         <select name="service_id">
             <option value="">全部</option>
             <?php foreach ($services as $service): ?>
@@ -221,21 +221,21 @@ hub_admin_header('記錄中心', $user);
                 </option>
             <?php endforeach; ?>
         </select>
-        <label>Time from</label>
+        <label>開始時間</label>
         <input name="time_from" value="<?= hub_h($jobFilters['time_from']) ?>" placeholder="2026-07-06 00:00:00">
-        <label>Time to</label>
+        <label>結束時間</label>
         <input name="time_to" value="<?= hub_h($jobFilters['time_to']) ?>" placeholder="2026-07-06 23:59:59">
-        <label>Keyword</label>
+        <label>關鍵字</label>
         <input name="keyword" value="<?= hub_h($jobFilters['keyword']) ?>" placeholder="action / stage / message / service_key">
         <p><button class="primary" type="submit">查詢</button> <a class="button" href="log_explorer.php?tab=jobs">清除</a></p>
     </form>
 </section>
 <section class="panel">
-    <h2>command_jobs</h2>
+    <h2>背景工作列表</h2>
     <p class="muted">共顯示 <?= count($jobLogs) ?> 筆，依建立時間新到舊排序。</p>
     <table>
         <tr>
-            <th>工作 ID</th><th>建立時間</th><th>更新時間</th><th>action</th><th>服務</th><th>status</th><th>progress</th><th>stage</th><th>exit_code</th><th>requested</th><th>error_message</th><th>stdout_tail / stderr_tail</th>
+            <th>工作 ID</th><th>建立時間</th><th>更新時間</th><th>動作</th><th>服務</th><th>狀態</th><th>進度</th><th>階段</th><th>結束碼</th><th>請求來源</th><th>錯誤訊息</th><th>stdout_tail / stderr_tail</th>
         </tr>
         <?php foreach ($jobLogs as $job): ?>
             <?php

@@ -27,9 +27,9 @@ hub_test('api examples documentation exists', function (): void {
     hub_test_assert(str_contains($apiDocsPage, 'hub_pack_api_contracts'), 'admin API docs must read pack contracts');
     hub_test_assert(str_contains($apiDocsPage, 'hub_api_docs_mode_url'), 'admin API docs must generate URLs from current host');
     hub_test_assert(!str_contains($apiDocsPage, 'http://localhost/3waAIHub/api.php'), 'admin API docs must not hardcode localhost API URLs');
-    hub_test_assert(str_contains($apiDocsPage, 'Reference Pack'), 'admin API docs must show hello reference pack');
-    hub_test_assert(str_contains($apiDocsPage, 'Mock mode'), 'admin API docs must show OCR mock mode');
-    hub_test_assert(str_contains($apiDocsPage, 'Real inference mode'), 'admin API docs must show OCR real inference mode');
+    hub_test_assert(str_contains($apiDocsPage, '參考 Pack'), 'admin API docs must show hello reference pack');
+    hub_test_assert(str_contains($apiDocsPage, 'Mock 模式'), 'admin API docs must show OCR mock mode');
+    hub_test_assert(str_contains($apiDocsPage, '真實推論模式'), 'admin API docs must show OCR real inference mode');
     hub_test_assert(str_contains($apiDocsPage, "hub_api_docs_mode_url('translate')"), 'admin API docs must show translate mode');
     hub_test_assert(str_contains($apiDocsPage, "hub_api_docs_mode_url('sam3')"), 'admin API docs must show sam3 mode');
     hub_test_assert(str_contains($apiDocsPage, 'prompt_type=text'), 'admin API docs must show SAM3 semantic prompt mode');

@@ -29,7 +29,7 @@ hub_test('model registry scans models root safely and skips symlinks', function 
     hub_test_assert(!hub_is_safe_models_root(HUB_ROOT), 'repo root accepted as models root');
 
     $modelsPage = (string)file_get_contents(HUB_ROOT . '/admin/models.php');
-    hub_test_assert(str_contains($modelsPage, 'Free / Total'), 'models page must show Free / Total heading');
+    hub_test_assert(str_contains($modelsPage, '可用 / 總量'), 'models page must show free / total heading');
     hub_test_assert(strpos($modelsPage, "usage['free_bytes']") < strpos($modelsPage, "usage['total_bytes']"), 'models page must render free bytes before total bytes');
 
     $scan = hub_scan_model_assets($db, ['max_depth' => 4, 'limit' => 50]);

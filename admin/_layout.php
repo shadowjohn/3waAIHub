@@ -12,7 +12,7 @@ function hub_admin_header(string $title, array $user): void
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= hub_h($title) ?> - <?= hub_h($siteTitle) ?></title>
+    <title><?= hub_h(__($title)) ?> - <?= hub_h($siteTitle) ?></title>
     <link rel="stylesheet" href="../assets/css/admin.css">
     <style>
         :root { color-scheme: light; --bg: #f6f7f9; --panel: #fff; --line: #d9dee7; --text: #1d2430; --muted: #667085; --blue: #1769e0; --red: #b42318; --green: #067647; }
@@ -21,6 +21,7 @@ function hub_admin_header(string $title, array $user): void
         .brand small { color: #98a2b3; display: block; font-size: 12px; font-weight: 500; margin-top: 2px; }
         nav a { color: #d0d5dd; margin-right: 16px; text-decoration: none; }
         nav a:hover { color: #fff; }
+        .i18n-selector select { background: #101828; border-color: #344054; color: #fff; margin-right: 16px; padding: 5px 8px; width: auto; }
         main { max-width: 1120px; margin: 24px auto; padding: 0 16px; }
         .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 16px; }
         table { border-collapse: collapse; width: 100%; background: #fff; }
@@ -63,36 +64,38 @@ function hub_admin_header(string $title, array $user): void
     <div class="brand"><strong><?= hub_h($siteTitle) ?></strong><small><?= hub_h($siteSubtitle . ' / ' . HUB_VERSION . ' / ' . HUB_RELEASE_LABEL) ?></small></div>
     <nav>
         <?php if ($isAdmin): ?>
-            <a href="index.php">控制台</a>
-            <a href="marketplace.php">安裝套件</a>
-            <a href="packs.php">HubPack 套件</a>
-            <a href="models.php">模型倉庫</a>
-            <a href="services.php">服務管理</a>
-            <a href="customers.php">客戶管理</a>
-            <a href="api_members.php">API 金鑰</a>
-            <a href="api_usage.php">API 記錄</a>
-            <a href="playground.php">API 測試場</a>
-            <a href="log_explorer.php">Log Explorer</a>
-            <a href="benchmarks.php">Benchmark 測試</a>
-            <a href="api_docs.php">API 文件</a>
-            <a href="environment.php">系統環境</a>
-            <a href="settings.php">系統設定</a>
+            <a href="index.php"><?= hub_h(__('控制台')) ?></a>
+            <a href="marketplace.php"><?= hub_h(__('安裝套件')) ?></a>
+            <a href="packs.php"><?= hub_h(__('HubPack 套件')) ?></a>
+            <a href="models.php"><?= hub_h(__('模型倉庫')) ?></a>
+            <a href="services.php"><?= hub_h(__('服務管理')) ?></a>
+            <a href="runtime_runs.php"><?= hub_h(__('執行歷程')) ?></a>
+            <a href="customers.php"><?= hub_h(__('客戶管理')) ?></a>
+            <a href="api_members.php"><?= hub_h(__('API 金鑰')) ?></a>
+            <a href="api_usage.php"><?= hub_h(__('API 記錄')) ?></a>
+            <a href="playground.php"><?= hub_h(__('API 測試場')) ?></a>
+            <a href="log_explorer.php"><?= hub_h(__('記錄中心')) ?></a>
+            <a href="benchmarks.php"><?= hub_h(__('Benchmark 測試')) ?></a>
+            <a href="api_docs.php"><?= hub_h(__('API 文件')) ?></a>
+            <a href="environment.php"><?= hub_h(__('系統環境')) ?></a>
+            <a href="settings.php"><?= hub_h(__('系統設定')) ?></a>
         <?php else: ?>
-            <a href="my_services.php">我的服務</a>
-            <a href="my_tokens.php">我的 Token</a>
-            <a href="my_ip_whitelist.php">IP 白名單</a>
-            <a href="my_usage.php" title="用量統計">我的用量</a>
-            <a href="my_profile.php">帳號資料</a>
-            <a href="change_password.php">變更密碼</a>
-            <a href="playground.php">API 測試場</a>
-            <a href="../public_api_docs.php">API 文件</a>
+            <a href="my_services.php"><?= hub_h(__('我的服務')) ?></a>
+            <a href="my_tokens.php"><?= hub_h(__('我的 Token')) ?></a>
+            <a href="my_ip_whitelist.php"><?= hub_h(__('IP 白名單')) ?></a>
+            <a href="my_usage.php" title="<?= hub_h(__('用量統計')) ?>"><?= hub_h(__('我的用量')) ?></a>
+            <a href="my_profile.php"><?= hub_h(__('帳號資料')) ?></a>
+            <a href="change_password.php"><?= hub_h(__('變更密碼')) ?></a>
+            <a href="playground.php"><?= hub_h(__('API 測試場')) ?></a>
+            <a href="../public_api_docs.php"><?= hub_h(__('API 文件')) ?></a>
         <?php endif; ?>
-        <a href="logout.php">登出 <?= hub_h($user['username']) ?></a>
+        <?= hub_i18n_language_selector() ?>
+        <a href="logout.php"><?= hub_h(__('登出')) ?> <?= hub_h($user['username']) ?></a>
     </nav>
 </header>
 <main>
 <?php if ((int)$user['must_change_password'] === 1): ?>
-    <div class="notice">預設密碼仍在使用中，請到「設定」修改密碼。</div>
+    <div class="notice"><?= hub_h(__('預設密碼仍在使用中，請到「設定」修改密碼。')) ?></div>
 <?php endif; ?>
     <?php
 }

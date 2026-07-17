@@ -34,16 +34,16 @@ hub_test('PhaseUI-2 admin shell is localized and keeps technical labels', functi
 hub_test('PhaseUI-2 settings tabs and brand fields render expected contract', function (): void {
     $settingsPage = (string)file_get_contents(HUB_ROOT . '/admin/settings.php');
 
-    foreach (['basic', 'appearance', 'storage', 'api', 'docker', 'maintenance', 'account'] as $tab) {
+    foreach (['basic', 'appearance', 'i18n', 'storage', 'api', 'docker', 'maintenance', 'account'] as $tab) {
         hub_test_assert(str_contains($settingsPage, "settings.php?tab={$tab}"), 'settings tab link missing ' . $tab);
     }
-    foreach (['基本設定', '介面顯示', '儲存與模型', 'API 與安全', 'Docker 與背景工作', '維護與保留', '帳號密碼'] as $label) {
+    foreach (['基本設定', '介面顯示', '多國語系', '儲存與模型', 'API 與安全', 'Docker 與背景工作', '維護與保留', '帳號密碼'] as $label) {
         hub_test_assert(str_contains($settingsPage, $label), 'settings tab label missing ' . $label);
     }
     foreach (['AIHUB_SITE_TITLE', 'AIHUB_SITE_SUBTITLE', 'AIHUB_MODELS_DIR', 'AIHUB_REQUIRE_API_TOKEN', 'AIHUB_AUTO_BUILD_MISSING_IMAGE', 'AIHUB_DB_MAX_SIZE_MB'] as $key) {
         hub_test_assert(str_contains($settingsPage, $key), 'settings page missing key ' . $key);
     }
-    hub_test_assert(str_contains($settingsPage, "['basic', 'appearance', 'storage', 'api', 'docker', 'maintenance', 'account']"), 'settings tab allowlist missing');
+    hub_test_assert(str_contains($settingsPage, "['basic', 'appearance', 'i18n', 'storage', 'api', 'docker', 'maintenance', 'account']"), 'settings tab allowlist missing');
     hub_test_assert(str_contains($settingsPage, "\$activeTab = 'basic'"), 'unknown settings tab must fall back to basic');
 
     $loginPage = (string)file_get_contents(HUB_ROOT . '/login.php');

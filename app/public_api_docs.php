@@ -369,6 +369,11 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
         .panel, .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 18px; margin-bottom: 16px; }
         .grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
         .muted { color: var(--muted); }
+        .tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+        .tab { border: 1px solid var(--line); border-radius: 999px; color: var(--text); display: inline-block; padding: 8px 13px; text-decoration: none; }
+        .tab:hover { border-color: var(--blue); color: var(--blue); }
+        .section-title { align-items: baseline; display: flex; gap: 10px; justify-content: space-between; }
+        .job-list { margin: 0; padding-left: 20px; }
         code, pre { background: #101828; color: #f2f4f7; border-radius: 6px; }
         code { padding: 2px 5px; }
         pre { overflow: auto; padding: 12px; white-space: pre-wrap; }
@@ -386,12 +391,19 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
         <p>認證方式：<code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
         <p>API Endpoint：<code><?= hub_h(hub_public_api_base_url()) ?>?mode=&lt;mode&gt;</code></p>
         <p>DocParser 局部補翻譯：看 <code>quality_report.missing_translation_blocks</code>，再送 <code>task_type=docparser_repair_translation</code>、<code>task_id</code>、<code>block_ids</code> 到 <code><?= hub_h(hub_public_api_base_url()) ?>?mode=task_submit</code>。此流程只重翻指定 block，不重跑 OCR / layout / figure extraction。</p>
+        <nav class="tabs" aria-label="Public API docs sections">
+            <a class="tab" href="#api">API modes</a>
+            <a class="tab" href="#local-jobs">Local Jobs</a>
+        </nav>
         <?php if ($user !== null): ?>
             <p><a class="button" href="admin/playground.php">開啟 API 測試場</a></p>
         <?php endif; ?>
     </section>
-    <section class="panel">
-        <h2>可用 mode</h2>
+    <section id="api" class="panel">
+        <div class="section-title">
+            <h2>API modes</h2>
+            <span class="muted">HTTP Gateway</span>
+        </div>
         <p><?php foreach ($services as $service): ?><code><?= hub_h((string)$service['mode']) ?></code> <?php endforeach; ?></p>
     </section>
     <section class="grid">
@@ -428,6 +440,52 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
                 <pre><?= hub_h((string)$service['examples']['js_fetch']) ?></pre>
             </article>
         <?php endforeach; ?>
+    </section>
+    <section id="local-jobs" class="panel">
+        <div class="section-title">
+            <h2>Local Jobs</h2>
+            <span class="muted">Local Job Contract v0.1</span>
+        </div>
+        <p class="muted">Local Job 是本機 CLI / workspace contract，不是 <code>api.php?mode=...</code>。適合批次推論、訓練、模型匯出、GIS 批次處理等需要檔案工作區的任務。</p>
+        <p>薄呼叫入口：</p>
+        <pre>bin/aihub-run yolo_predict --pack yolo --workspace &lt;WORKSPACE&gt;
+bin/aihub-run yolo_train --pack yolo --workspace &lt;WORKSPACE&gt; --gpu 0
+bin/aihub-run yolo_export_onnx --pack yolo --workspace &lt;WORKSPACE&gt;</pre>
+        <div class="grid">
+            <article class="card">
+                <h3>Workspace contract</h3>
+                <pre>workspace/
+├─ input/
+├─ output/
+├─ logs/
+├─ runtime/
+│  ├─ run.json
+│  ├─ resource.ndjson
+│  └─ events.ndjson
+├─ request.json
+├─ status.json
+├─ progress.ndjson
+└─ result.json</pre>
+            </article>
+            <article class="card">
+                <h3>Local jobs</h3>
+                <ul class="job-list">
+                    <li><code>yolo_predict</code>：真實 Ultralytics batch predict runner</li>
+                    <li><code>yolo_train</code>：真實 Ultralytics training runner</li>
+                    <li><code>yolo_export_onnx</code>：真實 Ultralytics ONNX export runner</li>
+                </ul>
+                <p class="muted">Local Job 由受控本機環境執行；公開文件不提供內部 port、主機路徑、Docker 權限端點或敏感設定。</p>
+            </article>
+            <article class="card">
+                <h3>Result rules</h3>
+                <table>
+                    <tr><th>status.json</th><td>目前狀態、stage、progress、message。</td></tr>
+                    <tr><th>progress.ndjson</th><td>可串接 UI 的逐行進度事件。</td></tr>
+                    <tr><th>result.json</th><td>最終輸出摘要、artifacts、metrics、exit_code。</td></tr>
+                    <tr><th>exit code</th><td><code>0</code> 表示 success；非 <code>0</code> 表示 failed。</td></tr>
+                </table>
+            </article>
+        </div>
     </section>
 </main>
 </body>

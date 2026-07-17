@@ -52,6 +52,30 @@ hub_test('admin API usage page renders byte totals and numeric columns for scann
     hub_test_assert(str_contains($source, 'class="usage-num"'), 'api_usage.php numeric cells must be right-aligned');
 });
 
+hub_test('token IP whitelist help explains CIDR ranges instead of wildcard syntax', function (): void {
+    $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
+    $customerPage = (string)file_get_contents(HUB_ROOT . '/admin/my_ip_whitelist.php');
+    $adminPage = (string)file_get_contents(HUB_ROOT . '/admin/api_token_whitelist.php');
+
+    foreach ([
+        '192.168.*.*',
+        '192.168.0.0/16',
+        '*.*.*.*',
+        '0.0.0.0/0',
+        '::/0',
+        '不設定任何規則',
+    ] as $needle) {
+        hub_test_assert(str_contains($readme, $needle), 'README token IP help missing ' . $needle);
+    }
+
+    foreach ([$customerPage, $adminPage] as $source) {
+        hub_test_assert(str_contains($source, '192.168.0.0/16'), 'token whitelist UI must show private subnet CIDR example');
+        hub_test_assert(str_contains($source, '0.0.0.0/0'), 'token whitelist UI must show all IPv4 CIDR example');
+        hub_test_assert(str_contains($source, '::/0'), 'token whitelist UI must show all IPv6 CIDR example');
+        hub_test_assert(str_contains($source, '不支援萬用字元'), 'token whitelist UI must explain wildcard syntax is unsupported');
+    }
+});
+
 hub_test('API token gateway rejects missing expired mode denied and IP denied tokens', function (): void {
     $db = hub_test_reset_db();
     hub_set_service_enabled($db, 'hello', true);

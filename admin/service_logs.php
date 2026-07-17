@@ -43,7 +43,7 @@ hub_admin_header('服務 Log', $user);
 <section class="panel">
     <h2>近期背景工作</h2>
     <table>
-        <tr><th>ID</th><th>動作</th><th>狀態</th><th>Exit</th><th>建立時間</th></tr>
+        <tr><th>ID</th><th>動作</th><th>狀態</th><th>結束碼</th><th>建立時間</th></tr>
         <?php foreach ($jobs as $job): ?>
             <tr>
                 <td>#<?= (int)$job['id'] ?></td>

@@ -8,6 +8,13 @@
   "execution_type": "sync_api",
   "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
+  "runtime_contract": "0.1",
+  "runtime_modes": ["service", "job"],
+  "capabilities": {
+    "local_job": true,
+    "managed_job": false,
+    "http_service": true
+  },
   "runtime_ready": true,
   "default_mode": "yolo",
   "description": "YOLO object detection API with storage mount, model init smoke, real inference, and benchmark contract.",
@@ -97,6 +104,32 @@
       ]
     }
   },
+  "local_jobs": [
+    {
+      "job_key": "yolo_predict",
+      "name": "YOLO local batch predict",
+      "entrypoint": "jobs/yolo_predict.sh",
+      "workspace_required": true,
+      "gpu": "optional",
+      "timeout_sec": 3600
+    },
+    {
+      "job_key": "yolo_train",
+      "name": "YOLO local train",
+      "entrypoint": "jobs/yolo_train.sh",
+      "workspace_required": true,
+      "gpu": "optional",
+      "timeout_sec": 86400
+    },
+    {
+      "job_key": "yolo_export_onnx",
+      "name": "YOLO export ONNX",
+      "entrypoint": "jobs/yolo_export_onnx.sh",
+      "workspace_required": true,
+      "gpu": "optional",
+      "timeout_sec": 3600
+    }
+  ],
   "hardware": {
     "gpu_required": false,
     "gpu_supported": true,

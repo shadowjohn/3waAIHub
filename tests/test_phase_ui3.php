@@ -48,13 +48,13 @@ hub_test('PhaseUI-3 models card contract is present and renders', function (): v
     foreach (['hub-card-grid', 'hub-card', 'hub-badge', 'hub-meta', 'hub-actions', 'hub-empty-state', 'hub-section-title'] as $class) {
         hub_test_assert(str_contains($page, $class), 'models missing UI class ' . $class);
     }
-    foreach (['Models Root 概覽', '磁碟空間', '常見模型子目錄', 'Model Inventory', 'Linked Services', 'Create Subdir'] as $section) {
+    foreach (['模型根目錄概覽', '磁碟空間', '常見模型子目錄', '模型檔案清單', '連結服務', '建立子目錄'] as $section) {
         hub_test_assert(str_contains($page, $section), 'models missing section ' . $section);
     }
     foreach (['paddleocr', 'yolo', 'ollama', 'sam3', 'whisper', 'huggingface'] as $dir) {
         hub_test_assert(str_contains($page, $dir), 'models missing common dir ' . $dir);
     }
-    foreach (['symlink skipped', '相對路徑', '類型', '大小', '修改時間', 'linked services'] as $label) {
+    foreach (['symlink 會被略過', '相對路徑', '類型', '大小', '修改時間', '連結服務'] as $label) {
         hub_test_assert(str_contains($page, $label), 'models missing inventory label ' . $label);
     }
     foreach (['AIHUB_MODELS_DIR', 'model path', 'service_key'] as $technical) {
@@ -76,7 +76,7 @@ hub_test('PhaseUI-3 models card contract is present and renders', function (): v
     require HUB_ROOT . '/admin/models.php';
     $html = (string)ob_get_clean();
 
-    foreach (['Models Root 概覽', 'Free / Total', 'sam3', 'whisper', 'demo.pt', 'symlink skipped', 'name="subdir"'] as $needle) {
+    foreach (['模型根目錄概覽', '可用 / 總量', 'sam3', 'whisper', 'demo.pt', 'symlink 已略過', 'name="subdir"'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered models page missing ' . $needle);
     }
 });

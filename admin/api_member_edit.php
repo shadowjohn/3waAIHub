@@ -27,12 +27,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     }
 }
 
-hub_admin_header($member ? 'Edit API Member' : 'New API Member', $user);
+hub_admin_header($member ? '編輯 API 會員' : '新增 API 會員', $user);
 ?>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <section class="panel">
-    <h1><?= $member ? 'Edit API Member' : 'New API Member' ?></h1>
+    <h1><?= $member ? '編輯 API 會員' : '新增 API 會員' ?></h1>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <?php if ($member): ?><input type="hidden" name="id" value="<?= (int)$member['id'] ?>"><?php endif; ?>
@@ -42,10 +42,10 @@ hub_admin_header($member ? 'Edit API Member' : 'New API Member', $user);
         <input name="contact_name" value="<?= hub_h((string)($member['contact_name'] ?? '')) ?>">
         <label>Email</label>
         <input name="contact_email" type="email" value="<?= hub_h((string)($member['contact_email'] ?? '')) ?>">
-        <label>Note</label>
+        <label>備註</label>
         <input name="note" value="<?= hub_h((string)($member['note'] ?? '')) ?>">
         <?php if ($member): ?>
-            <label><input type="checkbox" name="enabled" value="1"<?= (int)$member['enabled'] === 1 ? ' checked' : '' ?>> Enabled</label>
+            <label><input type="checkbox" name="enabled" value="1"<?= (int)$member['enabled'] === 1 ? ' checked' : '' ?>> 啟用</label>
         <?php endif; ?>
         <p><button class="primary" type="submit">儲存</button> <a class="button" href="api_members.php">返回</a></p>
     </form>

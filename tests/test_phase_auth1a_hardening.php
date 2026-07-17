@@ -102,7 +102,7 @@ hub_test('PhaseAuth-1A.1 login hardening and role nav behave as expected', funct
     foreach (['我的服務', '我的 Token', '我的用量', '帳號資料', '變更密碼', 'API 文件', 'API 測試場', '登出'] as $label) {
         hub_test_assert(str_contains($customerNav, $label), 'customer nav missing ' . $label);
     }
-    foreach (['服務管理', 'HubPack 套件', '安裝套件', '模型倉庫', '系統設定', '系統環境', 'Log Explorer', '客戶管理'] as $label) {
+    foreach (['服務管理', 'HubPack 套件', '安裝套件', '模型倉庫', '系統設定', '系統環境', '記錄中心', '客戶管理'] as $label) {
         hub_test_assert(!str_contains($customerNav, $label), 'customer nav must not show ' . $label);
     }
 
@@ -110,7 +110,7 @@ hub_test('PhaseAuth-1A.1 login hardening and role nav behave as expected', funct
     ob_start();
     hub_admin_header('測試', $admin);
     $adminNav = (string)ob_get_clean();
-    foreach (['服務管理', 'HubPack 套件', '安裝套件', '模型倉庫', '系統設定', '系統環境', 'Log Explorer', '客戶管理'] as $label) {
+    foreach (['服務管理', 'HubPack 套件', '安裝套件', '模型倉庫', '系統設定', '系統環境', '記錄中心', '客戶管理'] as $label) {
         hub_test_assert(str_contains($adminNav, $label), 'system_admin nav missing ' . $label);
     }
 });
