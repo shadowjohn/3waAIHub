@@ -90,4 +90,14 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     foreach (['php scripts/run_tests.php', 'python3-numpy', 'zend.assertions=1', 'assert.exception=1', 'self_check.log', 'actions/upload-artifact@v4', 'git diff --check', 'bash -n'] as $needle) {
         hub_test_assert(str_contains($ci, $needle), 'CI missing: ' . $needle);
     }
+
+    $windowsInstall = HUB_ROOT . '/install.ps1';
+    hub_test_assert(is_file($windowsInstall), 'Windows install.ps1 missing');
+    $ps1 = (string)file_get_contents($windowsInstall);
+    foreach (['[switch]$Check', 'scripts/init_db.php', 'Windows Control Plane preview', 'php -S 127.0.0.1:8080'] as $needle) {
+        hub_test_assert(str_contains($ps1, $needle), 'install.ps1 missing: ' . $needle);
+    }
+    foreach (['install NVIDIA', '--bootstrap-host', 'nvidia-smi'] as $needle) {
+        hub_test_assert(!str_contains($ps1, $needle), 'install.ps1 must stay app-only preview: ' . $needle);
+    }
 });

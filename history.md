@@ -2935,3 +2935,24 @@ Kept intentionally small:
 - No requeue.
 - No resource lock.
 - No UI changes.
+
+## Windows Control Plane Preview Installer
+
+Added a thin `install.ps1` for Windows trial installs.
+
+Implemented:
+
+- `.\install.ps1`
+- `.\install.ps1 -Check`
+- PHP / SQLite checks
+- `data/` runtime directory creation
+- SQLite initialization through `php scripts/init_db.php`
+- README usage notes
+
+Kept intentionally small:
+
+- No Docker install.
+- No NVIDIA install.
+- No cron / scheduler setup.
+- No Windows native runtime support.
+- No promise that Linux GPU Packs run locally on Windows.
