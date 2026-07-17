@@ -15,6 +15,8 @@ define('HUB_RELEASE_LABEL', 'Local Catalog + Token Auth MVP');
 date_default_timezone_set('Asia/Taipei');
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/runtime_portability.php';
+require_once __DIR__ . '/runtime_worker.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/i18n.php';
 require_once __DIR__ . '/storage.php';
@@ -49,8 +51,8 @@ function hub_ensure_runtime_dirs(): void
 
 function hub_path(string $path): string
 {
-    if (str_starts_with($path, '/')) {
-        return $path;
+    if (hub_is_host_absolute_path($path)) {
+        return hub_normalize_host_path($path);
     }
 
     return HUB_ROOT . '/' . ltrim($path, '/');

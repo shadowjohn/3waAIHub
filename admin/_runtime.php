@@ -42,6 +42,6 @@ function hub_runtime_tail(?string $path, ?string $workspace, int $bytes = 6000):
 
 function hub_runtime_state_badge(string $state): string
 {
-    $class = in_array($state, ['success', 'running'], true) ? 'hub-badge-ok' : ($state === 'failed' ? 'hub-badge-bad' : 'hub-badge-muted');
+    $class = in_array($state, ['succeeded', 'running'], true) ? 'hub-badge-ok' : ($state === 'failed' ? 'hub-badge-bad' : 'hub-badge-muted');
     return '<span class="hub-badge ' . $class . '">' . hub_h(hub_status_label($state)) . '</span>';
 }

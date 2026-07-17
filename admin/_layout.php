@@ -118,6 +118,7 @@ function hub_status_label(string $status): string
 {
     return [
         'running' => '執行中',
+        'succeeded' => '成功',
         'stopped' => '已停止',
         'success' => '成功',
         'failed' => '失敗',

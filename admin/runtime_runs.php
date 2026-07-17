@@ -40,7 +40,7 @@ hub_admin_header('執行歷程', $user);
     <form method="get" class="hub-card-grid">
         <div><label>Pack</label><input name="pack_id" value="<?= hub_h($filters['pack_id']) ?>" placeholder="yolo"></div>
         <div><label>Job</label><input name="task" value="<?= hub_h($filters['task']) ?>" placeholder="yolo_predict"></div>
-        <div><label>狀態</label><input name="state" value="<?= hub_h($filters['state']) ?>" placeholder="success"></div>
+        <div><label>狀態</label><input name="state" value="<?= hub_h($filters['state']) ?>" placeholder="succeeded"></div>
         <div><label>Run ID</label><input name="q" value="<?= hub_h($filters['q']) ?>" placeholder="run_"></div>
         <div><label>&nbsp;</label><button class="primary" type="submit">查詢</button></div>
     </form>

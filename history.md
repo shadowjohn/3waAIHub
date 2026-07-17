@@ -2799,3 +2799,68 @@ Kept intentionally small:
 - No GPU lock.
 - No automatic image build.
 - No training dataset wizard.
+
+## PhaseRuntime-0 Portability Guardrails
+
+Added thin portability guardrails so future runtime work does not keep locking 3waAIHub to scattered Linux assumptions.
+
+Implemented:
+
+- `docs/runtime_portability_guardrails.md`
+- `app/runtime_portability.php`
+- `hub_platform_id()`
+- `hub_is_host_absolute_path()`
+- `hub_normalize_host_path()`
+- `hub_container_path()`
+- `hub_platform_target_supported()`
+- `hub_normalize_pack_manifest()`
+
+Rules:
+
+- `/DATA` can remain a Linux default, but runtime logic must not hard-code scattered `/DATA/...` paths.
+- Container paths are validated as canonical POSIX paths.
+- Windows drive paths and UNC paths are recognized as host absolute paths and are not joined to `HUB_ROOT`.
+- Old Docker packs without `platform_targets` are normalized as `linux-docker` with `source=legacy_inferred`.
+- Windows + local `linux-docker` returns an explicit unsupported reason.
+
+Kept intentionally small:
+
+- No full Windows runtime.
+- No abstract runtime factory.
+- No scheduler rewrite.
+- No behavior change for existing Linux packs, services, or `aihub-run`.
+
+## PhaseRuntime-2A Atomic Claim / Lease / Heartbeat
+
+Added the first worker ownership layer for `runtime_runs`.
+
+Implemented:
+
+- `app/runtime_worker.php`
+- `hub_runtime_claim_next()`
+- `hub_runtime_heartbeat()`
+- `hub_runtime_mark_running()`
+- `hub_runtime_finish()`
+- `hub_runtime_find_stale()`
+- `worker_id`, `lease_token`, `lease_expires_at`, `heartbeat_at`, `claimed_at` columns
+- `idx_runtime_runs_claim`
+- `idx_runtime_runs_stale`
+
+Rules:
+
+- Claim uses `BEGIN IMMEDIATE`.
+- Claim transitions `queued -> claimed`.
+- Heartbeat only works for `claimed` / `running` with the owning `lease_token`.
+- `mark_running` only works for `claimed -> running`.
+- `finish` only works for `claimed` / `running -> succeeded` / `failed`.
+- Final states reject heartbeat, mark running, and second finish.
+- Stale detection only reports expired `claimed` / `running` rows and does not mutate state.
+- Old runtime state `success` is migrated to `succeeded`.
+
+Kept intentionally small:
+
+- No recovery.
+- No retry.
+- No cancel.
+- No resource lock.
+- No `aihub-run` flow integration yet.

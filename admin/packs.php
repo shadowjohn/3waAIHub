@@ -176,6 +176,29 @@ function hub_pack_local_job_keys(array $manifest): array
     return $keys;
 }
 
+function hub_pack_platform_targets_label(array $manifest): string
+{
+    $targets = is_array($manifest['platform_targets'] ?? null) ? $manifest['platform_targets'] : [];
+    if ($targets === []) {
+        return 'platform_targets: none';
+    }
+
+    $rows = [];
+    foreach ($targets as $target => $meta) {
+        $meta = is_array($meta) ? $meta : [];
+        $sourceKey = (string)($meta['source'] ?? 'declared');
+        $source = ['legacy_inferred' => 'legacy inferred', 'declared' => 'declared'][$sourceKey] ?? $sourceKey;
+        $packState = !empty($meta['supported']) ? 'supported' : 'unsupported';
+        $hostState = hub_platform_target_supported((string)$target);
+        $reason = (string)($meta['reason'] ?? $hostState['reason'] ?? '');
+        $rows[] = (string)$target . ': ' . $packState . ' / source: ' . $source
+            . ' / host: ' . (!empty($hostState['supported']) ? 'supported' : 'unsupported')
+            . ($reason !== '' ? ' / unsupported reason: ' . $reason : '');
+    }
+
+    return implode("\n", $rows);
+}
+
 function hub_pack_installed_stats(PDO $db): array
 {
     $stats = [];
@@ -382,6 +405,8 @@ hub_admin_header('HubPack 套件', $user);
                         <div class="pack-field-value">Runtime：<?= hub_h(implode(' + ', array_map(static fn (string $mode): string => ucfirst($mode), $runtimeModes))) ?> <span class="muted">runtime_modes</span></div>
                         <div class="pack-field-label">Runtime Contract</div>
                         <div class="pack-field-value"><code><?= hub_h((string)($manifest['runtime_contract'] ?? '')) ?></code></div>
+                        <div class="pack-field-label">Platform Targets</div>
+                        <div class="pack-field-value"><span class="muted">platform_targets</span><pre class="inline-pre"><?= hub_h(hub_pack_platform_targets_label($manifest)) ?></pre></div>
                         <div class="pack-field-label">Local Jobs</div>
                         <div class="pack-field-value">
                             <?php if ($localJobs === []): ?>

@@ -251,7 +251,7 @@ insert_sample($db, $runId, local_sample($gpuIndexes), $resourcePath);
 
 $status = is_file($statusPath) ? read_json($statusPath) : [];
 if (($status['status'] ?? '') === 'running' || !isset($status['status'])) {
-    $status['status'] = $exitCode === 0 ? 'success' : 'failed';
+    $status['status'] = $exitCode === 0 ? 'succeeded' : 'failed';
     $status['finished_at'] = gmdate('c');
     $status['exit_code'] = $exitCode;
     file_put_contents($statusPath, json_encode($status, JSON_UNESCAPED_SLASHES) . "\n");
@@ -286,7 +286,7 @@ $db->prepare(
          memory_peak_bytes = :memory_peak_bytes, artifact_count = :artifact_count, log_size_bytes = :log_size_bytes
      WHERE run_id = :run_id'
 )->execute([
-    ':state' => $exitCode === 0 ? 'success' : 'failed',
+    ':state' => $exitCode === 0 ? 'succeeded' : 'failed',
     ':exit_code' => $exitCode,
     ':finished_at' => $finishedAt,
     ':duration_ms' => $durationMs,
@@ -303,7 +303,7 @@ json_write($runJsonPath, [
     'runner_version' => AIHUB_RUNNER_VERSION,
     'caller' => $caller,
     'workspace' => $workspaceReal,
-    'state' => $exitCode === 0 ? 'success' : 'failed',
+    'state' => $exitCode === 0 ? 'succeeded' : 'failed',
     'exit_code' => $exitCode,
     'started_at' => $startedAt,
     'finished_at' => $finishedAt,

@@ -17,6 +17,7 @@ function hub_list_packs(): array
             continue;
         }
         $manifest = json_decode((string)file_get_contents($manifestPath), true);
+        $manifest = is_array($manifest) ? hub_normalize_pack_manifest($manifest) : $manifest;
         $errors = is_array($manifest) ? hub_validate_pack_manifest($manifest, dirname($manifestPath)) : ['pack.json is not valid JSON.'];
         $packs[] = hub_pack_record($fallbackId, dirname($manifestPath), $manifestPath, is_array($manifest) ? $manifest : [], $errors);
     }
@@ -56,17 +57,20 @@ function hub_read_pack_from_catalog_entry(array $entry): array
     $packDir = HUB_ROOT . '/' . trim((string)($entry['path'] ?? ''), '/');
     $manifestPath = $packDir . '/pack.json';
     $manifest = is_file($manifestPath) ? json_decode((string)file_get_contents($manifestPath), true) : null;
-    $errors = is_array($manifest) ? hub_validate_pack_manifest($manifest, $packDir) : ['pack.json not found or invalid JSON.'];
     if (is_array($manifest)) {
         $manifest['category'] = (string)($manifest['category'] ?? $entry['category'] ?? '');
         $manifest['description'] = (string)($manifest['description'] ?? $entry['description'] ?? '');
+        $manifest = hub_normalize_pack_manifest($manifest);
     }
+    $errors = is_array($manifest) ? hub_validate_pack_manifest($manifest, $packDir) : ['pack.json not found or invalid JSON.'];
 
     return hub_pack_record((string)($entry['id'] ?? ''), $packDir, $manifestPath, is_array($manifest) ? $manifest : [], $errors, $entry);
 }
 
 function hub_pack_record(string $fallbackId, string $packDir, string $manifestPath, array $manifest, array $errors, array $catalog = []): array
 {
+    $manifest = $manifest === [] ? [] : hub_normalize_pack_manifest($manifest);
+
     return [
         'id' => (string)($manifest['id'] ?? $fallbackId),
         'category' => (string)($manifest['category'] ?? $catalog['category'] ?? ''),

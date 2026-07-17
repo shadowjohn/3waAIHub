@@ -410,6 +410,11 @@ CREATE TABLE IF NOT EXISTS runtime_runs (
     caller TEXT NULL,
     workspace TEXT NULL,
     state TEXT NOT NULL,
+    worker_id TEXT NULL,
+    lease_token TEXT NULL,
+    lease_expires_at TEXT NULL,
+    heartbeat_at TEXT NULL,
+    claimed_at TEXT NULL,
     exit_code INTEGER NULL,
     error_code TEXT NULL,
     started_at TEXT NOT NULL,
@@ -519,6 +524,14 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_samples_run_time ON runtime_resource_samples(run_id, sampled_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_started ON runtime_runs(started_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_pack ON runtime_runs(pack_id, started_at)');
+    hub_add_column_if_missing($db, 'runtime_runs', 'worker_id', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'lease_token', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'lease_expires_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'heartbeat_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'claimed_at', 'TEXT NULL');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_claim ON runtime_runs(state, id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_stale ON runtime_runs(state, lease_expires_at)');
+    $db->exec("UPDATE runtime_runs SET state = 'succeeded' WHERE state = 'success'");
 }
 
 function hub_add_column_if_missing(PDO $db, string $table, string $column, string $definition): void

@@ -160,7 +160,7 @@ workspace/
 
 ## Exit Code
 
-- `0`：成功，`status.json.status=success`
+- `0`：成功，`status.json.status=succeeded`
 - 非 `0`：失敗，`status.json.status=failed`
 
 即使 job 失敗，`runtime_runs` 仍會留下紀錄，方便追查。

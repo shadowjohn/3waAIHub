@@ -73,7 +73,7 @@ hub_test('aihub-run executes YOLO local job and rejects workspace escape', funct
     hub_test_assert($run !== false, 'runtime_runs must record aihub-run execution');
     hub_test_assert((string)$run['pack_id'] === 'yolo', 'runtime run must record pack_id');
     hub_test_assert((string)$run['task'] === 'yolo_predict', 'runtime run must record task');
-    hub_test_assert((string)$run['state'] === 'success', 'runtime run must record success state');
+    hub_test_assert((string)$run['state'] === 'succeeded', 'runtime run must record succeeded state');
     $sampleCount = (int)$db->query("SELECT COUNT(*) FROM runtime_resource_samples WHERE run_id = " . $db->quote($runId))->fetchColumn();
     hub_test_assert($sampleCount >= 2, 'runtime_resource_samples must record start and end samples');
 
@@ -118,7 +118,7 @@ hub_test('YOLO local train validates workspace and writes real runner contract',
     hub_test_assert(is_file($workspace . '/runs/detect/val/predictions.json'), 'yolo_train must write predictions.json');
 
     $run = $db->query("SELECT * FROM runtime_runs WHERE run_id = " . $db->quote($runId))->fetch();
-    hub_test_assert($run !== false && (string)$run['state'] === 'success', 'runtime_runs must record yolo_train success');
+    hub_test_assert($run !== false && (string)$run['state'] === 'succeeded', 'runtime_runs must record yolo_train success');
 
     $badWorkspace = $root . '/jobs/yolo/missing-data';
     mkdir($badWorkspace, 0775, true);
@@ -185,7 +185,7 @@ hub_test('YOLO local predict and export write real runner contracts', function (
 
     foreach ([$predictRunId => 'yolo_predict', $exportRunId => 'yolo_export_onnx'] as $runId => $task) {
         $run = $db->query("SELECT * FROM runtime_runs WHERE run_id = " . $db->quote((string)$runId))->fetch();
-        hub_test_assert($run !== false && (string)$run['task'] === $task && (string)$run['state'] === 'success', 'runtime_runs must record ' . $task . ' success');
+        hub_test_assert($run !== false && (string)$run['task'] === $task && (string)$run['state'] === 'succeeded', 'runtime_runs must record ' . $task . ' success');
     }
 
     $badWorkspace = $root . '/jobs/yolo/predict-missing-image';

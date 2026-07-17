@@ -4,7 +4,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 3waAIHub Local 是一套輕量級容器服務與 AI 能力管理平台。它以 HubPack 統一管理長期運行的 Service 與單次執行的 Local Job，提供安裝、啟停、API Gateway、Token、執行歷程與資源使用量追蹤。
 
-目前通用 Job Runtime 薄版已完成；外部資料庫、Volume Resource Profile 與任意服務自動發佈仍在後續階段。Local Job Runtime 薄版已完成，YOLO `yolo_predict` / `yolo_train` / `yolo_export_onnx` 已接真實 Ultralytics runner。
+目前通用 Job Runtime 薄版已完成；外部資料庫、Volume Resource Profile 與任意服務自動發佈仍在後續階段。Local Job Runtime 薄版已完成，YOLO `yolo_predict` / `yolo_train` / `yolo_export_onnx` 已接真實 Ultralytics runner。Runtime portability guardrails 已建立，Linux 仍是預設執行主機，但新 runtime 邏輯需分離 host path、container path 與 platform target。
 
 目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`hello` L5 reference Pack、`ocr-ppocrv5` / `yolo` / `sam3` / `translate-gemma12b` / `tts-voxcpm2` / `structure-ppstructurev3` / `docparser` L5 benchmark-ready Pack，以及 `whisper-asr` experimental Pack。
 
@@ -55,7 +55,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 | Controlled Volume Binding | 規劃中 |
 | Generic Service Publishing | 規劃中 |
 
-完整定位請見 `docs/service_platform_vision_v0.1.md`。
+完整定位請見 `docs/service_platform_vision_v0.1.md`。Runtime portability 護欄請見 `docs/runtime_portability_guardrails.md`。
 
 ## 安裝
 

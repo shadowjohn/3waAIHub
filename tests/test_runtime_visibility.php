@@ -30,7 +30,7 @@ hub_test('PhaseRuntime-1B runtime run list and detail render safely', function (
     $workspace = sys_get_temp_dir() . '/3waaihub_runtime_visibility_' . getmypid() . '/jobs/yolo/001';
     @mkdir($workspace . '/runtime', 0775, true);
     @mkdir($workspace . '/logs', 0775, true);
-    file_put_contents($workspace . '/status.json', "{\"status\":\"success\"}\n");
+    file_put_contents($workspace . '/status.json', "{\"status\":\"succeeded\"}\n");
     file_put_contents($workspace . '/result.json', "{\"ok\":true}\n");
     file_put_contents($workspace . '/logs/stdout.log', "hello stdout\n");
     file_put_contents($workspace . '/logs/stderr.log', "hello stderr\n");
@@ -50,7 +50,7 @@ hub_test('PhaseRuntime-1B runtime run list and detail render safely', function (
         ':runner_version' => '0.1',
         ':caller' => 'test',
         ':workspace' => $workspace,
-        ':state' => 'success',
+        ':state' => 'succeeded',
         ':exit_code' => 0,
         ':started_at' => $now,
         ':finished_at' => $now,
@@ -78,7 +78,7 @@ hub_test('PhaseRuntime-1B runtime run list and detail render safely', function (
     ob_start();
     require HUB_ROOT . '/admin/runtime_runs.php';
     $listHtml = (string)ob_get_clean();
-    foreach (['Runtime 執行歷程', 'run_visibility_001', 'yolo_predict', 'success', 'RAM 峰值', '查看詳情'] as $needle) {
+    foreach (['Runtime 執行歷程', 'run_visibility_001', 'yolo_predict', 'succeeded', 'RAM 峰值', '查看詳情'] as $needle) {
         hub_test_assert(str_contains($listHtml, $needle), 'runtime runs list missing ' . $needle);
     }
 
