@@ -415,6 +415,9 @@ CREATE TABLE IF NOT EXISTS runtime_runs (
     lease_expires_at TEXT NULL,
     heartbeat_at TEXT NULL,
     claimed_at TEXT NULL,
+    recovery_count INTEGER NOT NULL DEFAULT 0,
+    last_recovered_at TEXT NULL,
+    last_recovery_reason TEXT NULL,
     exit_code INTEGER NULL,
     error_code TEXT NULL,
     started_at TEXT NOT NULL,
@@ -529,6 +532,9 @@ SQL);
     hub_add_column_if_missing($db, 'runtime_runs', 'lease_expires_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'runtime_runs', 'heartbeat_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'runtime_runs', 'claimed_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'recovery_count', 'INTEGER NOT NULL DEFAULT 0');
+    hub_add_column_if_missing($db, 'runtime_runs', 'last_recovered_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'last_recovery_reason', 'TEXT NULL');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_claim ON runtime_runs(state, id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_stale ON runtime_runs(state, lease_expires_at)');
     $db->exec("UPDATE runtime_runs SET state = 'succeeded' WHERE state = 'success'");

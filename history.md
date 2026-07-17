@@ -2864,3 +2864,39 @@ Kept intentionally small:
 - No cancel.
 - No resource lock.
 - No `aihub-run` flow integration yet.
+
+## PhaseRuntime-2B Recovery / Consistency Decision
+
+Added conservative recovery ownership and decision helpers for stale `runtime_runs`.
+
+Implemented:
+
+- `hub_runtime_takeover_stale()`
+- `hub_runtime_recovery_decision()`
+- `hub_runtime_apply_recovery()`
+- `recovery_count`, `last_recovered_at`, `last_recovery_reason` columns
+- `tests/test_runtime_recovery.php`
+
+Rules:
+
+- Stale takeover uses `BEGIN IMMEDIATE`.
+- Only expired `claimed` / `running` runs can be taken over.
+- Takeover replaces `worker_id` and `lease_token`.
+- Old lease tokens cannot heartbeat or apply recovery after takeover.
+- Recovery never requeues or reruns a job.
+- Recovery decisions are conservative and explainable.
+- `runtime_alive=true` keeps the run `running`.
+- `exit 0` plus `result_json.status=succeeded` plus valid required artifacts marks `succeeded`.
+- `result_json.status=failed` marks `failed` and preserves the reported `error_code`.
+- Conflicting success result with non-zero exit marks `failed/runtime_state_conflict`.
+- Missing or invalid output contract marks `failed/output_contract_invalid`.
+- Missing runtime with no usable result marks `failed/runtime_lost`.
+- Insufficient evidence marks `failed/recovery_evidence_insufficient`.
+
+Kept intentionally small:
+
+- No retry.
+- No cancel.
+- No resource lock.
+- No automatic container restart.
+- No `aihub-run` flow integration yet.
