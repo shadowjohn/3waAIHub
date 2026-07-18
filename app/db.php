@@ -397,6 +397,30 @@ CREATE TABLE IF NOT EXISTS user_mode_permissions (
     FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS yolo_model_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_ref TEXT NOT NULL UNIQUE,
+    source_system TEXT NOT NULL,
+    external_model_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    task_type TEXT NOT NULL DEFAULT 'detect',
+    framework TEXT NOT NULL DEFAULT 'ultralytics',
+    framework_version TEXT NULL,
+    artifact_path TEXT NOT NULL,
+    artifact_size_bytes INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT NOT NULL,
+    imgsz INTEGER NULL,
+    class_count INTEGER NULL,
+    labels_json TEXT NULL,
+    metadata_json TEXT NULL,
+    source_run_id TEXT NULL,
+    validation_status TEXT NOT NULL DEFAULT 'registered',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(source_system, external_model_key, sha256)
+);
+
 CREATE TABLE IF NOT EXISTS runtime_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL UNIQUE,
@@ -528,6 +552,8 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_users_api_member_id ON users(api_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_user_mode_permissions_user_id ON user_mode_permissions(user_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_user_mode_permissions_mode ON user_mode_permissions(mode)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_yolo_model_versions_source ON yolo_model_versions(source_system, external_model_key)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_yolo_model_versions_sha256 ON yolo_model_versions(sha256)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_samples_run_time ON runtime_resource_samples(run_id, sampled_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_started ON runtime_runs(started_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_pack ON runtime_runs(pack_id, started_at)');

@@ -311,3 +311,205 @@ function hub_model_format_bytes(int|float|null $bytes): string
 
     return number_format($value, $unit === 0 ? 0 : 2) . ' ' . $units[$unit];
 }
+
+function hub_model_import_roots(PDO $db): array
+{
+    $raw = str_replace([",", "\r"], "\n", hub_get_storage_setting($db, 'AIHUB_MODEL_IMPORT_ROOTS'));
+    $roots = [];
+    foreach (explode("\n", $raw) as $root) {
+        $root = trim($root);
+        if ($root === '' || !hub_is_host_absolute_path($root)) {
+            continue;
+        }
+        $real = realpath(hub_normalize_host_path($root));
+        if ($real !== false && is_dir($real)) {
+            $roots[] = rtrim(str_replace('\\', '/', $real), '/');
+        }
+    }
+
+    return array_values(array_unique($roots));
+}
+
+function hub_yolo_slug(string $value): string
+{
+    $slug = strtolower(trim($value));
+    $slug = preg_replace('/[^a-z0-9]+/', '-', $slug) ?? '';
+    $slug = trim($slug, '-');
+    if ($slug === '') {
+        throw new InvalidArgumentException('Invalid YOLO registry slug.');
+    }
+
+    return substr($slug, 0, 120);
+}
+
+function hub_yolo_assert_detect_task(string $taskType): void
+{
+    if (trim($taskType) !== 'detect') {
+        throw new RuntimeException('model_task_unsupported');
+    }
+}
+
+function hub_yolo_safe_import_path(PDO $db, string $path): string
+{
+    $raw = hub_normalize_host_path($path);
+    if (!hub_is_host_absolute_path($raw) || str_contains($raw, "\0")) {
+        throw new RuntimeException('model_import_path_not_allowed');
+    }
+    foreach (explode('/', $raw) as $part) {
+        if ($part === '..') {
+            throw new RuntimeException('model_import_path_not_allowed');
+        }
+    }
+    if (strtolower(pathinfo($raw, PATHINFO_EXTENSION)) !== 'pt') {
+        throw new RuntimeException('model_task_unsupported');
+    }
+    $real = realpath($raw);
+    if ($real === false || !is_file($real)) {
+        throw new RuntimeException('model_artifact_missing');
+    }
+    $real = str_replace('\\', '/', $real);
+    foreach (hub_model_import_roots($db) as $root) {
+        if ($real === $root || str_starts_with($real, $root . '/')) {
+            return $real;
+        }
+    }
+
+    throw new RuntimeException('model_import_path_not_allowed');
+}
+
+function hub_yolo_model_version_host_path(PDO $db, array $version): string
+{
+    return rtrim(hub_models_root($db), '/') . '/' . hub_model_asset_safe_path((string)$version['artifact_path']);
+}
+
+function hub_yolo_model_version_container_path(array $version): string
+{
+    $relative = hub_model_asset_safe_path((string)$version['artifact_path']);
+    $prefix = 'yolo/registry/';
+    if (!str_starts_with($relative, $prefix)) {
+        throw new RuntimeException('model_artifact_missing');
+    }
+
+    return hub_container_path('/models/registry/' . substr($relative, strlen($prefix)));
+}
+
+function hub_get_yolo_model_version(PDO $db, string $modelRef): ?array
+{
+    $stmt = $db->prepare('SELECT * FROM yolo_model_versions WHERE model_ref = :model_ref');
+    $stmt->execute([':model_ref' => trim($modelRef)]);
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+function hub_yolo_register_model_version(PDO $db, array $input, ?callable $validator = null): array
+{
+    $sourceSystem = hub_yolo_slug((string)($input['source_system'] ?? ''));
+    $externalKeyRaw = trim((string)($input['external_model_key'] ?? ''));
+    $externalKey = hub_yolo_slug($externalKeyRaw);
+    $taskType = trim((string)($input['task_type'] ?? 'detect')) ?: 'detect';
+    hub_yolo_assert_detect_task($taskType);
+
+    $artifact = is_array($input['artifact'] ?? null) ? $input['artifact'] : [];
+    if (($artifact['type'] ?? '') !== 'host_path') {
+        throw new RuntimeException('model_import_path_not_allowed');
+    }
+    $sourcePath = hub_yolo_safe_import_path($db, (string)($artifact['path'] ?? ''));
+    $sha256 = strtolower(trim((string)($artifact['sha256'] ?? '')));
+    if (!preg_match('/^[a-f0-9]{64}$/', $sha256)) {
+        throw new RuntimeException('model_checksum_mismatch');
+    }
+    $actualSha = hash_file('sha256', $sourcePath);
+    if ($actualSha === false || !hash_equals($sha256, strtolower($actualSha))) {
+        throw new RuntimeException('model_checksum_mismatch');
+    }
+
+    $existing = hub_yolo_find_model_version_by_source_sha($db, $sourceSystem, $externalKey, $sha256);
+    if ($existing) {
+        return $existing;
+    }
+
+    $validation = $validator ? $validator($sourcePath) : [];
+    $validatedTask = (string)($validation['task_type'] ?? $taskType);
+    hub_yolo_assert_detect_task($validatedTask);
+    $frameworkVersion = trim((string)($validation['framework_version'] ?? ''));
+    $labels = $validation['labels'] ?? ($input['metadata']['labels'] ?? []);
+    $labels = is_array($labels) ? array_values(array_map('strval', $labels)) : [];
+    $metadata = is_array($input['metadata'] ?? null) ? $input['metadata'] : [];
+    $imgsz = (int)($metadata['imgsz'] ?? 0);
+    $classCount = (int)($metadata['class_count'] ?? count($labels));
+
+    $version = hub_yolo_next_model_version($db, $sourceSystem, $externalKey);
+    $relative = 'yolo/registry/' . $sourceSystem . '/' . $externalKey . '/v' . $version . '/model.pt';
+    $target = rtrim(hub_models_root($db), '/') . '/' . $relative;
+    $targetDir = dirname($target);
+    if (!is_dir($targetDir) && !mkdir($targetDir, 0775, true) && !is_dir($targetDir)) {
+        throw new RuntimeException('model_import_failed');
+    }
+    $tmp = $target . '.tmp.' . bin2hex(random_bytes(6));
+    if (!copy($sourcePath, $tmp)) {
+        throw new RuntimeException('model_import_failed');
+    }
+    chmod($tmp, 0664);
+    rename($tmp, $target);
+
+    $now = hub_now();
+    $modelRef = 'yolo:' . $sourceSystem . ':' . $externalKey . ':v' . $version;
+    $stmt = $db->prepare(
+        'INSERT INTO yolo_model_versions
+            (model_ref, source_system, external_model_key, version, display_name, task_type, framework, framework_version,
+             artifact_path, artifact_size_bytes, sha256, imgsz, class_count, labels_json, metadata_json, source_run_id,
+             validation_status, created_at, updated_at)
+         VALUES
+            (:model_ref, :source_system, :external_model_key, :version, :display_name, :task_type, :framework, :framework_version,
+             :artifact_path, :artifact_size_bytes, :sha256, :imgsz, :class_count, :labels_json, :metadata_json, :source_run_id,
+             :validation_status, :created_at, :updated_at)'
+    );
+    $stmt->execute([
+        ':model_ref' => $modelRef,
+        ':source_system' => $sourceSystem,
+        ':external_model_key' => $externalKey,
+        ':version' => $version,
+        ':display_name' => trim((string)($input['display_name'] ?? '')) ?: $modelRef,
+        ':task_type' => $taskType,
+        ':framework' => 'ultralytics',
+        ':framework_version' => $frameworkVersion !== '' ? $frameworkVersion : null,
+        ':artifact_path' => $relative,
+        ':artifact_size_bytes' => filesize($target) ?: 0,
+        ':sha256' => $sha256,
+        ':imgsz' => $imgsz > 0 ? $imgsz : null,
+        ':class_count' => $classCount > 0 ? $classCount : null,
+        ':labels_json' => json_encode($labels, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ':metadata_json' => json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ':source_run_id' => trim((string)($input['source_run_id'] ?? '')) ?: null,
+        ':validation_status' => 'registered',
+        ':created_at' => $now,
+        ':updated_at' => $now,
+    ]);
+
+    return hub_get_yolo_model_version($db, $modelRef) ?: throw new RuntimeException('model_import_failed');
+}
+
+function hub_yolo_find_model_version_by_source_sha(PDO $db, string $sourceSystem, string $externalKey, string $sha256): ?array
+{
+    $stmt = $db->prepare(
+        'SELECT * FROM yolo_model_versions
+         WHERE source_system = :source_system AND external_model_key = :external_model_key AND sha256 = :sha256
+         LIMIT 1'
+    );
+    $stmt->execute([':source_system' => $sourceSystem, ':external_model_key' => $externalKey, ':sha256' => $sha256]);
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+function hub_yolo_next_model_version(PDO $db, string $sourceSystem, string $externalKey): int
+{
+    $stmt = $db->prepare(
+        'SELECT COALESCE(MAX(version), 0) + 1 FROM yolo_model_versions
+         WHERE source_system = :source_system AND external_model_key = :external_model_key'
+    );
+    $stmt->execute([':source_system' => $sourceSystem, ':external_model_key' => $externalKey]);
+
+    return max(1, (int)$stmt->fetchColumn());
+}

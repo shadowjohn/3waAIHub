@@ -140,6 +140,12 @@ function hub_public_api_services(PDO $db): array
             $services[] = $service;
         }
     }
+    if (hub_get_pack('yolo-serving') !== null) {
+        foreach (hub_public_api_yolo_model_services() as $service) {
+            $service['examples'] = hub_public_api_examples($service);
+            $services[] = $service;
+        }
+    }
 
     usort($services, static fn (array $a, array $b): int => strcmp((string)$a['mode'], (string)$b['mode']));
     return $services;
@@ -185,6 +191,55 @@ function hub_public_api_photo_services(): array
             ],
             'output_keys' => ['ok', 'mock', 'runtime_level', 'model', 'image_id', 'answer', 'caption', 'tags', 'usage', 'elapsed_ms'],
             'error_codes' => ['image_id_required', 'text_required', 'photo_forbidden', 'model_not_ready', 'vision_timeout', 'vision_bad_response', 'vision_failed'],
+            'task_api' => [],
+        ],
+    ];
+}
+
+function hub_public_api_yolo_model_services(): array
+{
+    return [
+        [
+            'mode' => 'yolo_model_register',
+            'pack_id' => 'yolo-serving',
+            'name' => 'YOLO Model Register',
+            'description' => 'Register an allowlisted YOLO Detect .pt host artifact into the Hub model registry.',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data',
+            'endpoint' => 'api.php?mode=yolo_model_register',
+            'url' => hub_public_api_mode_url('yolo_model_register'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L3-storage-mount',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'source_system', 'type' => 'string', 'required' => true, 'default' => 'natureweb'],
+                ['name' => 'external_model_key', 'type' => 'string', 'required' => true, 'default' => 'training_result_47'],
+                ['name' => 'display_name', 'type' => 'string', 'required' => false, 'default' => 'NatureWeb training result 47'],
+                ['name' => 'artifact_path', 'type' => 'string', 'required' => true, 'default' => '<ALLOWLISTED_HOST_PATH>/best.pt'],
+                ['name' => 'artifact_sha256', 'type' => 'string', 'required' => true, 'default' => '<SHA256>'],
+                ['name' => 'task_type', 'type' => 'string', 'required' => false, 'default' => 'detect'],
+            ],
+            'output_keys' => ['ok', 'model_ref', 'version_id', 'model_version_id', 'state', 'cpu_available', 'warm_state', 'task_type', 'sha256'],
+            'error_codes' => ['bad_request', 'model_import_path_not_allowed', 'model_checksum_mismatch', 'model_task_unsupported', 'model_artifact_missing', 'missing_token', 'token_mode_not_allowed'],
+            'task_api' => [],
+        ],
+        [
+            'mode' => 'yolo_model_status',
+            'pack_id' => 'yolo-serving',
+            'name' => 'YOLO Model Status',
+            'description' => 'Query Hub registry state for a model_ref. Phase 1A reports registered/cpu availability and cold warm state.',
+            'method' => 'POST',
+            'content_type' => 'application/json',
+            'endpoint' => 'api.php?mode=yolo_model_status',
+            'url' => hub_public_api_mode_url('yolo_model_status'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L3-storage-mount',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'model_ref', 'type' => 'string', 'required' => true, 'default' => 'yolo:natureweb:training-result-47:v1'],
+            ],
+            'output_keys' => ['ok', 'model_ref', 'version_id', 'model_version_id', 'state', 'cpu_available', 'warm_state', 'task_type', 'sha256'],
+            'error_codes' => ['model_ref_required', 'model_not_found', 'missing_token', 'token_mode_not_allowed'],
             'task_api' => [],
         ],
     ];

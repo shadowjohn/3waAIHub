@@ -232,6 +232,57 @@ curl -X POST "<BASE_URL>?mode=yolo" \
   -F "real_inference=1"
 ```
 
+## YOLO Model Registry / CPU Serving
+
+Status: Phase 1A. 只支援 YOLO detect `.pt` 匯入與 CPU serving。先不要把 segment / pose / ONNX serving、GPU warm pool、TensorRT、多 GPU、production alias 視為已支援能力。
+
+Register allowlisted host model:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_model_register" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "source_system=natureweb" \
+  -F "external_model_key=training_result_47" \
+  -F "display_name=NatureWeb training result 47" \
+  -F "artifact_path=<ALLOWLISTED_HOST_PATH>/best.pt" \
+  -F "artifact_sha256=<SHA256>" \
+  -F "task_type=detect"
+```
+
+Idempotency:
+
+- Same `external_model_key + sha256` returns the same `model_ref` / `version_id`.
+- Different sha256 under the same key creates the next version.
+
+Status:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_model_status" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"model_ref":"yolo:natureweb:training-result-47:v1"}'
+```
+
+Predict with registered model:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_predict" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@sample.jpg" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1" \
+  -F "execution_policy=auto"
+```
+
+Predict response includes:
+
+- `model_ref`
+- `version_id` / `model_version_id`
+- `device_used`
+- `fallback_reason`
+- `detections`
+
+Client must not send host paths or server artifact paths to `yolo_predict`; only `model_ref` is accepted.
+
 ## POST BioCLIP
 
 Status: L5 benchmark ready. `bioclip` 用 OpenCLIP / BioCLIP 做圖片候選標籤分類；預設可先跑 mock contract，表單加 `real_inference=1` 時執行真實推論。

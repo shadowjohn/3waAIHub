@@ -414,6 +414,15 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'ULTRALYTICS_SETTINGS_DIR' => $cacheDir . '/ultralytics',
             'YOLO_CONFIG_DIR' => $cacheDir . '/ultralytics',
         ],
+        'yolo-serving' => [
+            'YOLO_MODEL_REGISTRY_DIR' => $modelDir,
+            'YOLO_CACHE_DIR' => $cacheDir,
+            'YOLO_SERVICE_DATA_DIR' => $serviceDataDir,
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $cacheDir . '/home',
+            'ULTRALYTICS_SETTINGS_DIR' => $cacheDir . '/ultralytics',
+            'YOLO_CONFIG_DIR' => $cacheDir . '/ultralytics',
+        ],
         'translate-gemma12b' => [
             'TRANSLATE_MODEL_DIR' => '/models/ollama',
             'TRANSLATE_CACHE_DIR' => $cacheDir,

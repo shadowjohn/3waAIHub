@@ -2987,3 +2987,38 @@ Current seed summary:
 - `vi`: 17
 - `zh_CN`: 159
 - Total: 500
+
+## PhaseYoloServe-1A YOLO Model Registry / CPU Serving
+
+Added the first YOLO model registry and CPU serving slice.
+
+Implemented:
+
+- `yolo_model_versions` metadata table.
+- `hub_yolo_register_model_version()` allowlisted host-path import.
+- `AIHUB_MODEL_IMPORT_ROOTS` setting for model import roots.
+- Realpath-based path allowlist checks for imported `.pt` files.
+- Idempotent `source_system + external_model_key + sha256` registration.
+- Immutable registry artifact layout under `AIHUB_MODELS_DIR/yolo/registry/...`.
+- `yolo-serving` HubPack for CPU-only Detect `.pt` serving.
+- `api.php?mode=yolo_model_register` gateway route.
+- `api.php?mode=yolo_model_status` gateway route.
+- `api.php?mode=yolo_predict` model_ref-to-container-path injection.
+- Public docs and API examples for register / status / predict.
+
+Rules:
+
+- Only YOLO Detect `.pt` is supported in this phase.
+- Client requests use `model_ref`; they cannot send `host_path`, `model_path`, `artifact_path`, or arbitrary server paths to predict.
+- Gateway responses do not expose source host paths.
+- Status exposes `registered`, `cpu_available`, and cold warm state.
+- Predict requests are routed to CPU in 1A and return model/version/device/fallback metadata with detections.
+
+Deferred:
+
+- Segment / pose / classification serving.
+- ONNX serving.
+- GPU warm pool.
+- TensorRT.
+- Multi-GPU.
+- Production alias or auto model selection.
