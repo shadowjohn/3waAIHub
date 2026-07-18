@@ -10,10 +10,21 @@ Base URL:
 
 外部 IP 預設需要 Bearer token。先在後台建立 API Member / Token，授權對應 mode，必要時再設定 token IP whitelist。
 
+PowerShell：
+
+```powershell
+curl.exe "<BASE_URL>?mode=hello" `
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+Bash：
+
 ```bash
 curl "<BASE_URL>?mode=hello" \
   -H "Authorization: Bearer <TOKEN>"
 ```
+
+以下詳細範例以 Bash 顯示；PowerShell 請使用 `curl.exe`，並將行尾 `\` 改為反引號 `` ` ``。JSON body 內容不需更動。
 
 第一次介接流程：
 

@@ -12,6 +12,33 @@ function hub_observed_process_exit_code(array $status): ?int
     return !$status['running'] && is_int($exitCode) && $exitCode >= 0 ? $exitCode : null;
 }
 
+function hub_process_environment(array $overrides = [], ?array $baseEnvironment = null, ?string $platform = null): ?array
+{
+    if ($overrides === []) {
+        return null;
+    }
+
+    $baseEnvironment ??= getenv();
+    if (strcasecmp($platform ?? PHP_OS_FAMILY, 'Windows') !== 0) {
+        return array_replace($baseEnvironment, $overrides);
+    }
+
+    $environment = [];
+    $keys = [];
+    foreach ([$baseEnvironment, $overrides] as $values) {
+        foreach ($values as $key => $value) {
+            $normalized = strtolower((string)$key);
+            if (isset($keys[$normalized])) {
+                unset($environment[$keys[$normalized]]);
+            }
+            $environment[$key] = $value;
+            $keys[$normalized] = $key;
+        }
+    }
+
+    return $environment;
+}
+
 function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = []): array
 {
     hub_cli_only();
@@ -20,7 +47,7 @@ function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = 
         1 => ['pipe', 'w'],
         2 => ['pipe', 'w'],
     ];
-    $processEnv = $env ? array_merge($_ENV, $env) : null;
+    $processEnv = hub_process_environment($env);
     $process = @proc_open($command, $descriptor, $pipes, HUB_ROOT, $processEnv);
     if (!is_resource($process)) {
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Cannot start process.', 'output' => 'Cannot start process.'];
@@ -68,7 +95,7 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
         1 => ['pipe', 'w'],
         2 => ['pipe', 'w'],
     ];
-    $processEnv = $env ? array_merge($_ENV, $env) : null;
+    $processEnv = hub_process_environment($env);
     $process = @proc_open($command, $descriptor, $pipes, HUB_ROOT, $processEnv);
     if (!is_resource($process)) {
         file_put_contents($stderrPath, "Cannot start process.\n", FILE_APPEND);

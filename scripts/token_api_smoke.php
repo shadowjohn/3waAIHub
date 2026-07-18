@@ -75,14 +75,15 @@ try {
     echo 'token IP whitelist set: 127.0.0.1' . PHP_EOL;
 
     $servers[] = hub_token_smoke_start_server(
-        escapeshellarg(PHP_BINARY) . ' -S 127.0.0.1:' . $mockPort . ' ' . escapeshellarg($mockDir . '/router.php'),
+        [PHP_BINARY, '-S', '127.0.0.1:' . $mockPort, $mockDir . '/router.php'],
         'ocr mock'
     );
     hub_token_smoke_wait_http('http://127.0.0.1:' . $mockPort . '/health', 'ocr mock');
 
     $servers[] = hub_token_smoke_start_server(
-        'AIHUB_TEST_DB=' . escapeshellarg($dbPath) . ' ' . escapeshellarg(PHP_BINARY) . ' -S 127.0.0.1:' . $appPort . ' -t ' . escapeshellarg(HUB_ROOT),
-        'api server'
+        [PHP_BINARY, '-S', '127.0.0.1:' . $appPort, '-t', HUB_ROOT],
+        'api server',
+        ['AIHUB_TEST_DB' => $dbPath]
     );
     hub_token_smoke_wait_http('http://127.0.0.1:' . $appPort . '/api.php?mode=missing', 'api server');
 
@@ -126,9 +127,9 @@ exit(0);
 
 function hub_token_smoke_require_curl(): void
 {
-    exec('command -v curl 2>/dev/null', $output, $code);
-    if ($code !== 0 || $output === []) {
-        throw new RuntimeException('curl command is required');
+    $result = hub_run_command(['curl', '--version'], 5);
+    if ($result['exit_code'] !== 0) {
+        throw new RuntimeException('curl command is required: ' . ($result['stderr'] ?: $result['output']));
     }
 }
 
@@ -183,7 +184,7 @@ PHP);
     return $dir;
 }
 
-function hub_token_smoke_start_server(string $command, string $name): array
+function hub_token_smoke_start_server(array $command, string $name, array $env = []): array
 {
     $stdout = tempnam(sys_get_temp_dir(), '3waaihub_' . str_replace(' ', '_', $name) . '_out_');
     $stderr = tempnam(sys_get_temp_dir(), '3waaihub_' . str_replace(' ', '_', $name) . '_err_');
@@ -194,7 +195,7 @@ function hub_token_smoke_start_server(string $command, string $name): array
         0 => ['pipe', 'r'],
         1 => ['file', $stdout, 'a'],
         2 => ['file', $stderr, 'a'],
-    ], $pipes, HUB_ROOT);
+    ], $pipes, HUB_ROOT, hub_process_environment($env));
     if (!is_resource($process)) {
         throw new RuntimeException('cannot start ' . $name);
     }
@@ -220,17 +221,30 @@ function hub_token_smoke_wait_http(string $url, string $name): void
 
 function hub_token_smoke_curl_ocr(int $appPort, string $plainToken, string $sample, int &$httpCode): string
 {
-    $cmd = 'curl -sS -w ' . escapeshellarg("\n%{http_code}")
-        . ' -X POST ' . escapeshellarg('http://127.0.0.1:' . $appPort . '/api.php?mode=ocr')
-        . ' -H ' . escapeshellarg('Authorization: Bearer ' . $plainToken)
-        . ' -F ' . escapeshellarg('image=@' . $sample . ';filename=sample.png;type=image/png');
-    exec($cmd . ' 2>&1', $output, $exitCode);
-    if ($exitCode !== 0 || $output === []) {
-        throw new RuntimeException('curl failed: ' . implode("\n", $output));
+    $result = hub_run_command([
+        'curl',
+        '-sS',
+        '-w',
+        "\n%{http_code}",
+        '-X',
+        'POST',
+        'http://127.0.0.1:' . $appPort . '/api.php?mode=ocr',
+        '-H',
+        'Authorization: Bearer ' . $plainToken,
+        '-F',
+        'image=@' . $sample . ';filename=sample.png;type=image/png',
+    ], 30);
+    if ($result['exit_code'] !== 0) {
+        throw new RuntimeException('curl failed: ' . ($result['stderr'] ?: $result['output']));
     }
-    $httpCode = (int)array_pop($output);
+    $lines = preg_split('/\r?\n/', $result['stdout']) ?: [];
+    $status = (string)array_pop($lines);
+    if (!preg_match('/^\d{3}$/', $status)) {
+        throw new RuntimeException('curl did not return an HTTP status: ' . $result['output']);
+    }
+    $httpCode = (int)$status;
 
-    return implode("\n", $output);
+    return implode("\n", $lines);
 }
 
 function hub_token_smoke_cleanup(array $servers, array $files, array $dirs, ?string $dbPath): void

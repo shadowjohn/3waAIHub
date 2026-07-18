@@ -424,8 +424,10 @@ function hub_playground_examples(string $mode): array
     $url = hub_playground_api_url($mode);
     $phpUrl = var_export($url, true);
     $jsUrl = json_encode($url, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    $curlExecutable = hub_platform_id() === 'windows' ? 'curl.exe' : 'curl';
+    $curlContinuation = hub_platform_id() === 'windows' ? '`' : '\\';
     if ($mode === 'hello') {
-        $curl = 'curl -H "Authorization: Bearer <TOKEN>" "' . $url . '"';
+        $curl = $curlExecutable . ' -H "Authorization: Bearer <TOKEN>" "' . $url . '"';
         $php = <<<PHP
 \$ch = curl_init($phpUrl);
 curl_setopt_array(\$ch, [
@@ -444,7 +446,7 @@ JS;
     }
     if ($mode === 'translate') {
         $json = '{"source_lang":"en","target_lang":"zh-TW","text":"That was a wonderful time.","real_inference":0}';
-        $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
         $php = <<<PHP
 \$payload = [
     'source_lang' => 'en',
@@ -484,7 +486,7 @@ JS;
     }
     if ($mode === 'tts') {
         $json = '{"mode":"design","text":"RC 閥是用來控制二行程引擎排氣時機的重要機構。","voice_prompt":"沉穩的台灣男性技師，語速稍慢，清楚自然","seed":42,"format":"wav"}';
-        $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
         $php = <<<PHP
 \$payload = [
     'mode' => 'design',
@@ -526,7 +528,7 @@ JS;
     }
     if ($mode === 'chat') {
         $json = '{"text":"請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。","system_prompt":"你是 3waAIHub 本地 AI 助手，請簡潔回答。","real_inference":1,"enable_thinking":false,"max_tokens":256}';
-        $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
         $php = <<<PHP
 \$payload = [
     'text' => '請用正體中文解釋 RAG 中 embedding 與 reranking 的差異。',
@@ -569,7 +571,7 @@ JS;
     if ($mode === 'photo') {
         $uploadUrl = hub_playground_api_url('photo_upload');
         $json = '{"image_id":"img_...","text":"這張圖裡有什麼？","max_tokens":256,"real_inference":true}';
-        $curl = "curl -X POST \"$uploadUrl\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -F \"image=@example.jpg\"\n\ncurl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: application/json\" \\\n  -d '$json'";
+        $curl = "$curlExecutable -X POST \"$uploadUrl\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -F \"image=@example.jpg\"\n\n$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
         $php = <<<PHP
 // 先用 photo_upload 取得 image_id，再用同一個 image_id 重複提問。
 \$payload = [
@@ -611,15 +613,15 @@ JS;
     }
 
     $field = $mode === 'structure' ? 'file' : 'image';
-    $extra = $mode === 'sam3' ? " \\\n  -F prompt_type=auto \\\n  -F output_format=metadata" : '';
+    $extra = $mode === 'sam3' ? " $curlContinuation\n  -F prompt_type=auto $curlContinuation\n  -F output_format=metadata" : '';
     $sampleFile = $mode === 'structure' ? 'sample.pdf' : 'sample.png';
     $outputFormat = $mode === 'structure' ? 'both' : 'metadata';
     $realInference = $mode === 'structure' ? '1' : '0';
     $phpExtra = $mode === 'sam3' ? "        'prompt_type' => 'auto',\n" : '';
     $jsExtra = $mode === 'sam3' ? "form.append('prompt_type', 'auto');\n" : '';
-    $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: multipart/form-data\" \\\n  -F {$field}=@sample.png \\\n  -F real_inference={$realInference}{$extra}";
+    $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: multipart/form-data\" $curlContinuation\n  -F {$field}=@sample.png $curlContinuation\n  -F real_inference={$realInference}{$extra}";
     if ($mode === 'structure') {
-        $curl = "curl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -H \"Content-Type: multipart/form-data\" \\\n  -F {$field}=@{$sampleFile} \\\n  -F output_format=both \\\n  -F real_inference=1";
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: multipart/form-data\" $curlContinuation\n  -F {$field}=@{$sampleFile} $curlContinuation\n  -F output_format=both $curlContinuation\n  -F real_inference=1";
     }
     $php = <<<PHP
 \$ch = curl_init($phpUrl);

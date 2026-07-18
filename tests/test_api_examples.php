@@ -17,6 +17,11 @@ hub_test('api examples documentation exists', function (): void {
     hub_test_assert(str_contains($docs, 'candidate_labels=plant,insect,bird,mammal'), 'api docs missing BioCLIP labels example');
     hub_test_assert(str_contains($docs, 'text=mammal/insect/plant'), 'api docs missing SAM3 semantic prompt example');
     hub_test_assert(str_contains($docs, 'L5 benchmark ready'), 'api docs missing Translate L5 status');
+    foreach (['PowerShell', 'Bash', 'curl.exe'] as $needle) {
+        hub_test_assert(str_contains($docs, $needle), 'api docs missing platform copy-paste syntax: ' . $needle);
+    }
+    hub_test_assert(preg_match('/`\r?\n/', $docs) === 1, 'api docs missing PowerShell backtick continuation');
+    hub_test_assert(preg_match('/ \\\\\r?\n/', $docs) === 1, 'api docs missing Bash backslash continuation');
 
     $contracts = hub_pack_api_contracts();
     hub_test_assert(isset($contracts['ocr-ppocrv5']), 'OCR API contract missing');
@@ -34,6 +39,9 @@ hub_test('api examples documentation exists', function (): void {
     hub_test_assert(str_contains($apiDocsPage, "hub_api_docs_mode_url('sam3')"), 'admin API docs must show sam3 mode');
     hub_test_assert(str_contains($apiDocsPage, 'prompt_type=text'), 'admin API docs must show SAM3 semantic prompt mode');
     hub_test_assert(str_contains($apiDocsPage, 'Content-Type: application/json'), 'admin API docs must show JSON curl');
+    foreach (['hub_platform_id()', '$curlExecutable', '$curlContinuation', 'curl.exe'] as $needle) {
+        hub_test_assert(str_contains($apiDocsPage, $needle), 'admin API docs must select platform curl syntax: ' . $needle);
+    }
     $benchmarkPage = (string)file_get_contents(HUB_ROOT . '/admin/benchmarks.php');
     hub_test_assert(str_contains($benchmarkPage, 'ocr_mock_image'), 'benchmark page must show OCR mock benchmark');
     hub_test_assert(str_contains($benchmarkPage, 'ocr_real_image'), 'benchmark page must show OCR real benchmark');

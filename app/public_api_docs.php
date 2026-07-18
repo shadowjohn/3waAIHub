@@ -263,25 +263,31 @@ function hub_public_api_examples(array $service): array
     $url = (string)$service['url'];
     $method = (string)$service['method'];
     $contentType = (string)$service['content_type'];
+    $isWindows = hub_platform_id() === 'windows';
+    $curlExecutable = $isWindows ? 'curl.exe' : 'curl';
+    $continuation = $isWindows ? '`' : '\\';
+    $quoteArgument = static fn (string $value): string => $isWindows
+        ? "'" . str_replace("'", "''", $value) . "'"
+        : escapeshellarg($value);
     $jsPrefix = '';
     if ($method === 'GET') {
-        $curl = 'curl -H "Authorization: Bearer <TOKEN>" ' . escapeshellarg($url);
+        $curl = $curlExecutable . ' -H "Authorization: Bearer <TOKEN>" ' . $quoteArgument($url);
         $phpBody = '';
         $jsOptions = "{\n  headers: { Authorization: 'Bearer <TOKEN>' }\n}";
     } elseif ($contentType === 'application/json') {
         $body = json_encode(hub_public_api_json_body($service), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $curl = 'curl -X ' . $method . ' ' . escapeshellarg($url) . ' \\' . "\n"
-            . '  -H "Authorization: Bearer <TOKEN>" \\' . "\n"
-            . '  -H "Content-Type: application/json" \\' . "\n"
-            . "  -d '" . $body . "'";
+        $curl = $curlExecutable . ' -X ' . $method . ' ' . $quoteArgument($url) . ' ' . $continuation . "\n"
+            . '  -H "Authorization: Bearer <TOKEN>" ' . $continuation . "\n"
+            . '  -H "Content-Type: application/json" ' . $continuation . "\n"
+            . '  -d ' . $quoteArgument((string)$body);
         $phpBody = '$payload = ' . var_export(json_decode((string)$body, true) ?: [], true) . ";\n";
         $jsOptions = "{\n  method: '{$method}',\n  headers: {\n    Authorization: 'Bearer <TOKEN>',\n    'Content-Type': 'application/json'\n  },\n  body: JSON.stringify(" . json_encode(json_decode((string)$body, true) ?: [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ")\n}";
     } else {
         $fields = hub_public_api_multipart_fields($service);
-        $curl = 'curl -X ' . $method . ' ' . escapeshellarg($url) . ' \\' . "\n"
+        $curl = $curlExecutable . ' -X ' . $method . ' ' . $quoteArgument($url) . ' ' . $continuation . "\n"
             . '  -H "Authorization: Bearer <TOKEN>"';
         foreach ($fields as $field) {
-            $curl .= ' \\' . "\n" . '  -F ' . escapeshellarg($field);
+            $curl .= ' ' . $continuation . "\n" . '  -F ' . $quoteArgument($field);
         }
         $phpLines = ["\$fields = ["];
         $jsLines = ["const formData = new FormData();"];
