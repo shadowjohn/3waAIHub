@@ -99,11 +99,13 @@ hub_test('service settings validate unsafe path and backfill legacy service', fu
     $settings = hub_ensure_service_settings($db, $service);
     hub_test_assert(isset($settings['HELLO_MESSAGE']), 'legacy defaults were not backfilled');
     hub_test_assert($settings['HELLO_MESSAGE']['value'] === '3waAIHub service is running', 'legacy default mismatch');
+    $unsafePath = hub_platform_id() === 'windows' ? (string)getenv('SystemRoot') : '/etc';
+    hub_test_assert($unsafePath !== '', 'platform system directory is unavailable');
     hub_test_assert(hub_test_throws(static fn () => hub_validate_service_setting_value([
         'key' => 'MODEL_DIR',
         'type' => 'path',
         'required' => true,
-    ], '/etc')), 'unsafe path was accepted');
+    ], $unsafePath)), 'unsafe path was accepted');
     hub_test_assert(hub_test_throws(static fn () => hub_update_service_settings($db, (int)$service['id'], [
         'UNDECLARED_ENV' => 'x',
     ])), 'arbitrary setting key was accepted');
