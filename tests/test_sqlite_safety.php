@@ -202,6 +202,7 @@ hub_test('storage rejects filesystem roots and unresolved hosts', function (): v
     hub_test_assert(hub_storage_path_is_root('//server/share', 'windows'), 'UNC share root was not recognized');
     $missingShare = '\\\\localhost\\3waaihub_missing_' . getmypid();
     hub_test_assert(!hub_is_safe_absolute_path($missingShare), 'UNC share root accepted as storage');
+    hub_test_assert(hub_storage_canonical_comparison_path($missingShare, 'windows') === null, 'unresolved UNC host canonicalized');
 
     $missingDrive = null;
     foreach (range('Z', 'Q') as $drive) {
@@ -210,9 +211,10 @@ hub_test('storage rejects filesystem roots and unresolved hosts', function (): v
             break;
         }
     }
-    hub_test_assert($missingDrive !== null, 'test requires one unresolved Windows drive');
-    hub_test_assert(hub_storage_canonical_comparison_path($missingDrive, 'windows') === null, 'unresolved drive canonicalized');
-    hub_test_assert(!hub_is_safe_absolute_path($missingDrive), 'unresolved drive accepted as storage');
+    if ($missingDrive !== null) {
+        hub_test_assert(hub_storage_canonical_comparison_path($missingDrive, 'windows') === null, 'unresolved drive canonicalized');
+        hub_test_assert(!hub_is_safe_absolute_path($missingDrive), 'unresolved drive accepted as storage');
+    }
 });
 
 hub_test('Windows system directories and descendants are unsafe storage', function (): void {

@@ -216,24 +216,55 @@ function hub_storage_canonical_comparison_path(string $path, ?string $platform =
         $depth++;
     }
 
-    $resolved = false;
+    $resolved = realpath($root);
+    if ($resolved === false || !is_dir($resolved)) {
+        return null;
+    }
+
     $tail = [];
-    for ($count = count($parts); $count >= 0; $count--) {
-        $probe = $root . implode('/', array_slice($parts, 0, $count));
-        $resolved = realpath($probe);
-        if ($resolved !== false) {
-            $tail = array_slice($parts, $count);
-            if ($tail !== [] && !is_dir($resolved)) {
+    $logicalDepth = 0;
+    foreach ($parts as $part) {
+        if ($part === '' || $part === '.') {
+            continue;
+        }
+        if ($part === '..') {
+            if ($logicalDepth === 0) {
                 return null;
             }
-            break;
+            $logicalDepth--;
+            if ($tail !== []) {
+                array_pop($tail);
+                continue;
+            }
+            $parent = realpath(rtrim($resolved, '/\\') . DIRECTORY_SEPARATOR . '..');
+            if ($parent === false || !is_dir($parent)) {
+                return null;
+            }
+            $resolved = $parent;
+            continue;
         }
-        if (file_exists($probe) || is_link($probe)) {
+
+        $logicalDepth++;
+        if ($tail !== []) {
+            $tail[] = $part;
+            continue;
+        }
+        if (!is_dir($resolved)) {
             return null;
         }
-    }
-    if ($resolved === false) {
-        return null;
+        $probe = rtrim($resolved, '/\\') . DIRECTORY_SEPARATOR . $part;
+        $next = realpath($probe);
+        if ($next === false) {
+            if (file_exists($probe) || is_link($probe)) {
+                return null;
+            }
+            $tail[] = $part;
+            continue;
+        }
+        if (!is_dir($next)) {
+            return null;
+        }
+        $resolved = $next;
     }
 
     $canonical = str_replace('\\', '/', $resolved);
