@@ -9,7 +9,8 @@ function hub_test_yolo_gpu_source_model(string $root, string $name, string $cont
         mkdir($dir, 0775, true);
     }
 
-    $path = $dir . '/' . $name;
+    $fileName = preg_replace('/[^A-Za-z0-9_.-]/', '-', $name) ?: 'model.pt';
+    $path = $dir . '/' . $fileName;
     file_put_contents($path, $content);
 
     return $path;

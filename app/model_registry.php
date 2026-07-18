@@ -745,11 +745,11 @@ function hub_yolo_assign_gpu_slot(PDO $db, string $modelRef, int $slotNo, ?calla
             ]);
         }
 
-        $db->commit();
+        $db->exec('COMMIT');
         $started = false;
     } catch (Throwable $e) {
-        if ($started && $db->inTransaction()) {
-            $db->rollBack();
+        if ($started) {
+            $db->exec('ROLLBACK');
         }
         throw $e;
     }

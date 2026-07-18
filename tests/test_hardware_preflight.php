@@ -28,6 +28,7 @@ hub_test('station hardware profile maps GPU and pack preflight blocks weak compu
     $preflight = hub_pack_preflight($db, $translate, 'linux');
     hub_test_assert($preflight['summary']['status'] === 'pass', '5060 Ti should pass translate preflight');
 
+    unset($db);
     $db = hub_test_reset_db();
     hub_save_host_metric_snapshot($db, [
         'gpu' => [

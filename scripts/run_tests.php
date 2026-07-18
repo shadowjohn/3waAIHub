@@ -27,9 +27,11 @@ function hub_test_skip(string $reason): never
 
 function hub_test_reset_db(): PDO
 {
+    // Windows 需先釋放上一個測試結束後的 PDO 循環參考，否則 SQLite 檔可能仍被鎖住。
+    gc_collect_cycles();
     foreach ([HUB_DB_PATH, HUB_DB_PATH . '-wal', HUB_DB_PATH . '-shm'] as $path) {
-        if (is_file($path)) {
-            unlink($path);
+        if (is_file($path) && !unlink($path)) {
+            throw new RuntimeException('Cannot reset test SQLite file: ' . $path);
         }
     }
     $db = hub_db();
