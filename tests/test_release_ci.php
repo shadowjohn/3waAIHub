@@ -8,6 +8,17 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
     hub_test_assert(str_contains($readme, 'v0.2.x'), 'README version banner missing');
     hub_test_assert(str_contains($readme, 'Local Catalog'), 'README release scope missing');
+    foreach ([
+        'Windows 是 Control Plane preview；Linux Docker/GPU Pack 只能由 Linux runtime 或未來 Remote Agent 執行。',
+        'Docker 是否存在，只是環境資訊，不代表 Pack target 可執行。',
+        '安全路徑比較使用 canonical comparison；realpath() 失敗絕不等於安全。',
+        'Windows Core 的不適用能力顯示 N/A，不顯示成系統故障。',
+        'windows-wsl2-linux-docker',
+        'platform_target_unsupported',
+        'exit 78',
+    ] as $needle) {
+        hub_test_assert(str_contains($readme, $needle), 'README Windows support contract missing: ' . $needle);
+    }
 
     $layout = (string)file_get_contents(HUB_ROOT . '/admin/_layout.php');
     hub_test_assert(str_contains($layout, 'HUB_VERSION'), 'admin banner must display HUB_VERSION');
@@ -91,11 +102,60 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
         hub_test_assert(str_contains($ci, $needle), 'CI missing: ' . $needle);
     }
 
+    $windowsJobMatched = preg_match('/(?ms)^  windows-control-plane:\R(?<job>.*?)(?=^  [A-Za-z0-9_-]+:\R|\z)/', $ci, $windowsJobMatch) === 1;
+    hub_test_assert($windowsJobMatched, 'CI windows-control-plane job missing');
+    $windowsJob = $windowsJobMatched ? (string)$windowsJobMatch['job'] : '';
+    $normalizeCiLines = static fn(string $source): string => str_replace(["\r\n", "\r"], "\n", $source);
+    $windowsJob = $normalizeCiLines($windowsJob);
+    $windowsJobCrlf = str_replace("\n", "\r\n", $windowsJob);
+    hub_test_assert(str_contains($normalizeCiLines($windowsJobCrlf), "permissions:\n      contents: read"), 'Windows CI contract must tolerate CRLF line endings');
+    foreach ([
+        'runs-on: windows-latest',
+        "permissions:\n      contents: read",
+        'shivammathur/setup-php@v2',
+        'php-version: "8.3"',
+        'ini-values: date.timezone=Asia/Taipei, short_open_tag=On',
+        'sqlite3',
+        'pdo_sqlite',
+        'curl',
+        'mbstring',
+        'gd',
+        'fileinfo',
+        'openssl',
+        'zip',
+        'Get-ChildItem',
+        "-Filter '*.php'",
+        'php -l',
+        'tests\\test_windows_installer.ps1',
+        '- name: Core readiness report',
+        'install.ps1 -Mode Core -Check',
+        'zend.assertions=1',
+        'assert.exception=1',
+        'scripts/self_check.php',
+        'scripts/run_tests.php',
+        'install.ps1 -Mode WslRuntime',
+        '-WslDistro Ubuntu-24.04',
+        '-LinuxDataRoot /DATA',
+        '-Check',
+        'Status: NOT READY',
+        'Ready: false',
+    ] as $needle) {
+        hub_test_assert(str_contains($windowsJob, $needle), 'Windows CI job missing: ' . $needle);
+    }
+    foreach (['winget', 'choco', 'Docker Desktop', 'NVIDIA driver', 'Enable-WindowsOptionalFeature', 'Install-WindowsFeature'] as $needle) {
+        hub_test_assert(!str_contains(strtolower($windowsJob), strtolower($needle)), 'Windows CI job must not mutate host runtime: ' . $needle);
+    }
+    hub_test_assert(preg_match('/\bwsl(?:\.exe)?\s+--install\b/i', $windowsJob) !== 1, 'Windows CI job must not install a WSL distro');
+
     $windowsInstall = HUB_ROOT . '/install.ps1';
     hub_test_assert(is_file($windowsInstall), 'Windows install.ps1 missing');
     $ps1 = (string)file_get_contents($windowsInstall);
-    foreach (['[switch]$Check', 'scripts/init_db.php', 'Windows Control Plane preview', 'php -S 127.0.0.1:8080'] as $needle) {
+    foreach (['[switch]$Check', 'WslRuntime', 'Windows role installer'] as $needle) {
         hub_test_assert(str_contains($ps1, $needle), 'install.ps1 missing: ' . $needle);
+    }
+    $coreInstall = (string)file_get_contents(HUB_ROOT . '/scripts/windows/install-core.ps1');
+    foreach (['scripts/init_db.php', 'Installing Windows Core control plane', 'php -S 127.0.0.1:8080'] as $needle) {
+        hub_test_assert(str_contains($coreInstall, $needle), 'install-core.ps1 missing: ' . $needle);
     }
     foreach (['install NVIDIA', '--bootstrap-host', 'nvidia-smi'] as $needle) {
         hub_test_assert(!str_contains($ps1, $needle), 'install.ps1 must stay app-only preview: ' . $needle);

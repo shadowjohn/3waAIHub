@@ -81,14 +81,36 @@ cd /DATA/3waAIHub
 ./install.sh --check
 ```
 
-Windows 試水溫可用薄版 installer：
+Windows installer 依主機角色執行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Check
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -Check
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode WslRuntime -InstallRoot "D:\DATA\3waAIHub" -ModelsRoot "D:\DATA\models" -WslDistro "Ubuntu-24.04" -LinuxDataRoot "/DATA" -Check
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode Core -Check
+powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 ```
 
-`install.ps1` 只做 Windows Control Plane preview：檢查 PHP / SQLite、建立 `data/` runtime 目錄、初始化 SQLite。它不安裝 Docker、NVIDIA、cron，也不承諾在 Windows 本機執行 Linux GPU Pack。啟動測試可用：
+`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite / IIS readiness，建立 `data/` runtime 目錄並初始化 SQLite。若 PHP 缺少，會下載官方 PHP 8.3 NTS x64 FastCGI 版本、比對官方 SHA-256 後才解壓；它會把目前 PHP 的 `php.ini` 補成 `Asia/Taipei`、開啟 `short_open_tag`，並啟用 `pdo_sqlite`、`sqlite3`、`curl`、`mbstring`、`gd`、`fileinfo`、`openssl`、`zip`；實際變更前會建立一次 `.3waaihub.bak` 備份。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
+
+`WslRuntime -Check` 只做 read-only readiness report：檢查 WSL2、指定 Ubuntu distro、distro 內 Docker Engine / Compose、`nvidia-smi` 與 `/DATA` 是否在 WSL ext4。第一版不自動啟用 Windows Features、不安裝 Docker Desktop、不改顯示卡驅動、不建立 WSL runtime data。
+
+| Windows 主機 | 3waAIHub 角色建議 |
+| --- | --- |
+| Windows 11 | 建議 `3waAIHub Core（Control Plane）` + `WSL Runtime（Preview）` |
+| Windows Server | 預設 `3waAIHub Core（Control Plane）`；`WSL Runtime（Preview）` 選配；`Remote Linux Agent` 推薦；不建議或嘗試安裝 Docker Desktop |
+
+`windows-wsl2-linux-docker` 在 Windows-1 只提供 readiness/profile，不執行 Local Job。Windows 直接選用 `linux-docker` 時，會在呼叫 Docker 前以 `exit 78`、`error_code=platform_target_unsupported` 回報不支援。
+
+> Windows 是 Control Plane preview；Linux Docker/GPU Pack 只能由 Linux runtime 或未來 Remote Agent 執行。
+>
+> Docker 是否存在，只是環境資訊，不代表 Pack target 可執行。
+>
+> 安全路徑比較使用 canonical comparison；realpath() 失敗絕不等於安全。
+>
+> Windows Core 的不適用能力顯示 N/A，不顯示成系統故障。
+
+啟動 Core 測試可用：
 
 ```powershell
 php -S 127.0.0.1:8080
