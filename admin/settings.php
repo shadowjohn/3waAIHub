@@ -372,6 +372,7 @@ hub_admin_header('系統設定', $user);
 <?php elseif ($activeTab === 'storage'): ?>
 <section class="panel">
     <h2><?= hub_h(__('儲存與模型')) ?></h2>
+    <?php if (hub_platform_id() === 'windows'): ?><p class="form-help">以下為 3waAIHub Core（Control Plane）Windows 路徑；WSL Runtime（Preview）的 Linux data root 由 runtime profile 獨立管理。</p><?php endif; ?>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="form_type" value="storage">
@@ -437,6 +438,7 @@ hub_admin_header('系統設定', $user);
 <?php elseif ($activeTab === 'docker'): ?>
 <section class="panel">
     <h2><?= hub_h(__('Docker 與背景工作')) ?></h2>
+    <?php if (hub_platform_id() === 'windows'): ?><p class="form-help"><span class="muted">N/A（不適用）</span>：3waAIHub Core（Control Plane）不直接執行 linux-docker；WSL Runtime（Preview）readiness 另行檢查。</p><?php endif; ?>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="form_type" value="docker">
