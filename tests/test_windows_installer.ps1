@@ -254,12 +254,18 @@ exit /b 9
 '@
     [System.IO.File]::WriteAllText($fakePhp, ($fakePhpSource -replace "(?<!`r)`n", "`r`n"), [System.Text.UTF8Encoding]::new($false))
 
+    $coreReadinessRoot = Join-Path $runtimeRoot 'core-ready'
+    foreach ($directory in @('', 'data', 'data\logs', 'data\jobs', 'data\services')) {
+        New-Item -ItemType Directory -Path (Join-Path $coreReadinessRoot $directory) -Force | Out-Null
+    }
+    New-Item -ItemType File -Path (Join-Path $coreReadinessRoot 'index.php') -Force | Out-Null
+
     $previousPath = $env:Path
     $env:Path = $fakePhpDir + ';' + $previousPath
     $env:AIHUB_FAKE_PHP_FAIL = ''
     $env:AIHUB_FAKE_PHP_SHORT_TAG = ''
     try {
-        $fakeCore = & (Join-Path $PSScriptRoot '..\scripts\windows\check-core.ps1') -InstallRoot $repo -ProductType 1 6>&1 2>&1
+        $fakeCore = & (Join-Path $PSScriptRoot '..\scripts\windows\check-core.ps1') -InstallRoot $coreReadinessRoot -ProductType 1 6>&1 2>&1
         $fakeCoreExit = $LASTEXITCODE
     } finally {
         $env:Path = $previousPath
@@ -271,7 +277,7 @@ exit /b 9
     $previousPath = $env:Path
     try {
         $env:Path = $fakePhpDir + ';' + (Join-Path $env:SystemRoot 'System32')
-        $coreWithoutFastCgi = & (Join-Path $PSScriptRoot '..\scripts\windows\check-core.ps1') -InstallRoot $repo -ProductType 1 6>&1 2>&1
+        $coreWithoutFastCgi = & (Join-Path $PSScriptRoot '..\scripts\windows\check-core.ps1') -InstallRoot $coreReadinessRoot -ProductType 1 6>&1 2>&1
         $coreWithoutFastCgiExit = $LASTEXITCODE
     } finally {
         $env:Path = $previousPath
