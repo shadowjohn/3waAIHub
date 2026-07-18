@@ -860,6 +860,15 @@ AIHUB_MODEL_IMPORT_ROOTS=/DATA/NaturelID
 
 Gateway 會對 `artifact_path` 做 `realpath()` 後再檢查 allowlist，拒絕 `..`、symlink escape、非 `.pt`、非允許根目錄與 checksum mismatch。API response 不會回傳來源 host path。
 
+Registry 目錄需要讓 PHP/Web user 可寫。Linux 預設：
+
+```bash
+AIHUB_MODELS_DIR=/DATA/models
+sudo WEB_GROUP=www-data /DATA/3waAIHub/scripts/fix_permissions.sh
+```
+
+這會建立並修正 `/DATA/models/yolo/registry` 的 group write / setgid；系統有 `setfacl` 時會加上 web group default ACL。若 Apache/PHP-FPM 使用的群組不是 `www-data`，把 `WEB_GROUP` 改成實際群組。
+
 註冊模型：
 
 ```bash
@@ -895,11 +904,11 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_model_register" \
 查詢狀態：
 
 ```bash
-curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_model_status" \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"model_ref":"yolo:natureweb:training-result-47:v1"}'
+curl "http://localhost/3waAIHub/api.php?mode=yolo_model_status&model_ref=yolo:natureweb:training-result-47:v1" \
+  -H "Authorization: Bearer <TOKEN>"
 ```
+
+`warm_state` 代表目前可用狀態；若 DB slot 仍是 hot 但 `yolo-gpu0` 服務已停止，top-level `warm_state` 會回 `cold`，並在 `gpu.actual_state=hot`、`gpu.service.runtime_status=stopped`、`gpu.blocked_reason=gpu_service_unavailable` 說明原因。Client 要判斷 GPU Ready 請看 `gpu.service_available=true && warm_state=hot`。
 
 把模型指定到 GPU warm slot：
 

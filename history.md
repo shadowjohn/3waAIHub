@@ -3052,3 +3052,9 @@ Kept intentionally deferred:
 - LRU replacement.
 - Production alias.
 - Automatic model selection.
+
+Follow-up:
+
+- Documented `/DATA/models/yolo/registry` web-user write permissions and installer ACL repair.
+- Corrected `yolo_model_status` examples to GET query usage.
+- Added GPU service runtime availability to status responses so stopped `yolo-gpu0` no longer looks GPU ready.

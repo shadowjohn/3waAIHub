@@ -887,10 +887,20 @@ function hub_yolo_unassign_gpu(PDO $db, string $modelRef, ?callable $runtimeCall
 
 function hub_yolo_model_gpu_status(PDO $db, array $model): array
 {
+    $service = hub_get_service_by_key($db, hub_yolo_gpu_service_key());
+    $serviceRuntime = [
+        'service_key' => hub_yolo_gpu_service_key(),
+        'installed' => $service !== null && (string)($service['install_status'] ?? '') === 'installed',
+        'enabled' => $service !== null && (int)($service['enabled'] ?? 0) === 1,
+        'runtime_status' => $service ? (string)($service['runtime_status'] ?? 'unknown') : 'missing',
+    ];
+    $serviceAvailable = $serviceRuntime['installed'] && $serviceRuntime['enabled'] && $serviceRuntime['runtime_status'] === 'running';
     $deployment = hub_yolo_get_deployment_by_model($db, (int)$model['id'], hub_yolo_gpu_service_key());
     if (!$deployment) {
         return [
             'service_key' => hub_yolo_gpu_service_key(),
+            'service' => $serviceRuntime,
+            'service_available' => $serviceAvailable,
             'assigned' => false,
             'actual_state' => 'cold',
             'warm_state' => 'cold',
@@ -898,15 +908,19 @@ function hub_yolo_model_gpu_status(PDO $db, array $model): array
             'run_id' => null,
             'error' => null,
             'last_error' => null,
+            'blocked_reason' => $serviceAvailable ? null : 'gpu_service_unavailable',
         ];
     }
 
+    $actualState = (string)$deployment['actual_state'];
     return [
         'service_key' => (string)$deployment['service_key'],
+        'service' => $serviceRuntime,
+        'service_available' => $serviceAvailable,
         'assigned' => true,
         'slot_no' => (int)$deployment['slot_no'],
-        'actual_state' => (string)$deployment['actual_state'],
-        'warm_state' => (string)$deployment['actual_state'],
+        'actual_state' => $actualState,
+        'warm_state' => $serviceAvailable ? $actualState : 'cold',
         'run_id' => (string)($deployment['warm_run_id'] ?? ''),
         'vram_bytes' => isset($deployment['vram_bytes']) ? (int)$deployment['vram_bytes'] : null,
         'load_duration_ms' => isset($deployment['load_duration_ms']) ? (int)$deployment['load_duration_ms'] : null,
@@ -916,5 +930,6 @@ function hub_yolo_model_gpu_status(PDO $db, array $model): array
         'error' => $deployment['last_error_code'],
         'last_error' => $deployment['last_error_code'],
         'message' => $deployment['last_error_message'],
+        'blocked_reason' => $serviceAvailable ? null : 'gpu_service_unavailable',
     ];
 }

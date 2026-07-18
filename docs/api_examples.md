@@ -257,11 +257,11 @@ Idempotency:
 Status:
 
 ```bash
-curl -X POST "<BASE_URL>?mode=yolo_model_status" \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"model_ref":"yolo:natureweb:training-result-47:v1"}'
+curl "<BASE_URL>?mode=yolo_model_status&model_ref=yolo:natureweb:training-result-47:v1" \
+  -H "Authorization: Bearer <TOKEN>"
 ```
+
+GPU readiness should use `gpu.service_available=true && warm_state=hot`. If a DB slot is still marked hot but `yolo-gpu0` is stopped, status keeps `gpu.actual_state=hot` for traceability but returns top-level `warm_state=cold` with `gpu.blocked_reason=gpu_service_unavailable`.
 
 Assign GPU slot:
 

@@ -226,6 +226,24 @@ hub_test('YOLO gateway routes model_ref through GPU hot slot or CPU fallback saf
         'warm_inference_ms' => 1,
     ]);
 
+    $_SERVER['REQUEST_METHOD'] = 'GET';
+    $_GET = ['model_ref' => $model['model_ref']];
+    $_POST = [];
+    $hotStatus = hub_gateway_dispatch($db, 'yolo_model_status');
+    $hotPayload = json_decode((string)$hotStatus['body'], true);
+    hub_test_assert(($hotPayload['warm_state'] ?? '') === 'hot', 'Running GPU service should report hot warm_state.');
+    hub_test_assert(($hotPayload['gpu']['service_available'] ?? false) === true, 'Running GPU service should be available.');
+    hub_test_assert(($hotPayload['gpu']['service']['runtime_status'] ?? '') === 'running', 'GPU status should expose runtime_status.');
+
+    hub_update_service_status($db, (int)$gpuService['id'], 'stopped');
+    $stoppedStatus = hub_gateway_dispatch($db, 'yolo_model_status');
+    $stoppedPayload = json_decode((string)$stoppedStatus['body'], true);
+    hub_test_assert(($stoppedPayload['warm_state'] ?? '') === 'cold', 'Stopped GPU service must not report top-level hot warm_state.');
+    hub_test_assert(($stoppedPayload['gpu']['actual_state'] ?? '') === 'hot', 'GPU status should preserve DB slot actual_state.');
+    hub_test_assert(($stoppedPayload['gpu']['service_available'] ?? true) === false, 'Stopped GPU service should not be available.');
+    hub_test_assert(($stoppedPayload['gpu']['blocked_reason'] ?? '') === 'gpu_service_unavailable', 'Stopped GPU service should explain blocked reason.');
+    hub_update_service_status($db, (int)$gpuService['id'], 'running');
+
     hub_test_yolo_gpu_prepare_upload();
     $_POST['model_ref'] = $model['model_ref'];
     $_POST['execution_policy'] = 'auto';
@@ -336,6 +354,7 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
     $html = hub_public_api_docs_html($db);
     hub_test_assert(str_contains($html, 'yolo_model_assign_gpu'), 'Public docs should mention GPU assign mode.');
     hub_test_assert(str_contains($html, 'yolo_model_unassign_gpu'), 'Public docs should mention GPU unassign mode.');
+    hub_test_assert(str_contains($html, '?mode=yolo_model_status&amp;model_ref='), 'Public docs should show yolo_model_status as GET query.');
 
     $manifest = hub_public_api_manifest($db);
     $modes = array_column($manifest['services'], 'mode');
@@ -347,4 +366,10 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
         hub_test_assert(str_contains($source, $needle), 'YOLO serving runtime missing ' . $needle);
     }
     hub_test_assert(substr_count($source, '"fallback": bool(fallback_reason)') >= 2, 'YOLO predict response should expose top-level fallback flag.');
+
+    $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
+    hub_test_assert(str_contains($readme, '/DATA/models/yolo/registry'), 'README should document YOLO registry write permissions.');
+    $fixPermissions = (string)file_get_contents(HUB_ROOT . '/scripts/fix_permissions.sh');
+    hub_test_assert(str_contains($fixPermissions, '/DATA/models/yolo/registry'), 'fix_permissions should prepare YOLO registry directory.');
+    hub_test_assert(str_contains($fixPermissions, 'setfacl'), 'fix_permissions should apply ACL when available.');
 });

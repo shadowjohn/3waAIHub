@@ -36,7 +36,7 @@ find . \( -path './.git' -o -path './data' \) -prune -o -type d -exec chmod u+rw
 find . \( -path './.git' -o -path './data' \) -prune -o -type f -exec chmod u+rw,go+r {} +
 find . \( -path './.git' -o -path './data' \) -prune -o -type f -perm -0100 -exec chmod go+rx {} +
 
-for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/ollama /DATA/models/sam3; do
+for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/yolo/registry /DATA/models/ollama /DATA/models/sam3; do
   mkdir -p "$dir" 2>/dev/null || true
   chmod u+rwx,g+rwx,o+rx "$dir" 2>/dev/null || true
 done
@@ -59,12 +59,21 @@ if [ "$(id -u)" = "0" ]; then
   if [ -n "$web_group" ]; then
     chgrp -R "$web_group" data
     find data -type d -exec chmod 2775 {} +
+    if [ -d /DATA/models/yolo/registry ]; then
+      chgrp -R "$web_group" /DATA/models/yolo/registry 2>/dev/null || true
+      find /DATA/models/yolo/registry -type d -exec chmod 2775 {} + 2>/dev/null || true
+      find /DATA/models/yolo/registry -type f -exec chmod u+rw,g+rw,o+r {} + 2>/dev/null || true
+      if command -v setfacl >/dev/null 2>&1; then
+        setfacl -R -m "g:${web_group}:rwx" -m "d:g:${web_group}:rwx" /DATA/models/yolo/registry 2>/dev/null || true
+      fi
+    fi
     echo "[3waAIHub] Runtime group: $web_group"
   fi
 else
   echo "[3waAIHub] Non-root mode: skipped chown/chgrp."
   if getent group www-data >/dev/null; then
     echo "[3waAIHub] For Apache/PHP-FPM writes, run: sudo WEB_GROUP=www-data ./scripts/fix_permissions.sh"
+    echo "[3waAIHub] YOLO registry writes need: /DATA/models/yolo/registry writable by www-data."
   fi
 fi
 
