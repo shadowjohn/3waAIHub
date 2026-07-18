@@ -243,6 +243,80 @@ curl -X POST "<BASE_URL>?mode=yolo" \
   -F "real_inference=1"
 ```
 
+## YOLO Model Registry / GPU Warm Pool
+
+Status: Phase 1B. 只支援 YOLO detect `.pt` 匯入、CPU serving，以及固定 `yolo-gpu0` slot 1 / 2 warm pool。先不要把 segment / pose / ONNX serving、TensorRT、多 GPU、production alias 或自動換槽視為已支援能力。
+
+Register allowlisted host model:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_model_register" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "source_system=natureweb" \
+  -F "external_model_key=training_result_47" \
+  -F "display_name=NatureWeb training result 47" \
+  -F "artifact_path=<ALLOWLISTED_HOST_PATH>/best.pt" \
+  -F "artifact_sha256=<SHA256>" \
+  -F "task_type=detect"
+```
+
+Idempotency:
+
+- Same `external_model_key + sha256` returns the same `model_ref` / `version_id`.
+- Different sha256 under the same key creates the next version.
+
+Status:
+
+```bash
+curl "<BASE_URL>?mode=yolo_model_status&model_ref=yolo:natureweb:training-result-47:v1" \
+  -H "Authorization: Bearer <TOKEN>"
+```
+
+GPU readiness should use `gpu.service_available=true && warm_state=hot`. If a DB slot is still marked hot but `yolo-gpu0` is stopped, status keeps `gpu.actual_state=hot` for traceability but returns top-level `warm_state=cold` with `gpu.blocked_reason=gpu_service_unavailable`.
+
+Assign GPU slot:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_model_assign_gpu" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1" \
+  -F "slot_no=1"
+```
+
+Unassign GPU slot:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_model_unassign_gpu" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1"
+```
+
+Predict with registered model:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_predict" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@sample.jpg" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1" \
+  -F "execution_policy=auto"
+```
+
+Predict response includes:
+
+- `model_ref`
+- `version_id` / `model_version_id`
+- `device_used`
+- `fallback_reason`
+- `detections`
+
+`execution_policy`:
+
+- `auto`: prefer hot GPU slot, fallback to CPU when GPU is not ready.
+- `cpu_only`: force CPU.
+- `gpu_only`: require hot GPU slot or return `gpu_not_ready`.
+
+Client must not send host paths, server artifact paths, `slot_no`, or `device` to `yolo_predict`; only `model_ref` selects the model.
+
 ## POST BioCLIP
 
 Status: L5 benchmark ready. `bioclip` 用 OpenCLIP / BioCLIP 做圖片候選標籤分類；預設可先跑 mock contract，表單加 `real_inference=1` 時執行真實推論。

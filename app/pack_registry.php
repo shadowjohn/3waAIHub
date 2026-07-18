@@ -414,6 +414,15 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'ULTRALYTICS_SETTINGS_DIR' => $cacheDir . '/ultralytics',
             'YOLO_CONFIG_DIR' => $cacheDir . '/ultralytics',
         ],
+        'yolo-serving' => [
+            'YOLO_MODEL_REGISTRY_DIR' => $modelDir,
+            'YOLO_CACHE_DIR' => $cacheDir,
+            'YOLO_SERVICE_DATA_DIR' => $serviceDataDir,
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $cacheDir . '/home',
+            'ULTRALYTICS_SETTINGS_DIR' => $cacheDir . '/ultralytics',
+            'YOLO_CONFIG_DIR' => $cacheDir . '/ultralytics',
+        ],
         'translate-gemma12b' => [
             'TRANSLATE_MODEL_DIR' => '/models/ollama',
             'TRANSLATE_CACHE_DIR' => $cacheDir,
@@ -543,6 +552,9 @@ function hub_pack_requests_gpu(array $manifest, string $serviceKey = ''): bool
     if (($manifest['id'] ?? '') === 'ocr-ppocrv5') {
         return hub_service_key_requests_gpu($serviceKey);
     }
+    if (($manifest['id'] ?? '') === 'yolo-serving') {
+        return $serviceKey === 'yolo-gpu0' || hub_service_key_requests_gpu($serviceKey);
+    }
 
     foreach (($manifest['env'] ?? []) as $item) {
         if (!is_array($item)) {
@@ -589,9 +601,10 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
         . "    restart: unless-stopped\n";
 
     if (hub_pack_requests_gpu($manifest, $serviceKey)) {
+        $visibleDevices = (($manifest['id'] ?? '') === 'yolo-serving' && $serviceKey === 'yolo-gpu0') ? '0' : 'all';
         $compose .= "    gpus: all\n"
             . "    environment:\n"
-            . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
+            . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-' . $visibleDevices . '}"' . "\n"
             . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n";
     }
 

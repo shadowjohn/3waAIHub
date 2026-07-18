@@ -8,6 +8,7 @@ function hub_default_storage_settings(): array
         'AIHUB_SITE_SUBTITLE' => 'Local AI Service Hub',
         'AIHUB_DATA_DIR' => HUB_DATA_DIR,
         'AIHUB_MODELS_DIR' => '/DATA/models',
+        'AIHUB_MODEL_IMPORT_ROOTS' => "/DATA/NaturelID\n/DATA/NatureWeb",
         'AIHUB_CACHE_DIR' => HUB_DATA_DIR . '/cache',
         'AIHUB_UPLOADS_DIR' => HUB_DATA_DIR . '/uploads',
         'AIHUB_RESULTS_DIR' => HUB_DATA_DIR . '/results',

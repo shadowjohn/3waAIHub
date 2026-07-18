@@ -2987,3 +2987,74 @@ Current seed summary:
 - `vi`: 17
 - `zh_CN`: 159
 - Total: 500
+
+## PhaseYoloServe-1A YOLO Model Registry / CPU Serving
+
+Added the first YOLO model registry and CPU serving slice.
+
+Implemented:
+
+- `yolo_model_versions` metadata table.
+- `hub_yolo_register_model_version()` allowlisted host-path import.
+- `AIHUB_MODEL_IMPORT_ROOTS` setting for model import roots.
+- Realpath-based path allowlist checks for imported `.pt` files.
+- Idempotent `source_system + external_model_key + sha256` registration.
+- Immutable registry artifact layout under `AIHUB_MODELS_DIR/yolo/registry/...`.
+- `yolo-serving` HubPack for CPU-only Detect `.pt` serving.
+- `api.php?mode=yolo_model_register` gateway route.
+- `api.php?mode=yolo_model_status` gateway route.
+- `api.php?mode=yolo_predict` model_ref-to-container-path injection.
+- Public docs and API examples for register / status / predict.
+
+Rules:
+
+- Only YOLO Detect `.pt` is supported in this phase.
+- Client requests use `model_ref`; they cannot send `host_path`, `model_path`, `artifact_path`, or arbitrary server paths to predict.
+- Gateway responses do not expose source host paths.
+- Status exposes `registered`, `cpu_available`, and cold warm state.
+- Predict requests are routed to CPU in 1A and return model/version/device/fallback metadata with detections.
+
+Deferred:
+
+- Segment / pose / classification serving.
+- ONNX serving.
+- GPU warm pool.
+- TensorRT.
+- Multi-GPU.
+- Production alias or auto model selection.
+
+## PhaseYoloServe-1B YOLO GPU Dual-Slot Warm Pool
+
+Added a fixed two-slot GPU warm pool for Hub-managed YOLO Detect `.pt` models.
+
+Implemented:
+
+- `yolo_model_deployments` table.
+- Fixed `yolo-gpu0` service key with slot `1` / `2`.
+- `hub_yolo_assign_gpu_slot()`.
+- `hub_yolo_unassign_gpu()`.
+- Warm / unload history recorded in existing `runtime_runs`.
+- `api.php?mode=yolo_model_assign_gpu`.
+- `api.php?mode=yolo_model_unassign_gpu`.
+- `api.php?mode=yolo_model_status` now reports a `gpu` block.
+- `api.php?mode=yolo_predict` routes by `model_ref` with `auto` / `cpu_only` / `gpu_only`.
+- `auto` uses hot GPU slot when available and falls back to CPU when GPU is not ready.
+- Client-supplied `slot_no`, `device`, host paths, and container paths are rejected.
+- `yolo-serving` runtime added internal `/models`, `/models/{slot_no}/status`, `/models/warm`, `/models/unload`, and GPU-slot-aware `/detect/image`.
+- `yolo-gpu0` generated compose requests `gpus: all` and defaults `NVIDIA_VISIBLE_DEVICES` to `0`.
+
+Kept intentionally deferred:
+
+- Segment / pose / classification serving.
+- TensorRT.
+- ONNX serving.
+- Multi-GPU.
+- LRU replacement.
+- Production alias.
+- Automatic model selection.
+
+Follow-up:
+
+- Documented `/DATA/models/yolo/registry` web-user write permissions and installer ACL repair.
+- Corrected `yolo_model_status` examples to GET query usage.
+- Added GPU service runtime availability to status responses so stopped `yolo-gpu0` no longer looks GPU ready.

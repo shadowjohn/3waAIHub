@@ -25,9 +25,19 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     $manifest = hub_public_api_manifest($db);
     $json = json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     hub_test_assert(is_array($manifest['services'] ?? null), 'manifest services missing');
-    foreach (['hello', 'ocr', 'yolo', 'translate', 'sam3'] as $mode) {
+    foreach (['hello', 'ocr', 'yolo', 'translate', 'sam3', 'yolo_model_register', 'yolo_model_status'] as $mode) {
         hub_test_assert(in_array($mode, array_column($manifest['services'], 'mode'), true), 'manifest missing mode ' . $mode);
     }
+    $yoloRegister = null;
+    foreach ($manifest['services'] as $service) {
+        if (($service['mode'] ?? '') === 'yolo_model_register') {
+            $yoloRegister = $service;
+            break;
+        }
+    }
+    hub_test_assert(is_array($yoloRegister), 'manifest missing yolo_model_register mode');
+    hub_test_assert(str_contains((string)$yoloRegister['examples']['curl'], '<ALLOWLISTED_HOST_PATH>/best.pt'), 'yolo register example must use allowlist placeholder');
+    hub_test_assert(!str_contains((string)$yoloRegister['examples']['curl'], '/DATA/'), 'yolo register example must not leak host root');
     $photoUpload = null;
     foreach ($manifest['services'] as $service) {
         if (($service['mode'] ?? '') === 'photo_upload') {

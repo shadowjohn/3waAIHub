@@ -1,0 +1,181 @@
+{
+  "schema_version": "0.1",
+  "id": "yolo-serving",
+  "name": "YOLO Model Serving Runtime",
+  "version": "0.1.0",
+  "category": "vision",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L3-storage-mount",
+  "target_level": "L5-benchmark-ready",
+  "runtime_contract": "0.1",
+  "runtime_modes": ["service"],
+  "platform_targets": {
+    "linux-docker": {
+      "supported": true,
+      "source": "declared",
+      "reason": null
+    }
+  },
+  "capabilities": {
+    "local_job": false,
+    "managed_job": false,
+    "http_service": true,
+    "yolo_model_register": true,
+    "yolo_predict": true,
+    "gpu_warm_pool": true
+  },
+  "runtime_ready": true,
+  "default_mode": "yolo_predict",
+  "description": "YOLO Detect .pt serving runtime for Hub-managed model_ref prediction. Phase 1B supports CPU serving and a fixed GPU warm pool.",
+  "install": {
+    "default_service_key": "yolo-cpu"
+  },
+  "service": {
+    "default_local_port": 18182,
+    "local_port_env": "YOLO_SERVING_LOCAL_PORT"
+  },
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/detect/image",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 50
+  },
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": true,
+    "min_vram_mb": 0,
+    "min_compute_capability": "0"
+  },
+  "queue": {
+    "supported": false,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "storage"
+    ]
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "yolo/registry",
+        "container_path": "/models/registry",
+        "read_only": true
+      },
+      {
+        "type": "cache",
+        "host_subdir": "yolo-serving",
+        "container_path": "/cache/yolo-serving",
+        "read_only": false
+      },
+      {
+        "type": "service_data",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false
+      }
+    ]
+  },
+  "settings_schema": [
+    {
+      "key": "YOLO_SERVING_DEVICE",
+      "label": "YOLO serving device",
+      "type": "select",
+      "default": "cpu",
+      "options": ["cpu", "cuda:0"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "YOLO_GPU_SLOTS",
+      "label": "YOLO GPU warm pool slots",
+      "type": "number",
+      "default": "0",
+      "min": 0,
+      "max": 2,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "YOLO_SERVING_REAL_INFERENCE",
+      "label": "Enable real YOLO serving inference",
+      "type": "boolean",
+      "default": "1",
+      "required": true,
+      "restart_required": true
+    }
+  ],
+  "env": [
+    {
+      "name": "YOLO_MODEL_REGISTRY_DIR",
+      "default": "/models/registry",
+      "required": true
+    },
+    {
+      "name": "YOLO_SERVING_DEVICE",
+      "default": "cpu",
+      "required": true
+    },
+    {
+      "name": "YOLO_GPU_SLOTS",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "YOLO_SERVING_REAL_INFERENCE",
+      "default": "1",
+      "required": true
+    }
+  ],
+  "l5_contract": {
+    "endpoint": "/detect/image",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {
+          "name": "image",
+          "type": "file",
+          "required": true,
+          "max_mb": 50
+        },
+        {
+          "name": "model_ref",
+          "type": "string",
+          "required": true
+        },
+        {
+          "name": "execution_policy",
+          "type": "string",
+          "required": false,
+          "default": "auto"
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "model_ref", "version_id", "model_version_id", "device_used", "fallback_reason", "model", "runtime", "detections"],
+      "detection_keys": ["class_id", "label", "confidence", "bbox"]
+    },
+    "errors": [
+      "bad_request",
+      "model_not_found",
+      "model_artifact_missing",
+      "model_load_failed",
+      "model_task_unsupported",
+      "gpu_not_ready",
+      "cpu_service_unavailable",
+      "cpu_inference_failed"
+    ]
+  }
+}

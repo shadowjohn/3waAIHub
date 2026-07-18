@@ -28,7 +28,8 @@ AI、GIS 與通用容器服務的統一發佈平台。
 | Run history | 已完成 |
 | Resource samples | 已完成 |
 | YOLO smoke wrappers | 已完成 |
-| YOLO 真實 predict/train/export | 尚未完成 |
+| YOLO 真實 predict/train/export | 已完成 |
+| YOLO Model Registry / GPU Warm Pool | Preview／薄版 |
 | External DB / Volume binding | 規劃中 |
 | Generic Service Publish Contract | 規劃中 |
 
@@ -65,8 +66,10 @@ Pack
 | Phase | 名稱 | 狀態 |
 | --- | --- | --- |
 | Runtime-1A | Local Job Runner | 完成 |
-| Runtime-1B | Runtime UI 與平台定位 | 本刀 |
-| Runtime-1C | YOLO 真實 Job Adapter | 下一刀 |
+| Runtime-1B | Runtime UI 與平台定位 | 完成 |
+| Runtime-1C | YOLO 真實 Job Adapter | 完成 |
+| YoloServe-1A | YOLO Model Registry / CPU Serving | 完成 |
+| YoloServe-1B | YOLO GPU Dual-Slot Warm Pool | Preview／薄版 |
 | Runtime-2A | Generic Service Contract | 規劃中 |
 | Runtime-2B | Volume / Database Resource Profile | 規劃中 |
 | Runtime-2C | GIS Vertical Slice | 規劃中 |

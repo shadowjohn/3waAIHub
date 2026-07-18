@@ -1,0 +1,12 @@
+services:
+  yolo-serving:
+    build:
+      context: ./service
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${YOLO_SERVING_LOCAL_PORT:-18182}:8000"
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/yolo/registry:/models/registry:ro"
+      - "${AIHUB_CACHE_DIR:-../../data/cache}/yolo-serving:/cache/yolo-serving"
+      - "${SERVICE_DATA_DIR:-../../data/services/yolo-cpu}:/data/service"

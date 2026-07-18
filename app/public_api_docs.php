@@ -140,6 +140,12 @@ function hub_public_api_services(PDO $db): array
             $services[] = $service;
         }
     }
+    if (hub_get_pack('yolo-serving') !== null) {
+        foreach (hub_public_api_yolo_model_services() as $service) {
+            $service['examples'] = hub_public_api_examples($service);
+            $services[] = $service;
+        }
+    }
 
     usort($services, static fn (array $a, array $b): int => strcmp((string)$a['mode'], (string)$b['mode']));
     return $services;
@@ -185,6 +191,94 @@ function hub_public_api_photo_services(): array
             ],
             'output_keys' => ['ok', 'mock', 'runtime_level', 'model', 'image_id', 'answer', 'caption', 'tags', 'usage', 'elapsed_ms'],
             'error_codes' => ['image_id_required', 'text_required', 'photo_forbidden', 'model_not_ready', 'vision_timeout', 'vision_bad_response', 'vision_failed'],
+            'task_api' => [],
+        ],
+    ];
+}
+
+function hub_public_api_yolo_model_services(): array
+{
+    return [
+        [
+            'mode' => 'yolo_model_register',
+            'pack_id' => 'yolo-serving',
+            'name' => 'YOLO Model Register',
+            'description' => 'Register an allowlisted YOLO Detect .pt host artifact into the Hub model registry.',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data',
+            'endpoint' => 'api.php?mode=yolo_model_register',
+            'url' => hub_public_api_mode_url('yolo_model_register'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L3-storage-mount',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'source_system', 'type' => 'string', 'required' => true, 'default' => 'natureweb'],
+                ['name' => 'external_model_key', 'type' => 'string', 'required' => true, 'default' => 'training_result_47'],
+                ['name' => 'display_name', 'type' => 'string', 'required' => false, 'default' => 'NatureWeb training result 47'],
+                ['name' => 'artifact_path', 'type' => 'string', 'required' => true, 'default' => '<ALLOWLISTED_HOST_PATH>/best.pt'],
+                ['name' => 'artifact_sha256', 'type' => 'string', 'required' => true, 'default' => '<SHA256>'],
+                ['name' => 'task_type', 'type' => 'string', 'required' => false, 'default' => 'detect'],
+            ],
+            'output_keys' => ['ok', 'model_ref', 'version_id', 'model_version_id', 'state', 'cpu_available', 'warm_state', 'task_type', 'sha256'],
+            'error_codes' => ['bad_request', 'model_import_path_not_allowed', 'model_checksum_mismatch', 'model_task_unsupported', 'model_artifact_missing', 'missing_token', 'token_mode_not_allowed'],
+            'task_api' => [],
+        ],
+        [
+            'mode' => 'yolo_model_status',
+            'pack_id' => 'yolo-serving',
+            'name' => 'YOLO Model Status',
+            'description' => 'Query Hub registry and GPU warm-pool state for a model_ref.',
+            'method' => 'GET',
+            'content_type' => '',
+            'endpoint' => 'api.php?mode=yolo_model_status&model_ref=yolo:natureweb:training-result-47:v1',
+            'url' => hub_public_api_mode_url('yolo_model_status') . '&model_ref=yolo:natureweb:training-result-47:v1',
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L3-storage-mount',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'model_ref', 'type' => 'string', 'required' => true, 'default' => 'yolo:natureweb:training-result-47:v1'],
+            ],
+            'output_keys' => ['ok', 'model_ref', 'version_id', 'model_version_id', 'state', 'cpu_available', 'warm_state', 'gpu.service_available', 'gpu.service.runtime_status', 'gpu.actual_state', 'gpu.blocked_reason', 'task_type', 'sha256'],
+            'error_codes' => ['model_ref_required', 'model_not_found', 'missing_token', 'token_mode_not_allowed'],
+            'task_api' => [],
+        ],
+        [
+            'mode' => 'yolo_model_assign_gpu',
+            'pack_id' => 'yolo-serving',
+            'name' => 'YOLO Model Assign GPU Slot',
+            'description' => 'Assign a registered YOLO Detect model_ref to fixed yolo-gpu0 slot 1 or 2 and warm it when the GPU runtime is available.',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data',
+            'endpoint' => 'api.php?mode=yolo_model_assign_gpu',
+            'url' => hub_public_api_mode_url('yolo_model_assign_gpu'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L3-storage-mount',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'model_ref', 'type' => 'string', 'required' => true, 'default' => 'yolo:natureweb:training-result-47:v1'],
+                ['name' => 'slot_no', 'type' => 'integer', 'required' => true, 'default' => 1],
+            ],
+            'output_keys' => ['ok', 'model_ref', 'version_id', 'model_version_id', 'service_key', 'slot_no', 'warm_state', 'run_id'],
+            'error_codes' => ['gpu_slot_invalid', 'gpu_slot_occupied', 'gpu_model_already_assigned', 'gpu_service_unavailable', 'gpu_warm_failed', 'gpu_out_of_memory', 'model_not_found', 'missing_token', 'token_mode_not_allowed'],
+            'task_api' => [],
+        ],
+        [
+            'mode' => 'yolo_model_unassign_gpu',
+            'pack_id' => 'yolo-serving',
+            'name' => 'YOLO Model Unassign GPU Slot',
+            'description' => 'Unload a registered YOLO model_ref from the fixed yolo-gpu0 warm pool. Registry model artifacts are not deleted.',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data',
+            'endpoint' => 'api.php?mode=yolo_model_unassign_gpu',
+            'url' => hub_public_api_mode_url('yolo_model_unassign_gpu'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L3-storage-mount',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'model_ref', 'type' => 'string', 'required' => true, 'default' => 'yolo:natureweb:training-result-47:v1'],
+            ],
+            'output_keys' => ['ok', 'model_ref', 'version_id', 'model_version_id', 'service_key', 'run_id'],
+            'error_codes' => ['gpu_not_ready', 'gpu_model_slot_mismatch', 'gpu_unload_failed', 'model_not_found', 'missing_token', 'token_mode_not_allowed'],
             'task_api' => [],
         ],
     ];
@@ -425,7 +519,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
                     <tr><th>pack_id</th><td><code><?= hub_h((string)$service['pack_id']) ?></code></td></tr>
                     <tr><th>method</th><td><code><?= hub_h((string)$service['method']) ?></code></td></tr>
                     <tr><th>endpoint</th><td><code><?= hub_h((string)$service['endpoint']) ?></code></td></tr>
-                    <tr><th>content-type</th><td><code><?= hub_h((string)$service['content_type']) ?></code></td></tr>
+                    <tr><th>content-type</th><td><code><?= hub_h((string)$service['content_type'] !== '' ? (string)$service['content_type'] : '-') ?></code></td></tr>
                     <tr><th>runtime_level</th><td><code><?= hub_h((string)$service['runtime_level']) ?></code></td></tr>
                     <tr><th>execution_type</th><td><code><?= hub_h((string)$service['execution_type']) ?></code></td></tr>
                     <?php if (($service['task_type'] ?? '') !== ''): ?>

@@ -29,6 +29,15 @@
       "featured": true
     },
     {
+      "id": "yolo-serving",
+      "name": "YOLO Model Serving Runtime",
+      "version": "0.1.0",
+      "category": "vision",
+      "description": "CPU serving runtime for Hub-managed YOLO Detect .pt model_ref prediction.",
+      "path": "packs/yolo-serving",
+      "featured": true
+    },
+    {
       "id": "bioclip",
       "name": "BioCLIP Species Classification Service",
       "version": "0.1.0",

@@ -9,6 +9,9 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if (!preg_match('/^[a-zA-Z0-9_-]+$/', $mode)) {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(400, 'bad_request', 'invalid mode'), $started, $requestId);
     }
+    if ($mode === 'yolo_gpu_internal') {
+        return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId);
+    }
     $service = hub_get_service_by_mode($db, $mode);
     if (!$service && hub_is_task_api_mode($mode)) {
         $clientIp = hub_get_client_ip();
@@ -32,6 +35,16 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         unset($photoResponse['service']);
 
         return hub_gateway_finish($db, $logService, $mode, $photoResponse, $started, $requestId, $authContext);
+    }
+    if (!$service && hub_is_yolo_model_api_mode($mode)) {
+        $clientIp = hub_get_client_ip();
+        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
+        $authContext = $auth['context'] ?? [];
+        if (empty($auth['ok'])) {
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
+        }
+
+        return hub_gateway_finish($db, null, $mode, hub_yolo_model_api_dispatch($db, $mode), $started, $requestId, $authContext);
     }
     if (!$service) {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId);
@@ -60,10 +73,14 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
 
     $timeoutSec = hub_service_gateway_timeout_sec($service);
     $prepared = [];
-    if ($requester === null) {
+    if ($requester === null || (string)($service['pack_id'] ?? '') === 'yolo-serving') {
         $prepared = hub_gateway_prepare_service_request($db, $service, $authContext);
         if (isset($prepared['response'])) {
             return hub_gateway_finish($db, $service, $mode, $prepared['response'], $started, $requestId, $authContext);
+        }
+        if (is_array($prepared['service'] ?? null)) {
+            $service = $prepared['service'];
+            $timeoutSec = hub_service_gateway_timeout_sec($service);
         }
     }
     if (hub_service_is_internal_task($service)) {
@@ -76,13 +93,26 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         is_string($prepared['content_type'] ?? null) ? (string)$prepared['content_type'] : null
     );
 
-    return hub_gateway_finish($db, $service, $mode, $requester($service, $timeoutSec), $started, $requestId, $authContext);
+    $response = $requester($service, $timeoutSec);
+    if (
+        (string)($service['pack_id'] ?? '') === 'yolo-serving'
+        && is_array($prepared['fallback_service'] ?? null)
+        && hub_yolo_gateway_response_error($response) === 'gpu_not_ready'
+    ) {
+        hub_yolo_inject_predict_payload($prepared['model'], 'auto', 'cpu', null, 'gpu_not_ready');
+        $service = $prepared['fallback_service'];
+        $timeoutSec = hub_service_gateway_timeout_sec($service);
+        $response = $requester($service, $timeoutSec);
+    }
+
+    return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext);
 }
 
 function hub_gateway_prepare_service_request(PDO $db, array $service, array $authContext): array
 {
     return match ((string)($service['pack_id'] ?? '')) {
         'tts-voxcpm2' => hub_prepare_tts_voxcpm2_payload($db, $service, $authContext, (string)file_get_contents('php://input')),
+        'yolo-serving' => hub_prepare_yolo_serving_payload($db, $service),
         default => [],
     };
 }
@@ -185,6 +215,105 @@ function hub_prepare_tts_voxcpm2_payload(PDO $db, array $service, array $authCon
     ];
 }
 
+function hub_prepare_yolo_serving_payload(PDO $db, array $service): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return [];
+    }
+    foreach (['host_path', 'source_path', 'artifact_path', 'model_path', 'container_path', 'file_path', 'slot_no', 'device'] as $blockedKey) {
+        if (array_key_exists($blockedKey, $_POST)) {
+            return ['response' => hub_gateway_error(400, 'bad_request', 'client model paths are not accepted')];
+        }
+    }
+
+    $modelRef = trim((string)($_POST['model_ref'] ?? ''));
+    if ($modelRef === '') {
+        return ['response' => hub_gateway_error(400, 'model_ref_required', 'model_ref is required')];
+    }
+    $executionPolicy = trim((string)($_POST['execution_policy'] ?? 'auto')) ?: 'auto';
+    if (!in_array($executionPolicy, ['auto', 'cpu_only', 'gpu_only'], true)) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'execution_policy must be auto, cpu_only, or gpu_only')];
+    }
+    $model = hub_get_yolo_model_version($db, $modelRef);
+    if (!$model) {
+        return ['response' => hub_gateway_error(404, 'model_not_found', 'model_ref was not found')];
+    }
+    if ((string)$model['task_type'] !== 'detect') {
+        return ['response' => hub_gateway_error(400, 'model_task_unsupported', 'YOLO serving 1A supports Detect .pt models only')];
+    }
+    if (!is_file(hub_yolo_model_version_host_path($db, $model))) {
+        return ['response' => hub_gateway_error(404, 'model_artifact_missing', 'registered model artifact is missing')];
+    }
+
+    $cpuService = hub_get_service_by_key($db, 'yolo-cpu') ?: $service;
+    $deployment = hub_yolo_hot_deployment_for_model($db, (int)$model['id']);
+    if ($executionPolicy === 'cpu_only') {
+        hub_yolo_inject_predict_payload($model, $executionPolicy, 'cpu');
+
+        return ['service' => $cpuService, 'model' => $model];
+    }
+    if (!$deployment) {
+        if ($executionPolicy === 'gpu_only') {
+            return ['response' => hub_gateway_error(409, 'gpu_not_ready', 'YOLO model is not hot in a GPU slot')];
+        }
+        hub_yolo_inject_predict_payload($model, $executionPolicy, 'cpu', null, 'gpu_not_ready');
+
+        return ['service' => $cpuService, 'model' => $model];
+    }
+
+    $gpuService = hub_get_service_by_key($db, hub_yolo_gpu_service_key());
+    $gpuReady = $gpuService
+        && (int)($gpuService['enabled'] ?? 0) === 1
+        && (string)($gpuService['install_status'] ?? '') === 'installed'
+        && (string)($gpuService['runtime_status'] ?? '') === 'running';
+    if (!$gpuReady) {
+        if ($executionPolicy === 'gpu_only') {
+            return ['response' => hub_gateway_error(503, 'gpu_service_unavailable', 'YOLO GPU serving service is not available')];
+        }
+        hub_yolo_inject_predict_payload($model, $executionPolicy, 'cpu', null, 'gpu_service_unavailable');
+
+        return ['service' => $cpuService, 'model' => $model];
+    }
+
+    hub_yolo_inject_predict_payload($model, $executionPolicy, 'cuda:0', $deployment);
+
+    return [
+        'service' => $gpuService,
+        'fallback_service' => $executionPolicy === 'auto' ? $cpuService : null,
+        'model' => $model,
+    ];
+}
+
+function hub_yolo_inject_predict_payload(array $model, string $executionPolicy, string $device, ?array $deployment = null, ?string $fallbackReason = null): void
+{
+    $_POST['model_ref'] = (string)$model['model_ref'];
+    $_POST['model_version_id'] = (string)(int)$model['id'];
+    $_POST['model_path'] = hub_yolo_model_version_container_path($model);
+    $_POST['model_sha256'] = (string)$model['sha256'];
+    $_POST['execution_policy'] = $executionPolicy;
+    $_POST['device'] = $device;
+    if ($deployment) {
+        $_POST['slot_no'] = (string)(int)$deployment['slot_no'];
+    } else {
+        unset($_POST['slot_no']);
+    }
+    if ($fallbackReason !== null && $fallbackReason !== '') {
+        $_POST['fallback_reason'] = $fallbackReason;
+    } else {
+        unset($_POST['fallback_reason']);
+    }
+}
+
+function hub_yolo_gateway_response_error(array $response): ?string
+{
+    $payload = json_decode((string)($response['body'] ?? ''), true);
+    if (!is_array($payload)) {
+        return null;
+    }
+
+    return isset($payload['error']) ? (string)$payload['error'] : null;
+}
+
 function hub_gateway_service_ip_allowed_after_auth(PDO $db, array $service, string $clientIp, array $authContext): bool
 {
     if (empty($authContext['token_id'])) {
@@ -207,6 +336,11 @@ function hub_is_photo_api_mode(string $mode): bool
     return array_key_exists($mode, hub_photo_modes());
 }
 
+function hub_is_yolo_model_api_mode(string $mode): bool
+{
+    return in_array($mode, ['yolo_model_register', 'yolo_model_status', 'yolo_model_assign_gpu', 'yolo_model_unassign_gpu'], true);
+}
+
 function hub_task_api_modes(): array
 {
     return [
@@ -217,6 +351,202 @@ function hub_task_api_modes(): array
         'task_cancel' => 'Task Cancel',
         'artifact' => 'Task Artifact',
     ];
+}
+
+function hub_yolo_model_api_dispatch(PDO $db, string $mode): array
+{
+    return match ($mode) {
+        'yolo_model_register' => hub_api_yolo_model_register($db),
+        'yolo_model_status' => hub_api_yolo_model_status($db),
+        'yolo_model_assign_gpu' => hub_api_yolo_model_assign_gpu($db),
+        'yolo_model_unassign_gpu' => hub_api_yolo_model_unassign_gpu($db),
+        default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown_mode']),
+    };
+}
+
+function hub_api_yolo_model_register(PDO $db): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'yolo_model_register requires POST');
+    }
+
+    try {
+        $model = hub_yolo_register_model_version($db, hub_yolo_model_register_input());
+    } catch (Throwable $e) {
+        $errorCode = $e instanceof RuntimeException || $e instanceof InvalidArgumentException
+            ? (string)$e->getMessage()
+            : 'model_import_failed';
+        if ($errorCode === '' || str_contains($errorCode, ' ')) {
+            $errorCode = 'model_import_failed';
+        }
+
+        return hub_gateway_error(hub_yolo_model_error_status($errorCode), $errorCode, $errorCode);
+    }
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'model_ref' => (string)$model['model_ref'],
+        'version_id' => (int)$model['id'],
+        'model_version_id' => (int)$model['id'],
+        'state' => 'registered',
+        'cpu_available' => true,
+        'warm_state' => 'cold',
+        'task_type' => (string)$model['task_type'],
+        'sha256' => (string)$model['sha256'],
+    ]);
+}
+
+function hub_yolo_model_register_input(): array
+{
+    $payload = $_POST;
+    if ($payload === [] && str_starts_with((string)($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')) {
+        $decoded = json_decode((string)file_get_contents('php://input'), true);
+        $payload = is_array($decoded) ? $decoded : [];
+    }
+
+    $artifact = is_array($payload['artifact'] ?? null) ? $payload['artifact'] : [
+        'type' => 'host_path',
+        'path' => (string)($payload['artifact_path'] ?? $payload['host_path'] ?? ''),
+        'sha256' => (string)($payload['artifact_sha256'] ?? $payload['sha256'] ?? ''),
+    ];
+    $metadata = is_array($payload['metadata'] ?? null) ? $payload['metadata'] : [];
+    foreach (['imgsz', 'class_count'] as $key) {
+        if (array_key_exists($key, $payload) && !array_key_exists($key, $metadata)) {
+            $metadata[$key] = is_numeric($payload[$key]) ? (int)$payload[$key] : $payload[$key];
+        }
+    }
+    if (isset($payload['labels']) && !isset($metadata['labels'])) {
+        $metadata['labels'] = is_array($payload['labels'])
+            ? $payload['labels']
+            : array_values(array_filter(array_map('trim', explode(',', (string)$payload['labels']))));
+    }
+
+    return [
+        'source_system' => (string)($payload['source_system'] ?? ''),
+        'external_model_key' => (string)($payload['external_model_key'] ?? ''),
+        'display_name' => (string)($payload['display_name'] ?? ''),
+        'task_type' => (string)($payload['task_type'] ?? 'detect'),
+        'artifact' => $artifact,
+        'metadata' => $metadata,
+        'source_run_id' => (string)($payload['source_run_id'] ?? ''),
+    ];
+}
+
+function hub_api_yolo_model_status(PDO $db): array
+{
+    if (!in_array(($_SERVER['REQUEST_METHOD'] ?? 'GET'), ['GET', 'POST'], true)) {
+        return hub_gateway_error(405, 'method_not_allowed', 'yolo_model_status requires GET or POST');
+    }
+    $modelRef = trim((string)($_GET['model_ref'] ?? $_POST['model_ref'] ?? ''));
+    if ($modelRef === '') {
+        return hub_gateway_error(400, 'model_ref_required', 'model_ref is required');
+    }
+    $model = hub_get_yolo_model_version($db, $modelRef);
+    if (!$model) {
+        return hub_gateway_error(404, 'model_not_found', 'model_ref was not found');
+    }
+
+    $hostPath = hub_yolo_model_version_host_path($db, $model);
+    $registered = is_file($hostPath);
+    $gpu = hub_yolo_model_gpu_status($db, $model);
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'model_ref' => (string)$model['model_ref'],
+        'version_id' => (int)$model['id'],
+        'model_version_id' => (int)$model['id'],
+        'state' => $registered ? 'registered' : 'error',
+        'cpu_available' => $registered,
+        'warm_state' => $gpu['warm_state'] ?? 'cold',
+        'gpu' => $gpu,
+        'task_type' => (string)$model['task_type'],
+        'sha256' => (string)$model['sha256'],
+        'error' => $registered ? null : 'model_artifact_missing',
+    ]);
+}
+
+function hub_api_yolo_model_assign_gpu(PDO $db): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'yolo_model_assign_gpu requires POST');
+    }
+    $payload = $_POST;
+    if ($payload === [] && str_starts_with((string)($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')) {
+        $decoded = json_decode((string)file_get_contents('php://input'), true);
+        $payload = is_array($decoded) ? $decoded : [];
+    }
+
+    try {
+        $assigned = hub_yolo_assign_gpu_slot($db, (string)($payload['model_ref'] ?? ''), (int)($payload['slot_no'] ?? 0));
+    } catch (Throwable $e) {
+        $errorCode = $e instanceof RuntimeException || $e instanceof InvalidArgumentException
+            ? (string)$e->getMessage()
+            : 'gpu_warm_failed';
+        if ($errorCode === '' || str_contains($errorCode, ' ')) {
+            $errorCode = 'gpu_warm_failed';
+        }
+
+        return hub_gateway_error(hub_yolo_model_error_status($errorCode), $errorCode, $errorCode);
+    }
+
+    $deployment = $assigned['deployment'] ?? [];
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'model_ref' => (string)($assigned['model']['model_ref'] ?? ''),
+        'version_id' => (int)($assigned['model']['id'] ?? 0),
+        'model_version_id' => (int)($assigned['model']['id'] ?? 0),
+        'service_key' => hub_yolo_gpu_service_key(),
+        'slot_no' => (int)($deployment['slot_no'] ?? 0),
+        'warm_state' => (string)($deployment['actual_state'] ?? 'queued'),
+        'run_id' => (string)($assigned['run_id'] ?? ''),
+    ]);
+}
+
+function hub_api_yolo_model_unassign_gpu(PDO $db): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'yolo_model_unassign_gpu requires POST');
+    }
+    $payload = $_POST;
+    if ($payload === [] && str_starts_with((string)($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')) {
+        $decoded = json_decode((string)file_get_contents('php://input'), true);
+        $payload = is_array($decoded) ? $decoded : [];
+    }
+
+    try {
+        $removed = hub_yolo_unassign_gpu($db, (string)($payload['model_ref'] ?? ''));
+    } catch (Throwable $e) {
+        $errorCode = $e instanceof RuntimeException || $e instanceof InvalidArgumentException
+            ? (string)$e->getMessage()
+            : 'gpu_unload_failed';
+        if ($errorCode === '' || str_contains($errorCode, ' ')) {
+            $errorCode = 'gpu_unload_failed';
+        }
+
+        return hub_gateway_error(hub_yolo_model_error_status($errorCode), $errorCode, $errorCode);
+    }
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'model_ref' => (string)($removed['model']['model_ref'] ?? ''),
+        'version_id' => (int)($removed['model']['id'] ?? 0),
+        'model_version_id' => (int)($removed['model']['id'] ?? 0),
+        'service_key' => hub_yolo_gpu_service_key(),
+        'run_id' => (string)($removed['run_id'] ?? ''),
+    ]);
+}
+
+function hub_yolo_model_error_status(string $errorCode): int
+{
+    return match ($errorCode) {
+        'model_artifact_missing', 'model_not_found' => 404,
+        'model_import_path_not_allowed', 'model_checksum_mismatch', 'model_task_unsupported',
+        'model_ref_required', 'model_path_forbidden', 'gpu_slot_invalid', 'bad_request' => 400,
+        'gpu_slot_occupied', 'gpu_model_already_assigned', 'gpu_not_ready', 'gpu_model_slot_mismatch' => 409,
+        'gpu_service_unavailable', 'gpu_warm_failed', 'gpu_out_of_memory', 'gpu_unload_failed' => 503,
+        default => 500,
+    };
 }
 
 function hub_photo_api_dispatch(PDO $db, string $mode, array $authContext): array
