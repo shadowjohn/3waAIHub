@@ -346,4 +346,5 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
     foreach (['@app.get("/models")', '@app.get("/models/{slot_no}/status")', '@app.post("/models/warm"', '@app.post("/models/unload"'] as $needle) {
         hub_test_assert(str_contains($source, $needle), 'YOLO serving runtime missing ' . $needle);
     }
+    hub_test_assert(substr_count($source, '"fallback": bool(fallback_reason)') >= 2, 'YOLO predict response should expose top-level fallback flag.');
 });
