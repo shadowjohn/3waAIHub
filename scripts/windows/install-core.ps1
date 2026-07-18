@@ -1,5 +1,6 @@
 param(
     [string]$InstallRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
+    [string]$ModelsRoot = 'D:\DATA\models',
     [ValidateSet(0, 1, 2, 3)]
     [int]$ProductType = 0,
     [switch]$InstallIis,
@@ -90,6 +91,30 @@ function Get-PhpCommand {
     return $null
 }
 
+function Get-ManagedPhpInstallDir {
+    return Join-Path $InstallRoot 'tools\php'
+}
+
+function Get-ManagedPhpCommand {
+    $phpExe = Join-Path (Get-ManagedPhpInstallDir) 'php.exe'
+    if (Test-Path -LiteralPath $phpExe) { return $phpExe }
+    return $null
+}
+
+function Resolve-PhpForCore {
+    $existingPhp = Get-PhpCommand
+    if ($null -ne $existingPhp -and (Test-PhpConfiguration $existingPhp)) {
+        return [pscustomobject]@{ PhpExe = $existingPhp; Managed = $false; NeedsInstall = $false }
+    }
+
+    $managedPhp = Get-ManagedPhpCommand
+    if ($null -ne $managedPhp) {
+        return [pscustomobject]@{ PhpExe = $managedPhp; Managed = $true; NeedsInstall = $false }
+    }
+
+    return [pscustomobject]@{ PhpExe = $null; Managed = $true; NeedsInstall = $true }
+}
+
 function Get-OfficialPhpDownload {
     $page = Invoke-WebRequest -UseBasicParsing -Uri 'https://www.php.net/downloads.php?os=windows&version=8.3'
     $match = [regex]::Match(
@@ -142,7 +167,7 @@ function Install-Php {
     }
 
     $cacheDir = Join-Path $InstallRoot 'data\cache\install'
-    $installDir = Join-Path $env:LOCALAPPDATA "3waAIHub\tools\php-$($download.Version)"
+    $installDir = Get-ManagedPhpInstallDir
     $zipPath = Join-Path $cacheDir "php-$($download.Version)-windows-x64.zip"
     New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
 
@@ -329,11 +354,12 @@ if ($InstallIis) {
     Install-IisWebAdministration -ProductType $ProductType
 }
 
-$phpExe = Get-PhpCommand
-if ($null -eq $phpExe) {
-    $phpExe = Install-Php
-    Configure-Php $phpExe | Out-Null
-} elseif (-not (Test-PhpConfiguration $phpExe)) {
+$phpResolution = Resolve-PhpForCore
+$phpExe = $phpResolution.PhpExe
+if ($phpResolution.Managed) {
+    if ($phpResolution.NeedsInstall) {
+        $phpExe = Install-Php
+    }
     Configure-Php $phpExe | Out-Null
 }
 
@@ -344,7 +370,7 @@ if (-not (Test-PhpConfiguration $phpExe)) {
 New-RuntimeDirs
 
 Write-Host '[3waAIHub] Initializing SQLite...'
-& $phpExe scripts/init_db.php
+& $phpExe scripts/init_db.php "--models-root=$ModelsRoot"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host '[3waAIHub] Done.'

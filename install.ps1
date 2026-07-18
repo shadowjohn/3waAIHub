@@ -19,7 +19,7 @@ $ErrorActionPreference = 'Stop'
 
 function Show-Usage {
     Write-Host 'Usage:'
-    Write-Host '  .\install.ps1 -Mode Core [-InstallIis] [-Check] [-InstallRoot D:\DATA\3waAIHub]'
+    Write-Host '  .\install.ps1 -Mode Core [-InstallIis] [-ModelsRoot D:\DATA\models] [-Check] [-InstallRoot D:\DATA\3waAIHub]'
     Write-Host '  .\install.ps1 -Mode WslRuntime -InstallRoot "D:\DATA\3waAIHub" -ModelsRoot "D:\DATA\models" -WslDistro "Ubuntu-24.04" -LinuxDataRoot "/DATA" -Check'
     Write-Host '  .\install.ps1 -Mode NativeAgent -Check'
     Write-Host '  .\install.ps1 -Mode RemoteControlPlane -Check'
@@ -49,7 +49,7 @@ switch ($Mode) {
             exit 0
         }
 
-        & $installCore -InstallRoot $InstallRoot -ProductType $ProductType -InstallIis:$InstallIis -PhpZipUri $PhpZipUri -PhpZipSha256 $PhpZipSha256
+        & $installCore -InstallRoot $InstallRoot -ModelsRoot $ModelsRoot -ProductType $ProductType -InstallIis:$InstallIis -PhpZipUri $PhpZipUri -PhpZipSha256 $PhpZipSha256
         exit $LASTEXITCODE
     }
     'WslRuntime' {

@@ -7,6 +7,7 @@ $source = Get-Content -LiteralPath $installer -Raw -Encoding UTF8
 $checkCoreSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\check-core.ps1') -Raw -Encoding UTF8
 $checkWslSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\check-wsl-runtime.ps1') -Raw -Encoding UTF8
 $coreSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\install-core.ps1') -Raw -Encoding UTF8
+$initDbSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\init_db.php') -Raw -Encoding UTF8
 $profileWriter = Join-Path $PSScriptRoot '..\scripts\windows\write-runtime-profile.ps1'
 $uninstallSource = Get-Content -LiteralPath $uninstaller -Raw -Encoding UTF8
 
@@ -55,11 +56,18 @@ Assert-InstallerContract ($coreSource -match 'Get-FileHash') 'direct downloads m
 Assert-InstallerContract ($coreSource -match 'SHA256') 'direct downloads must use SHA256'
 Assert-InstallerContract ($coreSource -match 'php-8\\\.3.*-nts-Win32-vs16-x64') 'official PHP download must use the NTS x64 FastCGI build'
 Assert-InstallerContract ($coreSource -match 'AIHUB_WINDOWS_INSTALLER_TEST_FUNCTIONS_ONLY') 'Core installer must expose the isolated functions-only test hook'
+Assert-InstallerContract ($coreSource -notmatch 'LOCALAPPDATA') 'managed PHP must not be installed under the installer user profile'
+Assert-InstallerContract ($coreSource -match 'function Get-ManagedPhpInstallDir') 'Core installer must keep managed PHP below InstallRoot'
+Assert-InstallerContract ($coreSource -match 'function Resolve-PhpForCore') 'Core installer must select an existing PHP without modifying it'
+Assert-InstallerContract ($source -match '-InstallRoot \$InstallRoot -ModelsRoot \$ModelsRoot -ProductType') 'Core must pass ModelsRoot to its installer'
+Assert-InstallerContract ($initDbSource -match '--models-root') 'Core DB initialization must accept ModelsRoot'
 Assert-InstallerContract ($source -match '\[switch\]\$InstallIis') 'Core installer must expose explicit IIS installation opt-in'
 Assert-InstallerContract ($source -match '-InstallIis:\$InstallIis') 'Core installer must forward the IIS opt-in to the Core installer'
 Assert-InstallerContract ($coreSource -match 'function Install-IisWebAdministration') 'Core installer must install IIS through a dedicated function'
 Assert-InstallerContract ($coreSource -match 'IIS-ManagementScriptingTools') 'Workstation IIS plan must include WebAdministration tooling'
 Assert-InstallerContract ($checkCoreSource -match '-InstallIis') 'Core readiness must show the IIS remediation command'
+Assert-InstallerContract ($checkCoreSource -match 'Core readiness:') 'Core readiness must be reported independently of IIS'
+Assert-InstallerContract ($checkCoreSource -match 'IIS readiness:') 'IIS readiness must be reported independently of Core'
 Assert-InstallerContract ($checkWslSource -match 'Get-WslDistroVersion') 'WSL check must parse exact distro rows through a helper'
 Assert-InstallerContract ($checkWslSource -match 'Assert-LinuxDataRoot') 'WSL check must validate LinuxDataRoot before invoking WSL'
 Assert-InstallerContract ($source -notmatch 'Docker\.DockerDesktop') 'Core installer must not install Docker Desktop'
@@ -259,6 +267,20 @@ exit /b 9
     Assert-InstallerContract ($fakeCoreExit -eq 0) 'empty short_open_tag output must be a normal Core readiness result'
     Assert-InstallerContract (($fakeCore -join "`n") -match 'PHP configuration: MISSING') 'empty short_open_tag output must report PHP configuration MISSING'
 
+    $env:AIHUB_FAKE_PHP_SHORT_TAG = 'on'
+    $previousPath = $env:Path
+    try {
+        $env:Path = $fakePhpDir + ';' + (Join-Path $env:SystemRoot 'System32')
+        $coreWithoutFastCgi = & (Join-Path $PSScriptRoot '..\scripts\windows\check-core.ps1') -InstallRoot $repo -ProductType 1 6>&1 2>&1
+        $coreWithoutFastCgiExit = $LASTEXITCODE
+    } finally {
+        $env:Path = $previousPath
+    }
+    $coreWithoutFastCgiText = $coreWithoutFastCgi -join "`n"
+    Assert-InstallerContract ($coreWithoutFastCgiExit -eq 0) 'Core readiness without IIS FastCGI must remain a normal report'
+    Assert-InstallerContract ($coreWithoutFastCgiText -match 'Core readiness: READY') 'Core readiness must not depend on IIS FastCGI'
+    Assert-InstallerContract ($coreWithoutFastCgiText -match 'IIS readiness: NOT READY') 'IIS readiness must report the missing FastCGI capability'
+
     $previousFunctionsOnly = $env:AIHUB_WINDOWS_INSTALLER_TEST_FUNCTIONS_ONLY
     $env:AIHUB_WINDOWS_INSTALLER_TEST_FUNCTIONS_ONLY = '1'
     try {
@@ -270,6 +292,9 @@ exit /b 9
             $env:AIHUB_WINDOWS_INSTALLER_TEST_FUNCTIONS_ONLY = $previousFunctionsOnly
         }
     }
+
+    $managedPhpDir = Get-ManagedPhpInstallDir
+    Assert-InstallerContract ($managedPhpDir -eq (Join-Path $runtimeRoot 'tools\php')) 'managed PHP must live below InstallRoot'
 
     $workstationIisPlan = Get-IisFeaturePlan 1
     Assert-InstallerContract ($workstationIisPlan.HostKind -eq 'workstation') 'ProductType=1 must use the workstation IIS feature plan'
@@ -314,6 +339,21 @@ exit /b 9
     $env:AIHUB_FAKE_PHP_INI = $phpIni
     $originalIni = ";date.timezone =`r`n;short_open_tag = Off`r`n;extension_dir = `"ext`"`r`n"
     [System.IO.File]::WriteAllText($phpIni, $originalIni, [System.Text.UTF8Encoding]::new($false))
+    $managedPhpExe = Join-Path $managedPhpDir 'php.exe'
+    New-Item -ItemType Directory -Path $managedPhpDir -Force | Out-Null
+    [System.IO.File]::WriteAllBytes($managedPhpExe, [byte[]]@())
+    $env:AIHUB_FAKE_PHP_SHORT_TAG = ''
+    $previousPath = $env:Path
+    try {
+        $env:Path = $fakePhpDir + ';' + $previousPath
+        $phpResolution = Resolve-PhpForCore
+    } finally {
+        $env:Path = $previousPath
+    }
+    Assert-InstallerContract $phpResolution.Managed 'invalid existing PHP must fall back to managed PHP'
+    Assert-InstallerContract ($phpResolution.PhpExe -eq $managedPhpExe) 'managed PHP fallback path mismatch'
+    Assert-InstallerContract ((Get-Content -LiteralPath $phpIni -Raw -Encoding UTF8) -eq $originalIni) 'existing PHP php.ini must stay unchanged during Core PHP selection'
+    Assert-InstallerContract (-not (Test-Path -LiteralPath ($phpIni + '.3waaihub.bak'))) 'existing PHP php.ini must not receive a managed backup'
     foreach ($extension in @('pdo_sqlite', 'sqlite3', 'curl', 'mbstring', 'gd', 'fileinfo', 'openssl', 'zip')) {
         [System.IO.File]::WriteAllBytes((Join-Path $fakePhpExt "php_$extension.dll"), [byte[]]@())
     }

@@ -171,7 +171,12 @@ if ($phpOk) {
     Write-Host 'Core smoke: NOT RUN (PHP configuration is not ready)'
 }
 
-if ($phpOk -and $phpCgiOk -and $dataOk -and $iisOk -and $smokeOk) {
+$coreReady = $phpOk -and $dataOk -and $smokeOk
+$iisReady = $iisOk -and $phpCgiOk
+Write-Host ('Core readiness: ' + $(if ($coreReady) { 'READY' } else { 'NOT READY' }))
+Write-Host ('IIS readiness: ' + $(if ($iisReady) { 'READY' } else { 'NOT READY' }))
+
+if ($coreReady) {
     Write-Host 'Status: READY'
     Write-Host 'Ready: true'
 } else {
