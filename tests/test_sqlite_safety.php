@@ -91,7 +91,6 @@ hub_test('storage canonical comparison preserves symlink traversal semantics', f
     $targetDir = $tempDir . '/actual/inside';
     hub_test_assert(mkdir($targetDir, 0775, true), 'cannot create symlink storage fixture');
     $link = $tempDir . '/link';
-    $danglingLink = $tempDir . '/dangling';
     try {
         hub_test_assert(
             !hub_storage_path_is_within($tempDir . '/models-copy', $tempDir . '/models'),
@@ -109,20 +108,34 @@ hub_test('storage canonical comparison preserves symlink traversal semantics', f
             hub_storage_canonical_comparison_path($link . '/../models') === $expected,
             'symlink traversal did not follow realpath semantics'
         );
-        hub_test_assert(@symlink($tempDir . '/missing', $danglingLink), 'cannot create dangling symlink fixture');
+    } finally {
+        if (is_link($link)) {
+            @unlink($link);
+            @rmdir($link);
+        }
+        rmdir($targetDir);
+        rmdir($tempDir . '/actual');
+        rmdir($tempDir);
+    }
+});
+
+hub_test('storage canonical comparison rejects dangling symlinks', function (): void {
+    $tempDir = sys_get_temp_dir() . '/3waaihub_storage_dangling_' . bin2hex(random_bytes(4));
+    hub_test_assert(mkdir($tempDir), 'cannot create dangling symlink storage fixture');
+    $danglingLink = $tempDir . '/dangling';
+    try {
+        if (!@symlink($tempDir . '/missing', $danglingLink)) {
+            hub_test_skip('dangling symlink fixture is unavailable on this Windows host');
+        }
         hub_test_assert(
             hub_storage_canonical_comparison_path($danglingLink . '/models') === null,
             'realpath failure on existing symlink was treated as a nonexistent tail'
         );
     } finally {
-        foreach ([$link, $danglingLink] as $fixtureLink) {
-            if (is_link($fixtureLink)) {
-                @unlink($fixtureLink);
-                @rmdir($fixtureLink);
-            }
+        if (is_link($danglingLink)) {
+            @unlink($danglingLink);
+            @rmdir($danglingLink);
         }
-        rmdir($targetDir);
-        rmdir($tempDir . '/actual');
         rmdir($tempDir);
     }
 });
