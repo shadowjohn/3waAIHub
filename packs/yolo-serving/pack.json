@@ -22,11 +22,12 @@
     "managed_job": false,
     "http_service": true,
     "yolo_model_register": true,
-    "yolo_predict": true
+    "yolo_predict": true,
+    "gpu_warm_pool": true
   },
   "runtime_ready": true,
   "default_mode": "yolo_predict",
-  "description": "YOLO Detect .pt serving runtime for Hub-managed model_ref prediction. Phase 1A supports CPU serving only.",
+  "description": "YOLO Detect .pt serving runtime for Hub-managed model_ref prediction. Phase 1B supports CPU serving and a fixed GPU warm pool.",
   "install": {
     "default_service_key": "yolo-cpu"
   },
@@ -48,7 +49,7 @@
   },
   "hardware": {
     "gpu_required": false,
-    "gpu_supported": false,
+    "gpu_supported": true,
     "min_vram_mb": 0,
     "min_compute_capability": "0"
   },
@@ -92,7 +93,17 @@
       "label": "YOLO serving device",
       "type": "select",
       "default": "cpu",
-      "options": ["cpu"],
+      "options": ["cpu", "cuda:0"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "YOLO_GPU_SLOTS",
+      "label": "YOLO GPU warm pool slots",
+      "type": "number",
+      "default": "0",
+      "min": 0,
+      "max": 2,
       "required": true,
       "restart_required": true
     },
@@ -114,6 +125,11 @@
     {
       "name": "YOLO_SERVING_DEVICE",
       "default": "cpu",
+      "required": true
+    },
+    {
+      "name": "YOLO_GPU_SLOTS",
+      "default": "0",
       "required": true
     },
     {

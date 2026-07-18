@@ -421,6 +421,27 @@ CREATE TABLE IF NOT EXISTS yolo_model_versions (
     UNIQUE(source_system, external_model_key, sha256)
 );
 
+CREATE TABLE IF NOT EXISTS yolo_model_deployments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_version_id INTEGER NOT NULL,
+    service_key TEXT NOT NULL,
+    slot_no INTEGER NOT NULL,
+    actual_state TEXT NOT NULL DEFAULT 'queued',
+    warm_run_id TEXT NULL,
+    vram_bytes INTEGER NULL,
+    load_duration_ms INTEGER NULL,
+    warm_inference_ms INTEGER NULL,
+    loaded_at TEXT NULL,
+    last_used_at TEXT NULL,
+    last_error_code TEXT NULL,
+    last_error_message TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(service_key, slot_no),
+    UNIQUE(service_key, model_version_id),
+    FOREIGN KEY(model_version_id) REFERENCES yolo_model_versions(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS runtime_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL UNIQUE,
@@ -554,6 +575,8 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_user_mode_permissions_mode ON user_mode_permissions(mode)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_yolo_model_versions_source ON yolo_model_versions(source_system, external_model_key)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_yolo_model_versions_sha256 ON yolo_model_versions(sha256)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_yolo_model_deployments_state ON yolo_model_deployments(service_key, actual_state)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_yolo_model_deployments_model ON yolo_model_deployments(model_version_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_samples_run_time ON runtime_resource_samples(run_id, sampled_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_started ON runtime_runs(started_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_pack ON runtime_runs(pack_id, started_at)');

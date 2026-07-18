@@ -104,6 +104,13 @@ function hub_service_setting_default(array $service, string $key, array $item): 
             default => (string)($item['default'] ?? ''),
         };
     }
+    if ((string)($service['pack_id'] ?? '') === 'yolo-serving' && (string)($service['service_key'] ?? '') === 'yolo-gpu0') {
+        return match ($key) {
+            'YOLO_SERVING_DEVICE' => 'cuda:0',
+            'YOLO_GPU_SLOTS' => '2',
+            default => (string)($item['default'] ?? ''),
+        };
+    }
 
     return (string)($item['default'] ?? '');
 }

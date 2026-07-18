@@ -513,3 +513,408 @@ function hub_yolo_next_model_version(PDO $db, string $sourceSystem, string $exte
 
     return max(1, (int)$stmt->fetchColumn());
 }
+
+function hub_yolo_gpu_service_key(): string
+{
+    return 'yolo-gpu0';
+}
+
+function hub_yolo_validate_gpu_slot(int $slotNo): int
+{
+    if (!in_array($slotNo, [1, 2], true)) {
+        throw new RuntimeException('gpu_slot_invalid');
+    }
+
+    return $slotNo;
+}
+
+function hub_yolo_get_deployment_by_model(PDO $db, int $modelVersionId, string $serviceKey = 'yolo-gpu0'): ?array
+{
+    $stmt = $db->prepare('SELECT * FROM yolo_model_deployments WHERE service_key = :service_key AND model_version_id = :model_version_id LIMIT 1');
+    $stmt->execute([':service_key' => $serviceKey, ':model_version_id' => $modelVersionId]);
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+function hub_yolo_get_deployment_by_slot(PDO $db, int $slotNo, string $serviceKey = 'yolo-gpu0'): ?array
+{
+    hub_yolo_validate_gpu_slot($slotNo);
+    $stmt = $db->prepare('SELECT * FROM yolo_model_deployments WHERE service_key = :service_key AND slot_no = :slot_no LIMIT 1');
+    $stmt->execute([':service_key' => $serviceKey, ':slot_no' => $slotNo]);
+    $row = $stmt->fetch();
+
+    return $row ?: null;
+}
+
+function hub_yolo_hot_deployment_for_model(PDO $db, int $modelVersionId, string $serviceKey = 'yolo-gpu0'): ?array
+{
+    $deployment = hub_yolo_get_deployment_by_model($db, $modelVersionId, $serviceKey);
+    if (!$deployment || (string)$deployment['actual_state'] !== 'hot') {
+        return null;
+    }
+
+    return $deployment;
+}
+
+function hub_yolo_list_gpu_deployments(PDO $db, ?int $modelVersionId = null, string $serviceKey = 'yolo-gpu0'): array
+{
+    if ($modelVersionId !== null) {
+        $stmt = $db->prepare('SELECT * FROM yolo_model_deployments WHERE service_key = :service_key AND model_version_id = :model_version_id ORDER BY slot_no');
+        $stmt->execute([':service_key' => $serviceKey, ':model_version_id' => $modelVersionId]);
+
+        return $stmt->fetchAll();
+    }
+
+    $stmt = $db->prepare('SELECT * FROM yolo_model_deployments WHERE service_key = :service_key ORDER BY slot_no');
+    $stmt->execute([':service_key' => $serviceKey]);
+
+    return $stmt->fetchAll();
+}
+
+function hub_yolo_runtime_run_create(PDO $db, string $task, string $state = 'running'): string
+{
+    if (!in_array($task, ['yolo_model_warm', 'yolo_model_unload'], true)) {
+        throw new RuntimeException('bad_request');
+    }
+    if (!in_array($state, ['queued', 'running'], true)) {
+        throw new RuntimeException('bad_request');
+    }
+
+    $now = hub_now();
+    $runId = 'yolo_' . ($task === 'yolo_model_warm' ? 'warm' : 'unload') . '_' . gmdate('YmdHis') . '_' . bin2hex(random_bytes(4));
+    $stmt = $db->prepare(
+        'INSERT INTO runtime_runs
+            (run_id, pack_id, task, pack_version, caller, workspace, state, started_at, created_at, gpu_indexes)
+         VALUES
+            (:run_id, :pack_id, :task, :pack_version, :caller, :workspace, :state, :started_at, :created_at, :gpu_indexes)'
+    );
+    $stmt->execute([
+        ':run_id' => $runId,
+        ':pack_id' => 'yolo-serving',
+        ':task' => $task,
+        ':pack_version' => '0.1.0',
+        ':caller' => 'gateway',
+        ':workspace' => null,
+        ':state' => $state,
+        ':started_at' => $now,
+        ':created_at' => $now,
+        ':gpu_indexes' => '0',
+    ]);
+
+    return $runId;
+}
+
+function hub_yolo_runtime_run_result_path(string $runId): string
+{
+    $safeRunId = preg_replace('/[^A-Za-z0-9_.-]/', '-', $runId) ?: 'runtime-run';
+
+    return 'data/results/runtime_runs/' . $safeRunId . '/result.json';
+}
+
+function hub_yolo_runtime_run_finish(PDO $db, string $runId, bool $ok, array $runtime = [], ?string $errorCode = null): void
+{
+    $now = hub_now();
+    $resultPath = hub_yolo_runtime_run_result_path($runId);
+    $resultFile = hub_path($resultPath);
+    $resultDir = dirname($resultFile);
+    if (!is_dir($resultDir) && !mkdir($resultDir, 0775, true) && !is_dir($resultDir)) {
+        throw new RuntimeException('runtime_result_write_failed');
+    }
+    file_put_contents($resultFile, json_encode([
+        'ok' => $ok,
+        'error' => $ok ? null : ($errorCode ?: (string)($runtime['error'] ?? 'runtime_failed')),
+        'result' => $runtime,
+        'finished_at' => $now,
+    ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "\n");
+
+    $stmt = $db->prepare('SELECT started_at FROM runtime_runs WHERE run_id = :run_id LIMIT 1');
+    $stmt->execute([':run_id' => $runId]);
+    $startedAt = (string)($stmt->fetchColumn() ?: $now);
+    $durationMs = max(0, (int)round((strtotime($now) - strtotime($startedAt)) * 1000));
+    $update = $db->prepare(
+        'UPDATE runtime_runs
+            SET state = :state,
+                finished_at = :finished_at,
+                duration_ms = :duration_ms,
+                exit_code = :exit_code,
+                error_code = :error_code,
+                vram_peak_bytes = :vram_peak_bytes
+                , result_json_path = :result_json_path
+          WHERE run_id = :run_id'
+    );
+    $update->execute([
+        ':state' => $ok ? 'succeeded' : 'failed',
+        ':finished_at' => $now,
+        ':duration_ms' => $durationMs,
+        ':exit_code' => $ok ? 0 : 1,
+        ':error_code' => $ok ? null : ($errorCode ?: (string)($runtime['error'] ?? 'runtime_failed')),
+        ':vram_peak_bytes' => isset($runtime['vram_bytes']) ? (int)$runtime['vram_bytes'] : null,
+        ':result_json_path' => $resultPath,
+        ':run_id' => $runId,
+    ]);
+}
+
+function hub_yolo_gpu_runtime_caller(PDO $db): ?callable
+{
+    $service = hub_get_service_by_key($db, hub_yolo_gpu_service_key());
+    if (
+        !$service
+        || (int)($service['enabled'] ?? 0) !== 1
+        || (string)($service['install_status'] ?? '') !== 'installed'
+        || (string)($service['runtime_status'] ?? '') !== 'running'
+    ) {
+        return null;
+    }
+
+    return static function (string $action, array $deployment, array $model) use ($service): array {
+        $baseUrl = preg_replace('#/detect/image$#', '', (string)$service['internal_url']) ?: (string)$service['internal_url'];
+        $payload = [
+            'slot_no' => (int)$deployment['slot_no'],
+            'model_ref' => (string)$model['model_ref'],
+            'model_version_id' => (int)$model['id'],
+        ];
+        $path = $action === 'warm' ? '/models/warm' : '/models/unload';
+        if ($action === 'warm') {
+            $payload['model_path'] = hub_yolo_model_version_container_path($model);
+            $payload['sha256'] = (string)$model['sha256'];
+        }
+
+        $response = hub_proxy_request(
+            rtrim($baseUrl, '/') . $path,
+            hub_service_gateway_timeout_sec($service),
+            json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            'application/json'
+        );
+        $body = json_decode((string)($response['body'] ?? ''), true);
+        if (is_array($body) && ($response['status'] ?? 0) >= 200 && ($response['status'] ?? 0) < 300 && !empty($body['ok'])) {
+            return $body;
+        }
+
+        return [
+            'ok' => false,
+            'error' => is_array($body) ? (string)($body['error'] ?? 'gpu_service_unavailable') : 'gpu_service_unavailable',
+            'message' => is_array($body) ? (string)($body['message'] ?? 'YOLO GPU service unavailable') : 'YOLO GPU service unavailable',
+        ];
+    };
+}
+
+function hub_yolo_assign_gpu_slot(PDO $db, string $modelRef, int $slotNo, ?callable $runtimeCaller = null): array
+{
+    $slotNo = hub_yolo_validate_gpu_slot($slotNo);
+    $model = hub_get_yolo_model_version($db, $modelRef);
+    if (!$model) {
+        throw new RuntimeException('model_not_found');
+    }
+    hub_yolo_assert_detect_task((string)$model['task_type']);
+    if (!is_file(hub_yolo_model_version_host_path($db, $model))) {
+        throw new RuntimeException('model_artifact_missing');
+    }
+
+    $serviceKey = hub_yolo_gpu_service_key();
+    $now = hub_now();
+    $runId = '';
+    $started = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $started = true;
+
+        $byModel = hub_yolo_get_deployment_by_model($db, (int)$model['id'], $serviceKey);
+        if ($byModel && (int)$byModel['slot_no'] !== $slotNo) {
+            throw new RuntimeException('gpu_model_already_assigned');
+        }
+        $bySlot = hub_yolo_get_deployment_by_slot($db, $slotNo, $serviceKey);
+        if ($bySlot && (int)$bySlot['model_version_id'] !== (int)$model['id']) {
+            throw new RuntimeException('gpu_slot_occupied');
+        }
+
+        if (!$bySlot) {
+            $stmt = $db->prepare(
+                'INSERT INTO yolo_model_deployments
+                    (model_version_id, service_key, slot_no, actual_state, created_at, updated_at)
+                 VALUES
+                    (:model_version_id, :service_key, :slot_no, :actual_state, :created_at, :updated_at)'
+            );
+            $stmt->execute([
+                ':model_version_id' => (int)$model['id'],
+                ':service_key' => $serviceKey,
+                ':slot_no' => $slotNo,
+                ':actual_state' => 'queued',
+                ':created_at' => $now,
+                ':updated_at' => $now,
+            ]);
+        }
+
+        $db->commit();
+        $started = false;
+    } catch (Throwable $e) {
+        if ($started && $db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+
+    $runtimeCaller ??= hub_yolo_gpu_runtime_caller($db);
+    $runState = $runtimeCaller ? 'running' : 'queued';
+    $runId = hub_yolo_runtime_run_create($db, 'yolo_model_warm', $runState);
+    $db->prepare(
+        "UPDATE yolo_model_deployments
+            SET warm_run_id = :warm_run_id,
+                actual_state = :actual_state,
+                updated_at = :updated_at
+          WHERE service_key = :service_key AND model_version_id = :model_version_id"
+    )->execute([
+        ':warm_run_id' => $runId,
+        ':actual_state' => $runtimeCaller ? 'loading' : 'queued',
+        ':updated_at' => hub_now(),
+        ':service_key' => $serviceKey,
+        ':model_version_id' => (int)$model['id'],
+    ]);
+
+    $deployment = hub_yolo_get_deployment_by_model($db, (int)$model['id'], $serviceKey);
+    if (!$deployment) {
+        throw new RuntimeException('gpu_warm_failed');
+    }
+
+    if ($runtimeCaller) {
+        $db->prepare("UPDATE yolo_model_deployments SET actual_state = 'warming', updated_at = :updated_at WHERE id = :id")
+            ->execute([':updated_at' => hub_now(), ':id' => (int)$deployment['id']]);
+        $deployment = hub_yolo_get_deployment_by_model($db, (int)$model['id'], $serviceKey) ?: $deployment;
+        $runtime = $runtimeCaller('warm', $deployment, $model);
+        $runtime += [
+            'model_ref' => (string)$model['model_ref'],
+            'model_version_id' => (int)$model['id'],
+            'slot_no' => (int)$deployment['slot_no'],
+            'service_key' => $serviceKey,
+        ];
+        if (!empty($runtime['ok']) && (string)($runtime['state'] ?? 'hot') === 'hot') {
+            $db->prepare(
+                "UPDATE yolo_model_deployments
+                    SET actual_state = 'hot',
+                        vram_bytes = :vram_bytes,
+                        load_duration_ms = :load_duration_ms,
+                        warm_inference_ms = :warm_inference_ms,
+                        loaded_at = :loaded_at,
+                        last_error_code = NULL,
+                        last_error_message = NULL,
+                        updated_at = :updated_at
+                  WHERE id = :id"
+            )->execute([
+                ':vram_bytes' => isset($runtime['vram_bytes']) ? (int)$runtime['vram_bytes'] : null,
+                ':load_duration_ms' => isset($runtime['load_duration_ms']) ? (int)$runtime['load_duration_ms'] : null,
+                ':warm_inference_ms' => isset($runtime['warm_inference_ms']) ? (int)$runtime['warm_inference_ms'] : null,
+                ':loaded_at' => hub_now(),
+                ':updated_at' => hub_now(),
+                ':id' => (int)$deployment['id'],
+            ]);
+            hub_yolo_runtime_run_finish($db, $runId, true, $runtime);
+        } else {
+            $error = (string)($runtime['error'] ?? 'gpu_warm_failed');
+            $db->prepare(
+                "UPDATE yolo_model_deployments
+                    SET actual_state = 'error',
+                        last_error_code = :last_error_code,
+                        last_error_message = :last_error_message,
+                        updated_at = :updated_at
+                  WHERE id = :id"
+            )->execute([
+                ':last_error_code' => $error,
+                ':last_error_message' => (string)($runtime['message'] ?? $error),
+                ':updated_at' => hub_now(),
+                ':id' => (int)$deployment['id'],
+            ]);
+            hub_yolo_runtime_run_finish($db, $runId, false, $runtime, $error);
+        }
+    }
+
+    return [
+        'ok' => true,
+        'run_id' => $runId,
+        'model' => $model,
+        'deployment' => hub_yolo_get_deployment_by_model($db, (int)$model['id'], $serviceKey),
+    ];
+}
+
+function hub_yolo_unassign_gpu(PDO $db, string $modelRef, ?callable $runtimeCaller = null): array
+{
+    $model = hub_get_yolo_model_version($db, $modelRef);
+    if (!$model) {
+        throw new RuntimeException('model_not_found');
+    }
+    $deployment = hub_yolo_get_deployment_by_model($db, (int)$model['id'], hub_yolo_gpu_service_key());
+    if (!$deployment) {
+        throw new RuntimeException('gpu_not_ready');
+    }
+
+    $runtimeCaller ??= hub_yolo_gpu_runtime_caller($db);
+    $runId = hub_yolo_runtime_run_create($db, 'yolo_model_unload', 'running');
+    $db->prepare("UPDATE yolo_model_deployments SET actual_state = 'unloading', updated_at = :updated_at WHERE id = :id")
+        ->execute([':updated_at' => hub_now(), ':id' => (int)$deployment['id']]);
+    $deployment = hub_yolo_get_deployment_by_model($db, (int)$model['id'], hub_yolo_gpu_service_key()) ?: $deployment;
+
+    $runtime = $runtimeCaller ? $runtimeCaller('unload', $deployment, $model) : ['ok' => true, 'skipped_runtime' => true];
+    $runtime += [
+        'model_ref' => (string)$model['model_ref'],
+        'model_version_id' => (int)$model['id'],
+        'slot_no' => (int)$deployment['slot_no'],
+        'service_key' => (string)$deployment['service_key'],
+    ];
+    if (!empty($runtime['ok'])) {
+        $db->prepare('DELETE FROM yolo_model_deployments WHERE id = :id')->execute([':id' => (int)$deployment['id']]);
+        hub_yolo_runtime_run_finish($db, $runId, true, $runtime);
+
+        return ['ok' => true, 'run_id' => $runId, 'model' => $model];
+    }
+
+    $error = (string)($runtime['error'] ?? 'gpu_unload_failed');
+    $db->prepare(
+        "UPDATE yolo_model_deployments
+            SET actual_state = 'error',
+                last_error_code = :last_error_code,
+                last_error_message = :last_error_message,
+                updated_at = :updated_at
+          WHERE id = :id"
+    )->execute([
+        ':last_error_code' => $error,
+        ':last_error_message' => (string)($runtime['message'] ?? $error),
+        ':updated_at' => hub_now(),
+        ':id' => (int)$deployment['id'],
+    ]);
+    hub_yolo_runtime_run_finish($db, $runId, false, $runtime, $error);
+
+    throw new RuntimeException($error);
+}
+
+function hub_yolo_model_gpu_status(PDO $db, array $model): array
+{
+    $deployment = hub_yolo_get_deployment_by_model($db, (int)$model['id'], hub_yolo_gpu_service_key());
+    if (!$deployment) {
+        return [
+            'service_key' => hub_yolo_gpu_service_key(),
+            'assigned' => false,
+            'actual_state' => 'cold',
+            'warm_state' => 'cold',
+            'slot_no' => null,
+            'run_id' => null,
+            'error' => null,
+            'last_error' => null,
+        ];
+    }
+
+    return [
+        'service_key' => (string)$deployment['service_key'],
+        'assigned' => true,
+        'slot_no' => (int)$deployment['slot_no'],
+        'actual_state' => (string)$deployment['actual_state'],
+        'warm_state' => (string)$deployment['actual_state'],
+        'run_id' => (string)($deployment['warm_run_id'] ?? ''),
+        'vram_bytes' => isset($deployment['vram_bytes']) ? (int)$deployment['vram_bytes'] : null,
+        'load_duration_ms' => isset($deployment['load_duration_ms']) ? (int)$deployment['load_duration_ms'] : null,
+        'warm_inference_ms' => isset($deployment['warm_inference_ms']) ? (int)$deployment['warm_inference_ms'] : null,
+        'loaded_at' => $deployment['loaded_at'],
+        'last_used_at' => $deployment['last_used_at'],
+        'error' => $deployment['last_error_code'],
+        'last_error' => $deployment['last_error_code'],
+        'message' => $deployment['last_error_message'],
+    ];
+}

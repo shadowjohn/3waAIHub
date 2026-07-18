@@ -232,9 +232,9 @@ curl -X POST "<BASE_URL>?mode=yolo" \
   -F "real_inference=1"
 ```
 
-## YOLO Model Registry / CPU Serving
+## YOLO Model Registry / GPU Warm Pool
 
-Status: Phase 1A. 只支援 YOLO detect `.pt` 匯入與 CPU serving。先不要把 segment / pose / ONNX serving、GPU warm pool、TensorRT、多 GPU、production alias 視為已支援能力。
+Status: Phase 1B. 只支援 YOLO detect `.pt` 匯入、CPU serving，以及固定 `yolo-gpu0` slot 1 / 2 warm pool。先不要把 segment / pose / ONNX serving、TensorRT、多 GPU、production alias 或自動換槽視為已支援能力。
 
 Register allowlisted host model:
 
@@ -263,6 +263,23 @@ curl -X POST "<BASE_URL>?mode=yolo_model_status" \
   -d '{"model_ref":"yolo:natureweb:training-result-47:v1"}'
 ```
 
+Assign GPU slot:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_model_assign_gpu" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1" \
+  -F "slot_no=1"
+```
+
+Unassign GPU slot:
+
+```bash
+curl -X POST "<BASE_URL>?mode=yolo_model_unassign_gpu" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1"
+```
+
 Predict with registered model:
 
 ```bash
@@ -281,7 +298,13 @@ Predict response includes:
 - `fallback_reason`
 - `detections`
 
-Client must not send host paths or server artifact paths to `yolo_predict`; only `model_ref` is accepted.
+`execution_policy`:
+
+- `auto`: prefer hot GPU slot, fallback to CPU when GPU is not ready.
+- `cpu_only`: force CPU.
+- `gpu_only`: require hot GPU slot or return `gpu_not_ready`.
+
+Client must not send host paths, server artifact paths, `slot_no`, or `device` to `yolo_predict`; only `model_ref` selects the model.
 
 ## POST BioCLIP
 

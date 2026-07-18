@@ -35,7 +35,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - 服務狀態拆分：啟用 / 容器 / 健康 / 設定 / 最後工作
 - Dashboard 總覽中控台、服務健康摘要、API 24h 統計、L5 Pack 數、Pack readiness、模型/Docker 空間、Public API Docs / Agent Manifest 狀態與 quick links
 - Runtime Runs 執行歷程、Resource Sampling、Local Job workspace contract
-- YOLO Model Registry 1A：allowlisted host `.pt` 匯入、`model_ref` idempotent registry、CPU serving predict route
+- YOLO Model Registry 1B：allowlisted host `.pt` 匯入、`model_ref` idempotent registry、CPU serving predict route、固定 `yolo-gpu0` 雙槽 warm pool
 - Log Explorer 記錄中心：API 記錄、背景工作、服務記錄、系統記錄分頁
 - 環境診斷與修正建議
 - Service IP whitelist 與 API access logs
@@ -826,27 +826,30 @@ runtime/events.ndjson
 
 Runner 也會寫入 SQLite `runtime_runs` 與 `runtime_resource_samples`。這是 L2 Local Execution 的薄觀測能力；Runtime 已有 ownership、recovery、cancel request 與 timeout final-state helper。真正的 worker 停止程序、重試、concurrency 與 GPU lock 仍留給後續 Managed Job。
 
-### YOLO Model Registry / CPU Serving 1A
+### YOLO Model Registry / GPU Warm Pool 1B
 
-`yolo-serving` 是 YOLO Detect `.pt` 的第一版 model registry + CPU serving Pack，用來把外部訓練成果註冊成 Hub 可治理的 `model_ref`，再透過 API 做單張圖片 predict。
+`yolo-serving` 是 YOLO Detect `.pt` 的 model registry + serving Pack，用來把外部訓練成果註冊成 Hub 可治理的 `model_ref`，再透過 API 做單張圖片 predict。Phase 1B 增加固定 `yolo-gpu0` 雙槽 warm pool；CPU serving 仍保留作為安全 fallback。
 
 本刀只支援：
 
 - YOLO detect `.pt`
 - `yolo_model_register`
 - `yolo_model_status`
-- `yolo_predict` CPU serving
+- `yolo_model_assign_gpu`
+- `yolo_model_unassign_gpu`
+- `yolo_predict` CPU serving / GPU hot slot serving
 - idempotent `external_model_key + sha256`
 - registry artifact 複製到 `${AIHUB_MODELS_DIR}/yolo/registry/...`
+- 固定 `yolo-gpu0` slot 1 / 2
 
 暫不支援：
 
 - segment / pose / classification serving
 - ONNX serving
-- GPU warm pool
 - TensorRT
 - 多 GPU
 - production alias / 自動挑模型
+- LRU replacement / 自動換槽
 
 匯入來源必須先列入 allowlist：
 
@@ -879,7 +882,13 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_model_register" \
   "version_id": 1,
   "state": "registered",
   "cpu_available": true,
-  "warm_state": "cold"
+  "warm_state": "cold",
+  "gpu": {
+    "service_key": "yolo-gpu0",
+    "assigned": false,
+    "actual_state": "cold",
+    "slot_no": null
+  }
 }
 ```
 
@@ -892,7 +901,24 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_model_status" \
   -d '{"model_ref":"yolo:natureweb:training-result-47:v1"}'
 ```
 
-CPU predict：
+把模型指定到 GPU warm slot：
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_model_assign_gpu" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1" \
+  -F "slot_no=1"
+```
+
+解除 GPU warm slot：
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_model_unassign_gpu" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1"
+```
+
+Predict：
 
 ```bash
 curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_predict" \
@@ -902,7 +928,13 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_predict" \
   -F "execution_policy=auto"
 ```
 
-`yolo_predict` 會由 Gateway 將 `model_ref` 轉成 container path，runtime response 需回 `model_ref`、`version_id` / `model_version_id`、`device_used`、`fallback_reason` 與 `detections`。Client 不可傳 `host_path`、`model_path`、`artifact_path` 或任意 server path。
+`execution_policy` 支援：
+
+- `auto`：GPU hot slot 可用時走 `yolo-gpu0`，否則安全退回 `yolo-cpu`
+- `cpu_only`：固定走 CPU
+- `gpu_only`：GPU slot 未 hot 時回 `gpu_not_ready`，不退回 CPU
+
+`yolo_predict` 會由 Gateway 將 `model_ref` 轉成 container path，runtime response 需回 `model_ref`、`version_id` / `model_version_id`、`device_used`、`fallback_reason` 與 `detections`。Client 不可傳 `host_path`、`model_path`、`artifact_path`、`slot_no`、`device` 或任意 server path。
 
 ### sam3 Runtime Level
 

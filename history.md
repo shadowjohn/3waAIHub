@@ -3022,3 +3022,33 @@ Deferred:
 - TensorRT.
 - Multi-GPU.
 - Production alias or auto model selection.
+
+## PhaseYoloServe-1B YOLO GPU Dual-Slot Warm Pool
+
+Added a fixed two-slot GPU warm pool for Hub-managed YOLO Detect `.pt` models.
+
+Implemented:
+
+- `yolo_model_deployments` table.
+- Fixed `yolo-gpu0` service key with slot `1` / `2`.
+- `hub_yolo_assign_gpu_slot()`.
+- `hub_yolo_unassign_gpu()`.
+- Warm / unload history recorded in existing `runtime_runs`.
+- `api.php?mode=yolo_model_assign_gpu`.
+- `api.php?mode=yolo_model_unassign_gpu`.
+- `api.php?mode=yolo_model_status` now reports a `gpu` block.
+- `api.php?mode=yolo_predict` routes by `model_ref` with `auto` / `cpu_only` / `gpu_only`.
+- `auto` uses hot GPU slot when available and falls back to CPU when GPU is not ready.
+- Client-supplied `slot_no`, `device`, host paths, and container paths are rejected.
+- `yolo-serving` runtime added internal `/models`, `/models/{slot_no}/status`, `/models/warm`, `/models/unload`, and GPU-slot-aware `/detect/image`.
+- `yolo-gpu0` generated compose requests `gpus: all` and defaults `NVIDIA_VISIBLE_DEVICES` to `0`.
+
+Kept intentionally deferred:
+
+- Segment / pose / classification serving.
+- TensorRT.
+- ONNX serving.
+- Multi-GPU.
+- LRU replacement.
+- Production alias.
+- Automatic model selection.
