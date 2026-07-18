@@ -116,6 +116,11 @@ if (!is_string($workspace) || $workspace === '') {
     usage();
 }
 
+$unsupported = hub_linux_docker_unsupported_result();
+if ($unsupported !== null) {
+    fail((string)$unsupported['stderr'], (int)$unsupported['exit_code']);
+}
+
 $jobRoot = getenv('AIHUB_LOCAL_JOB_ROOT') ?: '/DATA/jobs';
 if (!is_dir($jobRoot) && !mkdir($jobRoot, 0775, true) && !is_dir($jobRoot)) {
     fail('cannot create local job root: ' . $jobRoot, 4);

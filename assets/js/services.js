@@ -110,7 +110,9 @@
 
         if (['success', 'failed', 'cancelled', 'timeout'].indexOf(job.status) !== -1) {
             $box.attr('data-job-id', '');
-            triggerServiceRefresh(job);
+            if (job.error_code !== 'platform_target_unsupported') {
+                triggerServiceRefresh(job);
+            }
         }
     }
 

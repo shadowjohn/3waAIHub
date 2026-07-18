@@ -24,8 +24,14 @@ hub_test('model registry scans models root safely and skips symlinks', function 
     hub_test_assert(hub_test_throws(static fn () => hub_model_asset_safe_path('../etc/passwd')), 'path traversal was accepted');
     hub_test_assert(hub_test_throws(static fn () => hub_model_asset_safe_path('/etc/passwd')), 'absolute asset path was accepted');
     hub_test_assert(!hub_is_safe_models_root('/'), 'root path accepted as models root');
-    hub_test_assert(!hub_is_safe_models_root('/etc'), 'etc path accepted as models root');
-    hub_test_assert(!hub_is_safe_models_root('/var/lib/docker'), 'docker root accepted as models root');
+    if (hub_platform_id() === 'windows') {
+        $systemRoot = (string)getenv('SystemRoot');
+        hub_test_assert($systemRoot !== '', 'SystemRoot is unavailable');
+        hub_test_assert(!hub_is_safe_models_root($systemRoot), 'SystemRoot accepted as models root');
+    } else {
+        hub_test_assert(!hub_is_safe_models_root('/etc'), 'etc path accepted as models root');
+        hub_test_assert(!hub_is_safe_models_root('/var/lib/docker'), 'docker root accepted as models root');
+    }
     hub_test_assert(!hub_is_safe_models_root(HUB_ROOT), 'repo root accepted as models root');
 
     $modelsPage = (string)file_get_contents(HUB_ROOT . '/admin/models.php');

@@ -25,6 +25,8 @@ $user = hub_require_system_admin($db);
 $services = hub_list_services($db);
 $contracts = hub_pack_api_contracts();
 $baseUrl = hub_api_docs_public_base_url();
+$curlExecutable = hub_platform_id() === 'windows' ? 'curl.exe' : 'curl';
+$curlContinuation = hub_platform_id() === 'windows' ? chr(96) : '\\';
 
 hub_admin_header('API 文件', $user);
 ?>
@@ -36,7 +38,7 @@ hub_admin_header('API 文件', $user);
 <section class="panel">
     <h2>Bearer Token</h2>
     <p class="muted">外部 IP 預設需要 Bearer token；localhost 可由 settings 略過 token。Token 明文只會在建立時顯示一次。</p>
-    <pre>curl "<?= hub_h(hub_api_docs_mode_url('hello')) ?>" \
+    <pre><?= hub_h($curlExecutable) ?> "<?= hub_h(hub_api_docs_mode_url('hello')) ?>" <?= hub_h($curlContinuation) ?>
   -H "Authorization: Bearer 3wa_live_xxx"</pre>
     <p><a class="button" href="api_members.php">API 會員</a> <a class="button" href="api_usage.php">API 用量</a></p>
 </section>
@@ -97,16 +99,16 @@ hub_admin_header('API 文件', $user);
             <tr><th>錯誤碼</th><td><code><?= hub_h(implode(', ', array_map('strval', $contract['errors'] ?? []))) ?></code></td></tr>
         </table>
         <?php if ($method === 'GET'): ?>
-        <pre>curl "<?= hub_h($contractUrl) ?>" \
+        <pre><?= hub_h($curlExecutable) ?> "<?= hub_h($contractUrl) ?>" <?= hub_h($curlContinuation) ?>
   -H "Authorization: Bearer 3wa_live_xxx"</pre>
         <?php elseif ($contentType === 'application/json'): ?>
-        <pre>curl -X <?= hub_h($method) ?> "<?= hub_h($contractUrl) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
-  -H "Content-Type: application/json" \
+        <pre><?= hub_h($curlExecutable) ?> -X <?= hub_h($method) ?> "<?= hub_h($contractUrl) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -H "Content-Type: application/json" <?= hub_h($curlContinuation) ?>
   -d '<?= hub_h(json_encode($jsonExample, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?>'</pre>
         <?php else: ?>
-        <pre>curl -X <?= hub_h($method) ?> "<?= hub_h($contractUrl) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+        <pre><?= hub_h($curlExecutable) ?> -X <?= hub_h($method) ?> "<?= hub_h($contractUrl) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
   -F "<?= hub_h($fileField) ?>=@<?= hub_h($sampleFile) ?>"</pre>
         <?php endif; ?>
     <?php endforeach; ?>
@@ -114,7 +116,7 @@ hub_admin_header('API 文件', $user);
 <?php endif; ?>
 <section class="panel">
     <h2>GET hello</h2>
-    <pre>curl "<?= hub_h(hub_api_docs_mode_url('hello')) ?>"</pre>
+    <pre><?= hub_h($curlExecutable) ?> "<?= hub_h(hub_api_docs_mode_url('hello')) ?>"</pre>
     <pre>{
   "ok": true,
   "service": "hello",
@@ -125,31 +127,31 @@ hub_admin_header('API 文件', $user);
     <h2>POST OCR</h2>
     <p class="muted">狀態：L5 可驗收。預設為 mock 模式；真實推論使用 <code>real_inference=1</code> 或服務設定 <code>OCR_REAL_INFERENCE=1</code>。</p>
     <h3>Mock 模式</h3>
-    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('ocr')) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('ocr')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
   -F "image=@sample.png"</pre>
     <h3>真實推論模式</h3>
-    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('ocr')) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@sample.png" \
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('ocr')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -F "image=@sample.png" <?= hub_h($curlContinuation) ?>
   -F "real_inference=1"</pre>
 </section>
 <section class="panel">
     <h2>POST Translate</h2>
     <p class="muted">狀態：L5 可驗收。預設為 mock 模式；真實推論使用 <code>real_inference=1</code>。幾何輸出使用 <code>output_format=metadata|polygon|rle|both</code>。</p>
     <h3>Mock 模式</h3>
-    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
-  -H "Content-Type: application/json" \
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -H "Content-Type: application/json" <?= hub_h($curlContinuation) ?>
   -d '{
     "source_lang": "en",
     "target_lang": "zh-TW",
     "text": "That was a wonderful time."
   }'</pre>
     <h3>真實推論模式</h3>
-    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
-  -H "Content-Type: application/json" \
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -H "Content-Type: application/json" <?= hub_h($curlContinuation) ?>
   -d '{
     "source_lang": "en",
     "target_lang": "zh-TW",
@@ -161,37 +163,37 @@ hub_admin_header('API 文件', $user);
     <h2>POST SAM3</h2>
     <p class="muted">狀態：L5 可驗收。預設為 mock 模式；真實推論使用 <code>real_inference=1</code>。</p>
     <h3>Mock 模式</h3>
-    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@packs/sam3/demo/camera_cat.png" \
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -F "image=@packs/sam3/demo/camera_cat.png" <?= hub_h($curlContinuation) ?>
   -F "prompt_type=auto"</pre>
     <h3>真實推論模式</h3>
-    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@packs/sam3/demo/camera_cat.png" \
-  -F "prompt_type=auto" \
-  -F "real_inference=1" \
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -F "image=@packs/sam3/demo/camera_cat.png" <?= hub_h($curlContinuation) ?>
+  -F "prompt_type=auto" <?= hub_h($curlContinuation) ?>
+  -F "real_inference=1" <?= hub_h($curlContinuation) ?>
   -F "output_format=polygon"</pre>
     <h3>點位 prompt</h3>
-    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@packs/sam3/demo/camera_cat.png" \
-  -F "prompt_type=points" \
-  -F 'points_json={"points":[[320,240]],"labels":[1]}' \
-  -F "real_inference=1" \
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -F "image=@packs/sam3/demo/camera_cat.png" <?= hub_h($curlContinuation) ?>
+  -F "prompt_type=points" <?= hub_h($curlContinuation) ?>
+  -F 'points_json={"points":[[320,240]],"labels":[1]}' <?= hub_h($curlContinuation) ?>
+  -F "real_inference=1" <?= hub_h($curlContinuation) ?>
   -F "output_format=both"</pre>
     <h3>語意文字 prompt</h3>
-    <pre>curl -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" \
-  -H "Authorization: Bearer 3wa_live_xxx" \
-  -F "image=@packs/sam3/demo/camera_cat.png" \
-  -F "prompt_type=text" \
-  -F "text=mammal/insect/plant" \
-  -F "real_inference=1" \
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -F "image=@packs/sam3/demo/camera_cat.png" <?= hub_h($curlContinuation) ?>
+  -F "prompt_type=text" <?= hub_h($curlContinuation) ?>
+  -F "text=mammal/insect/plant" <?= hub_h($curlContinuation) ?>
+  -F "real_inference=1" <?= hub_h($curlContinuation) ?>
   -F "output_format=polygon"</pre>
 </section>
 <section class="panel">
     <h2>未知 Mode</h2>
-    <pre>curl "<?= hub_h(hub_api_docs_mode_url('unknown')) ?>"</pre>
+    <pre><?= hub_h($curlExecutable) ?> "<?= hub_h(hub_api_docs_mode_url('unknown')) ?>"</pre>
     <pre>{
   "ok": false,
   "error": "unknown_mode",

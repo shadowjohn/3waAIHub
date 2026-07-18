@@ -133,12 +133,13 @@ function hub_env_key_label(string $key): string
         'log_exists' => 'worker log 已產生',
         'last_log_at' => '最後 log 時間',
         'install_command' => '掛載指令',
+        'manual_command' => 'Windows 手動執行指令',
     ][$key] ?? $key;
 }
 
 function hub_env_status_label(string $status): string
 {
-    return ['ok' => '正常', 'error' => '錯誤'][$status] ?? $status;
+    return ['ok' => '正常', 'error' => '錯誤', 'not_applicable' => '不適用'][$status] ?? $status;
 }
 
 function hub_env_format_bytes(int|float $bytes): string
@@ -227,6 +228,9 @@ function hub_env_should_skip(string $key, mixed $value, array $values): bool
 
 function hub_env_render_value(string $key, mixed $value, array $values): string
 {
+    if (is_array($value) && (($value['status'] ?? '') === 'not_applicable')) {
+        return '<span class="muted">N/A（不適用）</span>';
+    }
     if ($value === true) {
         return '<strong class="ok">是</strong>';
     }
@@ -259,26 +263,86 @@ function hub_env_render_value(string $key, mixed $value, array $values): string
     return hub_h((string)$value);
 }
 
+function hub_env_ps_literal(string $value): string
+{
+    return hub_powershell_single_quoted_literal($value);
+}
+
+function hub_env_windows_worker_command(): string
+{
+    $worker = HUB_ROOT . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'command_worker.php';
+
+    return "Set-Location -LiteralPath " . hub_env_ps_literal(HUB_ROOT) . "\nphp " . hub_env_ps_literal($worker) . ' --limit=5';
+}
+
+function hub_env_windows_core_command(): string
+{
+    return "Set-Location -LiteralPath " . hub_env_ps_literal(HUB_ROOT) . "\n.\\install.ps1 -Check\n.\\install.ps1";
+}
+
+function hub_env_windows_wsl_check_command(): string
+{
+    return "Set-Location -LiteralPath " . hub_env_ps_literal(HUB_ROOT)
+        . "\n.\\install.ps1 -Check"
+        . "\nwsl.exe --status"
+        . "\nwsl.exe --list --verbose";
+}
+
+function hub_env_normalize_fix_suggestions(array $suggestions): array
+{
+    if (hub_platform_id() !== 'windows') {
+        return $suggestions;
+    }
+
+    $normalized = [];
+    foreach ($suggestions as $suggestion) {
+        $title = (string)($suggestion['title'] ?? '');
+        if (in_array($title, ['修正 Docker socket 權限', '安裝 Docker Compose plugin'], true)) {
+            $suggestion = [
+                'title' => '檢查 WSL Runtime（Preview）',
+                'body' => '3waAIHub Core（Control Plane）不修 Linux Docker socket 權限；Linux Pack 請先確認 WSL runtime target readiness。',
+                'commands' => hub_env_windows_wsl_check_command(),
+            ];
+        } elseif ($title === '修正 Docker GPU runtime') {
+            $suggestion = [
+                'title' => '檢查 WSL Runtime（Preview）GPU',
+                'body' => 'Windows GPU Pack 需透過 WSL Runtime（Preview）或 remote Linux agent 執行；先跑 WslRuntime read-only check。',
+                'commands' => hub_env_windows_wsl_check_command(),
+            ];
+        }
+        $key = (string)$suggestion['title'] . "\n" . (string)$suggestion['commands'];
+        $normalized[$key] = $suggestion;
+    }
+
+    return array_values($normalized);
+}
+
 function hub_env_fix_suggestions(array $data): array
 {
     $host = $data['host'] ?? [];
     $docker = $data['docker'] ?? [];
     $disk = $data['disk'] ?? [];
     $worker = $data['command_worker'] ?? [];
-    $workerUser = (string)($host['server_user'] ?? '');
+    $workerUserValue = $host['server_user'] ?? '';
+    $workerUser = is_scalar($workerUserValue) ? (string)$workerUserValue : '';
     $displayUser = $workerUser !== '' ? $workerUser : 'COMMAND_WORKER_USER';
     $safeUser = escapeshellarg($displayUser);
     $suggestions = [];
+    $isWindows = hub_platform_id() === 'windows';
 
     if (($worker['cron_installed'] ?? null) === false) {
         $suggestions[] = [
-            'title' => '掛載 command worker cron',
-            'body' => '後台啟停服務會先排入 command_jobs，再由 crontab/1min.sh 消化。掛載 cron 需 root；一般 install 非 root 時只會提示。',
-            'commands' => "cd " . escapeshellarg(HUB_ROOT) . "\nsudo ./scripts/install_command_worker_cron.sh\n# 指定可信任本機帳號：sudo WORKER_USER=john ./scripts/install_command_worker_cron.sh",
+            'title' => $isWindows ? '執行 Windows command worker' : '掛載 command worker cron',
+            'body' => $isWindows
+                ? '3waAIHub Core（Control Plane）不掛 Linux cron；有 queued command_jobs 時先用 PowerShell 手動消化。'
+                : '後台啟停服務會先排入 command_jobs，再由 crontab/1min.sh 消化。掛載 cron 需 root；一般 install 非 root 時只會提示。',
+            'commands' => $isWindows
+                ? hub_env_windows_worker_command()
+                : "cd " . escapeshellarg(HUB_ROOT) . "\nsudo ./scripts/install_command_worker_cron.sh\n# 指定可信任本機帳號：sudo WORKER_USER=john ./scripts/install_command_worker_cron.sh",
         ];
     }
 
-    if (($worker['flock_available'] ?? true) === false) {
+    if (!$isWindows && ($worker['flock_available'] ?? true) === false) {
         $suggestions[] = [
             'title' => '安裝 flock',
             'body' => 'crontab/1min.sh 使用 flock 防止同一分鐘內重複執行 worker。',
@@ -288,15 +352,19 @@ function hub_env_fix_suggestions(array $data): array
 
     if (($docker['docker_installed'] ?? null) === false) {
         $suggestions[] = [
-            'title' => '安裝 Docker',
-            'body' => 'Docker 尚未安裝。這是 host bootstrap，需用 root 執行。',
-            'commands' => "cd " . escapeshellarg(HUB_ROOT) . "\nsudo ./install.sh --bootstrap-host --with-docker",
+            'title' => $isWindows ? '檢查 WSL Runtime（Preview）' : '安裝 Docker',
+            'body' => $isWindows
+                ? '3waAIHub Core（Control Plane）不需要本機 Linux Docker；Linux Pack 請改檢查 WSL Runtime（Preview）target。'
+                : 'Docker 尚未安裝。這是 host bootstrap，需用 root 執行。',
+            'commands' => $isWindows
+                ? hub_env_windows_wsl_check_command()
+                : "cd " . escapeshellarg(HUB_ROOT) . "\nsudo ./install.sh --bootstrap-host --with-docker",
         ];
     }
 
     $dockerGroupMissing = ($host['current_user_in_docker_group'] ?? null) === false;
     $isWebUser = in_array($workerUser, ['www-data', 'apache', 'nginx'], true);
-    if ($dockerGroupMissing) {
+    if (!$isWindows && $dockerGroupMissing) {
         $suggestions[] = [
             'title' => 'Docker 操作帳號建議',
             'body' => '目前執行使用者不在 docker 群組。不要把 www-data 加進 docker 群組；Docker group 等同 root 權限。建議讓 command worker 用 root cron，或建立可信任本機帳號專門跑 worker。',
@@ -308,7 +376,13 @@ function hub_env_fix_suggestions(array $data): array
 
     if (($docker['daemon_reachable'] ?? null) === false) {
         $reason = (string)($docker['daemon_error'] ?? '');
-        if (str_contains($reason, 'permission denied')) {
+        if ($isWindows) {
+            $suggestions[] = [
+                'title' => '檢查 WSL Runtime（Preview）',
+                'body' => '3waAIHub Core（Control Plane）不直接修 Linux Docker daemon；服務與 Pack runtime 請走 WSL Runtime（Preview）或 remote Linux agent。',
+                'commands' => hub_env_windows_wsl_check_command(),
+            ];
+        } elseif (str_contains($reason, 'permission denied')) {
             $suggestions[] = [
                 'title' => '讓 command worker 可操作 Docker',
                 'body' => '不要把 www-data 加進 docker 群組。建議用本機帳號執行 command worker，並只把該帳號加入 docker 群組。docker 群組等同 root 權限，請只給可信任帳號。',
@@ -329,7 +403,9 @@ function hub_env_fix_suggestions(array $data): array
         $suggestions[] = [
             'title' => '修正 runtime 權限',
             'body' => 'PHP 執行使用者無法寫入 data/logs，會造成 SQLite 或 log 儲存失敗。',
-            'commands' => "cd " . escapeshellarg(HUB_ROOT) . "\nsudo WEB_GROUP=www-data ./scripts/fix_permissions.sh",
+            'commands' => $isWindows
+                ? hub_env_windows_core_command()
+                : "cd " . escapeshellarg(HUB_ROOT) . "\nsudo WEB_GROUP=www-data ./scripts/fix_permissions.sh",
         ];
     }
 
@@ -341,6 +417,7 @@ hub_admin_header('系統環境', $user);
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <section class="panel">
     <h1>系統環境</h1>
+    <?php if (hub_platform_id() === 'windows'): ?><p class="muted">3waAIHub Core（Control Plane）／WSL Runtime（Preview）readiness 分開顯示；Linux-only 項目為 N/A。</p><?php endif; ?>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <button class="primary" type="submit">執行環境檢測</button>
@@ -360,7 +437,7 @@ hub_admin_header('系統環境', $user);
             <?php endforeach; ?>
         </table>
     </section>
-    <?php $suggestions = array_merge(hub_env_fix_suggestions(['command_worker' => $liveWorkerStatus]), hub_host_metric_fix_suggestions($hostMetricData)); ?>
+    <?php $suggestions = hub_env_normalize_fix_suggestions(array_merge(hub_env_fix_suggestions(['command_worker' => $liveWorkerStatus]), hub_host_metric_fix_suggestions($hostMetricData))); ?>
     <?php if ($suggestions): ?>
         <section class="panel">
             <h2>修正建議</h2>
@@ -378,7 +455,8 @@ hub_admin_header('系統環境', $user);
         <p>建立時間：<?= hub_h($snapshot['created_at']) ?></p>
         <?php if ($snapshot['error_message']): ?><p class="bad"><?= hub_h($snapshot['error_message']) ?></p><?php endif; ?>
     </section>
-    <?php $suggestions = array_merge(hub_env_fix_suggestions($snapshot['data']), hub_host_metric_fix_suggestions($hostMetricData, (string)($snapshot['data']['host']['server_user'] ?? ''))); ?>
+    <?php $snapshotServerUser = $snapshot['data']['host']['server_user'] ?? ''; ?>
+    <?php $suggestions = hub_env_normalize_fix_suggestions(array_merge(hub_env_fix_suggestions($snapshot['data']), hub_host_metric_fix_suggestions($hostMetricData, is_scalar($snapshotServerUser) ? (string)$snapshotServerUser : ''))); ?>
     <?php if ($suggestions): ?>
         <section class="panel">
             <h2>修正建議</h2>

@@ -67,7 +67,7 @@ hub_test('PhaseUI-3 models card contract is present and renders', function (): v
     hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', $modelsDir);
     @mkdir($modelsDir . '/sam3', 0775, true);
     file_put_contents($modelsDir . '/sam3/demo.pt', 'demo');
-    @symlink($modelsDir . '/sam3/demo.pt', $modelsDir . '/symlink-demo.pt');
+    $symlinkCreated = @symlink($modelsDir . '/sam3/demo.pt', $modelsDir . '/symlink-demo.pt');
 
     $_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];
     $_SERVER['REQUEST_METHOD'] = 'GET';
@@ -76,7 +76,14 @@ hub_test('PhaseUI-3 models card contract is present and renders', function (): v
     require HUB_ROOT . '/admin/models.php';
     $html = (string)ob_get_clean();
 
-    foreach (['模型根目錄概覽', '可用 / 總量', 'sam3', 'whisper', 'demo.pt', 'symlink 已略過', 'name="subdir"'] as $needle) {
+    foreach (['模型根目錄概覽', '可用 / 總量', 'sam3', 'whisper', 'demo.pt', 'name="subdir"'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered models page missing ' . $needle);
+    }
+    if ($symlinkCreated) {
+        hub_test_assert(str_contains($html, 'symlink 已略過'), 'rendered models page missing symlink 已略過');
+    } elseif (hub_platform_id() === 'windows') {
+        hub_test_skip('model symlink fixture is not available on this Windows host');
+    } else {
+        hub_test_assert(false, 'model symlink fixture creation failed');
     }
 });

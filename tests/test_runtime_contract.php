@@ -52,6 +52,10 @@ hub_test('Pack Runtime Contract docs and YOLO local jobs are declared', function
 });
 
 hub_test('aihub-run executes YOLO local job and rejects workspace escape', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Linux Docker local-job execution is unsupported on Windows.');
+    }
+
     $db = hub_test_reset_db();
     $root = sys_get_temp_dir() . '/3waaihub_runtime_contract_' . getmypid();
     hub_test_runtime_rm($root);
@@ -60,12 +64,23 @@ hub_test('aihub-run executes YOLO local job and rejects workspace escape', funct
     file_put_contents($root . '/jobs/yolo/001/request.json', json_encode(['image' => 'input/sample.jpg'], JSON_UNESCAPED_SLASHES) . "\n");
 
     $runId = 'test-yolo-run-' . getmypid();
-    $cmd = 'AIHUB_LOCAL_JOB_ROOT=' . escapeshellarg($root . '/jobs') . ' AIHUB_YOLO_PREDICT_DRY_RUN=1 '
-        . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/bin/aihub-run')
-        . ' yolo_predict --pack yolo --run-id ' . escapeshellarg($runId)
-        . ' --caller test --workspace ' . escapeshellarg($root . '/jobs/yolo/001') . ' 2>&1';
-    exec($cmd, $output, $code);
-    hub_test_assert($code === 0, 'aihub-run yolo_predict failed: ' . implode("\n", $output));
+    $run = hub_run_command([
+        PHP_BINARY,
+        HUB_ROOT . '/bin/aihub-run',
+        'yolo_predict',
+        '--pack',
+        'yolo',
+        '--run-id',
+        $runId,
+        '--caller',
+        'test',
+        '--workspace',
+        $root . '/jobs/yolo/001',
+    ], 120, [
+        'AIHUB_LOCAL_JOB_ROOT' => $root . '/jobs',
+        'AIHUB_YOLO_PREDICT_DRY_RUN' => '1',
+    ]);
+    hub_test_assert($run['exit_code'] === 0, 'aihub-run yolo_predict failed: ' . $run['output']);
 
     $result = json_decode((string)file_get_contents($root . '/jobs/yolo/001/result.json'), true);
     hub_test_assert(($result['ok'] ?? false) === true, 'local job result.json must be ok');
@@ -75,25 +90,34 @@ hub_test('aihub-run executes YOLO local job and rejects workspace escape', funct
     hub_test_assert(is_file($root . '/jobs/yolo/001/runtime/run.json'), 'local job must write runtime/run.json');
     hub_test_assert(is_file($root . '/jobs/yolo/001/runtime/resource.ndjson'), 'local job must write runtime/resource.ndjson');
 
-    $run = $db->query("SELECT * FROM runtime_runs WHERE run_id = " . $db->quote($runId))->fetch();
-    hub_test_assert($run !== false, 'runtime_runs must record aihub-run execution');
-    hub_test_assert((string)$run['pack_id'] === 'yolo', 'runtime run must record pack_id');
-    hub_test_assert((string)$run['task'] === 'yolo_predict', 'runtime run must record task');
-    hub_test_assert((string)$run['state'] === 'succeeded', 'runtime run must record succeeded state');
+    $runtimeRun = $db->query("SELECT * FROM runtime_runs WHERE run_id = " . $db->quote($runId))->fetch();
+    hub_test_assert($runtimeRun !== false, 'runtime_runs must record aihub-run execution');
+    hub_test_assert((string)$runtimeRun['pack_id'] === 'yolo', 'runtime run must record pack_id');
+    hub_test_assert((string)$runtimeRun['task'] === 'yolo_predict', 'runtime run must record task');
+    hub_test_assert((string)$runtimeRun['state'] === 'succeeded', 'runtime run must record succeeded state');
     $sampleCount = (int)$db->query("SELECT COUNT(*) FROM runtime_resource_samples WHERE run_id = " . $db->quote($runId))->fetchColumn();
     hub_test_assert($sampleCount >= 2, 'runtime_resource_samples must record start and end samples');
 
-    $badCmd = 'AIHUB_LOCAL_JOB_ROOT=' . escapeshellarg($root . '/jobs') . ' '
-        . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/bin/aihub-run')
-        . ' yolo_predict --pack yolo --workspace ' . escapeshellarg($root . '/outside') . ' 2>&1';
-    exec($badCmd, $badOutput, $badCode);
-    hub_test_assert($badCode !== 0, 'aihub-run must reject workspace outside AIHUB_LOCAL_JOB_ROOT');
-    hub_test_assert(str_contains(implode("\n", $badOutput), 'workspace must be under'), 'workspace escape error should be clear');
+    $bad = hub_run_command([
+        PHP_BINARY,
+        HUB_ROOT . '/bin/aihub-run',
+        'yolo_predict',
+        '--pack',
+        'yolo',
+        '--workspace',
+        $root . '/outside',
+    ], 30, ['AIHUB_LOCAL_JOB_ROOT' => $root . '/jobs']);
+    hub_test_assert($bad['exit_code'] !== 0, 'aihub-run must reject workspace outside AIHUB_LOCAL_JOB_ROOT');
+    hub_test_assert(str_contains($bad['stderr'], 'workspace must be under'), 'workspace escape error should be clear');
 
     hub_test_runtime_rm($root);
 });
 
 hub_test('YOLO local train validates workspace and writes real runner contract', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Linux Docker local-job execution is unsupported on Windows.');
+    }
+
     $db = hub_test_reset_db();
     $root = sys_get_temp_dir() . '/3waaihub_yolo_train_' . getmypid();
     hub_test_runtime_rm($root);
@@ -108,12 +132,25 @@ hub_test('YOLO local train validates workspace and writes real runner contract',
     ], JSON_UNESCAPED_SLASHES) . "\n");
 
     $runId = 'test-yolo-train-' . getmypid();
-    $cmd = 'AIHUB_LOCAL_JOB_ROOT=' . escapeshellarg($root . '/jobs') . ' AIHUB_YOLO_TRAIN_DRY_RUN=1 '
-        . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/bin/aihub-run')
-        . ' yolo_train --pack yolo --run-id ' . escapeshellarg($runId)
-        . ' --caller test --workspace ' . escapeshellarg($workspace) . ' --gpu 0 2>&1';
-    exec($cmd, $output, $code);
-    hub_test_assert($code === 0, 'aihub-run yolo_train failed: ' . implode("\n", $output));
+    $run = hub_run_command([
+        PHP_BINARY,
+        HUB_ROOT . '/bin/aihub-run',
+        'yolo_train',
+        '--pack',
+        'yolo',
+        '--run-id',
+        $runId,
+        '--caller',
+        'test',
+        '--workspace',
+        $workspace,
+        '--gpu',
+        '0',
+    ], 120, [
+        'AIHUB_LOCAL_JOB_ROOT' => $root . '/jobs',
+        'AIHUB_YOLO_TRAIN_DRY_RUN' => '1',
+    ]);
+    hub_test_assert($run['exit_code'] === 0, 'aihub-run yolo_train failed: ' . $run['output']);
 
     $result = json_decode((string)file_get_contents($workspace . '/result.json'), true);
     hub_test_assert(($result['ok'] ?? false) === true, 'yolo_train result must be ok');
@@ -129,11 +166,19 @@ hub_test('YOLO local train validates workspace and writes real runner contract',
     $badWorkspace = $root . '/jobs/yolo/missing-data';
     mkdir($badWorkspace, 0775, true);
     file_put_contents($badWorkspace . '/train_config.json', "{}\n");
-    $badCmd = 'AIHUB_LOCAL_JOB_ROOT=' . escapeshellarg($root . '/jobs') . ' AIHUB_YOLO_TRAIN_DRY_RUN=1 '
-        . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/bin/aihub-run')
-        . ' yolo_train --pack yolo --workspace ' . escapeshellarg($badWorkspace) . ' 2>&1';
-    exec($badCmd, $badOutput, $badCode);
-    hub_test_assert($badCode !== 0, 'yolo_train must fail without data.yaml');
+    $bad = hub_run_command([
+        PHP_BINARY,
+        HUB_ROOT . '/bin/aihub-run',
+        'yolo_train',
+        '--pack',
+        'yolo',
+        '--workspace',
+        $badWorkspace,
+    ], 30, [
+        'AIHUB_LOCAL_JOB_ROOT' => $root . '/jobs',
+        'AIHUB_YOLO_TRAIN_DRY_RUN' => '1',
+    ]);
+    hub_test_assert($bad['exit_code'] !== 0, 'yolo_train must fail without data.yaml');
     $badResult = json_decode((string)file_get_contents($badWorkspace . '/result.json'), true);
     hub_test_assert(($badResult['error'] ?? '') === 'missing_data_yaml', 'yolo_train missing data.yaml error must be explicit');
 
@@ -141,6 +186,10 @@ hub_test('YOLO local train validates workspace and writes real runner contract',
 });
 
 hub_test('YOLO local predict and export write real runner contracts', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Linux Docker local-job execution is unsupported on Windows.');
+    }
+
     $db = hub_test_reset_db();
     $root = sys_get_temp_dir() . '/3waaihub_yolo_predict_export_' . getmypid();
     hub_test_runtime_rm($root);
@@ -155,12 +204,25 @@ hub_test('YOLO local predict and export write real runner contracts', function (
     ], JSON_UNESCAPED_SLASHES) . "\n");
 
     $predictRunId = 'test-yolo-predict-' . getmypid();
-    $predictCmd = 'AIHUB_LOCAL_JOB_ROOT=' . escapeshellarg($root . '/jobs') . ' AIHUB_YOLO_PREDICT_DRY_RUN=1 '
-        . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/bin/aihub-run')
-        . ' yolo_predict --pack yolo --run-id ' . escapeshellarg($predictRunId)
-        . ' --caller test --workspace ' . escapeshellarg($predictWorkspace) . ' --gpu 0 2>&1';
-    exec($predictCmd, $predictOutput, $predictCode);
-    hub_test_assert($predictCode === 0, 'aihub-run yolo_predict failed: ' . implode("\n", $predictOutput));
+    $predictRun = hub_run_command([
+        PHP_BINARY,
+        HUB_ROOT . '/bin/aihub-run',
+        'yolo_predict',
+        '--pack',
+        'yolo',
+        '--run-id',
+        $predictRunId,
+        '--caller',
+        'test',
+        '--workspace',
+        $predictWorkspace,
+        '--gpu',
+        '0',
+    ], 120, [
+        'AIHUB_LOCAL_JOB_ROOT' => $root . '/jobs',
+        'AIHUB_YOLO_PREDICT_DRY_RUN' => '1',
+    ]);
+    hub_test_assert($predictRun['exit_code'] === 0, 'aihub-run yolo_predict failed: ' . $predictRun['output']);
 
     $predictResult = json_decode((string)file_get_contents($predictWorkspace . '/result.json'), true);
     hub_test_assert(($predictResult['ok'] ?? false) === true, 'yolo_predict result must be ok');
@@ -177,12 +239,25 @@ hub_test('YOLO local predict and export write real runner contracts', function (
     ], JSON_UNESCAPED_SLASHES) . "\n");
 
     $exportRunId = 'test-yolo-export-' . getmypid();
-    $exportCmd = 'AIHUB_LOCAL_JOB_ROOT=' . escapeshellarg($root . '/jobs') . ' AIHUB_YOLO_EXPORT_DRY_RUN=1 '
-        . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/bin/aihub-run')
-        . ' yolo_export_onnx --pack yolo --run-id ' . escapeshellarg($exportRunId)
-        . ' --caller test --workspace ' . escapeshellarg($exportWorkspace) . ' --gpu 0 2>&1';
-    exec($exportCmd, $exportOutput, $exportCode);
-    hub_test_assert($exportCode === 0, 'aihub-run yolo_export_onnx failed: ' . implode("\n", $exportOutput));
+    $exportRun = hub_run_command([
+        PHP_BINARY,
+        HUB_ROOT . '/bin/aihub-run',
+        'yolo_export_onnx',
+        '--pack',
+        'yolo',
+        '--run-id',
+        $exportRunId,
+        '--caller',
+        'test',
+        '--workspace',
+        $exportWorkspace,
+        '--gpu',
+        '0',
+    ], 120, [
+        'AIHUB_LOCAL_JOB_ROOT' => $root . '/jobs',
+        'AIHUB_YOLO_EXPORT_DRY_RUN' => '1',
+    ]);
+    hub_test_assert($exportRun['exit_code'] === 0, 'aihub-run yolo_export_onnx failed: ' . $exportRun['output']);
 
     $exportResult = json_decode((string)file_get_contents($exportWorkspace . '/result.json'), true);
     hub_test_assert(($exportResult['ok'] ?? false) === true, 'yolo_export_onnx result must be ok');
@@ -197,13 +272,49 @@ hub_test('YOLO local predict and export write real runner contracts', function (
     $badWorkspace = $root . '/jobs/yolo/predict-missing-image';
     mkdir($badWorkspace, 0775, true);
     file_put_contents($badWorkspace . '/request.json', json_encode(['images' => ['input/missing.jpg']], JSON_UNESCAPED_SLASHES) . "\n");
-    $badCmd = 'AIHUB_LOCAL_JOB_ROOT=' . escapeshellarg($root . '/jobs') . ' AIHUB_YOLO_PREDICT_DRY_RUN=1 '
-        . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/bin/aihub-run')
-        . ' yolo_predict --pack yolo --workspace ' . escapeshellarg($badWorkspace) . ' 2>&1';
-    exec($badCmd, $badOutput, $badCode);
-    hub_test_assert($badCode !== 0, 'yolo_predict must fail when input image is missing');
+    $bad = hub_run_command([
+        PHP_BINARY,
+        HUB_ROOT . '/bin/aihub-run',
+        'yolo_predict',
+        '--pack',
+        'yolo',
+        '--workspace',
+        $badWorkspace,
+    ], 30, [
+        'AIHUB_LOCAL_JOB_ROOT' => $root . '/jobs',
+        'AIHUB_YOLO_PREDICT_DRY_RUN' => '1',
+    ]);
+    hub_test_assert($bad['exit_code'] !== 0, 'yolo_predict must fail when input image is missing');
     $badResult = json_decode((string)file_get_contents($badWorkspace . '/result.json'), true);
     hub_test_assert(($badResult['error'] ?? '') === 'input_image_missing', 'yolo_predict missing image error must be explicit');
 
     hub_test_runtime_rm($root);
+});
+
+hub_test('Windows aihub-run exits 78 before creating local job state', function (): void {
+    if (hub_platform_id() !== 'windows') {
+        hub_test_skip('Windows-only aihub-run unsupported contract.');
+    }
+
+    $root = sys_get_temp_dir() . '/3waaihub_windows_cli_gate_' . getmypid();
+    hub_test_runtime_rm($root);
+    $jobRoot = $root . '/jobs';
+    $workspace = $jobRoot . '/yolo/001';
+    $result = hub_run_command([
+        PHP_BINARY,
+        HUB_ROOT . '/bin/aihub-run',
+        'yolo_predict',
+        '--workspace',
+        $workspace,
+    ], 30, [
+        'AIHUB_LOCAL_JOB_ROOT' => $jobRoot,
+        'AIHUB_TEST_DB' => $root . '/runtime.sqlite',
+    ]);
+
+    hub_test_assert($result['exit_code'] === 78, 'Windows aihub-run exit mismatch: ' . $result['output']);
+    hub_test_assert($result['stdout'] === '', 'Windows aihub-run stdout must be empty');
+    hub_test_assert($result['stderr'] === 'unsupported: linux-docker target is not available on Windows host', 'Windows aihub-run stderr mismatch');
+    hub_test_assert(!is_dir($jobRoot), 'Windows aihub-run must not create local job root');
+    hub_test_assert(!is_dir($workspace), 'Windows aihub-run must not create workspace');
+    hub_test_assert(!is_file($root . '/runtime.sqlite'), 'Windows aihub-run must not create runtime DB');
 });

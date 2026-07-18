@@ -46,6 +46,10 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
         }
     }
     hub_test_assert(is_array($photoUpload), 'manifest missing photo_upload mode');
+    $curlExecutable = hub_platform_id() === 'windows' ? 'curl.exe' : 'curl';
+    $continuation = hub_platform_id() === 'windows' ? "`" : "\\";
+    hub_test_assert(str_starts_with((string)$photoUpload['examples']['curl'], $curlExecutable . ' -X POST'), 'public multipart curl example must use the platform executable');
+    hub_test_assert(str_contains((string)$photoUpload['examples']['curl'], ' ' . $continuation . "\n"), 'public multipart curl example must use the platform continuation');
     hub_test_assert(str_contains((string)$photoUpload['examples']['php'], "new CURLFile('/path/to/example.jpg'"), 'photo_upload PHP example must include usable CURLFile');
     hub_test_assert(str_contains((string)$photoUpload['examples']['js_fetch'], 'const formData = new FormData()'), 'photo_upload JS example must define formData');
     hub_test_assert(str_contains((string)$photoUpload['examples']['js_fetch'], "formData.append('image', fileInput.files[0])"), 'photo_upload JS example must define formData image upload');
@@ -59,6 +63,30 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
         }
     }
     hub_test_assert(is_array($photo), 'manifest missing photo mode');
+    hub_test_assert(str_starts_with((string)$photo['examples']['curl'], $curlExecutable . ' -X POST'), 'public JSON curl example must use the platform executable');
+    hub_test_assert(str_contains((string)$photo['examples']['curl'], ' ' . $continuation . "\n"), 'public JSON curl example must use the platform continuation');
+    hub_test_assert(
+        preg_match("/-d '(.+)'$/s", (string)$photo['examples']['curl'], $jsonBody) === 1
+            && is_array(json_decode($jsonBody[1], true)),
+        'public JSON curl body must remain valid JSON'
+    );
+    $sam3 = null;
+    foreach ($manifest['services'] as $service) {
+        if (($service['mode'] ?? '') === 'sam3') {
+            $sam3 = $service;
+            break;
+        }
+    }
+    hub_test_assert(is_array($sam3), 'manifest missing sam3 mode');
+    $sam3Curl = (string)$sam3['examples']['curl'];
+    hub_test_assert(
+        str_contains($sam3Curl, "-F 'points_json={\"points\":[[320,240]],\"labels\":[1]}'"),
+        'SAM3 curl must preserve exact points_json JSON inside a single-quoted argument'
+    );
+    if (hub_platform_id() === 'windows') {
+        hub_test_assert(str_starts_with($sam3Curl, 'curl.exe -X POST'), 'Windows SAM3 curl must use curl.exe');
+        hub_test_assert(str_contains($sam3Curl, " `\n"), 'Windows SAM3 curl must use backtick continuations');
+    }
     $photoFields = [];
     foreach ($photo['input_fields'] ?? [] as $field) {
         if (is_array($field)) {

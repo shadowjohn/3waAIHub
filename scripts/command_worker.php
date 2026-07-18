@@ -29,8 +29,12 @@ while ($processed < $limit) {
         (int)$result['exit_code'],
         (string)($result['stdout'] ?? ''),
         (string)($result['stderr'] ?? ''),
-        $result['exit_code'] === 0 ? null : (string)($result['stderr'] ?? $result['output'] ?? 'Command failed.')
+        $result['exit_code'] === 0 ? null : (string)($result['message'] ?? $result['stderr'] ?? $result['output'] ?? 'Command failed.'),
+        isset($result['error_code']) ? (string)$result['error_code'] : null
     );
+    if (($result['error_code'] ?? null) === 'platform_target_unsupported') {
+        fwrite(STDERR, (string)$result['stderr'] . PHP_EOL);
+    }
     hub_audit($db, 'command_worker', 'job_' . $job['action'], 'job_id=' . $job['id'] . ' exit=' . $result['exit_code']);
     echo 'job ' . $job['id'] . ' ' . $job['action'] . ' exit=' . $result['exit_code'] . PHP_EOL;
     $processed++;
@@ -54,6 +58,15 @@ function hub_execute_command_job(PDO $db, array $job): array
         return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service id is required.'];
     }
 
+    $requiresLinuxDocker = in_array($action, ['permissions_fix', 'docker_prune_check', 'docker_builder_prune', 'ollama_model_pull'], true)
+        || ($service !== null && !hub_service_is_internal_task($service) && str_starts_with($action, 'service_'));
+    if ($requiresLinuxDocker) {
+        $unsupported = hub_linux_docker_unsupported_result();
+        if ($unsupported !== null) {
+            return $unsupported;
+        }
+    }
+
     return match ($action) {
         'service_start', 'service_install' => hub_start_service_with_job($db, $service, $job),
         'service_build' => hub_build_service($db, $service, $job),
@@ -74,6 +87,11 @@ function hub_execute_command_job(PDO $db, array $job): array
 
 function hub_run_ollama_model_pull_job(PDO $db, ?array $service, array $job): array
 {
+    $unsupported = hub_linux_docker_unsupported_result();
+    if ($unsupported !== null) {
+        return $unsupported;
+    }
+
     hub_job_progress($db, $job, 'checking_service', 5, 'Checking TranslateGemma service.');
     if (!$service) {
         return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service id is required.'];

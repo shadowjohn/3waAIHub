@@ -26,16 +26,32 @@ function hub_latest_env_snapshot(PDO $db): ?array
     return $snapshot;
 }
 
-function hub_collect_env_snapshot(): array
+function hub_not_applicable_status(string $reason = 'not_available_on_windows'): array
+{
+    return [
+        'available' => false,
+        'status' => 'not_applicable',
+        'reason' => $reason,
+    ];
+}
+
+function hub_powershell_single_quoted_literal(string $value): string
+{
+    return "'" . str_replace("'", "''", $value) . "'";
+}
+
+function hub_collect_env_snapshot(?string $platform = null): array
 {
     hub_cli_only();
+    $platform = hub_platform_id($platform);
+    $isWindows = $platform === 'windows';
 
     $dockerVersion = hub_run_command(['docker', '--version'], 10);
     $composeVersion = hub_run_command(['docker', 'compose', 'version'], 10);
     $dockerInfo = hub_run_command(['docker', 'info'], 15);
     $dockerDisk = hub_run_command(['docker', 'system', 'df'], 20);
     $dockerRootDir = $dockerInfo['exit_code'] === 0 ? hub_parse_docker_root_dir($dockerInfo['stdout']) : '';
-    $dockerRootFree = $dockerRootDir !== '' ? @disk_free_space($dockerRootDir) : null;
+    $dockerRootFree = !$isWindows && $dockerRootDir !== '' ? @disk_free_space($dockerRootDir) : null;
     return [
         'host' => [
             'hostname' => gethostname() ?: '',
@@ -43,11 +59,11 @@ function hub_collect_env_snapshot(): array
             'php_version' => PHP_VERSION,
             'app_path' => HUB_ROOT,
             'app_user' => get_current_user(),
-            'server_user' => function_exists('posix_geteuid') ? (posix_getpwuid(posix_geteuid())['name'] ?? '') : '',
+            'server_user' => $isWindows ? hub_not_applicable_status() : (function_exists('posix_geteuid') ? (posix_getpwuid(posix_geteuid())['name'] ?? '') : ''),
             'sqlite_path' => HUB_DB_PATH,
             'sqlite_writable' => is_writable(HUB_DB_PATH) || (!file_exists(HUB_DB_PATH) && is_writable(dirname(HUB_DB_PATH))),
-            'docker_group_warning' => 'Users in the docker group effectively have root-equivalent control of the host.',
-            'current_user_in_docker_group' => hub_current_user_in_group('docker'),
+            'docker_group_warning' => $isWindows ? hub_not_applicable_status() : 'Users in the docker group effectively have root-equivalent control of the host.',
+            'current_user_in_docker_group' => hub_current_user_in_group('docker', $platform),
         ],
         'docker' => [
             'docker_installed' => $dockerVersion['exit_code'] === 0,
@@ -58,7 +74,7 @@ function hub_collect_env_snapshot(): array
             'docker_root_dir' => $dockerRootDir,
             'docker_root_free_bytes' => $dockerRootFree,
             'docker_root_warning' => hub_docker_root_warning($dockerRootDir, $dockerRootFree),
-            'docker_root_status' => $dockerRootDir === '/DATA/docker' ? 'PASS' : '',
+            'docker_root_status' => $isWindows ? hub_not_applicable_status() : ($dockerRootDir === '/DATA/docker' ? 'PASS' : ''),
             'docker_error' => $dockerVersion['exit_code'] === 0 ? null : hub_command_error_summary($dockerVersion),
             'compose_error' => $composeVersion['exit_code'] === 0 ? null : hub_command_error_summary($composeVersion),
             'daemon_error' => $dockerInfo['exit_code'] === 0 ? null : hub_command_error_summary($dockerInfo),
@@ -66,7 +82,7 @@ function hub_collect_env_snapshot(): array
         ],
         'gpu_cuda' => hub_collect_gpu_status(),
         'storage' => hub_collect_storage_status(),
-        'memory' => hub_memory_status(),
+        'memory' => hub_memory_status($platform),
         'disk' => [
             'project_total_bytes' => disk_total_space(HUB_ROOT),
             'project_free_bytes' => disk_free_space(HUB_ROOT),
@@ -75,7 +91,7 @@ function hub_collect_env_snapshot(): array
             'logs_writable' => is_writable(HUB_LOG_DIR),
             'packs_readable' => is_readable(HUB_ROOT . '/packs'),
         ],
-        'command_worker' => hub_collect_command_worker_status(),
+        'command_worker' => hub_collect_command_worker_status($platform),
     ];
 }
 
@@ -110,9 +126,10 @@ function hub_parse_docker_root_dir(string $dockerInfo): string
     return '';
 }
 
-function hub_collect_gpu_status(): array
+function hub_collect_gpu_status(?callable $runner = null): array
 {
-    $nvidia = hub_run_command([
+    $runner ??= 'hub_run_command';
+    $nvidia = $runner([
         'nvidia-smi',
         '--query-gpu=name,driver_version,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu',
         '--format=csv,noheader,nounits',
@@ -128,7 +145,7 @@ function hub_collect_gpu_status(): array
     }
 
     $gpu += hub_parse_nvidia_gpu_row(explode("\n", trim($nvidia['stdout']))[0] ?? '');
-    $cuda = hub_run_command(['nvidia-smi'], 10);
+    $cuda = $runner(['nvidia-smi'], 10);
     if ($cuda['exit_code'] === 0 && preg_match('/CUDA Version:\s*([0-9.]+)/', $cuda['stdout'], $matches)) {
         $gpu['cuda_version'] = $matches[1];
     } else {
@@ -158,9 +175,14 @@ function hub_parse_nvidia_gpu_row(string $row): array
     ];
 }
 
-function hub_memory_status(): array
+function hub_memory_status(?string $platform = null, ?callable $reader = null): array
 {
-    $info = @file('/proc/meminfo', FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    if (hub_platform_id($platform) === 'windows') {
+        return hub_not_applicable_status();
+    }
+
+    $reader ??= static fn (string $path): array|false => @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+    $info = $reader('/proc/meminfo');
     if (!$info) {
         return ['available' => false];
     }
@@ -190,8 +212,12 @@ function hub_memory_status(): array
     ];
 }
 
-function hub_current_user_in_group(string $groupName): bool
+function hub_current_user_in_group(string $groupName, ?string $platform = null): bool|array
 {
+    if (hub_platform_id($platform) === 'windows') {
+        return hub_not_applicable_status();
+    }
+
     if (!function_exists('posix_getgroups') || !function_exists('posix_getgrgid')) {
         return false;
     }
@@ -206,8 +232,28 @@ function hub_current_user_in_group(string $groupName): bool
     return false;
 }
 
-function hub_collect_command_worker_status(): array
+function hub_collect_command_worker_status(?string $platform = null): array
 {
+    if (hub_platform_id($platform) === 'windows') {
+        $workerScript = HUB_ROOT . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'command_worker.php';
+        $notApplicable = hub_not_applicable_status();
+
+        return [
+            'cron_installed' => $notApplicable,
+            'cron_file' => $notApplicable,
+            'cron_user' => $notApplicable,
+            'cron_line' => $notApplicable,
+            'loop_script_exists' => $notApplicable,
+            'loop_script_executable' => $notApplicable,
+            'flock_available' => $notApplicable,
+            'log_path' => HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log',
+            'log_exists' => is_file(HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log'),
+            'last_log_at' => is_file(HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log') ? date('Y-m-d H:i:s', (int)filemtime(HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log')) : '',
+            'install_command' => $notApplicable,
+            'manual_command' => 'php ' . hub_powershell_single_quoted_literal($workerScript) . ' --limit=5',
+        ];
+    }
+
     $cronFile = '/etc/cron.d/3waaihub-command-worker';
     $cronContents = is_readable($cronFile) ? (string)file_get_contents($cronFile) : '';
     $cron = hub_parse_command_worker_cron($cronContents);

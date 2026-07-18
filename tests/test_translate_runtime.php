@@ -70,7 +70,10 @@ hub_test('TranslateGemma Ollama model pull CLI is explicit and allowlisted', fun
     hub_test_assert(hub_is_valid_job_action('ollama_model_pull'), 'ollama_model_pull must be allowlisted');
 
     $admin = (string)file_get_contents(HUB_ROOT . '/admin/service_settings.php');
-    hub_test_assert(str_contains($admin, "hub_enqueue_command_job(\n                \$db,\n                'ollama_model_pull'"), 'service settings must enqueue Ollama pull job');
+    hub_test_assert(
+        preg_match('/\bhub_enqueue_command_job\s*\(\s*\$db\s*,\s*([\'\"])ollama_model_pull\1\s*,/', $admin) === 1,
+        'service settings must enqueue Ollama pull job'
+    );
     hub_test_assert(!str_contains($admin, 'ollama pull'), 'service settings must not execute ollama pull directly');
 });
 

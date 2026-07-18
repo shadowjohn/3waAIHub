@@ -28,6 +28,7 @@ hub_test('PhaseUI-1 services page has AJAX update hooks', function (): void {
     foreach (['function updateServiceRow', 'function triggerServiceRefresh', 'data-service-status', 'job.status_class', '.fail(function'] as $needle) {
         hub_test_assert(str_contains($servicesJs, $needle), 'services.js missing ' . $needle);
     }
+    hub_test_assert(str_contains($servicesJs, "job.error_code !== 'platform_target_unsupported'"), 'unsupported terminal jobs must not trigger a service refresh');
 });
 
 hub_test('PhaseUI-1 packs page has readiness AJAX hooks', function (): void {

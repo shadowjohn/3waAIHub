@@ -8,14 +8,13 @@ hub_test('PhaseS-4.1 token API smoke runs OCR Bearer flow over HTTP', function (
     }
     @unlink($dbPath);
 
-    $cmd = 'php ' . escapeshellarg(HUB_ROOT . '/scripts/token_api_smoke.php') . ' --db=' . escapeshellarg($dbPath);
-    exec($cmd . ' 2>&1', $output, $exitCode);
+    $result = hub_run_command([PHP_BINARY, HUB_ROOT . '/scripts/token_api_smoke.php', '--db=' . $dbPath], 75);
     @unlink($dbPath);
     @unlink($dbPath . '-wal');
     @unlink($dbPath . '-shm');
 
-    $text = implode("\n", $output);
-    hub_test_assert($exitCode === 0, 'token API smoke failed: ' . $text);
+    $text = $result['output'];
+    hub_test_assert($result['exit_code'] === 0, 'token API smoke failed: ' . $text);
     foreach ([
         'member created',
         'token created',

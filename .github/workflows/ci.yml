@@ -60,3 +60,62 @@ jobs:
           path: |
             run_tests.log
             self_check.log
+
+  windows-control-plane:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: "8.3"
+          ini-values: date.timezone=Asia/Taipei, short_open_tag=On
+          extensions: sqlite3, pdo_sqlite, curl, mbstring, gd, fileinfo, openssl, zip
+
+      - name: PHP lint
+        shell: powershell
+        run: |
+          $root = (Resolve-Path -LiteralPath '.').Path
+          $dataPrefix = (Join-Path $root 'data') + [IO.Path]::DirectorySeparatorChar
+          Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.php' |
+            Where-Object { -not $_.FullName.StartsWith($dataPrefix, [StringComparison]::OrdinalIgnoreCase) } |
+            ForEach-Object {
+              & php -l $_.FullName
+              if ($LASTEXITCODE -ne 0) { throw "PHP lint failed: $($_.FullName)" }
+            }
+
+      - name: Windows installer contract
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\test_windows_installer.ps1
+
+      - name: Core readiness report
+        shell: powershell
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -Check -InstallRoot $PWD.Path -ProductType 1
+
+      - name: Self check
+        shell: powershell
+        run: php -d zend.assertions=1 -d assert.exception=1 -d display_errors=1 -d error_reporting=E_ALL scripts/self_check.php
+
+      - name: Tests
+        shell: powershell
+        run: php scripts/run_tests.php
+
+      - name: WSL runtime readiness (preview)
+        shell: powershell
+        run: |
+          $env:AIHUB_WSL_EXECUTABLE = '3waaihub-ci-missing-wsl.exe'
+          $readiness = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Mode WslRuntime -InstallRoot $PWD.Path -ModelsRoot 'D:\DATA\models' -WslDistro Ubuntu-24.04 -LinuxDataRoot /DATA -Check 2>&1
+          $exitCode = $LASTEXITCODE
+          $readiness | Write-Output
+          if ($exitCode -ne 0) { throw "WslRuntime -Check failed with exit $exitCode" }
+          $report = $readiness -join "`n"
+          if ($report -notmatch 'Status: NOT READY') { throw 'Missing Status: NOT READY readiness result' }
+          if ($report -notmatch 'Ready: false') { throw 'Missing Ready: false readiness result' }
+
+      - name: Diff check
+        shell: powershell
+        run: |
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { throw 'git diff --check failed' }

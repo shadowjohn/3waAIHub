@@ -80,19 +80,38 @@ function hub_collect_gpu_metric(): array
     ];
 }
 
-function hub_collect_host_metric(PDO $db): array
+function hub_collect_load_average(?string $platform = null, ?callable $reader = null): array
 {
-    $memory = hub_memory_status();
-    $swapIo = hub_collect_vmstat_swap_io();
-    $load = sys_getloadavg() ?: [0, 0, 0];
-    $rootDisk = hub_disk_metric('/');
-    $dataDisk = hub_disk_metric(is_dir('/DATA') ? '/DATA' : HUB_DATA_DIR);
+    if (hub_platform_id($platform) === 'windows') {
+        return hub_not_applicable_status();
+    }
+
+    $reader ??= static fn (): array|false => function_exists('sys_getloadavg') ? sys_getloadavg() : false;
+    $values = $reader();
+    if (!is_array($values) || count($values) < 3) {
+        return ['available' => false, 'status' => 'unavailable', 'reason' => 'load_average_unavailable'];
+    }
+
+    return ['available' => true, 'status' => 'ok', 'values' => array_values($values)];
+}
+
+function hub_collect_host_metric(PDO $db, ?string $platform = null): array
+{
+    $platform = hub_platform_id($platform);
+    $isWindows = $platform === 'windows';
+    $memory = hub_memory_status($platform);
+    $swapIo = hub_collect_vmstat_swap_io($platform);
+    $load = hub_collect_load_average($platform);
+    $loadValues = $load['values'] ?? [null, null, null];
+    $rootDisk = $isWindows ? hub_not_applicable_status() : hub_disk_metric('/');
+    $dataDisk = $isWindows ? hub_not_applicable_status() : hub_disk_metric(is_dir('/DATA') ? '/DATA' : HUB_DATA_DIR);
     $availablePercent = hub_percent($memory['available_bytes'] ?? null, $memory['total_bytes'] ?? null);
 
     return [
-        'load_1' => (float)$load[0],
-        'load_5' => (float)$load[1],
-        'load_15' => (float)$load[2],
+        'load_1' => isset($loadValues[0]) ? (float)$loadValues[0] : null,
+        'load_5' => isset($loadValues[1]) ? (float)$loadValues[1] : null,
+        'load_15' => isset($loadValues[2]) ? (float)$loadValues[2] : null,
+        'load_status' => $load,
         'ram_total_mb' => hub_bytes_to_mb($memory['total_bytes'] ?? null),
         'ram_used_mb' => hub_bytes_to_mb($memory['used_bytes'] ?? null),
         'ram_buff_cache_mb' => hub_bytes_to_mb($memory['buff_cache_bytes'] ?? null),
@@ -102,18 +121,25 @@ function hub_collect_host_metric(PDO $db): array
         'swap_total_mb' => hub_bytes_to_mb($memory['swap_total_bytes'] ?? null),
         'swap_used_mb' => hub_bytes_to_mb($memory['swap_used_bytes'] ?? null),
         'swap_used_percent' => hub_percent($memory['swap_used_bytes'] ?? null, $memory['swap_total_bytes'] ?? null),
-        'vmstat_si' => $swapIo['si'],
-        'vmstat_so' => $swapIo['so'],
-        'memory_pressure' => hub_memory_pressure_status($availablePercent, $swapIo['si'], $swapIo['so']),
+        'memory_status' => $isWindows ? $memory : ['available' => isset($memory['total_bytes']), 'status' => isset($memory['total_bytes']) ? 'ok' : 'unavailable'],
+        'vmstat_si' => $swapIo['si'] ?? null,
+        'vmstat_so' => $swapIo['so'] ?? null,
+        'swap_io_status' => $isWindows ? $swapIo : ['available' => isset($swapIo['si'], $swapIo['so']), 'status' => isset($swapIo['si'], $swapIo['so']) ? 'ok' : 'unavailable'],
+        'memory_pressure' => $isWindows ? 'not_applicable' : hub_memory_pressure_status($availablePercent, $swapIo['si'] ?? null, $swapIo['so'] ?? null),
         'disk_root' => $rootDisk,
         'disk_data' => $dataDisk,
         'models_dir' => hub_disk_metric(hub_get_storage_setting($db, 'AIHUB_MODELS_DIR')),
     ];
 }
 
-function hub_collect_vmstat_swap_io(): array
+function hub_collect_vmstat_swap_io(?string $platform = null, ?callable $runner = null): array
 {
-    $result = hub_run_command(['vmstat', '1', '2'], 5);
+    if (hub_platform_id($platform) === 'windows') {
+        return hub_not_applicable_status();
+    }
+
+    $runner ??= 'hub_run_command';
+    $result = $runner(['vmstat', '1', '2'], 5);
     if ($result['exit_code'] !== 0) {
         return ['si' => null, 'so' => null];
     }
@@ -151,11 +177,13 @@ function hub_memory_pressure_status(?float $availablePercent, ?int $si, ?int $so
     return 'ok';
 }
 
-function hub_collect_docker_metric(): array
+function hub_collect_docker_metric(?string $platform = null, ?callable $runner = null): array
 {
-    $version = hub_run_command(['docker', '--version'], 10);
-    $compose = hub_run_command(['docker', 'compose', 'version'], 10);
-    $nvidiaCtk = hub_run_command(['nvidia-ctk', '--version'], 10);
+    $platform = hub_platform_id($platform);
+    $runner ??= 'hub_run_command';
+    $version = $runner(['docker', '--version'], 10);
+    $compose = $runner(['docker', 'compose', 'version'], 10);
+    $nvidiaCtk = $runner(['nvidia-ctk', '--version'], 10);
     if ($version['exit_code'] !== 0) {
         return [
             'available' => false,
@@ -165,13 +193,17 @@ function hub_collect_docker_metric(): array
             'compose_reason' => $compose['exit_code'] === 0 ? '' : hub_command_error_summary($compose),
             'nvidia_container_toolkit_reason' => $nvidiaCtk['exit_code'] === 0 ? '' : hub_command_error_summary($nvidiaCtk),
             'nvidia_runtime_available' => false,
+            'root_dir' => '',
+            'root_status' => $platform === 'windows' ? hub_not_applicable_status() : ['available' => false, 'status' => 'unavailable', 'reason' => 'docker_unavailable'],
+            'root_free_gb' => null,
+            'root_used_percent' => null,
             'reason' => hub_command_error_summary($version),
         ];
     }
 
-    $info = hub_run_command(['docker', 'info'], 15);
+    $info = $runner(['docker', 'info'], 15);
     $rootDir = $info['exit_code'] === 0 ? hub_parse_docker_root_dir($info['stdout']) : '';
-    $disk = $rootDir !== '' ? hub_disk_metric($rootDir) : null;
+    $disk = $platform !== 'windows' && $rootDir !== '' ? hub_disk_metric($rootDir) : null;
 
     return [
         'available' => true,
@@ -185,6 +217,7 @@ function hub_collect_docker_metric(): array
         'nvidia_container_toolkit_reason' => $nvidiaCtk['exit_code'] === 0 ? '' : hub_command_error_summary($nvidiaCtk),
         'nvidia_runtime_reason' => $info['exit_code'] !== 0 ? hub_command_error_summary($info) : (($info['stdout'] !== '' && stripos($info['stdout'], 'nvidia') === false) ? 'docker info 未列出 nvidia runtime。' : ''),
         'root_dir' => $rootDir,
+        'root_status' => $platform === 'windows' ? hub_not_applicable_status() : ['available' => $rootDir !== '', 'status' => $rootDir === '/DATA/docker' ? 'ok' : 'warning', 'reason' => $rootDir === '/DATA/docker' ? '' : 'docker_root_outside_data'],
         'root_free_gb' => $disk['free_gb'] ?? null,
         'root_used_percent' => $disk['used_percent'] ?? null,
         'warning' => hub_docker_root_warning($rootDir, isset($disk['free_gb']) ? $disk['free_gb'] * 1024 * 1024 * 1024 : null),
@@ -306,16 +339,19 @@ function hub_gpu_compute_capability_for_name(string $name): ?string
     return null;
 }
 
-function hub_station_hardware_profile(PDO $db): array
+function hub_station_hardware_profile(PDO $db, ?string $platform = null): array
 {
+    $platform = hub_platform_id($platform);
     $latest = hub_latest_host_metric_snapshot($db);
     $data = $latest['data'] ?? [];
     $gpu = is_array($data['gpu'] ?? null) ? $data['gpu'] : [];
     $docker = is_array($data['docker'] ?? null) ? $data['docker'] : [];
     $gpuName = (string)($gpu['name'] ?? '');
+    $linuxDockerTarget = hub_platform_target_supported('linux-docker', $platform);
 
     return [
         'snapshot_at' => (string)($latest['created_at'] ?? ''),
+        'linux_docker_target' => $linuxDockerTarget,
         'gpu' => [
             'available' => !empty($gpu['available']),
             'name' => $gpuName,
@@ -325,7 +361,7 @@ function hub_station_hardware_profile(PDO $db): array
             'cuda_version' => (string)($gpu['cuda_version'] ?? ''),
         ],
         'docker_gpu' => [
-            'available' => !empty($docker['daemon_reachable']) && !empty($docker['nvidia_container_toolkit']) && !empty($docker['nvidia_runtime_available']) && !empty($gpu['available']),
+            'available' => !empty($linuxDockerTarget['supported']) && !empty($docker['daemon_reachable']) && !empty($docker['nvidia_container_toolkit']) && !empty($docker['nvidia_runtime_available']) && !empty($gpu['available']),
             'docker_available' => !empty($docker['available']),
             'docker_compose_available' => !empty($docker['compose_available']),
             'daemon_reachable' => !empty($docker['daemon_reachable']),
@@ -339,9 +375,9 @@ function hub_station_hardware_profile(PDO $db): array
     ];
 }
 
-function hub_host_metric_fix_suggestions(array $metrics, string $workerUser = ''): array
+function hub_host_metric_fix_suggestions(array $metrics, string $workerUser = '', ?string $platform = null): array
 {
-    if ($metrics === []) {
+    if ($metrics === [] || hub_platform_id($platform) === 'windows') {
         return [];
     }
 
@@ -381,11 +417,20 @@ function hub_host_metric_fix_suggestions(array $metrics, string $workerUser = ''
     return $suggestions;
 }
 
-function hub_pack_preflight(PDO $db, array $manifest): array
+function hub_pack_preflight(PDO $db, array $manifest, ?string $platform = null): array
 {
-    $profile = hub_station_hardware_profile($db);
+    $profile = hub_station_hardware_profile($db, $platform);
     $checks = (array)($manifest['preflight']['checks'] ?? []);
     $results = [];
+
+    if ((string)($manifest['runtime']['kind'] ?? '') === 'docker') {
+        $target = $profile['linux_docker_target'];
+        $results['platform_target'] = hub_preflight_row(
+            'platform_target',
+            !empty($target['supported']) ? 'pass' : 'fail',
+            !empty($target['supported']) ? 'linux-docker target 可執行' : (string)($target['reason'] ?? HUB_WINDOWS_LINUX_DOCKER_UNSUPPORTED)
+        );
+    }
 
     foreach ($checks as $check) {
         $key = (string)$check;

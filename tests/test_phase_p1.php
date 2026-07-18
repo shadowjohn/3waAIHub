@@ -60,3 +60,59 @@ hub_test('PhaseP-1 hello compose keeps legacy service name to avoid orphan confl
 
     hub_test_assert(str_contains($compose, "\n  hello:\n"), 'hello-main compose service must remain hello');
 });
+
+hub_test('Windows service build and start reject Linux Docker before runtime and port side effects', function (): void {
+    if (hub_platform_id() !== 'windows') {
+        hub_test_skip('Windows-only service side-effect contract.');
+    }
+
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'ocr-ppocrv5', [
+        'service_key' => 'ocr-windows-gate',
+        'name' => 'OCR Windows Gate',
+        'mode' => 'ocr_windows_gate',
+        'port_mode' => 'auto',
+        'environment' => 'production',
+    ]);
+    $service = $installed['service'];
+    $db->exec('UPDATE services SET local_port = NULL WHERE id = ' . (int)$service['id']);
+    $service = hub_get_service($db, (int)$service['id']);
+    $composePath = hub_path((string)$service['compose_file']);
+    $composeBefore = "# unsupported gate marker\n";
+    file_put_contents($composePath, $composeBefore);
+    $buildJobId = hub_enqueue_command_job($db, 'service_build', (int)$service['id'], [], null, '127.0.0.1');
+    $startJobId = hub_enqueue_command_job($db, 'service_start', (int)$service['id'], [], null, '127.0.0.1');
+
+    foreach ([
+        hub_build_service($db, $service, hub_get_command_job($db, $buildJobId)),
+        hub_start_service_with_job($db, $service, hub_get_command_job($db, $startJobId)),
+    ] as $result) {
+        hub_test_assert($result['exit_code'] === 78, 'Windows service action must return unsupported exit 78');
+        hub_test_assert($result['error_code'] === 'platform_target_unsupported', 'Windows service action error code mismatch');
+    }
+
+    $after = hub_get_service($db, (int)$service['id']);
+    hub_test_assert($after['local_port'] === null, 'unsupported service start must not allocate a port');
+    hub_test_assert((string)file_get_contents($composePath) === $composeBefore, 'unsupported service action must not rewrite compose');
+    hub_test_assert(hub_get_command_job($db, $buildJobId)['stage'] === 'queued', 'unsupported build must not claim preparation progress');
+    hub_test_assert(hub_get_command_job($db, $startJobId)['stage'] === 'queued', 'unsupported start must not claim preparation progress');
+});
+
+hub_test('Windows direct service status stop restart and logs reject before Docker', function (): void {
+    if (hub_platform_id() !== 'windows') {
+        hub_test_skip('Windows-only direct service gate contract.');
+    }
+
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    foreach ([
+        hub_refresh_service_status($db, $service),
+        hub_stop_service($db, $service),
+        hub_restart_service($db, $service),
+        hub_tail_service_logs($db, $service),
+    ] as $result) {
+        hub_test_assert(is_array($result), 'unsupported direct service action must return a result contract');
+        hub_test_assert($result['exit_code'] === 78, 'unsupported direct service action exit mismatch');
+        hub_test_assert($result['error_code'] === 'platform_target_unsupported', 'unsupported direct service action error code mismatch');
+    }
+});

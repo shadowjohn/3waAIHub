@@ -79,6 +79,9 @@ hub_test('PhaseDX-4 public docs and playground examples use current host URLs', 
         str_contains((string)$hello['examples']['curl'], 'https://nature.focusit.tw/3waAIHub/api.php?mode=hello'),
         'public docs examples must use current host'
     );
+    $curlExecutable = hub_platform_id() === 'windows' ? 'curl.exe' : 'curl';
+    $continuation = hub_platform_id() === 'windows' ? "`" : "\\";
+    hub_test_assert(str_starts_with((string)$hello['examples']['curl'], $curlExecutable . ' '), 'public docs must use the current platform curl executable');
 
     require_once HUB_ROOT . '/admin/playground.php';
     $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/playground.php';
@@ -87,4 +90,7 @@ hub_test('PhaseDX-4 public docs and playground examples use current host URLs', 
         str_contains($examples['curl'], 'https://nature.focusit.tw/3waAIHub/api.php?mode=hello'),
         'playground examples must use current host'
     );
+    hub_test_assert(str_starts_with($examples['curl'], $curlExecutable . ' '), 'playground must use the current platform curl executable');
+    $translateExamples = hub_playground_examples('translate');
+    hub_test_assert(str_contains($translateExamples['curl'], ' ' . $continuation . "\n"), 'playground must use the current platform continuation');
 });

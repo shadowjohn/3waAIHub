@@ -1,6 +1,9 @@
 <?php
 declare(strict_types=1);
 
+const HUB_EXIT_UNSUPPORTED = 78;
+const HUB_WINDOWS_LINUX_DOCKER_UNSUPPORTED = 'linux-docker target is not available on Windows host';
+
 function hub_platform_id(?string $osFamily = null): string
 {
     return match (strtolower(trim($osFamily ?? PHP_OS_FAMILY))) {
@@ -48,17 +51,88 @@ function hub_container_path(string $path): string
     return '/' . implode('/', $parts);
 }
 
-function hub_platform_target_supported(string $target, ?string $platform = null): array
+function hub_runtime_profile_path(): string
 {
-    $platform = hub_platform_id($platform);
-    if ($platform === 'linux' && $target === 'linux-docker') {
-        return ['platform' => $platform, 'target' => $target, 'supported' => true, 'reason' => null];
-    }
-    if ($platform === 'windows' && $target === 'linux-docker') {
-        return ['platform' => $platform, 'target' => $target, 'supported' => false, 'reason' => 'linux-docker target is not available on Windows host'];
+    return HUB_DATA_DIR . '/runtime_profile.json';
+}
+
+function hub_load_runtime_profile(?string $path = null): array
+{
+    $path ??= hub_runtime_profile_path();
+    if (!is_file($path)) {
+        return [];
     }
 
-    return ['platform' => $platform, 'target' => $target, 'supported' => false, 'reason' => $target . ' target is not implemented on ' . $platform . ' host'];
+    $profile = json_decode((string)file_get_contents($path), true);
+    return is_array($profile) ? $profile : [];
+}
+
+function hub_runtime_target_resolution(string $target, ?string $platform = null, ?array $profile = null): array
+{
+    $platform = hub_platform_id($platform);
+    if ($platform === 'windows' && $target === 'linux-docker') {
+        return [
+            'platform' => $platform,
+            'target' => $target,
+            'supported' => false,
+            'adapter' => null,
+            'profile' => null,
+            'reason' => HUB_WINDOWS_LINUX_DOCKER_UNSUPPORTED,
+        ];
+    }
+    if ($platform === 'linux' && $target === 'linux-docker') {
+        return [
+            'platform' => $platform,
+            'target' => $target,
+            'supported' => true,
+            'adapter' => 'native-linux-docker',
+            'profile' => null,
+            'reason' => null,
+        ];
+    }
+
+    $profile ??= hub_load_runtime_profile();
+    $row = $profile['runtime_targets'][$target] ?? null;
+    if (is_array($row)) {
+        $supported = !empty($row['supported']);
+        return [
+            'platform' => $platform,
+            'target' => $target,
+            'supported' => $supported,
+            'adapter' => $supported ? $target : null,
+            'profile' => $row,
+            'reason' => isset($row['reason']) ? (string)$row['reason'] : null,
+        ];
+    }
+
+    return [
+        'platform' => $platform,
+        'target' => $target,
+        'supported' => false,
+        'adapter' => null,
+        'profile' => null,
+        'reason' => $target . ' target is not implemented on ' . $platform . ' host',
+    ];
+}
+
+function hub_platform_target_supported(string $target, ?string $platform = null): array
+{
+    return hub_runtime_target_resolution($target, $platform);
+}
+
+function hub_unsupported_runtime_result(string $target, string $message): array
+{
+    $stderr = 'unsupported: ' . $message;
+    return [
+        'exit_code' => HUB_EXIT_UNSUPPORTED,
+        'error_code' => 'platform_target_unsupported',
+        'target' => $target,
+        'message' => $message,
+        'retryable' => false,
+        'stdout' => '',
+        'stderr' => $stderr,
+        'output' => $stderr,
+    ];
 }
 
 function hub_normalize_platform_targets(array $manifest): array

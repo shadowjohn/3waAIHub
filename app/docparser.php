@@ -214,7 +214,7 @@ function hub_docparser_build_docir(array $structurePayload, array $options): arr
 
 function hub_docparser_extract_figure_assets(string $inputFile, array $docir, string $figureDir): array
 {
-    if (!is_file($inputFile) || ($docir['figures'] ?? []) === [] || trim((string)shell_exec('command -v pdftoppm 2>/dev/null')) === '') {
+    if (!is_file($inputFile) || ($docir['figures'] ?? []) === [] || hub_docparser_run_command(['pdftoppm', '-v']) !== 0) {
         return $docir;
     }
     if (!is_dir($figureDir) && !mkdir($figureDir, 0775, true) && !is_dir($figureDir)) {

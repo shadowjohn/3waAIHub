@@ -8,6 +8,11 @@ hub_cli_only();
 
 $tests = [];
 $failures = 0;
+$skipped = 0;
+
+final class HubTestSkipped extends RuntimeException
+{
+}
 
 function hub_test(string $name, callable $fn): void
 {
@@ -15,11 +20,18 @@ function hub_test(string $name, callable $fn): void
     $tests[$name] = $fn;
 }
 
+function hub_test_skip(string $reason): never
+{
+    throw new HubTestSkipped($reason);
+}
+
 function hub_test_reset_db(): PDO
 {
+    // Windows 需先釋放上一個測試結束後的 PDO 循環參考，否則 SQLite 檔可能仍被鎖住。
+    gc_collect_cycles();
     foreach ([HUB_DB_PATH, HUB_DB_PATH . '-wal', HUB_DB_PATH . '-shm'] as $path) {
-        if (is_file($path)) {
-            unlink($path);
+        if (is_file($path) && !unlink($path)) {
+            throw new RuntimeException('Cannot reset test SQLite file: ' . $path);
         }
     }
     $db = hub_db();
@@ -71,11 +83,14 @@ foreach ($tests as $name => $fn) {
     try {
         $fn();
         echo '[PASS] ' . $name . PHP_EOL;
+    } catch (HubTestSkipped $e) {
+        $skipped++;
+        echo '[SKIP] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
     } catch (Throwable $e) {
         $failures++;
         echo '[FAIL] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
     }
 }
 
-echo 'tests=' . count($tests) . ' failures=' . $failures . PHP_EOL;
+echo 'tests=' . count($tests) . ' failures=' . $failures . ' skipped=' . $skipped . PHP_EOL;
 exit($failures === 0 ? 0 : 1);

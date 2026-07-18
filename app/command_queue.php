@@ -162,7 +162,7 @@ function hub_claim_next_command_job(PDO $db): ?array
     }
 }
 
-function hub_finish_command_job(PDO $db, array $job, string $status, int $exitCode, string $stdout, string $stderr, ?string $errorMessage = null): void
+function hub_finish_command_job(PDO $db, array $job, string $status, int $exitCode, string $stdout, string $stderr, ?string $errorMessage = null, ?string $errorCode = null): void
 {
     if (!in_array($status, ['success', 'failed', 'cancelled', 'timeout'], true)) {
         throw new InvalidArgumentException('Invalid job status.');
@@ -196,6 +196,7 @@ function hub_finish_command_job(PDO $db, array $job, string $status, int $exitCo
              stdout_path = :stdout_path,
              stderr_path = :stderr_path,
              error_message = :error_message,
+             error_code = :error_code,
              updated_at = :updated_at
          WHERE id = :id'
     );
@@ -206,6 +207,7 @@ function hub_finish_command_job(PDO $db, array $job, string $status, int $exitCo
         ':stdout_path' => $stdoutPath,
         ':stderr_path' => $stderrPath,
         ':error_message' => $errorMessage,
+        ':error_code' => $errorCode,
         ':updated_at' => hub_now(),
         ':id' => (int)$job['id'],
     ];
@@ -284,6 +286,7 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
         'current_message' => (string)($job['current_message'] ?? ''),
         'exit_code' => $job['exit_code'] === null ? null : (int)$job['exit_code'],
         'error_message' => (string)($job['error_message'] ?? ''),
+        'error_code' => isset($job['error_code']) ? (string)$job['error_code'] : null,
         'updated_at' => (string)($job['updated_at'] ?? ''),
         'stdout_tail' => hub_tail_file((string)($job['stdout_path'] ?? '')),
         'stderr_tail' => hub_tail_file((string)($job['stderr_path'] ?? '')),

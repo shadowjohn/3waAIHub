@@ -152,14 +152,216 @@ function hub_get_storage_paths(PDO $db): array
     return $paths;
 }
 
-function hub_is_safe_absolute_path(string $path): bool
+function hub_storage_canonical_comparison_path(string $path, ?string $platform = null): ?string
 {
-    if ($path === '' || str_contains($path, "\0") || !str_starts_with($path, '/')) {
+    $platform = hub_platform_id($platform);
+    if ($path !== trim($path)
+        || preg_match('/[\x00-\x1F]/', $path) === 1
+        || ($platform !== 'windows' && (str_contains($path, '\\')
+            || preg_match('/^[A-Za-z]:[\/\\\\]/', $path) === 1
+            || str_starts_with($path, '\\\\')
+            || str_starts_with($path, '//')))
+        || !hub_is_host_absolute_path($path)) {
+        return null;
+    }
+
+    $slashPath = str_replace('\\', '/', $path);
+    if ($platform === 'windows' && str_starts_with($slashPath, '//')) {
+        $slashPath = '//' . (preg_replace('#/+#', '/', substr($slashPath, 2)) ?? substr($slashPath, 2));
+    } else {
+        $slashPath = preg_replace('#/+#', '/', $slashPath) ?? $slashPath;
+    }
+
+    if ($platform === 'windows' && preg_match('#^([A-Za-z]):/(.*)$#', $slashPath, $matches) === 1) {
+        $root = $matches[1] . ':/';
+        $tailPath = $matches[2];
+    } elseif ($platform === 'windows' && preg_match('#^//([^/]+)/([^/]+)(?:/(.*))?$#', $slashPath, $matches) === 1) {
+        if (preg_match('/[<>:"|?*]/', $matches[1] . $matches[2]) === 1
+            || preg_match('/^[A-Za-z]\$$/i', $matches[2]) === 1) {
+            return null;
+        }
+        $root = '//' . $matches[1] . '/' . $matches[2] . '/';
+        $tailPath = $matches[3] ?? '';
+    } elseif (str_starts_with($slashPath, '/')) {
+        $root = '/';
+        $tailPath = ltrim($slashPath, '/');
+    } else {
+        return null;
+    }
+
+    $parts = [];
+    $depth = 0;
+    foreach (explode('/', $tailPath) as $part) {
+        if ($part === '') {
+            continue;
+        }
+        if ($part === '.') {
+            $parts[] = $part;
+            continue;
+        }
+        if ($part === '..') {
+            if ($depth === 0) {
+                return null;
+            }
+            $depth--;
+            $parts[] = $part;
+            continue;
+        }
+        if ($platform === 'windows' && (preg_match('/[<>:"|?*]/', $part) === 1
+            || preg_match('/[. ]$/', $part) === 1
+            || preg_match('/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i', $part) === 1)) {
+            return null;
+        }
+        $parts[] = $part;
+        $depth++;
+    }
+
+    $resolved = realpath($root);
+    if ($resolved === false || !is_dir($resolved)) {
+        return null;
+    }
+
+    $tail = [];
+    $logicalDepth = 0;
+    foreach ($parts as $part) {
+        if ($part === '' || $part === '.') {
+            continue;
+        }
+        if ($part === '..') {
+            if ($logicalDepth === 0) {
+                return null;
+            }
+            $logicalDepth--;
+            if ($tail !== []) {
+                array_pop($tail);
+                continue;
+            }
+            $parent = realpath(rtrim($resolved, '/\\') . DIRECTORY_SEPARATOR . '..');
+            if ($parent === false || !is_dir($parent)) {
+                return null;
+            }
+            $resolved = $parent;
+            continue;
+        }
+
+        $logicalDepth++;
+        if ($tail !== []) {
+            $tail[] = $part;
+            continue;
+        }
+        if (!is_dir($resolved)) {
+            return null;
+        }
+        $probe = rtrim($resolved, '/\\') . DIRECTORY_SEPARATOR . $part;
+        $next = realpath($probe);
+        if ($next === false) {
+            if (file_exists($probe) || is_link($probe)) {
+                return null;
+            }
+            $tail[] = $part;
+            continue;
+        }
+        if (!is_dir($next)) {
+            return null;
+        }
+        $resolved = $next;
+    }
+
+    $canonical = str_replace('\\', '/', $resolved);
+    if (str_starts_with($canonical, '//')) {
+        $canonical = '//' . (preg_replace('#/+#', '/', substr($canonical, 2)) ?? substr($canonical, 2));
+    } else {
+        $canonical = preg_replace('#/+#', '/', $canonical) ?? $canonical;
+    }
+
+    if (preg_match('#^([A-Za-z]):/(.*)$#', $canonical, $matches) === 1) {
+        $canonicalRoot = $matches[1] . ':/';
+        $canonicalParts = $matches[2] === '' ? [] : explode('/', $matches[2]);
+    } elseif (preg_match('#^//([^/]+)/([^/]+)(?:/(.*))?$#', $canonical, $matches) === 1) {
+        $canonicalRoot = '//' . $matches[1] . '/' . $matches[2] . '/';
+        $canonicalParts = ($matches[3] ?? '') === '' ? [] : explode('/', $matches[3]);
+    } elseif (str_starts_with($canonical, '/')) {
+        $canonicalRoot = '/';
+        $canonicalParts = ltrim($canonical, '/') === '' ? [] : explode('/', ltrim($canonical, '/'));
+    } else {
+        return null;
+    }
+    foreach ($tail as $part) {
+        if ($part === '' || $part === '.') {
+            continue;
+        }
+        if ($part === '..') {
+            if ($canonicalParts === []) {
+                return null;
+            }
+            array_pop($canonicalParts);
+            continue;
+        }
+        $canonicalParts[] = $part;
+    }
+
+    $canonical = $canonicalRoot . implode('/', $canonicalParts);
+
+    return $platform === 'windows' ? strtolower($canonical) : $canonical;
+}
+
+function hub_storage_paths_equal(string $left, string $right, ?string $platform = null): bool
+{
+    $left = hub_storage_canonical_comparison_path($left, $platform);
+    $right = hub_storage_canonical_comparison_path($right, $platform);
+
+    return $left !== null && $left === $right;
+}
+
+function hub_storage_path_is_within(string $candidate, string $root, ?string $platform = null): bool
+{
+    $candidate = hub_storage_canonical_comparison_path($candidate, $platform);
+    $root = hub_storage_canonical_comparison_path($root, $platform);
+    if ($candidate === null || $root === null) {
         return false;
     }
 
-    $path = rtrim($path, '/') ?: '/';
-    return !in_array($path, ['/', '/etc', '/bin', '/usr', '/var/lib/docker'], true);
+    return $candidate === $root || str_starts_with($candidate, rtrim($root, '/') . '/');
+}
+
+function hub_storage_path_is_root(string $canonical, ?string $platform = null): bool
+{
+    $canonical = str_replace('\\', '/', trim($canonical));
+    if ($canonical === '/') {
+        return true;
+    }
+
+    return hub_platform_id($platform) === 'windows'
+        && (preg_match('#^[A-Za-z]:/?$#', $canonical) === 1
+            || preg_match('#^//[^/]+/[^/]+/?$#', $canonical) === 1);
+}
+
+function hub_is_safe_absolute_path(string $path): bool
+{
+    $platform = hub_platform_id();
+    $canonical = hub_storage_canonical_comparison_path($path, $platform);
+    if ($canonical === null || hub_storage_path_is_root($canonical, $platform)) {
+        return false;
+    }
+
+    $blocked = [];
+    if ($platform === 'windows') {
+        foreach (['SystemRoot', 'ProgramFiles', 'ProgramFiles(x86)', 'ProgramData'] as $key) {
+            $value = getenv($key);
+            if (is_string($value) && $value !== '') {
+                $blocked[] = $value;
+            }
+        }
+    } else {
+        $blocked = ['/etc', '/bin', '/usr', '/var/lib/docker'];
+    }
+    foreach ($blocked as $root) {
+        if (hub_storage_path_is_within($canonical, $root, $platform)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function hub_is_safe_models_root(string $path): bool
@@ -168,10 +370,8 @@ function hub_is_safe_models_root(string $path): bool
         return false;
     }
 
-    $path = rtrim(preg_replace('#/+#', '/', $path) ?? $path, '/') ?: '/';
-    foreach (['/etc', '/var/lib/docker', '/DATA/docker', HUB_ROOT, HUB_DATA_DIR] as $blocked) {
-        $blocked = rtrim($blocked, '/');
-        if ($path === $blocked || str_starts_with($path, $blocked . '/')) {
+    foreach ([HUB_ROOT, HUB_DATA_DIR, '/DATA/docker'] as $root) {
+        if (hub_storage_path_is_within($path, $root)) {
             return false;
         }
     }

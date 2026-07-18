@@ -53,7 +53,7 @@ function hub_dash_pending_items(array $metrics): array
     if (($metrics['docker']['warning'] ?? '') !== '') {
         $items[] = __('Docker root warning：') . $metrics['docker']['warning'];
     }
-    if (($metrics['host']['memory_pressure'] ?? 'ok') !== 'ok') {
+    if (in_array(($metrics['host']['memory_pressure'] ?? 'not_applicable'), ['warning', 'critical'], true)) {
         $items[] = __('Memory pressure：MemAvailable=') . hub_dash_value($metrics['host']['ram_available_percent'] ?? null, '%')
             . ' vmstat si/so=' . hub_dash_value($metrics['host']['vmstat_si'] ?? null) . '/'
             . hub_dash_value($metrics['host']['vmstat_so'] ?? null);
@@ -227,6 +227,7 @@ hub_admin_header('儀表板', $user);
 <section class="panel">
     <h1><?= hub_h($siteTitle) ?> <?= hub_h(__('總覽中控台')) ?></h1>
     <p class="muted"><?= hub_h($siteSubtitle) ?>。<?= hub_dash_t('儀表板只讀 SQLite 最新監測快照；主機探測請由 CLI / cron 執行。') ?></p>
+    <?php if (hub_platform_id() === 'windows'): ?><p class="muted">3waAIHub Core（Control Plane）運作中；WSL Runtime（Preview）readiness 不會由 Docker CLI 偵測結果推定。</p><?php endif; ?>
 </section>
 
 <section class="panel">
@@ -348,6 +349,27 @@ hub_admin_header('儀表板', $user);
     $vramTotalLabel = hub_model_format_bytes($vramTotalMb !== null ? $vramTotalMb * 1024 * 1024 : null);
     $gpuUtilLabel = is_numeric($gpu['util_percent'] ?? null) ? (string)round($gpuUtilPercent, 1) . '%' : 'N/A';
     $gpuTempLabel = $gpuTempC !== null ? (string)round($gpuTempC, 1) . '°C' : 'N/A';
+    $memoryPressure = (string)($host['memory_pressure'] ?? 'not_applicable');
+    $memoryPressureClass = $memoryPressure === 'not_applicable' ? 'muted' : ($memoryPressure === 'ok' ? 'ok' : 'bad');
+    $memoryPressureLabel = $memoryPressure === 'not_applicable' ? 'N/A（不適用）' : $memoryPressure;
+    $memoryApplicable = (($host['memory_status']['status'] ?? '') !== 'not_applicable') && is_numeric($host['ram_used_mb'] ?? null);
+    $rootDiskApplicable = (($host['disk_root']['status'] ?? '') !== 'not_applicable');
+    $dataDiskApplicable = (($host['disk_data']['status'] ?? '') !== 'not_applicable');
+    $linuxDiskApplicable = $rootDiskApplicable || $dataDiskApplicable;
+    $dockerRootApplicable = (($docker['root_status']['status'] ?? '') !== 'not_applicable');
+    $diskBars = [];
+    if ($rootDiskApplicable && is_numeric($host['disk_root']['used_percent'] ?? null)) {
+        $diskBars[] = ['name' => '/', 'value' => hub_dash_percent($host['disk_root']['used_percent'])];
+    }
+    if ($dataDiskApplicable && is_numeric($host['disk_data']['used_percent'] ?? null)) {
+        $diskBars[] = ['name' => '/DATA', 'value' => hub_dash_percent($host['disk_data']['used_percent'])];
+    }
+    if (is_numeric($storage['models_used_percent'] ?? null)) {
+        $diskBars[] = ['name' => 'Models', 'value' => hub_dash_percent($storage['models_used_percent'])];
+    }
+    if ($dockerRootApplicable && is_numeric($docker['root_used_percent'] ?? null)) {
+        $diskBars[] = ['name' => 'Docker', 'value' => hub_dash_percent($docker['root_used_percent'])];
+    }
     $chartData = [
         'vramPercent' => $vramPercent,
         'vramUsedLabel' => $vramUsedLabel,
@@ -356,18 +378,13 @@ hub_admin_header('儀表板', $user);
         'gpuUtilLabel' => $gpuUtilLabel,
         'gpuTemp' => hub_dash_percent($gpuTempC ?? 0),
         'gpuTempLabel' => $gpuTempLabel,
-        'ramPercent' => hub_dash_percent($host['ram_used_percent'] ?? 0),
-        'ramParts' => [
+        'ramApplicable' => $memoryApplicable,
+        'ramParts' => $memoryApplicable ? [
             ['name' => __('已用'), 'value' => (float)($host['ram_used_mb'] ?? 0)],
             ['name' => __('Buff/Cache'), 'value' => (float)($host['ram_buff_cache_mb'] ?? 0)],
             ['name' => __('可用'), 'value' => (float)($host['ram_available_mb'] ?? 0)],
-        ],
-        'diskBars' => [
-            ['name' => '/', 'value' => hub_dash_percent($host['disk_root']['used_percent'] ?? 0)],
-            ['name' => '/DATA', 'value' => hub_dash_percent($host['disk_data']['used_percent'] ?? 0)],
-            ['name' => 'Models', 'value' => hub_dash_percent($storage['models_used_percent'] ?? 0)],
-            ['name' => 'Docker', 'value' => hub_dash_percent($docker['root_used_percent'] ?? 0)],
-        ],
+        ] : [],
+        'diskBars' => $diskBars,
         'serviceBars' => [
             ['name' => __('執行中'), 'value' => (int)($counts['running_services'] ?? 0)],
             ['name' => __('已停止'), 'value' => (int)($counts['stopped_services'] ?? 0)],
@@ -450,8 +467,8 @@ hub_admin_header('儀表板', $user);
                 <div><strong><?= hub_dash_t('可用') ?></strong><?= hub_h(hub_dash_value($host['ram_available_mb'] ?? null, ' MB')) ?> / <?= hub_h(hub_dash_value($host['ram_available_percent'] ?? null, '%')) ?></div>
                 <div><strong><?= hub_dash_t('Swap 已用') ?></strong><?= hub_h(hub_dash_value($host['swap_used_mb'] ?? null, ' MB')) ?></div>
             </div>
-            <p class="muted"><?= hub_dash_t('記憶體壓力') ?>：<span class="<?= ($host['memory_pressure'] ?? 'ok') === 'ok' ? 'ok' : 'bad' ?>"><?= hub_h((string)($host['memory_pressure'] ?? 'ok')) ?></span>　vmstat si/so: <?= hub_h(hub_dash_value($host['vmstat_si'] ?? null)) ?> / <?= hub_h(hub_dash_value($host['vmstat_so'] ?? null)) ?></p>
-            <div id="ramChart" class="dash-chart"></div>
+            <p class="muted"><?= hub_dash_t('記憶體壓力') ?>：<span class="<?= $memoryPressureClass ?>"><?= hub_h($memoryPressureLabel) ?></span>　vmstat si/so: <?= hub_h(hub_dash_value($host['vmstat_si'] ?? null)) ?> / <?= hub_h(hub_dash_value($host['vmstat_so'] ?? null)) ?></p>
+            <?php if ($memoryApplicable): ?><div id="ramChart" class="dash-chart"></div><?php else: ?><p class="muted">N/A（不適用）</p><?php endif; ?>
         </div>
         <div class="dash-card dash-span-6">
             <h3><?= hub_dash_t('磁碟 / 儲存') ?></h3>
@@ -460,14 +477,18 @@ hub_admin_header('儀表板', $user);
                 <?= hub_dash_t('模型目錄') ?>：<?= hub_h((string)($storage['models_dir'] ?? 'N/A')) ?>
             </p>
             <p class="muted">
-                <?= hub_dash_t('/ 可用空間') ?>：<?= hub_h(hub_dash_gb_value($host['disk_root']['free_gb'] ?? null)) ?> /
-                <?= hub_h(hub_dash_gb_value($host['disk_root']['total_gb'] ?? null)) ?>　
+                <?php if ($linuxDiskApplicable): ?>
+                    <?= hub_dash_t('/ 可用空間') ?>：<?= hub_h(hub_dash_gb_value($host['disk_root']['free_gb'] ?? null)) ?> /
+                    <?= hub_h(hub_dash_gb_value($host['disk_root']['total_gb'] ?? null)) ?>　
+                <?php else: ?>
+                    Linux host filesystems：N/A（不適用）　
+                <?php endif; ?>
                 <?= hub_dash_t('Docker 根目錄可用') ?>：<?= hub_h(hub_dash_gb_value($docker['root_free_gb'] ?? null)) ?>　
                 <?= hub_dash_t('模型目錄可用') ?>：<?= hub_h(hub_dash_gb_value($storage['models_free_gb'] ?? null)) ?> /
                 <?= hub_h(hub_dash_gb_value($storage['models_total_gb'] ?? null)) ?>
             </p>
-            <?php if (!empty($docker['reason'])): ?><p class="bad"><?= hub_dash_t('Docker daemon 目前不可用，請查看環境診斷。') ?></p><?php endif; ?>
-            <div id="diskChart" class="dash-chart"></div>
+            <?php if (!empty($docker['reason'])): ?><p class="<?= hub_platform_id() === 'windows' ? 'muted' : 'bad' ?>"><?= hub_platform_id() === 'windows' ? 'Docker CLI／daemon host fact 目前不可用；不影響 3waAIHub Core（Control Plane）。' : hub_dash_t('Docker daemon 目前不可用，請查看環境診斷。') ?></p><?php endif; ?>
+            <?php if ($diskBars): ?><div id="diskChart" class="dash-chart"></div><?php else: ?><p class="muted">N/A（不適用）</p><?php endif; ?>
         </div>
 
         <div class="dash-card dash-span-6"><div id="serviceChart" class="dash-chart"></div></div>
@@ -525,17 +546,23 @@ hub_admin_header('儀表板', $user);
     metricBar('gpuChart', metric.labels.gpuUtil, metric.gpuUtil, metric.gpuUtilLabel, metricColor(metric.gpuUtil, 70, 92));
     metricBar('tempChart', metric.labels.temp, metric.gpuTemp, metric.gpuTempLabel, metricColor(metric.gpuTemp, 65, 80, '#16a34a'), metric.gpuTempLabel);
     if (window.echarts) {
-        echarts.init(document.getElementById('ramChart')).setOption({
-            title: { text: metric.labels.ramTitle, left: 'center', top: 8, textStyle: { fontSize: 14 } },
-            tooltip: { trigger: 'item' },
-            series: [{ type: 'pie', radius: ['45%', '70%'], data: metric.ramParts }]
-        });
-        echarts.init(document.getElementById('diskChart')).setOption({
-            title: { text: metric.labels.diskTitle, left: 'center', top: 8, textStyle: { fontSize: 14 } },
-            xAxis: { type: 'category', data: metric.diskBars.map(x => x.name) },
-            yAxis: { type: 'value', max: 100 },
-            series: [{ type: 'bar', data: metric.diskBars.map(x => x.value) }]
-        });
+        const ramChart = document.getElementById('ramChart');
+        if (metric.ramApplicable && ramChart) {
+            echarts.init(ramChart).setOption({
+                title: { text: metric.labels.ramTitle, left: 'center', top: 8, textStyle: { fontSize: 14 } },
+                tooltip: { trigger: 'item' },
+                series: [{ type: 'pie', radius: ['45%', '70%'], data: metric.ramParts }]
+            });
+        }
+        const diskChart = document.getElementById('diskChart');
+        if (metric.diskBars.length > 0 && diskChart) {
+            echarts.init(diskChart).setOption({
+                title: { text: metric.labels.diskTitle, left: 'center', top: 8, textStyle: { fontSize: 14 } },
+                xAxis: { type: 'category', data: metric.diskBars.map(x => x.name) },
+                yAxis: { type: 'value', max: 100 },
+                series: [{ type: 'bar', data: metric.diskBars.map(x => x.value) }]
+            });
+        }
         echarts.init(document.getElementById('serviceChart')).setOption({
             title: { text: metric.labels.serviceTitle, left: 'center', top: 8, textStyle: { fontSize: 14 } },
             xAxis: { type: 'category', data: metric.serviceBars.map(x => x.name) },

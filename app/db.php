@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS command_jobs (
     stdout_path TEXT NULL,
     stderr_path TEXT NULL,
     error_message TEXT NULL,
+    error_code TEXT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL,
@@ -540,6 +541,7 @@ SQL);
     hub_add_column_if_missing($db, 'command_jobs', 'progress', 'INTEGER NOT NULL DEFAULT 0');
     hub_add_column_if_missing($db, 'command_jobs', 'stage', 'TEXT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'current_message', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'command_jobs', 'error_code', 'TEXT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_service_key ON services(service_key) WHERE service_key IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_local_port ON services(local_port) WHERE local_port IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_service_ip_whitelists_unique ON service_ip_whitelists(service_id, ip_rule)');
