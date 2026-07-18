@@ -87,6 +87,21 @@ function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = 
     return ['exit_code' => $exitCode, 'stdout' => trim($stdout), 'stderr' => trim($stderr), 'output' => $output];
 }
 
+function hub_linux_docker_unsupported_result(?string $platform = null): ?array
+{
+    $resolution = hub_runtime_target_resolution('linux-docker', $platform);
+    if ($resolution['supported']) {
+        return null;
+    }
+
+    return hub_unsupported_runtime_result('linux-docker', (string)$resolution['reason']);
+}
+
+function hub_run_linux_docker_command(array $command, int $timeoutSeconds = 60, array $env = [], ?string $platform = null): array
+{
+    return hub_linux_docker_unsupported_result($platform) ?? hub_run_command($command, $timeoutSeconds, $env);
+}
+
 function hub_run_command_streamed(array $command, int $timeoutSeconds, array $env, string $stdoutPath, string $stderrPath, ?callable $onOutput = null): array
 {
     hub_cli_only();
@@ -245,7 +260,7 @@ function hub_compose_status_from_ps(string $output): string
     return 'stopped';
 }
 
-function hub_refresh_service_status(PDO $db, array $service): string
+function hub_refresh_service_status(PDO $db, array $service): string|array
 {
     if (hub_service_is_internal_task($service)) {
         $status = (int)($service['enabled'] ?? 0) === 1 ? 'running' : 'stopped';
@@ -253,7 +268,12 @@ function hub_refresh_service_status(PDO $db, array $service): string
         return $status;
     }
 
-    $result = hub_run_command(hub_compose_command($service, ['ps']), 20, hub_compose_env($service));
+    $unsupported = hub_linux_docker_unsupported_result();
+    if ($unsupported !== null) {
+        return $unsupported;
+    }
+
+    $result = hub_run_linux_docker_command(hub_compose_command($service, ['ps']), 20, hub_compose_env($service));
     if ($result['exit_code'] !== 0) {
         hub_add_service_log($db, (int)$service['id'], 'status', $result['output'], (int)$result['exit_code']);
         hub_update_service_status($db, (int)$service['id'], 'error');
@@ -273,6 +293,13 @@ function hub_start_service(PDO $db, array $service): array
 
 function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 {
+    if (!hub_service_is_internal_task($service)) {
+        $unsupported = hub_linux_docker_unsupported_result();
+        if ($unsupported !== null) {
+            return $unsupported;
+        }
+    }
+
     hub_job_progress($db, $job, 'prepare_service_dir', 5, 'Preparing service runtime.');
     $service = hub_refresh_service_runtime_files($db, $service);
     if (hub_service_is_internal_task($service)) {
@@ -331,6 +358,13 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 
 function hub_build_service(PDO $db, array $service, ?array $job = null): array
 {
+    if (!hub_service_is_internal_task($service)) {
+        $unsupported = hub_linux_docker_unsupported_result();
+        if ($unsupported !== null) {
+            return $unsupported;
+        }
+    }
+
     hub_job_progress($db, $job, 'prepare_service_dir', 5, 'Preparing service runtime.');
     $service = hub_refresh_service_runtime_files($db, $service);
     if (hub_service_is_internal_task($service)) {
@@ -384,7 +418,12 @@ function hub_stop_service(PDO $db, array $service): array
         return $result;
     }
 
-    $result = hub_run_command(hub_compose_command($service, ['down', '--timeout', '5']), 10, hub_compose_env($service));
+    $unsupported = hub_linux_docker_unsupported_result();
+    if ($unsupported !== null) {
+        return $unsupported;
+    }
+
+    $result = hub_run_linux_docker_command(hub_compose_command($service, ['down', '--timeout', '5']), 10, hub_compose_env($service));
     hub_add_service_log($db, (int)$service['id'], 'stop', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_set_service_enabled($db, $service['mode'], false);
@@ -398,6 +437,17 @@ function hub_stop_service(PDO $db, array $service): array
 
 function hub_restart_service(PDO $db, array $service): array
 {
+    if (hub_service_is_internal_task($service)) {
+        $result = hub_internal_task_result('internal_task restart no-op');
+        hub_add_service_log($db, (int)$service['id'], 'restart', $result['output'], 0);
+        return $result;
+    }
+
+    $unsupported = hub_linux_docker_unsupported_result();
+    if ($unsupported !== null) {
+        return $unsupported;
+    }
+
     $result = hub_run_command(hub_compose_command($service, ['restart', '--timeout', '5']), 10, hub_compose_env($service));
     hub_add_service_log($db, (int)$service['id'], 'restart', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
@@ -411,6 +461,17 @@ function hub_restart_service(PDO $db, array $service): array
 
 function hub_tail_service_logs(PDO $db, array $service): array
 {
+    if (hub_service_is_internal_task($service)) {
+        $result = hub_internal_task_result('internal_task logs no-op');
+        hub_add_service_log($db, (int)$service['id'], 'docker_logs', $result['output'], 0);
+        return $result;
+    }
+
+    $unsupported = hub_linux_docker_unsupported_result();
+    if ($unsupported !== null) {
+        return $unsupported;
+    }
+
     $result = hub_run_command(hub_compose_command($service, ['logs', '--tail', '200']), 30, hub_compose_env($service));
     hub_add_service_log($db, (int)$service['id'], 'docker_logs', $result['output'], (int)$result['exit_code']);
 
@@ -420,7 +481,7 @@ function hub_tail_service_logs(PDO $db, array $service): array
 function hub_run_service_command(PDO $db, ?array $job, array $command, int $timeoutSeconds, array $env, string $stage, int $minProgress, int $maxProgress): array
 {
     if (!$job) {
-        return hub_run_command($command, $timeoutSeconds, $env);
+        return hub_run_linux_docker_command($command, $timeoutSeconds, $env);
     }
 
     $job = hub_prepare_command_job_logs($db, $job);
