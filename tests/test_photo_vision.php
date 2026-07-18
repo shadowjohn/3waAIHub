@@ -221,16 +221,40 @@ hub_test('Photo prune keeps row when unlink fails', function (): void {
         ->execute([':expires_at' => '2000-01-01 00:00:00', ':image_id' => $asset['image_id']]);
 
     $path = HUB_DATA_DIR . '/' . $asset['storage_relpath'];
-    chmod(dirname($path), 0555);
-    try {
-        $applied = hub_photo_prune_expired($db, false, 100);
-    } finally {
-        chmod(dirname($path), 0775);
+    $isWindows = hub_platform_id() === 'windows';
+    if ($isWindows) {
+        $handle = fopen($path, 'rb');
+        hub_test_assert(is_resource($handle), 'photo fixture must be openable');
+        try {
+            $applied = hub_photo_prune_expired($db, false, 100);
+        } finally {
+            fclose($handle);
+        }
+    } else {
+        chmod(dirname($path), 0555);
+        try {
+            $applied = hub_photo_prune_expired($db, false, 100);
+        } finally {
+            chmod(dirname($path), 0775);
+        }
+    }
+
+    $rowCount = (int)$db->query("SELECT COUNT(*) FROM photo_assets WHERE image_id = '" . $asset['image_id'] . "'")->fetchColumn();
+    if ($isWindows && (int)$applied['errors'] === 0) {
+        hub_test_assert(
+            (int)$applied['matched'] === 1
+            && (int)$applied['files_deleted'] === 1
+            && (int)$applied['rows_deleted'] === 1
+            && !is_file($path)
+            && $rowCount === 0,
+            'successful Windows unlink fixture must delete exactly one matched file and row'
+        );
+        hub_test_skip('open-file unlink failure cannot be reproduced on this Windows filesystem');
     }
 
     hub_test_assert((int)$applied['errors'] === 1, 'unlink failure must be reported');
     hub_test_assert((int)$applied['rows_deleted'] === 0, 'unlink failure must keep DB row for retry');
-    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM photo_assets WHERE image_id = '" . $asset['image_id'] . "'")->fetchColumn() === 1, 'photo row must remain after unlink failure');
+    hub_test_assert($rowCount === 1, 'photo row must remain after unlink failure');
 });
 
 hub_test('Photo vision service lookup applies service IP policy after token auth', function (): void {

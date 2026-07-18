@@ -129,6 +129,9 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
 
             $geometryOutput = [];
             $geometryExit = 0;
+            if (hub_platform_id() === 'windows') {
+                hub_test_skip('sam3 geometry_smoke.py requires Linux runtime on Windows control-plane host');
+            }
             exec('cd ' . escapeshellarg($base) . ' && python3 geometry_smoke.py', $geometryOutput, $geometryExit);
             hub_test_assert($geometryExit === 0, 'sam3 geometry_smoke.py must pass');
         }
@@ -252,6 +255,9 @@ hub_test('SAM3 model selector and gateway mode support L5 real smoke contract', 
 });
 
 hub_test('SAM3 model smoke rejects traversal and scans checkpoints', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('SAM3 model_smoke.py requires Linux runtime on Windows control-plane host');
+    }
     $root = sys_get_temp_dir() . '/3waaihub_sam3_model_smoke_' . getmypid();
     $modelDir = $root . '/sam3';
     if (!is_dir($modelDir . '/checkpoints') && !mkdir($modelDir . '/checkpoints', 0775, true) && !is_dir($modelDir . '/checkpoints')) {

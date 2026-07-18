@@ -8,11 +8,21 @@ hub_cli_only();
 
 $tests = [];
 $failures = 0;
+$skipped = 0;
+
+final class HubTestSkipped extends RuntimeException
+{
+}
 
 function hub_test(string $name, callable $fn): void
 {
     global $tests;
     $tests[$name] = $fn;
+}
+
+function hub_test_skip(string $reason): never
+{
+    throw new HubTestSkipped($reason);
 }
 
 function hub_test_reset_db(): PDO
@@ -71,11 +81,14 @@ foreach ($tests as $name => $fn) {
     try {
         $fn();
         echo '[PASS] ' . $name . PHP_EOL;
+    } catch (HubTestSkipped $e) {
+        $skipped++;
+        echo '[SKIP] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
     } catch (Throwable $e) {
         $failures++;
         echo '[FAIL] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
     }
 }
 
-echo 'tests=' . count($tests) . ' failures=' . $failures . PHP_EOL;
+echo 'tests=' . count($tests) . ' failures=' . $failures . ' skipped=' . $skipped . PHP_EOL;
 exit($failures === 0 ? 0 : 1);
