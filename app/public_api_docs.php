@@ -229,7 +229,7 @@ function hub_public_api_yolo_model_services(): array
             'name' => 'YOLO Model Status',
             'description' => 'Query Hub registry and GPU warm-pool state for a model_ref.',
             'method' => 'GET',
-            'content_type' => 'application/json',
+            'content_type' => '',
             'endpoint' => 'api.php?mode=yolo_model_status&model_ref=yolo:natureweb:training-result-47:v1',
             'url' => hub_public_api_mode_url('yolo_model_status') . '&model_ref=yolo:natureweb:training-result-47:v1',
             'execution_type' => 'sync_api',
@@ -513,7 +513,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
                     <tr><th>pack_id</th><td><code><?= hub_h((string)$service['pack_id']) ?></code></td></tr>
                     <tr><th>method</th><td><code><?= hub_h((string)$service['method']) ?></code></td></tr>
                     <tr><th>endpoint</th><td><code><?= hub_h((string)$service['endpoint']) ?></code></td></tr>
-                    <tr><th>content-type</th><td><code><?= hub_h((string)$service['content_type']) ?></code></td></tr>
+                    <tr><th>content-type</th><td><code><?= hub_h((string)$service['content_type'] !== '' ? (string)$service['content_type'] : '-') ?></code></td></tr>
                     <tr><th>runtime_level</th><td><code><?= hub_h((string)$service['runtime_level']) ?></code></td></tr>
                     <tr><th>execution_type</th><td><code><?= hub_h((string)$service['execution_type']) ?></code></td></tr>
                     <?php if (($service['task_type'] ?? '') !== ''): ?>

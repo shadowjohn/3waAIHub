@@ -360,6 +360,16 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
     $modes = array_column($manifest['services'], 'mode');
     hub_test_assert(in_array('yolo_model_assign_gpu', $modes, true), 'Agent manifest should include GPU assign mode.');
     hub_test_assert(in_array('yolo_model_unassign_gpu', $modes, true), 'Agent manifest should include GPU unassign mode.');
+    $statusService = null;
+    foreach ($manifest['services'] as $service) {
+        if (($service['mode'] ?? '') === 'yolo_model_status') {
+            $statusService = $service;
+            break;
+        }
+    }
+    hub_test_assert(is_array($statusService), 'Agent manifest should include YOLO status mode.');
+    hub_test_assert(($statusService['method'] ?? '') === 'GET', 'YOLO status should be documented as GET.');
+    hub_test_assert(($statusService['content_type'] ?? null) === '', 'YOLO status GET should not advertise a request Content-Type.');
 
     $source = (string)file_get_contents(HUB_ROOT . '/packs/yolo-serving/service/app.py');
     foreach (['@app.get("/models")', '@app.get("/models/{slot_no}/status")', '@app.post("/models/warm"', '@app.post("/models/unload"'] as $needle) {
