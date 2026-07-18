@@ -45,7 +45,7 @@ Write-Host 'No files or services will be removed during -Check.'
 
 switch ($Mode) {
     'Core' {
-        Write-Host 'Preserve: global PHP, WSL, NVIDIA driver, project root, SQLite DB, data directory, models.'
+        Write-Host 'Preserve: global PHP, IIS, WSL, NVIDIA driver, project root, SQLite DB, data directory, models.'
         if (Test-Path -LiteralPath $profilePath) {
             Write-Host "Managed profile candidate: $profilePath"
         } else {

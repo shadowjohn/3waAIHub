@@ -1,5 +1,8 @@
 param(
     [string]$InstallRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
+    [ValidateSet(0, 1, 2, 3)]
+    [int]$ProductType = 0,
+    [switch]$InstallIis,
     [string]$PhpZipUri,
     [string]$PhpZipSha256
 )
@@ -13,6 +16,72 @@ function Write-InstallLog {
     $logDir = Join-Path $InstallRoot 'data\logs\install'
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
     Add-Content -LiteralPath (Join-Path $logDir 'windows_installer.log') -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Message" -Encoding utf8
+}
+
+function Get-WindowsProductType {
+    param([int]$Override)
+
+    if ($Override -ne 0) { return $Override }
+    try {
+        return [int](Get-CimInstance -ClassName Win32_OperatingSystem -Property ProductType).ProductType
+    } catch {
+        return 0
+    }
+}
+
+function Get-IisFeaturePlan {
+    param([int]$ProductType)
+
+    $effectiveProductType = Get-WindowsProductType $ProductType
+    if ($effectiveProductType -in @(2, 3)) {
+        return [pscustomobject]@{
+            HostKind = 'server'
+            Features = @('Web-Server', 'Web-CGI')
+        }
+    }
+
+    return [pscustomobject]@{
+        HostKind = 'workstation'
+        Features = @('IIS-WebServerRole', 'IIS-WebServer', 'IIS-CGI', 'IIS-ManagementScriptingTools')
+    }
+}
+
+function Assert-IisInstallElevation {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw '-InstallIis requires an elevated PowerShell session.'
+    }
+}
+
+function Install-IisWebAdministration {
+    param([int]$ProductType)
+
+    Assert-IisInstallElevation
+    $plan = Get-IisFeaturePlan $ProductType
+    $restartNeeded = $false
+
+    Write-Host "[3waAIHub] Enabling IIS features for $($plan.HostKind)..."
+    if ($plan.HostKind -eq 'server') {
+        $result = Install-WindowsFeature -Name $plan.Features -IncludeManagementTools -ErrorAction Stop
+        $restartNeeded = [string]$result.RestartNeeded -notin @('', 'No', 'False')
+    } else {
+        foreach ($feature in $plan.Features) {
+            $result = Enable-WindowsOptionalFeature -Online -FeatureName $feature -All -NoRestart -ErrorAction Stop
+            $restartNeeded = $restartNeeded -or ([string]$result.RestartNeeded -notin @('', 'No', 'False'))
+        }
+    }
+
+    if (Get-Module -ListAvailable -Name WebAdministration) {
+        Write-Host '[3waAIHub] IIS WebAdministration: OK'
+        return
+    }
+    if ($restartNeeded) {
+        Write-Host '[3waAIHub] IIS feature installation requires a restart before WebAdministration becomes available.'
+        return
+    }
+
+    throw 'IIS feature installation completed but WebAdministration is still unavailable.'
 }
 
 function Get-PhpCommand {
@@ -255,6 +324,10 @@ Set-Location -LiteralPath $InstallRoot
 Write-Host '[3waAIHub] Installing Windows Core control plane'
 Write-Host '[3waAIHub] Role: 3waAIHub Core (Control Plane)'
 Write-Host '[3waAIHub] Core does not install container runtimes, WSL, or NVIDIA drivers.'
+
+if ($InstallIis) {
+    Install-IisWebAdministration -ProductType $ProductType
+}
 
 $phpExe = Get-PhpCommand
 if ($null -eq $phpExe) {

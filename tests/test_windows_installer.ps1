@@ -55,10 +55,15 @@ Assert-InstallerContract ($coreSource -match 'Get-FileHash') 'direct downloads m
 Assert-InstallerContract ($coreSource -match 'SHA256') 'direct downloads must use SHA256'
 Assert-InstallerContract ($coreSource -match 'php-8\\\.3.*-nts-Win32-vs16-x64') 'official PHP download must use the NTS x64 FastCGI build'
 Assert-InstallerContract ($coreSource -match 'AIHUB_WINDOWS_INSTALLER_TEST_FUNCTIONS_ONLY') 'Core installer must expose the isolated functions-only test hook'
+Assert-InstallerContract ($source -match '\[switch\]\$InstallIis') 'Core installer must expose explicit IIS installation opt-in'
+Assert-InstallerContract ($source -match '-InstallIis:\$InstallIis') 'Core installer must forward the IIS opt-in to the Core installer'
+Assert-InstallerContract ($coreSource -match 'function Install-IisWebAdministration') 'Core installer must install IIS through a dedicated function'
+Assert-InstallerContract ($coreSource -match 'IIS-ManagementScriptingTools') 'Workstation IIS plan must include WebAdministration tooling'
+Assert-InstallerContract ($checkCoreSource -match '-InstallIis') 'Core readiness must show the IIS remediation command'
 Assert-InstallerContract ($checkWslSource -match 'Get-WslDistroVersion') 'WSL check must parse exact distro rows through a helper'
 Assert-InstallerContract ($checkWslSource -match 'Assert-LinuxDataRoot') 'WSL check must validate LinuxDataRoot before invoking WSL'
 Assert-InstallerContract ($source -notmatch 'Docker\.DockerDesktop') 'Core installer must not install Docker Desktop'
-Assert-InstallerContract (($source + $checkCoreSource + $checkWslSource + $coreSource) -notmatch 'Docker\.DockerDesktop|Enable-WindowsOptionalFeature|Install-WindowsFeature|dism\.exe') 'installer checks must not mutate Windows features or install Docker Desktop'
+Assert-InstallerContract (($checkCoreSource + $checkWslSource) -notmatch 'Docker\.DockerDesktop|Enable-WindowsOptionalFeature|Install-WindowsFeature|dism\.exe') 'installer checks must not mutate Windows features or install Docker Desktop'
 Assert-InstallerContract ($checkCoreSource -notmatch '\b(New-Item|Set-Content|Add-Content|Copy-Item|Remove-Item)\b') 'Core -Check source must stay read-only'
 Assert-InstallerContract ($checkWslSource -notmatch '\b(New-Item|Set-Content|Add-Content|Copy-Item|Remove-Item|Invoke-WebRequest|Start-Process)\b') 'WslRuntime -Check source must stay read-only'
 
@@ -72,6 +77,11 @@ Assert-InstallerContract ($checkText -match 'Recommended: 3waAIHub Core \(Contro
 Assert-InstallerContract ($checkText -match 'Check: read-only') 'Core -Check must be read-only'
 Assert-InstallerContract ($checkText -match 'PHP configuration: OK') 'installer -Check must report PHP configuration readiness'
 Assert-InstallerContract ($checkText -notmatch 'Docker Desktop') 'Core -Check must not require Docker Desktop'
+
+$iisCheck = & $installer -Mode Core -Check -InstallIis -InstallRoot $repo -ProductType 1 6>&1 2>&1
+$iisCheckText = $iisCheck -join "`n"
+Assert-InstallerContract ($LASTEXITCODE -eq 0) 'Core -Check with -InstallIis must remain read-only'
+Assert-InstallerContract ($iisCheckText -match '-InstallIis is ignored during -Check') 'Core -Check must explicitly ignore the IIS installation opt-in'
 
 $serverCheck = & $installer -Check -InstallRoot $repo -ProductType 3 6>&1 2>&1
 $serverCheckText = $serverCheck -join "`n"
@@ -143,7 +153,7 @@ Assert-InstallerContract ($LASTEXITCODE -eq 0) 'uninstall -Check must succeed'
 Assert-InstallerContract ($uninstallCheckText -match 'Mode: Core') 'uninstall -Check must report mode'
 Assert-InstallerContract ($uninstallCheckText -match 'Role: 3waAIHub Core \(Control Plane\)') 'uninstall -Check must use the Core Control Plane label'
 Assert-InstallerContract ($uninstallCheckText -match 'No files or services will be removed') 'uninstall -Check must be non-mutating'
-Assert-InstallerContract ($uninstallCheckText -match 'Preserve: global PHP, WSL, NVIDIA driver, project root, SQLite DB, data directory, models') 'uninstall -Check must list preserved global/runtime assets'
+Assert-InstallerContract ($uninstallCheckText -match 'Preserve: global PHP, IIS, WSL, NVIDIA driver, project root, SQLite DB, data directory, models') 'uninstall -Check must list preserved global/runtime assets'
 Assert-InstallerContract ($uninstallSource -notmatch '\bRemove-Item\b') 'uninstaller must not delete project data or global runtime assets in this build'
 
 $removeModelsResult = Invoke-ChildPowerShell @($uninstaller, '-Mode', 'WslRuntime', '-RemoveModels', '-Check')
@@ -260,6 +270,13 @@ exit /b 9
             $env:AIHUB_WINDOWS_INSTALLER_TEST_FUNCTIONS_ONLY = $previousFunctionsOnly
         }
     }
+
+    $workstationIisPlan = Get-IisFeaturePlan 1
+    Assert-InstallerContract ($workstationIisPlan.HostKind -eq 'workstation') 'ProductType=1 must use the workstation IIS feature plan'
+    Assert-InstallerContract (@($workstationIisPlan.Features) -contains 'IIS-ManagementScriptingTools') 'workstation IIS plan must enable WebAdministration tooling'
+    $serverIisPlan = Get-IisFeaturePlan 3
+    Assert-InstallerContract ($serverIisPlan.HostKind -eq 'server') 'ProductType=3 must use the server IIS feature plan'
+    Assert-InstallerContract (@($serverIisPlan.Features) -contains 'Web-Server') 'server IIS plan must install Web Server'
 
     $env:AIHUB_FAKE_PHP_SHORT_TAG = ''
     $env:AIHUB_FAKE_PHP_FAIL = ''

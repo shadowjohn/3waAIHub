@@ -86,12 +86,14 @@ Windows installer 依主機角色執行：
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core
+# 僅在要用 IIS 部署時，以系統管理員 PowerShell 執行：
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -InstallIis
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode WslRuntime -InstallRoot "D:\DATA\3waAIHub" -ModelsRoot "D:\DATA\models" -WslDistro "Ubuntu-24.04" -LinuxDataRoot "/DATA" -Check
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 ```
 
-`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite / IIS readiness，建立 `data/` runtime 目錄並初始化 SQLite。若 PHP 缺少，會下載官方 PHP 8.3 NTS x64 FastCGI 版本、比對官方 SHA-256 後才解壓；它會把目前 PHP 的 `php.ini` 補成 `Asia/Taipei`、開啟 `short_open_tag`，並啟用 `pdo_sqlite`、`sqlite3`、`curl`、`mbstring`、`gd`、`fileinfo`、`openssl`、`zip`；實際變更前會建立一次 `.3waaihub.bak` 備份。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
+`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite / IIS readiness，建立 `data/` runtime 目錄並初始化 SQLite。若 PHP 缺少，會下載官方 PHP 8.3 NTS x64 FastCGI 版本、比對官方 SHA-256 後才解壓；它會把目前 PHP 的 `php.ini` 補成 `Asia/Taipei`、開啟 `short_open_tag`，並啟用 `pdo_sqlite`、`sqlite3`、`curl`、`mbstring`、`gd`、`fileinfo`、`openssl`、`zip`；實際變更前會建立一次 `.3waaihub.bak` 備份。IIS `WebAdministration` 不需下載第三方套件；要啟用時，`-InstallIis` 會以系統管理員權限啟用 Windows 內建 IIS／管理腳本工具，不會自動重開機，且 `-Check` 永遠不變更系統。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、IIS、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
 
 `WslRuntime -Check` 只做 read-only readiness report：檢查 WSL2、指定 Ubuntu distro、distro 內 Docker Engine / Compose、`nvidia-smi` 與 `/DATA` 是否在 WSL ext4。第一版不自動啟用 Windows Features、不安裝 Docker Desktop、不改顯示卡驅動、不建立 WSL runtime data。
 

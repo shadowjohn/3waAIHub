@@ -147,7 +147,7 @@ foreach ($dir in @('data', 'data\logs', 'data\jobs', 'data\services')) {
 $iis = Get-Module -ListAvailable -Name WebAdministration
 $iisOk = $null -ne $iis
 if ($null -eq $iis) {
-    Write-Host 'IIS WebAdministration: MISSING (Core preview can still run with php -S)'
+    Write-Host 'IIS WebAdministration: MISSING (run elevated: .\install.ps1 -Mode Core -InstallIis; php -S remains available)'
 } else {
     Write-Host 'IIS WebAdministration: OK'
 }
