@@ -385,6 +385,25 @@ CREATE TABLE IF NOT EXISTS photo_assets (
     FOREIGN KEY(owner_token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS audio_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audio_id TEXT NOT NULL UNIQUE,
+    owner_member_id INTEGER NULL,
+    owner_token_id INTEGER NULL,
+    mime TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    sample_rate INTEGER NOT NULL,
+    channels INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    storage_relpath TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_accessed_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(owner_token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
+);
+
 CREATE TABLE IF NOT EXISTS user_mode_permissions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -570,6 +589,10 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_sha256 ON photo_assets(sha256)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_owner_member ON photo_assets(owner_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_owner_token ON photo_assets(owner_token_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_expires_at ON audio_assets(expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_sha256 ON audio_assets(sha256)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_owner_member ON audio_assets(owner_member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_owner_token ON audio_assets(owner_token_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_service_settings_service_id ON service_settings(service_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_users_api_member_id ON users(api_member_id)');

@@ -16,6 +16,7 @@ function hub_playground_profiles(): array
         'structure' => ['label' => 'Structure', 'method' => 'POST', 'kind' => 'document'],
         'chat' => ['label' => 'Chat', 'method' => 'POST', 'kind' => 'json'],
         'photo' => ['label' => '圖片問答', 'method' => 'POST', 'kind' => 'photo'],
+        'audio' => ['label' => '音訊理解', 'method' => 'POST', 'kind' => 'audio'],
     ];
 }
 
@@ -112,6 +113,15 @@ function hub_playground_request_payload(string $mode): array
             'text' => trim((string)($_POST['text'] ?? '這張圖裡有什麼？')),
             'max_tokens' => (int)($_POST['max_tokens'] ?? 256),
             'real_inference' => !empty($_POST['real_inference']),
+        ];
+    }
+    if ($mode === 'audio') {
+        return [
+            'audio_id' => trim((string)($_POST['audio_id'] ?? '')),
+            'operation' => trim((string)($_POST['operation'] ?? 'understand')) ?: 'understand',
+            'text' => trim((string)($_POST['text'] ?? '這段錄音的重點是什麼？')),
+            'max_tokens' => (int)($_POST['max_tokens'] ?? 512),
+            'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
     }
     if ($mode === 'sam3') {
@@ -363,17 +373,20 @@ function hub_playground_execute(string $mode, string $token): array
             $options[CURLOPT_HTTPHEADER] = $headers;
             $options[CURLOPT_POSTFIELDS] = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         } else {
-            $fieldName = $mode === 'structure' ? 'file' : 'image';
+            $fieldName = $mode === 'structure' ? 'file' : ($mode === 'audio' ? 'audio' : 'image');
             $file = $_FILES[$fieldName] ?? null;
-            if (!is_array($file) || (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK) {
+            $hasFile = is_array($file) && (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK;
+            if (!$hasFile && !($mode === 'audio' && trim((string)($payload['audio_id'] ?? '')) !== '')) {
                 curl_close($ch);
-                return ['ok' => false, 'error' => 'missing_file', 'message' => $mode === 'structure' ? __('請選擇 PDF 或文件圖片。') : __('請選擇圖片檔。')];
+                return ['ok' => false, 'error' => 'missing_file', 'message' => $mode === 'structure' ? __('請選擇 PDF 或文件圖片。') : ($mode === 'audio' ? __('請選擇 WAV 音訊檔。') : __('請選擇圖片檔。'))];
             }
-            $payload[$fieldName] = new CURLFile(
-                (string)$file['tmp_name'],
-                (string)($file['type'] ?? 'application/octet-stream'),
-                (string)($file['name'] ?? 'image')
-            );
+            if ($hasFile) {
+                $payload[$fieldName] = new CURLFile(
+                    (string)$file['tmp_name'],
+                    (string)($file['type'] ?? ($mode === 'audio' ? 'audio/wav' : 'application/octet-stream')),
+                    (string)($file['name'] ?? $fieldName)
+                );
+            }
             $options[CURLOPT_POSTFIELDS] = $payload;
         }
     }
@@ -611,6 +624,44 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'audio') {
+        $uploadUrl = hub_playground_api_url('audio_upload');
+        $curl = "curl -X POST \"$uploadUrl\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -F \"audio=@sample.wav\"\n\ncurl -X POST \"$url\" \\\n  -H \"Authorization: Bearer <TOKEN>\" \\\n  -F \"audio_id=aud_...\" \\\n  -F \"operation=understand\" \\\n  -F \"text=這段錄音的重點是什麼？\" \\\n  -F \"max_tokens=512\" \\\n  -F \"real_inference=1\"";
+        $php = <<<PHP
+// 先用 mode=audio_upload 取得 audio_id，再用同一個 audio_id 重複追問。
+\$fields = [
+    'audio_id' => 'aud_...',
+    'operation' => 'understand',
+    'text' => '這段錄音的重點是什麼？',
+    'max_tokens' => '512',
+    'real_inference' => '1',
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>'],
+    CURLOPT_POSTFIELDS => \$fields,
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+// 先用 mode=audio_upload 取得 audio_id，再用同一個 audio_id 重複追問。
+const form = new FormData();
+form.append('audio_id', 'aud_...');
+form.append('operation', 'understand');
+form.append('text', '這段錄音的重點是什麼？');
+form.append('max_tokens', '512');
+form.append('real_inference', '1');
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer <TOKEN>' },
+  body: form
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
 
     $field = $mode === 'structure' ? 'file' : 'image';
     $extra = $mode === 'sam3' ? " $curlContinuation\n  -F prompt_type=auto $curlContinuation\n  -F output_format=metadata" : '';
@@ -682,7 +733,7 @@ hub_admin_header(__('API 測試場'), $user);
     <h1><?= hub_h(__('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(__('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(__('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(__('需要 Bearer Token')) ?></strong>。<?= hub_h(__('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(__('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code></p>
+    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -825,6 +876,23 @@ hub_admin_header(__('API 測試場'), $user);
                 <input name="max_tokens" type="number" min="32" max="2048" value="256">
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實圖片理解')) ?></label>
                 <p class="muted"><?= hub_h(__('先上傳圖片取得 image_id，再用 image_id 重複提問；不建立 server-side session。')) ?></p>
+            <?php elseif ($selectedMode === 'audio'): ?>
+                <label><?= hub_h(__('音訊檔')) ?></label>
+                <input name="audio" type="file" accept="audio/wav,.wav">
+                <label><?= hub_h(__('音訊 ID')) ?> audio_id</label>
+                <input name="audio_id" value="<?= hub_h((string)($_POST['audio_id'] ?? '')) ?>">
+                <label><?= hub_h(__('操作')) ?> operation</label>
+                <select name="operation">
+                    <option value="understand">understand</option>
+                    <option value="transcribe">transcribe</option>
+                    <option value="summarize">summarize</option>
+                </select>
+                <label><?= hub_h(__('提示文字')) ?></label>
+                <textarea name="text" rows="4">這段錄音的重點是什麼？</textarea>
+                <label><?= hub_h(__('最大輸出 token 數')) ?> max_tokens</label>
+                <input name="max_tokens" type="number" min="32" max="2048" value="512">
+                <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實音訊理解')) ?></label>
+                <p class="muted"><?= hub_h(__('可直接上傳 WAV，或先用 mode=audio_upload 取得 audio_id 後重複追問；只支援 16kHz mono WAV、30 秒內、16MB 內。')) ?></p>
             <?php elseif ($selectedMode === 'sam3'): ?>
                 <label><?= hub_h(__('圖片')) ?></label>
                 <input name="image" type="file" accept="image/*">

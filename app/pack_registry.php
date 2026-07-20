@@ -663,12 +663,15 @@ function hub_generate_llm_gemma4_compose(array $pack, string $serviceKey, int $l
     $manifest = $pack['manifest'];
     $portEnv = hub_pack_port_env($manifest);
     $buildContext = $pack['dir'] . '/service';
+    $vllmBuildContext = $pack['dir'] . '/vllm';
     $imageTag = hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
     $internalPort = (int)($manifest['runtime']['default_internal_port'] ?? 8000);
 
     return "services:\n"
         . "  vllm:\n"
-        . "    image: vllm/vllm-openai:latest\n"
+        . "    image: 3waaihub-gemma4-vllm:0.1.0\n"
+        . "    build:\n"
+        . "      context: {$vllmBuildContext}\n"
         . "    container_name: 3waaihub-{$serviceKey}-vllm\n"
         . "    env_file:\n"
         . "      - .env\n"
@@ -682,6 +685,7 @@ function hub_generate_llm_gemma4_compose(array $pack, string $serviceKey, int $l
         . '        --max-model-len "${VLLM_MAX_MODEL_LEN:-16384}"' . "\n"
         . '        --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.64}"' . "\n"
         . '        --max-num-seqs "${VLLM_MAX_NUM_SEQS:-1}"' . "\n"
+        . "        --limit-mm-per-prompt '{\"image\":1,\"audio\":1}'\n"
         . "    gpus: all\n"
         . "    environment:\n"
         . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"

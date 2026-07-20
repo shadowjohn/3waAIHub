@@ -5,15 +5,15 @@
 - Pack ID: `llm-gemma4-12b`
 - Default service key: `gemma4-main`
 - Default mode: `chat`
-- Public boundary: `api.php?mode=chat`
-- Hub adapter endpoint: `POST /chat`
+- Public boundaries: `api.php?mode=chat`, `api.php?mode=photo`, `api.php?mode=audio`
+- Hub adapter endpoints: `POST /chat`, `POST /photo`, `POST /audio`
 - Internal runtime: vLLM sidecar on the Docker network
 
 Use `vllm/vllm-openai:latest` for Gemma 4 QAT W4A16. The older
 `vllm/vllm-openai:gemma4` tag does not include the runtime fixes needed
 for the `gemma4_unified` architecture and compressed-tensors path.
 
-PhaseL-1A keeps the Hub boundary small: text-only, non-streaming JSON, and Q4 real inference through a thin adapter. The adapter converts Hub `/chat` requests to vLLM `/v1/chat/completions` internally.
+PhaseL-1A kept the Hub boundary small: text-only, non-streaming JSON, and Q4 real inference through a thin adapter. PhaseL-1C added `image_id` based Photo Vision. PhaseL-1D added short WAV one-shot audio input smoke. PhaseL-1E adds short-lived `audio_id` reuse.
 
 Default single-user runtime tuning:
 
@@ -39,10 +39,35 @@ Example Hub payload:
 }
 ```
 
+Audio input:
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=audio_upload" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio=@sample.wav"
+
+curl -X POST "http://localhost/3waAIHub/api.php?mode=audio" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio_id=aud_..." \
+  -F "operation=understand" \
+  -F "text=這段錄音的重點是什麼？" \
+  -F "max_tokens=512" \
+  -F "real_inference=1"
+```
+
+Audio limits:
+
+- WAV only
+- 16kHz mono
+- <= 30 seconds
+- <= 16MB
+- `audio_id` TTL is 7 days
+- `audio_id` is a managed upload asset, not a conversation session
+
 Deferred on purpose:
 
 - SSE streaming passthrough
-- Image / multimodal input
+- long audio / timestamps / diarization / VAD
 - tool calling
 - structured output mode
 - OpenAI-compatible Gateway surface

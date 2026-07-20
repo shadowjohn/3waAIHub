@@ -277,6 +277,9 @@ function hub_create_customer_token(PDO $db, int $userId, string $tokenName, ?str
     if (in_array('photo', $modes, true) && !in_array('photo_upload', $modes, true)) {
         $modes[] = 'photo_upload';
     }
+    if (in_array('audio', $modes, true) && !in_array('audio_upload', $modes, true)) {
+        $modes[] = 'audio_upload';
+    }
     foreach ($modes as $mode) {
         $service = hub_get_service_by_mode($db, $mode);
         hub_add_api_token_mode_permission($db, (int)$token['token_id'], $mode, $service ? (int)$service['id'] : null);
@@ -322,7 +325,7 @@ function hub_list_customer_usage(PDO $db, int $userId): array
 
 function hub_playground_supported_modes(): array
 {
-    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'tts', 'chat', 'photo'];
+    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'tts', 'chat', 'photo', 'audio'];
 }
 
 function hub_playground_service_options(PDO $db, ?array $user = null): array
@@ -337,6 +340,7 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
 
     $services = [];
     $hasPhoto = false;
+    $hasAudio = false;
     foreach (hub_list_services($db) as $service) {
         $mode = (string)($service['mode'] ?? '');
         if (!isset($supported[$mode])) {
@@ -348,6 +352,9 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
         if ($mode === 'photo') {
             $hasPhoto = true;
         }
+        if ($mode === 'audio') {
+            $hasAudio = true;
+        }
         $services[] = $service;
     }
     if (!$hasPhoto && ($allowedModes === null || isset($allowedModes['photo']))) {
@@ -357,6 +364,14 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
             $visionService['mode'] = 'photo';
             $visionService['name'] = 'Gemma 4 Photo Vision';
             $services[] = $visionService;
+        }
+    }
+    if (!$hasAudio && ($allowedModes === null || isset($allowedModes['audio']))) {
+        $audioService = hub_get_service_by_key($db, 'gemma4-main');
+        if ($audioService) {
+            $audioService['mode'] = 'audio';
+            $audioService['name'] = 'Gemma 4 Audio Input';
+            $services[] = $audioService;
         }
     }
 

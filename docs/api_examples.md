@@ -226,6 +226,44 @@ curl -X POST "<BASE_URL>?mode=photo" \
 
 No session is stored. Send prior context in `text` when needed.
 
+## Gemma 4 Audio Input
+
+Status: PhaseL-1E audio asset reuse. `mode=audio` 可直接送短 WAV，也可先 `audio_upload` 取得 `audio_id` 後反覆追問；不建立 session，也不取代 Whisper ASR。
+
+```bash
+curl -X POST "<BASE_URL>?mode=audio_upload" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio=@sample.wav"
+
+curl -X POST "<BASE_URL>?mode=audio" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio_id=aud_..." \
+  -F "operation=understand" \
+  -F "text=這段錄音的重點是什麼？" \
+  -F "max_tokens=512" \
+  -F "real_inference=1"
+```
+
+Contract:
+
+- Method: `POST`
+- Content-Type: `multipart/form-data`
+- Upload input: `mode=audio_upload` field `audio` WAV file
+- Ask input: `mode=audio` field `audio` WAV file or `audio_id`, optional `operation=understand|transcribe|summarize`, `text`, `max_tokens`, `real_inference`
+- Limits: WAV only, 16kHz mono, <= 30 seconds, <= 16MB
+- Asset TTL: 7 days
+- Upload output keys: `ok`, `audio_id`, `mime`, `size`, `duration_ms`, `sample_rate`, `channels`, `expires_at`
+- Required output keys: `ok`, `mock`, `runtime_level`, `model`, `operation`, `answer`, `transcript`, `summary`, `tags`, `audio`, `usage`, `elapsed_ms`
+- Errors: `file_required`, `payload_too_large`, `invalid_audio`, `unsupported_audio_format`, `audio_too_long`, `audio_not_found`, `model_not_ready`, `audio_failed`
+
+Benchmark:
+
+```bash
+php scripts/benchmark.php --pack=llm-gemma4-12b --case=gemma4_mock_audio
+php scripts/benchmark.php --service=gemma4-main --case=gemma4_real_audio_transcribe_zh
+php scripts/benchmark.php --service=gemma4-main --case=gemma4_real_audio_understand
+```
+
 ## POST YOLO
 
 Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `YOLO_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行單張圖片 detection。
