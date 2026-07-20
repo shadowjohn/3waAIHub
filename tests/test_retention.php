@@ -312,3 +312,65 @@ hub_test('shared stream lock makes retention prune retry without deleting', func
     hub_prune_retention($db, '2026-07-20 00:00:00');
     hub_test_assert((hub_get_task_artifact($db, $artifactId)['state'] ?? '') === 'purged', 'prune must retry after stream lock release');
 });
+
+hub_test('retention rejects protections during a purge claim and aborts a newly protected claim', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    hub_finish_task_success($db, hub_get_task($db, $taskId), ['ok' => true]);
+    $path = hub_task_result_dir($taskId) . '/claimed-protection.txt';
+    if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0775, true)) {
+        throw new RuntimeException('Cannot create claimed protection fixture.');
+    }
+    file_put_contents($path, 'protected', LOCK_EX);
+    $artifactId = hub_register_task_artifact($db, $taskId, 'claimed-protection.txt', $path, 'text/plain');
+    $db->prepare("UPDATE task_artifacts SET expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => $artifactId]);
+    $claim = hub_retention_claim_artifact($db, $artifactId, '2026-07-20 00:00:00');
+    hub_test_assert(is_array($claim), 'due artifact must enter a purge claim');
+
+    $error = null;
+    try {
+        hub_set_task_artifact_retention_protection($db, $artifactId, true, true);
+    } catch (RuntimeException $e) {
+        $error = $e->getMessage();
+    }
+    hub_test_assert($error === 'purge_in_progress', 'protection updates must reject an active purge claim');
+
+    $db->prepare("UPDATE task_artifacts SET pinned_at = '2026-07-20 00:00:00' WHERE id = :id")->execute([':id' => $artifactId]);
+    hub_test_assert(function_exists('hub_retention_revalidate_artifact_claim'), 'prune must revalidate protections immediately before deleting');
+    hub_test_assert(hub_retention_revalidate_artifact_claim($db, $claim) === false, 'new protection must abort the claim before file deletion');
+    $artifact = hub_get_task_artifact($db, $artifactId);
+    hub_test_assert(($artifact['state'] ?? '') === 'available' && !empty($artifact['pinned_at']) && empty($artifact['purge_claim_token']) && file_exists($path), 'aborted protection claim must keep the artifact active and intact');
+
+    hub_set_task_artifact_retention_protection($db, $artifactId, false, false);
+    $claim = hub_retention_claim_artifact($db, $artifactId, '2026-07-20 00:00:00');
+    hub_test_assert(is_array($claim) && hub_retention_revalidate_artifact_claim($db, $claim), 'a clear artifact must obtain a fresh valid claim');
+    $db->prepare('UPDATE task_artifacts SET legal_hold = 1 WHERE id = :id')->execute([':id' => $artifactId]);
+    hub_test_assert(hub_retention_finish_artifact_claim($db, $claim, 0, null, '2026-07-20 00:00:00') === false, 'finalization must not purge an artifact protected after pre-delete validation');
+    $artifact = hub_get_task_artifact($db, $artifactId);
+    hub_test_assert(($artifact['state'] ?? '') === 'available' && (int)($artifact['legal_hold'] ?? 0) === 1 && empty($artifact['purge_claim_token']), 'finalization protection fence must release the claim without purging metadata');
+});
+
+hub_test('task retention resource claims serialize source and workspace finalization', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    hub_finish_task_success($db, hub_get_task($db, $taskId), ['ok' => true]);
+    $now = '2026-07-20 00:00:00';
+    $db->prepare(
+        "UPDATE tasks
+         SET source_state = 'retention', workspace_state = 'retention',
+             source_expires_at = '2000-01-01 00:00:00', workspace_expires_at = '2000-01-01 00:00:00',
+             purge_claim_token = NULL, purge_claimed_at = NULL
+         WHERE id = :id"
+    )->execute([':id' => $taskId]);
+
+    $source = hub_retention_claim_task_resource($db, $taskId, 'source', $now);
+    hub_test_assert(is_array($source), 'source must acquire the task purge claim');
+    hub_test_assert(hub_retention_claim_task_resource($db, $taskId, 'workspace', $now) === null, 'workspace must not overwrite an active source claim');
+    hub_retention_finish_task_resource_claim($db, $source, 0, null, $now);
+
+    $workspace = hub_retention_claim_task_resource($db, $taskId, 'workspace', $now);
+    hub_test_assert(is_array($workspace), 'workspace must acquire the claim after source finalizes');
+    hub_retention_finish_task_resource_claim($db, $workspace, 0, null, $now);
+    $task = hub_get_task($db, $taskId);
+    hub_test_assert(($task['source_state'] ?? '') === 'purged' && ($task['workspace_state'] ?? '') === 'purged' && empty($task['purge_claim_token']), 'serialized resource finalization must not leave either resource purging');
+});

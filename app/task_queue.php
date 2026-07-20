@@ -973,16 +973,23 @@ function hub_set_task_artifact_retention_protection(PDO $db, int $artifactId, bo
     $stmt = $db->prepare(
         "UPDATE task_artifacts
          SET pinned_at = :pinned_at, legal_hold = :legal_hold
-         WHERE id = :id AND state <> 'purged' AND purged_at IS NULL"
+         WHERE id = :id AND state = 'available' AND purged_at IS NULL"
     );
     $stmt->execute([
         ':pinned_at' => $pinnedAt,
         ':legal_hold' => $legalHold ? 1 : 0,
         ':id' => $artifactId,
     ]);
-    if ($stmt->rowCount() !== 1) {
-        throw new RuntimeException('artifact_unavailable');
+    if ($stmt->rowCount() === 1) {
+        return;
     }
+    $state = $db->prepare('SELECT state, purged_at FROM task_artifacts WHERE id = :id');
+    $state->execute([':id' => $artifactId]);
+    $artifact = $state->fetch();
+    if (is_array($artifact) && empty($artifact['purged_at']) && in_array((string)($artifact['state'] ?? ''), ['expiring', 'purging'], true)) {
+        throw new RuntimeException('purge_in_progress');
+    }
+    throw new RuntimeException('artifact_unavailable');
 }
 
 function hub_claim_task_artifact_download(PDO $db, int $artifactId): ?string
@@ -1205,19 +1212,58 @@ function hub_retention_claim_artifact(PDO $db, int $artifactId, string $now): ?a
     }
 }
 
-function hub_retention_finish_artifact_claim(PDO $db, array $artifact, int $bytes, ?string $error, string $now): void
+function hub_retention_revalidate_artifact_claim(PDO $db, array $artifact): bool
 {
     $db->exec('BEGIN IMMEDIATE');
     try {
+        $valid = $db->prepare(
+            "SELECT 1 FROM task_artifacts
+             WHERE id = :id AND state = 'purging' AND purge_claim_token = :token
+               AND pinned_at IS NULL AND legal_hold = 0"
+        );
+        $valid->execute([':id' => (int)$artifact['id'], ':token' => (string)$artifact['purge_claim_token']]);
+        if ($valid->fetchColumn() !== false) {
+            $db->exec('COMMIT');
+            return true;
+        }
+        $release = $db->prepare(
+            "UPDATE task_artifacts
+             SET state = 'available', purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = NULL
+             WHERE id = :id AND state = 'purging' AND purge_claim_token = :token"
+        );
+        $release->execute([':id' => (int)$artifact['id'], ':token' => (string)$artifact['purge_claim_token']]);
+        $db->exec('COMMIT');
+
+        return false;
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+function hub_retention_finish_artifact_claim(PDO $db, array $artifact, int $bytes, ?string $error, string $now): bool
+{
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $finished = false;
         if ($error === null) {
             $stmt = $db->prepare(
                 "UPDATE task_artifacts SET state = 'purged', purged_at = :now, purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = NULL
-                 WHERE id = :id AND state = 'purging' AND purge_claim_token = :token"
+                 WHERE id = :id AND state = 'purging' AND purge_claim_token = :token
+                   AND pinned_at IS NULL AND legal_hold = 0"
             );
             $stmt->execute([':now' => $now, ':id' => (int)$artifact['id'], ':token' => $artifact['purge_claim_token']]);
             if ($stmt->rowCount() === 1) {
                 $task = $db->prepare('UPDATE tasks SET freed_bytes = freed_bytes + :bytes, purged_at = COALESCE(purged_at, :now) WHERE id = :task_id');
                 $task->execute([':bytes' => $bytes, ':now' => $now, ':task_id' => (int)$artifact['task_id']]);
+                $finished = true;
+            } else {
+                $release = $db->prepare(
+                    "UPDATE task_artifacts
+                     SET state = 'available', purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = NULL
+                     WHERE id = :id AND state = 'purging' AND purge_claim_token = :token"
+                );
+                $release->execute([':id' => (int)$artifact['id'], ':token' => $artifact['purge_claim_token']]);
             }
         } else {
             $stmt = $db->prepare(
@@ -1227,6 +1273,8 @@ function hub_retention_finish_artifact_claim(PDO $db, array $artifact, int $byte
             $stmt->execute([':error' => $error, ':id' => (int)$artifact['id'], ':token' => $artifact['purge_claim_token']]);
         }
         $db->exec('COMMIT');
+
+        return $finished;
     } catch (Throwable $e) {
         $db->exec('ROLLBACK');
         throw $e;
@@ -1254,7 +1302,8 @@ function hub_retention_claim_task_resource(PDO $db, int $taskId, string $resourc
     try {
         $stmt = $db->prepare(
             "SELECT * FROM tasks WHERE id = :id AND {$fields['state']} IN ('retention', 'expiring')
-             AND {$fields['expires']} IS NOT NULL AND {$fields['expires']} <= :now"
+             AND {$fields['expires']} IS NOT NULL AND {$fields['expires']} <= :now
+             AND purge_claim_token IS NULL"
         );
         $stmt->execute([':id' => $taskId, ':now' => $now]);
         $task = $stmt->fetch();
@@ -1285,7 +1334,7 @@ function hub_retention_claim_task_resource(PDO $db, int $taskId, string $resourc
             $db->exec('COMMIT');
             return null;
         }
-        $expiring = $db->prepare("UPDATE tasks SET {$fields['state']} = 'expiring', retention_state = 'expiring' WHERE id = :id AND {$fields['state']} IN ('retention', 'expiring')");
+        $expiring = $db->prepare("UPDATE tasks SET {$fields['state']} = 'expiring', retention_state = 'expiring' WHERE id = :id AND {$fields['state']} IN ('retention', 'expiring') AND purge_claim_token IS NULL");
         $expiring->execute([':id' => $taskId]);
         if ($expiring->rowCount() !== 1) {
             $db->exec('COMMIT');
@@ -1294,7 +1343,7 @@ function hub_retention_claim_task_resource(PDO $db, int $taskId, string $resourc
         $token = bin2hex(random_bytes(16));
         $claim = $db->prepare(
             "UPDATE tasks SET {$fields['state']} = 'purging', retention_state = 'purging', purge_claim_token = :token, purge_claimed_at = :now, purge_error = NULL
-             WHERE id = :id AND {$fields['state']} = 'expiring'"
+             WHERE id = :id AND {$fields['state']} = 'expiring' AND purge_claim_token IS NULL"
         );
         $claim->execute([':token' => $token, ':now' => $now, ':id' => $taskId]);
         $db->exec('COMMIT');
@@ -1405,10 +1454,14 @@ function hub_prune_retention(PDO $db, ?string $now = null): array
         if ($artifact === null) {
             continue;
         }
+        if (!hub_retention_revalidate_artifact_claim($db, $artifact)) {
+            continue;
+        }
         try {
             $bytes = hub_retention_remove_managed_path((string)$artifact['path'], hub_task_result_dir((int)$artifact['task_id']));
-            hub_retention_finish_artifact_claim($db, $artifact, $bytes, null, $now);
-            $purged++;
+            if (hub_retention_finish_artifact_claim($db, $artifact, $bytes, null, $now)) {
+                $purged++;
+            }
         } catch (Throwable $e) {
             hub_retention_finish_artifact_claim($db, $artifact, 0, substr($e->getMessage(), 0, 255), $now);
             $errors++;
