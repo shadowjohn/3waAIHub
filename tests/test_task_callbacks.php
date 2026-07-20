@@ -85,10 +85,18 @@ hub_test('audio callbacks resolve only the member default or registered alias', 
             ['callback_url' => 'https://attacker.invalid/'],
             ['callback_secret' => 'attacker-secret'],
             ['callback_target_id' => (string)$default['id']],
+            ['callback' => 'https://attacker.invalid/'],
+            ['callback_target' => 'default'],
         ] as $controls) {
+            $before = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
             $response = hub_test_audio_request($db, 'task_submit', (string)$tokenA['plain_token'], ['task_type' => 'demo_task'] + $controls);
-            hub_test_assert($response['status'] === 400 && (hub_test_audio_payload($response)['error'] ?? '') === 'forbidden_task_control', 'public task submit must reject callback endpoint and secret controls');
+            hub_test_assert($response['status'] === 400 && (hub_test_audio_payload($response)['error'] ?? '') === 'forbidden_task_control' && (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $before, 'generic task submit must reject every callback control without persisting it');
         }
+        $before = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_POST = ['task_type' => 'demo_task', 'callback' => 'true'];
+        $internal = hub_api_task_submit($db, ['internal_task' => true]);
+        hub_test_assert($internal['status'] === 400 && (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $before, 'internal generic task submission must not bypass callback controls');
     });
 });
 
@@ -106,6 +114,10 @@ hub_test('callback target registration rejects unsafe endpoints', function (): v
     ] as $index => $url) {
         hub_test_assert(hub_test_throws(static fn (): int => hub_register_callback_target($db, $memberId, 'unsafe_' . $index, $url)), 'unsafe callback URL must be rejected: ' . $url);
     }
+    foreach (['2001:2::1', '64:ff9b:1::7f00:1', '::127.0.0.1'] as $ip) {
+        hub_test_assert(!hub_callback_ip_is_public($ip), 'special IPv6 callback target must be rejected: ' . $ip);
+    }
+    hub_test_assert(hub_callback_ip_is_public('2606:4700:4700::1111'), 'normal global-unicast IPv6 must remain usable for callback targets');
 });
 
 hub_test('callback outbox preserves raw payload signs it and retries safely', function (): void {
@@ -135,6 +147,8 @@ hub_test('callback outbox preserves raw payload signs it and retries safely', fu
     hub_enqueue_task_callback_delivery($db, $taskId);
     $delivery = $db->query('SELECT * FROM task_callback_deliveries')->fetch();
     hub_test_assert(is_array($delivery) && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries')->fetchColumn() === 1, 'outbox enqueue must be durable and idempotent');
+    $payload = json_decode((string)$delivery['payload_json'], true);
+    hub_test_assert(is_array($payload) && array_keys($payload) === ['task', 'artifacts'] && array_keys($payload['task'] ?? []) === ['id', 'state', 'completed_at', 'error_code'], 'callback payload must expose only the published task contract');
     hub_test_assert(!str_contains((string)$delivery['payload_json'], $path) && !str_contains((string)$delivery['payload_json'], $dangerousPath) && !str_contains((string)$delivery['payload_json'], 'artifact-body') && !str_contains((string)$delivery['payload_json'], (string)$target['signing_secret']), 'callback payload must not expose paths, artifact bodies, runner errors, or secrets');
 
     $sent = [];
@@ -197,6 +211,39 @@ hub_test('disabled callback targets are finalized without a network send', funct
     }, 1700200000);
     $row = $db->query('SELECT * FROM task_callback_deliveries')->fetch();
     hub_test_assert(($result['state'] ?? '') === 'disabled' && !$called && (int)$row['attempt_count'] === 5 && ($row['last_error'] ?? '') === 'callback_target_disabled', 'disabled target must not receive a callback or retain retry work');
+});
+
+hub_test('callback outbox ignores a target removed after task admission', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Callback Removed Target Owner');
+    $target = hub_test_callback_target($db, $memberId);
+    $taskId = hub_test_callback_task($db, $memberId, (int)$target['id']);
+    $db->prepare('DELETE FROM task_callback_targets WHERE id = :id')->execute([':id' => (int)$target['id']]);
+
+    hub_test_assert(hub_enqueue_task_callback_delivery($db, $taskId) === null && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries')->fetchColumn() === 0, 'terminal callback enqueue must be a safe no-op after its target is removed');
+});
+
+hub_test('trusted callback target provisioning keeps the signing secret off the public surface', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Trusted Callback Target Owner');
+    $secret = 'trusted-callback-secret-0123456789abcdef';
+    $targetId = hub_register_callback_target_from_trusted_config($db, $memberId, 'trusted', 'https://8.8.8.8/callback', $secret);
+    $stored = $db->query('SELECT signing_secret FROM task_callback_targets WHERE id = ' . $targetId)->fetchColumn();
+    hub_test_assert($stored === $secret, 'trusted provisioning must persist the configured shared signing secret');
+
+    $script = (string)file_get_contents(HUB_ROOT . '/scripts/register_callback_target.php');
+    hub_test_assert(str_contains($script, "getenv('AIHUB_CALLBACK_SIGNING_SECRET')") && !str_contains($script, '--secret') && !str_contains($script, '$_POST') && !str_contains($script, '$_GET'), 'operator registration must read the secret only from trusted environment configuration');
+
+    $output = [];
+    $exitCode = 0;
+    exec('env ' . escapeshellarg('AIHUB_TEST_DB=' . HUB_DB_PATH) . ' '
+        . escapeshellarg('AIHUB_CALLBACK_OWNER_MEMBER_ID=' . $memberId) . ' '
+        . escapeshellarg('AIHUB_CALLBACK_TARGET_ALIAS=cli-target') . ' '
+        . escapeshellarg('AIHUB_CALLBACK_URL=https://8.8.8.8/callback') . ' '
+        . escapeshellarg('AIHUB_CALLBACK_SIGNING_SECRET=' . $secret) . ' '
+        . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/scripts/register_callback_target.php') . ' 2>&1', $output, $exitCode);
+    $cliTarget = $db->query("SELECT signing_secret FROM task_callback_targets WHERE target_alias = 'cli-target'")->fetchColumn();
+    hub_test_assert($exitCode === 0 && $cliTarget === $secret && !str_contains(implode("\n", $output), $secret), 'operator registration must provision a shared secret without printing it');
 });
 
 hub_test('callback worker requires an upgraded schema and cron runs it', function (): void {

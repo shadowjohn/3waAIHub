@@ -50,14 +50,16 @@ function hub_callback_ip_is_public(string $ip): bool
         return true;
     }
 
-    foreach ([['::', 128], ['::1', 128], ['fc00::', 7], ['fe80::', 10], ['ff00::', 8], ['2001:db8::', 32]] as [$network, $prefix]) {
+    if (!hub_callback_ip_in_cidr($ip, '2000::', 3)) {
+        return false;
+    }
+    foreach ([
+        ['::', 96], ['::ffff:0:0', 96], ['64:ff9b::', 96], ['64:ff9b:1::', 48],
+        ['2001::', 23], ['2001:db8::', 32], ['2002::', 16], ['3fff::', 20],
+    ] as [$network, $prefix]) {
         if (hub_callback_ip_in_cidr($ip, $network, $prefix)) {
             return false;
         }
-    }
-    $packed = inet_pton($ip);
-    if ($packed !== false && str_starts_with($packed, str_repeat("\0", 10) . "\xff\xff")) {
-        return hub_callback_ip_is_public(inet_ntop(substr($packed, -4)) ?: '');
     }
 
     return true;
@@ -122,6 +124,15 @@ function hub_callback_endpoint_info(string $url): array
 
 function hub_register_callback_target(PDO $db, int $ownerMemberId, string $alias, string $callbackUrl): int
 {
+    return hub_register_callback_target_from_trusted_config($db, $ownerMemberId, $alias, $callbackUrl, bin2hex(random_bytes(32)));
+}
+
+function hub_register_callback_target_from_trusted_config(PDO $db, int $ownerMemberId, string $alias, string $callbackUrl, string $signingSecret): int
+{
+    if (strlen($signingSecret) < 32 || strlen($signingSecret) > 512) {
+        throw new InvalidArgumentException('callback_target_secret_invalid');
+    }
+
     if ($ownerMemberId <= 0 || !hub_callback_alias_is_valid($alias)) {
         throw new InvalidArgumentException('callback_target_invalid');
     }
@@ -135,7 +146,7 @@ function hub_register_callback_target(PDO $db, int $ownerMemberId, string $alias
         ':owner_member_id' => $ownerMemberId,
         ':target_alias' => $alias,
         ':callback_url' => $callbackUrl,
-        ':signing_secret' => bin2hex(random_bytes(32)),
+        ':signing_secret' => $signingSecret,
         ':created_at' => $now,
         ':updated_at' => $now,
     ]);
@@ -269,7 +280,6 @@ function hub_task_callback_payload(PDO $db, array $task): string
             'state' => (string)($task['status'] ?? ''),
             'completed_at' => $task['finished_at'] === null ? null : (string)$task['finished_at'],
             'error_code' => hub_callback_safe_error_code($task['error_code']),
-            'task_type' => (string)$task['task_type'],
         ],
         'artifacts' => $items,
     ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -288,16 +298,34 @@ function hub_enqueue_task_callback_delivery(PDO $db, int $taskId): ?string
     if ($eventType === null || $targetId <= 0) {
         return null;
     }
+    $ownerMemberId = (int)($task['owner_member_id'] ?? 0);
+    if ($ownerMemberId <= 0) {
+        return null;
+    }
+    $target = $db->prepare(
+        'SELECT 1 FROM task_callback_targets
+         WHERE id = :id AND owner_member_id = :owner_member_id AND enabled = 1'
+    );
+    $target->execute([':id' => $targetId, ':owner_member_id' => $ownerMemberId]);
+    if ($target->fetchColumn() === false) {
+        return null;
+    }
     $deliveryId = 'cb_' . hash('sha256', $targetId . ':' . $taskId . ':' . $eventType);
     $now = hub_now();
     $stmt = $db->prepare(
         'INSERT OR IGNORE INTO task_callback_deliveries
          (delivery_id, callback_target_id, task_id, event_type, payload_json, attempt_count, next_attempt_at, created_at, updated_at)
-         VALUES (:delivery_id, :callback_target_id, :task_id, :event_type, :payload_json, 0, :next_attempt_at, :created_at, :updated_at)'
+         SELECT :delivery_id, :callback_target_id, :task_id, :event_type, :payload_json, 0, :next_attempt_at, :created_at, :updated_at
+         WHERE EXISTS (
+             SELECT 1 FROM task_callback_targets
+             WHERE id = :active_target_id AND owner_member_id = :active_owner_member_id AND enabled = 1
+         )'
     );
     $stmt->execute([
         ':delivery_id' => $deliveryId,
         ':callback_target_id' => $targetId,
+        ':active_target_id' => $targetId,
+        ':active_owner_member_id' => $ownerMemberId,
         ':task_id' => $taskId,
         ':event_type' => $eventType,
         ':payload_json' => hub_task_callback_payload($db, $task),
@@ -305,6 +333,14 @@ function hub_enqueue_task_callback_delivery(PDO $db, int $taskId): ?string
         ':created_at' => $now,
         ':updated_at' => $now,
     ]);
+
+    if ($stmt->rowCount() === 0) {
+        $existing = $db->prepare('SELECT 1 FROM task_callback_deliveries WHERE delivery_id = :delivery_id');
+        $existing->execute([':delivery_id' => $deliveryId]);
+        if ($existing->fetchColumn() === false) {
+            return null;
+        }
+    }
 
     return $deliveryId;
 }
