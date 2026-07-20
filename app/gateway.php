@@ -373,6 +373,7 @@ function hub_task_api_modes(): array
         'task_cancel' => 'Task Cancel',
         'task_retry' => 'Task Retry',
         'task_artifacts_ack' => 'Task Artifact Acknowledge',
+        'task_artifact_retention' => 'Task Artifact Retention Control',
         'artifact' => 'Task Artifact',
     ];
 }
@@ -730,6 +731,7 @@ function hub_task_api_dispatch(PDO $db, string $mode, array $authContext = []): 
         'task_cancel' => hub_api_task_cancel($db, $authContext),
         'task_retry' => hub_api_task_retry($db, $authContext),
         'task_artifacts_ack' => hub_api_task_artifacts_ack($db, $authContext),
+        'task_artifact_retention' => hub_api_task_artifact_retention($db),
         'artifact' => hub_api_artifact($db, $authContext),
         default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown mode']),
     };
@@ -1338,6 +1340,39 @@ function hub_api_task_artifacts_ack(PDO $db, array $authContext = []): array
     ]);
 }
 
+function hub_api_task_artifact_retention(PDO $db): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'task_artifact_retention requires POST');
+    }
+    $user = hub_current_user($db);
+    if (!is_array($user) || (string)($user['role'] ?? '') !== 'system_admin') {
+        return hub_gateway_error(403, 'admin_required', 'administrator session required');
+    }
+    $artifactId = trim((string)($_POST['artifact_id'] ?? ''));
+    $action = (string)($_POST['action'] ?? '');
+    if (!ctype_digit($artifactId) || (int)$artifactId < 1 || !in_array($action, ['pin', 'unpin', 'legal_hold', 'release_legal_hold'], true)) {
+        return hub_gateway_error(400, 'bad_request', 'artifact_id and valid action are required');
+    }
+    try {
+        $artifact = hub_get_task_artifact($db, (int)$artifactId);
+        if (!is_array($artifact)) {
+            throw new RuntimeException('artifact_unavailable');
+        }
+        hub_set_task_artifact_retention_protection(
+            $db,
+            (int)$artifactId,
+            $action === 'pin' ? true : ($action === 'unpin' ? false : !empty($artifact['pinned_at'])),
+            $action === 'legal_hold' ? true : ($action === 'release_legal_hold' ? false : !empty($artifact['legal_hold']))
+        );
+    } catch (RuntimeException $e) {
+        return hub_gateway_error(409, $e->getMessage(), 'artifact is unavailable');
+    }
+    $artifact = hub_get_task_artifact($db, (int)$artifactId);
+
+    return hub_gateway_json(200, ['ok' => true, 'artifact_id' => (int)$artifactId, 'pinned_at' => $artifact['pinned_at'] ?? null, 'legal_hold' => (int)($artifact['legal_hold'] ?? 0)]);
+}
+
 function hub_api_artifact(PDO $db, array $authContext = []): array
 {
     $artifactId = (int)($_GET['artifact_id'] ?? $_POST['artifact_id'] ?? 0);
@@ -1348,6 +1383,9 @@ function hub_api_artifact(PDO $db, array $authContext = []): array
     $task = hub_get_task($db, (int)$artifact['task_id']);
     if (!$task || !hub_task_access_allowed($db, $task, $authContext)) {
         return hub_gateway_json(404, ['ok' => false, 'error' => 'artifact not found']);
+    }
+    if (($artifact['state'] ?? '') === 'purged' || !empty($artifact['purged_at'])) {
+        return hub_gateway_error(410, 'artifact_purged', 'artifact has been purged');
     }
 
     $path = hub_artifact_safe_path($artifact['path']);
@@ -1393,12 +1431,15 @@ function hub_task_access_allowed(PDO $db, array $task, array $authContext): bool
 
 function hub_gateway_admin_legacy_task_session_allowed(PDO $db, string $mode): bool
 {
-    if (!in_array($mode, ['task_status', 'task_result', 'task_log', 'artifact'], true)) {
+    if (!in_array($mode, ['task_status', 'task_result', 'task_log', 'artifact', 'task_artifact_retention'], true)) {
         return false;
     }
     $user = hub_current_user($db);
     if (!is_array($user) || (string)($user['role'] ?? '') !== 'system_admin') {
         return false;
+    }
+    if ($mode === 'task_artifact_retention') {
+        return true;
     }
     if ($mode === 'artifact') {
         $artifactId = (int)($_GET['artifact_id'] ?? $_POST['artifact_id'] ?? 0);
@@ -1658,10 +1699,16 @@ function hub_send_gateway_response(array $response): never
         clearstatcache(true, $streamPath);
         $stream = @fopen($streamPath, 'rb');
         $stat = $stream === false ? false : fstat($stream);
-        if (!is_array($stat) || (int)($stat['size'] ?? -1) !== $streamSize) {
+        if (!is_array($stat) || (int)($stat['size'] ?? -1) !== $streamSize || !flock($stream, LOCK_SH)) {
             if (is_resource($stream)) {
                 fclose($stream);
             }
+            $stream = null;
+        }
+        if (is_resource($stream) && !empty($response['stream_artifact_id']) && is_string($response['stream_download_token'] ?? null)
+            && !hub_refresh_task_artifact_download(hub_db(), (int)$response['stream_artifact_id'], (string)$response['stream_download_token'])) {
+            flock($stream, LOCK_UN);
+            fclose($stream);
             $stream = null;
         }
     }
@@ -1679,6 +1726,7 @@ function hub_send_gateway_response(array $response): never
         try {
             fpassthru($stream);
         } finally {
+            flock($stream, LOCK_UN);
             fclose($stream);
             if (!empty($response['stream_artifact_id']) && is_string($response['stream_download_token'] ?? null)) {
                 hub_release_task_artifact_download(hub_db(), (int)$response['stream_artifact_id'], (string)$response['stream_download_token']);

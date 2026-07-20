@@ -967,6 +967,24 @@ function hub_ack_task_artifact(PDO $db, int $memberId, int $taskId, int $artifac
     return $update->rowCount() === 1;
 }
 
+function hub_set_task_artifact_retention_protection(PDO $db, int $artifactId, bool $pinned, bool $legalHold): void
+{
+    $pinnedAt = $pinned ? hub_now() : null;
+    $stmt = $db->prepare(
+        "UPDATE task_artifacts
+         SET pinned_at = :pinned_at, legal_hold = :legal_hold
+         WHERE id = :id AND state <> 'purged' AND purged_at IS NULL"
+    );
+    $stmt->execute([
+        ':pinned_at' => $pinnedAt,
+        ':legal_hold' => $legalHold ? 1 : 0,
+        ':id' => $artifactId,
+    ]);
+    if ($stmt->rowCount() !== 1) {
+        throw new RuntimeException('artifact_unavailable');
+    }
+}
+
 function hub_claim_task_artifact_download(PDO $db, int $artifactId): ?string
 {
     $token = bin2hex(random_bytes(16));
@@ -974,7 +992,8 @@ function hub_claim_task_artifact_download(PDO $db, int $artifactId): ?string
     $stmt = $db->prepare(
         "UPDATE task_artifacts
          SET last_accessed_at = :now, download_claim_token = :token, download_claim_expires_at = :expires_at
-         WHERE id = :id AND state = 'available' AND purged_at IS NULL"
+         WHERE id = :id AND state = 'available' AND purged_at IS NULL
+           AND (download_claim_token IS NULL OR download_claim_expires_at IS NULL OR download_claim_expires_at <= :now)"
     );
     $stmt->execute([
         ':now' => $now,
@@ -984,6 +1003,23 @@ function hub_claim_task_artifact_download(PDO $db, int $artifactId): ?string
     ]);
 
     return $stmt->rowCount() === 1 ? $token : null;
+}
+
+function hub_refresh_task_artifact_download(PDO $db, int $artifactId, string $token): bool
+{
+    $now = hub_now();
+    $stmt = $db->prepare(
+        "UPDATE task_artifacts SET last_accessed_at = :now, download_claim_expires_at = :expires_at
+         WHERE id = :id AND state = 'available' AND purged_at IS NULL AND download_claim_token = :token"
+    );
+    $stmt->execute([
+        ':now' => $now,
+        ':expires_at' => hub_retention_deadline(300, $now),
+        ':id' => $artifactId,
+        ':token' => $token,
+    ]);
+
+    return $stmt->rowCount() === 1;
 }
 
 function hub_release_task_artifact_download(PDO $db, int $artifactId, string $token): void
@@ -1049,8 +1085,19 @@ function hub_retention_remove_managed_path(string $path, string $root): int
         throw new RuntimeException('path_rejected');
     }
     if (is_file($path)) {
-        $bytes = filesize($path);
-        if ($bytes === false || !unlink($path)) {
+        $handle = @fopen($path, 'rb');
+        if ($handle === false || !flock($handle, LOCK_EX | LOCK_NB)) {
+            if (is_resource($handle)) {
+                fclose($handle);
+            }
+            throw new RuntimeException('file_busy');
+        }
+        $stat = fstat($handle);
+        $bytes = is_array($stat) ? (int)($stat['size'] ?? -1) : -1;
+        $deleted = $bytes >= 0 && unlink($path);
+        flock($handle, LOCK_UN);
+        fclose($handle);
+        if (!$deleted) {
             throw new RuntimeException('delete_failed');
         }
 
@@ -1088,6 +1135,29 @@ function hub_retention_remove_managed_path(string $path, string $root): int
     }
 
     return $bytes;
+}
+
+function hub_retention_recover_stale_claims(PDO $db, string $now): int
+{
+    $cutoff = hub_retention_deadline(-300, $now);
+    $artifact = $db->prepare(
+        "UPDATE task_artifacts SET state = 'available', purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = 'purge_claim_expired'
+         WHERE state = 'purging' AND purge_claimed_at IS NOT NULL AND purge_claimed_at <= :cutoff"
+    );
+    $artifact->execute([':cutoff' => $cutoff]);
+    $recovered = $artifact->rowCount();
+    $task = $db->prepare(
+        "UPDATE tasks
+         SET source_state = CASE WHEN source_state = 'purging' THEN 'retention' ELSE source_state END,
+             workspace_state = CASE WHEN workspace_state = 'purging' THEN 'retention' ELSE workspace_state END,
+             retention_state = 'retention', purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = 'purge_claim_expired'
+         WHERE (source_state = 'purging' OR workspace_state = 'purging')
+           AND purge_claimed_at IS NOT NULL AND purge_claimed_at <= :cutoff"
+    );
+    $task->execute([':cutoff' => $cutoff]);
+    $recovered += $task->rowCount();
+
+    return $recovered;
 }
 
 function hub_retention_claim_artifact(PDO $db, int $artifactId, string $now): ?array
@@ -1321,6 +1391,7 @@ function hub_prune_retention_partials(PDO $db, string $now): int
 function hub_prune_retention(PDO $db, ?string $now = null): array
 {
     $now ??= hub_now();
+    $recovered = hub_retention_recover_stale_claims($db, $now);
     $stmt = $db->prepare(
         "SELECT id FROM task_artifacts
          WHERE state = 'available' AND purged_at IS NULL AND pinned_at IS NULL AND legal_hold = 0
@@ -1351,7 +1422,7 @@ function hub_prune_retention(PDO $db, ?string $now = null): array
     }
     $purged += hub_prune_retention_partials($db, $now);
 
-    return ['purged' => $purged, 'errors' => $errors];
+    return ['purged' => $purged, 'errors' => $errors, 'recovered' => $recovered];
 }
 
 function hub_retention_schema_missing(PDO $db): array

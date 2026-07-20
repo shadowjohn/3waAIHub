@@ -224,3 +224,91 @@ hub_test('retention deletion failure records retryable error without false purge
         }
     }
 });
+
+hub_test('retention controls only a trusted helper can pin or legal-hold an artifact', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    $path = hub_task_result_dir($taskId) . '/protected.txt';
+    if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0775, true)) {
+        throw new RuntimeException('Cannot create protected artifact fixture.');
+    }
+    file_put_contents($path, 'protected', LOCK_EX);
+    $artifactId = hub_register_task_artifact($db, $taskId, 'protected.txt', $path, 'text/plain');
+
+    hub_set_task_artifact_retention_protection($db, $artifactId, true, true);
+    $protected = hub_get_task_artifact($db, $artifactId);
+    hub_test_assert(!empty($protected['pinned_at']) && (int)$protected['legal_hold'] === 1, 'trusted helper must set protections');
+    hub_set_task_artifact_retention_protection($db, $artifactId, false, false);
+    $released = hub_get_task_artifact($db, $artifactId);
+    hub_test_assert(empty($released['pinned_at']) && (int)$released['legal_hold'] === 0, 'trusted helper must release protections');
+});
+
+hub_test('retention prune recovers stale claims and purged artifacts return gone', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'gone owner');
+        $token = hub_create_api_token($db, $memberId, 'gone token', null, null);
+        hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'artifact', null);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1', ['owner_member_id' => $memberId]);
+        hub_finish_task_success($db, hub_get_task($db, $taskId), ['ok' => true]);
+        $path = hub_task_result_dir($taskId) . '/stale.txt';
+        if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0775, true)) {
+            throw new RuntimeException('Cannot create stale claim fixture.');
+        }
+        file_put_contents($path, 'stale', LOCK_EX);
+        $artifactId = hub_register_task_artifact($db, $taskId, 'stale.txt', $path, 'text/plain');
+        $db->prepare("UPDATE task_artifacts SET expires_at = '2000-01-01 00:00:00', state = 'purging', purge_claim_token = 'abandoned', purge_claimed_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => $artifactId]);
+        $staleTaskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+        $db->prepare("UPDATE tasks SET source_state = 'purging', workspace_state = 'purging', purge_claim_token = 'abandoned', purge_claimed_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => $staleTaskId]);
+
+        hub_prune_retention($db, '2026-07-20 00:00:00');
+        $response = hub_test_audio_request($db, 'artifact', (string)$token['plain_token'], [], ['artifact_id' => (string)$artifactId], [], 'GET', false);
+        $recoveredTask = hub_get_task($db, $staleTaskId);
+        hub_test_assert((hub_get_task_artifact($db, $artifactId)['state'] ?? '') === 'purged' && !file_exists($path), 'stale purge claims must be recovered and retried');
+        hub_test_assert(($recoveredTask['source_state'] ?? '') === 'retention' && ($recoveredTask['workspace_state'] ?? '') === 'retention' && empty($recoveredTask['purge_claim_token']), 'a stale shared task claim must recover every purging resource');
+        hub_test_assert($response['status'] === 410 && (hub_test_audio_payload($response)['error'] ?? '') === 'artifact_purged', 'purged artifact requests must return gone');
+    });
+});
+
+hub_test('DB maintenance never deletes terminal task metadata directly', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/scripts/prune_db.php');
+    hub_test_assert(!str_contains($source, 'DELETE FROM tasks'), 'metadata retention must not bypass retention-safe file cleanup');
+});
+
+hub_test('lost runtime fence terminalization applies retention lifecycle', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $db->prepare("UPDATE runtime_runs SET lease_expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => $fixture['run']['id']]);
+
+    hub_test_assert(hub_pack_job_reconcile_lost_fence($db, hub_get_task($db, $fixture['task_id']), $fixture['run'], hub_test_pack_job_cleanup_asserted()), 'expired fence must reconcile');
+    $task = hub_get_task($db, $fixture['task_id']);
+    hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['retention_state'] ?? '') === 'retention' && !empty($task['source_expires_at']), 'lost-fence terminal task must enter retention');
+});
+
+hub_test('shared stream lock makes retention prune retry without deleting', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    hub_finish_task_success($db, hub_get_task($db, $taskId), ['ok' => true]);
+    $path = hub_task_result_dir($taskId) . '/locked.txt';
+    if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0775, true)) {
+        throw new RuntimeException('Cannot create lock fixture.');
+    }
+    file_put_contents($path, 'locked', LOCK_EX);
+    $artifactId = hub_register_task_artifact($db, $taskId, 'locked.txt', $path, 'text/plain');
+    $db->prepare("UPDATE task_artifacts SET expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => $artifactId]);
+    $stream = fopen($path, 'rb');
+    if ($stream === false || !flock($stream, LOCK_SH)) {
+        throw new RuntimeException('Cannot acquire shared lock fixture.');
+    }
+    try {
+        hub_prune_retention($db, '2026-07-20 00:00:00');
+        hub_test_assert(file_exists($path) && (hub_get_task_artifact($db, $artifactId)['state'] ?? '') === 'available', 'exclusive prune must not delete while shared stream lock exists');
+    } finally {
+        flock($stream, LOCK_UN);
+        fclose($stream);
+    }
+    hub_prune_retention($db, '2026-07-20 00:00:00');
+    hub_test_assert((hub_get_task_artifact($db, $artifactId)['state'] ?? '') === 'purged', 'prune must retry after stream lock release');
+});

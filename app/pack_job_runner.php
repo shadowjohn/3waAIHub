@@ -503,6 +503,7 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
             $db->exec('ROLLBACK');
             return false;
         }
+        hub_apply_task_terminal_retention($db, $taskId, 'failed', $now);
         hub_release_task_artifact_holds($db, $taskId);
         hub_enqueue_task_callback_delivery($db, $taskId);
         $db->exec('COMMIT');

@@ -51,12 +51,6 @@ $plans = [
         'params' => [':cutoff' => $taskCutoff],
     ],
     [
-        'key' => 'tasks',
-        'sql' => "DELETE FROM tasks WHERE status IN ($terminalStatuses) AND COALESCE(finished_at, updated_at, created_at) < :cutoff",
-        'count_sql' => "SELECT COUNT(*) FROM tasks WHERE status IN ($terminalStatuses) AND COALESCE(finished_at, updated_at, created_at) < :cutoff",
-        'params' => [':cutoff' => $taskCutoff],
-    ],
-    [
         'key' => 'api_access_logs',
         'sql' => 'DELETE FROM api_access_logs WHERE created_at < :cutoff',
         'count_sql' => 'SELECT COUNT(*) FROM api_access_logs WHERE created_at < :cutoff',
