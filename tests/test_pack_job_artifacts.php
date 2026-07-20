@@ -36,12 +36,14 @@ function hub_test_pack_job_contract(): array
                 'type' => 'transcript_json',
                 'path' => 'transcript.json',
                 'mime_types' => ['application/json'],
+                'max_bytes' => 1048576,
                 'json' => ['required_keys' => ['text']],
             ],
             [
                 'type' => 'subtitle_text',
                 'path' => 'subtitle.srt',
                 'mime_types' => ['text/plain'],
+                'max_bytes' => 128,
                 'when' => ['input' => 'include_subtitles', 'equals' => true],
                 'text' => ['max_bytes' => 128],
             ],
@@ -49,6 +51,7 @@ function hub_test_pack_job_contract(): array
                 'type' => 'audio',
                 'path' => 'audio.wav',
                 'mime_types' => ['audio/wav', 'audio/x-wav'],
+                'max_bytes' => 1048576,
                 'audio' => [],
             ],
         ],
@@ -419,6 +422,7 @@ hub_test('Pack job finalize rejects a contract with no active outputs', function
                 'type' => 'optional_json',
                 'path' => 'optional.json',
                 'mime_types' => ['application/json'],
+                'max_bytes' => 1024,
                 'required' => false,
                 'json' => ['required_keys' => ['text']],
             ],
@@ -426,6 +430,7 @@ hub_test('Pack job finalize rejects a contract with no active outputs', function
                 'type' => 'conditional_json',
                 'path' => 'conditional.json',
                 'mime_types' => ['application/json'],
+                'max_bytes' => 1024,
                 'when' => ['input' => 'include_conditional', 'equals' => true],
                 'json' => ['required_keys' => ['text']],
             ],
@@ -564,6 +569,35 @@ hub_test('Pack job missing required output fails the contract without success re
         $task = hub_get_task($db, $fixture['task_id']);
         hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'output_contract_invalid', 'missing required output must use the fixed output contract failure');
         hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'missing required output must not register artifacts or success');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job output size cap rejects before parsing and terminalizes without artifacts', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $workspace = $fixture['workspace'];
+    $contract = hub_test_pack_job_contract();
+    $contract['artifacts'][0]['max_bytes'] = 16;
+    $contract['artifacts'][1]['max_bytes'] = 128;
+    $contract['artifacts'][2]['max_bytes'] = 1024;
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"this is larger than sixteen bytes\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $reason = '';
+        try {
+            hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], $contract, 'hub_test_pack_job_audio_probe');
+        } catch (HubPackOutputContractInvalid $e) {
+            $reason = $e->getMessage();
+        }
+        hub_test_assert($reason === 'artifact_size_invalid', 'oversized output must be rejected on its size before JSON parsing');
+
+        $outcome = hub_finalize_pack_job_success($db, $fixture['task_id'], $fixture['run'], $workspace, ['include_subtitles' => true], $contract, hub_test_pack_job_cleanup_asserted(), 'hub_test_pack_job_audio_probe');
+        $task = hub_get_task($db, $fixture['task_id']);
+        hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'output_contract_invalid', 'oversized output must report the fixed contract failure');
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'oversized output must not partially register terminal artifacts');
     } finally {
         hub_test_pack_job_rm($workspace);
     }

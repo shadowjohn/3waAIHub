@@ -36,6 +36,7 @@
             "type": "transcript_json",
             "path": "transcript.json",
             "mime_types": ["application/json"],
+            "max_bytes": 2097152,
             "json": {
               "required_keys": ["text"]
             }

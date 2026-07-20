@@ -127,6 +127,32 @@ hub_test('audio async routes are fixed and resolve installed Pack versions', fun
     });
 });
 
+hub_test('async Pack output contracts require bounded artifact sizes', function (): void {
+    foreach (['whisper-asr', 'tts-voxcpm2'] as $packId) {
+        $pack = hub_get_pack($packId);
+        $artifacts = $pack['manifest']['async_jobs'][0]['output']['artifacts'] ?? [];
+        hub_test_assert(is_array($artifacts) && $artifacts !== [], $packId . ' must declare async output artifacts');
+        foreach ($artifacts as $artifact) {
+            hub_test_assert(is_int($artifact['max_bytes'] ?? null) && $artifact['max_bytes'] > 0 && $artifact['max_bytes'] <= hub_pack_job_output_hard_max_bytes(), $packId . ' output artifact must have a finite Hub-bounded max_bytes');
+        }
+    }
+
+    $manifest = [
+        'gateway' => ['max_upload_mb' => 1],
+        'async_jobs' => [[
+            'job' => 'oversized_output',
+            'input' => ['fields' => [], 'source_artifact_types' => []],
+            'output' => ['artifacts' => [[
+                'type' => 'result',
+                'path' => 'result.bin',
+                'mime_types' => ['application/octet-stream'],
+                'max_bytes' => hub_pack_job_output_hard_max_bytes() + 1,
+            ]]],
+        ]],
+    ];
+    hub_test_assert(hub_pack_async_job_contract($manifest, 'oversized_output') === null, 'manifest output max_bytes must not exceed the Hub hard maximum');
+});
+
 hub_test('audio async admission rejects controls and persists the managed route snapshot', function (): void {
     hub_test_audio_isolate(static function (): void {
     $db = hub_test_reset_db();
@@ -231,6 +257,10 @@ hub_test('audio artifact chaining validates ownership state type and path', func
     }
     $artifact = hub_test_audio_request($db, 'artifact', (string)$tokenB['plain_token'], [], ['artifact_id' => (string)$source['artifact_id']], [], 'GET');
     hub_test_assert($artifact['status'] === 404, 'cross-member artifact download must not reveal artifact');
+    $artifact = hub_test_audio_request($db, 'artifact', (string)$tokenA['plain_token'], [], ['artifact_id' => (string)$source['artifact_id']], [], 'GET');
+    $headers = implode("\n", $artifact['headers'] ?? []);
+    hub_test_assert($artifact['status'] === 200 && ($artifact['stream_path'] ?? '') === $source['path'] && ($artifact['stream_size'] ?? -1) === filesize($source['path']) && ($artifact['body'] ?? null) === '', 'authorized artifact response must retain only a streamed file descriptor, not an in-memory body');
+    hub_test_assert(str_contains($headers, 'Content-Type: audio/wav') && str_contains($headers, 'Content-Length: ' . filesize($source['path'])) && str_contains($headers, 'Content-Disposition: attachment; filename="source.wav"'), 'streamed artifact response must preserve download MIME length and disposition headers');
 
     $invalid = [
         hub_test_audio_source_artifact($db, $memberB, (int)$tokenB['token_id']),

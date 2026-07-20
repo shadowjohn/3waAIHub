@@ -1310,14 +1310,9 @@ function hub_api_artifact(PDO $db, array $authContext = []): array
         return hub_gateway_json(403, ['ok' => false, 'error' => 'artifact path rejected']);
     }
 
-    return [
-        'status' => 200,
-        'headers' => [
-            'Content-Type: ' . $artifact['mime_type'],
-            'Content-Disposition: attachment; filename="' . basename($artifact['name']) . '"',
-        ],
-        'body' => (string)file_get_contents($path),
-    ];
+    $response = hub_gateway_stream_file_response($path, (string)$artifact['mime_type'], (string)$artifact['name']);
+
+    return $response ?? hub_gateway_json(403, ['ok' => false, 'error' => 'artifact path rejected']);
 }
 
 function hub_api_load_task(PDO $db, array $authContext = []): ?array
@@ -1440,6 +1435,35 @@ function hub_gateway_json(int $status, array $payload): array
     ];
 }
 
+function hub_gateway_stream_file_response(string $path, string $mimeType, string $downloadName): ?array
+{
+    $path = hub_artifact_safe_path($path);
+    if ($path === null) {
+        return null;
+    }
+    clearstatcache(true, $path);
+    $size = filesize($path);
+    if ($size === false || $size < 0) {
+        return null;
+    }
+    $mimeType = preg_match('/^[a-z0-9.+-]{1,64}\/[a-z0-9.+-]{1,64}$/i', $mimeType) === 1
+        ? strtolower($mimeType)
+        : 'application/octet-stream';
+    $downloadName = preg_replace('/[^A-Za-z0-9._-]/', '_', basename($downloadName)) ?: 'artifact';
+
+    return [
+        'status' => 200,
+        'headers' => [
+            'Content-Type: ' . $mimeType,
+            'Content-Length: ' . (int)$size,
+            'Content-Disposition: attachment; filename="' . $downloadName . '"',
+        ],
+        'body' => '',
+        'stream_path' => $path,
+        'stream_size' => (int)$size,
+    ];
+}
+
 function hub_gateway_error(int $status, string $errorCode, string $message): array
 {
     return hub_gateway_json($status, ['ok' => false, 'error' => $errorCode, 'message' => $message]);
@@ -1463,10 +1487,19 @@ function hub_gateway_finish(PDO $db, ?array $service, string $mode, array $respo
         $requestId,
         $authContext,
         hub_gateway_upload_bytes(),
-        strlen((string)($response['body'] ?? ''))
+        hub_gateway_response_output_bytes($response)
     );
 
     return $response;
+}
+
+function hub_gateway_response_output_bytes(array $response): int
+{
+    if (is_int($response['stream_size'] ?? null) && $response['stream_size'] >= 0) {
+        return $response['stream_size'];
+    }
+
+    return strlen((string)($response['body'] ?? ''));
 }
 
 function hub_gateway_upload_bytes(): int
@@ -1564,9 +1597,31 @@ function hub_service_gateway_int(array $service, string $key, int $default): int
 
 function hub_send_gateway_response(array $response): never
 {
+    $streamPath = is_string($response['stream_path'] ?? null) ? hub_artifact_safe_path($response['stream_path']) : null;
+    $streamSize = $response['stream_size'] ?? null;
+    $stream = null;
+    if ($streamPath !== null && is_int($streamSize) && $streamSize >= 0) {
+        clearstatcache(true, $streamPath);
+        $stream = @fopen($streamPath, 'rb');
+        $stat = $stream === false ? false : fstat($stream);
+        if (!is_array($stat) || (int)($stat['size'] ?? -1) !== $streamSize) {
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
+            $stream = null;
+        }
+    }
+    if (array_key_exists('stream_path', $response) && !is_resource($stream)) {
+        $response = hub_gateway_error(404, 'artifact_not_available', 'artifact is not available');
+    }
     http_response_code((int)$response['status']);
     foreach ($response['headers'] as $header) {
         header($header);
+    }
+    if (is_resource($stream)) {
+        fpassthru($stream);
+        fclose($stream);
+        exit;
     }
     echo $response['body'];
     exit;

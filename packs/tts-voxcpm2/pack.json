@@ -40,6 +40,7 @@
             "type": "audio",
             "path": "audio.wav",
             "mime_types": ["audio/wav", "audio/x-wav"],
+            "max_bytes": 33554432,
             "audio": {}
           }
         ]

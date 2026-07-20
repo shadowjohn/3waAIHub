@@ -773,6 +773,38 @@ function hub_pack_job_output_contract_invalid(string $reason): never
     throw new HubPackOutputContractInvalid($reason);
 }
 
+function hub_pack_job_output_hard_max_bytes(): int
+{
+    $default = 64 * 1024 * 1024;
+    $configured = trim((string)(getenv('AIHUB_PACK_OUTPUT_HARD_MAX_BYTES') ?: ''));
+    if ($configured === '' || !ctype_digit($configured) || (int)$configured < 1) {
+        return $default;
+    }
+
+    return min($default, (int)$configured);
+}
+
+function hub_pack_job_parser_max_bytes(): int
+{
+    return min(hub_pack_job_output_hard_max_bytes(), 4 * 1024 * 1024);
+}
+
+function hub_pack_job_artifact_max_bytes(mixed $value): int
+{
+    if (!is_int($value) || $value < 1 || $value > hub_pack_job_output_hard_max_bytes()) {
+        hub_pack_job_output_contract_invalid('artifact_size_contract_invalid');
+    }
+
+    return $value;
+}
+
+function hub_pack_job_validate_artifact_size(int $size, int $maxBytes): void
+{
+    if ($size < 0 || $size > $maxBytes || $size > hub_pack_job_output_hard_max_bytes()) {
+        hub_pack_job_output_contract_invalid('artifact_size_invalid');
+    }
+}
+
 function hub_pack_job_artifact_relative_path(mixed $value): string
 {
     if (!is_string($value) || $value === '' || strlen($value) > 240 || str_contains($value, "\0")) {
@@ -811,7 +843,7 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
     $types = [];
     $paths = [];
     foreach ($artifacts as $definition) {
-        if (!is_array($definition) || array_diff(array_keys($definition), ['type', 'path', 'mime_types', 'required', 'when', 'json', 'text', 'audio']) !== []) {
+        if (!is_array($definition) || array_diff(array_keys($definition), ['type', 'path', 'mime_types', 'max_bytes', 'required', 'when', 'json', 'text', 'audio']) !== []) {
             hub_pack_job_output_contract_invalid('artifact_contract_invalid');
         }
         $type = (string)($definition['type'] ?? '');
@@ -825,6 +857,7 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
         if (isset($definition['required']) && !is_bool($definition['required'])) {
             hub_pack_job_output_contract_invalid('artifact_required_invalid');
         }
+        $maxBytes = hub_pack_job_artifact_max_bytes($definition['max_bytes'] ?? null);
         if (isset($definition['when'])) {
             $when = $definition['when'];
             if (!is_array($when) || array_keys($when) !== ['input', 'equals'] || !is_string($when['input']) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $when['input']) !== 1 || is_array($when['equals']) || is_object($when['equals'])) {
@@ -841,6 +874,9 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
             if (array_diff(array_keys($definition['json']), ['required_keys']) !== [] || !is_array($keys) || !array_is_list($keys)) {
                 hub_pack_job_output_contract_invalid('artifact_json_contract_invalid');
             }
+            if ($maxBytes > hub_pack_job_parser_max_bytes()) {
+                hub_pack_job_output_contract_invalid('artifact_parser_size_contract_invalid');
+            }
             foreach ($keys as $key) {
                 if (!is_string($key) || preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $key) !== 1) {
                     hub_pack_job_output_contract_invalid('artifact_json_contract_invalid');
@@ -848,8 +884,8 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
             }
         }
         if (isset($definition['text'])) {
-            $maxBytes = $definition['text']['max_bytes'] ?? 1048576;
-            if (array_diff(array_keys($definition['text']), ['max_bytes']) !== [] || !is_int($maxBytes) || $maxBytes < 1 || $maxBytes > 10485760) {
+            $textMaxBytes = $definition['text']['max_bytes'] ?? $maxBytes;
+            if (array_diff(array_keys($definition['text']), ['max_bytes']) !== [] || !is_int($textMaxBytes) || $textMaxBytes !== $maxBytes || $maxBytes > hub_pack_job_parser_max_bytes()) {
                 hub_pack_job_output_contract_invalid('artifact_text_contract_invalid');
             }
         }
@@ -859,6 +895,7 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
         $definition['type'] = $type;
         $definition['path'] = $path;
         $definition['mime_types'] = hub_pack_job_artifact_mime_types($definition['mime_types'] ?? null);
+        $definition['max_bytes'] = $maxBytes;
         $types[$type] = true;
         $paths[$path] = true;
         $normalized[] = $definition;
@@ -946,13 +983,48 @@ function hub_pack_job_detect_mime(string $path): string
         : 'application/octet-stream';
 }
 
-function hub_pack_job_validate_json_output(string $path, array $definition): void
+function hub_pack_job_sha256_file(string $path): ?string
+{
+    $handle = @fopen($path, 'rb');
+    if ($handle === false) {
+        return null;
+    }
+    try {
+        $context = hash_init('sha256');
+        if (hash_update_stream($context, $handle) === false) {
+            return null;
+        }
+
+        return strtolower(hash_final($context));
+    } catch (Throwable) {
+        return null;
+    } finally {
+        fclose($handle);
+    }
+}
+
+function hub_pack_job_read_parser_output(string $path, int $size): string
+{
+    if ($size < 0 || $size > hub_pack_job_parser_max_bytes()) {
+        hub_pack_job_output_contract_invalid('artifact_size_invalid');
+    }
+    $contents = file_get_contents($path, false, null, 0, $size + 1);
+    if (!is_string($contents) || strlen($contents) !== $size) {
+        hub_pack_job_output_contract_invalid('artifact_metadata_invalid');
+    }
+
+    return $contents;
+}
+
+function hub_pack_job_validate_json_output(string $path, array $definition, int $size): void
 {
     if (!isset($definition['json'])) {
         return;
     }
     try {
-        $decoded = json_decode((string)file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
+        $decoded = json_decode(hub_pack_job_read_parser_output($path, $size), true, 64, JSON_THROW_ON_ERROR);
+    } catch (HubPackOutputContractInvalid $e) {
+        throw $e;
     } catch (Throwable) {
         hub_pack_job_output_contract_invalid('artifact_json_invalid');
     }
@@ -971,9 +1043,8 @@ function hub_pack_job_validate_text_output(string $path, array $definition, int 
     if (!isset($definition['text'])) {
         return;
     }
-    $contents = file_get_contents($path);
-    $maxBytes = (int)($definition['text']['max_bytes'] ?? 1048576);
-    if (!is_string($contents) || $contents === '' || $size > $maxBytes || preg_match('//u', $contents) !== 1) {
+    $contents = hub_pack_job_read_parser_output($path, $size);
+    if ($contents === '' || preg_match('//u', $contents) !== 1) {
         hub_pack_job_output_contract_invalid('artifact_text_invalid');
     }
 }
@@ -1065,21 +1136,23 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
         if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
             hub_pack_job_output_contract_invalid('artifact_nonregular');
         }
-        $size = filesize($path);
-        $sha256 = hash_file('sha256', $path);
+        $size = (int)($stat['size'] ?? -1);
+        hub_pack_job_validate_artifact_size($size, (int)$definition['max_bytes']);
+        $sha256 = hub_pack_job_sha256_file($path);
         $mime = hub_pack_job_detect_mime($path);
-        if ($size === false || $size < 0 || $sha256 === false || !in_array($mime, $definition['mime_types'], true)) {
+        if ($sha256 === null || !in_array($mime, $definition['mime_types'], true)) {
             hub_pack_job_output_contract_invalid('artifact_metadata_invalid');
         }
-        hub_pack_job_validate_json_output($path, $definition);
-        hub_pack_job_validate_text_output($path, $definition, (int)$size);
+        hub_pack_job_validate_json_output($path, $definition, $size);
+        hub_pack_job_validate_text_output($path, $definition, $size);
         $validated[] = [
             'name' => $relative,
             'artifact_type' => $definition['type'],
             'path' => $path,
             'mime_type' => $mime,
-            'size_bytes' => (int)$size,
-            'sha256' => strtolower($sha256),
+            'size_bytes' => $size,
+            'max_bytes' => (int)$definition['max_bytes'],
+            'sha256' => $sha256,
             'metadata' => hub_pack_job_validate_audio_output($path, $definition, $audioProbe),
             'device' => (int)$stat['dev'],
             'inode' => (int)$stat['ino'],
@@ -1163,11 +1236,15 @@ function hub_revalidate_pack_job_artifact_snapshot(PDO $db, int $taskId, ?array 
             hub_pack_job_output_contract_invalid('artifact_changed');
         }
         $stat = lstat($path);
-        $size = filesize($path);
-        $sha256 = hash_file('sha256', $path);
-        if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1
-            || (int)$stat['dev'] !== (int)($artifact['device'] ?? -1) || (int)$stat['ino'] !== (int)($artifact['inode'] ?? -1)
-            || $size === false || (int)$size !== (int)($artifact['size_bytes'] ?? -1) || $sha256 === false || !hash_equals((string)($artifact['sha256'] ?? ''), strtolower($sha256))
+        if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
+            hub_pack_job_output_contract_invalid('artifact_changed');
+        }
+        $size = (int)($stat['size'] ?? -1);
+        $maxBytes = hub_pack_job_artifact_max_bytes($artifact['max_bytes'] ?? null);
+        hub_pack_job_validate_artifact_size($size, $maxBytes);
+        $sha256 = hub_pack_job_sha256_file($path);
+        if ((int)$stat['dev'] !== (int)($artifact['device'] ?? -1) || (int)$stat['ino'] !== (int)($artifact['inode'] ?? -1)
+            || $size !== (int)($artifact['size_bytes'] ?? -1) || $sha256 === null || !hash_equals((string)($artifact['sha256'] ?? ''), $sha256)
             || hub_pack_job_detect_mime($path) !== ($artifact['mime_type'] ?? null)) {
             hub_pack_job_output_contract_invalid('artifact_changed');
         }
@@ -1244,7 +1321,35 @@ function hub_pack_job_published_artifact_path(string $handoffDir, string $name):
     return $destination;
 }
 
-function hub_pack_job_copy_to_published_artifact(string $source, string $destination): void
+function hub_pack_job_stream_copy($sourceHandle, $destinationHandle, int $maxBytes): bool
+{
+    $copied = 0;
+    while (!feof($sourceHandle)) {
+        $chunk = fread($sourceHandle, 8192);
+        if ($chunk === false) {
+            return false;
+        }
+        if ($chunk === '') {
+            return feof($sourceHandle);
+        }
+        $copied += strlen($chunk);
+        if ($copied > $maxBytes) {
+            return false;
+        }
+        $offset = 0;
+        while ($offset < strlen($chunk)) {
+            $written = fwrite($destinationHandle, substr($chunk, $offset));
+            if ($written === false || $written === 0) {
+                return false;
+            }
+            $offset += $written;
+        }
+    }
+
+    return true;
+}
+
+function hub_pack_job_copy_to_published_artifact(string $source, string $destination, int $maxBytes): void
 {
     $temporary = $destination . '.tmp-' . bin2hex(random_bytes(12));
     $sourceHandle = null;
@@ -1254,7 +1359,7 @@ function hub_pack_job_copy_to_published_artifact(string $source, string $destina
         $sourceHandle = fopen($source, 'rb');
         $destinationHandle = fopen($temporary, 'xb');
         if ($sourceHandle === false || $destinationHandle === false
-            || stream_copy_to_stream($sourceHandle, $destinationHandle) === false
+            || !hub_pack_job_stream_copy($sourceHandle, $destinationHandle, $maxBytes)
             || !fflush($destinationHandle)
             || (function_exists('fsync') && !fsync($destinationHandle))
             || !fclose($destinationHandle)) {
@@ -1304,17 +1409,21 @@ function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array
         $published = [];
         foreach ($validatedArtifacts as $artifact) {
             $name = is_string($artifact['name'] ?? null) ? $artifact['name'] : '';
+            $maxBytes = hub_pack_job_artifact_max_bytes($artifact['max_bytes'] ?? null);
             $destination = hub_pack_job_published_artifact_path($handoffDir, $name);
-            hub_pack_job_copy_to_published_artifact((string)($artifact['path'] ?? ''), $destination);
+            hub_pack_job_copy_to_published_artifact((string)($artifact['path'] ?? ''), $destination, $maxBytes);
             clearstatcache(true, $destination);
             $path = realpath($destination);
             $stat = $path === false ? false : lstat($path);
-            $size = $path === false ? false : filesize($path);
-            $sha256 = $path === false ? false : hash_file('sha256', $path);
             if ($path === false || !str_starts_with($path, $handoffDir . DIRECTORY_SEPARATOR) || is_link($path)
-                || !is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1
-                || $size === false || (int)$size !== (int)($artifact['size_bytes'] ?? -1)
-                || $sha256 === false || !hash_equals((string)($artifact['sha256'] ?? ''), strtolower($sha256))
+                || !is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
+                hub_pack_job_output_contract_invalid('artifact_handoff_failed');
+            }
+            $size = is_array($stat) ? (int)($stat['size'] ?? -1) : -1;
+            hub_pack_job_validate_artifact_size($size, $maxBytes);
+            $sha256 = hub_pack_job_sha256_file($path);
+            if ($size !== (int)($artifact['size_bytes'] ?? -1)
+                || $sha256 === null || !hash_equals((string)($artifact['sha256'] ?? ''), $sha256)
                 || hub_pack_job_detect_mime($path) !== ($artifact['mime_type'] ?? null)) {
                 hub_pack_job_output_contract_invalid('artifact_handoff_failed');
             }
@@ -1370,13 +1479,17 @@ function hub_revalidate_published_pack_job_artifacts(int $taskId, array $publish
         $path = realpath($handoffDir . '/' . $name);
         clearstatcache(true, $handoffDir . '/' . $name);
         $stat = $path === false ? false : lstat($path);
-        $size = $path === false ? false : filesize($path);
-        $sha256 = $path === false ? false : hash_file('sha256', $path);
         if ($path === false || $path !== ($artifact['path'] ?? null) || !str_starts_with($path, $handoffDir . DIRECTORY_SEPARATOR) || is_link($path)
-            || !is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1
-            || (int)$stat['dev'] !== (int)($artifact['device'] ?? -1) || (int)$stat['ino'] !== (int)($artifact['inode'] ?? -1)
-            || $size === false || (int)$size !== (int)($artifact['size_bytes'] ?? -1)
-            || $sha256 === false || !hash_equals((string)($artifact['sha256'] ?? ''), strtolower($sha256))
+            || !is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
+            hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
+        }
+        $maxBytes = hub_pack_job_artifact_max_bytes($artifact['max_bytes'] ?? null);
+        $size = is_array($stat) ? (int)($stat['size'] ?? -1) : -1;
+        hub_pack_job_validate_artifact_size($size, $maxBytes);
+        $sha256 = hub_pack_job_sha256_file($path);
+        if ((int)$stat['dev'] !== (int)($artifact['device'] ?? -1) || (int)$stat['ino'] !== (int)($artifact['inode'] ?? -1)
+            || $size !== (int)($artifact['size_bytes'] ?? -1)
+            || $sha256 === null || !hash_equals((string)($artifact['sha256'] ?? ''), $sha256)
             || hub_pack_job_detect_mime($path) !== ($artifact['mime_type'] ?? null)) {
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
         }
