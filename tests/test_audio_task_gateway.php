@@ -491,3 +491,75 @@ hub_test('audio admission persists only declared scalar job inputs', function ()
         hub_test_assert($accepted['status'] === 200 && ($task['input'] ?? null) === ['text' => 'allowed manifest field'], 'audio task input must contain only declared client fields');
     });
 });
+
+hub_test('manifest async job declarations cannot permit reserved controls', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Manifest Control Owner');
+        $token = hub_create_api_token($db, $memberId, 'manifest control token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+
+        $manifestPath = HUB_ROOT . '/packs/tts-voxcpm2/pack.json';
+        $original = (string)file_get_contents($manifestPath);
+        $manifest = json_decode($original, true);
+        if (!is_array($manifest)) {
+            throw new RuntimeException('Cannot decode TTS manifest fixture.');
+        }
+        $reservedFields = ['command', 'requested_mode', 'route_resolved_at', 'source_upload_path'];
+        $manifest['async_jobs'][0]['input']['fields'] = array_values(array_unique(array_merge(
+            $manifest['async_jobs'][0]['input']['fields'],
+            $reservedFields
+        )));
+        try {
+            file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
+            foreach ($reservedFields as $field) {
+                $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                    'source_artifact_id' => (string)$source['artifact_id'],
+                    'text' => 'safe text',
+                    $field => 'unexpected runtime control',
+                ]);
+                hub_test_assert($response['status'] === 400 && (hub_test_audio_payload($response)['error'] ?? '') === 'forbidden_task_control', 'manifest input declarations must not permit reserved runtime controls');
+            }
+        } finally {
+            file_put_contents($manifestPath, $original, LOCK_EX);
+        }
+    });
+});
+
+hub_test('existing task worker leaves queued Pack jobs untouched', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $memberId = hub_create_api_member($db, 'Worker Queue Owner');
+    $token = hub_create_api_token($db, $memberId, 'worker queue token', null, null);
+    $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51');
+
+    $output = [];
+    $exitCode = 0;
+    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/scripts/task_worker.php') . ' --limit=1 2>&1', $output, $exitCode);
+
+    $task = hub_get_task($db, $taskId);
+    hub_test_assert($exitCode === 0 && ($task['status'] ?? '') === 'queued', 'existing task worker must not claim or fail queued Pack jobs before a Pack adapter exists');
+});
+
+hub_test('audio manual retry accepts timed-out Pack jobs', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $memberId = hub_create_api_member($db, 'Timed Retry Owner');
+    $token = hub_create_api_token($db, $memberId, 'timed retry token', null, null);
+    $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+    $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51', [
+        'source_artifact_id' => $source['artifact_id'],
+        'source_task_id' => $source['task_id'],
+    ]);
+    hub_finish_task_timed_out($db, hub_get_task($db, $taskId) ?? [], 'timed out');
+
+    $retryId = hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']]);
+    $retry = hub_get_task($db, $retryId);
+    hub_test_assert((int)($retry['retry_of_task_id'] ?? 0) === $taskId && ($retry['status'] ?? '') === 'queued', 'timed-out Pack jobs must create a linked queued retry');
+});

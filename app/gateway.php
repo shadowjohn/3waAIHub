@@ -790,20 +790,27 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
 
 function hub_audio_task_has_forbidden_control(array $input): bool
 {
-    foreach (array_keys($input) as $key) {
-        $key = strtolower((string)$key);
-        if (
-            in_array($key, ['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'entrypoint', 'command', 'script', 'env', 'environment', 'environment_json', 'host_path', 'container_path', 'path', 'input_file', 'source_path', 'workdir', 'working_dir', 'working_directory', 'secret', 'secrets', 'callback_url', 'callback_secret', 'callback_target_id'], true)
-            || str_starts_with($key, 'env_')
-            || str_starts_with($key, 'environment_')
-            || str_starts_with($key, 'secret_')
-            || str_starts_with($key, 'callback_')
-        ) {
+    foreach ($input as $key => $value) {
+        if (!is_string($key) || hub_audio_task_is_reserved_control_key($key)) {
+            return true;
+        }
+        if (is_array($value) && hub_audio_task_has_forbidden_control($value)) {
             return true;
         }
     }
 
     return false;
+}
+
+function hub_audio_task_is_reserved_control_key(string $key): bool
+{
+    $key = strtolower($key);
+
+    return in_array($key, ['requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at', 'entrypoint', 'command', 'script', 'env', 'environment', 'environment_json', 'host_path', 'container_path', 'path', 'input_file', 'source_path', 'source_upload_path', 'workdir', 'working_dir', 'working_directory', 'secret', 'secrets', 'callback_url', 'callback_secret', 'callback_target_id'], true)
+        || str_starts_with($key, 'env_')
+        || str_starts_with($key, 'environment_')
+        || str_starts_with($key, 'secret_')
+        || str_starts_with($key, 'callback_');
 }
 
 function hub_audio_task_uploads(): array
@@ -827,10 +834,16 @@ function hub_audio_task_uploads(): array
 
 function hub_audio_task_input(array $input, array $route): array
 {
+    if (hub_audio_task_has_forbidden_control($input)) {
+        throw new InvalidArgumentException('forbidden_task_control');
+    }
     $allowed = array_fill_keys((array)($route['input_fields'] ?? []), true);
     $filtered = [];
     foreach ($input as $key => $value) {
         if ($key === 'source_artifact_id') {
+            if (!is_scalar($value)) {
+                throw new InvalidArgumentException('forbidden_task_control');
+            }
             continue;
         }
         if (!is_string($key) || !isset($allowed[$key]) || !is_scalar($value)) {

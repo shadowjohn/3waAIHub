@@ -186,7 +186,7 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     if (!$task || ($task['task_type'] ?? '') !== 'pack_job') {
         throw new InvalidArgumentException('task_not_retryable');
     }
-    if (!in_array((string)($task['status'] ?? ''), ['success', 'failed', 'cancelled'], true)) {
+    if (!in_array((string)($task['status'] ?? ''), ['success', 'failed', 'cancelled', 'timed_out'], true)) {
         throw new RuntimeException('task_not_terminal');
     }
     $ownerMemberId = (int)($task['owner_member_id'] ?? 0);
@@ -250,16 +250,30 @@ function hub_get_task(PDO $db, int $taskId): ?array
     return $task;
 }
 
-function hub_claim_next_task(PDO $db): ?array
+function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null): ?array
 {
+    $taskTypes = $supportedTaskTypes ?? hub_allowed_task_types();
+    foreach ($taskTypes as $taskType) {
+        if (!is_string($taskType) || !hub_is_valid_task_type($taskType)) {
+            throw new InvalidArgumentException('Invalid supported task type.');
+        }
+    }
+    $taskTypes = array_values(array_unique($taskTypes));
+    if ($taskTypes === []) {
+        return null;
+    }
+
     $db->beginTransaction();
     try {
-        $task = $db->query(
+        $placeholders = implode(', ', array_fill(0, count($taskTypes), '?'));
+        $stmt = $db->prepare(
             "SELECT * FROM tasks
-             WHERE status = 'queued' AND lock_token IS NULL
+             WHERE status = 'queued' AND lock_token IS NULL AND task_type IN ({$placeholders})
              ORDER BY priority DESC, created_at ASC, id ASC
              LIMIT 1"
-        )->fetch();
+        );
+        $stmt->execute($taskTypes);
+        $task = $stmt->fetch();
         if (!$task) {
             $db->commit();
             return null;

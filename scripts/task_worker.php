@@ -20,7 +20,7 @@ if ($missing !== []) {
 
 $processed = 0;
 while ($processed < $limit) {
-    $task = hub_claim_next_task($db);
+    $task = hub_claim_next_task($db, ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation']);
     if (!$task) {
         break;
     }
