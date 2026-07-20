@@ -367,6 +367,7 @@ function hub_callback_claim_due_delivery(PDO $db, int $timestamp, int $leaseSeco
              WHERE d.event_type IN (\'task.completed\', \'task.failed\')
                AND d.delivered_at IS NULL AND d.attempt_count < 5
                AND (d.next_attempt_at IS NULL OR d.next_attempt_at <= :now)
+               AND (d.claim_token IS NULL OR d.claim_expires_at IS NULL OR d.claim_expires_at <= :now)
              ORDER BY d.next_attempt_at ASC, d.id ASC LIMIT 1'
         );
         $stmt->execute([':now' => $now]);
@@ -375,25 +376,29 @@ function hub_callback_claim_due_delivery(PDO $db, int $timestamp, int $leaseSeco
             $db->exec('COMMIT');
             return null;
         }
-        $attempt = (int)$delivery['attempt_count'] + 1;
+        $claimToken = bin2hex(random_bytes(32));
         $reserve = $db->prepare(
             'UPDATE task_callback_deliveries
-             SET attempt_count = :attempt_count, next_attempt_at = :next_attempt_at, updated_at = :updated_at
-             WHERE id = :id AND delivered_at IS NULL AND attempt_count = :previous_attempt_count'
+             SET claim_token = :claim_token, claim_expires_at = :claim_expires_at, updated_at = :updated_at
+             WHERE id = :id AND delivered_at IS NULL AND attempt_count = :previous_attempt_count
+               AND (next_attempt_at IS NULL OR next_attempt_at <= :now)
+               AND (claim_token IS NULL OR claim_expires_at IS NULL OR claim_expires_at <= :now)'
         );
         $reserve->execute([
-            ':attempt_count' => $attempt,
-            ':next_attempt_at' => hub_callback_time($timestamp + max(1, $leaseSeconds)),
+            ':claim_token' => $claimToken,
+            ':claim_expires_at' => hub_callback_time($timestamp + max(1, $leaseSeconds)),
             ':updated_at' => $now,
             ':id' => (int)$delivery['id'],
             ':previous_attempt_count' => (int)$delivery['attempt_count'],
+            ':now' => $now,
         ]);
         if ($reserve->rowCount() !== 1) {
             $db->exec('ROLLBACK');
             return null;
         }
         $db->exec('COMMIT');
-        $delivery['attempt_count'] = $attempt;
+        $delivery['claim_token'] = $claimToken;
+        $delivery['claim_expires_at'] = hub_callback_time($timestamp + max(1, $leaseSeconds));
 
         return $delivery;
     } catch (Throwable $e) {
@@ -424,7 +429,11 @@ function hub_callback_safe_error(?string $error, ?int $status): string
 
 function hub_callback_finalize_delivery(PDO $db, array $delivery, array $result, int $timestamp): bool
 {
-    $attemptCount = (int)($delivery['attempt_count'] ?? 0);
+    $claimToken = (string)($delivery['claim_token'] ?? '');
+    if ($claimToken === '' || (!array_key_exists('status', $result) && !array_key_exists('error', $result))) {
+        return false;
+    }
+    $attemptCount = (int)($delivery['attempt_count'] ?? 0) + 1;
     $status = isset($result['status']) && is_int($result['status']) && $result['status'] >= 100 && $result['status'] <= 599
         ? $result['status']
         : null;
@@ -438,8 +447,9 @@ function hub_callback_finalize_delivery(PDO $db, array $delivery, array $result,
     $stmt = $db->prepare(
         'UPDATE task_callback_deliveries
          SET attempt_count = :stored_attempt_count, delivered_at = :delivered_at, last_http_status = :last_http_status, last_error = :last_error,
-             next_attempt_at = :next_attempt_at, updated_at = :updated_at
-         WHERE delivery_id = :delivery_id AND delivered_at IS NULL AND attempt_count = :attempt_count'
+             next_attempt_at = :next_attempt_at, claim_token = NULL, claim_expires_at = NULL, updated_at = :updated_at
+         WHERE delivery_id = :delivery_id AND delivered_at IS NULL AND attempt_count = :previous_attempt_count
+           AND claim_token = :claim_token AND claim_expires_at > :now'
     );
     $stmt->execute([
         ':stored_attempt_count' => $storedAttemptCount,
@@ -449,7 +459,9 @@ function hub_callback_finalize_delivery(PDO $db, array $delivery, array $result,
         ':next_attempt_at' => $nextAttemptAt,
         ':updated_at' => $now,
         ':delivery_id' => (string)$delivery['delivery_id'],
-        ':attempt_count' => $attemptCount,
+        ':previous_attempt_count' => (int)$delivery['attempt_count'],
+        ':claim_token' => $claimToken,
+        ':now' => $now,
     ]);
 
     return $stmt->rowCount() === 1;
@@ -484,9 +496,11 @@ function hub_callback_send_http(array $delivery, array $headers, ?callable $tran
     }
     $options = [
         CURLOPT_POST => true,
-        CURLOPT_RETURNTRANSFER => true,
         CURLOPT_HTTPHEADER => $headerLines,
         CURLOPT_POSTFIELDS => (string)$delivery['payload_json'],
+        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk): int {
+            return strlen($chunk);
+        },
         CURLOPT_CONNECTTIMEOUT => 3,
         CURLOPT_TIMEOUT => 15,
         CURLOPT_FOLLOWLOCATION => false,

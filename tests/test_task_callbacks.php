@@ -194,6 +194,32 @@ hub_test('callback worker limits attempts and atomically reserves claims', funct
     hub_test_assert(hub_callback_process_next($db, static fn (): array => ['status' => 204], $now + 99999) === null, 'exhausted callbacks must not be sent again');
 });
 
+hub_test('callback claims survive crashes and reject stale finalizers', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Callback Claim Recovery Owner');
+    $target = hub_test_callback_target($db, $memberId);
+    $taskId = hub_test_callback_task($db, $memberId, (int)$target['id']);
+    hub_enqueue_task_callback_delivery($db, $taskId);
+    $now = 1700300000;
+    $db->prepare('UPDATE task_callback_deliveries SET next_attempt_at = :next_attempt_at')->execute([
+        ':next_attempt_at' => hub_callback_time($now),
+    ]);
+
+    for ($claimAt = $now; $claimAt < $now + (5 * 121); $claimAt += 121) {
+        $abandoned = hub_callback_claim_due_delivery($db, $claimAt, 120);
+        hub_test_assert($abandoned !== null && (int)$abandoned['attempt_count'] === 0 && !empty($abandoned['claim_token']), 'abandoned callback claim must not consume an attempt');
+    }
+    $reclaimed = hub_callback_claim_due_delivery($db, $now + (5 * 121), 120);
+    hub_test_assert($reclaimed !== null && (int)$reclaimed['attempt_count'] === 0, 'expired callback claims must remain deliverable after repeated worker crashes');
+
+    $newer = hub_callback_claim_due_delivery($db, $now + (5 * 121) + 121, 120);
+    hub_test_assert($newer !== null && (string)$newer['claim_token'] !== (string)$reclaimed['claim_token'], 'an expired claim must receive a new token');
+    hub_test_assert(!hub_callback_finalize_delivery($db, $reclaimed, ['status' => 500], $now + (5 * 121) + 121), 'stale callback claim token must not finalize a newer claim');
+    hub_test_assert(hub_callback_finalize_delivery($db, $newer, ['status' => 204], $now + (5 * 121) + 121), 'current callback claim token must finalize delivery');
+    $row = $db->query('SELECT attempt_count, delivered_at, claim_token, claim_expires_at FROM task_callback_deliveries')->fetch();
+    hub_test_assert((int)$row['attempt_count'] === 1 && !empty($row['delivered_at']) && $row['claim_token'] === null && $row['claim_expires_at'] === null, 'only the completed send outcome must increment attempts and clear its claim');
+});
+
 hub_test('disabled callback targets are finalized without a network send', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Callback Disabled Owner');
@@ -252,10 +278,19 @@ hub_test('callback worker requires an upgraded schema and cron runs it', functio
         throw new RuntimeException('Cannot create callback schema fixture.');
     }
     try {
+        $fixture = new PDO('sqlite:' . $path);
+        $fixture->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        hub_migrate($fixture);
+        $fixture->exec('DROP INDEX idx_task_callback_deliveries_claim');
+        $fixture->exec('ALTER TABLE task_callback_deliveries DROP COLUMN claim_token');
+        $fixture->exec('ALTER TABLE task_callback_deliveries DROP COLUMN claim_expires_at');
+        unset($fixture);
+
         $output = [];
         $exitCode = 0;
         exec('env ' . escapeshellarg('AIHUB_TEST_DB=' . $path) . ' ' . escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/scripts/callback_worker.php') . ' 2>&1', $output, $exitCode);
-        hub_test_assert($exitCode === 1 && str_contains(implode("\n", $output), 'schema_upgrade_required:') && str_contains(implode("\n", $output), 'php scripts/init_db.php'), 'callback worker must direct an unmigrated operator to init_db');
+        $message = implode("\n", $output);
+        hub_test_assert($exitCode === 1 && str_contains($message, 'schema_upgrade_required:') && str_contains($message, 'task_callback_deliveries.claim_token') && str_contains($message, 'task_callback_deliveries.claim_expires_at') && str_contains($message, 'php scripts/init_db.php'), 'callback worker must direct an old callback schema operator to init_db');
         hub_test_assert(str_contains((string)file_get_contents(HUB_ROOT . '/crontab/1min.sh'), 'php scripts/callback_worker.php --limit="$CALLBACK_WORKER_LIMIT"'), 'cron must invoke the callback worker');
     } finally {
         foreach ([$path, $path . '-wal', $path . '-shm'] as $file) {
@@ -284,8 +319,10 @@ hub_test('callback HTTP transport fails closed when resolved-IP pinning is unava
     $delivery['callback_url'] = 'https://8.8.8.8/callback';
     $configured = false;
     $result = hub_callback_send_http($delivery, [], null, null, static function ($handle, array $options) use (&$configured): bool {
-        $configured = isset($options[CURLOPT_RESOLVE]);
+        $configured = isset($options[CURLOPT_RESOLVE]) && isset($options[CURLOPT_WRITEFUNCTION]) && !isset($options[CURLOPT_RETURNTRANSFER]);
         return false;
     });
     hub_test_assert($configured && ($result['error'] ?? '') === 'callback_network_error', 'callback transport must stop before execution when cURL rejects its pinning options');
+    $source = (string)file_get_contents(HUB_ROOT . '/app/task_callbacks.php');
+    hub_test_assert(!str_contains($source, 'CURLOPT_RETURNTRANSFER') && str_contains($source, 'CURLOPT_WRITEFUNCTION'), 'callback HTTP transport must discard response bodies instead of buffering them');
 });

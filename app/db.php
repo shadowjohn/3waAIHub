@@ -541,6 +541,8 @@ CREATE TABLE IF NOT EXISTS task_callback_deliveries (
     payload_json TEXT NOT NULL,
     attempt_count INTEGER NOT NULL DEFAULT 0,
     next_attempt_at TEXT NULL,
+    claim_token TEXT NULL,
+    claim_expires_at TEXT NULL,
     delivered_at TEXT NULL,
     last_http_status INTEGER NULL,
     last_error TEXT NULL,
@@ -622,6 +624,8 @@ SQL);
     hub_add_column_if_missing($db, 'tasks', 'retention_state', "TEXT NOT NULL DEFAULT 'active'");
     hub_add_column_if_missing($db, 'tasks', 'purged_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'tasks', 'freed_bytes', 'INTEGER NOT NULL DEFAULT 0');
+    hub_add_column_if_missing($db, 'task_callback_deliveries', 'claim_token', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_callback_deliveries', 'claim_expires_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'task_artifacts', 'artifact_type', 'TEXT NULL');
     hub_add_column_if_missing($db, 'task_artifacts', 'sha256', 'TEXT NULL');
     hub_add_column_if_missing($db, 'task_artifacts', 'expires_at', 'TEXT NULL');
@@ -692,6 +696,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_stale ON runtime_runs(state, lease_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_targets_alias ON task_callback_targets(target_alias)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_due ON task_callback_deliveries(delivered_at, next_attempt_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_claim ON task_callback_deliveries(delivered_at, claim_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_task_id ON task_callback_deliveries(task_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifact_holds_active ON task_artifact_holds(source_artifact_id, released_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_state_expires ON runtime_resource_leases(state, lease_expires_at)');
@@ -706,7 +711,7 @@ function hub_runtime_schema_missing(PDO $db): array
 {
     $required = [
         'task_callback_targets' => ['id', 'owner_member_id', 'target_alias', 'callback_url', 'signing_secret', 'enabled', 'created_at', 'updated_at'],
-        'task_callback_deliveries' => ['id', 'delivery_id', 'callback_target_id', 'task_id', 'event_type', 'payload_json', 'attempt_count', 'next_attempt_at', 'delivered_at', 'last_http_status', 'last_error', 'created_at', 'updated_at'],
+        'task_callback_deliveries' => ['id', 'delivery_id', 'callback_target_id', 'task_id', 'event_type', 'payload_json', 'attempt_count', 'next_attempt_at', 'claim_token', 'claim_expires_at', 'delivered_at', 'last_http_status', 'last_error', 'created_at', 'updated_at'],
         'runtime_resource_leases' => ['resource_key', 'runtime_run_id', 'worker_id', 'lease_token', 'state', 'acquired_at', 'heartbeat_at', 'lease_expires_at', 'last_error', 'updated_at'],
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes'],
         'task_artifacts' => ['artifact_type', 'sha256', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error'],
