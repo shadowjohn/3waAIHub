@@ -91,6 +91,28 @@ hub_test('retention prune removes due managed source workspace and abandoned par
     hub_test_assert(($after['source_state'] ?? '') === 'purged' && ($after['workspace_state'] ?? '') === 'purged' && !empty($after['purged_at']), 'task resource metadata must record purge');
 });
 
+hub_test('partial retention purges a failed terminal upload after one hour without waiting for resource expiry', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    hub_finish_task_failed($db, hub_get_task($db, $taskId), 'upload failed');
+    $now = hub_now();
+    $finishedAt = hub_retention_deadline(-7200, $now);
+    $db->prepare('UPDATE tasks SET finished_at = :finished_at, updated_at = :updated_at WHERE id = :id')
+        ->execute([':finished_at' => $finishedAt, ':updated_at' => $finishedAt, ':id' => $taskId]);
+    $partial = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId . '/failed-upload.partial';
+    if (!is_dir(dirname($partial)) && !mkdir(dirname($partial), 0775, true)) {
+        throw new RuntimeException('Cannot create terminal partial fixture.');
+    }
+    file_put_contents($partial, 'partial', LOCK_EX);
+    touch($partial, strtotime($finishedAt));
+
+    hub_prune_retention($db, $now);
+    $after = hub_get_task($db, $taskId);
+
+    hub_test_assert(!file_exists($partial), 'a managed failed-task partial older than one hour must be removed before source or workspace retention expires');
+    hub_test_assert(($after['source_state'] ?? '') === 'retention' && ($after['workspace_state'] ?? '') === 'retention', 'partial cleanup must not wait for or alter independent task resource retention');
+});
+
 hub_test('artifact ACK API accepts owned task and artifact identifiers only', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -451,6 +473,35 @@ hub_test('metadata purge keeps records with an artifact hold or pending callback
     hub_test_assert(hub_get_task($db, $taskId) === null && hub_get_task($db, $downstreamId) !== null, 'final metadata deletion must keep the downstream task intact');
 });
 
+hub_test('metadata purge preserves a parent referenced by a completed downstream task', function (): void {
+    $db = hub_test_reset_db();
+    $now = '2026-07-20 00:00:00';
+    $parentId = hub_test_retention_metadata_ready_task($db, '2025-01-01 00:00:00');
+    $path = hub_task_result_dir($parentId) . '/purged-parent-artifact.txt';
+    if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0775, true)) {
+        throw new RuntimeException('Cannot create parent artifact fixture.');
+    }
+    file_put_contents($path, 'purged parent artifact', LOCK_EX);
+    $artifactId = hub_register_task_artifact($db, $parentId, 'purged-parent-artifact.txt', $path, 'text/plain');
+    unlink($path);
+    $db->prepare("UPDATE task_artifacts SET state = 'purged', purged_at = '2025-01-02 00:00:00' WHERE id = :id")
+        ->execute([':id' => $artifactId]);
+    $childId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1', [
+        'source_artifact_id' => $artifactId,
+        'source_task_id' => $parentId,
+        'retry_of_task_id' => $parentId,
+    ]);
+    hub_finish_task_success($db, hub_get_task($db, $childId), ['ok' => true]);
+
+    hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $parentId) !== null && hub_get_task($db, $childId) !== null, 'completed downstream lineage must retain the parent metadata and artifact record');
+
+    $db->prepare('UPDATE tasks SET source_artifact_id = NULL, source_task_id = NULL, retry_of_task_id = NULL WHERE id = :id')
+        ->execute([':id' => $childId]);
+    hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $parentId) === null && hub_get_task($db, $childId) !== null, 'the parent becomes eligible only after every downstream lineage reference is cleared');
+});
+
 hub_test('session-admin artifact retention controls require CSRF while bearer controls remain token-authenticated', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -477,6 +528,21 @@ hub_test('session-admin artifact retention controls require CSRF while bearer co
             $valid = hub_test_audio_request($db, 'task_artifact_retention', '', ['artifact_id' => (string)$artifactId, 'action' => 'pin', 'csrf_token' => 'csrf-good']);
             $bearer = hub_test_audio_request($db, 'task_artifact_retention', (string)$token['plain_token'], ['artifact_id' => (string)$artifactId, 'action' => 'unpin']);
             hub_test_assert($valid['status'] === 200 && $bearer['status'] === 200 && empty(hub_get_task_artifact($db, $artifactId)['pinned_at']), 'valid session CSRF must mutate while bearer-authenticated control does not require a cookie CSRF token');
+
+            hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '1');
+            $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+            $_SERVER['REQUEST_METHOD'] = 'POST';
+            $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=task_artifact_retention';
+            $_SERVER['HTTP_AUTHORIZATION'] = '';
+            $_SERVER['HTTP_HOST'] = 'hub.test';
+            $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
+            $_POST = ['artifact_id' => (string)$artifactId, 'action' => 'pin'];
+            $_GET = [];
+            $_FILES = [];
+            $localMissing = hub_gateway_dispatch($db, 'task_artifact_retention');
+            $_POST['csrf_token'] = 'csrf-good';
+            $localValid = hub_gateway_dispatch($db, 'task_artifact_retention');
+            hub_test_assert($localMissing['status'] === 400 && $localValid['status'] === 200 && !empty(hub_get_task_artifact($db, $artifactId)['pinned_at']), 'localhost token bypass without a bearer credential must still require session CSRF before mutation');
         } finally {
             $_SESSION = $session;
         }

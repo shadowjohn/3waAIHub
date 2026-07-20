@@ -1434,6 +1434,9 @@ function hub_retention_task_metadata_dependencies_clear(PDO $db, int $taskId, st
         'SELECT 1 FROM task_artifact_holds h
          LEFT JOIN task_artifacts a ON a.id = h.source_artifact_id
          WHERE h.released_at IS NULL AND (h.downstream_task_id = :task_id OR a.task_id = :task_id)',
+        'SELECT 1 FROM tasks
+         WHERE source_task_id = :task_id OR retry_of_task_id = :task_id
+            OR source_artifact_id IN (SELECT id FROM task_artifacts WHERE task_id = :task_id)',
         "SELECT 1 FROM runtime_runs
          WHERE task_id = :task_id AND state NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out')",
         "SELECT 1 FROM runtime_resource_leases l
@@ -1571,9 +1574,14 @@ function hub_prune_retention_partials(PDO $db, string $now): int
     $cutoff = (strtotime($now) ?: time()) - hub_retention_policy($db)['partial_hours'] * 3600;
     $tasks = $db->prepare(
         "SELECT id FROM tasks
-         WHERE (status IN ('success', 'failed', 'cancelled', 'timed_out')
-                AND (source_expires_at IS NOT NULL AND source_expires_at <= :now
-                     OR workspace_expires_at IS NOT NULL AND workspace_expires_at <= :now))
+         WHERE (status IN ('success', 'failed', 'cancelled', 'timed_out') AND (
+                    (finished_at IS NOT NULL AND finished_at <= :cutoff
+                     AND (source_state <> 'purged' OR workspace_state <> 'purged'))
+                    OR (source_state IN ('retention', 'expiring')
+                        AND source_expires_at IS NOT NULL AND source_expires_at <= :now)
+                    OR (workspace_state IN ('retention', 'expiring')
+                        AND workspace_expires_at IS NOT NULL AND workspace_expires_at <= :now)
+                ))
             OR (status IN ('staging', 'queued') AND updated_at <= :cutoff)
          ORDER BY id ASC"
     );
@@ -1633,12 +1641,12 @@ function hub_prune_retention(PDO $db, ?string $now = null): array
         }
     }
 
+    $purged += hub_prune_retention_partials($db, $now);
     foreach (['source', 'workspace'] as $resource) {
         $taskResult = hub_prune_retention_task_resources($db, $resource, $now);
         $purged += $taskResult['purged'];
         $errors += $taskResult['errors'];
     }
-    $purged += hub_prune_retention_partials($db, $now);
     $metadataPurged = hub_prune_retention_metadata($db, $now);
 
     return ['purged' => $purged, 'errors' => $errors, 'recovered' => $recovered, 'metadata_purged' => $metadataPurged];

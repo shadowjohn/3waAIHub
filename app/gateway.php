@@ -1350,7 +1350,7 @@ function hub_api_task_artifact_retention(PDO $db, array $authContext = []): arra
     if (!is_array($user) || (string)($user['role'] ?? '') !== 'system_admin') {
         return hub_gateway_error(403, 'admin_required', 'administrator session required');
     }
-    if (!empty($authContext['session_admin']) && !hub_check_csrf(false)) {
+    if (hub_bearer_token_from_request() === '' && !hub_check_csrf(false)) {
         return hub_gateway_error(400, 'csrf_invalid', 'valid CSRF token required');
     }
     $artifactId = trim((string)($_POST['artifact_id'] ?? ''));
