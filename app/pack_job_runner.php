@@ -270,6 +270,9 @@ function hub_pack_job_runner_arguments(array $runner, array $task, array $run, s
 
 function hub_pack_job_execution_details(array $details, array $fallback = []): array
 {
+    $reportedEvidence = (isset($details['container_id']) && trim((string)$details['container_id']) !== '')
+        || array_key_exists('baseline_pids', $details)
+        || array_key_exists('owned_pids', $details);
     $details += $fallback;
     $containerId = isset($details['container_id']) ? trim((string)$details['container_id']) : null;
     if ($containerId === '') {
@@ -283,7 +286,7 @@ function hub_pack_job_execution_details(array $details, array $fallback = []): a
         'container_id' => $containerId,
         'baseline_pids' => hub_runtime_gpu_recovery_pids($details['baseline_pids'] ?? []),
         'owned_pids' => hub_runtime_gpu_recovery_pids($details['owned_pids'] ?? []),
-        'has_process_evidence' => $containerId !== null || array_key_exists('baseline_pids', $details) || array_key_exists('owned_pids', $details),
+        'has_process_evidence' => $reportedEvidence || !empty($fallback['has_process_evidence']),
     ];
 }
 
@@ -344,6 +347,23 @@ function hub_pack_job_cleanup_from_result(array $result, array $details, ?callab
     return $cleanup;
 }
 
+function hub_pack_job_stop_result(array $options, array $context, string $reason, array $result): array
+{
+    if (!isset($options['stopper']) || !is_callable($options['stopper'])) {
+        return $result;
+    }
+    $stopped = $options['stopper']($context, $reason, $result);
+    if (!is_array($stopped)) {
+        throw new RuntimeException('runtime_stop_invalid');
+    }
+    if (array_intersect(['runner_exited', 'container_removed', 'owned_gpu_pids_gone'], array_keys($stopped)) !== []) {
+        $result['cleanup'] = $stopped;
+        return $result;
+    }
+
+    return array_replace($result, $stopped);
+}
+
 function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
 {
     if (($task['task_type'] ?? '') !== 'pack_job' || ($task['status'] ?? '') !== 'running') {
@@ -391,6 +411,8 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $pidInspector = $gpuLease === null ? null : ($options['pid_inspector'] ?? static fn (): array => []);
         $baseline = $pidInspector === null ? [] : hub_runtime_gpu_recovery_pids($pidInspector($context));
         $details = hub_pack_job_execution_details(['baseline_pids' => $baseline]);
+        // A baseline is needed for GPU recovery but is not proof that this executor owned no process.
+        $details['has_process_evidence'] = false;
         if (!hub_pack_job_record_execution($db, $task, $run, $gpuLease, $details)) {
             return ['status' => 'fence_lost'];
         }
@@ -420,12 +442,18 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         if ($fenceLost || $intent === 'fence_lost') {
             return ['status' => 'fence_lost'];
         }
-        $cleanup = hub_pack_job_cleanup_from_result($result, $details, $pidInspector, $context);
         if ($intent === 'cancelled' || $intent === 'timed_out') {
+            $result = hub_pack_job_stop_result($options, $context, $intent, $result);
+            $details = hub_pack_job_execution_details($result, $details);
+            if (!hub_pack_job_record_execution($db, $task, $run, $gpuLease, $details)) {
+                return ['status' => 'fence_lost'];
+            }
+            $cleanup = hub_pack_job_cleanup_from_result($result, $details, $pidInspector, $context);
             hub_commit_pack_job_failure($db, $taskId, $run, $intent, $intent, 'Pack job ' . $intent, $cleanup, $gpuLease);
             $latest = hub_get_task($db, $taskId);
             return ['status' => (string)($latest['status'] ?? 'failed'), 'error_code' => (string)($latest['error_code'] ?? $intent)];
         }
+        $cleanup = hub_pack_job_cleanup_from_result($result, $details, $pidInspector, $context);
         if ((int)($result['exit_code'] ?? 1) !== 0) {
             $code = (string)($result['error_code'] ?? 'runtime_exit_nonzero');
             if (preg_match('/^[a-z0-9_:-]{1,120}$/i', $code) !== 1) {

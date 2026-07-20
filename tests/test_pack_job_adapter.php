@@ -115,6 +115,11 @@ hub_test('Pack job adapter uses the shared worker and only manifest runner contr
     $called = 0;
     try {
         $task = hub_test_adapter_claim($db);
+        $memberId = hub_create_api_member($db, 'Adapter Callback Owner');
+        $targetId = hub_register_callback_target($db, $memberId, 'adapter-callback', 'https://8.8.8.8/callback');
+        $db->prepare('UPDATE tasks SET owner_member_id = :owner_member_id, callback_target_id = :callback_target_id WHERE id = :id')
+            ->execute([':owner_member_id' => $memberId, ':callback_target_id' => $targetId, ':id' => $fixture['task_id']]);
+        $task = hub_get_task($db, $fixture['task_id']) ?? $task;
         $result = hub_run_pack_job_task($db, $task, [
             'worker_id' => 'adapter-test-worker',
             'executor' => static function (array $context) use (&$called): array {
@@ -130,8 +135,154 @@ hub_test('Pack job adapter uses the shared worker and only manifest runner contr
         $latest = hub_get_task($db, $fixture['task_id']);
         $run = $db->query('SELECT * FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch();
         hub_test_assert($called === 1 && ($result['status'] ?? '') === 'success', 'one generic executor must run the Pack job');
-        hub_test_assert(($latest['status'] ?? '') === 'success' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 1, 'validated generic output must terminalize and publish');
+        hub_test_assert(($latest['status'] ?? '') === 'success' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 1 && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 1, 'validated generic output must terminalize publish and enqueue its callback');
         hub_test_assert(($run['container_id'] ?? '') === 'fixture-container', 'runtime run must record its managed container');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Pack job adapter stages only Hub-owned source files and fails safely without an executor', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    try {
+        $sourceTaskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+        $sourceDir = hub_task_result_dir($sourceTaskId);
+        if (!is_dir($sourceDir)) {
+            mkdir($sourceDir, 0700, true);
+        }
+        $sourcePath = $sourceDir . '/source.bin';
+        file_put_contents($sourcePath, 'hub-owned-source', LOCK_EX);
+        $sourceArtifactId = hub_register_task_artifact($db, $sourceTaskId, 'source.bin', $sourcePath, 'application/octet-stream');
+        $db->prepare('UPDATE tasks SET source_artifact_id = :source_artifact_id WHERE id = :id')->execute([':source_artifact_id' => $sourceArtifactId, ':id' => $fixture['task_id']]);
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, [
+            'executor' => static function (array $context): array {
+                hub_test_assert((string)file_get_contents($context['workspace'] . '/input/source') === 'hub-owned-source', 'source must be copied from the registered Hub artifact');
+                hub_test_assert(!file_exists($context['workspace'] . '/input/command'), 'client command must never become a workspace input file');
+                file_put_contents($context['workspace'] . '/output/result.txt', "source\n", LOCK_EX);
+                return ['exit_code' => 0, 'container_id' => 'source-container', 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'success', 'registered source artifact must be executable through the generic adapter');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    try {
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task);
+        $latest = hub_get_task($db, $fixture['task_id']);
+        $run = $db->query('SELECT container_id FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch();
+        hub_test_assert(($latest['error_code'] ?? '') === 'runner_unavailable' && ($run['container_id'] ?? null) === null, 'a Pack runner without a configured controlled executor must fail without a spawn');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Pack job adapter cooperatively stops cancelled and timed-out GPU jobs before terminal state', function (): void {
+    foreach (['cancelled', 'timed_out'] as $intent) {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_adapter_fixture($db, 'gpu');
+        $stopped = [];
+        try {
+            $task = hub_test_adapter_claim($db);
+            hub_run_pack_job_task($db, $task, [
+                'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+                'pid_inspector' => static fn (): array => [],
+                'executor' => static function (array $context) use ($intent): array {
+                    $context['started'](['container_id' => 'stop-' . $intent, 'baseline_pids' => [11], 'owned_pids' => [22]]);
+                    if ($intent === 'cancelled') {
+                        hub_test_assert(hub_cancel_task($context['db'], (int)$context['task']['id']), 'cancel request must reach the owned runtime run');
+                    } else {
+                        $context['db']->prepare('UPDATE runtime_runs SET timeout_at = :timeout_at WHERE id = :id')->execute([':timeout_at' => date('Y-m-d H:i:s', time() - 1), ':id' => $context['run']['id']]);
+                    }
+                    hub_test_assert($context['tick']() === $intent, 'worker tick must observe terminal intent while executor is running');
+                    file_put_contents($context['workspace'] . '/output/result.txt', "must-not-publish\n", LOCK_EX);
+                    return ['exit_code' => 0, 'container_id' => 'stop-' . $intent, 'baseline_pids' => [11], 'owned_pids' => [22]];
+                },
+                'stopper' => static function (array $context, string $reason, array $result) use (&$stopped): array {
+                    $stopped[] = [$context['runner']['image'], $reason, $result['container_id'] ?? null];
+                    return ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true];
+                },
+            ]);
+            $latest = hub_get_task($db, $fixture['task_id']);
+            hub_test_assert(($latest['status'] ?? '') === $intent && $stopped === [['registry.example/fixture-pack:1', $intent, 'stop-' . $intent]] && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && $db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'available', 'cancel/timeout must stop cleanup and release before any artifact success');
+        } finally {
+            hub_test_adapter_remove($fixture['dir']);
+        }
+    }
+});
+
+hub_test('Pack job adapter blocks cleanup lies after owned PID recheck and fences mid-run loss', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    try {
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+            'pid_inspector' => static fn (): array => [22],
+            'executor' => static function (array $context): array {
+                $context['started'](['container_id' => 'pid-residue', 'owned_pids' => [22]]);
+                file_put_contents($context['workspace'] . '/output/result.txt', "residue\n", LOCK_EX);
+                return ['exit_code' => 0, 'container_id' => 'pid-residue', 'owned_pids' => [22], 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        $latest = hub_get_task($db, $fixture['task_id']);
+        hub_test_assert(($latest['error_code'] ?? '') === 'cleanup_failed' && $db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'blocked', 'owned PID recheck must override a false cleanup attestation');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    try {
+        $task = hub_test_adapter_claim($db);
+        $outcome = hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+            'executor' => static function (array $context): array {
+                $context['started'](['container_id' => 'tick-fence']);
+                $context['db']->prepare('UPDATE runtime_runs SET lease_token = :token WHERE id = :id')->execute([':token' => 'lost-mid-run', ':id' => $context['run']['id']]);
+                hub_test_assert($context['tick']() === 'fence_lost', 'heartbeat tick must detect a lost runtime fence during execution');
+                file_put_contents($context['workspace'] . '/output/result.txt', "lost-mid-run\n", LOCK_EX);
+                return ['exit_code' => 0, 'container_id' => 'tick-fence', 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        hub_test_assert(($outcome['status'] ?? '') === 'fence_lost' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'mid-run fence loss must prevent publication and callbacks');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Pack job adapter requires explicit no-process evidence when executor reports no runtime metadata', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    try {
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, [
+            'executor' => static function (array $context): array {
+                file_put_contents($context['workspace'] . '/output/result.txt', "unknown\n", LOCK_EX);
+                return ['exit_code' => 0, 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        hub_test_assert((hub_get_task($db, $fixture['task_id'])['error_code'] ?? '') === 'cleanup_failed', 'an executor without container or PID data cannot claim a clean exit');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    try {
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, [
+            'executor' => static function (array $context): array {
+                file_put_contents($context['workspace'] . '/output/result.txt', "known-empty\n", LOCK_EX);
+                return ['exit_code' => 0, 'completed_no_process_evidence' => true, 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'success', 'a no-container runner can complete only with explicit no-process evidence');
     } finally {
         hub_test_adapter_remove($fixture['dir']);
     }
