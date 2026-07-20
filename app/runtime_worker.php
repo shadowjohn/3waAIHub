@@ -336,9 +336,15 @@ function hub_runtime_gpu_recovery_update(PDO $db, array $lease, string $state, ?
     }
     $db->exec('BEGIN IMMEDIATE');
     try {
-        if ($state === 'available' && ($run === null || !hub_runtime_gpu_fence_matches_run($run, $lease) || !hub_runtime_gpu_runtime_fence_in_transaction($db, $run))) {
+        $runtimePredicate = '';
+        if ($state === 'available' && ($run === null || !hub_runtime_gpu_fence_matches_run($run, $lease))) {
             $state = 'blocked';
             $error = 'runtime_ownership_conflict';
+        } elseif ($state === 'available') {
+            $runtimePredicate = ' AND EXISTS (
+                SELECT 1 FROM runtime_runs
+                WHERE run_id = :run_fence_run_id AND worker_id = :run_fence_worker_id AND lease_token = :run_fence_lease_token
+            )';
         }
         $now = hub_now();
         $set = $state === 'available'
@@ -348,7 +354,7 @@ function hub_runtime_gpu_recovery_update(PDO $db, array $lease, string $state, ?
         $stmt = $db->prepare(
             "UPDATE runtime_resource_leases SET {$set}
              WHERE resource_key = :resource_key AND runtime_run_id = :runtime_run_id AND worker_id = :worker_id
-               AND lease_token = :lease_token AND state = 'recovery_required'"
+               AND lease_token = :lease_token AND state = 'recovery_required'{$runtimePredicate}"
         );
         $params = [
             ':now' => $now,
@@ -357,11 +363,37 @@ function hub_runtime_gpu_recovery_update(PDO $db, array $lease, string $state, ?
             ':worker_id' => $gpu['worker_id'],
             ':lease_token' => $gpu['lease_token'],
         ];
+        if ($state === 'available') {
+            $runtime = hub_runtime_gpu_runtime_identity($run);
+            $params[':run_fence_run_id'] = $runtime['run_id'];
+            $params[':run_fence_worker_id'] = $runtime['worker_id'];
+            $params[':run_fence_lease_token'] = $runtime['lease_token'];
+        }
         if ($state === 'blocked') {
             $params[':last_error'] = substr(trim((string)$error), 0, 512) ?: 'recovery_blocked';
         }
         $stmt->execute($params);
         if ($stmt->rowCount() !== 1) {
+            if ($state === 'available') {
+                $blocked = $db->prepare(
+                    "UPDATE runtime_resource_leases
+                     SET state = 'blocked', last_error = 'runtime_ownership_conflict', updated_at = :now
+                     WHERE resource_key = :resource_key AND runtime_run_id = :runtime_run_id AND worker_id = :worker_id
+                       AND lease_token = :lease_token AND state = 'recovery_required'"
+                );
+                $blocked->execute([
+                    ':now' => $now,
+                    ':resource_key' => $gpu['resource_key'],
+                    ':runtime_run_id' => $gpu['runtime_run_id'],
+                    ':worker_id' => $gpu['worker_id'],
+                    ':lease_token' => $gpu['lease_token'],
+                ]);
+                if ($blocked->rowCount() === 1) {
+                    $result = hub_runtime_gpu_fetch($db);
+                    $db->exec('COMMIT');
+                    return $result;
+                }
+            }
             $db->exec('ROLLBACK');
             return null;
         }
@@ -375,6 +407,25 @@ function hub_runtime_gpu_recovery_update(PDO $db, array $lease, string $state, ?
         }
         throw $e;
     }
+}
+
+function hub_runtime_gpu_recovery_ownership_matches(PDO $db, array $run, array $lease): bool
+{
+    if (!hub_runtime_gpu_fence_matches_run($run, $lease)) {
+        return false;
+    }
+    $runtime = hub_runtime_gpu_runtime_identity($run);
+    $stmt = $db->prepare(
+        'SELECT 1 FROM runtime_runs
+         WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token'
+    );
+    $stmt->execute([
+        ':run_id' => $runtime['run_id'],
+        ':worker_id' => $runtime['worker_id'],
+        ':lease_token' => $runtime['lease_token'],
+    ]);
+
+    return $stmt->fetchColumn() !== false;
 }
 
 function hub_runtime_gpu_recovery_pids(mixed $pids): array
@@ -408,9 +459,7 @@ function hub_runtime_gpu_recover(PDO $db, callable $inspector, ?callable $contai
     if (!is_array($run)) {
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'runtime_run_missing');
     }
-    if (!hub_runtime_gpu_fence_matches_run($run, $lease)
-        || !in_array((string)($run['state'] ?? ''), ['claimed', 'running'], true)
-        || (!empty($run['lease_expires_at']) && (string)$run['lease_expires_at'] <= hub_now())) {
+    if (!hub_runtime_gpu_recovery_ownership_matches($db, $run, $lease)) {
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'runtime_ownership_conflict');
     }
 
@@ -419,7 +468,7 @@ function hub_runtime_gpu_recover(PDO $db, callable $inspector, ?callable $contai
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'recovery_inspection_invalid');
     }
     if (!empty($evidence['container_exists']) || !empty($evidence['container_running'])) {
-        if ($containerCleanup === null || !$containerCleanup($run, $lease, $evidence)) {
+        if ($containerCleanup === null || !hub_runtime_gpu_recovery_ownership_matches($db, $run, $lease) || !$containerCleanup($run, $lease, $evidence)) {
             return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'container_cleanup_failed');
         }
         $evidence = $inspector($run, $lease);

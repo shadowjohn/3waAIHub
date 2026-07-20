@@ -157,7 +157,7 @@ hub_test('GPU recovery blocks a lease whose runtime ownership was taken over wit
     hub_test_assert(($recovered['state'] ?? '') === 'blocked' && ($recovered['last_error'] ?? '') === 'runtime_ownership_conflict', 'takeover mismatch must block GPU safely');
 });
 
-hub_test('GPU recovery blocks an expired runtime lease before inspection', function (): void {
+hub_test('GPU recovery reopens clean residue when both the runtime and GPU leases expired together', function (): void {
     $db = hub_test_reset_db();
     $run = hub_test_gpu_lease_run($db, 'gpu_recovery_runtime_expired', 'worker-a');
     $lease = hub_runtime_gpu_acquire($db, $run, 60);
@@ -168,13 +168,11 @@ hub_test('GPU recovery blocks an expired runtime lease before inspection', funct
         ':expired' => date('Y-m-d H:i:s', time() - 60),
         ':run_id' => $run['run_id'],
     ]);
-    $inspected = false;
-    $recovered = hub_runtime_gpu_recover($db, static function () use (&$inspected): array {
-        $inspected = true;
+    $recovered = hub_runtime_gpu_recover($db, static function (): array {
         return ['container_exists' => false, 'owned_gpu_pids' => [], 'ambiguous' => false];
     });
 
-    hub_test_assert(!$inspected && ($recovered['state'] ?? '') === 'blocked', 'expired runtime lease must block before inspection');
+    hub_test_assert(($recovered['state'] ?? '') === 'available', 'matching expired runtime ownership with no residue must reopen GPU');
 });
 
 hub_test('GPU preflight waits with a stable reason and releases the lease without probing hardware in tests', function (): void {
