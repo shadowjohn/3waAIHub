@@ -638,6 +638,39 @@ hub_test('audio async uploads enforce the Pack advertised byte limit before stag
     });
 });
 
+hub_test('audio async request body limit applies before artifact source enqueue', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Audio Artifact Body Limit Owner');
+        $token = hub_create_api_token($db, $memberId, 'audio artifact body limit token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+        $taskCount = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+
+        $_SERVER['REMOTE_ADDR'] = '203.0.113.51';
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=voice_generate';
+        $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . (string)$token['plain_token'];
+        $_SERVER['HTTP_HOST'] = 'hub.test';
+        $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
+        $_SERVER['CONTENT_LENGTH'] = (string)(2 * 1024 * 1024 + 1);
+        $_POST = [
+            'source_artifact_id' => (string)$source['artifact_id'],
+            'text' => str_repeat('x', 2 * 1024 * 1024 + 1),
+        ];
+        $_GET = [];
+        $_FILES = [];
+
+        $response = hub_gateway_dispatch($db, 'voice_generate');
+        $payload = hub_test_audio_payload($response);
+        hub_test_assert($response['status'] === 413 && ($payload['error'] ?? '') === 'payload_too_large', 'an oversized request body must be rejected before source-artifact enqueue');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $taskCount, 'an oversized source-artifact request must not create a downstream task');
+    });
+});
+
 hub_test('remote system admin session accesses only legacy task endpoints without bearer', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -665,6 +698,29 @@ hub_test('remote system admin session accesses only legacy task endpoints withou
             $_FILES = [];
             $service = hub_gateway_dispatch($db, 'hello', static fn (): array => hub_gateway_json(200, ['ok' => true]));
             hub_test_assert($service['status'] === 401, 'remote system admin session must not bypass bearer authentication for normal service modes');
+        } finally {
+            $_SESSION = $session;
+        }
+    });
+});
+
+hub_test('remote system admin session cannot mutate legacy tasks without bearer', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $legacyTaskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '203.0.113.51');
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $session = $_SESSION ?? [];
+        $_SESSION = ['user_id' => 1, 'username' => 'admin'];
+        try {
+            $retry = hub_test_audio_request($db, 'task_retry', '', ['task_id' => (string)$legacyTaskId]);
+            hub_test_assert($retry['status'] === 401, 'remote system admin session must not retry a legacy task without bearer authentication');
+            hub_test_assert((hub_get_task($db, $legacyTaskId)['status'] ?? '') === 'queued', 'unauthenticated retry must not mutate a legacy task');
+
+            $cancel = hub_test_audio_request($db, 'task_cancel', '', ['task_id' => (string)$legacyTaskId]);
+            hub_test_assert($cancel['status'] === 401, 'remote system admin session must not cancel a legacy task without bearer authentication');
+            hub_test_assert((hub_get_task($db, $legacyTaskId)['status'] ?? '') === 'queued', 'unauthenticated cancel must not mutate a legacy task');
         } finally {
             $_SESSION = $session;
         }

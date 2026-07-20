@@ -742,6 +742,9 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
     if ($ownerMemberId <= 0) {
         return hub_gateway_error(403, 'member_required', 'audio task submission requires an API member');
     }
+    if (!hub_audio_task_request_size_allowed($route)) {
+        return hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows');
+    }
     try {
         $input = hub_audio_task_input($_POST, $route);
     } catch (InvalidArgumentException) {
@@ -843,14 +846,10 @@ function hub_audio_task_uploads(): array
 
 function hub_audio_task_upload_size_allowed(array $route, array $file): bool
 {
-    $maxUploadBytes = (int)($route['max_upload_bytes'] ?? 0);
-    if ($maxUploadBytes <= 0) {
+    if (!hub_audio_task_request_size_allowed($route)) {
         return false;
     }
-    $contentLength = trim((string)($_SERVER['CONTENT_LENGTH'] ?? ''));
-    if ($contentLength !== '' && (!ctype_digit($contentLength) || (int)$contentLength > $maxUploadBytes)) {
-        return false;
-    }
+    $maxUploadBytes = (int)$route['max_upload_bytes'];
     $declaredSize = $file['size'] ?? null;
     if (!is_int($declaredSize) && !(is_string($declaredSize) && ctype_digit($declaredSize))) {
         return false;
@@ -861,6 +860,17 @@ function hub_audio_task_upload_size_allowed(array $route, array $file): bool
     $actualSize = filesize((string)($file['tmp_name'] ?? ''));
 
     return $actualSize !== false && $actualSize <= $maxUploadBytes;
+}
+
+function hub_audio_task_request_size_allowed(array $route): bool
+{
+    $maxUploadBytes = (int)($route['max_upload_bytes'] ?? 0);
+    if ($maxUploadBytes <= 0) {
+        return false;
+    }
+    $contentLength = trim((string)($_SERVER['CONTENT_LENGTH'] ?? ''));
+
+    return $contentLength === '' || (ctype_digit($contentLength) && (int)$contentLength <= $maxUploadBytes);
 }
 
 function hub_audio_task_input(array $input, array $route): array
@@ -1317,7 +1327,7 @@ function hub_task_access_allowed(PDO $db, array $task, array $authContext): bool
 
 function hub_gateway_admin_legacy_task_session_allowed(PDO $db, string $mode): bool
 {
-    if (!in_array($mode, ['task_status', 'task_result', 'task_log', 'task_cancel', 'task_retry', 'artifact'], true)) {
+    if (!in_array($mode, ['task_status', 'task_result', 'task_log', 'artifact'], true)) {
         return false;
     }
     $user = hub_current_user($db);
