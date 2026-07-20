@@ -603,6 +603,27 @@ hub_test('Pack job output size cap rejects before parsing and terminalizes witho
     }
 });
 
+hub_test('Pack job streamed SHA-256 rejects bytes that exceed its cap', function (): void {
+    $path = tempnam(sys_get_temp_dir(), '3waaihub_pack_hash_');
+    if ($path === false) {
+        throw new RuntimeException('Cannot create Pack-job hash fixture.');
+    }
+    try {
+        hub_test_pack_job_write($path, str_repeat('x', 17));
+        $reason = '';
+        try {
+            hub_pack_job_sha256_file($path, 16);
+        } catch (HubPackOutputContractInvalid $e) {
+            $reason = $e->getMessage();
+        }
+        hub_test_assert($reason === 'artifact_size_invalid', 'streamed hashing must stop once bytes exceed the previously accepted artifact cap');
+    } finally {
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+});
+
 hub_test('Pack job failed terminalization requires cleanup attestation before preserving its error', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
