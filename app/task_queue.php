@@ -1898,22 +1898,38 @@ function hub_pack_job_requires_gpu_lease(PDO $db, int $taskId): bool
 
 function hub_pack_job_active_gpu_fence(PDO $db, int $taskId, ?array $run, ?array $gpuLease): void
 {
+    if ($run === null) {
+        throw new RuntimeException('runtime_fence_required');
+    }
+    $runId = (int)($run['id'] ?? 0);
+    $runtimeId = (string)($run['run_id'] ?? '');
+    $workerId = (string)($run['worker_id'] ?? '');
+    $leaseToken = (string)($run['lease_token'] ?? '');
+    if ($runId <= 0 || $runtimeId === '' || $workerId === '' || $leaseToken === '') {
+        throw new RuntimeException('runtime_fence_invalid');
+    }
+    $stmt = $db->prepare(
+        "SELECT * FROM runtime_runs
+         WHERE id = :id AND run_id = :run_id AND task_id = :task_id AND worker_id = :worker_id AND lease_token = :lease_token
+           AND state IN ('claimed', 'running') AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
+    );
+    $stmt->execute([
+        ':id' => $runId,
+        ':run_id' => $runtimeId,
+        ':task_id' => $taskId,
+        ':worker_id' => $workerId,
+        ':lease_token' => $leaseToken,
+        ':now' => hub_now(),
+    ]);
+    $current = $stmt->fetch();
+    if (!is_array($current)) {
+        throw new RuntimeException('runtime_ownership_conflict');
+    }
     if (!hub_pack_job_requires_gpu_lease($db, $taskId)) {
         return;
     }
-    if ($run === null || $gpuLease === null) {
+    if ($gpuLease === null) {
         throw new RuntimeException('gpu_lease_required');
-    }
-    $runId = (int)($run['id'] ?? 0);
-    $leaseToken = (string)($run['lease_token'] ?? '');
-    if ($runId <= 0 || $leaseToken === '') {
-        throw new RuntimeException('runtime_fence_invalid');
-    }
-    $stmt = $db->prepare('SELECT * FROM runtime_runs WHERE id = :id AND task_id = :task_id');
-    $stmt->execute([':id' => $runId, ':task_id' => $taskId]);
-    $current = $stmt->fetch();
-    if (!is_array($current) || !hash_equals((string)$current['lease_token'], $leaseToken)) {
-        throw new RuntimeException('runtime_ownership_conflict');
     }
     if (!hub_runtime_gpu_active($db, $current, $gpuLease)) {
         throw new RuntimeException('gpu_ownership_conflict');

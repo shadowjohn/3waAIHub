@@ -154,6 +154,8 @@ function hub_test_pack_job_create_terminal_fixture(PDO $db, ?int $callbackTarget
         'workspace' => $workspace,
         'run' => [
             'id' => (int)$db->lastInsertId(),
+            'run_id' => $runId,
+            'worker_id' => 'test-worker',
             'lease_token' => $leaseToken,
         ],
     ];
@@ -362,6 +364,40 @@ hub_test('CPU Pack terminal fence loss discards only its staged handoff', functi
         )), 'CPU terminal fence loss must reject the success commit');
         hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'running' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'CPU fence loss must not publish artifacts or callbacks');
         hub_test_assert(is_dir($artifactRoot . '/' . $unrelated) && count(glob($artifactRoot . '/*') ?: []) === 1, 'CPU fence loss must remove only its generated handoff and preserve unrelated handoffs');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('CPU Pack success rejects an expired runtime lease after artifact handoff', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $targetId = hub_register_callback_target($db, $fixture['member_id'], 'cpu-expired-fence', 'https://8.8.8.8/callback');
+    $db->prepare('UPDATE tasks SET callback_target_id = :target_id WHERE id = :id')->execute([':target_id' => $targetId, ':id' => $fixture['task_id']]);
+    $workspace = $fixture['workspace'];
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+        $outcome = hub_commit_pack_job_success(
+            $db,
+            $fixture['task_id'],
+            $fixture['run'],
+            $validated,
+            hub_test_pack_job_cleanup_asserted(),
+            null,
+            static function () use ($db, $fixture): void {
+                $db->prepare('UPDATE runtime_runs SET lease_expires_at = :lease_expires_at WHERE id = :id')
+                    ->execute([':lease_expires_at' => '2000-01-01 00:00:00', ':id' => $fixture['run']['id']]);
+            }
+        );
+        hub_test_assert(($outcome['ok'] ?? true) === false, 'an expired CPU lease after handoff must reject success publication');
+        hub_test_assert(hub_reconcile_expired_pack_job_runs($db) === 1, 'the shared stale-run recovery must reclaim the expired CPU success fence');
+        $task = hub_get_task($db, $fixture['task_id']) ?? [];
+        $run = $db->query('SELECT state, error_code FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+        $delivery = $db->query('SELECT event_type FROM task_callback_deliveries WHERE task_id = ' . $fixture['task_id'])->fetchColumn();
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'runtime_lease_lost' && ($run['state'] ?? '') === 'failed' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && $delivery === 'task.failed', 'expired CPU validation or handoff must never publish success artifacts or callbacks');
     } finally {
         hub_test_pack_job_rm($workspace);
     }

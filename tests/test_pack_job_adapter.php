@@ -602,3 +602,66 @@ hub_test('Pack job adapter stops an executor that throws after declaring process
         hub_test_adapter_remove($fixture['dir']);
     }
 });
+
+hub_test('Stale GPU execution without start metadata is blocked as unknown residue', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    try {
+        $task = hub_test_adapter_claim($db);
+        $run = hub_pack_job_claim_runtime($db, $task, 'stale-begin-worker', 60);
+        hub_test_assert(is_array($run), 'stale GPU fixture must claim a runtime run');
+        $gpuLease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+        $contract = hub_resolve_stored_pack_job($db, $task);
+        $run = hub_pack_job_begin_execution($db, $task, $run, $contract['runner'], $gpuLease);
+        hub_test_assert(is_array($run), 'stale GPU fixture must enter running before start metadata');
+        $db->prepare('UPDATE runtime_runs SET lease_expires_at = :lease_expires_at WHERE id = :id')
+            ->execute([':lease_expires_at' => '2000-01-01 00:00:00', ':id' => $run['id']]);
+        hub_test_assert(hub_reconcile_expired_pack_job_runs($db) === 1, 'stale sweep must reclaim a running GPU execution with no recorded start metadata');
+        $latest = hub_get_task($db, $fixture['task_id']) ?? [];
+        $runtime = hub_runtime_fetch_run($db, (int)$run['id']) ?? [];
+        $gpu = hub_runtime_gpu_fetch($db) ?? [];
+        hub_test_assert(($latest['error_code'] ?? '') === 'cleanup_failed' && ($runtime['state'] ?? '') === 'failed' && ($runtime['error_code'] ?? '') === 'cleanup_failed' && ($gpu['state'] ?? '') === 'blocked', 'a running GPU execution without process metadata must be treated as uncertain cleanup and block the GPU');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Stale Pack run terminalizes while its matching GPU lease is already blocked', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    try {
+        $memberId = hub_create_api_member($db, 'Blocked GPU Recovery Owner');
+        $targetId = hub_register_callback_target($db, $memberId, 'blocked-gpu-recovery', 'https://8.8.8.8/callback');
+        $db->prepare('UPDATE tasks SET owner_member_id = :owner_member_id, callback_target_id = :callback_target_id WHERE id = :id')
+            ->execute([':owner_member_id' => $memberId, ':callback_target_id' => $targetId, ':id' => $fixture['task_id']]);
+        $sourceTaskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '127.0.0.1');
+        $sourcePath = hub_task_result_dir($sourceTaskId) . '/stale-source.txt';
+        if (!is_dir(dirname($sourcePath)) && !mkdir(dirname($sourcePath), 0700, true) && !is_dir(dirname($sourcePath))) {
+            throw new RuntimeException('Cannot create blocked GPU source fixture.');
+        }
+        file_put_contents($sourcePath, "stale source\n", LOCK_EX);
+        $sourceArtifactId = hub_register_task_artifact($db, $sourceTaskId, 'stale-source.txt', $sourcePath, 'text/plain');
+        $db->prepare('UPDATE tasks SET source_artifact_id = :source_artifact_id, source_task_id = :source_task_id WHERE id = :id')
+            ->execute([':source_artifact_id' => $sourceArtifactId, ':source_task_id' => $sourceTaskId, ':id' => $fixture['task_id']]);
+        hub_hold_task_source_artifact($db, $sourceArtifactId, $fixture['task_id']);
+        $task = hub_test_adapter_claim($db);
+        $run = hub_pack_job_claim_runtime($db, $task, 'blocked-stale-worker', 60);
+        hub_test_assert(is_array($run), 'blocked GPU fixture must claim a runtime run');
+        $gpuLease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+        $contract = hub_resolve_stored_pack_job($db, $task);
+        $run = hub_pack_job_begin_execution($db, $task, $run, $contract['runner'], $gpuLease);
+        hub_test_assert(is_array($run), 'blocked GPU fixture must enter running');
+        $db->prepare("UPDATE runtime_runs SET lease_expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => $run['id']]);
+        $db->prepare("UPDATE runtime_resource_leases SET state = 'blocked', last_error = 'already_blocked' WHERE resource_key = 'gpu:0'")->execute();
+        hub_test_assert(hub_reconcile_expired_pack_job_runs($db) === 1, 'stale sweep must terminalize even when the exact GPU resource is already blocked');
+        $latest = hub_get_task($db, $fixture['task_id']) ?? [];
+        $runtime = hub_runtime_fetch_run($db, (int)$run['id']) ?? [];
+        $gpu = hub_runtime_gpu_fetch($db) ?? [];
+        $delivery = $db->query('SELECT event_type FROM task_callback_deliveries WHERE task_id = ' . $fixture['task_id'])->fetchColumn();
+        $hold = $db->prepare('SELECT released_at FROM task_artifact_holds WHERE source_artifact_id = :source_artifact_id AND downstream_task_id = :task_id');
+        $hold->execute([':source_artifact_id' => $sourceArtifactId, ':task_id' => $fixture['task_id']]);
+        hub_test_assert(($latest['status'] ?? '') === 'failed' && ($latest['error_code'] ?? '') === 'cleanup_failed' && ($runtime['state'] ?? '') === 'failed' && ($gpu['state'] ?? '') === 'blocked' && ($gpu['last_error'] ?? '') === 'already_blocked' && ($gpu['runtime_run_id'] ?? '') === ($run['run_id'] ?? '') && $delivery === 'task.failed' && !empty(($hold->fetch() ?: [])['released_at']), 'a pre-blocked matching GPU lease must remain blocked while stale task terminalization releases its hold and outbox work');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});

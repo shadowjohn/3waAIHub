@@ -430,19 +430,33 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
             $gpuSet = $clean
                 ? "runtime_run_id = NULL, worker_id = NULL, lease_token = NULL, state = 'available', acquired_at = NULL, heartbeat_at = NULL, lease_expires_at = NULL, last_error = NULL, updated_at = :updated_at"
                 : "state = 'blocked', last_error = 'cleanup_failed', updated_at = :updated_at";
-            $gpuStmt = $db->prepare(
-                "UPDATE runtime_resource_leases SET {$gpuSet}
-                 WHERE resource_key = :resource_key AND runtime_run_id = :runtime_run_id AND worker_id = :worker_id
-                   AND lease_token = :lease_token AND state IN ('leased', 'recovery_required')"
-            );
-            $gpuStmt->execute([
-                ':updated_at' => hub_now(),
+            if (($gpuLease['state'] ?? '') === 'blocked') {
+                $gpuStmt = $db->prepare(
+                    "SELECT 1 FROM runtime_resource_leases
+                     WHERE resource_key = :resource_key AND runtime_run_id = :runtime_run_id AND worker_id = :worker_id
+                       AND lease_token = :lease_token AND state = 'blocked'"
+                );
+            } else {
+                $gpuStmt = $db->prepare(
+                    "UPDATE runtime_resource_leases SET {$gpuSet}
+                     WHERE resource_key = :resource_key AND runtime_run_id = :runtime_run_id AND worker_id = :worker_id
+                       AND lease_token = :lease_token AND state IN ('leased', 'recovery_required')"
+                );
+            }
+            $params = [
                 ':resource_key' => $gpu['resource_key'],
                 ':runtime_run_id' => $gpu['runtime_run_id'],
                 ':worker_id' => $gpu['worker_id'],
                 ':lease_token' => $gpu['lease_token'],
-            ]);
-            if ($gpuStmt->rowCount() !== 1) {
+            ];
+            if (($gpuLease['state'] ?? '') !== 'blocked') {
+                $params[':updated_at'] = hub_now();
+            }
+            $gpuStmt->execute($params);
+            $gpuMatched = ($gpuLease['state'] ?? '') === 'blocked'
+                ? $gpuStmt->fetchColumn() !== false
+                : $gpuStmt->rowCount() === 1;
+            if (!$gpuMatched) {
                 $db->exec('ROLLBACK');
                 return false;
             }
@@ -526,10 +540,13 @@ function hub_reconcile_expired_pack_job_runs(PDO $db): int
         if (!is_array($task) || ($task['task_type'] ?? '') !== 'pack_job' || ($task['status'] ?? '') !== 'running') {
             continue;
         }
+        $requiresGpu = hub_runtime_task_requires_gpu($task);
         $ownedPids = hub_runtime_gpu_recovery_pids(json_decode((string)($run['owned_gpu_pids_json'] ?? ''), true));
-        $cleanup = trim((string)($run['container_id'] ?? '')) === '' && $ownedPids === [] ? hub_pack_job_no_work_cleanup() : [];
+        $cleanup = (!$requiresGpu || ($run['state'] ?? '') !== 'running') && trim((string)($run['container_id'] ?? '')) === '' && $ownedPids === []
+            ? hub_pack_job_no_work_cleanup()
+            : [];
         $gpuLease = null;
-        if (hub_runtime_task_requires_gpu($task)) {
+        if ($requiresGpu) {
             $candidate = hub_runtime_gpu_fetch($db);
             if (is_array($candidate) && ($candidate['runtime_run_id'] ?? '') === ($run['run_id'] ?? '')) {
                 $gpuLease = $candidate;
@@ -560,6 +577,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
     $context = null;
     $pidInspector = null;
     $details = [];
+    $cleanup = null;
     try {
         try {
             $contract = hub_resolve_stored_pack_job($db, $task);
@@ -659,10 +677,13 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, null, $gpuLease);
         $latest = hub_get_task($db, $taskId);
+        if (($final['ok'] ?? false) !== true && ($latest['status'] ?? '') === 'running' && hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds) === 'fence_lost') {
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, $cleanup);
+        }
         return ['status' => (string)($latest['status'] ?? (($final['ok'] ?? false) ? 'success' : 'failed'))] + $final;
     } catch (Throwable $e) {
         if (hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds) === 'fence_lost') {
-            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, $started, $context, $details, $pidInspector, $gpuLease);
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, $started, $context, $details, $pidInspector, $gpuLease, $cleanup);
         }
         $cleanup = $started && $context !== null
             ? hub_pack_job_cleanup_after_started_failure($options, $context, $details, $pidInspector, 'runtime_execution_failed')
