@@ -383,6 +383,115 @@ hub_test('Pack job terminal rejects output replacement after validation before c
     }
 });
 
+hub_test('Pack job finalize reports snapshot revalidation failure instead of success', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $targetId = hub_register_callback_target($db, $fixture['member_id'], 'pack-revalidation', 'https://8.8.8.8/callback');
+    $db->prepare('UPDATE tasks SET callback_target_id = :target_id WHERE id = :id')->execute([':target_id' => $targetId, ':id' => $fixture['task_id']]);
+    $workspace = $fixture['workspace'];
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $probe = static function (string $path) use ($workspace): array {
+            hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"changed after validation\"}");
+            return hub_test_pack_job_audio_probe($path);
+        };
+        $outcome = hub_finalize_pack_job_success($db, $fixture['task_id'], $fixture['run'], $workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), hub_test_pack_job_cleanup_asserted(), $probe);
+        $task = hub_get_task($db, $fixture['task_id']);
+        $delivery = $db->query('SELECT event_type FROM task_callback_deliveries')->fetchColumn();
+        hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'output_contract_invalid', 'finalize must report the revalidation failure to its caller');
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && $delivery === 'task.failed', 'revalidation failure must keep the failed terminal state and outbox');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'revalidation failure must not register artifacts');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job finalize rejects a contract with no active outputs', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $targetId = hub_register_callback_target($db, $fixture['member_id'], 'pack-no-outputs', 'https://8.8.8.8/callback');
+    $db->prepare('UPDATE tasks SET callback_target_id = :target_id WHERE id = :id')->execute([':target_id' => $targetId, ':id' => $fixture['task_id']]);
+    $contract = [
+        'artifacts' => [
+            [
+                'type' => 'optional_json',
+                'path' => 'optional.json',
+                'mime_types' => ['application/json'],
+                'required' => false,
+                'json' => ['required_keys' => ['text']],
+            ],
+            [
+                'type' => 'conditional_json',
+                'path' => 'conditional.json',
+                'mime_types' => ['application/json'],
+                'when' => ['input' => 'include_conditional', 'equals' => true],
+                'json' => ['required_keys' => ['text']],
+            ],
+        ],
+    ];
+
+    $outcome = hub_finalize_pack_job_success($db, $fixture['task_id'], $fixture['run'], $fixture['workspace'], ['include_conditional' => false], $contract, hub_test_pack_job_cleanup_asserted(), 'hub_test_pack_job_audio_probe');
+    $task = hub_get_task($db, $fixture['task_id']);
+    $run = $db->query('SELECT state, error_code FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+    $delivery = $db->query('SELECT event_type FROM task_callback_deliveries')->fetchColumn();
+    hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'output_contract_invalid', 'an empty active contract must not report a successful finalize');
+    hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && ($run['state'] ?? '') === 'failed' && ($run['error_code'] ?? '') === 'output_contract_invalid', 'an empty active contract must terminalize task and run as output-contract failure');
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && $delivery === 'task.failed', 'an empty active contract must register no success artifacts or success callback');
+});
+
+hub_test('Pack job handoff keeps registered artifacts immutable after runner workspace mutation', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $workspace = $fixture['workspace'];
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"before handoff\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+        $published = hub_handoff_pack_job_artifacts($db, $fixture['task_id'], $fixture['run'], $validated);
+        $publishedTranscript = array_values(array_filter($published, static fn (array $artifact): bool => ($artifact['name'] ?? '') === 'transcript.json'))[0] ?? null;
+        hub_test_assert(is_array($publishedTranscript) && !str_starts_with((string)$publishedTranscript['path'], $workspace . '/'), 'handoff must publish outside the runner workspace');
+
+        rename($workspace . '/output/transcript.json', $workspace . '/output/transcript.runner-old.json');
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"runner changed it after handoff\"}");
+        $outcome = hub_commit_published_pack_job_success($db, $fixture['task_id'], $fixture['run'], $published, hub_test_pack_job_cleanup_asserted());
+        $row = $db->query("SELECT path, sha256 FROM task_artifacts WHERE task_id = " . (int)$fixture['task_id'] . " AND name = 'transcript.json'")->fetch();
+        hub_test_assert(($outcome['ok'] ?? false) === true, 'published artifacts must remain committable after runner workspace mutation');
+        hub_test_assert(($row['path'] ?? '') === ($publishedTranscript['path'] ?? '') && ($row['sha256'] ?? '') === hash_file('sha256', (string)($row['path'] ?? '')) && ($row['sha256'] ?? '') !== hash_file('sha256', $workspace . '/output/transcript.json'), 'registered SHA-256 must describe the final Hub-owned downloadable copy, not the mutated runner output');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job handoff failure terminalizes without a partial artifact registry', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $workspace = $fixture['workspace'];
+    $artifactRoot = hub_task_result_dir($fixture['task_id']) . '/artifacts';
+    try {
+        hub_test_pack_job_rm($artifactRoot);
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        if (!symlink($workspace, $artifactRoot)) {
+            throw new RuntimeException('Cannot create unsafe artifact-root fixture.');
+        }
+        $outcome = hub_finalize_pack_job_success($db, $fixture['task_id'], $fixture['run'], $workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), hub_test_pack_job_cleanup_asserted(), 'hub_test_pack_job_audio_probe');
+        $task = hub_get_task($db, $fixture['task_id']);
+        $run = $db->query('SELECT state, error_code FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+        hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'output_contract_invalid', 'an unsafe publication directory must fail closed');
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && ($run['state'] ?? '') === 'failed' && ($run['error_code'] ?? '') === 'output_contract_invalid', 'handoff setup failure must terminalize through the fenced failure path');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'handoff setup failure must not register a partial artifact set');
+    } finally {
+        if (is_link($artifactRoot)) {
+            unlink($artifactRoot);
+        }
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
 hub_test('Pack job terminal rejects an extra output added after validation before commit', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
