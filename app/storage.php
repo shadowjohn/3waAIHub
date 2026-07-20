@@ -20,6 +20,7 @@ function hub_default_storage_settings(): array
         'AIHUB_METRIC_RETENTION_DAYS' => '14',
         'AIHUB_TASK_RETENTION_DAYS' => '180',
         'AIHUB_SOURCE_RETENTION_DAYS' => '7',
+        'AIHUB_FAILED_SOURCE_RETENTION_DAYS' => '7',
         'AIHUB_WORKSPACE_RETENTION_HOURS' => '24',
         'AIHUB_ARTIFACT_RETENTION_DAYS' => '30',
         'AIHUB_PARTIAL_RETENTION_HOURS' => '1',
@@ -135,6 +136,21 @@ function hub_get_storage_setting(PDO $db, string $key): string
     }
 
     return (string)(hub_default_storage_settings()[$key] ?? '');
+}
+
+function hub_retention_policy(PDO $db): array
+{
+    $failedSourceDays = (int)hub_get_storage_setting($db, 'AIHUB_FAILED_SOURCE_RETENTION_DAYS');
+
+    return [
+        'partial_hours' => 1,
+        'workspace_hours' => 24,
+        'completed_source_days' => 7,
+        'failed_source_days' => max(3, min(7, $failedSourceDays ?: 7)),
+        'artifact_days' => 30,
+        'metadata_days' => 180,
+        'ack_min_hours' => 24,
+    ];
 }
 
 function hub_set_storage_setting(PDO $db, string $key, string $value): void

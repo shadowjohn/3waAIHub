@@ -372,6 +372,7 @@ function hub_task_api_modes(): array
         'task_log' => 'Task Log',
         'task_cancel' => 'Task Cancel',
         'task_retry' => 'Task Retry',
+        'task_artifacts_ack' => 'Task Artifact Acknowledge',
         'artifact' => 'Task Artifact',
     ];
 }
@@ -728,6 +729,7 @@ function hub_task_api_dispatch(PDO $db, string $mode, array $authContext = []): 
         'task_log' => hub_api_task_log($db, $authContext),
         'task_cancel' => hub_api_task_cancel($db, $authContext),
         'task_retry' => hub_api_task_retry($db, $authContext),
+        'task_artifacts_ack' => hub_api_task_artifacts_ack($db, $authContext),
         'artifact' => hub_api_artifact($db, $authContext),
         default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown mode']),
     };
@@ -805,7 +807,21 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         hub_update_task_input($db, $taskId, $input);
         hub_publish_staged_pack_job($db, $taskId);
     } catch (Throwable $e) {
-        $db->prepare('DELETE FROM tasks WHERE id = :id')->execute([':id' => $taskId]);
+        $now = hub_now();
+        $stmt = $db->prepare(
+            "UPDATE tasks SET status = 'failed', error_code = 'staging_failed', error_message = :error_message,
+                 finished_at = :finished_at, updated_at = :updated_at
+             WHERE id = :id AND status = 'staging'"
+        );
+        $stmt->execute([
+            ':error_message' => substr($e->getMessage(), 0, 2048),
+            ':finished_at' => $now,
+            ':updated_at' => $now,
+            ':id' => $taskId,
+        ]);
+        if ($stmt->rowCount() === 1) {
+            hub_apply_task_terminal_retention($db, $taskId, 'failed', $now);
+        }
         throw $e;
     }
 
@@ -1293,6 +1309,35 @@ function hub_api_task_retry(PDO $db, array $authContext = []): array
     return hub_gateway_json(200, hub_task_submit_response($taskId));
 }
 
+function hub_api_task_artifacts_ack(PDO $db, array $authContext = []): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'task_artifacts_ack requires POST');
+    }
+    $taskId = trim((string)($_POST['task_id'] ?? ''));
+    $artifactId = trim((string)($_POST['artifact_id'] ?? ''));
+    $memberId = (int)($authContext['member_id'] ?? 0);
+    if ($memberId <= 0 || !ctype_digit($taskId) || !ctype_digit($artifactId) || (int)$taskId < 1 || (int)$artifactId < 1) {
+        return hub_gateway_error(400, 'bad_request', 'task_id and artifact_id are required');
+    }
+    try {
+        if (!hub_ack_task_artifact($db, $memberId, (int)$taskId, (int)$artifactId)) {
+            return hub_gateway_error(404, 'artifact_not_found', 'artifact was not found');
+        }
+    } catch (RuntimeException $e) {
+        return hub_gateway_error(409, $e->getMessage(), 'artifact is unavailable');
+    }
+    $artifact = hub_get_task_artifact($db, (int)$artifactId);
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'task_id' => (int)$taskId,
+        'artifact_id' => (int)$artifactId,
+        'acknowledged_at' => $artifact['acknowledged_at'] ?? null,
+        'expires_at' => $artifact['expires_at'] ?? null,
+    ]);
+}
+
 function hub_api_artifact(PDO $db, array $authContext = []): array
 {
     $artifactId = (int)($_GET['artifact_id'] ?? $_POST['artifact_id'] ?? 0);
@@ -1309,10 +1354,19 @@ function hub_api_artifact(PDO $db, array $authContext = []): array
     if ($path === null) {
         return hub_gateway_json(403, ['ok' => false, 'error' => 'artifact path rejected']);
     }
-
+    $downloadToken = hub_claim_task_artifact_download($db, $artifactId);
+    if ($downloadToken === null) {
+        return hub_gateway_error(409, 'artifact_not_available', 'artifact is unavailable');
+    }
     $response = hub_gateway_stream_file_response($path, (string)$artifact['mime_type'], (string)$artifact['name']);
+    if ($response === null) {
+        hub_release_task_artifact_download($db, $artifactId, $downloadToken);
+        return hub_gateway_json(403, ['ok' => false, 'error' => 'artifact path rejected']);
+    }
+    $response['stream_artifact_id'] = $artifactId;
+    $response['stream_download_token'] = $downloadToken;
 
-    return $response ?? hub_gateway_json(403, ['ok' => false, 'error' => 'artifact path rejected']);
+    return $response;
 }
 
 function hub_api_load_task(PDO $db, array $authContext = []): ?array
@@ -1612,6 +1666,9 @@ function hub_send_gateway_response(array $response): never
         }
     }
     if (array_key_exists('stream_path', $response) && !is_resource($stream)) {
+        if (!empty($response['stream_artifact_id']) && is_string($response['stream_download_token'] ?? null)) {
+            hub_release_task_artifact_download(hub_db(), (int)$response['stream_artifact_id'], (string)$response['stream_download_token']);
+        }
         $response = hub_gateway_error(404, 'artifact_not_available', 'artifact is not available');
     }
     http_response_code((int)$response['status']);
@@ -1619,8 +1676,14 @@ function hub_send_gateway_response(array $response): never
         header($header);
     }
     if (is_resource($stream)) {
-        fpassthru($stream);
-        fclose($stream);
+        try {
+            fpassthru($stream);
+        } finally {
+            fclose($stream);
+            if (!empty($response['stream_artifact_id']) && is_string($response['stream_download_token'] ?? null)) {
+                hub_release_task_artifact_download(hub_db(), (int)$response['stream_artifact_id'], (string)$response['stream_download_token']);
+            }
+        }
         exit;
     }
     echo $response['body'];

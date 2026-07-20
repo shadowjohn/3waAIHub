@@ -25,6 +25,30 @@ function hub_is_valid_task_queue(string $queueName): bool
     return in_array($queueName, hub_default_task_queues(), true);
 }
 
+function hub_retention_deadline(int $seconds, ?string $from = null): string
+{
+    $base = $from === null ? time() : (strtotime($from) ?: time());
+
+    return date('Y-m-d H:i:s', $base + $seconds);
+}
+
+function hub_apply_task_terminal_retention(PDO $db, int $taskId, string $status, string $finishedAt): void
+{
+    $policy = hub_retention_policy($db);
+    $sourceDays = $status === 'success' ? $policy['completed_source_days'] : $policy['failed_source_days'];
+    $stmt = $db->prepare(
+        "UPDATE tasks
+         SET source_expires_at = :source_expires_at, workspace_expires_at = :workspace_expires_at,
+             source_state = 'retention', workspace_state = 'retention', retention_state = 'retention'
+         WHERE id = :id"
+    );
+    $stmt->execute([
+        ':source_expires_at' => hub_retention_deadline($sourceDays * 86400, $finishedAt),
+        ':workspace_expires_at' => hub_retention_deadline($policy['workspace_hours'] * 3600, $finishedAt),
+        ':id' => $taskId,
+    ]);
+}
+
 function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $priority, array $input, ?int $requestedBy, ?string $requestedIp, array $attributes = []): int
 {
     if (!hub_is_valid_task_type($taskType)) {
@@ -39,15 +63,18 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
     }
 
     $now = hub_now();
+    $policy = hub_retention_policy($db);
     $stmt = $db->prepare(
-        'INSERT INTO tasks
+        "INSERT INTO tasks
             (task_type, queue_name, priority, input_json, status, requested_by, requested_ip,
              owner_member_id, owner_token_id, requested_mode, pack_id, pack_version, job, job_contract_json, job_contract_digest, runtime_mode, accelerator,
-             route_resolved_at, source_artifact_id, source_task_id, retry_of_task_id, callback_target_id, created_at, updated_at)
+             route_resolved_at, source_artifact_id, source_task_id, retry_of_task_id, callback_target_id,
+             source_expires_at, workspace_expires_at, source_state, workspace_state, retention_state, created_at, updated_at)
          VALUES
             (:task_type, :queue_name, :priority, :input_json, :status, :requested_by, :requested_ip,
              :owner_member_id, :owner_token_id, :requested_mode, :pack_id, :pack_version, :job, :job_contract_json, :job_contract_digest, :runtime_mode, :accelerator,
-             :route_resolved_at, :source_artifact_id, :source_task_id, :retry_of_task_id, :callback_target_id, :created_at, :updated_at)'
+             :route_resolved_at, :source_artifact_id, :source_task_id, :retry_of_task_id, :callback_target_id,
+             :source_expires_at, :workspace_expires_at, 'active', 'active', 'active', :created_at, :updated_at)"
     );
     $stmt->execute([
         ':task_type' => $taskType,
@@ -72,6 +99,8 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
         ':source_task_id' => $attributes['source_task_id'] ?? null,
         ':retry_of_task_id' => $attributes['retry_of_task_id'] ?? null,
         ':callback_target_id' => $attributes['callback_target_id'] ?? null,
+        ':source_expires_at' => hub_retention_deadline($policy['completed_source_days'] * 86400, $now),
+        ':workspace_expires_at' => hub_retention_deadline($policy['workspace_hours'] * 3600, $now),
         ':created_at' => $now,
         ':updated_at' => $now,
     ]);
@@ -514,6 +543,7 @@ function hub_finish_task_terminal_result(PDO $db, array $task, string $status, a
         ':updated_at' => $now,
         ':id' => $taskId,
     ]);
+    hub_apply_task_terminal_retention($db, $taskId, $status, $now);
     hub_release_task_artifact_holds($db, $taskId);
 }
 
@@ -726,12 +756,14 @@ function hub_finish_task_failed(PDO $db, array $task, string $errorMessage): voi
          SET status = 'failed', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
          WHERE id = :id"
     );
+    $now = hub_now();
     $stmt->execute([
         ':error_message' => $errorMessage,
-        ':finished_at' => hub_now(),
-        ':updated_at' => hub_now(),
+        ':finished_at' => $now,
+        ':updated_at' => $now,
         ':id' => (int)$task['id'],
     ]);
+    hub_apply_task_terminal_retention($db, (int)$task['id'], 'failed', $now);
     hub_release_task_artifact_holds($db, (int)$task['id']);
 }
 
@@ -742,12 +774,14 @@ function hub_finish_task_cancelled(PDO $db, array $task, string $message = 'canc
          SET status = 'cancelled', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
          WHERE id = :id"
     );
+    $now = hub_now();
     $stmt->execute([
         ':error_message' => $message,
-        ':finished_at' => hub_now(),
-        ':updated_at' => hub_now(),
+        ':finished_at' => $now,
+        ':updated_at' => $now,
         ':id' => (int)$task['id'],
     ]);
+    hub_apply_task_terminal_retention($db, (int)$task['id'], 'cancelled', $now);
     hub_release_task_artifact_holds($db, (int)$task['id']);
 }
 
@@ -758,12 +792,14 @@ function hub_finish_task_timed_out(PDO $db, array $task, string $message = 'time
          SET status = 'timed_out', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
          WHERE id = :id"
     );
+    $now = hub_now();
     $stmt->execute([
         ':error_message' => $message,
-        ':finished_at' => hub_now(),
-        ':updated_at' => hub_now(),
+        ':finished_at' => $now,
+        ':updated_at' => $now,
         ':id' => (int)$task['id'],
     ]);
+    hub_apply_task_terminal_retention($db, (int)$task['id'], 'timed_out', $now);
     hub_release_task_artifact_holds($db, (int)$task['id']);
 }
 
@@ -793,6 +829,7 @@ function hub_cancel_task(PDO $db, int $taskId): bool
                 $db->commit();
                 return false;
             }
+            hub_apply_task_terminal_retention($db, $taskId, 'cancelled', $now);
             hub_release_task_artifact_holds($db, $taskId);
             hub_enqueue_task_callback_delivery($db, $taskId);
             $db->commit();
@@ -810,13 +847,15 @@ function hub_cancel_task(PDO $db, int $taskId): bool
          SET status = 'cancelled', finished_at = :finished_at, updated_at = :updated_at
          WHERE id = :id AND status = 'queued'"
     );
+    $now = hub_now();
     $stmt->execute([
-        ':finished_at' => hub_now(),
-        ':updated_at' => hub_now(),
+        ':finished_at' => $now,
+        ':updated_at' => $now,
         ':id' => $taskId,
     ]);
 
     if ($stmt->rowCount() === 1) {
+        hub_apply_task_terminal_retention($db, $taskId, 'cancelled', $now);
         hub_release_task_artifact_holds($db, $taskId);
         return true;
     }
@@ -878,9 +917,10 @@ function hub_register_task_artifact(PDO $db, int $taskId, string $name, string $
         throw new InvalidArgumentException('Invalid artifact path.');
     }
 
+    $now = hub_now();
     $stmt = $db->prepare(
-        'INSERT INTO task_artifacts (task_id, name, path, mime_type, size_bytes, created_at)
-         VALUES (:task_id, :name, :path, :mime_type, :size_bytes, :created_at)'
+        'INSERT INTO task_artifacts (task_id, name, path, mime_type, size_bytes, expires_at, created_at)
+         VALUES (:task_id, :name, :path, :mime_type, :size_bytes, :expires_at, :created_at)'
     );
     $stmt->execute([
         ':task_id' => $taskId,
@@ -888,10 +928,457 @@ function hub_register_task_artifact(PDO $db, int $taskId, string $name, string $
         ':path' => $safePath,
         ':mime_type' => $mimeType,
         ':size_bytes' => is_file($safePath) ? filesize($safePath) : 0,
-        ':created_at' => hub_now(),
+        ':expires_at' => hub_retention_deadline(hub_retention_policy($db)['artifact_days'] * 86400, $now),
+        ':created_at' => $now,
     ]);
 
     return (int)$db->lastInsertId();
+}
+
+function hub_ack_task_artifact(PDO $db, int $memberId, int $taskId, int $artifactId): bool
+{
+    $stmt = $db->prepare(
+        'SELECT a.id, a.state, a.purged_at
+         FROM task_artifacts a
+         JOIN tasks t ON t.id = a.task_id
+         WHERE a.id = :artifact_id AND a.task_id = :task_id AND t.owner_member_id = :member_id'
+    );
+    $stmt->execute([':artifact_id' => $artifactId, ':task_id' => $taskId, ':member_id' => $memberId]);
+    $artifact = $stmt->fetch();
+    if (!$artifact) {
+        return false;
+    }
+    if (($artifact['state'] ?? '') !== 'available' || !empty($artifact['purged_at'])) {
+        throw new RuntimeException('artifact_unavailable');
+    }
+    $now = hub_now();
+    $update = $db->prepare(
+        "UPDATE task_artifacts
+         SET acknowledged_at = :acknowledged_at, expires_at = :expires_at
+         WHERE id = :id AND task_id = :task_id AND state = 'available' AND purged_at IS NULL"
+    );
+    $update->execute([
+        ':acknowledged_at' => $now,
+        ':expires_at' => hub_retention_deadline(hub_retention_policy($db)['ack_min_hours'] * 3600, $now),
+        ':id' => $artifactId,
+        ':task_id' => $taskId,
+    ]);
+
+    return $update->rowCount() === 1;
+}
+
+function hub_claim_task_artifact_download(PDO $db, int $artifactId): ?string
+{
+    $token = bin2hex(random_bytes(16));
+    $now = hub_now();
+    $stmt = $db->prepare(
+        "UPDATE task_artifacts
+         SET last_accessed_at = :now, download_claim_token = :token, download_claim_expires_at = :expires_at
+         WHERE id = :id AND state = 'available' AND purged_at IS NULL"
+    );
+    $stmt->execute([
+        ':now' => $now,
+        ':token' => $token,
+        ':expires_at' => hub_retention_deadline(300, $now),
+        ':id' => $artifactId,
+    ]);
+
+    return $stmt->rowCount() === 1 ? $token : null;
+}
+
+function hub_release_task_artifact_download(PDO $db, int $artifactId, string $token): void
+{
+    $stmt = $db->prepare(
+        'UPDATE task_artifacts SET download_claim_token = NULL, download_claim_expires_at = NULL
+         WHERE id = :id AND download_claim_token = :token'
+    );
+    $stmt->execute([':id' => $artifactId, ':token' => $token]);
+}
+
+function hub_retention_terminal_statuses(): array
+{
+    return ['success', 'failed', 'cancelled', 'timed_out'];
+}
+
+function hub_retention_task_is_busy(PDO $db, int $taskId): bool
+{
+    $terminal = "'success', 'failed', 'cancelled', 'timed_out'";
+    $checks = [
+        "SELECT 1 FROM tasks WHERE id = :task_id AND status NOT IN ({$terminal})",
+        "SELECT 1 FROM runtime_runs WHERE task_id = :task_id AND state IN ('claimed', 'running', 'waiting_gpu')",
+        "SELECT 1 FROM tasks WHERE retry_of_task_id = :task_id AND status NOT IN ({$terminal})",
+        "SELECT 1 FROM runtime_resource_leases l JOIN runtime_runs r ON r.run_id = l.runtime_run_id WHERE r.task_id = :task_id AND l.state = 'leased'",
+    ];
+    foreach ($checks as $sql) {
+        $stmt = $db->prepare($sql);
+        $stmt->execute([':task_id' => $taskId]);
+        if ($stmt->fetchColumn() !== false) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function hub_retention_artifact_is_held(PDO $db, int $artifactId): bool
+{
+    $stmt = $db->prepare('SELECT 1 FROM task_artifact_holds WHERE source_artifact_id = :id AND released_at IS NULL');
+    $stmt->execute([':id' => $artifactId]);
+
+    return $stmt->fetchColumn() !== false;
+}
+
+function hub_retention_managed_path(string $path, string $root): ?string
+{
+    if (is_link($path)) {
+        return null;
+    }
+    $realPath = realpath($path);
+    $realRoot = realpath($root);
+    if ($realPath === false || $realRoot === false || $realPath === $realRoot || !str_starts_with($realPath, $realRoot . DIRECTORY_SEPARATOR)) {
+        return null;
+    }
+
+    return $realPath;
+}
+
+function hub_retention_remove_managed_path(string $path, string $root): int
+{
+    $path = hub_retention_managed_path($path, $root);
+    if ($path === null) {
+        throw new RuntimeException('path_rejected');
+    }
+    if (is_file($path)) {
+        $bytes = filesize($path);
+        if ($bytes === false || !unlink($path)) {
+            throw new RuntimeException('delete_failed');
+        }
+
+        return max(0, (int)$bytes);
+    }
+    if (!is_dir($path)) {
+        throw new RuntimeException('path_rejected');
+    }
+    $entries = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($path, FilesystemIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::CHILD_FIRST
+    );
+    $bytes = 0;
+    foreach ($entries as $entry) {
+        $entryPath = $entry->getPathname();
+        if ($entry->isLink() || !str_starts_with($entryPath, $path . DIRECTORY_SEPARATOR)) {
+            throw new RuntimeException('path_rejected');
+        }
+        if ($entry->isFile()) {
+            $size = $entry->getSize();
+            if (!unlink($entryPath)) {
+                throw new RuntimeException('delete_failed');
+            }
+            $bytes += max(0, $size);
+        } elseif ($entry->isDir()) {
+            if (!rmdir($entryPath)) {
+                throw new RuntimeException('delete_failed');
+            }
+        } else {
+            throw new RuntimeException('path_rejected');
+        }
+    }
+    if (!rmdir($path)) {
+        throw new RuntimeException('delete_failed');
+    }
+
+    return $bytes;
+}
+
+function hub_retention_claim_artifact(PDO $db, int $artifactId, string $now): ?array
+{
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $stmt = $db->prepare(
+            "SELECT a.*, t.status AS task_status
+             FROM task_artifacts a JOIN tasks t ON t.id = a.task_id
+             WHERE a.id = :id AND a.state = 'available' AND a.purged_at IS NULL
+               AND a.pinned_at IS NULL AND a.legal_hold = 0 AND a.expires_at IS NOT NULL AND a.expires_at <= :now"
+        );
+        $stmt->execute([':id' => $artifactId, ':now' => $now]);
+        $artifact = $stmt->fetch();
+        if (!$artifact || hub_retention_task_is_busy($db, (int)$artifact['task_id']) || hub_retention_artifact_is_held($db, $artifactId)
+            || (!empty($artifact['download_claim_expires_at']) && (string)$artifact['download_claim_expires_at'] > $now)) {
+            $db->exec('COMMIT');
+            return null;
+        }
+        $root = hub_task_result_dir((int)$artifact['task_id']);
+        if (hub_retention_managed_path((string)$artifact['path'], $root) === null) {
+            $error = $db->prepare("UPDATE task_artifacts SET purge_error = 'path_rejected' WHERE id = :id AND state = 'available'");
+            $error->execute([':id' => $artifactId]);
+            $db->exec('COMMIT');
+            return null;
+        }
+        $expiring = $db->prepare("UPDATE task_artifacts SET state = 'expiring' WHERE id = :id AND state = 'available'");
+        $expiring->execute([':id' => $artifactId]);
+        if ($expiring->rowCount() !== 1) {
+            $db->exec('COMMIT');
+            return null;
+        }
+        $token = bin2hex(random_bytes(16));
+        $claim = $db->prepare(
+            "UPDATE task_artifacts SET state = 'purging', purge_claim_token = :token, purge_claimed_at = :now, purge_error = NULL
+             WHERE id = :id AND state = 'expiring' AND purged_at IS NULL"
+        );
+        $claim->execute([':token' => $token, ':now' => $now, ':id' => $artifactId]);
+        $db->exec('COMMIT');
+
+        return $claim->rowCount() === 1 ? array_merge($artifact, ['purge_claim_token' => $token]) : null;
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+function hub_retention_finish_artifact_claim(PDO $db, array $artifact, int $bytes, ?string $error, string $now): void
+{
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        if ($error === null) {
+            $stmt = $db->prepare(
+                "UPDATE task_artifacts SET state = 'purged', purged_at = :now, purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = NULL
+                 WHERE id = :id AND state = 'purging' AND purge_claim_token = :token"
+            );
+            $stmt->execute([':now' => $now, ':id' => (int)$artifact['id'], ':token' => $artifact['purge_claim_token']]);
+            if ($stmt->rowCount() === 1) {
+                $task = $db->prepare('UPDATE tasks SET freed_bytes = freed_bytes + :bytes, purged_at = COALESCE(purged_at, :now) WHERE id = :task_id');
+                $task->execute([':bytes' => $bytes, ':now' => $now, ':task_id' => (int)$artifact['task_id']]);
+            }
+        } else {
+            $stmt = $db->prepare(
+                "UPDATE task_artifacts SET state = 'available', purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = :error
+                 WHERE id = :id AND state = 'purging' AND purge_claim_token = :token"
+            );
+            $stmt->execute([':error' => $error, ':id' => (int)$artifact['id'], ':token' => $artifact['purge_claim_token']]);
+        }
+        $db->exec('COMMIT');
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+function hub_retention_task_has_active_source_hold(PDO $db, int $taskId): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM task_artifact_holds h
+         JOIN task_artifacts a ON a.id = h.source_artifact_id
+         WHERE a.task_id = :task_id AND h.released_at IS NULL'
+    );
+    $stmt->execute([':task_id' => $taskId]);
+
+    return $stmt->fetchColumn() !== false;
+}
+
+function hub_retention_claim_task_resource(PDO $db, int $taskId, string $resource, string $now): ?array
+{
+    $fields = $resource === 'source'
+        ? ['expires' => 'source_expires_at', 'state' => 'source_state']
+        : ['expires' => 'workspace_expires_at', 'state' => 'workspace_state'];
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $stmt = $db->prepare(
+            "SELECT * FROM tasks WHERE id = :id AND {$fields['state']} IN ('retention', 'expiring')
+             AND {$fields['expires']} IS NOT NULL AND {$fields['expires']} <= :now"
+        );
+        $stmt->execute([':id' => $taskId, ':now' => $now]);
+        $task = $stmt->fetch();
+        if (!$task || hub_retention_task_is_busy($db, $taskId) || hub_retention_task_has_active_source_hold($db, $taskId)) {
+            $db->exec('COMMIT');
+            return null;
+        }
+        $path = null;
+        $root = null;
+        if ($resource === 'source') {
+            $input = json_decode((string)($task['input_json'] ?? ''), true);
+            $candidate = is_array($input) ? (string)($input['source_upload_path'] ?? $input['input_file'] ?? '') : '';
+            if ($candidate !== '') {
+                $path = hub_managed_task_upload_path($taskId, $candidate);
+                $root = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId;
+            }
+        } else {
+            $candidate = hub_task_result_dir($taskId) . '/workspace';
+            if (file_exists($candidate)) {
+                $path = hub_retention_managed_path($candidate, hub_task_result_dir($taskId));
+                $root = hub_task_result_dir($taskId);
+            }
+        }
+        if (($resource === 'workspace' && file_exists(hub_task_result_dir($taskId) . '/workspace') && $path === null)
+            || ($resource === 'source' && $candidate !== '' && $path === null)) {
+            $error = $db->prepare("UPDATE tasks SET purge_error = 'path_rejected' WHERE id = :id");
+            $error->execute([':id' => $taskId]);
+            $db->exec('COMMIT');
+            return null;
+        }
+        $expiring = $db->prepare("UPDATE tasks SET {$fields['state']} = 'expiring', retention_state = 'expiring' WHERE id = :id AND {$fields['state']} IN ('retention', 'expiring')");
+        $expiring->execute([':id' => $taskId]);
+        if ($expiring->rowCount() !== 1) {
+            $db->exec('COMMIT');
+            return null;
+        }
+        $token = bin2hex(random_bytes(16));
+        $claim = $db->prepare(
+            "UPDATE tasks SET {$fields['state']} = 'purging', retention_state = 'purging', purge_claim_token = :token, purge_claimed_at = :now, purge_error = NULL
+             WHERE id = :id AND {$fields['state']} = 'expiring'"
+        );
+        $claim->execute([':token' => $token, ':now' => $now, ':id' => $taskId]);
+        $db->exec('COMMIT');
+
+        return $claim->rowCount() === 1 ? array_merge($task, ['resource' => $resource, 'path' => $path, 'root' => $root, 'purge_claim_token' => $token]) : null;
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+function hub_retention_finish_task_resource_claim(PDO $db, array $task, int $bytes, ?string $error, string $now): void
+{
+    $field = ($task['resource'] ?? '') === 'source' ? 'source_state' : 'workspace_state';
+    $otherField = $field === 'source_state' ? 'workspace_state' : 'source_state';
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        if ($error === null) {
+            $stmt = $db->prepare(
+                "UPDATE tasks
+                 SET {$field} = 'purged', freed_bytes = freed_bytes + :bytes, purged_at = COALESCE(purged_at, :now),
+                     retention_state = CASE WHEN {$otherField} = 'purged' THEN 'purged' ELSE 'retention' END,
+                     purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = NULL
+                 WHERE id = :id AND {$field} = 'purging' AND purge_claim_token = :token"
+            );
+            $stmt->execute([':bytes' => $bytes, ':now' => $now, ':id' => (int)$task['id'], ':token' => $task['purge_claim_token']]);
+        } else {
+            $stmt = $db->prepare(
+                "UPDATE tasks SET {$field} = 'retention', retention_state = 'retention', purge_claim_token = NULL, purge_claimed_at = NULL, purge_error = :error
+                 WHERE id = :id AND {$field} = 'purging' AND purge_claim_token = :token"
+            );
+            $stmt->execute([':error' => $error, ':id' => (int)$task['id'], ':token' => $task['purge_claim_token']]);
+        }
+        $db->exec('COMMIT');
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+function hub_prune_retention_task_resources(PDO $db, string $resource, string $now): array
+{
+    $field = $resource === 'source' ? 'source_expires_at' : 'workspace_expires_at';
+    $state = $resource === 'source' ? 'source_state' : 'workspace_state';
+    $stmt = $db->prepare("SELECT id FROM tasks WHERE {$state} IN ('retention', 'expiring') AND {$field} IS NOT NULL AND {$field} <= :now ORDER BY id ASC");
+    $stmt->execute([':now' => $now]);
+    $result = ['purged' => 0, 'errors' => 0];
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $taskId) {
+        $task = hub_retention_claim_task_resource($db, (int)$taskId, $resource, $now);
+        if ($task === null) {
+            continue;
+        }
+        try {
+            $bytes = $task['path'] === null ? 0 : hub_retention_remove_managed_path((string)$task['path'], (string)$task['root']);
+            hub_retention_finish_task_resource_claim($db, $task, $bytes, null, $now);
+            $result['purged']++;
+        } catch (Throwable $e) {
+            hub_retention_finish_task_resource_claim($db, $task, 0, substr($e->getMessage(), 0, 255), $now);
+            $result['errors']++;
+        }
+    }
+
+    return $result;
+}
+
+function hub_prune_retention_partials(PDO $db, string $now): int
+{
+    $cutoff = (strtotime($now) ?: time()) - hub_retention_policy($db)['partial_hours'] * 3600;
+    $tasks = $db->query('SELECT id FROM tasks ORDER BY id ASC')->fetchAll(PDO::FETCH_COLUMN);
+    $purged = 0;
+    foreach ($tasks as $taskId) {
+        $root = HUB_DATA_DIR . '/uploads/tasks/task_' . (int)$taskId;
+        if (!is_dir($root) || is_link($root)) {
+            continue;
+        }
+        foreach (new DirectoryIterator($root) as $entry) {
+            if ($entry->isDot() || $entry->isLink() || !$entry->isFile() || !str_ends_with($entry->getFilename(), '.partial') || $entry->getMTime() > $cutoff) {
+                continue;
+            }
+            try {
+                $bytes = hub_retention_remove_managed_path($entry->getPathname(), $root);
+                $stmt = $db->prepare('UPDATE tasks SET freed_bytes = freed_bytes + :bytes, purged_at = COALESCE(purged_at, :now) WHERE id = :id');
+                $stmt->execute([':bytes' => $bytes, ':now' => $now, ':id' => (int)$taskId]);
+                $purged++;
+            } catch (Throwable) {
+                // A corrupt partial remains for the next safe retry.
+            }
+        }
+    }
+
+    return $purged;
+}
+
+function hub_prune_retention(PDO $db, ?string $now = null): array
+{
+    $now ??= hub_now();
+    $stmt = $db->prepare(
+        "SELECT id FROM task_artifacts
+         WHERE state = 'available' AND purged_at IS NULL AND pinned_at IS NULL AND legal_hold = 0
+           AND expires_at IS NOT NULL AND expires_at <= :now ORDER BY id ASC"
+    );
+    $stmt->execute([':now' => $now]);
+    $purged = 0;
+    $errors = 0;
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $artifactId) {
+        $artifact = hub_retention_claim_artifact($db, (int)$artifactId, $now);
+        if ($artifact === null) {
+            continue;
+        }
+        try {
+            $bytes = hub_retention_remove_managed_path((string)$artifact['path'], hub_task_result_dir((int)$artifact['task_id']));
+            hub_retention_finish_artifact_claim($db, $artifact, $bytes, null, $now);
+            $purged++;
+        } catch (Throwable $e) {
+            hub_retention_finish_artifact_claim($db, $artifact, 0, substr($e->getMessage(), 0, 255), $now);
+            $errors++;
+        }
+    }
+
+    foreach (['source', 'workspace'] as $resource) {
+        $taskResult = hub_prune_retention_task_resources($db, $resource, $now);
+        $purged += $taskResult['purged'];
+        $errors += $taskResult['errors'];
+    }
+    $purged += hub_prune_retention_partials($db, $now);
+
+    return ['purged' => $purged, 'errors' => $errors];
+}
+
+function hub_retention_schema_missing(PDO $db): array
+{
+    $required = [
+        'tasks' => ['source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error'],
+        'task_artifacts' => ['expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
+        'task_artifact_holds' => ['source_artifact_id', 'downstream_task_id', 'released_at'],
+        'runtime_runs' => ['task_id', 'state'],
+        'runtime_resource_leases' => ['runtime_run_id', 'state'],
+    ];
+    $tables = array_fill_keys($db->query("SELECT name FROM sqlite_master WHERE type = 'table'")->fetchAll(PDO::FETCH_COLUMN), true);
+    $missing = [];
+    foreach ($required as $table => $columns) {
+        if (!isset($tables[$table])) {
+            $missing[] = $table;
+            continue;
+        }
+        $present = array_fill_keys(array_column($db->query('PRAGMA table_info(' . $table . ')')->fetchAll(), 'name'), true);
+        foreach ($columns as $column) {
+            if (!isset($present[$column])) {
+                $missing[] = $table . '.' . $column;
+            }
+        }
+    }
+
+    return $missing;
 }
 
 function hub_get_task_artifact(PDO $db, int $artifactId): ?array
@@ -2035,10 +2522,11 @@ function hub_register_validated_pack_job_artifact(PDO $db, int $taskId, array $a
     }
     $stmt = $db->prepare(
         'INSERT INTO task_artifacts
-            (task_id, name, path, artifact_type, mime_type, size_bytes, sha256, metadata_json, created_at)
+            (task_id, name, path, artifact_type, mime_type, size_bytes, sha256, metadata_json, expires_at, created_at)
          VALUES
-            (:task_id, :name, :path, :artifact_type, :mime_type, :size_bytes, :sha256, :metadata_json, :created_at)'
+            (:task_id, :name, :path, :artifact_type, :mime_type, :size_bytes, :sha256, :metadata_json, :expires_at, :created_at)'
     );
+    $now = hub_now();
     $stmt->execute([
         ':task_id' => $taskId,
         ':name' => $artifact['name'],
@@ -2048,7 +2536,8 @@ function hub_register_validated_pack_job_artifact(PDO $db, int $taskId, array $a
         ':size_bytes' => $artifact['size_bytes'],
         ':sha256' => $artifact['sha256'],
         ':metadata_json' => $metadata,
-        ':created_at' => hub_now(),
+        ':expires_at' => hub_retention_deadline(hub_retention_policy($db)['artifact_days'] * 86400, $now),
+        ':created_at' => $now,
     ]);
 
     return (int)$db->lastInsertId();
@@ -2079,6 +2568,7 @@ function hub_pack_job_mark_task_terminal(PDO $db, int $taskId, string $status, ?
     if ($stmt->rowCount() !== 1) {
         throw new RuntimeException('task_ownership_conflict');
     }
+    hub_apply_task_terminal_retention($db, $taskId, $status, $now);
 }
 
 function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run, array $publishedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $beforeTerminalFence = null): array

@@ -70,6 +70,10 @@ if flock -n 9; then
     echo "[3waAIHub] host metrics collection failed."
   fi
 
+  if ! php scripts/prune_retention.php; then
+    echo "[3waAIHub] retention prune failed."
+  fi
+
   while [ "$tick" -le "$WORKER_TICKS" ]; do
     php scripts/command_worker.php --limit="$WORKER_LIMIT"
     if [ "$tick" -lt "$WORKER_TICKS" ]; then
