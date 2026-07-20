@@ -630,6 +630,8 @@ SQL);
     hub_add_column_if_missing($db, 'tasks', 'purge_claim_token', 'TEXT NULL');
     hub_add_column_if_missing($db, 'tasks', 'purge_claimed_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'tasks', 'purge_error', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'metadata_purge_claim_token', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'metadata_purge_claimed_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'task_callback_deliveries', 'claim_token', 'TEXT NULL');
     hub_add_column_if_missing($db, 'task_callback_deliveries', 'claim_expires_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'task_artifacts', 'artifact_type', 'TEXT NULL');
@@ -713,6 +715,8 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifact_holds_active ON task_artifact_holds(source_artifact_id, released_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifacts_retention ON task_artifacts(state, expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifacts_download_claim ON task_artifacts(download_claim_expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_metadata_retention ON tasks(status, finished_at, metadata_purge_claim_token)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_partial_candidates ON tasks(status, updated_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_state_expires ON runtime_resource_leases(state, lease_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_run_id ON runtime_resource_leases(runtime_run_id)');
     $db->prepare(
@@ -727,7 +731,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'task_callback_targets' => ['id', 'owner_member_id', 'target_alias', 'callback_url', 'signing_secret', 'enabled', 'created_at', 'updated_at'],
         'task_callback_deliveries' => ['id', 'delivery_id', 'callback_target_id', 'task_id', 'event_type', 'payload_json', 'attempt_count', 'next_attempt_at', 'claim_token', 'claim_expires_at', 'delivered_at', 'last_http_status', 'last_error', 'created_at', 'updated_at'],
         'runtime_resource_leases' => ['resource_key', 'runtime_run_id', 'worker_id', 'lease_token', 'state', 'acquired_at', 'heartbeat_at', 'lease_expires_at', 'last_error', 'updated_at'],
-        'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error'],
+        'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at'],
         'task_artifacts' => ['artifact_type', 'sha256', 'metadata_json', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],
         'runtime_runs' => ['task_id', 'attempt_no', 'container_id', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],

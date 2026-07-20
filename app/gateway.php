@@ -34,7 +34,8 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         $authContext = $auth['context'] ?? [];
         if (empty($auth['ok'])) {
             if (hub_bearer_token_from_request() === '' && hub_gateway_admin_legacy_task_session_allowed($db, $mode)) {
-                return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode), $started, $requestId);
+                $sessionContext = ['session_admin' => true];
+                return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode, $sessionContext), $started, $requestId, $sessionContext);
             }
             return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
         }
@@ -731,7 +732,7 @@ function hub_task_api_dispatch(PDO $db, string $mode, array $authContext = []): 
         'task_cancel' => hub_api_task_cancel($db, $authContext),
         'task_retry' => hub_api_task_retry($db, $authContext),
         'task_artifacts_ack' => hub_api_task_artifacts_ack($db, $authContext),
-        'task_artifact_retention' => hub_api_task_artifact_retention($db),
+        'task_artifact_retention' => hub_api_task_artifact_retention($db, $authContext),
         'artifact' => hub_api_artifact($db, $authContext),
         default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown mode']),
     };
@@ -1340,7 +1341,7 @@ function hub_api_task_artifacts_ack(PDO $db, array $authContext = []): array
     ]);
 }
 
-function hub_api_task_artifact_retention(PDO $db): array
+function hub_api_task_artifact_retention(PDO $db, array $authContext = []): array
 {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
         return hub_gateway_error(405, 'method_not_allowed', 'task_artifact_retention requires POST');
@@ -1348,6 +1349,9 @@ function hub_api_task_artifact_retention(PDO $db): array
     $user = hub_current_user($db);
     if (!is_array($user) || (string)($user['role'] ?? '') !== 'system_admin') {
         return hub_gateway_error(403, 'admin_required', 'administrator session required');
+    }
+    if (!empty($authContext['session_admin']) && !hub_check_csrf(false)) {
+        return hub_gateway_error(400, 'csrf_invalid', 'valid CSRF token required');
     }
     $artifactId = trim((string)($_POST['artifact_id'] ?? ''));
     $action = (string)($_POST['action'] ?? '');

@@ -374,3 +374,116 @@ hub_test('task retention resource claims serialize source and workspace finaliza
     $task = hub_get_task($db, $taskId);
     hub_test_assert(($task['source_state'] ?? '') === 'purged' && ($task['workspace_state'] ?? '') === 'purged' && empty($task['purge_claim_token']), 'serialized resource finalization must not leave either resource purging');
 });
+
+function hub_test_retention_metadata_ready_task(PDO $db, string $finishedAt): int
+{
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    hub_finish_task_success($db, hub_get_task($db, $taskId), ['ok' => true]);
+    $db->prepare(
+        "UPDATE tasks
+         SET finished_at = :finished_at, updated_at = :finished_at,
+             source_state = 'purged', workspace_state = 'purged', retention_state = 'purged',
+             purge_claim_token = NULL, purge_claimed_at = NULL
+         WHERE id = :id"
+    )->execute([':finished_at' => $finishedAt, ':id' => $taskId]);
+
+    return $taskId;
+}
+
+hub_test('retention keeps terminal metadata before 180 days then purges an eligible record', function (): void {
+    $db = hub_test_reset_db();
+    $now = '2026-07-20 00:00:00';
+    $taskId = hub_test_retention_metadata_ready_task($db, '2026-02-01 00:00:00');
+
+    $before = hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $taskId) !== null && (int)($before['metadata_purged'] ?? 0) === 0, 'terminal metadata must remain before the 180-day deadline');
+
+    $db->prepare("UPDATE tasks SET finished_at = '2025-01-01 00:00:00', updated_at = '2025-01-01 00:00:00' WHERE id = :id")->execute([':id' => $taskId]);
+    $after = hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $taskId) === null && (int)($after['metadata_purged'] ?? 0) === 1, 'eligible terminal metadata must be deleted only after 180 days');
+});
+
+hub_test('metadata purge keeps records with an artifact hold or pending callback', function (): void {
+    $db = hub_test_reset_db();
+    $now = '2026-07-20 00:00:00';
+    $taskId = hub_test_retention_metadata_ready_task($db, '2025-01-01 00:00:00');
+    $path = hub_task_result_dir($taskId) . '/metadata-blocker.txt';
+    if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0775, true)) {
+        throw new RuntimeException('Cannot create metadata blocker artifact.');
+    }
+    file_put_contents($path, 'metadata blocker', LOCK_EX);
+    $artifactId = hub_register_task_artifact($db, $taskId, 'metadata-blocker.txt', $path, 'text/plain');
+
+    hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $taskId) !== null, 'an unpurged artifact must block metadata deletion');
+
+    unlink($path);
+    $db->prepare("UPDATE task_artifacts SET state = 'purged', purged_at = '2025-01-02 00:00:00', pinned_at = NULL, legal_hold = 0 WHERE id = :id")->execute([':id' => $artifactId]);
+    $downstreamId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    $db->prepare('INSERT INTO task_artifact_holds (source_artifact_id, downstream_task_id, held_at) VALUES (:artifact_id, :task_id, :held_at)')
+        ->execute([':artifact_id' => $artifactId, ':task_id' => $downstreamId, ':held_at' => '2025-01-03 00:00:00']);
+    hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $taskId) !== null, 'an active artifact hold must block metadata deletion');
+
+    $db->prepare('UPDATE task_artifact_holds SET released_at = :released_at WHERE source_artifact_id = :artifact_id')
+        ->execute([':released_at' => '2025-01-04 00:00:00', ':artifact_id' => $artifactId]);
+    $memberId = hub_create_api_member($db, 'metadata callback owner');
+    $targetId = hub_register_callback_target($db, $memberId, 'metadata', 'https://8.8.8.8/callback');
+    $db->prepare(
+        'INSERT INTO task_callback_deliveries
+            (delivery_id, callback_target_id, task_id, event_type, payload_json, attempt_count, next_attempt_at, created_at, updated_at)
+         VALUES (:delivery_id, :target_id, :task_id, :event_type, :payload_json, 0, :next_attempt_at, :created_at, :updated_at)'
+    )->execute([
+        ':delivery_id' => 'metadata-' . $taskId,
+        ':target_id' => $targetId,
+        ':task_id' => $taskId,
+        ':event_type' => 'task.completed',
+        ':payload_json' => '{}',
+        ':next_attempt_at' => '2025-01-05 00:00:00',
+        ':created_at' => '2025-01-05 00:00:00',
+        ':updated_at' => '2025-01-05 00:00:00',
+    ]);
+    hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $taskId) !== null, 'a pending callback must block metadata deletion');
+
+    $db->prepare('UPDATE task_callback_deliveries SET attempt_count = 5, next_attempt_at = NULL WHERE task_id = :task_id')->execute([':task_id' => $taskId]);
+    hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $taskId) === null && hub_get_task($db, $downstreamId) !== null, 'final metadata deletion must keep the downstream task intact');
+});
+
+hub_test('session-admin artifact retention controls require CSRF while bearer controls remain token-authenticated', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '203.0.113.51');
+        $path = hub_task_result_dir($taskId) . '/csrf.txt';
+        if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0775, true)) {
+            throw new RuntimeException('Cannot create CSRF artifact fixture.');
+        }
+        file_put_contents($path, 'csrf', LOCK_EX);
+        $artifactId = hub_register_task_artifact($db, $taskId, 'csrf.txt', $path, 'text/plain');
+        $memberId = hub_create_api_member($db, 'retention bearer owner');
+        $token = hub_create_api_token($db, $memberId, 'retention bearer token', null, null);
+        hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'task_artifact_retention', null);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $session = $_SESSION ?? [];
+        $_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'csrf-good'];
+        try {
+            $missing = hub_test_audio_request($db, 'task_artifact_retention', '', ['artifact_id' => (string)$artifactId, 'action' => 'pin']);
+            $bad = hub_test_audio_request($db, 'task_artifact_retention', '', ['artifact_id' => (string)$artifactId, 'action' => 'pin', 'csrf_token' => 'csrf-bad']);
+            hub_test_assert($missing['status'] === 400 && $bad['status'] === 400 && empty(hub_get_task_artifact($db, $artifactId)['pinned_at']), 'missing or invalid session CSRF must reject retention mutation without changing the artifact');
+
+            $valid = hub_test_audio_request($db, 'task_artifact_retention', '', ['artifact_id' => (string)$artifactId, 'action' => 'pin', 'csrf_token' => 'csrf-good']);
+            $bearer = hub_test_audio_request($db, 'task_artifact_retention', (string)$token['plain_token'], ['artifact_id' => (string)$artifactId, 'action' => 'unpin']);
+            hub_test_assert($valid['status'] === 200 && $bearer['status'] === 200 && empty(hub_get_task_artifact($db, $artifactId)['pinned_at']), 'valid session CSRF must mutate while bearer-authenticated control does not require a cookie CSRF token');
+        } finally {
+            $_SESSION = $session;
+        }
+    });
+});
+
+hub_test('partial retention only scans stale task candidates', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/app/task_queue.php');
+    hub_test_assert(!str_contains($source, "SELECT id FROM tasks ORDER BY id ASC"), 'partial retention must not scan every task forever');
+});

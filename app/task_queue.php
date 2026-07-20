@@ -1163,6 +1163,14 @@ function hub_retention_recover_stale_claims(PDO $db, string $now): int
     );
     $task->execute([':cutoff' => $cutoff]);
     $recovered += $task->rowCount();
+    $metadata = $db->prepare(
+        'UPDATE tasks
+         SET metadata_purge_claim_token = NULL, metadata_purge_claimed_at = NULL
+         WHERE metadata_purge_claim_token IS NOT NULL
+           AND metadata_purge_claimed_at IS NOT NULL AND metadata_purge_claimed_at <= :cutoff'
+    );
+    $metadata->execute([':cutoff' => $cutoff]);
+    $recovered += $metadata->rowCount();
 
     return $recovered;
 }
@@ -1409,12 +1417,169 @@ function hub_prune_retention_task_resources(PDO $db, string $resource, string $n
     return $result;
 }
 
+function hub_retention_metadata_cutoff(PDO $db, string $now): string
+{
+    return hub_retention_deadline(-hub_retention_policy($db)['metadata_days'] * 86400, $now);
+}
+
+function hub_retention_task_metadata_dependencies_clear(PDO $db, int $taskId, string $now): bool
+{
+    $checks = [
+        "SELECT 1 FROM task_artifacts
+         WHERE task_id = :task_id AND (
+             state <> 'purged' OR purged_at IS NULL OR pinned_at IS NOT NULL OR legal_hold <> 0
+             OR (download_claim_token IS NOT NULL
+                 AND (download_claim_expires_at IS NULL OR download_claim_expires_at > :now))
+         )",
+        'SELECT 1 FROM task_artifact_holds h
+         LEFT JOIN task_artifacts a ON a.id = h.source_artifact_id
+         WHERE h.released_at IS NULL AND (h.downstream_task_id = :task_id OR a.task_id = :task_id)',
+        "SELECT 1 FROM runtime_runs
+         WHERE task_id = :task_id AND state NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out')",
+        "SELECT 1 FROM runtime_resource_leases l
+         JOIN runtime_runs r ON r.run_id = l.runtime_run_id
+         WHERE r.task_id = :task_id AND l.state = 'leased'",
+        'SELECT 1 FROM task_callback_deliveries
+         WHERE task_id = :task_id AND delivered_at IS NULL AND attempt_count < 5',
+    ];
+    foreach ($checks as $sql) {
+        $stmt = $db->prepare($sql);
+        $params = [':task_id' => $taskId];
+        if (str_contains($sql, ':now')) {
+            $params[':now'] = $now;
+        }
+        $stmt->execute($params);
+        if ($stmt->fetchColumn() !== false) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function hub_retention_claim_task_metadata(PDO $db, int $taskId, string $now): ?array
+{
+    $cutoff = hub_retention_metadata_cutoff($db, $now);
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $stmt = $db->prepare(
+            "SELECT * FROM tasks
+             WHERE id = :id AND status IN ('success', 'failed', 'cancelled', 'timed_out')
+               AND COALESCE(finished_at, updated_at, created_at) <= :cutoff
+               AND source_state = 'purged' AND workspace_state = 'purged'
+               AND purge_claim_token IS NULL AND metadata_purge_claim_token IS NULL"
+        );
+        $stmt->execute([':id' => $taskId, ':cutoff' => $cutoff]);
+        $task = $stmt->fetch();
+        if (!$task || hub_retention_task_is_busy($db, $taskId) || !hub_retention_task_metadata_dependencies_clear($db, $taskId, $now)) {
+            $db->exec('COMMIT');
+            return null;
+        }
+        $token = bin2hex(random_bytes(16));
+        $claim = $db->prepare(
+            'UPDATE tasks
+             SET metadata_purge_claim_token = :token, metadata_purge_claimed_at = :now
+             WHERE id = :id AND purge_claim_token IS NULL AND metadata_purge_claim_token IS NULL'
+        );
+        $claim->execute([':token' => $token, ':now' => $now, ':id' => $taskId]);
+        $db->exec('COMMIT');
+
+        return $claim->rowCount() === 1 ? array_merge($task, ['metadata_purge_claim_token' => $token]) : null;
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+function hub_retention_finish_task_metadata_claim(PDO $db, array $task, string $now): bool
+{
+    $taskId = (int)($task['id'] ?? 0);
+    $token = (string)($task['metadata_purge_claim_token'] ?? '');
+    if ($taskId < 1 || $token === '') {
+        return false;
+    }
+    $cutoff = hub_retention_metadata_cutoff($db, $now);
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $candidate = $db->prepare(
+            "SELECT 1 FROM tasks
+             WHERE id = :id AND status IN ('success', 'failed', 'cancelled', 'timed_out')
+               AND COALESCE(finished_at, updated_at, created_at) <= :cutoff
+               AND source_state = 'purged' AND workspace_state = 'purged'
+               AND purge_claim_token IS NULL AND metadata_purge_claim_token = :token"
+        );
+        $candidate->execute([':id' => $taskId, ':cutoff' => $cutoff, ':token' => $token]);
+        if ($candidate->fetchColumn() === false || hub_retention_task_is_busy($db, $taskId)
+            || !hub_retention_task_metadata_dependencies_clear($db, $taskId, $now)) {
+            $release = $db->prepare(
+                'UPDATE tasks
+                 SET metadata_purge_claim_token = NULL, metadata_purge_claimed_at = NULL
+                 WHERE id = :id AND metadata_purge_claim_token = :token'
+            );
+            $release->execute([':id' => $taskId, ':token' => $token]);
+            $db->exec('COMMIT');
+
+            return false;
+        }
+        $runs = $db->prepare(
+            "DELETE FROM runtime_runs
+             WHERE task_id = :task_id AND state IN ('succeeded', 'failed', 'cancelled', 'timed_out')"
+        );
+        $runs->execute([':task_id' => $taskId]);
+        hub_audit($db, 'system', 'task_metadata_purge', 'task_id=' . $taskId);
+        $delete = $db->prepare(
+            'DELETE FROM tasks WHERE id = :id AND metadata_purge_claim_token = :token'
+        );
+        $delete->execute([':id' => $taskId, ':token' => $token]);
+        $db->exec('COMMIT');
+
+        return $delete->rowCount() === 1;
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+function hub_prune_retention_metadata(PDO $db, string $now, int $limit = 100): int
+{
+    $cutoff = hub_retention_metadata_cutoff($db, $now);
+    $stmt = $db->prepare(
+        "SELECT id FROM tasks
+         WHERE status IN ('success', 'failed', 'cancelled', 'timed_out')
+           AND COALESCE(finished_at, updated_at, created_at) <= :cutoff
+           AND source_state = 'purged' AND workspace_state = 'purged'
+           AND purge_claim_token IS NULL AND metadata_purge_claim_token IS NULL
+         ORDER BY COALESCE(finished_at, updated_at, created_at) ASC, id ASC
+         LIMIT :limit"
+    );
+    $stmt->bindValue(':cutoff', $cutoff, PDO::PARAM_STR);
+    $stmt->bindValue(':limit', max(1, $limit), PDO::PARAM_INT);
+    $stmt->execute();
+    $purged = 0;
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $taskId) {
+        $task = hub_retention_claim_task_metadata($db, (int)$taskId, $now);
+        if ($task !== null && hub_retention_finish_task_metadata_claim($db, $task, $now)) {
+            $purged++;
+        }
+    }
+
+    return $purged;
+}
+
 function hub_prune_retention_partials(PDO $db, string $now): int
 {
     $cutoff = (strtotime($now) ?: time()) - hub_retention_policy($db)['partial_hours'] * 3600;
-    $tasks = $db->query('SELECT id FROM tasks ORDER BY id ASC')->fetchAll(PDO::FETCH_COLUMN);
+    $tasks = $db->prepare(
+        "SELECT id FROM tasks
+         WHERE (status IN ('success', 'failed', 'cancelled', 'timed_out')
+                AND (source_expires_at IS NOT NULL AND source_expires_at <= :now
+                     OR workspace_expires_at IS NOT NULL AND workspace_expires_at <= :now))
+            OR (status IN ('staging', 'queued') AND updated_at <= :cutoff)
+         ORDER BY id ASC"
+    );
+    $tasks->execute([':now' => $now, ':cutoff' => date('Y-m-d H:i:s', $cutoff)]);
     $purged = 0;
-    foreach ($tasks as $taskId) {
+    foreach ($tasks->fetchAll(PDO::FETCH_COLUMN) as $taskId) {
         $root = HUB_DATA_DIR . '/uploads/tasks/task_' . (int)$taskId;
         if (!is_dir($root) || is_link($root)) {
             continue;
@@ -1474,14 +1639,15 @@ function hub_prune_retention(PDO $db, ?string $now = null): array
         $errors += $taskResult['errors'];
     }
     $purged += hub_prune_retention_partials($db, $now);
+    $metadataPurged = hub_prune_retention_metadata($db, $now);
 
-    return ['purged' => $purged, 'errors' => $errors, 'recovered' => $recovered];
+    return ['purged' => $purged, 'errors' => $errors, 'recovered' => $recovered, 'metadata_purged' => $metadataPurged];
 }
 
 function hub_retention_schema_missing(PDO $db): array
 {
     $required = [
-        'tasks' => ['source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error'],
+        'tasks' => ['source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at'],
         'task_artifacts' => ['expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['source_artifact_id', 'downstream_task_id', 'released_at'],
         'runtime_runs' => ['task_id', 'state'],
