@@ -80,6 +80,17 @@ function hub_test_audio_source_artifact(PDO $db, int $memberId, int $tokenId, st
     return ['task_id' => $sourceTaskId, 'artifact_id' => $artifactId, 'path' => $path];
 }
 
+function hub_test_audio_hold_released(PDO $db, int $artifactId, int $taskId): bool
+{
+    $stmt = $db->prepare(
+        'SELECT released_at FROM task_artifact_holds
+         WHERE source_artifact_id = :source_artifact_id AND downstream_task_id = :downstream_task_id'
+    );
+    $stmt->execute([':source_artifact_id' => $artifactId, ':downstream_task_id' => $taskId]);
+
+    return !empty(($stmt->fetch() ?: [])['released_at']);
+}
+
 hub_test('audio async routes are fixed and resolve installed Pack versions', function (): void {
     hub_test_audio_isolate(static function (): void {
     $db = hub_test_reset_db();
@@ -326,5 +337,157 @@ hub_test('reserved task modes win over service modes and keep member ownership',
 
         $response = hub_test_audio_request($db, 'task_status', (string)$tokenB['plain_token'], [], ['task_id' => (string)$taskId], [], 'GET');
         hub_test_assert($response['status'] === 404, 'reserved task_status must not be shadowed by an installed service or reveal another member task');
+    });
+});
+
+hub_test('owned tasks stay private on localhost while legacy tasks remain trusted-local', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Local Privacy Owner');
+        $token = hub_create_api_token($db, $memberId, 'local privacy token', null, null);
+        $ownedTaskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '203.0.113.51', [
+            'owner_member_id' => $memberId,
+            'owner_token_id' => (int)$token['token_id'],
+        ]);
+        $legacyTaskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=task_status';
+        unset($_SERVER['HTTP_AUTHORIZATION']);
+        $_POST = [];
+        $_FILES = [];
+        $_GET = ['task_id' => (string)$ownedTaskId];
+        hub_test_assert(hub_gateway_dispatch($db, 'task_status')['status'] === 404, 'localhost must not read a member-owned task without its member token');
+
+        $_GET = ['task_id' => (string)$legacyTaskId];
+        hub_test_assert(hub_gateway_dispatch($db, 'task_status')['status'] === 200, 'trusted localhost must keep legacy null-owner task access');
+    });
+});
+
+hub_test('external legacy task submit stores member ownership for status access', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Legacy Submit Owner');
+        $token = hub_create_api_token($db, $memberId, 'legacy submit token', null, null);
+        hub_test_audio_allow($db, [$token], ['task_submit', 'task_status']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $created = hub_test_audio_request($db, 'task_submit', (string)$token['plain_token'], ['task_type' => 'demo_task', 'name' => 'owned legacy submit']);
+        $taskId = (int)(hub_test_audio_payload($created)['task_id'] ?? 0);
+        $task = hub_get_task($db, $taskId);
+        hub_test_assert((int)($task['owner_member_id'] ?? 0) === $memberId && (int)($task['owner_token_id'] ?? 0) === (int)$token['token_id'], 'token-authenticated legacy task must store owner columns');
+        $status = hub_test_audio_request($db, 'task_status', (string)$token['plain_token'], [], ['task_id' => (string)$taskId], [], 'GET');
+        hub_test_assert($status['status'] === 200, 'external submitter must be able to read its owned legacy task');
+    });
+});
+
+hub_test('staged audio upload cannot be claimed before its managed source is published', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Staged Upload Owner');
+        $token = hub_create_api_token($db, $memberId, 'staged upload token', null, null);
+        $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+        $taskId = hub_stage_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51');
+        hub_test_assert(hub_claim_next_task($db) === null, 'worker must not claim a staged upload task');
+
+        $path = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId . '/input.wav';
+        if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0775, true) && !is_dir(dirname($path))) {
+            throw new RuntimeException('Cannot create staged upload path.');
+        }
+        file_put_contents($path, 'RIFFaudio', LOCK_EX);
+        hub_update_task_input($db, $taskId, ['source_upload_path' => $path]);
+        hub_publish_staged_pack_job($db, $taskId);
+        $claimed = hub_claim_next_task($db);
+        hub_test_assert((int)($claimed['id'] ?? 0) === $taskId && !empty($claimed['input']['source_upload_path']), 'published upload task must be claimable only with its managed source input');
+    });
+});
+
+hub_test('audio routes require declared async jobs without changing legacy local jobs', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+        hub_test_assert(($route['input_fields'] ?? null) === [] && ($route['source_artifact_types'] ?? null) === ['audio'], 'async route must derive its input contract from the Pack declaration');
+        hub_test_assert(!empty(hub_get_pack('yolo')['manifest']['local_jobs']), 'legacy local_jobs must remain readable without async-job validation');
+
+        $manifestPath = HUB_ROOT . '/packs/whisper-asr/pack.json';
+        $original = (string)file_get_contents($manifestPath);
+        $manifest = json_decode($original, true);
+        if (!is_array($manifest)) {
+            throw new RuntimeException('Cannot decode Whisper manifest fixture.');
+        }
+        unset($manifest['async_jobs']);
+        try {
+            file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
+            $error = '';
+            try {
+                hub_resolve_audio_async_route($db, 'speech_transcribe');
+            } catch (RuntimeException $e) {
+                $error = $e->getMessage();
+            }
+            hub_test_assert($error === 'pack_version_unavailable', 'undeclared async job must not route');
+        } finally {
+            file_put_contents($manifestPath, $original, LOCK_EX);
+        }
+    });
+});
+
+hub_test('source artifact holds release only when downstream tasks terminalize', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Hold Release Owner');
+        $token = hub_create_api_token($db, $memberId, 'hold release token', null, null);
+        $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+        $terminalize = [
+            'success' => static fn (PDO $db, array $task): bool => (hub_finish_task_success($db, $task, ['ok' => true]) === null),
+            'failed' => static fn (PDO $db, array $task): bool => (hub_finish_task_failed($db, $task, 'failed') === null),
+            'cancelled' => static fn (PDO $db, array $task): bool => (hub_finish_task_cancelled($db, $task, 'cancelled') === null),
+            'timed_out' => static fn (PDO $db, array $task): bool => (hub_finish_task_timed_out($db, $task, 'timed out') === null),
+            'queued_cancel' => static fn (PDO $db, array $task): bool => hub_cancel_task($db, (int)$task['id']),
+        ];
+        foreach ($terminalize as $name => $finish) {
+            $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+            $taskId = hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51', [
+                'source_artifact_id' => $source['artifact_id'],
+                'source_task_id' => $source['task_id'],
+            ]);
+            hub_test_assert(!hub_test_audio_hold_released($db, (int)$source['artifact_id'], $taskId), $name . ' hold must start active');
+            hub_test_assert($finish($db, hub_get_task($db, $taskId) ?? []), $name . ' terminal helper failed');
+            hub_test_assert(hub_test_audio_hold_released($db, (int)$source['artifact_id'], $taskId), $name . ' must release the source hold at terminal state');
+        }
+    });
+});
+
+hub_test('audio admission persists only declared scalar job inputs', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Audio Input Owner');
+        $token = hub_create_api_token($db, $memberId, 'audio input token', null, null);
+        hub_test_audio_allow($db, [$token], ['speech_transcribe', 'voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+
+        foreach ([
+            ['audio_path' => '/host/audio.wav'],
+            ['params' => ['callback_url' => 'https://attacker.invalid/']],
+            ['unknown_option' => 'nope'],
+        ] as $payload) {
+            $response = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], ['source_artifact_id' => (string)$source['artifact_id']] + $payload);
+            hub_test_assert($response['status'] === 400 && (hub_test_audio_payload($response)['error'] ?? '') === 'forbidden_task_control', 'audio admission must reject unknown or nested controls');
+        }
+
+        $accepted = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+            'source_artifact_id' => (string)$source['artifact_id'],
+            'text' => 'allowed manifest field',
+        ]);
+        $task = hub_get_task($db, (int)(hub_test_audio_payload($accepted)['task_id'] ?? 0));
+        hub_test_assert($accepted['status'] === 200 && ($task['input'] ?? null) === ['text' => 'allowed manifest field'], 'audio task input must contain only declared client fields');
     });
 });

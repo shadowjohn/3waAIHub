@@ -23,6 +23,15 @@
     "timeout_sec": 180,
     "max_upload_mb": 100
   },
+  "async_jobs": [
+    {
+      "job": "transcribe",
+      "input": {
+        "fields": [],
+        "source_artifact_types": ["audio"]
+      }
+    }
+  ],
   "hardware": {
     "gpu_required": false,
     "gpu_supported": true,

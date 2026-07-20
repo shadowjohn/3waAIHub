@@ -124,7 +124,6 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
     if ($packVersion === '') {
         throw new RuntimeException('pack_version_unavailable');
     }
-
     $stmt = $db->prepare(
         "SELECT pack_version FROM services
          WHERE pack_id = :pack_id AND install_status = 'installed'
@@ -138,6 +137,10 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
     if (!in_array($packVersion, array_map('strval', $installedVersions), true)) {
         throw new RuntimeException('pack_version_unavailable');
     }
+    $jobContract = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), (string)$route['job']);
+    if ($jobContract === null) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
 
     return [
         'requested_mode' => $requestedMode,
@@ -147,7 +150,7 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
         'runtime_mode' => 'job',
         'accelerator' => 'gpu',
         'route_resolved_at' => hub_now(),
-    ];
+    ] + $jobContract;
 }
 
 function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
@@ -166,12 +169,49 @@ function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
     return $route;
 }
 
-function hub_audio_job_input_artifact_types(string $job): array
+function hub_pack_async_job_contract(array $manifest, string $job): ?array
 {
-    return match ($job) {
-        'cleanup', 'transcribe', 'synthesize' => ['audio'],
-        default => [],
-    };
+    $jobs = $manifest['async_jobs'] ?? null;
+    if (!is_array($jobs) || !array_is_list($jobs)) {
+        return null;
+    }
+    foreach ($jobs as $definition) {
+        if (!is_array($definition) || (string)($definition['job'] ?? '') !== $job) {
+            continue;
+        }
+        $input = $definition['input'] ?? null;
+        if (!is_array($input)) {
+            return null;
+        }
+        $fields = hub_pack_async_job_contract_names($input['fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
+        $artifactTypes = hub_pack_async_job_contract_names($input['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
+        if ($fields === null || $artifactTypes === null) {
+            return null;
+        }
+
+        return [
+            'input_fields' => $fields,
+            'source_artifact_types' => $artifactTypes,
+        ];
+    }
+
+    return null;
+}
+
+function hub_pack_async_job_contract_names(mixed $values, string $pattern): ?array
+{
+    if (!is_array($values) || !array_is_list($values)) {
+        return null;
+    }
+    $normalized = [];
+    foreach ($values as $value) {
+        if (!is_string($value) || !preg_match($pattern, $value) || isset($normalized[$value])) {
+            return null;
+        }
+        $normalized[$value] = true;
+    }
+
+    return array_keys($normalized);
 }
 
 function hub_pack_is_internal_task(array $manifest): bool

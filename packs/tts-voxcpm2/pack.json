@@ -27,6 +27,15 @@
     "timeout_sec": 180,
     "max_upload_mb": 2
   },
+  "async_jobs": [
+    {
+      "job": "synthesize",
+      "input": {
+        "fields": ["text"],
+        "source_artifact_types": ["audio"]
+      }
+    }
+  ],
   "l5_contract": {
     "endpoint": "/v1/tts",
     "method": "POST",

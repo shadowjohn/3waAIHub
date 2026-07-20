@@ -33,6 +33,10 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
     if (!hub_is_valid_task_queue($queueName)) {
         throw new InvalidArgumentException('Invalid task queue.');
     }
+    $status = (string)($attributes['status'] ?? 'queued');
+    if (!in_array($status, ['queued', 'staging'], true)) {
+        throw new InvalidArgumentException('Invalid initial task status.');
+    }
 
     $now = hub_now();
     $stmt = $db->prepare(
@@ -50,7 +54,7 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
         ':queue_name' => $queueName,
         ':priority' => $priority,
         ':input_json' => json_encode($input, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-        ':status' => 'queued',
+        ':status' => $status,
         ':requested_by' => $requestedBy,
         ':requested_ip' => $requestedIp,
         ':owner_member_id' => $attributes['owner_member_id'] ?? null,
@@ -72,7 +76,7 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
     return (int)$db->lastInsertId();
 }
 
-function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ownerMemberId, ?int $ownerTokenId, ?string $requestedIp, array $lineage = []): int
+function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ownerMemberId, ?int $ownerTokenId, ?string $requestedIp, array $lineage = [], string $status = 'queued'): int
 {
     foreach (['requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at'] as $field) {
         if (empty($route[$field])) {
@@ -86,12 +90,40 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
         'source_artifact_id' => $lineage['source_artifact_id'] ?? null,
         'source_task_id' => $lineage['source_task_id'] ?? null,
         'retry_of_task_id' => $lineage['retry_of_task_id'] ?? null,
+        'status' => $status,
     ]);
     if (!empty($lineage['source_artifact_id'])) {
         hub_hold_task_source_artifact($db, (int)$lineage['source_artifact_id'], $taskId);
     }
 
     return $taskId;
+}
+
+function hub_stage_owned_pack_job(PDO $db, array $route, array $input, int $ownerMemberId, ?int $ownerTokenId, ?string $requestedIp, array $lineage = []): int
+{
+    return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, $ownerTokenId, $requestedIp, $lineage, 'staging');
+}
+
+function hub_publish_staged_pack_job(PDO $db, int $taskId): void
+{
+    $db->beginTransaction();
+    try {
+        $stmt = $db->prepare(
+            "UPDATE tasks
+             SET status = 'queued', updated_at = :updated_at
+             WHERE id = :id AND task_type = 'pack_job' AND status = 'staging'"
+        );
+        $stmt->execute([':updated_at' => hub_now(), ':id' => $taskId]);
+        if ($stmt->rowCount() !== 1) {
+            throw new RuntimeException('task_not_staged');
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
 }
 
 function hub_hold_task_source_artifact(PDO $db, int $artifactId, int $downstreamTaskId): void
@@ -111,7 +143,7 @@ function hub_hold_task_source_artifact(PDO $db, int $artifactId, int $downstream
     ]);
 }
 
-function hub_validate_pack_job_source_artifact(PDO $db, int $artifactId, int $ownerMemberId, string $job): ?array
+function hub_validate_pack_job_source_artifact(PDO $db, int $artifactId, int $ownerMemberId, array $route): ?array
 {
     $stmt = $db->prepare(
         'SELECT a.*, t.owner_member_id AS task_owner_member_id
@@ -128,7 +160,7 @@ function hub_validate_pack_job_source_artifact(PDO $db, int $artifactId, int $ow
         ($artifact['state'] ?? '') !== 'available'
         || !empty($artifact['purged_at'])
         || (!empty($artifact['expires_at']) && (string)$artifact['expires_at'] <= hub_now())
-        || !in_array((string)($artifact['artifact_type'] ?? ''), hub_audio_job_input_artifact_types($job), true)
+        || !in_array((string)($artifact['artifact_type'] ?? ''), (array)($route['source_artifact_types'] ?? []), true)
         || hub_artifact_safe_path((string)($artifact['path'] ?? '')) === null
     ) {
         throw new RuntimeException('source_artifact_invalid');
@@ -163,16 +195,15 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     }
     $input = is_array($task['input'] ?? null) ? $task['input'] : [];
     unset($input['cancel_requested'], $input['cancel_requested_at']);
+    $route = hub_revalidate_audio_async_route($db, $task);
     $sourceArtifactId = (int)($task['source_artifact_id'] ?? 0);
-    $source = $sourceArtifactId > 0 ? hub_validate_pack_job_source_artifact($db, $sourceArtifactId, $ownerMemberId, (string)$task['job']) : null;
+    $source = $sourceArtifactId > 0 ? hub_validate_pack_job_source_artifact($db, $sourceArtifactId, $ownerMemberId, $route) : null;
     if ($sourceArtifactId > 0 && $source === null) {
         throw new RuntimeException('source_artifact_invalid');
     }
     if ($sourceArtifactId <= 0 && hub_managed_task_upload_path($taskId, (string)($input['source_upload_path'] ?? '')) === null) {
         throw new RuntimeException('source_upload_invalid');
     }
-    $route = hub_revalidate_audio_async_route($db, $task);
-
     return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
         'source_artifact_id' => $sourceArtifactId,
         'source_task_id' => (int)($source['task_id'] ?? 0),
@@ -314,6 +345,20 @@ function hub_finish_task_terminal_result(PDO $db, array $task, string $status, a
         ':finished_at' => $now,
         ':updated_at' => $now,
         ':id' => $taskId,
+    ]);
+    hub_release_task_artifact_holds($db, $taskId);
+}
+
+function hub_release_task_artifact_holds(PDO $db, int $taskId): void
+{
+    $stmt = $db->prepare(
+        'UPDATE task_artifact_holds
+         SET released_at = :released_at
+         WHERE downstream_task_id = :downstream_task_id AND released_at IS NULL'
+    );
+    $stmt->execute([
+        ':released_at' => hub_now(),
+        ':downstream_task_id' => $taskId,
     ]);
 }
 
@@ -519,6 +564,7 @@ function hub_finish_task_failed(PDO $db, array $task, string $errorMessage): voi
         ':updated_at' => hub_now(),
         ':id' => (int)$task['id'],
     ]);
+    hub_release_task_artifact_holds($db, (int)$task['id']);
 }
 
 function hub_finish_task_cancelled(PDO $db, array $task, string $message = 'cancelled'): void
@@ -534,6 +580,23 @@ function hub_finish_task_cancelled(PDO $db, array $task, string $message = 'canc
         ':updated_at' => hub_now(),
         ':id' => (int)$task['id'],
     ]);
+    hub_release_task_artifact_holds($db, (int)$task['id']);
+}
+
+function hub_finish_task_timed_out(PDO $db, array $task, string $message = 'timed out'): void
+{
+    $stmt = $db->prepare(
+        "UPDATE tasks
+         SET status = 'timed_out', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
+         WHERE id = :id"
+    );
+    $stmt->execute([
+        ':error_message' => $message,
+        ':finished_at' => hub_now(),
+        ':updated_at' => hub_now(),
+        ':id' => (int)$task['id'],
+    ]);
+    hub_release_task_artifact_holds($db, (int)$task['id']);
 }
 
 function hub_cancel_task(PDO $db, int $taskId): bool
@@ -550,6 +613,7 @@ function hub_cancel_task(PDO $db, int $taskId): bool
     ]);
 
     if ($stmt->rowCount() === 1) {
+        hub_release_task_artifact_holds($db, $taskId);
         return true;
     }
 

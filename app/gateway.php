@@ -736,7 +736,9 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
     if ($ownerMemberId <= 0) {
         return hub_gateway_error(403, 'member_required', 'audio task submission requires an API member');
     }
-    if (hub_audio_task_has_forbidden_control($_POST)) {
+    try {
+        $input = hub_audio_task_input($_POST, $route);
+    } catch (InvalidArgumentException) {
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
 
@@ -750,7 +752,7 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
             return hub_gateway_error(400, 'source_artifact_invalid', 'source_artifact_id is invalid');
         }
         try {
-            $source = hub_validate_pack_job_source_artifact($db, (int)$sourceArtifactId, $ownerMemberId, (string)$route['job']);
+            $source = hub_validate_pack_job_source_artifact($db, (int)$sourceArtifactId, $ownerMemberId, $route);
         } catch (RuntimeException) {
             return hub_gateway_error(409, 'source_artifact_invalid', 'source artifact is unavailable');
         }
@@ -758,7 +760,7 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
             return hub_gateway_error(404, 'source_artifact_not_found', 'source artifact was not found');
         }
 
-        $taskId = hub_enqueue_owned_pack_job($db, $route, hub_audio_task_input($_POST), $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip(), [
+        $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip(), [
             'source_artifact_id' => (int)$source['id'],
             'source_task_id' => (int)$source['task_id'],
         ]);
@@ -771,12 +773,13 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
     $file = $uploads[0];
     $extension = strtolower(pathinfo((string)($file['name'] ?? ''), PATHINFO_EXTENSION));
     $extension = preg_match('/^[a-z0-9]{1,8}$/', $extension) ? $extension : 'bin';
-    $taskId = hub_enqueue_owned_pack_job($db, $route, hub_audio_task_input($_POST), $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip());
+    $taskId = hub_stage_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip());
     try {
         $input = hub_get_task($db, $taskId)['input'] ?? [];
         $input['source_upload_path'] = hub_store_task_upload_file($taskId, $file, $extension);
         $input['original_filename'] = basename((string)($file['name'] ?? 'source.' . $extension));
         hub_update_task_input($db, $taskId, $input);
+        hub_publish_staged_pack_job($db, $taskId);
     } catch (Throwable $e) {
         $db->prepare('DELETE FROM tasks WHERE id = :id')->execute([':id' => $taskId]);
         throw $e;
@@ -822,10 +825,21 @@ function hub_audio_task_uploads(): array
     return $uploads;
 }
 
-function hub_audio_task_input(array $input): array
+function hub_audio_task_input(array $input, array $route): array
 {
-    unset($input['source_artifact_id']);
-    return $input;
+    $allowed = array_fill_keys((array)($route['input_fields'] ?? []), true);
+    $filtered = [];
+    foreach ($input as $key => $value) {
+        if ($key === 'source_artifact_id') {
+            continue;
+        }
+        if (!is_string($key) || !isset($allowed[$key]) || !is_scalar($value)) {
+            throw new InvalidArgumentException('forbidden_task_control');
+        }
+        $filtered[$key] = $value;
+    }
+
+    return $filtered;
 }
 
 function hub_api_task_submit(PDO $db, array $authContext = []): array
@@ -849,7 +863,7 @@ function hub_api_task_submit(PDO $db, array $authContext = []): array
 
     $priority = max(0, min(100, (int)($_POST['priority'] ?? 0)));
     if ($taskType === 'structure_parse') {
-        return hub_api_structure_task_submit($db, $queueName, $priority);
+        return hub_api_structure_task_submit($db, $queueName, $priority, $authContext);
     }
     if ($taskType === 'docparser_parse') {
         return hub_api_docparser_task_submit($db, $queueName, $priority, $authContext);
@@ -861,7 +875,7 @@ function hub_api_task_submit(PDO $db, array $authContext = []): array
     $input = $_POST;
     unset($input['task_type'], $input['queue'], $input['priority']);
 
-    $taskId = hub_enqueue_task($db, $taskType, $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
+    $taskId = hub_enqueue_task($db, $taskType, $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null, hub_task_owner_attributes($authContext));
 
     return hub_gateway_json(200, hub_task_submit_response($taskId));
 }
@@ -914,7 +928,7 @@ function hub_task_response_links(int $taskId): array
     ];
 }
 
-function hub_api_structure_task_submit(PDO $db, string $queueName, int $priority): array
+function hub_api_structure_task_submit(PDO $db, string $queueName, int $priority, array $authContext = []): array
 {
     $file = $_FILES['file'] ?? null;
     if (!is_array($file) || (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_file((string)($file['tmp_name'] ?? ''))) {
@@ -934,7 +948,7 @@ function hub_api_structure_task_submit(PDO $db, string $queueName, int $priority
         'original_filename' => $filename,
     ];
 
-    $taskId = hub_enqueue_task($db, 'structure_parse', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
+    $taskId = hub_enqueue_task($db, 'structure_parse', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null, hub_task_owner_attributes($authContext));
     $input['input_file'] = hub_store_task_upload_file($taskId, $file, $extension);
     hub_update_task_input($db, $taskId, $input);
 
@@ -991,7 +1005,7 @@ function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority
         return hub_gateway_json(200, hub_task_cached_response($cachedTask));
     }
 
-    $taskId = hub_enqueue_task($db, 'docparser_parse', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
+    $taskId = hub_enqueue_task($db, 'docparser_parse', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null, hub_task_owner_attributes($authContext));
     $input['input_file'] = hub_store_task_upload_file($taskId, $file, 'pdf');
     hub_update_task_input($db, $taskId, $input);
 
@@ -1038,7 +1052,7 @@ function hub_api_docparser_repair_task_submit(PDO $db, string $queueName, int $p
         $input['api_token_id'] = (int)$authContext['token_id'];
     }
 
-    $taskId = hub_enqueue_task($db, 'docparser_repair_translation', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null);
+    $taskId = hub_enqueue_task($db, 'docparser_repair_translation', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null, hub_task_owner_attributes($authContext));
 
     return hub_gateway_json(200, hub_task_submit_response($taskId));
 }
@@ -1051,6 +1065,19 @@ function hub_docparser_repair_allowed_for_auth(array $sourceTask, array $authCon
 
     $sourceMemberId = (int)($sourceTask['input']['api_member_id'] ?? 0);
     return $sourceMemberId > 0 && $sourceMemberId === (int)$authContext['member_id'];
+}
+
+function hub_task_owner_attributes(array $authContext): array
+{
+    $memberId = (int)($authContext['member_id'] ?? 0);
+    if ($memberId <= 0) {
+        return [];
+    }
+
+    return [
+        'owner_member_id' => $memberId,
+        'owner_token_id' => !empty($authContext['token_id']) ? (int)$authContext['token_id'] : null,
+    ];
 }
 
 function hub_docparser_assert_repair_blocks_exist(array $docir, array $blockIds): void
@@ -1233,8 +1260,8 @@ function hub_api_load_task(PDO $db, array $authContext = []): ?array
 function hub_task_access_allowed(PDO $db, array $task, array $authContext): bool
 {
     $memberId = (int)($authContext['member_id'] ?? 0);
-    if ($memberId > 0) {
-        return (int)($task['owner_member_id'] ?? 0) === $memberId;
+    if (($task['owner_member_id'] ?? null) !== null) {
+        return $memberId > 0 && (int)$task['owner_member_id'] === $memberId;
     }
     if (hub_is_localhost_ip(hub_get_client_ip())) {
         return true;
