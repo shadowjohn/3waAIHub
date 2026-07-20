@@ -364,16 +364,39 @@ hub_test('Pack job terminal rejects output replacement after validation before c
         hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
         hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
         $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
-        $replacement = $workspace . '/output/replacement.json';
-        hub_test_pack_job_write($replacement, "{\"text\":\"replaced\"}");
-        unlink($workspace . '/output/transcript.json');
-        if (!link($replacement, $workspace . '/output/transcript.json')) {
+        $replacement = $workspace . '/replacement.json';
+        $target = $workspace . '/output/transcript.json';
+        hub_test_pack_job_write($replacement, "{\"text\":\"hello\"}");
+        lstat($target); // Populate PHP's stat cache before an external replacement.
+        $output = [];
+        $exitCode = 1;
+        exec('rm ' . escapeshellarg($target) . ' && ln ' . escapeshellarg($replacement) . ' ' . escapeshellarg($target), $output, $exitCode);
+        if ($exitCode !== 0) {
             throw new RuntimeException('Cannot replace output with hardlink fixture.');
         }
         hub_commit_pack_job_success($db, $fixture['task_id'], $fixture['run'], $validated, hub_test_pack_job_cleanup_asserted());
         $task = hub_get_task($db, $fixture['task_id']);
         hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && (string)$db->query('SELECT state FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetchColumn() === 'failed', 'output replacement must terminalize as output_contract_invalid');
         hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'output replacement must not register stale metadata');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job terminal rejects an extra output added after validation before commit', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $workspace = $fixture['workspace'];
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+        hub_test_pack_job_write($workspace . '/output/late-extra.bin', 'late runner output');
+        hub_commit_pack_job_success($db, $fixture['task_id'], $fixture['run'], $validated, hub_test_pack_job_cleanup_asserted());
+        $task = hub_get_task($db, $fixture['task_id']);
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid', 'post-validation extra output must terminalize as output_contract_invalid');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'post-validation extra output must not register any artifact');
     } finally {
         hub_test_pack_job_rm($workspace);
     }

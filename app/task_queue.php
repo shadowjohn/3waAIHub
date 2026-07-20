@@ -880,11 +880,15 @@ function hub_pack_job_artifact_is_expected(array $definition, array $input): boo
 
 function hub_pack_job_output_dir(string $workspace): string
 {
+    clearstatcache(true, $workspace);
     if ($workspace === '' || is_link($workspace) || !is_dir($workspace)) {
         hub_pack_job_output_contract_invalid('workspace_invalid');
     }
     $workspace = realpath($workspace);
     $output = $workspace === false ? false : $workspace . '/output';
+    if (is_string($output)) {
+        clearstatcache(true, $output);
+    }
     if ($output === false || is_link($output) || !is_dir($output)) {
         hub_pack_job_output_contract_invalid('output_dir_invalid');
     }
@@ -900,12 +904,14 @@ function hub_pack_job_output_files(string $outputDir): array
 {
     $files = [];
     try {
+        clearstatcache(true, $outputDir);
         $iterator = new RecursiveIteratorIterator(
             new RecursiveDirectoryIterator($outputDir, FilesystemIterator::SKIP_DOTS),
             RecursiveIteratorIterator::SELF_FIRST
         );
         foreach ($iterator as $entry) {
             $path = $entry->getPathname();
+            clearstatcache(true, $path);
             $relative = substr($path, strlen($outputDir) + 1);
             if ($relative === false || $relative === '' || is_link($path)) {
                 hub_pack_job_output_contract_invalid('artifact_symlink_invalid');
@@ -1047,6 +1053,7 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
 
     $validated = [];
     foreach ($expected as $relative => $definition) {
+        clearstatcache(true, $files[$relative]);
         $path = realpath($files[$relative]);
         if ($path === false || !str_starts_with($path, $outputDir . DIRECTORY_SEPARATOR) || is_link($path)) {
             hub_pack_job_output_contract_invalid('artifact_path_invalid');
@@ -1109,7 +1116,10 @@ function hub_pack_job_trusted_output_dir(PDO $db, int $taskId, ?array $run): str
     if (!is_string($workspace) || $workspace === '') {
         throw new RuntimeException('runtime_ownership_conflict');
     }
-    $taskRoot = realpath(hub_task_result_dir($taskId));
+    $taskResultDir = hub_task_result_dir($taskId);
+    clearstatcache(true, $taskResultDir);
+    clearstatcache(true, $workspace);
+    $taskRoot = realpath($taskResultDir);
     $workspaceReal = is_link($workspace) ? false : realpath($workspace);
     if ($taskRoot === false || $workspaceReal === false || !str_starts_with($workspaceReal, $taskRoot . DIRECTORY_SEPARATOR)) {
         hub_pack_job_output_contract_invalid('workspace_invalid');
@@ -1131,8 +1141,20 @@ function hub_pack_job_require_submitted_output_dir(PDO $db, int $taskId, ?array 
 function hub_revalidate_pack_job_artifact_snapshot(PDO $db, int $taskId, ?array $run, array $validatedArtifacts): void
 {
     $outputDir = hub_pack_job_trusted_output_dir($db, $taskId, $run);
+    $files = hub_pack_job_output_files($outputDir);
+    $expected = [];
+    foreach ($validatedArtifacts as $artifact) {
+        if (!is_string($artifact['name'] ?? null) || isset($expected[$artifact['name']])) {
+            hub_pack_job_output_contract_invalid('artifact_changed');
+        }
+        $expected[$artifact['name']] = true;
+    }
+    if (array_diff_key($files, $expected) !== [] || array_diff_key($expected, $files) !== []) {
+        hub_pack_job_output_contract_invalid('artifact_changed');
+    }
     foreach ($validatedArtifacts as $artifact) {
         $name = is_string($artifact['name'] ?? null) ? $artifact['name'] : '';
+        clearstatcache(true, $outputDir . '/' . $name);
         $path = $name === '' ? false : realpath($outputDir . '/' . $name);
         if ($path === false || $path !== ($artifact['path'] ?? null) || !str_starts_with($path, $outputDir . DIRECTORY_SEPARATOR) || is_link($path)) {
             hub_pack_job_output_contract_invalid('artifact_changed');
