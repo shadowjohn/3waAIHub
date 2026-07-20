@@ -29,6 +29,18 @@
       "input": {
         "fields": [],
         "source_artifact_types": ["audio"]
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "transcript_json",
+            "path": "transcript.json",
+            "mime_types": ["application/json"],
+            "json": {
+              "required_keys": ["text"]
+            }
+          }
+        ]
       }
     }
   ],

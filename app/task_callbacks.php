@@ -226,7 +226,7 @@ function hub_task_callback_event_type(array $task): ?string
 {
     return match ((string)($task['status'] ?? '')) {
         'success' => 'task.completed',
-        'failed' => 'task.failed',
+        'failed', 'cancelled', 'timed_out' => 'task.failed',
         default => null,
     };
 }

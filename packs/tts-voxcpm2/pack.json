@@ -33,6 +33,16 @@
       "input": {
         "fields": ["text"],
         "source_artifact_types": ["audio"]
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "audio",
+            "path": "audio.wav",
+            "mime_types": ["audio/wav", "audio/x-wav"],
+            "audio": {}
+          }
+        ]
       }
     }
   ],

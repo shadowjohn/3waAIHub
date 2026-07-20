@@ -727,3 +727,495 @@ function hub_artifact_safe_path(string $path): ?string
 
     return str_starts_with($realPath, $resultsRoot . DIRECTORY_SEPARATOR) ? $realPath : null;
 }
+
+final class HubPackOutputContractInvalid extends RuntimeException
+{
+}
+
+function hub_pack_job_output_contract_invalid(string $reason): never
+{
+    throw new HubPackOutputContractInvalid($reason);
+}
+
+function hub_pack_job_artifact_relative_path(mixed $value): string
+{
+    if (!is_string($value) || $value === '' || strlen($value) > 240 || str_contains($value, "\0")) {
+        hub_pack_job_output_contract_invalid('artifact_path_invalid');
+    }
+    $value = str_replace('\\', '/', $value);
+    if (str_starts_with($value, '/') || preg_match('#(^|/)\.{1,2}(/|$)#', $value)) {
+        hub_pack_job_output_contract_invalid('artifact_path_invalid');
+    }
+
+    return $value;
+}
+
+function hub_pack_job_artifact_mime_types(mixed $values): array
+{
+    if (!is_array($values) || !array_is_list($values) || $values === []) {
+        hub_pack_job_output_contract_invalid('artifact_mime_invalid');
+    }
+    $types = [];
+    foreach ($values as $value) {
+        if (!is_string($value) || preg_match('/^[a-z0-9.+-]{1,64}\/[a-z0-9.+-]{1,64}$/i', $value) !== 1) {
+            hub_pack_job_output_contract_invalid('artifact_mime_invalid');
+        }
+        $types[strtolower($value)] = true;
+    }
+
+    return array_keys($types);
+}
+
+function hub_pack_job_contract_artifacts(array $jobContract): array
+{
+    $artifacts = $jobContract['artifacts'] ?? null;
+    if (!is_array($artifacts) || !array_is_list($artifacts) || $artifacts === []) {
+        hub_pack_job_output_contract_invalid('artifact_contract_invalid');
+    }
+    $types = [];
+    $paths = [];
+    foreach ($artifacts as $definition) {
+        if (!is_array($definition) || array_diff(array_keys($definition), ['type', 'path', 'mime_types', 'required', 'when', 'json', 'text', 'audio']) !== []) {
+            hub_pack_job_output_contract_invalid('artifact_contract_invalid');
+        }
+        $type = (string)($definition['type'] ?? '');
+        if (preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $type) !== 1 || isset($types[$type])) {
+            hub_pack_job_output_contract_invalid('artifact_type_invalid');
+        }
+        $path = hub_pack_job_artifact_relative_path($definition['path'] ?? null);
+        if (isset($paths[$path])) {
+            hub_pack_job_output_contract_invalid('artifact_path_duplicate');
+        }
+        if (isset($definition['required']) && !is_bool($definition['required'])) {
+            hub_pack_job_output_contract_invalid('artifact_required_invalid');
+        }
+        if (isset($definition['when'])) {
+            $when = $definition['when'];
+            if (!is_array($when) || array_keys($when) !== ['input', 'equals'] || !is_string($when['input']) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $when['input']) !== 1 || is_array($when['equals']) || is_object($when['equals'])) {
+                hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+            }
+        }
+        foreach (['json', 'text', 'audio'] as $validator) {
+            if (isset($definition[$validator]) && !is_array($definition[$validator])) {
+                hub_pack_job_output_contract_invalid('artifact_validator_invalid');
+            }
+        }
+        if (isset($definition['json'])) {
+            $keys = $definition['json']['required_keys'] ?? [];
+            if (array_diff(array_keys($definition['json']), ['required_keys']) !== [] || !is_array($keys) || !array_is_list($keys)) {
+                hub_pack_job_output_contract_invalid('artifact_json_contract_invalid');
+            }
+            foreach ($keys as $key) {
+                if (!is_string($key) || preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $key) !== 1) {
+                    hub_pack_job_output_contract_invalid('artifact_json_contract_invalid');
+                }
+            }
+        }
+        if (isset($definition['text'])) {
+            $maxBytes = $definition['text']['max_bytes'] ?? 1048576;
+            if (array_diff(array_keys($definition['text']), ['max_bytes']) !== [] || !is_int($maxBytes) || $maxBytes < 1 || $maxBytes > 10485760) {
+                hub_pack_job_output_contract_invalid('artifact_text_contract_invalid');
+            }
+        }
+        if (isset($definition['audio']) && $definition['audio'] !== []) {
+            hub_pack_job_output_contract_invalid('artifact_audio_contract_invalid');
+        }
+        $definition['type'] = $type;
+        $definition['path'] = $path;
+        $definition['mime_types'] = hub_pack_job_artifact_mime_types($definition['mime_types'] ?? null);
+        $types[$type] = true;
+        $paths[$path] = true;
+        $normalized[] = $definition;
+    }
+
+    return $normalized ?? [];
+}
+
+function hub_pack_job_artifact_is_expected(array $definition, array $input): bool
+{
+    if (isset($definition['when'])) {
+        return ($definition['required'] ?? true) === true
+            && array_key_exists($definition['when']['input'], $input)
+            && $input[$definition['when']['input']] === $definition['when']['equals'];
+    }
+
+    return ($definition['required'] ?? true) === true;
+}
+
+function hub_pack_job_output_dir(string $workspace): string
+{
+    if ($workspace === '' || is_link($workspace) || !is_dir($workspace)) {
+        hub_pack_job_output_contract_invalid('workspace_invalid');
+    }
+    $workspace = realpath($workspace);
+    $output = $workspace === false ? false : $workspace . '/output';
+    if ($output === false || is_link($output) || !is_dir($output)) {
+        hub_pack_job_output_contract_invalid('output_dir_invalid');
+    }
+    $output = realpath($output);
+    if ($output === false || !str_starts_with($output, $workspace . DIRECTORY_SEPARATOR)) {
+        hub_pack_job_output_contract_invalid('output_dir_invalid');
+    }
+
+    return $output;
+}
+
+function hub_pack_job_output_files(string $outputDir): array
+{
+    $files = [];
+    try {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($outputDir, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::SELF_FIRST
+        );
+        foreach ($iterator as $entry) {
+            $path = $entry->getPathname();
+            $relative = substr($path, strlen($outputDir) + 1);
+            if ($relative === false || $relative === '' || is_link($path)) {
+                hub_pack_job_output_contract_invalid('artifact_symlink_invalid');
+            }
+            $stat = lstat($path);
+            $kind = is_array($stat) ? ((int)$stat['mode'] & 0170000) : 0;
+            if ($kind === 0040000) {
+                continue;
+            }
+            if ($kind !== 0100000) {
+                hub_pack_job_output_contract_invalid('artifact_nonregular');
+            }
+            $files[str_replace(DIRECTORY_SEPARATOR, '/', $relative)] = $path;
+        }
+    } catch (UnexpectedValueException) {
+        hub_pack_job_output_contract_invalid('output_dir_invalid');
+    }
+
+    return $files;
+}
+
+function hub_pack_job_detect_mime(string $path): string
+{
+    try {
+        $mime = (new finfo(FILEINFO_MIME_TYPE))->file($path);
+    } catch (Throwable) {
+        $mime = false;
+    }
+
+    return is_string($mime) && preg_match('/^[a-z0-9.+-]{1,64}\/[a-z0-9.+-]{1,64}$/i', $mime) === 1
+        ? strtolower($mime)
+        : 'application/octet-stream';
+}
+
+function hub_pack_job_validate_json_output(string $path, array $definition): void
+{
+    if (!isset($definition['json'])) {
+        return;
+    }
+    try {
+        $decoded = json_decode((string)file_get_contents($path), true, 64, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        hub_pack_job_output_contract_invalid('artifact_json_invalid');
+    }
+    if (!is_array($decoded) || array_is_list($decoded)) {
+        hub_pack_job_output_contract_invalid('artifact_json_invalid');
+    }
+    foreach ($definition['json']['required_keys'] ?? [] as $key) {
+        if (!array_key_exists($key, $decoded)) {
+            hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+    }
+}
+
+function hub_pack_job_validate_text_output(string $path, array $definition, int $size): void
+{
+    if (!isset($definition['text'])) {
+        return;
+    }
+    $contents = file_get_contents($path);
+    $maxBytes = (int)($definition['text']['max_bytes'] ?? 1048576);
+    if (!is_string($contents) || $contents === '' || $size > $maxBytes || preg_match('//u', $contents) !== 1) {
+        hub_pack_job_output_contract_invalid('artifact_text_invalid');
+    }
+}
+
+function hub_pack_job_ffprobe(string $path): ?array
+{
+    if (!function_exists('exec')) {
+        return null;
+    }
+    $output = [];
+    $exitCode = 1;
+    exec('ffprobe -v error -show_entries format=duration:stream=codec_type,sample_rate,channels -of json ' . escapeshellarg($path) . ' 2>&1', $output, $exitCode);
+    if ($exitCode !== 0) {
+        return null;
+    }
+    try {
+        $result = json_decode(implode("\n", $output), true, 32, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return null;
+    }
+    $stream = null;
+    foreach ((array)($result['streams'] ?? []) as $candidate) {
+        if (is_array($candidate) && ($candidate['codec_type'] ?? '') === 'audio') {
+            $stream = $candidate;
+            break;
+        }
+    }
+    if ($stream === null) {
+        return null;
+    }
+
+    return [
+        'duration_seconds' => $result['format']['duration'] ?? null,
+        'sample_rate' => $stream['sample_rate'] ?? null,
+        'channels' => $stream['channels'] ?? null,
+    ];
+}
+
+function hub_pack_job_validate_audio_output(string $path, array $definition, ?callable $audioProbe): array
+{
+    if (!isset($definition['audio'])) {
+        return [];
+    }
+    $probe = $audioProbe ?? 'hub_pack_job_ffprobe';
+    try {
+        $result = $probe($path);
+    } catch (Throwable) {
+        $result = null;
+    }
+    $duration = is_array($result) ? $result['duration_seconds'] ?? null : null;
+    $sampleRate = is_array($result) ? $result['sample_rate'] ?? null : null;
+    $channels = is_array($result) ? $result['channels'] ?? null : null;
+    if (!is_numeric($duration) || (float)$duration <= 0 || !is_numeric($sampleRate) || (int)$sampleRate <= 0 || !is_numeric($channels) || (int)$channels <= 0) {
+        hub_pack_job_output_contract_invalid('artifact_audio_invalid');
+    }
+
+    return [
+        'duration_seconds' => (float)$duration,
+        'sample_rate' => (int)$sampleRate,
+        'channels' => (int)$channels,
+    ];
+}
+
+function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, array $jobContract, ?callable $audioProbe = null): array
+{
+    $outputDir = hub_pack_job_output_dir($workspace);
+    $expected = [];
+    foreach (hub_pack_job_contract_artifacts($jobContract) as $definition) {
+        if (hub_pack_job_artifact_is_expected($definition, $taskInput)) {
+            $expected[$definition['path']] = $definition;
+        }
+    }
+    $files = hub_pack_job_output_files($outputDir);
+    if (array_diff_key($expected, $files) !== [] || array_diff_key($files, $expected) !== []) {
+        hub_pack_job_output_contract_invalid('artifact_set_invalid');
+    }
+
+    $validated = [];
+    foreach ($expected as $relative => $definition) {
+        $path = realpath($files[$relative]);
+        if ($path === false || !str_starts_with($path, $outputDir . DIRECTORY_SEPARATOR) || is_link($path)) {
+            hub_pack_job_output_contract_invalid('artifact_path_invalid');
+        }
+        $stat = lstat($path);
+        if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000)) {
+            hub_pack_job_output_contract_invalid('artifact_nonregular');
+        }
+        $size = filesize($path);
+        $sha256 = hash_file('sha256', $path);
+        $mime = hub_pack_job_detect_mime($path);
+        if ($size === false || $size < 0 || $sha256 === false || !in_array($mime, $definition['mime_types'], true)) {
+            hub_pack_job_output_contract_invalid('artifact_metadata_invalid');
+        }
+        hub_pack_job_validate_json_output($path, $definition);
+        hub_pack_job_validate_text_output($path, $definition, (int)$size);
+        $validated[] = [
+            'name' => $relative,
+            'artifact_type' => $definition['type'],
+            'path' => $path,
+            'mime_type' => $mime,
+            'size_bytes' => (int)$size,
+            'sha256' => strtolower($sha256),
+            'metadata' => hub_pack_job_validate_audio_output($path, $definition, $audioProbe),
+        ];
+    }
+
+    return $validated;
+}
+
+function hub_pack_job_assert_cleanup_preconditions(array $cleanup): void
+{
+    foreach (['runner_exited', 'container_removed', 'owned_gpu_pids_gone'] as $field) {
+        if (($cleanup[$field] ?? false) !== true) {
+            throw new InvalidArgumentException('pack_job_cleanup_incomplete');
+        }
+    }
+}
+
+function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $state, ?string $errorCode): void
+{
+    if ($run === null) {
+        return;
+    }
+    $runId = (int)($run['id'] ?? 0);
+    $leaseToken = (string)($run['lease_token'] ?? '');
+    if ($runId <= 0 || $leaseToken === '') {
+        throw new InvalidArgumentException('runtime_fence_invalid');
+    }
+    $now = hub_now();
+    $extra = $state === 'succeeded' ? ' AND cancel_requested_at IS NULL' : '';
+    if ($state === 'cancelled') {
+        $extra .= ' AND cancel_requested_at IS NOT NULL';
+    }
+    if ($state === 'timed_out') {
+        $extra .= ' AND timeout_at IS NOT NULL AND timeout_at <= :now';
+    }
+    $stmt = $db->prepare(
+        "UPDATE runtime_runs
+         SET state = :state, finished_at = :finished_at, error_code = :error_code, lease_expires_at = NULL
+         WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')
+           AND (task_id IS NULL OR task_id = :task_id){$extra}"
+    );
+    $params = [
+        ':state' => $state,
+        ':finished_at' => $now,
+        ':error_code' => $errorCode,
+        ':id' => $runId,
+        ':lease_token' => $leaseToken,
+        ':task_id' => $taskId,
+    ];
+    if ($state === 'timed_out') {
+        $params[':now'] = $now;
+    }
+    $stmt->execute($params);
+    if ($stmt->rowCount() !== 1) {
+        throw new RuntimeException('runtime_ownership_conflict');
+    }
+}
+
+function hub_register_validated_pack_job_artifact(PDO $db, int $taskId, array $artifact): int
+{
+    $metadata = json_encode($artifact['metadata'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!is_string($artifact['name'] ?? null) || !is_string($artifact['artifact_type'] ?? null) || !is_string($artifact['path'] ?? null)
+        || !is_string($artifact['mime_type'] ?? null) || !is_string($artifact['sha256'] ?? null) || $metadata === false
+        || !is_int($artifact['size_bytes'] ?? null) || $artifact['size_bytes'] < 0) {
+        throw new InvalidArgumentException('validated_artifact_invalid');
+    }
+    $stmt = $db->prepare(
+        'INSERT INTO task_artifacts
+            (task_id, name, path, artifact_type, mime_type, size_bytes, sha256, metadata_json, created_at)
+         VALUES
+            (:task_id, :name, :path, :artifact_type, :mime_type, :size_bytes, :sha256, :metadata_json, :created_at)'
+    );
+    $stmt->execute([
+        ':task_id' => $taskId,
+        ':name' => $artifact['name'],
+        ':path' => $artifact['path'],
+        ':artifact_type' => $artifact['artifact_type'],
+        ':mime_type' => $artifact['mime_type'],
+        ':size_bytes' => $artifact['size_bytes'],
+        ':sha256' => $artifact['sha256'],
+        ':metadata_json' => $metadata,
+        ':created_at' => hub_now(),
+    ]);
+
+    return (int)$db->lastInsertId();
+}
+
+function hub_pack_job_mark_task_terminal(PDO $db, int $taskId, string $status, ?string $errorCode, string $errorMessage, array $result = []): void
+{
+    $resultJson = $result === [] ? null : json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($resultJson === false) {
+        throw new RuntimeException('task_result_encode_failed');
+    }
+    $stmt = $db->prepare(
+        "UPDATE tasks
+         SET status = :status, progress = 100, result_json = :result_json, error_code = :error_code,
+             error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
+         WHERE id = :id AND task_type = 'pack_job' AND status = 'running'"
+    );
+    $now = hub_now();
+    $stmt->execute([
+        ':status' => $status,
+        ':result_json' => $resultJson,
+        ':error_code' => $errorCode,
+        ':error_message' => $errorMessage === '' ? null : $errorMessage,
+        ':finished_at' => $now,
+        ':updated_at' => $now,
+        ':id' => $taskId,
+    ]);
+    if ($stmt->rowCount() !== 1) {
+        throw new RuntimeException('task_ownership_conflict');
+    }
+}
+
+function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup): void
+{
+    // Task5 releases any GPU resource lease after this terminal transaction commits.
+    hub_pack_job_assert_cleanup_preconditions($cleanup);
+    if ($db->inTransaction()) {
+        throw new LogicException('pack_job_terminal_transaction_required');
+    }
+    $db->beginTransaction();
+    try {
+        hub_pack_job_terminal_fence($db, $run, $taskId, 'succeeded', null);
+        $resultArtifacts = [];
+        foreach ($validatedArtifacts as $artifact) {
+            $resultArtifacts[] = [
+                'id' => hub_register_validated_pack_job_artifact($db, $taskId, $artifact),
+                'type' => $artifact['artifact_type'] ?? null,
+            ];
+        }
+        if ($resultArtifacts === []) {
+            throw new InvalidArgumentException('validated_artifacts_required');
+        }
+        hub_pack_job_mark_task_terminal($db, $taskId, 'success', null, '', ['artifacts' => $resultArtifacts]);
+        hub_release_task_artifact_holds($db, $taskId);
+        hub_enqueue_task_callback_delivery($db, $taskId);
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+}
+
+function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $status, string $errorCode, string $errorMessage, array $cleanup = []): void
+{
+    if (!in_array($status, ['failed', 'cancelled', 'timed_out'], true) || preg_match('/^[a-z0-9_:-]{1,120}$/i', $errorCode) !== 1) {
+        throw new InvalidArgumentException('pack_job_terminal_invalid');
+    }
+    if (in_array($status, ['cancelled', 'timed_out'], true)) {
+        hub_pack_job_assert_cleanup_preconditions($cleanup);
+    }
+    if ($db->inTransaction()) {
+        throw new LogicException('pack_job_terminal_transaction_required');
+    }
+    $db->beginTransaction();
+    try {
+        hub_pack_job_terminal_fence($db, $run, $taskId, $status === 'failed' ? 'failed' : $status, $errorCode);
+        hub_pack_job_mark_task_terminal($db, $taskId, $status, $errorCode, substr($errorMessage, 0, 2048));
+        hub_release_task_artifact_holds($db, $taskId);
+        hub_enqueue_task_callback_delivery($db, $taskId);
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+}
+
+function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null): array
+{
+    hub_pack_job_assert_cleanup_preconditions($cleanup);
+    try {
+        $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe);
+    } catch (HubPackOutputContractInvalid) {
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed');
+
+        return ['ok' => false, 'error_code' => 'output_contract_invalid'];
+    }
+    hub_commit_pack_job_success($db, $taskId, $run, $artifacts, $cleanup);
+
+    return ['ok' => true, 'artifacts' => count($artifacts)];
+}

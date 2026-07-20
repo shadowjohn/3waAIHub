@@ -186,7 +186,13 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         $fields = hub_pack_async_job_contract_names($input['fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
         $artifactTypes = hub_pack_async_job_contract_names($input['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
         $maxUploadBytes = hub_pack_async_job_max_upload_bytes($definition, $manifest);
-        if ($fields === null || $artifactTypes === null || $maxUploadBytes === null) {
+        $output = $definition['output'] ?? null;
+        if ($fields === null || $artifactTypes === null || $maxUploadBytes === null || !is_array($output)) {
+            return null;
+        }
+        try {
+            $artifactContract = ['artifacts' => hub_pack_job_contract_artifacts($output)];
+        } catch (HubPackOutputContractInvalid) {
             return null;
         }
 
@@ -194,6 +200,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
             'input_fields' => $fields,
             'source_artifact_types' => $artifactTypes,
             'max_upload_bytes' => $maxUploadBytes,
+            'artifact_contract' => $artifactContract,
         ];
     }
 
@@ -308,6 +315,23 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     }
     if (!preg_match('/^[A-Z][A-Z0-9_]*$/', (string)($service['local_port_env'] ?? hub_default_port_env((string)($manifest['id'] ?? 'PACK'))))) {
         $errors[] = 'service.local_port_env must be an env var name.';
+    }
+
+    if (array_key_exists('async_jobs', $manifest)) {
+        $jobs = $manifest['async_jobs'];
+        if (!is_array($jobs) || !array_is_list($jobs)) {
+            $errors[] = 'async_jobs must be an array.';
+        } else {
+            $seen = [];
+            foreach ($jobs as $definition) {
+                $job = is_array($definition) ? (string)($definition['job'] ?? '') : '';
+                if (!preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $job) || isset($seen[$job]) || hub_pack_async_job_contract(['gateway' => $manifest['gateway'], 'async_jobs' => [$definition]], $job) === null) {
+                    $errors[] = 'async_jobs output contract is invalid.';
+                    continue;
+                }
+                $seen[$job] = true;
+            }
+        }
     }
 
     return $errors;
