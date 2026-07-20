@@ -288,6 +288,24 @@ hub_test('Pack job terminal fence mismatch rolls back registrations callbacks an
     }
 });
 
+hub_test('Pack job terminal rejects an unlinked runtime run without partial commit', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $db->prepare('UPDATE runtime_runs SET task_id = NULL WHERE id = :id')->execute([':id' => $fixture['run']['id']]);
+    $workspace = hub_test_pack_job_workspace();
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+        hub_test_assert(hub_test_throws(static fn () => hub_commit_pack_job_success($db, $fixture['task_id'], $fixture['run'], $validated, hub_test_pack_job_cleanup_asserted())), 'unlinked runtime run must fail Pack terminal fencing');
+        hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'running' && (string)$db->query('SELECT state FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetchColumn() === 'running', 'unlinked run fence must roll back task and run states');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries')->fetchColumn() === 0, 'unlinked run fence must not expose artifacts or callback');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
 hub_test('Pack job invalid output and cleanup failure terminalize as failed through the outbox', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
@@ -313,4 +331,86 @@ hub_test('Pack job invalid output and cleanup failure terminalize as failed thro
     $task = hub_get_task($db, $fixture['task_id']);
     hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'cleanup_failed', 'cleanup failure must remain terminal failure');
     hub_test_assert(hub_test_throws(static fn () => hub_commit_pack_job_failure($db, $fixture['task_id'], $fixture['run'], 'cancelled', 'cancelled', 'cancelled')), 'cancelled terminal state must require explicit cleanup assertion');
+});
+
+hub_test('Pack job incomplete cleanup attestation fails the requested success atomically', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $targetId = hub_register_callback_target($db, $fixture['member_id'], 'pack-cleanup', 'https://8.8.8.8/callback');
+    $db->prepare('UPDATE tasks SET callback_target_id = :target_id WHERE id = :id')->execute([':target_id' => $targetId, ':id' => $fixture['task_id']]);
+
+    $outcome = hub_finalize_pack_job_success($db, $fixture['task_id'], $fixture['run'], '/not-used', ['include_subtitles' => true], hub_test_pack_job_contract(), ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => false], 'hub_test_pack_job_audio_probe');
+    $task = hub_get_task($db, $fixture['task_id']);
+    $run = $db->query('SELECT state, error_code FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+    $delivery = $db->query('SELECT event_type FROM task_callback_deliveries')->fetchColumn();
+    hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'cleanup_failed', 'incomplete cleanup must reject requested success as cleanup_failed');
+    hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'cleanup_failed' && ($run['state'] ?? '') === 'failed' && ($run['error_code'] ?? '') === 'cleanup_failed', 'incomplete cleanup must terminalize task and fenced run as failed');
+    hub_test_assert($delivery === 'task.failed' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'cleanup failure must use only the failed outbox without registering outputs');
+});
+
+hub_test('Pack job missing required output fails the contract without success registration', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $workspace = hub_test_pack_job_workspace();
+    try {
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $outcome = hub_finalize_pack_job_success($db, $fixture['task_id'], $fixture['run'], $workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), hub_test_pack_job_cleanup_asserted(), 'hub_test_pack_job_audio_probe');
+        $task = hub_get_task($db, $fixture['task_id']);
+        hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'output_contract_invalid', 'missing required output must use the fixed output contract failure');
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'missing required output must not register artifacts or success');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job failed terminalization requires cleanup attestation before preserving its error', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    hub_commit_pack_job_failure($db, $fixture['task_id'], $fixture['run'], 'failed', 'runtime_exit_nonzero', 'runner failed');
+    $task = hub_get_task($db, $fixture['task_id']);
+    hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'cleanup_failed', 'unattested ordinary failure must normalize to cleanup_failed');
+
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    hub_commit_pack_job_failure($db, $fixture['task_id'], $fixture['run'], 'failed', 'runtime_exit_nonzero', 'runner failed', hub_test_pack_job_cleanup_asserted());
+    $task = hub_get_task($db, $fixture['task_id']);
+    hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'runtime_exit_nonzero', 'attested ordinary failure must preserve its error code');
+});
+
+hub_test('Pack job timeout fencing lets cancellation win and cancellation records its timestamp', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $past = date('Y-m-d H:i:s', time() - 60);
+    $db->prepare('UPDATE runtime_runs SET timeout_at = :timeout_at, cancel_requested_at = :cancel_requested_at WHERE id = :id')->execute([
+        ':timeout_at' => $past,
+        ':cancel_requested_at' => $past,
+        ':id' => $fixture['run']['id'],
+    ]);
+    hub_test_assert(hub_test_throws(static fn () => hub_commit_pack_job_failure($db, $fixture['task_id'], $fixture['run'], 'timed_out', 'timed_out', 'timed out', hub_test_pack_job_cleanup_asserted())), 'timeout must not win when cancellation was requested');
+    hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'running' && (string)$db->query('SELECT state FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetchColumn() === 'running', 'cancel-timeout fence race must roll back terminal states');
+
+    hub_commit_pack_job_failure($db, $fixture['task_id'], $fixture['run'], 'cancelled', 'cancelled', 'cancelled', hub_test_pack_job_cleanup_asserted());
+    $run = $db->query('SELECT state, cancelled_at FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+    hub_test_assert(($run['state'] ?? '') === 'cancelled' && !empty($run['cancelled_at']), 'cancelled Pack run must record canonical cancelled_at');
+});
+
+hub_test('Queued Pack job cancellation uses one terminal outbox transaction', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $targetId = hub_register_callback_target($db, $fixture['member_id'], 'pack-queued-cancel', 'https://8.8.8.8/callback');
+    $db->prepare('UPDATE tasks SET status = :status, lock_token = NULL, callback_target_id = :target_id WHERE id = :id')->execute([
+        ':status' => 'queued',
+        ':target_id' => $targetId,
+        ':id' => $fixture['task_id'],
+    ]);
+    $db->prepare('DELETE FROM runtime_runs WHERE id = :id')->execute([':id' => $fixture['run']['id']]);
+
+    hub_test_assert(hub_cancel_task($db, $fixture['task_id']), 'queued Pack job must cancel through its terminal helper');
+    hub_test_assert(!hub_cancel_task($db, $fixture['task_id']), 'terminal Pack job cancellation must not enqueue a duplicate callback');
+    $task = hub_get_task($db, $fixture['task_id']);
+    $hold = $db->prepare('SELECT released_at FROM task_artifact_holds WHERE source_artifact_id = :source AND downstream_task_id = :task');
+    $hold->execute([':source' => $fixture['source_artifact_id'], ':task' => $fixture['task_id']]);
+    $delivery = $db->query('SELECT event_type FROM task_callback_deliveries')->fetchColumn();
+    hub_test_assert(($task['status'] ?? '') === 'cancelled' && !empty(($hold->fetch() ?: [])['released_at']), 'queued Pack cancellation must atomically terminalize and release its source hold');
+    hub_test_assert($delivery === 'task.failed' && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries')->fetchColumn() === 1, 'queued Pack cancellation must create exactly one failed outbox callback');
 });

@@ -633,6 +633,42 @@ function hub_finish_task_timed_out(PDO $db, array $task, string $message = 'time
 
 function hub_cancel_task(PDO $db, int $taskId): bool
 {
+    $task = hub_get_task($db, $taskId);
+    if ($task && ($task['task_type'] ?? '') === 'pack_job' && ($task['status'] ?? '') === 'queued') {
+        // A queued Pack job never started a runner, container, or GPU PID.
+        $noWorkCleanup = ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true];
+        if (!hub_pack_job_cleanup_attested($noWorkCleanup)) {
+            throw new LogicException('pack_job_cleanup_incomplete');
+        }
+        if ($db->inTransaction()) {
+            throw new LogicException('pack_job_terminal_transaction_required');
+        }
+        $db->beginTransaction();
+        try {
+            $now = hub_now();
+            $stmt = $db->prepare(
+                "UPDATE tasks
+                 SET status = 'cancelled', progress = 100, error_code = 'cancelled', error_message = 'cancelled',
+                     finished_at = :finished_at, updated_at = :updated_at
+                 WHERE id = :id AND task_type = 'pack_job' AND status = 'queued' AND lock_token IS NULL"
+            );
+            $stmt->execute([':finished_at' => $now, ':updated_at' => $now, ':id' => $taskId]);
+            if ($stmt->rowCount() !== 1) {
+                $db->commit();
+                return false;
+            }
+            hub_release_task_artifact_holds($db, $taskId);
+            hub_enqueue_task_callback_delivery($db, $taskId);
+            $db->commit();
+            return true;
+        } catch (Throwable $e) {
+            if ($db->inTransaction()) {
+                $db->rollBack();
+            }
+            throw $e;
+        }
+    }
+
     $stmt = $db->prepare(
         "UPDATE tasks
          SET status = 'cancelled', finished_at = :finished_at, updated_at = :updated_at
@@ -1041,13 +1077,15 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
     return $validated;
 }
 
-function hub_pack_job_assert_cleanup_preconditions(array $cleanup): void
+function hub_pack_job_cleanup_attested(array $cleanup): bool
 {
     foreach (['runner_exited', 'container_removed', 'owned_gpu_pids_gone'] as $field) {
         if (($cleanup[$field] ?? false) !== true) {
-            throw new InvalidArgumentException('pack_job_cleanup_incomplete');
+            return false;
         }
     }
+
+    return true;
 }
 
 function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $state, ?string $errorCode): void
@@ -1061,18 +1099,22 @@ function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $
         throw new InvalidArgumentException('runtime_fence_invalid');
     }
     $now = hub_now();
-    $extra = $state === 'succeeded' ? ' AND cancel_requested_at IS NULL' : '';
+    $extra = ' AND task_id = :task_id';
+    if ($state === 'succeeded') {
+        $extra .= ' AND cancel_requested_at IS NULL';
+    }
     if ($state === 'cancelled') {
         $extra .= ' AND cancel_requested_at IS NOT NULL';
     }
     if ($state === 'timed_out') {
-        $extra .= ' AND timeout_at IS NOT NULL AND timeout_at <= :now';
+        $extra .= ' AND cancel_requested_at IS NULL AND timeout_at IS NOT NULL AND timeout_at <= :now';
     }
     $stmt = $db->prepare(
         "UPDATE runtime_runs
-         SET state = :state, finished_at = :finished_at, error_code = :error_code, lease_expires_at = NULL
+         SET state = :state, finished_at = :finished_at, error_code = :error_code, lease_expires_at = NULL,
+             cancelled_at = CASE WHEN :state = 'cancelled' THEN :finished_at ELSE cancelled_at END
          WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')
-           AND (task_id IS NULL OR task_id = :task_id){$extra}"
+           {$extra}"
     );
     $params = [
         ':state' => $state,
@@ -1150,7 +1192,10 @@ function hub_pack_job_mark_task_terminal(PDO $db, int $taskId, string $status, ?
 function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup): void
 {
     // Task5 releases any GPU resource lease after this terminal transaction commits.
-    hub_pack_job_assert_cleanup_preconditions($cleanup);
+    if (!hub_pack_job_cleanup_attested($cleanup)) {
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup);
+        return;
+    }
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
@@ -1184,8 +1229,10 @@ function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $
     if (!in_array($status, ['failed', 'cancelled', 'timed_out'], true) || preg_match('/^[a-z0-9_:-]{1,120}$/i', $errorCode) !== 1) {
         throw new InvalidArgumentException('pack_job_terminal_invalid');
     }
-    if (in_array($status, ['cancelled', 'timed_out'], true)) {
-        hub_pack_job_assert_cleanup_preconditions($cleanup);
+    if (!hub_pack_job_cleanup_attested($cleanup)) {
+        $status = 'failed';
+        $errorCode = 'cleanup_failed';
+        $errorMessage = 'Pack cleanup was not attested';
     }
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
@@ -1207,11 +1254,15 @@ function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $
 
 function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null): array
 {
-    hub_pack_job_assert_cleanup_preconditions($cleanup);
+    if (!hub_pack_job_cleanup_attested($cleanup)) {
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup);
+
+        return ['ok' => false, 'error_code' => 'cleanup_failed'];
+    }
     try {
         $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe);
     } catch (HubPackOutputContractInvalid) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed');
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
     }
