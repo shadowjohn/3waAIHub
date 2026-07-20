@@ -498,3 +498,107 @@ hub_test('Pack job adapter blocks GPU on cleanup failure and never publishes aft
         hub_test_adapter_remove($fixture['dir']);
     }
 });
+
+hub_test('Pack job adapter reconciles an expired unticked execution without leaving a dead task', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    $stops = [];
+    try {
+        $task = hub_test_adapter_claim($db);
+        $outcome = hub_run_pack_job_task($db, $task, [
+            'lease_seconds' => 5,
+            'executor' => static function (array $context): array {
+                $context['started'](['container_id' => 'unticked-container']);
+                $context['db']->prepare('UPDATE runtime_runs SET lease_expires_at = :expired WHERE id = :id')
+                    ->execute([':expired' => '2000-01-01 00:00:00', ':id' => $context['run']['id']]);
+                return ['exit_code' => 0, 'container_id' => 'unticked-container'];
+            },
+            'stopper' => static function (array $context, string $reason, array $result) use (&$stops): array {
+                $stops[] = [$context['run']['run_id'], $reason, $result['container_id'] ?? null];
+                return hub_test_adapter_cleanup();
+            },
+        ]);
+        $latest = hub_get_task($db, $fixture['task_id']) ?? [];
+        $run = $db->query('SELECT state, error_code FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch();
+        hub_test_assert(($outcome['status'] ?? '') === 'failed' && ($latest['status'] ?? '') === 'failed' && ($latest['error_code'] ?? '') === 'runtime_lease_lost' && empty($latest['lock_token']) && ($run['state'] ?? '') === 'failed' && ($run['error_code'] ?? '') === 'runtime_lease_lost' && count($stops) === 1, 'an expired executor lease must be cleaned and terminalized instead of leaving a locked running task');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Pack job adapter blocks a GPU lease when expired-fence cleanup is uncertain', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    try {
+        $task = hub_test_adapter_claim($db);
+        $outcome = hub_run_pack_job_task($db, $task, [
+            'lease_seconds' => 5,
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+            'executor' => static function (array $context): array {
+                $context['started'](['container_id' => 'uncertain-expired-container']);
+                $context['db']->prepare('UPDATE runtime_runs SET lease_expires_at = :expired WHERE id = :id')
+                    ->execute([':expired' => '2000-01-01 00:00:00', ':id' => $context['run']['id']]);
+                return ['exit_code' => 0, 'container_id' => 'uncertain-expired-container'];
+            },
+        ]);
+        $latest = hub_get_task($db, $fixture['task_id']) ?? [];
+        $gpu = $db->query("SELECT state, last_error FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetch();
+        hub_test_assert(($outcome['status'] ?? '') === 'failed' && ($latest['error_code'] ?? '') === 'cleanup_failed' && ($gpu['state'] ?? '') === 'blocked' && ($gpu['last_error'] ?? '') === 'cleanup_failed', 'uncertain cleanup after an expired GPU fence must block its exact lease before terminalizing');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Pack job adapter leaves a taken-over runtime untouched after fence loss', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    $stops = 0;
+    try {
+        $task = hub_test_adapter_claim($db);
+        $outcome = hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+            'executor' => static function (array $context): array {
+                $context['started'](['container_id' => 'taken-over-container']);
+                $context['db']->prepare('UPDATE runtime_runs SET worker_id = :worker_id, lease_token = :lease_token, lease_expires_at = :lease_expires_at WHERE id = :id')
+                    ->execute([':worker_id' => 'recovery-worker', ':lease_token' => 'recovery-token', ':lease_expires_at' => hub_runtime_lease_until(60), ':id' => $context['run']['id']]);
+                return ['exit_code' => 0, 'container_id' => 'taken-over-container'];
+            },
+            'stopper' => static function () use (&$stops): array {
+                $stops++;
+                return hub_test_adapter_cleanup();
+            },
+        ]);
+        $latest = hub_get_task($db, $fixture['task_id']) ?? [];
+        $run = $db->query('SELECT run_id, state, worker_id, lease_token FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch();
+        $gpu = $db->query("SELECT state, runtime_run_id, worker_id, lease_token FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetch();
+        hub_test_assert(($outcome['status'] ?? '') === 'fence_lost' && ($latest['status'] ?? '') === 'running' && ($run['state'] ?? '') === 'running' && ($run['worker_id'] ?? '') === 'recovery-worker' && ($run['lease_token'] ?? '') === 'recovery-token' && ($gpu['state'] ?? '') === 'leased' && ($gpu['runtime_run_id'] ?? '') === ($run['run_id'] ?? '') && $stops === 1, 'a stale worker must clean its own process but never mutate a runtime or GPU lease taken over by another worker');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Pack job adapter stops an executor that throws after declaring process ownership', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    $stops = [];
+    $inspections = 0;
+    try {
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+            'pid_inspector' => static function () use (&$inspections): array { $inspections++; return []; },
+            'executor' => static function (array $context): array {
+                $context['started'](['container_id' => 'throwing-container', 'owned_pids' => [91]]);
+                throw new RuntimeException('executor exploded');
+            },
+            'stopper' => static function (array $context, string $reason, array $result) use (&$stops): array {
+                $stops[] = [$context['run']['run_id'], $reason, $result['container_id'] ?? null];
+                return hub_test_adapter_cleanup();
+            },
+        ]);
+        $latest = hub_get_task($db, $fixture['task_id']) ?? [];
+        hub_test_assert(($latest['status'] ?? '') === 'failed' && ($latest['error_code'] ?? '') === 'runtime_execution_failed' && $stops === [[(string)$db->query('SELECT run_id FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetchColumn(), 'runtime_execution_failed', 'throwing-container']] && $inspections >= 2 && $db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'available', 'an executor exception after start must invoke stopper and inspector before safe terminal cleanup');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});

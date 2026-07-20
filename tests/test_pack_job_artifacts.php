@@ -332,6 +332,41 @@ hub_test('Pack job terminal fence mismatch rolls back registrations callbacks an
     }
 });
 
+hub_test('CPU Pack terminal fence loss discards only its staged handoff', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $workspace = $fixture['workspace'];
+    $artifactRoot = hub_task_result_dir($fixture['task_id']) . '/artifacts';
+    $unrelated = str_repeat('a', 32);
+    try {
+        if (is_dir($artifactRoot)) {
+            hub_test_pack_job_rm($artifactRoot);
+        }
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+        hub_pack_job_published_artifact_dir($fixture['task_id'], $unrelated);
+        hub_test_assert(hub_test_throws(static fn () => hub_commit_pack_job_success(
+            $db,
+            $fixture['task_id'],
+            $fixture['run'],
+            $validated,
+            hub_test_pack_job_cleanup_asserted(),
+            null,
+            null,
+            static function () use ($db, $fixture): void {
+                $db->prepare('UPDATE runtime_runs SET lease_token = :lease_token WHERE id = :id')
+                    ->execute([':lease_token' => 'cpu-terminal-fence-lost', ':id' => $fixture['run']['id']]);
+            }
+        )), 'CPU terminal fence loss must reject the success commit');
+        hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'running' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'CPU fence loss must not publish artifacts or callbacks');
+        hub_test_assert(is_dir($artifactRoot . '/' . $unrelated) && count(glob($artifactRoot . '/*') ?: []) === 1, 'CPU fence loss must remove only its generated handoff and preserve unrelated handoffs');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
 hub_test('Pack job terminal rejects an unlinked runtime run without partial commit', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);

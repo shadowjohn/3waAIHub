@@ -860,7 +860,8 @@ function hub_runtime_heartbeat(PDO $db, int $runId, string $leaseToken, int $lea
     $stmt = $db->prepare(
         "UPDATE runtime_runs
          SET heartbeat_at = :now, lease_expires_at = :lease_expires_at
-         WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')"
+         WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')
+           AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
     );
     $stmt->execute([
         ':now' => hub_now(),

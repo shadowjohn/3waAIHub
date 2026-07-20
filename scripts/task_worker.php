@@ -20,6 +20,7 @@ if ($missing !== []) {
 
 $processed = 0;
 while ($processed < $limit) {
+    hub_reconcile_expired_pack_job_runs($db);
     $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
     if (!$task) {
         break;
@@ -43,7 +44,10 @@ while ($processed < $limit) {
 function hub_run_task(PDO $db, array $task): void
 {
     if ($task['task_type'] === 'pack_job') {
-        hub_run_pack_job_task($db, $task);
+        $outcome = hub_run_pack_job_task($db, $task);
+        if (($outcome['status'] ?? '') === 'fence_lost') {
+            hub_add_task_log($db, (int)$task['id'], 'warning', 'pack_job_fence_lost_recovery_pending');
+        }
         return;
     }
 

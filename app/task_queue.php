@@ -1652,9 +1652,14 @@ function hub_pack_job_remove_published_handoff(int $taskId, string $handoffId, ?
 
 function hub_pack_job_remove_gpu_published_handoff(int $taskId, array $publishedArtifacts): void
 {
+    hub_pack_job_remove_published_handoff_artifacts($taskId, $publishedArtifacts);
+}
+
+function hub_pack_job_remove_published_handoff_artifacts(int $taskId, array $publishedArtifacts): void
+{
     $handoffId = $publishedArtifacts[0]['published_handoff_id'] ?? null;
     $handoffScope = $publishedArtifacts[0]['published_handoff_scope'] ?? null;
-    if (is_string($handoffId) && is_string($handoffScope)) {
+    if (is_string($handoffId) && ($handoffScope === null || is_string($handoffScope))) {
         hub_pack_job_remove_published_handoff($taskId, $handoffId, $handoffScope);
     }
 }
@@ -1817,7 +1822,7 @@ function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array
     } catch (Throwable) {
         hub_pack_job_output_contract_invalid('artifact_handoff_failed');
     } finally {
-        if (!$handoffComplete && is_string($handoffId) && is_string($handoffScope)) {
+        if (!$handoffComplete && is_string($handoffId)) {
             hub_pack_job_remove_published_handoff($taskId, $handoffId, $handoffScope);
         }
     }
@@ -2120,19 +2125,19 @@ function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $v
     try {
         hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
     } catch (RuntimeException) {
-        hub_pack_job_remove_gpu_published_handoff($taskId, $publishedArtifacts);
+        hub_pack_job_remove_published_handoff_artifacts($taskId, $publishedArtifacts);
 
         return ['ok' => false, 'error_code' => 'gpu_ownership_conflict'];
     }
     try {
         $result = hub_commit_published_pack_job_success($db, $taskId, $run, $publishedArtifacts, $cleanup, $gpuLease, $beforeTerminalFence);
         if (($result['ok'] ?? false) !== true) {
-            hub_pack_job_remove_gpu_published_handoff($taskId, $publishedArtifacts);
+            hub_pack_job_remove_published_handoff_artifacts($taskId, $publishedArtifacts);
         }
 
         return $result;
     } catch (Throwable $e) {
-        hub_pack_job_remove_gpu_published_handoff($taskId, $publishedArtifacts);
+        hub_pack_job_remove_published_handoff_artifacts($taskId, $publishedArtifacts);
         throw $e;
     }
 }
