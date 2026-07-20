@@ -4,14 +4,24 @@ declare(strict_types=1);
 require __DIR__ . '/../app/bootstrap.php';
 hub_cli_only();
 
+$runtimeDb = hub_db();
+$missing = hub_runtime_schema_missing($runtimeDb);
+if ($missing !== []) {
+    fwrite(STDERR, '[FAIL] schema_upgrade_required: ' . implode(', ', $missing) . '. Run php scripts/init_db.php.' . PHP_EOL);
+    exit(1);
+}
+
 $tmp = tempnam(sys_get_temp_dir(), '3waaihub_');
 if ($tmp === false) {
     throw new RuntimeException('Cannot create temp database.');
 }
+if (!unlink($tmp)) {
+    throw new RuntimeException('Cannot prepare temp database.');
+}
+$runtimeDb->exec('VACUUM INTO ' . $runtimeDb->quote($tmp));
 
 $db = new PDO('sqlite:' . $tmp);
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-hub_migrate($db);
 hub_seed_admin_user($db);
 hub_seed_hello_service($db);
 hub_ensure_default_storage_settings($db);
@@ -309,17 +319,13 @@ unlink($artifactPath);
 
 unlink($tmp);
 
-if (is_file(HUB_DB_PATH)) {
-    $runtimeDb = hub_db();
-    hub_migrate($runtimeDb);
-    hub_ensure_default_storage_settings($runtimeDb);
-    foreach (hub_storage_settings_warnings(hub_get_storage_paths($runtimeDb)) as $warning) {
-        echo "WARNING: {$warning}\n";
-        echo "Manual migration:\n";
-        echo "  sudo mkdir -p /DATA/models\n";
-        echo "  sudo rsync -aHAX " . HUB_DATA_DIR . "/models/ /DATA/models/\n";
-        echo "Then update AIHUB_MODELS_DIR=/DATA/models in Settings.\n";
-    }
+hub_ensure_default_storage_settings($runtimeDb);
+foreach (hub_storage_settings_warnings(hub_get_storage_paths($runtimeDb)) as $warning) {
+    echo "WARNING: {$warning}\n";
+    echo "Manual migration:\n";
+    echo "  sudo mkdir -p /DATA/models\n";
+    echo "  sudo rsync -aHAX " . HUB_DATA_DIR . "/models/ /DATA/models/\n";
+    echo "Then update AIHUB_MODELS_DIR=/DATA/models in Settings.\n";
 }
 
 echo "self_check ok\n";

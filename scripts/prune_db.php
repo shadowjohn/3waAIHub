@@ -12,7 +12,11 @@ if ($dryRun === $apply) {
 }
 
 $db = hub_db();
-hub_migrate($db);
+$missing = hub_runtime_schema_missing($db);
+if ($missing !== []) {
+    fwrite(STDERR, 'schema_upgrade_required: ' . implode(', ', $missing) . '. Run php scripts/init_db.php.' . PHP_EOL);
+    exit(1);
+}
 hub_ensure_default_storage_settings($db);
 
 $metricCutoff = hub_prune_cutoff((int)hub_get_storage_setting($db, 'AIHUB_METRIC_RETENTION_DAYS'));

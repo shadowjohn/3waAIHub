@@ -121,6 +121,12 @@ if ($unsupported !== null) {
     fail((string)$unsupported['stderr'], (int)$unsupported['exit_code']);
 }
 
+$db = hub_db();
+$missing = hub_runtime_schema_missing($db);
+if ($missing !== []) {
+    fail('schema_upgrade_required: ' . implode(', ', $missing) . '. Run php scripts/init_db.php.', 78);
+}
+
 $jobRoot = getenv('AIHUB_LOCAL_JOB_ROOT') ?: '/DATA/jobs';
 if (!is_dir($jobRoot) && !mkdir($jobRoot, 0775, true) && !is_dir($jobRoot)) {
     fail('cannot create local job root: ' . $jobRoot, 4);
@@ -172,8 +178,6 @@ $gpuIndexes = arg_value($args, '--gpu');
 $startedAt = hub_now();
 $startedMs = (int)round(microtime(true) * 1000);
 
-$db = hub_db();
-hub_migrate($db);
 $db->prepare(
     'INSERT INTO runtime_runs
         (run_id, pack_id, task, pack_version, runner_version, caller, workspace, state, started_at, gpu_indexes, result_json_path, stdout_log_path, stderr_log_path, created_at)
