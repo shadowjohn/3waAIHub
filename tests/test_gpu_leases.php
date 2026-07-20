@@ -6,9 +6,9 @@ function hub_test_gpu_lease_run(PDO $db, string $runId, string $workerId = 'gpu-
     $now = hub_now();
     $db->prepare(
         'INSERT INTO runtime_runs
-            (run_id, pack_id, task, workspace, state, worker_id, lease_token, task_id, started_at, created_at)
+            (run_id, pack_id, task, workspace, state, worker_id, lease_token, lease_expires_at, task_id, started_at, created_at)
          VALUES
-            (:run_id, :pack_id, :task, :workspace, :state, :worker_id, :lease_token, :task_id, :started_at, :created_at)'
+            (:run_id, :pack_id, :task, :workspace, :state, :worker_id, :lease_token, :lease_expires_at, :task_id, :started_at, :created_at)'
     )->execute([
         ':run_id' => $runId,
         ':pack_id' => 'gpu-test',
@@ -17,12 +17,22 @@ function hub_test_gpu_lease_run(PDO $db, string $runId, string $workerId = 'gpu-
         ':state' => 'claimed',
         ':worker_id' => $workerId,
         ':lease_token' => bin2hex(random_bytes(32)),
+        ':lease_expires_at' => hub_runtime_lease_until(60),
         ':task_id' => null,
         ':started_at' => $now,
         ':created_at' => $now,
     ]);
 
     return $db->query('SELECT * FROM runtime_runs WHERE run_id = ' . $db->quote($runId))->fetch() ?: [];
+}
+
+function hub_test_gpu_recovery_evidence(bool $containerExists = false, bool $containerRunning = false, array $ownedPids = [], bool $ambiguous = false): array
+{
+    return [
+        'container' => ['exists' => $containerExists, 'running' => $containerRunning],
+        'owned_pids' => $ownedPids,
+        'ambiguous' => $ambiguous,
+    ];
 }
 
 function hub_test_gpu_lease_expire(PDO $db, array $lease): void
@@ -114,7 +124,7 @@ hub_test('GPU recovery reopens only clean residue and blocks stuck or ambiguous 
     hub_test_assert(is_array($lease), 'clean fixture must acquire GPU');
     hub_test_gpu_lease_expire($db, $lease);
     hub_runtime_gpu_expire($db);
-    $clean = hub_runtime_gpu_recover($db, static fn (array $run, array $lease): array => ['container_exists' => false, 'owned_gpu_pids' => [], 'ambiguous' => false]);
+    $clean = hub_runtime_gpu_recover($db, static fn (array $run, array $lease): array => hub_test_gpu_recovery_evidence());
     hub_test_assert(($clean['state'] ?? '') === 'available', 'clean recovery must reopen GPU');
 
     $stuckRun = hub_test_gpu_lease_run($db, 'gpu_stuck_recovery');
@@ -122,7 +132,7 @@ hub_test('GPU recovery reopens only clean residue and blocks stuck or ambiguous 
     hub_test_assert(is_array($stuckLease), 'stuck fixture must acquire GPU');
     hub_test_gpu_lease_expire($db, $stuckLease);
     hub_runtime_gpu_expire($db);
-    $stuck = hub_runtime_gpu_recover($db, static fn (array $run, array $lease): array => ['container_exists' => false, 'owned_gpu_pids' => [1234], 'ambiguous' => false]);
+    $stuck = hub_runtime_gpu_recover($db, static fn (array $run, array $lease): array => hub_test_gpu_recovery_evidence(false, false, [1234]));
     hub_test_assert(($stuck['state'] ?? '') === 'blocked', 'owned PID residue must block GPU');
 
     $db->prepare("UPDATE runtime_resource_leases SET state = 'available', runtime_run_id = NULL, worker_id = NULL, lease_token = NULL WHERE resource_key = 'gpu:0'")->execute();
@@ -131,7 +141,7 @@ hub_test('GPU recovery reopens only clean residue and blocks stuck or ambiguous 
     hub_test_assert(is_array($ambiguousLease), 'ambiguous fixture must acquire GPU');
     hub_test_gpu_lease_expire($db, $ambiguousLease);
     hub_runtime_gpu_expire($db);
-    $ambiguous = hub_runtime_gpu_recover($db, static fn (array $run, array $lease): array => ['container_exists' => false, 'owned_gpu_pids' => [], 'ambiguous' => true]);
+    $ambiguous = hub_runtime_gpu_recover($db, static fn (array $run, array $lease): array => hub_test_gpu_recovery_evidence(false, false, [], true));
     hub_test_assert(($ambiguous['state'] ?? '') === 'blocked', 'ambiguous residue must block GPU');
 });
 
@@ -150,7 +160,7 @@ hub_test('GPU recovery blocks a lease whose runtime ownership was taken over wit
     $inspected = false;
     $recovered = hub_runtime_gpu_recover($db, static function () use (&$inspected): array {
         $inspected = true;
-        return ['container_exists' => false, 'owned_gpu_pids' => [], 'ambiguous' => false];
+        return hub_test_gpu_recovery_evidence();
     });
 
     hub_test_assert(!$inspected, 'takeover mismatch must not inspect or clean another owner run');
@@ -169,10 +179,41 @@ hub_test('GPU recovery reopens clean residue when both the runtime and GPU lease
         ':run_id' => $run['run_id'],
     ]);
     $recovered = hub_runtime_gpu_recover($db, static function (): array {
-        return ['container_exists' => false, 'owned_gpu_pids' => [], 'ambiguous' => false];
+        return hub_test_gpu_recovery_evidence();
     });
 
     hub_test_assert(($recovered['state'] ?? '') === 'available', 'matching expired runtime ownership with no residue must reopen GPU');
+});
+
+hub_test('GPU recovery blocks unavailable malformed or incomplete inspector evidence', function (): void {
+    foreach ([
+        [],
+        ['container' => ['exists' => false, 'running' => false], 'owned_pids' => []],
+        ['container' => ['exists' => 'no', 'running' => false], 'owned_pids' => [], 'ambiguous' => false],
+        ['container' => ['exists' => false, 'running' => false], 'owned_pids' => ['not-a-pid'], 'ambiguous' => false],
+    ] as $evidence) {
+        $db = hub_test_reset_db();
+        $run = hub_test_gpu_lease_run($db, 'gpu_bad_evidence_' . bin2hex(random_bytes(3)));
+        $lease = hub_runtime_gpu_acquire($db, $run, 60);
+        hub_test_assert(is_array($lease), 'fixture must acquire GPU');
+        hub_test_gpu_lease_expire($db, $lease);
+        hub_test_assert(hub_runtime_gpu_expire($db) !== null, 'fixture must require recovery');
+
+        $result = hub_runtime_gpu_recover($db, static fn (): array => $evidence);
+        hub_test_assert(($result['state'] ?? '') === 'blocked', 'malformed recovery evidence must block GPU');
+    }
+});
+
+hub_test('GPU acquire rejects an expired runtime lease', function (): void {
+    $db = hub_test_reset_db();
+    $run = hub_test_gpu_lease_run($db, 'gpu_acquire_expired');
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expired WHERE run_id = :run_id')->execute([
+        ':expired' => date('Y-m-d H:i:s', time() - 60),
+        ':run_id' => $run['run_id'],
+    ]);
+
+    hub_test_assert(hub_runtime_gpu_acquire($db, $run, 60) === null, 'expired runtime owner must not acquire GPU');
+    hub_test_assert((string)$db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'available', 'expired acquisition must leave GPU available');
 });
 
 hub_test('GPU preflight waits with a stable reason and releases the lease without probing hardware in tests', function (): void {
@@ -192,7 +233,12 @@ hub_test('GPU preflight waits with a stable reason and releases the lease withou
     hub_test_assert(!empty($task['next_attempt_at']), 'preflight wait must schedule a backoff');
 
     $db->prepare("UPDATE tasks SET status = 'running', waiting_reason = NULL WHERE id = :id")->execute([':id' => $taskId]);
-    $db->prepare("UPDATE runtime_runs SET state = 'claimed', lease_token = :token, worker_id = :worker WHERE run_id = :run_id")->execute([':token' => bin2hex(random_bytes(32)), ':worker' => 'gpu-worker', ':run_id' => $run['run_id']]);
+    $db->prepare("UPDATE runtime_runs SET state = 'claimed', lease_token = :token, worker_id = :worker, lease_expires_at = :lease_expires_at WHERE run_id = :run_id")->execute([
+        ':token' => bin2hex(random_bytes(32)),
+        ':worker' => 'gpu-worker',
+        ':lease_expires_at' => hub_runtime_lease_until(60),
+        ':run_id' => $run['run_id'],
+    ]);
     $run = $db->query('SELECT * FROM runtime_runs WHERE run_id = ' . $db->quote($run['run_id']))->fetch();
     $lease = hub_runtime_gpu_acquire($db, $run, 60);
     $result = hub_runtime_gpu_preflight($db, $taskId, $run, $lease ?: [], 1, static fn (): array => ['free_vram_mb' => 4096, 'processes' => [991]], 15, 256);
@@ -216,6 +262,34 @@ hub_test('GPU preflight cannot move a different task into waiting_gpu', function
     hub_test_assert((hub_get_task($db, $otherTaskId)['status'] ?? '') === 'running', 'cross-task preflight must not change another task');
     hub_test_assert((string)$db->query('SELECT state FROM runtime_runs WHERE run_id = ' . $db->quote($run['run_id']))->fetchColumn() === 'claimed', 'cross-task preflight must not change runtime state');
     hub_test_assert((string)$db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'leased', 'cross-task preflight must not release GPU');
+});
+
+hub_test('Due waiting_gpu Pack task promotes once and is claimable without changing runtime attempt', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '127.0.0.1', ['accelerator' => 'gpu']);
+    $db->prepare("UPDATE tasks SET status = 'running', lock_token = 'gpu-retry-lock' WHERE id = :id")->execute([':id' => $taskId]);
+    $run = hub_test_gpu_lease_run($db, 'gpu_waiting_retry');
+    $db->prepare('UPDATE runtime_runs SET task_id = :task_id, attempt_no = 7 WHERE run_id = :run_id')->execute([':task_id' => $taskId, ':run_id' => $run['run_id']]);
+    $run = $db->query('SELECT * FROM runtime_runs WHERE run_id = ' . $db->quote($run['run_id']))->fetch();
+    $lease = hub_runtime_gpu_acquire($db, $run, 60);
+    hub_test_assert(is_array($lease), 'fixture must acquire GPU');
+    hub_runtime_gpu_preflight($db, $taskId, $run, $lease, 1024, static fn (): array => ['free_vram_mb' => 0, 'processes' => []], 1, 256);
+    $db->prepare('UPDATE tasks SET next_attempt_at = :past WHERE id = :id')->execute([':past' => date('Y-m-d H:i:s', time() - 60), ':id' => $taskId]);
+
+    hub_test_assert(hub_promote_due_waiting_gpu_task($db), 'one due waiting GPU task must promote');
+    hub_test_assert(!hub_promote_due_waiting_gpu_task($db), 'promoted task must not promote twice');
+    $task = hub_get_task($db, $taskId);
+    $retryRun = $db->query('SELECT state, worker_id, lease_token, attempt_no FROM runtime_runs WHERE run_id = ' . $db->quote($run['run_id']))->fetch();
+    hub_test_assert(($task['status'] ?? '') === 'queued' && empty($task['lock_token']) && empty($task['next_attempt_at']), 'promotion must restore queued task without a lock');
+    hub_test_assert(($retryRun['state'] ?? '') === 'queued' && $retryRun['worker_id'] === null && $retryRun['lease_token'] === null && (int)$retryRun['attempt_no'] === 7, 'promotion must clear runtime lease without changing attempt');
+    $claimed = hub_claim_next_task($db, ['pack_job']);
+    hub_test_assert((int)($claimed['id'] ?? 0) === $taskId, 'promoted task must be claimable once');
+
+    $db->prepare("UPDATE tasks SET status = 'waiting_gpu', next_attempt_at = :past WHERE id = :id")->execute([':past' => date('Y-m-d H:i:s', time() - 60), ':id' => $taskId]);
+    $db->prepare("UPDATE runtime_runs SET state = 'waiting_gpu' WHERE run_id = :run_id")->execute([':run_id' => $run['run_id']]);
+    $db->prepare("UPDATE runtime_resource_leases SET state = 'blocked' WHERE resource_key = 'gpu:0'")->execute();
+    hub_test_assert(!hub_promote_due_waiting_gpu_task($db), 'blocked GPU must not promote waiting work');
+    hub_test_assert((hub_get_task($db, $taskId)['status'] ?? '') === 'waiting_gpu', 'blocked GPU must leave waiting task unchanged');
 });
 
 hub_test('CPU ffmpeg tasks do not request a GPU lease', function (): void {
@@ -246,6 +320,7 @@ hub_test('GPU Pack terminal completion releases only its exact GPU fence atomica
 hub_test('GPU Pack stale ownership cannot publish artifacts before terminal fencing', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    hub_test_pack_job_clear_published_artifacts($db, $fixture['task_id']);
     $db->prepare("UPDATE tasks SET accelerator = 'gpu' WHERE id = :id")->execute([':id' => $fixture['task_id']]);
     $run = $db->query('SELECT * FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
     $lease = hub_runtime_gpu_acquire($db, $run, 60);
@@ -259,6 +334,39 @@ hub_test('GPU Pack stale ownership cannot publish artifacts before terminal fenc
 
     hub_test_assert(hub_test_throws(static fn () => hub_commit_pack_job_success($db, $fixture['task_id'], $run, $validated, hub_test_pack_job_cleanup_asserted(), $bad)), 'stale GPU ownership must reject Pack success');
     hub_test_assert(!is_dir(hub_task_result_dir($fixture['task_id']) . '/artifacts'), 'stale GPU ownership must not publish artifacts before terminal fencing');
+});
+
+hub_test('GPU Pack fence loss after artifact staging removes only its staged handoff without DB success', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    hub_test_pack_job_clear_published_artifacts($db, $fixture['task_id']);
+    $db->prepare("UPDATE tasks SET accelerator = 'gpu' WHERE id = :id")->execute([':id' => $fixture['task_id']]);
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expires_at WHERE id = :id')->execute([':expires_at' => hub_runtime_lease_until(60), ':id' => $fixture['run']['id']]);
+    $run = $db->query('SELECT * FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+    $lease = hub_runtime_gpu_acquire($db, $run, 60);
+    hub_test_assert(is_array($lease), 'handoff fixture must acquire GPU');
+    hub_test_assert(is_string(hub_pack_job_handoff_scope($run, $lease)), 'GPU handoff scope must bind the active runtime fence');
+    hub_test_pack_job_write($fixture['workspace'] . '/output/transcript.json', "{\"text\":\"hello\"}\n");
+    hub_test_pack_job_write($fixture['workspace'] . '/output/subtitle.srt', "1\n00:00:00,000 --> 00:00:01,000\nhello\n");
+    hub_test_pack_job_write($fixture['workspace'] . '/output/audio.wav', hub_test_pack_job_wav());
+    $validated = hub_validate_pack_job_artifacts($fixture['workspace'], ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+
+    $result = hub_commit_pack_job_success(
+        $db,
+        $fixture['task_id'],
+        $run,
+        $validated,
+        hub_test_pack_job_cleanup_asserted(),
+        $lease,
+        static function () use ($db): void {
+            $db->exec("UPDATE runtime_resource_leases SET lease_token = 'stale-after-stage' WHERE resource_key = 'gpu:0'");
+        }
+    );
+    $artifactRoot = hub_task_result_dir($fixture['task_id']) . '/artifacts';
+    hub_test_assert(($result['ok'] ?? true) === false && ($result['error_code'] ?? '') === 'gpu_ownership_conflict', 'post-stage GPU fence loss must not succeed');
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn() === 0, 'post-stage fence loss must not register artifacts');
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn() === 0, 'post-stage fence loss must not enqueue callbacks');
+    hub_test_assert(!is_dir($artifactRoot) || (glob($artifactRoot . '/*') ?: []) === [], 'post-stage fence loss must remove its lease-scoped handoff directory');
 });
 
 hub_test('GPU Pack cleanup failure terminalizes with cleanup_failed and blocks the exact GPU lease', function (): void {

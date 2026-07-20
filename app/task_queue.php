@@ -268,6 +268,67 @@ function hub_get_task(PDO $db, int $taskId): ?array
     return $task;
 }
 
+function hub_promote_due_waiting_gpu_task(PDO $db): bool
+{
+    if ($db->inTransaction()) {
+        throw new LogicException('waiting_gpu_promotion_transaction_required');
+    }
+
+    $now = hub_now();
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $resource = $db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn();
+        if ($resource !== 'available') {
+            $db->exec('COMMIT');
+            return false;
+        }
+        $candidate = $db->prepare(
+            "SELECT t.id AS task_id, r.id AS runtime_id
+             FROM tasks t
+             JOIN runtime_runs r ON r.task_id = t.id
+             WHERE t.task_type = 'pack_job' AND t.status = 'waiting_gpu'
+               AND t.lock_token IS NULL AND t.next_attempt_at IS NOT NULL AND t.next_attempt_at <= :now
+               AND r.state = 'waiting_gpu'
+             ORDER BY t.next_attempt_at ASC, t.id ASC
+             LIMIT 1"
+        );
+        $candidate->execute([':now' => $now]);
+        $waiting = $candidate->fetch();
+        if (!is_array($waiting)) {
+            $db->exec('COMMIT');
+            return false;
+        }
+
+        $taskStmt = $db->prepare(
+            "UPDATE tasks
+             SET status = 'queued', waiting_reason = NULL, next_attempt_at = NULL, lock_token = NULL, updated_at = :now
+             WHERE id = :id AND task_type = 'pack_job' AND status = 'waiting_gpu'
+               AND lock_token IS NULL AND next_attempt_at IS NOT NULL AND next_attempt_at <= :now"
+        );
+        $taskStmt->execute([':now' => $now, ':id' => (int)$waiting['task_id']]);
+        $runStmt = $db->prepare(
+            "UPDATE runtime_runs
+             SET state = 'queued', worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
+                 heartbeat_at = NULL, claimed_at = NULL
+             WHERE id = :id AND task_id = :task_id AND state = 'waiting_gpu'"
+        );
+        $runStmt->execute([':id' => (int)$waiting['runtime_id'], ':task_id' => (int)$waiting['task_id']]);
+        if ($taskStmt->rowCount() !== 1 || $runStmt->rowCount() !== 1) {
+            $db->exec('ROLLBACK');
+            return false;
+        }
+        $db->exec('COMMIT');
+
+        return true;
+    } catch (Throwable $e) {
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
+        }
+        throw $e;
+    }
+}
+
 function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null): ?array
 {
     $taskTypes = $supportedTaskTypes ?? hub_allowed_task_types();
@@ -280,6 +341,8 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null): ?array
     if ($taskTypes === []) {
         return null;
     }
+
+    hub_promote_due_waiting_gpu_task($db);
 
     $db->beginTransaction();
     try {
@@ -1353,9 +1416,29 @@ function hub_revalidate_pack_job_artifact_snapshot(PDO $db, int $taskId, ?array 
     }
 }
 
-function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId): string
+function hub_pack_job_handoff_scope(?array $run, ?array $gpuLease): ?string
 {
-    if (preg_match('/^[a-f0-9]{32}$/', $handoffId) !== 1) {
+    if ($gpuLease === null) {
+        return null;
+    }
+    if ($run === null || !hub_runtime_gpu_fence_matches_run($run, $gpuLease)) {
+        throw new RuntimeException('gpu_ownership_conflict');
+    }
+    $attemptValue = $run['attempt_no'] ?? 0;
+    if ((!is_int($attemptValue) && (!is_string($attemptValue) || !ctype_digit($attemptValue))) || (int)$attemptValue < 0) {
+        throw new RuntimeException('runtime_fence_invalid');
+    }
+    $attempt = (int)$attemptValue;
+    $runtime = hub_runtime_gpu_runtime_identity($run);
+    $gpu = hub_runtime_gpu_lease_identity($gpuLease);
+
+    return substr(hash('sha256', implode("\0", [$runtime['run_id'], (string)$attempt, $gpu['worker_id'], $gpu['lease_token']])), 0, 32);
+}
+
+function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?string $handoffScope = null): string
+{
+    if (preg_match('/^[a-f0-9]{32}$/', $handoffId) !== 1
+        || ($handoffScope !== null && preg_match('/^[a-f0-9]{32}$/', $handoffScope) !== 1)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $taskResultDir = hub_task_result_dir($taskId);
@@ -1380,6 +1463,22 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId): st
     if ($artifactRoot === false || !str_starts_with($artifactRoot, $taskResultDir . DIRECTORY_SEPARATOR)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
+    if ($handoffScope !== null) {
+        $scopeDir = $artifactRoot . '/' . $handoffScope;
+        clearstatcache(true, $scopeDir);
+        if (is_link($scopeDir) || (!is_dir($scopeDir) && !mkdir($scopeDir, 0700))) {
+            hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
+        }
+        clearstatcache(true, $scopeDir);
+        if (is_link($scopeDir) || !is_dir($scopeDir) || !chmod($scopeDir, 0700)) {
+            hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
+        }
+        $scopeDir = realpath($scopeDir);
+        if ($scopeDir === false || !str_starts_with($scopeDir, $artifactRoot . DIRECTORY_SEPARATOR)) {
+            hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
+        }
+        $artifactRoot = $scopeDir;
+    }
     $handoffDir = $artifactRoot . '/' . $handoffId;
     clearstatcache(true, $handoffDir);
     if (is_link($handoffDir) || (!is_dir($handoffDir) && !mkdir($handoffDir, 0700))) {
@@ -1395,6 +1494,73 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId): st
     }
 
     return $handoffDir;
+}
+
+function hub_pack_job_remove_published_handoff_dir(string $path): bool
+{
+    clearstatcache(true, $path);
+    if (is_link($path) || !is_dir($path)) {
+        return false;
+    }
+    $entries = scandir($path);
+    if (!is_array($entries)) {
+        return false;
+    }
+    foreach ($entries as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        $child = $path . '/' . $entry;
+        clearstatcache(true, $child);
+        if (is_link($child)) {
+            return false;
+        }
+        if (is_dir($child)) {
+            if (!hub_pack_job_remove_published_handoff_dir($child)) {
+                return false;
+            }
+            continue;
+        }
+        if (!is_file($child) || !unlink($child)) {
+            return false;
+        }
+    }
+
+    return rmdir($path);
+}
+
+function hub_pack_job_remove_published_handoff(int $taskId, string $handoffId, ?string $handoffScope): bool
+{
+    if (preg_match('/^[a-f0-9]{32}$/', $handoffId) !== 1
+        || ($handoffScope !== null && preg_match('/^[a-f0-9]{32}$/', $handoffScope) !== 1)) {
+        return false;
+    }
+    $taskResultDir = realpath(hub_task_result_dir($taskId));
+    if ($taskResultDir === false) {
+        return false;
+    }
+    $artifactRoot = realpath($taskResultDir . '/artifacts');
+    if ($artifactRoot === false || is_link($artifactRoot) || !str_starts_with($artifactRoot, $taskResultDir . DIRECTORY_SEPARATOR)) {
+        return false;
+    }
+    $parent = $artifactRoot;
+    if ($handoffScope !== null) {
+        $parent .= '/' . $handoffScope;
+    }
+    $handoffDir = $parent . '/' . $handoffId;
+    $realHandoffDir = realpath($handoffDir);
+    if ($realHandoffDir === false || $realHandoffDir !== $handoffDir || !str_starts_with($realHandoffDir, $parent . DIRECTORY_SEPARATOR)) {
+        return false;
+    }
+    $removed = hub_pack_job_remove_published_handoff_dir($realHandoffDir);
+    if ($removed && $handoffScope !== null) {
+        clearstatcache(true, $parent);
+        if (is_dir($parent) && !is_link($parent) && (scandir($parent) === ['.', '..'])) {
+            rmdir($parent);
+        }
+    }
+
+    return $removed;
 }
 
 function hub_pack_job_published_artifact_path(string $handoffDir, string $name): string
@@ -1496,7 +1662,7 @@ function hub_pack_job_copy_to_published_artifact(string $source, string $destina
     }
 }
 
-function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array $validatedArtifacts): array
+function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, ?array $gpuLease = null, ?callable $afterStage = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
@@ -1504,10 +1670,13 @@ function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array
     if ($validatedArtifacts === []) {
         hub_pack_job_output_contract_invalid('artifact_set_invalid');
     }
+    hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
     hub_revalidate_pack_job_artifact_snapshot($db, $taskId, $run, $validatedArtifacts);
+    hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
     try {
         $handoffId = bin2hex(random_bytes(16));
-        $handoffDir = hub_pack_job_published_artifact_dir($taskId, $handoffId);
+        $handoffScope = hub_pack_job_handoff_scope($run, $gpuLease);
+        $handoffDir = hub_pack_job_published_artifact_dir($taskId, $handoffId, $handoffScope);
         $published = [];
         foreach ($validatedArtifacts as $artifact) {
             $name = is_string($artifact['name'] ?? null) ? $artifact['name'] : '';
@@ -1533,7 +1702,13 @@ function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array
             $artifact['device'] = (int)$stat['dev'];
             $artifact['inode'] = (int)$stat['ino'];
             $artifact['published_handoff_id'] = $handoffId;
+            if ($handoffScope !== null) {
+                $artifact['published_handoff_scope'] = $handoffScope;
+            }
             $published[] = $artifact;
+        }
+        if ($afterStage !== null) {
+            $afterStage($published);
         }
 
         return $published;
@@ -1564,16 +1739,22 @@ function hub_revalidate_published_pack_job_artifacts(int $taskId, array $publish
     }
     $names = [];
     $publishedHandoffId = null;
+    $publishedHandoffScope = null;
     foreach ($publishedArtifacts as $artifact) {
         $name = is_string($artifact['name'] ?? null) ? hub_pack_job_artifact_relative_path($artifact['name']) : '';
         $handoffId = is_string($artifact['published_handoff_id'] ?? null) ? $artifact['published_handoff_id'] : '';
+        $handoffScope = array_key_exists('published_handoff_scope', $artifact) ? $artifact['published_handoff_scope'] : null;
         if ($name === '' || isset($names[$name]) || preg_match('/^[a-f0-9]{32}$/', $handoffId) !== 1
-            || ($publishedHandoffId !== null && $publishedHandoffId !== $handoffId)) {
+            || ($handoffScope !== null && (!is_string($handoffScope) || preg_match('/^[a-f0-9]{32}$/', $handoffScope) !== 1))
+            || ($publishedHandoffId !== null && $publishedHandoffId !== $handoffId)
+            || ($publishedHandoffScope !== null && $publishedHandoffScope !== $handoffScope)
+            || ($publishedHandoffScope === null && $publishedHandoffId !== null && $handoffScope !== null)) {
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
         }
         $names[$name] = true;
         $publishedHandoffId = $handoffId;
-        $handoffDir = $artifactRoot . '/' . $handoffId;
+        $publishedHandoffScope = $handoffScope;
+        $handoffDir = $artifactRoot . ($handoffScope === null ? '' : '/' . $handoffScope) . '/' . $handoffId;
         clearstatcache(true, $handoffDir);
         if (is_link($handoffDir) || !is_dir($handoffDir)) {
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
@@ -1795,7 +1976,7 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
     }
 }
 
-function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup, ?array $gpuLease = null): array
+function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $afterHandoff = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
@@ -1807,11 +1988,22 @@ function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $v
     }
     hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
     try {
-        $publishedArtifacts = hub_handoff_pack_job_artifacts($db, $taskId, $run, $validatedArtifacts);
+        $publishedArtifacts = hub_handoff_pack_job_artifacts($db, $taskId, $run, $validatedArtifacts, $gpuLease, $afterHandoff);
     } catch (HubPackOutputContractInvalid) {
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
+    }
+    try {
+        hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
+    } catch (RuntimeException) {
+        $handoffId = $publishedArtifacts[0]['published_handoff_id'] ?? null;
+        $handoffScope = $publishedArtifacts[0]['published_handoff_scope'] ?? null;
+        if (is_string($handoffId) && ($handoffScope === null || is_string($handoffScope))) {
+            hub_pack_job_remove_published_handoff($taskId, $handoffId, $handoffScope);
+        }
+
+        return ['ok' => false, 'error_code' => 'gpu_ownership_conflict'];
     }
 
     return hub_commit_published_pack_job_success($db, $taskId, $run, $publishedArtifacts, $cleanup, $gpuLease);

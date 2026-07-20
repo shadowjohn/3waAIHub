@@ -66,12 +66,14 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds): ?array
         $runFence = $db->prepare(
             "SELECT 1 FROM runtime_runs
              WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
-               AND state IN ('claimed', 'running')"
+               AND state IN ('claimed', 'running')
+               AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
         );
         $runFence->execute([
             ':run_id' => $runtime['run_id'],
             ':worker_id' => $runtime['worker_id'],
             ':lease_token' => $runtime['lease_token'],
+            ':now' => $now,
         ]);
         if ($runFence->fetchColumn() === false) {
             $db->exec('COMMIT');
@@ -443,6 +445,53 @@ function hub_runtime_gpu_recovery_pids(mixed $pids): array
     return array_keys($result);
 }
 
+function hub_runtime_gpu_recovery_evidence(mixed $evidence): ?array
+{
+    if (!is_array($evidence)
+        || array_diff(array_keys($evidence), ['container', 'owned_pids', 'ambiguous']) !== []
+        || !array_key_exists('container', $evidence)
+        || !array_key_exists('owned_pids', $evidence)
+        || !array_key_exists('ambiguous', $evidence)
+        || !is_array($evidence['container'])
+        || !array_key_exists('exists', $evidence['container'])
+        || !array_key_exists('running', $evidence['container'])
+        || !is_bool($evidence['container']['exists'])
+        || !is_bool($evidence['container']['running'])
+        || !is_array($evidence['owned_pids'])
+        || !array_is_list($evidence['owned_pids'])
+        || !is_bool($evidence['ambiguous'])
+    ) {
+        return null;
+    }
+    if (array_diff(array_keys($evidence['container']), ['exists', 'running', 'removed']) !== []) {
+        return null;
+    }
+    if (array_key_exists('removed', $evidence['container']) && !is_bool($evidence['container']['removed'])) {
+        return null;
+    }
+    if (!$evidence['container']['exists'] && $evidence['container']['running']) {
+        return null;
+    }
+
+    $ownedPids = [];
+    foreach ($evidence['owned_pids'] as $pid) {
+        if (!is_int($pid) || $pid < 1) {
+            return null;
+        }
+        $ownedPids[$pid] = true;
+    }
+
+    return [
+        'container' => [
+            'exists' => $evidence['container']['exists'],
+            'running' => $evidence['container']['running'],
+            'removed' => $evidence['container']['removed'] ?? null,
+        ],
+        'owned_pids' => array_keys($ownedPids),
+        'ambiguous' => $evidence['ambiguous'],
+    ];
+}
+
 function hub_runtime_gpu_recover(PDO $db, callable $inspector, ?callable $containerCleanup = null): ?array
 {
     if ($db->inTransaction()) {
@@ -463,26 +512,26 @@ function hub_runtime_gpu_recover(PDO $db, callable $inspector, ?callable $contai
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'runtime_ownership_conflict');
     }
 
-    $evidence = $inspector($run, $lease);
-    if (!is_array($evidence)) {
+    $evidence = hub_runtime_gpu_recovery_evidence($inspector($run, $lease));
+    if ($evidence === null) {
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'recovery_inspection_invalid');
     }
-    if (!empty($evidence['container_exists']) || !empty($evidence['container_running'])) {
+    if ($evidence['container']['exists'] || $evidence['container']['running']) {
         if ($containerCleanup === null || !hub_runtime_gpu_recovery_ownership_matches($db, $run, $lease) || !$containerCleanup($run, $lease, $evidence)) {
             return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'container_cleanup_failed');
         }
-        $evidence = $inspector($run, $lease);
-        if (!is_array($evidence)) {
+        $evidence = hub_runtime_gpu_recovery_evidence($inspector($run, $lease));
+        if ($evidence === null) {
             return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'recovery_inspection_invalid');
         }
     }
-    if (!empty($evidence['container_exists']) || !empty($evidence['container_running'])) {
+    if ($evidence['container']['exists'] || $evidence['container']['running']) {
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'container_residue');
     }
-    if (!empty($evidence['ambiguous'])) {
+    if ($evidence['ambiguous']) {
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'gpu_residue_ambiguous');
     }
-    if (hub_runtime_gpu_recovery_pids($evidence['owned_gpu_pids'] ?? []) !== []) {
+    if ($evidence['owned_pids'] !== []) {
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'owned_gpu_pid_residue');
     }
 

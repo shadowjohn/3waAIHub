@@ -28,6 +28,28 @@ function hub_test_pack_job_rm(string $path): void
     rmdir($path);
 }
 
+function hub_test_pack_job_clear_published_artifacts(PDO $db, int $taskId): void
+{
+    $task = hub_get_task($db, $taskId);
+    if (($task['task_type'] ?? '') !== 'pack_job') {
+        throw new RuntimeException('Pack-job artifact cleanup requires its fixture task.');
+    }
+    $resultsRoot = realpath(HUB_DATA_DIR . '/results');
+    $taskResultDir = realpath(hub_task_result_dir($taskId));
+    if ($resultsRoot === false || $taskResultDir === false || !str_starts_with($taskResultDir, $resultsRoot . DIRECTORY_SEPARATOR)) {
+        throw new RuntimeException('Pack-job artifact cleanup target is outside Hub results.');
+    }
+    $artifactPath = $taskResultDir . '/artifacts';
+    clearstatcache(true, $artifactPath);
+    if (!file_exists($artifactPath)) {
+        return;
+    }
+    if (is_link($artifactPath) || !is_dir($artifactPath) || realpath($artifactPath) !== $artifactPath) {
+        throw new RuntimeException('Pack-job artifact cleanup target is invalid.');
+    }
+    hub_test_pack_job_rm($artifactPath);
+}
+
 function hub_test_pack_job_contract(): array
 {
     return [
@@ -108,9 +130,9 @@ function hub_test_pack_job_create_terminal_fixture(PDO $db, ?int $callbackTarget
     $now = hub_now();
     $db->prepare(
         'INSERT INTO runtime_runs
-            (run_id, pack_id, task, workspace, state, worker_id, lease_token, task_id, started_at, created_at)
+            (run_id, pack_id, task, workspace, state, worker_id, lease_token, lease_expires_at, task_id, started_at, created_at)
          VALUES
-            (:run_id, :pack_id, :task, :workspace, :state, :worker_id, :lease_token, :task_id, :started_at, :created_at)'
+            (:run_id, :pack_id, :task, :workspace, :state, :worker_id, :lease_token, :lease_expires_at, :task_id, :started_at, :created_at)'
     )->execute([
         ':run_id' => $runId,
         ':pack_id' => 'whisper-asr',
@@ -119,6 +141,7 @@ function hub_test_pack_job_create_terminal_fixture(PDO $db, ?int $callbackTarget
         ':state' => 'running',
         ':worker_id' => 'test-worker',
         ':lease_token' => $leaseToken,
+        ':lease_expires_at' => hub_runtime_lease_until(60),
         ':task_id' => $taskId,
         ':started_at' => $now,
         ':created_at' => $now,
