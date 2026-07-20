@@ -195,16 +195,97 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         } catch (HubPackOutputContractInvalid) {
             return null;
         }
+        $runner = null;
+        if (array_key_exists('runner', $definition)) {
+            $runner = hub_pack_async_job_runner_contract($definition['runner']);
+            if ($runner === null) {
+                return null;
+            }
+        }
 
         return [
             'input_fields' => $fields,
             'source_artifact_types' => $artifactTypes,
             'max_upload_bytes' => $maxUploadBytes,
             'artifact_contract' => $artifactContract,
-        ];
+        ] + ($runner === null ? [] : ['runner' => $runner]);
     }
 
     return null;
+}
+
+function hub_pack_async_job_runner_contract(mixed $runner): ?array
+{
+    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds']) !== []) {
+        return null;
+    }
+    $image = trim((string)($runner['image'] ?? ''));
+    $entrypoint = $runner['entrypoint'] ?? null;
+    $args = $runner['args'] ?? null;
+    $outputDir = (string)($runner['output_dir'] ?? '');
+    $accelerator = (string)($runner['accelerator'] ?? '');
+    $requiredVram = $runner['required_vram_mb'] ?? null;
+    $timeout = $runner['timeout_seconds'] ?? null;
+    if (preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
+        || !is_array($entrypoint) || !array_is_list($entrypoint) || $entrypoint === []
+        || !is_array($args) || !array_is_list($args)
+        || $outputDir !== 'output' || !in_array($accelerator, ['cpu', 'gpu'], true)
+        || !is_int($requiredVram) || $requiredVram < 0 || $requiredVram > 1048576
+        || !is_int($timeout) || $timeout < 1 || $timeout > 86400) {
+        return null;
+    }
+    foreach (array_merge($entrypoint, $args) as $value) {
+        if (!is_string($value) || $value === '' || strlen($value) > 1024 || str_contains($value, "\0")) {
+            return null;
+        }
+        preg_match_all('/\{[^}]*\}/', $value, $matches);
+        foreach ($matches[0] as $template) {
+            if (!in_array($template, ['{workspace}', '{input_dir}', '{output_dir}', '{run_id}', '{task_id}'], true)) {
+                return null;
+            }
+        }
+    }
+
+    return [
+        'image' => $image,
+        'entrypoint' => array_values($entrypoint),
+        'args' => array_values($args),
+        'output_dir' => 'output',
+        'accelerator' => $accelerator,
+        'required_vram_mb' => $requiredVram,
+        'timeout_seconds' => $timeout,
+    ];
+}
+
+function hub_resolve_stored_pack_job(PDO $db, array $task): array
+{
+    foreach (['pack_id', 'pack_version', 'job'] as $field) {
+        if (!is_string($task[$field] ?? null) || trim((string)$task[$field]) === '') {
+            throw new RuntimeException('pack_version_unavailable');
+        }
+    }
+    if (($task['task_type'] ?? '') !== 'pack_job' || ($task['runtime_mode'] ?? '') !== 'job' || !in_array((string)($task['accelerator'] ?? ''), ['cpu', 'gpu'], true)) {
+        throw new RuntimeException('job_unavailable');
+    }
+    $pack = hub_get_pack((string)$task['pack_id']);
+    if (!$pack || ($pack['status'] ?? '') !== 'ok' || (string)($pack['manifest']['version'] ?? '') !== (string)$task['pack_version']) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+    $installed = $db->prepare(
+        "SELECT 1 FROM services
+         WHERE pack_id = :pack_id AND pack_version = :pack_version AND install_status = 'installed'
+         LIMIT 1"
+    );
+    $installed->execute([':pack_id' => $task['pack_id'], ':pack_version' => $task['pack_version']]);
+    if ($installed->fetchColumn() === false) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+    $contract = hub_pack_async_job_contract((array)$pack['manifest'], (string)$task['job']);
+    if ($contract === null || !isset($contract['runner']) || ($contract['runner']['accelerator'] ?? null) !== $task['accelerator']) {
+        throw new RuntimeException('job_unavailable');
+    }
+
+    return $contract;
 }
 
 function hub_pack_async_job_max_upload_bytes(array $definition, array $manifest): ?int

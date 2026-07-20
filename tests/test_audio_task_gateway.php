@@ -563,7 +563,7 @@ hub_test('manifest async job declarations cannot permit reserved controls', func
     });
 });
 
-hub_test('existing task worker leaves queued Pack jobs untouched', function (): void {
+hub_test('shared task worker claims Pack jobs and rejects runner-unavailable manifests', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
     $memberId = hub_create_api_member($db, 'Worker Queue Owner');
@@ -576,7 +576,7 @@ hub_test('existing task worker leaves queued Pack jobs untouched', function (): 
     exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/scripts/task_worker.php') . ' --limit=1 2>&1', $output, $exitCode);
 
     $task = hub_get_task($db, $taskId);
-    hub_test_assert($exitCode === 0 && ($task['status'] ?? '') === 'queued', 'existing task worker must not claim or fail queued Pack jobs before a Pack adapter exists');
+    hub_test_assert($exitCode === 0 && ($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'job_unavailable', 'shared worker must route Pack jobs through the generic adapter and fail runner-unavailable manifests safely');
 });
 
 hub_test('audio manual retry accepts timed-out Pack jobs', function (): void {

@@ -20,7 +20,7 @@ if ($missing !== []) {
 
 $processed = 0;
 while ($processed < $limit) {
-    $task = hub_claim_next_task($db, ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation']);
+    $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
     if (!$task) {
         break;
     }
@@ -42,6 +42,11 @@ while ($processed < $limit) {
 
 function hub_run_task(PDO $db, array $task): void
 {
+    if ($task['task_type'] === 'pack_job') {
+        hub_run_pack_job_task($db, $task);
+        return;
+    }
+
     if ($task['task_type'] === 'docparser_repair_translation') {
         hub_run_docparser_repair_translation_task($db, $task);
         return;

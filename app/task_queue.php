@@ -749,6 +749,20 @@ function hub_cancel_task(PDO $db, int $taskId): bool
     }
 
     $task = hub_get_task($db, $taskId);
+    if ($task && ($task['status'] ?? '') === 'running' && ($task['task_type'] ?? '') === 'pack_job') {
+        $run = $db->prepare(
+            "SELECT id FROM runtime_runs
+             WHERE task_id = :task_id AND state IN ('claimed', 'running')
+             ORDER BY id DESC LIMIT 1"
+        );
+        $run->execute([':task_id' => $taskId]);
+        $runId = (int)$run->fetchColumn();
+        if ($runId > 0 && hub_runtime_request_cancel($db, $runId, 'task_cancel_requested')) {
+            hub_add_task_log($db, $taskId, 'warning', 'cancel_requested');
+            return true;
+        }
+        return false;
+    }
     if (!$task || ($task['status'] ?? '') !== 'running' || ($task['task_type'] ?? '') !== 'docparser_parse') {
         return false;
     }
@@ -1840,21 +1854,37 @@ function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $
     }
     if (hub_pack_job_requires_gpu_lease($db, $taskId)) {
         if ($gpuLease === null) {
-            throw new RuntimeException('gpu_lease_required');
-        }
-        $runStmt = $db->prepare(
-            "SELECT * FROM runtime_runs
-             WHERE id = :id AND task_id = :task_id AND lease_token = :lease_token
-               AND state IN ('claimed', 'running')"
-        );
-        $runStmt->execute([':id' => $runId, ':task_id' => $taskId, ':lease_token' => $leaseToken]);
-        $runtime = $runStmt->fetch();
-        $gpuTransitioned = is_array($runtime)
-            && ($errorCode === 'cleanup_failed'
-                ? hub_runtime_gpu_block_in_transaction($db, $runtime, $gpuLease, 'cleanup_failed', $taskId)
-                : hub_runtime_gpu_release_in_transaction($db, $runtime, $gpuLease, $taskId));
-        if (!$gpuTransitioned) {
-            throw new RuntimeException('gpu_ownership_conflict');
+            // A Pack/version rejection can happen before any GPU acquisition or runner start.
+            // Do not require a lease that was deliberately never taken, but never use this for success.
+            if ($state !== 'failed') {
+                throw new RuntimeException('gpu_lease_required');
+            }
+            $unstarted = $db->prepare(
+                "SELECT 1 FROM runtime_runs
+                 WHERE id = :id AND task_id = :task_id AND lease_token = :lease_token
+                   AND state IN ('claimed', 'running') AND container_id IS NULL
+                   AND (gpu_process_baseline_json IS NULL OR gpu_process_baseline_json = '[]')
+                   AND (owned_gpu_pids_json IS NULL OR owned_gpu_pids_json = '[]')"
+            );
+            $unstarted->execute([':id' => $runId, ':task_id' => $taskId, ':lease_token' => $leaseToken]);
+            if ($unstarted->fetchColumn() === false) {
+                throw new RuntimeException('gpu_lease_required');
+            }
+        } else {
+            $runStmt = $db->prepare(
+                "SELECT * FROM runtime_runs
+                 WHERE id = :id AND task_id = :task_id AND lease_token = :lease_token
+                   AND state IN ('claimed', 'running')"
+            );
+            $runStmt->execute([':id' => $runId, ':task_id' => $taskId, ':lease_token' => $leaseToken]);
+            $runtime = $runStmt->fetch();
+            $gpuTransitioned = is_array($runtime)
+                && ($errorCode === 'cleanup_failed'
+                    ? hub_runtime_gpu_block_in_transaction($db, $runtime, $gpuLease, 'cleanup_failed', $taskId)
+                    : hub_runtime_gpu_release_in_transaction($db, $runtime, $gpuLease, $taskId));
+            if (!$gpuTransitioned) {
+                throw new RuntimeException('gpu_ownership_conflict');
+            }
         }
     }
     $now = hub_now();

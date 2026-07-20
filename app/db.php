@@ -692,6 +692,7 @@ SQL);
     hub_add_column_if_missing($db, 'runtime_runs', 'cancelled_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'runtime_runs', 'task_id', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'runtime_runs', 'attempt_no', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'container_id', 'TEXT NULL');
     hub_add_column_if_missing($db, 'runtime_runs', 'gpu_process_baseline_json', 'TEXT NULL');
     hub_add_column_if_missing($db, 'runtime_runs', 'owned_gpu_pids_json', 'TEXT NULL');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_claim ON runtime_runs(state, id)');
@@ -718,7 +719,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes'],
         'task_artifacts' => ['artifact_type', 'sha256', 'metadata_json', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error'],
         'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],
-        'runtime_runs' => ['task_id', 'attempt_no', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],
+        'runtime_runs' => ['task_id', 'attempt_no', 'container_id', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],
     ];
     $tables = array_fill_keys($db->query("SELECT name FROM sqlite_master WHERE type = 'table'")->fetchAll(PDO::FETCH_COLUMN), true);
     $missing = [];
