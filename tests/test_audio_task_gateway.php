@@ -563,3 +563,44 @@ hub_test('audio manual retry accepts timed-out Pack jobs', function (): void {
     $retry = hub_get_task($db, $retryId);
     hub_test_assert((int)($retry['retry_of_task_id'] ?? 0) === $taskId && ($retry['status'] ?? '') === 'queued', 'timed-out Pack jobs must create a linked queued retry');
 });
+
+hub_test('internal task dispatch cannot submit public Pack jobs', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Internal Pack Bypass Owner');
+        $token = hub_create_api_token($db, $memberId, 'internal pack bypass token', null, null);
+        hub_test_audio_allow($db, [$token], ['internal_pack_bypass']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $now = hub_now();
+        $db->prepare(
+            'INSERT INTO services
+                (name, mode, type, internal_url, health_url, compose_project, compose_file, enabled, status, runtime_status, created_at, updated_at)
+             VALUES
+                (:name, :mode, :type, :internal_url, :health_url, :compose_project, :compose_file, :enabled, :status, :runtime_status, :created_at, :updated_at)'
+        )->execute([
+            ':name' => 'Internal Pack Bypass Fixture',
+            ':mode' => 'internal_pack_bypass',
+            ':type' => 'internal_task',
+            ':internal_url' => 'internal-task:task_submit:pack_job',
+            ':health_url' => 'internal-task:health',
+            ':compose_project' => 'internal-pack-bypass',
+            ':compose_file' => 'unused-internal-task-compose.yml',
+            ':enabled' => 1,
+            ':status' => 'running',
+            ':runtime_status' => 'running',
+            ':created_at' => $now,
+            ':updated_at' => $now,
+        ]);
+
+        $response = hub_test_audio_request($db, 'internal_pack_bypass', (string)$token['plain_token'], [
+            'command' => 'unexpected command',
+            'source_upload_path' => '/host/source.wav',
+            'queue' => 'gpu',
+        ]);
+        $payload = hub_test_audio_payload($response);
+        hub_test_assert($response['status'] === 400 && ($payload['error'] ?? '') === 'forbidden_task_control', 'internal task dispatch must reject Pack job submission before task API bypass');
+        hub_test_assert((int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn() === 0, 'blocked internal Pack dispatch must not enqueue a Pack job');
+    });
+});

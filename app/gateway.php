@@ -154,6 +154,9 @@ function hub_dispatch_internal_task_service(PDO $db, array $service, array $auth
             'task_type' => $taskType,
         ]);
     }
+    if ($taskType === 'pack_job') {
+        return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
+    }
 
     $previousTaskType = $_POST['task_type'] ?? null;
     $_POST['task_type'] = $taskType;
