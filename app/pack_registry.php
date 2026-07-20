@@ -150,6 +150,22 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
     ];
 }
 
+function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
+{
+    $requestedMode = (string)($snapshot['requested_mode'] ?? '');
+    if (!hub_is_audio_async_mode($requestedMode)) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+    $route = hub_resolve_audio_async_route($db, $requestedMode);
+    foreach (['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator'] as $field) {
+        if (($snapshot[$field] ?? null) !== ($route[$field] ?? null)) {
+            throw new RuntimeException('pack_version_unavailable');
+        }
+    }
+
+    return $route;
+}
+
 function hub_audio_job_input_artifact_types(string $job): array
 {
     return match ($job) {

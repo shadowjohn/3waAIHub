@@ -209,6 +209,17 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
     FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS task_artifact_holds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_artifact_id INTEGER NOT NULL,
+    downstream_task_id INTEGER NOT NULL,
+    held_at TEXT NOT NULL,
+    released_at TEXT NULL,
+    UNIQUE(source_artifact_id, downstream_task_id),
+    FOREIGN KEY(source_artifact_id) REFERENCES task_artifacts(id) ON DELETE CASCADE,
+    FOREIGN KEY(downstream_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS service_ip_whitelists (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     service_id INTEGER NOT NULL,
@@ -682,6 +693,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_targets_alias ON task_callback_targets(target_alias)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_due ON task_callback_deliveries(delivered_at, next_attempt_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_task_id ON task_callback_deliveries(task_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifact_holds_active ON task_artifact_holds(source_artifact_id, released_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_state_expires ON runtime_resource_leases(state, lease_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_run_id ON runtime_resource_leases(runtime_run_id)');
     $db->prepare(
@@ -698,6 +710,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'runtime_resource_leases' => ['resource_key', 'runtime_run_id', 'worker_id', 'lease_token', 'state', 'acquired_at', 'heartbeat_at', 'lease_expires_at', 'last_error', 'updated_at'],
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes'],
         'task_artifacts' => ['artifact_type', 'sha256', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error'],
+        'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],
         'runtime_runs' => ['task_id', 'attempt_no', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],
     ];
     $tables = array_fill_keys($db->query("SELECT name FROM sqlite_master WHERE type = 'table'")->fetchAll(PDO::FETCH_COLUMN), true);

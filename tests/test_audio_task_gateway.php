@@ -157,6 +157,31 @@ hub_test('audio async admission rejects controls and persists the managed route 
     });
 });
 
+hub_test('public task_submit cannot bypass fixed audio admission controls', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Task Submit Client');
+        $token = hub_create_api_token($db, $memberId, 'task submit token', null, null);
+        hub_test_audio_allow($db, [$token], ['task_submit']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $packJob = hub_test_audio_request($db, 'task_submit', (string)$token['plain_token'], [
+            'task_type' => 'pack_job',
+            'pack_id' => 'whisper-asr',
+            'command' => 'run anything',
+        ]);
+        hub_test_assert($packJob['status'] === 400 && (hub_test_audio_payload($packJob)['error'] ?? '') === 'forbidden_task_control', 'task_submit must not create public Pack jobs');
+
+        $controls = hub_test_audio_request($db, 'task_submit', (string)$token['plain_token'], [
+            'task_type' => 'demo_task',
+            'workdir' => '/tmp',
+            'secret' => 'not-a-secret-channel',
+        ]);
+        hub_test_assert($controls['status'] === 400 && (hub_test_audio_payload($controls)['error'] ?? '') === 'forbidden_task_control', 'task_submit must reject workdir and secret controls');
+    });
+});
+
 hub_test('audio artifact chaining validates ownership state type and path', function (): void {
     hub_test_audio_isolate(static function (): void {
     $db = hub_test_reset_db();
@@ -176,6 +201,12 @@ hub_test('audio artifact chaining validates ownership state type and path', func
     $taskId = (int)($createdPayload['task_id'] ?? 0);
     $task = hub_get_task($db, $taskId);
     hub_test_assert($created['status'] === 200 && (int)($task['source_artifact_id'] ?? 0) === $source['artifact_id'] && (int)($task['source_task_id'] ?? 0) === $source['task_id'], 'valid source artifact must preserve lineage');
+    $hold = $db->prepare(
+        'SELECT * FROM task_artifact_holds
+         WHERE source_artifact_id = :source_artifact_id AND downstream_task_id = :downstream_task_id AND released_at IS NULL'
+    );
+    $hold->execute([':source_artifact_id' => $source['artifact_id'], ':downstream_task_id' => $taskId]);
+    hub_test_assert((bool)$hold->fetch(), 'downstream source artifact must receive a durable retention hold');
 
     $sameMember = hub_test_audio_request($db, 'task_status', (string)$tokenA2['plain_token'], [], ['task_id' => (string)$taskId], [], 'GET');
     hub_test_assert($sameMember['status'] === 200, 'different token for same member must read task');
@@ -256,11 +287,44 @@ hub_test('audio manual retry creates a linked task without mutating terminal his
         hub_finish_task_success($db, hub_get_task($db, $uploadedTaskId) ?? [], ['finished' => true]);
         $uploadedRetry = hub_test_audio_request($db, 'task_retry', (string)$token['plain_token'], ['task_id' => (string)$uploadedTaskId]);
         $uploadedReplacement = hub_get_task($db, (int)(hub_test_audio_payload($uploadedRetry)['task_id'] ?? 0));
-        hub_test_assert($uploadedRetry['status'] === 200 && (int)($uploadedReplacement['retry_of_task_id'] ?? 0) === $uploadedTaskId && !empty($uploadedReplacement['input']['source_upload_path']), 'manual retry must retain a managed upload source');
+    hub_test_assert($uploadedRetry['status'] === 200 && (int)($uploadedReplacement['retry_of_task_id'] ?? 0) === $uploadedTaskId && !empty($uploadedReplacement['input']['source_upload_path']), 'manual retry must retain a managed upload source');
     } finally {
         if (is_file($upload)) {
             unlink($upload);
         }
     }
+
+    $db->prepare('UPDATE services SET pack_version = :pack_version WHERE pack_id = :pack_id')
+        ->execute([':pack_version' => 'missing-version', ':pack_id' => 'whisper-asr']);
+    $unavailable = hub_test_audio_request($db, 'task_retry', (string)$token['plain_token'], ['task_id' => (string)$taskId]);
+    hub_test_assert($unavailable['status'] === 503 && (hub_test_audio_payload($unavailable)['error'] ?? '') === 'pack_version_unavailable', 'manual retry must reject an unavailable saved Pack route');
+    hub_test_assert((hub_get_task($db, $taskId)['status'] ?? '') === 'success', 'route retry rejection must not mutate original terminal history');
+    });
+});
+
+hub_test('reserved task modes win over service modes and keep member ownership', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $reserved = hub_install_pack($db, 'hello', [
+            'service_key' => 'reserved-task-status',
+            'mode' => 'task_status',
+            'idempotent' => true,
+        ]);
+        hub_set_service_enabled($db, 'task_status', true);
+        hub_update_service_status($db, (int)$reserved['service']['id'], 'running');
+        $memberA = hub_create_api_member($db, 'Reserved Task Owner');
+        $tokenA = hub_create_api_token($db, $memberA, 'reserved owner token', null, null);
+        $memberB = hub_create_api_member($db, 'Reserved Task Stranger');
+        $tokenB = hub_create_api_token($db, $memberB, 'reserved stranger token', null, null);
+        hub_test_audio_allow($db, [$tokenA, $tokenB], ['task_status']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '203.0.113.51', [
+            'owner_member_id' => $memberA,
+            'owner_token_id' => (int)$tokenA['token_id'],
+        ]);
+
+        $response = hub_test_audio_request($db, 'task_status', (string)$tokenB['plain_token'], [], ['task_id' => (string)$taskId], [], 'GET');
+        hub_test_assert($response['status'] === 404, 'reserved task_status must not be shadowed by an installed service or reveal another member task');
     });
 });

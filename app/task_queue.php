@@ -80,12 +80,34 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
         }
     }
 
-    return hub_enqueue_task($db, 'pack_job', 'gpu', 0, $input, null, $requestedIp, $route + [
+    $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, $input, null, $requestedIp, $route + [
         'owner_member_id' => $ownerMemberId,
         'owner_token_id' => $ownerTokenId,
         'source_artifact_id' => $lineage['source_artifact_id'] ?? null,
         'source_task_id' => $lineage['source_task_id'] ?? null,
         'retry_of_task_id' => $lineage['retry_of_task_id'] ?? null,
+    ]);
+    if (!empty($lineage['source_artifact_id'])) {
+        hub_hold_task_source_artifact($db, (int)$lineage['source_artifact_id'], $taskId);
+    }
+
+    return $taskId;
+}
+
+function hub_hold_task_source_artifact(PDO $db, int $artifactId, int $downstreamTaskId): void
+{
+    $task = hub_get_task($db, $downstreamTaskId);
+    if (!$task || (int)($task['source_artifact_id'] ?? 0) !== $artifactId) {
+        throw new RuntimeException('source_artifact_hold_invalid');
+    }
+    $stmt = $db->prepare(
+        'INSERT OR IGNORE INTO task_artifact_holds (source_artifact_id, downstream_task_id, held_at)
+         VALUES (:source_artifact_id, :downstream_task_id, :held_at)'
+    );
+    $stmt->execute([
+        ':source_artifact_id' => $artifactId,
+        ':downstream_task_id' => $downstreamTaskId,
+        ':held_at' => hub_now(),
     ]);
 }
 
@@ -149,7 +171,7 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     if ($sourceArtifactId <= 0 && hub_managed_task_upload_path($taskId, (string)($input['source_upload_path'] ?? '')) === null) {
         throw new RuntimeException('source_upload_invalid');
     }
-    $route = array_intersect_key($task, array_flip(['requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at']));
+    $route = hub_revalidate_audio_async_route($db, $task);
 
     return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
         'source_artifact_id' => $sourceArtifactId,

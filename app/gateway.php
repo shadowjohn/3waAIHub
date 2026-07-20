@@ -28,8 +28,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
 
         return hub_gateway_finish($db, null, $mode, hub_api_audio_task_submit($db, $route, $authContext), $started, $requestId, $authContext);
     }
-    $service = hub_get_service_by_mode($db, $mode);
-    if (!$service && hub_is_task_api_mode($mode)) {
+    if (hub_is_task_api_mode($mode)) {
         $clientIp = hub_get_client_ip();
         $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
         $authContext = $auth['context'] ?? [];
@@ -39,6 +38,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
 
         return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode, $authContext), $started, $requestId, $authContext);
     }
+    $service = hub_get_service_by_mode($db, $mode);
     if (!$service && hub_is_photo_api_mode($mode)) {
         $clientIp = hub_get_client_ip();
         $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
@@ -158,7 +158,7 @@ function hub_dispatch_internal_task_service(PDO $db, array $service, array $auth
     $previousTaskType = $_POST['task_type'] ?? null;
     $_POST['task_type'] = $taskType;
     try {
-        return hub_api_task_submit($db, $authContext);
+        return hub_api_task_submit($db, array_merge($authContext, ['internal_task' => true]));
     } finally {
         if ($previousTaskType === null) {
             unset($_POST['task_type']);
@@ -790,9 +790,10 @@ function hub_audio_task_has_forbidden_control(array $input): bool
     foreach (array_keys($input) as $key) {
         $key = strtolower((string)$key);
         if (
-            in_array($key, ['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'entrypoint', 'command', 'script', 'env', 'environment', 'environment_json', 'host_path', 'container_path', 'path', 'input_file', 'source_path', 'callback_url', 'callback_secret', 'callback_target_id'], true)
+            in_array($key, ['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'entrypoint', 'command', 'script', 'env', 'environment', 'environment_json', 'host_path', 'container_path', 'path', 'input_file', 'source_path', 'workdir', 'working_dir', 'working_directory', 'secret', 'secrets', 'callback_url', 'callback_secret', 'callback_target_id'], true)
             || str_starts_with($key, 'env_')
             || str_starts_with($key, 'environment_')
+            || str_starts_with($key, 'secret_')
             || str_starts_with($key, 'callback_')
         ) {
             return true;
@@ -836,6 +837,9 @@ function hub_api_task_submit(PDO $db, array $authContext = []): array
     $taskType = trim((string)($_POST['task_type'] ?? ''));
     if (!hub_is_valid_task_type($taskType)) {
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown task_type']);
+    }
+    if (empty($authContext['internal_task']) && ($taskType === 'pack_job' || hub_audio_task_has_forbidden_control($_POST))) {
+        return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
 
     $queueName = trim((string)($_POST['queue'] ?? (in_array($taskType, ['structure_parse', 'docparser_parse', 'docparser_repair_translation'], true) ? 'ocr' : 'default')));
@@ -1182,6 +1186,9 @@ function hub_api_task_retry(PDO $db, array $authContext = []): array
     try {
         $taskId = hub_create_manual_retry($db, (int)$task['id'], $authContext);
     } catch (InvalidArgumentException|RuntimeException $e) {
+        if (in_array($e->getMessage(), ['pack_not_installed', 'pack_version_unavailable'], true)) {
+            return hub_gateway_error(503, $e->getMessage(), $e->getMessage());
+        }
         return hub_gateway_json(409, ['ok' => false, 'error' => $e->getMessage()]);
     }
 
