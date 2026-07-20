@@ -33,6 +33,9 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
         $authContext = $auth['context'] ?? [];
         if (empty($auth['ok'])) {
+            if (hub_bearer_token_from_request() === '' && hub_gateway_admin_legacy_task_session_allowed($db, $mode)) {
+                return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode), $started, $requestId);
+            }
             return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
         }
 
@@ -774,6 +777,9 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         return hub_gateway_error(400, 'source_ambiguous', 'provide exactly one managed source');
     }
     $file = $uploads[0];
+    if (!hub_audio_task_upload_size_allowed($route, $file)) {
+        return hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows');
+    }
     $extension = strtolower(pathinfo((string)($file['name'] ?? ''), PATHINFO_EXTENSION));
     $extension = preg_match('/^[a-z0-9]{1,8}$/', $extension) ? $extension : 'bin';
     $taskId = hub_stage_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip());
@@ -833,6 +839,28 @@ function hub_audio_task_uploads(): array
     }
 
     return $uploads;
+}
+
+function hub_audio_task_upload_size_allowed(array $route, array $file): bool
+{
+    $maxUploadBytes = (int)($route['max_upload_bytes'] ?? 0);
+    if ($maxUploadBytes <= 0) {
+        return false;
+    }
+    $contentLength = trim((string)($_SERVER['CONTENT_LENGTH'] ?? ''));
+    if ($contentLength !== '' && (!ctype_digit($contentLength) || (int)$contentLength > $maxUploadBytes)) {
+        return false;
+    }
+    $declaredSize = $file['size'] ?? null;
+    if (!is_int($declaredSize) && !(is_string($declaredSize) && ctype_digit($declaredSize))) {
+        return false;
+    }
+    if ((int)$declaredSize > $maxUploadBytes) {
+        return false;
+    }
+    $actualSize = filesize((string)($file['tmp_name'] ?? ''));
+
+    return $actualSize !== false && $actualSize <= $maxUploadBytes;
 }
 
 function hub_audio_task_input(array $input, array $route): array
@@ -1285,6 +1313,27 @@ function hub_task_access_allowed(PDO $db, array $task, array $authContext): bool
 
     $user = hub_current_user($db);
     return is_array($user) && (string)($user['role'] ?? '') === 'system_admin';
+}
+
+function hub_gateway_admin_legacy_task_session_allowed(PDO $db, string $mode): bool
+{
+    if (!in_array($mode, ['task_status', 'task_result', 'task_log', 'task_cancel', 'task_retry', 'artifact'], true)) {
+        return false;
+    }
+    $user = hub_current_user($db);
+    if (!is_array($user) || (string)($user['role'] ?? '') !== 'system_admin') {
+        return false;
+    }
+    if ($mode === 'artifact') {
+        $artifactId = (int)($_GET['artifact_id'] ?? $_POST['artifact_id'] ?? 0);
+        $artifact = $artifactId > 0 ? hub_get_task_artifact($db, $artifactId) : null;
+        $task = $artifact ? hub_get_task($db, (int)$artifact['task_id']) : null;
+    } else {
+        $taskId = (int)($_GET['task_id'] ?? $_POST['task_id'] ?? 0);
+        $task = $taskId > 0 ? hub_get_task($db, $taskId) : null;
+    }
+
+    return $task !== null && ($task['owner_member_id'] ?? null) === null;
 }
 
 function hub_proxy_request(string $url, int $timeoutSec = 60, ?string $bodyOverride = null, ?string $contentTypeOverride = null): array

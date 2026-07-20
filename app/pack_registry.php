@@ -185,17 +185,41 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         }
         $fields = hub_pack_async_job_contract_names($input['fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
         $artifactTypes = hub_pack_async_job_contract_names($input['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
-        if ($fields === null || $artifactTypes === null) {
+        $maxUploadBytes = hub_pack_async_job_max_upload_bytes($definition, $manifest);
+        if ($fields === null || $artifactTypes === null || $maxUploadBytes === null) {
             return null;
         }
 
         return [
             'input_fields' => $fields,
             'source_artifact_types' => $artifactTypes,
+            'max_upload_bytes' => $maxUploadBytes,
         ];
     }
 
     return null;
+}
+
+function hub_pack_async_job_max_upload_bytes(array $definition, array $manifest): ?int
+{
+    if (array_key_exists('max_upload_bytes', $definition)) {
+        return hub_pack_async_job_positive_bytes($definition['max_upload_bytes'] ?? null, 1);
+    }
+
+    return hub_pack_async_job_positive_bytes($manifest['gateway']['max_upload_mb'] ?? null, 1024 * 1024);
+}
+
+function hub_pack_async_job_positive_bytes(mixed $value, int $multiplier): ?int
+{
+    if (!is_numeric($value) || (float)$value <= 0) {
+        return null;
+    }
+    $bytes = (float)$value * $multiplier;
+    if ($bytes < 1 || $bytes > PHP_INT_MAX) {
+        return null;
+    }
+
+    return (int)floor($bytes);
 }
 
 function hub_pack_async_job_contract_names(mixed $values, string $pattern): ?array

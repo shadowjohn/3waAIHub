@@ -84,19 +84,35 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
         }
     }
 
-    $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, $input, null, $requestedIp, $route + [
-        'owner_member_id' => $ownerMemberId,
-        'owner_token_id' => $ownerTokenId,
-        'source_artifact_id' => $lineage['source_artifact_id'] ?? null,
-        'source_task_id' => $lineage['source_task_id'] ?? null,
-        'retry_of_task_id' => $lineage['retry_of_task_id'] ?? null,
-        'status' => $status,
-    ]);
-    if (!empty($lineage['source_artifact_id'])) {
-        hub_hold_task_source_artifact($db, (int)$lineage['source_artifact_id'], $taskId);
+    $sourceArtifactId = (int)($lineage['source_artifact_id'] ?? 0);
+    $startedTransaction = false;
+    if ($sourceArtifactId > 0 && !$db->inTransaction()) {
+        $db->beginTransaction();
+        $startedTransaction = true;
     }
+    try {
+        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, $input, null, $requestedIp, $route + [
+            'owner_member_id' => $ownerMemberId,
+            'owner_token_id' => $ownerTokenId,
+            'source_artifact_id' => $sourceArtifactId > 0 ? $sourceArtifactId : null,
+            'source_task_id' => $lineage['source_task_id'] ?? null,
+            'retry_of_task_id' => $lineage['retry_of_task_id'] ?? null,
+            'status' => $status,
+        ]);
+        if ($sourceArtifactId > 0) {
+            hub_hold_task_source_artifact($db, $sourceArtifactId, $taskId);
+        }
+        if ($startedTransaction) {
+            $db->commit();
+        }
 
-    return $taskId;
+        return $taskId;
+    } catch (Throwable $e) {
+        if ($startedTransaction && $db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
 }
 
 function hub_stage_owned_pack_job(PDO $db, array $route, array $input, int $ownerMemberId, ?int $ownerTokenId, ?string $requestedIp, array $lineage = []): int

@@ -604,3 +604,90 @@ hub_test('internal task dispatch cannot submit public Pack jobs', function (): v
         hub_test_assert((int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn() === 0, 'blocked internal Pack dispatch must not enqueue a Pack job');
     });
 });
+
+hub_test('audio async uploads enforce the Pack advertised byte limit before staging', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Audio Upload Limit Owner');
+        $token = hub_create_api_token($db, $memberId, 'audio upload limit token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $upload = tempnam(sys_get_temp_dir(), '3waaihub_oversized_');
+        if ($upload === false || file_put_contents($upload, str_repeat('x', 2 * 1024 * 1024 + 1), LOCK_EX) === false) {
+            throw new RuntimeException('Cannot create oversized audio fixture.');
+        }
+        try {
+            $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], ['text' => 'oversized upload'], [], [[
+                'name' => 'oversized.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $upload,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($upload),
+            ]]);
+            $payload = hub_test_audio_payload($response);
+            hub_test_assert($response['status'] === 413 && ($payload['error'] ?? '') === 'payload_too_large', 'audio upload over the Pack limit must be rejected before staging');
+            hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === 0, 'oversized audio upload must not create a staging or queued task');
+        } finally {
+            if (is_file($upload)) {
+                unlink($upload);
+            }
+        }
+    });
+});
+
+hub_test('remote system admin session accesses only legacy task endpoints without bearer', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Admin Legacy Task Owner');
+        $legacyTaskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '203.0.113.51');
+        $ownedTaskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '203.0.113.51', ['owner_member_id' => $memberId]);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $session = $_SESSION ?? [];
+        $_SESSION = ['user_id' => 1, 'username' => 'admin'];
+        try {
+            $legacy = hub_test_audio_request($db, 'task_status', '', [], ['task_id' => (string)$legacyTaskId], [], 'GET');
+            hub_test_assert($legacy['status'] === 200, 'remote system admin session must access a legacy null-owner task without bearer token');
+
+            $owned = hub_test_audio_request($db, 'task_status', '', [], ['task_id' => (string)$ownedTaskId], [], 'GET');
+            hub_test_assert($owned['status'] === 401, 'remote system admin session must not bypass bearer access for member-owned tasks');
+
+            $_SERVER['REMOTE_ADDR'] = '203.0.113.51';
+            $_SERVER['REQUEST_METHOD'] = 'GET';
+            $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=hello';
+            unset($_SERVER['HTTP_AUTHORIZATION'], $_SERVER['CONTENT_LENGTH']);
+            $_GET = [];
+            $_POST = [];
+            $_FILES = [];
+            $service = hub_gateway_dispatch($db, 'hello', static fn (): array => hub_gateway_json(200, ['ok' => true]));
+            hub_test_assert($service['status'] === 401, 'remote system admin session must not bypass bearer authentication for normal service modes');
+        } finally {
+            $_SESSION = $session;
+        }
+    });
+});
+
+hub_test('artifact Pack enqueue rolls back when its source hold cannot persist', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $memberId = hub_create_api_member($db, 'Atomic Hold Owner');
+    $token = hub_create_api_token($db, $memberId, 'atomic hold token', null, null);
+    $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+
+    $failed = false;
+    try {
+        hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51', [
+            'source_artifact_id' => 999999,
+        ]);
+    } catch (Throwable) {
+        $failed = true;
+    }
+
+    hub_test_assert($failed, 'invalid source hold fixture must fail');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job' AND status = 'queued'")->fetchColumn() === 0, 'failed source hold must not leave a runnable Pack job');
+    hub_test_assert(hub_claim_next_task($db) === null, 'failed source hold must not leave any claimable task');
+});
