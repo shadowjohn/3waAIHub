@@ -154,6 +154,17 @@ function hub_test_pack_job_contract_fails(callable $fn): bool
     return false;
 }
 
+function hub_test_pack_job_with_env(string $key, string $value, callable $fn): void
+{
+    $previous = getenv($key);
+    putenv($key . '=' . $value);
+    try {
+        $fn();
+    } finally {
+        putenv($previous === false ? $key : $key . '=' . $previous);
+    }
+}
+
 hub_test('Pack job artifact validation recomputes trusted metadata and respects conditional outputs', function (): void {
     $workspace = hub_test_pack_job_workspace();
     try {
@@ -621,6 +632,105 @@ hub_test('Pack job streamed SHA-256 rejects bytes that exceed its cap', function
         if (is_file($path)) {
             unlink($path);
         }
+    }
+});
+
+hub_test('Pack job traversal rejects unexpected empty directories without collecting the tree', function (): void {
+    $workspace = hub_test_pack_job_workspace();
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        mkdir($workspace . '/output/unexpected-empty');
+        $reason = '';
+        try {
+            hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+        } catch (HubPackOutputContractInvalid $e) {
+            $reason = $e->getMessage();
+        }
+        hub_test_assert($reason === 'artifact_set_invalid', 'an unexpected empty directory must be rejected during traversal');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job traversal entry cap stops before building a large output map', function (): void {
+    $workspace = hub_test_pack_job_workspace();
+    try {
+        $contract = hub_test_pack_job_contract();
+        $contract['artifacts'][0]['path'] = 'one/transcript.json';
+        $contract['artifacts'][1]['path'] = 'two/subtitle.srt';
+        $contract['artifacts'][2]['path'] = 'three/audio.wav';
+        foreach (['one', 'two', 'three'] as $dir) {
+            mkdir($workspace . '/output/' . $dir);
+        }
+        hub_test_pack_job_write($workspace . '/output/one/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/two/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/three/audio.wav', hub_test_pack_job_wav());
+        hub_test_pack_job_with_env('AIHUB_PACK_OUTPUT_HARD_MAX_ENTRIES', '4', static function () use ($workspace, $contract): void {
+            $reason = '';
+            try {
+                hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], $contract, 'hub_test_pack_job_audio_probe');
+            } catch (HubPackOutputContractInvalid $e) {
+                $reason = $e->getMessage();
+            }
+            hub_test_assert($reason === 'artifact_entry_limit', 'entry cap must stop traversal before all expected paths can be collected');
+        });
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job traversal enforces configured depth and aggregate-size caps', function (): void {
+    $workspace = hub_test_pack_job_workspace();
+    try {
+        $contract = hub_test_pack_job_contract();
+        $contract['artifacts'][0]['path'] = 'a/b/c/transcript.json';
+        $contract['artifacts'][1]['path'] = 'a/b/c/subtitle.srt';
+        $contract['artifacts'][2]['path'] = 'a/b/c/audio.wav';
+        mkdir($workspace . '/output/a/b/c', 0775, true);
+        hub_test_pack_job_write($workspace . '/output/a/b/c/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/a/b/c/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/a/b/c/audio.wav', hub_test_pack_job_wav());
+        hub_test_pack_job_with_env('AIHUB_PACK_OUTPUT_HARD_MAX_DEPTH', '2', static function () use ($workspace, $contract): void {
+            $reason = '';
+            try {
+                hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], $contract, 'hub_test_pack_job_audio_probe');
+            } catch (HubPackOutputContractInvalid $e) {
+                $reason = $e->getMessage();
+            }
+            hub_test_assert($reason === 'artifact_depth_limit', 'depth cap must reject a nested runner tree before parsing outputs');
+        });
+        hub_test_pack_job_with_env('AIHUB_PACK_OUTPUT_HARD_MAX_TOTAL_BYTES', '20', static function () use ($workspace, $contract): void {
+            $reason = '';
+            try {
+                hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], $contract, 'hub_test_pack_job_audio_probe');
+            } catch (HubPackOutputContractInvalid $e) {
+                $reason = $e->getMessage();
+            }
+            hub_test_assert($reason === 'artifact_total_size_invalid', 'aggregate-size cap must reject before artifact hashing');
+        });
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job traversal permits declared nested artifact parents', function (): void {
+    $workspace = hub_test_pack_job_workspace();
+    try {
+        $contract = hub_test_pack_job_contract();
+        $contract['artifacts'][0]['path'] = 'results/transcript.json';
+        $contract['artifacts'][1]['path'] = 'results/subtitles/subtitle.srt';
+        $contract['artifacts'][2]['path'] = 'results/audio/audio.wav';
+        mkdir($workspace . '/output/results/subtitles', 0775, true);
+        mkdir($workspace . '/output/results/audio', 0775, true);
+        hub_test_pack_job_write($workspace . '/output/results/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/results/subtitles/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/results/audio/audio.wav', hub_test_pack_job_wav());
+        $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], $contract, 'hub_test_pack_job_audio_probe');
+        hub_test_assert(count($validated) === 3, 'declared nested artifact parent directories must remain valid');
+    } finally {
+        hub_test_pack_job_rm($workspace);
     }
 });
 

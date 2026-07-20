@@ -784,6 +784,31 @@ function hub_pack_job_output_hard_max_bytes(): int
     return min($default, (int)$configured);
 }
 
+function hub_pack_job_lowered_hard_limit(string $environmentKey, int $default): int
+{
+    $configured = trim((string)(getenv($environmentKey) ?: ''));
+    if ($configured === '' || !ctype_digit($configured) || (int)$configured < 1) {
+        return $default;
+    }
+
+    return min($default, (int)$configured);
+}
+
+function hub_pack_job_output_hard_max_entries(): int
+{
+    return hub_pack_job_lowered_hard_limit('AIHUB_PACK_OUTPUT_HARD_MAX_ENTRIES', 128);
+}
+
+function hub_pack_job_output_hard_max_depth(): int
+{
+    return hub_pack_job_lowered_hard_limit('AIHUB_PACK_OUTPUT_HARD_MAX_DEPTH', 16);
+}
+
+function hub_pack_job_output_hard_max_total_bytes(): int
+{
+    return hub_pack_job_lowered_hard_limit('AIHUB_PACK_OUTPUT_HARD_MAX_TOTAL_BYTES', hub_pack_job_output_hard_max_bytes());
+}
+
 function hub_pack_job_parser_max_bytes(): int
 {
     return min(hub_pack_job_output_hard_max_bytes(), 4 * 1024 * 1024);
@@ -814,6 +839,9 @@ function hub_pack_job_artifact_relative_path(mixed $value): string
     if (str_starts_with($value, '/') || preg_match('#(^|/)\.{1,2}(/|$)#', $value)) {
         hub_pack_job_output_contract_invalid('artifact_path_invalid');
     }
+    if (count(explode('/', $value)) > hub_pack_job_output_hard_max_depth()) {
+        hub_pack_job_output_contract_invalid('artifact_depth_limit');
+    }
 
     return $value;
 }
@@ -839,6 +867,9 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
     $artifacts = $jobContract['artifacts'] ?? null;
     if (!is_array($artifacts) || !array_is_list($artifacts) || $artifacts === []) {
         hub_pack_job_output_contract_invalid('artifact_contract_invalid');
+    }
+    if (count($artifacts) > hub_pack_job_output_hard_max_entries()) {
+        hub_pack_job_output_contract_invalid('artifact_entry_limit');
     }
     $types = [];
     $paths = [];
@@ -937,9 +968,41 @@ function hub_pack_job_output_dir(string $workspace): string
     return $output;
 }
 
-function hub_pack_job_output_files(string $outputDir): array
+function hub_pack_job_output_tree_contract(array $expected): array
 {
+    if ($expected === [] || count($expected) > hub_pack_job_output_hard_max_entries()) {
+        hub_pack_job_output_contract_invalid('artifact_entry_limit');
+    }
     $files = [];
+    $directories = [];
+    $maxTrackedPaths = hub_pack_job_output_hard_max_entries() * hub_pack_job_output_hard_max_depth();
+    foreach (array_keys($expected) as $relative) {
+        $relative = hub_pack_job_artifact_relative_path($relative);
+        $files[$relative] = true;
+        $segments = explode('/', $relative);
+        array_pop($segments);
+        $directory = '';
+        foreach ($segments as $segment) {
+            $directory = $directory === '' ? $segment : $directory . '/' . $segment;
+            $directories[$directory] = true;
+        }
+        if (count($files) + count($directories) > $maxTrackedPaths) {
+            hub_pack_job_output_contract_invalid('artifact_entry_limit');
+        }
+    }
+
+    return ['files' => $files, 'directories' => $directories];
+}
+
+function hub_pack_job_output_files(string $outputDir, array $expected): array
+{
+    $contract = hub_pack_job_output_tree_contract($expected);
+    $files = [];
+    $entryCount = 0;
+    $totalBytes = 0;
+    $maxEntries = hub_pack_job_output_hard_max_entries();
+    $maxDepth = hub_pack_job_output_hard_max_depth();
+    $maxTotalBytes = hub_pack_job_output_hard_max_total_bytes();
     try {
         clearstatcache(true, $outputDir);
         $iterator = new RecursiveIteratorIterator(
@@ -953,15 +1016,34 @@ function hub_pack_job_output_files(string $outputDir): array
             if ($relative === false || $relative === '' || is_link($path)) {
                 hub_pack_job_output_contract_invalid('artifact_symlink_invalid');
             }
+            $relative = str_replace(DIRECTORY_SEPARATOR, '/', $relative);
+            if (count(explode('/', $relative)) > $maxDepth) {
+                hub_pack_job_output_contract_invalid('artifact_depth_limit');
+            }
+            $entryCount++;
+            if ($entryCount > $maxEntries) {
+                hub_pack_job_output_contract_invalid('artifact_entry_limit');
+            }
             $stat = lstat($path);
             $kind = is_array($stat) ? ((int)$stat['mode'] & 0170000) : 0;
             if ($kind === 0040000) {
+                if (!isset($contract['directories'][$relative])) {
+                    hub_pack_job_output_contract_invalid('artifact_set_invalid');
+                }
                 continue;
             }
             if ($kind !== 0100000) {
                 hub_pack_job_output_contract_invalid('artifact_nonregular');
             }
-            $files[str_replace(DIRECTORY_SEPARATOR, '/', $relative)] = $path;
+            if (!isset($contract['files'][$relative])) {
+                hub_pack_job_output_contract_invalid('artifact_set_invalid');
+            }
+            $size = (int)($stat['size'] ?? -1);
+            if ($size < 0 || $size > $maxTotalBytes - $totalBytes) {
+                hub_pack_job_output_contract_invalid('artifact_total_size_invalid');
+            }
+            $totalBytes += $size;
+            $files[$relative] = $path;
         }
     } catch (UnexpectedValueException) {
         hub_pack_job_output_contract_invalid('output_dir_invalid');
@@ -1140,7 +1222,7 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
     if ($expected === []) {
         hub_pack_job_output_contract_invalid('artifact_set_invalid');
     }
-    $files = hub_pack_job_output_files($outputDir);
+    $files = hub_pack_job_output_files($outputDir, $expected);
     if (array_diff_key($expected, $files) !== [] || array_diff_key($files, $expected) !== []) {
         hub_pack_job_output_contract_invalid('artifact_set_invalid');
     }
@@ -1237,7 +1319,6 @@ function hub_pack_job_require_submitted_output_dir(PDO $db, int $taskId, ?array 
 function hub_revalidate_pack_job_artifact_snapshot(PDO $db, int $taskId, ?array $run, array $validatedArtifacts): void
 {
     $outputDir = hub_pack_job_trusted_output_dir($db, $taskId, $run);
-    $files = hub_pack_job_output_files($outputDir);
     $expected = [];
     foreach ($validatedArtifacts as $artifact) {
         if (!is_string($artifact['name'] ?? null) || isset($expected[$artifact['name']])) {
@@ -1245,6 +1326,7 @@ function hub_revalidate_pack_job_artifact_snapshot(PDO $db, int $taskId, ?array 
         }
         $expected[$artifact['name']] = true;
     }
+    $files = hub_pack_job_output_files($outputDir, $expected);
     if (array_diff_key($files, $expected) !== [] || array_diff_key($expected, $files) !== []) {
         hub_pack_job_output_contract_invalid('artifact_changed');
     }
