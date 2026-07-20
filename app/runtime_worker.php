@@ -41,7 +41,9 @@ function hub_runtime_gpu_fence_matches_run(array $run, array $lease): bool
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $gpu = hub_runtime_gpu_lease_identity($lease);
 
-    return $runtime['run_id'] === $gpu['runtime_run_id'] && $runtime['worker_id'] === $gpu['worker_id'];
+    return $runtime['run_id'] === $gpu['runtime_run_id']
+        && $runtime['worker_id'] === $gpu['worker_id']
+        && hash_equals($runtime['lease_token'], $gpu['lease_token']);
 }
 
 function hub_runtime_gpu_fetch(PDO $db): ?array
@@ -58,7 +60,6 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds): ?array
     }
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $now = hub_now();
-    $gpuToken = bin2hex(random_bytes(32));
 
     $db->exec('BEGIN IMMEDIATE');
     try {
@@ -87,7 +88,7 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds): ?array
         $stmt->execute([
             ':runtime_run_id' => $runtime['run_id'],
             ':worker_id' => $runtime['worker_id'],
-            ':lease_token' => $gpuToken,
+            ':lease_token' => $runtime['lease_token'],
             ':now' => $now,
             ':lease_expires_at' => hub_runtime_lease_until($leaseSeconds),
         ]);
@@ -108,13 +109,39 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds): ?array
     }
 }
 
+function hub_runtime_gpu_runtime_fence_in_transaction(PDO $db, array $run, ?int $taskId = null): bool
+{
+    $runtime = hub_runtime_gpu_runtime_identity($run);
+    $now = hub_now();
+    $taskPredicate = $taskId === null ? '' : ' AND task_id = :task_id';
+    $stmt = $db->prepare(
+        "UPDATE runtime_runs SET heartbeat_at = heartbeat_at
+         WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
+           AND state IN ('claimed', 'running')
+           AND (lease_expires_at IS NULL OR lease_expires_at > :now){$taskPredicate}"
+    );
+    $params = [
+        ':run_id' => $runtime['run_id'],
+        ':worker_id' => $runtime['worker_id'],
+        ':lease_token' => $runtime['lease_token'],
+        ':now' => $now,
+    ];
+    if ($taskId !== null) {
+        $params[':task_id'] = $taskId;
+    }
+    $stmt->execute($params);
+
+    return $stmt->rowCount() === 1;
+}
+
 function hub_runtime_gpu_update_leased(PDO $db, array $lease, string $setSql, array $extra = []): bool
 {
     $gpu = hub_runtime_gpu_lease_identity($lease);
     $stmt = $db->prepare(
         "UPDATE runtime_resource_leases SET {$setSql}
          WHERE resource_key = :resource_key AND runtime_run_id = :runtime_run_id AND worker_id = :worker_id
-           AND lease_token = :lease_token AND state = 'leased'"
+           AND lease_token = :lease_token AND state = 'leased'
+           AND (lease_expires_at IS NULL OR lease_expires_at > :now)"
     );
     $stmt->execute($extra + [
         ':resource_key' => $gpu['resource_key'],
@@ -126,8 +153,11 @@ function hub_runtime_gpu_update_leased(PDO $db, array $lease, string $setSql, ar
     return $stmt->rowCount() === 1;
 }
 
-function hub_runtime_gpu_release_in_transaction(PDO $db, array $lease): bool
+function hub_runtime_gpu_release_in_transaction(PDO $db, array $run, array $lease, ?int $taskId = null): bool
 {
+    if (!hub_runtime_gpu_fence_matches_run($run, $lease) || !hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId)) {
+        return false;
+    }
     $now = hub_now();
 
     return hub_runtime_gpu_update_leased(
@@ -139,14 +169,14 @@ function hub_runtime_gpu_release_in_transaction(PDO $db, array $lease): bool
     );
 }
 
-function hub_runtime_gpu_release(PDO $db, array $lease): bool
+function hub_runtime_gpu_release(PDO $db, array $run, array $lease): bool
 {
     if ($db->inTransaction()) {
         throw new LogicException('runtime_gpu_release_transaction_required');
     }
     $db->exec('BEGIN IMMEDIATE');
     try {
-        $released = hub_runtime_gpu_release_in_transaction($db, $lease);
+        $released = hub_runtime_gpu_release_in_transaction($db, $run, $lease);
         if (!$released) {
             $db->exec('ROLLBACK');
             return false;
@@ -179,7 +209,8 @@ function hub_runtime_gpu_heartbeat(PDO $db, array $run, array $lease, int $lease
         $runtimeStmt = $db->prepare(
             "UPDATE runtime_runs SET heartbeat_at = :now, lease_expires_at = :lease_expires_at
              WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
-               AND state IN ('claimed', 'running')"
+               AND state IN ('claimed', 'running')
+               AND (lease_expires_at IS NULL OR lease_expires_at > :now)"
         );
         $runtimeStmt->execute([
             ':now' => $now,
@@ -209,20 +240,29 @@ function hub_runtime_gpu_heartbeat(PDO $db, array $run, array $lease, int $lease
     }
 }
 
-function hub_runtime_gpu_block(PDO $db, array $lease, string $error): bool
+function hub_runtime_gpu_block_in_transaction(PDO $db, array $run, array $lease, string $error, ?int $taskId = null): bool
+{
+    if (!hub_runtime_gpu_fence_matches_run($run, $lease) || !hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId)) {
+        return false;
+    }
+    $error = substr(trim($error), 0, 512);
+
+    return hub_runtime_gpu_update_leased(
+        $db,
+        $lease,
+        "state = 'blocked', last_error = :last_error, updated_at = :now",
+        [':last_error' => $error === '' ? 'blocked' : $error, ':now' => hub_now()]
+    );
+}
+
+function hub_runtime_gpu_block(PDO $db, array $run, array $lease, string $error): bool
 {
     if ($db->inTransaction()) {
         throw new LogicException('runtime_gpu_block_transaction_required');
     }
-    $error = substr(trim($error), 0, 512);
     $db->exec('BEGIN IMMEDIATE');
     try {
-        $blocked = hub_runtime_gpu_update_leased(
-            $db,
-            $lease,
-            "state = 'blocked', last_error = :last_error, updated_at = :now",
-            [':last_error' => $error === '' ? 'blocked' : $error, ':now' => hub_now()]
-        );
+        $blocked = hub_runtime_gpu_block_in_transaction($db, $run, $lease, $error);
         if (!$blocked) {
             $db->exec('ROLLBACK');
             return false;
@@ -288,7 +328,7 @@ function hub_runtime_gpu_expire(PDO $db, ?string $now = null): ?array
     }
 }
 
-function hub_runtime_gpu_recovery_update(PDO $db, array $lease, string $state, ?string $error): ?array
+function hub_runtime_gpu_recovery_update(PDO $db, array $lease, string $state, ?string $error, ?array $run = null): ?array
 {
     $gpu = hub_runtime_gpu_lease_identity($lease);
     if (!in_array($state, ['available', 'blocked'], true)) {
@@ -296,6 +336,10 @@ function hub_runtime_gpu_recovery_update(PDO $db, array $lease, string $state, ?
     }
     $db->exec('BEGIN IMMEDIATE');
     try {
+        if ($state === 'available' && ($run === null || !hub_runtime_gpu_fence_matches_run($run, $lease) || !hub_runtime_gpu_runtime_fence_in_transaction($db, $run))) {
+            $state = 'blocked';
+            $error = 'runtime_ownership_conflict';
+        }
         $now = hub_now();
         $set = $state === 'available'
             ? "runtime_run_id = NULL, worker_id = NULL, lease_token = NULL, state = 'available', acquired_at = NULL,
@@ -364,6 +408,11 @@ function hub_runtime_gpu_recover(PDO $db, callable $inspector, ?callable $contai
     if (!is_array($run)) {
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'runtime_run_missing');
     }
+    if (!hub_runtime_gpu_fence_matches_run($run, $lease)
+        || !in_array((string)($run['state'] ?? ''), ['claimed', 'running'], true)
+        || (!empty($run['lease_expires_at']) && (string)$run['lease_expires_at'] <= hub_now())) {
+        return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'runtime_ownership_conflict');
+    }
 
     $evidence = $inspector($run, $lease);
     if (!is_array($evidence)) {
@@ -388,7 +437,7 @@ function hub_runtime_gpu_recover(PDO $db, callable $inspector, ?callable $contai
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'owned_gpu_pid_residue');
     }
 
-    return hub_runtime_gpu_recovery_update($db, $lease, 'available', null);
+    return hub_runtime_gpu_recovery_update($db, $lease, 'available', null, $run);
 }
 
 function hub_runtime_record_gpu_ownership(PDO $db, array $run, array $lease, ?string $containerId, array $baselinePids, array $ownedPids): bool
@@ -492,36 +541,45 @@ function hub_runtime_gpu_preflight_result(array $run, int $requiredVramMb, int $
     return ['ok' => true, 'reason' => null];
 }
 
-function hub_runtime_gpu_active(PDO $db, array $run, array $lease): bool
+function hub_runtime_gpu_active(PDO $db, array $run, array $lease, ?int $taskId = null): bool
 {
     if (!hub_runtime_gpu_fence_matches_run($run, $lease)) {
         return false;
     }
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $gpu = hub_runtime_gpu_lease_identity($lease);
+    $taskPredicate = $taskId === null ? '' : ' AND task_id = :task_id';
     $runStmt = $db->prepare(
         "SELECT 1 FROM runtime_runs
          WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
-           AND state IN ('claimed', 'running')"
+           AND state IN ('claimed', 'running')
+           AND (lease_expires_at IS NULL OR lease_expires_at > :now){$taskPredicate}"
     );
-    $runStmt->execute([
+    $params = [
         ':run_id' => $runtime['run_id'],
         ':worker_id' => $runtime['worker_id'],
         ':lease_token' => $runtime['lease_token'],
-    ]);
+        ':now' => hub_now(),
+    ];
+    if ($taskId !== null) {
+        $params[':task_id'] = $taskId;
+    }
+    $runStmt->execute($params);
     if ($runStmt->fetchColumn() === false) {
         return false;
     }
     $leaseStmt = $db->prepare(
         "SELECT 1 FROM runtime_resource_leases
          WHERE resource_key = :resource_key AND runtime_run_id = :runtime_run_id AND worker_id = :worker_id
-           AND lease_token = :lease_token AND state = 'leased'"
+           AND lease_token = :lease_token AND state = 'leased'
+           AND (lease_expires_at IS NULL OR lease_expires_at > :now)"
     );
     $leaseStmt->execute([
         ':resource_key' => $gpu['resource_key'],
         ':runtime_run_id' => $gpu['runtime_run_id'],
         ':worker_id' => $gpu['worker_id'],
         ':lease_token' => $gpu['lease_token'],
+        ':now' => hub_now(),
     ]);
 
     return $leaseStmt->fetchColumn() !== false;
@@ -551,17 +609,22 @@ function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, arr
     $nextAttemptAt = hub_runtime_lease_until(max(1, $backoffSeconds));
     $db->exec('BEGIN IMMEDIATE');
     try {
+        if (!hub_runtime_gpu_release_in_transaction($db, $run, $lease, $taskId)) {
+            $db->exec('ROLLBACK');
+            return ['ok' => false, 'reason' => 'lost_gpu_lease'];
+        }
         $runStmt = $db->prepare(
             "UPDATE runtime_runs
              SET state = 'waiting_gpu', lease_expires_at = NULL, heartbeat_at = :now, error_code = NULL
              WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
-               AND state IN ('claimed', 'running')"
+               AND task_id = :task_id AND state IN ('claimed', 'running')"
         );
         $runStmt->execute([
             ':now' => $now,
             ':run_id' => $runtime['run_id'],
             ':worker_id' => $runtime['worker_id'],
             ':lease_token' => $runtime['lease_token'],
+            ':task_id' => $taskId,
         ]);
         $taskStmt = $db->prepare(
             "UPDATE tasks
@@ -575,8 +638,7 @@ function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, arr
             ':now' => $now,
             ':id' => $taskId,
         ]);
-        $released = $runStmt->rowCount() === 1 && $taskStmt->rowCount() === 1 && hub_runtime_gpu_release_in_transaction($db, $lease);
-        if (!$released) {
+        if ($runStmt->rowCount() !== 1 || $taskStmt->rowCount() !== 1) {
             $db->exec('ROLLBACK');
             return ['ok' => false, 'reason' => 'lost_gpu_lease'];
         }
@@ -597,7 +659,7 @@ function hub_runtime_gpu_preflight(PDO $db, int $taskId, array $run, array $leas
     if ($db->inTransaction()) {
         throw new LogicException('runtime_gpu_preflight_transaction_required');
     }
-    if (!hub_runtime_gpu_active($db, $run, $lease)) {
+    if (!hub_runtime_gpu_active($db, $run, $lease, $taskId)) {
         return ['ok' => false, 'reason' => 'lost_gpu_lease'];
     }
     $probe ??= 'hub_runtime_gpu_probe';
