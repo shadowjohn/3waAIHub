@@ -492,6 +492,20 @@ function hub_runtime_gpu_recovery_evidence(mixed $evidence): ?array
     ];
 }
 
+function hub_runtime_gpu_recovery_block_callback_failure(PDO $db, array $lease, string $reason, Throwable $callbackError): ?array
+{
+    try {
+        $blocked = hub_runtime_gpu_recovery_update($db, $lease, 'blocked', $reason);
+    } catch (Throwable) {
+        throw $callbackError;
+    }
+    if ($blocked === null) {
+        throw $callbackError;
+    }
+
+    return $blocked;
+}
+
 function hub_runtime_gpu_recover(PDO $db, callable $inspector, ?callable $containerCleanup = null): ?array
 {
     if ($db->inTransaction()) {
@@ -512,15 +526,33 @@ function hub_runtime_gpu_recover(PDO $db, callable $inspector, ?callable $contai
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'runtime_ownership_conflict');
     }
 
-    $evidence = hub_runtime_gpu_recovery_evidence($inspector($run, $lease));
+    try {
+        $inspection = $inspector($run, $lease);
+    } catch (Throwable $e) {
+        return hub_runtime_gpu_recovery_block_callback_failure($db, $lease, 'recovery_inspection_failed', $e);
+    }
+    $evidence = hub_runtime_gpu_recovery_evidence($inspection);
     if ($evidence === null) {
         return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'recovery_inspection_invalid');
     }
     if ($evidence['container']['exists'] || $evidence['container']['running']) {
-        if ($containerCleanup === null || !hub_runtime_gpu_recovery_ownership_matches($db, $run, $lease) || !$containerCleanup($run, $lease, $evidence)) {
+        if ($containerCleanup === null || !hub_runtime_gpu_recovery_ownership_matches($db, $run, $lease)) {
             return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'container_cleanup_failed');
         }
-        $evidence = hub_runtime_gpu_recovery_evidence($inspector($run, $lease));
+        try {
+            $cleaned = $containerCleanup($run, $lease, $evidence);
+        } catch (Throwable $e) {
+            return hub_runtime_gpu_recovery_block_callback_failure($db, $lease, 'container_cleanup_failed', $e);
+        }
+        if (!$cleaned) {
+            return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'container_cleanup_failed');
+        }
+        try {
+            $inspection = $inspector($run, $lease);
+        } catch (Throwable $e) {
+            return hub_runtime_gpu_recovery_block_callback_failure($db, $lease, 'recovery_inspection_failed', $e);
+        }
+        $evidence = hub_runtime_gpu_recovery_evidence($inspection);
         if ($evidence === null) {
             return hub_runtime_gpu_recovery_update($db, $lease, 'blocked', 'recovery_inspection_invalid');
         }

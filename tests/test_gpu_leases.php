@@ -204,6 +204,65 @@ hub_test('GPU recovery blocks unavailable malformed or incomplete inspector evid
     }
 });
 
+hub_test('GPU recovery blocks inspector and cleanup callback failures without further actions', function (): void {
+    $db = hub_test_reset_db();
+    $run = hub_test_gpu_lease_run($db, 'gpu_throwing_inspector');
+    $lease = hub_runtime_gpu_acquire($db, $run, 60);
+    hub_test_assert(is_array($lease), 'throwing inspector fixture must acquire GPU');
+    hub_test_gpu_lease_expire($db, $lease);
+    hub_test_assert(hub_runtime_gpu_expire($db) !== null, 'throwing inspector fixture must require recovery');
+    $cleanupCalled = false;
+    $inspectorResult = hub_runtime_gpu_recover(
+        $db,
+        static function (): array {
+            throw new RuntimeException('inspector transport failed');
+        },
+        static function () use (&$cleanupCalled): bool {
+            $cleanupCalled = true;
+            return true;
+        }
+    );
+    hub_test_assert(($inspectorResult['state'] ?? '') === 'blocked' && ($inspectorResult['last_error'] ?? '') === 'recovery_inspection_failed', 'throwing inspector must block the exact recovery lease');
+    hub_test_assert(!$cleanupCalled, 'throwing inspector must not invoke cleanup afterward');
+
+    $db = hub_test_reset_db();
+    $run = hub_test_gpu_lease_run($db, 'gpu_throwing_cleanup');
+    $lease = hub_runtime_gpu_acquire($db, $run, 60);
+    hub_test_assert(is_array($lease), 'throwing cleanup fixture must acquire GPU');
+    hub_test_gpu_lease_expire($db, $lease);
+    hub_test_assert(hub_runtime_gpu_expire($db) !== null, 'throwing cleanup fixture must require recovery');
+    $inspections = 0;
+    $cleanupResult = hub_runtime_gpu_recover(
+        $db,
+        static function () use (&$inspections): array {
+            $inspections++;
+            return hub_test_gpu_recovery_evidence(true);
+        },
+        static function (): bool {
+            throw new RuntimeException('container removal failed');
+        }
+    );
+    hub_test_assert(($cleanupResult['state'] ?? '') === 'blocked' && ($cleanupResult['last_error'] ?? '') === 'container_cleanup_failed', 'throwing cleanup must block the exact recovery lease');
+    hub_test_assert($inspections === 1, 'throwing cleanup must not inspect or act again afterward');
+
+    $db = hub_test_reset_db();
+    $run = hub_test_gpu_lease_run($db, 'gpu_throwing_inspector_fence_lost');
+    $lease = hub_runtime_gpu_acquire($db, $run, 60);
+    hub_test_assert(is_array($lease), 'lost blocking fence fixture must acquire GPU');
+    hub_test_gpu_lease_expire($db, $lease);
+    hub_test_assert(hub_runtime_gpu_expire($db) !== null, 'lost blocking fence fixture must require recovery');
+    $error = null;
+    try {
+        hub_runtime_gpu_recover($db, static function () use ($db): array {
+            $db->exec("UPDATE runtime_resource_leases SET lease_token = 'new-recovery-owner' WHERE resource_key = 'gpu:0'");
+            throw new RuntimeException('inspector lost its exact recovery fence');
+        });
+    } catch (RuntimeException $e) {
+        $error = $e->getMessage();
+    }
+    hub_test_assert($error === 'inspector lost its exact recovery fence', 'callback error may escape only after its exact blocking fence is lost');
+});
+
 hub_test('GPU acquire rejects an expired runtime lease', function (): void {
     $db = hub_test_reset_db();
     $run = hub_test_gpu_lease_run($db, 'gpu_acquire_expired');
@@ -367,6 +426,75 @@ hub_test('GPU Pack fence loss after artifact staging removes only its staged han
     hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn() === 0, 'post-stage fence loss must not register artifacts');
     hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn() === 0, 'post-stage fence loss must not enqueue callbacks');
     hub_test_assert(!is_dir($artifactRoot) || (glob($artifactRoot . '/*') ?: []) === [], 'post-stage fence loss must remove its lease-scoped handoff directory');
+});
+
+hub_test('GPU Pack inner terminal fence loss removes its staged handoff', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    hub_test_pack_job_clear_published_artifacts($db, $fixture['task_id']);
+    $db->prepare("UPDATE tasks SET accelerator = 'gpu' WHERE id = :id")->execute([':id' => $fixture['task_id']]);
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expires_at WHERE id = :id')->execute([':expires_at' => hub_runtime_lease_until(60), ':id' => $fixture['run']['id']]);
+    $run = $db->query('SELECT * FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+    $lease = hub_runtime_gpu_acquire($db, $run, 60);
+    hub_test_assert(is_array($lease), 'inner terminal fixture must acquire GPU');
+    hub_test_pack_job_write($fixture['workspace'] . '/output/transcript.json', "{\"text\":\"hello\"}\n");
+    hub_test_pack_job_write($fixture['workspace'] . '/output/subtitle.srt', "1\n00:00:00,000 --> 00:00:01,000\nhello\n");
+    hub_test_pack_job_write($fixture['workspace'] . '/output/audio.wav', hub_test_pack_job_wav());
+    $validated = hub_validate_pack_job_artifacts($fixture['workspace'], ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+
+    $error = null;
+    try {
+        hub_commit_pack_job_success(
+            $db,
+            $fixture['task_id'],
+            $run,
+            $validated,
+            hub_test_pack_job_cleanup_asserted(),
+            $lease,
+            null,
+            static function () use ($db): void {
+                $db->exec("UPDATE runtime_resource_leases SET lease_token = 'stale-inside-terminal' WHERE resource_key = 'gpu:0'");
+            }
+        );
+    } catch (RuntimeException $e) {
+        $error = $e->getMessage();
+    }
+    $artifactRoot = hub_task_result_dir($fixture['task_id']) . '/artifacts';
+    hub_test_assert($error === 'gpu_ownership_conflict', 'inner terminal fence loss must preserve its ownership error');
+    hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'running', 'inner terminal fence loss must not terminalize its task');
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn() === 0, 'inner terminal fence loss must not register artifacts');
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn() === 0, 'inner terminal fence loss must not enqueue callbacks');
+    hub_test_assert(!is_dir($artifactRoot) || (glob($artifactRoot . '/*') ?: []) === [], 'inner terminal fence loss must remove its lease-scoped handoff directory');
+});
+
+hub_test('GPU Pack staged handoff failure discards only its lease-scoped directory', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    hub_test_pack_job_clear_published_artifacts($db, $fixture['task_id']);
+    $db->prepare("UPDATE tasks SET accelerator = 'gpu' WHERE id = :id")->execute([':id' => $fixture['task_id']]);
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expires_at WHERE id = :id')->execute([':expires_at' => hub_runtime_lease_until(60), ':id' => $fixture['run']['id']]);
+    $run = $db->query('SELECT * FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+    $lease = hub_runtime_gpu_acquire($db, $run, 60);
+    hub_test_assert(is_array($lease), 'handoff failure fixture must acquire GPU');
+    hub_test_pack_job_write($fixture['workspace'] . '/output/transcript.json', "{\"text\":\"hello\"}\n");
+    hub_test_pack_job_write($fixture['workspace'] . '/output/subtitle.srt', "1\n00:00:00,000 --> 00:00:01,000\nhello\n");
+    hub_test_pack_job_write($fixture['workspace'] . '/output/audio.wav', hub_test_pack_job_wav());
+    $validated = hub_validate_pack_job_artifacts($fixture['workspace'], ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+
+    $result = hub_commit_pack_job_success(
+        $db,
+        $fixture['task_id'],
+        $run,
+        $validated,
+        hub_test_pack_job_cleanup_asserted(),
+        $lease,
+        static function (): void {
+            throw new RuntimeException('handoff hook failed');
+        }
+    );
+    $artifactRoot = hub_task_result_dir($fixture['task_id']) . '/artifacts';
+    hub_test_assert(($result['ok'] ?? true) === false && ($result['error_code'] ?? '') === 'output_contract_invalid', 'handoff failure must preserve its terminal outcome');
+    hub_test_assert(!is_dir($artifactRoot) || (glob($artifactRoot . '/*') ?: []) === [], 'handoff failure must remove its lease-scoped handoff directory');
 });
 
 hub_test('GPU Pack cleanup failure terminalizes with cleanup_failed and blocks the exact GPU lease', function (): void {

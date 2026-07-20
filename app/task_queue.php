@@ -1563,6 +1563,15 @@ function hub_pack_job_remove_published_handoff(int $taskId, string $handoffId, ?
     return $removed;
 }
 
+function hub_pack_job_remove_gpu_published_handoff(int $taskId, array $publishedArtifacts): void
+{
+    $handoffId = $publishedArtifacts[0]['published_handoff_id'] ?? null;
+    $handoffScope = $publishedArtifacts[0]['published_handoff_scope'] ?? null;
+    if (is_string($handoffId) && is_string($handoffScope)) {
+        hub_pack_job_remove_published_handoff($taskId, $handoffId, $handoffScope);
+    }
+}
+
 function hub_pack_job_published_artifact_path(string $handoffDir, string $name): string
 {
     $name = hub_pack_job_artifact_relative_path($name);
@@ -1673,6 +1682,9 @@ function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array
     hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
     hub_revalidate_pack_job_artifact_snapshot($db, $taskId, $run, $validatedArtifacts);
     hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
+    $handoffId = null;
+    $handoffScope = null;
+    $handoffComplete = false;
     try {
         $handoffId = bin2hex(random_bytes(16));
         $handoffScope = hub_pack_job_handoff_scope($run, $gpuLease);
@@ -1710,12 +1722,17 @@ function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array
         if ($afterStage !== null) {
             $afterStage($published);
         }
+        $handoffComplete = true;
 
         return $published;
     } catch (HubPackOutputContractInvalid $e) {
         throw $e;
     } catch (Throwable) {
         hub_pack_job_output_contract_invalid('artifact_handoff_failed');
+    } finally {
+        if (!$handoffComplete && is_string($handoffId) && is_string($handoffScope)) {
+            hub_pack_job_remove_published_handoff($taskId, $handoffId, $handoffScope);
+        }
     }
 }
 
@@ -1931,7 +1948,7 @@ function hub_pack_job_mark_task_terminal(PDO $db, int $taskId, string $status, ?
     }
 }
 
-function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run, array $publishedArtifacts, array $cleanup, ?array $gpuLease = null): array
+function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run, array $publishedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $beforeTerminalFence = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
@@ -1950,6 +1967,9 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
     }
     $db->beginTransaction();
     try {
+        if ($beforeTerminalFence !== null) {
+            $beforeTerminalFence($publishedArtifacts);
+        }
         hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
         hub_pack_job_terminal_fence($db, $run, $taskId, 'succeeded', null, $gpuLease);
         $resultArtifacts = [];
@@ -1976,7 +1996,7 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
     }
 }
 
-function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $afterHandoff = null): array
+function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $afterHandoff = null, ?callable $beforeTerminalFence = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
@@ -1997,16 +2017,21 @@ function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $v
     try {
         hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
     } catch (RuntimeException) {
-        $handoffId = $publishedArtifacts[0]['published_handoff_id'] ?? null;
-        $handoffScope = $publishedArtifacts[0]['published_handoff_scope'] ?? null;
-        if (is_string($handoffId) && ($handoffScope === null || is_string($handoffScope))) {
-            hub_pack_job_remove_published_handoff($taskId, $handoffId, $handoffScope);
-        }
+        hub_pack_job_remove_gpu_published_handoff($taskId, $publishedArtifacts);
 
         return ['ok' => false, 'error_code' => 'gpu_ownership_conflict'];
     }
+    try {
+        $result = hub_commit_published_pack_job_success($db, $taskId, $run, $publishedArtifacts, $cleanup, $gpuLease, $beforeTerminalFence);
+        if (($result['ok'] ?? false) !== true) {
+            hub_pack_job_remove_gpu_published_handoff($taskId, $publishedArtifacts);
+        }
 
-    return hub_commit_published_pack_job_success($db, $taskId, $run, $publishedArtifacts, $cleanup, $gpuLease);
+        return $result;
+    } catch (Throwable $e) {
+        hub_pack_job_remove_gpu_published_handoff($taskId, $publishedArtifacts);
+        throw $e;
+    }
 }
 
 function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $status, string $errorCode, string $errorMessage, array $cleanup = [], ?array $gpuLease = null): void
