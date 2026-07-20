@@ -1142,7 +1142,9 @@ function hub_api_docparser_repair_task_submit(PDO $db, string $queueName, int $p
         $input['api_token_id'] = (int)$authContext['token_id'];
     }
 
-    $taskId = hub_enqueue_task($db, 'docparser_repair_translation', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null, hub_task_owner_attributes($authContext));
+    $attributes = hub_task_owner_attributes($authContext);
+    $attributes['source_task_id'] = $sourceTaskId;
+    $taskId = hub_enqueue_task($db, 'docparser_repair_translation', $queueName, $priority, $input, null, $_SERVER['REMOTE_ADDR'] ?? null, $attributes);
 
     return hub_gateway_json(200, hub_task_submit_response($taskId));
 }

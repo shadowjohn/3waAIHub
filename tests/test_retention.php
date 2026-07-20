@@ -473,6 +473,26 @@ hub_test('legacy timeout tasks remain eligible for final retention cleanup', fun
     hub_test_assert(hub_get_task($db, $taskId) === null && (int)($result['metadata_purged'] ?? 0) === 1, 'legacy timeout metadata must be normalized or treated as terminal by retention cleanup');
 });
 
+hub_test('DocParser repair lineage retains parent metadata while queued or running', function (): void {
+    $db = hub_test_reset_db();
+    $now = '2026-07-20 00:00:00';
+    $parentId = hub_test_retention_metadata_ready_task($db, '2025-01-01 00:00:00');
+    $repairId = hub_enqueue_task($db, 'docparser_repair_translation', 'ocr', 0, ['source_task_id' => $parentId, 'block_ids' => ['p1-b1']], null, '127.0.0.1', [
+        'source_task_id' => $parentId,
+    ]);
+
+    hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $parentId) !== null, 'a queued DocParser repair must retain its source task metadata');
+
+    $db->prepare("UPDATE tasks SET status = 'running' WHERE id = :id")->execute([':id' => $repairId]);
+    hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $parentId) !== null, 'a running DocParser repair must retain its source task metadata');
+
+    $db->prepare('UPDATE tasks SET source_task_id = NULL WHERE id = :id')->execute([':id' => $repairId]);
+    $result = hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $parentId) === null && hub_get_task($db, $repairId) !== null && (int)($result['metadata_purged'] ?? 0) === 1, 'parent metadata becomes eligible only after the repair lineage column is cleared');
+});
+
 hub_test('metadata purge keeps records with an artifact hold or pending callback', function (): void {
     $db = hub_test_reset_db();
     $now = '2026-07-20 00:00:00';
