@@ -9,7 +9,7 @@ function hub_test_audio_payload(array $response): array
     return $payload;
 }
 
-function hub_test_audio_request(PDO $db, string $mode, string $token, array $post = [], array $get = [], array $files = [], string $method = 'POST'): array
+function hub_test_audio_request(PDO $db, string $mode, string $token, array $post = [], array $get = [], array $files = [], string $method = 'POST', ?bool $includeContentLength = null): array
 {
     $_SERVER['REMOTE_ADDR'] = '203.0.113.51';
     $_SERVER['REQUEST_METHOD'] = $method;
@@ -18,6 +18,9 @@ function hub_test_audio_request(PDO $db, string $mode, string $token, array $pos
     $_SERVER['HTTP_HOST'] = 'hub.test';
     $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
     unset($_SERVER['CONTENT_LENGTH']);
+    if ($includeContentLength ?? array_key_exists('source_artifact_id', $post)) {
+        $_SERVER['CONTENT_LENGTH'] = (string)strlen(http_build_query($post));
+    }
     $_POST = $post;
     $_GET = $get;
     $_FILES = $files;
@@ -668,6 +671,28 @@ hub_test('audio async request body limit applies before artifact source enqueue'
         $payload = hub_test_audio_payload($response);
         hub_test_assert($response['status'] === 413 && ($payload['error'] ?? '') === 'payload_too_large', 'an oversized request body must be rejected before source-artifact enqueue');
         hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $taskCount, 'an oversized source-artifact request must not create a downstream task');
+    });
+});
+
+hub_test('audio artifact source requires Content-Length before enqueue', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Audio Artifact Length Owner');
+        $token = hub_create_api_token($db, $memberId, 'audio artifact length token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+        $taskCount = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+
+        $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+            'source_artifact_id' => (string)$source['artifact_id'],
+            'text' => str_repeat('x', 2 * 1024 * 1024 + 1),
+        ], [], [], 'POST', false);
+        $payload = hub_test_audio_payload($response);
+        hub_test_assert($response['status'] === 411 && ($payload['error'] ?? '') === 'length_required', 'a headerless source-artifact request must be rejected before enqueue');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $taskCount, 'a headerless source-artifact request must not create a downstream task');
     });
 });
 

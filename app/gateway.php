@@ -742,6 +742,10 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
     if ($ownerMemberId <= 0) {
         return hub_gateway_error(403, 'member_required', 'audio task submission requires an API member');
     }
+    $sourceArtifactId = trim((string)($_POST['source_artifact_id'] ?? ''));
+    if ($sourceArtifactId !== '' && !hub_audio_task_has_valid_content_length()) {
+        return hub_gateway_error(411, 'length_required', 'source artifact requests require Content-Length');
+    }
     if (!hub_audio_task_request_size_allowed($route)) {
         return hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows');
     }
@@ -751,7 +755,6 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
 
-    $sourceArtifactId = trim((string)($_POST['source_artifact_id'] ?? ''));
     $uploads = hub_audio_task_uploads();
     if (($sourceArtifactId === '' && $uploads === []) || ($sourceArtifactId !== '' && $uploads !== [])) {
         return hub_gateway_error(400, $sourceArtifactId === '' ? 'source_required' : 'source_ambiguous', 'provide exactly one managed source');
@@ -871,6 +874,11 @@ function hub_audio_task_request_size_allowed(array $route): bool
     $contentLength = trim((string)($_SERVER['CONTENT_LENGTH'] ?? ''));
 
     return $contentLength === '' || (ctype_digit($contentLength) && (int)$contentLength <= $maxUploadBytes);
+}
+
+function hub_audio_task_has_valid_content_length(): bool
+{
+    return ctype_digit(trim((string)($_SERVER['CONTENT_LENGTH'] ?? '')));
 }
 
 function hub_audio_task_input(array $input, array $route): array
