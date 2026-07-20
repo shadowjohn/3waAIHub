@@ -95,6 +95,69 @@ function hub_get_pack(string $packId): ?array
     return null;
 }
 
+function hub_audio_async_routes(): array
+{
+    return [
+        'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
+        'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
+        'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize'],
+    ];
+}
+
+function hub_is_audio_async_mode(string $mode): bool
+{
+    return array_key_exists($mode, hub_audio_async_routes());
+}
+
+function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
+{
+    $route = hub_audio_async_routes()[$requestedMode] ?? null;
+    if ($route === null) {
+        throw new InvalidArgumentException('unknown_audio_async_mode');
+    }
+
+    $pack = hub_get_pack((string)$route['pack_id']);
+    if (!$pack || ($pack['status'] ?? '') !== 'ok') {
+        throw new RuntimeException('pack_not_installed');
+    }
+    $packVersion = (string)($pack['manifest']['version'] ?? '');
+    if ($packVersion === '') {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+
+    $stmt = $db->prepare(
+        "SELECT pack_version FROM services
+         WHERE pack_id = :pack_id AND install_status = 'installed'
+         ORDER BY id DESC"
+    );
+    $stmt->execute([':pack_id' => $route['pack_id']]);
+    $installedVersions = $stmt->fetchAll(PDO::FETCH_COLUMN);
+    if ($installedVersions === []) {
+        throw new RuntimeException('pack_not_installed');
+    }
+    if (!in_array($packVersion, array_map('strval', $installedVersions), true)) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+
+    return [
+        'requested_mode' => $requestedMode,
+        'pack_id' => $route['pack_id'],
+        'pack_version' => $packVersion,
+        'job' => $route['job'],
+        'runtime_mode' => 'job',
+        'accelerator' => 'gpu',
+        'route_resolved_at' => hub_now(),
+    ];
+}
+
+function hub_audio_job_input_artifact_types(string $job): array
+{
+    return match ($job) {
+        'cleanup', 'transcribe', 'synthesize' => ['audio'],
+        default => [],
+    };
+}
+
 function hub_pack_is_internal_task(array $manifest): bool
 {
     return (string)($manifest['runtime']['kind'] ?? '') === 'internal_task';

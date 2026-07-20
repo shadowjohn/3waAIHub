@@ -7,7 +7,7 @@ class HubTaskCancelled extends RuntimeException
 
 function hub_allowed_task_types(): array
 {
-    return ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation'];
+    return ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation', 'pack_job'];
 }
 
 function hub_default_task_queues(): array
@@ -25,7 +25,7 @@ function hub_is_valid_task_queue(string $queueName): bool
     return in_array($queueName, hub_default_task_queues(), true);
 }
 
-function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $priority, array $input, ?int $requestedBy, ?string $requestedIp): int
+function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $priority, array $input, ?int $requestedBy, ?string $requestedIp, array $attributes = []): int
 {
     if (!hub_is_valid_task_type($taskType)) {
         throw new InvalidArgumentException('Invalid task type.');
@@ -37,9 +37,13 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
     $now = hub_now();
     $stmt = $db->prepare(
         'INSERT INTO tasks
-            (task_type, queue_name, priority, input_json, status, requested_by, requested_ip, created_at, updated_at)
+            (task_type, queue_name, priority, input_json, status, requested_by, requested_ip,
+             owner_member_id, owner_token_id, requested_mode, pack_id, pack_version, job, runtime_mode, accelerator,
+             route_resolved_at, source_artifact_id, source_task_id, retry_of_task_id, created_at, updated_at)
          VALUES
-            (:task_type, :queue_name, :priority, :input_json, :status, :requested_by, :requested_ip, :created_at, :updated_at)'
+            (:task_type, :queue_name, :priority, :input_json, :status, :requested_by, :requested_ip,
+             :owner_member_id, :owner_token_id, :requested_mode, :pack_id, :pack_version, :job, :runtime_mode, :accelerator,
+             :route_resolved_at, :source_artifact_id, :source_task_id, :retry_of_task_id, :created_at, :updated_at)'
     );
     $stmt->execute([
         ':task_type' => $taskType,
@@ -49,11 +53,109 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
         ':status' => 'queued',
         ':requested_by' => $requestedBy,
         ':requested_ip' => $requestedIp,
+        ':owner_member_id' => $attributes['owner_member_id'] ?? null,
+        ':owner_token_id' => $attributes['owner_token_id'] ?? null,
+        ':requested_mode' => $attributes['requested_mode'] ?? null,
+        ':pack_id' => $attributes['pack_id'] ?? null,
+        ':pack_version' => $attributes['pack_version'] ?? null,
+        ':job' => $attributes['job'] ?? null,
+        ':runtime_mode' => $attributes['runtime_mode'] ?? null,
+        ':accelerator' => $attributes['accelerator'] ?? null,
+        ':route_resolved_at' => $attributes['route_resolved_at'] ?? null,
+        ':source_artifact_id' => $attributes['source_artifact_id'] ?? null,
+        ':source_task_id' => $attributes['source_task_id'] ?? null,
+        ':retry_of_task_id' => $attributes['retry_of_task_id'] ?? null,
         ':created_at' => $now,
         ':updated_at' => $now,
     ]);
 
     return (int)$db->lastInsertId();
+}
+
+function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ownerMemberId, ?int $ownerTokenId, ?string $requestedIp, array $lineage = []): int
+{
+    foreach (['requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at'] as $field) {
+        if (empty($route[$field])) {
+            throw new InvalidArgumentException('Invalid Pack job route.');
+        }
+    }
+
+    return hub_enqueue_task($db, 'pack_job', 'gpu', 0, $input, null, $requestedIp, $route + [
+        'owner_member_id' => $ownerMemberId,
+        'owner_token_id' => $ownerTokenId,
+        'source_artifact_id' => $lineage['source_artifact_id'] ?? null,
+        'source_task_id' => $lineage['source_task_id'] ?? null,
+        'retry_of_task_id' => $lineage['retry_of_task_id'] ?? null,
+    ]);
+}
+
+function hub_validate_pack_job_source_artifact(PDO $db, int $artifactId, int $ownerMemberId, string $job): ?array
+{
+    $stmt = $db->prepare(
+        'SELECT a.*, t.owner_member_id AS task_owner_member_id
+         FROM task_artifacts a
+         JOIN tasks t ON t.id = a.task_id
+         WHERE a.id = :id'
+    );
+    $stmt->execute([':id' => $artifactId]);
+    $artifact = $stmt->fetch();
+    if (!$artifact || (int)($artifact['task_owner_member_id'] ?? 0) !== $ownerMemberId) {
+        return null;
+    }
+    if (
+        ($artifact['state'] ?? '') !== 'available'
+        || !empty($artifact['purged_at'])
+        || (!empty($artifact['expires_at']) && (string)$artifact['expires_at'] <= hub_now())
+        || !in_array((string)($artifact['artifact_type'] ?? ''), hub_audio_job_input_artifact_types($job), true)
+        || hub_artifact_safe_path((string)($artifact['path'] ?? '')) === null
+    ) {
+        throw new RuntimeException('source_artifact_invalid');
+    }
+
+    return $artifact;
+}
+
+function hub_managed_task_upload_path(int $taskId, string $path): ?string
+{
+    $realPath = realpath($path);
+    $taskRoot = realpath(HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId);
+    if ($realPath === false || $taskRoot === false || !is_file($realPath)) {
+        return null;
+    }
+
+    return str_starts_with($realPath, $taskRoot . DIRECTORY_SEPARATOR) ? $realPath : null;
+}
+
+function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []): int
+{
+    $task = hub_get_task($db, $taskId);
+    if (!$task || ($task['task_type'] ?? '') !== 'pack_job') {
+        throw new InvalidArgumentException('task_not_retryable');
+    }
+    if (!in_array((string)($task['status'] ?? ''), ['success', 'failed', 'cancelled'], true)) {
+        throw new RuntimeException('task_not_terminal');
+    }
+    $ownerMemberId = (int)($task['owner_member_id'] ?? 0);
+    if ($ownerMemberId <= 0 || (!empty($authContext['member_id']) && $ownerMemberId !== (int)$authContext['member_id'])) {
+        throw new InvalidArgumentException('task_not_found');
+    }
+    $input = is_array($task['input'] ?? null) ? $task['input'] : [];
+    unset($input['cancel_requested'], $input['cancel_requested_at']);
+    $sourceArtifactId = (int)($task['source_artifact_id'] ?? 0);
+    $source = $sourceArtifactId > 0 ? hub_validate_pack_job_source_artifact($db, $sourceArtifactId, $ownerMemberId, (string)$task['job']) : null;
+    if ($sourceArtifactId > 0 && $source === null) {
+        throw new RuntimeException('source_artifact_invalid');
+    }
+    if ($sourceArtifactId <= 0 && hub_managed_task_upload_path($taskId, (string)($input['source_upload_path'] ?? '')) === null) {
+        throw new RuntimeException('source_upload_invalid');
+    }
+    $route = array_intersect_key($task, array_flip(['requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at']));
+
+    return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
+        'source_artifact_id' => $sourceArtifactId,
+        'source_task_id' => (int)($source['task_id'] ?? 0),
+        'retry_of_task_id' => $taskId,
+    ]);
 }
 
 function hub_update_task_input(PDO $db, int $taskId, array $input): void

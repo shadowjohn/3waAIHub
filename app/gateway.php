@@ -12,6 +12,22 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if ($mode === 'yolo_gpu_internal') {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId);
     }
+    if (hub_is_audio_async_mode($mode)) {
+        $clientIp = hub_get_client_ip();
+        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
+        $authContext = $auth['context'] ?? [];
+        if (empty($auth['ok'])) {
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
+        }
+        try {
+            $route = hub_resolve_audio_async_route($db, $mode);
+        } catch (RuntimeException $e) {
+            $code = in_array($e->getMessage(), ['pack_not_installed', 'pack_version_unavailable'], true) ? $e->getMessage() : 'pack_not_installed';
+            return hub_gateway_finish($db, null, $mode, hub_gateway_error(503, $code, $code), $started, $requestId, $authContext);
+        }
+
+        return hub_gateway_finish($db, null, $mode, hub_api_audio_task_submit($db, $route, $authContext), $started, $requestId, $authContext);
+    }
     $service = hub_get_service_by_mode($db, $mode);
     if (!$service && hub_is_task_api_mode($mode)) {
         $clientIp = hub_get_client_ip();
@@ -349,6 +365,7 @@ function hub_task_api_modes(): array
         'task_result' => 'Task Result',
         'task_log' => 'Task Log',
         'task_cancel' => 'Task Cancel',
+        'task_retry' => 'Task Retry',
         'artifact' => 'Task Artifact',
     ];
 }
@@ -700,13 +717,114 @@ function hub_task_api_dispatch(PDO $db, string $mode, array $authContext = []): 
 {
     return match ($mode) {
         'task_submit' => hub_api_task_submit($db, $authContext),
-        'task_status' => hub_api_task_status($db),
-        'task_result' => hub_api_task_result($db),
-        'task_log' => hub_api_task_log($db),
-        'task_cancel' => hub_api_task_cancel($db),
-        'artifact' => hub_api_artifact($db),
+        'task_status' => hub_api_task_status($db, $authContext),
+        'task_result' => hub_api_task_result($db, $authContext),
+        'task_log' => hub_api_task_log($db, $authContext),
+        'task_cancel' => hub_api_task_cancel($db, $authContext),
+        'task_retry' => hub_api_task_retry($db, $authContext),
+        'artifact' => hub_api_artifact($db, $authContext),
         default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown mode']),
     };
+}
+
+function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'audio task submission requires POST');
+    }
+    $ownerMemberId = (int)($authContext['member_id'] ?? 0);
+    if ($ownerMemberId <= 0) {
+        return hub_gateway_error(403, 'member_required', 'audio task submission requires an API member');
+    }
+    if (hub_audio_task_has_forbidden_control($_POST)) {
+        return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
+    }
+
+    $sourceArtifactId = trim((string)($_POST['source_artifact_id'] ?? ''));
+    $uploads = hub_audio_task_uploads();
+    if (($sourceArtifactId === '' && $uploads === []) || ($sourceArtifactId !== '' && $uploads !== [])) {
+        return hub_gateway_error(400, $sourceArtifactId === '' ? 'source_required' : 'source_ambiguous', 'provide exactly one managed source');
+    }
+    if ($sourceArtifactId !== '') {
+        if (!ctype_digit($sourceArtifactId) || (int)$sourceArtifactId <= 0) {
+            return hub_gateway_error(400, 'source_artifact_invalid', 'source_artifact_id is invalid');
+        }
+        try {
+            $source = hub_validate_pack_job_source_artifact($db, (int)$sourceArtifactId, $ownerMemberId, (string)$route['job']);
+        } catch (RuntimeException) {
+            return hub_gateway_error(409, 'source_artifact_invalid', 'source artifact is unavailable');
+        }
+        if ($source === null) {
+            return hub_gateway_error(404, 'source_artifact_not_found', 'source artifact was not found');
+        }
+
+        $taskId = hub_enqueue_owned_pack_job($db, $route, hub_audio_task_input($_POST), $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip(), [
+            'source_artifact_id' => (int)$source['id'],
+            'source_task_id' => (int)$source['task_id'],
+        ]);
+        return hub_gateway_json(200, hub_task_submit_response($taskId));
+    }
+
+    if (count($uploads) !== 1) {
+        return hub_gateway_error(400, 'source_ambiguous', 'provide exactly one managed source');
+    }
+    $file = $uploads[0];
+    $extension = strtolower(pathinfo((string)($file['name'] ?? ''), PATHINFO_EXTENSION));
+    $extension = preg_match('/^[a-z0-9]{1,8}$/', $extension) ? $extension : 'bin';
+    $taskId = hub_enqueue_owned_pack_job($db, $route, hub_audio_task_input($_POST), $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip());
+    try {
+        $input = hub_get_task($db, $taskId)['input'] ?? [];
+        $input['source_upload_path'] = hub_store_task_upload_file($taskId, $file, $extension);
+        $input['original_filename'] = basename((string)($file['name'] ?? 'source.' . $extension));
+        hub_update_task_input($db, $taskId, $input);
+    } catch (Throwable $e) {
+        $db->prepare('DELETE FROM tasks WHERE id = :id')->execute([':id' => $taskId]);
+        throw $e;
+    }
+
+    return hub_gateway_json(200, hub_task_submit_response($taskId));
+}
+
+function hub_audio_task_has_forbidden_control(array $input): bool
+{
+    foreach (array_keys($input) as $key) {
+        $key = strtolower((string)$key);
+        if (
+            in_array($key, ['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'entrypoint', 'command', 'script', 'env', 'environment', 'environment_json', 'host_path', 'container_path', 'path', 'input_file', 'source_path', 'callback_url', 'callback_secret', 'callback_target_id'], true)
+            || str_starts_with($key, 'env_')
+            || str_starts_with($key, 'environment_')
+            || str_starts_with($key, 'callback_')
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function hub_audio_task_uploads(): array
+{
+    $uploads = [];
+    foreach ($_FILES as $file) {
+        if (!is_array($file) || is_array($file['tmp_name'] ?? null)) {
+            continue;
+        }
+        if ((int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_NO_FILE) {
+            continue;
+        }
+        if ((int)($file['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_file((string)($file['tmp_name'] ?? ''))) {
+            return [];
+        }
+        $uploads[] = $file;
+    }
+
+    return $uploads;
+}
+
+function hub_audio_task_input(array $input): array
+{
+    unset($input['source_artifact_id']);
+    return $input;
 }
 
 function hub_api_task_submit(PDO $db, array $authContext = []): array
@@ -975,9 +1093,9 @@ function hub_store_task_upload_file(int $taskId, array $file, string $extension)
     return $path;
 }
 
-function hub_api_task_status(PDO $db): array
+function hub_api_task_status(PDO $db, array $authContext = []): array
 {
-    $task = hub_api_load_task($db);
+    $task = hub_api_load_task($db, $authContext);
     if (!$task) {
         return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
     }
@@ -998,9 +1116,9 @@ function hub_api_task_status(PDO $db): array
     ]);
 }
 
-function hub_api_task_result(PDO $db): array
+function hub_api_task_result(PDO $db, array $authContext = []): array
 {
-    $task = hub_api_load_task($db);
+    $task = hub_api_load_task($db, $authContext);
     if (!$task) {
         return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
     }
@@ -1012,9 +1130,9 @@ function hub_api_task_result(PDO $db): array
     return hub_gateway_json(200, ['ok' => true, 'task_id' => (int)$task['id'], 'result' => $task['result']]);
 }
 
-function hub_api_task_log(PDO $db): array
+function hub_api_task_log(PDO $db, array $authContext = []): array
 {
-    $task = hub_api_load_task($db);
+    $task = hub_api_load_task($db, $authContext);
     if (!$task) {
         return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
     }
@@ -1026,13 +1144,13 @@ function hub_api_task_log(PDO $db): array
     ]);
 }
 
-function hub_api_task_cancel(PDO $db): array
+function hub_api_task_cancel(PDO $db, array $authContext = []): array
 {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
         return hub_gateway_json(405, ['ok' => false, 'error' => 'task_cancel requires POST']);
     }
 
-    $task = hub_api_load_task($db);
+    $task = hub_api_load_task($db, $authContext);
     if (!$task) {
         return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
     }
@@ -1051,11 +1169,34 @@ function hub_api_task_cancel(PDO $db): array
     ]);
 }
 
-function hub_api_artifact(PDO $db): array
+function hub_api_task_retry(PDO $db, array $authContext = []): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_json(405, ['ok' => false, 'error' => 'task_retry requires POST']);
+    }
+
+    $task = hub_api_load_task($db, $authContext);
+    if (!$task) {
+        return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
+    }
+    try {
+        $taskId = hub_create_manual_retry($db, (int)$task['id'], $authContext);
+    } catch (InvalidArgumentException|RuntimeException $e) {
+        return hub_gateway_json(409, ['ok' => false, 'error' => $e->getMessage()]);
+    }
+
+    return hub_gateway_json(200, hub_task_submit_response($taskId));
+}
+
+function hub_api_artifact(PDO $db, array $authContext = []): array
 {
     $artifactId = (int)($_GET['artifact_id'] ?? $_POST['artifact_id'] ?? 0);
     $artifact = $artifactId > 0 ? hub_get_task_artifact($db, $artifactId) : null;
     if (!$artifact) {
+        return hub_gateway_json(404, ['ok' => false, 'error' => 'artifact not found']);
+    }
+    $task = hub_get_task($db, (int)$artifact['task_id']);
+    if (!$task || !hub_task_access_allowed($db, $task, $authContext)) {
         return hub_gateway_json(404, ['ok' => false, 'error' => 'artifact not found']);
     }
 
@@ -1074,10 +1215,26 @@ function hub_api_artifact(PDO $db): array
     ];
 }
 
-function hub_api_load_task(PDO $db): ?array
+function hub_api_load_task(PDO $db, array $authContext = []): ?array
 {
     $taskId = (int)($_GET['task_id'] ?? $_POST['task_id'] ?? 0);
-    return $taskId > 0 ? hub_get_task($db, $taskId) : null;
+    $task = $taskId > 0 ? hub_get_task($db, $taskId) : null;
+
+    return $task && hub_task_access_allowed($db, $task, $authContext) ? $task : null;
+}
+
+function hub_task_access_allowed(PDO $db, array $task, array $authContext): bool
+{
+    $memberId = (int)($authContext['member_id'] ?? 0);
+    if ($memberId > 0) {
+        return (int)($task['owner_member_id'] ?? 0) === $memberId;
+    }
+    if (hub_is_localhost_ip(hub_get_client_ip())) {
+        return true;
+    }
+
+    $user = hub_current_user($db);
+    return is_array($user) && (string)($user['role'] ?? '') === 'system_admin';
 }
 
 function hub_proxy_request(string $url, int $timeoutSec = 60, ?string $bodyOverride = null, ?string $contentTypeOverride = null): array

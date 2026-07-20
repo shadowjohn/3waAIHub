@@ -1,0 +1,266 @@
+<?php
+declare(strict_types=1);
+
+function hub_test_audio_payload(array $response): array
+{
+    $payload = json_decode((string)($response['body'] ?? ''), true);
+    hub_test_assert(is_array($payload), 'audio gateway response must be JSON');
+
+    return $payload;
+}
+
+function hub_test_audio_request(PDO $db, string $mode, string $token, array $post = [], array $get = [], array $files = [], string $method = 'POST'): array
+{
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.51';
+    $_SERVER['REQUEST_METHOD'] = $method;
+    $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=' . $mode;
+    $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $token;
+    $_SERVER['HTTP_HOST'] = 'hub.test';
+    $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
+    unset($_SERVER['CONTENT_LENGTH']);
+    $_POST = $post;
+    $_GET = $get;
+    $_FILES = $files;
+
+    return hub_gateway_dispatch($db, $mode);
+}
+
+function hub_test_audio_allow(PDO $db, array $tokens, array $modes): void
+{
+    foreach ($tokens as $token) {
+        foreach ($modes as $mode) {
+            hub_add_api_token_mode_permission($db, (int)$token['token_id'], $mode, null);
+        }
+    }
+}
+
+function hub_test_audio_isolate(callable $fn): void
+{
+    $server = $_SERVER;
+    $get = $_GET;
+    $post = $_POST;
+    $files = $_FILES;
+    try {
+        $fn();
+    } finally {
+        $_SERVER = $server;
+        $_GET = $get;
+        $_POST = $post;
+        $_FILES = $files;
+    }
+}
+
+function hub_test_audio_source_artifact(PDO $db, int $memberId, int $tokenId, string $artifactType = 'audio', string $state = 'available', ?string $expiresAt = null, ?string $purgedAt = null, ?string $path = null): array
+{
+    $sourceTaskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '203.0.113.51', [
+        'owner_member_id' => $memberId,
+        'owner_token_id' => $tokenId,
+    ]);
+    $path ??= hub_task_result_dir($sourceTaskId) . '/source.wav';
+    $dir = dirname($path);
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create audio source artifact directory.');
+    }
+    if (file_put_contents($path, 'RIFFaudio', LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write audio source artifact.');
+    }
+    $artifactId = hub_register_task_artifact($db, $sourceTaskId, basename($path), $path, 'audio/wav');
+    $db->prepare(
+        'UPDATE task_artifacts
+         SET artifact_type = :artifact_type, state = :state, expires_at = :expires_at, purged_at = :purged_at
+         WHERE id = :id'
+    )->execute([
+        ':artifact_type' => $artifactType,
+        ':state' => $state,
+        ':expires_at' => $expiresAt,
+        ':purged_at' => $purgedAt,
+        ':id' => $artifactId,
+    ]);
+
+    return ['task_id' => $sourceTaskId, 'artifact_id' => $artifactId, 'path' => $path];
+}
+
+hub_test('audio async routes are fixed and resolve installed Pack versions', function (): void {
+    hub_test_audio_isolate(static function (): void {
+    $db = hub_test_reset_db();
+    $routes = hub_audio_async_routes();
+    hub_test_assert($routes === [
+        'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
+        'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
+        'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize'],
+    ], 'audio route map must not be client-configurable');
+
+    $whisper = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $tts = hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+    $asrRoute = hub_resolve_audio_async_route($db, 'speech_transcribe');
+    $ttsRoute = hub_resolve_audio_async_route($db, 'voice_generate');
+    foreach ([
+        [$asrRoute, 'speech_transcribe', 'whisper-asr', (string)$whisper['service']['pack_version'], 'transcribe'],
+        [$ttsRoute, 'voice_generate', 'tts-voxcpm2', (string)$tts['service']['pack_version'], 'synthesize'],
+    ] as [$route, $mode, $packId, $packVersion, $job]) {
+        hub_test_assert(($route['requested_mode'] ?? '') === $mode, 'requested public mode must persist');
+        hub_test_assert(($route['pack_id'] ?? '') === $packId && ($route['pack_version'] ?? '') === $packVersion && ($route['job'] ?? '') === $job, 'installed Pack route snapshot mismatch');
+        hub_test_assert(($route['runtime_mode'] ?? '') === 'job' && ($route['accelerator'] ?? '') === 'gpu' && !empty($route['route_resolved_at']), 'audio route runtime snapshot mismatch');
+    }
+
+    $memberId = hub_create_api_member($db, 'Audio Route Client');
+    $token = hub_create_api_token($db, $memberId, 'audio route token', null, null);
+    hub_test_audio_allow($db, [$token], ['audio_cleanup']);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+    $missing = hub_test_audio_request($db, 'audio_cleanup', (string)$token['plain_token'], ['source_artifact_id' => '1']);
+        hub_test_assert($missing['status'] === 503 && (hub_test_audio_payload($missing)['error'] ?? '') === 'pack_not_installed', 'uninstalled audio Pack must fail safely');
+    });
+});
+
+hub_test('audio async admission rejects controls and persists the managed route snapshot', function (): void {
+    hub_test_audio_isolate(static function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $memberId = hub_create_api_member($db, 'Audio Submit Owner');
+    $token = hub_create_api_token($db, $memberId, 'audio submit token', null, null);
+    hub_test_audio_allow($db, [$token], ['speech_transcribe']);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+    $upload = tempnam(sys_get_temp_dir(), '3waaihub_audio_');
+    if ($upload === false || file_put_contents($upload, 'RIFFaudio', LOCK_EX) === false) {
+        throw new RuntimeException('Cannot create managed upload fixture.');
+    }
+    try {
+        $file = [
+            'name' => 'voice.wav',
+            'type' => 'audio/wav',
+            'tmp_name' => $upload,
+            'error' => UPLOAD_ERR_OK,
+            'size' => filesize($upload),
+        ];
+        $forbidden = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], ['pack_version' => 'other'], [], ['file' => $file]);
+        hub_test_assert($forbidden['status'] === 400 && (hub_test_audio_payload($forbidden)['error'] ?? '') === 'forbidden_task_control', 'client Pack controls must be rejected, not ignored');
+
+        $created = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [], [], ['file' => $file]);
+        $payload = hub_test_audio_payload($created);
+        hub_test_assert($created['status'] === 200 && !empty($payload['task_id']), 'managed upload must create an audio task');
+        $task = hub_get_task($db, (int)$payload['task_id']);
+        hub_test_assert(($task['task_type'] ?? '') === 'pack_job' && ($task['queue_name'] ?? '') === 'gpu', 'audio work must use the one generic Pack task path');
+        hub_test_assert((int)($task['owner_member_id'] ?? 0) === $memberId && (int)($task['owner_token_id'] ?? 0) === (int)$token['token_id'], 'audio task ownership must persist');
+        hub_test_assert(($task['requested_mode'] ?? '') === 'speech_transcribe' && ($task['pack_id'] ?? '') === 'whisper-asr' && ($task['job'] ?? '') === 'transcribe' && ($task['runtime_mode'] ?? '') === 'job' && ($task['accelerator'] ?? '') === 'gpu', 'audio route fields must be immutable task columns');
+        hub_test_assert(empty($task['source_artifact_id']) && empty($task['source_task_id']) && str_starts_with((string)($task['input']['source_upload_path'] ?? ''), HUB_DATA_DIR . '/uploads/tasks/task_' . (int)$task['id'] . '/'), 'upload source must be copied only into managed storage');
+
+        $none = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token']);
+        hub_test_assert($none['status'] === 400 && (hub_test_audio_payload($none)['error'] ?? '') === 'source_required', 'audio task requires one source');
+    } finally {
+        if (is_file($upload)) {
+            unlink($upload);
+        }
+    }
+    });
+});
+
+hub_test('audio artifact chaining validates ownership state type and path', function (): void {
+    hub_test_audio_isolate(static function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $memberA = hub_create_api_member($db, 'Audio Artifact Owner');
+    $tokenA = hub_create_api_token($db, $memberA, 'audio artifact token A', null, null);
+    $tokenA2 = hub_create_api_token($db, $memberA, 'audio artifact token A2', null, null);
+    $memberB = hub_create_api_member($db, 'Audio Artifact Stranger');
+    $tokenB = hub_create_api_token($db, $memberB, 'audio artifact token B', null, null);
+    hub_test_audio_allow($db, [$tokenA, $tokenA2, $tokenB], ['speech_transcribe', 'task_status', 'task_result', 'task_log', 'task_cancel', 'task_retry', 'artifact']);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+    $source = hub_test_audio_source_artifact($db, $memberA, (int)$tokenA['token_id']);
+    $created = hub_test_audio_request($db, 'speech_transcribe', (string)$tokenA['plain_token'], ['source_artifact_id' => (string)$source['artifact_id']]);
+    $createdPayload = hub_test_audio_payload($created);
+    $taskId = (int)($createdPayload['task_id'] ?? 0);
+    $task = hub_get_task($db, $taskId);
+    hub_test_assert($created['status'] === 200 && (int)($task['source_artifact_id'] ?? 0) === $source['artifact_id'] && (int)($task['source_task_id'] ?? 0) === $source['task_id'], 'valid source artifact must preserve lineage');
+
+    $sameMember = hub_test_audio_request($db, 'task_status', (string)$tokenA2['plain_token'], [], ['task_id' => (string)$taskId], [], 'GET');
+    hub_test_assert($sameMember['status'] === 200, 'different token for same member must read task');
+    foreach (['task_status', 'task_result', 'task_log', 'task_cancel', 'task_retry'] as $mode) {
+        $method = in_array($mode, ['task_cancel', 'task_retry'], true) ? 'POST' : 'GET';
+        $response = hub_test_audio_request($db, $mode, (string)$tokenB['plain_token'], ['task_id' => (string)$taskId], ['task_id' => (string)$taskId], [], $method);
+        hub_test_assert($response['status'] === 404, 'cross-member ' . $mode . ' must not reveal task');
+    }
+    $artifact = hub_test_audio_request($db, 'artifact', (string)$tokenB['plain_token'], [], ['artifact_id' => (string)$source['artifact_id']], [], 'GET');
+    hub_test_assert($artifact['status'] === 404, 'cross-member artifact download must not reveal artifact');
+
+    $invalid = [
+        hub_test_audio_source_artifact($db, $memberB, (int)$tokenB['token_id']),
+        hub_test_audio_source_artifact($db, $memberA, (int)$tokenA['token_id'], 'audio', 'purged'),
+        hub_test_audio_source_artifact($db, $memberA, (int)$tokenA['token_id'], 'audio', 'available', '2000-01-01 00:00:00'),
+        hub_test_audio_source_artifact($db, $memberA, (int)$tokenA['token_id'], 'audio', 'available', null, '2020-01-01 00:00:00'),
+        hub_test_audio_source_artifact($db, $memberA, (int)$tokenA['token_id'], 'transcript_json'),
+    ];
+    foreach ($invalid as $index => $bad) {
+        $response = hub_test_audio_request($db, 'speech_transcribe', (string)$tokenA['plain_token'], ['source_artifact_id' => (string)$bad['artifact_id']]);
+        hub_test_assert($response['status'] === ($index === 0 ? 404 : 409), 'invalid source artifact must be rejected');
+    }
+    $outside = tempnam(sys_get_temp_dir(), '3waaihub_outside_');
+    if ($outside === false) {
+        throw new RuntimeException('Cannot create outside artifact fixture.');
+    }
+    try {
+        $unsafe = hub_test_audio_source_artifact($db, $memberA, (int)$tokenA['token_id']);
+        $db->prepare('UPDATE task_artifacts SET path = :path WHERE id = :id')->execute([':path' => $outside, ':id' => $unsafe['artifact_id']]);
+        $response = hub_test_audio_request($db, 'speech_transcribe', (string)$tokenA['plain_token'], ['source_artifact_id' => (string)$unsafe['artifact_id']]);
+        hub_test_assert($response['status'] === 409, 'source artifact outside results root must be rejected');
+    } finally {
+        if (is_file($outside)) {
+            unlink($outside);
+        }
+    }
+    });
+});
+
+hub_test('audio manual retry creates a linked task without mutating terminal history', function (): void {
+    hub_test_audio_isolate(static function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $memberId = hub_create_api_member($db, 'Audio Retry Owner');
+    $token = hub_create_api_token($db, $memberId, 'audio retry token', null, null);
+    hub_test_audio_allow($db, [$token], ['speech_transcribe', 'task_retry']);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+    $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+    $created = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], ['source_artifact_id' => (string)$source['artifact_id']]);
+    $taskId = (int)(hub_test_audio_payload($created)['task_id'] ?? 0);
+    $original = hub_get_task($db, $taskId);
+    hub_finish_task_success($db, $original ?? [], ['finished' => true]);
+    $before = hub_get_task($db, $taskId);
+
+    $retry = hub_test_audio_request($db, 'task_retry', (string)$token['plain_token'], ['task_id' => (string)$taskId]);
+    $retryPayload = hub_test_audio_payload($retry);
+    $replacement = hub_get_task($db, (int)($retryPayload['task_id'] ?? 0));
+    $after = hub_get_task($db, $taskId);
+    hub_test_assert($retry['status'] === 200 && (int)($replacement['retry_of_task_id'] ?? 0) === $taskId, 'manual retry must create a linked new task');
+    hub_test_assert((int)($replacement['source_artifact_id'] ?? 0) === $source['artifact_id'] && (int)($replacement['source_task_id'] ?? 0) === $source['task_id'] && ($replacement['status'] ?? '') === 'queued', 'retry must retain a valid source lineage');
+    hub_test_assert(($after['status'] ?? '') === 'success' && ($after['finished_at'] ?? '') === ($before['finished_at'] ?? ''), 'manual retry must not mutate terminal history');
+
+    $upload = tempnam(sys_get_temp_dir(), '3waaihub_retry_');
+    if ($upload === false || file_put_contents($upload, 'RIFFaudio', LOCK_EX) === false) {
+        throw new RuntimeException('Cannot create retry upload fixture.');
+    }
+    try {
+        $uploaded = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [], [], [[
+            'name' => 'retry.wav',
+            'type' => 'audio/wav',
+            'tmp_name' => $upload,
+            'error' => UPLOAD_ERR_OK,
+            'size' => filesize($upload),
+        ]]);
+        $uploadedTaskId = (int)(hub_test_audio_payload($uploaded)['task_id'] ?? 0);
+        hub_finish_task_success($db, hub_get_task($db, $uploadedTaskId) ?? [], ['finished' => true]);
+        $uploadedRetry = hub_test_audio_request($db, 'task_retry', (string)$token['plain_token'], ['task_id' => (string)$uploadedTaskId]);
+        $uploadedReplacement = hub_get_task($db, (int)(hub_test_audio_payload($uploadedRetry)['task_id'] ?? 0));
+        hub_test_assert($uploadedRetry['status'] === 200 && (int)($uploadedReplacement['retry_of_task_id'] ?? 0) === $uploadedTaskId && !empty($uploadedReplacement['input']['source_upload_path']), 'manual retry must retain a managed upload source');
+    } finally {
+        if (is_file($upload)) {
+            unlink($upload);
+        }
+    }
+    });
+});
