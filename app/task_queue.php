@@ -1942,6 +1942,8 @@ function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $
         throw new InvalidArgumentException('runtime_fence_required');
     }
     $runId = (int)($run['id'] ?? 0);
+    $runtimeId = (string)($run['run_id'] ?? '');
+    $workerId = (string)($run['worker_id'] ?? '');
     $leaseToken = (string)($run['lease_token'] ?? '');
     if ($runId <= 0 || $leaseToken === '') {
         throw new InvalidArgumentException('runtime_fence_invalid');
@@ -1984,7 +1986,10 @@ function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $
     $now = hub_now();
     $extra = ' AND task_id = :task_id';
     if ($state === 'succeeded') {
-        $extra .= ' AND cancel_requested_at IS NULL';
+        if ($runtimeId === '' || $workerId === '') {
+            throw new InvalidArgumentException('runtime_fence_invalid');
+        }
+        $extra .= ' AND run_id = :run_id AND worker_id = :worker_id AND lease_expires_at IS NOT NULL AND lease_expires_at > :now AND cancel_requested_at IS NULL';
     }
     if ($state === 'cancelled') {
         $extra .= ' AND cancel_requested_at IS NOT NULL';
@@ -2007,7 +2012,11 @@ function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $
         ':lease_token' => $leaseToken,
         ':task_id' => $taskId,
     ];
-    if ($state === 'timed_out') {
+    if ($state === 'succeeded') {
+        $params[':run_id'] = $runtimeId;
+        $params[':worker_id'] = $workerId;
+        $params[':now'] = $now;
+    } elseif ($state === 'timed_out') {
         $params[':now'] = $now;
     }
     $stmt->execute($params);
@@ -2089,11 +2098,11 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
     }
+    if ($beforeTerminalFence !== null) {
+        $beforeTerminalFence($publishedArtifacts);
+    }
     $db->beginTransaction();
     try {
-        if ($beforeTerminalFence !== null) {
-            $beforeTerminalFence($publishedArtifacts);
-        }
         hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
         hub_pack_job_terminal_fence($db, $run, $taskId, 'succeeded', null, $gpuLease);
         $resultArtifacts = [];

@@ -626,6 +626,44 @@ hub_test('Stale GPU execution without start metadata is blocked as unknown resid
     }
 });
 
+hub_test('Stale CPU execution without start metadata is failed as unknown residue', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'cpu');
+    try {
+        $memberId = hub_create_api_member($db, 'Stale CPU Recovery Owner');
+        $targetId = hub_register_callback_target($db, $memberId, 'stale-cpu-recovery', 'https://8.8.8.8/callback');
+        $db->prepare('UPDATE tasks SET owner_member_id = :owner_member_id, callback_target_id = :callback_target_id WHERE id = :id')
+            ->execute([':owner_member_id' => $memberId, ':callback_target_id' => $targetId, ':id' => $fixture['task_id']]);
+        $sourceTaskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '127.0.0.1');
+        $sourcePath = hub_task_result_dir($sourceTaskId) . '/stale-cpu-source.txt';
+        if (!is_dir(dirname($sourcePath)) && !mkdir(dirname($sourcePath), 0700, true) && !is_dir(dirname($sourcePath))) {
+            throw new RuntimeException('Cannot create stale CPU source fixture.');
+        }
+        file_put_contents($sourcePath, "stale CPU source\n", LOCK_EX);
+        $sourceArtifactId = hub_register_task_artifact($db, $sourceTaskId, 'stale-cpu-source.txt', $sourcePath, 'text/plain');
+        $db->prepare('UPDATE tasks SET source_artifact_id = :source_artifact_id, source_task_id = :source_task_id WHERE id = :id')
+            ->execute([':source_artifact_id' => $sourceArtifactId, ':source_task_id' => $sourceTaskId, ':id' => $fixture['task_id']]);
+        hub_hold_task_source_artifact($db, $sourceArtifactId, $fixture['task_id']);
+        $task = hub_test_adapter_claim($db);
+        $run = hub_pack_job_claim_runtime($db, $task, 'stale-cpu-worker', 60);
+        hub_test_assert(is_array($run), 'stale CPU fixture must claim a runtime run');
+        $contract = hub_resolve_stored_pack_job($db, $task);
+        $run = hub_pack_job_begin_execution($db, $task, $run, $contract['runner'], null);
+        hub_test_assert(is_array($run), 'stale CPU fixture must enter running before start metadata');
+        $db->prepare("UPDATE runtime_runs SET lease_expires_at = '2000-01-01 00:00:00' WHERE id = :id")
+            ->execute([':id' => $run['id']]);
+        hub_test_assert(hub_reconcile_expired_pack_job_runs($db) === 1, 'stale sweep must reclaim a running CPU execution with no recorded start metadata');
+        $latest = hub_get_task($db, $fixture['task_id']) ?? [];
+        $runtime = hub_runtime_fetch_run($db, (int)$run['id']) ?? [];
+        $delivery = $db->query('SELECT event_type FROM task_callback_deliveries WHERE task_id = ' . $fixture['task_id'])->fetchColumn();
+        $hold = $db->prepare('SELECT released_at FROM task_artifact_holds WHERE source_artifact_id = :source_artifact_id AND downstream_task_id = :task_id');
+        $hold->execute([':source_artifact_id' => $sourceArtifactId, ':task_id' => $fixture['task_id']]);
+        hub_test_assert(($latest['status'] ?? '') === 'failed' && ($latest['error_code'] ?? '') === 'cleanup_failed' && ($runtime['state'] ?? '') === 'failed' && ($runtime['error_code'] ?? '') === 'cleanup_failed' && $delivery === 'task.failed' && !empty(($hold->fetch() ?: [])['released_at']), 'a running CPU execution without process metadata must remain unknown and terminalize its hold and outbox as cleanup_failed');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
 hub_test('Stale Pack run terminalizes while its matching GPU lease is already blocked', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_adapter_fixture($db, 'gpu');

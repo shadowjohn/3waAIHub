@@ -542,7 +542,7 @@ function hub_reconcile_expired_pack_job_runs(PDO $db): int
         }
         $requiresGpu = hub_runtime_task_requires_gpu($task);
         $ownedPids = hub_runtime_gpu_recovery_pids(json_decode((string)($run['owned_gpu_pids_json'] ?? ''), true));
-        $cleanup = (!$requiresGpu || ($run['state'] ?? '') !== 'running') && trim((string)($run['container_id'] ?? '')) === '' && $ownedPids === []
+        $cleanup = ($run['state'] ?? '') !== 'running' && trim((string)($run['container_id'] ?? '')) === '' && $ownedPids === []
             ? hub_pack_job_no_work_cleanup()
             : [];
         $gpuLease = null;
