@@ -95,19 +95,24 @@ function hub_test_pack_job_create_terminal_fixture(PDO $db, ?int $callbackTarget
     hub_hold_task_source_artifact($db, $sourceArtifactId, $taskId);
     $db->prepare("UPDATE tasks SET status = 'running', lock_token = :lock_token WHERE id = :id")
         ->execute([':lock_token' => 'task-lock-' . $taskId, ':id' => $taskId]);
+    $workspace = hub_task_result_dir($taskId) . '/workspace';
+    if (!is_dir($workspace . '/output') && !mkdir($workspace . '/output', 0775, true) && !is_dir($workspace . '/output')) {
+        throw new RuntimeException('Cannot create trusted Pack-job workspace fixture.');
+    }
 
     $leaseToken = bin2hex(random_bytes(32));
     $runId = 'pack_job_' . bin2hex(random_bytes(8));
     $now = hub_now();
     $db->prepare(
         'INSERT INTO runtime_runs
-            (run_id, pack_id, task, state, worker_id, lease_token, task_id, started_at, created_at)
+            (run_id, pack_id, task, workspace, state, worker_id, lease_token, task_id, started_at, created_at)
          VALUES
-            (:run_id, :pack_id, :task, :state, :worker_id, :lease_token, :task_id, :started_at, :created_at)'
+            (:run_id, :pack_id, :task, :workspace, :state, :worker_id, :lease_token, :task_id, :started_at, :created_at)'
     )->execute([
         ':run_id' => $runId,
         ':pack_id' => 'whisper-asr',
         ':task' => 'transcribe',
+        ':workspace' => $workspace,
         ':state' => 'running',
         ':worker_id' => 'test-worker',
         ':lease_token' => $leaseToken,
@@ -120,6 +125,7 @@ function hub_test_pack_job_create_terminal_fixture(PDO $db, ?int $callbackTarget
         'member_id' => $memberId,
         'task_id' => $taskId,
         'source_artifact_id' => $sourceArtifactId,
+        'workspace' => $workspace,
         'run' => [
             'id' => (int)$db->lastInsertId(),
             'lease_token' => $leaseToken,
@@ -241,7 +247,7 @@ hub_test('Pack job success terminal commit atomically registers validated output
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
     $targetId = hub_register_callback_target($db, $fixture['member_id'], 'pack-complete', 'https://8.8.8.8/callback');
     $db->prepare('UPDATE tasks SET callback_target_id = :target_id WHERE id = :id')->execute([':target_id' => $targetId, ':id' => $fixture['task_id']]);
-    $workspace = hub_test_pack_job_workspace();
+    $workspace = $fixture['workspace'];
     try {
         hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
         hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
@@ -252,7 +258,7 @@ hub_test('Pack job success terminal commit atomically registers validated output
 
         $task = hub_get_task($db, $fixture['task_id']);
         $run = $db->query('SELECT state FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
-        $artifacts = $db->prepare('SELECT artifact_type, mime_type, size_bytes, sha256, metadata_json FROM task_artifacts WHERE task_id = :task_id ORDER BY id');
+        $artifacts = $db->prepare('SELECT path, artifact_type, mime_type, size_bytes, sha256, metadata_json FROM task_artifacts WHERE task_id = :task_id ORDER BY id');
         $artifacts->execute([':task_id' => $fixture['task_id']]);
         $rows = $artifacts->fetchAll();
         $delivery = $db->query('SELECT event_type, payload_json FROM task_callback_deliveries')->fetch();
@@ -260,6 +266,7 @@ hub_test('Pack job success terminal commit atomically registers validated output
         $hold->execute([':source' => $fixture['source_artifact_id'], ':task' => $fixture['task_id']]);
         hub_test_assert(($task['status'] ?? '') === 'success' && ($run['state'] ?? '') === 'succeeded', 'success terminal commit must complete task and owned run');
         hub_test_assert(count($rows) === 3 && ($rows[2]['sha256'] ?? '') === hash_file('sha256', $workspace . '/output/audio.wav'), 'success terminal commit must register only Hub-validated metadata');
+        hub_test_assert(hub_artifact_safe_path((string)($rows[2]['path'] ?? '')) === ($rows[2]['path'] ?? ''), 'success artifacts must remain directly downloadable from managed results storage');
         hub_test_assert((json_decode((string)($rows[2]['metadata_json'] ?? ''), true)['sample_rate'] ?? null) === 48000, 'audio metadata must be stored with registered artifact');
         hub_test_assert(!empty(($hold->fetch() ?: [])['released_at']), 'success terminal commit must release source hold in its transaction');
         hub_test_assert(($delivery['event_type'] ?? '') === 'task.completed' && count(json_decode((string)($delivery['payload_json'] ?? ''), true)['artifacts'] ?? []) === 3, 'callback must be outbox-only and see committed artifact registry');
@@ -271,7 +278,7 @@ hub_test('Pack job success terminal commit atomically registers validated output
 hub_test('Pack job terminal fence mismatch rolls back registrations callbacks and task state', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
-    $workspace = hub_test_pack_job_workspace();
+    $workspace = $fixture['workspace'];
     try {
         hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
         hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
@@ -292,7 +299,7 @@ hub_test('Pack job terminal rejects an unlinked runtime run without partial comm
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
     $db->prepare('UPDATE runtime_runs SET task_id = NULL WHERE id = :id')->execute([':id' => $fixture['run']['id']]);
-    $workspace = hub_test_pack_job_workspace();
+    $workspace = $fixture['workspace'];
     try {
         hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
         hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
@@ -306,12 +313,78 @@ hub_test('Pack job terminal rejects an unlinked runtime run without partial comm
     }
 });
 
+hub_test('Pack job success terminal rejects missing runtime context without mutations', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $workspace = $fixture['workspace'];
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+        hub_test_assert(hub_test_throws(static fn () => hub_commit_pack_job_success($db, $fixture['task_id'], null, $validated, hub_test_pack_job_cleanup_asserted())), 'success terminal must require a runtime fence');
+        hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'running' && (string)$db->query('SELECT state FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetchColumn() === 'running', 'missing success fence must preserve task and run states');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries')->fetchColumn() === 0, 'missing success fence must not expose artifacts or callbacks');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job failure terminal rejects missing runtime context without mutations', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    hub_test_assert(hub_test_throws(static fn () => hub_commit_pack_job_failure($db, $fixture['task_id'], null, 'failed', 'runtime_exit_nonzero', 'runner failed', hub_test_pack_job_cleanup_asserted())), 'failure terminal must require a runtime fence');
+    hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'running' && (string)$db->query('SELECT state FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetchColumn() === 'running', 'missing failure fence must preserve task and run states');
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries')->fetchColumn() === 0, 'missing failure fence must not expose a callback');
+});
+
+hub_test('Pack job terminal rejects a workspace outside its trusted runtime workspace', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $foreignWorkspace = hub_test_pack_job_workspace();
+    try {
+        hub_test_pack_job_write($foreignWorkspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($foreignWorkspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($foreignWorkspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $outcome = hub_finalize_pack_job_success($db, $fixture['task_id'], $fixture['run'], $foreignWorkspace, ['include_subtitles' => true], hub_test_pack_job_contract(), hub_test_pack_job_cleanup_asserted(), 'hub_test_pack_job_audio_probe');
+        $task = hub_get_task($db, $fixture['task_id']);
+        hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'output_contract_invalid', 'foreign workspace must be rejected as output contract invalid');
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'foreign workspace must not commit artifacts or success');
+    } finally {
+        hub_test_pack_job_rm($foreignWorkspace);
+    }
+});
+
+hub_test('Pack job terminal rejects output replacement after validation before commit', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $workspace = $fixture['workspace'];
+    try {
+        hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"hello\"}");
+        hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
+        hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());
+        $validated = hub_validate_pack_job_artifacts($workspace, ['include_subtitles' => true], hub_test_pack_job_contract(), 'hub_test_pack_job_audio_probe');
+        $replacement = $workspace . '/output/replacement.json';
+        hub_test_pack_job_write($replacement, "{\"text\":\"replaced\"}");
+        unlink($workspace . '/output/transcript.json');
+        if (!link($replacement, $workspace . '/output/transcript.json')) {
+            throw new RuntimeException('Cannot replace output with hardlink fixture.');
+        }
+        hub_commit_pack_job_success($db, $fixture['task_id'], $fixture['run'], $validated, hub_test_pack_job_cleanup_asserted());
+        $task = hub_get_task($db, $fixture['task_id']);
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && (string)$db->query('SELECT state FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetchColumn() === 'failed', 'output replacement must terminalize as output_contract_invalid');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'output replacement must not register stale metadata');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
 hub_test('Pack job invalid output and cleanup failure terminalize as failed through the outbox', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
     $targetId = hub_register_callback_target($db, $fixture['member_id'], 'pack-failed', 'https://8.8.8.8/callback');
     $db->prepare('UPDATE tasks SET callback_target_id = :target_id WHERE id = :id')->execute([':target_id' => $targetId, ':id' => $fixture['task_id']]);
-    $workspace = hub_test_pack_job_workspace();
+    $workspace = $fixture['workspace'];
     try {
         hub_test_pack_job_write($workspace . '/output/transcript.json', 'not-json');
         hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
@@ -351,7 +424,7 @@ hub_test('Pack job incomplete cleanup attestation fails the requested success at
 hub_test('Pack job missing required output fails the contract without success registration', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
-    $workspace = hub_test_pack_job_workspace();
+    $workspace = $fixture['workspace'];
     try {
         hub_test_pack_job_write($workspace . '/output/subtitle.srt', "subtitle\n");
         hub_test_pack_job_write($workspace . '/output/audio.wav', hub_test_pack_job_wav());

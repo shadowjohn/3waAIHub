@@ -1052,7 +1052,7 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
             hub_pack_job_output_contract_invalid('artifact_path_invalid');
         }
         $stat = lstat($path);
-        if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000)) {
+        if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
             hub_pack_job_output_contract_invalid('artifact_nonregular');
         }
         $size = filesize($path);
@@ -1071,6 +1071,8 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
             'size_bytes' => (int)$size,
             'sha256' => strtolower($sha256),
             'metadata' => hub_pack_job_validate_audio_output($path, $definition, $audioProbe),
+            'device' => (int)$stat['dev'],
+            'inode' => (int)$stat['ino'],
         ];
     }
 
@@ -1088,10 +1090,69 @@ function hub_pack_job_cleanup_attested(array $cleanup): bool
     return true;
 }
 
+function hub_pack_job_trusted_output_dir(PDO $db, int $taskId, ?array $run): string
+{
+    if ($run === null) {
+        throw new InvalidArgumentException('runtime_fence_required');
+    }
+    $runId = (int)($run['id'] ?? 0);
+    $leaseToken = (string)($run['lease_token'] ?? '');
+    if ($runId <= 0 || $leaseToken === '') {
+        throw new InvalidArgumentException('runtime_fence_invalid');
+    }
+    $stmt = $db->prepare(
+        "SELECT workspace FROM runtime_runs
+         WHERE id = :id AND lease_token = :lease_token AND task_id = :task_id AND state IN ('claimed', 'running')"
+    );
+    $stmt->execute([':id' => $runId, ':lease_token' => $leaseToken, ':task_id' => $taskId]);
+    $workspace = $stmt->fetchColumn();
+    if (!is_string($workspace) || $workspace === '') {
+        throw new RuntimeException('runtime_ownership_conflict');
+    }
+    $taskRoot = realpath(hub_task_result_dir($taskId));
+    $workspaceReal = is_link($workspace) ? false : realpath($workspace);
+    if ($taskRoot === false || $workspaceReal === false || !str_starts_with($workspaceReal, $taskRoot . DIRECTORY_SEPARATOR)) {
+        hub_pack_job_output_contract_invalid('workspace_invalid');
+    }
+
+    return hub_pack_job_output_dir($workspaceReal);
+}
+
+function hub_pack_job_require_submitted_output_dir(PDO $db, int $taskId, ?array $run, string $workspace): string
+{
+    $trustedOutputDir = hub_pack_job_trusted_output_dir($db, $taskId, $run);
+    if (hub_pack_job_output_dir($workspace) !== $trustedOutputDir) {
+        hub_pack_job_output_contract_invalid('workspace_invalid');
+    }
+
+    return $trustedOutputDir;
+}
+
+function hub_revalidate_pack_job_artifact_snapshot(PDO $db, int $taskId, ?array $run, array $validatedArtifacts): void
+{
+    $outputDir = hub_pack_job_trusted_output_dir($db, $taskId, $run);
+    foreach ($validatedArtifacts as $artifact) {
+        $name = is_string($artifact['name'] ?? null) ? $artifact['name'] : '';
+        $path = $name === '' ? false : realpath($outputDir . '/' . $name);
+        if ($path === false || $path !== ($artifact['path'] ?? null) || !str_starts_with($path, $outputDir . DIRECTORY_SEPARATOR) || is_link($path)) {
+            hub_pack_job_output_contract_invalid('artifact_changed');
+        }
+        $stat = lstat($path);
+        $size = filesize($path);
+        $sha256 = hash_file('sha256', $path);
+        if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1
+            || (int)$stat['dev'] !== (int)($artifact['device'] ?? -1) || (int)$stat['ino'] !== (int)($artifact['inode'] ?? -1)
+            || $size === false || (int)$size !== (int)($artifact['size_bytes'] ?? -1) || $sha256 === false || !hash_equals((string)($artifact['sha256'] ?? ''), strtolower($sha256))
+            || hub_pack_job_detect_mime($path) !== ($artifact['mime_type'] ?? null)) {
+            hub_pack_job_output_contract_invalid('artifact_changed');
+        }
+    }
+}
+
 function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $state, ?string $errorCode): void
 {
     if ($run === null) {
-        return;
+        throw new InvalidArgumentException('runtime_fence_required');
     }
     $runId = (int)($run['id'] ?? 0);
     $leaseToken = (string)($run['lease_token'] ?? '');
@@ -1196,6 +1257,12 @@ function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $v
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup);
         return;
     }
+    try {
+        hub_revalidate_pack_job_artifact_snapshot($db, $taskId, $run, $validatedArtifacts);
+    } catch (HubPackOutputContractInvalid) {
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup);
+        return;
+    }
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
@@ -1260,6 +1327,7 @@ function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
     }
     try {
+        hub_pack_job_require_submitted_output_dir($db, $taskId, $run, $workspace);
         $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe);
     } catch (HubPackOutputContractInvalid) {
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup);
