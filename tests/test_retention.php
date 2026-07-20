@@ -113,6 +113,42 @@ hub_test('partial retention purges a failed terminal upload after one hour witho
     hub_test_assert(($after['source_state'] ?? '') === 'retention' && ($after['workspace_state'] ?? '') === 'retention', 'partial cleanup must not wait for or alter independent task resource retention');
 });
 
+hub_test('partial retention retries a failed deletion after source and workspace are purged', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    hub_finish_task_failed($db, hub_get_task($db, $taskId), 'upload failed');
+    $now = hub_now();
+    $old = hub_retention_deadline(-7200, $now);
+    $db->prepare(
+        "UPDATE tasks
+         SET finished_at = :old, updated_at = :old,
+             source_expires_at = '2000-01-01 00:00:00', workspace_expires_at = '2000-01-01 00:00:00'
+         WHERE id = :id"
+    )->execute([':old' => $old, ':id' => $taskId]);
+    $partial = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId . '/retry-after-resource-purge.partial';
+    $root = dirname($partial);
+    if (!is_dir($root) && !mkdir($root, 0775, true)) {
+        throw new RuntimeException('Cannot create partial retry fixture.');
+    }
+    file_put_contents($partial, 'partial', LOCK_EX);
+    touch($partial, strtotime($old));
+    if (!chmod($root, 0555)) {
+        throw new RuntimeException('Cannot make partial directory read-only.');
+    }
+    try {
+        hub_prune_retention($db, $now);
+        $failed = hub_get_task($db, $taskId);
+        hub_test_assert(file_exists($partial) && !empty($failed['partial_purge_error'])
+            && ($failed['source_state'] ?? '') === 'purged' && ($failed['workspace_state'] ?? '') === 'purged', 'a failed partial deletion must retain its retry marker after independent resource cleanup');
+    } finally {
+        chmod($root, 0775);
+    }
+
+    hub_prune_retention($db, $now);
+    $retried = hub_get_task($db, $taskId);
+    hub_test_assert(!file_exists($partial) && empty($retried['partial_purge_error']), 'a managed partial retry must reselect the exact stale path after source and workspace reach purged');
+});
+
 hub_test('artifact ACK API accepts owned task and artifact identifiers only', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -423,6 +459,18 @@ hub_test('retention keeps terminal metadata before 180 days then purges an eligi
     $db->prepare("UPDATE tasks SET finished_at = '2025-01-01 00:00:00', updated_at = '2025-01-01 00:00:00' WHERE id = :id")->execute([':id' => $taskId]);
     $after = hub_prune_retention($db, $now);
     hub_test_assert(hub_get_task($db, $taskId) === null && (int)($after['metadata_purged'] ?? 0) === 1, 'eligible terminal metadata must be deleted only after 180 days');
+});
+
+hub_test('legacy timeout tasks remain eligible for final retention cleanup', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_test_retention_metadata_ready_task($db, '2025-01-01 00:00:00');
+    $db->prepare("UPDATE tasks SET status = 'timeout' WHERE id = :id")->execute([':id' => $taskId]);
+    hub_migrate($db);
+    hub_test_assert((hub_get_task($db, $taskId)['status'] ?? '') === 'timed_out', 'migration must normalize legacy timeout task status before retention runs');
+
+    $result = hub_prune_retention($db, '2026-07-20 00:00:00');
+
+    hub_test_assert(hub_get_task($db, $taskId) === null && (int)($result['metadata_purged'] ?? 0) === 1, 'legacy timeout metadata must be normalized or treated as terminal by retention cleanup');
 });
 
 hub_test('metadata purge keeps records with an artifact hold or pending callback', function (): void {

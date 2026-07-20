@@ -1040,12 +1040,12 @@ function hub_release_task_artifact_download(PDO $db, int $artifactId, string $to
 
 function hub_retention_terminal_statuses(): array
 {
-    return ['success', 'failed', 'cancelled', 'timed_out'];
+    return ['success', 'failed', 'cancelled', 'timed_out', 'timeout'];
 }
 
 function hub_retention_task_is_busy(PDO $db, int $taskId): bool
 {
-    $terminal = "'success', 'failed', 'cancelled', 'timed_out'";
+    $terminal = "'success', 'failed', 'cancelled', 'timed_out', 'timeout'";
     $checks = [
         "SELECT 1 FROM tasks WHERE id = :task_id AND status NOT IN ({$terminal})",
         "SELECT 1 FROM runtime_runs WHERE task_id = :task_id AND state IN ('claimed', 'running', 'waiting_gpu')",
@@ -1101,7 +1101,7 @@ function hub_retention_remove_managed_path(string $path, string $root): int
         }
         $stat = fstat($handle);
         $bytes = is_array($stat) ? (int)($stat['size'] ?? -1) : -1;
-        $deleted = $bytes >= 0 && unlink($path);
+        $deleted = $bytes >= 0 && @unlink($path);
         flock($handle, LOCK_UN);
         fclose($handle);
         if (!$deleted) {
@@ -1467,10 +1467,11 @@ function hub_retention_claim_task_metadata(PDO $db, int $taskId, string $now): ?
     try {
         $stmt = $db->prepare(
             "SELECT * FROM tasks
-             WHERE id = :id AND status IN ('success', 'failed', 'cancelled', 'timed_out')
+             WHERE id = :id AND status IN ('success', 'failed', 'cancelled', 'timed_out', 'timeout')
                AND COALESCE(finished_at, updated_at, created_at) <= :cutoff
                AND source_state = 'purged' AND workspace_state = 'purged'
-               AND purge_claim_token IS NULL AND metadata_purge_claim_token IS NULL"
+               AND purge_claim_token IS NULL AND metadata_purge_claim_token IS NULL
+               AND partial_purge_error IS NULL AND partial_purge_retry_at IS NULL"
         );
         $stmt->execute([':id' => $taskId, ':cutoff' => $cutoff]);
         $task = $stmt->fetch();
@@ -1506,10 +1507,11 @@ function hub_retention_finish_task_metadata_claim(PDO $db, array $task, string $
     try {
         $candidate = $db->prepare(
             "SELECT 1 FROM tasks
-             WHERE id = :id AND status IN ('success', 'failed', 'cancelled', 'timed_out')
+             WHERE id = :id AND status IN ('success', 'failed', 'cancelled', 'timed_out', 'timeout')
                AND COALESCE(finished_at, updated_at, created_at) <= :cutoff
                AND source_state = 'purged' AND workspace_state = 'purged'
-               AND purge_claim_token IS NULL AND metadata_purge_claim_token = :token"
+               AND purge_claim_token IS NULL AND metadata_purge_claim_token = :token
+               AND partial_purge_error IS NULL AND partial_purge_retry_at IS NULL"
         );
         $candidate->execute([':id' => $taskId, ':cutoff' => $cutoff, ':token' => $token]);
         if ($candidate->fetchColumn() === false || hub_retention_task_is_busy($db, $taskId)
@@ -1548,10 +1550,11 @@ function hub_prune_retention_metadata(PDO $db, string $now, int $limit = 100): i
     $cutoff = hub_retention_metadata_cutoff($db, $now);
     $stmt = $db->prepare(
         "SELECT id FROM tasks
-         WHERE status IN ('success', 'failed', 'cancelled', 'timed_out')
+         WHERE status IN ('success', 'failed', 'cancelled', 'timed_out', 'timeout')
            AND COALESCE(finished_at, updated_at, created_at) <= :cutoff
            AND source_state = 'purged' AND workspace_state = 'purged'
            AND purge_claim_token IS NULL AND metadata_purge_claim_token IS NULL
+           AND partial_purge_error IS NULL AND partial_purge_retry_at IS NULL
          ORDER BY COALESCE(finished_at, updated_at, created_at) ASC, id ASC
          LIMIT :limit"
     );
@@ -1571,12 +1574,15 @@ function hub_prune_retention_metadata(PDO $db, string $now, int $limit = 100): i
 
 function hub_prune_retention_partials(PDO $db, string $now): int
 {
-    $cutoff = (strtotime($now) ?: time()) - hub_retention_policy($db)['partial_hours'] * 3600;
+    $policy = hub_retention_policy($db);
+    $cutoff = (strtotime($now) ?: time()) - $policy['partial_hours'] * 3600;
     $tasks = $db->prepare(
-        "SELECT id FROM tasks
-         WHERE (status IN ('success', 'failed', 'cancelled', 'timed_out') AND (
-                    (finished_at IS NOT NULL AND finished_at <= :cutoff
-                     AND (source_state <> 'purged' OR workspace_state <> 'purged'))
+        "SELECT id, partial_purge_error, partial_purge_retry_at FROM tasks
+         WHERE (status IN ('success', 'failed', 'cancelled', 'timed_out', 'timeout') AND (
+                    (partial_purge_retry_at IS NOT NULL AND partial_purge_retry_at <= :now)
+                    OR (partial_purge_error IS NOT NULL AND partial_purge_retry_at IS NULL)
+                    OR (finished_at IS NOT NULL AND finished_at <= :cutoff
+                        AND (source_state <> 'purged' OR workspace_state <> 'purged'))
                     OR (source_state IN ('retention', 'expiring')
                         AND source_expires_at IS NOT NULL AND source_expires_at <= :now)
                     OR (workspace_state IN ('retention', 'expiring')
@@ -1586,24 +1592,69 @@ function hub_prune_retention_partials(PDO $db, string $now): int
          ORDER BY id ASC"
     );
     $tasks->execute([':now' => $now, ':cutoff' => date('Y-m-d H:i:s', $cutoff)]);
+    $markRetry = $db->prepare(
+        'UPDATE tasks
+         SET partial_purge_error = :error, partial_purge_retry_at = :retry_at
+         WHERE id = :id'
+    );
+    $clearRetry = $db->prepare(
+        'UPDATE tasks
+         SET partial_purge_error = NULL, partial_purge_retry_at = NULL
+         WHERE id = :id'
+    );
+    $deferRetry = $db->prepare(
+        'UPDATE tasks
+         SET partial_purge_error = NULL, partial_purge_retry_at = :retry_at
+         WHERE id = :id'
+    );
     $purged = 0;
-    foreach ($tasks->fetchAll(PDO::FETCH_COLUMN) as $taskId) {
-        $root = HUB_DATA_DIR . '/uploads/tasks/task_' . (int)$taskId;
+    foreach ($tasks->fetchAll() as $task) {
+        $taskId = (int)$task['id'];
+        $hasRetryMarker = !empty($task['partial_purge_error']) || !empty($task['partial_purge_retry_at']);
+        $partialRemains = false;
+        $nextRetryAt = null;
+        $retryError = null;
+        $root = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId;
         if (!is_dir($root) || is_link($root)) {
+            if ($hasRetryMarker) {
+                $clearRetry->execute([':id' => $taskId]);
+            }
             continue;
         }
         foreach (new DirectoryIterator($root) as $entry) {
-            if ($entry->isDot() || $entry->isLink() || !$entry->isFile() || !str_ends_with($entry->getFilename(), '.partial') || $entry->getMTime() > $cutoff) {
+            if ($entry->isDot() || !str_ends_with($entry->getFilename(), '.partial')) {
+                continue;
+            }
+            if ($entry->isLink() || !$entry->isFile()) {
+                $partialRemains = true;
+                $retryError ??= 'path_rejected';
+                continue;
+            }
+            if ($entry->getMTime() > $cutoff) {
+                $partialRemains = true;
+                $retryAt = date('Y-m-d H:i:s', $entry->getMTime() + $policy['partial_hours'] * 3600);
+                if ($nextRetryAt === null || $retryAt < $nextRetryAt) {
+                    $nextRetryAt = $retryAt;
+                }
                 continue;
             }
             try {
                 $bytes = hub_retention_remove_managed_path($entry->getPathname(), $root);
                 $stmt = $db->prepare('UPDATE tasks SET freed_bytes = freed_bytes + :bytes, purged_at = COALESCE(purged_at, :now) WHERE id = :id');
-                $stmt->execute([':bytes' => $bytes, ':now' => $now, ':id' => (int)$taskId]);
+                $stmt->execute([':bytes' => $bytes, ':now' => $now, ':id' => $taskId]);
                 $purged++;
-            } catch (Throwable) {
-                // A corrupt partial remains for the next safe retry.
+            } catch (Throwable $e) {
+                $partialRemains = true;
+                $message = trim($e->getMessage());
+                $retryError ??= $message === '' ? 'partial_purge_failed' : substr($message, 0, 255);
             }
+        }
+        if ($retryError !== null) {
+            $markRetry->execute([':error' => $retryError, ':retry_at' => $now, ':id' => $taskId]);
+        } elseif (!$partialRemains && $hasRetryMarker) {
+            $clearRetry->execute([':id' => $taskId]);
+        } elseif ($nextRetryAt !== null && $hasRetryMarker) {
+            $deferRetry->execute([':retry_at' => $nextRetryAt, ':id' => $taskId]);
         }
     }
 
@@ -1655,7 +1706,7 @@ function hub_prune_retention(PDO $db, ?string $now = null): array
 function hub_retention_schema_missing(PDO $db): array
 {
     $required = [
-        'tasks' => ['source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at'],
+        'tasks' => ['source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
         'task_artifacts' => ['expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['source_artifact_id', 'downstream_task_id', 'released_at'],
         'runtime_runs' => ['task_id', 'state'],
