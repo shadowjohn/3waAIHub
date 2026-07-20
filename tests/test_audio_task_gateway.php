@@ -346,6 +346,48 @@ hub_test('audio manual retry creates a linked task without mutating terminal his
     });
 });
 
+hub_test('audio retry snapshots a changed live runner without rewriting the original task', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Retry Contract Owner');
+        $token = hub_create_api_token($db, $memberId, 'retry contract token', null, null);
+        $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+        $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+        $taskId = hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51', [
+            'source_artifact_id' => $source['artifact_id'],
+            'source_task_id' => $source['task_id'],
+        ]);
+        hub_finish_task_success($db, hub_get_task($db, $taskId) ?? [], ['finished' => true]);
+        $originalTask = hub_get_task($db, $taskId) ?? [];
+        $manifestPath = HUB_ROOT . '/packs/whisper-asr/pack.json';
+        $original = (string)file_get_contents($manifestPath);
+        $manifest = json_decode($original, true);
+        if (!is_array($manifest)) {
+            throw new RuntimeException('Cannot decode Whisper manifest fixture.');
+        }
+        $manifest['async_jobs'][0]['runner'] = [
+            'image' => 'registry.example/whisper-retry:2',
+            'entrypoint' => ['/app/transcribe'],
+            'args' => ['--workspace', '{workspace}', '--output', '{output_dir}'],
+            'output_dir' => 'output',
+            'accelerator' => 'gpu',
+            'required_vram_mb' => 64,
+            'timeout_seconds' => 30,
+        ];
+        try {
+            file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
+            $retryId = hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']]);
+            $retry = hub_get_task($db, $retryId) ?? [];
+            $after = hub_get_task($db, $taskId) ?? [];
+            $retryContract = json_decode((string)($retry['job_contract_json'] ?? ''), true);
+            hub_test_assert(($after['job_contract_json'] ?? '') === ($originalTask['job_contract_json'] ?? '') && ($after['job_contract_digest'] ?? '') === ($originalTask['job_contract_digest'] ?? '') && ($retry['job_contract_digest'] ?? '') !== ($originalTask['job_contract_digest'] ?? '') && ($retryContract['runner']['image'] ?? '') === 'registry.example/whisper-retry:2', 'manual retry must snapshot the current valid runner without rewriting the original task contract');
+        } finally {
+            file_put_contents($manifestPath, $original, LOCK_EX);
+        }
+    });
+});
+
 hub_test('reserved task modes win over service modes and keep member ownership', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();

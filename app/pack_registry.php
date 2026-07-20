@@ -142,6 +142,7 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
         throw new RuntimeException('pack_version_unavailable');
     }
 
+    $snapshot = hub_pack_job_contract_snapshot($jobContract);
     return [
         'requested_mode' => $requestedMode,
         'pack_id' => $route['pack_id'],
@@ -150,6 +151,8 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
         'runtime_mode' => 'job',
         'accelerator' => 'gpu',
         'route_resolved_at' => hub_now(),
+        'job_contract_json' => $snapshot['json'],
+        'job_contract_digest' => $snapshot['digest'],
     ] + $jobContract;
 }
 
@@ -159,6 +162,7 @@ function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
     if (!hub_is_audio_async_mode($requestedMode)) {
         throw new RuntimeException('pack_version_unavailable');
     }
+    hub_resolve_stored_pack_job($db, $snapshot);
     $route = hub_resolve_audio_async_route($db, $requestedMode);
     foreach (['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator'] as $field) {
         if (($snapshot[$field] ?? null) !== ($route[$field] ?? null)) {
@@ -257,6 +261,63 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
     ];
 }
 
+function hub_pack_job_contract_snapshot(array $contract): array
+{
+    $fields = hub_pack_async_job_contract_names($contract['input_fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
+    $artifactTypes = hub_pack_async_job_contract_names($contract['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
+    $maxUploadBytes = hub_pack_async_job_positive_bytes($contract['max_upload_bytes'] ?? null, 1);
+    try {
+        $artifacts = hub_pack_job_contract_artifacts((array)($contract['artifact_contract'] ?? []));
+    } catch (HubPackOutputContractInvalid) {
+        $artifacts = null;
+    }
+    if ($fields === null || $artifactTypes === null || $maxUploadBytes === null || $artifacts === null) {
+        throw new InvalidArgumentException('job_contract_unavailable');
+    }
+    $snapshot = [
+        'input_fields' => $fields,
+        'source_artifact_types' => $artifactTypes,
+        'max_upload_bytes' => $maxUploadBytes,
+        'artifact_contract' => ['artifacts' => $artifacts],
+    ];
+    if (array_key_exists('runner', $contract)) {
+        $runner = hub_pack_async_job_runner_contract($contract['runner']);
+        if ($runner === null) {
+            throw new InvalidArgumentException('job_contract_unavailable');
+        }
+        $snapshot['runner'] = $runner;
+    }
+    $json = json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if ($json === false) {
+        throw new InvalidArgumentException('job_contract_unavailable');
+    }
+
+    return ['json' => $json, 'digest' => hash('sha256', $json), 'contract' => $snapshot];
+}
+
+function hub_pack_job_contract_from_snapshot(array $task): array
+{
+    $json = (string)($task['job_contract_json'] ?? '');
+    $digest = (string)($task['job_contract_digest'] ?? '');
+    if ($json === '' || preg_match('/^[a-f0-9]{64}$/', $digest) !== 1) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+    $decoded = json_decode($json, true);
+    if (!is_array($decoded)) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+    try {
+        $snapshot = hub_pack_job_contract_snapshot($decoded);
+    } catch (Throwable) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+    if (!hash_equals($digest, $snapshot['digest']) || !hash_equals($json, $snapshot['json'])) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+
+    return $snapshot['contract'];
+}
+
 function hub_resolve_stored_pack_job(PDO $db, array $task): array
 {
     foreach (['pack_id', 'pack_version', 'job'] as $field) {
@@ -280,8 +341,11 @@ function hub_resolve_stored_pack_job(PDO $db, array $task): array
     if ($installed->fetchColumn() === false) {
         throw new RuntimeException('pack_version_unavailable');
     }
-    $contract = hub_pack_async_job_contract((array)$pack['manifest'], (string)$task['job']);
-    if ($contract === null || !isset($contract['runner']) || ($contract['runner']['accelerator'] ?? null) !== $task['accelerator']) {
+    if (hub_pack_async_job_contract((array)$pack['manifest'], (string)$task['job']) === null) {
+        throw new RuntimeException('job_unavailable');
+    }
+    $contract = hub_pack_job_contract_from_snapshot($task);
+    if (isset($contract['runner']) && ($contract['runner']['accelerator'] ?? null) !== $task['accelerator']) {
         throw new RuntimeException('job_unavailable');
     }
 

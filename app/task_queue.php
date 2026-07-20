@@ -42,11 +42,11 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
     $stmt = $db->prepare(
         'INSERT INTO tasks
             (task_type, queue_name, priority, input_json, status, requested_by, requested_ip,
-             owner_member_id, owner_token_id, requested_mode, pack_id, pack_version, job, runtime_mode, accelerator,
+             owner_member_id, owner_token_id, requested_mode, pack_id, pack_version, job, job_contract_json, job_contract_digest, runtime_mode, accelerator,
              route_resolved_at, source_artifact_id, source_task_id, retry_of_task_id, callback_target_id, created_at, updated_at)
          VALUES
             (:task_type, :queue_name, :priority, :input_json, :status, :requested_by, :requested_ip,
-             :owner_member_id, :owner_token_id, :requested_mode, :pack_id, :pack_version, :job, :runtime_mode, :accelerator,
+             :owner_member_id, :owner_token_id, :requested_mode, :pack_id, :pack_version, :job, :job_contract_json, :job_contract_digest, :runtime_mode, :accelerator,
              :route_resolved_at, :source_artifact_id, :source_task_id, :retry_of_task_id, :callback_target_id, :created_at, :updated_at)'
     );
     $stmt->execute([
@@ -63,6 +63,8 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
         ':pack_id' => $attributes['pack_id'] ?? null,
         ':pack_version' => $attributes['pack_version'] ?? null,
         ':job' => $attributes['job'] ?? null,
+        ':job_contract_json' => $attributes['job_contract_json'] ?? null,
+        ':job_contract_digest' => $attributes['job_contract_digest'] ?? null,
         ':runtime_mode' => $attributes['runtime_mode'] ?? null,
         ':accelerator' => $attributes['accelerator'] ?? null,
         ':route_resolved_at' => $attributes['route_resolved_at'] ?? null,
@@ -79,7 +81,7 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
 
 function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ownerMemberId, ?int $ownerTokenId, ?string $requestedIp, array $lineage = [], string $status = 'queued'): int
 {
-    foreach (['requested_mode', 'pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator', 'route_resolved_at'] as $field) {
+    foreach (['requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at'] as $field) {
         if (empty($route[$field])) {
             throw new InvalidArgumentException('Invalid Pack job route.');
         }

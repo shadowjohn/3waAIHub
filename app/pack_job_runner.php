@@ -152,7 +152,7 @@ function hub_pack_job_no_work_cleanup(): array
 function hub_pack_job_failure_code(Throwable $error, string $fallback = 'job_unavailable'): string
 {
     $message = $error->getMessage();
-    return in_array($message, ['pack_version_unavailable', 'job_unavailable'], true) ? $message : $fallback;
+    return in_array($message, ['pack_version_unavailable', 'job_unavailable', 'job_contract_unavailable'], true) ? $message : $fallback;
 }
 
 function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $code, string $message, array $cleanup, ?array $gpuLease): array
@@ -384,6 +384,12 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         } catch (Throwable $e) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, hub_pack_job_failure_code($e), 'Stored Pack job is unavailable', hub_pack_job_no_work_cleanup(), null);
         }
+        if (!isset($contract['runner'])) {
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'job_unavailable', 'Stored Pack job has no runner contract', hub_pack_job_no_work_cleanup(), null);
+        }
+        if (!isset($options['executor']) || !is_callable($options['executor'])) {
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'No controlled Pack job executor is configured', hub_pack_job_no_work_cleanup(), null);
+        }
         $runner = $contract['runner'];
         if (hub_runtime_task_requires_gpu($task)) {
             $gpuLease = hub_runtime_gpu_acquire_for_task($db, $task, $run, $leaseSeconds);
@@ -426,9 +432,6 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $context['tick'] = static function () use ($db, $run, $gpuLease, $leaseSeconds): ?string {
             return hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds);
         };
-        if (!isset($options['executor']) || !is_callable($options['executor'])) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'No controlled Pack job executor is configured', hub_pack_job_no_work_cleanup(), $gpuLease);
-        }
         $started = true;
         $result = $options['executor']($context);
         if (!is_array($result)) {

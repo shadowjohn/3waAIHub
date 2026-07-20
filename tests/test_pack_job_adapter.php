@@ -76,6 +76,7 @@ function hub_test_adapter_fixture(PDO $db, string $accelerator = 'cpu', bool $wi
     $manifest = hub_test_adapter_manifest($id, '1.0.0', $accelerator, $withRunner);
     file_put_contents($dir . '/pack.json', json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
     hub_install_pack($db, $id, ['service_key' => $id . '-main', 'mode' => 'adapter_fixture', 'idempotent' => true]);
+    $snapshot = hub_pack_job_contract_snapshot(hub_pack_async_job_contract($manifest, 'convert') ?? []);
 
     $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [
         'command' => 'never-from-client',
@@ -86,6 +87,8 @@ function hub_test_adapter_fixture(PDO $db, string $accelerator = 'cpu', bool $wi
         'pack_id' => $id,
         'pack_version' => '1.0.0',
         'job' => 'convert',
+        'job_contract_json' => $snapshot['json'],
+        'job_contract_digest' => $snapshot['digest'],
         'runtime_mode' => 'job',
         'accelerator' => $accelerator,
         'route_resolved_at' => hub_now(),
@@ -283,6 +286,76 @@ hub_test('Pack job adapter requires explicit no-process evidence when executor r
             },
         ]);
         hub_test_assert((hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'success', 'a no-container runner can complete only with explicit no-process evidence');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Pack job adapter rejects unavailable executors before GPU leasing and uses an admission snapshot', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    try {
+        $manifest = hub_test_adapter_manifest($fixture['id'], '1.0.0', 'gpu');
+        $snapshot = hub_pack_job_contract_snapshot(hub_pack_async_job_contract($manifest, 'convert') ?? []);
+        $db->prepare('UPDATE tasks SET job_contract_json = :job_contract_json, job_contract_digest = :job_contract_digest WHERE id = :id')
+            ->execute([':job_contract_json' => $snapshot['json'], ':job_contract_digest' => $snapshot['digest'], ':id' => $fixture['task_id']]);
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task);
+        $latest = hub_get_task($db, $fixture['task_id']);
+        $run = $db->query('SELECT state FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch();
+        hub_test_assert(($latest['error_code'] ?? '') === 'runner_unavailable' && ($run['state'] ?? '') === 'failed' && $db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'available', 'missing executor must fail before GPU acquisition or waiting retry');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    $called = 0;
+    try {
+        $manifest = hub_test_adapter_manifest($fixture['id'], '1.0.0');
+        $snapshot = hub_pack_job_contract_snapshot(hub_pack_async_job_contract($manifest, 'convert') ?? []);
+        $db->prepare('UPDATE tasks SET job_contract_json = :job_contract_json, job_contract_digest = :job_contract_digest WHERE id = :id')
+            ->execute([':job_contract_json' => $snapshot['json'], ':job_contract_digest' => $snapshot['digest'], ':id' => $fixture['task_id']]);
+        $manifest['async_jobs'][0]['runner']['image'] = 'registry.example/changed:1';
+        $manifest['async_jobs'][0]['runner']['args'][] = '--changed-live-runner';
+        file_put_contents($fixture['dir'] . '/pack.json', json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, [
+            'executor' => static function (array $context) use (&$called): array {
+                $called++;
+                hub_test_assert(($context['runner']['image'] ?? '') === 'registry.example/fixture-pack:1' && !in_array('--changed-live-runner', $context['runner']['args'] ?? [], true), 'executor must receive the admission snapshot, not a changed live manifest');
+                file_put_contents($context['workspace'] . '/output/result.txt', "pinned\n", LOCK_EX);
+                return ['exit_code' => 0, 'container_id' => 'pinned-contract', 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        hub_test_assert($called === 1 && (hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'success', 'same-version runner edits must not alter admitted work');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
+hub_test('Pack job adapter rejects tampered and pre-snapshot contracts safely', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    $called = 0;
+    try {
+        $db->prepare('UPDATE tasks SET job_contract_json = :job_contract_json, job_contract_digest = :job_contract_digest WHERE id = :id')
+            ->execute([':job_contract_json' => '{}', ':job_contract_digest' => str_repeat('a', 64), ':id' => $fixture['task_id']]);
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, ['executor' => static function () use (&$called): array { $called++; return []; }]);
+        hub_test_assert($called === 0 && (hub_get_task($db, $fixture['task_id'])['error_code'] ?? '') === 'job_contract_unavailable', 'a digest mismatch must fail before executor spawn');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    $called = 0;
+    try {
+        $db->prepare('UPDATE tasks SET job_contract_json = NULL, job_contract_digest = NULL WHERE id = :id')->execute([':id' => $fixture['task_id']]);
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, ['executor' => static function () use (&$called): array { $called++; return []; }]);
+        hub_test_assert($called === 0 && (hub_get_task($db, $fixture['task_id'])['error_code'] ?? '') === 'job_contract_unavailable', 'pre-snapshot Pack tasks must not fall back to the live manifest');
     } finally {
         hub_test_adapter_remove($fixture['dir']);
     }
