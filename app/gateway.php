@@ -763,6 +763,12 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         if (in_array($e->getMessage(), ['callback_target_not_found', 'callback_target_disabled'], true)) {
             return hub_gateway_error($e->getMessage() === 'callback_target_not_found' ? 404 : 409, $e->getMessage(), 'callback target is unavailable');
         }
+        if ($e->getMessage() === 'capability_unavailable') {
+            return hub_gateway_error(409, 'capability_unavailable', 'requested audio capability is not available');
+        }
+        if ($e->getMessage() === 'invalid_request') {
+            return hub_gateway_error(400, 'invalid_request', 'audio request does not match the Pack contract');
+        }
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
 
@@ -929,7 +935,7 @@ function hub_audio_task_input(array $input, array $route): array
         $filtered[$key] = $value;
     }
 
-    return $filtered;
+    return hub_pack_job_normalize_request_input($filtered, $route);
 }
 
 function hub_api_task_submit(PDO $db, array $authContext = []): array

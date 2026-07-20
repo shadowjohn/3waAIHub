@@ -189,9 +189,10 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         }
         $fields = hub_pack_async_job_contract_names($input['fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
         $artifactTypes = hub_pack_async_job_contract_names($input['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
+        $requestSchema = hub_pack_async_job_request_schema($input['request_schema'] ?? [], $fields ?? []);
         $maxUploadBytes = hub_pack_async_job_max_upload_bytes($definition, $manifest);
         $output = $definition['output'] ?? null;
-        if ($fields === null || $artifactTypes === null || $maxUploadBytes === null || !is_array($output)) {
+        if ($fields === null || $artifactTypes === null || $requestSchema === null || $maxUploadBytes === null || !is_array($output)) {
             return null;
         }
         try {
@@ -206,13 +207,21 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
                 return null;
             }
         }
+        $capabilities = hub_pack_async_job_capabilities($definition['capabilities'] ?? []);
+        $capabilityRequirements = hub_pack_async_job_capability_requirements($definition['capability_requirements'] ?? [], $capabilities ?? []);
+        if ($capabilities === null || $capabilityRequirements === null) {
+            return null;
+        }
 
         return [
             'input_fields' => $fields,
             'source_artifact_types' => $artifactTypes,
+            'request_schema' => $requestSchema,
             'max_upload_bytes' => $maxUploadBytes,
             'artifact_contract' => $artifactContract,
-        ] + ($runner === null ? [] : ['runner' => $runner]);
+        ] + ($runner === null ? [] : ['runner' => $runner])
+            + ($capabilities === [] ? [] : ['capabilities' => $capabilities])
+            + ($capabilityRequirements === [] ? [] : ['capability_requirements' => $capabilityRequirements]);
     }
 
     return null;
@@ -261,6 +270,133 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
     ];
 }
 
+function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
+{
+    if (!is_array($schema) || ($schema !== [] && array_is_list($schema))) {
+        return null;
+    }
+    $allowed = array_fill_keys($fields, true);
+    $normalized = [];
+    foreach ($schema as $name => $definition) {
+        if (!is_string($name) || !isset($allowed[$name]) || !is_array($definition)
+            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length']) !== []) {
+            return null;
+        }
+        $type = (string)($definition['type'] ?? 'string');
+        $required = $definition['required'] ?? false;
+        $maxLength = $definition['max_length'] ?? 1024;
+        if ($type !== 'string' || !is_bool($required) || !is_int($maxLength) || $maxLength < 1 || $maxLength > 4096) {
+            return null;
+        }
+        $enum = $definition['enum'] ?? null;
+        if ($enum !== null) {
+            if (!is_array($enum) || !array_is_list($enum) || $enum === []) {
+                return null;
+            }
+            $seen = [];
+            foreach ($enum as $value) {
+                if (!is_string($value) || $value === '' || strlen($value) > $maxLength || isset($seen[$value])) {
+                    return null;
+                }
+                $seen[$value] = true;
+            }
+            $enum = array_keys($seen);
+        }
+        $default = $definition['default'] ?? null;
+        if ($default !== null && (!is_string($default) || $default === '' || strlen($default) > $maxLength || ($enum !== null && !in_array($default, $enum, true)))) {
+            return null;
+        }
+        $normalized[$name] = ['type' => 'string', 'required' => $required, 'max_length' => $maxLength]
+            + ($enum === null ? [] : ['enum' => $enum])
+            + ($default === null ? [] : ['default' => $default]);
+    }
+
+    return $normalized;
+}
+
+function hub_pack_async_job_capabilities(mixed $capabilities): ?array
+{
+    if (!is_array($capabilities) || ($capabilities !== [] && array_is_list($capabilities))) {
+        return null;
+    }
+    $normalized = [];
+    foreach ($capabilities as $name => $available) {
+        if (!is_string($name) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $name) !== 1 || !is_bool($available)) {
+            return null;
+        }
+        $normalized[$name] = $available;
+    }
+
+    return $normalized;
+}
+
+function hub_pack_async_job_capability_requirements(mixed $requirements, array $capabilities): ?array
+{
+    if (!is_array($requirements) || ($requirements !== [] && array_is_list($requirements))) {
+        return null;
+    }
+    $normalized = [];
+    foreach ($requirements as $capability => $values) {
+        if (!is_string($capability) || !array_key_exists($capability, $capabilities) || !is_array($values) || !array_is_list($values) || $values === []) {
+            return null;
+        }
+        $seen = [];
+        foreach ($values as $value) {
+            if (!is_string($value) || $value === '' || isset($seen[$value])) {
+                return null;
+            }
+            $seen[$value] = true;
+        }
+        $normalized[$capability] = array_keys($seen);
+    }
+
+    return $normalized;
+}
+
+function hub_pack_job_normalize_request_input(array $input, array $contract): array
+{
+    $fields = hub_pack_async_job_contract_names($contract['input_fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
+    $schema = hub_pack_async_job_request_schema($contract['request_schema'] ?? [], $fields ?? []);
+    $capabilities = hub_pack_async_job_capabilities($contract['capabilities'] ?? []);
+    $requirements = hub_pack_async_job_capability_requirements($contract['capability_requirements'] ?? [], $capabilities ?? []);
+    if ($fields === null || $schema === null || $capabilities === null || $requirements === null) {
+        throw new InvalidArgumentException('invalid_request');
+    }
+    $allowed = array_fill_keys($fields, true);
+    foreach ($input as $name => $value) {
+        if (!is_string($name) || !isset($allowed[$name]) || !is_scalar($value)) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+    }
+    foreach ($schema as $name => $definition) {
+        if (!array_key_exists($name, $input)) {
+            if (array_key_exists('default', $definition)) {
+                $input[$name] = $definition['default'];
+                continue;
+            }
+            if ($definition['required']) {
+                throw new InvalidArgumentException('invalid_request');
+            }
+            continue;
+        }
+        if (!is_string($input[$name]) || $input[$name] === '' || strlen($input[$name]) > $definition['max_length']
+            || (isset($definition['enum']) && !in_array($input[$name], $definition['enum'], true))) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+    }
+    foreach ($requirements as $capability => $values) {
+        if (!$capabilities[$capability]) {
+            foreach ($input as $value) {
+                if (is_string($value) && in_array($value, $values, true)) {
+                    throw new InvalidArgumentException('capability_unavailable');
+                }
+            }
+        }
+    }
+
+    return $input;
+}
+
 function hub_pack_job_contract_snapshot(array $contract): array
 {
     $fields = hub_pack_async_job_contract_names($contract['input_fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
@@ -277,9 +413,21 @@ function hub_pack_job_contract_snapshot(array $contract): array
     $snapshot = [
         'input_fields' => $fields,
         'source_artifact_types' => $artifactTypes,
+        'request_schema' => hub_pack_async_job_request_schema($contract['request_schema'] ?? [], $fields) ?? throw new InvalidArgumentException('job_contract_unavailable'),
         'max_upload_bytes' => $maxUploadBytes,
         'artifact_contract' => ['artifacts' => $artifacts],
     ];
+    $capabilities = hub_pack_async_job_capabilities($contract['capabilities'] ?? []);
+    $requirements = hub_pack_async_job_capability_requirements($contract['capability_requirements'] ?? [], $capabilities ?? []);
+    if ($capabilities === null || $requirements === null) {
+        throw new InvalidArgumentException('job_contract_unavailable');
+    }
+    if ($capabilities !== []) {
+        $snapshot['capabilities'] = $capabilities;
+    }
+    if ($requirements !== []) {
+        $snapshot['capability_requirements'] = $requirements;
+    }
     if (array_key_exists('runner', $contract)) {
         $runner = hub_pack_async_job_runner_contract($contract['runner']);
         if ($runner === null) {

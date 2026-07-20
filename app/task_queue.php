@@ -1877,7 +1877,22 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
         $maxBytes = hub_pack_job_artifact_max_bytes($definition['max_bytes'] ?? null);
         if (isset($definition['when'])) {
             $when = $definition['when'];
-            if (!is_array($when) || array_keys($when) !== ['input', 'equals'] || !is_string($when['input']) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $when['input']) !== 1 || is_array($when['equals']) || is_object($when['equals'])) {
+            if (!is_array($when) || !is_string($when['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $when['input']) !== 1) {
+                hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+            }
+            if (array_keys($when) === ['input', 'equals']) {
+                if (is_array($when['equals']) || is_object($when['equals'])) {
+                    hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+                }
+            } elseif (array_keys($when) === ['input', 'in'] && is_array($when['in']) && array_is_list($when['in']) && $when['in'] !== []) {
+                $seen = [];
+                foreach ($when['in'] as $value) {
+                    if (is_array($value) || is_object($value) || isset($seen[serialize($value)])) {
+                        hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+                    }
+                    $seen[serialize($value)] = true;
+                }
+            } else {
                 hub_pack_job_output_contract_invalid('artifact_condition_invalid');
             }
         }
@@ -1924,6 +1939,11 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
 function hub_pack_job_artifact_is_expected(array $definition, array $input): bool
 {
     if (isset($definition['when'])) {
+        if (isset($definition['when']['in'])) {
+            return ($definition['required'] ?? true) === true
+                && array_key_exists($definition['when']['input'], $input)
+                && in_array($input[$definition['when']['input']], $definition['when']['in'], true);
+        }
         return ($definition['required'] ?? true) === true
             && array_key_exists($definition['when']['input'], $input)
             && $input[$definition['when']['input']] === $definition['when']['equals'];

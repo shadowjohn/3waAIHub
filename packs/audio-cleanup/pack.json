@@ -1,0 +1,143 @@
+{
+  "schema_version": "0.1",
+  "id": "audio-cleanup",
+  "name": "GPU Audio Cleanup",
+  "version": "0.1.0",
+  "category": "audio",
+  "type": "internal_task",
+  "execution_type": "async_task",
+  "runtime_level": "L1-contract",
+  "target_level": "L1-contract",
+  "runtime_ready": true,
+  "default_mode": "audio_cleanup",
+  "description": "GPU-only audio separation and optional enhancement through the generic Pack job adapter.",
+  "runtime": {
+    "kind": "internal_task"
+  },
+  "gateway": {
+    "invoke_path": "task_submit:pack_job",
+    "methods": ["POST"],
+    "timeout_sec": 1800,
+    "max_upload_mb": 200
+  },
+  "model_allowlist": {
+    "demucs": {
+      "aliases": {
+        "balanced": {
+          "model": "htdemucs",
+          "version": "v4.0.1",
+          "device": "cuda",
+          "segment_seconds": 7.8,
+          "shifts": 1
+        },
+        "quality": {
+          "model": "htdemucs_ft",
+          "version": "v4.0.1",
+          "device": "cuda",
+          "segment_seconds": 7.8,
+          "shifts": 2
+        }
+      }
+    }
+  },
+  "async_jobs": [
+    {
+      "job": "cleanup",
+      "input": {
+        "fields": ["operation", "demucs_model"],
+        "source_artifact_types": ["audio"],
+        "request_schema": {
+          "operation": {
+            "type": "string",
+            "required": true,
+            "enum": ["separate", "enhance", "separate_and_enhance"],
+            "max_length": 32
+          },
+          "demucs_model": {
+            "type": "string",
+            "required": false,
+            "enum": ["balanced", "quality"],
+            "default": "balanced",
+            "max_length": 32
+          }
+        }
+      },
+      "capabilities": {
+        "deepfilternet": false
+      },
+      "capability_requirements": {
+        "deepfilternet": ["enhance", "separate_and_enhance"]
+      },
+      "runner": {
+        "image": "ghcr.io/3waaihub/audio-cleanup:0.1.0",
+        "entrypoint": ["/app/audio-cleanup"],
+        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 8192,
+        "timeout_seconds": 1800
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "vocals_audio",
+            "path": "vocals.wav",
+            "mime_types": ["audio/wav", "audio/x-wav"],
+            "max_bytes": 16777216,
+            "when": {"input": "operation", "in": ["separate", "separate_and_enhance"]},
+            "audio": {}
+          },
+          {
+            "type": "background_audio",
+            "path": "background.wav",
+            "mime_types": ["audio/wav", "audio/x-wav"],
+            "max_bytes": 16777216,
+            "when": {"input": "operation", "in": ["separate", "separate_and_enhance"]},
+            "audio": {}
+          },
+          {
+            "type": "cleaned_audio",
+            "path": "cleaned.wav",
+            "mime_types": ["audio/wav", "audio/x-wav"],
+            "max_bytes": 16777216,
+            "when": {"input": "operation", "in": ["enhance", "separate_and_enhance"]},
+            "audio": {}
+          },
+          {
+            "type": "cleanup_report",
+            "path": "cleanup_report.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 65536,
+            "json": {
+              "required_keys": ["operation", "actual_chain", "model_versions"]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 8192,
+    "recommended_vram_mb": 12288,
+    "cpu_fallback": false,
+    "min_compute_capability": "7.5"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": []
+  },
+  "env": [],
+  "preflight": {
+    "checks": ["nvidia_smi", "docker_gpus"]
+  },
+  "install": {
+    "default_service_key": "audio-cleanup-main",
+    "compose_project": "3waaihub_audio_cleanup_main"
+  }
+}
