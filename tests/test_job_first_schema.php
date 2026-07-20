@@ -125,7 +125,9 @@ hub_test('job-first schema migration is idempotent and operational entry points 
     }
 
     hub_test_assert(hub_runtime_schema_missing($db) === [], 'migrated database must have the runtime schema');
-    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM runtime_resource_leases WHERE resource_key = 'gpu:0/available' AND state = 'available'")->fetchColumn() === 1, 'gpu:0 available lease must be seeded once');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM runtime_resource_leases WHERE resource_key = 'gpu:0' AND state = 'available'")->fetchColumn() === 1, 'gpu:0 available lease must be seeded once');
+    $db->exec("DELETE FROM runtime_resource_leases WHERE resource_key = 'gpu:0'");
+    hub_test_assert(in_array('runtime_resource_leases.gpu:0', hub_runtime_schema_missing($db), true), 'missing gpu:0 lease must require schema upgrade');
 
     foreach ([
         'AIHUB_SOURCE_RETENTION_DAYS' => '7',
@@ -145,5 +147,19 @@ hub_test('job-first schema migration is idempotent and operational entry points 
 
     foreach (['scripts/task_worker.php', 'scripts/command_worker.php', 'scripts/self_check.php', 'scripts/prune_db.php', 'bin/aihub-run'] as $path) {
         hub_test_assert(!hub_test_source_calls_migrate((string)file_get_contents(HUB_ROOT . '/' . $path)), "{$path} must not run migrations");
+    }
+});
+
+hub_test('self check snapshots into a private temporary database', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/scripts/self_check.php');
+
+    foreach ([
+        'mkdir($tmpDir, 0700, true)',
+        '$tmp = $tmpDir . \'/runtime.sqlite\'',
+        'VACUUM INTO',
+        'chmod($tmp, 0600)',
+        'finally {',
+    ] as $required) {
+        hub_test_assert(str_contains($source, $required), "self_check must contain {$required}");
     }
 });

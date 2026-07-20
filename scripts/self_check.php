@@ -11,14 +11,22 @@ if ($missing !== []) {
     exit(1);
 }
 
-$tmp = tempnam(sys_get_temp_dir(), '3waaihub_');
-if ($tmp === false) {
-    throw new RuntimeException('Cannot create temp database.');
+$tmpDir = sys_get_temp_dir() . '/3waaihub_self_check_' . bin2hex(random_bytes(16));
+$tmp = $tmpDir . '/runtime.sqlite';
+$db = null;
+$tmpDirCreated = false;
+try {
+if (!mkdir($tmpDir, 0700, true)) {
+    throw new RuntimeException('Cannot create private temp directory.');
 }
-if (!unlink($tmp)) {
-    throw new RuntimeException('Cannot prepare temp database.');
+$tmpDirCreated = true;
+if (!chmod($tmpDir, 0700)) {
+    throw new RuntimeException('Cannot secure private temp directory.');
 }
 $runtimeDb->exec('VACUUM INTO ' . $runtimeDb->quote($tmp));
+if (!is_file($tmp) || !chmod($tmp, 0600)) {
+    throw new RuntimeException('Cannot secure temp database.');
+}
 
 $db = new PDO('sqlite:' . $tmp);
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -317,7 +325,23 @@ assert(hub_artifact_safe_path($artifact['path']) === realpath($artifactPath));
 assert(hub_artifact_safe_path(HUB_ROOT . '/README.md') === null);
 unlink($artifactPath);
 
-unlink($tmp);
+} finally {
+    $stmt = null;
+    $db = null;
+    gc_collect_cycles();
+    $cleanupFailed = false;
+    foreach ([$tmp, $tmp . '-wal', $tmp . '-shm'] as $file) {
+        if (is_file($file) && !unlink($file)) {
+            $cleanupFailed = true;
+        }
+    }
+    if ($tmpDirCreated && is_dir($tmpDir) && !rmdir($tmpDir)) {
+        $cleanupFailed = true;
+    }
+    if ($cleanupFailed) {
+        throw new RuntimeException('Cannot remove private temp database.');
+    }
+}
 
 hub_ensure_default_storage_settings($runtimeDb);
 foreach (hub_storage_settings_warnings(hub_get_storage_paths($runtimeDb)) as $warning) {

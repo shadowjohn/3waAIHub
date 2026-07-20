@@ -685,7 +685,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_state_expires ON runtime_resource_leases(state, lease_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_run_id ON runtime_resource_leases(runtime_run_id)');
     $db->prepare(
-        "INSERT OR IGNORE INTO runtime_resource_leases (resource_key, state, updated_at) VALUES ('gpu:0/available', 'available', :updated_at)"
+        "INSERT OR IGNORE INTO runtime_resource_leases (resource_key, state, updated_at) VALUES ('gpu:0', 'available', :updated_at)"
     )->execute([':updated_at' => hub_now()]);
     $db->exec("UPDATE runtime_runs SET state = 'succeeded' WHERE state = 'success'");
 }
@@ -712,6 +712,13 @@ function hub_runtime_schema_missing(PDO $db): array
         foreach ($columns as $column) {
             if (!isset($present[$column])) {
                 $missing[] = $table . '.' . $column;
+            }
+        }
+        if ($table === 'runtime_resource_leases' && isset($present['resource_key'])) {
+            $lease = $db->prepare('SELECT 1 FROM runtime_resource_leases WHERE resource_key = :resource_key');
+            $lease->execute([':resource_key' => 'gpu:0']);
+            if ($lease->fetchColumn() === false) {
+                $missing[] = 'runtime_resource_leases.gpu:0';
             }
         }
     }
