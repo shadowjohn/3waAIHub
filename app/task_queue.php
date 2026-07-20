@@ -1598,7 +1598,39 @@ function hub_revalidate_published_pack_job_artifacts(int $taskId, array $publish
     }
 }
 
-function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $state, ?string $errorCode): void
+function hub_pack_job_requires_gpu_lease(PDO $db, int $taskId): bool
+{
+    $stmt = $db->prepare('SELECT accelerator FROM tasks WHERE id = :id AND task_type = :task_type');
+    $stmt->execute([':id' => $taskId, ':task_type' => 'pack_job']);
+
+    return strtolower((string)$stmt->fetchColumn()) === 'gpu';
+}
+
+function hub_pack_job_active_gpu_fence(PDO $db, int $taskId, ?array $run, ?array $gpuLease): void
+{
+    if (!hub_pack_job_requires_gpu_lease($db, $taskId)) {
+        return;
+    }
+    if ($run === null || $gpuLease === null) {
+        throw new RuntimeException('gpu_lease_required');
+    }
+    $runId = (int)($run['id'] ?? 0);
+    $leaseToken = (string)($run['lease_token'] ?? '');
+    if ($runId <= 0 || $leaseToken === '') {
+        throw new RuntimeException('runtime_fence_invalid');
+    }
+    $stmt = $db->prepare('SELECT * FROM runtime_runs WHERE id = :id AND task_id = :task_id');
+    $stmt->execute([':id' => $runId, ':task_id' => $taskId]);
+    $current = $stmt->fetch();
+    if (!is_array($current) || !hash_equals((string)$current['lease_token'], $leaseToken)) {
+        throw new RuntimeException('runtime_ownership_conflict');
+    }
+    if (!hub_runtime_gpu_active($db, $current, $gpuLease)) {
+        throw new RuntimeException('gpu_ownership_conflict');
+    }
+}
+
+function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $state, ?string $errorCode, ?array $gpuLease = null): void
 {
     if ($run === null) {
         throw new InvalidArgumentException('runtime_fence_required');
@@ -1640,6 +1672,22 @@ function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $
     $stmt->execute($params);
     if ($stmt->rowCount() !== 1) {
         throw new RuntimeException('runtime_ownership_conflict');
+    }
+    if (!hub_pack_job_requires_gpu_lease($db, $taskId)) {
+        return;
+    }
+    if ($gpuLease === null) {
+        throw new RuntimeException('gpu_lease_required');
+    }
+    $gpu = hub_runtime_gpu_lease_identity($gpuLease);
+    $runStmt = $db->prepare('SELECT run_id, worker_id FROM runtime_runs WHERE id = :id');
+    $runStmt->execute([':id' => $runId]);
+    $runtime = $runStmt->fetch();
+    if (!is_array($runtime)
+        || (string)$runtime['run_id'] !== $gpu['runtime_run_id']
+        || (string)$runtime['worker_id'] !== $gpu['worker_id']
+        || !hub_runtime_gpu_release_in_transaction($db, $gpuLease)) {
+        throw new RuntimeException('gpu_ownership_conflict');
     }
 }
 
@@ -1699,26 +1747,27 @@ function hub_pack_job_mark_task_terminal(PDO $db, int $taskId, string $status, ?
     }
 }
 
-function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run, array $publishedArtifacts, array $cleanup): array
+function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run, array $publishedArtifacts, array $cleanup, ?array $gpuLease = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
     if (!hub_pack_job_cleanup_attested($cleanup)) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
     }
     try {
         hub_revalidate_published_pack_job_artifacts($taskId, $publishedArtifacts);
     } catch (HubPackOutputContractInvalid) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
     }
     $db->beginTransaction();
     try {
-        hub_pack_job_terminal_fence($db, $run, $taskId, 'succeeded', null);
+        hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
+        hub_pack_job_terminal_fence($db, $run, $taskId, 'succeeded', null, $gpuLease);
         $resultArtifacts = [];
         foreach ($publishedArtifacts as $artifact) {
             $resultArtifacts[] = [
@@ -1743,29 +1792,29 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
     }
 }
 
-function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup): array
+function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup, ?array $gpuLease = null): array
 {
-    // Task5 releases any GPU resource lease after this terminal transaction commits.
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
     if (!hub_pack_job_cleanup_attested($cleanup)) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
     }
+    hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
     try {
         $publishedArtifacts = hub_handoff_pack_job_artifacts($db, $taskId, $run, $validatedArtifacts);
     } catch (HubPackOutputContractInvalid) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
     }
 
-    return hub_commit_published_pack_job_success($db, $taskId, $run, $publishedArtifacts, $cleanup);
+    return hub_commit_published_pack_job_success($db, $taskId, $run, $publishedArtifacts, $cleanup, $gpuLease);
 }
 
-function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $status, string $errorCode, string $errorMessage, array $cleanup = []): void
+function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $status, string $errorCode, string $errorMessage, array $cleanup = [], ?array $gpuLease = null): void
 {
     if (!in_array($status, ['failed', 'cancelled', 'timed_out'], true) || preg_match('/^[a-z0-9_:-]{1,120}$/i', $errorCode) !== 1) {
         throw new InvalidArgumentException('pack_job_terminal_invalid');
@@ -1780,7 +1829,7 @@ function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $
     }
     $db->beginTransaction();
     try {
-        hub_pack_job_terminal_fence($db, $run, $taskId, $status === 'failed' ? 'failed' : $status, $errorCode);
+        hub_pack_job_terminal_fence($db, $run, $taskId, $status === 'failed' ? 'failed' : $status, $errorCode, $gpuLease);
         hub_pack_job_mark_task_terminal($db, $taskId, $status, $errorCode, substr($errorMessage, 0, 2048));
         hub_release_task_artifact_holds($db, $taskId);
         hub_enqueue_task_callback_delivery($db, $taskId);
@@ -1793,13 +1842,13 @@ function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $
     }
 }
 
-function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null): array
+function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null, ?array $gpuLease = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
     if (!hub_pack_job_cleanup_attested($cleanup)) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
     }
@@ -1807,9 +1856,9 @@ function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string
         hub_pack_job_require_submitted_output_dir($db, $taskId, $run, $workspace);
         $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe);
     } catch (HubPackOutputContractInvalid) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
     }
-    return hub_commit_pack_job_success($db, $taskId, $run, $artifacts, $cleanup);
+    return hub_commit_pack_job_success($db, $taskId, $run, $artifacts, $cleanup, $gpuLease);
 }
