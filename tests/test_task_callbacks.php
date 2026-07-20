@@ -265,3 +265,27 @@ hub_test('callback worker requires an upgraded schema and cron runs it', functio
         }
     }
 });
+
+hub_test('callback HTTP transport fails closed when resolved-IP pinning is unavailable', function (): void {
+    $delivery = [
+        'callback_url' => 'https://127.0.0.1/callback',
+        'payload_json' => '{}',
+        'event_type' => 'task.completed',
+        'delivery_id' => 'cb_test_pinning',
+        'signing_secret' => 'test-secret',
+    ];
+    $attempted = false;
+    $result = hub_callback_send_http($delivery, [], static function () use (&$attempted): array {
+        $attempted = true;
+        return ['status' => 204];
+    }, false);
+    hub_test_assert(($result['error'] ?? '') === 'callback_network_error' && !$attempted, 'callback transport must not send when cURL cannot pin the resolved address');
+
+    $delivery['callback_url'] = 'https://8.8.8.8/callback';
+    $configured = false;
+    $result = hub_callback_send_http($delivery, [], null, null, static function ($handle, array $options) use (&$configured): bool {
+        $configured = isset($options[CURLOPT_RESOLVE]);
+        return false;
+    });
+    hub_test_assert($configured && ($result['error'] ?? '') === 'callback_network_error', 'callback transport must stop before execution when cURL rejects its pinning options');
+});

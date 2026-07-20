@@ -468,9 +468,9 @@ function hub_callback_headers(array $delivery, int $timestamp): array
     ];
 }
 
-function hub_callback_send_http(array $delivery, array $headers): array
+function hub_callback_send_http(array $delivery, array $headers, ?callable $transport = null, ?bool $resolveAvailable = null, ?callable $configure = null): array
 {
-    if (!function_exists('curl_init')) {
+    if (!function_exists('curl_init') || !defined('CURLOPT_RESOLVE') || $resolveAvailable === false) {
         return ['error' => 'callback_network_error'];
     }
     try {
@@ -497,15 +497,25 @@ function hub_callback_send_http(array $delivery, array $headers): array
     if (defined('CURLOPT_PROTOCOLS') && defined('CURLPROTO_HTTPS')) {
         $options[CURLOPT_PROTOCOLS] = CURLPROTO_HTTPS;
     }
-    if (filter_var($endpoint['host'], FILTER_VALIDATE_IP) === false && defined('CURLOPT_RESOLVE')) {
-        $ip = (string)$endpoint['ips'][0];
-        $options[CURLOPT_RESOLVE] = [$endpoint['host'] . ':443:' . (str_contains($ip, ':') ? '[' . $ip . ']' : $ip)];
+    $ip = (string)$endpoint['ips'][0];
+    $host = str_contains($endpoint['host'], ':') ? '[' . $endpoint['host'] . ']' : $endpoint['host'];
+    $options[CURLOPT_RESOLVE] = [$host . ':443:' . (str_contains($ip, ':') ? '[' . $ip . ']' : $ip)];
+    if ($transport !== null) {
+        return $transport($endpoint['url'], $options);
     }
     $handle = curl_init($endpoint['url']);
     if ($handle === false) {
         return ['error' => 'callback_network_error'];
     }
-    curl_setopt_array($handle, $options);
+    try {
+        $configured = $configure ? $configure($handle, $options) : curl_setopt_array($handle, $options);
+    } catch (Throwable) {
+        $configured = false;
+    }
+    if (!$configured) {
+        curl_close($handle);
+        return ['error' => 'callback_network_error'];
+    }
     $ok = curl_exec($handle);
     $status = (int)(curl_getinfo($handle, CURLINFO_RESPONSE_CODE) ?: 0);
     curl_close($handle);
