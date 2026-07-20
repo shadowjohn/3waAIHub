@@ -43,11 +43,11 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
         'INSERT INTO tasks
             (task_type, queue_name, priority, input_json, status, requested_by, requested_ip,
              owner_member_id, owner_token_id, requested_mode, pack_id, pack_version, job, runtime_mode, accelerator,
-             route_resolved_at, source_artifact_id, source_task_id, retry_of_task_id, created_at, updated_at)
+             route_resolved_at, source_artifact_id, source_task_id, retry_of_task_id, callback_target_id, created_at, updated_at)
          VALUES
             (:task_type, :queue_name, :priority, :input_json, :status, :requested_by, :requested_ip,
              :owner_member_id, :owner_token_id, :requested_mode, :pack_id, :pack_version, :job, :runtime_mode, :accelerator,
-             :route_resolved_at, :source_artifact_id, :source_task_id, :retry_of_task_id, :created_at, :updated_at)'
+             :route_resolved_at, :source_artifact_id, :source_task_id, :retry_of_task_id, :callback_target_id, :created_at, :updated_at)'
     );
     $stmt->execute([
         ':task_type' => $taskType,
@@ -69,6 +69,7 @@ function hub_enqueue_task(PDO $db, string $taskType, string $queueName, int $pri
         ':source_artifact_id' => $attributes['source_artifact_id'] ?? null,
         ':source_task_id' => $attributes['source_task_id'] ?? null,
         ':retry_of_task_id' => $attributes['retry_of_task_id'] ?? null,
+        ':callback_target_id' => $attributes['callback_target_id'] ?? null,
         ':created_at' => $now,
         ':updated_at' => $now,
     ]);
@@ -97,6 +98,7 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
             'source_artifact_id' => $sourceArtifactId > 0 ? $sourceArtifactId : null,
             'source_task_id' => $lineage['source_task_id'] ?? null,
             'retry_of_task_id' => $lineage['retry_of_task_id'] ?? null,
+            'callback_target_id' => $lineage['callback_target_id'] ?? null,
             'status' => $status,
         ]);
         if ($sourceArtifactId > 0) {

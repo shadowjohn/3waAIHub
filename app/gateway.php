@@ -750,8 +750,14 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         return hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows');
     }
     try {
-        $input = hub_audio_task_input($_POST, $route);
-    } catch (InvalidArgumentException) {
+        $callbackTargetId = hub_audio_callback_target_id($db, $ownerMemberId, $_POST);
+        $taskInput = $_POST;
+        unset($taskInput['callback'], $taskInput['callback_target']);
+        $input = hub_audio_task_input($taskInput, $route);
+    } catch (InvalidArgumentException $e) {
+        if (in_array($e->getMessage(), ['callback_target_not_found', 'callback_target_disabled'], true)) {
+            return hub_gateway_error($e->getMessage() === 'callback_target_not_found' ? 404 : 409, $e->getMessage(), 'callback target is unavailable');
+        }
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
 
@@ -775,6 +781,7 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip(), [
             'source_artifact_id' => (int)$source['id'],
             'source_task_id' => (int)$source['task_id'],
+            'callback_target_id' => $callbackTargetId,
         ]);
         return hub_gateway_json(200, hub_task_submit_response($taskId));
     }
@@ -788,7 +795,9 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
     }
     $extension = strtolower(pathinfo((string)($file['name'] ?? ''), PATHINFO_EXTENSION));
     $extension = preg_match('/^[a-z0-9]{1,8}$/', $extension) ? $extension : 'bin';
-    $taskId = hub_stage_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip());
+    $taskId = hub_stage_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip(), [
+        'callback_target_id' => $callbackTargetId,
+    ]);
     try {
         $input = hub_get_task($db, $taskId)['input'] ?? [];
         $input['source_upload_path'] = hub_store_task_upload_file($taskId, $file, $extension);
