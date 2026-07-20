@@ -346,6 +346,72 @@ hub_test('audio manual retry creates a linked task without mutating terminal his
     });
 });
 
+hub_test('audio upload retry copies its owned source into the new task before adapter execution', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Upload Retry Owner');
+        $token = hub_create_api_token($db, $memberId, 'upload retry token', null, null);
+        $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+        $taskId = hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51');
+        $oldDir = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId;
+        $oldPath = $oldDir . '/input.wav';
+        if ((!is_dir($oldDir) && !mkdir($oldDir, 0700, true)) || file_put_contents($oldPath, 'RIFFretry-source', LOCK_EX) === false) {
+            throw new RuntimeException('Cannot create retry upload fixture.');
+        }
+        hub_update_task_input($db, $taskId, ['source_upload_path' => $oldPath]);
+        hub_finish_task_success($db, hub_get_task($db, $taskId) ?? [], ['finished' => true]);
+
+        $manifestPath = HUB_ROOT . '/packs/whisper-asr/pack.json';
+        $originalManifest = (string)file_get_contents($manifestPath);
+        $manifest = json_decode($originalManifest, true);
+        if (!is_array($manifest)) {
+            throw new RuntimeException('Cannot decode Whisper manifest fixture.');
+        }
+        $manifest['async_jobs'][0]['runner'] = [
+            'image' => 'registry.example/whisper-retry:2',
+            'entrypoint' => ['/app/transcribe'],
+            'args' => ['--workspace', '{workspace}', '--output', '{output_dir}'],
+            'output_dir' => 'output',
+            'accelerator' => 'gpu',
+            'required_vram_mb' => 64,
+            'timeout_seconds' => 30,
+        ];
+        try {
+            file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
+            $retryId = hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']]);
+            $retry = hub_get_task($db, $retryId) ?? [];
+            $newPath = (string)($retry['input']['source_upload_path'] ?? '');
+            hub_test_assert($newPath !== $oldPath && $newPath === HUB_DATA_DIR . '/uploads/tasks/task_' . $retryId . '/input.wav' && is_file($newPath) && hash_file('sha256', $newPath) === hash_file('sha256', $oldPath), 'retry must copy its validated upload into its own canonical path');
+
+            $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+            hub_test_assert((int)($claimed['id'] ?? 0) === $retryId, 'copied upload retry must be claimable');
+            hub_run_pack_job_task($db, $claimed ?? [], [
+                'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+                'executor' => static function (array $context): array {
+                    hub_test_assert((string)file_get_contents($context['workspace'] . '/input/source') === 'RIFFretry-source', 'adapter must stage the retry-owned source copy');
+                    file_put_contents($context['workspace'] . '/output/transcript.json', '{"text":"retry"}', LOCK_EX);
+                    return ['exit_code' => 0, 'container_id' => 'upload-retry', 'cleanup' => hub_test_adapter_cleanup()];
+                },
+            ]);
+            hub_test_assert((hub_get_task($db, $retryId)['status'] ?? '') === 'success', 'retry with copied upload source must execute successfully');
+
+            $manifest['async_jobs'][0]['max_upload_bytes'] = 1;
+            file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
+            $retryCount = (int)$db->query('SELECT COUNT(*) FROM tasks WHERE retry_of_task_id = ' . $taskId)->fetchColumn();
+            hub_test_assert(hub_test_throws(static fn (): int => hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']])), 'retry must fail when its copied upload exceeds the newly admitted limit');
+            hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks WHERE retry_of_task_id = ' . $taskId)->fetchColumn() === $retryCount, 'failed upload copying must remove its staging task before it can become runnable');
+        } finally {
+            file_put_contents($manifestPath, $originalManifest, LOCK_EX);
+            foreach ([$oldPath, $newPath ?? ''] as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+        }
+    });
+});
+
 hub_test('audio retry snapshots a changed live runner without rewriting the original task', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();

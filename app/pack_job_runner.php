@@ -66,7 +66,7 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
         $claim = $db->prepare(
             "UPDATE runtime_runs
              SET state = 'claimed', worker_id = :worker_id, lease_token = :lease_token, claimed_at = :now,
-                 heartbeat_at = :now, lease_expires_at = :lease_expires_at, attempt_no = COALESCE(attempt_no, 0) + 1
+                 heartbeat_at = :now, lease_expires_at = :lease_expires_at
              WHERE id = :id AND state = 'queued'"
         );
         $claim->execute([
@@ -226,24 +226,49 @@ function hub_pack_job_copy_source_artifact(PDO $db, array $task, string $workspa
     }
 }
 
-function hub_pack_job_mark_running(PDO $db, array $run, array $runner): bool
+function hub_pack_job_begin_execution(PDO $db, array $task, array $run, array $runner, ?array $gpuLease): ?array
 {
-    if (!hub_runtime_mark_running($db, (int)$run['id'], (string)$run['lease_token'])) {
-        return false;
+    if ($db->inTransaction()) {
+        throw new LogicException('pack_job_execution_transaction_required');
     }
     $timeout = date('Y-m-d H:i:s', time() + (int)$runner['timeout_seconds']);
-    $stmt = $db->prepare(
-        "UPDATE runtime_runs SET image_name = :image_name, timeout_at = :timeout_at
-         WHERE id = :id AND lease_token = :lease_token AND state = 'running'"
-    );
-    $stmt->execute([
-        ':image_name' => $runner['image'],
-        ':timeout_at' => $timeout,
-        ':id' => (int)$run['id'],
-        ':lease_token' => (string)$run['lease_token'],
-    ]);
+    $taskId = (int)$task['id'];
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        if ($gpuLease !== null && (!hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId) || !hub_runtime_gpu_active($db, $run, $gpuLease, $taskId))) {
+            $db->exec('ROLLBACK');
+            return null;
+        }
+        $stmt = $db->prepare(
+            "UPDATE runtime_runs
+             SET state = 'running', started_at = :started_at, image_name = :image_name, timeout_at = :timeout_at,
+                 attempt_no = COALESCE(attempt_no, 0) + 1
+             WHERE id = :id AND task_id = :task_id AND lease_token = :lease_token AND state = 'claimed'
+               AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
+        );
+        $stmt->execute([
+            ':started_at' => hub_now(),
+            ':image_name' => $runner['image'],
+            ':timeout_at' => $timeout,
+            ':id' => (int)$run['id'],
+            ':task_id' => $taskId,
+            ':lease_token' => (string)$run['lease_token'],
+            ':now' => hub_now(),
+        ]);
+        if ($stmt->rowCount() !== 1) {
+            $db->exec('ROLLBACK');
+            return null;
+        }
+        $started = hub_runtime_fetch_run($db, (int)$run['id']);
+        $db->exec('COMMIT');
 
-    return $stmt->rowCount() === 1;
+        return $started;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
 }
 
 function hub_pack_job_runner_arguments(array $runner, array $task, array $run, string $workspace): array
@@ -402,9 +427,6 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 return ['status' => ($preflight['reason'] ?? '') === 'lost_gpu_lease' ? 'fence_lost' : 'waiting_gpu'];
             }
         }
-        if (!hub_pack_job_mark_running($db, $run, $runner)) {
-            return ['status' => 'fence_lost'];
-        }
         $workspace = hub_pack_job_prepare_workspace($task, $contract);
         hub_pack_job_copy_source_artifact($db, $task, $workspace);
         $context = [
@@ -422,6 +444,12 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         if (!hub_pack_job_record_execution($db, $task, $run, $gpuLease, $details)) {
             return ['status' => 'fence_lost'];
         }
+        $run = hub_pack_job_begin_execution($db, $task, $run, $runner, $gpuLease);
+        if ($run === null) {
+            return ['status' => 'fence_lost'];
+        }
+        $context['run'] = $run;
+        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace);
         $fenceLost = false;
         $context['started'] = static function (array $startedDetails) use (&$details, &$fenceLost, $db, $task, $run, $gpuLease, $baseline): void {
             $details = hub_pack_job_execution_details($startedDetails, ['baseline_pids' => $baseline]);

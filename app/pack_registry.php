@@ -329,7 +329,7 @@ function hub_resolve_stored_pack_job(PDO $db, array $task): array
         throw new RuntimeException('job_unavailable');
     }
     $pack = hub_get_pack((string)$task['pack_id']);
-    if (!$pack || ($pack['status'] ?? '') !== 'ok' || (string)($pack['manifest']['version'] ?? '') !== (string)$task['pack_version']) {
+    if (!$pack || (string)($pack['manifest']['version'] ?? '') !== (string)$task['pack_version']) {
         throw new RuntimeException('pack_version_unavailable');
     }
     $installed = $db->prepare(
@@ -341,7 +341,7 @@ function hub_resolve_stored_pack_job(PDO $db, array $task): array
     if ($installed->fetchColumn() === false) {
         throw new RuntimeException('pack_version_unavailable');
     }
-    if (hub_pack_async_job_contract((array)$pack['manifest'], (string)$task['job']) === null) {
+    if (!hub_pack_async_job_is_declared((array)$pack['manifest'], (string)$task['job'])) {
         throw new RuntimeException('job_unavailable');
     }
     $contract = hub_pack_job_contract_from_snapshot($task);
@@ -350,6 +350,17 @@ function hub_resolve_stored_pack_job(PDO $db, array $task): array
     }
 
     return $contract;
+}
+
+function hub_pack_async_job_is_declared(array $manifest, string $job): bool
+{
+    foreach ((array)($manifest['async_jobs'] ?? []) as $definition) {
+        if (is_array($definition) && ($definition['job'] ?? null) === $job) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 function hub_pack_async_job_max_upload_bytes(array $definition, array $manifest): ?int

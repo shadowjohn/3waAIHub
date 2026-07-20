@@ -200,6 +200,48 @@ function hub_managed_task_upload_path(int $taskId, string $path): ?string
     return str_starts_with($realPath, $taskRoot . DIRECTORY_SEPARATOR) ? $realPath : null;
 }
 
+function hub_copy_managed_task_upload_for_retry(int $sourceTaskId, int $retryTaskId, string $sourcePath, array $route): string
+{
+    $source = hub_managed_task_upload_path($sourceTaskId, $sourcePath);
+    $maxBytes = (int)($route['max_upload_bytes'] ?? 0);
+    $size = $source === null ? false : filesize($source);
+    if ($source === null || $maxBytes < 1 || $size === false || $size < 0 || $size > $maxBytes) {
+        throw new RuntimeException('source_upload_invalid');
+    }
+    $sourceHash = hash_file('sha256', $source);
+    if (!is_string($sourceHash) || preg_match('/^[a-f0-9]{64}$/', $sourceHash) !== 1) {
+        throw new RuntimeException('source_upload_invalid');
+    }
+    $extension = strtolower(pathinfo($source, PATHINFO_EXTENSION));
+    $extension = preg_match('/^[a-z0-9]{1,8}$/', $extension) ? $extension : 'bin';
+    $dir = HUB_DATA_DIR . '/uploads/tasks/task_' . $retryTaskId;
+    if (is_link($dir) || (!is_dir($dir) && !mkdir($dir, 0700, true))) {
+        throw new RuntimeException('source_copy_failed');
+    }
+    $path = $dir . '/input.' . $extension;
+    $temporary = $path . '.' . bin2hex(random_bytes(8)) . '.tmp';
+    if (is_link($path) || !copy($source, $temporary)) {
+        throw new RuntimeException('source_copy_failed');
+    }
+    $copiedHash = hash_file('sha256', $temporary);
+    $currentSourceHash = hash_file('sha256', $source);
+    if (!is_string($copiedHash) || !is_string($currentSourceHash) || !hash_equals($sourceHash, $currentSourceHash) || !hash_equals($sourceHash, $copiedHash) || !rename($temporary, $path)) {
+        if (is_file($temporary)) {
+            unlink($temporary);
+        }
+        throw new RuntimeException('source_upload_invalid');
+    }
+    $managed = hub_managed_task_upload_path($retryTaskId, $path);
+    if ($managed === null || filesize($managed) !== $size || !hash_equals($sourceHash, (string)hash_file('sha256', $managed))) {
+        if (is_file($path)) {
+            unlink($path);
+        }
+        throw new RuntimeException('source_copy_failed');
+    }
+
+    return $managed;
+}
+
 function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []): int
 {
     $task = hub_get_task($db, $taskId);
@@ -221,14 +263,43 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     if ($sourceArtifactId > 0 && $source === null) {
         throw new RuntimeException('source_artifact_invalid');
     }
-    if ($sourceArtifactId <= 0 && hub_managed_task_upload_path($taskId, (string)($input['source_upload_path'] ?? '')) === null) {
+    if ($sourceArtifactId > 0) {
+        return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
+            'source_artifact_id' => $sourceArtifactId,
+            'source_task_id' => (int)($source['task_id'] ?? 0),
+            'retry_of_task_id' => $taskId,
+        ]);
+    }
+    $sourcePath = hub_managed_task_upload_path($taskId, (string)($input['source_upload_path'] ?? ''));
+    if ($sourcePath === null) {
         throw new RuntimeException('source_upload_invalid');
     }
-    return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
-        'source_artifact_id' => $sourceArtifactId,
-        'source_task_id' => (int)($source['task_id'] ?? 0),
+    if ($db->inTransaction()) {
+        throw new LogicException('manual_retry_copy_transaction_required');
+    }
+    unset($input['source_upload_path']);
+    $retryId = hub_stage_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
         'retry_of_task_id' => $taskId,
     ]);
+    $copiedPath = null;
+    try {
+        $retryInput = (hub_get_task($db, $retryId)['input'] ?? []);
+        $copiedPath = hub_copy_managed_task_upload_for_retry($taskId, $retryId, $sourcePath, $route);
+        $retryInput['source_upload_path'] = $copiedPath;
+        hub_update_task_input($db, $retryId, $retryInput);
+        hub_publish_staged_pack_job($db, $retryId);
+
+        return $retryId;
+    } catch (Throwable $e) {
+        if ($copiedPath !== null && is_file($copiedPath)) {
+            unlink($copiedPath);
+        }
+        if ($copiedPath !== null && is_dir(dirname($copiedPath))) {
+            rmdir(dirname($copiedPath));
+        }
+        $db->prepare("DELETE FROM tasks WHERE id = :id AND task_type = 'pack_job' AND status = 'staging'")->execute([':id' => $retryId]);
+        throw $e;
+    }
 }
 
 function hub_update_task_input(PDO $db, int $taskId, array $input): void

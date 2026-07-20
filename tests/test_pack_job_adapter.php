@@ -332,6 +332,27 @@ hub_test('Pack job adapter rejects unavailable executors before GPU leasing and 
     } finally {
         hub_test_adapter_remove($fixture['dir']);
     }
+
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    $called = 0;
+    try {
+        $manifest = hub_test_adapter_manifest($fixture['id'], '1.0.0');
+        $manifest['async_jobs'][0]['runner'] = ['image' => ''];
+        file_put_contents($fixture['dir'] . '/pack.json', json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+        $task = hub_test_adapter_claim($db);
+        hub_run_pack_job_task($db, $task, [
+            'executor' => static function (array $context) use (&$called): array {
+                $called++;
+                hub_test_assert(($context['runner']['image'] ?? '') === 'registry.example/fixture-pack:1', 'adapter must not parse a changed live runner after admission');
+                file_put_contents($context['workspace'] . '/output/result.txt', "snapshot-only\n", LOCK_EX);
+                return ['exit_code' => 0, 'container_id' => 'snapshot-only', 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        hub_test_assert($called === 1 && (hub_get_task($db, $fixture['task_id'])['status'] ?? '') === 'success', 'a malformed live runner must not invalidate a valid admitted snapshot');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
 });
 
 hub_test('Pack job adapter rejects tampered and pre-snapshot contracts safely', function (): void {
@@ -402,7 +423,8 @@ hub_test('Pack job adapter waits then reclaims GPU work while CPU skips GPU', fu
             'gpu_backoff_seconds' => 1,
         ]);
         $row = hub_get_task($db, $fixture['task_id']);
-        hub_test_assert(($waiting['status'] ?? '') === 'waiting_gpu' && $called === 0 && ($row['status'] ?? '') === 'waiting_gpu', 'preflight wait must not start a container');
+        $waitingRun = $db->query('SELECT attempt_no FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch();
+        hub_test_assert(($waiting['status'] ?? '') === 'waiting_gpu' && $called === 0 && ($row['status'] ?? '') === 'waiting_gpu' && (int)($waitingRun['attempt_no'] ?? -1) === 0, 'preflight wait must not start a container or consume an execution attempt');
         $db->prepare('UPDATE tasks SET next_attempt_at = :now WHERE id = :id')->execute([':now' => hub_now(), ':id' => $fixture['task_id']]);
         $retry = hub_test_adapter_claim($db);
         hub_run_pack_job_task($db, $retry, [
@@ -415,8 +437,8 @@ hub_test('Pack job adapter waits then reclaims GPU work while CPU skips GPU', fu
                 return ['exit_code' => 0, 'container_id' => 'gpu-container', 'baseline_pids' => [11], 'owned_pids' => [22], 'cleanup' => hub_test_adapter_cleanup()];
             },
         ]);
-        $run = $db->query('SELECT container_id, gpu_process_baseline_json, owned_gpu_pids_json FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch();
-        hub_test_assert($called === 1 && (($run['container_id'] ?? '') === 'gpu-container') && str_contains((string)$run['gpu_process_baseline_json'], '11') && str_contains((string)$run['owned_gpu_pids_json'], '22'), 'GPU retry must record managed ownership before success');
+        $run = $db->query('SELECT container_id, gpu_process_baseline_json, owned_gpu_pids_json, attempt_no FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch();
+        hub_test_assert($called === 1 && (($run['container_id'] ?? '') === 'gpu-container') && str_contains((string)$run['gpu_process_baseline_json'], '11') && str_contains((string)$run['owned_gpu_pids_json'], '22') && (int)($run['attempt_no'] ?? 0) === 1, 'GPU retry must record managed ownership and consume exactly one execution attempt');
     } finally {
         hub_test_adapter_remove($fixture['dir']);
     }
