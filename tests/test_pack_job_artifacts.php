@@ -305,6 +305,8 @@ hub_test('Pack job success terminal commit atomically registers validated output
         $hold->execute([':source' => $fixture['source_artifact_id'], ':task' => $fixture['task_id']]);
         hub_test_assert(($task['status'] ?? '') === 'success' && ($run['state'] ?? '') === 'succeeded', 'success terminal commit must complete task and owned run');
         hub_test_assert(count($rows) === 3 && ($rows[2]['sha256'] ?? '') === hash_file('sha256', $workspace . '/output/audio.wav'), 'success terminal commit must register only Hub-validated metadata');
+        $resultArtifacts = (array)(($task['result'] ?? [])['artifacts'] ?? []);
+        hub_test_assert(count($resultArtifacts) === 3 && ($resultArtifacts[2]['sha256'] ?? '') === ($rows[2]['sha256'] ?? '') && ($resultArtifacts[2]['size_bytes'] ?? null) === (int)$rows[2]['size_bytes'], 'task result must expose artifact integrity metadata for polling clients');
         hub_test_assert(hub_artifact_safe_path((string)($rows[2]['path'] ?? '')) === ($rows[2]['path'] ?? ''), 'success artifacts must remain directly downloadable from managed results storage');
         hub_test_assert((json_decode((string)($rows[2]['metadata_json'] ?? ''), true)['sample_rate'] ?? null) === 48000, 'audio metadata must be stored with registered artifact');
         hub_test_assert(!empty(($hold->fetch() ?: [])['released_at']), 'success terminal commit must release source hold in its transaction');

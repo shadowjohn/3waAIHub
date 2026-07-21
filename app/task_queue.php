@@ -3400,6 +3400,9 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
             $resultArtifacts[] = [
                 'id' => hub_register_validated_pack_job_artifact($db, $taskId, $artifact),
                 'type' => $artifact['artifact_type'] ?? null,
+                'mime_type' => $artifact['mime_type'] ?? null,
+                'size_bytes' => $artifact['size_bytes'] ?? null,
+                'sha256' => $artifact['sha256'] ?? null,
             ];
         }
         if ($resultArtifacts === []) {
