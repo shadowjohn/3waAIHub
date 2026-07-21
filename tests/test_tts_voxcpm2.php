@@ -308,7 +308,7 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
         'args' => ['--workspace', '{workspace}', '--input', '{input_dir}', '--output', '{output_dir}', '--runner-config', '{input_dir}/runner_config.json'],
         'output_dir' => 'output',
         'accelerator' => 'gpu',
-        'required_vram_mb' => 16384,
+        'required_vram_mb' => 16000,
         'timeout_seconds' => 7200,
         'executor' => 'container',
         'asset_mounts' => [[

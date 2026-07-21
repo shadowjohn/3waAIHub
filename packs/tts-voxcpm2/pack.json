@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "tts-voxcpm2",
   "name": "VoxCPM2 Experimental TTS Service",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "category": "audio",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -77,7 +77,7 @@
         "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
         "output_dir": "output",
         "accelerator": "gpu",
-        "required_vram_mb": 16384,
+        "required_vram_mb": 16000,
         "timeout_seconds": 7200,
         "executor": "container",
         "asset_mounts": [
