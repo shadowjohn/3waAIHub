@@ -2136,12 +2136,12 @@ function hub_pack_job_read_parser_output(string $path, int $size): string
 
 function hub_pack_job_json_semantic_contract(mixed $semantic): ?array
 {
-    if (!is_array($semantic) || array_is_list($semantic) || array_diff(array_keys($semantic), ['equals_input', 'array_equals_by_input', 'object_keys_by_input', 'field_types', 'object_properties', 'object_properties_by_input']) !== []) {
+    if (!is_array($semantic) || array_is_list($semantic) || array_diff(array_keys($semantic), ['equals_input', 'array_equals_by_input', 'object_keys_by_input', 'field_types', 'object_properties', 'object_properties_by_input', 'object_values']) !== []) {
         return null;
     }
     $field = static fn (mixed $value): bool => is_string($value) && preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $value) === 1;
     $inputField = static fn (mixed $value): bool => is_string($value) && preg_match('/^[a-z][a-z0-9_]{0,63}$/', $value) === 1;
-    $propertyTypes = ['number_nonnegative' => true, 'positive_integer' => true, 'array' => true];
+    $propertyTypes = ['number_nonnegative' => true, 'positive_integer' => true, 'array' => true, 'nonempty_string' => true];
     $properties = static function (mixed $value) use ($field, $propertyTypes): ?array {
         if (!is_array($value) || array_is_list($value) || $value === []) {
             return null;
@@ -2183,6 +2183,13 @@ function hub_pack_job_json_semantic_contract(mixed $semantic): ?array
             }
         }
         $normalized['object_properties'] = $semantic['object_properties'];
+    }
+    if (isset($semantic['object_values'])) {
+        $typed = $properties($semantic['object_values']);
+        if ($typed === null) {
+            return null;
+        }
+        $normalized['object_values'] = $typed;
     }
     foreach (['array_equals_by_input', 'object_keys_by_input'] as $name) {
         if (!isset($semantic[$name])) {
@@ -2233,6 +2240,7 @@ function hub_pack_job_json_semantic_type_matches(mixed $value, string $type): bo
         'number_nonnegative' => (is_int($value) || is_float($value)) && $value >= 0,
         'positive_integer' => is_int($value) && $value > 0,
         'array' => is_array($value) && array_is_list($value),
+        'nonempty_string' => is_string($value) && $value !== '',
         default => false,
     };
 }
@@ -2285,6 +2293,16 @@ function hub_pack_job_validate_json_output(string $path, array $definition, int 
     foreach ($semantic['object_properties'] ?? [] as $output => $properties) {
         if (!array_key_exists($output, $decoded) || !hub_pack_job_json_semantic_properties_valid($decoded[$output], $properties)) {
             hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+    }
+    foreach ($semantic['object_values'] ?? [] as $output => $type) {
+        if (!array_key_exists($output, $decoded) || !is_array($decoded[$output]) || array_is_list($decoded[$output]) || $decoded[$output] === []) {
+            hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+        foreach ($decoded[$output] as $value) {
+            if (!hub_pack_job_json_semantic_type_matches($value, $type)) {
+                hub_pack_job_output_contract_invalid('artifact_json_invalid');
+            }
         }
     }
     foreach (['array_equals_by_input', 'object_keys_by_input'] as $name) {

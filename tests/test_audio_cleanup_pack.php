@@ -106,6 +106,27 @@ hub_test('audio-cleanup Pack declares a GPU-only generic runner and fixed cleanu
     }
 });
 
+hub_test('audio-cleanup image provisions only offline Demucs weights', function (): void {
+    $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/audio-cleanup/service/Dockerfile');
+    foreach ([
+        'AIHUB_DEMUCS_MODEL_DIR=/opt/aihub/models/demucs',
+        '955717e8-8726e21a.th',
+        'f7e0c4bc-ba3fe64a.th',
+        'd12395a8-e57c48e6.th',
+        '92cfc3b6-ef3bcb9c.th',
+        '04573f0d-f3cf25b2.th',
+        'htdemucs.yaml',
+        'htdemucs_ft.yaml',
+        'curl --fail --location',
+    ] as $needle) {
+        hub_test_assert(str_contains($dockerfile, $needle), 'audio-cleanup image must provision the allowlisted local weight ' . $needle);
+    }
+    $runner = (string)file_get_contents(HUB_ROOT . '/packs/audio-cleanup/service/job.py');
+    foreach (['TORCH_HOME', 'require_demucs_model', '--repo', 'model_assets_missing:demucs', 'require_deepfilter_model', 'model_assets_missing:deepfilternet', '--model-base-dir'] as $needle) {
+        hub_test_assert(str_contains($runner, $needle), 'audio-cleanup runner must stay offline for ' . $needle);
+    }
+});
+
 hub_test('audio-cleanup request schema rejects invalid operations and unavailable enhancement', function (): void {
     $pack = hub_get_pack('audio-cleanup');
     $route = hub_pack_async_job_contract($pack['manifest'], 'cleanup');
@@ -316,6 +337,33 @@ hub_test('audio-cleanup report semantics reject empty and mismatched reports', f
                 },
             ]);
             hub_test_assert((hub_get_task($db, $taskId)['error_code'] ?? '') === 'output_contract_invalid', 'invalid cleanup report must fail the output contract');
+        } finally {
+            hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+        }
+    }
+});
+
+hub_test('audio-cleanup report model versions must be nonempty strings', function (): void {
+    foreach (['', true, 4] as $version) {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+        $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+        $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
+        $task = hub_test_adapter_claim($db);
+        try {
+            hub_run_pack_job_task($db, $task, [
+                'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+                'executor' => static function (array $context) use ($version): array {
+                    $context['started'](['container_id' => 'invalid-model-version']);
+                    hub_test_audio_cleanup_write($context['workspace'], 'separate');
+                    $report = hub_test_audio_cleanup_report('separate');
+                    $report['model_versions'] = ['demucs' => $version];
+                    file_put_contents($context['workspace'] . '/output/cleanup_report.json', json_encode($report, JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+
+                    return ['exit_code' => 0, 'container_id' => 'invalid-model-version', 'cleanup' => hub_test_adapter_cleanup()];
+                },
+            ]);
+            hub_test_assert((hub_get_task($db, $taskId)['error_code'] ?? '') === 'output_contract_invalid', 'model version values must be nonempty strings');
         } finally {
             hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
         }

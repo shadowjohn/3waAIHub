@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,15 @@ import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
+
+
+DEMUCS_MODEL_DIR = Path(os.environ.get("AIHUB_DEMUCS_MODEL_DIR", "/opt/aihub/models/demucs"))
+DEEPFILTERNET_MODEL_DIR = Path(os.environ.get("AIHUB_DEEPFILTERNET_MODEL_DIR", "/opt/aihub/models/deepfilternet"))
+TORCH_HOME = Path(os.environ.get("TORCH_HOME", "/opt/aihub/models/torch"))
+DEMUCS_MODEL_FILES = {
+    "htdemucs": ("htdemucs.yaml", "955717e8-8726e21a.th"),
+    "htdemucs_ft": ("htdemucs_ft.yaml", "f7e0c4bc-ba3fe64a.th", "d12395a8-e57c48e6.th", "92cfc3b6-ef3bcb9c.th", "04573f0d-f3cf25b2.th"),
+}
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -69,8 +79,25 @@ def require_cuda() -> None:
         import torch
     except ImportError as error:
         raise RuntimeError("dependency_missing:torch") from error
+    torch.hub.set_dir(str(TORCH_HOME))
     if not torch.cuda.is_available():
         raise RuntimeError("gpu_unavailable")
+
+
+def require_demucs_model(model_name: Any) -> Path:
+    if not isinstance(model_name, str) or model_name not in DEMUCS_MODEL_FILES:
+        raise RuntimeError("model_not_allowlisted:demucs")
+    missing = [name for name in DEMUCS_MODEL_FILES[model_name] if not (DEMUCS_MODEL_DIR / name).is_file()]
+    if missing:
+        raise RuntimeError(f"model_assets_missing:demucs:{model_name}")
+    return DEMUCS_MODEL_DIR
+
+
+def require_deepfilter_model() -> Path:
+    checkpoints = DEEPFILTERNET_MODEL_DIR / "checkpoints"
+    if not (DEEPFILTERNET_MODEL_DIR / "config.ini").is_file() or not checkpoints.is_dir() or not any(checkpoints.glob("*.ckpt*")):
+        raise RuntimeError("model_assets_missing:deepfilternet")
+    return DEEPFILTERNET_MODEL_DIR
 
 
 def one_file(root: Path, name: str) -> Path:
@@ -82,12 +109,13 @@ def one_file(root: Path, name: str) -> Path:
 
 def demucs(source: Path, work: Path, model: dict[str, Any]) -> tuple[Path, Path, str]:
     model_name = model.get("model")
-    if not isinstance(model_name, str) or not model_name:
-        raise RuntimeError("runner_config_invalid")
+    model_repo = require_demucs_model(model_name)
     run([
         sys.executable,
         "-m",
         "demucs",
+        "--repo",
+        str(model_repo),
         "--two-stems",
         "vocals",
         "--device",
@@ -102,7 +130,8 @@ def demucs(source: Path, work: Path, model: dict[str, Any]) -> tuple[Path, Path,
 
 
 def deep_filter(source: Path, work: Path) -> tuple[Path, str]:
-    run(["deepFilter", "--device", "cuda", "-o", str(work), str(source)])
+    model_dir = require_deepfilter_model()
+    run(["deepFilter", "--model-base-dir", str(model_dir), "--output-dir", str(work), str(source)])
     return one_file(work, "*.wav"), package_version("DeepFilterNet")
 
 

@@ -128,6 +128,9 @@
                     "duration_seconds": "number_nonnegative"
                   }
                 },
+                "object_values": {
+                  "model_versions": "nonempty_string"
+                },
                 "array_equals_by_input": {
                   "input": "operation",
                   "output": "actual_chain",
