@@ -1083,7 +1083,11 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
     }
 
     $uploads = hub_audio_task_uploads();
-    if (($sourceArtifactId === '' && $uploads === []) || ($sourceArtifactId !== '' && $uploads !== [])) {
+    $sourceRequired = ($route['source_required'] ?? true) === true;
+    if (!$sourceRequired && ($sourceArtifactId !== '' || $uploads !== [])) {
+        return hub_gateway_error(400, 'source_not_allowed', 'this Pack job does not accept a source file');
+    }
+    if ($sourceRequired && (($sourceArtifactId === '' && $uploads === []) || ($sourceArtifactId !== '' && $uploads !== []))) {
         return hub_gateway_error(400, $sourceArtifactId === '' ? 'source_required' : 'source_ambiguous', 'provide exactly one managed source');
     }
     if ($sourceArtifactId !== '') {
@@ -1104,6 +1108,14 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
             'source_task_id' => (int)$source['task_id'],
             'callback_target_id' => $callbackTargetId,
         ]);
+        return hub_gateway_json(200, hub_task_submit_response($taskId));
+    }
+
+    if (!$sourceRequired) {
+        $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip(), [
+            'callback_target_id' => $callbackTargetId,
+        ]);
+
         return hub_gateway_json(200, hub_task_submit_response($taskId));
     }
 

@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "tts-voxcpm2",
   "name": "VoxCPM2 Experimental TTS Service",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "category": "audio",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -49,7 +49,8 @@
       "job": "synthesize",
       "input": {
         "fields": ["text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "waveform_preview"],
-        "source_artifact_types": ["audio"],
+        "source_artifact_types": [],
+        "source_required": false,
         "request_schema": {
           "text": {"type": "string", "required": true, "max_length": 4096},
           "mode": {"type": "string", "required": false, "enum": ["design", "clone"], "max_length": 16},

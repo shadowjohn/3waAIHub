@@ -280,7 +280,7 @@ Normal release resets the row to `available`; it never deletes the row.
 
 All status, result, log, cancel, retry, ACK, artifact download, and callback-target operations verify API member ownership. Different tokens belonging to the same member may share tasks and artifacts. Different members may not.
 
-An async submission accepts exactly one source:
+`audio_cleanup` and `speech_transcribe` accept exactly one source:
 
 1. multipart upload, stored under the new Hub task's managed upload directory; or
 2. `source_artifact_id`, resolved by Hub without exposing a host path.
@@ -295,6 +295,8 @@ An artifact reference is accepted only if:
 - the canonical file remains inside the Hub results root and is a regular file.
 
 The downstream task saves both `source_artifact_id` and `source_task_id`. A nonterminal downstream task is a retention hold on its source artifact. The hold ends only when the downstream task is `success`, `failed`, `cancelled`, or `timed_out`.
+
+`voice_generate` declares `source_required=false` and an empty source type allowlist. It accepts text and either allowlisted design controls or one owned managed voice profile; upload and `source_artifact_id` are rejected rather than silently ignored.
 
 The first release supports one source artifact per task. A many-input dependency table is deferred until a real multi-input Pack requires it.
 

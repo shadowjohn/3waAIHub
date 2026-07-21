@@ -202,7 +202,7 @@ curl -X POST "<BASE_URL>?mode=task_submit" \
 
 ## Async Audio Delivery
 
-Use `audio_cleanup`, `speech_transcribe`, and `voice_generate` for production audio. Submit multipart form data with exactly one `source=@file` or an owned `source_artifact_id`; add `callback_target=<registered-alias>` only when a trusted operator has registered that alias. The full curl examples and field allowlists are in [API examples](api_examples.md#async-audio-pack-tasks).
+Use `audio_cleanup`, `speech_transcribe`, and `voice_generate` for production audio. Cleanup and transcription submit exactly one `source=@file` or an owned `source_artifact_id`. Voice generation submits text plus allowlisted design controls or one managed `voice_profile_id`; it rejects uploads and `source_artifact_id`. Add `callback_target=<registered-alias>` only when a trusted operator has registered that alias. The full curl examples and field allowlists are in [API examples](api_examples.md#async-audio-pack-tasks).
 
 The initial response is asynchronous. Treat callbacks as an optimization, not the only completion path: use `task_status` and `task_result` as the polling fallback, then download every listed `artifact_id` through `artifact`. A received artifact can be acknowledged with `task_artifacts_ack`; ACK does not delete it immediately.
 

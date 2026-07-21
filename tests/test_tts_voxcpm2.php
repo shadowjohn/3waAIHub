@@ -301,6 +301,7 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
     $job = hub_pack_async_job_contract($manifest, 'synthesize');
     hub_test_assert(is_array($job), 'VoxCPM2 synthesize job contract missing');
     hub_test_assert(($job['input_fields'] ?? []) === ['text', 'mode', 'voice_prompt', 'control', 'seed', 'seed_policy', 'model', 'voice_profile_id', 'waveform_preview'], 'long-form input must be a closed Pack allowlist');
+    hub_test_assert(($job['source_required'] ?? true) === false && ($job['source_artifact_types'] ?? null) === [], 'long-form synthesis must receive text and managed voice context, never an external audio source');
     hub_test_assert(($job['runner'] ?? []) === [
         'image' => '3waaihub/tts-voxcpm2:0.1.0',
         'entrypoint' => ['/app/voice-generate'],
@@ -482,9 +483,7 @@ hub_test('VoxCPM2 async clone resolves one owned profile into a path-free snapsh
             'consent_type' => 'self_recorded',
             'usage_scope' => 'private',
         ]);
-        $source = hub_test_audio_source_artifact($db, $owner, (int)$ownerToken['token_id']);
         $input = [
-            'source_artifact_id' => (string)$source['artifact_id'],
             'text' => 'RC Valve 8,500 rpm',
             'mode' => 'clone',
             'voice_profile_id' => (string)$profileId,
@@ -545,7 +544,6 @@ hub_test('VoxCPM2 async clone resolves one owned profile into a path-free snapsh
             throw new RuntimeException('Cannot create VoxCPM2 model fixture.');
         }
         file_put_contents($modelDir . '/config.json', '{}', LOCK_EX);
-        $db->prepare("UPDATE tasks SET status = 'success' WHERE id = :id")->execute([':id' => (int)$source['task_id']]);
         $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
         $dockerRun = [];
         hub_run_pack_job_task($db, $claimed ?? [], [
@@ -565,8 +563,7 @@ hub_test('VoxCPM2 async clone resolves one owned profile into a path-free snapsh
         hub_test_assert(in_array($profileMount, $dockerRun, true) && in_array($checkpointMount, $dockerRun, true)
             && !in_array('type=bind,src=' . hub_task_result_dir((int)$task['id']) . '/workspace/input/source,dst=/workspace/input/source,readonly', $dockerRun, true), 'default executor must retain the clone mount and writable private checkpoints after execution starts');
 
-        $otherSource = hub_test_audio_source_artifact($db, $other, (int)$otherToken['token_id']);
-        $crossMember = hub_test_audio_request($db, 'voice_generate', (string)$otherToken['plain_token'], array_replace($input, ['source_artifact_id' => (string)$otherSource['artifact_id']]));
+        $crossMember = hub_test_audio_request($db, 'voice_generate', (string)$otherToken['plain_token'], $input);
         hub_test_assert($crossMember['status'] === 403 && (hub_test_audio_payload($crossMember)['error'] ?? '') === 'voice_profile_forbidden', 'another member must not clone an owned profile');
         $design = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], array_replace($input, ['mode' => 'design', 'voice_prompt' => 'voice']));
         hub_test_assert($design['status'] === 400 && (hub_test_audio_payload($design)['error'] ?? '') === 'invalid_request', 'design must reject a profile ID');
@@ -575,7 +572,7 @@ hub_test('VoxCPM2 async clone resolves one owned profile into a path-free snapsh
 
         unlink($profilePath);
         hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_voice_profile_mount($db, $task, hub_pack_job_contract_from_snapshot($task))), 'profile file changes or removal must fail before GPU work');
-        foreach ([$task, $source] as $item) {
+        foreach ([$task] as $item) {
             if (is_array($item) && isset($item['id'])) {
                 hub_test_voxcpm2_remove(hub_task_result_dir((int)$item['id']));
             }

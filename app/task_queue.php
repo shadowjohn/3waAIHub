@@ -365,6 +365,11 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
             'retry_of_task_id' => $taskId,
         ]);
     }
+    if (($route['source_required'] ?? true) !== true) {
+        return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
+            'retry_of_task_id' => $taskId,
+        ]);
+    }
     $sourcePath = hub_managed_task_upload_path($taskId, (string)$sourceUploadPath);
     if ($sourcePath === null) {
         throw new RuntimeException('source_upload_invalid');

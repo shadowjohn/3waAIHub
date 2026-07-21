@@ -189,11 +189,12 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         }
         $fields = hub_pack_async_job_contract_names($input['fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
         $artifactTypes = hub_pack_async_job_contract_names($input['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
+        $sourceRequired = $input['source_required'] ?? true;
         $requestSchema = hub_pack_async_job_request_schema($input['request_schema'] ?? [], $fields ?? []);
         $voiceContext = hub_pack_async_job_voice_context_contract($input['voice_context'] ?? null, $fields ?? [], $requestSchema ?? []);
         $maxUploadBytes = hub_pack_async_job_max_upload_bytes($definition, $manifest);
         $output = $definition['output'] ?? null;
-        if ($fields === null || $artifactTypes === null || $requestSchema === null || $voiceContext === null || $maxUploadBytes === null || !is_array($output)
+        if ($fields === null || $artifactTypes === null || !is_bool($sourceRequired) || $requestSchema === null || $voiceContext === null || $maxUploadBytes === null || !is_array($output)
             || array_diff(array_keys($output), ['artifacts', 'report_attestation']) !== []) {
             return null;
         }
@@ -227,6 +228,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         return [
             'input_fields' => $fields,
             'source_artifact_types' => $artifactTypes,
+            'source_required' => $sourceRequired,
             'request_schema' => $requestSchema,
             'max_upload_bytes' => $maxUploadBytes,
             'artifact_contract' => $artifactContract,
@@ -823,6 +825,8 @@ function hub_pack_job_contract_snapshot(array $contract, bool $allowLegacyVoiceC
 {
     $fields = hub_pack_async_job_contract_names($contract['input_fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
     $artifactTypes = hub_pack_async_job_contract_names($contract['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
+    $hasSourceRequired = array_key_exists('source_required', $contract);
+    $sourceRequired = $contract['source_required'] ?? true;
     $maxUploadBytes = hub_pack_async_job_positive_bytes($contract['max_upload_bytes'] ?? null, 1);
     $attestation = null;
     try {
@@ -832,7 +836,7 @@ function hub_pack_job_contract_snapshot(array $contract, bool $allowLegacyVoiceC
     } catch (HubPackOutputContractInvalid) {
         $artifacts = null;
     }
-    if ($fields === null || $artifactTypes === null || $maxUploadBytes === null || $artifacts === null) {
+    if ($fields === null || $artifactTypes === null || !is_bool($sourceRequired) || $maxUploadBytes === null || $artifacts === null) {
         throw new InvalidArgumentException('job_contract_unavailable');
     }
     $snapshot = [
@@ -842,6 +846,9 @@ function hub_pack_job_contract_snapshot(array $contract, bool $allowLegacyVoiceC
         'max_upload_bytes' => $maxUploadBytes,
         'artifact_contract' => ['artifacts' => $artifacts] + ($attestation === null ? [] : ['report_attestation' => $attestation]),
     ];
+    if ($hasSourceRequired || !$allowLegacyVoiceContext) {
+        $snapshot['source_required'] = $sourceRequired;
+    }
     $voiceContext = hub_pack_async_job_voice_context_contract($contract['voice_context'] ?? null, $fields, $snapshot['request_schema'], $allowLegacyVoiceContext);
     if ($voiceContext === null) {
         throw new InvalidArgumentException('job_contract_unavailable');

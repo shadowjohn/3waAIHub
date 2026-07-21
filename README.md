@@ -1404,7 +1404,7 @@ curl -X POST 'http://localhost/3waAIHub/api.php?mode=task_cancel&task_id=1'
 
 ## Job-first Audio Operations
 
-Production audio uses the async Pack modes `audio_cleanup`, `speech_transcribe`, and `voice_generate`. Hub owns queue admission, immutable Pack routing, workspace/artifact lifecycle, `gpu:0` fencing, callback delivery, and retention; MyAI or another client owns product workflow and consumes completed artifacts. See [API examples](docs/api_examples.md#async-audio-pack-tasks) for multipart requests, owned `source_artifact_id` chaining, polling, download, ACK, and callback handling.
+Production audio uses the async Pack modes `audio_cleanup`, `speech_transcribe`, and `voice_generate`. Hub owns queue admission, immutable Pack routing, workspace/artifact lifecycle, `gpu:0` fencing, callback delivery, and retention; MyAI or another client owns product workflow and consumes completed artifacts. Cleanup and transcription take one multipart source or owned `source_artifact_id`; voice generation takes text plus allowlisted design controls or a managed voice profile, never an external audio source. See [API examples](docs/api_examples.md#async-audio-pack-tasks) for polling, download, ACK, and callback handling.
 
 Legacy `asr` and `tts` remain diagnostic only. `sync_max_duration_seconds=30`, the Pack upload limit, `sync_concurrency=1`, no callbacks, and no source artifact chaining are enforced. Use the named async mode from an `async_required` response; `sync_busy` means another actual GPU inference owns the shared lease. Sync requests never turn themselves into tasks.
 

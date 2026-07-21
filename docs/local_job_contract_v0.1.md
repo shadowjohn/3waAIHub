@@ -169,4 +169,4 @@ workspace/
 
 公開 async API 不直接執行 `bin/aihub-run`。它建立唯一的 `tasks.task_type=pack_job`，由 `scripts/task_worker.php` 讀取提交時凍結的 Pack version、job contract 和 input。worker 只可執行該 contract 的 manifest runner，並重用同一 task workspace；retry 會保留可驗證的 checkpoint，不能改選新版 Pack 或任意命令。
 
-一個 task 只接受一個受管 source：multipart upload 或同 member、有效且 allowlisted 的 `source_artifact_id`。source artifact chaining 會建立 retention hold，直到 downstream task terminal。container 結束後，Hub 驗證輸出、ffprobe 音訊、hash metadata，再以 fenced terminal transaction 同時寫入 artifact registry、task state 和 callback outbox。
+`audio_cleanup` 與 `speech_transcribe` 各只接受一個受管 source：multipart upload 或同 member、有效且 allowlisted 的 `source_artifact_id`。source artifact chaining 會建立 retention hold，直到 downstream task terminal。`voice_generate` 是 text-only job：只接受文字、allowlisted design controls 或一個受管 `voice_profile_id`，拒絕 upload 與 `source_artifact_id`。container 結束後，Hub 驗證輸出、ffprobe 音訊、hash metadata，再以 fenced terminal transaction 同時寫入 artifact registry、task state 和 callback outbox。

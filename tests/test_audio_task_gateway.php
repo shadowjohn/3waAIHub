@@ -116,6 +116,7 @@ hub_test('audio async routes are fixed and resolve installed Pack versions', fun
         hub_test_assert(($route['pack_id'] ?? '') === $packId && ($route['pack_version'] ?? '') === $packVersion && ($route['job'] ?? '') === $job, 'installed Pack route snapshot mismatch');
         hub_test_assert(($route['runtime_mode'] ?? '') === 'job' && ($route['accelerator'] ?? '') === 'gpu' && !empty($route['route_resolved_at']), 'audio route runtime snapshot mismatch');
     }
+    hub_test_assert(($ttsRoute['source_required'] ?? true) === false && ($ttsRoute['source_artifact_types'] ?? null) === [], 'voice_generate must not inherit the audio-source requirement');
 
     $memberId = hub_create_api_member($db, 'Audio Route Client');
     $token = hub_create_api_token($db, $memberId, 'audio route token', null, null);
@@ -665,12 +666,32 @@ hub_test('audio admission persists only declared scalar job inputs', function ()
         }
 
         $accepted = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
-            'source_artifact_id' => (string)$source['artifact_id'],
             'text' => 'allowed manifest field',
         ]);
         $task = hub_get_task($db, (int)(hub_test_audio_payload($accepted)['task_id'] ?? 0));
-        hub_test_assert($accepted['status'] === 200 && ($task['input'] ?? null) === ['text' => 'allowed manifest field'], 'audio task input must contain only declared client fields');
+        hub_test_assert($accepted['status'] === 200 && ($task['input'] ?? null) === ['text' => 'allowed manifest field'] && empty($task['source_artifact_id']), 'text-only task input must contain only declared client fields and no source lineage');
+
+        $withSource = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+            'source_artifact_id' => (string)$source['artifact_id'],
+            'text' => 'source must not become a voice reference',
+        ]);
+        hub_test_assert($withSource['status'] === 400 && (hub_test_audio_payload($withSource)['error'] ?? '') === 'source_not_allowed', 'voice generation must reject all uploaded or chained audio sources');
     });
+});
+
+hub_test('text-only voice tasks retry without fabricating a source upload', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+    $memberId = hub_create_api_member($db, 'Text Retry Owner');
+    $token = hub_create_api_token($db, $memberId, 'text retry token', null, null);
+    $route = hub_resolve_audio_async_route($db, 'voice_generate');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, ['text' => 'retry this text'], $memberId, (int)$token['token_id'], '203.0.113.51');
+    hub_finish_task_success($db, hub_get_task($db, $taskId) ?? [], ['finished' => true]);
+
+    $retryId = hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']]);
+    $retry = hub_get_task($db, $retryId);
+    hub_test_assert($retryId !== $taskId && (int)($retry['retry_of_task_id'] ?? 0) === $taskId && empty($retry['source_artifact_id'])
+        && ($retry['input'] ?? null) === ['text' => 'retry this text'] && ($retry['status'] ?? '') === 'queued', 'text-only voice retry must preserve immutable input without requiring a fake source file');
 });
 
 hub_test('manifest async job declarations cannot permit reserved controls', function (): void {
@@ -812,19 +833,27 @@ hub_test('internal task dispatch cannot submit public Pack jobs', function (): v
 hub_test('audio async uploads enforce the Pack advertised byte limit before staging', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
-        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
         $memberId = hub_create_api_member($db, 'Audio Upload Limit Owner');
         $token = hub_create_api_token($db, $memberId, 'audio upload limit token', null, null);
-        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_test_audio_allow($db, [$token], ['speech_transcribe']);
         hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
         hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $manifestPath = HUB_ROOT . '/packs/whisper-asr/pack.json';
+        $originalManifest = (string)file_get_contents($manifestPath);
+        $manifest = json_decode($originalManifest, true);
+        if (!is_array($manifest)) {
+            throw new RuntimeException('Cannot decode Whisper manifest fixture.');
+        }
+        $manifest['gateway']['max_upload_mb'] = 1;
+        file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
 
         $upload = tempnam(sys_get_temp_dir(), '3waaihub_oversized_');
         if ($upload === false || file_put_contents($upload, str_repeat('x', 2 * 1024 * 1024 + 1), LOCK_EX) === false) {
             throw new RuntimeException('Cannot create oversized audio fixture.');
         }
         try {
-            $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], ['text' => 'oversized upload'], [], [[
+            $response = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [], [], [[
                 'name' => 'oversized.wav',
                 'type' => 'audio/wav',
                 'tmp_name' => $upload,
@@ -835,6 +864,7 @@ hub_test('audio async uploads enforce the Pack advertised byte limit before stag
             hub_test_assert($response['status'] === 413 && ($payload['error'] ?? '') === 'payload_too_large', 'audio upload over the Pack limit must be rejected before staging');
             hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === 0, 'oversized audio upload must not create a staging or queued task');
         } finally {
+            file_put_contents($manifestPath, $originalManifest, LOCK_EX);
             if (is_file($upload)) {
                 unlink($upload);
             }

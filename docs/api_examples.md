@@ -498,7 +498,7 @@ Use block IDs from `quality_report.missing_translation_blocks` or `missing_trans
 
 ## Async Audio Pack Tasks
 
-All audio jobs use `POST multipart/form-data`, a Bearer token with the requested mode, and exactly one source: one upload or one owned `source_artifact_id`. The server resolves Pack/job/version; clients never send Pack paths, Docker controls, or callback URLs. A submission returns `task_id`, `status_url`, `result_url`, `log_url`, `cancel_url`, and `artifact_url_template`.
+All audio jobs use `POST multipart/form-data` and a Bearer token with the requested mode. `audio_cleanup` and `speech_transcribe` require exactly one source: one upload or one owned `source_artifact_id`. `voice_generate` is text-only and rejects both source forms. The server resolves Pack/job/version; clients never send Pack paths, Docker controls, or callback URLs. A submission returns `task_id`, `status_url`, `result_url`, `log_url`, `cancel_url`, and `artifact_url_template`.
 
 ### `mode=audio_cleanup`
 
@@ -539,13 +539,14 @@ The client must send a normal `Content-Length` header for artifact-only requests
 ```bash
 curl -X POST "<BASE_URL>?mode=voice_generate" \
   -H "Authorization: Bearer <TOKEN>" \
-  -F "source=@reference.wav" \
   -F "text=請檢查 RC Valve 間隙。" \
   -F "mode=design" \
   -F "voice_prompt=沉穩的台灣男性技師" \
   -F "seed=42" \
   -F "callback_target=myai"
 ```
+
+`mode=clone` replaces the design prompt with one owned managed `voice_profile_id`; it never accepts an uploaded reference file or `source_artifact_id`.
 
 `mode=clone` uses one managed `voice_profile_id`; it does not accept a server path. Upload byte limits come from the resolved Pack. Use the async modes for work larger than a sync diagnostic sample.
 
