@@ -87,7 +87,8 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if (!hub_service_method_allowed($service, (string)($_SERVER['REQUEST_METHOD'] ?? 'GET'))) {
         return hub_gateway_finish($db, $service, $mode, hub_gateway_error(405, 'method_not_allowed', 'HTTP method is not allowed for this mode'), $started, $requestId, $authContext);
     }
-    if (!hub_service_upload_size_allowed($service, (string)($_SERVER['CONTENT_LENGTH'] ?? ''))) {
+    $isAudioSync = hub_audio_sync_route($service) !== null;
+    if (!$isAudioSync && !hub_service_upload_size_allowed($service, (string)($_SERVER['CONTENT_LENGTH'] ?? ''))) {
         return hub_gateway_finish($db, $service, $mode, hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows'), $started, $requestId, $authContext);
     }
 
@@ -105,6 +106,13 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     }
     if (hub_service_is_internal_task($service)) {
         return hub_gateway_finish($db, $service, $mode, hub_dispatch_internal_task_service($db, $service, $authContext), $started, $requestId, $authContext);
+    }
+    $syncAdmission = null;
+    if ($isAudioSync) {
+        $syncAdmission = hub_validate_audio_sync_request($db, $service);
+        if (isset($syncAdmission['response'])) {
+            return hub_gateway_finish($db, $service, $mode, $syncAdmission['response'], $started, $requestId, $authContext);
+        }
     }
     $requester ??= static fn (array $service, int $timeoutSec): array => hub_proxy_request(
         $service['internal_url'],
@@ -125,7 +133,284 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         $response = $requester($service, $timeoutSec);
     }
 
+    if (isset($syncAdmission['run'])) {
+        $response = hub_finish_audio_sync_request($db, $service, $syncAdmission, $response);
+    }
+
     return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext);
+}
+
+function hub_audio_sync_route(array $service): ?array
+{
+    return match ([(string)($service['mode'] ?? ''), (string)($service['pack_id'] ?? '')]) {
+        ['asr', 'whisper-asr'] => ['async_mode' => 'speech_transcribe'],
+        ['tts', 'tts-voxcpm2'] => ['async_mode' => 'voice_generate'],
+        default => null,
+    };
+}
+
+function hub_validate_audio_sync_request(PDO $db, array $service): array
+{
+    $route = hub_audio_sync_route($service);
+    if ($route === null) {
+        return [];
+    }
+    $asyncMode = (string)$route['async_mode'];
+    foreach (hub_audio_sync_request_control_keys() as $key) {
+        if ($key === 'source_artifact_id' || str_starts_with($key, 'callback')) {
+            return ['response' => hub_gateway_error(400, 'async_required', 'use ' . $asyncMode . '; sync requests do not accept ' . $key)];
+        }
+    }
+    if (hub_audio_sync_upload_bytes() > hub_audio_sync_max_upload_bytes($db, $service)) {
+        return ['response' => hub_gateway_error(413, 'async_required', 'use ' . $asyncMode . '; sync upload is too large')];
+    }
+    foreach (hub_audio_sync_upload_paths() as $path) {
+        $probe = hub_pack_job_ffprobe($path);
+        if (!is_array($probe) || !is_numeric($probe['duration_seconds'] ?? null) || (float)$probe['duration_seconds'] > 30.0) {
+            return ['response' => hub_gateway_error(413, 'async_required', 'use ' . $asyncMode . '; sync audio must be 30 seconds or less')];
+        }
+    }
+    if (!hub_audio_sync_requires_gpu($db, $service)) {
+        return [];
+    }
+
+    $run = hub_audio_sync_create_runtime_run($db, $service);
+    $lease = hub_runtime_gpu_acquire($db, $run, max(60, hub_service_gateway_timeout_sec($service) + 30));
+    if ($lease === null) {
+        hub_runtime_finish($db, (int)$run['id'], (string)$run['lease_token'], 'failed', ['error' => 'sync_busy']);
+        return ['response' => hub_gateway_error(409, 'sync_busy', 'the single sync audio slot is busy')];
+    }
+    if (!hub_runtime_mark_running($db, (int)$run['id'], (string)$run['lease_token'])) {
+        hub_audio_sync_abort($db, $run, $lease, 'runtime_lease_lost');
+        return ['response' => hub_gateway_error(503, 'runtime_not_ready', 'sync runtime lease is unavailable')];
+    }
+    $baseline = hub_audio_sync_gpu_processes();
+    if ($baseline === null || !hub_runtime_record_gpu_ownership($db, $run, $lease, hub_audio_sync_container_name($service), $baseline, [])) {
+        hub_audio_sync_abort($db, $run, $lease, 'gpu_probe_failed');
+        return ['response' => hub_gateway_error(503, 'runtime_not_ready', 'sync GPU inspection is unavailable')];
+    }
+
+    return ['route' => $route, 'run' => $run, 'lease' => $lease, 'baseline_pids' => $baseline];
+}
+
+function hub_audio_sync_requires_gpu(PDO $db, array $service): bool
+{
+    $settings = hub_service_settings_values($db, $service);
+    $configured = match ((string)$service['pack_id']) {
+        'whisper-asr' => $settings['WHISPER_REAL_INFERENCE'] ?? '0',
+        'tts-voxcpm2' => $settings['VOXCPM2_REAL_INFERENCE'] ?? '0',
+        default => '0',
+    };
+    $requested = $_POST['real_inference'] ?? null;
+    if ($requested === null) {
+        $payload = json_decode((string)file_get_contents('php://input'), true);
+        $requested = is_array($payload) ? ($payload['real_inference'] ?? null) : null;
+    }
+
+    return in_array((string)$configured, ['1', 'true', 'yes', 'on'], true)
+        || in_array((string)$requested, ['1', 'true', 'yes', 'on'], true);
+}
+
+function hub_audio_sync_request_control_keys(): array
+{
+    $payload = [];
+    $rawBody = (string)file_get_contents('php://input');
+    if ($rawBody !== '') {
+        $decoded = json_decode($rawBody, true);
+        if (is_array($decoded)) {
+            $payload = $decoded;
+        }
+    }
+
+    $keys = [];
+    foreach ([$_GET ?? [], $_POST ?? [], $payload] as $source) {
+        foreach (array_keys($source) as $key) {
+            if (is_string($key)) {
+                $keys[strtolower($key)] = true;
+            }
+        }
+    }
+
+    return array_keys($keys);
+}
+
+function hub_audio_sync_upload_bytes(): int
+{
+    $bytes = hub_gateway_upload_bytes();
+    foreach ($_FILES ?? [] as $file) {
+        if (is_array($file) && isset($file['size']) && is_numeric($file['size']) && !is_array($file['size'])) {
+            $bytes = max($bytes, (int)$file['size']);
+        }
+    }
+
+    return $bytes;
+}
+
+function hub_audio_sync_max_upload_bytes(PDO $db, array $service): int
+{
+    $maxMb = hub_service_gateway_int($service, 'max_upload_mb', 0);
+    foreach (hub_service_settings_values($db, $service) as $key => $value) {
+        if (str_ends_with($key, '_MAX_UPLOAD_MB') && ctype_digit($value)) {
+            $maxMb = $maxMb > 0 ? min($maxMb, (int)$value) : (int)$value;
+        }
+    }
+
+    return max(1, $maxMb) * 1024 * 1024;
+}
+
+function hub_audio_sync_upload_paths(): array
+{
+    $paths = [];
+    foreach ($_FILES ?? [] as $file) {
+        $path = is_array($file) ? (string)($file['tmp_name'] ?? '') : '';
+        if (($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK && is_file($path)) {
+            $paths[] = $path;
+        }
+    }
+
+    return $paths;
+}
+
+function hub_audio_sync_create_runtime_run(PDO $db, array $service): array
+{
+    $now = hub_now();
+    $run = [
+        'run_id' => 'sync-' . (string)$service['mode'] . '-' . bin2hex(random_bytes(12)),
+        'worker_id' => 'gateway-sync-' . substr(hash('sha256', gethostname() ?: 'host'), 0, 12),
+        'lease_token' => bin2hex(random_bytes(32)),
+    ];
+    $db->prepare(
+        'INSERT INTO runtime_runs
+            (run_id, pack_id, task, pack_version, runner_version, caller, workspace, state, worker_id, lease_token, lease_expires_at, heartbeat_at, claimed_at, started_at, created_at)
+         VALUES
+            (:run_id, :pack_id, :task, :pack_version, :runner_version, :caller, :workspace, :state, :worker_id, :lease_token, :lease_expires_at, :heartbeat_at, :claimed_at, :started_at, :created_at)'
+    )->execute([
+        ':run_id' => $run['run_id'],
+        ':pack_id' => (string)$service['pack_id'],
+        ':task' => (string)$service['mode'],
+        ':pack_version' => (string)($service['pack_version'] ?? ''),
+        ':runner_version' => 'gateway-sync/0.1',
+        ':caller' => $run['worker_id'],
+        ':workspace' => HUB_DATA_DIR . '/services/' . (string)$service['service_key'],
+        ':state' => 'claimed',
+        ':worker_id' => $run['worker_id'],
+        ':lease_token' => $run['lease_token'],
+        ':lease_expires_at' => hub_runtime_lease_until(max(60, hub_service_gateway_timeout_sec($service) + 30)),
+        ':heartbeat_at' => $now,
+        ':claimed_at' => $now,
+        ':started_at' => $now,
+        ':created_at' => $now,
+    ]);
+
+    return hub_runtime_fetch_run($db, (int)$db->lastInsertId()) ?? throw new RuntimeException('sync_runtime_create_failed');
+}
+
+function hub_finish_audio_sync_request(PDO $db, array $service, array $admission, array $response): array
+{
+    $run = $admission['run'];
+    $lease = $admission['lease'];
+    $clean = hub_audio_sync_cleanup($db, $service, $run, $lease, (array)$admission['baseline_pids']);
+    if (!$clean) {
+        hub_runtime_gpu_block($db, $run, $lease, 'cleanup_failed');
+        hub_runtime_finish($db, (int)$run['id'], (string)$run['lease_token'], 'failed', ['error' => 'cleanup_failed']);
+        return hub_gateway_error(500, 'cleanup_failed', 'sync audio cleanup could not be proven');
+    }
+    if (!hub_runtime_gpu_release($db, $run, $lease)) {
+        hub_runtime_gpu_block($db, $run, $lease, 'cleanup_failed');
+        hub_runtime_finish($db, (int)$run['id'], (string)$run['lease_token'], 'failed', ['error' => 'cleanup_failed']);
+        return hub_gateway_error(500, 'cleanup_failed', 'sync GPU release could not be fenced');
+    }
+    hub_runtime_finish($db, (int)$run['id'], (string)$run['lease_token'], (int)$response['status'] < 400 ? 'succeeded' : 'failed', ['error' => 'sync_proxy_failed']);
+    hub_update_service_status($db, (int)$service['id'], 'stopped');
+
+    return $response;
+}
+
+function hub_audio_sync_abort(PDO $db, array $run, array $lease, string $error): void
+{
+    hub_runtime_gpu_release($db, $run, $lease);
+    hub_runtime_finish($db, (int)$run['id'], (string)$run['lease_token'], 'failed', ['error' => $error]);
+}
+
+function hub_audio_sync_cleanup(PDO $db, array $service, array $run, array $lease, array $baselinePids): bool
+{
+    $ownedPids = hub_audio_sync_gpu_processes();
+    if ($ownedPids === null) {
+        return false;
+    }
+    $ownedPids = array_values(array_diff($ownedPids, hub_runtime_gpu_recovery_pids($baselinePids)));
+    $container = hub_audio_sync_container_name($service);
+    if (!hub_runtime_record_gpu_ownership($db, $run, $lease, $container, $baselinePids, $ownedPids)
+        || !hub_audio_sync_remove_container($container)) {
+        return false;
+    }
+    $remainingPids = hub_audio_sync_gpu_processes();
+
+    return $remainingPids !== null && array_intersect($ownedPids, $remainingPids) === [];
+}
+
+function hub_audio_sync_container_name(array $service): string
+{
+    $serviceKey = (string)($service['service_key'] ?? '');
+    if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1) {
+        throw new RuntimeException('sync_service_container_invalid');
+    }
+
+    return '3waaihub-' . $serviceKey;
+}
+
+function hub_audio_sync_gpu_processes(): ?array
+{
+    if (!function_exists('exec')) {
+        return null;
+    }
+    $output = [];
+    $exitCode = 1;
+    exec('nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>&1', $output, $exitCode);
+    if ($exitCode !== 0) {
+        return null;
+    }
+
+    return hub_runtime_gpu_recovery_pids($output);
+}
+
+function hub_audio_sync_remove_container(string $container): bool
+{
+    $before = hub_audio_sync_container_state($container);
+    if (!is_array($before) || empty($before['exists'])) {
+        return false;
+    }
+    foreach ([['stop', '-t', '10'], ['container', 'rm', '-f']] as $command) {
+        $output = [];
+        $exitCode = 1;
+        exec('docker ' . implode(' ', array_map('escapeshellarg', $command)) . ' ' . escapeshellarg($container) . ' 2>&1', $output, $exitCode);
+        if ($exitCode !== 0) {
+            return false;
+        }
+    }
+    $after = hub_audio_sync_container_state($container);
+
+    return is_array($after) && empty($after['exists']);
+}
+
+function hub_audio_sync_container_state(string $container): ?array
+{
+    if (!function_exists('exec')) {
+        return null;
+    }
+    $output = [];
+    $exitCode = 1;
+    exec('docker container inspect --format ' . escapeshellarg('{{json .State}}') . ' ' . escapeshellarg($container) . ' 2>&1', $output, $exitCode);
+    if ($exitCode !== 0) {
+        return preg_match('/no such (?:container|object)/i', implode("\n", $output)) === 1 ? ['exists' => false] : null;
+    }
+    try {
+        $state = json_decode(implode("\n", $output), true, 16, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return null;
+    }
+
+    return is_array($state) && is_bool($state['Running'] ?? null) ? ['exists' => true, 'running' => $state['Running']] : null;
 }
 
 function hub_gateway_prepare_service_request(PDO $db, array $service, array $authContext): array

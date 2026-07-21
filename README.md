@@ -1402,6 +1402,34 @@ curl 'http://localhost/3waAIHub/api.php?mode=task_log&task_id=1'
 curl -X POST 'http://localhost/3waAIHub/api.php?mode=task_cancel&task_id=1'
 ```
 
+## Job-first Audio Operations
+
+Production audio uses the async Pack modes `audio_cleanup`, `speech_transcribe`, and `voice_generate`. Hub owns queue admission, immutable Pack routing, workspace/artifact lifecycle, `gpu:0` fencing, callback delivery, and retention; MyAI or another client owns product workflow and consumes completed artifacts. See [API examples](docs/api_examples.md#async-audio-pack-tasks) for multipart requests, owned `source_artifact_id` chaining, polling, download, ACK, and callback handling.
+
+Legacy `asr` and `tts` remain diagnostic only. `sync_max_duration_seconds=30`, the Pack upload limit, `sync_concurrency=1`, no callbacks, and no source artifact chaining are enforced. Use the named async mode from an `async_required` response; `sync_busy` means another actual GPU inference owns the shared lease. Sync requests never turn themselves into tasks.
+
+Deploy in this order:
+
+```bash
+git pull
+php scripts/init_db.php
+php scripts/task_worker.php --limit=5
+php scripts/callback_worker.php --limit=5
+php scripts/prune_retention.php
+```
+
+Run `task_worker.php`, `callback_worker.php`, and `prune_retention.php` from the existing one-minute scheduler. Register callback URLs and their secrets only through trusted operator configuration (`scripts/register_callback_target.php`); task callers submit only a callback alias. Verify `X-AIHub-Signature` as HMAC-SHA256 of the exact raw callback JSON, deduplicate `X-AIHub-Delivery`, and keep polling as the recovery path.
+
+Retention defaults: failed partial uploads 1 hour, workspaces/temporary files 24 hours, source media 7 days, result artifacts 30 days, and audit metadata 180 days. `task_artifacts_ack` records receipt and may shorten retention, but does not delete files immediately.
+
+After the Packs are installed and GPU preflight is green, use the station acceptance command serially (not ordinary CI):
+
+```bash
+php scripts/audio_packs_acceptance.php --pack all --fixture packs/whisper-asr/demo/sample.wav --callback-target myai --voice-profile-id voice_profile_1 --json
+```
+
+Confirm each job releases `gpu:0`, has no owned GPU PID, and leaves cleanup uncertainty `blocked`. Do not run real model acceptance concurrently with another CUDA workload.
+
 ## Runtime 檔案
 
 所有 runtime 檔案都放在 `data/`，不得上版：

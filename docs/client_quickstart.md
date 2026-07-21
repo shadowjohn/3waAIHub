@@ -200,6 +200,16 @@ curl -X POST "<BASE_URL>?mode=task_submit" \
 
 `docparser_repair_translation` rewrites the original task artifacts after repair. It only retranslates selected DocIR blocks and does not rerun OCR, layout parsing, image crops, or figure extraction. Already translated blocks are skipped.
 
+## Async Audio Delivery
+
+Use `audio_cleanup`, `speech_transcribe`, and `voice_generate` for production audio. Submit multipart form data with exactly one `source=@file` or an owned `source_artifact_id`; add `callback_target=<registered-alias>` only when a trusted operator has registered that alias. The full curl examples and field allowlists are in [API examples](api_examples.md#async-audio-pack-tasks).
+
+The initial response is asynchronous. Treat callbacks as an optimization, not the only completion path: use `task_status` and `task_result` as the polling fallback, then download every listed `artifact_id` through `artifact`. A received artifact can be acknowledged with `task_artifacts_ack`; ACK does not delete it immediately.
+
+Verify callback HMAC against the exact raw request body before JSON parsing. `X-AIHub-Signature` is `sha256=` plus HMAC-SHA256 of the raw body using the registered target secret. Reject invalid signatures, deduplicate `X-AIHub-Delivery`, and return 2xx for an already processed delivery.
+
+`asr` and `tts` are diagnostic sync modes only: 30 seconds maximum, Pack upload limit, no callback, no artifact chaining, and one actual GPU inference at a time. `async_required` names `speech_transcribe` or `voice_generate`; `sync_busy` means the shared slot is leased.
+
 ## Debug
 
 API 錯誤回應通常會有 `request_id`。回報問題時帶：
