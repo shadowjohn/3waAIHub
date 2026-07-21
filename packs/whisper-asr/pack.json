@@ -10,7 +10,7 @@
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "asr",
-  "description": "Whisper-compatible audio transcription API adapter with dependency import smoke and storage mount checks.",
+  "description": "Whisper-compatible audio transcription API adapter with an opt-in GPU Pack job for managed audio artifacts.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -23,12 +23,46 @@
     "timeout_sec": 180,
     "max_upload_mb": 100
   },
+  "model_allowlist": {
+    "whisper": {
+      "aliases": {
+        "large_v3": {
+          "model": "large-v3"
+        }
+      }
+    }
+  },
   "async_jobs": [
     {
       "job": "transcribe",
       "input": {
-        "fields": [],
-        "source_artifact_types": ["audio"]
+        "fields": ["model", "language", "word_timestamps", "diarization", "min_speakers", "max_speakers", "output_srt", "output_vtt"],
+        "source_artifact_types": ["audio", "cleaned_audio", "vocals_audio"],
+        "request_schema": {
+          "model": {"type": "string", "required": false, "enum": ["large_v3"], "default": "large_v3", "max_length": 32},
+          "language": {"type": "string", "required": false, "default": "auto", "max_length": 16},
+          "word_timestamps": {"type": "boolean", "required": false, "default": false},
+          "diarization": {"type": "boolean", "required": false, "default": false},
+          "min_speakers": {"type": "integer", "required": false, "min": 1, "max": 100, "requires": {"diarization": true}},
+          "max_speakers": {"type": "integer", "required": false, "min": 1, "max": 100, "requires": {"diarization": true}, "gte_field": "min_speakers"},
+          "output_srt": {"type": "boolean", "required": false, "default": false},
+          "output_vtt": {"type": "boolean", "required": false, "default": false}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/whisper-asr:0.1.0",
+        "entrypoint": ["/app/speech-transcribe"],
+        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 10000,
+        "timeout_seconds": 3600,
+        "executor": "container",
+        "secret_env": ["AIHUB_SECRET_PYANNOTE_TOKEN"]
+      },
+      "runner_config": {
+        "alias_input": "model",
+        "model_allowlist": "whisper"
       },
       "output": {
         "artifacts": [
@@ -36,10 +70,37 @@
             "type": "transcript_json",
             "path": "transcript.json",
             "mime_types": ["application/json"],
-            "max_bytes": 2097152,
-            "json": {
-              "required_keys": ["text"]
-            }
+            "max_bytes": 4194304,
+            "json": {"required_keys": ["text", "segments", "language", "model", "word_timestamps"]}
+          },
+          {
+            "type": "transcription_report",
+            "path": "transcription_report.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 65536,
+            "json": {"required_keys": ["model", "language", "word_timestamps", "diarization", "segment_count", "elapsed_seconds"]}
+          },
+          {
+            "type": "subtitle_srt",
+            "path": "subtitle.srt",
+            "mime_types": ["application/x-subrip", "text/plain"],
+            "max_bytes": 4194304,
+            "when": {"input": "output_srt", "equals": true}
+          },
+          {
+            "type": "subtitle_vtt",
+            "path": "subtitle.vtt",
+            "mime_types": ["text/vtt", "text/plain"],
+            "max_bytes": 4194304,
+            "when": {"input": "output_vtt", "equals": true}
+          },
+          {
+            "type": "speaker_timeline",
+            "path": "speaker_timeline.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 1048576,
+            "when": {"input": "diarization", "equals": true},
+            "json": {"required_keys": ["speakers"]}
           }
         ]
       }

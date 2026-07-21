@@ -115,6 +115,7 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
             throw new InvalidArgumentException('Invalid Pack job route.');
         }
     }
+    $input = hub_pack_job_normalize_request_input($input, $route);
 
     $sourceArtifactId = (int)($lineage['source_artifact_id'] ?? 0);
     $startedTransaction = false;

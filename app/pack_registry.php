@@ -240,7 +240,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
 
 function hub_pack_async_job_runner_contract(mixed $runner): ?array
 {
-    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'executor']) !== []) {
+    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'executor', 'secret_env']) !== []) {
         return null;
     }
     $image = trim((string)($runner['image'] ?? ''));
@@ -260,6 +260,18 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
         return null;
     }
     if ($executor !== null && $executor !== 'container') {
+        return null;
+    }
+    $secretEnv = $runner['secret_env'] ?? [];
+    if (!is_array($secretEnv) || !array_is_list($secretEnv) || count($secretEnv) > 16) {
+        return null;
+    }
+    foreach ($secretEnv as $name) {
+        if (!is_string($name) || preg_match('/^AIHUB_SECRET_[A-Z0-9_]{1,63}$/', $name) !== 1) {
+            return null;
+        }
+    }
+    if (count(array_unique($secretEnv)) !== count($secretEnv)) {
         return null;
     }
     foreach (array_merge($entrypoint, $args) as $value) {
@@ -282,7 +294,8 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
         'accelerator' => $accelerator,
         'required_vram_mb' => $requiredVram,
         'timeout_seconds' => $timeout,
-    ] + ($executor === null ? [] : ['executor' => $executor]);
+    ] + ($executor === null ? [] : ['executor' => $executor])
+        + ($secretEnv === [] ? [] : ['secret_env' => $secretEnv]);
 }
 
 function hub_pack_async_job_runner_config_value(mixed $value, int $depth = 0): bool
@@ -352,36 +365,75 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
     $normalized = [];
     foreach ($schema as $name => $definition) {
         if (!is_string($name) || !isset($allowed[$name]) || !is_array($definition)
-            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length']) !== []) {
+            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length', 'min', 'max', 'requires', 'gte_field']) !== []) {
             return null;
         }
         $type = (string)($definition['type'] ?? 'string');
         $required = $definition['required'] ?? false;
-        $maxLength = $definition['max_length'] ?? 1024;
-        if ($type !== 'string' || !is_bool($required) || !is_int($maxLength) || $maxLength < 1 || $maxLength > 4096) {
+        if (!in_array($type, ['string', 'boolean', 'integer'], true) || !is_bool($required)) {
             return null;
         }
-        $enum = $definition['enum'] ?? null;
-        if ($enum !== null) {
-            if (!is_array($enum) || !array_is_list($enum) || $enum === []) {
+        $item = ['type' => $type, 'required' => $required];
+        if ($type === 'string') {
+            $maxLength = $definition['max_length'] ?? 1024;
+            if (!is_int($maxLength) || $maxLength < 1 || $maxLength > 4096) {
                 return null;
             }
-            $seen = [];
-            foreach ($enum as $value) {
-                if (!is_string($value) || $value === '' || strlen($value) > $maxLength || isset($seen[$value])) {
+            $enum = $definition['enum'] ?? null;
+            if ($enum !== null) {
+                if (!is_array($enum) || !array_is_list($enum) || $enum === []) {
                     return null;
                 }
-                $seen[$value] = true;
+                $seen = [];
+                foreach ($enum as $value) {
+                    if (!is_string($value) || $value === '' || strlen($value) > $maxLength || isset($seen[$value])) {
+                        return null;
+                    }
+                    $seen[$value] = true;
+                }
+                $item['enum'] = array_keys($seen);
             }
-            $enum = array_keys($seen);
-        }
-        $default = $definition['default'] ?? null;
-        if ($default !== null && (!is_string($default) || $default === '' || strlen($default) > $maxLength || ($enum !== null && !in_array($default, $enum, true)))) {
+            $item['max_length'] = $maxLength;
+        } elseif (isset($definition['max_length']) || isset($definition['enum'])) {
             return null;
         }
-        $normalized[$name] = ['type' => 'string', 'required' => $required, 'max_length' => $maxLength]
-            + ($enum === null ? [] : ['enum' => $enum])
-            + ($default === null ? [] : ['default' => $default]);
+        if ($type === 'integer') {
+            $min = $definition['min'] ?? -2147483648;
+            $max = $definition['max'] ?? 2147483647;
+            if (!is_int($min) || !is_int($max) || $min > $max) {
+                return null;
+            }
+            $item += ['min' => $min, 'max' => $max];
+        } elseif (isset($definition['min']) || isset($definition['max']) || isset($definition['gte_field'])) {
+            return null;
+        }
+        if (isset($definition['requires'])) {
+            if (!is_array($definition['requires']) || array_is_list($definition['requires']) || $definition['requires'] === []) {
+                return null;
+            }
+            foreach ($definition['requires'] as $field => $value) {
+                if (!is_string($field) || !isset($allowed[$field]) || $field === $name || !is_scalar($value)) {
+                    return null;
+                }
+            }
+            $item['requires'] = $definition['requires'];
+        }
+        if (isset($definition['gte_field'])) {
+            if ($type !== 'integer' || !is_string($definition['gte_field']) || !isset($allowed[$definition['gte_field']]) || $definition['gte_field'] === $name) {
+                return null;
+            }
+            $item['gte_field'] = $definition['gte_field'];
+        }
+        if (array_key_exists('default', $definition)) {
+            $default = $definition['default'];
+            if (($type === 'string' && (!is_string($default) || $default === '' || strlen($default) > ($item['max_length'] ?? 0) || (isset($item['enum']) && !in_array($default, $item['enum'], true))))
+                || ($type === 'boolean' && !is_bool($default))
+                || ($type === 'integer' && (!is_int($default) || $default < $item['min'] || $default > $item['max']))) {
+                return null;
+            }
+            $item['default'] = $default;
+        }
+        $normalized[$name] = $item;
     }
 
     return $normalized;
@@ -441,6 +493,7 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
             throw new InvalidArgumentException('invalid_request');
         }
     }
+    $provided = array_fill_keys(array_keys($input), true);
     foreach ($schema as $name => $definition) {
         if (!array_key_exists($name, $input)) {
             if (array_key_exists('default', $definition)) {
@@ -452,8 +505,40 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
             }
             continue;
         }
-        if (!is_string($input[$name]) || $input[$name] === '' || strlen($input[$name]) > $definition['max_length']
-            || (isset($definition['enum']) && !in_array($input[$name], $definition['enum'], true))) {
+        $value = $input[$name];
+        if ($definition['type'] === 'string') {
+            $valid = is_string($value) && $value !== '' && strlen($value) <= $definition['max_length']
+                && (!isset($definition['enum']) || in_array($value, $definition['enum'], true));
+        } elseif ($definition['type'] === 'boolean') {
+            $valid = is_bool($value) || (is_string($value) && in_array(strtolower($value), ['0', '1', 'false', 'true'], true));
+            if ($valid) {
+                $input[$name] = is_bool($value) ? $value : in_array(strtolower($value), ['1', 'true'], true);
+            }
+        } else {
+            $valid = is_int($value) || (is_string($value) && preg_match('/^-?(?:0|[1-9][0-9]*)$/', $value) === 1);
+            if ($valid) {
+                $integer = (int)$value;
+                $valid = $integer >= $definition['min'] && $integer <= $definition['max'];
+                if ($valid) {
+                    $input[$name] = $integer;
+                }
+            }
+        }
+        if (!$valid) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+    }
+    foreach ($schema as $name => $definition) {
+        if (!isset($provided[$name])) {
+            continue;
+        }
+        foreach ((array)($definition['requires'] ?? []) as $field => $expected) {
+            if (!array_key_exists($field, $input) || $input[$field] !== $expected) {
+                throw new InvalidArgumentException('invalid_request');
+            }
+        }
+        if (isset($definition['gte_field']) && array_key_exists($definition['gte_field'], $input)
+            && $input[$name] < $input[$definition['gte_field']]) {
             throw new InvalidArgumentException('invalid_request');
         }
     }
@@ -743,8 +828,7 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
             $errors[] = 'runtime.default_internal_port is required.';
         }
     }
-    $containerImages = hub_pack_internal_container_runner_images($manifest);
-    if (($containerImages !== [] || array_key_exists('runner_build', $manifest)) && hub_pack_internal_runner_build_contract($manifest, $packDir) === null) {
+    if (array_key_exists('runner_build', $manifest) && hub_pack_internal_runner_build_contract($manifest, $packDir) === null) {
         $errors[] = 'internal container runner_build is invalid.';
     }
 
@@ -1213,13 +1297,21 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     $containerName = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? '3waaihub-hello' : '3waaihub-' . $serviceKey;
     $portEnv = hub_pack_port_env($manifest);
     $buildContext = $pack['dir'] . '/service';
-    $imageTag = hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
+    $dockerfile = '';
+    if (($manifest['id'] ?? '') === 'whisper-asr') {
+        $buildContext = $pack['dir'];
+        $dockerfile = "      dockerfile: service/Dockerfile\n";
+    }
+    $imageTag = ($manifest['id'] ?? '') === 'whisper-asr'
+        ? '3waaihub/whisper-asr:' . (string)($manifest['version'] ?? 'latest')
+        : hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
 
     $compose = "services:\n"
         . "  {$composeService}:\n"
         . "    image: {$imageTag}\n"
         . "    build:\n"
         . "      context: {$buildContext}\n"
+        . $dockerfile
         . "    container_name: {$containerName}\n"
         . "    env_file:\n"
         . "      - .env\n"

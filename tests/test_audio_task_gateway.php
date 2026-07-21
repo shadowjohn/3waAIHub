@@ -420,10 +420,11 @@ hub_test('audio upload retry copies its owned source into the new task before ad
             $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
             hub_test_assert((int)($claimed['id'] ?? 0) === $retryId, 'copied upload retry must be claimable');
             hub_run_pack_job_task($db, $claimed ?? [], [
-                'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+                'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
                 'executor' => static function (array $context): array {
                     hub_test_assert((string)file_get_contents($context['workspace'] . '/input/source') === 'RIFFretry-source', 'adapter must stage the retry-owned source copy');
-                    file_put_contents($context['workspace'] . '/output/transcript.json', '{"text":"retry"}', LOCK_EX);
+                    file_put_contents($context['workspace'] . '/output/transcript.json', '{"text":"retry","segments":[],"language":"auto","model":"large-v3","word_timestamps":false}', LOCK_EX);
+                    file_put_contents($context['workspace'] . '/output/transcription_report.json', '{"model":"large-v3","language":"auto","word_timestamps":false,"diarization":false,"segment_count":1,"elapsed_seconds":0}', LOCK_EX);
                     return ['exit_code' => 0, 'container_id' => 'upload-retry', 'cleanup' => hub_test_adapter_cleanup()];
                 },
             ]);
@@ -440,6 +441,9 @@ hub_test('audio upload retry copies its owned source into the new task before ad
                 if (is_file($path)) {
                     unlink($path);
                 }
+            }
+            if (isset($retryId)) {
+                hub_test_pack_job_rm(hub_task_result_dir($retryId));
             }
         }
     });
@@ -584,7 +588,7 @@ hub_test('audio routes require declared async jobs without changing legacy local
         $db = hub_test_reset_db();
         hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
         $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
-        hub_test_assert(($route['input_fields'] ?? null) === [] && ($route['source_artifact_types'] ?? null) === ['audio'], 'async route must derive its input contract from the Pack declaration');
+        hub_test_assert(($route['input_fields'] ?? null) === ['model', 'language', 'word_timestamps', 'diarization', 'min_speakers', 'max_speakers', 'output_srt', 'output_vtt'] && ($route['source_artifact_types'] ?? null) === ['audio', 'cleaned_audio', 'vocals_audio'], 'async route must derive its input contract from the Pack declaration');
         hub_test_assert(!empty(hub_get_pack('yolo')['manifest']['local_jobs']), 'legacy local_jobs must remain readable without async-job validation');
 
         $manifestPath = HUB_ROOT . '/packs/whisper-asr/pack.json';
@@ -704,7 +708,7 @@ hub_test('manifest async job declarations cannot permit reserved controls', func
     });
 });
 
-hub_test('shared task worker claims Pack jobs and rejects runner-unavailable manifests', function (): void {
+hub_test('shared task worker claims Whisper Pack jobs and waits for its GPU contract', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
     $memberId = hub_create_api_member($db, 'Worker Queue Owner');
@@ -717,7 +721,7 @@ hub_test('shared task worker claims Pack jobs and rejects runner-unavailable man
     exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/scripts/task_worker.php') . ' --limit=1 2>&1', $output, $exitCode);
 
     $task = hub_get_task($db, $taskId);
-    hub_test_assert($exitCode === 0 && ($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'job_unavailable', 'shared worker must route Pack jobs through the generic adapter and fail runner-unavailable manifests safely');
+    hub_test_assert($exitCode === 0 && ($task['status'] ?? '') === 'waiting_gpu' && !empty($task['waiting_reason']), 'shared worker must route Whisper through the generic GPU adapter without a CPU fallback');
 });
 
 hub_test('audio manual retry accepts timed-out Pack jobs', function (): void {

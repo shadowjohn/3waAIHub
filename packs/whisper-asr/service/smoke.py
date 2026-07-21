@@ -8,6 +8,7 @@ import json
 def main() -> None:
     fastapi = importlib.import_module("fastapi")
     faster_whisper = importlib.import_module("faster_whisper")
+    whisperx = importlib.import_module("whisperx")
     print(json.dumps(
         {
             "ok": True,
@@ -15,6 +16,7 @@ def main() -> None:
             "runtime_level": "L2-deps-import",
             "fastapi": getattr(fastapi, "__version__", "unknown"),
             "faster_whisper": getattr(faster_whisper, "__version__", importlib.metadata.version("faster-whisper")),
+            "whisperx": getattr(whisperx, "__version__", importlib.metadata.version("whisperx")),
         },
         ensure_ascii=False,
     ))

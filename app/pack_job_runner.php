@@ -349,6 +349,12 @@ function hub_pack_job_default_runner_command(array $context): array
         $command[] = '--gpus';
         $command[] = 'all';
     }
+    foreach ((array)($runner['secret_env'] ?? []) as $name) {
+        if (is_string($name) && getenv($name) !== false) {
+            $command[] = '--env';
+            $command[] = $name;
+        }
+    }
     $command[] = '--entrypoint';
     $command[] = $replace((string)$entrypoint[0]);
     $command[] = (string)($runner['image'] ?? '');
