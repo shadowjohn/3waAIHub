@@ -169,7 +169,8 @@ function hub_stage_owned_pack_job(PDO $db, array $route, array $input, int $owne
 
 function hub_pack_job_voice_context_snapshot(array $definition, array $input, mixed $snapshot): array
 {
-    if (array_keys($definition) !== ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path']) {
+    $legacy = array_keys($definition) === ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path'];
+    if (!$legacy && array_keys($definition) !== ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path']) {
         throw new InvalidArgumentException('invalid_request');
     }
     $mode = $input[$definition['mode_input']] ?? null;
@@ -190,7 +191,8 @@ function hub_pack_job_voice_context_snapshot(array $definition, array $input, mi
     if (!is_array($snapshot) || array_is_list($snapshot)) {
         throw new InvalidArgumentException('invalid_request');
     }
-    if (array_key_exists($definition['design_prompt_input'], $input)) {
+    $designPromptInput = $legacy ? 'voice_prompt' : $definition['design_prompt_input'];
+    if (array_key_exists($designPromptInput, $input)) {
         throw new InvalidArgumentException('invalid_request');
     }
     $profileId = $input[$definition['profile_input']] ?? null;

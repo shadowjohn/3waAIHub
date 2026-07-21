@@ -515,6 +515,26 @@ hub_test('VoxCPM2 async clone resolves one owned profile into a path-free snapsh
         $profileMount = 'type=bind,src=' . realpath($profilePath) . ',dst=/data/voice_profiles/reference.wav,readonly';
         hub_test_assert(in_array($profileMount, $command, true) && !str_contains(implode("\n", $command), 'async_clone_reference.wav') === false, 'runner command must receive only the Hub-derived read-only reference mount');
 
+        $legacyContract = json_decode((string)$task['job_contract_json'], true, 512, JSON_THROW_ON_ERROR);
+        unset($legacyContract['voice_context']['design_prompt_input']);
+        $legacyJson = json_encode($legacyContract, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $legacyTask = $task;
+        $legacyTask['job_contract_json'] = $legacyJson;
+        $legacyTask['job_contract_digest'] = hash('sha256', $legacyJson);
+        $legacyResolved = hub_pack_job_contract_from_snapshot($legacyTask);
+        hub_test_assert(array_keys($legacyResolved['voice_context'] ?? []) === ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path']
+            && hub_pack_job_voice_context_snapshot($legacyResolved['voice_context'], ['mode' => 'design'], null) === [], 'valid legacy design/clone contracts must canonicalize without adding a client path or prompt control');
+        hub_test_assert(hub_pack_job_resolve_voice_profile_mount($db, $legacyTask, $legacyResolved) === $mount, 'valid legacy clone contracts must preserve the owned profile hash and controlled mount');
+        $legacyPromptInput = $legacyTask['input'];
+        $legacyPromptInput['voice_prompt'] = 'forbidden clone prompt';
+        hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_voice_context_snapshot($legacyResolved['voice_context'], $legacyPromptInput, $snapshot)), 'legacy clone contracts must not bypass the prompt prohibition before GPU work');
+        $db->prepare('UPDATE tasks SET job_contract_json = :json, job_contract_digest = :digest WHERE id = :id')->execute([
+            ':json' => $legacyJson,
+            ':digest' => $legacyTask['job_contract_digest'],
+            ':id' => (int)$task['id'],
+        ]);
+        $task = $legacyTask;
+
         $beforeClonePrompt = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
         $clonePrompt = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], $input + ['voice_prompt' => 'must be rejected before GPU']);
         hub_test_assert($clonePrompt['status'] === 400 && (hub_test_audio_payload($clonePrompt)['error'] ?? '') === 'invalid_request'

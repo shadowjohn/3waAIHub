@@ -661,24 +661,29 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
     return $normalized;
 }
 
-function hub_pack_async_job_voice_context_contract(mixed $definition, array $fields, array $requestSchema): ?array
+function hub_pack_async_job_voice_context_contract(mixed $definition, array $fields, array $requestSchema, bool $allowLegacy = false): ?array
 {
     if ($definition === null) {
         return [];
     }
-    if (!is_array($definition) || array_keys($definition) !== ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path']) {
+    $modernKeys = ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path'];
+    $legacyKeys = ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path'];
+    $legacy = is_array($definition) && array_keys($definition) === $legacyKeys;
+    if (!is_array($definition) || (!$legacy && array_keys($definition) !== $modernKeys) || ($legacy && !$allowLegacy)) {
         return null;
     }
     $modeInput = $definition['mode_input'] ?? null;
     $designValue = $definition['design_value'] ?? null;
     $cloneValue = $definition['clone_value'] ?? null;
     $profileInput = $definition['profile_input'] ?? null;
-    $designPromptInput = $definition['design_prompt_input'] ?? null;
+    $designPromptInput = $legacy ? null : ($definition['design_prompt_input'] ?? null);
     $containerPath = $definition['container_path'] ?? null;
-    if (!is_string($modeInput) || !is_string($designValue) || !is_string($cloneValue) || !is_string($profileInput) || !is_string($designPromptInput) || !is_string($containerPath)
-        || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || !in_array($designPromptInput, $fields, true) || $designValue === '' || $cloneValue === '' || $designValue === $cloneValue
+    $designPromptValid = $legacy || (is_string($designPromptInput) && in_array($designPromptInput, $fields, true)
+        && ($requestSchema[$designPromptInput]['type'] ?? null) === 'string');
+    if (!is_string($modeInput) || !is_string($designValue) || !is_string($cloneValue) || !is_string($profileInput) || !is_string($containerPath)
+        || !$designPromptValid || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || $designValue === '' || $cloneValue === '' || $designValue === $cloneValue
         || ($requestSchema[$modeInput]['type'] ?? null) !== 'string' || !in_array($designValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true)
-        || !in_array($cloneValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true) || ($requestSchema[$profileInput]['type'] ?? null) !== 'integer' || ($requestSchema[$designPromptInput]['type'] ?? null) !== 'string'
+        || !in_array($cloneValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true) || ($requestSchema[$profileInput]['type'] ?? null) !== 'integer'
         || $containerPath !== '/data/voice_profiles/reference.wav') {
         return null;
     }
@@ -688,9 +693,7 @@ function hub_pack_async_job_voice_context_contract(mixed $definition, array $fie
         'design_value' => $designValue,
         'clone_value' => $cloneValue,
         'profile_input' => $profileInput,
-        'design_prompt_input' => $designPromptInput,
-        'container_path' => $containerPath,
-    ];
+    ] + ($legacy ? [] : ['design_prompt_input' => $designPromptInput]) + ['container_path' => $containerPath];
 }
 
 function hub_pack_async_job_capabilities(mixed $capabilities): ?array
@@ -816,7 +819,7 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
     return $input;
 }
 
-function hub_pack_job_contract_snapshot(array $contract): array
+function hub_pack_job_contract_snapshot(array $contract, bool $allowLegacyVoiceContext = false): array
 {
     $fields = hub_pack_async_job_contract_names($contract['input_fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
     $artifactTypes = hub_pack_async_job_contract_names($contract['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
@@ -839,7 +842,7 @@ function hub_pack_job_contract_snapshot(array $contract): array
         'max_upload_bytes' => $maxUploadBytes,
         'artifact_contract' => ['artifacts' => $artifacts] + ($attestation === null ? [] : ['report_attestation' => $attestation]),
     ];
-    $voiceContext = hub_pack_async_job_voice_context_contract($contract['voice_context'] ?? null, $fields, $snapshot['request_schema']);
+    $voiceContext = hub_pack_async_job_voice_context_contract($contract['voice_context'] ?? null, $fields, $snapshot['request_schema'], $allowLegacyVoiceContext);
     if ($voiceContext === null) {
         throw new InvalidArgumentException('job_contract_unavailable');
     }
@@ -891,7 +894,7 @@ function hub_pack_job_contract_from_snapshot(array $task): array
         throw new RuntimeException('job_contract_unavailable');
     }
     try {
-        $snapshot = hub_pack_job_contract_snapshot($decoded);
+        $snapshot = hub_pack_job_contract_snapshot($decoded, true);
     } catch (Throwable) {
         throw new RuntimeException('job_contract_unavailable');
     }
