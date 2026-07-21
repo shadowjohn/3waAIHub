@@ -36,7 +36,7 @@ function hub_test_audio_cleanup_remove(string $path): void
 function hub_test_audio_cleanup_write(string $workspace, string $operation): void
 {
     $audio = hub_test_audio_cleanup_wav();
-    if (is_dir($workspace . '/input')) {
+    if (is_dir($workspace . '/input') && !is_file($workspace . '/input/source')) {
         file_put_contents($workspace . '/input/source', $audio, LOCK_EX);
     }
     if (in_array($operation, ['separate', 'separate_and_enhance'], true)) {
@@ -135,11 +135,6 @@ hub_test('audio-cleanup image provisions only offline Demucs weights', function 
     $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/audio-cleanup/service/Dockerfile');
     foreach ([
         'AIHUB_DEMUCS_MODEL_DIR=/opt/aihub/models/demucs',
-        '955717e8-8726e21a.th',
-        'f7e0c4bc-ba3fe64a.th',
-        'd12395a8-e57c48e6.th',
-        '92cfc3b6-ef3bcb9c.th',
-        '04573f0d-f3cf25b2.th',
         'htdemucs.yaml',
         'htdemucs_ft.yaml',
         'curl --fail --location',
@@ -150,6 +145,19 @@ hub_test('audio-cleanup image provisions only offline Demucs weights', function 
     foreach (['TORCH_HOME', 'require_demucs_model', '--repo', 'model_assets_missing:demucs', 'require_deepfilter_model', 'model_assets_missing:deepfilternet', '--model-base-dir'] as $needle) {
         hub_test_assert(str_contains($runner, $needle), 'audio-cleanup runner must stay offline for ' . $needle);
     }
+});
+
+hub_test('audio-cleanup image verifies every allowlisted weight with a full SHA-256 lock', function (): void {
+    $service = HUB_ROOT . '/packs/audio-cleanup/service';
+    $lock = (string)file_get_contents($service . '/model-lock.sha256');
+    $pins = preg_split('/\R/', trim($lock)) ?: [];
+    hub_test_assert(count($pins) === 5, 'audio-cleanup must lock exactly its five allowlisted Demucs weights');
+    foreach ($pins as $pin) {
+        hub_test_assert(preg_match('/^[a-f0-9]{64}  [a-f0-9]{8}-[a-f0-9]{8}\.th$/', $pin) === 1, 'audio-cleanup model lock must contain a full SHA-256 and expected release filename');
+    }
+    $dockerfile = (string)file_get_contents($service . '/Dockerfile');
+    hub_test_assert(str_contains($dockerfile, 'COPY model-lock.sha256 /tmp/model-lock.sha256') && str_contains($dockerfile, 'sha256sum -c /tmp/model-lock.sha256'), 'audio-cleanup image must verify the checked-in full digest lock');
+    hub_test_assert(!str_contains($dockerfile, 'substr($1, 1, 8)'), 'audio-cleanup image must not accept truncated model checksums');
 });
 
 hub_test('audio-cleanup install builds and verifies its declared local runner image', function (): void {
@@ -278,6 +286,89 @@ hub_test('audio-cleanup report attests Hub-probed source outputs and frozen mode
     }
 });
 
+hub_test('audio-cleanup captures source metadata and hash before runner execution', function (): void {
+    $workspace = hub_test_audio_cleanup_workspace();
+    try {
+        file_put_contents($workspace . '/input/source', hub_test_audio_cleanup_wav(), LOCK_EX);
+        $attestation = hub_pack_job_capture_staged_source_audio_attestation($workspace, static fn (): array => ['duration_seconds' => 0.01, 'sample_rate' => 48000, 'channels' => 1]);
+        hub_test_assert(($attestation['metadata'] ?? null) === ['duration_seconds' => 0.01, 'sample_rate' => 48000, 'channels' => 1]
+            && preg_match('/^[a-f0-9]{64}$/', (string)($attestation['sha256'] ?? '')) === 1, 'Hub must retain prelaunch ffprobe metadata and a full source hash');
+    } finally {
+        hub_test_audio_cleanup_remove($workspace);
+    }
+});
+
+hub_test('audio-cleanup report cannot attest a source mutated after prelaunch', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_audio_cleanup_install($db);
+    $source = hub_test_audio_source_artifact($db, 1, 1);
+    file_put_contents($source['path'], hub_test_audio_cleanup_wav(), LOCK_EX);
+    hub_finish_task_success($db, hub_get_task($db, (int)$source['task_id']) ?? [], ['source' => true]);
+    $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1', [
+        'source_artifact_id' => $source['artifact_id'],
+        'source_task_id' => $source['task_id'],
+    ]);
+    $task = hub_test_adapter_claim($db);
+    try {
+        hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+            'audio_probe' => static function (string $path): array {
+                return file_get_contents($path) === 'mutated-source'
+                    ? ['duration_seconds' => 0.01, 'sample_rate' => 16000, 'channels' => 1]
+                    : ['duration_seconds' => 0.01, 'sample_rate' => 48000, 'channels' => 1];
+            },
+            'executor' => static function (array $context): array {
+                $context['started'](['container_id' => 'mutated-source']);
+                hub_test_audio_cleanup_write($context['workspace'], 'separate');
+                $report = hub_test_audio_cleanup_report('separate');
+                $report['source_audio']['sample_rate'] = 16000;
+                file_put_contents($context['workspace'] . '/input/source', 'mutated-source', LOCK_EX);
+                file_put_contents($context['workspace'] . '/output/cleanup_report.json', json_encode($report, JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+
+                return ['exit_code' => 0, 'container_id' => 'mutated-source', 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        $latest = hub_get_task($db, $taskId) ?? [];
+        hub_test_assert(($latest['error_code'] ?? '') === 'output_contract_invalid', 'a report must not use a source mutation to replace Hub prelaunch evidence: ' . json_encode($latest));
+    } finally {
+        hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+        hub_test_audio_cleanup_remove(hub_task_result_dir((int)$source['task_id']));
+    }
+});
+
+hub_test('audio-cleanup default command mounts only output writable and input snapshots read-only', function (): void {
+    $workspace = hub_test_audio_cleanup_workspace();
+    try {
+        foreach (['source' => hub_test_audio_cleanup_wav(), 'request.json' => '{"operation":"separate"}\n', 'runner_config.json' => '{"alias":"balanced"}\n'] as $file => $contents) {
+            file_put_contents($workspace . '/input/' . $file, $contents, LOCK_EX);
+        }
+        $route = hub_pack_async_job_contract(hub_get_pack('audio-cleanup')['manifest'], 'cleanup');
+        $command = hub_pack_job_default_runner_command([
+            'workspace' => $workspace,
+            'run' => ['run_id' => 'audio-mount-test'],
+            'runner' => $route['runner'],
+        ])['command'];
+        $mounts = [];
+        foreach ($command as $index => $argument) {
+            if ($argument === '--mount') {
+                $mount = (string)($command[$index + 1] ?? '');
+                preg_match('/(?:^|,)src=([^,]+),dst=([^,]+)(?:,(readonly))?/', $mount, $matches);
+                if ($matches !== []) {
+                    $mounts[$matches[2]] = [$matches[1], $matches[3] ?? ''];
+                }
+            }
+        }
+        hub_test_assert(($mounts['/workspace/output'] ?? null) === [$workspace . '/output', '']
+            && ($mounts['/workspace/input/source'] ?? null) === [$workspace . '/input/source', 'readonly']
+            && ($mounts['/workspace/input/request.json'] ?? null) === [$workspace . '/input/request.json', 'readonly']
+            && ($mounts['/workspace/input/runner_config.json'] ?? null) === [$workspace . '/input/runner_config.json', 'readonly']
+            && !in_array($workspace, array_column($mounts, 0), true), 'container argv must expose writable output and immutable input snapshots only');
+    } finally {
+        hub_test_audio_cleanup_remove($workspace);
+    }
+});
+
 hub_test('audio-cleanup admits one source and runs through the injected generic GPU executor', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -312,6 +403,7 @@ hub_test('audio-cleanup admits one source and runs through the injected generic 
         $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
         $outcome = hub_run_pack_job_task($db, $claimed ?? [], [
             'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+            'audio_probe' => static fn (): array => ['duration_seconds' => 0.01, 'sample_rate' => 48000, 'channels' => 1],
             'executor' => static function (array $context): array {
                 hub_test_assert(($context['runner']['accelerator'] ?? '') === 'gpu' && !str_contains(strtolower(json_encode($context['runner'])), 'myai'), 'audio cleanup must receive the manifest generic runner only');
                 hub_test_assert(json_decode((string)file_get_contents($context['workspace'] . '/input/request.json'), true) === ['operation' => 'separate', 'demucs_model' => 'balanced'], 'generic runner must receive the normalized request only');
@@ -341,10 +433,17 @@ hub_test('audio-cleanup default executor dispatches its snapshotted container ru
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
     $task = hub_test_adapter_claim($db);
     $runs = 0;
+    $probes = [];
 
     try {
         $result = hub_run_pack_job_task($db, $task, [
-            'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+            'gpu_probe_runner' => static function (array $command, int $timeoutSeconds) use ($db, &$probes): array {
+                hub_test_assert(!$db->inTransaction(), 'production GPU probe must run outside a database transaction');
+                $probes[] = $command;
+                return str_contains(implode(' ', $command), 'memory.free')
+                    ? ['exit_code' => 0, 'stdout' => "16384\n", 'stderr' => '']
+                    : ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            },
             'command_runner' => static function (array $command, int $timeoutSeconds) use (&$runs): array {
                 if (($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect') {
                     return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'Error: No such container'];
@@ -354,16 +453,25 @@ hub_test('audio-cleanup default executor dispatches its snapshotted container ru
                 hub_test_assert(in_array('3waaihub/audio-cleanup:0.1.0', $command, true), 'default executor must use the snapshotted audio-cleanup image');
                 hub_test_assert(in_array('/app/audio-cleanup', $command, true), 'default executor must use the snapshotted audio-cleanup entrypoint');
                 hub_test_assert(!str_contains(json_encode($command), 'never-from-client'), 'default executor must not execute client controls');
-                $mount = $command[array_search('--mount', $command, true) + 1] ?? '';
-                preg_match('/(?:^|,)src=([^,]+)/', (string)$mount, $matches);
-                hub_test_assert(!empty($matches[1]), 'default executor must mount its managed workspace');
-                hub_test_audio_cleanup_write((string)$matches[1], 'separate');
+                $outputMount = null;
+                foreach ($command as $index => $argument) {
+                    if ($argument === '--mount' && str_contains((string)($command[$index + 1] ?? ''), 'dst=/workspace/output')) {
+                        $outputMount = (string)$command[$index + 1];
+                        break;
+                    }
+                }
+                preg_match('/(?:^|,)src=([^,]+)/', (string)$outputMount, $matches);
+                hub_test_assert(!empty($matches[1]), 'default executor must retain writable managed output');
+                hub_test_audio_cleanup_write(dirname((string)$matches[1]), 'separate');
 
                 return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
             },
         ]);
 
-        hub_test_assert($runs === 1 && ($result['status'] ?? '') === 'success', 'task-worker default executor must dispatch audio cleanup without an injected executor');
+        hub_test_assert($probes === [
+            ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,noheader,nounits'],
+            ['nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader,nounits'],
+        ] && $runs === 1 && ($result['status'] ?? '') === 'success', 'task-worker default executor must use the real GPU probe and not wait solely because no probe hook was supplied');
         hub_test_assert((hub_get_task($db, $taskId)['error_code'] ?? null) === null, 'default executor must not report runner_unavailable');
     } finally {
         hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
@@ -393,7 +501,7 @@ hub_test('audio-cleanup async container process heartbeats before it completes',
                 $polls += 2;
                 $mount = $command[array_search('--mount', $command, true) + 1] ?? '';
                 preg_match('/(?:^|,)src=([^,]+)/', (string)$mount, $matches);
-                hub_test_audio_cleanup_write((string)($matches[1] ?? 'missing'), 'separate');
+                hub_test_audio_cleanup_write(dirname((string)($matches[1] ?? 'missing')), 'separate');
 
                 return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
             },
@@ -496,7 +604,7 @@ hub_test('audio-cleanup default executor proves container cleanup before reporti
                 if (($command[1] ?? '') === 'run') {
                     $mount = $command[array_search('--mount', $command, true) + 1] ?? '';
                     preg_match('/(?:^|,)src=([^,]+)/', (string)$mount, $matches);
-                    hub_test_audio_cleanup_write((string)($matches[1] ?? 'missing'), 'separate');
+                    hub_test_audio_cleanup_write(dirname((string)($matches[1] ?? 'missing')), 'separate');
                     return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
                 }
                 if (($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect') {

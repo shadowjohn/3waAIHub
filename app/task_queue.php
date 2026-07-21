@@ -2467,7 +2467,7 @@ function hub_pack_job_validate_audio_output(string $path, array $definition, ?ca
     ];
 }
 
-function hub_pack_job_staged_source_audio_metadata(string $workspace, ?callable $audioProbe): array
+function hub_pack_job_staged_source_audio_path(string $workspace): string
 {
     $workspace = realpath($workspace);
     $input = $workspace === false ? false : realpath($workspace . '/input');
@@ -2481,7 +2481,34 @@ function hub_pack_job_staged_source_audio_metadata(string $workspace, ?callable 
         hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
     }
 
-    return hub_pack_job_validate_audio_output($source, ['audio' => []], $audioProbe);
+    return $source;
+}
+
+function hub_pack_job_capture_staged_source_audio_attestation(string $workspace, ?callable $audioProbe): array
+{
+    $source = hub_pack_job_staged_source_audio_path($workspace);
+    $sha256 = hash_file('sha256', $source);
+    if ($sha256 === false || preg_match('/^[a-f0-9]{64}$/', $sha256) !== 1) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
+
+    return [
+        'metadata' => hub_pack_job_validate_audio_output($source, ['audio' => []], $audioProbe),
+        'sha256' => $sha256,
+    ];
+}
+
+function hub_pack_job_validate_staged_source_audio_attestation(string $workspace, array $attestation): void
+{
+    $metadata = $attestation['metadata'] ?? null;
+    $sha256 = $attestation['sha256'] ?? null;
+    if (!is_array($metadata) || !is_string($sha256) || preg_match('/^[a-f0-9]{64}$/', $sha256) !== 1) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
+    $actual = hash_file('sha256', hub_pack_job_staged_source_audio_path($workspace));
+    if ($actual === false || !hash_equals($sha256, $actual)) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
 }
 
 function hub_pack_job_report_audio_matches(mixed $reported, array $trusted, array $tolerance): bool
@@ -2499,7 +2526,7 @@ function hub_pack_job_report_audio_matches(mixed $reported, array $trusted, arra
     return true;
 }
 
-function hub_pack_job_validate_report_attestation(string $workspace, array $taskInput, array $jobContract, array $validated, ?callable $audioProbe, ?array $runnerConfig): void
+function hub_pack_job_validate_report_attestation(string $workspace, array $taskInput, array $jobContract, array $validated, ?callable $audioProbe, ?array $runnerConfig, ?array $sourceAudioAttestation = null): void
 {
     $attestation = $jobContract['report_attestation'] ?? null;
     if ($attestation === null) {
@@ -2522,8 +2549,10 @@ function hub_pack_job_validate_report_attestation(string $workspace, array $task
     } catch (Throwable) {
         hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
     }
+    $sourceAudioAttestation ??= hub_pack_job_capture_staged_source_audio_attestation($workspace, $audioProbe);
+    hub_pack_job_validate_staged_source_audio_attestation($workspace, $sourceAudioAttestation);
     if (!is_array($report) || array_is_list($report)
-        || !hub_pack_job_report_audio_matches($report[$attestation['source_audio']] ?? null, hub_pack_job_staged_source_audio_metadata($workspace, $audioProbe), $attestation['tolerance'])
+        || !hub_pack_job_report_audio_matches($report[$attestation['source_audio']] ?? null, $sourceAudioAttestation['metadata'], $attestation['tolerance'])
         || !is_array($report[$attestation['outputs_audio']] ?? null) || array_is_list($report[$attestation['outputs_audio']])) {
         hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
     }
@@ -2551,7 +2580,7 @@ function hub_pack_job_validate_report_attestation(string $workspace, array $task
     }
 }
 
-function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, array $jobContract, ?callable $audioProbe = null, ?array $runnerConfig = null): array
+function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, array $jobContract, ?callable $audioProbe = null, ?array $runnerConfig = null, ?array $sourceAudioAttestation = null): array
 {
     $outputDir = hub_pack_job_output_dir($workspace);
     $expected = [];
@@ -2601,7 +2630,7 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
             'inode' => (int)$stat['ino'],
         ];
     }
-    hub_pack_job_validate_report_attestation($workspace, $taskInput, $jobContract, $validated, $audioProbe, $runnerConfig);
+    hub_pack_job_validate_report_attestation($workspace, $taskInput, $jobContract, $validated, $audioProbe, $runnerConfig, $sourceAudioAttestation);
 
     return $validated;
 }
@@ -3390,7 +3419,7 @@ function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $
     }
 }
 
-function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null, ?array $gpuLease = null, ?array $runnerConfig = null): array
+function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null, ?array $gpuLease = null, ?array $runnerConfig = null, ?array $sourceAudioAttestation = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
@@ -3402,7 +3431,7 @@ function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string
     }
     try {
         hub_pack_job_require_submitted_output_dir($db, $taskId, $run, $workspace);
-        $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe, $runnerConfig);
+        $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe, $runnerConfig, $sourceAudioAttestation);
     } catch (HubPackOutputContractInvalid) {
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 

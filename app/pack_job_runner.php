@@ -337,7 +337,14 @@ function hub_pack_job_default_runner_command(array $context): array
     if (!is_array($entrypoint) || $entrypoint === [] || !is_array($args)) {
         throw new RuntimeException('job_contract_unavailable');
     }
-    $command = ['docker', 'run', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . ',dst=' . $containerWorkspace, '--name', $name];
+    $command = ['docker', 'run', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . '/output,dst=' . $containerWorkspace . '/output', '--name', $name];
+    foreach (['source', 'request.json', 'runner_config.json'] as $file) {
+        $path = $workspace . '/input/' . $file;
+        if (is_file($path) && !is_link($path)) {
+            $command[] = '--mount';
+            $command[] = 'type=bind,src=' . $path . ',dst=' . $containerWorkspace . '/input/' . $file . ',readonly';
+        }
+    }
     if (($runner['accelerator'] ?? '') === 'gpu') {
         $command[] = '--gpus';
         $command[] = 'all';
@@ -815,7 +822,9 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 }
                 return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
             }
-            $probe = $options['gpu_probe'] ?? static fn (): array => ['free_vram_mb' => 0, 'processes' => []];
+            $probe = isset($options['gpu_probe']) && is_callable($options['gpu_probe'])
+                ? $options['gpu_probe']
+                : static fn (): array => hub_runtime_gpu_probe(isset($options['gpu_probe_runner']) && is_callable($options['gpu_probe_runner']) ? $options['gpu_probe_runner'] : null);
             $preflight = hub_runtime_gpu_preflight($db, $taskId, $run, $gpuLease, (int)$runner['required_vram_mb'], $probe, max(1, (int)($options['gpu_backoff_seconds'] ?? 30)));
             if (empty($preflight['ok'])) {
                 if (($preflight['reason'] ?? '') !== 'lost_gpu_lease') {
@@ -826,6 +835,10 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $workspace = hub_pack_job_prepare_workspace($task, $contract);
         hub_pack_job_copy_source_artifact($db, $task, $workspace);
+        $audioProbe = isset($options['audio_probe']) && is_callable($options['audio_probe']) ? $options['audio_probe'] : null;
+        $sourceAudioAttestation = isset($contract['artifact_contract']['report_attestation']) && is_file($workspace . '/input/source')
+            ? hub_pack_job_capture_staged_source_audio_attestation($workspace, $audioProbe)
+            : null;
         $context = [
             'db' => $db,
             'task' => $task,
@@ -893,7 +906,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             }
             return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Pack job exited unsuccessfully', $cleanup, $gpuLease);
         }
-        $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, null, $gpuLease, $contract['runner_config'] ?? null);
+        $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, $audioProbe, $gpuLease, $contract['runner_config'] ?? null, $sourceAudioAttestation);
         $latest = hub_get_task($db, $taskId);
         if (($final['ok'] ?? false) !== true && ($latest['status'] ?? '') === 'running' && hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds) === 'fence_lost') {
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, $cleanup);
