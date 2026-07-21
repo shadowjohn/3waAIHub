@@ -47,7 +47,7 @@
         "request_schema": {
           "model": {"type": "string", "required": false, "enum": ["large_v3"], "default": "large_v3", "max_length": 32},
           "language": {"type": "string", "required": false, "default": "auto", "max_length": 16},
-          "word_timestamps": {"type": "boolean", "required": false, "default": false},
+          "word_timestamps": {"type": "boolean", "required": false, "default": false, "requires_when": {"equals": true, "field": "language", "not_equals": "auto"}},
           "diarization": {"type": "boolean", "required": false, "default": false},
           "min_speakers": {"type": "integer", "required": false, "min": 1, "max": 100, "requires": {"diarization": true}},
           "max_speakers": {"type": "integer", "required": false, "min": 1, "max": 100, "requires": {"diarization": true}, "gte_field": "min_speakers"},
@@ -90,7 +90,7 @@
               },
               "exact_keys": ["schema", "language", "model_name", "model_dir", "weight_path", "alignment_languages"],
               "string_lists": {"alignment_languages": ["en"]},
-              "input_membership": {"input": "language", "list_field": "alignment_languages", "ignore_equals": "auto"}
+              "input_membership": {"input": "language", "list_field": "alignment_languages"}
             }
           },
           {

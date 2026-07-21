@@ -13,6 +13,7 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
     $job = hub_pack_async_job_contract($manifest, 'transcribe');
     hub_test_assert(is_array($job), 'Whisper ASR transcribe job contract missing');
     hub_test_assert(($job['input_fields'] ?? []) === ['model', 'language', 'word_timestamps', 'diarization', 'min_speakers', 'max_speakers', 'output_srt', 'output_vtt'], 'Whisper input field allowlist mismatch');
+    hub_test_assert(($job['request_schema']['word_timestamps']['requires_when'] ?? null) === ['equals' => true, 'field' => 'language', 'not_equals' => 'auto'], 'Word timestamps must require an explicit alignment language at admission');
     hub_test_assert(($job['source_artifact_types'] ?? []) === ['audio', 'cleaned_audio', 'vocals_audio'], 'Whisper must accept managed audio sources only');
     hub_test_assert(($job['runner']['accelerator'] ?? '') === 'gpu' && ($job['runner']['required_vram_mb'] ?? 0) === 10000 && ($job['runner']['executor'] ?? '') === 'container', 'Whisper transcription must use the generic GPU container runner');
     hub_test_assert(($job['runner']['asset_mounts'] ?? []) === [
@@ -41,7 +42,7 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
                 ],
                 'exact_keys' => ['schema', 'language', 'model_name', 'model_dir', 'weight_path', 'alignment_languages'],
                 'string_lists' => ['alignment_languages' => ['en']],
-                'input_membership' => ['input' => 'language', 'list_field' => 'alignment_languages', 'ignore_equals' => 'auto'],
+                'input_membership' => ['input' => 'language', 'list_field' => 'alignment_languages'],
             ],
         ],
         [
@@ -100,7 +101,7 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
         ...$asrAssets,
         ['id' => 'whisper_alignment_torch', 'source' => $cache . '/whisper/torch', 'container_path' => '/cache/whisper/torch'],
     ];
-    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => true, 'diarization' => false]) === $alignmentAssets, 'word timestamps must mount only its exact local alignment cache');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'en', 'word_timestamps' => true, 'diarization' => false]) === $alignmentAssets, 'word timestamps must mount only its exact local alignment cache');
 
     mkdir($cache . '/whisper/pyannote/speaker-diarization-3.1/models', 0775, true);
     foreach (['config.yaml', 'models/pyannote_segmentation-3.0.bin', 'models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin'] as $path) {
@@ -221,7 +222,7 @@ hub_test('Whisper ASR rejects malformed or stale optional asset markers before G
     }
 });
 
-hub_test('Whisper ASR rejects an explicit unsupported alignment language before GPU work', function (): void {
+hub_test('Whisper ASR rejects unsupported or simulated auto alignment before GPU work', function (): void {
     $db = hub_test_reset_db();
     $models = sys_get_temp_dir() . '/3waaihub_whisper_language_models_' . bin2hex(random_bytes(4));
     $cache = sys_get_temp_dir() . '/3waaihub_whisper_language_cache_' . bin2hex(random_bytes(4));
@@ -239,6 +240,7 @@ hub_test('Whisper ASR rejects an explicit unsupported alignment language before 
     $token = hub_create_api_token($db, $member, 'whisper language preflight token', null, null);
     $taskId = hub_enqueue_owned_pack_job($db, hub_resolve_audio_async_route($db, 'speech_transcribe'), ['word_timestamps' => true, 'language' => 'zh'], $member, (int)$token['token_id'], '203.0.113.63');
     $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+    $autoTaskId = 0;
     $executorCalls = 0;
     $gpuProbeCalls = 0;
     try {
@@ -254,10 +256,30 @@ hub_test('Whisper ASR rejects an explicit unsupported alignment language before 
             },
         ]);
         hub_test_assert(($result['error_code'] ?? '') === 'model_assets_unavailable' && $executorCalls === 0 && $gpuProbeCalls === 0, 'an explicit unsupported alignment language must fail before GPU work or inference');
+        $autoTaskId = hub_enqueue_owned_pack_job($db, hub_resolve_audio_async_route($db, 'speech_transcribe'), [], $member, (int)$token['token_id'], '203.0.113.64');
+        $autoTask = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        $autoTask['input']['word_timestamps'] = true;
+        $executorCalls = 0;
+        $gpuProbeCalls = 0;
+        $autoResult = hub_run_pack_job_task($db, $autoTask ?? [], [
+            'worker_id' => 'whisper-auto-language-test-worker',
+            'gpu_probe' => static function () use (&$gpuProbeCalls): array {
+                $gpuProbeCalls++;
+                return ['free_vram_mb' => 65536, 'processes' => []];
+            },
+            'executor' => static function () use (&$executorCalls): array {
+                $executorCalls++;
+                return [];
+            },
+        ]);
+        hub_test_assert(($autoResult['error_code'] ?? '') === 'model_assets_unavailable' && $executorCalls === 0 && $gpuProbeCalls === 0, 'a simulated auto-detected timestamp task must fail before GPU work or inference');
     } finally {
         hub_test_audio_cleanup_remove($models);
         hub_test_audio_cleanup_remove($cache);
         hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+        if ($autoTaskId > 0) {
+            hub_test_audio_cleanup_remove(hub_task_result_dir($autoTaskId));
+        }
     }
 });
 
@@ -313,9 +335,12 @@ hub_test('Whisper ASR normalizes only typed transcription controls', function ()
         'output_vtt' => '1',
     ], $route);
     hub_test_assert($input === ['model' => 'large_v3', 'language' => 'zh', 'word_timestamps' => true, 'diarization' => true, 'min_speakers' => 2, 'max_speakers' => 3, 'output_srt' => false, 'output_vtt' => true], 'Whisper controls must normalize to fixed scalar types');
+    $basicAuto = hub_pack_job_normalize_request_input(['language' => 'auto', 'word_timestamps' => false], $route);
+    hub_test_assert(($basicAuto['language'] ?? null) === 'auto' && ($basicAuto['word_timestamps'] ?? null) === false, 'Basic ASR must keep auto language valid when word timestamps are disabled');
     foreach ([
         ['model' => 'large_v3', 'diarization' => false, 'min_speakers' => 2],
         ['model' => 'large_v3', 'diarization' => true, 'min_speakers' => 4, 'max_speakers' => 3],
+        ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => true],
         ['model' => 'host-path'],
     ] as $invalid) {
         hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input($invalid, $route)), 'Whisper invalid typed controls must be rejected');
@@ -378,7 +403,7 @@ base = {"model": "large_v3", "language": "auto", "word_timestamps": False, "diar
 result = run(base)
 assert result["transcript"]["text"] == "hello" and loads == [("asr", "/models/whisper/asr/large-v3")]
 loads.clear()
-run(base | {"word_timestamps": True})
+run(base | {"word_timestamps": True, "language": "en"})
 assert loads == [("asr", "/models/whisper/asr/large-v3"), ("align", "en")]
 loads.clear()
 result = run(base | {"diarization": True, "min_speakers": 1, "max_speakers": 2, "output_srt": True, "output_vtt": True})
@@ -436,7 +461,8 @@ try:
         job.ASR_MODEL_DIR.mkdir(parents=True)
         for name in ("config.json", "model.bin", "tokenizer.json"):
             (job.ASR_MODEL_DIR / name).write_text("model", encoding="utf-8")
-        job.require_cuda = lambda: None
+        cuda_calls = []
+        job.require_cuda = lambda: cuda_calls.append("cuda")
         job.load_asr = lambda model: loads.append(("asr", model)) or object()
         job.transcribe = lambda model, source, language, words: ([{"start": 0.0, "end": 1.0, "text": "hello"}], "en")
         job.diarize = lambda loader, source, minimum, maximum: [{"start": 0.0, "end": 1.0, "speaker": "private"}]
@@ -456,8 +482,17 @@ try:
         base = {"model": "large_v3", "language": "auto", "word_timestamps": False, "diarization": False, "output_srt": False, "output_vtt": False}
         run(base)
         assert loads == [("asr", str(job.ASR_MODEL_DIR))]
+        loads.clear()
+        cuda_calls.clear()
         try:
             run(base | {"word_timestamps": True})
+        except RuntimeError as error:
+            assert str(error) == "request_invalid"
+        else:
+            raise AssertionError("auto language must be rejected before GPU-dependent timestamp alignment")
+        assert loads == [] and cuda_calls == []
+        try:
+            run(base | {"word_timestamps": True, "language": "en"})
         except RuntimeError as error:
             assert str(error) == "alignment_cache_unavailable"
         else:
@@ -473,7 +508,7 @@ try:
         job.ALIGNMENT_WEIGHT.write_text("weights", encoding="utf-8")
         job.ALIGNMENT_MARKER.write_text('{"schema":"aihub-whisper-alignment/v1","language":"en","model_name":"WAV2VEC2_ASR_BASE_960H","model_dir":"/cache/whisper/torch","weight_path":"/cache/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth","alignment_languages":["en"]}', encoding="utf-8")
         loads.clear()
-        run(base | {"word_timestamps": True})
+        run(base | {"word_timestamps": True, "language": "en"})
         assert loads[0] == ("asr", str(job.ASR_MODEL_DIR)) and loads[1][0] == "align"
 
         job.PYANNOTE_CONFIG.parent.joinpath("models").mkdir(parents=True)

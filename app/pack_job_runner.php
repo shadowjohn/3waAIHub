@@ -373,11 +373,10 @@ function hub_pack_job_asset_marker_json_valid(string $source, array $marker, arr
     if ($membership !== null) {
         $inputField = $membership['input'] ?? null;
         $listField = $membership['list_field'] ?? null;
-        $ignoreEquals = $membership['ignore_equals'] ?? null;
         $items = is_string($listField) && array_key_exists($listField, $value) ? $value[$listField] : null;
         $requested = is_string($inputField) && array_key_exists($inputField, $input) ? $input[$inputField] : null;
-        if (!is_string($ignoreEquals) || !is_string($requested) || !is_array($items)
-            || ($requested !== $ignoreEquals && !in_array('*', $items, true) && !in_array($requested, $items, true))) {
+        if (!is_string($requested) || !is_array($items)
+            || (!in_array('*', $items, true) && !in_array($requested, $items, true))) {
             return false;
         }
     }

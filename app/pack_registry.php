@@ -291,10 +291,9 @@ function hub_pack_async_job_runner_asset_marker_json(mixed $marker, array $requi
         return null;
     }
     $membership = $marker['input_membership'] ?? null;
-    if ($membership !== null && (!is_array($membership) || array_keys($membership) !== ['input', 'list_field', 'ignore_equals']
+    if ($membership !== null && (!is_array($membership) || array_keys($membership) !== ['input', 'list_field']
         || !is_string($membership['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]*$/', $membership['input']) !== 1
-        || !is_string($membership['list_field'] ?? null) || !isset($normalizedLists[$membership['list_field']])
-        || !is_string($membership['ignore_equals'] ?? null) || $membership['ignore_equals'] === '' || strlen($membership['ignore_equals']) > 512 || str_contains($membership['ignore_equals'], "\0"))) {
+        || !is_string($membership['list_field'] ?? null) || !isset($normalizedLists[$membership['list_field']]))) {
         return null;
     }
 
@@ -306,7 +305,6 @@ function hub_pack_async_job_runner_asset_marker_json(mixed $marker, array $requi
         + ($membership === null ? [] : ['input_membership' => [
             'input' => $membership['input'],
             'list_field' => $membership['list_field'],
-            'ignore_equals' => $membership['ignore_equals'],
         ]]);
 }
 
@@ -405,11 +403,9 @@ function hub_pack_async_job_runner_asset_mount_conditions_valid(array $mounts, a
             continue;
         }
         $input = $membership['input'] ?? null;
-        $ignoreEquals = $membership['ignore_equals'] ?? null;
         $definition = is_string($input) && isset($allowed[$input]) ? ($requestSchema[$input] ?? null) : null;
         if (!is_array($definition) || ($definition['type'] ?? '') !== 'string'
-            || !is_string($ignoreEquals) || $ignoreEquals === '' || strlen($ignoreEquals) > ($definition['max_length'] ?? 0)
-            || (isset($definition['enum']) && !in_array($ignoreEquals, $definition['enum'], true))) {
+        ) {
             return false;
         }
     }
@@ -540,6 +536,20 @@ function hub_pack_async_job_runner_config_from_manifest(mixed $definition, array
     ], $fields, $requestSchema);
 }
 
+function hub_pack_async_job_request_schema_scalar_valid(mixed $value, array $definition): bool
+{
+    if (($definition['type'] ?? '') === 'string') {
+        return is_string($value) && $value !== '' && strlen($value) <= ($definition['max_length'] ?? 0)
+            && (!isset($definition['enum']) || in_array($value, $definition['enum'], true));
+    }
+    if (($definition['type'] ?? '') === 'boolean') {
+        return is_bool($value);
+    }
+
+    return ($definition['type'] ?? '') === 'integer' && is_int($value)
+        && $value >= ($definition['min'] ?? 0) && $value <= ($definition['max'] ?? 0);
+}
+
 function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
 {
     if (!is_array($schema) || ($schema !== [] && array_is_list($schema))) {
@@ -549,7 +559,7 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
     $normalized = [];
     foreach ($schema as $name => $definition) {
         if (!is_string($name) || !isset($allowed[$name]) || !is_array($definition)
-            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length', 'min', 'max', 'requires', 'gte_field']) !== []) {
+            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length', 'min', 'max', 'requires', 'gte_field', 'requires_when']) !== []) {
             return null;
         }
         $type = (string)($definition['type'] ?? 'string');
@@ -608,6 +618,19 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
             }
             $item['gte_field'] = $definition['gte_field'];
         }
+        if (array_key_exists('requires_when', $definition)) {
+            $rule = $definition['requires_when'];
+            if (!is_array($rule) || array_keys($rule) !== ['equals', 'field', 'not_equals']
+                || !is_scalar($rule['equals'] ?? null) || !is_string($rule['field'] ?? null) || !isset($allowed[$rule['field']]) || $rule['field'] === $name
+                || !is_scalar($rule['not_equals'] ?? null)) {
+                return null;
+            }
+            $item['requires_when'] = [
+                'equals' => $rule['equals'],
+                'field' => $rule['field'],
+                'not_equals' => $rule['not_equals'],
+            ];
+        }
         if (array_key_exists('default', $definition)) {
             $default = $definition['default'];
             if (($type === 'string' && (!is_string($default) || $default === '' || strlen($default) > ($item['max_length'] ?? 0) || (isset($item['enum']) && !in_array($default, $item['enum'], true))))
@@ -618,6 +641,17 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
             $item['default'] = $default;
         }
         $normalized[$name] = $item;
+    }
+    foreach ($normalized as $name => $definition) {
+        $rule = $definition['requires_when'] ?? null;
+        if ($rule === null) {
+            continue;
+        }
+        $target = $normalized[$rule['field']] ?? null;
+        if (!is_array($target) || !hub_pack_async_job_request_schema_scalar_valid($rule['equals'], $definition)
+            || !hub_pack_async_job_request_schema_scalar_valid($rule['not_equals'], $target)) {
+            return null;
+        }
     }
 
     return $normalized;
@@ -723,6 +757,13 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
         }
         if (isset($definition['gte_field']) && array_key_exists($definition['gte_field'], $input)
             && $input[$name] < $input[$definition['gte_field']]) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+    }
+    foreach ($schema as $name => $definition) {
+        $rule = $definition['requires_when'] ?? null;
+        if ($rule !== null && ($input[$name] ?? null) === $rule['equals']
+            && ($input[$rule['field']] ?? null) === $rule['not_equals']) {
             throw new InvalidArgumentException('invalid_request');
         }
     }

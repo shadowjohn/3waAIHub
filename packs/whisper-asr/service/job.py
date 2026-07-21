@@ -217,6 +217,8 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
     diarization = request.get("diarization", False)
     if not isinstance(word_timestamps, bool) or not isinstance(diarization, bool):
         raise RuntimeError("request_invalid")
+    if word_timestamps and language == "auto":
+        raise RuntimeError("request_invalid")
     minimum = request.get("min_speakers")
     maximum = request.get("max_speakers")
     if any(value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1 or value > 100) for value in (minimum, maximum)):
