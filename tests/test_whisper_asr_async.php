@@ -39,6 +39,7 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
                     'model_dir' => '/cache/whisper/torch',
                     'weight_path' => '/cache/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth',
                 ],
+                'exact_keys' => ['schema', 'language', 'model_name', 'model_dir', 'weight_path', 'alignment_languages'],
                 'string_lists' => ['alignment_languages' => ['en']],
                 'input_membership' => ['input' => 'language', 'list_field' => 'alignment_languages', 'ignore_equals' => 'auto'],
             ],
@@ -58,6 +59,7 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
                     'segmentation_path' => '/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_segmentation-3.0.bin',
                     'embedding_path' => '/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin',
                 ],
+                'exact_keys' => ['schema', 'config_path', 'segmentation_path', 'embedding_path'],
             ],
         ],
     ], 'Whisper must declare only controlled Hub model/cache mount descriptors');
@@ -207,6 +209,9 @@ hub_test('Whisper ASR rejects malformed or stale optional asset markers before G
         file_put_contents($alignmentMarker, $validAlignment, LOCK_EX);
         file_put_contents($pyannoteMarker, str_replace('aihub-whisper-pyannote/v1', 'stale-pyannote', $validPyannote), LOCK_EX);
         $assertPreflight(['diarization' => true]);
+        file_put_contents($pyannoteMarker, $validPyannote, LOCK_EX);
+        file_put_contents($alignmentMarker, substr($validAlignment, 0, -1) . ',"obsolete_marker_key":"stale"}', LOCK_EX);
+        $assertPreflight(['word_timestamps' => true, 'language' => 'en']);
     } finally {
         foreach ($taskIds as $taskId) {
             hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));

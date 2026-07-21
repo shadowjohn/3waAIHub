@@ -345,6 +345,11 @@ function hub_pack_job_asset_marker_json_valid(string $source, array $marker, arr
     if (!is_array($value) || array_is_list($value)) {
         return false;
     }
+    $exactKeys = $marker['exact_keys'] ?? null;
+    if (!is_array($exactKeys) || count($value) !== count($exactKeys)
+        || array_diff(array_keys($value), $exactKeys) !== [] || array_diff($exactKeys, array_keys($value)) !== []) {
+        return false;
+    }
     foreach ((array)($marker['required_strings'] ?? []) as $field => $expected) {
         if (!is_string($field) || !is_string($expected) || !array_key_exists($field, $value)
             || !is_string($value[$field]) || $value[$field] !== $expected) {

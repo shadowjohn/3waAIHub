@@ -240,14 +240,16 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
 
 function hub_pack_async_job_runner_asset_marker_json(mixed $marker, array $requiredPaths): ?array
 {
-    if (!is_array($marker) || array_diff(array_keys($marker), ['path', 'required_strings', 'string_lists', 'input_membership']) !== []
-        || !array_key_exists('path', $marker) || !array_key_exists('required_strings', $marker)) {
+    if (!is_array($marker) || array_diff(array_keys($marker), ['path', 'required_strings', 'string_lists', 'input_membership', 'exact_keys']) !== []
+        || !array_key_exists('path', $marker) || !array_key_exists('required_strings', $marker) || !array_key_exists('exact_keys', $marker)) {
         return null;
     }
     $path = $marker['path'];
     $requiredStrings = $marker['required_strings'];
+    $exactKeys = $marker['exact_keys'];
     if (!is_string($path) || !in_array($path, $requiredPaths, true)
-        || !is_array($requiredStrings) || array_is_list($requiredStrings) || $requiredStrings === [] || count($requiredStrings) > 16) {
+        || !is_array($requiredStrings) || array_is_list($requiredStrings) || $requiredStrings === [] || count($requiredStrings) > 16
+        || !is_array($exactKeys) || !array_is_list($exactKeys) || $exactKeys === [] || count($exactKeys) > 24) {
         return null;
     }
     $normalizedStrings = [];
@@ -277,6 +279,17 @@ function hub_pack_async_job_runner_asset_marker_json(mixed $marker, array $requi
         }
         $normalizedLists[$field] = array_values($values);
     }
+    $seenKeys = [];
+    foreach ($exactKeys as $field) {
+        if (!is_string($field) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $field) !== 1 || isset($seenKeys[$field])) {
+            return null;
+        }
+        $seenKeys[$field] = true;
+    }
+    $declaredFields = array_keys($normalizedStrings + $normalizedLists);
+    if (count($exactKeys) !== count($declaredFields) || array_diff($exactKeys, $declaredFields) !== [] || array_diff($declaredFields, $exactKeys) !== []) {
+        return null;
+    }
     $membership = $marker['input_membership'] ?? null;
     if ($membership !== null && (!is_array($membership) || array_keys($membership) !== ['input', 'list_field', 'ignore_equals']
         || !is_string($membership['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]*$/', $membership['input']) !== 1
@@ -288,6 +301,7 @@ function hub_pack_async_job_runner_asset_marker_json(mixed $marker, array $requi
     return [
         'path' => $path,
         'required_strings' => $normalizedStrings,
+        'exact_keys' => array_values($exactKeys),
     ] + ($normalizedLists === [] ? [] : ['string_lists' => $normalizedLists])
         + ($membership === null ? [] : ['input_membership' => [
             'input' => $membership['input'],
