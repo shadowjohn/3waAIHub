@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -118,6 +119,12 @@ def one_file(root: Path, name: str) -> Path:
 
 def demucs(source: Path, work: Path, model: dict[str, Any]) -> tuple[Path, Path, str]:
     model_name = model.get("model")
+    segment_seconds = model.get("segment_seconds")
+    shifts = model.get("shifts")
+    if (isinstance(segment_seconds, bool) or not isinstance(segment_seconds, (int, float))
+            or not math.isfinite(float(segment_seconds)) or not 0 < float(segment_seconds) <= 7.8
+            or isinstance(shifts, bool) or not isinstance(shifts, int) or not 0 <= shifts <= 10):
+        raise RuntimeError("model_config_invalid:demucs")
     model_repo = require_demucs_model(model_name)
     run([
         sys.executable,
@@ -131,6 +138,10 @@ def demucs(source: Path, work: Path, model: dict[str, Any]) -> tuple[Path, Path,
         "cuda",
         "--name",
         model_name,
+        "--segment",
+        str(segment_seconds),
+        "--shifts",
+        str(shifts),
         "--out",
         str(work),
         str(source),

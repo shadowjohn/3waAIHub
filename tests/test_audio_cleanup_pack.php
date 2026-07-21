@@ -132,6 +132,49 @@ hub_test('audio-cleanup Pack declares a GPU-only generic runner and fixed cleanu
     }
 });
 
+hub_test('audio-cleanup runner forwards only validated frozen Demucs settings', function (): void {
+    $runner = HUB_ROOT . '/packs/audio-cleanup/service/job.py';
+    $route = hub_pack_async_job_contract(hub_get_pack('audio-cleanup')['manifest'], 'cleanup');
+    $models = [];
+    foreach (['balanced', 'quality'] as $alias) {
+        $models[$alias] = hub_pack_job_runner_config_for_task(['runner_config' => $route['runner_config']], ['demucs_model' => $alias])['model'];
+    }
+    $script = <<<'PY'
+import base64
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location("audio_cleanup_job", sys.argv[1])
+job = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(job)
+commands = []
+job.require_demucs_model = lambda name: Path("/models")
+job.run = commands.append
+job.one_file = lambda root, name: root / name
+job.package_version = lambda name: "4.0.1"
+for model in json.loads(base64.b64decode(sys.argv[2])).values():
+    job.demucs(Path("/source.wav"), Path("/work"), model)
+    assert commands[-1] == [sys.executable, "-m", "demucs", "--repo", "/models", "--two-stems", "vocals", "--device", "cuda", "--name", model["model"], "--segment", str(model["segment_seconds"]), "--shifts", str(model["shifts"]), "--out", "/work", "/source.wav"]
+for model in [
+    {"model": "htdemucs", "segment_seconds": 0, "shifts": 1},
+    {"model": "htdemucs", "segment_seconds": float("inf"), "shifts": 1},
+    {"model": "htdemucs", "segment_seconds": "7.8", "shifts": 1},
+    {"model": "htdemucs", "segment_seconds": 7.8, "shifts": 1.0},
+    {"model": "htdemucs", "segment_seconds": 7.8, "shifts": -1},
+]:
+    try:
+        job.demucs(Path("/source.wav"), Path("/work"), model)
+    except RuntimeError as error:
+        assert str(error) == "model_config_invalid:demucs"
+    else:
+        raise AssertionError("invalid frozen model config reached Demucs")
+PY;
+    $result = hub_run_command(['python3', '-c', $script, $runner, base64_encode((string)json_encode($models, JSON_THROW_ON_ERROR))], 10);
+    hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Demucs must receive validated snapshot segment/shifts argv: ' . ($result['stderr'] ?? ''));
+});
+
 hub_test('audio-cleanup image provisions only offline Demucs weights', function (): void {
     $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/audio-cleanup/service/Dockerfile');
     foreach ([
