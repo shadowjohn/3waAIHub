@@ -1422,13 +1422,13 @@ Run `task_worker.php`, `callback_worker.php`, and `prune_retention.php` from the
 
 Retention defaults: failed partial uploads 1 hour, workspaces/temporary files 24 hours, source media 7 days, result artifacts 30 days, and audit metadata 180 days. `task_artifacts_ack` records receipt and may shorten retention, but does not delete files immediately.
 
-After the Packs are installed and GPU preflight is green, use the station acceptance command serially (not ordinary CI):
+Task 13 will add the serial, real-HW acceptance workflow for all audio Packs; no single repository command provides that acceptance today. Do not treat ordinary CI or an individual Pack benchmark as a replacement. The currently implemented real VoxCPM2 benchmark is:
 
 ```bash
-php scripts/audio_packs_acceptance.php --pack all --fixture packs/whisper-asr/demo/sample.wav --callback-target myai --voice-profile-id voice_profile_1 --json
+php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_real_wav
 ```
 
-Confirm each job releases `gpu:0`, has no owned GPU PID, and leaves cleanup uncertainty `blocked`. Do not run real model acceptance concurrently with another CUDA workload.
+The future Task 13 station acceptance must confirm each job releases `gpu:0`, has no owned GPU PID, and leaves cleanup uncertainty `blocked`. Do not run real model acceptance concurrently with another CUDA workload.
 
 ## Runtime 檔案
 

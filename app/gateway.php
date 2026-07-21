@@ -207,8 +207,7 @@ function hub_audio_sync_requires_gpu(PDO $db, array $service): bool
         $requested = is_array($payload) ? ($payload['real_inference'] ?? null) : null;
     }
 
-    return in_array((string)$configured, ['1', 'true', 'yes', 'on'], true)
-        || in_array((string)$requested, ['1', 'true', 'yes', 'on'], true);
+    return hub_photo_parse_bool($configured) || hub_photo_parse_bool($requested);
 }
 
 function hub_audio_sync_request_control_keys(): array

@@ -115,8 +115,6 @@ hub_test('legacy ASR and TTS sync requests require the bounded diagnostic path',
         $oversizedPayload = json_decode((string)$oversized['body'], true);
         hub_test_assert($oversized['status'] === 413 && ($oversizedPayload['error'] ?? '') === 'async_required' && str_contains((string)($oversizedPayload['message'] ?? ''), 'voice_generate'), 'oversized TTS must require voice_generate');
 
-        $asrService = hub_get_service_by_mode($db, 'asr');
-        hub_update_service_settings($db, (int)$asrService['id'], ['WHISPER_REAL_INFERENCE' => '1']);
         $now = hub_now();
         $busyRun = ['run_id' => 'sync-busy-' . bin2hex(random_bytes(6)), 'worker_id' => 'sync-busy-worker', 'lease_token' => bin2hex(random_bytes(32))];
         $db->prepare(
@@ -127,6 +125,7 @@ hub_test('legacy ASR and TTS sync requests require the bounded diagnostic path',
             ':worker_id' => $busyRun['worker_id'], ':lease_token' => $busyRun['lease_token'], ':lease_expires_at' => hub_runtime_lease_until(60), ':started_at' => $now, ':created_at' => $now,
         ]);
         hub_test_assert(hub_runtime_gpu_acquire($db, $busyRun, 60) !== null, 'busy fixture must reserve gpu:0');
+        $_POST = ['real_inference' => 'TRUE'];
         $_SERVER['CONTENT_LENGTH'] = '0';
         $busy = hub_gateway_dispatch($db, 'asr', static fn (): array => throw new RuntimeException('busy sync request must not proxy'));
         hub_test_assert($busy['status'] === 409 && (json_decode((string)$busy['body'], true)['error'] ?? '') === 'sync_busy', 'occupied gpu:0 must return sync_busy');
