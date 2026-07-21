@@ -2136,11 +2136,24 @@ function hub_pack_job_read_parser_output(string $path, int $size): string
 
 function hub_pack_job_json_semantic_contract(mixed $semantic): ?array
 {
-    if (!is_array($semantic) || array_is_list($semantic) || array_diff(array_keys($semantic), ['equals_input', 'array_equals_by_input', 'object_keys_by_input']) !== []) {
+    if (!is_array($semantic) || array_is_list($semantic) || array_diff(array_keys($semantic), ['equals_input', 'array_equals_by_input', 'object_keys_by_input', 'field_types', 'object_properties', 'object_properties_by_input']) !== []) {
         return null;
     }
     $field = static fn (mixed $value): bool => is_string($value) && preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $value) === 1;
     $inputField = static fn (mixed $value): bool => is_string($value) && preg_match('/^[a-z][a-z0-9_]{0,63}$/', $value) === 1;
+    $propertyTypes = ['number_nonnegative' => true, 'positive_integer' => true, 'array' => true];
+    $properties = static function (mixed $value) use ($field, $propertyTypes): ?array {
+        if (!is_array($value) || array_is_list($value) || $value === []) {
+            return null;
+        }
+        foreach ($value as $name => $type) {
+            if (!$field($name) || !is_string($type) || !isset($propertyTypes[$type])) {
+                return null;
+            }
+        }
+
+        return $value;
+    };
     $normalized = [];
     if (isset($semantic['equals_input'])) {
         if (!is_array($semantic['equals_input']) || array_is_list($semantic['equals_input']) || $semantic['equals_input'] === []) {
@@ -2152,6 +2165,24 @@ function hub_pack_job_json_semantic_contract(mixed $semantic): ?array
             }
         }
         $normalized['equals_input'] = $semantic['equals_input'];
+    }
+    if (isset($semantic['field_types'])) {
+        $typed = $properties($semantic['field_types']);
+        if ($typed === null) {
+            return null;
+        }
+        $normalized['field_types'] = $typed;
+    }
+    if (isset($semantic['object_properties'])) {
+        if (!is_array($semantic['object_properties']) || array_is_list($semantic['object_properties']) || $semantic['object_properties'] === []) {
+            return null;
+        }
+        foreach ($semantic['object_properties'] as $output => $definition) {
+            if (!$field($output) || $properties($definition) === null) {
+                return null;
+            }
+        }
+        $normalized['object_properties'] = $semantic['object_properties'];
     }
     foreach (['array_equals_by_input', 'object_keys_by_input'] as $name) {
         if (!isset($semantic[$name])) {
@@ -2174,8 +2205,50 @@ function hub_pack_job_json_semantic_contract(mixed $semantic): ?array
         }
         $normalized[$name] = $rule;
     }
+    if (isset($semantic['object_properties_by_input'])) {
+        $rule = $semantic['object_properties_by_input'];
+        if (!is_array($rule) || array_keys($rule) !== ['input', 'output', 'values', 'properties'] || !$inputField($rule['input'] ?? null) || !$field($rule['output'] ?? null)
+            || !is_array($rule['values'] ?? null) || array_is_list($rule['values']) || $rule['values'] === [] || $properties($rule['properties'] ?? null) === null) {
+            return null;
+        }
+        foreach ($rule['values'] as $value => $expected) {
+            if (!is_string($value) || $value === '' || !is_array($expected) || !array_is_list($expected) || $expected === []) {
+                return null;
+            }
+            foreach ($expected as $key) {
+                if (!$field($key)) {
+                    return null;
+                }
+            }
+        }
+        $normalized['object_properties_by_input'] = $rule;
+    }
 
     return $normalized === [] ? null : $normalized;
+}
+
+function hub_pack_job_json_semantic_type_matches(mixed $value, string $type): bool
+{
+    return match ($type) {
+        'number_nonnegative' => (is_int($value) || is_float($value)) && $value >= 0,
+        'positive_integer' => is_int($value) && $value > 0,
+        'array' => is_array($value) && array_is_list($value),
+        default => false,
+    };
+}
+
+function hub_pack_job_json_semantic_properties_valid(mixed $value, array $properties): bool
+{
+    if (!is_array($value) || array_is_list($value) || array_keys($value) !== array_keys($properties)) {
+        return false;
+    }
+    foreach ($properties as $name => $type) {
+        if (!hub_pack_job_json_semantic_type_matches($value[$name] ?? null, $type)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function hub_pack_job_validate_json_output(string $path, array $definition, int $size, array $taskInput): void
@@ -2204,6 +2277,16 @@ function hub_pack_job_validate_json_output(string $path, array $definition, int 
             hub_pack_job_output_contract_invalid('artifact_json_invalid');
         }
     }
+    foreach ($semantic['field_types'] ?? [] as $output => $type) {
+        if (!array_key_exists($output, $decoded) || !hub_pack_job_json_semantic_type_matches($decoded[$output], $type)) {
+            hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+    }
+    foreach ($semantic['object_properties'] ?? [] as $output => $properties) {
+        if (!array_key_exists($output, $decoded) || !hub_pack_job_json_semantic_properties_valid($decoded[$output], $properties)) {
+            hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+    }
     foreach (['array_equals_by_input', 'object_keys_by_input'] as $name) {
         if (!isset($semantic[$name])) {
             continue;
@@ -2221,6 +2304,20 @@ function hub_pack_job_validate_json_output(string $path, array $definition, int 
                 if (!is_scalar($version) || trim((string)$version) === '') {
                     hub_pack_job_output_contract_invalid('artifact_json_invalid');
                 }
+            }
+        }
+    }
+    if (isset($semantic['object_properties_by_input'])) {
+        $rule = $semantic['object_properties_by_input'];
+        $input = $taskInput[$rule['input']] ?? null;
+        $expected = is_string($input) ? ($rule['values'][$input] ?? null) : null;
+        $actual = $decoded[$rule['output']] ?? null;
+        if ($expected === null || !is_array($actual) || array_is_list($actual) || array_keys($actual) !== $expected) {
+            hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+        foreach ($actual as $properties) {
+            if (!hub_pack_job_json_semantic_properties_valid($properties, $rule['properties'])) {
+                hub_pack_job_output_contract_invalid('artifact_json_invalid');
             }
         }
     }

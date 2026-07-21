@@ -337,7 +337,7 @@ function hub_pack_job_default_runner_command(array $context): array
     if (!is_array($entrypoint) || $entrypoint === [] || !is_array($args)) {
         throw new RuntimeException('job_contract_unavailable');
     }
-    $command = ['docker', 'run', '--rm', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . ',dst=' . $containerWorkspace, '--name', $name];
+    $command = ['docker', 'run', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . ',dst=' . $containerWorkspace, '--name', $name];
     if (($runner['accelerator'] ?? '') === 'gpu') {
         $command[] = '--gpus';
         $command[] = 'all';
@@ -352,21 +352,72 @@ function hub_pack_job_default_runner_command(array $context): array
     return ['name' => $name, 'command' => $command];
 }
 
+function hub_pack_job_docker_container_state(callable $runner, string $name, int $timeoutSeconds): ?array
+{
+    try {
+        $result = $runner(['docker', 'container', 'inspect', '--format', '{{json .State}}', $name], $timeoutSeconds);
+    } catch (Throwable) {
+        return null;
+    }
+    if (!is_array($result)) {
+        return null;
+    }
+    if ((int)($result['exit_code'] ?? 1) !== 0) {
+        $message = (string)($result['stderr'] ?? '') . "\n" . (string)($result['stdout'] ?? '');
+        return preg_match('/no such (?:container|object)/i', $message) === 1 ? ['exists' => false, 'pid' => 0] : null;
+    }
+    try {
+        $state = json_decode((string)($result['stdout'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return null;
+    }
+    if (!is_array($state) || !is_bool($state['Running'] ?? null) || !is_int($state['Pid'] ?? null) || (int)$state['Pid'] < 0) {
+        return null;
+    }
+
+    return ['exists' => true, 'pid' => (int)$state['Pid']];
+}
+
+function hub_pack_job_default_container_cleanup(callable $runner, string $name, int $timeoutSeconds): array
+{
+    $state = hub_pack_job_docker_container_state($runner, $name, $timeoutSeconds);
+    if ($state === null) {
+        return ['cleanup' => [], 'owned_pids' => []];
+    }
+    $ownedPids = $state['pid'] > 0 ? [(int)$state['pid']] : [];
+    if ($state['exists']) {
+        try {
+            $runner(['docker', 'stop', '-t', '10', $name], $timeoutSeconds);
+            $runner(['docker', 'container', 'rm', '-f', $name], $timeoutSeconds);
+        } catch (Throwable) {
+            return ['cleanup' => [], 'owned_pids' => $ownedPids];
+        }
+    }
+    $after = hub_pack_job_docker_container_state($runner, $name, $timeoutSeconds);
+    if ($after === null || $after['exists']) {
+        return ['cleanup' => [], 'owned_pids' => $ownedPids];
+    }
+
+    return ['cleanup' => hub_pack_job_no_work_cleanup(), 'owned_pids' => $ownedPids];
+}
+
 function hub_pack_job_default_executor(array $context, ?callable $commandRunner = null): array
 {
     $execution = hub_pack_job_default_runner_command($context);
     $context['started'](['container_id' => $execution['name']]);
     $runner = $commandRunner ?? 'hub_run_linux_docker_command';
-    $result = $runner($execution['command'], (int)$context['runner']['timeout_seconds']);
-    if (!is_array($result)) {
-        throw new RuntimeException('runtime_execution_invalid');
+    try {
+        $result = $runner($execution['command'], (int)$context['runner']['timeout_seconds']);
+    } catch (Throwable) {
+        $result = ['exit_code' => 1];
     }
+    $cleanup = hub_pack_job_default_container_cleanup($runner, $execution['name'], (int)$context['runner']['timeout_seconds']);
 
     return [
         'exit_code' => (int)($result['exit_code'] ?? 1),
         'container_id' => $execution['name'],
-        'cleanup' => hub_pack_job_no_work_cleanup(),
-        'completed_no_process_evidence' => true,
+        'owned_pids' => $cleanup['owned_pids'],
+        'cleanup' => $cleanup['cleanup'],
     ];
 }
 

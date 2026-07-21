@@ -1,0 +1,2 @@
+demucs==4.0.1
+DeepFilterNet==0.5.6
