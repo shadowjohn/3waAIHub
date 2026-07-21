@@ -28,21 +28,16 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
             'storage' => 'cache',
             'host_subdir' => 'whisper/torch',
             'container_path' => '/cache/whisper/torch',
-            'required_paths' => ['wav2vec2_fairseq_base_ls960_asr_ls960.pth'],
-        ],
-        [
-            'id' => 'whisper_huggingface_cache',
-            'storage' => 'cache',
-            'host_subdir' => 'whisper/huggingface',
-            'container_path' => '/cache/whisper/huggingface',
-            'required_paths' => ['.aihub-offline-ready.json'],
+            'required_paths' => ['.aihub-alignment-ready.json', 'wav2vec2_fairseq_base_ls960_asr_ls960.pth'],
+            'when' => ['input' => 'word_timestamps', 'equals' => true],
         ],
         [
             'id' => 'whisper_pyannote_diarization',
             'storage' => 'cache',
             'host_subdir' => 'whisper/pyannote/speaker-diarization-3.1',
             'container_path' => '/cache/whisper/pyannote/speaker-diarization-3.1',
-            'required_paths' => ['config.yaml', 'models/pyannote_segmentation-3.0.bin', 'models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin'],
+            'required_paths' => ['.aihub-pyannote-ready.json', 'config.yaml', 'models/pyannote_segmentation-3.0.bin', 'models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin'],
+            'when' => ['input' => 'diarization', 'equals' => true],
         ],
     ], 'Whisper must declare only controlled Hub model/cache mount descriptors');
     hub_test_assert(!array_key_exists('secret_env', $job['runner'] ?? []), 'Whisper task runtime must not receive a pyannote credential');
@@ -64,27 +59,36 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
     hub_set_storage_setting($db, 'AIHUB_CACHE_DIR', $cache);
     $runner = hub_pack_async_job_contract(hub_get_pack('whisper-asr')['manifest'], 'transcribe')['runner'];
 
-    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner)), 'missing offline assets must fail the controlled preflight');
     mkdir($models . '/whisper/asr/large-v3', 0775, true);
     foreach (['config.json', 'model.bin', 'tokenizer.json'] as $path) {
         file_put_contents($models . '/whisper/asr/large-v3/' . $path, '{}', LOCK_EX);
     }
+    $asrAssets = [
+        ['id' => 'whisper_asr_large_v3', 'source' => $models . '/whisper/asr/large-v3', 'container_path' => '/models/whisper/asr/large-v3'],
+    ];
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['word_timestamps' => false, 'diarization' => false]) === $asrAssets, 'basic ASR must preflight only the fixed CTranslate2 model');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['word_timestamps' => true, 'diarization' => false])), 'word timestamps must preflight the missing alignment cache before GPU work');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['word_timestamps' => false, 'diarization' => true])), 'diarization must preflight its missing local model before GPU work');
+
     mkdir($cache . '/whisper/torch', 0775, true);
     file_put_contents($cache . '/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth', 'weights', LOCK_EX);
-    mkdir($cache . '/whisper/huggingface', 0775, true);
-    file_put_contents($cache . '/whisper/huggingface/.aihub-offline-ready.json', '{"schema":"aihub-whisper-offline-assets/v2","alignment":{"language":"en","model_name":"WAV2VEC2_ASR_BASE_960H","model_dir":"/cache/whisper/torch","weight_path":"/cache/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth"},"pyannote":{"config_path":"/cache/whisper/pyannote/speaker-diarization-3.1/config.yaml","segmentation_path":"/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_segmentation-3.0.bin","embedding_path":"/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"}}', LOCK_EX);
+    file_put_contents($cache . '/whisper/torch/.aihub-alignment-ready.json', '{"schema":"aihub-whisper-alignment/v1","language":"en","model_name":"WAV2VEC2_ASR_BASE_960H","model_dir":"/cache/whisper/torch","weight_path":"/cache/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth"}', LOCK_EX);
+    $alignmentAssets = [
+        ...$asrAssets,
+        ['id' => 'whisper_alignment_torch', 'source' => $cache . '/whisper/torch', 'container_path' => '/cache/whisper/torch'],
+    ];
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['word_timestamps' => true, 'diarization' => false]) === $alignmentAssets, 'word timestamps must mount only its exact local alignment cache');
+
     mkdir($cache . '/whisper/pyannote/speaker-diarization-3.1/models', 0775, true);
     foreach (['config.yaml', 'models/pyannote_segmentation-3.0.bin', 'models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin'] as $path) {
         file_put_contents($cache . '/whisper/pyannote/speaker-diarization-3.1/' . $path, 'model', LOCK_EX);
     }
-
-    $assets = hub_pack_job_resolve_asset_mounts($db, $runner);
-    hub_test_assert($assets === [
-        ['id' => 'whisper_asr_large_v3', 'source' => $models . '/whisper/asr/large-v3', 'container_path' => '/models/whisper/asr/large-v3'],
-        ['id' => 'whisper_alignment_torch', 'source' => $cache . '/whisper/torch', 'container_path' => '/cache/whisper/torch'],
-        ['id' => 'whisper_huggingface_cache', 'source' => $cache . '/whisper/huggingface', 'container_path' => '/cache/whisper/huggingface'],
+    file_put_contents($cache . '/whisper/pyannote/speaker-diarization-3.1/.aihub-pyannote-ready.json', '{"schema":"aihub-whisper-pyannote/v1","config_path":"/cache/whisper/pyannote/speaker-diarization-3.1/config.yaml","segmentation_path":"/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_segmentation-3.0.bin","embedding_path":"/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"}', LOCK_EX);
+    $diarizationAssets = [
+        ...$asrAssets,
         ['id' => 'whisper_pyannote_diarization', 'source' => $cache . '/whisper/pyannote/speaker-diarization-3.1', 'container_path' => '/cache/whisper/pyannote/speaker-diarization-3.1'],
-    ], 'asset resolver must derive fixed paths from Hub storage settings only');
+    ];
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['word_timestamps' => false, 'diarization' => true]) === $diarizationAssets, 'diarization must mount only its fixed local pyannote model');
 
     $workspace = sys_get_temp_dir() . '/3waaihub_whisper_mount_workspace_' . bin2hex(random_bytes(4));
     mkdir($workspace . '/input', 0775, true);
@@ -95,24 +99,32 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
     $previousToken = getenv('AIHUB_SECRET_PYANNOTE_TOKEN');
     putenv('AIHUB_SECRET_PYANNOTE_TOKEN=test-env-only-token');
     try {
-        $command = hub_pack_job_default_runner_command([
-            'workspace' => $workspace,
-            'run' => ['run_id' => 'whisper-assets-test'],
-            'runner' => array_replace($runner, ['asset_mounts' => $assets]),
-        ])['command'];
-        $mounts = [];
-        foreach ($command as $index => $argument) {
-            if ($argument === '--mount') {
-                $mounts[] = (string)($command[$index + 1] ?? '');
+        $allAssets = [...$alignmentAssets, $diarizationAssets[1]];
+        foreach ([
+            'basic' => [$asrAssets, [$asrAssets[0]['source']]],
+            'alignment' => [$alignmentAssets, [$asrAssets[0]['source'], $alignmentAssets[1]['source']]],
+            'diarization' => [$diarizationAssets, [$asrAssets[0]['source'], $diarizationAssets[1]['source']]],
+            'both' => [$allAssets, [$asrAssets[0]['source'], $alignmentAssets[1]['source'], $diarizationAssets[1]['source']]],
+        ] as [$assets, $expectedSources]) {
+            $command = hub_pack_job_default_runner_command([
+                'workspace' => $workspace,
+                'run' => ['run_id' => 'whisper-assets-test'],
+                'runner' => array_replace($runner, ['asset_mounts' => $assets]),
+            ])['command'];
+            $mounts = [];
+            foreach ($command as $index => $argument) {
+                if ($argument === '--mount') {
+                    $mounts[] = (string)($command[$index + 1] ?? '');
+                }
             }
+            hub_test_assert(in_array('--network', $command, true) && ($command[array_search('--network', $command, true) + 1] ?? null) === 'none', 'production job containers must remain network-isolated');
+            foreach ($allAssets as $asset) {
+                $mount = 'type=bind,src=' . $asset['source'] . ',dst=' . $asset['container_path'] . ',readonly';
+                hub_test_assert(in_array($asset['source'], $expectedSources, true) === in_array($mount, $mounts, true), 'asset mount activation must exactly follow normalized transcription controls');
+            }
+            hub_test_assert(!in_array('AIHUB_SECRET_PYANNOTE_TOKEN', $command, true)
+                && !str_contains(implode("\n", $command), 'test-env-only-token') && !str_contains(implode("\n", $command), 'AIHUB_SECRET_PYANNOTE_TOKEN='), 'Whisper task Docker command must not receive the pyannote token name or value');
         }
-        hub_test_assert(in_array('--network', $command, true) && ($command[array_search('--network', $command, true) + 1] ?? null) === 'none', 'production job containers must remain network-isolated');
-        hub_test_assert(in_array('type=bind,src=' . $models . '/whisper/asr/large-v3,dst=/models/whisper/asr/large-v3,readonly', $mounts, true)
-            && in_array('type=bind,src=' . $cache . '/whisper/torch,dst=/cache/whisper/torch,readonly', $mounts, true)
-            && in_array('type=bind,src=' . $cache . '/whisper/huggingface,dst=/cache/whisper/huggingface,readonly', $mounts, true)
-            && in_array('type=bind,src=' . $cache . '/whisper/pyannote/speaker-diarization-3.1,dst=/cache/whisper/pyannote/speaker-diarization-3.1,readonly', $mounts, true), 'only resolved model/cache mounts may reach Docker, read-only');
-        hub_test_assert(!in_array('AIHUB_SECRET_PYANNOTE_TOKEN', $command, true)
-            && !str_contains(implode("\n", $command), 'test-env-only-token') && !str_contains(implode("\n", $command), 'AIHUB_SECRET_PYANNOTE_TOKEN='), 'Whisper task Docker command must not receive the pyannote token name or value');
     } finally {
         putenv($previousToken === false ? 'AIHUB_SECRET_PYANNOTE_TOKEN' : 'AIHUB_SECRET_PYANNOTE_TOKEN=' . $previousToken);
         hub_test_audio_cleanup_remove($workspace);
@@ -121,7 +133,7 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
     }
 });
 
-hub_test('Whisper ASR fails missing assets before GPU reservation or executor invocation', function (): void {
+hub_test('Whisper ASR fails missing requested diarization assets before GPU reservation or executor invocation', function (): void {
     $db = hub_test_reset_db();
     $models = sys_get_temp_dir() . '/3waaihub_whisper_missing_models_' . bin2hex(random_bytes(4));
     $cache = sys_get_temp_dir() . '/3waaihub_whisper_missing_cache_' . bin2hex(random_bytes(4));
@@ -129,10 +141,14 @@ hub_test('Whisper ASR fails missing assets before GPU reservation or executor in
     mkdir($cache, 0775, true);
     hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', $models);
     hub_set_storage_setting($db, 'AIHUB_CACHE_DIR', $cache);
+    mkdir($models . '/whisper/asr/large-v3', 0775, true);
+    foreach (['config.json', 'model.bin', 'tokenizer.json'] as $path) {
+        file_put_contents($models . '/whisper/asr/large-v3/' . $path, 'model', LOCK_EX);
+    }
     hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
     $member = hub_create_api_member($db, 'Whisper Asset Preflight Owner');
     $token = hub_create_api_token($db, $member, 'whisper asset preflight token', null, null);
-    $taskId = hub_enqueue_owned_pack_job($db, hub_resolve_audio_async_route($db, 'speech_transcribe'), [], $member, (int)$token['token_id'], '203.0.113.61');
+    $taskId = hub_enqueue_owned_pack_job($db, hub_resolve_audio_async_route($db, 'speech_transcribe'), ['diarization' => true], $member, (int)$token['token_id'], '203.0.113.61');
     $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
     $executorCalls = 0;
     $gpuProbeCalls = 0;
@@ -148,7 +164,7 @@ hub_test('Whisper ASR fails missing assets before GPU reservation or executor in
                 return [];
             },
         ]);
-        hub_test_assert(($result['error_code'] ?? '') === 'model_assets_unavailable' && $executorCalls === 0 && $gpuProbeCalls === 0, 'asset preflight must fail before GPU work or inference');
+        hub_test_assert(($result['error_code'] ?? '') === 'model_assets_unavailable' && $executorCalls === 0 && $gpuProbeCalls === 0, 'requested diarization preflight must fail before GPU work or inference');
     } finally {
         hub_test_audio_cleanup_remove($models);
         hub_test_audio_cleanup_remove($cache);
@@ -202,7 +218,9 @@ spec = importlib.util.spec_from_file_location("whisper_asr_job", sys.argv[1])
 job = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(job)
 loads = []
-job.require_offline_assets = lambda request, language: None
+job.require_asr_assets = lambda: None
+job.require_alignment_assets = lambda language: None
+job.require_diarization_assets = lambda: None
 job.require_cuda = lambda: None
 job.load_asr = lambda model: loads.append(("asr", model)) or object()
 job.transcribe = lambda model, source, language, words: ([{"start": 0.0, "end": 1.0, "text": "hello"}], "en")
@@ -244,6 +262,187 @@ PY;
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper runner loading matrix failed: ' . ($result['stderr'] ?? ''));
     $source = (string)file_get_contents($runner);
     hub_test_assert(str_contains($source, 'local_files_only=True') && str_contains($source, 'HF_HUB_OFFLINE') && !str_contains($source, 'snapshot_download') && !str_contains($source, 'AIHUB_SECRET_PYANNOTE_TOKEN'), 'request execution must use local model/cache files without a download or runtime pyannote credential');
+});
+
+hub_test('Whisper ASR runner requires optional caches only for the requested feature', function (): void {
+    $runner = hub_test_whisper_async_runner();
+    $script = <<<'PY'
+import importlib.util
+import json
+import sys
+import tempfile
+import types
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+spec = importlib.util.spec_from_file_location("whisper_asr_job", sys.argv[1])
+job = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(job)
+loads = []
+
+def align_loader(**kwargs):
+    loads.append(("align", kwargs))
+    return object(), {}
+
+def diarization_loader(**kwargs):
+    loads.append(("diarize", kwargs))
+    return object()
+
+previous = sys.modules.get("whisperx")
+sys.modules["whisperx"] = types.SimpleNamespace(
+    load_align_model=align_loader,
+    DiarizationPipeline=diarization_loader,
+    align=lambda segments, *args, **kwargs: {"segments": segments},
+)
+try:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        job.ASR_MODEL_DIR = root / "models" / "large-v3"
+        job.TORCH_CACHE_DIR = root / "cache" / "torch"
+        job.ALIGNMENT_WEIGHT = job.TORCH_CACHE_DIR / "wav2vec2_fairseq_base_ls960_asr_ls960.pth"
+        job.ALIGNMENT_MARKER = job.TORCH_CACHE_DIR / ".aihub-alignment-ready.json"
+        job.PYANNOTE_CONFIG = root / "cache" / "pyannote" / "config.yaml"
+        job.PYANNOTE_SEGMENTATION = job.PYANNOTE_CONFIG.parent / "models" / "pyannote_segmentation-3.0.bin"
+        job.PYANNOTE_EMBEDDING = job.PYANNOTE_CONFIG.parent / "models" / "pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
+        job.PYANNOTE_MARKER = job.PYANNOTE_CONFIG.parent / ".aihub-pyannote-ready.json"
+        job.ASR_MODEL_DIR.mkdir(parents=True)
+        for name in ("config.json", "model.bin", "tokenizer.json"):
+            (job.ASR_MODEL_DIR / name).write_text("model", encoding="utf-8")
+        job.require_cuda = lambda: None
+        job.load_asr = lambda model: loads.append(("asr", model)) or object()
+        job.transcribe = lambda model, source, language, words: ([{"start": 0.0, "end": 1.0, "text": "hello"}], "en")
+        job.diarize = lambda loader, source, minimum, maximum: [{"start": 0.0, "end": 1.0, "speaker": "private"}]
+        runs = [0]
+
+        def run(request):
+            runs[0] += 1
+            workspace = root / ("workspace_" + str(runs[0]))
+            input_dir = workspace / "input"
+            output_dir = workspace / "output"
+            input_dir.mkdir(parents=True)
+            (input_dir / "source").write_bytes(b"RIFFaudio")
+            (input_dir / "request.json").write_text(json.dumps(request), encoding="utf-8")
+            (input_dir / "runner_config.json").write_text(json.dumps({"model": {"model": str(job.ASR_MODEL_DIR), "label": "large-v3"}}), encoding="utf-8")
+            job.run_job(workspace, input_dir, output_dir, input_dir / "runner_config.json")
+
+        base = {"model": "large_v3", "language": "auto", "word_timestamps": False, "diarization": False, "output_srt": False, "output_vtt": False}
+        run(base)
+        assert loads == [("asr", str(job.ASR_MODEL_DIR))]
+        try:
+            run(base | {"word_timestamps": True})
+        except RuntimeError as error:
+            assert str(error) == "alignment_cache_unavailable"
+        else:
+            raise AssertionError("word timestamps must require the exact alignment cache")
+        try:
+            run(base | {"diarization": True})
+        except RuntimeError as error:
+            assert str(error) == "diarization_model_unavailable"
+        else:
+            raise AssertionError("diarization must require the local pyannote model")
+
+        job.TORCH_CACHE_DIR.mkdir(parents=True)
+        job.ALIGNMENT_WEIGHT.write_text("weights", encoding="utf-8")
+        job.ALIGNMENT_MARKER.write_text('{"schema":"aihub-whisper-alignment/v1","language":"en","model_name":"WAV2VEC2_ASR_BASE_960H","model_dir":"/cache/whisper/torch","weight_path":"/cache/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth"}', encoding="utf-8")
+        loads.clear()
+        run(base | {"word_timestamps": True})
+        assert loads[0] == ("asr", str(job.ASR_MODEL_DIR)) and loads[1][0] == "align"
+
+        job.PYANNOTE_CONFIG.parent.joinpath("models").mkdir(parents=True)
+        job.PYANNOTE_CONFIG.write_text("config", encoding="utf-8")
+        job.PYANNOTE_SEGMENTATION.write_text("segmentation", encoding="utf-8")
+        job.PYANNOTE_EMBEDDING.write_text("embedding", encoding="utf-8")
+        job.PYANNOTE_MARKER.write_text('{"schema":"aihub-whisper-pyannote/v1","config_path":"/cache/whisper/pyannote/speaker-diarization-3.1/config.yaml","segmentation_path":"/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_segmentation-3.0.bin","embedding_path":"/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"}', encoding="utf-8")
+        loads.clear()
+        run(base | {"diarization": True})
+        assert loads[0] == ("asr", str(job.ASR_MODEL_DIR)) and loads[1][0] == "diarize"
+finally:
+    if previous is None:
+        sys.modules.pop("whisperx", None)
+    else:
+        sys.modules["whisperx"] = previous
+PY;
+    $result = hub_run_command(['python3', '-c', $script, $runner], 20);
+    hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper optional-asset preflight matrix failed: ' . ($result['stderr'] ?? ''));
+});
+
+hub_test('Whisper ASR provisioning needs the pyannote token only for explicit diarization assets', function (): void {
+    $provisioner = HUB_ROOT . '/packs/whisper-asr/service/provision_offline_assets.py';
+    $script = <<<'PY'
+import importlib.util
+import os
+import sys
+import tempfile
+import types
+from pathlib import Path
+
+service_dir = Path(sys.argv[1]).parent
+sys.path.insert(0, str(service_dir))
+spec = importlib.util.spec_from_file_location("whisper_asr_provision", sys.argv[1])
+provision = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(provision)
+
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    provision.ASR_MODEL_DIR = root / "models" / "large-v3"
+    provision.HUGGINGFACE_CACHE_DIR = root / "cache" / "huggingface"
+    provision.TORCH_CACHE_DIR = root / "cache" / "torch"
+    provision.ALIGNMENT_WEIGHT = provision.TORCH_CACHE_DIR / "wav2vec2_fairseq_base_ls960_asr_ls960.pth"
+    provision.ALIGNMENT_MARKER = provision.TORCH_CACHE_DIR / ".aihub-alignment-ready.json"
+    provision.PYANNOTE_MODEL_DIR = root / "cache" / "pyannote" / "speaker-diarization-3.1"
+    provision.PYANNOTE_CONFIG = provision.PYANNOTE_MODEL_DIR / "config.yaml"
+    provision.PYANNOTE_SEGMENTATION = provision.PYANNOTE_MODEL_DIR / "models" / "pyannote_segmentation-3.0.bin"
+    provision.PYANNOTE_EMBEDDING = provision.PYANNOTE_MODEL_DIR / "models" / "pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
+    provision.PYANNOTE_MARKER = provision.PYANNOTE_MODEL_DIR / ".aihub-pyannote-ready.json"
+    calls = []
+
+    def snapshot_download(repo_id, local_dir, allow_patterns=None, token=None):
+        calls.append((repo_id, token))
+        target = Path(local_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        for name in allow_patterns or []:
+            (target / name).write_text("snapshot", encoding="utf-8")
+        return str(target)
+
+    def align_loader(**kwargs):
+        provision.ALIGNMENT_WEIGHT.parent.mkdir(parents=True, exist_ok=True)
+        provision.ALIGNMENT_WEIGHT.write_text("weights", encoding="utf-8")
+        return object(), {}
+
+    previous_hub = sys.modules.get("huggingface_hub")
+    previous_whisperx = sys.modules.get("whisperx")
+    sys.modules["huggingface_hub"] = types.SimpleNamespace(snapshot_download=snapshot_download)
+    sys.modules["whisperx"] = types.SimpleNamespace(load_align_model=align_loader, DiarizationPipeline=lambda **kwargs: object())
+    original_argv = sys.argv
+    original_token = os.environ.pop("AIHUB_SECRET_PYANNOTE_TOKEN", None)
+    try:
+        provision.storage_root = lambda name, expected: expected
+        sys.argv = ["provision"]
+        assert provision.main() == 0
+        assert all(not repo.startswith("pyannote/") for repo, token in calls)
+        assert provision.ALIGNMENT_MARKER.is_file() and not provision.PYANNOTE_MARKER.exists()
+        sys.argv = ["provision", "--with-diarization"]
+        try:
+            provision.main()
+        except RuntimeError as error:
+            assert str(error) == "pyannote_token_missing"
+        else:
+            raise AssertionError("explicit diarization provisioning must require the pyannote token")
+    finally:
+        sys.argv = original_argv
+        if original_token is not None:
+            os.environ["AIHUB_SECRET_PYANNOTE_TOKEN"] = original_token
+        if previous_hub is None:
+            sys.modules.pop("huggingface_hub", None)
+        else:
+            sys.modules["huggingface_hub"] = previous_hub
+        if previous_whisperx is None:
+            sys.modules.pop("whisperx", None)
+        else:
+            sys.modules["whisperx"] = previous_whisperx
+PY;
+    $result = hub_run_command(['python3', '-c', $script, $provisioner], 20);
+    hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper provisioning option matrix failed: ' . ($result['stderr'] ?? ''));
 });
 
 hub_test('Whisper ASR provisioning and task loaders use the same fixed offline alignment and pyannote paths', function (): void {

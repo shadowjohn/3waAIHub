@@ -205,7 +205,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         $artifactContract = ['artifacts' => $artifacts] + ($attestation === null ? [] : ['report_attestation' => $attestation]);
         $runner = null;
         if (array_key_exists('runner', $definition)) {
-            $runner = hub_pack_async_job_runner_contract($definition['runner']);
+            $runner = hub_pack_async_job_runner_contract($definition['runner'], $fields, $requestSchema);
             if ($runner === null) {
                 return null;
             }
@@ -246,7 +246,7 @@ function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
     $normalized = [];
     $seen = [];
     foreach ($mounts as $mount) {
-        if (!is_array($mount) || array_diff(array_keys($mount), ['id', 'storage', 'host_subdir', 'container_path', 'required_paths']) !== []) {
+        if (!is_array($mount) || array_diff(array_keys($mount), ['id', 'storage', 'host_subdir', 'container_path', 'required_paths', 'when']) !== []) {
             return null;
         }
         $id = (string)($mount['id'] ?? '');
@@ -254,12 +254,18 @@ function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
         $hostSubdir = (string)($mount['host_subdir'] ?? '');
         $containerPath = (string)($mount['container_path'] ?? '');
         $requiredPaths = $mount['required_paths'] ?? null;
+        $when = $mount['when'] ?? null;
         if (preg_match('/^[a-z][a-z0-9_]{0,63}$/', $id) !== 1
             || !in_array($storage, ['models', 'cache'], true)
             || preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/', $hostSubdir) !== 1
             || strlen($hostSubdir) > 240
             || preg_match($storage === 'models' ? '~^/models/[A-Za-z0-9][A-Za-z0-9._/-]{0,239}$~' : '~^/cache/[A-Za-z0-9][A-Za-z0-9._/-]{0,239}$~', $containerPath) !== 1
             || !is_array($requiredPaths) || !array_is_list($requiredPaths) || $requiredPaths === [] || count($requiredPaths) > 64) {
+            return null;
+        }
+        if ($when !== null && (!is_array($when) || array_keys($when) !== ['input', 'equals']
+            || !is_string($when['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]*$/', $when['input']) !== 1
+            || !is_scalar($when['equals'] ?? null))) {
             return null;
         }
         foreach ($requiredPaths as $path) {
@@ -280,13 +286,48 @@ function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
             'host_subdir' => $hostSubdir,
             'container_path' => $containerPath,
             'required_paths' => array_values($requiredPaths),
-        ];
+        ] + ($when === null ? [] : ['when' => ['input' => $when['input'], 'equals' => $when['equals']]]);
     }
 
     return $normalized;
 }
 
-function hub_pack_async_job_runner_contract(mixed $runner): ?array
+function hub_pack_async_job_runner_asset_mount_conditions_valid(array $mounts, array $fields, array $requestSchema): bool
+{
+    $allowed = array_fill_keys($fields, true);
+    foreach ($mounts as $mount) {
+        if (!isset($mount['when'])) {
+            continue;
+        }
+        $when = $mount['when'];
+        $input = $when['input'] ?? null;
+        $equals = $when['equals'] ?? null;
+        $definition = is_string($input) && isset($allowed[$input]) ? ($requestSchema[$input] ?? null) : null;
+        if (!is_array($definition)) {
+            return false;
+        }
+        if (($definition['type'] ?? '') === 'boolean') {
+            if (!is_bool($equals)) {
+                return false;
+            }
+        } elseif (($definition['type'] ?? '') === 'integer') {
+            if (!is_int($equals) || $equals < ($definition['min'] ?? 0) || $equals > ($definition['max'] ?? 0)) {
+                return false;
+            }
+        } elseif (($definition['type'] ?? '') === 'string') {
+            if (!is_string($equals) || $equals === '' || strlen($equals) > ($definition['max_length'] ?? 0)
+                || (isset($definition['enum']) && !in_array($equals, $definition['enum'], true))) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null, ?array $requestSchema = null): ?array
 {
     if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'executor', 'secret_env', 'asset_mounts']) !== []) {
         return null;
@@ -323,7 +364,7 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
         return null;
     }
     $assetMounts = hub_pack_async_job_runner_asset_mounts($runner['asset_mounts'] ?? []);
-    if ($assetMounts === null) {
+    if ($assetMounts === null || ($fields !== null && $requestSchema !== null && !hub_pack_async_job_runner_asset_mount_conditions_valid($assetMounts, $fields, $requestSchema))) {
         return null;
     }
     foreach (array_merge($entrypoint, $args) as $value) {
@@ -643,7 +684,7 @@ function hub_pack_job_contract_snapshot(array $contract): array
         $snapshot['capability_requirements'] = $requirements;
     }
     if (array_key_exists('runner', $contract)) {
-        $runner = hub_pack_async_job_runner_contract($contract['runner']);
+        $runner = hub_pack_async_job_runner_contract($contract['runner'], $fields, $snapshot['request_schema']);
         if ($runner === null) {
             throw new InvalidArgumentException('job_contract_unavailable');
         }

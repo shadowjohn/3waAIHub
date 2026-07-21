@@ -12,16 +12,18 @@ from typing import Any
 
 from offline_paths import (
     ALIGNMENT_LANGUAGE,
+    ALIGNMENT_MARKER,
     ALIGNMENT_MODEL_NAME,
     ALIGNMENT_WEIGHT,
     ASR_MODEL_DIR,
     HUGGINGFACE_CACHE_DIR,
-    OFFLINE_CACHE_MARKER,
     PYANNOTE_CONFIG,
     PYANNOTE_EMBEDDING,
+    PYANNOTE_MARKER,
     PYANNOTE_SEGMENTATION,
     TORCH_CACHE_DIR,
-    offline_cache_manifest as fixed_offline_cache_manifest,
+    alignment_cache_manifest,
+    pyannote_cache_manifest,
 )
 
 
@@ -37,23 +39,29 @@ def configure_offline_cache() -> None:
     os.environ["PYANNOTE_METRICS_ENABLED"] = "0"
 
 
-def offline_cache_manifest() -> dict[str, Any]:
+def require_manifest(path: Path, expected: dict[str, object], error_code: str) -> None:
     try:
-        value = read_json(OFFLINE_CACHE_MARKER)
+        value = read_json(path)
     except Exception as error:
-        raise RuntimeError("offline_cache_unavailable") from error
-    if value != fixed_offline_cache_manifest():
-        raise RuntimeError("offline_cache_unavailable")
-    return value
+        raise RuntimeError(error_code) from error
+    if value != expected:
+        raise RuntimeError(error_code)
 
 
-def require_offline_assets(request: dict[str, Any], language: str) -> None:
+def require_asr_assets() -> None:
     require_regular_files(ASR_MODEL_DIR, ("config.json", "model.bin", "tokenizer.json"), "asr_model_unavailable")
-    offline_cache_manifest()
-    require_regular_files(TORCH_CACHE_DIR, (ALIGNMENT_WEIGHT.name,), "alignment_cache_unavailable")
-    require_regular_files(PYANNOTE_CONFIG.parent, (PYANNOTE_CONFIG.name, "models/" + PYANNOTE_SEGMENTATION.name, "models/" + PYANNOTE_EMBEDDING.name), "diarization_model_unavailable")
-    if request.get("word_timestamps") is True and language != "auto" and language != ALIGNMENT_LANGUAGE:
+
+
+def require_alignment_assets(language: str) -> None:
+    if language != ALIGNMENT_LANGUAGE:
         raise RuntimeError("alignment_cache_unavailable")
+    require_manifest(ALIGNMENT_MARKER, alignment_cache_manifest(), "alignment_cache_unavailable")
+    require_regular_files(TORCH_CACHE_DIR, (ALIGNMENT_WEIGHT.name,), "alignment_cache_unavailable")
+
+
+def require_diarization_assets() -> None:
+    require_manifest(PYANNOTE_MARKER, pyannote_cache_manifest(), "diarization_model_unavailable")
+    require_regular_files(PYANNOTE_CONFIG.parent, (PYANNOTE_CONFIG.name, "models/" + PYANNOTE_SEGMENTATION.name, "models/" + PYANNOTE_EMBEDDING.name), "diarization_model_unavailable")
 
 
 def require_regular_files(directory: Path, names: tuple[str, ...], error_code: str) -> None:
@@ -221,12 +229,12 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
         raise RuntimeError("request_invalid")
 
     configure_offline_cache()
-    require_offline_assets(request, language)
+    require_asr_assets()
     require_cuda()
     started = time.monotonic()
     segments, detected_language = transcribe(load_asr(model["model"]), source, None if language == "auto" else language, word_timestamps)
     if word_timestamps:
-        require_offline_assets(request, detected_language)
+        require_alignment_assets(detected_language)
         segments = align(load_alignment(detected_language), segments, source, detected_language)
     output_dir.mkdir(parents=True, exist_ok=True)
     transcript = {
@@ -242,6 +250,7 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
     if output_vtt:
         (output_dir / "subtitle.vtt").write_text(subtitle(segments, True), encoding="utf-8")
     if diarization:
+        require_diarization_assets()
         timeline = anonymous_speakers(diarize(load_diarization(), source, minimum, maximum))
         (output_dir / "speaker_timeline.json").write_text(json.dumps({"speakers": timeline}, ensure_ascii=False) + "\n", encoding="utf-8")
     report = {

@@ -713,43 +713,41 @@ hub_test('manifest async job declarations cannot permit reserved controls', func
 
 hub_test('shared task worker claims Whisper Pack jobs and waits for its GPU contract', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
-    $storage = hub_get_storage_paths($db);
-    $modelDirectory = $storage['AIHUB_MODELS_DIR'] . '/whisper/asr/large-v3';
-    $cacheDirectory = $storage['AIHUB_CACHE_DIR'] . '/whisper';
-    if (!is_dir($modelDirectory)) {
+    $originalStorage = hub_get_storage_paths($db);
+    $models = sys_get_temp_dir() . '/3waaihub_whisper_worker_models_' . bin2hex(random_bytes(4));
+    $cache = sys_get_temp_dir() . '/3waaihub_whisper_worker_cache_' . bin2hex(random_bytes(4));
+    mkdir($models, 0775, true);
+    mkdir($cache, 0775, true);
+    hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', $models);
+    hub_set_storage_setting($db, 'AIHUB_CACHE_DIR', $cache);
+    $taskId = 0;
+    try {
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $modelDirectory = $models . '/whisper/asr/large-v3';
         mkdir($modelDirectory, 0775, true);
-    }
-    foreach (['config.json', 'model.bin', 'tokenizer.json'] as $file) {
-        file_put_contents($modelDirectory . '/' . $file, '{}', LOCK_EX);
-    }
-    foreach ([
-        'torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth',
-        'pyannote/speaker-diarization-3.1/config.yaml',
-        'pyannote/speaker-diarization-3.1/models/pyannote_segmentation-3.0.bin',
-        'pyannote/speaker-diarization-3.1/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin',
-    ] as $path) {
-        $target = $cacheDirectory . '/' . $path;
-        if (!is_dir(dirname($target))) {
-            mkdir(dirname($target), 0775, true);
+        foreach (['config.json', 'model.bin', 'tokenizer.json'] as $file) {
+            file_put_contents($modelDirectory . '/' . $file, '{}', LOCK_EX);
         }
-        file_put_contents($target, 'model', LOCK_EX);
-    }
-    if (!is_dir($cacheDirectory . '/huggingface')) {
-        mkdir($cacheDirectory . '/huggingface', 0775, true);
-    }
-    file_put_contents($cacheDirectory . '/huggingface/.aihub-offline-ready.json', '{"schema":"aihub-whisper-offline-assets/v2","alignment":{"language":"en","model_name":"WAV2VEC2_ASR_BASE_960H","model_dir":"/cache/whisper/torch","weight_path":"/cache/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth"},"pyannote":{"config_path":"/cache/whisper/pyannote/speaker-diarization-3.1/config.yaml","segmentation_path":"/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_segmentation-3.0.bin","embedding_path":"/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"}}', LOCK_EX);
-    $memberId = hub_create_api_member($db, 'Worker Queue Owner');
-    $token = hub_create_api_token($db, $memberId, 'worker queue token', null, null);
-    $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
-    $taskId = hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51');
+        $memberId = hub_create_api_member($db, 'Worker Queue Owner');
+        $token = hub_create_api_token($db, $memberId, 'worker queue token', null, null);
+        $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+        $taskId = hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51');
 
-    $output = [];
-    $exitCode = 0;
-    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/scripts/task_worker.php') . ' --limit=1 2>&1', $output, $exitCode);
+        $output = [];
+        $exitCode = 0;
+        exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/scripts/task_worker.php') . ' --limit=1 2>&1', $output, $exitCode);
 
-    $task = hub_get_task($db, $taskId);
-    hub_test_assert($exitCode === 0 && ($task['status'] ?? '') === 'waiting_gpu' && !empty($task['waiting_reason']), 'shared worker must route Whisper through the generic GPU adapter without a CPU fallback');
+        $task = hub_get_task($db, $taskId);
+        hub_test_assert($exitCode === 0 && ($task['status'] ?? '') === 'waiting_gpu' && !empty($task['waiting_reason']), 'shared worker must route basic Whisper ASR through the generic GPU adapter without optional cache fixtures');
+    } finally {
+        hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', $originalStorage['AIHUB_MODELS_DIR']);
+        hub_set_storage_setting($db, 'AIHUB_CACHE_DIR', $originalStorage['AIHUB_CACHE_DIR']);
+        hub_test_audio_cleanup_remove($models);
+        hub_test_audio_cleanup_remove($cache);
+        if ($taskId > 0) {
+            hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+        }
+    }
 });
 
 hub_test('audio manual retry accepts timed-out Pack jobs', function (): void {

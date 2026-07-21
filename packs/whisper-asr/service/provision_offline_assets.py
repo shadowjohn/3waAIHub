@@ -10,17 +10,19 @@ from pathlib import Path
 
 from offline_paths import (
     ALIGNMENT_LANGUAGE,
+    ALIGNMENT_MARKER,
     ALIGNMENT_MODEL_NAME,
     ALIGNMENT_WEIGHT,
     ASR_MODEL_DIR,
     HUGGINGFACE_CACHE_DIR,
-    OFFLINE_CACHE_MARKER,
     PYANNOTE_CONFIG,
     PYANNOTE_EMBEDDING,
+    PYANNOTE_MARKER,
     PYANNOTE_MODEL_DIR,
     PYANNOTE_SEGMENTATION,
     TORCH_CACHE_DIR,
-    offline_cache_manifest,
+    alignment_cache_manifest,
+    pyannote_cache_manifest,
     pyannote_config_text,
 )
 
@@ -120,10 +122,11 @@ def prepare_pyannote_snapshot(snapshot_download: object, token: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Preprovision offline Whisper ASR assets")
     parser.add_argument("--languages", default=ALIGNMENT_LANGUAGE, help="Fixed WhisperX alignment language (en)")
+    parser.add_argument("--with-diarization", action="store_true", help="Provision the local pyannote assets using the trusted token")
     args = parser.parse_args()
     selected_languages = languages(args.languages)
-    token = os.environ.get("AIHUB_SECRET_PYANNOTE_TOKEN", "")
-    if not token:
+    token = os.environ.get("AIHUB_SECRET_PYANNOTE_TOKEN", "") if args.with_diarization else ""
+    if args.with_diarization and not token:
         raise RuntimeError("pyannote_token_missing")
 
     storage_root("AIHUB_MODELS_DIR", Path("/models"))
@@ -131,7 +134,6 @@ def main() -> int:
     ASR_MODEL_DIR.mkdir(parents=True, exist_ok=True)
     HUGGINGFACE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     TORCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    PYANNOTE_MODEL_DIR.mkdir(parents=True, exist_ok=True)
     configure_download_cache()
 
     from huggingface_hub import snapshot_download
@@ -140,10 +142,13 @@ def main() -> int:
     for language in selected_languages:
         precache_alignment(language)
     require_regular_file(ALIGNMENT_WEIGHT, "alignment_cache_unavailable")
-    prepare_pyannote_snapshot(snapshot_download, token)
     configure_offline_cache()
-    validate_local_diarization()
-    write_atomic(OFFLINE_CACHE_MARKER, (json.dumps(offline_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
+    write_atomic(ALIGNMENT_MARKER, (json.dumps(alignment_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
+    if args.with_diarization:
+        PYANNOTE_MODEL_DIR.mkdir(parents=True, exist_ok=True)
+        prepare_pyannote_snapshot(snapshot_download, token)
+        validate_local_diarization()
+        write_atomic(PYANNOTE_MARKER, (json.dumps(pyannote_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
     return 0
 
 

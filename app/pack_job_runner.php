@@ -316,7 +316,21 @@ function hub_pack_job_asset_descendant(string $root, string $relative): ?string
     return $resolved;
 }
 
-function hub_pack_job_resolve_asset_mounts(PDO $db, array $runner): array
+function hub_pack_job_asset_mounts_for_input(array $descriptors, array $input): array
+{
+    $active = [];
+    foreach ($descriptors as $descriptor) {
+        $when = $descriptor['when'] ?? null;
+        if ($when !== null && (!array_key_exists($when['input'], $input) || $input[$when['input']] !== $when['equals'])) {
+            continue;
+        }
+        $active[] = $descriptor;
+    }
+
+    return $active;
+}
+
+function hub_pack_job_resolve_asset_mounts(PDO $db, array $runner, array $input = []): array
 {
     $descriptors = hub_pack_async_job_runner_asset_mounts($runner['asset_mounts'] ?? []);
     if ($descriptors === null) {
@@ -328,7 +342,7 @@ function hub_pack_job_resolve_asset_mounts(PDO $db, array $runner): array
         'cache' => (string)($storage['AIHUB_CACHE_DIR'] ?? ''),
     ];
     $resolved = [];
-    foreach ($descriptors as $descriptor) {
+    foreach (hub_pack_job_asset_mounts_for_input($descriptors, $input) as $descriptor) {
         $configuredRoot = $roots[$descriptor['storage']] ?? '';
         if ($configuredRoot === '' || is_link($configuredRoot)) {
             throw new RuntimeException('model_assets_unavailable');
@@ -883,7 +897,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $runner = $contract['runner'];
         $runnerConfig = hub_pack_job_runner_config_for_task($contract, (array)($task['input'] ?? []));
         try {
-            $assetMounts = hub_pack_job_resolve_asset_mounts($db, $runner);
+            $assetMounts = hub_pack_job_resolve_asset_mounts($db, $runner, (array)($task['input'] ?? []));
         } catch (Throwable) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
         }
