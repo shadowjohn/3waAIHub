@@ -178,7 +178,7 @@ function hub_pack_job_prepare_workspace(array $task, array $contract): string
     if (is_link($workspace) || (!is_dir($workspace) && !mkdir($workspace, 0700, true))) {
         throw new RuntimeException('workspace_unavailable');
     }
-    foreach (['input', 'output', 'logs'] as $name) {
+    foreach (['input', 'output', 'logs', 'checkpoints'] as $name) {
         $dir = $workspace . '/' . $name;
         if (is_link($dir) || (!is_dir($dir) && !mkdir($dir, 0700, true))) {
             throw new RuntimeException('workspace_unavailable');
@@ -287,7 +287,7 @@ function hub_pack_job_runner_config_for_task(array $contract, array $input): ?ar
         return null;
     }
     $config = $contract['runner_config'];
-    $alias = $input[$config['alias_input'] ?? ''] ?? null;
+    $alias = $input[$config['alias_input'] ?? ''] ?? ($config['default_alias'] ?? null);
     if (!is_string($alias) || !isset($config['aliases'][$alias])) {
         throw new RuntimeException('job_contract_unavailable');
     }
@@ -491,6 +491,16 @@ function hub_pack_job_default_runner_command(array $context): array
     if ($workspace === false || !is_dir($workspace . '/input') || !is_dir($workspace . '/output')) {
         throw new RuntimeException('workspace_unavailable');
     }
+    $output = realpath($workspace . '/output');
+    $checkpointPath = $workspace . '/checkpoints';
+    if (is_link($checkpointPath) || (!is_dir($checkpointPath) && !mkdir($checkpointPath, 0700, true))) {
+        throw new RuntimeException('workspace_unavailable');
+    }
+    $checkpoints = realpath($checkpointPath);
+    if ($output === false || $checkpoints === false || is_link($workspace . '/output')
+        || $output !== $workspace . '/output' || $checkpoints !== $workspace . '/checkpoints') {
+        throw new RuntimeException('workspace_unavailable');
+    }
     $name = 'aihub-pack-' . substr(preg_replace('/[^a-z0-9_.-]/', '-', strtolower((string)($context['run']['run_id'] ?? 'run'))) ?: 'run', 0, 48);
     $containerWorkspace = '/workspace';
     $replace = static fn (string $value): string => strtr($value, [
@@ -503,7 +513,7 @@ function hub_pack_job_default_runner_command(array $context): array
     if (!is_array($entrypoint) || $entrypoint === [] || !is_array($args)) {
         throw new RuntimeException('job_contract_unavailable');
     }
-    $command = ['docker', 'run', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . '/output,dst=' . $containerWorkspace . '/output', '--name', $name];
+    $command = ['docker', 'run', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=' . $output . ',dst=' . $containerWorkspace . '/output', '--mount', 'type=bind,src=' . $checkpoints . ',dst=' . $containerWorkspace . '/checkpoints', '--name', $name];
     $voiceProfileMount = $runner['voice_profile_mount'] ?? null;
     foreach (['source', 'request.json', 'runner_config.json'] as $file) {
         if ($file === 'source' && $voiceProfileMount !== null) {
@@ -1067,7 +1077,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $run = $startedRun;
         $context['run'] = $run;
-        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts);
+        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts, $voiceProfileMount);
         $fenceLost = false;
         $context['started'] = static function (array $startedDetails) use (&$details, &$fenceLost, $db, $task, $run, $gpuLease, $baseline): void {
             $details = hub_pack_job_execution_details($startedDetails, ['baseline_pids' => $baseline]);

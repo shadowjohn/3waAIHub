@@ -953,6 +953,7 @@ function hub_audio_task_resolve_voice_context(PDO $db, array $input, array $rout
     }
     $modeInput = (string)($definition['mode_input'] ?? '');
     $profileInput = (string)($definition['profile_input'] ?? '');
+    $designPromptInput = (string)($definition['design_prompt_input'] ?? '');
     $mode = $input[$modeInput] ?? null;
     if ($mode === null) {
         return $input;
@@ -967,6 +968,9 @@ function hub_audio_task_resolve_voice_context(PDO $db, array $input, array $rout
         return $input;
     }
     if ($mode !== ($definition['clone_value'] ?? null)) {
+        throw new InvalidArgumentException('invalid_request');
+    }
+    if (array_key_exists($designPromptInput, $input)) {
         throw new InvalidArgumentException('invalid_request');
     }
     $profileId = $input[$profileInput] ?? null;

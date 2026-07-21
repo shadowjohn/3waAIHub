@@ -81,7 +81,8 @@ def validate_request(value: dict[str, Any]) -> dict[str, Any]:
 def model_snapshot(config: dict[str, Any]) -> dict[str, Any]:
     model = config.get("model")
     expected = {"model", "label", "version", "sample_rate"}
-    if set(config) != {"model"} or not isinstance(model, dict) or set(model) != expected:
+    generic_config = set(config) == {"allowlist", "alias", "model"} and config.get("allowlist") == "voxcpm2" and config.get("alias") == "voxcpm2"
+    if not (set(config) == {"model"} or generic_config) or not isinstance(model, dict) or set(model) != expected:
         raise RuntimeError("runner_config_invalid")
     if model.get("model") != "/models/voxcpm2/model" or model.get("label") != "VoxCPM2" or model.get("version") != "2.0.3" or model.get("sample_rate") != 48000:
         raise RuntimeError("runner_config_invalid")

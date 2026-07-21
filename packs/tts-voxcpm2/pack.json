@@ -66,6 +66,7 @@
           "design_value": "design",
           "clone_value": "clone",
           "profile_input": "voice_profile_id",
+          "design_prompt_input": "voice_prompt",
           "container_path": "/data/voice_profiles/reference.wav"
         }
       },
@@ -90,7 +91,8 @@
       },
       "runner_config": {
         "alias_input": "model",
-        "model_allowlist": "voxcpm2"
+        "model_allowlist": "voxcpm2",
+        "default_alias": "voxcpm2"
       },
       "output": {
         "artifacts": [

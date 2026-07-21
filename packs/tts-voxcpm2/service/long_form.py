@@ -36,8 +36,8 @@ def _protected_break(text: str, index: int) -> bool:
     right = text[index:]
     if re.search(r"(?:\d[\d,]*|\d+\.\d+)$", left) and re.match(r"(?:\d|\s*(?:rpm|mm|cm|ms|Hz|N·m)\b)", right, re.I):
         return True
-    token = re.search(r"[A-Za-z0-9.-]+$", left)
-    if token and re.match(r"[A-Za-z0-9.-]", right or ""):
+    token = re.search(r"[A-Za-z0-9.·-]+$", left)
+    if token and re.match(r"[A-Za-z0-9.·-]", right or ""):
         return True
     if re.search(r"(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e)|(?:[A-Za-z]\.){1,})\.$", left, re.I):
         return True
@@ -61,6 +61,10 @@ def _boundary_positions(text: str) -> list[int]:
 
 def _hard_cut(text: str, start: int, limit: int) -> int:
     end = min(len(text), start + limit)
+    if _protected_break(text, end):
+        for offset in range(end + 1, min(len(text), end + 32) + 1):
+            if not _protected_break(text, offset):
+                return offset
     for offset in range(end, start, -1):
         if text[offset - 1].isspace() and not _protected_break(text, offset):
             return offset

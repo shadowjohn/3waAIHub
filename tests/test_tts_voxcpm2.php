@@ -21,7 +21,7 @@ function hub_test_voxcpm2_remove(string $path): void
 function hub_test_voxcpm2_job_workspace(): string
 {
     $workspace = sys_get_temp_dir() . '/3waaihub_voxcpm2_job_' . bin2hex(random_bytes(8));
-    if (!mkdir($workspace . '/input', 0700, true) || !mkdir($workspace . '/output', 0700, true)) {
+    if (!mkdir($workspace . '/input', 0700, true) || !mkdir($workspace . '/output', 0700, true) || !mkdir($workspace . '/checkpoints', 0700, true)) {
         throw new RuntimeException('Cannot create VoxCPM2 job workspace.');
     }
 
@@ -329,6 +329,7 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
                 'sample_rate' => 48000,
             ],
         ],
+        'default_alias' => 'voxcpm2',
     ], 'model, version, and sample rate must be a frozen task snapshot');
     hub_test_assert(($manifest['hardware']['gpu_required'] ?? null) === true && ($manifest['hardware']['cpu_fallback'] ?? null) === false, 'long-form synthesis must not declare a CPU path');
     hub_test_assert(array_column($job['artifact_contract']['artifacts'] ?? [], 'type') === ['generated_audio', 'synthesis_metadata', 'waveform_preview'], 'long-form artifact contract mismatch');
@@ -351,15 +352,21 @@ hub_test('VoxCPM2 long-form fake runner is deterministic, resumable, and emits n
         'control' => '清楚、稍慢',
         'seed' => 42,
         'seed_policy' => 'derived_per_chunk',
-        'model' => 'voxcpm2',
         'waveform_preview' => true,
     ];
-    $config = ['model' => [
+    $pack = hub_get_pack('tts-voxcpm2');
+    $contract = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), 'synthesize');
+    $config = hub_pack_job_runner_config_for_task((array)$contract, $request);
+    hub_test_assert($config === [
+        'allowlist' => 'voxcpm2',
+        'alias' => 'voxcpm2',
+        'model' => [
         'model' => '/models/voxcpm2/model',
         'label' => 'VoxCPM2',
         'version' => '2.0.3',
         'sample_rate' => 48000,
-    ]];
+        ],
+    ], 'ordinary design synthesis without a model must use the fixed runner default');
     file_put_contents($workspace . '/input/request.json', json_encode($request, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n", LOCK_EX);
     file_put_contents($workspace . '/input/runner_config.json', json_encode($config, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n", LOCK_EX);
     file_put_contents($workspace . '/input/source', 'managed-source-not-a-path', LOCK_EX);
@@ -380,6 +387,9 @@ assert first['normalization'] == 'semantic-v1'
 assert ''.join(chunk['text'] for chunk in first['chunks']) == first['normalized_input']
 assert '8,500 rpm' in first['normalized_input'] and '0.7 mm' in first['normalized_input']
 assert all('word_alignment' not in chunk for chunk in first['chunks'])
+unit_chunks = module.split_semantic_v1('A' * 41 + 'N·m。tail', 42)
+assert all(not (left.endswith('N') and right.startswith('·m')) for left, right in zip(unit_chunks, unit_chunks[1:]))
+assert 'N·m' in ''.join(unit_chunks)
 PY;
         $plan = hub_run_command(['python3', '-c', $planScript, $service . '/long_form.py'], 10);
         hub_test_assert(($plan['exit_code'] ?? 1) === 0, 'semantic-v1 plan must be byte-deterministic: ' . ($plan['stderr'] ?? ''));
@@ -399,6 +409,7 @@ PY;
             hub_test_assert(array_key_exists($key, $metadataValue), 'synthesis metadata missing ' . $key);
         }
         hub_test_assert(($metadataValue['plan']['normalization'] ?? '') === 'semantic-v1', 'metadata must preserve the immutable semantic plan');
+        hub_test_assert(($metadataValue['model']['model'] ?? '') === '/models/voxcpm2/model' && ($metadataValue['controls']['task_seed'] ?? null) === 42, 'runner defaults must be recorded in an ordinary design result');
         hub_test_assert(!str_contains((string)file_get_contents($metadata), $workspace), 'metadata must not disclose workspace paths');
         $second = hub_run_command($command, 30);
         hub_test_assert(($second['exit_code'] ?? 1) === 0 && $audioHash === hash_file('sha256', $audio), 'resume must reuse matching chunk checkpoints deterministically');
@@ -503,6 +514,36 @@ hub_test('VoxCPM2 async clone resolves one owned profile into a path-free snapsh
         ])['command'];
         $profileMount = 'type=bind,src=' . realpath($profilePath) . ',dst=/data/voice_profiles/reference.wav,readonly';
         hub_test_assert(in_array($profileMount, $command, true) && !str_contains(implode("\n", $command), 'async_clone_reference.wav') === false, 'runner command must receive only the Hub-derived read-only reference mount');
+
+        $beforeClonePrompt = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+        $clonePrompt = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], $input + ['voice_prompt' => 'must be rejected before GPU']);
+        hub_test_assert($clonePrompt['status'] === 400 && (hub_test_audio_payload($clonePrompt)['error'] ?? '') === 'invalid_request'
+            && (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $beforeClonePrompt, 'clone voice_prompt must be rejected at gateway admission before a task or GPU work exists');
+
+        $modelDir = hub_test_models_dir() . '/voxcpm2/model';
+        if (!is_dir($modelDir) && !mkdir($modelDir, 0700, true) && !is_dir($modelDir)) {
+            throw new RuntimeException('Cannot create VoxCPM2 model fixture.');
+        }
+        file_put_contents($modelDir . '/config.json', '{}', LOCK_EX);
+        $db->prepare("UPDATE tasks SET status = 'success' WHERE id = :id")->execute([':id' => (int)$source['task_id']]);
+        $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        $dockerRun = [];
+        hub_run_pack_job_task($db, $claimed ?? [], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+            'command_runner' => static function (array $command, int $timeout) use (&$dockerRun): array {
+                if (($command[1] ?? '') === 'run') {
+                    $dockerRun = $command;
+                    return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'synthetic runner failure'];
+                }
+                if (($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect') {
+                    return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such container'];
+                }
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            },
+        ]);
+        $checkpointMount = 'type=bind,src=' . hub_task_result_dir((int)$task['id']) . '/workspace/checkpoints,dst=/workspace/checkpoints';
+        hub_test_assert(in_array($profileMount, $dockerRun, true) && in_array($checkpointMount, $dockerRun, true)
+            && !in_array('type=bind,src=' . hub_task_result_dir((int)$task['id']) . '/workspace/input/source,dst=/workspace/input/source,readonly', $dockerRun, true), 'default executor must retain the clone mount and writable private checkpoints after execution starts');
 
         $otherSource = hub_test_audio_source_artifact($db, $other, (int)$otherToken['token_id']);
         $crossMember = hub_test_audio_request($db, 'voice_generate', (string)$otherToken['plain_token'], array_replace($input, ['source_artifact_id' => (string)$otherSource['artifact_id']]));

@@ -502,15 +502,17 @@ function hub_pack_async_job_runner_config_value(mixed $value, int $depth = 0): b
 
 function hub_pack_async_job_runner_config(mixed $config, array $fields, array $requestSchema): ?array
 {
-    if (!is_array($config) || array_diff(array_keys($config), ['alias_input', 'model_allowlist', 'aliases']) !== []) {
+    if (!is_array($config) || array_diff(array_keys($config), ['alias_input', 'model_allowlist', 'aliases', 'default_alias']) !== []) {
         return null;
     }
     $aliasInput = (string)($config['alias_input'] ?? '');
     $allowlist = (string)($config['model_allowlist'] ?? '');
     $aliases = $config['aliases'] ?? null;
+    $defaultAlias = $config['default_alias'] ?? null;
     if (!in_array($aliasInput, $fields, true) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $allowlist) !== 1
         || !is_array($aliases) || $aliases === [] || array_is_list($aliases)
-        || !isset($requestSchema[$aliasInput]['enum']) || array_keys($aliases) !== $requestSchema[$aliasInput]['enum']) {
+        || !isset($requestSchema[$aliasInput]['enum']) || array_keys($aliases) !== $requestSchema[$aliasInput]['enum']
+        || ($defaultAlias !== null && (!is_string($defaultAlias) || !isset($aliases[$defaultAlias])))) {
         return null;
     }
     foreach ($aliases as $alias => $model) {
@@ -519,12 +521,13 @@ function hub_pack_async_job_runner_config(mixed $config, array $fields, array $r
         }
     }
 
-    return ['alias_input' => $aliasInput, 'model_allowlist' => $allowlist, 'aliases' => $aliases];
+    return ['alias_input' => $aliasInput, 'model_allowlist' => $allowlist, 'aliases' => $aliases]
+        + ($defaultAlias === null ? [] : ['default_alias' => $defaultAlias]);
 }
 
 function hub_pack_async_job_runner_config_from_manifest(mixed $definition, array $manifest, array $fields, array $requestSchema): ?array
 {
-    if (!is_array($definition) || array_diff(array_keys($definition), ['alias_input', 'model_allowlist']) !== []) {
+    if (!is_array($definition) || array_diff(array_keys($definition), ['alias_input', 'model_allowlist', 'default_alias']) !== []) {
         return null;
     }
     $allowlist = (string)($definition['model_allowlist'] ?? '');
@@ -534,7 +537,7 @@ function hub_pack_async_job_runner_config_from_manifest(mixed $definition, array
         'alias_input' => $definition['alias_input'] ?? null,
         'model_allowlist' => $allowlist,
         'aliases' => $aliases,
-    ], $fields, $requestSchema);
+    ] + (array_key_exists('default_alias', $definition) ? ['default_alias' => $definition['default_alias']] : []), $fields, $requestSchema);
 }
 
 function hub_pack_async_job_request_schema_scalar_valid(mixed $value, array $definition): bool
@@ -663,18 +666,19 @@ function hub_pack_async_job_voice_context_contract(mixed $definition, array $fie
     if ($definition === null) {
         return [];
     }
-    if (!is_array($definition) || array_keys($definition) !== ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path']) {
+    if (!is_array($definition) || array_keys($definition) !== ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path']) {
         return null;
     }
     $modeInput = $definition['mode_input'] ?? null;
     $designValue = $definition['design_value'] ?? null;
     $cloneValue = $definition['clone_value'] ?? null;
     $profileInput = $definition['profile_input'] ?? null;
+    $designPromptInput = $definition['design_prompt_input'] ?? null;
     $containerPath = $definition['container_path'] ?? null;
-    if (!is_string($modeInput) || !is_string($designValue) || !is_string($cloneValue) || !is_string($profileInput) || !is_string($containerPath)
-        || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || $designValue === '' || $cloneValue === '' || $designValue === $cloneValue
+    if (!is_string($modeInput) || !is_string($designValue) || !is_string($cloneValue) || !is_string($profileInput) || !is_string($designPromptInput) || !is_string($containerPath)
+        || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || !in_array($designPromptInput, $fields, true) || $designValue === '' || $cloneValue === '' || $designValue === $cloneValue
         || ($requestSchema[$modeInput]['type'] ?? null) !== 'string' || !in_array($designValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true)
-        || !in_array($cloneValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true) || ($requestSchema[$profileInput]['type'] ?? null) !== 'integer'
+        || !in_array($cloneValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true) || ($requestSchema[$profileInput]['type'] ?? null) !== 'integer' || ($requestSchema[$designPromptInput]['type'] ?? null) !== 'string'
         || $containerPath !== '/data/voice_profiles/reference.wav') {
         return null;
     }
@@ -684,6 +688,7 @@ function hub_pack_async_job_voice_context_contract(mixed $definition, array $fie
         'design_value' => $designValue,
         'clone_value' => $cloneValue,
         'profile_input' => $profileInput,
+        'design_prompt_input' => $designPromptInput,
         'container_path' => $containerPath,
     ];
 }
