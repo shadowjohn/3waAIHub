@@ -6,11 +6,11 @@
   "category": "asr",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L3-storage-mount",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "asr",
-  "description": "Whisper-compatible audio transcription API adapter with dependency import smoke and storage mount checks.",
+  "description": "Whisper-compatible audio transcription API with GPU-first faster-whisper inference and CPU fallback.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -59,6 +59,14 @@
   },
   "settings_schema": [
     {
+      "key": "USE_GPU",
+      "label": "Use GPU",
+      "type": "boolean",
+      "default": "1",
+      "required": true,
+      "restart_required": true
+    },
+    {
       "key": "WHISPER_MODEL",
       "label": "Whisper model",
       "type": "text",
@@ -79,8 +87,8 @@
       "key": "WHISPER_COMPUTE_TYPE",
       "label": "Compute type",
       "type": "select",
-      "default": "int8",
-      "options": ["int8", "float16", "float32"],
+      "default": "auto",
+      "options": ["auto", "int8", "float16", "float32"],
       "required": true,
       "restart_required": true
     },
@@ -88,10 +96,10 @@
       "key": "WHISPER_REAL_INFERENCE",
       "label": "Enable real ASR inference",
       "type": "boolean",
-      "default": "0",
+      "default": "1",
       "required": true,
       "restart_required": true,
-      "help": "L3 keeps real transcription disabled."
+      "help": "Run faster-whisper inference by default, preferring CUDA with CPU fallback."
     },
     {
       "key": "WHISPER_MAX_UPLOAD_MB",
@@ -117,17 +125,22 @@
     },
     {
       "name": "WHISPER_COMPUTE_TYPE",
-      "default": "int8",
+      "default": "auto",
       "required": true
     },
     {
       "name": "WHISPER_REAL_INFERENCE",
-      "default": "0",
+      "default": "1",
       "required": true
     },
     {
       "name": "WHISPER_MAX_UPLOAD_MB",
       "default": "100",
+      "required": true
+    },
+    {
+      "name": "USE_GPU",
+      "default": "1",
       "required": true
     }
   ],

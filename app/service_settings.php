@@ -70,6 +70,7 @@ function hub_ensure_service_settings(PDO $db, array $service): array
     if ($schema === []) {
         return [];
     }
+    $existing = hub_list_service_settings($db, (int)$service['id']);
     $now = hub_now();
     $stmt = $db->prepare(
         'INSERT OR IGNORE INTO service_settings
@@ -78,6 +79,9 @@ function hub_ensure_service_settings(PDO $db, array $service): array
             (:service_id, :key, :value, :value_type, :is_secret, :restart_required, :created_at, :updated_at)'
     );
     foreach ($schema as $key => $item) {
+        if (isset($existing[$key])) {
+            continue;
+        }
         $stmt->execute([
             ':service_id' => (int)$service['id'],
             ':key' => $key,
@@ -95,6 +99,10 @@ function hub_ensure_service_settings(PDO $db, array $service): array
 
 function hub_service_setting_default(array $service, string $key, array $item): string
 {
+    $environmentOverride = hub_service_setting_environment_override($service, $key);
+    if ($environmentOverride !== null) {
+        return hub_validate_service_setting_value($item, $environmentOverride);
+    }
     if ((string)($service['pack_id'] ?? '') === 'ocr-ppocrv5' && hub_service_key_requests_gpu((string)($service['service_key'] ?? ''))) {
         return match ($key) {
             'OCR_USE_GPU' => '1',
@@ -113,6 +121,42 @@ function hub_service_setting_default(array $service, string $key, array $item): 
     }
 
     return (string)($item['default'] ?? '');
+}
+
+function hub_service_setting_environment_override(array $service, string $key): ?string
+{
+    $environment = json_decode((string)($service['environment_json'] ?? ''), true);
+    if (!is_array($environment) || !array_key_exists($key, $environment) || !is_scalar($environment[$key])) {
+        return null;
+    }
+    $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
+    if (!$pack) {
+        return (string)$environment[$key];
+    }
+    $defaults = hub_pack_env_values($pack['manifest']);
+    if (
+        hub_service_environment_is_legacy_full_snapshot($environment, $defaults)
+        && array_key_exists($key, $defaults)
+        && (string)$environment[$key] === (string)$defaults[$key]
+    ) {
+        return null;
+    }
+
+    return (string)$environment[$key];
+}
+
+function hub_service_environment_is_legacy_full_snapshot(array $environment, array $defaults): bool
+{
+    if (count($environment) !== count($defaults)) {
+        return false;
+    }
+    foreach ($defaults as $key => $_value) {
+        if (!array_key_exists($key, $environment)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function hub_list_service_settings(PDO $db, int $serviceId): array
@@ -229,6 +273,7 @@ function hub_update_service_settings(PDO $db, int $serviceId, array $values): ar
 
     if ($changed) {
         hub_write_service_env($db, $service);
+        hub_write_service_compose($db, $service);
         $restartSql = $needsRestart ? 'restart_required = 1' : 'restart_required = restart_required';
         $db->prepare(
             'UPDATE services
@@ -298,4 +343,27 @@ function hub_write_service_env(PDO $db, array $service): string
     chmod($envPath, 0664);
 
     return $envPath;
+}
+
+function hub_write_service_compose(PDO $db, array $service): string
+{
+    $pack = hub_get_pack((string)$service['pack_id']);
+    if (!$pack) {
+        throw new RuntimeException('Pack is not available for service settings.');
+    }
+    $manifest = $pack['manifest'];
+    if (hub_pack_is_internal_task($manifest)) {
+        return '';
+    }
+
+    $composePath = hub_path((string)$service['compose_file']);
+    file_put_contents($composePath, hub_generate_pack_compose(
+        $pack,
+        (string)$service['service_key'],
+        (int)$service['local_port'],
+        hub_service_settings_values($db, $service),
+    ));
+    chmod($composePath, 0664);
+
+    return $composePath;
 }
