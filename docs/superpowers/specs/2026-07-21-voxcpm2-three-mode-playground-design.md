@@ -18,7 +18,7 @@ This does not implement the planned generic audio job runtime. The first version
 
 A Voice Profile remains the only public reference to a clone source. The browser uploads a WAV to the managed `data/uploads/voice_profiles/` directory; the browser and public API never supply a host or container path.
 
-The profile lookup key is `(owner_member_id, reference_audio_sha256, deleted_at IS NULL)`. A byte-identical upload by the same owner reuses the existing profile, its stored transcript, and its managed WAV. Profiles belonging to other members are never selected or exposed.
+The automatic upload-cache lookup key is `(owner_member_id, reference_audio_sha256, deleted_at IS NULL)`. A byte-identical upload by the same owner reuses the existing profile, its stored transcript, and its managed WAV. A different member never receives an automatic cache hit. Existing explicit `shared` Voice Profile access remains unchanged.
 
 `voice_profiles` gains nullable `prompt_text_confirmed_at`.
 
