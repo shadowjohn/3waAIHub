@@ -1422,13 +1422,26 @@ Run `task_worker.php`, `callback_worker.php`, and `prune_retention.php` from the
 
 Retention defaults: failed partial uploads 1 hour, workspaces/temporary files 24 hours, source media 7 days, result artifacts 30 days, and audit metadata 180 days. `task_artifacts_ack` records receipt and may shorten retention, but does not delete files immediately.
 
-Task 13 will add the serial, real-HW acceptance workflow for all audio Packs; no single repository command provides that acceptance today. Do not treat ordinary CI or an individual Pack benchmark as a replacement. The currently implemented real VoxCPM2 benchmark is:
+Task 13's real station acceptance is deliberately separate from ordinary CI. It uses only the public async API, then polls, downloads, SHA-256-verifies, ffprobes/parses every artifact, ACKs it, and records observed VRAM use. It refuses a host without NVIDIA, Docker access, or `ffprobe` readiness; it never calls a Pack runner directly or substitutes mock output.
+
+```bash
+AIHUB_ACCEPTANCE_BASE_URL='https://hub.example/3waAIHub/api.php' \
+AIHUB_ACCEPTANCE_TOKEN='<acceptance-token>' \
+php scripts/audio_packs_acceptance.php \
+  --pack=all \
+  --fixture=packs/whisper-asr/demo/sample.wav \
+  --callback-target=myai \
+  --voice-profile-id=123 \
+  --json
+```
+
+Use a token with `audio_cleanup`, `speech_transcribe`, `voice_generate`, `task_status`, `task_result`, `artifact`, and `task_artifacts_ack` permissions. `--voice-profile-id` is optional, but when supplied adds a managed-clone TTS run after design TTS. Run it serially with other CUDA workloads stopped, then confirm each task returns `gpu:0` to `available`, has no owned PID, and leaves any cleanup uncertainty `blocked` rather than forcing the next job to start.
+
+The narrower VoxCPM2 benchmark remains useful during Pack work, but does not replace full task/artifact acceptance:
 
 ```bash
 php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_real_wav
 ```
-
-The future Task 13 station acceptance must confirm each job releases `gpu:0`, has no owned GPU PID, and leaves cleanup uncertainty `blocked`. Do not run real model acceptance concurrently with another CUDA workload.
 
 ## Runtime 檔案
 

@@ -1,5 +1,9 @@
 # 3waAIHub History
 
+## Job-first Audio Runtime Acceptance Tooling
+
+Added `scripts/audio_packs_acceptance.php` for explicit RTX station acceptance of `audio-cleanup`, `whisper-asr`, and `tts-voxcpm2` through their public async modes. It checks NVIDIA/Docker/ffprobe readiness, submits serial tasks, polls completion, verifies downloaded artifact SHA-256 and content, ACKs artifacts, and reports elapsed time plus observed GPU usage. It is not part of ordinary CI and does not invoke Pack runners directly.
+
 ## PhaseL-1C Gemma 4 Photo Vision
 
 Implemented:

@@ -104,3 +104,27 @@ hub_test('Whisper ASR service instance generates env compose and gateway mock', 
     }
     hub_test_assert($response['status'] === 200, 'ASR gateway mock should pass');
 });
+
+hub_test('real audio Pack acceptance client has a closed public API contract', function (): void {
+    $script = HUB_ROOT . '/scripts/audio_packs_acceptance.php';
+    hub_test_assert(is_file($script), 'real audio acceptance client must exist outside ordinary CI');
+    $source = (string)file_get_contents($script);
+    foreach ([
+        '--pack',
+        '--fixture',
+        '--callback-target',
+        '--voice-profile-id',
+        '--json',
+        'audio-cleanup',
+        'whisper-asr',
+        'tts-voxcpm2',
+        'nvidia-smi',
+        "'docker', 'info'",
+        'hub_audio_acceptance_submit',
+        'hub_audio_acceptance_poll',
+        'hash_file',
+        'source_artifact_id',
+    ] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'real audio acceptance client missing ' . $needle);
+    }
+});
