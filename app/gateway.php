@@ -759,6 +759,7 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         $taskInput = $_POST;
         unset($taskInput['callback'], $taskInput['callback_target']);
         $input = hub_audio_task_input($taskInput, $route);
+        $input = hub_audio_task_resolve_voice_context($db, $input, $route, $ownerMemberId, (int)($authContext['token_id'] ?? 0));
     } catch (InvalidArgumentException $e) {
         if (in_array($e->getMessage(), ['callback_target_not_found', 'callback_target_disabled'], true)) {
             return hub_gateway_error($e->getMessage() === 'callback_target_not_found' ? 404 : 409, $e->getMessage(), 'callback target is unavailable');
@@ -768,6 +769,12 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         }
         if ($e->getMessage() === 'invalid_request') {
             return hub_gateway_error(400, 'invalid_request', 'audio request does not match the Pack contract');
+        }
+        if ($e->getMessage() === 'voice_profile_required') {
+            return hub_gateway_error(400, 'voice_profile_required', 'clone mode requires one owned managed voice profile');
+        }
+        if ($e->getMessage() === 'voice_profile_forbidden') {
+            return hub_gateway_error(403, 'voice_profile_forbidden', 'voice profile is not available for this member');
         }
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
@@ -936,6 +943,58 @@ function hub_audio_task_input(array $input, array $route): array
     }
 
     return hub_pack_job_normalize_request_input($filtered, $route);
+}
+
+function hub_audio_task_resolve_voice_context(PDO $db, array $input, array $route, int $ownerMemberId, int $tokenId): array
+{
+    $definition = $route['voice_context'] ?? [];
+    if (!is_array($definition) || $definition === []) {
+        return $input;
+    }
+    $modeInput = (string)($definition['mode_input'] ?? '');
+    $profileInput = (string)($definition['profile_input'] ?? '');
+    $mode = $input[$modeInput] ?? null;
+    if ($mode === null) {
+        return $input;
+    }
+    if (!is_string($mode) || $mode === '') {
+        throw new InvalidArgumentException('invalid_request');
+    }
+    if ($mode === ($definition['design_value'] ?? null)) {
+        if (array_key_exists($profileInput, $input)) {
+            throw new InvalidArgumentException('voice_profile_forbidden');
+        }
+        return $input;
+    }
+    if ($mode !== ($definition['clone_value'] ?? null)) {
+        throw new InvalidArgumentException('invalid_request');
+    }
+    $profileId = $input[$profileInput] ?? null;
+    if (!is_int($profileId) || $profileId < 1) {
+        throw new InvalidArgumentException('voice_profile_required');
+    }
+    $profile = hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId);
+    if (!$profile || (int)($profile['owner_member_id'] ?? 0) !== $ownerMemberId
+        || (!empty($profile['expires_at']) && (string)$profile['expires_at'] <= hub_now())) {
+        throw new InvalidArgumentException('voice_profile_forbidden');
+    }
+    $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
+    $sha256 = $path === null ? false : hash_file('sha256', $path);
+    if ($path === null || !is_string($sha256) || !hash_equals((string)($profile['reference_audio_sha256'] ?? ''), $sha256)) {
+        throw new InvalidArgumentException('voice_profile_forbidden');
+    }
+    $input['voice_context'] = [
+        'mode' => $mode,
+        'voice_profile_id' => $profileId,
+        'reference_audio_sha256' => $sha256,
+        'container_path' => (string)$definition['container_path'],
+    ];
+    hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, $tokenId > 0 ? $tokenId : null, 'use', 'clone', [
+        'requested_mode' => (string)($route['requested_mode'] ?? ''),
+        'text_chars' => function_exists('mb_strlen') ? mb_strlen((string)($input['text'] ?? ''), 'UTF-8') : strlen((string)($input['text'] ?? '')),
+    ]);
+
+    return $input;
 }
 
 function hub_api_task_submit(PDO $db, array $authContext = []): array

@@ -115,7 +115,20 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
             throw new InvalidArgumentException('Invalid Pack job route.');
         }
     }
+    $voiceContext = $input['voice_context'] ?? null;
+    unset($input['voice_context']);
     $input = hub_pack_job_normalize_request_input($input, $route);
+    $definition = $route['voice_context'] ?? [];
+    if (!is_array($definition) || $definition === []) {
+        if ($voiceContext !== null) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+    } else {
+        $voiceContext = hub_pack_job_voice_context_snapshot($definition, $input, $voiceContext);
+        if ($voiceContext !== []) {
+            $input['voice_context'] = $voiceContext;
+        }
+    }
 
     $sourceArtifactId = (int)($lineage['source_artifact_id'] ?? 0);
     $startedTransaction = false;
@@ -152,6 +165,45 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
 function hub_stage_owned_pack_job(PDO $db, array $route, array $input, int $ownerMemberId, ?int $ownerTokenId, ?string $requestedIp, array $lineage = []): int
 {
     return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, $ownerTokenId, $requestedIp, $lineage, 'staging');
+}
+
+function hub_pack_job_voice_context_snapshot(array $definition, array $input, mixed $snapshot): array
+{
+    if (array_keys($definition) !== ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path']) {
+        throw new InvalidArgumentException('invalid_request');
+    }
+    $mode = $input[$definition['mode_input']] ?? null;
+    if ($mode === null) {
+        if ($snapshot !== null) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+
+        return [];
+    }
+    if ($mode === $definition['design_value']) {
+        if ($snapshot !== null) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+
+        return [];
+    }
+    if (!is_array($snapshot) || array_is_list($snapshot)) {
+        throw new InvalidArgumentException('invalid_request');
+    }
+    $profileId = $input[$definition['profile_input']] ?? null;
+    $sha256 = $snapshot['reference_audio_sha256'] ?? null;
+    $expected = [
+        'mode' => $definition['clone_value'],
+        'voice_profile_id' => $profileId,
+        'reference_audio_sha256' => $sha256,
+        'container_path' => $definition['container_path'],
+    ];
+    if ($mode !== $definition['clone_value'] || !is_int($profileId) || $profileId < 1
+        || !is_string($sha256) || preg_match('/^[a-f0-9]{64}$/', $sha256) !== 1 || $snapshot !== $expected) {
+        throw new InvalidArgumentException('invalid_request');
+    }
+
+    return $expected;
 }
 
 function hub_publish_staged_pack_job(PDO $db, int $taskId): void
@@ -287,10 +339,15 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     }
     $input = is_array($task['input'] ?? null) ? $task['input'] : [];
     unset($input['cancel_requested'], $input['cancel_requested_at']);
+    $voiceContext = $input['voice_context'] ?? null;
+    unset($input['voice_context']);
     $route = hub_revalidate_audio_async_route($db, $task);
     $sourceUploadPath = $input['source_upload_path'] ?? null;
     unset($input['source_upload_path'], $input['original_filename']);
     $input = hub_pack_job_normalize_request_input($input, $route);
+    if ($voiceContext !== null) {
+        $input['voice_context'] = $voiceContext;
+    }
     $sourceArtifactId = (int)($task['source_artifact_id'] ?? 0);
     $source = $sourceArtifactId > 0 ? hub_validate_pack_job_source_artifact($db, $sourceArtifactId, $ownerMemberId, $route) : null;
     if ($sourceArtifactId > 0 && $source === null) {

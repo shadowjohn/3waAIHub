@@ -195,6 +195,9 @@ function hub_pack_job_prepare_workspace(array $task, array $contract): string
             $request[$field] = $input[$field];
         }
     }
+    if (isset($input['voice_context'])) {
+        $request['voice_context'] = $input['voice_context'];
+    }
     $source = null;
     if ((int)($task['source_artifact_id'] ?? 0) <= 0 && isset($input['source_upload_path'])) {
         $source = hub_managed_task_upload_path($taskId, (string)$input['source_upload_path']);
@@ -428,7 +431,36 @@ function hub_pack_job_resolve_asset_mounts(PDO $db, array $runner, array $input 
     return $resolved;
 }
 
-function hub_pack_job_runner_arguments(array $runner, array $task, array $run, string $workspace, ?array $config = null, array $assetMounts = []): array
+function hub_pack_job_resolve_voice_profile_mount(PDO $db, array $task, array $contract): ?array
+{
+    $definition = $contract['voice_context'] ?? [];
+    if (!is_array($definition) || $definition === []) {
+        return null;
+    }
+    $input = is_array($task['input'] ?? null) ? $task['input'] : [];
+    $snapshot = hub_pack_job_voice_context_snapshot($definition, $input, $input['voice_context'] ?? null);
+    if ($snapshot === []) {
+        return null;
+    }
+    $profileId = (int)($snapshot['voice_profile_id'] ?? 0);
+    $ownerMemberId = (int)($task['owner_member_id'] ?? 0);
+    $profile = $profileId > 0 && $ownerMemberId > 0 ? hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId) : null;
+    if (!$profile || (int)($profile['owner_member_id'] ?? 0) !== $ownerMemberId
+        || (!empty($profile['expires_at']) && (string)$profile['expires_at'] <= hub_now())) {
+        throw new RuntimeException('voice_profile_unavailable');
+    }
+    $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
+    $sha256 = $path === null ? false : hash_file('sha256', $path);
+    if ($path === null || !is_string($sha256)
+        || !hash_equals((string)($snapshot['reference_audio_sha256'] ?? ''), $sha256)
+        || !hash_equals((string)($profile['reference_audio_sha256'] ?? ''), $sha256)) {
+        throw new RuntimeException('voice_profile_unavailable');
+    }
+
+    return ['source' => $path, 'container_path' => (string)$definition['container_path']];
+}
+
+function hub_pack_job_runner_arguments(array $runner, array $task, array $run, string $workspace, ?array $config = null, array $assetMounts = [], ?array $voiceProfileMount = null): array
 {
     $replacements = [
         '{workspace}' => $workspace,
@@ -448,7 +480,8 @@ function hub_pack_job_runner_arguments(array $runner, array $task, array $run, s
         'required_vram_mb' => $runner['required_vram_mb'],
         'timeout_seconds' => $runner['timeout_seconds'],
     ] + ($config === null ? [] : ['config' => $config])
-        + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts]);
+        + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts])
+        + ($voiceProfileMount === null ? [] : ['voice_profile_mount' => $voiceProfileMount]);
 }
 
 function hub_pack_job_default_runner_command(array $context): array
@@ -471,7 +504,11 @@ function hub_pack_job_default_runner_command(array $context): array
         throw new RuntimeException('job_contract_unavailable');
     }
     $command = ['docker', 'run', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . '/output,dst=' . $containerWorkspace . '/output', '--name', $name];
+    $voiceProfileMount = $runner['voice_profile_mount'] ?? null;
     foreach (['source', 'request.json', 'runner_config.json'] as $file) {
+        if ($file === 'source' && $voiceProfileMount !== null) {
+            continue;
+        }
         $path = $workspace . '/input/' . $file;
         if (is_file($path) && !is_link($path)) {
             $command[] = '--mount';
@@ -485,6 +522,16 @@ function hub_pack_job_default_runner_command(array $context): array
             || !is_dir($source) || is_link($source)
             || preg_match('~^/(?:models|cache)/[A-Za-z0-9][A-Za-z0-9._/-]{0,239}$~', $containerPath) !== 1) {
             throw new RuntimeException('model_assets_unavailable');
+        }
+        $command[] = '--mount';
+        $command[] = 'type=bind,src=' . $source . ',dst=' . $containerPath . ',readonly';
+    }
+    if ($voiceProfileMount !== null) {
+        $source = is_array($voiceProfileMount) ? ($voiceProfileMount['source'] ?? null) : null;
+        $containerPath = is_array($voiceProfileMount) ? ($voiceProfileMount['container_path'] ?? null) : null;
+        if (!is_string($source) || !is_string($containerPath) || !is_file($source) || is_link($source)
+            || $containerPath !== '/data/voice_profiles/reference.wav') {
+            throw new RuntimeException('voice_profile_unavailable');
         }
         $command[] = '--mount';
         $command[] = 'type=bind,src=' . $source . ',dst=' . $containerPath . ',readonly';
@@ -958,6 +1005,11 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         } catch (Throwable) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
         }
+        try {
+            $voiceProfileMount = hub_pack_job_resolve_voice_profile_mount($db, $task, $contract);
+        } catch (Throwable) {
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'voice_profile_unavailable', 'Managed voice profile is unavailable', hub_pack_job_no_work_cleanup(), null);
+        }
         if (isset($options['executor']) && is_callable($options['executor'])) {
             $executor = $options['executor'];
         } elseif (($runner['executor'] ?? '') === 'container') {
@@ -999,7 +1051,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             'task' => $task,
             'run' => $run,
             'workspace' => $workspace,
-            'runner' => hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts),
+            'runner' => hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts, $voiceProfileMount),
         ];
         $pidInspector = $gpuLease === null ? null : ($options['pid_inspector'] ?? static fn (): array => []);
         $baseline = $pidInspector === null ? [] : hub_runtime_gpu_recovery_pids($pidInspector($context));

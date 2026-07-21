@@ -1,6 +1,7 @@
 services:
   app:
     build:
-      context: ./service
+      context: .
+      dockerfile: service/Dockerfile
     ports:
       - "127.0.0.1:${TTS_LOCAL_PORT:-18108}:8000"

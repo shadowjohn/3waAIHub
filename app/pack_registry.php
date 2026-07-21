@@ -190,9 +190,10 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         $fields = hub_pack_async_job_contract_names($input['fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
         $artifactTypes = hub_pack_async_job_contract_names($input['source_artifact_types'] ?? null, '/^[a-z][a-z0-9_-]*$/');
         $requestSchema = hub_pack_async_job_request_schema($input['request_schema'] ?? [], $fields ?? []);
+        $voiceContext = hub_pack_async_job_voice_context_contract($input['voice_context'] ?? null, $fields ?? [], $requestSchema ?? []);
         $maxUploadBytes = hub_pack_async_job_max_upload_bytes($definition, $manifest);
         $output = $definition['output'] ?? null;
-        if ($fields === null || $artifactTypes === null || $requestSchema === null || $maxUploadBytes === null || !is_array($output)
+        if ($fields === null || $artifactTypes === null || $requestSchema === null || $voiceContext === null || $maxUploadBytes === null || !is_array($output)
             || array_diff(array_keys($output), ['artifacts', 'report_attestation']) !== []) {
             return null;
         }
@@ -229,7 +230,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
             'request_schema' => $requestSchema,
             'max_upload_bytes' => $maxUploadBytes,
             'artifact_contract' => $artifactContract,
-        ] + ($runner === null ? [] : ['runner' => $runner])
+        ] + ($voiceContext === [] ? [] : ['voice_context' => $voiceContext]) + ($runner === null ? [] : ['runner' => $runner])
             + ($runnerConfig === null ? [] : ['runner_config' => $runnerConfig])
             + ($capabilities === [] ? [] : ['capabilities' => $capabilities])
             + ($capabilityRequirements === [] ? [] : ['capability_requirements' => $capabilityRequirements]);
@@ -657,6 +658,36 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
     return $normalized;
 }
 
+function hub_pack_async_job_voice_context_contract(mixed $definition, array $fields, array $requestSchema): ?array
+{
+    if ($definition === null) {
+        return [];
+    }
+    if (!is_array($definition) || array_keys($definition) !== ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path']) {
+        return null;
+    }
+    $modeInput = $definition['mode_input'] ?? null;
+    $designValue = $definition['design_value'] ?? null;
+    $cloneValue = $definition['clone_value'] ?? null;
+    $profileInput = $definition['profile_input'] ?? null;
+    $containerPath = $definition['container_path'] ?? null;
+    if (!is_string($modeInput) || !is_string($designValue) || !is_string($cloneValue) || !is_string($profileInput) || !is_string($containerPath)
+        || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || $designValue === '' || $cloneValue === '' || $designValue === $cloneValue
+        || ($requestSchema[$modeInput]['type'] ?? null) !== 'string' || !in_array($designValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true)
+        || !in_array($cloneValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true) || ($requestSchema[$profileInput]['type'] ?? null) !== 'integer'
+        || $containerPath !== '/data/voice_profiles/reference.wav') {
+        return null;
+    }
+
+    return [
+        'mode_input' => $modeInput,
+        'design_value' => $designValue,
+        'clone_value' => $cloneValue,
+        'profile_input' => $profileInput,
+        'container_path' => $containerPath,
+    ];
+}
+
 function hub_pack_async_job_capabilities(mixed $capabilities): ?array
 {
     if (!is_array($capabilities) || ($capabilities !== [] && array_is_list($capabilities))) {
@@ -803,6 +834,13 @@ function hub_pack_job_contract_snapshot(array $contract): array
         'max_upload_bytes' => $maxUploadBytes,
         'artifact_contract' => ['artifacts' => $artifacts] + ($attestation === null ? [] : ['report_attestation' => $attestation]),
     ];
+    $voiceContext = hub_pack_async_job_voice_context_contract($contract['voice_context'] ?? null, $fields, $snapshot['request_schema']);
+    if ($voiceContext === null) {
+        throw new InvalidArgumentException('job_contract_unavailable');
+    }
+    if ($voiceContext !== []) {
+        $snapshot['voice_context'] = $voiceContext;
+    }
     $capabilities = hub_pack_async_job_capabilities($contract['capabilities'] ?? []);
     $requirements = hub_pack_async_job_capability_requirements($contract['capability_requirements'] ?? [], $capabilities ?? []);
     if ($capabilities === null || $requirements === null) {
