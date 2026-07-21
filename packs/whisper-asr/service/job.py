@@ -10,18 +10,31 @@ import time
 from pathlib import Path
 from typing import Any
 
-ASR_MODEL_DIR = Path("/models/whisper/asr/large-v3")
-HUGGINGFACE_CACHE_DIR = Path("/cache/whisper/huggingface")
-OFFLINE_CACHE_MARKER = HUGGINGFACE_CACHE_DIR / ".aihub-offline-ready.json"
+from offline_paths import (
+    ALIGNMENT_LANGUAGE,
+    ALIGNMENT_MODEL_NAME,
+    ALIGNMENT_WEIGHT,
+    ASR_MODEL_DIR,
+    HUGGINGFACE_CACHE_DIR,
+    OFFLINE_CACHE_MARKER,
+    PYANNOTE_CONFIG,
+    PYANNOTE_EMBEDDING,
+    PYANNOTE_SEGMENTATION,
+    TORCH_CACHE_DIR,
+    offline_cache_manifest as fixed_offline_cache_manifest,
+)
 
 
 def configure_offline_cache() -> None:
-    cache = str(HUGGINGFACE_CACHE_DIR)
-    os.environ["HF_HOME"] = cache
-    os.environ["XDG_CACHE_HOME"] = cache
+    os.environ["HF_HOME"] = str(HUGGINGFACE_CACHE_DIR)
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(HUGGINGFACE_CACHE_DIR)
+    os.environ["TRANSFORMERS_CACHE"] = str(HUGGINGFACE_CACHE_DIR)
+    os.environ["XDG_CACHE_HOME"] = str(HUGGINGFACE_CACHE_DIR)
+    os.environ["TORCH_HOME"] = str(TORCH_CACHE_DIR)
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
     os.environ["HF_DATASETS_OFFLINE"] = "1"
+    os.environ["PYANNOTE_METRICS_ENABLED"] = "0"
 
 
 def offline_cache_manifest() -> dict[str, Any]:
@@ -29,24 +42,25 @@ def offline_cache_manifest() -> dict[str, Any]:
         value = read_json(OFFLINE_CACHE_MARKER)
     except Exception as error:
         raise RuntimeError("offline_cache_unavailable") from error
-    if value.get("schema") != "aihub-whisper-offline-cache/v1":
-        raise RuntimeError("offline_cache_unavailable")
-    languages = value.get("alignment_languages")
-    if not isinstance(languages, list) or not languages or any(not isinstance(language, str) or not language for language in languages):
-        raise RuntimeError("offline_cache_unavailable")
-    if value.get("pyannote_model") != "pyannote/speaker-diarization-3.1":
+    if value != fixed_offline_cache_manifest():
         raise RuntimeError("offline_cache_unavailable")
     return value
 
 
 def require_offline_assets(request: dict[str, Any], language: str) -> None:
-    if any(not (ASR_MODEL_DIR / name).is_file() or (ASR_MODEL_DIR / name).is_symlink() for name in ("config.json", "model.bin", "tokenizer.json")):
-        raise RuntimeError("asr_model_unavailable")
-    cache = offline_cache_manifest()
-    if request.get("word_timestamps") is True and language != "auto":
-        languages = cache["alignment_languages"]
-        if "*" not in languages and language not in languages:
-            raise RuntimeError("alignment_cache_unavailable")
+    require_regular_files(ASR_MODEL_DIR, ("config.json", "model.bin", "tokenizer.json"), "asr_model_unavailable")
+    offline_cache_manifest()
+    require_regular_files(TORCH_CACHE_DIR, (ALIGNMENT_WEIGHT.name,), "alignment_cache_unavailable")
+    require_regular_files(PYANNOTE_CONFIG.parent, (PYANNOTE_CONFIG.name, "models/" + PYANNOTE_SEGMENTATION.name, "models/" + PYANNOTE_EMBEDDING.name), "diarization_model_unavailable")
+    if request.get("word_timestamps") is True and language != "auto" and language != ALIGNMENT_LANGUAGE:
+        raise RuntimeError("alignment_cache_unavailable")
+
+
+def require_regular_files(directory: Path, names: tuple[str, ...], error_code: str) -> None:
+    for name in names:
+        path = directory / name
+        if not path.is_file() or path.is_symlink():
+            raise RuntimeError(error_code)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -99,9 +113,16 @@ def transcribe(model: Any, source: Path, language: str | None, word_timestamps: 
 
 
 def load_alignment(language: str) -> Any:
+    if language != ALIGNMENT_LANGUAGE:
+        raise RuntimeError("alignment_unavailable")
     try:
         import whisperx
-        return whisperx.load_align_model(language_code=language, device="cuda")
+        return whisperx.load_align_model(
+            language_code=language,
+            device="cuda",
+            model_name=ALIGNMENT_MODEL_NAME,
+            model_dir=str(TORCH_CACHE_DIR),
+        )
     except Exception as error:
         raise RuntimeError("alignment_unavailable") from error
 
@@ -119,10 +140,10 @@ def align(loader: Any, segments: list[dict[str, Any]], source: Path, language: s
         raise RuntimeError("alignment_failed") from error
 
 
-def load_diarization(token: str) -> Any:
+def load_diarization() -> Any:
     try:
         import whisperx
-        return whisperx.DiarizationPipeline(use_auth_token=token, device="cuda")
+        return whisperx.DiarizationPipeline(model_name=str(PYANNOTE_CONFIG), use_auth_token=None, device="cuda")
     except Exception as error:
         raise RuntimeError("diarization_unavailable") from error
 
@@ -221,10 +242,7 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
     if output_vtt:
         (output_dir / "subtitle.vtt").write_text(subtitle(segments, True), encoding="utf-8")
     if diarization:
-        token = os.environ.get("AIHUB_SECRET_PYANNOTE_TOKEN")
-        if not token:
-            raise RuntimeError("diarization_token_missing")
-        timeline = anonymous_speakers(diarize(load_diarization(token), source, minimum, maximum))
+        timeline = anonymous_speakers(diarize(load_diarization(), source, minimum, maximum))
         (output_dir / "speaker_timeline.json").write_text(json.dumps({"speakers": timeline}, ensure_ascii=False) + "\n", encoding="utf-8")
     report = {
         "model": model["label"],

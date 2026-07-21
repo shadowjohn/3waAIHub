@@ -64,7 +64,6 @@
         "required_vram_mb": 10000,
         "timeout_seconds": 3600,
         "executor": "container",
-        "secret_env": ["AIHUB_SECRET_PYANNOTE_TOKEN"],
         "asset_mounts": [
           {
             "id": "whisper_asr_large_v3",
@@ -74,11 +73,25 @@
             "required_paths": ["config.json", "model.bin", "tokenizer.json"]
           },
           {
+            "id": "whisper_alignment_torch",
+            "storage": "cache",
+            "host_subdir": "whisper/torch",
+            "container_path": "/cache/whisper/torch",
+            "required_paths": ["wav2vec2_fairseq_base_ls960_asr_ls960.pth"]
+          },
+          {
             "id": "whisper_huggingface_cache",
             "storage": "cache",
             "host_subdir": "whisper/huggingface",
             "container_path": "/cache/whisper/huggingface",
             "required_paths": [".aihub-offline-ready.json"]
+          },
+          {
+            "id": "whisper_pyannote_diarization",
+            "storage": "cache",
+            "host_subdir": "whisper/pyannote/speaker-diarization-3.1",
+            "container_path": "/cache/whisper/pyannote/speaker-diarization-3.1",
+            "required_paths": ["config.yaml", "models/pyannote_segmentation-3.0.bin", "models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"]
           }
         ]
       },

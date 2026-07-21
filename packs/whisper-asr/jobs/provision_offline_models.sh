@@ -10,10 +10,10 @@ case "$AIHUB_CACHE_DIR" in /*) ;; *) echo 'AIHUB_CACHE_DIR must be absolute' >&2
 
 mkdir -p "$AIHUB_MODELS_DIR" "$AIHUB_CACHE_DIR"
 exec docker run --rm \
-  --mount "type=bind,src=$AIHUB_MODELS_DIR,dst=/hub/models" \
-  --mount "type=bind,src=$AIHUB_CACHE_DIR,dst=/hub/cache" \
-  --env AIHUB_MODELS_DIR=/hub/models \
-  --env AIHUB_CACHE_DIR=/hub/cache \
+  --mount "type=bind,src=$AIHUB_MODELS_DIR,dst=/models" \
+  --mount "type=bind,src=$AIHUB_CACHE_DIR,dst=/cache" \
+  --env AIHUB_MODELS_DIR=/models \
+  --env AIHUB_CACHE_DIR=/cache \
   --env AIHUB_SECRET_PYANNOTE_TOKEN \
   --entrypoint /app/provision-offline-assets \
   3waaihub/whisper-asr:0.1.0 \

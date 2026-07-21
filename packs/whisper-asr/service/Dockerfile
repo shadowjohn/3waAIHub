@@ -26,7 +26,7 @@ RUN mkdir -p /tmp/home /tmp/xdg \
        python3 /app/smoke.py \
     && rm -rf /tmp/home /tmp/xdg
 
-COPY service/app.py service/job.py service/provision_offline_assets.py jobs/speech_transcribe.sh ./
+COPY service/app.py service/job.py service/offline_paths.py service/provision_offline_assets.py jobs/speech_transcribe.sh ./
 RUN chmod 0755 /app/speech_transcribe.sh /app/provision_offline_assets.py \
     && ln -s /app/speech_transcribe.sh /app/speech-transcribe \
     && ln -s /app/provision_offline_assets.py /app/provision-offline-assets
