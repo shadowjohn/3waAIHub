@@ -19,6 +19,17 @@ function hub_db(): PDO
     return $db;
 }
 
+function hub_voice_profile_active_sha_index_unique(PDO $db): ?bool
+{
+    foreach ($db->query("PRAGMA index_list('voice_profiles')")->fetchAll() as $index) {
+        if (($index['name'] ?? '') === 'idx_voice_profiles_owner_sha_active') {
+            return (int)($index['unique'] ?? 0) === 1;
+        }
+    }
+
+    return null;
+}
+
 function hub_migrate(PDO $db): void
 {
     $db->exec(<<<'SQL'
@@ -343,6 +354,10 @@ CREATE TABLE IF NOT EXISTS voice_profiles (
     prompt_text TEXT NULL,
     prompt_text_confirmed_at TEXT NULL,
     language TEXT NULL,
+    transcription_status TEXT NOT NULL DEFAULT 'pending',
+    transcription_error TEXT NULL,
+    transcription_started_at TEXT NULL,
+    transcription_lease_token TEXT NULL,
     consent_type TEXT NOT NULL,
     usage_scope TEXT NOT NULL DEFAULT 'private',
     visibility TEXT NOT NULL DEFAULT 'private',
@@ -565,6 +580,48 @@ SQL);
     }
     hub_add_column_if_missing($db, 'voice_profiles', 'usage_scope', "TEXT NOT NULL DEFAULT 'private'");
     hub_add_column_if_missing($db, 'voice_profiles', 'retain_original_audio', 'INTEGER NOT NULL DEFAULT 1');
+    $voiceProfileTranscriptionStateMarker = 'db_migration_voice_profiles_transcription_state_v1';
+    if (hub_get_storage_setting($db, $voiceProfileTranscriptionStateMarker) !== '1') {
+        $voiceProfileTranscriptionStateMigrationStarted = false;
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            $voiceProfileTranscriptionStateMigrationStarted = true;
+            hub_add_column_if_missing($db, 'voice_profiles', 'transcription_status', "TEXT NOT NULL DEFAULT 'pending'");
+            hub_add_column_if_missing($db, 'voice_profiles', 'transcription_error', 'TEXT NULL');
+            hub_add_column_if_missing($db, 'voice_profiles', 'transcription_started_at', 'TEXT NULL');
+            hub_add_column_if_missing($db, 'voice_profiles', 'transcription_lease_token', 'TEXT NULL');
+            if (hub_get_storage_setting($db, $voiceProfileTranscriptionStateMarker) !== '1') {
+                $db->exec("UPDATE voice_profiles
+                           SET transcription_status = CASE
+                               WHEN prompt_text IS NOT NULL AND trim(prompt_text) <> '' THEN 'ready'
+                               WHEN transcription_error IS NOT NULL AND trim(transcription_error) <> '' THEN 'failed'
+                               ELSE 'pending'
+                           END,
+                               transcription_error = CASE
+                               WHEN transcription_error = 'asr_unavailable' THEN 'asr_unavailable'
+                               WHEN transcription_error IS NOT NULL AND trim(transcription_error) <> '' THEN 'asr_failed'
+                               ELSE NULL
+                           END");
+                hub_set_storage_setting($db, $voiceProfileTranscriptionStateMarker, '1');
+            }
+            $db->exec('COMMIT');
+            $voiceProfileTranscriptionStateMigrationStarted = false;
+        } catch (Throwable $e) {
+            if ($voiceProfileTranscriptionStateMigrationStarted) {
+                try {
+                    $db->exec('ROLLBACK');
+                } catch (Throwable) {
+                }
+            }
+            throw $e;
+        }
+    } else {
+        hub_add_column_if_missing($db, 'voice_profiles', 'transcription_status', "TEXT NOT NULL DEFAULT 'pending'");
+        hub_add_column_if_missing($db, 'voice_profiles', 'transcription_error', 'TEXT NULL');
+        hub_add_column_if_missing($db, 'voice_profiles', 'transcription_started_at', 'TEXT NULL');
+        hub_add_column_if_missing($db, 'voice_profiles', 'transcription_lease_token', 'TEXT NULL');
+    }
+    $db->exec('DROP TABLE IF EXISTS voice_profile_upload_locks');
     hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'progress', 'INTEGER NOT NULL DEFAULT 0');
     hub_add_column_if_missing($db, 'command_jobs', 'stage', 'TEXT NULL');
@@ -592,6 +649,33 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token_date ON api_token_usage_daily(token_id, usage_date)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner ON voice_profiles(owner_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_deleted ON voice_profiles(deleted_at)');
+    $voiceProfileIndexUnique = hub_voice_profile_active_sha_index_unique($db);
+    if ($voiceProfileIndexUnique === null) {
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner_sha_active ON voice_profiles(owner_member_id, reference_audio_sha256) WHERE deleted_at IS NULL');
+    } elseif ($voiceProfileIndexUnique) {
+        $voiceProfileIndexMigrationStarted = false;
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            $voiceProfileIndexMigrationStarted = true;
+            $voiceProfileIndexUnique = hub_voice_profile_active_sha_index_unique($db);
+            if ($voiceProfileIndexUnique === null) {
+                $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner_sha_active ON voice_profiles(owner_member_id, reference_audio_sha256) WHERE deleted_at IS NULL');
+            } elseif ($voiceProfileIndexUnique) {
+                $db->exec('DROP INDEX idx_voice_profiles_owner_sha_active');
+                $db->exec('CREATE INDEX idx_voice_profiles_owner_sha_active ON voice_profiles(owner_member_id, reference_audio_sha256) WHERE deleted_at IS NULL');
+            }
+            $db->exec('COMMIT');
+            $voiceProfileIndexMigrationStarted = false;
+        } catch (Throwable $e) {
+            if ($voiceProfileIndexMigrationStarted) {
+                try {
+                    $db->exec('ROLLBACK');
+                } catch (Throwable) {
+                }
+            }
+            throw $e;
+        }
+    }
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_profile ON voice_profile_audit_logs(voice_profile_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_owner ON voice_profile_audit_logs(owner_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_expires_at ON photo_assets(expires_at)');

@@ -130,6 +130,1022 @@ hub_test('VoxCPM2 voice profile drafts confirm per owner and accept explicit tok
     hub_test_assert(($auditDetails['text_chars'] ?? null) === (function_exists('mb_strlen') ? 4 : strlen('繁中測試')), 'confirmation audit must count Traditional Chinese characters correctly');
 });
 
+hub_test('VoxCPM2 rolls back confirmation when its audit cannot be written', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Confirm Audit Failure Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/confirm_audit_failure.wav';
+    file_put_contents($path, 'RIFFconfirm');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Confirm audit failure draft',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $before = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing confirmation audit failure profile.');
+    $db->exec("CREATE TRIGGER voice_profile_confirm_audit_failure
+        BEFORE INSERT ON voice_profile_audit_logs
+        WHEN NEW.voice_profile_id = " . $profileId . " AND NEW.action = 'confirm_transcript'
+        BEGIN
+            SELECT RAISE(ABORT, 'confirm_audit_failed');
+        END");
+
+    try {
+        hub_test_assert(hub_test_throws(static fn (): array => hub_confirm_voice_profile_prompt($db, $profileId, $memberId, 'must not confirm')), 'confirmation audit failure must surface');
+        $after = hub_get_voice_profile($db, $profileId);
+        $confirmCount = (int)$db->query('SELECT COUNT(*) FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $profileId . " AND action = 'confirm_transcript'")->fetchColumn();
+        hub_test_assert($after !== null && $after['prompt_text'] === $before['prompt_text'] && $after['prompt_text_confirmed_at'] === $before['prompt_text_confirmed_at'] && $after['transcription_status'] === $before['transcription_status'] && $after['transcription_error'] === $before['transcription_error'] && $after['transcription_started_at'] === $before['transcription_started_at'] && $after['transcription_lease_token'] === $before['transcription_lease_token'], 'confirmation audit failure must leave transcript, confirmation, status, and lease state unchanged');
+        hub_test_assert($confirmCount === 0, 'confirmation audit failure must not leave a confirm audit');
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS voice_profile_confirm_audit_failure');
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 stores validated WAV uploads as unconfirmed ASR drafts', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Uploaded Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+
+    try {
+        $result = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Uploaded draft', 'consent_type' => 'self_recorded'],
+            static fn (string $from, string $to): bool => copy($from, $to),
+            static fn (): array => ['ok' => true, 'text' => '自動字幕', 'language' => 'zh-TW', 'device' => ['effective' => 'cuda']]
+        );
+    } finally {
+        @unlink($tmpName);
+    }
+
+    $profile = $result['profile'];
+    hub_test_assert($result['cache_hit'] === false, 'new WAV upload must not be a cache hit');
+    hub_test_assert($profile['prompt_text'] === '自動字幕', 'successful ASR must save the draft text');
+    hub_test_assert($profile['language'] === 'zh-TW', 'successful ASR must save the language');
+    hub_test_assert($profile['prompt_text_confirmed_at'] === null, 'ASR text must remain unconfirmed');
+    hub_test_assert($profile['transcription_status'] === 'ready' && $profile['transcription_error'] === null, 'successful ASR must mark the draft ready without an error');
+    hub_test_assert(hub_voice_profile_safe_host_path((string)$profile['reference_audio_path']) === $profile['reference_audio_path'], 'uploaded WAV must stay in managed storage');
+
+    $indexSql = $db->query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_voice_profiles_owner_sha_active'")->fetchColumn();
+    hub_test_assert(str_contains((string)$indexSql, 'CREATE INDEX') && !str_contains((string)$indexSql, 'CREATE UNIQUE INDEX') && str_contains((string)$indexSql, 'WHERE deleted_at IS NULL'), 'owner SHA cache lookup needs a nonunique active-profile partial index');
+    $audit = $db->query('SELECT details_json FROM voice_profile_audit_logs WHERE voice_profile_id = ' . (int)$profile['id'] . " AND action = 'transcribe'")->fetchColumn();
+    hub_test_assert(json_decode((string)$audit, true) === ['status' => 'success', 'device' => ['effective' => 'cuda'], 'text_chars' => 4], 'transcribe audit must contain status, device, and character count only');
+});
+
+hub_test('VoxCPM2 keeps duplicate legacy owner SHA profiles during migration', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Legacy Duplicate Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/legacy_duplicate.wav';
+    file_put_contents($path, 'RIFFlegacy');
+    $firstId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Legacy one',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $secondId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Legacy two',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    hub_migrate($db);
+    $sha256 = hash_file('sha256', $path);
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM voice_profiles WHERE owner_member_id = ' . $memberId . ' AND deleted_at IS NULL')->fetchColumn() === 2, 'legacy duplicate active profiles must remain intact');
+    hub_test_assert(hub_find_active_voice_profile_by_owner_sha($db, $memberId, (string)$sha256) !== null, 'legacy duplicate owner SHA must remain searchable');
+    hub_test_assert($firstId !== $secondId, 'legacy duplicate fixtures must be distinct profiles');
+});
+
+hub_test('VoxCPM2 caches uploaded WAV bytes only for the same owner', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Cache Voice Owner');
+    $otherMemberId = hub_create_api_member($db, 'Other Cache Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $moveCalls = 0;
+    $asrCalls = 0;
+    $move = static function (string $from, string $to) use (&$moveCalls): bool {
+        $moveCalls++;
+        return copy($from, $to);
+    };
+    $transcribe = static function () use (&$asrCalls): array {
+        $asrCalls++;
+        return ['ok' => true, 'text' => 'draft', 'language' => 'en', 'device' => []];
+    };
+
+    try {
+        $first = hub_create_uploaded_voice_profile($db, $memberId, $upload, ['name' => 'Cached draft', 'consent_type' => 'self_recorded'], $move, $transcribe);
+        $again = hub_create_uploaded_voice_profile($db, $memberId, $upload, ['name' => 'Ignored name', 'consent_type' => 'self_recorded'], $move, static fn (): array => throw new RuntimeException('cache hit must not transcribe'));
+        $other = hub_create_uploaded_voice_profile($db, $otherMemberId, $upload, ['name' => 'Other draft', 'consent_type' => 'self_recorded'], $move, $transcribe);
+    } finally {
+        @unlink($tmpName);
+    }
+
+    hub_test_assert($again['cache_hit'] === true && (int)$again['profile']['id'] === (int)$first['profile']['id'], 'same owner and bytes must reuse the active profile');
+    hub_test_assert($moveCalls === 2 && $asrCalls === 2, 'same-owner ready cache hit must skip staging and ASR');
+    hub_test_assert($other['cache_hit'] === false && (int)$other['profile']['owner_member_id'] === $otherMemberId, 'matching bytes must not cross profile ownership');
+    hub_test_assert((int)$other['profile']['id'] !== (int)$first['profile']['id'], 'other owner must receive a separate private profile');
+    $cacheAudit = $db->query('SELECT details_json FROM voice_profile_audit_logs WHERE voice_profile_id = ' . (int)$first['profile']['id'] . " AND action = 'cache_hit'")->fetchColumn();
+    hub_test_assert(json_decode((string)$cacheAudit, true) === ['status' => 'reused'], 'active cache reuse must be audited without transcript details');
+});
+
+hub_test('VoxCPM2 validates profile input before moving an uploaded WAV', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Validation Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $moveCalls = 0;
+    $move = static function (string $from, string $to) use (&$moveCalls): bool {
+        $moveCalls++;
+        return copy($from, $to);
+    };
+
+    try {
+        hub_test_assert(hub_test_throws(static fn (): array => hub_create_uploaded_voice_profile($db, $memberId, $upload, ['name' => '', 'consent_type' => 'self_recorded', 'usage_scope' => 'private', 'visibility' => 'private'], $move)), 'blank profile name must be rejected');
+        hub_test_assert(hub_test_throws(static fn (): array => hub_create_uploaded_voice_profile($db, $memberId, $upload, ['name' => 'Invalid consent', 'consent_type' => 'unknown', 'usage_scope' => 'private', 'visibility' => 'private'], $move)), 'invalid profile consent must be rejected');
+    } finally {
+        @unlink($tmpName);
+    }
+
+    hub_test_assert($moveCalls === 0, 'invalid profile input must not leave a managed WAV behind');
+});
+
+hub_test('VoxCPM2 reports a pending owner SHA upload without a cache hit', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Pending Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $sha256 = hash_file('sha256', $tmpName);
+    $path = hub_voice_profile_storage_dir() . '/voice_profile_' . $memberId . '_' . $sha256 . '.wav';
+    $moveCalls = 0;
+    file_put_contents($path, (string)file_get_contents($tmpName));
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Pending draft',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+        'transcription_status' => 'pending',
+    ]);
+    hub_test_assert((string)((hub_get_voice_profile($db, $profileId) ?? [])['transcription_started_at'] ?? '') !== '', 'new pending profile must start a transcription lease');
+
+    try {
+        $result = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Second pending upload', 'consent_type' => 'self_recorded'],
+            static function (string $from, string $to) use (&$moveCalls): bool {
+                $moveCalls++;
+                return copy($from, $to);
+            },
+            static fn (): array => throw new RuntimeException('pending upload must not transcribe')
+        );
+        hub_test_assert((glob(hub_voice_profile_storage_dir() . '/voice_profile_stage_' . $memberId . '_*.wav') ?: []) === [], 'pending upload must delete only its staging WAV');
+    } finally {
+        @unlink($tmpName);
+        hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        foreach (glob(hub_voice_profile_storage_dir() . '/voice_profile_stage_' . $memberId . '_*.wav') ?: [] as $staging) {
+            @unlink($staging);
+        }
+    }
+
+    hub_test_assert($result['cache_hit'] === false, 'pending upload must not report a completed cache hit');
+    hub_test_assert(($result['transcription']['error'] ?? '') === 'transcription_pending', 'pending upload must return a safe pending status');
+    hub_test_assert((int)$result['profile']['id'] === $profileId && $moveCalls === 0, 'pending upload must retain the active profile without staging its duplicate bytes');
+});
+
+hub_test('VoxCPM2 reclaims a stale pending owner SHA upload without moving bytes', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Stale Pending Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $sha256 = hash_file('sha256', $tmpName);
+    $path = hub_voice_profile_storage_dir() . '/voice_profile_' . $memberId . '_' . $sha256 . '.wav';
+    file_put_contents($path, (string)file_get_contents($tmpName));
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Stale pending draft',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+        'transcription_status' => 'pending',
+    ]);
+    $db->prepare('UPDATE voice_profiles SET transcription_started_at = :started_at WHERE id = :id')
+        ->execute([':started_at' => date('Y-m-d H:i:s', time() - 301), ':id' => $profileId]);
+    $moveCalls = 0;
+
+    try {
+        $result = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Stale retry upload', 'consent_type' => 'self_recorded'],
+            static function (string $from, string $to) use (&$moveCalls): bool {
+                $moveCalls++;
+                return copy($from, $to);
+            },
+            static fn (): array => ['ok' => true, 'text' => 'reclaimed draft', 'language' => 'en', 'device' => []]
+        );
+        hub_test_assert($result['cache_hit'] === false && (int)$result['profile']['id'] === $profileId, 'stale pending upload must reclaim the existing profile');
+        hub_test_assert($result['profile']['transcription_status'] === 'ready' && $moveCalls === 0, 'stale pending upload must retranscribe managed bytes without staging another file');
+    } finally {
+        @unlink($tmpName);
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 removes only stale unreferenced generated upload WAVs on a cache miss', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Staging Cleanup Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $cleanupTmpName = tempnam(sys_get_temp_dir(), 'voice-profile-cleanup-');
+    if ($cleanupTmpName === false) {
+        throw new RuntimeException('Cannot create cleanup WAV fixture.');
+    }
+    file_put_contents($cleanupTmpName, "RIFF" . pack('V', 37) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 1) . "\0");
+    $cleanupUpload = ['tmp_name' => $cleanupTmpName, 'size' => filesize($cleanupTmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $sha256 = hash_file('sha256', $tmpName);
+    $dir = hub_voice_profile_storage_dir();
+    $path = $dir . '/voice_profile_' . $memberId . '_' . $sha256 . '.wav';
+    $oldStaging = $dir . '/voice_profile_stage_99_' . str_repeat('a', 32) . '.wav';
+    $freshStaging = $dir . '/voice_profile_stage_99_' . str_repeat('b', 32) . '.wav';
+    $oldUnreferencedFinal = $dir . '/voice_profile_99_' . str_repeat('c', 32) . '.wav';
+    $activeFinal = $dir . '/voice_profile_' . $memberId . '_' . str_repeat('d', 32) . '.wav';
+    $deletedFinal = $dir . '/voice_profile_' . $memberId . '_' . str_repeat('e', 32) . '.wav';
+    $freshUnreferencedFinal = $dir . '/voice_profile_99_' . str_repeat('f', 32) . '.wav';
+    $oldLegacyFinal = $dir . '/voice_profile_99_' . str_repeat('a', 64) . '.wav';
+    file_put_contents($path, (string)file_get_contents($tmpName));
+    file_put_contents($oldStaging, 'old');
+    file_put_contents($freshStaging, 'fresh');
+    file_put_contents($oldUnreferencedFinal, 'old final');
+    file_put_contents($activeFinal, 'active final');
+    file_put_contents($deletedFinal, 'deleted final');
+    file_put_contents($freshUnreferencedFinal, 'fresh final');
+    file_put_contents($oldLegacyFinal, 'legacy final');
+    $oldAt = time() - hub_voice_profile_transcription_lease_seconds($db) - 1;
+    touch($oldStaging, $oldAt);
+    touch($oldUnreferencedFinal, $oldAt);
+    touch($activeFinal, $oldAt);
+    touch($deletedFinal, $oldAt);
+    touch($oldLegacyFinal, $oldAt);
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Ready cleanup draft',
+        'reference_audio_path' => $path,
+        'prompt_text' => 'ready',
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $activeProfileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Active final cleanup draft',
+        'reference_audio_path' => $activeFinal,
+        'prompt_text' => 'active',
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $deletedProfileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Deleted final cleanup draft',
+        'reference_audio_path' => $deletedFinal,
+        'prompt_text' => 'deleted',
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    hub_soft_delete_voice_profile($db, $deletedProfileId, $memberId);
+    $cleanupProfileId = 0;
+
+    try {
+        $cached = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Ready cache', 'consent_type' => 'self_recorded'],
+            static fn (): bool => throw new RuntimeException('ready cache must not move')
+        );
+        hub_test_assert($cached['cache_hit'] === true, 'ready profile must remain a cache hit without cleanup');
+        hub_test_assert(is_file($oldStaging) && is_file($oldUnreferencedFinal), 'ready cache hit must not run staging or final cleanup');
+        $result = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $cleanupUpload,
+            ['name' => 'Cleanup cache miss', 'consent_type' => 'self_recorded'],
+            static fn (string $from, string $to): bool => copy($from, $to),
+            static fn (): array => ['ok' => true, 'text' => 'cleanup draft', 'language' => 'en', 'device' => []]
+        );
+        $cleanupProfileId = (int)$result['profile']['id'];
+        hub_test_assert($result['cache_hit'] === false, 'cleanup fixture upload must take the no-cache-miss path');
+        hub_test_assert(!is_file($oldStaging) && is_file($freshStaging), 'upload entry must remove only stale random staging WAVs');
+        hub_test_assert(!is_file($oldUnreferencedFinal), 'upload entry must remove an old unreferenced immutable final WAV');
+        hub_test_assert(is_file($activeFinal) && is_file($deletedFinal), 'upload entry must retain old immutable final WAVs referenced by active or soft-deleted profiles');
+        hub_test_assert(is_file($freshUnreferencedFinal), 'upload entry must retain a fresh unreferenced immutable final WAV');
+        hub_test_assert(is_file($oldLegacyFinal), 'upload entry must not remove arbitrary legacy WAV filenames');
+    } finally {
+        @unlink($tmpName);
+        @unlink($cleanupTmpName);
+        @unlink($oldStaging);
+        @unlink($freshStaging);
+        @unlink($oldUnreferencedFinal);
+        @unlink($deletedFinal);
+        @unlink($freshUnreferencedFinal);
+        @unlink($oldLegacyFinal);
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+        if (hub_get_voice_profile($db, $activeProfileId) !== null) {
+            hub_soft_delete_voice_profile($db, $activeProfileId, $memberId, true);
+        }
+        if ($cleanupProfileId > 0 && hub_get_voice_profile($db, $cleanupProfileId) !== null) {
+            hub_soft_delete_voice_profile($db, $cleanupProfileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 final cleanup waits for writer lock before checking final references', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Concurrent Cleanup Voice Owner');
+    $concurrentDb = hub_db();
+    $concurrentDb->exec('PRAGMA busy_timeout = 0');
+    $dir = hub_voice_profile_storage_dir();
+    $writerStaging = $dir . '/voice_profile_stage_' . $memberId . '_' . str_repeat('1', 32) . '.wav';
+    $protectedFinal = $dir . '/voice_profile_' . $memberId . '_' . str_repeat('2', 32) . '.wav';
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-concurrent-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create concurrent WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 37) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 1) . "\0");
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    file_put_contents($writerStaging, 'RIFFuncommitted');
+    touch($writerStaging, time() - hub_voice_profile_transcription_lease_seconds($db) - 1);
+    $writerTransactionStarted = false;
+    $writerProfileId = 0;
+    $uploadProfileId = 0;
+
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $writerTransactionStarted = true;
+        hub_test_assert(rename($writerStaging, $protectedFinal), 'writer must rename its final WAV before creating the profile');
+        $writerProfileId = hub_create_voice_profile($db, $memberId, [
+            'name' => 'Uncommitted writer draft',
+            'reference_audio_path' => $protectedFinal,
+            'prompt_text' => 'writer',
+            'consent_type' => 'self_recorded',
+            'usage_scope' => 'private',
+            'visibility' => 'private',
+        ]);
+        hub_test_assert(hub_test_throws(static fn (): array => hub_create_uploaded_voice_profile(
+            $concurrentDb,
+            $memberId,
+            $upload,
+            ['name' => 'Concurrent cleanup miss', 'consent_type' => 'self_recorded'],
+            static fn (string $from, string $to): bool => copy($from, $to),
+            static fn (): array => ['ok' => true, 'text' => 'child', 'language' => 'en', 'device' => []]
+        )), 'concurrent upload must wait for the writer before final cleanup');
+        hub_test_assert(is_file($protectedFinal), 'cleanup must not run before the writer lock can expose its profile reference');
+
+        $db->exec('COMMIT');
+        $writerTransactionStarted = false;
+        $result = hub_create_uploaded_voice_profile(
+            $concurrentDb,
+            $memberId,
+            $upload,
+            ['name' => 'Concurrent cleanup retry', 'consent_type' => 'self_recorded'],
+            static fn (string $from, string $to): bool => copy($from, $to),
+            static fn (): array => ['ok' => true, 'text' => 'child', 'language' => 'en', 'device' => []]
+        );
+        $uploadProfileId = (int)$result['profile']['id'];
+        hub_test_assert(is_file($protectedFinal), 'cleanup after the writer lock must preserve the committed profile WAV');
+    } finally {
+        if ($writerTransactionStarted) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        $concurrentDb = null;
+        @unlink($tmpName);
+        @unlink($writerStaging);
+        if ($uploadProfileId > 0 && hub_get_voice_profile($db, $uploadProfileId) !== null) {
+            hub_soft_delete_voice_profile($db, $uploadProfileId, $memberId, true);
+        }
+        if ($writerProfileId > 0 && hub_get_voice_profile($db, $writerProfileId) !== null) {
+            hub_soft_delete_voice_profile($db, $writerProfileId, $memberId, true);
+        } elseif (is_file($protectedFinal)) {
+            unlink($protectedFinal);
+        }
+    }
+});
+
+hub_test('VoxCPM2 reuploads after a profile is soft-deleted', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Reupload Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $asrCalls = 0;
+    $transcribe = static function () use (&$asrCalls): array {
+        $asrCalls++;
+        return ['ok' => true, 'text' => 'draft', 'language' => 'en', 'device' => []];
+    };
+
+    $firstPath = null;
+    $secondPath = null;
+    try {
+        $first = hub_create_uploaded_voice_profile($db, $memberId, $upload, ['name' => 'First upload', 'consent_type' => 'self_recorded'], static fn (string $from, string $to): bool => copy($from, $to), $transcribe);
+        $firstPath = (string)$first['profile']['reference_audio_path'];
+        hub_soft_delete_voice_profile($db, (int)$first['profile']['id'], $memberId);
+        $second = hub_create_uploaded_voice_profile($db, $memberId, $upload, ['name' => 'Second upload', 'consent_type' => 'self_recorded'], static fn (string $from, string $to): bool => copy($from, $to), $transcribe);
+        $secondPath = (string)$second['profile']['reference_audio_path'];
+        hub_test_assert(is_file($firstPath) && unlink($firstPath), 'delayed old audio cleanup fixture must remove the old WAV');
+        hub_test_assert($firstPath !== $secondPath && is_file($secondPath), 'delayed cleanup for a soft-deleted profile must not remove a matching reupload WAV');
+    } finally {
+        @unlink($tmpName);
+        if (isset($second) && hub_get_voice_profile($db, (int)$second['profile']['id']) !== null) {
+            hub_soft_delete_voice_profile($db, (int)$second['profile']['id'], $memberId, true);
+        }
+        if ($firstPath !== null && is_file($firstPath)) {
+            unlink($firstPath);
+        }
+    }
+
+    hub_test_assert($second['cache_hit'] === false && (int)$second['profile']['id'] !== (int)$first['profile']['id'], 'reupload after soft delete must create a new active profile');
+    hub_test_assert($asrCalls === 2, 'reupload after soft delete must transcribe the new profile');
+});
+
+hub_test('VoxCPM2 removes staged and final WAVs when profile creation fails', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Failed Insert Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $dir = hub_voice_profile_storage_dir();
+    $finalPattern = $dir . '/voice_profile_' . $memberId . '_*.wav';
+    $stagingPattern = $dir . '/voice_profile_stage_' . $memberId . '_*.wav';
+    $db->exec("CREATE TRIGGER voice_profile_insert_failure
+        BEFORE INSERT ON voice_profiles
+        BEGIN
+            SELECT RAISE(ABORT, 'profile_insert_failed');
+        END");
+
+    try {
+        hub_test_assert(hub_test_throws(static fn (): array => hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Failed insert', 'consent_type' => 'self_recorded'],
+            static fn (string $from, string $to): bool => copy($from, $to),
+            static fn (): array => throw new RuntimeException('ASR must not run')
+        )), 'profile insert failure must surface');
+        hub_test_assert((glob($finalPattern) ?: []) === [], 'failed profile insert must remove its final WAV before rollback');
+        hub_test_assert((glob($stagingPattern) ?: []) === [], 'failed profile insert must remove this request staging WAV');
+    } finally {
+        $db->exec('DROP TRIGGER voice_profile_insert_failure');
+        @unlink($tmpName);
+        foreach (glob($finalPattern) ?: [] as $final) {
+            @unlink($final);
+        }
+        foreach (glob($stagingPattern) ?: [] as $staging) {
+            @unlink($staging);
+        }
+    }
+});
+
+hub_test('VoxCPM2 rejects WAV uploads without a RIFF WAVE header', function (): void {
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create invalid WAV fixture.');
+    }
+    file_put_contents($tmpName, 'RIFF0000NOTWAVE');
+
+    try {
+        try {
+            hub_validate_voice_profile_wav(['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK]);
+            throw new RuntimeException('invalid WAV header must be rejected');
+        } catch (InvalidArgumentException) {
+        }
+    } finally {
+        @unlink($tmpName);
+    }
+});
+
+hub_test('VoxCPM2 retains a Basic Clone profile when ASR transcription fails', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Failed ASR Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+
+    try {
+        $result = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Retryable draft', 'consent_type' => 'self_recorded'],
+            static fn (string $from, string $to): bool => copy($from, $to),
+            static fn (): array => ['ok' => false, 'error' => 'asr_unavailable', 'message' => 'ASR is unavailable']
+        );
+    } finally {
+        @unlink($tmpName);
+    }
+
+    hub_test_assert(($result['transcription']['error'] ?? '') === 'asr_unavailable', 'ASR failure must be returned to the caller');
+    hub_test_assert(hub_get_voice_profile_for_member($db, (int)$result['profile']['id'], $memberId) !== null, 'ASR failure must preserve the Basic Clone profile');
+    hub_test_assert($result['profile']['prompt_text'] === null && $result['profile']['prompt_text_confirmed_at'] === null, 'failed ASR must leave an unconfirmed empty draft');
+    hub_test_assert($result['profile']['transcription_status'] === 'failed' && $result['profile']['transcription_error'] === 'asr_unavailable', 'failed ASR must persist only its safe error code');
+    $failureAudit = $db->query('SELECT details_json FROM voice_profile_audit_logs WHERE voice_profile_id = ' . (int)$result['profile']['id'] . " AND action = 'transcribe'")->fetchColumn();
+    hub_test_assert(json_decode((string)$failureAudit, true) === ['status' => 'failed', 'error' => 'asr_unavailable'], 'ASR failure must be audited without transcript details');
+});
+
+hub_test('VoxCPM2 retranscribes a failed matching upload without a new profile', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Failed Reupload Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $profileId = 0;
+    $retryMoveCalls = 0;
+
+    try {
+        $failed = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Failed upload', 'consent_type' => 'self_recorded'],
+            static fn (string $from, string $to): bool => copy($from, $to),
+            static fn (): array => ['ok' => false, 'error' => 'asr_unavailable']
+        );
+        $profileId = (int)$failed['profile']['id'];
+        $retried = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Ignored failed retry name', 'consent_type' => 'self_recorded'],
+            static function (string $from, string $to) use (&$retryMoveCalls): bool {
+                $retryMoveCalls++;
+                return copy($from, $to);
+            },
+            static fn (): array => ['ok' => true, 'text' => 'reupload draft', 'language' => 'en', 'device' => []]
+        );
+        hub_test_assert($retried['cache_hit'] === false && (int)$retried['profile']['id'] === $profileId, 'failed matching upload must retry the same profile instead of creating a duplicate');
+        hub_test_assert($retried['profile']['transcription_status'] === 'ready' && $retried['profile']['prompt_text'] === 'reupload draft', 'failed matching upload must return its ready retry result');
+        hub_test_assert($retryMoveCalls === 0, 'failed matching upload must retry managed bytes without staging another file');
+    } finally {
+        @unlink($tmpName);
+        if ($profileId > 0 && hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 retries a failed owned profile to ready', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Retry Voice Owner');
+    $otherMemberId = hub_create_api_member($db, 'Other Retry Voice Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $upload = ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK];
+    $profileId = 0;
+
+    try {
+        $failed = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            $upload,
+            ['name' => 'Retryable draft', 'consent_type' => 'self_recorded'],
+            static fn (string $from, string $to): bool => copy($from, $to),
+            static fn (): array => ['ok' => false, 'error' => 'asr_unavailable', 'message' => 'ASR is unavailable']
+        );
+        $profileId = (int)$failed['profile']['id'];
+        hub_test_assert(hub_test_throws(static fn (): array => hub_retry_voice_profile_transcription($db, $profileId, $otherMemberId)), 'retry must reject a nonowner');
+        $retried = hub_retry_voice_profile_transcription(
+            $db,
+            $profileId,
+            $memberId,
+            static fn (): array => ['ok' => true, 'text' => 'retry draft', 'language' => 'en', 'device' => []]
+        );
+        hub_test_assert($retried['profile']['transcription_status'] === 'ready', 'retry must mark the owned profile ready');
+        hub_test_assert($retried['profile']['transcription_error'] === null && $retried['profile']['prompt_text'] === 'retry draft', 'retry must clear the safe error and save its new draft');
+    } finally {
+        @unlink($tmpName);
+        if ($profileId > 0 && hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 completes a matching transcription lease normally', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Lease Completion Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/lease_completion.wav';
+    file_put_contents($path, 'RIFFlease');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Lease completion draft',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $claim = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing lease profile.');
+
+    try {
+        hub_test_assert((string)($claim['transcription_lease_token'] ?? '') !== '', 'pending transcription must claim a lease token');
+        $result = hub_run_voice_profile_transcription(
+            $db,
+            $claim,
+            $memberId,
+            static fn (): array => ['ok' => true, 'text' => 'completed draft', 'language' => 'en', 'device' => []]
+        );
+        hub_test_assert(($result['transcription']['ok'] ?? false) === true, 'matching transcription lease must complete normally');
+        hub_test_assert($result['profile']['transcription_status'] === 'ready' && $result['profile']['transcription_lease_token'] === null && $result['profile']['transcription_started_at'] === null, 'completed transcription must clear its lease state');
+    } finally {
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 rolls back a transcription result when its audit cannot be written', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Audit Failure Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/audit_failure.wav';
+    file_put_contents($path, 'RIFFlease');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Audit failure draft',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $claim = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing audit failure lease profile.');
+    $db->exec("CREATE TRIGGER voice_profile_transcribe_audit_failure
+        BEFORE INSERT ON voice_profile_audit_logs
+        WHEN NEW.voice_profile_id = " . $profileId . " AND NEW.action = 'transcribe'
+        BEGIN
+            SELECT RAISE(ABORT, 'transcribe_audit_failed');
+        END");
+
+    try {
+        $result = hub_run_voice_profile_transcription(
+            $db,
+            $claim,
+            $memberId,
+            static fn (): array => ['ok' => true, 'text' => 'must roll back', 'language' => 'en', 'device' => []]
+        );
+        $after = hub_get_voice_profile($db, $profileId);
+        $transcribeCount = (int)$db->query('SELECT COUNT(*) FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $profileId . " AND action = 'transcribe'")->fetchColumn();
+        hub_test_assert(($result['transcription']['error'] ?? '') === 'transcription_save_failed', 'audit failure must return a recoverable transcription save error');
+        hub_test_assert($after !== null && $after['transcription_status'] === 'pending' && $after['prompt_text'] === null && $after['transcription_lease_token'] === $claim['transcription_lease_token'] && $after['transcription_started_at'] === $claim['transcription_started_at'], 'audit failure must roll back the fenced transcription state');
+        hub_test_assert($transcribeCount === 0, 'audit failure must not leave a transcribe audit or a completed transcription state');
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS voice_profile_transcribe_audit_failure');
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 fences an old transcription lease after confirmation', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Confirmed Lease Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/confirmed_lease.wav';
+    file_put_contents($path, 'RIFFlease');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Confirmed lease draft',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $oldClaim = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing old lease profile.');
+    $confirmed = hub_confirm_voice_profile_prompt($db, $profileId, $memberId, 'confirmed transcript');
+
+    try {
+        $lost = hub_run_voice_profile_transcription(
+            $db,
+            $oldClaim,
+            $memberId,
+            static fn (): array => ['ok' => true, 'text' => 'old result', 'language' => 'en', 'device' => []]
+        );
+        $after = hub_get_voice_profile($db, $profileId);
+        $transcribeCount = (int)$db->query('SELECT COUNT(*) FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $profileId . " AND action = 'transcribe'")->fetchColumn();
+        hub_test_assert(($lost['transcription']['error'] ?? '') === 'transcription_lost_lease', 'superseded ASR completion must return a safe lost-lease result');
+        hub_test_assert($after !== null && $after['transcription_status'] === 'ready' && $after['prompt_text'] === $confirmed['prompt_text'] && $after['prompt_text_confirmed_at'] === $confirmed['prompt_text_confirmed_at'] && $after['transcription_lease_token'] === null && $after['transcription_started_at'] === null, 'old ASR completion must not overwrite a confirmed transcript');
+        hub_test_assert($transcribeCount === 0, 'lost ASR completion must not write a transcribe audit');
+    } finally {
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 soft deletion fences an in-flight transcription lease', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Deleted Lease Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/deleted_lease.wav';
+    file_put_contents($path, 'RIFFlease');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Deleted lease draft',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $claim = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing deleted lease profile.');
+
+    try {
+        hub_soft_delete_voice_profile($db, $profileId, $memberId);
+        $before = $db->query('SELECT transcription_status, transcription_error, transcription_started_at, transcription_lease_token, deleted_at FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+        $lost = hub_run_voice_profile_transcription(
+            $db,
+            $claim,
+            $memberId,
+            static fn (): array => ['ok' => true, 'text' => 'late deleted result', 'language' => 'en', 'device' => []]
+        );
+        $after = $db->query('SELECT transcription_status, transcription_error, transcription_started_at, transcription_lease_token, deleted_at FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+        $transcribeCount = (int)$db->query('SELECT COUNT(*) FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $profileId . " AND action = 'transcribe'")->fetchColumn();
+
+        hub_test_assert(is_array($before) && ($before['transcription_status'] ?? null) === 'failed' && array_key_exists('transcription_started_at', $before) && $before['transcription_started_at'] === null && array_key_exists('transcription_lease_token', $before) && $before['transcription_lease_token'] === null && (string)($before['deleted_at'] ?? '') !== '', 'soft delete must invalidate a pending transcription lease');
+        hub_test_assert(($lost['transcription']['error'] ?? '') === 'transcription_lost_lease', 'late completion after deletion must return lost lease');
+        hub_test_assert($after === $before, 'late completion after deletion must not mutate the deleted profile');
+        hub_test_assert($transcribeCount === 0, 'late completion after deletion must not add a transcribe audit');
+    } finally {
+        @unlink($path);
+    }
+});
+
+hub_test('VoxCPM2 soft delete keeps audio when the database mutation fails', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Delete Failure Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/delete_db_failure.wav';
+    file_put_contents($path, 'RIFFlease');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Delete failure draft',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $db->exec("CREATE TRIGGER voice_profile_delete_failure
+        BEFORE UPDATE OF deleted_at ON voice_profiles
+        WHEN NEW.deleted_at IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'delete_db_failed');
+        END");
+
+    try {
+        hub_test_assert(hub_test_throws(static function () use ($db, $profileId, $memberId): void {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }), 'soft delete must surface a database failure');
+        hub_test_assert(is_file($path), 'database failure must leave the managed audio intact');
+        hub_test_assert(hub_get_voice_profile($db, $profileId) !== null, 'database failure must leave the voice profile active');
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS voice_profile_delete_failure');
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        } else {
+            @unlink($path);
+        }
+    }
+});
+
+hub_test('VoxCPM2 stale lease recovery fences old ready and failed results', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Stale Lease Voice Owner');
+    $readyPath = hub_voice_profile_storage_dir() . '/stale_lease_ready.wav';
+    $failedPath = hub_voice_profile_storage_dir() . '/stale_lease_failed.wav';
+    file_put_contents($readyPath, 'RIFFlease');
+    file_put_contents($failedPath, 'RIFFlease');
+    $readyId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Stale ready lease draft',
+        'reference_audio_path' => $readyPath,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $failedId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Stale failed lease draft',
+        'reference_audio_path' => $failedPath,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $oldReadyClaim = hub_get_voice_profile($db, $readyId) ?? throw new RuntimeException('Missing stale ready lease.');
+    $oldFailedClaim = hub_get_voice_profile($db, $failedId) ?? throw new RuntimeException('Missing stale failed lease.');
+    $db->prepare('UPDATE voice_profiles SET transcription_started_at = :started_at WHERE id IN (:ready_id, :failed_id)')
+        ->execute([':started_at' => date('Y-m-d H:i:s', time() - 301), ':ready_id' => $readyId, ':failed_id' => $failedId]);
+    $newReadyToken = null;
+    $newFailedToken = null;
+
+    try {
+        $newReady = hub_retry_voice_profile_transcription(
+            $db,
+            $readyId,
+            $memberId,
+            static function () use ($db, $readyId, &$newReadyToken): array {
+                $newReadyToken = (string)((hub_get_voice_profile($db, $readyId) ?? [])['transcription_lease_token'] ?? '');
+                return ['ok' => true, 'text' => 'new ready', 'language' => 'en', 'device' => []];
+            }
+        );
+        $newFailed = hub_retry_voice_profile_transcription(
+            $db,
+            $failedId,
+            $memberId,
+            static function () use ($db, $failedId, &$newFailedToken): array {
+                $newFailedToken = (string)((hub_get_voice_profile($db, $failedId) ?? [])['transcription_lease_token'] ?? '');
+                return ['ok' => false, 'error' => 'asr_unavailable'];
+            }
+        );
+        $oldReady = hub_run_voice_profile_transcription($db, $oldReadyClaim, $memberId, static fn (): array => ['ok' => false, 'error' => 'asr_unavailable']);
+        $oldFailed = hub_run_voice_profile_transcription($db, $oldFailedClaim, $memberId, static fn (): array => ['ok' => true, 'text' => 'old ready', 'language' => 'en', 'device' => []]);
+        $readyAfter = hub_get_voice_profile($db, $readyId);
+        $failedAfter = hub_get_voice_profile($db, $failedId);
+        $readyAuditCount = (int)$db->query('SELECT COUNT(*) FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $readyId . " AND action = 'transcribe'")->fetchColumn();
+        $failedAuditCount = (int)$db->query('SELECT COUNT(*) FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $failedId . " AND action = 'transcribe'")->fetchColumn();
+
+        hub_test_assert($newReadyToken !== '' && $newReadyToken !== (string)($oldReadyClaim['transcription_lease_token'] ?? ''), 'stale recovery must atomically replace the ready lease token');
+        hub_test_assert($newFailedToken !== '' && $newFailedToken !== (string)($oldFailedClaim['transcription_lease_token'] ?? ''), 'stale recovery must atomically replace the failed lease token');
+        hub_test_assert(($newReady['transcription']['ok'] ?? false) === true && ($newFailed['transcription']['error'] ?? '') === 'asr_unavailable', 'new lease completions must retain their normal results');
+        hub_test_assert(($oldReady['transcription']['error'] ?? '') === 'transcription_lost_lease' && ($oldFailed['transcription']['error'] ?? '') === 'transcription_lost_lease', 'old lease completions must be fenced after recovery');
+        hub_test_assert($readyAfter !== null && $readyAfter['transcription_status'] === 'ready' && $readyAfter['prompt_text'] === 'new ready', 'old failed lease must not overwrite newer ready state');
+        hub_test_assert($failedAfter !== null && $failedAfter['transcription_status'] === 'failed' && $failedAfter['transcription_error'] === 'asr_unavailable' && $failedAfter['prompt_text'] === null, 'old successful lease must not overwrite newer failed state');
+        hub_test_assert($readyAuditCount === 1 && $failedAuditCount === 1, 'lost lease completions must not add success or failure audits');
+    } finally {
+        if (hub_get_voice_profile($db, $readyId) !== null) {
+            hub_soft_delete_voice_profile($db, $readyId, $memberId, true);
+        }
+        if (hub_get_voice_profile($db, $failedId) !== null) {
+            hub_soft_delete_voice_profile($db, $failedId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 retry leaves a confirmed ready profile untouched', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Confirmed Retry Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/confirmed_retry.wav';
+    file_put_contents($path, 'RIFFconfirmed');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Confirmed retry draft',
+        'reference_audio_path' => $path,
+        'prompt_text' => 'initial draft',
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $confirmed = hub_confirm_voice_profile_prompt($db, $profileId, $memberId, 'confirmed transcript');
+
+    try {
+        hub_test_assert(hub_test_throws(static fn (): array => hub_retry_voice_profile_transcription(
+            $db,
+            $profileId,
+            $memberId,
+            static fn (): array => ['ok' => true, 'text' => 'must not replace', 'language' => 'en', 'device' => []]
+        )), 'retry must reject a ready profile');
+        $after = hub_get_voice_profile($db, $profileId);
+        hub_test_assert($after !== null && $after['prompt_text'] === $confirmed['prompt_text'] && $after['prompt_text_confirmed_at'] === $confirmed['prompt_text_confirmed_at'], 'ready retry rejection must preserve confirmed transcript text and timestamp');
+    } finally {
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
+hub_test('VoxCPM2 test reset clears managed voice profile WAVs', function (): void {
+    $dir = hub_voice_profile_storage_dir();
+    $productionDir = HUB_DATA_DIR . '/uploads/voice_profiles';
+    $finalPath = $dir . '/voice_profile_99_' . str_repeat('a', 64) . '.wav';
+    $stagingPath = $dir . '/voice_profile_stage_99_' . str_repeat('b', 32) . '.wav';
+    file_put_contents($finalPath, 'final');
+    file_put_contents($stagingPath, 'staging');
+
+    try {
+        hub_test_reset_db();
+        hub_test_assert($dir !== $productionDir, 'test voice profile storage must not use the production upload directory');
+        hub_test_assert(preg_match('/^3waaihub_test_voice_profiles_[a-f0-9]{32}$/', basename($dir)) === 1, 'test voice profile storage must use a random directory name');
+        if (DIRECTORY_SEPARATOR !== '\\') {
+            hub_test_assert((fileperms($dir) & 0777) === 0700, 'test voice profile storage must be private');
+        }
+        hub_test_assert((glob($dir . '/*.wav') ?: []) === [], 'test reset must clear all managed voice profile WAVs');
+    } finally {
+        @unlink($finalPath);
+        @unlink($stagingPath);
+    }
+});
+
+hub_test('VoxCPM2 guarded final test storage teardown removes only its requested root', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_voice_profile_teardown_' . bin2hex(random_bytes(8));
+    $sibling = $root . '_sibling';
+    if (!mkdir($root, 0700) || !mkdir($sibling, 0700)) {
+        throw new RuntimeException('Cannot create test teardown fixtures.');
+    }
+    $rootWav = $root . '/owned.wav';
+    $siblingWav = $sibling . '/other.wav';
+    file_put_contents($rootWav, 'RIFFowned');
+    file_put_contents($siblingWav, 'RIFFother');
+
+    try {
+        hub_test_remove_voice_profile_storage_dir($root);
+        hub_test_assert(!file_exists($root), 'guarded teardown must remove its requested isolated root');
+        hub_test_assert(is_file($siblingWav) && file_get_contents($siblingWav) === 'RIFFother', 'guarded teardown must leave neighboring temporary paths untouched');
+    } finally {
+        @unlink($rootWav);
+        @rmdir($root);
+        @unlink($siblingWav);
+        @rmdir($sibling);
+    }
+});
+
+hub_test('VoxCPM2 test reset refuses a symlinked voice profile directory', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_voice_profile_symlink_' . bin2hex(random_bytes(8));
+    $link = $root . '_link';
+    if (!mkdir($root, 0700)) {
+        throw new RuntimeException('Cannot create symlink target fixture.');
+    }
+    $targetWav = $root . '/target.wav';
+    file_put_contents($targetWav, 'RIFFtarget');
+    if (!@symlink($root, $link)) {
+        @unlink($targetWav);
+        @rmdir($root);
+        hub_test_skip('Symlink fixture is unavailable on this host.');
+    }
+
+    try {
+        hub_test_assert(hub_test_throws(static fn (): string => hub_test_voice_profile_cleanup_dir($link)), 'test reset must refuse a symlinked voice profile directory');
+        hub_test_assert(is_file($targetWav) && file_get_contents($targetWav) === 'RIFFtarget', 'symlink cleanup refusal must not delete the target WAV');
+    } finally {
+        @unlink($link);
+        @unlink($targetWav);
+        @rmdir($root);
+    }
+});
+
+hub_test('VoxCPM2 test reset preserves production voice profile WAVs', function (): void {
+    $productionDir = HUB_DATA_DIR . '/uploads/voice_profiles';
+    if (!is_dir($productionDir) && !mkdir($productionDir, 0775, true) && !is_dir($productionDir)) {
+        throw new RuntimeException('Cannot create production voice profile fixture directory.');
+    }
+    $productionPath = $productionDir . '/non_test_voice_profile_reset_guard.wav';
+    file_put_contents($productionPath, 'RIFFproduction');
+
+    try {
+        hub_test_reset_db();
+        hub_test_assert(hub_voice_profile_storage_dir() !== $productionDir, 'test storage override must remain separate from production uploads');
+        hub_test_assert(is_file($productionPath) && file_get_contents($productionPath) === 'RIFFproduction', 'test reset must never delete a production voice profile WAV');
+    } finally {
+        @unlink($productionPath);
+    }
+});
+
 hub_test('VoxCPM2 migrates legacy transcripts once without overwriting confirmation', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Legacy Voice Owner');
@@ -141,6 +1157,7 @@ hub_test('VoxCPM2 migrates legacy transcripts once without overwriting confirmat
         reference_audio_sha256 TEXT NOT NULL,
         prompt_text TEXT NULL,
         prompt_text_confirmed_at TEXT NULL,
+        transcription_error TEXT NULL,
         deleted_at TEXT NULL,
         updated_at TEXT NOT NULL
     )');
@@ -151,8 +1168,23 @@ hub_test('VoxCPM2 migrates legacy transcripts once without overwriting confirmat
             ':prompt_text' => '既有逐字稿',
             ':updated_at' => '2000-01-01 00:00:00',
         ]);
+    $db->prepare('INSERT INTO voice_profiles (owner_member_id, reference_audio_sha256, transcription_error, updated_at) VALUES (:owner_member_id, :reference_audio_sha256, :transcription_error, :updated_at)')
+        ->execute([
+            ':owner_member_id' => $memberId,
+            ':reference_audio_sha256' => str_repeat('b', 64),
+            ':transcription_error' => 'asr_unavailable',
+            ':updated_at' => '2000-01-01 00:00:00',
+        ]);
+    $db->prepare('INSERT INTO voice_profiles (owner_member_id, reference_audio_sha256, updated_at) VALUES (:owner_member_id, :reference_audio_sha256, :updated_at)')
+        ->execute([
+            ':owner_member_id' => $memberId,
+            ':reference_audio_sha256' => str_repeat('c', 64),
+            ':updated_at' => '2000-01-01 00:00:00',
+        ]);
     $db->prepare('DELETE FROM settings WHERE key = :key')
         ->execute([':key' => 'db_migration_voice_profiles_prompt_text_confirmed_at_v1']);
+    $db->prepare('DELETE FROM settings WHERE key = :key')
+        ->execute([':key' => 'db_migration_voice_profiles_transcription_state_v1']);
     $db->exec("CREATE TRIGGER voice_profile_confirmation_marker_failure
         BEFORE INSERT ON settings
         WHEN NEW.key = 'db_migration_voice_profiles_prompt_text_confirmed_at_v1'
@@ -166,7 +1198,11 @@ hub_test('VoxCPM2 migrates legacy transcripts once without overwriting confirmat
     hub_migrate($db);
     $legacy = hub_get_voice_profile($db, 1);
     hub_test_assert(($legacy['prompt_text_confirmed_at'] ?? null) === '2000-01-01 00:00:00', 'legacy nonempty transcript must migrate as confirmed');
+    hub_test_assert(array_key_exists('transcription_lease_token', $legacy ?? []), 'legacy voice profiles must migrate the nullable transcription lease token');
     hub_test_assert(hub_get_storage_setting($db, 'db_migration_voice_profiles_prompt_text_confirmed_at_v1') === '1', 'successful retry must mark transcript migration complete');
+    hub_test_assert(($legacy['transcription_status'] ?? null) === 'ready', 'legacy transcript must migrate to ready');
+    hub_test_assert((hub_get_voice_profile($db, 2)['transcription_status'] ?? null) === 'failed', 'recorded legacy transcription failure must migrate to failed');
+    hub_test_assert((hub_get_voice_profile($db, 3)['transcription_status'] ?? null) === 'pending', 'unknown legacy transcription state must migrate to pending');
     $db->prepare('UPDATE voice_profiles SET prompt_text_confirmed_at = :confirmed_at WHERE id = 1')
         ->execute([':confirmed_at' => '2001-01-01 00:00:00']);
     hub_migrate($db);
