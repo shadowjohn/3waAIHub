@@ -71,9 +71,10 @@ hub_test('VoxCPM2 real inference requests cannot silently return mock audio', fu
     hub_test_assert(str_contains($dockerfile, 'gcc'), 'VoxCPM2 image must include a C compiler for Triton warmup');
 });
 
-hub_test('VoxCPM2 voice profile schema helper ownership and audit are available', function (): void {
+hub_test('VoxCPM2 voice profile drafts confirm per owner and accept explicit tokens', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Voice Owner');
+    $otherMemberId = hub_create_api_member($db, 'Other Voice Owner');
     $dir = hub_voice_profile_storage_dir();
     if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
         throw new RuntimeException('Cannot create voice profile test dir.');
@@ -91,11 +92,85 @@ hub_test('VoxCPM2 voice profile schema helper ownership and audit are available'
     ]);
     $profile = hub_get_voice_profile_for_member($db, $profileId, $memberId);
     hub_test_assert($profile !== null, 'owner must be able to load profile');
-    hub_test_assert(hub_get_voice_profile_for_member($db, $profileId, $memberId + 99) === null, 'other member must not load private profile');
+    $otherProfileId = hub_create_voice_profile($db, $otherMemberId, [
+        'name' => 'Other private profile',
+        'reference_audio_path' => $wav,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $otherProfile = hub_get_voice_profile_for_member($db, $otherProfileId, $otherMemberId);
+    hub_test_assert($otherProfile !== null && $otherProfile['reference_audio_sha256'] === $profile['reference_audio_sha256'], 'private profiles must retain same SHA for matching audio');
+    hub_test_assert(hub_get_voice_profile_for_member($db, $profileId, $otherMemberId) === null, 'same SHA must not make a private profile visible');
     hub_test_assert(str_starts_with(hub_voice_profile_container_path($profile), '/data/voice_profiles/'), 'voice profile must map to container path');
+    hub_test_assert(($profile['prompt_text_confirmed_at'] ?? null) === null, 'draft transcript must start unconfirmed');
+    hub_migrate($db);
+    hub_test_assert((hub_get_voice_profile($db, $profileId)['prompt_text_confirmed_at'] ?? null) === null, 'later migrations must not confirm new drafts');
 
-    $audit = $db->query('SELECT action FROM voice_profile_audit_logs ORDER BY id ASC')->fetchAll();
-    hub_test_assert(count($audit) === 1 && $audit[0]['action'] === 'create', 'voice profile create must be audited');
+    $confirmed = hub_confirm_voice_profile_prompt($db, $profileId, $memberId, '繁中測試');
+    hub_test_assert($confirmed['prompt_text'] === '繁中測試', 'confirmation must retain edited transcript');
+    hub_test_assert((string)$confirmed['prompt_text_confirmed_at'] !== '', 'confirmation timestamp must be written');
+    hub_migrate($db);
+    hub_test_assert((hub_get_voice_profile($db, $profileId)['prompt_text_confirmed_at'] ?? null) !== null, 'confirmed transcript must remain confirmed after later migrations');
+
+    $token = hub_create_api_token($db, $memberId, 'TTS token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'tts');
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '1');
+    $auth = hub_gateway_authenticate_api_token($db, 'tts', '203.0.113.10', (string)$token['plain_token']);
+    hub_test_assert(!empty($auth['ok']) && (int)$auth['context']['member_id'] === $memberId, 'explicit TTS token must use its token member');
+    hub_test_assert(!str_contains((string)json_encode($auth), (string)$token['plain_token']), 'auth context must not expose supplied token');
+    $emptyToken = hub_gateway_authenticate_api_token($db, 'tts', '127.0.0.1', '');
+    hub_test_assert(empty($emptyToken['ok']) && ($emptyToken['response']['status'] ?? 0) === 401, 'explicit empty token must not use localhost bypass');
+
+    $audit = $db->query('SELECT action, details_json FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $profileId . ' ORDER BY id ASC')->fetchAll();
+    hub_test_assert(array_column($audit, 'action') === ['create', 'confirm_transcript'], 'voice profile create and confirmation must be audited');
+    hub_test_assert(!str_contains((string)$audit[1]['details_json'], '繁中測試'), 'transcript contents must not be included in audit details');
+    $auditDetails = json_decode((string)$audit[1]['details_json'], true);
+    hub_test_assert(($auditDetails['text_chars'] ?? null) === (function_exists('mb_strlen') ? 4 : strlen('繁中測試')), 'confirmation audit must count Traditional Chinese characters correctly');
+});
+
+hub_test('VoxCPM2 migrates legacy transcripts once without overwriting confirmation', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Legacy Voice Owner');
+    $db->exec('DROP TABLE voice_profile_audit_logs');
+    $db->exec('DROP TABLE voice_profiles');
+    $db->exec('CREATE TABLE voice_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        owner_member_id INTEGER NOT NULL,
+        reference_audio_sha256 TEXT NOT NULL,
+        prompt_text TEXT NULL,
+        prompt_text_confirmed_at TEXT NULL,
+        deleted_at TEXT NULL,
+        updated_at TEXT NOT NULL
+    )');
+    $db->prepare('INSERT INTO voice_profiles (owner_member_id, reference_audio_sha256, prompt_text, updated_at) VALUES (:owner_member_id, :reference_audio_sha256, :prompt_text, :updated_at)')
+        ->execute([
+            ':owner_member_id' => $memberId,
+            ':reference_audio_sha256' => str_repeat('a', 64),
+            ':prompt_text' => '既有逐字稿',
+            ':updated_at' => '2000-01-01 00:00:00',
+        ]);
+    $db->prepare('DELETE FROM settings WHERE key = :key')
+        ->execute([':key' => 'db_migration_voice_profiles_prompt_text_confirmed_at_v1']);
+    $db->exec("CREATE TRIGGER voice_profile_confirmation_marker_failure
+        BEFORE INSERT ON settings
+        WHEN NEW.key = 'db_migration_voice_profiles_prompt_text_confirmed_at_v1'
+        BEGIN
+            SELECT RAISE(ABORT, 'marker_write_failed');
+        END");
+    hub_test_assert(hub_test_throws(static fn () => hub_migrate($db)), 'marker write failure must be surfaced');
+    hub_test_assert((hub_get_voice_profile($db, 1)['prompt_text_confirmed_at'] ?? null) === null, 'marker write failure must roll back transcript confirmation');
+    $db->exec('DROP TRIGGER voice_profile_confirmation_marker_failure');
+
+    hub_migrate($db);
+    $legacy = hub_get_voice_profile($db, 1);
+    hub_test_assert(($legacy['prompt_text_confirmed_at'] ?? null) === '2000-01-01 00:00:00', 'legacy nonempty transcript must migrate as confirmed');
+    hub_test_assert(hub_get_storage_setting($db, 'db_migration_voice_profiles_prompt_text_confirmed_at_v1') === '1', 'successful retry must mark transcript migration complete');
+    $db->prepare('UPDATE voice_profiles SET prompt_text_confirmed_at = :confirmed_at WHERE id = 1')
+        ->execute([':confirmed_at' => '2001-01-01 00:00:00']);
+    hub_migrate($db);
+    hub_test_assert((hub_get_voice_profile($db, 1)['prompt_text_confirmed_at'] ?? null) === '2001-01-01 00:00:00', 'migration must not overwrite existing confirmation');
 });
 
 hub_test('VoxCPM2 install generates GPU compose storage env and gateway contract', function (): void {

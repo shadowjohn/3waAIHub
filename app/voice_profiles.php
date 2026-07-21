@@ -134,6 +134,21 @@ function hub_get_voice_profile_for_member(PDO $db, int $profileId, int $memberId
     return $profile ?: null;
 }
 
+function hub_confirm_voice_profile_prompt(PDO $db, int $profileId, int $ownerMemberId, string $promptText): array
+{
+    $profile = hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId);
+    $promptText = trim($promptText);
+    if (!$profile || (int)$profile['owner_member_id'] !== $ownerMemberId || $promptText === '') {
+        throw new InvalidArgumentException('voice_profile_transcript_invalid');
+    }
+    $now = hub_now();
+    $db->prepare('UPDATE voice_profiles SET prompt_text = :prompt_text, prompt_text_confirmed_at = :confirmed_at, updated_at = :updated_at WHERE id = :id')
+        ->execute([':prompt_text' => $promptText, ':confirmed_at' => $now, ':updated_at' => $now, ':id' => $profileId]);
+    hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'confirm_transcript', null, ['text_chars' => function_exists('mb_strlen') ? mb_strlen($promptText, 'UTF-8') : strlen($promptText)]);
+
+    return hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
+}
+
 function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMemberId, bool $deleteAudio = false): void
 {
     $profile = hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId);

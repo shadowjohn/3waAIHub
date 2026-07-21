@@ -299,10 +299,11 @@ function hub_bearer_token_from_request(): string
     return '';
 }
 
-function hub_gateway_authenticate_api_token(PDO $db, string $mode, string $clientIp): array
+function hub_gateway_authenticate_api_token(PDO $db, string $mode, string $clientIp, ?string $providedToken = null): array
 {
-    $plainToken = hub_bearer_token_from_request();
-    if ($plainToken === '' && hub_is_localhost_ip($clientIp) && hub_get_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN') === '1') {
+    $tokenCameFromRequest = $providedToken === null;
+    $plainToken = $providedToken ?? hub_bearer_token_from_request();
+    if ($plainToken === '' && $tokenCameFromRequest && hub_is_localhost_ip($clientIp) && hub_get_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN') === '1') {
         return ['ok' => true, 'context' => []];
     }
     if ($plainToken === '' && hub_get_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN') !== '1') {

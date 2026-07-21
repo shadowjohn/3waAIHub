@@ -341,6 +341,7 @@ CREATE TABLE IF NOT EXISTS voice_profiles (
     reference_audio_path TEXT NOT NULL,
     reference_audio_sha256 TEXT NOT NULL,
     prompt_text TEXT NULL,
+    prompt_text_confirmed_at TEXT NULL,
     language TEXT NULL,
     consent_type TEXT NOT NULL,
     usage_scope TEXT NOT NULL DEFAULT 'private',
@@ -535,6 +536,33 @@ SQL);
     hub_add_column_if_missing($db, 'api_access_logs', 'token_id', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'upload_bytes', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'response_bytes', 'INTEGER NULL');
+    $voiceProfilePromptConfirmationMarker = 'db_migration_voice_profiles_prompt_text_confirmed_at_v1';
+    if (hub_get_storage_setting($db, $voiceProfilePromptConfirmationMarker) !== '1') {
+        $voiceProfilePromptConfirmationMigrationStarted = false;
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            $voiceProfilePromptConfirmationMigrationStarted = true;
+            hub_add_column_if_missing($db, 'voice_profiles', 'prompt_text_confirmed_at', 'TEXT NULL');
+            if (hub_get_storage_setting($db, $voiceProfilePromptConfirmationMarker) !== '1') {
+                $db->exec("UPDATE voice_profiles
+                           SET prompt_text_confirmed_at = COALESCE(prompt_text_confirmed_at, updated_at)
+                           WHERE prompt_text IS NOT NULL AND trim(prompt_text) <> ''");
+                hub_set_storage_setting($db, $voiceProfilePromptConfirmationMarker, '1');
+            }
+            $db->exec('COMMIT');
+            $voiceProfilePromptConfirmationMigrationStarted = false;
+        } catch (Throwable $e) {
+            if ($voiceProfilePromptConfirmationMigrationStarted) {
+                try {
+                    $db->exec('ROLLBACK');
+                } catch (Throwable) {
+                }
+            }
+            throw $e;
+        }
+    } else {
+        hub_add_column_if_missing($db, 'voice_profiles', 'prompt_text_confirmed_at', 'TEXT NULL');
+    }
     hub_add_column_if_missing($db, 'voice_profiles', 'usage_scope', "TEXT NOT NULL DEFAULT 'private'");
     hub_add_column_if_missing($db, 'voice_profiles', 'retain_original_audio', 'INTEGER NOT NULL DEFAULT 1');
     hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
