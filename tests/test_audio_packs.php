@@ -128,3 +128,13 @@ hub_test('real audio Pack acceptance client has a closed public API contract', f
         hub_test_assert(str_contains($source, $needle), 'real audio acceptance client missing ' . $needle);
     }
 });
+
+hub_test('real audio Pack acceptance client returns JSON for a JSON configuration error', function (): void {
+    $script = HUB_ROOT . '/scripts/audio_packs_acceptance.php';
+    $output = [];
+    $exitCode = 0;
+    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' --json 2>&1', $output, $exitCode);
+    $payload = json_decode(implode("\n", $output), true);
+    hub_test_assert($exitCode === 1, 'acceptance client configuration error must fail');
+    hub_test_assert(is_array($payload) && ($payload['ok'] ?? true) === false && !empty($payload['error']), 'acceptance client --json must return a JSON error payload');
+});

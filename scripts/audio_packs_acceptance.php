@@ -17,6 +17,7 @@ function hub_audio_acceptance_main(array $argv): int
         return 0;
     }
 
+    $config = ['json' => isset($options['json'])];
     try {
         $config = hub_audio_acceptance_config($options);
         $readiness = hub_audio_acceptance_readiness();
