@@ -209,6 +209,13 @@ function hub_pack_job_prepare_workspace(array $task, array $contract): string
     if ($json === false || file_put_contents($workspace . '/input/request.json', $json . PHP_EOL, LOCK_EX) === false) {
         throw new RuntimeException('workspace_unavailable');
     }
+    $runnerConfig = hub_pack_job_runner_config_for_task($contract, $input);
+    if ($runnerConfig !== null) {
+        $json = json_encode($runnerConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($json === false || file_put_contents($workspace . '/input/runner_config.json', $json . PHP_EOL, LOCK_EX) === false) {
+            throw new RuntimeException('workspace_unavailable');
+        }
+    }
 
     return $workspace;
 }
@@ -271,7 +278,25 @@ function hub_pack_job_begin_execution(PDO $db, array $task, array $run, array $r
     }
 }
 
-function hub_pack_job_runner_arguments(array $runner, array $task, array $run, string $workspace): array
+function hub_pack_job_runner_config_for_task(array $contract, array $input): ?array
+{
+    if (!isset($contract['runner_config'])) {
+        return null;
+    }
+    $config = $contract['runner_config'];
+    $alias = $input[$config['alias_input'] ?? ''] ?? null;
+    if (!is_string($alias) || !isset($config['aliases'][$alias])) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+
+    return [
+        'allowlist' => $config['model_allowlist'],
+        'alias' => $alias,
+        'model' => $config['aliases'][$alias],
+    ];
+}
+
+function hub_pack_job_runner_arguments(array $runner, array $task, array $run, string $workspace, ?array $config = null): array
 {
     $replacements = [
         '{workspace}' => $workspace,
@@ -290,6 +315,58 @@ function hub_pack_job_runner_arguments(array $runner, array $task, array $run, s
         'accelerator' => $runner['accelerator'],
         'required_vram_mb' => $runner['required_vram_mb'],
         'timeout_seconds' => $runner['timeout_seconds'],
+    ] + ($config === null ? [] : ['config' => $config]);
+}
+
+function hub_pack_job_default_runner_command(array $context): array
+{
+    $runner = $context['runner'] ?? [];
+    $workspace = realpath((string)($context['workspace'] ?? ''));
+    if ($workspace === false || !is_dir($workspace . '/input') || !is_dir($workspace . '/output')) {
+        throw new RuntimeException('workspace_unavailable');
+    }
+    $name = 'aihub-pack-' . substr(preg_replace('/[^a-z0-9_.-]/', '-', strtolower((string)($context['run']['run_id'] ?? 'run'))) ?: 'run', 0, 48);
+    $containerWorkspace = '/workspace';
+    $replace = static fn (string $value): string => strtr($value, [
+        $workspace . '/input' => $containerWorkspace . '/input',
+        $workspace . '/output' => $containerWorkspace . '/output',
+        $workspace => $containerWorkspace,
+    ]);
+    $entrypoint = $runner['entrypoint'] ?? [];
+    $args = $runner['args'] ?? [];
+    if (!is_array($entrypoint) || $entrypoint === [] || !is_array($args)) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+    $command = ['docker', 'run', '--rm', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . ',dst=' . $containerWorkspace, '--name', $name];
+    if (($runner['accelerator'] ?? '') === 'gpu') {
+        $command[] = '--gpus';
+        $command[] = 'all';
+    }
+    $command[] = '--entrypoint';
+    $command[] = $replace((string)$entrypoint[0]);
+    $command[] = (string)($runner['image'] ?? '');
+    foreach (array_merge(array_slice($entrypoint, 1), $args) as $value) {
+        $command[] = $replace((string)$value);
+    }
+
+    return ['name' => $name, 'command' => $command];
+}
+
+function hub_pack_job_default_executor(array $context, ?callable $commandRunner = null): array
+{
+    $execution = hub_pack_job_default_runner_command($context);
+    $context['started'](['container_id' => $execution['name']]);
+    $runner = $commandRunner ?? 'hub_run_linux_docker_command';
+    $result = $runner($execution['command'], (int)$context['runner']['timeout_seconds']);
+    if (!is_array($result)) {
+        throw new RuntimeException('runtime_execution_invalid');
+    }
+
+    return [
+        'exit_code' => (int)($result['exit_code'] ?? 1),
+        'container_id' => $execution['name'],
+        'cleanup' => hub_pack_job_no_work_cleanup(),
+        'completed_no_process_evidence' => true,
     ];
 }
 
@@ -588,10 +665,15 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         if (!isset($contract['runner'])) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'job_unavailable', 'Stored Pack job has no runner contract', hub_pack_job_no_work_cleanup(), null);
         }
-        if (!isset($options['executor']) || !is_callable($options['executor'])) {
+        $runner = $contract['runner'];
+        $runnerConfig = hub_pack_job_runner_config_for_task($contract, (array)($task['input'] ?? []));
+        if (isset($options['executor']) && is_callable($options['executor'])) {
+            $executor = $options['executor'];
+        } elseif (($runner['executor'] ?? '') === 'container') {
+            $executor = static fn (array $context): array => hub_pack_job_default_executor($context, isset($options['command_runner']) && is_callable($options['command_runner']) ? $options['command_runner'] : null);
+        } else {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'No controlled Pack job executor is configured', hub_pack_job_no_work_cleanup(), null);
         }
-        $runner = $contract['runner'];
         if (hub_runtime_task_requires_gpu($task)) {
             $gpuLease = hub_runtime_gpu_acquire_for_task($db, $task, $run, $leaseSeconds);
             if ($gpuLease === null) {
@@ -616,7 +698,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             'task' => $task,
             'run' => $run,
             'workspace' => $workspace,
-            'runner' => hub_pack_job_runner_arguments($runner, $task, $run, $workspace),
+            'runner' => hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig),
         ];
         $pidInspector = $gpuLease === null ? null : ($options['pid_inspector'] ?? static fn (): array => []);
         $baseline = $pidInspector === null ? [] : hub_runtime_gpu_recovery_pids($pidInspector($context));
@@ -632,7 +714,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $run = $startedRun;
         $context['run'] = $run;
-        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace);
+        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig);
         $fenceLost = false;
         $context['started'] = static function (array $startedDetails) use (&$details, &$fenceLost, $db, $task, $run, $gpuLease, $baseline): void {
             $details = hub_pack_job_execution_details($startedDetails, ['baseline_pids' => $baseline]);
@@ -644,7 +726,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             return hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds);
         };
         $started = true;
-        $result = $options['executor']($context);
+        $result = $executor($context);
         if (!is_array($result)) {
             throw new RuntimeException('runtime_execution_invalid');
         }

@@ -346,6 +346,39 @@ hub_test('audio manual retry creates a linked task without mutating terminal his
     });
 });
 
+hub_test('audio manual retry revalidates disabled cleanup capabilities before queueing', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $manifestPath = HUB_ROOT . '/packs/audio-cleanup/pack.json';
+        $original = (string)file_get_contents($manifestPath);
+        $manifest = json_decode($original, true);
+        if (!is_array($manifest)) {
+            throw new RuntimeException('Cannot decode audio-cleanup manifest fixture.');
+        }
+        $manifest['async_jobs'][0]['capabilities']['deepfilternet'] = true;
+        try {
+            file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "\n", LOCK_EX);
+            hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+            $memberId = hub_create_api_member($db, 'Cleanup Retry Owner');
+            $token = hub_create_api_token($db, $memberId, 'cleanup retry token', null, null);
+            $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+            $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+            $taskId = hub_enqueue_owned_pack_job($db, $route, hub_audio_task_input(['operation' => 'enhance'], $route), $memberId, (int)$token['token_id'], '203.0.113.51', [
+                'source_artifact_id' => $source['artifact_id'],
+                'source_task_id' => $source['task_id'],
+            ]);
+            hub_finish_task_success($db, hub_get_task($db, $taskId) ?? [], ['finished' => true]);
+
+            $manifest['async_jobs'][0]['capabilities']['deepfilternet'] = false;
+            file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "\n", LOCK_EX);
+            hub_test_assert(hub_test_throws(static fn (): int => hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']])), 'retry must reject enhancement after the fresh snapshot disables DeepFilterNet');
+            hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks WHERE retry_of_task_id = ' . $taskId)->fetchColumn() === 0, 'capability-rejected retry must not queue a task');
+        } finally {
+            file_put_contents($manifestPath, $original, LOCK_EX);
+        }
+    });
+});
+
 hub_test('audio upload retry copies its owned source into the new task before adapter execution', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();

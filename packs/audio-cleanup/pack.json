@@ -71,11 +71,16 @@
       "runner": {
         "image": "ghcr.io/3waaihub/audio-cleanup:0.1.0",
         "entrypoint": ["/app/audio-cleanup"],
-        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
+        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
         "output_dir": "output",
         "accelerator": "gpu",
         "required_vram_mb": 8192,
-        "timeout_seconds": 1800
+        "timeout_seconds": 1800,
+        "executor": "container"
+      },
+      "runner_config": {
+        "alias_input": "demucs_model",
+        "model_allowlist": "demucs"
       },
       "output": {
         "artifacts": [
@@ -109,7 +114,28 @@
             "mime_types": ["application/json"],
             "max_bytes": 65536,
             "json": {
-              "required_keys": ["operation", "actual_chain", "model_versions"]
+              "required_keys": ["operation", "actual_chain", "model_versions"],
+              "semantic": {
+                "equals_input": {"operation": "operation"},
+                "array_equals_by_input": {
+                  "input": "operation",
+                  "output": "actual_chain",
+                  "values": {
+                    "separate": ["demucs"],
+                    "enhance": ["deepfilternet"],
+                    "separate_and_enhance": ["demucs", "deepfilternet"]
+                  }
+                },
+                "object_keys_by_input": {
+                  "input": "operation",
+                  "output": "model_versions",
+                  "values": {
+                    "separate": ["demucs"],
+                    "enhance": ["deepfilternet"],
+                    "separate_and_enhance": ["demucs", "deepfilternet"]
+                  }
+                }
+              }
             }
           }
         ]

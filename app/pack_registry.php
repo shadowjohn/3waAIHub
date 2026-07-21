@@ -207,6 +207,13 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
                 return null;
             }
         }
+        $runnerConfig = null;
+        if (array_key_exists('runner_config', $definition)) {
+            $runnerConfig = hub_pack_async_job_runner_config_from_manifest($definition['runner_config'], $manifest, $fields, $requestSchema);
+            if ($runnerConfig === null || $runner === null) {
+                return null;
+            }
+        }
         $capabilities = hub_pack_async_job_capabilities($definition['capabilities'] ?? []);
         $capabilityRequirements = hub_pack_async_job_capability_requirements($definition['capability_requirements'] ?? [], $capabilities ?? []);
         if ($capabilities === null || $capabilityRequirements === null) {
@@ -220,6 +227,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
             'max_upload_bytes' => $maxUploadBytes,
             'artifact_contract' => $artifactContract,
         ] + ($runner === null ? [] : ['runner' => $runner])
+            + ($runnerConfig === null ? [] : ['runner_config' => $runnerConfig])
             + ($capabilities === [] ? [] : ['capabilities' => $capabilities])
             + ($capabilityRequirements === [] ? [] : ['capability_requirements' => $capabilityRequirements]);
     }
@@ -229,7 +237,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
 
 function hub_pack_async_job_runner_contract(mixed $runner): ?array
 {
-    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds']) !== []) {
+    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'executor']) !== []) {
         return null;
     }
     $image = trim((string)($runner['image'] ?? ''));
@@ -239,12 +247,16 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
     $accelerator = (string)($runner['accelerator'] ?? '');
     $requiredVram = $runner['required_vram_mb'] ?? null;
     $timeout = $runner['timeout_seconds'] ?? null;
+    $executor = $runner['executor'] ?? null;
     if (preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
         || !is_array($entrypoint) || !array_is_list($entrypoint) || $entrypoint === []
         || !is_array($args) || !array_is_list($args)
         || $outputDir !== 'output' || !in_array($accelerator, ['cpu', 'gpu'], true)
         || !is_int($requiredVram) || $requiredVram < 0 || $requiredVram > 1048576
         || !is_int($timeout) || $timeout < 1 || $timeout > 86400) {
+        return null;
+    }
+    if ($executor !== null && $executor !== 'container') {
         return null;
     }
     foreach (array_merge($entrypoint, $args) as $value) {
@@ -267,7 +279,65 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
         'accelerator' => $accelerator,
         'required_vram_mb' => $requiredVram,
         'timeout_seconds' => $timeout,
-    ];
+    ] + ($executor === null ? [] : ['executor' => $executor]);
+}
+
+function hub_pack_async_job_runner_config_value(mixed $value, int $depth = 0): bool
+{
+    if (is_string($value)) {
+        return $value !== '' && strlen($value) <= 1024 && !str_contains($value, "\0");
+    }
+    if (is_int($value) || is_float($value) || is_bool($value)) {
+        return true;
+    }
+    if (!is_array($value) || $depth >= 4 || count($value) > 64) {
+        return false;
+    }
+    foreach ($value as $key => $item) {
+        if ((!is_int($key) && (!is_string($key) || preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $key) !== 1))
+            || !hub_pack_async_job_runner_config_value($item, $depth + 1)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function hub_pack_async_job_runner_config(mixed $config, array $fields, array $requestSchema): ?array
+{
+    if (!is_array($config) || array_diff(array_keys($config), ['alias_input', 'model_allowlist', 'aliases']) !== []) {
+        return null;
+    }
+    $aliasInput = (string)($config['alias_input'] ?? '');
+    $allowlist = (string)($config['model_allowlist'] ?? '');
+    $aliases = $config['aliases'] ?? null;
+    if (!in_array($aliasInput, $fields, true) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $allowlist) !== 1
+        || !is_array($aliases) || $aliases === [] || array_is_list($aliases)
+        || !isset($requestSchema[$aliasInput]['enum']) || array_keys($aliases) !== $requestSchema[$aliasInput]['enum']) {
+        return null;
+    }
+    foreach ($aliases as $alias => $model) {
+        if (!is_string($alias) || preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $alias) !== 1 || !hub_pack_async_job_runner_config_value($model)) {
+            return null;
+        }
+    }
+
+    return ['alias_input' => $aliasInput, 'model_allowlist' => $allowlist, 'aliases' => $aliases];
+}
+
+function hub_pack_async_job_runner_config_from_manifest(mixed $definition, array $manifest, array $fields, array $requestSchema): ?array
+{
+    if (!is_array($definition) || array_diff(array_keys($definition), ['alias_input', 'model_allowlist']) !== []) {
+        return null;
+    }
+    $allowlist = (string)($definition['model_allowlist'] ?? '');
+    $aliases = $manifest['model_allowlist'][$allowlist]['aliases'] ?? null;
+
+    return hub_pack_async_job_runner_config([
+        'alias_input' => $definition['alias_input'] ?? null,
+        'model_allowlist' => $allowlist,
+        'aliases' => $aliases,
+    ], $fields, $requestSchema);
 }
 
 function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
@@ -434,6 +504,13 @@ function hub_pack_job_contract_snapshot(array $contract): array
             throw new InvalidArgumentException('job_contract_unavailable');
         }
         $snapshot['runner'] = $runner;
+    }
+    if (array_key_exists('runner_config', $contract)) {
+        $runnerConfig = hub_pack_async_job_runner_config($contract['runner_config'], $fields, $snapshot['request_schema']);
+        if ($runnerConfig === null || !isset($snapshot['runner'])) {
+            throw new InvalidArgumentException('job_contract_unavailable');
+        }
+        $snapshot['runner_config'] = $runnerConfig;
     }
     $json = json_encode($snapshot, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     if ($json === false) {
@@ -629,7 +706,7 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
             $seen = [];
             foreach ($jobs as $definition) {
                 $job = is_array($definition) ? (string)($definition['job'] ?? '') : '';
-                if (!preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $job) || isset($seen[$job]) || hub_pack_async_job_contract(['gateway' => $manifest['gateway'], 'async_jobs' => [$definition]], $job) === null) {
+                if (!preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $job) || isset($seen[$job]) || hub_pack_async_job_contract($manifest, $job) === null) {
                     $errors[] = 'async_jobs output contract is invalid.';
                     continue;
                 }

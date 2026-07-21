@@ -287,6 +287,9 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     $input = is_array($task['input'] ?? null) ? $task['input'] : [];
     unset($input['cancel_requested'], $input['cancel_requested_at']);
     $route = hub_revalidate_audio_async_route($db, $task);
+    $sourceUploadPath = $input['source_upload_path'] ?? null;
+    unset($input['source_upload_path'], $input['original_filename']);
+    $input = hub_pack_job_normalize_request_input($input, $route);
     $sourceArtifactId = (int)($task['source_artifact_id'] ?? 0);
     $source = $sourceArtifactId > 0 ? hub_validate_pack_job_source_artifact($db, $sourceArtifactId, $ownerMemberId, $route) : null;
     if ($sourceArtifactId > 0 && $source === null) {
@@ -299,7 +302,7 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
             'retry_of_task_id' => $taskId,
         ]);
     }
-    $sourcePath = hub_managed_task_upload_path($taskId, (string)($input['source_upload_path'] ?? ''));
+    $sourcePath = hub_managed_task_upload_path($taskId, (string)$sourceUploadPath);
     if ($sourcePath === null) {
         throw new RuntimeException('source_upload_invalid');
     }
@@ -1903,7 +1906,7 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
         }
         if (isset($definition['json'])) {
             $keys = $definition['json']['required_keys'] ?? [];
-            if (array_diff(array_keys($definition['json']), ['required_keys']) !== [] || !is_array($keys) || !array_is_list($keys)) {
+            if (array_diff(array_keys($definition['json']), ['required_keys', 'semantic']) !== [] || !is_array($keys) || !array_is_list($keys)) {
                 hub_pack_job_output_contract_invalid('artifact_json_contract_invalid');
             }
             if ($maxBytes > hub_pack_job_parser_max_bytes()) {
@@ -1913,6 +1916,13 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
                 if (!is_string($key) || preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $key) !== 1) {
                     hub_pack_job_output_contract_invalid('artifact_json_contract_invalid');
                 }
+            }
+            if (isset($definition['json']['semantic'])) {
+                $semantic = hub_pack_job_json_semantic_contract($definition['json']['semantic']);
+                if ($semantic === null) {
+                    hub_pack_job_output_contract_invalid('artifact_json_contract_invalid');
+                }
+                $definition['json']['semantic'] = $semantic;
             }
         }
         if (isset($definition['text'])) {
@@ -2124,7 +2134,51 @@ function hub_pack_job_read_parser_output(string $path, int $size): string
     return $contents;
 }
 
-function hub_pack_job_validate_json_output(string $path, array $definition, int $size): void
+function hub_pack_job_json_semantic_contract(mixed $semantic): ?array
+{
+    if (!is_array($semantic) || array_is_list($semantic) || array_diff(array_keys($semantic), ['equals_input', 'array_equals_by_input', 'object_keys_by_input']) !== []) {
+        return null;
+    }
+    $field = static fn (mixed $value): bool => is_string($value) && preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $value) === 1;
+    $inputField = static fn (mixed $value): bool => is_string($value) && preg_match('/^[a-z][a-z0-9_]{0,63}$/', $value) === 1;
+    $normalized = [];
+    if (isset($semantic['equals_input'])) {
+        if (!is_array($semantic['equals_input']) || array_is_list($semantic['equals_input']) || $semantic['equals_input'] === []) {
+            return null;
+        }
+        foreach ($semantic['equals_input'] as $output => $input) {
+            if (!$field($output) || !$inputField($input)) {
+                return null;
+            }
+        }
+        $normalized['equals_input'] = $semantic['equals_input'];
+    }
+    foreach (['array_equals_by_input', 'object_keys_by_input'] as $name) {
+        if (!isset($semantic[$name])) {
+            continue;
+        }
+        $rule = $semantic[$name];
+        if (!is_array($rule) || array_keys($rule) !== ['input', 'output', 'values'] || !$inputField($rule['input'] ?? null) || !$field($rule['output'] ?? null)
+            || !is_array($rule['values'] ?? null) || array_is_list($rule['values']) || $rule['values'] === []) {
+            return null;
+        }
+        foreach ($rule['values'] as $value => $expected) {
+            if (!is_string($value) || $value === '' || !is_array($expected) || !array_is_list($expected) || $expected === []) {
+                return null;
+            }
+            foreach ($expected as $key) {
+                if (!$field($key)) {
+                    return null;
+                }
+            }
+        }
+        $normalized[$name] = $rule;
+    }
+
+    return $normalized === [] ? null : $normalized;
+}
+
+function hub_pack_job_validate_json_output(string $path, array $definition, int $size, array $taskInput): void
 {
     if (!isset($definition['json'])) {
         return;
@@ -2142,6 +2196,32 @@ function hub_pack_job_validate_json_output(string $path, array $definition, int 
     foreach ($definition['json']['required_keys'] ?? [] as $key) {
         if (!array_key_exists($key, $decoded)) {
             hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+    }
+    $semantic = $definition['json']['semantic'] ?? [];
+    foreach ($semantic['equals_input'] ?? [] as $output => $input) {
+        if (!array_key_exists($output, $decoded) || !array_key_exists($input, $taskInput) || $decoded[$output] !== $taskInput[$input]) {
+            hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+    }
+    foreach (['array_equals_by_input', 'object_keys_by_input'] as $name) {
+        if (!isset($semantic[$name])) {
+            continue;
+        }
+        $rule = $semantic[$name];
+        $input = $taskInput[$rule['input']] ?? null;
+        $expected = is_string($input) ? ($rule['values'][$input] ?? null) : null;
+        $actual = $decoded[$rule['output']] ?? null;
+        if ($expected === null || !is_array($actual) || ($name === 'array_equals_by_input' && (!array_is_list($actual) || $actual !== $expected))
+            || ($name === 'object_keys_by_input' && (array_is_list($actual) || $actual === [] || array_keys($actual) !== $expected))) {
+            hub_pack_job_output_contract_invalid('artifact_json_invalid');
+        }
+        if ($name === 'object_keys_by_input') {
+            foreach ($actual as $version) {
+                if (!is_scalar($version) || trim((string)$version) === '') {
+                    hub_pack_job_output_contract_invalid('artifact_json_invalid');
+                }
+            }
         }
     }
 }
@@ -2251,7 +2331,7 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
         if ($sha256 === null || !in_array($mime, $definition['mime_types'], true)) {
             hub_pack_job_output_contract_invalid('artifact_metadata_invalid');
         }
-        hub_pack_job_validate_json_output($path, $definition, $size);
+        hub_pack_job_validate_json_output($path, $definition, $size, $taskInput);
         hub_pack_job_validate_text_output($path, $definition, $size);
         $validated[] = [
             'name' => $relative,

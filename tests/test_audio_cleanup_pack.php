@@ -43,10 +43,20 @@ function hub_test_audio_cleanup_write(string $workspace, string $operation): voi
     if (in_array($operation, ['enhance', 'separate_and_enhance'], true)) {
         file_put_contents($workspace . '/output/cleaned.wav', $audio, LOCK_EX);
     }
+    $stages = match ($operation) {
+        'separate' => ['demucs'],
+        'enhance' => ['deepfilternet'],
+        'separate_and_enhance' => ['demucs', 'deepfilternet'],
+        default => [],
+    };
+    $versions = [];
+    foreach ($stages as $stage) {
+        $versions[$stage] = $stage === 'demucs' ? 'htdemucs@v4.0.1' : 'DeepFilterNet@3.0.0';
+    }
     file_put_contents($workspace . '/output/cleanup_report.json', json_encode([
         'operation' => $operation,
-        'actual_chain' => ['demucs'],
-        'model_versions' => ['demucs' => 'htdemucs@v4.0.1'],
+        'actual_chain' => $stages,
+        'model_versions' => $versions,
     ], JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
 }
 
@@ -79,6 +89,10 @@ hub_test('audio-cleanup request schema rejects invalid operations and unavailabl
     $enabled = $route;
     $enabled['capabilities']['deepfilternet'] = true;
     hub_test_assert(hub_audio_task_input(['operation' => 'enhance'], $enabled) === ['operation' => 'enhance', 'demucs_model' => 'balanced'], 'enabled enhancement must retain the normalized request');
+
+    $invalidAliasSchema = $pack['manifest'];
+    $invalidAliasSchema['async_jobs'][0]['input']['request_schema']['demucs_model']['enum'] = ['host-path'];
+    hub_test_assert(hub_pack_async_job_contract($invalidAliasSchema, 'cleanup') === null, 'Demucs request aliases must match the fixed model allowlist');
 });
 
 hub_test('audio-cleanup conditional outputs require only the artifacts for the requested operation', function (): void {
@@ -155,4 +169,102 @@ hub_test('audio-cleanup admits one source and runs through the injected generic 
             }
         }
     });
+});
+
+hub_test('audio-cleanup default executor dispatches its snapshotted container runner', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
+    $task = hub_test_adapter_claim($db);
+    $called = 0;
+
+    try {
+        $result = hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+            'command_runner' => static function (array $command, int $timeoutSeconds) use (&$called): array {
+                $called++;
+                hub_test_assert($command[0] === 'docker' && $command[1] === 'run' && in_array('--gpus', $command, true), 'default executor must use the controlled GPU container runner');
+                hub_test_assert(in_array('ghcr.io/3waaihub/audio-cleanup:0.1.0', $command, true), 'default executor must use the snapshotted audio-cleanup image');
+                hub_test_assert(in_array('/app/audio-cleanup', $command, true), 'default executor must use the snapshotted audio-cleanup entrypoint');
+                hub_test_assert(!str_contains(json_encode($command), 'never-from-client'), 'default executor must not execute client controls');
+                $mount = $command[array_search('--mount', $command, true) + 1] ?? '';
+                preg_match('/(?:^|,)src=([^,]+)/', (string)$mount, $matches);
+                hub_test_assert(!empty($matches[1]), 'default executor must mount its managed workspace');
+                hub_test_audio_cleanup_write((string)$matches[1], 'separate');
+
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            },
+        ]);
+
+        hub_test_assert($called === 1 && ($result['status'] ?? '') === 'success', 'task-worker default executor must dispatch audio cleanup without an injected executor');
+        hub_test_assert((hub_get_task($db, $taskId)['error_code'] ?? null) === null, 'default executor must not report runner_unavailable');
+    } finally {
+        hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+    }
+});
+
+hub_test('audio-cleanup report semantics reject empty and mismatched reports', function (): void {
+    foreach ([
+        ['operation' => 'separate', 'actual_chain' => [], 'model_versions' => []],
+        ['operation' => 'enhance', 'actual_chain' => ['demucs'], 'model_versions' => ['demucs' => 'htdemucs@v4.0.1']],
+    ] as $report) {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+        $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+        $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
+        $task = hub_test_adapter_claim($db);
+        try {
+            hub_run_pack_job_task($db, $task, [
+                'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+                'executor' => static function (array $context) use ($report): array {
+                    $context['started'](['container_id' => 'invalid-cleanup-report']);
+                    hub_test_audio_cleanup_write($context['workspace'], 'separate');
+                    file_put_contents($context['workspace'] . '/output/cleanup_report.json', json_encode($report, JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+
+                    return ['exit_code' => 0, 'container_id' => 'invalid-cleanup-report', 'cleanup' => hub_test_adapter_cleanup()];
+                },
+            ]);
+            hub_test_assert((hub_get_task($db, $taskId)['error_code'] ?? '') === 'output_contract_invalid', 'invalid cleanup report must fail the output contract');
+        } finally {
+            hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+        }
+    }
+});
+
+hub_test('audio-cleanup task freezes the selected Demucs config for its runner', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'quality'], 1, null, '127.0.0.1');
+    $manifestPath = HUB_ROOT . '/packs/audio-cleanup/pack.json';
+    $original = (string)file_get_contents($manifestPath);
+    $manifest = json_decode($original, true);
+    if (!is_array($manifest)) {
+        throw new RuntimeException('Cannot decode audio-cleanup manifest fixture.');
+    }
+    $manifest['model_allowlist']['demucs']['aliases']['quality']['model'] = 'changed-live-model';
+
+    try {
+        file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "\n", LOCK_EX);
+        try {
+            $task = hub_test_adapter_claim($db);
+            $result = hub_run_pack_job_task($db, $task, [
+                'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+                'executor' => static function (array $context): array {
+                    hub_test_assert(($context['runner']['config']['alias'] ?? '') === 'quality', 'runner must receive the selected Demucs alias');
+                    hub_test_assert(($context['runner']['config']['model']['model'] ?? '') === 'htdemucs_ft', 'runner config must come from the immutable task snapshot');
+                    $context['started'](['container_id' => 'frozen-demucs-config']);
+                    hub_test_audio_cleanup_write($context['workspace'], 'separate');
+
+                    return ['exit_code' => 0, 'container_id' => 'frozen-demucs-config', 'cleanup' => hub_test_adapter_cleanup()];
+                },
+            ]);
+            hub_test_assert(($result['status'] ?? '') === 'success', 'frozen Demucs config task must execute');
+        } finally {
+            hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+        }
+    } finally {
+        file_put_contents($manifestPath, $original, LOCK_EX);
+    }
 });
