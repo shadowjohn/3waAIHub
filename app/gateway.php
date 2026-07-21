@@ -121,7 +121,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         is_string($prepared['content_type'] ?? null) ? (string)$prepared['content_type'] : null
     );
 
-    $response = $requester($service, $timeoutSec);
+    $response = hub_gateway_invoke_requester($requester, $service, $timeoutSec);
     if (
         (string)($service['pack_id'] ?? '') === 'yolo-serving'
         && is_array($prepared['fallback_service'] ?? null)
@@ -130,7 +130,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         hub_yolo_inject_predict_payload($prepared['model'], 'auto', 'cpu', null, 'gpu_not_ready');
         $service = $prepared['fallback_service'];
         $timeoutSec = hub_service_gateway_timeout_sec($service);
-        $response = $requester($service, $timeoutSec);
+        $response = hub_gateway_invoke_requester($requester, $service, $timeoutSec);
     }
 
     if (isset($syncAdmission['run'])) {
@@ -138,6 +138,15 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     }
 
     return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext);
+}
+
+function hub_gateway_invoke_requester(callable $requester, array $service, int $timeoutSec): array
+{
+    try {
+        return $requester($service, $timeoutSec);
+    } catch (Throwable) {
+        return hub_gateway_error(502, 'proxy_error', 'service proxy error');
+    }
 }
 
 function hub_audio_sync_route(array $service): ?array
@@ -319,10 +328,18 @@ function hub_finish_audio_sync_request(PDO $db, array $service, array $admission
         hub_runtime_finish($db, (int)$run['id'], (string)$run['lease_token'], 'failed', ['error' => 'cleanup_failed']);
         return hub_gateway_error(500, 'cleanup_failed', 'sync GPU release could not be fenced');
     }
-    hub_runtime_finish($db, (int)$run['id'], (string)$run['lease_token'], (int)$response['status'] < 400 ? 'succeeded' : 'failed', ['error' => 'sync_proxy_failed']);
+    $terminal = hub_audio_sync_terminal_result($response);
+    hub_runtime_finish($db, (int)$run['id'], (string)$run['lease_token'], $terminal['state'], $terminal['result']);
     hub_update_service_status($db, (int)$service['id'], 'stopped');
 
     return $response;
+}
+
+function hub_audio_sync_terminal_result(array $response): array
+{
+    return (int)($response['status'] ?? 500) < 400
+        ? ['state' => 'succeeded', 'result' => []]
+        : ['state' => 'failed', 'result' => ['error' => 'sync_proxy_failed']];
 }
 
 function hub_audio_sync_abort(PDO $db, array $run, array $lease, string $error): void

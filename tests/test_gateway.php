@@ -1,6 +1,49 @@
 <?php
 declare(strict_types=1);
 
+function hub_test_gateway_fake_audio_runtime_bin(): string
+{
+    $bin = sys_get_temp_dir() . '/hub-gateway-audio-' . bin2hex(random_bytes(6));
+    if (!mkdir($bin, 0775, true)) {
+        throw new RuntimeException('Cannot create fake audio runtime bin.');
+    }
+    file_put_contents($bin . '/nvidia-smi', "#!/bin/sh\nexit 0\n");
+    file_put_contents($bin . '/docker', <<<'SH'
+#!/bin/sh
+state_dir=$(dirname "$0")
+case "$1:$2" in
+  container:inspect)
+    if [ -f "$state_dir/removed" ]; then
+      echo 'Error: No such container' >&2
+      exit 1
+    fi
+    echo '{"Running":true}'
+    ;;
+  stop:-t|container:rm)
+    touch "$state_dir/removed"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+SH
+    );
+    chmod($bin . '/nvidia-smi', 0755);
+    chmod($bin . '/docker', 0755);
+
+    return $bin;
+}
+
+function hub_test_gateway_remove_audio_runtime_bin(string $bin): void
+{
+    foreach (['nvidia-smi', 'docker', 'removed'] as $name) {
+        if (is_file($bin . '/' . $name)) {
+            unlink($bin . '/' . $name);
+        }
+    }
+    rmdir($bin);
+}
+
 hub_test('hello gateway and unknown mode keep expected contract', function (): void {
     $db = hub_test_reset_db();
     hub_set_service_enabled($db, 'hello', true);
@@ -38,6 +81,14 @@ hub_test('gateway applies manifest upload limit and timeout', function (): void 
         return hub_gateway_json(200, ['ok' => true]);
     });
     hub_test_assert($response['status'] === 200, 'translate request should pass after content length is acceptable');
+});
+
+hub_test('gateway normalizes proxy exceptions and sync terminal metadata', function (): void {
+    $error = hub_gateway_invoke_requester(static fn (): array => throw new RuntimeException('proxy exploded'), [], 1);
+    $payload = json_decode((string)$error['body'], true);
+    hub_test_assert($error['status'] === 502 && ($payload['error'] ?? '') === 'proxy_error', 'requester exceptions must become a safe proxy error before sync cleanup');
+    hub_test_assert(hub_audio_sync_terminal_result(hub_gateway_json(200, ['ok' => true])) === ['state' => 'succeeded', 'result' => []], 'successful sync diagnostics must not store an error code');
+    hub_test_assert(hub_audio_sync_terminal_result(hub_gateway_error(502, 'proxy_error', 'failed')) === ['state' => 'failed', 'result' => ['error' => 'sync_proxy_failed']], 'failed sync diagnostics must keep the proxy error code');
 });
 
 hub_test('task_cancel API requests cooperative cancel for running DocParser tasks', function (): void {
@@ -134,6 +185,83 @@ hub_test('legacy ASR and TTS sync requests require the bounded diagnostic path',
         if (is_string($longAudio) && is_file($longAudio)) {
             unlink($longAudio);
         }
+        $_SERVER = $serverBackup;
+        $_GET = $getBackup;
+        $_POST = $postBackup;
+        $_FILES = $filesBackup;
+    }
+});
+
+hub_test('real-inference sync requester failures finalize their GPU lease', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'asr', true);
+    hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+
+    $serverBackup = $_SERVER;
+    $getBackup = $_GET;
+    $postBackup = $_POST;
+    $filesBackup = $_FILES;
+    $pathBackup = getenv('PATH');
+    $bin = hub_test_gateway_fake_audio_runtime_bin();
+    try {
+        putenv('PATH=' . $bin . ':' . $pathBackup);
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=asr';
+        $_SERVER['CONTENT_LENGTH'] = '0';
+        $_GET = [];
+        $_POST = ['real_inference' => 'TRUE'];
+        $_FILES = [];
+        $beforeTasks = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+
+        $response = hub_gateway_dispatch($db, 'asr', static fn (): array => throw new RuntimeException('requester exploded'));
+        $payload = json_decode((string)$response['body'], true);
+        $run = $db->query('SELECT state, error_code FROM runtime_runs ORDER BY id DESC LIMIT 1')->fetch();
+        $gpuState = (string)$db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn();
+        hub_test_assert($response['status'] === 502 && ($payload['error'] ?? '') === 'proxy_error', 'throwing requester must return a safe proxy error');
+        hub_test_assert(is_array($run) && ($run['state'] ?? '') === 'failed' && ($run['error_code'] ?? '') === 'sync_proxy_failed', 'throwing requester must terminalize its runtime run');
+        hub_test_assert(in_array($gpuState, ['available', 'blocked'], true), 'throwing requester must release or block gpu:0');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $beforeTasks, 'throwing sync requests must not create tasks');
+    } finally {
+        putenv($pathBackup === false ? 'PATH' : 'PATH=' . $pathBackup);
+        hub_test_gateway_remove_audio_runtime_bin($bin);
+        $_SERVER = $serverBackup;
+        $_GET = $getBackup;
+        $_POST = $postBackup;
+        $_FILES = $filesBackup;
+    }
+});
+
+hub_test('successful real-inference sync diagnostics leave no error code', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'asr', true);
+    hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+
+    $serverBackup = $_SERVER;
+    $getBackup = $_GET;
+    $postBackup = $_POST;
+    $filesBackup = $_FILES;
+    $pathBackup = getenv('PATH');
+    $bin = hub_test_gateway_fake_audio_runtime_bin();
+    try {
+        putenv('PATH=' . $bin . ':' . $pathBackup);
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=asr';
+        $_SERVER['CONTENT_LENGTH'] = '0';
+        $_GET = [];
+        $_POST = ['real_inference' => 'TRUE'];
+        $_FILES = [];
+
+        $response = hub_gateway_dispatch($db, 'asr', static fn (): array => hub_gateway_json(200, ['ok' => true]));
+        $run = $db->query('SELECT state, error_code FROM runtime_runs ORDER BY id DESC LIMIT 1')->fetch();
+        hub_test_assert($response['status'] === 200, 'successful sync diagnostic must return its proxy response');
+        hub_test_assert(is_array($run) && ($run['state'] ?? '') === 'succeeded' && $run['error_code'] === null, 'successful sync diagnostic must have no error code');
+    } finally {
+        putenv($pathBackup === false ? 'PATH' : 'PATH=' . $pathBackup);
+        hub_test_gateway_remove_audio_runtime_bin($bin);
         $_SERVER = $serverBackup;
         $_GET = $getBackup;
         $_POST = $postBackup;
