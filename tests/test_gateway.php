@@ -91,6 +91,21 @@ hub_test('gateway normalizes proxy exceptions and sync terminal metadata', funct
     hub_test_assert(hub_audio_sync_terminal_result(hub_gateway_error(502, 'proxy_error', 'failed')) === ['state' => 'failed', 'result' => ['error' => 'sync_proxy_failed']], 'failed sync diagnostics must keep the proxy error code');
 });
 
+hub_test('non-audio gateway requester exceptions preserve existing behavior', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'translate-gemma12b', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'translate', true);
+    $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+    $_SERVER['REQUEST_METHOD'] = 'POST';
+    $_SERVER['CONTENT_LENGTH'] = '0';
+    try {
+        hub_gateway_dispatch($db, 'translate', static fn (): array => throw new RuntimeException('must propagate'));
+        hub_test_assert(false, 'non-audio requester exception must propagate');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'must propagate', 'non-audio requester exception changed');
+    }
+});
+
 hub_test('task_cancel API requests cooperative cancel for running DocParser tasks', function (): void {
     $db = hub_test_reset_db();
     $taskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, ['input_file' => HUB_DATA_DIR . '/uploads/tasks/task_1/input.pdf'], null, '127.0.0.1');

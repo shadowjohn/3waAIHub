@@ -121,7 +121,9 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         is_string($prepared['content_type'] ?? null) ? (string)$prepared['content_type'] : null
     );
 
-    $response = hub_gateway_invoke_requester($requester, $service, $timeoutSec);
+    $response = $isAudioSync
+        ? hub_gateway_invoke_requester($requester, $service, $timeoutSec)
+        : $requester($service, $timeoutSec);
     if (
         (string)($service['pack_id'] ?? '') === 'yolo-serving'
         && is_array($prepared['fallback_service'] ?? null)
@@ -130,7 +132,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         hub_yolo_inject_predict_payload($prepared['model'], 'auto', 'cpu', null, 'gpu_not_ready');
         $service = $prepared['fallback_service'];
         $timeoutSec = hub_service_gateway_timeout_sec($service);
-        $response = hub_gateway_invoke_requester($requester, $service, $timeoutSec);
+        $response = $requester($service, $timeoutSec);
     }
 
     if (isset($syncAdmission['run'])) {
