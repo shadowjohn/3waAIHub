@@ -352,6 +352,64 @@ function hub_pack_job_default_runner_command(array $context): array
     return ['name' => $name, 'command' => $command];
 }
 
+function hub_pack_job_default_process_runner(array $command, int $timeoutSeconds, callable $poll): array
+{
+    $unsupported = hub_linux_docker_unsupported_result();
+    if ($unsupported !== null) {
+        return $unsupported;
+    }
+    hub_cli_only();
+    $process = @proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, HUB_ROOT);
+    if (!is_resource($process)) {
+        return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Cannot start process.'];
+    }
+    foreach ($pipes as $pipe) {
+        stream_set_blocking($pipe, false);
+    }
+
+    $stdout = '';
+    $stderr = '';
+    $observedExitCode = null;
+    $intent = null;
+    $startedAt = microtime(true);
+    do {
+        $stdout .= stream_get_contents($pipes[1]) ?: '';
+        $stderr .= stream_get_contents($pipes[2]) ?: '';
+        $status = proc_get_status($process);
+        if (!$status['running']) {
+            $observedExitCode = hub_observed_process_exit_code($status) ?? $observedExitCode;
+            break;
+        }
+        $intent = $poll();
+        if ($intent !== null) {
+            proc_terminate($process);
+            break;
+        }
+        if (microtime(true) - $startedAt >= max(1, $timeoutSeconds)) {
+            $intent = 'timed_out';
+            proc_terminate($process);
+            $stderr .= "\nCommand timed out.";
+            break;
+        }
+        usleep(1000000);
+    } while (true);
+
+    $stdout .= stream_get_contents($pipes[1]) ?: '';
+    $stderr .= stream_get_contents($pipes[2]) ?: '';
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $result = [
+        'exit_code' => hub_process_exit_code(proc_close($process), $observedExitCode),
+        'stdout' => trim($stdout),
+        'stderr' => trim($stderr),
+    ];
+    if ($intent !== null) {
+        $result['intent'] = $intent;
+    }
+
+    return $result;
+}
+
 function hub_pack_job_docker_container_state(callable $runner, string $name, int $timeoutSeconds): ?array
 {
     try {
@@ -401,14 +459,34 @@ function hub_pack_job_default_container_cleanup(callable $runner, string $name, 
     return ['cleanup' => hub_pack_job_no_work_cleanup(), 'owned_pids' => $ownedPids];
 }
 
-function hub_pack_job_default_executor(array $context, ?callable $commandRunner = null): array
+function hub_pack_job_default_executor(array $context, ?callable $commandRunner = null, ?callable $processRunner = null): array
 {
     $execution = hub_pack_job_default_runner_command($context);
     $context['started'](['container_id' => $execution['name']]);
     $runner = $commandRunner ?? 'hub_run_linux_docker_command';
     try {
-        $result = $runner($execution['command'], (int)$context['runner']['timeout_seconds']);
+        if ($processRunner === null && $commandRunner !== null) {
+            $result = $runner($execution['command'], (int)$context['runner']['timeout_seconds']);
+        } else {
+            $intent = null;
+            $poll = static function () use ($context, &$intent): ?string {
+                if (!isset($context['tick']) || !is_callable($context['tick'])) {
+                    return null;
+                }
+                $next = $context['tick']();
+                if (in_array($next, ['fence_lost', 'cancelled', 'timed_out'], true)) {
+                    $intent = $next;
+                }
+
+                return $intent;
+            };
+            $process = $processRunner ?? 'hub_pack_job_default_process_runner';
+            $result = $process($execution['command'], (int)$context['runner']['timeout_seconds'], $poll);
+        }
     } catch (Throwable) {
+        $result = ['exit_code' => 1];
+    }
+    if (!is_array($result)) {
         $result = ['exit_code' => 1];
     }
     $cleanup = hub_pack_job_default_container_cleanup($runner, $execution['name'], (int)$context['runner']['timeout_seconds']);
@@ -418,7 +496,7 @@ function hub_pack_job_default_executor(array $context, ?callable $commandRunner 
         'container_id' => $execution['name'],
         'owned_pids' => $cleanup['owned_pids'],
         'cleanup' => $cleanup['cleanup'],
-    ];
+    ] + (isset($result['intent']) ? ['intent' => $result['intent']] : []);
 }
 
 function hub_pack_job_execution_details(array $details, array $fallback = []): array
@@ -721,7 +799,11 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         if (isset($options['executor']) && is_callable($options['executor'])) {
             $executor = $options['executor'];
         } elseif (($runner['executor'] ?? '') === 'container') {
-            $executor = static fn (array $context): array => hub_pack_job_default_executor($context, isset($options['command_runner']) && is_callable($options['command_runner']) ? $options['command_runner'] : null);
+            $executor = static fn (array $context): array => hub_pack_job_default_executor(
+                $context,
+                isset($options['command_runner']) && is_callable($options['command_runner']) ? $options['command_runner'] : null,
+                isset($options['process_runner']) && is_callable($options['process_runner']) ? $options['process_runner'] : null
+            );
         } else {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'No controlled Pack job executor is configured', hub_pack_job_no_work_cleanup(), null);
         }
@@ -785,7 +867,9 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         if (!$fenceLost && !hub_pack_job_record_execution($db, $task, $run, $gpuLease, $details)) {
             $fenceLost = true;
         }
-        $intent = hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds);
+        $intent = in_array($result['intent'] ?? null, ['fence_lost', 'cancelled', 'timed_out'], true)
+            ? $result['intent']
+            : hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds);
         if ($fenceLost || $intent === 'fence_lost') {
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease);
         }

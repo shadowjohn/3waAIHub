@@ -255,6 +255,116 @@ hub_test('audio-cleanup default executor dispatches its snapshotted container ru
     }
 });
 
+hub_test('audio-cleanup async container process heartbeats before it completes', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
+    $task = hub_test_adapter_claim($db);
+    $polls = 0;
+    $inspects = 0;
+    try {
+        $result = hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+            'command_runner' => static function (array $command, int $timeoutSeconds) use (&$inspects): array {
+                hub_test_assert(($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect', 'command runner must only clean an asynchronously started container');
+                $inspects++;
+                return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'Error: No such container'];
+            },
+            'process_runner' => static function (array $command, int $timeoutSeconds, callable $poll) use ($db, &$polls): array {
+                hub_test_assert(!$db->inTransaction(), 'process polling must not hold a database transaction');
+                hub_test_assert(($command[0] ?? '') === 'docker' && ($command[1] ?? '') === 'run', 'process runner must start the controlled Docker argv');
+                hub_test_assert($poll() === null && $poll() === null, 'a long container must heartbeat while it is running');
+                $polls += 2;
+                $mount = $command[array_search('--mount', $command, true) + 1] ?? '';
+                preg_match('/(?:^|,)src=([^,]+)/', (string)$mount, $matches);
+                hub_test_audio_cleanup_write((string)($matches[1] ?? 'missing'), 'separate');
+
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            },
+        ]);
+        hub_test_assert(($result['status'] ?? '') === 'success' && $polls === 2 && $inspects === 2, 'async container completion must preserve heartbeats and verified cleanup');
+    } finally {
+        hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+    }
+});
+
+hub_test('audio-cleanup async container fence loss stops and cleans without success', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
+    $task = hub_test_adapter_claim($db);
+    $inspects = 0;
+    $stops = 0;
+    try {
+        $outcome = hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+            'command_runner' => static function (array $command, int $timeoutSeconds) use (&$inspects, &$stops): array {
+                if (($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect') {
+                    $inspects++;
+                    return $inspects === 1
+                        ? ['exit_code' => 0, 'stdout' => '{"Running":true,"Pid":4242}', 'stderr' => '']
+                        : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'Error: No such container'];
+                }
+                if (($command[1] ?? '') === 'stop' || (($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'rm')) {
+                    $stops++;
+                    return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+                }
+                throw new RuntimeException('synchronous docker run must not start when process runner is supplied');
+            },
+            'process_runner' => static function (array $command, int $timeoutSeconds, callable $poll) use ($db, $taskId): array {
+                $runId = (int)$db->query('SELECT id FROM runtime_runs WHERE task_id = ' . $taskId . ' ORDER BY id DESC LIMIT 1')->fetchColumn();
+                $db->prepare('UPDATE runtime_runs SET lease_token = :token WHERE id = :id')->execute([':token' => 'lost-during-process', ':id' => $runId]);
+                hub_test_assert($poll() === 'fence_lost', 'async process poll must surface a lost runtime fence');
+
+                return ['exit_code' => 1, 'stdout' => '', 'stderr' => '', 'intent' => 'fence_lost'];
+            },
+        ]);
+        hub_test_assert(($outcome['status'] ?? '') === 'fence_lost' && (hub_get_task($db, $taskId)['status'] ?? '') !== 'success' && $inspects === 2 && $stops === 2, 'lost fence must stop/remove the named container before success is impossible');
+    } finally {
+        hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+    }
+});
+
+hub_test('audio-cleanup async container cancellation stops before natural completion', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
+    $task = hub_test_adapter_claim($db);
+    $inspects = 0;
+    $stops = 0;
+    try {
+        $outcome = hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+            'command_runner' => static function (array $command, int $timeoutSeconds) use (&$inspects, &$stops): array {
+                if (($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect') {
+                    $inspects++;
+                    return $inspects === 1
+                        ? ['exit_code' => 0, 'stdout' => '{"Running":true,"Pid":4242}', 'stderr' => '']
+                        : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'Error: No such container'];
+                }
+                if (($command[1] ?? '') === 'stop' || (($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'rm')) {
+                    $stops++;
+                    return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+                }
+                throw new RuntimeException('natural completion must not run after cancellation');
+            },
+            'process_runner' => static function (array $command, int $timeoutSeconds, callable $poll) use ($db, $taskId): array {
+                $runId = (int)$db->query('SELECT id FROM runtime_runs WHERE task_id = ' . $taskId . ' ORDER BY id DESC LIMIT 1')->fetchColumn();
+                hub_test_assert(hub_runtime_request_cancel($db, $runId, 'test cancel'), 'test must request cancellation while the process is running');
+                hub_test_assert($poll() === 'cancelled', 'async process poll must surface cancellation before natural completion');
+
+                return ['exit_code' => 1, 'stdout' => '', 'stderr' => '', 'intent' => 'cancelled'];
+            },
+        ]);
+        hub_test_assert(($outcome['status'] ?? '') === 'cancelled' && (hub_get_task($db, $taskId)['status'] ?? '') === 'cancelled' && $inspects === 2 && $stops === 2, 'cancellation must stop/remove the running container and skip success');
+    } finally {
+        hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+    }
+});
+
 hub_test('audio-cleanup default executor proves container cleanup before reporting success', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
