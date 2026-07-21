@@ -26,6 +26,7 @@ def alignment_cache_manifest() -> dict[str, object]:
         "model_name": ALIGNMENT_MODEL_NAME,
         "model_dir": str(TORCH_CACHE_DIR),
         "weight_path": str(ALIGNMENT_WEIGHT),
+        "alignment_languages": [ALIGNMENT_LANGUAGE],
     }
 
 

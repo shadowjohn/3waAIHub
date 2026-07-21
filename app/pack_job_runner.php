@@ -330,6 +330,56 @@ function hub_pack_job_asset_mounts_for_input(array $descriptors, array $input): 
     return $active;
 }
 
+function hub_pack_job_asset_marker_json_valid(string $source, array $marker, array $input): bool
+{
+    $path = hub_pack_job_asset_descendant($source, (string)($marker['path'] ?? ''));
+    $size = $path === null ? false : filesize($path);
+    if ($path === null || $size === false || $size < 1 || $size > 65536) {
+        return false;
+    }
+    try {
+        $value = json_decode((string)file_get_contents($path), true, 32, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return false;
+    }
+    if (!is_array($value) || array_is_list($value)) {
+        return false;
+    }
+    foreach ((array)($marker['required_strings'] ?? []) as $field => $expected) {
+        if (!is_string($field) || !is_string($expected) || !array_key_exists($field, $value)
+            || !is_string($value[$field]) || $value[$field] !== $expected) {
+            return false;
+        }
+    }
+    foreach ((array)($marker['string_lists'] ?? []) as $field => $allowed) {
+        $items = is_string($field) && array_key_exists($field, $value) ? $value[$field] : null;
+        if (!is_array($items) || !array_is_list($items) || $items === [] || !is_array($allowed) || $allowed === []) {
+            return false;
+        }
+        $seen = [];
+        foreach ($items as $item) {
+            if (!is_string($item) || !in_array($item, $allowed, true) || isset($seen[$item])) {
+                return false;
+            }
+            $seen[$item] = true;
+        }
+    }
+    $membership = $marker['input_membership'] ?? null;
+    if ($membership !== null) {
+        $inputField = $membership['input'] ?? null;
+        $listField = $membership['list_field'] ?? null;
+        $ignoreEquals = $membership['ignore_equals'] ?? null;
+        $items = is_string($listField) && array_key_exists($listField, $value) ? $value[$listField] : null;
+        $requested = is_string($inputField) && array_key_exists($inputField, $input) ? $input[$inputField] : null;
+        if (!is_string($ignoreEquals) || !is_string($requested) || !is_array($items)
+            || ($requested !== $ignoreEquals && !in_array('*', $items, true) && !in_array($requested, $items, true))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 function hub_pack_job_resolve_asset_mounts(PDO $db, array $runner, array $input = []): array
 {
     $descriptors = hub_pack_async_job_runner_asset_mounts($runner['asset_mounts'] ?? []);
@@ -360,6 +410,9 @@ function hub_pack_job_resolve_asset_mounts(PDO $db, array $runner, array $input 
             if ($required === null || !is_file($required)) {
                 throw new RuntimeException('model_assets_unavailable');
             }
+        }
+        if (isset($descriptor['marker_json']) && !hub_pack_job_asset_marker_json_valid($source, $descriptor['marker_json'], $input)) {
+            throw new RuntimeException('model_assets_unavailable');
         }
         $resolved[] = [
             'id' => $descriptor['id'],

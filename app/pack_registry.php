@@ -238,6 +238,64 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
     return null;
 }
 
+function hub_pack_async_job_runner_asset_marker_json(mixed $marker, array $requiredPaths): ?array
+{
+    if (!is_array($marker) || array_diff(array_keys($marker), ['path', 'required_strings', 'string_lists', 'input_membership']) !== []
+        || !array_key_exists('path', $marker) || !array_key_exists('required_strings', $marker)) {
+        return null;
+    }
+    $path = $marker['path'];
+    $requiredStrings = $marker['required_strings'];
+    if (!is_string($path) || !in_array($path, $requiredPaths, true)
+        || !is_array($requiredStrings) || array_is_list($requiredStrings) || $requiredStrings === [] || count($requiredStrings) > 16) {
+        return null;
+    }
+    $normalizedStrings = [];
+    foreach ($requiredStrings as $field => $value) {
+        if (!is_string($field) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $field) !== 1
+            || !is_string($value) || $value === '' || strlen($value) > 512 || str_contains($value, "\0")) {
+            return null;
+        }
+        $normalizedStrings[$field] = $value;
+    }
+    $stringLists = $marker['string_lists'] ?? [];
+    if (!is_array($stringLists) || ($stringLists !== [] && array_is_list($stringLists)) || count($stringLists) > 8) {
+        return null;
+    }
+    $normalizedLists = [];
+    foreach ($stringLists as $field => $values) {
+        if (!is_string($field) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $field) !== 1 || isset($normalizedStrings[$field])
+            || !is_array($values) || !array_is_list($values) || $values === [] || count($values) > 32) {
+            return null;
+        }
+        $seen = [];
+        foreach ($values as $value) {
+            if (!is_string($value) || preg_match('/^(?:\\*|[A-Za-z0-9][A-Za-z0-9._-]{0,63})$/', $value) !== 1 || isset($seen[$value])) {
+                return null;
+            }
+            $seen[$value] = true;
+        }
+        $normalizedLists[$field] = array_values($values);
+    }
+    $membership = $marker['input_membership'] ?? null;
+    if ($membership !== null && (!is_array($membership) || array_keys($membership) !== ['input', 'list_field', 'ignore_equals']
+        || !is_string($membership['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]*$/', $membership['input']) !== 1
+        || !is_string($membership['list_field'] ?? null) || !isset($normalizedLists[$membership['list_field']])
+        || !is_string($membership['ignore_equals'] ?? null) || $membership['ignore_equals'] === '' || strlen($membership['ignore_equals']) > 512 || str_contains($membership['ignore_equals'], "\0"))) {
+        return null;
+    }
+
+    return [
+        'path' => $path,
+        'required_strings' => $normalizedStrings,
+    ] + ($normalizedLists === [] ? [] : ['string_lists' => $normalizedLists])
+        + ($membership === null ? [] : ['input_membership' => [
+            'input' => $membership['input'],
+            'list_field' => $membership['list_field'],
+            'ignore_equals' => $membership['ignore_equals'],
+        ]]);
+}
+
 function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
 {
     if (!is_array($mounts) || !array_is_list($mounts) || count($mounts) > 8) {
@@ -246,7 +304,7 @@ function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
     $normalized = [];
     $seen = [];
     foreach ($mounts as $mount) {
-        if (!is_array($mount) || array_diff(array_keys($mount), ['id', 'storage', 'host_subdir', 'container_path', 'required_paths', 'when']) !== []) {
+        if (!is_array($mount) || array_diff(array_keys($mount), ['id', 'storage', 'host_subdir', 'container_path', 'required_paths', 'when', 'marker_json']) !== []) {
             return null;
         }
         $id = (string)($mount['id'] ?? '');
@@ -255,6 +313,8 @@ function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
         $containerPath = (string)($mount['container_path'] ?? '');
         $requiredPaths = $mount['required_paths'] ?? null;
         $when = $mount['when'] ?? null;
+        $hasMarkerJson = array_key_exists('marker_json', $mount);
+        $markerJson = $mount['marker_json'] ?? null;
         if (preg_match('/^[a-z][a-z0-9_]{0,63}$/', $id) !== 1
             || !in_array($storage, ['models', 'cache'], true)
             || preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/', $hostSubdir) !== 1
@@ -274,6 +334,10 @@ function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
                 return null;
             }
         }
+        $markerContract = $hasMarkerJson ? hub_pack_async_job_runner_asset_marker_json($markerJson, $requiredPaths) : null;
+        if ($hasMarkerJson && $markerContract === null) {
+            return null;
+        }
         if (isset($seen[$id]) || isset($seen[$storage . ':' . $hostSubdir]) || isset($seen['container:' . $containerPath])) {
             return null;
         }
@@ -286,7 +350,8 @@ function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
             'host_subdir' => $hostSubdir,
             'container_path' => $containerPath,
             'required_paths' => array_values($requiredPaths),
-        ] + ($when === null ? [] : ['when' => ['input' => $when['input'], 'equals' => $when['equals']]]);
+        ] + ($when === null ? [] : ['when' => ['input' => $when['input'], 'equals' => $when['equals']]])
+            + ($markerContract === null ? [] : ['marker_json' => $markerContract]);
     }
 
     return $normalized;
@@ -296,30 +361,41 @@ function hub_pack_async_job_runner_asset_mount_conditions_valid(array $mounts, a
 {
     $allowed = array_fill_keys($fields, true);
     foreach ($mounts as $mount) {
-        if (!isset($mount['when'])) {
+        if (isset($mount['when'])) {
+            $when = $mount['when'];
+            $input = $when['input'] ?? null;
+            $equals = $when['equals'] ?? null;
+            $definition = is_string($input) && isset($allowed[$input]) ? ($requestSchema[$input] ?? null) : null;
+            if (!is_array($definition)) {
+                return false;
+            }
+            if (($definition['type'] ?? '') === 'boolean') {
+                if (!is_bool($equals)) {
+                    return false;
+                }
+            } elseif (($definition['type'] ?? '') === 'integer') {
+                if (!is_int($equals) || $equals < ($definition['min'] ?? 0) || $equals > ($definition['max'] ?? 0)) {
+                    return false;
+                }
+            } elseif (($definition['type'] ?? '') === 'string') {
+                if (!is_string($equals) || $equals === '' || strlen($equals) > ($definition['max_length'] ?? 0)
+                    || (isset($definition['enum']) && !in_array($equals, $definition['enum'], true))) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        $membership = $mount['marker_json']['input_membership'] ?? null;
+        if ($membership === null) {
             continue;
         }
-        $when = $mount['when'];
-        $input = $when['input'] ?? null;
-        $equals = $when['equals'] ?? null;
+        $input = $membership['input'] ?? null;
+        $ignoreEquals = $membership['ignore_equals'] ?? null;
         $definition = is_string($input) && isset($allowed[$input]) ? ($requestSchema[$input] ?? null) : null;
-        if (!is_array($definition)) {
-            return false;
-        }
-        if (($definition['type'] ?? '') === 'boolean') {
-            if (!is_bool($equals)) {
-                return false;
-            }
-        } elseif (($definition['type'] ?? '') === 'integer') {
-            if (!is_int($equals) || $equals < ($definition['min'] ?? 0) || $equals > ($definition['max'] ?? 0)) {
-                return false;
-            }
-        } elseif (($definition['type'] ?? '') === 'string') {
-            if (!is_string($equals) || $equals === '' || strlen($equals) > ($definition['max_length'] ?? 0)
-                || (isset($definition['enum']) && !in_array($equals, $definition['enum'], true))) {
-                return false;
-            }
-        } else {
+        if (!is_array($definition) || ($definition['type'] ?? '') !== 'string'
+            || !is_string($ignoreEquals) || $ignoreEquals === '' || strlen($ignoreEquals) > ($definition['max_length'] ?? 0)
+            || (isset($definition['enum']) && !in_array($ignoreEquals, $definition['enum'], true))) {
             return false;
         }
     }
