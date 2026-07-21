@@ -10,6 +10,44 @@ import time
 from pathlib import Path
 from typing import Any
 
+ASR_MODEL_DIR = Path("/models/whisper/asr/large-v3")
+HUGGINGFACE_CACHE_DIR = Path("/cache/whisper/huggingface")
+OFFLINE_CACHE_MARKER = HUGGINGFACE_CACHE_DIR / ".aihub-offline-ready.json"
+
+
+def configure_offline_cache() -> None:
+    cache = str(HUGGINGFACE_CACHE_DIR)
+    os.environ["HF_HOME"] = cache
+    os.environ["XDG_CACHE_HOME"] = cache
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["HF_DATASETS_OFFLINE"] = "1"
+
+
+def offline_cache_manifest() -> dict[str, Any]:
+    try:
+        value = read_json(OFFLINE_CACHE_MARKER)
+    except Exception as error:
+        raise RuntimeError("offline_cache_unavailable") from error
+    if value.get("schema") != "aihub-whisper-offline-cache/v1":
+        raise RuntimeError("offline_cache_unavailable")
+    languages = value.get("alignment_languages")
+    if not isinstance(languages, list) or not languages or any(not isinstance(language, str) or not language for language in languages):
+        raise RuntimeError("offline_cache_unavailable")
+    if value.get("pyannote_model") != "pyannote/speaker-diarization-3.1":
+        raise RuntimeError("offline_cache_unavailable")
+    return value
+
+
+def require_offline_assets(request: dict[str, Any], language: str) -> None:
+    if any(not (ASR_MODEL_DIR / name).is_file() or (ASR_MODEL_DIR / name).is_symlink() for name in ("config.json", "model.bin", "tokenizer.json")):
+        raise RuntimeError("asr_model_unavailable")
+    cache = offline_cache_manifest()
+    if request.get("word_timestamps") is True and language != "auto":
+        languages = cache["alignment_languages"]
+        if "*" not in languages and language not in languages:
+            raise RuntimeError("alignment_cache_unavailable")
+
 
 def read_json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -141,7 +179,7 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
     request = read_json(input_dir / "request.json")
     config = read_json(runner_config_path)
     model = config.get("model")
-    if not isinstance(model, dict) or not isinstance(model.get("model"), str) or not model["model"]:
+    if not isinstance(model, dict) or model.get("model") != str(ASR_MODEL_DIR) or model.get("label") != "large-v3":
         raise RuntimeError("runner_config_invalid")
     language = request.get("language", "auto")
     if not isinstance(language, str) or not language or len(language) > 16:
@@ -161,17 +199,20 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
     if not isinstance(output_srt, bool) or not isinstance(output_vtt, bool):
         raise RuntimeError("request_invalid")
 
+    configure_offline_cache()
+    require_offline_assets(request, language)
     require_cuda()
     started = time.monotonic()
     segments, detected_language = transcribe(load_asr(model["model"]), source, None if language == "auto" else language, word_timestamps)
     if word_timestamps:
+        require_offline_assets(request, detected_language)
         segments = align(load_alignment(detected_language), segments, source, detected_language)
     output_dir.mkdir(parents=True, exist_ok=True)
     transcript = {
         "text": " ".join(str(segment.get("text", "")).strip() for segment in segments).strip(),
         "segments": segments,
         "language": detected_language,
-        "model": model["model"],
+        "model": model["label"],
         "word_timestamps": word_timestamps,
     }
     (output_dir / "transcript.json").write_text(json.dumps(transcript, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -186,7 +227,7 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
         timeline = anonymous_speakers(diarize(load_diarization(token), source, minimum, maximum))
         (output_dir / "speaker_timeline.json").write_text(json.dumps({"speakers": timeline}, ensure_ascii=False) + "\n", encoding="utf-8")
     report = {
-        "model": model["model"],
+        "model": model["label"],
         "language": detected_language,
         "word_timestamps": word_timestamps,
         "diarization": diarization,

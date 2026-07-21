@@ -238,9 +238,57 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
     return null;
 }
 
+function hub_pack_async_job_runner_asset_mounts(mixed $mounts): ?array
+{
+    if (!is_array($mounts) || !array_is_list($mounts) || count($mounts) > 8) {
+        return null;
+    }
+    $normalized = [];
+    $seen = [];
+    foreach ($mounts as $mount) {
+        if (!is_array($mount) || array_diff(array_keys($mount), ['id', 'storage', 'host_subdir', 'container_path', 'required_paths']) !== []) {
+            return null;
+        }
+        $id = (string)($mount['id'] ?? '');
+        $storage = (string)($mount['storage'] ?? '');
+        $hostSubdir = (string)($mount['host_subdir'] ?? '');
+        $containerPath = (string)($mount['container_path'] ?? '');
+        $requiredPaths = $mount['required_paths'] ?? null;
+        if (preg_match('/^[a-z][a-z0-9_]{0,63}$/', $id) !== 1
+            || !in_array($storage, ['models', 'cache'], true)
+            || preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/', $hostSubdir) !== 1
+            || strlen($hostSubdir) > 240
+            || preg_match($storage === 'models' ? '~^/models/[A-Za-z0-9][A-Za-z0-9._/-]{0,239}$~' : '~^/cache/[A-Za-z0-9][A-Za-z0-9._/-]{0,239}$~', $containerPath) !== 1
+            || !is_array($requiredPaths) || !array_is_list($requiredPaths) || $requiredPaths === [] || count($requiredPaths) > 64) {
+            return null;
+        }
+        foreach ($requiredPaths as $path) {
+            if (!is_string($path) || strlen($path) > 240
+                || preg_match('/^(?!\/)(?!.*(?:^|\/)\.\.?\/?(?:$|\/))[A-Za-z0-9.][A-Za-z0-9._-]*(?:\/[A-Za-z0-9.][A-Za-z0-9._-]*)*$/', $path) !== 1) {
+                return null;
+            }
+        }
+        if (isset($seen[$id]) || isset($seen[$storage . ':' . $hostSubdir]) || isset($seen['container:' . $containerPath])) {
+            return null;
+        }
+        $seen[$id] = true;
+        $seen[$storage . ':' . $hostSubdir] = true;
+        $seen['container:' . $containerPath] = true;
+        $normalized[] = [
+            'id' => $id,
+            'storage' => $storage,
+            'host_subdir' => $hostSubdir,
+            'container_path' => $containerPath,
+            'required_paths' => array_values($requiredPaths),
+        ];
+    }
+
+    return $normalized;
+}
+
 function hub_pack_async_job_runner_contract(mixed $runner): ?array
 {
-    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'executor', 'secret_env']) !== []) {
+    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'executor', 'secret_env', 'asset_mounts']) !== []) {
         return null;
     }
     $image = trim((string)($runner['image'] ?? ''));
@@ -274,6 +322,10 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
     if (count(array_unique($secretEnv)) !== count($secretEnv)) {
         return null;
     }
+    $assetMounts = hub_pack_async_job_runner_asset_mounts($runner['asset_mounts'] ?? []);
+    if ($assetMounts === null) {
+        return null;
+    }
     foreach (array_merge($entrypoint, $args) as $value) {
         if (!is_string($value) || $value === '' || strlen($value) > 1024 || str_contains($value, "\0")) {
             return null;
@@ -295,7 +347,8 @@ function hub_pack_async_job_runner_contract(mixed $runner): ?array
         'required_vram_mb' => $requiredVram,
         'timeout_seconds' => $timeout,
     ] + ($executor === null ? [] : ['executor' => $executor])
-        + ($secretEnv === [] ? [] : ['secret_env' => $secretEnv]);
+        + ($secretEnv === [] ? [] : ['secret_env' => $secretEnv])
+        + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts]);
 }
 
 function hub_pack_async_job_runner_config_value(mixed $value, int $depth = 0): bool
@@ -738,30 +791,39 @@ function hub_pack_internal_container_runner_images(array $manifest): array
     return array_keys($images);
 }
 
-function hub_pack_internal_runner_build_contract(array $manifest, string $packDir): ?array
+function hub_pack_container_runner_build_contract(array $manifest, string $packDir): ?array
 {
     $images = hub_pack_internal_container_runner_images($manifest);
     $definition = $manifest['runner_build'] ?? null;
     if ($images === [] && $definition === null) {
         return null;
     }
-    if (!hub_pack_is_internal_task($manifest) || !is_array($definition) || array_keys($definition) !== ['context', 'dockerfile', 'image']
-        || ($definition['context'] ?? null) !== 'service' || ($definition['dockerfile'] ?? null) !== 'Dockerfile'
+    $internalTask = hub_pack_is_internal_task($manifest);
+    $apiService = (string)($manifest['type'] ?? '') === 'api_service';
+    if ((!$internalTask && !$apiService) || !is_array($definition) || array_keys($definition) !== ['context', 'dockerfile', 'image']
+        || ($internalTask && (($definition['context'] ?? null) !== 'service' || ($definition['dockerfile'] ?? null) !== 'Dockerfile'))
+        || ($apiService && (($definition['context'] ?? null) !== '.' || ($definition['dockerfile'] ?? null) !== 'service/Dockerfile'))
         || !is_string($definition['image'] ?? null) || !in_array($definition['image'], $images, true) || count($images) !== 1) {
         return null;
     }
-    $context = realpath($packDir . '/service');
-    $dockerfile = $context === false ? false : realpath($context . '/Dockerfile');
-    if ($context === false || $dockerfile === false || !is_dir($context) || !is_file($dockerfile) || dirname($dockerfile) !== $context) {
+    $context = realpath($internalTask ? $packDir . '/service' : $packDir);
+    $dockerfile = $context === false ? false : realpath($context . '/' . (string)$definition['dockerfile']);
+    if ($context === false || $dockerfile === false || !is_dir($context) || !is_file($dockerfile)
+        || !str_starts_with($dockerfile, $context . DIRECTORY_SEPARATOR)) {
         return null;
     }
 
     return ['image' => $definition['image'], 'context' => $context, 'dockerfile' => $dockerfile];
 }
 
-function hub_pack_provision_internal_runner_image(array $pack, ?callable $commandRunner = null): void
+function hub_pack_internal_runner_build_contract(array $manifest, string $packDir): ?array
 {
-    $build = hub_pack_internal_runner_build_contract((array)($pack['manifest'] ?? []), (string)($pack['dir'] ?? ''));
+    return hub_pack_container_runner_build_contract($manifest, $packDir);
+}
+
+function hub_pack_provision_container_runner_image(array $pack, ?callable $commandRunner = null): void
+{
+    $build = hub_pack_container_runner_build_contract((array)($pack['manifest'] ?? []), (string)($pack['dir'] ?? ''));
     if ($build === null) {
         return;
     }
@@ -786,6 +848,11 @@ function hub_pack_provision_internal_runner_image(array $pack, ?callable $comman
     if (!is_array($result) || (int)($result['exit_code'] ?? 1) !== 0 || !$available()) {
         throw new RuntimeException('internal_runner_image_unavailable');
     }
+}
+
+function hub_pack_provision_internal_runner_image(array $pack, ?callable $commandRunner = null): void
+{
+    hub_pack_provision_container_runner_image($pack, $commandRunner);
 }
 
 function hub_validate_pack_manifest(array $manifest, string $packDir): array
@@ -828,8 +895,8 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
             $errors[] = 'runtime.default_internal_port is required.';
         }
     }
-    if (array_key_exists('runner_build', $manifest) && hub_pack_internal_runner_build_contract($manifest, $packDir) === null) {
-        $errors[] = 'internal container runner_build is invalid.';
+    if (array_key_exists('runner_build', $manifest) && hub_pack_container_runner_build_contract($manifest, $packDir) === null) {
+        $errors[] = 'container runner_build is invalid.';
     }
 
     $gateway = is_array($manifest['gateway'] ?? null) ? $manifest['gateway'] : [];
@@ -910,8 +977,10 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     $existing = $idempotent ? ($existingByKey ?: $existingByMode) : null;
 
     $isInternalTask = hub_pack_is_internal_task($manifest);
-    if ($isInternalTask) {
-        hub_pack_provision_internal_runner_image($pack, isset($options['runner_build_runner']) && is_callable($options['runner_build_runner']) ? $options['runner_build_runner'] : null);
+    $runnerBuildRunner = isset($options['runner_build_runner']) && is_callable($options['runner_build_runner']) ? $options['runner_build_runner'] : null;
+    if (hub_pack_container_runner_build_contract($manifest, (string)$pack['dir']) !== null
+        && (!defined('HUB_TESTING') || HUB_TESTING !== true || $runnerBuildRunner !== null)) {
+        hub_pack_provision_container_runner_image($pack, $runnerBuildRunner);
     }
     $localPort = $isInternalTask
         ? null

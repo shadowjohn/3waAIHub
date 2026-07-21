@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 putenv('AIHUB_TEST_DB=' . (getenv('AIHUB_TEST_DB') ?: sys_get_temp_dir() . '/3waaihub_test.sqlite'));
+define('HUB_TESTING', true);
 
 require __DIR__ . '/../app/bootstrap.php';
 hub_cli_only();

@@ -16,6 +16,11 @@
     "compose_file": "docker-compose.yml",
     "default_internal_port": 8000
   },
+  "runner_build": {
+    "context": ".",
+    "dockerfile": "service/Dockerfile",
+    "image": "3waaihub/whisper-asr:0.1.0"
+  },
   "gateway": {
     "health_path": "/health",
     "invoke_path": "/asr/audio",
@@ -27,7 +32,8 @@
     "whisper": {
       "aliases": {
         "large_v3": {
-          "model": "large-v3"
+          "model": "/models/whisper/asr/large-v3",
+          "label": "large-v3"
         }
       }
     }
@@ -58,7 +64,23 @@
         "required_vram_mb": 10000,
         "timeout_seconds": 3600,
         "executor": "container",
-        "secret_env": ["AIHUB_SECRET_PYANNOTE_TOKEN"]
+        "secret_env": ["AIHUB_SECRET_PYANNOTE_TOKEN"],
+        "asset_mounts": [
+          {
+            "id": "whisper_asr_large_v3",
+            "storage": "models",
+            "host_subdir": "whisper/asr/large-v3",
+            "container_path": "/models/whisper/asr/large-v3",
+            "required_paths": ["config.json", "model.bin", "tokenizer.json"]
+          },
+          {
+            "id": "whisper_huggingface_cache",
+            "storage": "cache",
+            "host_subdir": "whisper/huggingface",
+            "container_path": "/cache/whisper/huggingface",
+            "required_paths": [".aihub-offline-ready.json"]
+          }
+        ]
       },
       "runner_config": {
         "alias_input": "model",

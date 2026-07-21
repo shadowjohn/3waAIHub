@@ -29,12 +29,27 @@ hub_test('Whisper ASR pack has storage mount runtime files', function (): void {
 
 hub_test('Whisper ASR service instance generates env compose and gateway mock', function (): void {
     $db = hub_test_reset_db();
+    $built = false;
+    $commands = [];
     $installed = hub_install_pack($db, 'whisper-asr', [
         'service_key' => 'asr-main',
         'mode' => 'asr',
         'name' => 'Whisper ASR Main',
         'port_mode' => 'manual',
         'local_port' => 18107,
+        'runner_build_runner' => static function (array $command, int $timeoutSeconds) use (&$built, &$commands): array {
+            $commands[] = $command;
+            if (($command[1] ?? '') === 'image' && ($command[2] ?? '') === 'inspect') {
+                return $built
+                    ? ['exit_code' => 0, 'stdout' => 'sha256:test-whisper-asr', 'stderr' => '']
+                    : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such image'];
+            }
+            if (($command[1] ?? '') === 'build') {
+                $built = true;
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            }
+            throw new RuntimeException('unexpected Whisper runner image lifecycle command');
+        },
     ]);
 
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
@@ -45,6 +60,7 @@ hub_test('Whisper ASR service instance generates env compose and gateway mock', 
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/whisper:/models/whisper'), 'whisper-asr compose must mount model storage');
     hub_test_assert(str_contains($compose, '${AIHUB_CACHE_DIR}/whisper:/cache/whisper'), 'whisper-asr compose must mount cache storage');
     hub_test_assert(str_contains($compose, '${SERVICE_DATA_DIR}:/data/service'), 'whisper-asr compose must mount service data');
+    hub_test_assert($built && in_array(['docker', 'build', '--tag', '3waaihub/whisper-asr:0.1.0', '--file', HUB_ROOT . '/packs/whisper-asr/service/Dockerfile', HUB_ROOT . '/packs/whisper-asr'], $commands, true), 'install must build and verify the declared generic Pack runner image');
     foreach ([
         'WHISPER_MODEL_DIR=/models/whisper',
         'WHISPER_CACHE_DIR=/cache/whisper',

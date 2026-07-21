@@ -410,6 +410,7 @@ hub_test('audio upload retry copies its owned source into the new task before ad
             'required_vram_mb' => 64,
             'timeout_seconds' => 30,
         ];
+        unset($manifest['runner_build']);
         try {
             file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
             $retryId = hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']]);
@@ -478,6 +479,7 @@ hub_test('audio retry snapshots a changed live runner without rewriting the orig
             'required_vram_mb' => 64,
             'timeout_seconds' => 30,
         ];
+        unset($manifest['runner_build']);
         try {
             file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
             $retryId = hub_create_manual_retry($db, $taskId, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']]);
@@ -598,6 +600,7 @@ hub_test('audio routes require declared async jobs without changing legacy local
             throw new RuntimeException('Cannot decode Whisper manifest fixture.');
         }
         unset($manifest['async_jobs']);
+        unset($manifest['runner_build']);
         try {
             file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . PHP_EOL, LOCK_EX);
             $error = '';
@@ -711,6 +714,19 @@ hub_test('manifest async job declarations cannot permit reserved controls', func
 hub_test('shared task worker claims Whisper Pack jobs and waits for its GPU contract', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $storage = hub_get_storage_paths($db);
+    $modelDirectory = $storage['AIHUB_MODELS_DIR'] . '/whisper/asr/large-v3';
+    $cacheDirectory = $storage['AIHUB_CACHE_DIR'] . '/whisper/huggingface';
+    if (!is_dir($modelDirectory)) {
+        mkdir($modelDirectory, 0775, true);
+    }
+    foreach (['config.json', 'model.bin', 'tokenizer.json'] as $file) {
+        file_put_contents($modelDirectory . '/' . $file, '{}', LOCK_EX);
+    }
+    if (!is_dir($cacheDirectory)) {
+        mkdir($cacheDirectory, 0775, true);
+    }
+    file_put_contents($cacheDirectory . '/.aihub-offline-ready.json', '{"schema":"aihub-whisper-offline-cache/v1","alignment_languages":["en"],"pyannote_model":"pyannote/speaker-diarization-3.1"}', LOCK_EX);
     $memberId = hub_create_api_member($db, 'Worker Queue Owner');
     $token = hub_create_api_token($db, $memberId, 'worker queue token', null, null);
     $route = hub_resolve_audio_async_route($db, 'speech_transcribe');

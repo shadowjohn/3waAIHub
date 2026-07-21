@@ -296,7 +296,68 @@ function hub_pack_job_runner_config_for_task(array $contract, array $input): ?ar
     ];
 }
 
-function hub_pack_job_runner_arguments(array $runner, array $task, array $run, string $workspace, ?array $config = null): array
+function hub_pack_job_asset_descendant(string $root, string $relative): ?string
+{
+    $path = $root;
+    foreach (explode('/', $relative) as $part) {
+        if ($part === '' || $part === '.' || $part === '..') {
+            return null;
+        }
+        $path .= DIRECTORY_SEPARATOR . $part;
+        if (is_link($path)) {
+            return null;
+        }
+    }
+    $resolved = realpath($path);
+    if ($resolved === false || ($resolved !== $root && !str_starts_with($resolved, $root . DIRECTORY_SEPARATOR))) {
+        return null;
+    }
+
+    return $resolved;
+}
+
+function hub_pack_job_resolve_asset_mounts(PDO $db, array $runner): array
+{
+    $descriptors = hub_pack_async_job_runner_asset_mounts($runner['asset_mounts'] ?? []);
+    if ($descriptors === null) {
+        throw new RuntimeException('model_assets_unavailable');
+    }
+    $storage = hub_get_storage_paths($db);
+    $roots = [
+        'models' => (string)($storage['AIHUB_MODELS_DIR'] ?? ''),
+        'cache' => (string)($storage['AIHUB_CACHE_DIR'] ?? ''),
+    ];
+    $resolved = [];
+    foreach ($descriptors as $descriptor) {
+        $configuredRoot = $roots[$descriptor['storage']] ?? '';
+        if ($configuredRoot === '' || is_link($configuredRoot)) {
+            throw new RuntimeException('model_assets_unavailable');
+        }
+        $root = realpath($configuredRoot);
+        if ($root === false || !is_dir($root)) {
+            throw new RuntimeException('model_assets_unavailable');
+        }
+        $source = hub_pack_job_asset_descendant($root, (string)$descriptor['host_subdir']);
+        if ($source === null || !is_dir($source)) {
+            throw new RuntimeException('model_assets_unavailable');
+        }
+        foreach ($descriptor['required_paths'] as $requiredPath) {
+            $required = hub_pack_job_asset_descendant($source, (string)$requiredPath);
+            if ($required === null || !is_file($required)) {
+                throw new RuntimeException('model_assets_unavailable');
+            }
+        }
+        $resolved[] = [
+            'id' => $descriptor['id'],
+            'source' => $source,
+            'container_path' => $descriptor['container_path'],
+        ];
+    }
+
+    return $resolved;
+}
+
+function hub_pack_job_runner_arguments(array $runner, array $task, array $run, string $workspace, ?array $config = null, array $assetMounts = []): array
 {
     $replacements = [
         '{workspace}' => $workspace,
@@ -315,7 +376,8 @@ function hub_pack_job_runner_arguments(array $runner, array $task, array $run, s
         'accelerator' => $runner['accelerator'],
         'required_vram_mb' => $runner['required_vram_mb'],
         'timeout_seconds' => $runner['timeout_seconds'],
-    ] + ($config === null ? [] : ['config' => $config]);
+    ] + ($config === null ? [] : ['config' => $config])
+        + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts]);
 }
 
 function hub_pack_job_default_runner_command(array $context): array
@@ -344,6 +406,17 @@ function hub_pack_job_default_runner_command(array $context): array
             $command[] = '--mount';
             $command[] = 'type=bind,src=' . $path . ',dst=' . $containerWorkspace . '/input/' . $file . ',readonly';
         }
+    }
+    foreach ((array)($runner['asset_mounts'] ?? []) as $asset) {
+        $source = is_array($asset) ? ($asset['source'] ?? null) : null;
+        $containerPath = is_array($asset) ? ($asset['container_path'] ?? null) : null;
+        if (!is_string($source) || !is_string($containerPath)
+            || !is_dir($source) || is_link($source)
+            || preg_match('~^/(?:models|cache)/[A-Za-z0-9][A-Za-z0-9._/-]{0,239}$~', $containerPath) !== 1) {
+            throw new RuntimeException('model_assets_unavailable');
+        }
+        $command[] = '--mount';
+        $command[] = 'type=bind,src=' . $source . ',dst=' . $containerPath . ',readonly';
     }
     if (($runner['accelerator'] ?? '') === 'gpu') {
         $command[] = '--gpus';
@@ -809,6 +882,11 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $runner = $contract['runner'];
         $runnerConfig = hub_pack_job_runner_config_for_task($contract, (array)($task['input'] ?? []));
+        try {
+            $assetMounts = hub_pack_job_resolve_asset_mounts($db, $runner);
+        } catch (Throwable) {
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
+        }
         if (isset($options['executor']) && is_callable($options['executor'])) {
             $executor = $options['executor'];
         } elseif (($runner['executor'] ?? '') === 'container') {
@@ -850,7 +928,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             'task' => $task,
             'run' => $run,
             'workspace' => $workspace,
-            'runner' => hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig),
+            'runner' => hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts),
         ];
         $pidInspector = $gpuLease === null ? null : ($options['pid_inspector'] ?? static fn (): array => []);
         $baseline = $pidInspector === null ? [] : hub_runtime_gpu_recovery_pids($pidInspector($context));
@@ -866,7 +944,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $run = $startedRun;
         $context['run'] = $run;
-        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig);
+        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts);
         $fenceLost = false;
         $context['started'] = static function (array $startedDetails) use (&$details, &$fenceLost, $db, $task, $run, $gpuLease, $baseline): void {
             $details = hub_pack_job_execution_details($startedDetails, ['baseline_pids' => $baseline]);
