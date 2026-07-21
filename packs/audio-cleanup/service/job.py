@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -65,6 +66,14 @@ def audio_properties(path: Path) -> dict[str, Any]:
     if values["sample_rate"] < 1 or values["channels"] < 1 or values["duration_seconds"] < 0:
         raise RuntimeError("audio_probe_failed")
     return values
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def package_version(name: str) -> str:
@@ -162,6 +171,7 @@ def main() -> int:
     scratch.mkdir()
     started = time.monotonic()
     source_audio = audio_properties(source)
+    source_sha256 = file_sha256(source)
     outputs: dict[str, dict[str, Any]] = {}
     versions: dict[str, str] = {}
     chain: list[str] = []
@@ -187,6 +197,7 @@ def main() -> int:
             "actual_chain": chain,
             "model_versions": versions,
             "source_audio": source_audio,
+            "source_sha256": source_sha256,
             "outputs": outputs,
             "elapsed_seconds": max(0.0, time.monotonic() - started),
             "warnings": [],

@@ -46,7 +46,7 @@ function hub_test_audio_cleanup_write(string $workspace, string $operation): voi
     if (in_array($operation, ['enhance', 'separate_and_enhance'], true)) {
         file_put_contents($workspace . '/output/cleaned.wav', $audio, LOCK_EX);
     }
-    file_put_contents($workspace . '/output/cleanup_report.json', json_encode(hub_test_audio_cleanup_report($operation), JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+    file_put_contents($workspace . '/output/cleanup_report.json', json_encode(hub_test_audio_cleanup_report($operation, $workspace . '/input/source'), JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
 }
 
 function hub_test_audio_cleanup_install(PDO $db, array $options = []): array
@@ -71,7 +71,7 @@ function hub_test_audio_cleanup_install(PDO $db, array $options = []): array
     return hub_install_pack($db, 'audio-cleanup', $options);
 }
 
-function hub_test_audio_cleanup_report(string $operation): array
+function hub_test_audio_cleanup_report(string $operation, ?string $sourcePath = null): array
 {
     $stages = match ($operation) {
         'separate' => ['demucs'],
@@ -98,6 +98,7 @@ function hub_test_audio_cleanup_report(string $operation): array
         'actual_chain' => $stages,
         'model_versions' => $versions,
         'source_audio' => $properties,
+        'source_sha256' => $sourcePath === null ? hash('sha256', hub_test_audio_cleanup_wav()) : (hash_file('sha256', $sourcePath) ?: ''),
         'outputs' => $outputs,
         'elapsed_seconds' => 0.01,
         'warnings' => [],
@@ -126,7 +127,7 @@ hub_test('audio-cleanup Pack declares a GPU-only generic runner and fixed cleanu
         hub_test_assert(is_file(HUB_ROOT . '/packs/audio-cleanup/' . $asset), 'audio-cleanup Pack asset missing ' . $asset);
     }
     $runner = (string)file_get_contents(HUB_ROOT . '/packs/audio-cleanup/service/job.py');
-    foreach (['--runner-config', 'demucs', 'deepFilter', 'cleanup_report.json'] as $needle) {
+    foreach (['--runner-config', 'demucs', 'deepFilter', 'file_sha256', 'source_sha256', 'cleanup_report.json'] as $needle) {
         hub_test_assert(str_contains($runner, $needle), 'audio-cleanup runner missing ' . $needle);
     }
 });
@@ -272,6 +273,14 @@ hub_test('audio-cleanup report attests Hub-probed source outputs and frozen mode
             $report['model_versions']['demucs'] = 'tampered@v0';
             return $report;
         },
+        static function (array $report): array {
+            unset($report['source_sha256']);
+            return $report;
+        },
+        static function (array $report): array {
+            $report['source_sha256'] = str_repeat('0', 64);
+            return $report;
+        },
     ] as $index => $mutate) {
         $workspace = hub_test_audio_cleanup_workspace();
         try {
@@ -331,6 +340,42 @@ hub_test('audio-cleanup report cannot attest a source mutated after prelaunch', 
         ]);
         $latest = hub_get_task($db, $taskId) ?? [];
         hub_test_assert(($latest['error_code'] ?? '') === 'output_contract_invalid', 'a report must not use a source mutation to replace Hub prelaunch evidence: ' . json_encode($latest));
+    } finally {
+        hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
+        hub_test_audio_cleanup_remove(hub_task_result_dir((int)$source['task_id']));
+    }
+});
+
+hub_test('audio-cleanup report source SHA rejects a swap and restore race', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_audio_cleanup_install($db);
+    $source = hub_test_audio_source_artifact($db, 1, 1);
+    $original = hub_test_audio_cleanup_wav();
+    file_put_contents($source['path'], $original, LOCK_EX);
+    hub_finish_task_success($db, hub_get_task($db, (int)$source['task_id']) ?? [], ['source' => true]);
+    $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1', [
+        'source_artifact_id' => $source['artifact_id'],
+        'source_task_id' => $source['task_id'],
+    ]);
+    $task = hub_test_adapter_claim($db);
+    try {
+        hub_run_pack_job_task($db, $task, [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 16384, 'processes' => []],
+            'audio_probe' => static fn (): array => ['duration_seconds' => 0.01, 'sample_rate' => 48000, 'channels' => 1],
+            'executor' => static function (array $context) use ($original): array {
+                $context['started'](['container_id' => 'source-swap-race']);
+                hub_test_audio_cleanup_write($context['workspace'], 'separate');
+                $alternate = $original . 'same-probe-different-source';
+                file_put_contents($context['workspace'] . '/input/source', $alternate, LOCK_EX);
+                $report = hub_test_audio_cleanup_report('separate', $context['workspace'] . '/input/source');
+                file_put_contents($context['workspace'] . '/output/cleanup_report.json', json_encode($report, JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+                file_put_contents($context['workspace'] . '/input/source', $original, LOCK_EX);
+
+                return ['exit_code' => 0, 'container_id' => 'source-swap-race', 'cleanup' => hub_test_adapter_cleanup()];
+            },
+        ]);
+        hub_test_assert((hub_get_task($db, $taskId)['error_code'] ?? '') === 'output_contract_invalid', 'cleanup report source SHA must bind to the trusted prelaunch source even when the source is restored before validation');
     } finally {
         hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
         hub_test_audio_cleanup_remove(hub_task_result_dir((int)$source['task_id']));

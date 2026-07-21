@@ -1951,7 +1951,7 @@ function hub_pack_job_report_attestation_contract(mixed $definition, array $arti
     if ($definition === null) {
         return null;
     }
-    if (!is_array($definition) || array_keys($definition) !== ['report_artifact', 'source_audio', 'outputs_audio', 'model_versions', 'tolerance']) {
+    if (!is_array($definition) || array_keys($definition) !== ['report_artifact', 'source_audio', 'source_sha256', 'outputs_audio', 'model_versions', 'tolerance']) {
         hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
     }
     $field = static fn (mixed $value): bool => is_string($value) && preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $value) === 1;
@@ -1960,7 +1960,8 @@ function hub_pack_job_report_attestation_contract(mixed $definition, array $arti
         $artifactsByType[$artifact['type']] = $artifact;
     }
     $reportArtifact = $definition['report_artifact'] ?? null;
-    if (!$field($reportArtifact) || !isset($artifactsByType[$reportArtifact]['json']) || !$field($definition['source_audio'] ?? null) || !$field($definition['outputs_audio'] ?? null)) {
+    if (!$field($reportArtifact) || !isset($artifactsByType[$reportArtifact]['json']) || !$field($definition['source_audio'] ?? null)
+        || !$field($definition['source_sha256'] ?? null) || !$field($definition['outputs_audio'] ?? null)) {
         hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
     }
     $models = $definition['model_versions'] ?? null;
@@ -1996,6 +1997,7 @@ function hub_pack_job_report_attestation_contract(mixed $definition, array $arti
     return [
         'report_artifact' => $reportArtifact,
         'source_audio' => $definition['source_audio'],
+        'source_sha256' => $definition['source_sha256'],
         'outputs_audio' => $definition['outputs_audio'],
         'model_versions' => $models,
         'tolerance' => $tolerance,
@@ -2552,6 +2554,7 @@ function hub_pack_job_validate_report_attestation(string $workspace, array $task
     $sourceAudioAttestation ??= hub_pack_job_capture_staged_source_audio_attestation($workspace, $audioProbe);
     hub_pack_job_validate_staged_source_audio_attestation($workspace, $sourceAudioAttestation);
     if (!is_array($report) || array_is_list($report)
+        || !is_string($report[$attestation['source_sha256']] ?? null) || !hash_equals($sourceAudioAttestation['sha256'], $report[$attestation['source_sha256']])
         || !hub_pack_job_report_audio_matches($report[$attestation['source_audio']] ?? null, $sourceAudioAttestation['metadata'], $attestation['tolerance'])
         || !is_array($report[$attestation['outputs_audio']] ?? null) || array_is_list($report[$attestation['outputs_audio']])) {
         hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');

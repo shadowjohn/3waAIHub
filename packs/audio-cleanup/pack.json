@@ -91,6 +91,7 @@
         "report_attestation": {
           "report_artifact": "cleanup_report",
           "source_audio": "source_audio",
+          "source_sha256": "source_sha256",
           "outputs_audio": "outputs",
           "model_versions": {
             "demucs": {
@@ -139,7 +140,7 @@
             "mime_types": ["application/json"],
             "max_bytes": 65536,
             "json": {
-              "required_keys": ["operation", "actual_chain", "model_versions", "source_audio", "outputs", "elapsed_seconds", "warnings"],
+              "required_keys": ["operation", "actual_chain", "model_versions", "source_audio", "source_sha256", "outputs", "elapsed_seconds", "warnings"],
               "semantic": {
                 "equals_input": {"operation": "operation"},
                 "field_types": {
