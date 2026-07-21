@@ -14,6 +14,11 @@
   "runtime": {
     "kind": "internal_task"
   },
+  "runner_build": {
+    "context": "service",
+    "dockerfile": "Dockerfile",
+    "image": "3waaihub/audio-cleanup:0.1.0"
+  },
   "gateway": {
     "invoke_path": "task_submit:pack_job",
     "methods": ["POST"],
@@ -83,6 +88,26 @@
         "model_allowlist": "demucs"
       },
       "output": {
+        "report_attestation": {
+          "report_artifact": "cleanup_report",
+          "source_audio": "source_audio",
+          "outputs_audio": "outputs",
+          "model_versions": {
+            "demucs": {
+              "model_field": "model",
+              "version_field": "version",
+              "when": {
+                "input": "operation",
+                "in": ["separate", "separate_and_enhance"]
+              }
+            }
+          },
+          "tolerance": {
+            "duration_seconds": 0.05,
+            "sample_rate": 1,
+            "channels": 0
+          }
+        },
         "artifacts": [
           {
             "type": "vocals_audio",

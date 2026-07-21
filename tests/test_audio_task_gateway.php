@@ -358,7 +358,7 @@ hub_test('audio manual retry revalidates disabled cleanup capabilities before qu
         $manifest['async_jobs'][0]['capabilities']['deepfilternet'] = true;
         try {
             file_put_contents($manifestPath, json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) . "\n", LOCK_EX);
-            hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+            hub_test_audio_cleanup_install($db);
             $memberId = hub_create_api_member($db, 'Cleanup Retry Owner');
             $token = hub_create_api_token($db, $memberId, 'cleanup retry token', null, null);
             $route = hub_resolve_audio_async_route($db, 'audio_cleanup');

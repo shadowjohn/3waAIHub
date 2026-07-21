@@ -1946,6 +1946,62 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
     return $normalized ?? [];
 }
 
+function hub_pack_job_report_attestation_contract(mixed $definition, array $artifacts): ?array
+{
+    if ($definition === null) {
+        return null;
+    }
+    if (!is_array($definition) || array_keys($definition) !== ['report_artifact', 'source_audio', 'outputs_audio', 'model_versions', 'tolerance']) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
+    }
+    $field = static fn (mixed $value): bool => is_string($value) && preg_match('/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/', $value) === 1;
+    $artifactsByType = [];
+    foreach ($artifacts as $artifact) {
+        $artifactsByType[$artifact['type']] = $artifact;
+    }
+    $reportArtifact = $definition['report_artifact'] ?? null;
+    if (!$field($reportArtifact) || !isset($artifactsByType[$reportArtifact]['json']) || !$field($definition['source_audio'] ?? null) || !$field($definition['outputs_audio'] ?? null)) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
+    }
+    $models = $definition['model_versions'] ?? null;
+    if (!is_array($models) || array_is_list($models) || $models === []) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
+    }
+    foreach ($models as $stage => $model) {
+        if (!$field($stage) || !is_array($model) || array_diff(array_keys($model), ['model_field', 'version_field', 'when']) !== []
+            || !isset($model['model_field'], $model['version_field']) || !$field($model['model_field']) || !$field($model['version_field'])) {
+            hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
+        }
+        if (isset($model['when'])) {
+            $when = $model['when'];
+            if (!is_array($when) || !isset($when['input']) || !$field($when['input']) || array_diff(array_keys($when), ['input', 'equals', 'in']) !== []
+                || (isset($when['equals']) === isset($when['in']))
+                || (isset($when['equals']) && !is_string($when['equals']))
+                || (isset($when['in']) && (!is_array($when['in']) || $when['in'] === [] || array_is_list($when['in']) === false || count(array_unique($when['in'], SORT_REGULAR)) !== count($when['in']) || array_filter($when['in'], static fn (mixed $value): bool => !is_string($value) || $value === '') !== []))) {
+                hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
+            }
+        }
+    }
+    $tolerance = $definition['tolerance'] ?? null;
+    $maximum = ['duration_seconds' => 5.0, 'sample_rate' => 4000.0, 'channels' => 4.0];
+    if (!is_array($tolerance) || array_keys($tolerance) !== array_keys($maximum)) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
+    }
+    foreach ($maximum as $property => $max) {
+        if ((!is_int($tolerance[$property]) && !is_float($tolerance[$property])) || $tolerance[$property] < 0 || $tolerance[$property] > $max) {
+            hub_pack_job_output_contract_invalid('artifact_report_attestation_contract_invalid');
+        }
+    }
+
+    return [
+        'report_artifact' => $reportArtifact,
+        'source_audio' => $definition['source_audio'],
+        'outputs_audio' => $definition['outputs_audio'],
+        'model_versions' => $models,
+        'tolerance' => $tolerance,
+    ];
+}
+
 function hub_pack_job_artifact_is_expected(array $definition, array $input): bool
 {
     if (isset($definition['when'])) {
@@ -2411,7 +2467,91 @@ function hub_pack_job_validate_audio_output(string $path, array $definition, ?ca
     ];
 }
 
-function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, array $jobContract, ?callable $audioProbe = null): array
+function hub_pack_job_staged_source_audio_metadata(string $workspace, ?callable $audioProbe): array
+{
+    $workspace = realpath($workspace);
+    $input = $workspace === false ? false : realpath($workspace . '/input');
+    $source = $input === false ? false : realpath($input . '/source');
+    if ($workspace === false || $input === false || $source === false || !str_starts_with($input, $workspace . DIRECTORY_SEPARATOR)
+        || !str_starts_with($source, $input . DIRECTORY_SEPARATOR) || is_link($source)) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
+    $stat = lstat($source);
+    if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
+
+    return hub_pack_job_validate_audio_output($source, ['audio' => []], $audioProbe);
+}
+
+function hub_pack_job_report_audio_matches(mixed $reported, array $trusted, array $tolerance): bool
+{
+    if (!is_array($reported) || array_is_list($reported)) {
+        return false;
+    }
+    foreach (['duration_seconds', 'sample_rate', 'channels'] as $property) {
+        if (!array_key_exists($property, $reported) || !is_numeric($reported[$property]) || !isset($trusted[$property], $tolerance[$property])
+            || abs((float)$reported[$property] - (float)$trusted[$property]) > (float)$tolerance[$property]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function hub_pack_job_validate_report_attestation(string $workspace, array $taskInput, array $jobContract, array $validated, ?callable $audioProbe, ?array $runnerConfig): void
+{
+    $attestation = $jobContract['report_attestation'] ?? null;
+    if ($attestation === null) {
+        return;
+    }
+    $attestation = hub_pack_job_report_attestation_contract($attestation, hub_pack_job_contract_artifacts($jobContract));
+    if ($attestation === null) {
+        return;
+    }
+    $byType = [];
+    foreach ($validated as $artifact) {
+        $byType[$artifact['artifact_type']] = $artifact;
+    }
+    $reportArtifact = $byType[$attestation['report_artifact']] ?? null;
+    if (!is_array($reportArtifact)) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
+    try {
+        $report = json_decode(hub_pack_job_read_parser_output($reportArtifact['path'], (int)$reportArtifact['size_bytes']), true, 64, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
+    if (!is_array($report) || array_is_list($report)
+        || !hub_pack_job_report_audio_matches($report[$attestation['source_audio']] ?? null, hub_pack_job_staged_source_audio_metadata($workspace, $audioProbe), $attestation['tolerance'])
+        || !is_array($report[$attestation['outputs_audio']] ?? null) || array_is_list($report[$attestation['outputs_audio']])) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
+    foreach ($validated as $artifact) {
+        if ($artifact['metadata'] !== [] && !hub_pack_job_report_audio_matches($report[$attestation['outputs_audio']][$artifact['artifact_type']] ?? null, $artifact['metadata'], $attestation['tolerance'])) {
+            hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+        }
+    }
+    $aliasInput = is_array($runnerConfig) ? ($runnerConfig['alias_input'] ?? null) : null;
+    $aliases = is_array($runnerConfig) && is_array($runnerConfig['aliases'] ?? null) ? $runnerConfig['aliases'] : [];
+    $alias = is_string($aliasInput) ? ($taskInput[$aliasInput] ?? null) : null;
+    $selectedModel = is_string($alias) && is_array($aliases[$alias] ?? null) ? $aliases[$alias] : null;
+    if (!is_array($selectedModel) || !is_array($report['model_versions'] ?? null) || array_is_list($report['model_versions'])) {
+        hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+    }
+    foreach ($attestation['model_versions'] as $stage => $fields) {
+        if (isset($fields['when']) && !hub_pack_job_artifact_is_expected(['required' => true, 'when' => $fields['when']], $taskInput)) {
+            continue;
+        }
+        $model = $selectedModel[$fields['model_field']] ?? null;
+        $version = $selectedModel[$fields['version_field']] ?? null;
+        if (!is_string($model) || $model === '' || !is_string($version) || $version === '' || ($report['model_versions'][$stage] ?? null) !== $model . '@' . $version) {
+            hub_pack_job_output_contract_invalid('artifact_report_attestation_invalid');
+        }
+    }
+}
+
+function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, array $jobContract, ?callable $audioProbe = null, ?array $runnerConfig = null): array
 {
     $outputDir = hub_pack_job_output_dir($workspace);
     $expected = [];
@@ -2461,6 +2601,7 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
             'inode' => (int)$stat['ino'],
         ];
     }
+    hub_pack_job_validate_report_attestation($workspace, $taskInput, $jobContract, $validated, $audioProbe, $runnerConfig);
 
     return $validated;
 }
@@ -3249,7 +3390,7 @@ function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $
     }
 }
 
-function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null, ?array $gpuLease = null): array
+function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null, ?array $gpuLease = null, ?array $runnerConfig = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
@@ -3261,7 +3402,7 @@ function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string
     }
     try {
         hub_pack_job_require_submitted_output_dir($db, $taskId, $run, $workspace);
-        $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe);
+        $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe, $runnerConfig);
     } catch (HubPackOutputContractInvalid) {
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 

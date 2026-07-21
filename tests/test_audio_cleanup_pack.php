@@ -9,7 +9,7 @@ function hub_test_audio_cleanup_wav(): string
 function hub_test_audio_cleanup_workspace(): string
 {
     $workspace = sys_get_temp_dir() . '/3waaihub_audio_cleanup_' . bin2hex(random_bytes(8));
-    if (!mkdir($workspace . '/output', 0700, true)) {
+    if (!mkdir($workspace . '/input', 0700, true) || !mkdir($workspace . '/output', 0700, true)) {
         throw new RuntimeException('Cannot create audio cleanup workspace.');
     }
 
@@ -36,6 +36,9 @@ function hub_test_audio_cleanup_remove(string $path): void
 function hub_test_audio_cleanup_write(string $workspace, string $operation): void
 {
     $audio = hub_test_audio_cleanup_wav();
+    if (is_dir($workspace . '/input')) {
+        file_put_contents($workspace . '/input/source', $audio, LOCK_EX);
+    }
     if (in_array($operation, ['separate', 'separate_and_enhance'], true)) {
         file_put_contents($workspace . '/output/vocals.wav', $audio, LOCK_EX);
         file_put_contents($workspace . '/output/background.wav', $audio, LOCK_EX);
@@ -44,6 +47,28 @@ function hub_test_audio_cleanup_write(string $workspace, string $operation): voi
         file_put_contents($workspace . '/output/cleaned.wav', $audio, LOCK_EX);
     }
     file_put_contents($workspace . '/output/cleanup_report.json', json_encode(hub_test_audio_cleanup_report($operation), JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+}
+
+function hub_test_audio_cleanup_install(PDO $db, array $options = []): array
+{
+    $built = false;
+    $options += [
+        'idempotent' => true,
+        'runner_build_runner' => static function (array $command, int $timeoutSeconds) use (&$built): array {
+            if (($command[1] ?? '') === 'image' && ($command[2] ?? '') === 'inspect') {
+                return $built
+                    ? ['exit_code' => 0, 'stdout' => 'sha256:test-audio-cleanup', 'stderr' => '']
+                    : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such image'];
+            }
+            if (($command[1] ?? '') === 'build') {
+                $built = true;
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            }
+            throw new RuntimeException('unexpected runner image lifecycle command');
+        },
+    ];
+
+    return hub_install_pack($db, 'audio-cleanup', $options);
 }
 
 function hub_test_audio_cleanup_report(string $operation): array
@@ -127,6 +152,62 @@ hub_test('audio-cleanup image provisions only offline Demucs weights', function 
     }
 });
 
+hub_test('audio-cleanup install builds and verifies its declared local runner image', function (): void {
+    $db = hub_test_reset_db();
+    $commands = [];
+    $built = false;
+    $installed = hub_install_pack($db, 'audio-cleanup', [
+        'idempotent' => true,
+        'runner_build_runner' => static function (array $command, int $timeoutSeconds) use (&$commands, &$built): array {
+            $commands[] = $command;
+            if (($command[1] ?? '') === 'image' && ($command[2] ?? '') === 'inspect') {
+                return $built
+                    ? ['exit_code' => 0, 'stdout' => 'sha256:audio-cleanup', 'stderr' => '']
+                    : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such image'];
+            }
+            if (($command[1] ?? '') === 'build') {
+                $built = true;
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            }
+            throw new RuntimeException('unexpected local image command');
+        },
+    ]);
+    $serviceDir = HUB_ROOT . '/packs/audio-cleanup/service';
+    hub_test_assert($commands === [
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/audio-cleanup:0.1.0'],
+        ['docker', 'build', '--tag', '3waaihub/audio-cleanup:0.1.0', '--file', $serviceDir . '/Dockerfile', $serviceDir],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/audio-cleanup:0.1.0'],
+    ] && (($installed['service']['install_status'] ?? '') === 'installed'), 'internal runner install must build only its declared context/tag and verify the local image before marking installed');
+});
+
+hub_test('audio-cleanup install does not mark its service installed when the controlled build fails', function (): void {
+    $db = hub_test_reset_db();
+    $commands = [];
+    try {
+        hub_install_pack($db, 'audio-cleanup', [
+            'idempotent' => true,
+            'runner_build_runner' => static function (array $command, int $timeoutSeconds) use (&$commands): array {
+                $commands[] = $command;
+                if (($command[1] ?? '') === 'image' && ($command[2] ?? '') === 'inspect') {
+                    return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such image'];
+                }
+                if (($command[1] ?? '') === 'build') {
+                    return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'controlled build failed'];
+                }
+                throw new RuntimeException('unexpected local image command');
+            },
+        ]);
+        throw new RuntimeException('controlled build failure unexpectedly installed the Pack');
+    } catch (RuntimeException $error) {
+        hub_test_assert($error->getMessage() === 'internal_runner_image_unavailable', 'internal runner install must fail from its controlled image build: ' . $error->getMessage());
+    }
+    hub_test_assert($commands === [
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/audio-cleanup:0.1.0'],
+        ['docker', 'build', '--tag', '3waaihub/audio-cleanup:0.1.0', '--file', HUB_ROOT . '/packs/audio-cleanup/service/Dockerfile', HUB_ROOT . '/packs/audio-cleanup/service'],
+    ], 'failed controlled image builds must stop before an image verification can succeed');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM services WHERE pack_id = 'audio-cleanup'")->fetchColumn() === 0, 'failed controlled image builds must not write an installed service state');
+});
+
 hub_test('audio-cleanup request schema rejects invalid operations and unavailable enhancement', function (): void {
     $pack = hub_get_pack('audio-cleanup');
     $route = hub_pack_async_job_contract($pack['manifest'], 'cleanup');
@@ -145,7 +226,8 @@ hub_test('audio-cleanup request schema rejects invalid operations and unavailabl
 
 hub_test('audio-cleanup conditional outputs require only the artifacts for the requested operation', function (): void {
     $pack = hub_get_pack('audio-cleanup');
-    $contract = hub_pack_async_job_contract($pack['manifest'], 'cleanup')['artifact_contract'];
+    $route = hub_pack_async_job_contract($pack['manifest'], 'cleanup');
+    $contract = $route['artifact_contract'];
     $probe = static fn (): array => ['duration_seconds' => 0.01, 'sample_rate' => 48000, 'channels' => 1];
     foreach ([
         'separate' => ['vocals_audio', 'background_audio', 'cleanup_report'],
@@ -155,8 +237,41 @@ hub_test('audio-cleanup conditional outputs require only the artifacts for the r
         $workspace = hub_test_audio_cleanup_workspace();
         try {
             hub_test_audio_cleanup_write($workspace, $operation);
-            $artifacts = hub_validate_pack_job_artifacts($workspace, ['operation' => $operation], $contract, $probe);
+            $artifacts = hub_validate_pack_job_artifacts($workspace, ['operation' => $operation, 'demucs_model' => 'balanced'], $contract, $probe, $route['runner_config']);
             hub_test_assert(array_column($artifacts, 'artifact_type') === $expectedTypes, $operation . ' output set mismatch');
+        } finally {
+            hub_test_audio_cleanup_remove($workspace);
+        }
+    }
+});
+
+hub_test('audio-cleanup report attests Hub-probed source outputs and frozen model config', function (): void {
+    $pack = hub_get_pack('audio-cleanup');
+    $route = hub_pack_async_job_contract($pack['manifest'], 'cleanup');
+    $contract = $route['artifact_contract'];
+    $probe = static fn (): array => ['duration_seconds' => 0.01, 'sample_rate' => 48000, 'channels' => 1];
+    foreach ([
+        static fn (array $report): array => $report,
+        static function (array $report): array {
+            $report['source_audio']['sample_rate'] = 16000;
+            return $report;
+        },
+        static function (array $report): array {
+            $report['outputs']['vocals_audio']['channels'] = 2;
+            return $report;
+        },
+        static function (array $report): array {
+            $report['model_versions']['demucs'] = 'tampered@v0';
+            return $report;
+        },
+    ] as $index => $mutate) {
+        $workspace = hub_test_audio_cleanup_workspace();
+        try {
+            hub_test_audio_cleanup_write($workspace, 'separate');
+            $report = $mutate(hub_test_audio_cleanup_report('separate'));
+            file_put_contents($workspace . '/output/cleanup_report.json', json_encode($report, JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+            $valid = !hub_test_throws(static fn (): array => hub_validate_pack_job_artifacts($workspace, ['operation' => 'separate', 'demucs_model' => 'balanced'], $contract, $probe, $route['runner_config']));
+            hub_test_assert($valid === ($index === 0), 'cleanup report must bind to Hub-probed source/output metadata and frozen model config');
         } finally {
             hub_test_audio_cleanup_remove($workspace);
         }
@@ -168,7 +283,7 @@ hub_test('audio-cleanup admits one source and runs through the injected generic 
         $db = hub_test_reset_db();
         $resultTaskIds = [];
         try {
-        hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+        hub_test_audio_cleanup_install($db);
         $memberId = hub_create_api_member($db, 'Audio Cleanup Owner');
         $token = hub_create_api_token($db, $memberId, 'audio cleanup token', null, null);
         hub_test_audio_allow($db, [$token], ['audio_cleanup']);
@@ -221,7 +336,7 @@ hub_test('audio-cleanup admits one source and runs through the injected generic 
 
 hub_test('audio-cleanup default executor dispatches its snapshotted container runner', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    hub_test_audio_cleanup_install($db);
     $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
     $task = hub_test_adapter_claim($db);
@@ -257,7 +372,7 @@ hub_test('audio-cleanup default executor dispatches its snapshotted container ru
 
 hub_test('audio-cleanup async container process heartbeats before it completes', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    hub_test_audio_cleanup_install($db);
     $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
     $task = hub_test_adapter_claim($db);
@@ -291,7 +406,7 @@ hub_test('audio-cleanup async container process heartbeats before it completes',
 
 hub_test('audio-cleanup async container fence loss stops and cleans without success', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    hub_test_audio_cleanup_install($db);
     $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
     $task = hub_test_adapter_claim($db);
@@ -329,7 +444,7 @@ hub_test('audio-cleanup async container fence loss stops and cleans without succ
 
 hub_test('audio-cleanup async container cancellation stops before natural completion', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    hub_test_audio_cleanup_install($db);
     $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
     $task = hub_test_adapter_claim($db);
@@ -367,7 +482,7 @@ hub_test('audio-cleanup async container cancellation stops before natural comple
 
 hub_test('audio-cleanup default executor proves container cleanup before reporting success', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    hub_test_audio_cleanup_install($db);
     $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
     $task = hub_test_adapter_claim($db);
@@ -394,7 +509,7 @@ hub_test('audio-cleanup default executor proves container cleanup before reporti
             },
         ]);
         hub_test_assert(($result['status'] ?? '') === 'success' && $inspects === 2, 'default executor must re-inspect after stopping and removing the exact container');
-        hub_test_assert(array_map(static fn (array $command): string => implode(' ', array_slice($command, 1, 3)), $commands) === ['run --network none', 'container inspect --format', 'stop -t 10', 'container rm -f', 'container inspect --format'], 'default executor cleanup command order must be deterministic');
+        hub_test_assert(array_map(static fn (array $command): string => implode(' ', array_slice($command, 1, 3)), $commands) === ['run --pull=never --network', 'container inspect --format', 'stop -t 10', 'container rm -f', 'container inspect --format'], 'default executor cleanup command order must be deterministic');
     } finally {
         hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
     }
@@ -402,7 +517,7 @@ hub_test('audio-cleanup default executor proves container cleanup before reporti
 
 hub_test('audio-cleanup default executor blocks GPU when container cleanup cannot be proven', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    hub_test_audio_cleanup_install($db);
     $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
     $task = hub_test_adapter_claim($db);
@@ -429,9 +544,24 @@ hub_test('audio-cleanup report semantics reject empty and mismatched reports', f
         array_replace(hub_test_audio_cleanup_report('separate'), ['source_audio' => []]),
         array_replace(hub_test_audio_cleanup_report('separate'), ['elapsed_seconds' => 'fast', 'warnings' => 'none']),
         array_replace(hub_test_audio_cleanup_report('separate'), ['outputs' => ['vocals_audio' => ['sample_rate' => 48000, 'channels' => 1, 'duration_seconds' => 0.01]]]),
+        (static function (): array {
+            $report = hub_test_audio_cleanup_report('separate');
+            $report['source_audio']['sample_rate'] = 16000;
+            return $report;
+        })(),
+        (static function (): array {
+            $report = hub_test_audio_cleanup_report('separate');
+            $report['outputs']['vocals_audio']['channels'] = 2;
+            return $report;
+        })(),
+        (static function (): array {
+            $report = hub_test_audio_cleanup_report('separate');
+            $report['model_versions']['demucs'] = 'tampered@v0';
+            return $report;
+        })(),
     ] as $report) {
         $db = hub_test_reset_db();
-        hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+        hub_test_audio_cleanup_install($db);
         $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
         $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
         $task = hub_test_adapter_claim($db);
@@ -456,7 +586,7 @@ hub_test('audio-cleanup report semantics reject empty and mismatched reports', f
 hub_test('audio-cleanup report model versions must be nonempty strings', function (): void {
     foreach (['', true, 4] as $version) {
         $db = hub_test_reset_db();
-        hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+        hub_test_audio_cleanup_install($db);
         $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
         $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'balanced'], 1, null, '127.0.0.1');
         $task = hub_test_adapter_claim($db);
@@ -482,7 +612,7 @@ hub_test('audio-cleanup report model versions must be nonempty strings', functio
 
 hub_test('audio-cleanup task freezes the selected Demucs config for its runner', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'audio-cleanup', ['idempotent' => true]);
+    hub_test_audio_cleanup_install($db);
     $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['operation' => 'separate', 'demucs_model' => 'quality'], 1, null, '127.0.0.1');
     $manifestPath = HUB_ROOT . '/packs/audio-cleanup/pack.json';
@@ -504,6 +634,9 @@ hub_test('audio-cleanup task freezes the selected Demucs config for its runner',
                     hub_test_assert(($context['runner']['config']['model']['model'] ?? '') === 'htdemucs_ft', 'runner config must come from the immutable task snapshot');
                     $context['started'](['container_id' => 'frozen-demucs-config']);
                     hub_test_audio_cleanup_write($context['workspace'], 'separate');
+                    $report = hub_test_audio_cleanup_report('separate');
+                    $report['model_versions']['demucs'] = 'htdemucs_ft@v4.0.1';
+                    file_put_contents($context['workspace'] . '/output/cleanup_report.json', json_encode($report, JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
 
                     return ['exit_code' => 0, 'container_id' => 'frozen-demucs-config', 'cleanup' => hub_test_adapter_cleanup()];
                 },

@@ -337,7 +337,7 @@ function hub_pack_job_default_runner_command(array $context): array
     if (!is_array($entrypoint) || $entrypoint === [] || !is_array($args)) {
         throw new RuntimeException('job_contract_unavailable');
     }
-    $command = ['docker', 'run', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . ',dst=' . $containerWorkspace, '--name', $name];
+    $command = ['docker', 'run', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=' . $workspace . ',dst=' . $containerWorkspace, '--name', $name];
     if (($runner['accelerator'] ?? '') === 'gpu') {
         $command[] = '--gpus';
         $command[] = 'all';
@@ -893,7 +893,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             }
             return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Pack job exited unsuccessfully', $cleanup, $gpuLease);
         }
-        $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, null, $gpuLease);
+        $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, null, $gpuLease, $contract['runner_config'] ?? null);
         $latest = hub_get_task($db, $taskId);
         if (($final['ok'] ?? false) !== true && ($latest['status'] ?? '') === 'running' && hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds) === 'fence_lost') {
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, $cleanup);
