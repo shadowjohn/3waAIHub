@@ -3,14 +3,16 @@ declare(strict_types=1);
 
 define('HUB_TESTING', true);
 putenv('AIHUB_TEST_DB=' . (getenv('AIHUB_TEST_DB') ?: sys_get_temp_dir() . '/3waaihub_test.sqlite'));
-define('HUB_TESTING', true);
+putenv('AIHUB_TEST_DATA_DIR=' . (getenv('AIHUB_TEST_DATA_DIR') ?: sys_get_temp_dir() . '/3waaihub_test_data_' . bin2hex(random_bytes(16))));
 
 require __DIR__ . '/../app/bootstrap.php';
 hub_cli_only();
+hub_ensure_runtime_dirs();
 
 $tests = [];
 $failures = 0;
 $skipped = 0;
+$testQuiet = getenv('AIHUB_TEST_QUIET') === '1';
 
 final class HubTestSkipped extends RuntimeException
 {
@@ -126,6 +128,69 @@ function hub_test_teardown_audio_asset_storage(): void
     }
 }
 
+function hub_test_data_root(): string
+{
+    $tempRoot = realpath(sys_get_temp_dir());
+    $dataRoot = realpath(HUB_DATA_DIR);
+    if (
+        !HUB_TEST_DATA_DIR_ACTIVE
+        || $tempRoot === false
+        || $dataRoot === false
+        || is_link(HUB_DATA_DIR)
+        || dirname($dataRoot) !== $tempRoot
+        || preg_match('/^3waaihub_test_data_[a-f0-9]{32}$/', basename($dataRoot)) !== 1
+    ) {
+        throw new RuntimeException('Test runtime data root must be an isolated temporary directory.');
+    }
+
+    return $dataRoot;
+}
+
+function hub_test_remove_data_tree(string $dir): void
+{
+    foreach (scandir($dir) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+
+        $path = $dir . DIRECTORY_SEPARATOR . $entry;
+        if (is_link($path)) {
+            if (!unlink($path)) {
+                throw new RuntimeException('Cannot remove isolated test symlink: ' . $path);
+            }
+            continue;
+        }
+        if (is_dir($path)) {
+            hub_test_remove_data_tree($path);
+            continue;
+        }
+        if (!is_file($path) || !unlink($path)) {
+            throw new RuntimeException('Cannot remove isolated test data file: ' . $path);
+        }
+    }
+
+    if (!rmdir($dir)) {
+        throw new RuntimeException('Cannot remove isolated test data directory: ' . $dir);
+    }
+}
+
+function hub_test_teardown_data_root(): void
+{
+    hub_test_remove_data_tree(hub_test_data_root());
+}
+
+function hub_test_clear_data_root(): void
+{
+    $dataRoot = hub_test_data_root();
+    foreach (scandir($dataRoot) ?: [] as $entry) {
+        if ($entry === '.' || $entry === '..') {
+            continue;
+        }
+        hub_test_remove_data_tree($dataRoot . DIRECTORY_SEPARATOR . $entry);
+    }
+    hub_ensure_runtime_dirs();
+}
+
 function hub_test_reset_db(): PDO
 {
     // Windows 需先釋放上一個測試結束後的 PDO 循環參考，否則 SQLite 檔可能仍被鎖住。
@@ -140,6 +205,10 @@ function hub_test_reset_db(): PDO
         }
     }
     hub_test_clear_audio_asset_storage();
+    // SQLite IDs start again from 1 after a reset.  Remove the matching
+    // isolated task files as well, otherwise one test can impersonate a
+    // stale workspace from a previous fixture.
+    hub_test_clear_data_root();
     foreach ([HUB_DB_PATH, HUB_DB_PATH . '-wal', HUB_DB_PATH . '-shm'] as $path) {
         if (is_file($path) && !unlink($path)) {
             throw new RuntimeException('Cannot reset test SQLite file: ' . $path);
@@ -193,10 +262,14 @@ foreach (glob(HUB_ROOT . '/tests/test_*.php') ?: [] as $file) {
 foreach ($tests as $name => $fn) {
     try {
         $fn();
-        echo '[PASS] ' . $name . PHP_EOL;
+        if (!$testQuiet) {
+            echo '[PASS] ' . $name . PHP_EOL;
+        }
     } catch (HubTestSkipped $e) {
         $skipped++;
-        echo '[SKIP] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
+        if (!$testQuiet) {
+            echo '[SKIP] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
+        }
     } catch (Throwable $e) {
         $failures++;
         echo '[FAIL] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
@@ -215,6 +288,13 @@ try {
 } catch (Throwable $e) {
     $failures++;
     echo '[FAIL] Audio asset test storage teardown: ' . $e->getMessage() . PHP_EOL;
+}
+
+try {
+    hub_test_teardown_data_root();
+} catch (Throwable $e) {
+    $failures++;
+    echo '[FAIL] Test runtime data teardown: ' . $e->getMessage() . PHP_EOL;
 }
 
 echo 'tests=' . count($tests) . ' failures=' . $failures . ' skipped=' . $skipped . PHP_EOL;

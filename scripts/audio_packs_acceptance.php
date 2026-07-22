@@ -10,10 +10,10 @@ function hub_audio_acceptance_main(array $argv): int
 {
     $options = getopt('', [
         'base-url:', 'token:', 'pack:', 'fixture::', 'callback-target::', 'voice-profile-id::',
-        'text::', 'timeout::', 'json', 'help',
+        'text::', 'timeout::', 'subtitle-reflow::', 'json', 'help',
     ]);
     if (isset($options['help'])) {
-        echo "Usage: php scripts/audio_packs_acceptance.php --base-url=<api.php URL> --token=<token> --pack=audio-cleanup|whisper-asr|tts-voxcpm2|all [--fixture=<audio>] [--callback-target=<alias>] [--voice-profile-id=<managed numeric id>] [--text=<text>] [--timeout=<seconds>] [--json]\n";
+        echo "Usage: php scripts/audio_packs_acceptance.php --base-url=<api.php URL> --token=<token> --pack=audio-cleanup|whisper-asr|tts-voxcpm2|all [--fixture=<audio>] [--callback-target=<alias>] [--voice-profile-id=<managed numeric id>] [--text=<text>] [--timeout=<seconds>] [--subtitle-reflow=none|legacy_adaptive_v1] [--json]\n";
         return 0;
     }
 
@@ -87,6 +87,10 @@ function hub_audio_acceptance_config(array $options): array
     if ($voiceProfileId !== '' && (!ctype_digit($voiceProfileId) || (int)$voiceProfileId < 1)) {
         throw new InvalidArgumentException('voice-profile-id must be a managed numeric ID');
     }
+    $subtitleReflow = trim((string)($options['subtitle-reflow'] ?? 'none'));
+    if (!in_array($subtitleReflow, ['none', 'legacy_adaptive_v1'], true)) {
+        throw new InvalidArgumentException('subtitle-reflow must be none or legacy_adaptive_v1');
+    }
 
     return [
         'base_url' => $baseUrl,
@@ -95,6 +99,7 @@ function hub_audio_acceptance_config(array $options): array
         'fixture' => $fixture,
         'callback_target' => $callbackTarget,
         'voice_profile_id' => $voiceProfileId === '' ? null : (int)$voiceProfileId,
+        'subtitle_reflow' => $subtitleReflow,
         'text' => trim((string)($options['text'] ?? '請檢查 RC Valve 間隙，並以清楚自然的語氣說明。')),
         'timeout' => max(30, min(14400, (int)($options['timeout'] ?? 7200))),
         'json' => isset($options['json']),
@@ -126,7 +131,7 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
     };
     $fields = match ($pack) {
         'audio-cleanup' => ['operation' => 'separate', 'demucs_model' => 'balanced'],
-        'whisper-asr' => ['model' => 'large_v3', 'language' => 'auto', 'diarization' => '0', 'output_srt' => '1', 'output_vtt' => '1'],
+        'whisper-asr' => ['model' => 'large_v3', 'language' => 'auto', 'diarization' => '0', 'output_srt' => '1', 'output_vtt' => '1', 'subtitle_reflow' => $config['subtitle_reflow']],
         'tts-voxcpm2' => ['text' => $config['text'], 'model' => 'voxcpm2', 'waveform_preview' => '1'],
     };
     $fields = array_replace($fields, $override);

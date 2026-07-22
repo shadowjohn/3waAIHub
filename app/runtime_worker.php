@@ -660,15 +660,12 @@ function hub_runtime_gpu_preflight_result(array $run, int $requiredVramMb, int $
     $unmanaged = array_key_exists('unmanaged_pids', $probe)
         ? hub_runtime_gpu_recovery_pids($probe['unmanaged_pids'])
         : array_values(array_diff(hub_runtime_gpu_recovery_pids($probe['processes'] ?? []), $owned));
-    if ($unmanaged !== []) {
-        return ['ok' => false, 'reason' => 'unmanaged_gpu_process'];
-    }
     $freeVram = (int)($probe['free_vram_mb'] ?? 0);
     if ($freeVram < max(0, $requiredVramMb) + max(0, $safetyMarginMb)) {
-        return ['ok' => false, 'reason' => 'insufficient_vram'];
+        return ['ok' => false, 'reason' => $unmanaged !== [] ? 'unmanaged_gpu_process' : 'insufficient_vram'];
     }
 
-    return ['ok' => true, 'reason' => null];
+    return ['ok' => true, 'reason' => null, 'unmanaged_pids' => $unmanaged];
 }
 
 function hub_runtime_gpu_active(PDO $db, array $run, array $lease, ?int $taskId = null): bool

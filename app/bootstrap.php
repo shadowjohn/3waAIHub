@@ -2,8 +2,30 @@
 declare(strict_types=1);
 
 define('HUB_ROOT', dirname(__DIR__));
-define('HUB_DATA_DIR', HUB_ROOT . '/data');
-$hubDbPath = getenv('AIHUB_TEST_DB') ?: HUB_DATA_DIR . '/3waaihub.sqlite';
+$hubDbPath = trim((string)(getenv('AIHUB_TEST_DB') ?: ''));
+$hubTestDataDir = trim((string)(getenv('AIHUB_TEST_DATA_DIR') ?: ''));
+$hubDataDir = HUB_ROOT . '/data';
+$hubTestDataDirActive = false;
+
+if ($hubDbPath !== '' && $hubTestDataDir !== '') {
+    $hubTempRoot = realpath(sys_get_temp_dir());
+    $hubNormalizedTestDataDir = rtrim(str_replace('\\', '/', $hubTestDataDir), '/');
+    $hubNormalizedTempRoot = rtrim(str_replace('\\', '/', $hubTempRoot !== false ? $hubTempRoot : sys_get_temp_dir()), '/');
+
+    if (
+        dirname($hubNormalizedTestDataDir) !== $hubNormalizedTempRoot
+        || preg_match('/^3waaihub_test_data_[a-f0-9]{32}$/', basename($hubNormalizedTestDataDir)) !== 1
+    ) {
+        throw new RuntimeException('AIHUB_TEST_DATA_DIR must be a dedicated directory beneath the system temp root.');
+    }
+
+    $hubDataDir = $hubNormalizedTestDataDir;
+    $hubTestDataDirActive = true;
+}
+
+define('HUB_DATA_DIR', $hubDataDir);
+define('HUB_TEST_DATA_DIR_ACTIVE', $hubTestDataDirActive);
+$hubDbPath = $hubDbPath !== '' ? $hubDbPath : HUB_DATA_DIR . '/3waaihub.sqlite';
 define('HUB_DB_PATH', $hubDbPath);
 define('HUB_LOG_DIR', HUB_DATA_DIR . '/logs');
 define('HUB_JOB_LOG_DIR', HUB_LOG_DIR . '/jobs');
@@ -58,7 +80,12 @@ function hub_path(string $path): string
         return hub_normalize_host_path($path);
     }
 
-    return HUB_ROOT . '/' . ltrim($path, '/');
+    $relativePath = ltrim($path, '/');
+    if (HUB_TEST_DATA_DIR_ACTIVE && ($relativePath === 'data' || str_starts_with($relativePath, 'data/'))) {
+        return HUB_DATA_DIR . substr($relativePath, 4);
+    }
+
+    return HUB_ROOT . '/' . $relativePath;
 }
 
 function hub_h(?string $value): string

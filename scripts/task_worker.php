@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require __DIR__ . '/../app/bootstrap.php';
 hub_cli_only();
+umask(0002);
 
 $limit = 5;
 foreach ($argv as $arg) {

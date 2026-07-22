@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -12,7 +12,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /tmp/requirements.txt
-RUN python3 -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN python3 -m pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cu128 \
+        torch==2.8.0 torchaudio==2.8.0 \
+    && python3 -m pip install --no-cache-dir -r /tmp/requirements.txt \
+    && python3 -m pip check
 
 COPY model-lock.sha256 /tmp/model-lock.sha256
 RUN set -eux; \
@@ -24,5 +27,6 @@ RUN set -eux; \
     printf '%s\n' "models: ['955717e8']" > "$AIHUB_DEMUCS_MODEL_DIR/htdemucs.yaml"; \
     printf '%s\n' "models: ['f7e0c4bc', 'd12395a8', '92cfc3b6', '04573f0d']" "weights: [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]]" > "$AIHUB_DEMUCS_MODEL_DIR/htdemucs_ft.yaml"
 
-COPY --chmod=755 job.py /app/audio-cleanup
+COPY job.py /app/audio-cleanup
+RUN chmod 0755 /app/audio-cleanup
 ENTRYPOINT ["/app/audio-cleanup"]

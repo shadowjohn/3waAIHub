@@ -605,6 +605,13 @@ hub_test('Pack job handoff keeps registered artifacts immutable after runner wor
         $published = hub_handoff_pack_job_artifacts($db, $fixture['task_id'], $fixture['run'], $validated);
         $publishedTranscript = array_values(array_filter($published, static fn (array $artifact): bool => ($artifact['name'] ?? '') === 'transcript.json'))[0] ?? null;
         hub_test_assert(is_array($publishedTranscript) && !str_starts_with((string)$publishedTranscript['path'], $workspace . '/'), 'handoff must publish outside the runner workspace');
+        $publishedPath = (string)($publishedTranscript['path'] ?? '');
+        $taskResultDir = hub_task_result_dir($fixture['task_id']);
+        $artifactRoot = $taskResultDir . '/artifacts';
+        $handoffScope = (string)($publishedTranscript['published_handoff_scope'] ?? '');
+        $handoffId = (string)($publishedTranscript['published_handoff_id'] ?? '');
+        $handoffDir = $artifactRoot . ($handoffScope === '' ? '' : '/' . $handoffScope) . '/' . $handoffId;
+        hub_test_assert((fileperms($taskResultDir) & 07777) === 02710 && (fileperms($artifactRoot) & 07777) === 02750 && (fileperms($handoffDir) & 07777) === 02750 && (fileperms($publishedPath) & 0777) === 0640, 'published artifacts must preserve web-service-group inheritance without granting any access to other users');
 
         rename($workspace . '/output/transcript.json', $workspace . '/output/transcript.runner-old.json');
         hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"runner changed it after handoff\"}");

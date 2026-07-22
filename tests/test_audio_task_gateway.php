@@ -198,6 +198,49 @@ hub_test('audio async admission rejects controls and persists the managed route 
     });
 });
 
+hub_test('audio upload fails safely when its staging workspace already exists', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Stale Upload Workspace Owner');
+        $token = hub_create_api_token($db, $memberId, 'stale upload workspace token', null, null);
+        hub_test_audio_allow($db, [$token], ['speech_transcribe']);
+        $nextTaskId = (int)$db->query('SELECT COALESCE(MAX(id), 0) + 1 FROM tasks')->fetchColumn();
+        $workspace = HUB_DATA_DIR . '/uploads/tasks/task_' . $nextTaskId;
+        if (!mkdir($workspace, 0700, true)) {
+            throw new RuntimeException('Cannot create stale task upload workspace.');
+        }
+        $sentinel = $workspace . '/stale-input.wav';
+        file_put_contents($sentinel, 'stale-upload', LOCK_EX);
+        $upload = tempnam(sys_get_temp_dir(), '3waaihub_stale_upload_');
+        if ($upload === false || file_put_contents($upload, 'RIFFfresh-upload', LOCK_EX) === false) {
+            throw new RuntimeException('Cannot create audio upload fixture.');
+        }
+
+        try {
+            $response = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [], [], [[
+                'name' => 'fresh.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $upload,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($upload),
+            ]]);
+            $payload = hub_test_audio_payload($response);
+            $task = hub_get_task($db, $nextTaskId);
+            hub_test_assert($response['status'] === 409 && ($payload['error'] ?? '') === 'task_upload_workspace_conflict', 'stale task workspace must fail with an explicit conflict response');
+            hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'staging_failed', 'stale task workspace must terminalize the staged task safely');
+            hub_test_assert(is_file($sentinel) && file_get_contents($sentinel) === 'stale-upload' && !is_file($workspace . '/input.wav'), 'stale task workspace contents must remain untouched');
+        } finally {
+            if (is_file($upload)) {
+                unlink($upload);
+            }
+            if (is_dir($workspace) && !is_link($workspace)) {
+                hub_test_remove_data_tree($workspace);
+            }
+        }
+    });
+});
+
 hub_test('public task_submit cannot bypass fixed audio admission controls', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -426,7 +469,7 @@ hub_test('audio upload retry copies its owned source into the new task before ad
                 'executor' => static function (array $context): array {
                     hub_test_assert((string)file_get_contents($context['workspace'] . '/input/source') === 'RIFFretry-source', 'adapter must stage the retry-owned source copy');
                     file_put_contents($context['workspace'] . '/output/transcript.json', '{"text":"retry","segments":[],"language":"auto","model":"large-v3","word_timestamps":false}', LOCK_EX);
-                    file_put_contents($context['workspace'] . '/output/transcription_report.json', '{"model":"large-v3","language":"auto","word_timestamps":false,"diarization":false,"segment_count":1,"elapsed_seconds":0}', LOCK_EX);
+                    file_put_contents($context['workspace'] . '/output/transcription_report.json', '{"model":"large-v3","language":"auto","word_timestamps":false,"diarization":false,"segment_count":1,"elapsed_seconds":0,"subtitle_reflow_profile":"none","subtitle_breaker":null,"subtitle_breakers":[],"timing_source":"native_segment"}', LOCK_EX);
                     return ['exit_code' => 0, 'container_id' => 'upload-retry', 'cleanup' => hub_test_adapter_cleanup()];
                 },
             ]);
@@ -591,7 +634,7 @@ hub_test('audio routes require declared async jobs without changing legacy local
         $db = hub_test_reset_db();
         hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
         $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
-        hub_test_assert(($route['input_fields'] ?? null) === ['model', 'language', 'word_timestamps', 'diarization', 'min_speakers', 'max_speakers', 'output_srt', 'output_vtt'] && ($route['source_artifact_types'] ?? null) === ['audio', 'cleaned_audio', 'vocals_audio'], 'async route must derive its input contract from the Pack declaration');
+        hub_test_assert(($route['input_fields'] ?? null) === ['model', 'language', 'word_timestamps', 'diarization', 'min_speakers', 'max_speakers', 'output_srt', 'output_vtt', 'subtitle_reflow'] && ($route['source_artifact_types'] ?? null) === ['audio', 'cleaned_audio', 'vocals_audio'], 'async route must derive its input contract from the Pack declaration');
         hub_test_assert(!empty(hub_get_pack('yolo')['manifest']['local_jobs']), 'legacy local_jobs must remain readable without async-job validation');
 
         $manifestPath = HUB_ROOT . '/packs/whisper-asr/pack.json';
@@ -754,12 +797,14 @@ hub_test('shared task worker claims Whisper Pack jobs and waits for its GPU cont
         $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
         $taskId = hub_enqueue_owned_pack_job($db, $route, [], $memberId, (int)$token['token_id'], '203.0.113.51');
 
-        $output = [];
-        $exitCode = 0;
-        exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(HUB_ROOT . '/scripts/task_worker.php') . ' --limit=1 2>&1', $output, $exitCode);
+        $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        hub_test_assert((int)($claimed['id'] ?? 0) === $taskId, 'shared task worker claim contract must include Whisper Pack jobs');
+        hub_run_pack_job_task($db, $claimed ?? [], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+        ]);
 
         $task = hub_get_task($db, $taskId);
-        hub_test_assert($exitCode === 0 && ($task['status'] ?? '') === 'waiting_gpu' && !empty($task['waiting_reason']), 'shared worker must route basic Whisper ASR through the generic GPU adapter without optional cache fixtures');
+        hub_test_assert(($task['status'] ?? '') === 'waiting_gpu' && ($task['waiting_reason'] ?? '') === 'insufficient_vram', 'shared worker must route basic Whisper ASR through the generic GPU adapter without optional cache fixtures');
     } finally {
         hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', $originalStorage['AIHUB_MODELS_DIR']);
         hub_set_storage_setting($db, 'AIHUB_CACHE_DIR', $originalStorage['AIHUB_CACHE_DIR']);

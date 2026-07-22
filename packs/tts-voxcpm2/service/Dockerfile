@@ -11,6 +11,8 @@ RUN apt-get update \
 
 COPY service/requirements.txt .
 RUN python3 -m pip install --upgrade pip setuptools wheel \
+    && python3 -m pip install --index-url https://download.pytorch.org/whl/cu128 \
+        torch==2.8.0 torchaudio==2.8.0 \
     && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 

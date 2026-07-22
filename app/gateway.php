@@ -1358,6 +1358,9 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         if ($stmt->rowCount() === 1) {
             hub_apply_task_terminal_retention($db, $taskId, 'failed', $now);
         }
+        if ($e->getMessage() === 'task_upload_workspace_exists') {
+            return hub_gateway_error(409, 'task_upload_workspace_conflict', 'managed task workspace already exists');
+        }
         throw $e;
     }
 
@@ -1789,7 +1792,10 @@ function hub_file_has_pdf_magic(string $path): bool
 function hub_store_task_upload_file(int $taskId, array $file, string $extension): string
 {
     $dir = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId;
-    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+    if (is_link($dir) || file_exists($dir)) {
+        throw new RuntimeException('task_upload_workspace_exists');
+    }
+    if (!@mkdir($dir, 0775, true)) {
         throw new RuntimeException('Cannot create task upload directory.');
     }
 

@@ -18,8 +18,8 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
         'type' => 'string',
         'required' => false,
         'enum' => ['none', 'legacy_adaptive_v1'],
-        'default' => 'none',
         'max_length' => 32,
+        'default' => 'none',
     ], 'Whisper subtitle reflow must use the fixed compatibility-mode contract');
     hub_test_assert(($job['request_schema']['word_timestamps']['requires_when'] ?? null) === ['equals' => true, 'field' => 'language', 'not_equals' => 'auto'], 'Word timestamps must require an explicit alignment language at admission');
     hub_test_assert(($job['source_artifact_types'] ?? []) === ['audio', 'cleaned_audio', 'vocals_audio'], 'Whisper must accept managed audio sources only');

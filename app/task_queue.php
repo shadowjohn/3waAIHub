@@ -2829,13 +2829,19 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
     if ($taskResultDir === false) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
+    // Keep the workspace private while preserving results-root setgid
+    // inheritance: a root worker publishes files for the authorized
+    // web-service group, never for "other".
+    if (!chmod($taskResultDir, 02710)) {
+        hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
+    }
     $artifactRoot = $taskResultDir . '/artifacts';
     clearstatcache(true, $artifactRoot);
-    if (is_link($artifactRoot) || (!is_dir($artifactRoot) && !mkdir($artifactRoot, 0700, true))) {
+    if (is_link($artifactRoot) || (!is_dir($artifactRoot) && !mkdir($artifactRoot, 02750, true))) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     clearstatcache(true, $artifactRoot);
-    if (is_link($artifactRoot) || !is_dir($artifactRoot) || !chmod($artifactRoot, 0700)) {
+    if (is_link($artifactRoot) || !is_dir($artifactRoot) || !chmod($artifactRoot, 02750)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $artifactRoot = realpath($artifactRoot);
@@ -2845,11 +2851,11 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
     if ($handoffScope !== null) {
         $scopeDir = $artifactRoot . '/' . $handoffScope;
         clearstatcache(true, $scopeDir);
-        if (is_link($scopeDir) || (!is_dir($scopeDir) && !mkdir($scopeDir, 0700))) {
+        if (is_link($scopeDir) || (!is_dir($scopeDir) && !mkdir($scopeDir, 02750))) {
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
         }
         clearstatcache(true, $scopeDir);
-        if (is_link($scopeDir) || !is_dir($scopeDir) || !chmod($scopeDir, 0700)) {
+        if (is_link($scopeDir) || !is_dir($scopeDir) || !chmod($scopeDir, 02750)) {
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
         }
         $scopeDir = realpath($scopeDir);
@@ -2860,11 +2866,11 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
     }
     $handoffDir = $artifactRoot . '/' . $handoffId;
     clearstatcache(true, $handoffDir);
-    if (is_link($handoffDir) || (!is_dir($handoffDir) && !mkdir($handoffDir, 0700))) {
+    if (is_link($handoffDir) || (!is_dir($handoffDir) && !mkdir($handoffDir, 02750))) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     clearstatcache(true, $handoffDir);
-    if (is_link($handoffDir) || !is_dir($handoffDir) || !chmod($handoffDir, 0700)) {
+    if (is_link($handoffDir) || !is_dir($handoffDir) || !chmod($handoffDir, 02750)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $handoffDir = realpath($handoffDir);
@@ -2962,11 +2968,11 @@ function hub_pack_job_published_artifact_path(string $handoffDir, string $name):
     $destination = $handoffDir . '/' . $name;
     $parent = dirname($destination);
     clearstatcache(true, $parent);
-    if (is_link($parent) || (!is_dir($parent) && !mkdir($parent, 0700, true))) {
+    if (is_link($parent) || (!is_dir($parent) && !mkdir($parent, 02750, true))) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     clearstatcache(true, $parent);
-    if (is_link($parent) || !is_dir($parent) || !chmod($parent, 0700)) {
+    if (is_link($parent) || !is_dir($parent) || !chmod($parent, 02750)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $parent = realpath($parent);
@@ -3033,7 +3039,9 @@ function hub_pack_job_copy_to_published_artifact(string $source, string $destina
             hub_pack_job_output_contract_invalid('artifact_handoff_failed');
         }
         $sourceHandle = null;
-        if (!chmod($temporary, 0600) || !rename($temporary, $destination)) {
+        // Published artifacts are readable by the web-service group only;
+        // the artifact API still performs member/token authorization.
+        if (!chmod($temporary, 0640) || !rename($temporary, $destination)) {
             hub_pack_job_output_contract_invalid('artifact_handoff_failed');
         }
     } catch (HubPackOutputContractInvalid $e) {

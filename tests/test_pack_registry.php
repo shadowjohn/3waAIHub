@@ -3,6 +3,11 @@ declare(strict_types=1);
 
 hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(HUB_DB_PATH === getenv('AIHUB_TEST_DB'), 'test DB override is not active');
+    hub_ensure_runtime_dirs();
+    $tempRoot = realpath(sys_get_temp_dir());
+    hub_test_assert(HUB_TEST_DATA_DIR_ACTIVE, 'test data override is not active');
+    hub_test_assert($tempRoot !== false && dirname(HUB_DATA_DIR) === $tempRoot, 'test data root must be under the system temp directory');
+    hub_test_assert(HUB_DATA_DIR !== HUB_ROOT . '/data', 'tests must not use the production data root');
 
     $catalog = hub_load_pack_catalog();
     hub_test_assert(($catalog['schema_version'] ?? '') === '0.1', 'catalog schema_version mismatch');

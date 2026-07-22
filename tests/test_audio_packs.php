@@ -18,7 +18,7 @@ hub_test('Whisper ASR pack has L5 GPU-first runtime files', function (): void {
     }
 
     $dockerfile = (string)file_get_contents($base . '/Dockerfile');
-    foreach (['FROM nvidia/cuda:', 'whisperx==3.3.1', 'python3 -m unittest -v test_app.py', 'speech_transcribe.sh'] as $needle) {
+    foreach (['FROM nvidia/cuda:', 'whisperx==3.8.5', 'python3 -m unittest -v test_app.py', 'speech_transcribe.sh'] as $needle) {
         hub_test_assert(str_contains($dockerfile, $needle) || str_contains((string)file_get_contents($base . '/requirements.txt'), $needle), 'whisper-asr Job image missing ' . $needle);
     }
 
@@ -88,11 +88,11 @@ hub_test('Whisper ASR service instance generates GPU compose and gateway respons
     $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
     hub_test_assert(str_contains($compose, '127.0.0.1:${ASR_LOCAL_PORT:-18107}:8000'), 'whisper-asr compose port binding mismatch');
     hub_test_assert(str_contains($compose, 'context: ' . HUB_ROOT . '/packs/whisper-asr') && str_contains($compose, 'dockerfile: service/Dockerfile'), 'whisper-asr generated compose must include its controlled Pack job launcher');
-    hub_test_assert(str_contains($compose, 'image: 3waaihub/whisper-asr:0.1.0'), 'whisper-asr service image must match the generic Pack runner image');
+    hub_test_assert(str_contains($compose, 'image: 3waaihub/whisper-asr:0.1.1'), 'whisper-asr service image must match the generic Pack runner image');
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/whisper:/models/whisper'), 'whisper-asr compose must mount model storage');
     hub_test_assert(str_contains($compose, '${AIHUB_CACHE_DIR}/whisper:/cache/whisper'), 'whisper-asr compose must mount cache storage');
     hub_test_assert(str_contains($compose, '${SERVICE_DATA_DIR}:/data/service'), 'whisper-asr compose must mount service data');
-    hub_test_assert($built && in_array(['docker', 'build', '--tag', '3waaihub/whisper-asr:0.1.0', '--file', HUB_ROOT . '/packs/whisper-asr/service/Dockerfile', HUB_ROOT . '/packs/whisper-asr'], $commands, true), 'install must build and verify the declared generic Pack runner image');
+    hub_test_assert($built && in_array(['docker', 'build', '--tag', '3waaihub/whisper-asr:0.1.1', '--file', HUB_ROOT . '/packs/whisper-asr/service/Dockerfile', HUB_ROOT . '/packs/whisper-asr'], $commands, true), 'install must build and verify the declared generic Pack runner image');
     hub_test_assert(str_contains($compose, 'gpus: all'), 'whisper-asr generated compose must request GPUs via USE_GPU=1');
     foreach ([
         'WHISPER_MODEL_DIR=/models/whisper',
@@ -256,6 +256,7 @@ hub_test('real audio Pack acceptance client has a closed public API contract', f
     foreach ([
         '--pack',
         '--fixture',
+        '--subtitle-reflow',
         '--callback-target',
         '--voice-profile-id',
         '--json',

@@ -301,7 +301,10 @@ hub_test('GPU preflight waits with a stable reason and releases the lease withou
     $run = $db->query('SELECT * FROM runtime_runs WHERE run_id = ' . $db->quote($run['run_id']))->fetch();
     $lease = hub_runtime_gpu_acquire($db, $run, 60);
     $result = hub_runtime_gpu_preflight($db, $taskId, $run, $lease ?: [], 1, static fn (): array => ['free_vram_mb' => 4096, 'processes' => [991]], 15, 256);
-    hub_test_assert(($result['reason'] ?? '') === 'unmanaged_gpu_process', 'unmanaged GPU processes must wait without being killed');
+    hub_test_assert(!empty($result['ok']) && ($result['unmanaged_pids'] ?? []) === [991], 'unmanaged GPU processes may coexist when the required VRAM plus margin is available');
+
+    $result = hub_runtime_gpu_preflight($db, $taskId, $run, $lease ?: [], 4096, static fn (): array => ['free_vram_mb' => 4096, 'processes' => [991]], 15, 256);
+    hub_test_assert(($result['reason'] ?? '') === 'unmanaged_gpu_process', 'unmanaged GPU processes must wait without being killed when they leave insufficient VRAM');
 });
 
 hub_test('GPU preflight cannot move a different task into waiting_gpu', function (): void {
