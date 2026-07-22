@@ -285,3 +285,25 @@ hub_test('BiRefNet declares one structural benchmark and three per-fixture quali
     hub_test_assert(is_file(HUB_ROOT . '/packs/image-birefnet/service/acceptance.py'), 'BiRefNet acceptance runner missing');
     hub_test_assert(is_file(HUB_ROOT . '/packs/image-birefnet/demo/acceptance/README.md'), 'BiRefNet acceptance README missing');
 });
+
+hub_test('BiRefNet operations runbook covers provisioning acceptance and rollback', function (): void {
+    $path = HUB_ROOT . '/docs/operations/image-birefnet.md';
+    hub_test_assert(is_file($path), 'BiRefNet operations runbook missing');
+    $runbook = (string)file_get_contents($path);
+    foreach ([
+        'ZhengPeng7/BiRefNet',
+        'e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4',
+        'provision_offline_assets.py',
+        'verify_ready',
+        "'BIREFNET_USE_GPU' => '0'",
+        '--expect-device cuda',
+        '--expect-device cpu',
+        '/app/acceptance.py',
+        'birefnet_real_image',
+        'previous known-good Pack',
+        'no tiling, batch API, video workflow, interactive editor, or output',
+    ] as $needle) {
+        hub_test_assert(str_contains($runbook, $needle), 'BiRefNet runbook missing ' . $needle);
+    }
+    hub_test_assert(!str_contains($runbook, '$oauthtoken'), 'BiRefNet runbook must not contain registry credentials');
+});
