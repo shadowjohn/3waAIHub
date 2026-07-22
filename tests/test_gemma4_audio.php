@@ -51,6 +51,24 @@ hub_test('Gemma4 audio adapter exposes one-shot WAV endpoint contract', function
     }
 });
 
+hub_test('Gemma4 audio test assets use private temporary storage', function (): void {
+    $root = hub_audio_upload_root();
+    $tempRoot = realpath(sys_get_temp_dir());
+    hub_test_assert($tempRoot !== false, 'test temp root missing');
+    hub_test_assert(hub_audio_upload_root() !== HUB_DATA_DIR . '/uploads/audio', 'test audio assets must not use production uploads');
+    hub_test_assert(str_starts_with($root, rtrim($tempRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR), 'test audio assets must use the system temp directory');
+    hub_test_assert(preg_match('/^3waaihub_test_audio_assets_[a-f0-9]{32}$/', basename($root)) === 1, 'test audio assets must use a random directory name');
+    hub_test_assert((fileperms($root) & 0777) === 0700, 'test audio assets must use private storage');
+
+    $link = sys_get_temp_dir() . '/3waaihub_test_audio_assets_link_' . bin2hex(random_bytes(8));
+    hub_test_assert(symlink($root, $link), 'cannot create test audio asset symlink');
+    try {
+        hub_test_assert(hub_test_throws(static fn (): string => hub_test_audio_asset_cleanup_dir($link)), 'test cleanup must refuse a symlinked audio asset directory');
+    } finally {
+        @unlink($link);
+    }
+});
+
 hub_test('Gemma4 audio gateway mode validates upload and customer permission', function (): void {
     $db = hub_test_reset_db();
     hub_ensure_default_storage_settings($db);
@@ -129,7 +147,11 @@ hub_test('Gemma4 audio asset upload stores short WAV with owner and TTL', functi
     hub_test_assert((int)$asset['duration_ms'] === 6000, 'audio duration mismatch');
     hub_test_assert((int)$asset['sample_rate'] === 16000, 'audio sample rate mismatch');
     hub_test_assert((int)$asset['channels'] === 1, 'audio channels mismatch');
-    hub_test_assert(is_file(HUB_DATA_DIR . '/' . $asset['storage_relpath']), 'stored audio missing');
+    $storedPath = hub_audio_asset_host_path($asset);
+    hub_test_assert($storedPath !== null && is_file($storedPath), 'stored audio missing');
+    hub_test_assert((string)$asset['storage_relpath'] === 'uploads/audio/' . $asset['audio_id'] . '/original.wav', 'audio storage path format mismatch');
+    hub_test_assert(hub_audio_upload_root() !== HUB_DATA_DIR . '/uploads/audio', 'test audio assets must not use production uploads');
+    hub_test_assert(str_starts_with((string)$storedPath, hub_audio_upload_root() . DIRECTORY_SEPARATOR), 'test audio asset must stay in isolated storage');
     hub_test_assert(!str_contains((string)$asset['storage_relpath'], 'client-name'), 'client filename must not be used as storage path');
     hub_test_assert(hub_audio_get_asset_for_auth($db, (string)$asset['audio_id'], ['member_id' => $memberId]) !== null, 'owner member must read audio asset');
 });

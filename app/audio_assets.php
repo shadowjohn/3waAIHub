@@ -8,6 +8,18 @@ function hub_audio_generate_audio_id(): string
 
 function hub_audio_upload_root(): string
 {
+    if (defined('HUB_TESTING') && HUB_TESTING) {
+        static $testDir = null;
+        if ($testDir === null) {
+            $testDir = sys_get_temp_dir() . '/3waaihub_test_audio_assets_' . bin2hex(random_bytes(16));
+            if (!mkdir($testDir, 0700) || is_link($testDir)) {
+                throw new RuntimeException('Cannot create test audio asset directory.');
+            }
+        }
+
+        return $testDir;
+    }
+
     return HUB_DATA_DIR . '/uploads/audio';
 }
 
@@ -96,7 +108,7 @@ function hub_audio_store_upload(PDO $db, array $file, array $authContext): array
     $meta = hub_audio_wav_metadata($tmpName);
     $audioId = hub_audio_generate_audio_id();
     $relDir = 'uploads/audio/' . $audioId;
-    $dir = HUB_DATA_DIR . '/' . $relDir;
+    $dir = hub_audio_upload_root() . '/' . $audioId;
     if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
         throw new RuntimeException('storage_failed');
     }
@@ -170,7 +182,15 @@ function hub_audio_get_asset_for_auth(PDO $db, string $audioId, array $authConte
 function hub_audio_asset_host_path(array $asset): ?string
 {
     $root = realpath(hub_audio_upload_root());
-    $path = realpath(HUB_DATA_DIR . '/' . ltrim((string)($asset['storage_relpath'] ?? ''), '/'));
+    if ($root === false) {
+        return null;
+    }
+    $storageRelpath = ltrim((string)($asset['storage_relpath'] ?? ''), '/');
+    $prefix = 'uploads/audio/';
+    if (!str_starts_with($storageRelpath, $prefix)) {
+        return null;
+    }
+    $path = realpath($root . DIRECTORY_SEPARATOR . substr($storageRelpath, strlen($prefix)));
     if ($root === false || $path === false || !is_file($path) || !str_starts_with($path, $root . DIRECTORY_SEPARATOR)) {
         return null;
     }

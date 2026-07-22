@@ -85,7 +85,7 @@ hub_test('Gemma 4 LLM install generates vLLM sidecar plus Hub chat adapter compo
     foreach ([
         '  vllm:',
         'image: 3waaihub-gemma4-vllm:0.1.0',
-        'context: /DATA/3waAIHub/packs/llm-gemma4-12b/vllm',
+        'context: ' . HUB_ROOT . '/packs/llm-gemma4-12b/vllm',
         '--limit-mm-per-prompt \'{"image":1,"audio":1}\'',
         '  chat-api:',
         'build:',
