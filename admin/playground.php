@@ -76,16 +76,7 @@ function hub_playground_request_payload(string $mode): array
         ];
     }
     if ($mode === 'tts') {
-        return [
-            'mode' => trim((string)($_POST['tts_mode'] ?? 'design')) ?: 'design',
-            'text' => trim((string)($_POST['text'] ?? 'RC 閥是用來控制二行程引擎排氣時機的重要機構。')),
-            'voice_prompt' => trim((string)($_POST['voice_prompt'] ?? '沉穩的台灣男性技師，語速稍慢，清楚自然')),
-            'reference_audio_id' => trim((string)($_POST['reference_audio_id'] ?? '')),
-            'control' => trim((string)($_POST['control'] ?? '沉穩、稍慢、像技師解說')),
-            'seed' => (int)($_POST['seed'] ?? 42),
-            'format' => 'wav',
-            'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
-        ];
+        return hub_playground_tts_request_payload();
     }
     if ($mode === 'chat') {
         return [
@@ -267,7 +258,7 @@ function hub_playground_finish_curl($ch, float $started): array
     ];
 }
 
-function hub_playground_execute(string $mode, string $token): array
+function hub_playground_execute(string $mode, string $token, ?array $requestPayload = null): array
 {
     $profiles = hub_playground_profiles();
     $profile = $profiles[$mode] ?? null;
@@ -287,7 +278,7 @@ function hub_playground_execute(string $mode, string $token): array
     }
 
     if ($mode === 'photo') {
-        $payload = hub_playground_request_payload($mode);
+        $payload = $requestPayload ?? hub_playground_request_payload($mode);
         $file = $_FILES['image'] ?? null;
         if (is_array($file) && (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
             $upload = curl_init(hub_playground_local_api_url('photo_upload'));
@@ -348,7 +339,7 @@ function hub_playground_execute(string $mode, string $token): array
 
     if ($profile['method'] === 'POST') {
         $options[CURLOPT_POST] = true;
-        $payload = hub_playground_request_payload($mode);
+        $payload = $requestPayload ?? hub_playground_request_payload($mode);
         if ($profile['kind'] === 'json') {
             $headers[] = 'Content-Type: application/json';
             $options[CURLOPT_HTTPHEADER] = $headers;
@@ -656,19 +647,21 @@ $profiles = hub_playground_profiles();
 $profile = $profiles[$selectedMode] ?? $profiles['hello'];
 $result = null;
 $readinessNotice = $selectedService ? hub_playground_basic_readiness($selectedService) : null;
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && in_array((string)($_POST['action'] ?? ''), ['execute', 'voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'], true)) {
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (!empty($_POST['load_voice_profiles']) || in_array((string)($_POST['action'] ?? ''), ['execute', 'voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'], true))) {
     hub_check_csrf();
-    $action = (string)$_POST['action'];
+    $action = !empty($_POST['load_voice_profiles']) ? 'voice_profile_list' : (string)$_POST['action'];
     if ($action === 'execute') {
         $token = trim((string)($_POST['bearer_token'] ?? ''));
         $guard = $selectedService ? hub_playground_readiness_guard($selectedService) : ['error' => 'service_not_found', 'message' => __('找不到可測試的服務。')];
-        $result = $guard === null ? hub_playground_execute($selectedMode, $token) : hub_playground_guard_result($guard);
-    } else {
+        $result = $guard === null ? ($selectedMode === 'tts' ? hub_playground_execute_tts($token) : hub_playground_execute($selectedMode, $token)) : hub_playground_guard_result($guard);
+    } elseif ($action !== 'voice_profile_list') {
         $result = hub_playground_voice_profile_dispatch($db, $action, (string)($_POST['bearer_token'] ?? ''), $_POST, $_FILES);
     }
 }
 $examples = hub_playground_examples($selectedMode);
-$audioUrl = $selectedService && $selectedMode === 'tts' ? hub_playground_tts_audio_url($selectedService, $result) : '';
+$ttsProfiles = $selectedMode === 'tts' ? hub_playground_tts_active_profiles($db, trim((string)($_POST['bearer_token'] ?? ''))) : [];
+$audioUrls = $selectedService && $selectedMode === 'tts' && is_array($result) ? hub_playground_tts_audio_urls($selectedService, $result) : [];
+$audioUrl = $selectedService && $selectedMode === 'tts' && $audioUrls === [] ? hub_playground_tts_audio_url($selectedService, $result) : '';
 $authHeaderExample = 'Authorization: Bearer <TOKEN>';
 
 hub_admin_header(__('API 測試場'), $user);
@@ -765,16 +758,27 @@ hub_admin_header(__('API 測試場'), $user);
             <?php elseif ($selectedMode === 'tts'): ?>
                 <label>TTS <?= hub_h(__('模式')) ?></label>
                 <select name="tts_mode">
-                    <option value="design">design</option>
-                    <option value="clone">clone</option>
+                    <?php $selectedTtsMode = trim((string)($_POST['tts_mode'] ?? 'design')); ?>
+                    <option value="design" <?= $selectedTtsMode === 'design' ? 'selected' : '' ?>>design</option>
+                    <option value="clone" <?= $selectedTtsMode === 'clone' ? 'selected' : '' ?>>clone</option>
+                    <option value="ultimate_clone" <?= $selectedTtsMode === 'ultimate_clone' ? 'selected' : '' ?>>ultimate_clone</option>
                 </select>
+                <label><input name="compare_all" type="checkbox" value="1" <?= !empty($_POST['compare_all']) ? 'checked' : '' ?>> <?= hub_h(__('依序比較 design、clone、ultimate_clone')) ?></label>
                 <label><?= hub_h(__('文字')) ?></label>
                 <textarea name="text" rows="5">RC 閥是用來控制二行程引擎排氣時機的重要機構。</textarea>
                 <label><?= hub_h(__('聲音提示')) ?> voice_prompt</label>
                 <input name="voice_prompt" value="沉穩的台灣男性技師，語速稍慢，清楚自然">
-                <label><?= hub_h(__('參考音訊 ID')) ?> reference_audio_id</label>
-                <input name="reference_audio_id" placeholder="voice_profile_1">
-                <p class="muted">clone <?= hub_h(__('模式需填入自己擁有的 Voice Profile，例如')) ?> <code>voice_profile_1</code>。<?= hub_h(__('第一版不接受任意伺服器檔案路徑。')) ?></p>
+                <label>Voice Profile</label>
+                <select name="voice_profile_id">
+                    <option value=""><?= hub_h(__('不使用 Voice Profile（design）')) ?></option>
+                    <?php foreach ($ttsProfiles as $ttsProfile): ?>
+                        <?php $ttsProfileId = (int)$ttsProfile['id']; ?>
+                        <option value="<?= $ttsProfileId ?>" <?= (int)($_POST['voice_profile_id'] ?? 0) === $ttsProfileId ? 'selected' : '' ?>>
+                            <?= hub_h((string)$ttsProfile['name']) ?> #<?= $ttsProfileId ?> / <?= hub_h((string)$ttsProfile['transcription_status']) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+                <p class="muted"><?= hub_h(__('先輸入 Bearer Token，再載入目前 token 可用的 Voice Profile；clone 與 ultimate_clone 會由 Gateway 驗證存取權。')) ?></p>
                 <label><?= hub_h(__('控制描述')) ?> control</label>
                 <input name="control" value="沉穩、稍慢、像技師解說">
                 <label>seed</label>
@@ -840,7 +844,10 @@ hub_admin_header(__('API 測試場'), $user);
             <?php else: ?>
                 <p class="muted">hello <?= hub_h(__('使用 GET，不需要欄位。')) ?></p>
             <?php endif; ?>
-            <div class="hub-actions"><button class="primary" type="submit"><?= hub_h(__('執行測試')) ?></button></div>
+            <div class="hub-actions">
+                <?php if ($selectedMode === 'tts'): ?><button type="submit" name="load_voice_profiles" value="1"><?= hub_h(__('載入可用 Voice Profile')) ?></button><?php endif; ?>
+                <button class="primary" type="submit"><?= hub_h(__('執行測試')) ?></button>
+            </div>
         </form>
         <?php if ($selectedMode === 'tts'): ?>
             <hr>
@@ -870,11 +877,16 @@ hub_admin_header(__('API 測試場'), $user);
                 <input type="hidden" name="mode" value="tts">
                 <label>Bearer Token</label>
                 <input name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off" required>
-                <label>Voice Profile ID</label>
-                <input name="voice_profile_id" type="number" min="1" required>
+                <label>Voice Profile</label>
+                <select name="voice_profile_id" required>
+                    <option value=""><?= hub_h(__('請先載入可用 Voice Profile')) ?></option>
+                    <?php foreach ($ttsProfiles as $ttsProfile): ?>
+                        <option value="<?= (int)$ttsProfile['id'] ?>"><?= hub_h((string)$ttsProfile['name']) ?> #<?= (int)$ttsProfile['id'] ?></option>
+                    <?php endforeach; ?>
+                </select>
                 <label><?= hub_h(__('確認後的轉錄文字')) ?></label>
                 <textarea name="prompt_text" rows="3" required></textarea>
-                <div class="hub-actions"><button type="submit"><?= hub_h(__('確認轉錄文字')) ?></button></div>
+                <div class="hub-actions"><button type="submit" name="load_voice_profiles" value="1" formnovalidate><?= hub_h(__('載入可用 Voice Profile')) ?></button><button type="submit"><?= hub_h(__('確認轉錄文字')) ?></button></div>
             </form>
             <form method="post">
                 <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
@@ -882,9 +894,14 @@ hub_admin_header(__('API 測試場'), $user);
                 <input type="hidden" name="mode" value="tts">
                 <label>Bearer Token</label>
                 <input name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off" required>
-                <label>Voice Profile ID</label>
-                <input name="voice_profile_id" type="number" min="1" required>
-                <div class="hub-actions"><button type="submit"><?= hub_h(__('重新嘗試 ASR')) ?></button></div>
+                <label>Voice Profile</label>
+                <select name="voice_profile_id" required>
+                    <option value=""><?= hub_h(__('請先載入可用 Voice Profile')) ?></option>
+                    <?php foreach ($ttsProfiles as $ttsProfile): ?>
+                        <option value="<?= (int)$ttsProfile['id'] ?>"><?= hub_h((string)$ttsProfile['name']) ?> #<?= (int)$ttsProfile['id'] ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <div class="hub-actions"><button type="submit" name="load_voice_profiles" value="1" formnovalidate><?= hub_h(__('載入可用 Voice Profile')) ?></button><button type="submit"><?= hub_h(__('重新嘗試 ASR')) ?></button></div>
             </form>
         <?php endif; ?>
     </section>
@@ -914,7 +931,19 @@ hub_admin_header(__('API 測試場'), $user);
                 <div class="hub-meta-value"><code><?= hub_h((string)$result['error']) ?></code> <?= hub_h((string)($result['message'] ?? '')) ?></div>
             <?php endif; ?>
         </div>
-        <?php if ($audioUrl !== ''): ?>
+        <?php if ($selectedMode === 'tts' && is_array($result['results'] ?? null)): ?>
+            <?php foreach ($result['results'] as $ttsMode => $ttsResult): ?>
+                <div class="hub-card">
+                    <h3><?= hub_h((string)$ttsMode) ?></h3>
+                    <p><code>HTTP <?= hub_h((string)($ttsResult['status'] ?? '-')) ?></code><?php if ((string)($ttsResult['error'] ?? '') !== ''): ?> <code><?= hub_h((string)$ttsResult['error']) ?></code><?php endif; ?></p>
+                    <?php if (isset($audioUrls[$ttsMode])): ?>
+                        <audio controls src="<?= hub_h($audioUrls[$ttsMode]) ?>"></audio>
+                        <p><a class="button" href="<?= hub_h($audioUrls[$ttsMode]) ?>"><?= hub_h(__('下載 WAV')) ?></a></p>
+                    <?php endif; ?>
+                    <pre><?= hub_h((string)($ttsResult['pretty_body'] ?? json_encode($ttsResult, JSON_UNESCAPED_UNICODE))) ?></pre>
+                </div>
+            <?php endforeach; ?>
+        <?php elseif ($audioUrl !== ''): ?>
             <div class="hub-card">
                 <h3><?= hub_h(__('語音預覽')) ?></h3>
                 <audio controls src="<?= hub_h($audioUrl) ?>"></audio>
