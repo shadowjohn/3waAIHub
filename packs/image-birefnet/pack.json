@@ -1,0 +1,143 @@
+{
+  "schema_version": "0.1",
+  "id": "image-birefnet",
+  "name": "BiRefNet Background Removal Service",
+  "version": "0.1.0",
+  "category": "vision",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L1-contract",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": false,
+  "default_mode": "background_remove",
+  "description": "Local background removal service powered by BiRefNet.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/remove-background/image",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 50
+  },
+  "l5_contract": {
+    "endpoint": "/remove-background/image",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {"name": "image", "type": "file", "required": true, "max_mb": 50},
+        {"name": "output", "type": "string", "required": false, "default": "cutout", "enum": ["cutout", "mask", "composite"]},
+        {"name": "feather_px", "type": "number", "required": false, "default": 0, "min": 0, "max": 20},
+        {"name": "edge_offset_px", "type": "integer", "required": false, "default": 0, "min": -20, "max": 20},
+        {"name": "defringe", "type": "boolean", "required": false, "default": true},
+        {"name": "background", "type": "string", "required": false, "default": "transparent", "enum": ["transparent", "white", "color", "image"]},
+        {"name": "background_color", "type": "string", "required": false},
+        {"name": "background_image", "type": "file", "required": false, "max_mb": 50}
+      ]
+    },
+    "output": {
+      "content_type": "image/png",
+      "variants": {
+        "cutout": "RGBA",
+        "mask": "L",
+        "composite": "RGB"
+      },
+      "required_headers": [
+        "X-3waAIHub-Model",
+        "X-3waAIHub-Device",
+        "X-3waAIHub-Elapsed-Ms",
+        "X-3waAIHub-Width",
+        "X-3waAIHub-Height"
+      ]
+    },
+    "errors": [
+      "file_required",
+      "payload_too_large",
+      "unsupported_media_type",
+      "invalid_image",
+      "invalid_parameter",
+      "model_not_present",
+      "model_load_failed",
+      "inference_failed",
+      "inference_timeout",
+      "runtime_not_ready",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 180,
+      "max_upload_mb": 50,
+      "max_axis_px": 8192,
+      "max_decoded_pixels": 40000000,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": false,
+      "cases": []
+    }
+  },
+  "error_codes": [
+    "file_required",
+    "payload_too_large",
+    "unsupported_media_type",
+    "invalid_image",
+    "invalid_parameter",
+    "model_not_present",
+    "model_load_failed",
+    "inference_failed",
+    "inference_timeout",
+    "runtime_not_ready",
+    "gateway_timeout"
+  ],
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": true,
+    "cpu_fallback": true,
+    "min_vram_mb": 0,
+    "recommended_vram_mb": 4096,
+    "min_compute_capability": "8.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {"type": "models", "host_subdir": "birefnet", "container_path": "/models/birefnet", "read_only": false},
+      {"type": "cache", "host_subdir": "birefnet", "container_path": "/cache/birefnet", "read_only": false},
+      {"type": "service_data", "host_subdir": "", "container_path": "/data/service", "read_only": false}
+    ]
+  },
+  "settings_schema": [
+    {"key": "BIREFNET_USE_GPU", "label": "Use GPU", "type": "boolean", "default": "1", "required": true, "restart_required": true},
+    {"key": "BIREFNET_DEVICE", "label": "Device", "type": "select", "default": "auto", "options": ["auto", "cuda", "cpu"], "required": true, "restart_required": true},
+    {"key": "BIREFNET_CPU_FALLBACK", "label": "CPU fallback", "type": "boolean", "default": "1", "required": true, "restart_required": true},
+    {"key": "BIREFNET_MAX_UPLOAD_MB", "label": "Max upload MB", "type": "integer", "default": "50", "min": 1, "max": 50, "required": true, "restart_required": true},
+    {"key": "KEEP_WARM", "label": "Keep model warm", "type": "boolean", "default": "0", "required": true, "restart_required": true}
+  ],
+  "env": [
+    {"name": "BIREFNET_USE_GPU", "default": "1", "required": true},
+    {"name": "BIREFNET_DEVICE", "default": "auto", "required": true},
+    {"name": "BIREFNET_CPU_FALLBACK", "default": "1", "required": true},
+    {"name": "BIREFNET_MODEL_DIR", "default": "/models/birefnet", "required": true},
+    {"name": "BIREFNET_CACHE_DIR", "default": "/cache/birefnet", "required": true},
+    {"name": "BIREFNET_SERVICE_DATA_DIR", "default": "/data/service", "required": true},
+    {"name": "BIREFNET_MAX_UPLOAD_MB", "default": "50", "required": true},
+    {"name": "KEEP_WARM", "default": "0", "required": true}
+  ],
+  "preflight": {
+    "checks": ["docker", "docker_compose", "storage"]
+  },
+  "service": {
+    "default_local_port": 18112,
+    "local_port_env": "BIREFNET_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "birefnet-main",
+    "compose_project": "3waaihub_birefnet"
+  }
+}

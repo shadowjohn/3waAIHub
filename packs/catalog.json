@@ -47,6 +47,15 @@
       "featured": true
     },
     {
+      "id": "image-birefnet",
+      "name": "BiRefNet Background Removal Service",
+      "version": "0.1.0",
+      "category": "vision",
+      "description": "Local background removal service powered by BiRefNet.",
+      "path": "packs/image-birefnet",
+      "featured": true
+    },
+    {
       "id": "sam3",
       "name": "SAM3 Segmentation Service",
       "version": "0.1.0",
