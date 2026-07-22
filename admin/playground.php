@@ -621,14 +621,21 @@ $profiles = hub_playground_profiles();
 $profile = $profiles[$selectedMode] ?? $profiles['hello'];
 $result = null;
 $action = '';
+$voiceProfileDraftPrefill = '';
 $readinessNotice = $selectedService ? hub_playground_basic_readiness($selectedService) : null;
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (!empty($_POST['load_voice_profiles']) || in_array((string)($_POST['action'] ?? ''), ['execute', 'voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'], true))) {
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (!empty($_POST['load_voice_profiles']) || !empty($_POST['load_voice_profile_draft']) || in_array((string)($_POST['action'] ?? ''), ['execute', 'voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'], true))) {
     hub_check_csrf();
-    $action = !empty($_POST['load_voice_profiles']) ? 'voice_profile_list' : (string)$_POST['action'];
+    $action = !empty($_POST['load_voice_profiles'])
+        ? 'voice_profile_list'
+        : (!empty($_POST['load_voice_profile_draft']) ? 'voice_profile_load_draft' : (string)$_POST['action']);
     if ($action === 'execute') {
         $token = trim((string)($_POST['bearer_token'] ?? ''));
         $guard = $selectedService ? hub_playground_readiness_guard($selectedService) : ['error' => 'service_not_found', 'message' => __('找不到可測試的服務。')];
         $result = $guard === null ? ($selectedMode === 'tts' ? hub_playground_execute_tts($token) : hub_playground_execute($selectedMode, $token)) : hub_playground_guard_result($guard);
+    } elseif ($action === 'voice_profile_load_draft') {
+        $draft = hub_playground_voice_profile_draft_prefill($db, (string)($_POST['bearer_token'] ?? ''), (int)($_POST['voice_profile_id'] ?? 0));
+        $result = $draft === null ? hub_playground_voice_profile_error_result() : hub_playground_voice_profile_draft_result();
+        $voiceProfileDraftPrefill = $draft ?? '';
     } elseif ($action !== 'voice_profile_list') {
         $result = hub_playground_voice_profile_dispatch($db, $action, (string)($_POST['bearer_token'] ?? ''), $_POST, $_FILES);
     }
@@ -871,8 +878,8 @@ hub_admin_header(__('API 測試場'), $user);
                     <?php endforeach; ?>
                 </select>
                 <label><?= hub_h(__('確認後的轉錄文字')) ?></label>
-                <textarea name="prompt_text" rows="3" required></textarea>
-                <div class="hub-actions"><button type="submit" name="load_voice_profiles" value="1" formnovalidate><?= hub_h(__('載入可用 Voice Profile')) ?></button><button type="submit"><?= hub_h(__('確認轉錄文字')) ?></button></div>
+                <textarea name="prompt_text" rows="3" required><?= hub_h($voiceProfileDraftPrefill) ?></textarea>
+                <div class="hub-actions"><button type="submit" name="load_voice_profiles" value="1" formnovalidate><?= hub_h(__('載入可用 Voice Profile')) ?></button><button type="submit" name="load_voice_profile_draft" value="1" formnovalidate><?= hub_h(__('載入 ASR 草稿')) ?></button><button type="submit"><?= hub_h(__('確認轉錄文字')) ?></button></div>
             </form>
             <form method="post">
                 <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">

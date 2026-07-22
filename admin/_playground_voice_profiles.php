@@ -33,6 +33,36 @@ function hub_playground_tts_request_payload(): array
     return $payload;
 }
 
+function hub_playground_gateway_result(array $response): array
+{
+    $body = (string)($response['body'] ?? '');
+    $payload = json_decode($body, true);
+    $requestId = '';
+    foreach (is_array($response['headers'] ?? null) ? $response['headers'] : [] as $header) {
+        if (stripos((string)$header, 'X-3waAIHub-Request-Id:') === 0) {
+            $requestId = trim(substr((string)$header, strlen('X-3waAIHub-Request-Id:')));
+            break;
+        }
+    }
+    if ($requestId === '' && is_array($payload) && is_string($payload['request_id'] ?? null)) {
+        $requestId = $payload['request_id'];
+    }
+    $status = (int)($response['status'] ?? 0);
+    $gatewayError = is_array($payload) ? (string)($payload['error'] ?? $payload['error_code'] ?? '') : '';
+    $ok = $status >= 200 && $status < 400;
+
+    return [
+        'ok' => $ok,
+        'status' => $status,
+        'elapsed_ms' => 0,
+        'request_id' => $requestId,
+        'error' => $ok ? '' : ($gatewayError ?: 'request_failed'),
+        'message' => $ok ? '' : hub_playground_error_message($status, '', $gatewayError),
+        'body' => $body,
+        'pretty_body' => hub_playground_pretty_json($body),
+    ];
+}
+
 function hub_playground_tts_profiles_for_member(PDO $db, int $memberId, bool $ownerOnly): array
 {
     $stmt = $db->prepare(
@@ -84,7 +114,39 @@ function hub_playground_execute_tts_mode(string $ttsMode, string $token, ?callab
         return $request($ttsMode, $payload, trim($token));
     }
 
-    return hub_playground_execute('tts', $token, $payload);
+    if (!function_exists('curl_init')) {
+        return ['ok' => false, 'error' => 'curl_unavailable'];
+    }
+
+    $rawBody = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+    if (!is_string($rawBody)) {
+        return ['ok' => false, 'error' => 'request_failed', 'message' => __('Gateway 回傳錯誤。')];
+    }
+    $db = hub_db();
+    hub_migrate($db);
+    $ownerMemberId = null;
+    try {
+        $ownerMemberId = hub_playground_tts_member_id($db, trim($token));
+    } catch (Throwable) {
+    }
+    $started = microtime(true);
+    $result = hub_playground_gateway_result(hub_gateway_dispatch($db, 'tts', null, [
+        'client_ip' => hub_get_client_ip(),
+        'bearer_token' => trim($token),
+        'raw_body' => $rawBody,
+        'method' => 'POST',
+        'request_uri' => '/api.php?mode=tts',
+    ]));
+    $result['elapsed_ms'] = (int)round((microtime(true) - $started) * 1000);
+    if (!empty($result['ok']) && $ownerMemberId !== null) {
+        try {
+            hub_playground_register_tts_artifact($db, hub_get_service_by_mode($db, 'tts') ?: [], $result, $ownerMemberId);
+        } catch (Throwable) {
+            // Artifact access remains denied unless its owner mapping was stored.
+        }
+    }
+
+    return $result;
 }
 
 function hub_playground_execute_tts(string $token, ?callable $request = null): array
@@ -171,6 +233,30 @@ function hub_playground_voice_profile_error_result(): array
         'message' => __('Voice Profile 操作失敗。'),
         'pretty_body' => json_encode(['ok' => false, 'error' => 'voice_profile_request_failed'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE),
     ];
+}
+
+function hub_playground_voice_profile_draft_result(): array
+{
+    return [
+        'ok' => true,
+        'status' => 200,
+        'elapsed_ms' => 0,
+        'request_id' => '',
+        'error' => '',
+        'message' => '',
+        'pretty_body' => json_encode(['ok' => true, 'voice_profile_draft_loaded' => true], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+    ];
+}
+
+function hub_playground_voice_profile_draft_prefill(PDO $db, string $token, int $profileId): ?string
+{
+    try {
+        $memberId = hub_playground_tts_member_id($db, trim($token));
+        $profile = hub_get_voice_profile($db, $profileId);
+        return $profile && (int)$profile['owner_member_id'] === $memberId ? (string)($profile['prompt_text'] ?? '') : null;
+    } catch (Throwable) {
+        return null;
+    }
 }
 
 function hub_playground_voice_profile_dispatch(PDO $db, string $action, string $token, array $post, array $files): array
