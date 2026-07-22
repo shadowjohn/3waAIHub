@@ -1496,6 +1496,7 @@ hub_test('VoxCPM2 playground lists only active profiles accessible to the bearer
 
     try {
         $profiles = hub_playground_tts_active_profiles($db, (string)$token['plain_token']);
+        $managementProfiles = hub_playground_tts_owned_profiles($db, (string)$token['plain_token']);
     } finally {
         $_SERVER = $oldServer;
     }
@@ -1506,6 +1507,23 @@ hub_test('VoxCPM2 playground lists only active profiles accessible to the bearer
     sort($expected);
     hub_test_assert($ids === $expected, 'profile selector must include only active owned or shared profiles');
     hub_test_assert(!in_array($privateId, $ids, true) && !in_array($deletedId, $ids, true), 'profile selector must not expose private foreign or deleted profiles');
+    hub_test_assert(array_map(static fn (array $profile): int => (int)$profile['id'], $managementProfiles) === [$ownId], 'management selectors must exclude shared profiles because their mutations are owner-only');
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(str_contains($source, 'foreach ($ttsProfiles as $ttsProfile)') && substr_count($source, 'foreach ($ttsManagementProfiles as $ttsProfile)') === 2, 'execution and management selectors must use their distinct profile lists');
+});
+
+hub_test('VoxCPM2 playground returns a safe error when loading profiles with an invalid token', function (): void {
+    hub_test_assert(function_exists('hub_playground_tts_profile_options_result'), 'playground profile-load action helper missing');
+
+    $db = hub_test_reset_db();
+    $result = hub_playground_tts_profile_options_result($db, 'invalid-playground-token');
+    hub_test_assert(empty($result['ok']) && ($result['error'] ?? '') === 'voice_profile_request_failed', 'invalid profile load must return a generic action error');
+    foreach (['invalid-playground-token', HUB_ROOT, 'reference_audio_path'] as $secret) {
+        hub_test_assert(!str_contains((string)($result['pretty_body'] ?? ''), $secret), 'profile-load error must not expose token or storage details');
+    }
+
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(str_contains($source, "\$action === 'voice_profile_list'") && str_contains($source, 'hub_playground_tts_profile_options_result'), 'profile-load action must render the safe helper result');
 });
 
 hub_test('VoxCPM2 playground compares all modes sequentially and keeps each result', function (): void {
@@ -1624,6 +1642,22 @@ hub_test('VoxCPM2 playground preserves an unconfirmed Ultimate Clone result', fu
 
     hub_test_assert(($result['results']['design']['ok'] ?? false) === true && ($result['results']['clone']['ok'] ?? false) === true, 'successful design and clone results must remain available');
     hub_test_assert(($result['results']['ultimate_clone']['status'] ?? 0) === 409 && ($result['results']['ultimate_clone']['error'] ?? '') === 'voice_profile_transcript_unconfirmed', 'unconfirmed Ultimate Clone must remain its own result');
+});
+
+hub_test('VoxCPM2 playground gives an all-failed comparison a concrete aggregate error', function (): void {
+    $oldPost = $_POST;
+    $_POST = ['compare_all' => '1', 'voice_profile_id' => '42'];
+
+    try {
+        $result = hub_playground_execute_tts('test-token', static function (string $ttsMode): array {
+            return ['ok' => false, 'status' => 409, 'error' => 'voice_profile_transcript_unconfirmed', 'message' => $ttsMode, 'pretty_body' => '{}'];
+        });
+    } finally {
+        $_POST = $oldPost;
+    }
+
+    hub_test_assert(empty($result['ok']) && ($result['status'] ?? null) === 500 && ($result['error'] ?? '') === 'tts_comparison_failed', 'all-failed comparison must not be reported as mixed');
+    hub_test_assert(array_keys($result['results'] ?? []) === ['design', 'clone', 'ultimate_clone'], 'all-failed comparison must preserve each mode result');
 });
 
 hub_test('VoxCPM2 playground manages voice profiles with request-scoped TTS tokens', function (): void {

@@ -33,22 +33,41 @@ function hub_playground_tts_request_payload(): array
     return $payload;
 }
 
+function hub_playground_tts_profiles_for_member(PDO $db, int $memberId, bool $ownerOnly): array
+{
+    $stmt = $db->prepare(
+        'SELECT id, name, transcription_status, owner_member_id, visibility
+         FROM voice_profiles
+         WHERE deleted_at IS NULL
+           AND (' . ($ownerOnly ? 'owner_member_id = :owner_member_id' : 'owner_member_id = :owner_member_id OR visibility = "shared"') . ')
+         ORDER BY name ASC, id ASC'
+    );
+    $stmt->execute([':owner_member_id' => $memberId]);
+
+    return $stmt->fetchAll();
+}
+
 function hub_playground_tts_active_profiles(PDO $db, string $token): array
+{
+    return hub_playground_tts_profiles_for_member($db, hub_playground_tts_member_id($db, trim($token)), false);
+}
+
+function hub_playground_tts_owned_profiles(PDO $db, string $token): array
+{
+    return hub_playground_tts_profiles_for_member($db, hub_playground_tts_member_id($db, trim($token)), true);
+}
+
+function hub_playground_tts_profile_options_result(PDO $db, string $token): array
 {
     try {
         $memberId = hub_playground_tts_member_id($db, trim($token));
-        $stmt = $db->prepare(
-            'SELECT id, name, transcription_status, owner_member_id, visibility
-             FROM voice_profiles
-             WHERE deleted_at IS NULL
-               AND (owner_member_id = :owner_member_id OR visibility = "shared")
-             ORDER BY name ASC, id ASC'
-        );
-        $stmt->execute([':owner_member_id' => $memberId]);
-
-        return $stmt->fetchAll();
+        return [
+            'ok' => true,
+            'execution_profiles' => hub_playground_tts_profiles_for_member($db, $memberId, false),
+            'management_profiles' => hub_playground_tts_profiles_for_member($db, $memberId, true),
+        ];
     } catch (Throwable) {
-        return [];
+        return hub_playground_voice_profile_error_result();
     }
 }
 
@@ -85,13 +104,15 @@ function hub_playground_execute_tts(string $token, ?callable $request = null): a
     $successful = array_filter($results, static fn (array $result): bool => !empty($result['ok']));
     $failed = array_filter($results, static fn (array $result): bool => empty($result['ok']));
 
+    $allFailed = $successful === [];
+
     return [
         'ok' => $successful !== [],
-        'status' => $failed === [] ? 200 : 'mixed',
+        'status' => $allFailed ? 500 : ($failed === [] ? 200 : 'mixed'),
         'elapsed_ms' => array_sum(array_map(static fn (array $result): int => (int)($result['elapsed_ms'] ?? 0), $results)),
         'request_id' => '',
-        'error' => '',
-        'message' => '',
+        'error' => $allFailed ? 'tts_comparison_failed' : '',
+        'message' => $allFailed ? __('所有 TTS 模式皆失敗。') : '',
         'results' => $results,
         'pretty_body' => json_encode(['results' => $results], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
     ];
