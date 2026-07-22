@@ -1795,3 +1795,35 @@ hub_test('VoxCPM2 acceptance set covers Traditional Chinese maintenance text', f
         hub_test_assert(str_contains((string)$joined, $needle), 'VoxCPM2 acceptance set missing ' . $needle);
     }
 });
+
+hub_test('VoxCPM2 three-mode smoke runbook keeps the safe operator contract', function (): void {
+    $path = HUB_ROOT . '/docs/operations/voxcpm2-three-mode-smoke.md';
+    hub_test_assert(is_file($path), 'VoxCPM2 three-mode smoke runbook missing');
+    $doc = (string)file_get_contents($path);
+
+    foreach ([
+        'app/bootstrap.php',
+        'hub_get_storage_setting($db, "AIHUB_MODELS_DIR")',
+        'WHISPER_REAL_INFERENCE=1',
+        'docker compose',
+        'up -d --build',
+        'nvidia-smi',
+        'python3 -m unittest -v test_app.py',
+        'mock": false',
+        'effective": "cuda"',
+        'ultimate_clone',
+        'voice_profile_transcript_unconfirmed',
+        '409',
+        'CPU fallback',
+        'Docker NVIDIA runtime',
+        'does not authorize use of non-consented voice audio',
+        'https://github.com/SYSTRAN/faster-whisper/blob/master/README.md',
+        'https://huggingface.co/openbmb/VoxCPM2',
+    ] as $needle) {
+        hub_test_assert(str_contains($doc, $needle), 'three-mode smoke runbook missing ' . $needle);
+    }
+
+    foreach (['/DATA/models', 'Authorization: Bearer', 'reference_audio_path', 'prompt_wav_path', 'request_id'] as $forbidden) {
+        hub_test_assert(!str_contains($doc, $forbidden), 'three-mode smoke runbook must not include ' . $forbidden);
+    }
+});
