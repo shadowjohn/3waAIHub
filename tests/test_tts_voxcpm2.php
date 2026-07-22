@@ -1412,15 +1412,42 @@ hub_test('VoxCPM2 appears in customer playground when user and token allow tts',
     hub_test_assert($modes === ['tts'], 'customer playground must show tts when user and own token allow it');
 
     $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
-    foreach (['api.php?mode=tts', 'voice_prompt', 'reference_audio_id', 'voice_profile_1'] as $needle) {
+    foreach (['api.php?mode=tts', 'voice_prompt', 'name="voice_profile_id"', 'ultimate_clone'] as $needle) {
         hub_test_assert(str_contains($source, $needle), 'playground TTS UI missing ' . $needle);
     }
+    hub_test_assert(!str_contains($source, 'name="reference_audio_id"'), 'playground must not accept arbitrary voice profile IDs');
     $ttsStart = strpos($source, "\$selectedMode === 'tts'):");
     hub_test_assert($ttsStart !== false, 'playground TTS branch missing');
-    $ttsEnd = strpos($source, '<?php elseif', $ttsStart);
+    $ttsEnd = strpos($source, "<?php elseif (in_array(\$selectedMode, ['ocr', 'yolo'], true)):", $ttsStart);
     hub_test_assert($ttsEnd !== false, 'playground TTS branch end missing');
     $ttsBranch = substr($source, $ttsStart, $ttsEnd - $ttsStart);
     hub_test_assert(str_contains($ttsBranch, 'name="real_inference" type="checkbox" value="1" checked'), 'playground TTS real inference must be checked by default');
+});
+
+hub_test('VoxCPM2 playground keeps Voice Profile actions owner-scoped and compares all three modes', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+
+    foreach ([
+        'hub_ensure_user_api_member',
+        'hub_playground_active_voice_profiles',
+        'owner_member_id = :owner_member_id AND deleted_at IS NULL',
+        'voice_profile_upload',
+        'hub_create_uploaded_voice_profile',
+        'voice_profile_confirm',
+        'hub_confirm_voice_profile_prompt',
+        'voice_profile_retry',
+        'hub_retry_voice_profile_transcription',
+        'hub_voice_profile_transcription_is_stale',
+        'voice_profile_wav',
+        'tts_compare',
+        "['design', 'clone', 'ultimate_clone']",
+        'voice_profile_transcript_unconfirmed',
+        'hub_playground_tts_audio_url($selectedService, $compareResult)',
+    ] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'playground Voice Profile workflow missing ' . $needle);
+    }
+    hub_test_assert(!str_contains($source, 'hub_playground_mask_token'), 'playground must not display submitted bearer tokens');
+    hub_test_assert(!str_contains($source, 'reference_audio_path'), 'playground must not expose Voice Profile host paths');
 });
 
 hub_test('VoxCPM2 playground exposes generated WAV through authenticated audio player', function (): void {
