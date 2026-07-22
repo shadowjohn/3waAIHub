@@ -150,7 +150,7 @@
             "path": "transcription_report.json",
             "mime_types": ["application/json"],
             "max_bytes": 65536,
-            "json": {"required_keys": ["model", "language", "word_timestamps", "diarization", "segment_count", "elapsed_seconds"]}
+            "json": {"required_keys": ["model", "language", "word_timestamps", "diarization", "segment_count", "elapsed_seconds", "subtitle_reflow_profile", "subtitle_breaker", "subtitle_breakers", "timing_source"]}
           },
           {
             "type": "subtitle_srt",

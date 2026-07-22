@@ -246,11 +246,17 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
         segments = align(load_alignment(detected_language), segments, source, detected_language)
     subtitle_segments = segments
     subtitle_breaker = None
+    subtitle_breakers: list[str] = []
     if subtitle_reflow == "legacy_adaptive_v1":
         from subtitle_reflow import reflow_legacy_segments
 
         subtitle_segments, diagnostic = reflow_legacy_segments(segments, detected_language)
         subtitle_breaker = diagnostic.get("subtitle_breaker")
+        values = diagnostic.get("subtitle_breakers")
+        if isinstance(values, list) and all(isinstance(value, str) for value in values):
+            subtitle_breakers = values
+        elif subtitle_breaker in {"ckip", "jieba", "fallback"}:
+            subtitle_breakers = [subtitle_breaker]
     transcript_segments = subtitle_segments
     if not word_timestamps:
         transcript_segments = [{key: value for key, value in segment.items() if key != "words"} for segment in subtitle_segments]
@@ -280,6 +286,7 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
         "elapsed_seconds": max(0.0, time.monotonic() - started),
         "subtitle_reflow_profile": subtitle_reflow,
         "subtitle_breaker": subtitle_breaker,
+        "subtitle_breakers": subtitle_breakers,
         "timing_source": "whisperx_aligned_words" if word_timestamps else ("faster_whisper_native_words" if subtitle_reflow == "legacy_adaptive_v1" else "native_segment"),
     }
     (output_dir / "transcription_report.json").write_text(json.dumps(report, ensure_ascii=False) + "\n", encoding="utf-8")

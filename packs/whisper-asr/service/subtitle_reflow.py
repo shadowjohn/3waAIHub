@@ -165,7 +165,7 @@ def _breaker_tokens(
     try:
         tokens = (jieba_segment or _jieba_tokens)(text)
     except Exception:
-        tokens = []
+        return _fallback_tokens(text), {"subtitle_breaker": "fallback", "ckip_error": ckip_error}
     return [str(token) for token in tokens], {"subtitle_breaker": "jieba", "ckip_error": ckip_error}
 
 
@@ -201,7 +201,9 @@ def _punctuation_and_boundaries(words: list[dict[str, Any]], tokens: list[str]) 
         compact = _compact(token)
         if not compact:
             if _is_punctuation(token):
-                punctuation[last_word] = punctuation.get(last_word, "") + token
+                carried = re.search(r"[，。！？；：、,.!?;:()\[\]{}<>【】《》「」『』]+$", str(words[last_word].get("word", "")).strip())
+                if carried is None or token not in carried.group(0):
+                    punctuation[last_word] = punctuation.get(last_word, "") + token
             continue
         end = position + len(compact)
         for index, (_, word_end) in enumerate(spans):
@@ -322,10 +324,11 @@ def reflow_legacy_segments(
     free_vram_mb: int | None = None,
     ckip_segment: Callable[[str], list[str]] | None = None,
     jieba_segment: Callable[[str], list[str]] | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, str | None]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return reflowed cues and the actual CJK breaker used, without I/O or network."""
     result: list[dict[str, Any]] = []
-    diagnostic: dict[str, str | None] = {"subtitle_breaker": None, "ckip_error": None}
+    diagnostic: dict[str, Any] = {"subtitle_breaker": None, "ckip_error": None}
+    breakers: list[str] = []
     model_dir = Path(ckip_model_dir)
     for segment in segments:
         copied = dict(segment)
@@ -342,8 +345,17 @@ def reflow_legacy_segments(
             group_text = str(copied["text"]) if len(groups) == 1 else _smart_join(group_words)
             if chinese:
                 tokens, used = _breaker_tokens(group_text, free_vram_mb, model_dir, ckip_segment, jieba_segment)
-                diagnostic = used
+                breaker = used.get("subtitle_breaker")
+                if isinstance(breaker, str) and breaker not in breakers:
+                    breakers.append(breaker)
+                if used.get("ckip_error") is not None:
+                    diagnostic["ckip_error"] = used["ckip_error"]
             else:
                 tokens = _fallback_tokens(group_text)
             result.extend(_reflow_group(copied, group_words, speaker, chinese, tokens))
+    if len(breakers) == 1:
+        diagnostic["subtitle_breaker"] = breakers[0]
+    elif len(breakers) > 1:
+        diagnostic["subtitle_breaker"] = "mixed"
+        diagnostic["subtitle_breakers"] = breakers
     return result, diagnostic

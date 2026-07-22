@@ -93,6 +93,7 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
     hub_test_assert(!array_key_exists('secret_env', $job['runner'] ?? []), 'Whisper task runtime must not receive a pyannote credential');
     hub_test_assert(($job['runner_config']['alias_input'] ?? '') === 'model' && array_keys($job['runner_config']['aliases'] ?? []) === ['large_v3'], 'Whisper model must be a fixed manifest allowlist');
     hub_test_assert(array_column($job['artifact_contract']['artifacts'] ?? [], 'type') === ['transcript_json', 'transcription_report', 'subtitle_srt', 'subtitle_vtt', 'speaker_timeline'], 'Whisper artifact contract mismatch');
+    hub_test_assert(($job['artifact_contract']['artifacts'][1]['json']['required_keys'] ?? []) === ['model', 'language', 'word_timestamps', 'diarization', 'segment_count', 'elapsed_seconds', 'subtitle_reflow_profile', 'subtitle_breaker', 'subtitle_breakers', 'timing_source'], 'Whisper report must attest the selected subtitle reflow diagnostics');
     hub_test_assert(is_file(HUB_ROOT . '/packs/whisper-asr/jobs/speech_transcribe.sh')
         && is_file(HUB_ROOT . '/packs/whisper-asr/jobs/provision_offline_models.sh')
         && is_file(HUB_ROOT . '/packs/whisper-asr/service/provision_offline_assets.py')
@@ -415,6 +416,7 @@ reflowed_segments = [
     {"start": 1.90, "end": 2.20, "text": "完成。"},
 ]
 subtitle_breaker = ["ckip"]
+subtitle_breakers = [None]
 reflow_calls = []
 subtitle_reflow = types.ModuleType("subtitle_reflow")
 
@@ -423,7 +425,10 @@ def reflow_legacy_segments(segments, *args, **kwargs):
     cues = json.loads(json.dumps(reflowed_segments))
     if segments and segments[0].get("words"):
         cues[0]["words"] = segments[0]["words"]
-    return cues, {"subtitle_breaker": subtitle_breaker[0]}
+    diagnostic = {"subtitle_breaker": subtitle_breaker[0]}
+    if subtitle_breakers[0] is not None:
+        diagnostic["subtitle_breakers"] = subtitle_breakers[0]
+    return cues, diagnostic
 
 subtitle_reflow.reflow_legacy_segments = reflow_legacy_segments
 sys.modules["subtitle_reflow"] = subtitle_reflow
@@ -479,14 +484,14 @@ expected_srt = "1\n00:00:00,100 --> 00:00:01,620\n今天，我們測試 AI Hub�
 expected_vtt = "WEBVTT\n\n00:00:00.100 --> 00:00:01.620\n今天，我們測試 AI Hub。\n\n00:00:01.900 --> 00:00:02.200\n完成。\n"
 result = run(base)
 assert result["transcript"]["text"] == "hello" and loads == [("asr", "/models/whisper/asr/large-v3")] and transcriptions == [(None, False)], "plain ASR must not request native words or optional models"
-assert result["report"]["subtitle_reflow_profile"] == "none" and result["report"]["subtitle_breaker"] is None and result["report"]["timing_source"] == "native_segment"
+assert result["report"]["subtitle_reflow_profile"] == "none" and result["report"]["subtitle_breaker"] is None and result["report"]["subtitle_breakers"] == [] and result["report"]["timing_source"] == "native_segment"
 loads.clear()
 transcriptions.clear()
 result = run(base | {"language": "zh", "output_srt": True, "subtitle_reflow": "legacy_adaptive_v1"})
 assert loads == [("asr", "/models/whisper/asr/large-v3")] and transcriptions == [("zh", True)], "legacy subtitle reflow must request native words without WhisperX alignment"
 assert "words" not in result["transcript"]["segments"][0], "legacy subtitle reflow must not expose native words in transcript JSON"
 assert result["srt"] == expected_srt and result["report"]["subtitle_breaker"] == "ckip" and len(reflow_calls) == 1, "legacy reflow must write CKIP-reflowed SRT cues and report the actual breaker"
-assert result["report"]["subtitle_reflow_profile"] == "legacy_adaptive_v1" and result["report"]["timing_source"] == "faster_whisper_native_words"
+assert result["report"]["subtitle_reflow_profile"] == "legacy_adaptive_v1" and result["report"]["subtitle_breakers"] == ["ckip"] and result["report"]["timing_source"] == "faster_whisper_native_words"
 assert reflow_calls[0][0] == [{"start": 0.0, "end": 1.0, "text": "hello", "words": [{"start": 0.0, "end": 1.0, "word": "hello"}]}], "legacy reflow must receive native words before transcript serialization"
 loads.clear()
 transcriptions.clear()
@@ -503,7 +508,15 @@ assert loads == [("asr", "/models/whisper/asr/large-v3"), ("align", "en")] and t
 assert reflow_calls[0][0] == [{"start": 0.0, "end": 1.0, "text": "hello", "words": [{"start": 0.0, "end": 1.0, "word": "aligned"}]}], "legacy reflow with explicit words must receive WhisperX-aligned words before transcript serialization"
 assert result["transcript"]["segments"][0]["words"] == [{"start": 0.0, "end": 1.0, "word": "aligned"}], "legacy reflow with explicit words must retain aligned transcript words"
 assert result["vtt"] == expected_vtt and result["report"]["subtitle_breaker"] == "jieba" and len(reflow_calls) == 1, "legacy reflow must write Jieba-reflowed VTT cues and report the actual breaker"
+assert result["report"]["subtitle_breakers"] == ["jieba"]
 assert result["report"]["timing_source"] == "whisperx_aligned_words"
+loads.clear()
+transcriptions.clear()
+subtitle_breaker[0] = "mixed"
+subtitle_breakers[0] = ["ckip", "jieba"]
+result = run(base | {"language": "zh", "output_srt": True, "subtitle_reflow": "legacy_adaptive_v1"})
+assert result["report"]["subtitle_breaker"] == "mixed" and result["report"]["subtitle_breakers"] == ["ckip", "jieba"], "multi-segment reflow must retain every actual breaker outcome"
+subtitle_breakers[0] = None
 loads.clear()
 transcriptions.clear()
 result = run(base | {"diarization": True, "min_speakers": 1, "max_speakers": 2, "output_srt": True, "output_vtt": True})
@@ -709,6 +722,31 @@ fallback, fallback_diagnostic = reflow_legacy_segments(segments, free_vram_mb=40
 assert fallback == expected
 assert fallback_calls == ["今天，我們測試 AI Hub。完成。"]
 assert fallback_diagnostic == {"subtitle_breaker": "jieba", "ckip_error": "ckip model unavailable"}
+
+native_punctuation = [{
+    "start": 0.0,
+    "end": 1.0,
+    "text": "今天，我們。",
+    "words": [
+        {"start": 0.0, "end": 0.4, "word": "今天，"},
+        {"start": 0.5, "end": 1.0, "word": "我們。"},
+    ],
+}]
+native_punctuation_reflowed, _ = reflow_legacy_segments(native_punctuation, free_vram_mb=4096, ckip_segment=lambda text: ["今天", "，", "我們", "。"])
+assert native_punctuation_reflowed == native_punctuation
+
+_, broken_jieba_diagnostic = reflow_legacy_segments(segments, free_vram_mb=4095, jieba_segment=lambda text: (_ for _ in ()).throw(RuntimeError("jieba unavailable")))
+assert broken_jieba_diagnostic == {"subtitle_breaker": "fallback", "ckip_error": None}
+
+mixed_calls = []
+def mixed_ckip(text):
+    mixed_calls.append(text)
+    if len(mixed_calls) == 2:
+        raise RuntimeError("second CKIP failure")
+    return tokens
+
+_, mixed_diagnostic = reflow_legacy_segments(segments + segments, free_vram_mb=4096, ckip_segment=mixed_ckip, jieba_segment=lambda text: tokens)
+assert mixed_diagnostic == {"subtitle_breaker": "mixed", "subtitle_breakers": ["ckip", "jieba"], "ckip_error": "second CKIP failure"}
 
 text_only = {"start": 0.0, "end": 1.0, "text": "純文字不應失敗。"}
 assert reflow_legacy_segments([text_only], "zh")[0] == [text_only]
