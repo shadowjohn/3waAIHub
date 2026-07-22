@@ -229,28 +229,44 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
     output_vtt = request.get("output_vtt", False)
     if not isinstance(output_srt, bool) or not isinstance(output_vtt, bool):
         raise RuntimeError("request_invalid")
+    subtitle_reflow = request.get("subtitle_reflow", "none")
+    if not isinstance(subtitle_reflow, str) or subtitle_reflow not in {"none", "legacy_adaptive_v1"}:
+        raise RuntimeError("request_invalid")
+    if subtitle_reflow == "legacy_adaptive_v1" and not (output_srt or output_vtt):
+        raise RuntimeError("request_invalid")
 
     configure_offline_cache()
     require_asr_assets()
     require_cuda()
     started = time.monotonic()
-    segments, detected_language = transcribe(load_asr(model["model"]), source, None if language == "auto" else language, word_timestamps)
+    native_word_timestamps = word_timestamps or subtitle_reflow == "legacy_adaptive_v1"
+    segments, detected_language = transcribe(load_asr(model["model"]), source, None if language == "auto" else language, native_word_timestamps)
     if word_timestamps:
         require_alignment_assets(detected_language)
         segments = align(load_alignment(detected_language), segments, source, detected_language)
+    subtitle_segments = segments
+    subtitle_breaker = None
+    if subtitle_reflow == "legacy_adaptive_v1":
+        from subtitle_reflow import reflow_legacy_segments
+
+        subtitle_segments, diagnostic = reflow_legacy_segments(segments, detected_language)
+        subtitle_breaker = diagnostic.get("subtitle_breaker")
+    transcript_segments = subtitle_segments
+    if not word_timestamps:
+        transcript_segments = [{key: value for key, value in segment.items() if key != "words"} for segment in subtitle_segments]
     output_dir.mkdir(parents=True, exist_ok=True)
     transcript = {
-        "text": " ".join(str(segment.get("text", "")).strip() for segment in segments).strip(),
-        "segments": segments,
+        "text": " ".join(str(segment.get("text", "")).strip() for segment in transcript_segments).strip(),
+        "segments": transcript_segments,
         "language": detected_language,
         "model": model["label"],
         "word_timestamps": word_timestamps,
     }
     (output_dir / "transcript.json").write_text(json.dumps(transcript, ensure_ascii=False) + "\n", encoding="utf-8")
     if output_srt:
-        (output_dir / "subtitle.srt").write_text(subtitle(segments, False), encoding="utf-8")
+        (output_dir / "subtitle.srt").write_text(subtitle(subtitle_segments, False), encoding="utf-8")
     if output_vtt:
-        (output_dir / "subtitle.vtt").write_text(subtitle(segments, True), encoding="utf-8")
+        (output_dir / "subtitle.vtt").write_text(subtitle(subtitle_segments, True), encoding="utf-8")
     if diarization:
         require_diarization_assets()
         timeline = anonymous_speakers(diarize(load_diarization(), source, minimum, maximum))
@@ -260,8 +276,11 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
         "language": detected_language,
         "word_timestamps": word_timestamps,
         "diarization": diarization,
-        "segment_count": len(segments),
+        "segment_count": len(subtitle_segments),
         "elapsed_seconds": max(0.0, time.monotonic() - started),
+        "subtitle_reflow_profile": subtitle_reflow,
+        "subtitle_breaker": subtitle_breaker,
+        "timing_source": "whisperx_aligned_words" if word_timestamps else ("faster_whisper_native_words" if subtitle_reflow == "legacy_adaptive_v1" else "native_segment"),
     }
     (output_dir / "transcription_report.json").write_text(json.dumps(report, ensure_ascii=False) + "\n", encoding="utf-8")
 

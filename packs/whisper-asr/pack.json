@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "whisper-asr",
   "name": "Whisper ASR Service",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "category": "asr",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -19,7 +19,7 @@
   "runner_build": {
     "context": ".",
     "dockerfile": "service/Dockerfile",
-    "image": "3waaihub/whisper-asr:0.1.0"
+    "image": "3waaihub/whisper-asr:0.1.1"
   },
   "gateway": {
     "health_path": "/health",
@@ -42,7 +42,7 @@
     {
       "job": "transcribe",
       "input": {
-        "fields": ["model", "language", "word_timestamps", "diarization", "min_speakers", "max_speakers", "output_srt", "output_vtt"],
+        "fields": ["model", "language", "word_timestamps", "diarization", "min_speakers", "max_speakers", "output_srt", "output_vtt", "subtitle_reflow"],
         "source_artifact_types": ["audio", "cleaned_audio", "vocals_audio"],
         "request_schema": {
           "model": {"type": "string", "required": false, "enum": ["large_v3"], "default": "large_v3", "max_length": 32},
@@ -52,11 +52,12 @@
           "min_speakers": {"type": "integer", "required": false, "min": 1, "max": 100, "requires": {"diarization": true}},
           "max_speakers": {"type": "integer", "required": false, "min": 1, "max": 100, "requires": {"diarization": true}, "gte_field": "min_speakers"},
           "output_srt": {"type": "boolean", "required": false, "default": false},
-          "output_vtt": {"type": "boolean", "required": false, "default": false}
+          "output_vtt": {"type": "boolean", "required": false, "default": false},
+          "subtitle_reflow": {"type": "string", "required": false, "enum": ["none", "legacy_adaptive_v1"], "default": "none", "max_length": 32}
         }
       },
       "runner": {
-        "image": "3waaihub/whisper-asr:0.1.0",
+        "image": "3waaihub/whisper-asr:0.1.1",
         "entrypoint": ["/app/speech-transcribe"],
         "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
         "output_dir": "output",
@@ -91,6 +92,24 @@
               "exact_keys": ["schema", "language", "model_name", "model_dir", "weight_path", "alignment_languages"],
               "string_lists": {"alignment_languages": ["en"]},
               "input_membership": {"input": "language", "list_field": "alignment_languages"}
+            }
+          },
+          {
+            "id": "whisper_ckip_bert_base",
+            "storage": "cache",
+            "host_subdir": "whisper/ckip/bert-base-chinese-ws",
+            "container_path": "/cache/whisper/ckip/bert-base-chinese-ws",
+            "required_paths": [".aihub-ckip-ready.json", "config.json", "pytorch_model.bin", "vocab.txt"],
+            "when": {"input": "subtitle_reflow", "equals": "legacy_adaptive_v1"},
+            "marker_json": {
+              "path": ".aihub-ckip-ready.json",
+              "required_strings": {
+                "schema": "aihub-whisper-ckip/v1",
+                "repository": "ckiplab/bert-base-chinese-ws",
+                "model_path": "/cache/whisper/ckip/bert-base-chinese-ws",
+                "breaker": "ckip-transformers-0.3.4"
+              },
+              "exact_keys": ["schema", "repository", "model_path", "breaker"]
             }
           },
           {
