@@ -1439,9 +1439,10 @@ hub_test('VoxCPM2 playground manages voice profiles with request-scoped TTS toke
         hub_test_assert(str_contains($source, $needle), 'playground voice-profile flow missing ' . $needle);
     }
 
-    $ttsExamplesStart = strpos($source, "if (\$mode === 'tts') {");
+    $examplesStart = strpos($source, 'function hub_playground_examples');
+    $ttsExamplesStart = $examplesStart === false ? false : strpos($source, "if (\$mode === 'tts') {", $examplesStart);
     $ttsExamplesEnd = strpos($source, "if (\$mode === 'chat') {", $ttsExamplesStart);
-    hub_test_assert($ttsExamplesStart !== false && $ttsExamplesEnd !== false, 'playground TTS example block missing');
+    hub_test_assert($examplesStart !== false && $ttsExamplesStart !== false && $ttsExamplesEnd !== false, 'playground TTS example block missing');
     $ttsExamples = substr($source, $ttsExamplesStart, $ttsExamplesEnd - $ttsExamplesStart);
     foreach (['reference_audio_path', 'prompt_wav_path', 'prompt_audio_path'] as $forbidden) {
         hub_test_assert(!str_contains($ttsExamples, $forbidden), 'browser TTS payload must not contain ' . $forbidden);
@@ -1471,6 +1472,56 @@ hub_test('VoxCPM2 playground resolves voice-profile ownership from the TTS token
         );
     } finally {
         $_SERVER = $oldServer;
+    }
+});
+
+hub_test('VoxCPM2 playground rejects foreign token voice-profile mutations with a redacted error', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    foreach ([
+        'hub_confirm_voice_profile_prompt($db, (int)($_POST[\'voice_profile_id\'] ?? 0), $memberId',
+        'hub_retry_voice_profile_transcription($db, (int)($_POST[\'voice_profile_id\'] ?? 0), $memberId)',
+        '} catch (Throwable) {',
+        'hub_playground_voice_profile_error_result()',
+    ] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'playground controller boundary missing ' . $needle);
+    }
+
+    $db = hub_test_reset_db();
+    $ownerMemberId = hub_create_api_member($db, 'Playground Profile Owner');
+    $foreignMemberId = hub_create_api_member($db, 'Playground Profile Foreign Member');
+    $foreignToken = hub_create_api_token($db, $foreignMemberId, 'Playground foreign TTS token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$foreignToken['token_id'], 'tts');
+    $dir = hub_voice_profile_storage_dir();
+    $wav = $dir . '/playground_foreign_owner.wav';
+    file_put_contents($wav, 'RIFFmock');
+    $profileId = hub_create_voice_profile($db, $ownerMemberId, [
+        'name' => 'Owner-only profile',
+        'reference_audio_path' => $wav,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $oldServer = $_SERVER;
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.35';
+
+    try {
+        $tokenMemberId = hub_playground_tts_member_id($db, (string)$foreignToken['plain_token']);
+        hub_test_assert($tokenMemberId === $foreignMemberId, 'playground must derive the mutation owner from the supplied token');
+        hub_test_assert(hub_test_throws(static fn (): array => hub_confirm_voice_profile_prompt($db, $profileId, $tokenMemberId, 'foreign transcript')), 'foreign TTS token must not confirm another owner profile');
+        hub_test_assert(hub_test_throws(static fn (): array => hub_retry_voice_profile_transcription($db, $profileId, $tokenMemberId)), 'foreign TTS token must not retry another owner profile');
+        hub_test_assert((hub_get_voice_profile($db, $profileId)['prompt_text'] ?? null) === null, 'foreign token mutation must leave the owner profile unchanged');
+
+        $error = hub_playground_voice_profile_error_result();
+        $body = (string)($error['pretty_body'] ?? '');
+        hub_test_assert(($error['error'] ?? '') === 'voice_profile_request_failed', 'playground controller error must stay generic');
+        foreach ([$wav, 'foreign transcript', 'voice_profile_forbidden'] as $secret) {
+            hub_test_assert(!str_contains($body, $secret), 'playground controller error must redact ' . $secret);
+        }
+    } finally {
+        $_SERVER = $oldServer;
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $ownerMemberId, true);
+        }
     }
 });
 
