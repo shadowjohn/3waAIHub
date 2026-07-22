@@ -87,6 +87,29 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
         hub_test_assert(str_starts_with($sam3Curl, 'curl.exe -X POST'), 'Windows SAM3 curl must use curl.exe');
         hub_test_assert(str_contains($sam3Curl, " `\n"), 'Windows SAM3 curl must use backtick continuations');
     }
+    $backgroundRemove = null;
+    foreach ($manifest['services'] as $service) {
+        if (($service['mode'] ?? '') === 'background_remove') {
+            $backgroundRemove = $service;
+            break;
+        }
+    }
+    hub_test_assert(is_array($backgroundRemove), 'manifest missing background_remove mode');
+    hub_test_assert(($backgroundRemove['response_content_type'] ?? '') === 'image/png', 'BiRefNet docs response MIME mismatch');
+    hub_test_assert(($backgroundRemove['response_headers'] ?? []) === [
+        'X-3waAIHub-Model',
+        'X-3waAIHub-Device',
+        'X-3waAIHub-Elapsed-Ms',
+        'X-3waAIHub-Width',
+        'X-3waAIHub-Height',
+    ], 'BiRefNet docs response headers mismatch');
+    hub_test_assert(str_contains((string)$backgroundRemove['examples']['curl'], '--output result.png'), 'BiRefNet curl example must save PNG');
+    hub_test_assert(str_contains((string)$backgroundRemove['examples']['php'], "file_put_contents('result.png'"), 'BiRefNet PHP example must save PNG');
+    hub_test_assert(str_contains((string)$backgroundRemove['examples']['php'], 'CURLINFO_HTTP_CODE'), 'BiRefNet PHP example must check status');
+    hub_test_assert(str_contains((string)$backgroundRemove['examples']['php'], 'CURLINFO_CONTENT_TYPE'), 'BiRefNet PHP example must check MIME');
+    hub_test_assert(str_contains((string)$backgroundRemove['examples']['js_fetch'], 'await res.blob()'), 'BiRefNet JS example must read a blob');
+    hub_test_assert(str_contains((string)$backgroundRemove['examples']['js_fetch'], 'URL.createObjectURL'), 'BiRefNet JS example must create an object URL');
+    hub_test_assert(!str_contains((string)$backgroundRemove['examples']['js_fetch'], 'res.json()'), 'BiRefNet JS success example must not decode PNG as JSON');
     $photoFields = [];
     foreach ($photo['input_fields'] ?? [] as $field) {
         if (is_array($field)) {

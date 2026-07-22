@@ -134,3 +134,72 @@ hub_test('BiRefNet install generates GPU-first compose and permits explicit CPU 
     hub_test_assert(str_contains($cpuEnv, 'BIREFNET_USE_GPU=0'), 'BiRefNet CPU env must disable GPU');
     hub_test_assert(str_contains($cpuEnv, 'BIREFNET_DEVICE=cpu'), 'BiRefNet CPU env must select CPU');
 });
+
+hub_test('BiRefNet gateway allowlists only validated final response metadata', function (): void {
+    $rawHeaders = "HTTP/1.1 100 Continue\r\n"
+        . "X-3waAIHub-Device: cpu\r\n\r\n"
+        . "HTTP/1.1 200 OK\r\n"
+        . "Set-Cookie: secret=1\r\n"
+        . "Location: https://example.invalid/private\r\n"
+        . "X-Internal-Path: /models/private\r\n"
+        . "x-3WAAIhub-model: bad\x00value\r\n"
+        . "X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision\r\n"
+        . "X-3waAIHub-Device: TPU\r\n"
+        . "x-3waaihub-device: cuda\r\n"
+        . "X-3waAIHub-Elapsed-Ms: 12ms\r\n"
+        . "x-3waaihub-elapsed-ms: 12\r\n"
+        . "X-3waAIHub-Width: 1280\r\n"
+        . "X-3waAIHub-Height: 720\r\n\r\n";
+    hub_test_assert(hub_proxy_allowed_response_headers($rawHeaders, 'image/png') === [
+        'Content-Type: image/png',
+        'X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision',
+        'X-3waAIHub-Device: cuda',
+        'X-3waAIHub-Elapsed-Ms: 12',
+        'X-3waAIHub-Width: 1280',
+        'X-3waAIHub-Height: 720',
+    ], 'BiRefNet gateway response header allowlist mismatch');
+});
+
+hub_test('BiRefNet binary gateway preserves PNG bytes metadata request id and accounting', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'image-birefnet', [
+        'service_key' => 'birefnet-main',
+        'mode' => 'background_remove',
+        'name' => 'BiRefNet Main',
+        'port_mode' => 'manual',
+        'local_port' => 18112,
+    ]);
+    $readiness = hub_pack_l5_readiness($db, 'image-birefnet');
+    hub_test_assert(($readiness['checks']['has_output_contract'] ?? false) === true, 'BiRefNet binary output must satisfy L5 readiness');
+    hub_set_service_enabled($db, 'background_remove', true);
+    hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+    $png = "\x89PNG\r\n\x1a\n" . random_bytes(64);
+    $oldServer = $_SERVER;
+    try {
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=background_remove';
+        $_SERVER['CONTENT_LENGTH'] = '128';
+        $response = hub_gateway_dispatch($db, 'background_remove', static fn (): array => [
+            'status' => 200,
+            'headers' => [
+                'Content-Type: image/png',
+                'X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision',
+                'X-3waAIHub-Device: cuda',
+                'X-3waAIHub-Elapsed-Ms: 12',
+                'X-3waAIHub-Width: 1280',
+                'X-3waAIHub-Height: 720',
+            ],
+            'body' => $png,
+        ]);
+    } finally {
+        $_SERVER = $oldServer;
+    }
+    hub_test_assert($response['status'] === 200 && $response['body'] === $png, 'BiRefNet PNG body changed in gateway');
+    hub_test_assert(in_array('Content-Type: image/png', $response['headers'], true), 'BiRefNet PNG MIME missing after gateway');
+    hub_test_assert(in_array('X-3waAIHub-Device: cuda', $response['headers'], true), 'BiRefNet device metadata missing after gateway');
+    hub_test_assert(count(array_filter($response['headers'], static fn (string $header): bool => str_starts_with($header, 'X-3waAIHub-Request-Id: '))) === 1, 'BiRefNet request id header missing');
+    $log = $db->query('SELECT response_bytes, ok, error_code FROM api_access_logs ORDER BY id DESC LIMIT 1')->fetch();
+    hub_test_assert((int)$log['response_bytes'] === strlen($png), 'BiRefNet PNG output byte accounting mismatch');
+    hub_test_assert((int)$log['ok'] === 1 && $log['error_code'] === null, 'BiRefNet PNG success log mismatch');
+});

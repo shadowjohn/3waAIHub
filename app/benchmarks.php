@@ -647,10 +647,15 @@ function hub_pack_l5_readiness(PDO $db, string $packId): array
         $realInferencePass = (string)($stmt->fetchColumn() ?: '') === 'pass';
     }
 
+    $output = is_array($contract['output'] ?? null) ? $contract['output'] : [];
+    $jsonOutput = is_array($output['required_keys'] ?? null) && $output['required_keys'] !== [];
+    $responseContentType = strtolower(trim((string)($output['content_type'] ?? '')));
+    $binaryOutput = $responseContentType !== '' && !str_starts_with($responseContentType, 'application/json')
+        && is_array($output['required_headers'] ?? null) && $output['required_headers'] !== [];
     $checks = [
         'has_l5_contract' => $contract !== [],
         'has_input_contract' => is_array($contract['input']['fields'] ?? null) && $contract['input']['fields'] !== [],
-        'has_output_contract' => is_array($contract['output']['required_keys'] ?? null) && $contract['output']['required_keys'] !== [],
+        'has_output_contract' => $jsonOutput || $binaryOutput,
         'has_error_contract' => is_array($contract['errors'] ?? null) && $contract['errors'] !== [],
         'has_benchmark_cases' => $caseIds !== [],
         'has_api_examples' => is_file(HUB_ROOT . '/docs/api_examples.md'),

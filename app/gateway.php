@@ -2054,6 +2054,61 @@ function hub_gateway_admin_legacy_task_session_allowed(PDO $db, string $mode): b
     return $task !== null && ($task['owner_member_id'] ?? null) === null;
 }
 
+function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentType): array
+{
+    $contentType = trim($contentType);
+    if ($contentType === '' || strlen($contentType) > 200 || preg_match('/[\x00-\x1F\x7F]/', $contentType) === 1) {
+        $contentType = 'application/octet-stream';
+    }
+    $headers = ['Content-Type: ' . $contentType];
+    $normalized = str_replace("\r\n", "\n", $rawHeaders);
+    $blocks = preg_split('/\n\n+/', trim($normalized)) ?: [];
+    $final = '';
+    foreach (array_reverse($blocks) as $block) {
+        if (preg_match('/^HTTP\/\S+\s+\d{3}(?:\s|$)/', $block) === 1) {
+            $final = $block;
+            break;
+        }
+    }
+
+    $canonical = [
+        'x-3waaihub-model' => 'X-3waAIHub-Model',
+        'x-3waaihub-device' => 'X-3waAIHub-Device',
+        'x-3waaihub-elapsed-ms' => 'X-3waAIHub-Elapsed-Ms',
+        'x-3waaihub-width' => 'X-3waAIHub-Width',
+        'x-3waaihub-height' => 'X-3waAIHub-Height',
+    ];
+    $accepted = [];
+    foreach (preg_split('/\n/', $final) ?: [] as $line) {
+        if (!str_contains($line, ':')) {
+            continue;
+        }
+        [$rawName, $rawValue] = explode(':', $line, 2);
+        $name = strtolower(trim($rawName));
+        if (!isset($canonical[$name])) {
+            continue;
+        }
+        $value = trim($rawValue, " \t");
+        if ($name === 'x-3waaihub-model') {
+            $valid = $value !== '' && strlen($value) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1;
+        } elseif ($name === 'x-3waaihub-device') {
+            $valid = in_array($value, ['cuda', 'cpu'], true);
+        } else {
+            $valid = $value !== '' && strlen($value) <= 20 && ctype_digit($value);
+        }
+        if ($valid) {
+            $accepted[$name] = $value;
+        }
+    }
+    foreach ($canonical as $name => $outputName) {
+        if (isset($accepted[$name])) {
+            $headers[] = $outputName . ': ' . $accepted[$name];
+        }
+    }
+
+    return $headers;
+}
+
 function hub_proxy_request(string $url, int $timeoutSec = 60, ?string $bodyOverride = null, ?string $contentTypeOverride = null, ?string $methodOverride = null): array
 {
     $ch = curl_init($url);
@@ -2096,10 +2151,11 @@ function hub_proxy_request(string $url, int $timeoutSec = 60, ?string $bodyOverr
     $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 502;
     $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE) ?: 0;
     $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: 'application/json';
+    $rawHeaders = substr($raw, 0, $headerSize);
     $body = substr($raw, $headerSize);
     curl_close($ch);
 
-    return ['status' => $status, 'headers' => ['Content-Type: ' . $contentType], 'body' => $body];
+    return ['status' => $status, 'headers' => hub_proxy_allowed_response_headers($rawHeaders, $contentType), 'body' => $body];
 }
 
 function hub_proxy_post_fields(array $post, array $files): array
@@ -2169,7 +2225,7 @@ function hub_gateway_finish(PDO $db, ?array $service, string $mode, array $respo
 {
     $status = (int)$response['status'];
     $response = hub_gateway_attach_request_id($response, $requestId);
-    [$errorCode, $reason] = hub_gateway_response_error($response);
+    [$errorCode, $reason] = $status >= 400 ? hub_gateway_response_error($response) : [null, null];
     $elapsedMs = (int)round((microtime(true) - $started) * 1000);
     hub_log_api_access(
         $db,

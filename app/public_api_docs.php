@@ -111,7 +111,10 @@ function hub_public_api_services(PDO $db): array
         $method = hub_public_api_method($manifest, $contract);
         $contentType = hub_public_api_content_type($method, $contract);
         $fields = is_array($contract['input']['fields'] ?? null) ? $contract['input']['fields'] : [];
-        $outputKeys = array_values(array_map('strval', is_array($contract['output']['required_keys'] ?? null) ? $contract['output']['required_keys'] : []));
+        $output = is_array($contract['output'] ?? null) ? $contract['output'] : [];
+        $outputKeys = array_values(array_map('strval', is_array($output['required_keys'] ?? null) ? $output['required_keys'] : []));
+        $responseContentType = trim((string)($output['content_type'] ?? 'application/json'));
+        $responseHeaders = array_values(array_map('strval', is_array($output['required_headers'] ?? null) ? $output['required_headers'] : []));
         $errors = array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : []));
         $taskApi = is_array($contract['task_api'] ?? null) ? $contract['task_api'] : [];
         $service = [
@@ -128,6 +131,8 @@ function hub_public_api_services(PDO $db): array
             'task_type' => (string)($contract['task_type'] ?? ''),
             'input_fields' => $fields,
             'output_keys' => $outputKeys,
+            'response_content_type' => $responseContentType,
+            'response_headers' => $responseHeaders,
             'error_codes' => $errors,
             'task_api' => hub_public_api_task_api_refs($taskApi),
         ];
@@ -400,6 +405,7 @@ function hub_public_api_examples(array $service): array
     $url = (string)$service['url'];
     $method = (string)$service['method'];
     $contentType = (string)$service['content_type'];
+    $binaryPng = (string)($service['response_content_type'] ?? '') === 'image/png';
     $isWindows = hub_platform_id() === 'windows';
     $curlExecutable = $isWindows ? 'curl.exe' : 'curl';
     $continuation = $isWindows ? '`' : '\\';
@@ -456,6 +462,10 @@ function hub_public_api_examples(array $service): array
         $jsPrefix = implode("\n", $jsLines) . "\n";
     }
 
+    if ($binaryPng) {
+        $curl .= ' ' . $continuation . "\n" . '  --output result.png';
+    }
+
     $headers = ["'Authorization: Bearer <TOKEN>'"];
     $postFields = '';
     if ($method !== 'GET' && $contentType === 'application/json') {
@@ -471,11 +481,28 @@ function hub_public_api_examples(array $service): array
         . "    CURLOPT_CUSTOMREQUEST => '{$method}',\n"
         . $postFields
         . '    CURLOPT_HTTPHEADER => [' . implode(', ', $headers) . "],\n"
-        . "]);\n"
-        . 'echo curl_exec($ch);';
+        . "]);\n";
+    if ($binaryPng) {
+        $php .= "\$result = curl_exec(\$ch);\n"
+            . "\$status = curl_getinfo(\$ch, CURLINFO_HTTP_CODE);\n"
+            . "\$mime = strtolower((string)curl_getinfo(\$ch, CURLINFO_CONTENT_TYPE));\n"
+            . "if (\$result === false || \$status < 200 || \$status >= 300 || !str_starts_with(\$mime, 'image/png')) {\n"
+            . "    throw new RuntimeException('BiRefNet request failed');\n"
+            . "}\n"
+            . "file_put_contents('result.png', \$result);";
+    } else {
+        $php .= 'echo curl_exec($ch);';
+    }
     $js = $jsPrefix
-        . "const res = await fetch(" . json_encode($url, JSON_UNESCAPED_SLASHES) . ", {$jsOptions});\n"
-        . 'console.log(await res.json());';
+        . "const res = await fetch(" . json_encode($url, JSON_UNESCAPED_SLASHES) . ", {$jsOptions});\n";
+    if ($binaryPng) {
+        $js .= "if (!res.ok) throw new Error(await res.text());\n"
+            . "const blob = await res.blob();\n"
+            . "const objectUrl = URL.createObjectURL(blob);\n"
+            . "console.log(objectUrl);";
+    } else {
+        $js .= 'console.log(await res.json());';
+    }
 
     return ['curl' => $curl, 'php' => $php, 'js_fetch' => $js];
 }
@@ -563,6 +590,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
                     <tr><th>method</th><td><code><?= hub_h((string)$service['method']) ?></code></td></tr>
                     <tr><th>endpoint</th><td><code><?= hub_h((string)$service['endpoint']) ?></code></td></tr>
                     <tr><th>content-type</th><td><code><?= hub_h((string)$service['content_type'] !== '' ? (string)$service['content_type'] : '-') ?></code></td></tr>
+                    <tr><th>response-content-type</th><td><code><?= hub_h((string)($service['response_content_type'] ?? 'application/json')) ?></code></td></tr>
                     <tr><th>runtime_level</th><td><code><?= hub_h((string)$service['runtime_level']) ?></code></td></tr>
                     <tr><th>execution_type</th><td><code><?= hub_h((string)$service['execution_type']) ?></code></td></tr>
                     <?php if (($service['task_type'] ?? '') !== ''): ?>
@@ -573,6 +601,10 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null): string
                 <pre><?= hub_h(json_encode($service['input_fields'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <h3><?= $t('Response keys') ?></h3>
                 <pre><?= hub_h(json_encode($service['output_keys'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php if (($service['response_headers'] ?? []) !== []): ?>
+                    <h3><?= $t('Response headers') ?></h3>
+                    <pre><?= hub_h(json_encode($service['response_headers'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php endif; ?>
                 <?php if (($service['task_api'] ?? []) !== []): ?>
                     <h3><?= $t('Task 狀態 / 結果') ?></h3>
                     <pre><?= hub_h(json_encode($service['task_api'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
