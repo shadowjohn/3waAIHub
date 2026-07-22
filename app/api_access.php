@@ -187,7 +187,7 @@ function hub_new_request_id(): string
     return 'req_' . date('YmdHis') . '_' . bin2hex(random_bytes(3));
 }
 
-function hub_log_api_access(PDO $db, ?array $service, string $mode, int $status, bool $ok, ?string $errorCode, ?string $reason, int $elapsedMs, ?string $requestId = null, array $authContext = [], int $uploadBytes = 0, int $responseBytes = 0): void
+function hub_log_api_access(PDO $db, ?array $service, string $mode, int $status, bool $ok, ?string $errorCode, ?string $reason, int $elapsedMs, ?string $requestId = null, array $authContext = [], int $uploadBytes = 0, int $responseBytes = 0, array $requestContext = []): void
 {
     try {
         $stmt = $db->prepare(
@@ -202,9 +202,9 @@ function hub_log_api_access(PDO $db, ?array $service, string $mode, int $status,
             ':member_id' => isset($authContext['member_id']) ? (int)$authContext['member_id'] : null,
             ':token_id' => isset($authContext['token_id']) ? (int)$authContext['token_id'] : null,
             ':mode' => $mode,
-            ':client_ip' => substr(hub_get_client_ip(), 0, 128),
-            ':method' => substr((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'), 0, 16),
-            ':request_uri' => substr((string)($_SERVER['REQUEST_URI'] ?? ''), 0, 1024),
+            ':client_ip' => substr((string)($requestContext['client_ip'] ?? hub_get_client_ip()), 0, 128),
+            ':method' => substr((string)($requestContext['method'] ?? $_SERVER['REQUEST_METHOD'] ?? 'GET'), 0, 16),
+            ':request_uri' => substr((string)($requestContext['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? ''), 0, 1024),
             ':status_code' => $status,
             ':ok' => $ok ? 1 : 0,
             ':error_code' => $errorCode,

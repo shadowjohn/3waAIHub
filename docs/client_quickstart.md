@@ -70,7 +70,7 @@ php scripts/api_smoke_client.php \
 php scripts/api_smoke_client.php \
   --base-url=https://nature.focusit.tw/3waAIHub/api.php \
   --token=<TOKEN> \
-  --modes=hello,ocr,yolo,translate,sam3,chat
+  --modes=hello,ocr,yolo,translate,sam3,chat,audio
 ```
 
 `photo` 需要先 `photo_upload` 取得 `image_id`，再呼叫 `photo`；請用下方 curl 兩步驟範例驗證。
@@ -81,7 +81,7 @@ php scripts/api_smoke_client.php \
 php scripts/api_smoke_client.php \
   --base-url=https://nature.focusit.tw/3waAIHub/api.php \
   --token=<TOKEN> \
-  --modes=ocr,yolo,sam3,translate,chat \
+  --modes=ocr,yolo,sam3,translate,chat,audio \
   --real
 ```
 
@@ -170,6 +170,31 @@ curl -X POST "<BASE_URL>?mode=photo" \
 - response contract: `photo_upload` 回 JSON `ok`, `image_id`；`photo` 回 JSON `ok`, `mock`, `runtime_level`, `model`, `image_id`, `answer`, `caption`, `tags`, `usage`, `elapsed_ms`
 - error contract: `image_id_required`, `text_required`, `photo_forbidden`, `model_not_ready`, `vision_timeout`, `vision_bad_response`, `vision_failed`
 - no server-side session；需要前文時請放在 `text`
+
+### `mode=audio_upload` + `mode=audio`
+
+Gemma4 audio input 適合短音訊理解、摘要或輔助轉錄；可直接送 WAV，也可先上傳一次取得 `audio_id` 後反覆追問。長音訊 ASR 請使用 Whisper ASR Pack。
+
+```bash
+curl -X POST "<BASE_URL>?mode=audio_upload" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio=@sample.wav"
+
+curl -X POST "<BASE_URL>?mode=audio" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio_id=aud_..." \
+  -F "operation=understand" \
+  -F "text=這段錄音的重點是什麼？" \
+  -F "max_tokens=512" \
+  -F "real_inference=1"
+```
+
+- upload contract: `POST multipart/form-data`, field `audio`, returns `audio_id`
+- request contract: `POST multipart/form-data`, field `audio` or `audio_id`; optional `operation=understand|transcribe|summarize`, `text`, `max_tokens`, `real_inference`
+- audio limits: WAV only, 16kHz mono, <= 30 seconds, <= 16MB
+- audio asset TTL: 7 days
+- response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `operation`, `answer`, `transcript`, `summary`, `tags`, `audio`, `usage`, `elapsed_ms`
+- error contract: `file_required`, `payload_too_large`, `invalid_audio`, `unsupported_audio_format`, `audio_too_long`, `audio_not_found`, `model_not_ready`, `audio_failed`
 
 ### `mode=sam3`
 

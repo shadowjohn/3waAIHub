@@ -21,8 +21,10 @@ hub_test('Gemma 4 LLM pack stays inside 3waAIHub sync API boundary', function ()
         hub_test_assert(!array_key_exists($field, $manifest['gateway'] ?? []), 'LLM gateway must not add core field ' . $field);
     }
 
-    hub_test_assert(in_array('chat', $manifest['capabilities'] ?? [], true), 'LLM chat capability missing');
-    foreach (['streaming', 'vision', 'tool_calling', 'structured_output'] as $deferred) {
+    foreach (['chat', 'reasoning', 'vision', 'audio_understanding', 'audio_transcription'] as $capability) {
+        hub_test_assert(in_array($capability, $manifest['capabilities'] ?? [], true), 'LLM capability missing ' . $capability);
+    }
+    foreach (['streaming', 'tool_calling', 'structured_output'] as $deferred) {
         hub_test_assert(!in_array($deferred, $manifest['capabilities'] ?? [], true), 'LLM deferred capability leaked: ' . $deferred);
     }
     hub_test_assert(($manifest['hardware']['gpu_required'] ?? false) === true, 'LLM GPU requirement missing');
@@ -82,7 +84,9 @@ hub_test('Gemma 4 LLM install generates vLLM sidecar plus Hub chat adapter compo
     $compose = (string)file_get_contents(hub_path((string)$service['compose_file']));
     foreach ([
         '  vllm:',
-        'image: vllm/vllm-openai:latest',
+        'image: 3waaihub-gemma4-vllm:0.1.0',
+        'context: ' . HUB_ROOT . '/packs/llm-gemma4-12b/vllm',
+        '--limit-mm-per-prompt \'{"image":1,"audio":1}\'',
         '  chat-api:',
         'build:',
         'depends_on:',
@@ -94,7 +98,8 @@ hub_test('Gemma 4 LLM install generates vLLM sidecar plus Hub chat adapter compo
     ] as $needle) {
         hub_test_assert(str_contains($compose, $needle), 'LLM generated compose missing ' . $needle);
     }
-    foreach (['--enable-auto-tool-choice', '--limit-mm-per-prompt', 'streaming_api'] as $forbidden) {
+    hub_test_assert(str_contains((string)file_get_contents(HUB_ROOT . '/packs/llm-gemma4-12b/vllm/Dockerfile'), 'vllm[audio]'), 'Gemma4 vLLM Dockerfile must install audio extras');
+    foreach (['--enable-auto-tool-choice', 'streaming_api'] as $forbidden) {
         hub_test_assert(!str_contains($compose, $forbidden), 'LLM generated compose leaked deferred feature ' . $forbidden);
     }
 

@@ -1,13 +1,15 @@
 import base64
+import io
 import json
 import os
 import re
 import time
+import wave
 from pathlib import Path
 from typing import Any
 
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -15,6 +17,8 @@ from pydantic import BaseModel, Field
 RUNTIME_LEVEL = "L5-benchmark-ready"
 SERVICE = "llm-gemma4-12b"
 PHOTO_ROOT = Path("/data/photo").resolve()
+AUDIO_MAX_BYTES = 16 * 1024 * 1024
+AUDIO_MAX_DURATION_SEC = 30.0
 
 
 def env_bool(name: str, default: str = "0") -> bool:
@@ -85,6 +89,12 @@ class PhotoRequest(BaseModel):
     real_inference: bool = False
 
 
+def parse_form_bool(value: str | bool | int | None) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def safe_photo_path(path: str) -> Path | None:
     try:
         resolved = Path(path).resolve()
@@ -115,6 +125,51 @@ def parse_model_json(text: str) -> dict[str, Any] | None:
     except json.JSONDecodeError:
         return None
     return value if isinstance(value, dict) else None
+
+
+def validate_wav_bytes(data: bytes) -> dict[str, Any]:
+    if not data:
+        raise ValueError("file_required")
+    if len(data) > AUDIO_MAX_BYTES:
+        raise ValueError("payload_too_large")
+    try:
+        with wave.open(io.BytesIO(data), "rb") as wav:
+            channels = wav.getnchannels()
+            rate = wav.getframerate()
+            frames = wav.getnframes()
+            sample_width = wav.getsampwidth()
+    except wave.Error as exc:
+        raise ValueError("invalid_audio") from exc
+    duration = frames / rate if rate else 0
+    if channels != 1 or rate != 16000:
+        raise ValueError("unsupported_audio_format")
+    if duration <= 0 or duration > AUDIO_MAX_DURATION_SEC:
+        raise ValueError("audio_too_long")
+
+    return {
+        "mime": "audio/wav",
+        "duration_ms": int(round(duration * 1000)),
+        "sample_rate": rate,
+        "channels": channels,
+        "sample_width": sample_width,
+        "size": len(data),
+    }
+
+
+def audio_prompt(operation: str, text: str) -> str:
+    if operation == "transcribe":
+        return "請忠實轉錄這段音訊，只輸出逐字稿。無法辨識的片段以［聽不清楚］表示。"
+    if operation == "summarize":
+        return (
+            "請使用正體中文回答。請根據音訊輸出 JSON："
+            "{\"summary\":\"音訊摘要\",\"answer\":null,\"transcript\":null,\"tags\":[\"最多八個短標籤\"]}"
+        )
+    question = text.strip() or "這段音訊的重點是什麼？"
+    return (
+        "請使用正體中文回答。請根據音訊與使用者問題輸出 JSON："
+        "{\"answer\":\"針對問題的完整回答\",\"summary\":\"一句摘要\",\"transcript\":null,\"tags\":[\"最多八個短標籤\"]}"
+        f"\n使用者問題：{question}"
+    )
 
 
 app = FastAPI(title="3waAIHub Gemma 4 Chat Adapter")
@@ -315,6 +370,133 @@ def photo(request: PhotoRequest) -> JSONResponse:
         "answer": answer,
         "caption": caption,
         "tags": tags,
+        "usage": {
+            "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+            "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+            "total_tokens": int(usage.get("total_tokens", 0) or 0),
+        },
+        "elapsed_ms": elapsed,
+    })
+
+
+@app.post("/audio")
+async def audio(
+    audio: UploadFile = File(...),
+    operation: str = Form("understand"),
+    text: str = Form(""),
+    max_tokens: int = Form(512),
+    real_inference: str = Form("0"),
+) -> JSONResponse:
+    started = time.monotonic()
+    operation = operation.strip().lower() or "understand"
+    if operation not in {"understand", "transcribe", "summarize"}:
+        return error_response(400, "bad_request", "operation must be understand, transcribe or summarize.")
+
+    data = await audio.read()
+    try:
+        audio_meta = validate_wav_bytes(data)
+    except ValueError as exc:
+        code = str(exc)
+        return error_response({
+            "file_required": 400,
+            "payload_too_large": 413,
+            "invalid_audio": 400,
+            "unsupported_audio_format": 415,
+            "audio_too_long": 413,
+        }.get(code, 400), code, code)
+
+    max_tokens = max(32, min(int(max_tokens or 512), 2048))
+    real = parse_form_bool(real_inference)
+    if not real:
+        elapsed = int((time.monotonic() - started) * 1000)
+        return JSONResponse(content={
+            "ok": True,
+            "mock": True,
+            "runtime_level": RUNTIME_LEVEL,
+            "model": served_model(),
+            "operation": operation,
+            "answer": "這是一個 Gemma 4 Audio mock answer。" if operation == "understand" else None,
+            "transcript": "mock transcription" if operation == "transcribe" else None,
+            "summary": "Gemma 4 Audio mock summary" if operation == "summarize" else None,
+            "tags": [],
+            "audio": audio_meta,
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "elapsed_ms": elapsed,
+        })
+
+    payload = {
+        "model": served_model(),
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": audio_prompt(operation, text)},
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": base64.b64encode(data).decode("ascii"),
+                        "format": "wav",
+                    },
+                },
+            ],
+        }],
+        "temperature": 0.1,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    try:
+        response = requests.post(
+            f"{vllm_base_url()}/v1/chat/completions",
+            json=payload,
+            timeout=env_float("VLLM_TIMEOUT_SEC", 600.0),
+        )
+    except requests.Timeout:
+        return error_response(504, "audio_timeout", "Gemma 4 audio request timed out.")
+    except requests.RequestException as exc:
+        return error_response(503, "model_not_ready", "Gemma 4 audio backend is unavailable.", str(exc))
+    if response.status_code < 200 or response.status_code >= 300:
+        return error_response(502, "audio_bad_response", "Gemma 4 audio returned an error.", response.text)
+
+    try:
+        body = response.json()
+    except ValueError as exc:
+        return error_response(502, "audio_bad_response", "Gemma 4 audio response was not valid JSON.", str(exc))
+    choices = body.get("choices") if isinstance(body, dict) else None
+    message = choices[0].get("message", {}) if isinstance(choices, list) and choices else {}
+    output_text = str(message.get("content") or "").strip()
+    if not output_text:
+        return error_response(502, "audio_failed", "Gemma 4 audio output was empty.")
+
+    answer: str | None = None
+    transcript: str | None = None
+    summary: str | None = None
+    tags: list[str] = []
+    if operation == "transcribe":
+        transcript = output_text
+    else:
+        parsed = parse_model_json(output_text)
+        if parsed is None:
+            return error_response(502, "audio_failed", "Gemma 4 audio response was not valid JSON.")
+        answer = str(parsed.get("answer") or "").strip() or None
+        transcript_value = parsed.get("transcript")
+        summary_value = parsed.get("summary")
+        transcript = str(transcript_value).strip() if transcript_value is not None and str(transcript_value).strip() != "" else None
+        summary = str(summary_value).strip() if summary_value is not None and str(summary_value).strip() != "" else None
+        raw_tags = parsed.get("tags") if isinstance(parsed.get("tags"), list) else []
+        tags = [str(tag).strip() for tag in raw_tags if str(tag).strip()][:8]
+
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    elapsed = int((time.monotonic() - started) * 1000)
+    return JSONResponse(content={
+        "ok": True,
+        "mock": False,
+        "runtime_level": RUNTIME_LEVEL,
+        "model": served_model(),
+        "operation": operation,
+        "answer": answer,
+        "transcript": transcript,
+        "summary": summary,
+        "tags": tags,
+        "audio": audio_meta,
         "usage": {
             "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
             "completion_tokens": int(usage.get("completion_tokens", 0) or 0),

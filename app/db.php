@@ -19,6 +19,17 @@ function hub_db(): PDO
     return $db;
 }
 
+function hub_voice_profile_active_sha_index_unique(PDO $db): ?bool
+{
+    foreach ($db->query("PRAGMA index_list('voice_profiles')")->fetchAll() as $index) {
+        if (($index['name'] ?? '') === 'idx_voice_profiles_owner_sha_active') {
+            return (int)($index['unique'] ?? 0) === 1;
+        }
+    }
+
+    return null;
+}
+
 function hub_migrate(PDO $db): void
 {
     $db->exec(<<<'SQL'
@@ -353,7 +364,12 @@ CREATE TABLE IF NOT EXISTS voice_profiles (
     reference_audio_path TEXT NOT NULL,
     reference_audio_sha256 TEXT NOT NULL,
     prompt_text TEXT NULL,
+    prompt_text_confirmed_at TEXT NULL,
     language TEXT NULL,
+    transcription_status TEXT NOT NULL DEFAULT 'pending',
+    transcription_error TEXT NULL,
+    transcription_started_at TEXT NULL,
+    transcription_lease_token TEXT NULL,
     consent_type TEXT NOT NULL,
     usage_scope TEXT NOT NULL DEFAULT 'private',
     visibility TEXT NOT NULL DEFAULT 'private',
@@ -379,6 +395,19 @@ CREATE TABLE IF NOT EXISTS voice_profile_audit_logs (
     FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS playground_tts_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    service_id INTEGER NOT NULL,
+    owner_member_id INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(service_id, filename),
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS photo_assets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     image_id TEXT NOT NULL UNIQUE,
@@ -388,6 +417,25 @@ CREATE TABLE IF NOT EXISTS photo_assets (
     byte_size INTEGER NOT NULL,
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    storage_relpath TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_accessed_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(owner_token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS audio_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audio_id TEXT NOT NULL UNIQUE,
+    owner_member_id INTEGER NULL,
+    owner_token_id INTEGER NULL,
+    mime TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    sample_rate INTEGER NOT NULL,
+    channels INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
     storage_relpath TEXT NOT NULL,
     expires_at TEXT NOT NULL,
@@ -595,8 +643,77 @@ SQL);
     hub_add_column_if_missing($db, 'api_access_logs', 'token_id', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'upload_bytes', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'api_access_logs', 'response_bytes', 'INTEGER NULL');
+    $voiceProfilePromptConfirmationMarker = 'db_migration_voice_profiles_prompt_text_confirmed_at_v1';
+    if (hub_get_storage_setting($db, $voiceProfilePromptConfirmationMarker) !== '1') {
+        $voiceProfilePromptConfirmationMigrationStarted = false;
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            $voiceProfilePromptConfirmationMigrationStarted = true;
+            hub_add_column_if_missing($db, 'voice_profiles', 'prompt_text_confirmed_at', 'TEXT NULL');
+            if (hub_get_storage_setting($db, $voiceProfilePromptConfirmationMarker) !== '1') {
+                $db->exec("UPDATE voice_profiles
+                           SET prompt_text_confirmed_at = COALESCE(prompt_text_confirmed_at, updated_at)
+                           WHERE prompt_text IS NOT NULL AND trim(prompt_text) <> ''");
+                hub_set_storage_setting($db, $voiceProfilePromptConfirmationMarker, '1');
+            }
+            $db->exec('COMMIT');
+            $voiceProfilePromptConfirmationMigrationStarted = false;
+        } catch (Throwable $e) {
+            if ($voiceProfilePromptConfirmationMigrationStarted) {
+                try {
+                    $db->exec('ROLLBACK');
+                } catch (Throwable) {
+                }
+            }
+            throw $e;
+        }
+    } else {
+        hub_add_column_if_missing($db, 'voice_profiles', 'prompt_text_confirmed_at', 'TEXT NULL');
+    }
     hub_add_column_if_missing($db, 'voice_profiles', 'usage_scope', "TEXT NOT NULL DEFAULT 'private'");
     hub_add_column_if_missing($db, 'voice_profiles', 'retain_original_audio', 'INTEGER NOT NULL DEFAULT 1');
+    $voiceProfileTranscriptionStateMarker = 'db_migration_voice_profiles_transcription_state_v1';
+    if (hub_get_storage_setting($db, $voiceProfileTranscriptionStateMarker) !== '1') {
+        $voiceProfileTranscriptionStateMigrationStarted = false;
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            $voiceProfileTranscriptionStateMigrationStarted = true;
+            hub_add_column_if_missing($db, 'voice_profiles', 'transcription_status', "TEXT NOT NULL DEFAULT 'pending'");
+            hub_add_column_if_missing($db, 'voice_profiles', 'transcription_error', 'TEXT NULL');
+            hub_add_column_if_missing($db, 'voice_profiles', 'transcription_started_at', 'TEXT NULL');
+            hub_add_column_if_missing($db, 'voice_profiles', 'transcription_lease_token', 'TEXT NULL');
+            if (hub_get_storage_setting($db, $voiceProfileTranscriptionStateMarker) !== '1') {
+                $db->exec("UPDATE voice_profiles
+                           SET transcription_status = CASE
+                               WHEN prompt_text IS NOT NULL AND trim(prompt_text) <> '' THEN 'ready'
+                               WHEN transcription_error IS NOT NULL AND trim(transcription_error) <> '' THEN 'failed'
+                               ELSE 'pending'
+                           END,
+                               transcription_error = CASE
+                               WHEN transcription_error = 'asr_unavailable' THEN 'asr_unavailable'
+                               WHEN transcription_error IS NOT NULL AND trim(transcription_error) <> '' THEN 'asr_failed'
+                               ELSE NULL
+                           END");
+                hub_set_storage_setting($db, $voiceProfileTranscriptionStateMarker, '1');
+            }
+            $db->exec('COMMIT');
+            $voiceProfileTranscriptionStateMigrationStarted = false;
+        } catch (Throwable $e) {
+            if ($voiceProfileTranscriptionStateMigrationStarted) {
+                try {
+                    $db->exec('ROLLBACK');
+                } catch (Throwable) {
+                }
+            }
+            throw $e;
+        }
+    } else {
+        hub_add_column_if_missing($db, 'voice_profiles', 'transcription_status', "TEXT NOT NULL DEFAULT 'pending'");
+        hub_add_column_if_missing($db, 'voice_profiles', 'transcription_error', 'TEXT NULL');
+        hub_add_column_if_missing($db, 'voice_profiles', 'transcription_started_at', 'TEXT NULL');
+        hub_add_column_if_missing($db, 'voice_profiles', 'transcription_lease_token', 'TEXT NULL');
+    }
+    $db->exec('DROP TABLE IF EXISTS voice_profile_upload_locks');
     hub_add_column_if_missing($db, 'command_jobs', 'stderr_path', 'TEXT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'progress', 'INTEGER NOT NULL DEFAULT 0');
     hub_add_column_if_missing($db, 'command_jobs', 'stage', 'TEXT NULL');
@@ -673,12 +790,44 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token_date ON api_token_usage_daily(token_id, usage_date)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner ON voice_profiles(owner_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_deleted ON voice_profiles(deleted_at)');
+    $voiceProfileIndexUnique = hub_voice_profile_active_sha_index_unique($db);
+    if ($voiceProfileIndexUnique === null) {
+        $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner_sha_active ON voice_profiles(owner_member_id, reference_audio_sha256) WHERE deleted_at IS NULL');
+    } elseif ($voiceProfileIndexUnique) {
+        $voiceProfileIndexMigrationStarted = false;
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            $voiceProfileIndexMigrationStarted = true;
+            $voiceProfileIndexUnique = hub_voice_profile_active_sha_index_unique($db);
+            if ($voiceProfileIndexUnique === null) {
+                $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner_sha_active ON voice_profiles(owner_member_id, reference_audio_sha256) WHERE deleted_at IS NULL');
+            } elseif ($voiceProfileIndexUnique) {
+                $db->exec('DROP INDEX idx_voice_profiles_owner_sha_active');
+                $db->exec('CREATE INDEX idx_voice_profiles_owner_sha_active ON voice_profiles(owner_member_id, reference_audio_sha256) WHERE deleted_at IS NULL');
+            }
+            $db->exec('COMMIT');
+            $voiceProfileIndexMigrationStarted = false;
+        } catch (Throwable $e) {
+            if ($voiceProfileIndexMigrationStarted) {
+                try {
+                    $db->exec('ROLLBACK');
+                } catch (Throwable) {
+                }
+            }
+            throw $e;
+        }
+    }
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_profile ON voice_profile_audit_logs(voice_profile_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_owner ON voice_profile_audit_logs(owner_member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_playground_tts_artifacts_owner ON playground_tts_artifacts(owner_member_id, service_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_expires_at ON photo_assets(expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_sha256 ON photo_assets(sha256)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_owner_member ON photo_assets(owner_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_owner_token ON photo_assets(owner_token_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_expires_at ON audio_assets(expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_sha256 ON audio_assets(sha256)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_owner_member ON audio_assets(owner_member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_owner_token ON audio_assets(owner_token_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_service_settings_service_id ON service_settings(service_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_users_api_member_id ON users(api_member_id)');

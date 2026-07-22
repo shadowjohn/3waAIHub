@@ -13,8 +13,8 @@
   "capability": "text_to_speech",
   "experimental": true,
   "model": "openbmb/VoxCPM2",
-  "tts_modes": ["design", "clone"],
-  "description": "Experimental VoxCPM2 text-to-speech adapter with real inference smoke, benchmark contract, voice design, and governed controllable cloning; ultimate clone and streaming are intentionally deferred.",
+  "tts_modes": ["design", "clone", "ultimate_clone"],
+  "description": "Experimental VoxCPM2 text-to-speech adapter with real inference smoke, benchmark contract, voice design, governed controllable cloning, and transcript-confirmed ultimate cloning; streaming is intentionally deferred.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -139,7 +139,7 @@
           "type": "string",
           "required": false,
           "default": "design",
-          "enum": ["design", "clone"]
+          "enum": ["design", "clone", "ultimate_clone"]
         },
         {
           "name": "voice_prompt",
@@ -169,7 +169,7 @@
           "name": "reference_audio_id",
           "type": "string",
           "required": false,
-          "mode": "clone"
+          "mode": ["clone", "ultimate_clone"]
         },
         {
           "name": "control",
@@ -192,7 +192,9 @@
       "artifact_write_failed",
       "voice_profile_required",
       "voice_profile_forbidden",
-      "ultimate_clone_not_ready",
+      "voice_profile_transcript_unconfirmed",
+      "ultimate_clone_prompt_wav_required",
+      "ultimate_clone_prompt_text_required",
       "gateway_timeout"
     ],
     "limits": {

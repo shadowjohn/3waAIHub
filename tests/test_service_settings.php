@@ -90,6 +90,118 @@ hub_test('service settings override pack runtime env defaults when writing env',
     hub_test_assert(str_contains($env, 'STRUCTURE_MAX_UPLOAD_MB=512'), 'updated structure upload limit missing from env');
 });
 
+hub_test('install environment overrides seed declared GPU settings', function (): void {
+    $db = hub_test_reset_db();
+    $nemotron = hub_install_pack($db, 'rag-nemotron', [
+        'service_key' => 'nemotron-settings-cpu',
+        'name' => 'Nemotron Settings CPU',
+        'mode' => 'nemotron_settings_cpu',
+        'port_mode' => 'manual',
+        'local_port' => 18163,
+        'env' => ['NEMOTRON_USE_GPU' => '0'],
+    ]);
+    $yolo = hub_install_pack($db, 'yolo', [
+        'service_key' => 'yolo-settings-gpu',
+        'name' => 'YOLO Settings GPU',
+        'mode' => 'yolo_settings_gpu',
+        'port_mode' => 'manual',
+        'local_port' => 18164,
+        'env' => ['YOLO_USE_GPU' => '1'],
+    ]);
+
+    foreach ([
+        [$nemotron['service'], 'NEMOTRON_USE_GPU', '0', false],
+        [$yolo['service'], 'YOLO_USE_GPU', '1', true],
+    ] as [$service, $key, $value, $usesGpu]) {
+        $storedOverrides = json_decode((string)$service['environment_json'], true);
+        hub_test_assert(is_array($storedOverrides) && ($storedOverrides[$key] ?? '') === $value, $service['pack_id'] . ' must persist the validated install override');
+        $settings = hub_list_service_settings($db, (int)$service['id']);
+        hub_test_assert(($settings[$key]['value'] ?? '') === $value, $service['pack_id'] . ' setting must honor install override');
+        $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+        $compose = (string)file_get_contents(hub_path($service['compose_file']));
+        hub_test_assert(str_contains($env, $key . '=' . $value), $service['pack_id'] . ' env must honor install override');
+        hub_test_assert(str_contains($compose, 'gpus: all') === $usesGpu, $service['pack_id'] . ' compose must honor install override');
+    }
+});
+
+hub_test('legacy GPU service settings backfill keeps GPU-special defaults', function (): void {
+    $db = hub_test_reset_db();
+    $yolo = hub_install_pack($db, 'yolo-serving', [
+        'service_key' => 'yolo-gpu0',
+        'name' => 'YOLO GPU Legacy Backfill',
+        'mode' => 'yolo_gpu_legacy_backfill',
+        'port_mode' => 'manual',
+        'local_port' => 18165,
+    ]);
+    $ocr = hub_install_pack($db, 'ocr-ppocrv5', [
+        'service_key' => 'ocr-gpu',
+        'name' => 'OCR GPU Legacy Backfill',
+        'mode' => 'ocr_gpu_legacy_backfill',
+        'port_mode' => 'manual',
+        'local_port' => 18166,
+    ]);
+
+    foreach ([$yolo['service'], $ocr['service']] as $service) {
+        $pack = hub_get_pack((string)$service['pack_id']);
+        hub_test_assert($pack !== null, 'legacy pack must be available');
+        $db->prepare('UPDATE services SET environment_json = :environment_json WHERE id = :id')->execute([
+            ':environment_json' => json_encode(hub_pack_env_values($pack['manifest']), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ':id' => (int)$service['id'],
+        ]);
+        $db->prepare('DELETE FROM service_settings WHERE service_id = :service_id')->execute([':service_id' => (int)$service['id']]);
+    }
+
+    $yoloSettings = hub_ensure_service_settings($db, hub_get_service($db, (int)$yolo['service']['id']) ?: $yolo['service']);
+    hub_test_assert(($yoloSettings['YOLO_SERVING_DEVICE']['value'] ?? '') === 'cuda:0', 'legacy yolo-gpu0 backfill must retain CUDA device');
+    hub_test_assert(($yoloSettings['YOLO_GPU_SLOTS']['value'] ?? '') === '2', 'legacy yolo-gpu0 backfill must retain GPU slots');
+
+    $ocrSettings = hub_ensure_service_settings($db, hub_get_service($db, (int)$ocr['service']['id']) ?: $ocr['service']);
+    hub_test_assert(($ocrSettings['OCR_DEVICE']['value'] ?? '') === 'gpu', 'legacy ocr-gpu backfill must retain GPU device');
+    hub_test_assert(($ocrSettings['OCR_USE_GPU']['value'] ?? '') === '1', 'legacy ocr-gpu backfill must retain GPU enablement');
+});
+
+hub_test('mixed legacy GPU snapshots preserve changed settings and GPU-special defaults', function (): void {
+    $db = hub_test_reset_db();
+    $yolo = hub_install_pack($db, 'yolo-serving', [
+        'service_key' => 'yolo-gpu0',
+        'name' => 'YOLO GPU Mixed Legacy Backfill',
+        'mode' => 'yolo_gpu_mixed_legacy_backfill',
+        'port_mode' => 'manual',
+        'local_port' => 18167,
+    ]);
+    $ocr = hub_install_pack($db, 'ocr-ppocrv5', [
+        'service_key' => 'ocr-gpu',
+        'name' => 'OCR GPU Mixed Legacy Backfill',
+        'mode' => 'ocr_gpu_mixed_legacy_backfill',
+        'port_mode' => 'manual',
+        'local_port' => 18168,
+    ]);
+
+    foreach ([
+        [$yolo['service'], ['YOLO_SERVING_REAL_INFERENCE' => '0']],
+        [$ocr['service'], ['OCR_REAL_INFERENCE' => '1']],
+    ] as [$service, $changedValues]) {
+        $pack = hub_get_pack((string)$service['pack_id']);
+        hub_test_assert($pack !== null, 'legacy pack must be available');
+        $environment = array_merge(hub_pack_env_values($pack['manifest']), $changedValues);
+        $db->prepare('UPDATE services SET environment_json = :environment_json WHERE id = :id')->execute([
+            ':environment_json' => json_encode($environment, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ':id' => (int)$service['id'],
+        ]);
+        $db->prepare('DELETE FROM service_settings WHERE service_id = :service_id')->execute([':service_id' => (int)$service['id']]);
+    }
+
+    $yoloSettings = hub_ensure_service_settings($db, hub_get_service($db, (int)$yolo['service']['id']) ?: $yolo['service']);
+    hub_test_assert(($yoloSettings['YOLO_SERVING_REAL_INFERENCE']['value'] ?? '') === '0', 'mixed legacy yolo setting must persist');
+    hub_test_assert(($yoloSettings['YOLO_SERVING_DEVICE']['value'] ?? '') === 'cuda:0', 'mixed legacy yolo-gpu0 backfill must retain CUDA device');
+    hub_test_assert(($yoloSettings['YOLO_GPU_SLOTS']['value'] ?? '') === '2', 'mixed legacy yolo-gpu0 backfill must retain GPU slots');
+
+    $ocrSettings = hub_ensure_service_settings($db, hub_get_service($db, (int)$ocr['service']['id']) ?: $ocr['service']);
+    hub_test_assert(($ocrSettings['OCR_REAL_INFERENCE']['value'] ?? '') === '1', 'mixed legacy OCR setting must persist');
+    hub_test_assert(($ocrSettings['OCR_DEVICE']['value'] ?? '') === 'gpu', 'mixed legacy ocr-gpu backfill must retain GPU device');
+    hub_test_assert(($ocrSettings['OCR_USE_GPU']['value'] ?? '') === '1', 'mixed legacy ocr-gpu backfill must retain GPU enablement');
+});
+
 hub_test('service settings validate unsafe path and backfill legacy service', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');

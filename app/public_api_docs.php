@@ -135,7 +135,7 @@ function hub_public_api_services(PDO $db): array
         $services[] = $service;
     }
     if (hub_get_pack('llm-gemma4-12b') !== null) {
-        foreach (hub_public_api_photo_services() as $service) {
+        foreach (hub_public_api_gemma4_services() as $service) {
             $service['examples'] = hub_public_api_examples($service);
             $services[] = $service;
         }
@@ -151,7 +151,7 @@ function hub_public_api_services(PDO $db): array
     return $services;
 }
 
-function hub_public_api_photo_services(): array
+function hub_public_api_gemma4_services(): array
 {
     return [
         [
@@ -191,6 +191,49 @@ function hub_public_api_photo_services(): array
             ],
             'output_keys' => ['ok', 'mock', 'runtime_level', 'model', 'image_id', 'answer', 'caption', 'tags', 'usage', 'elapsed_ms'],
             'error_codes' => ['image_id_required', 'text_required', 'photo_forbidden', 'model_not_ready', 'vision_timeout', 'vision_bad_response', 'vision_failed'],
+            'task_api' => [],
+        ],
+        [
+            'mode' => 'audio_upload',
+            'pack_id' => 'llm-gemma4-12b',
+            'name' => 'Gemma 4 Audio Upload',
+            'description' => 'Upload a short WAV once and reuse audio_id for Gemma 4 audio questions.',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data',
+            'endpoint' => 'api.php?mode=audio_upload',
+            'url' => hub_public_api_mode_url('audio_upload'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L5-benchmark-ready',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'audio', 'type' => 'file', 'required' => true, 'example' => 'sample.wav', 'mime' => 'audio/wav', 'max_mb' => 16],
+            ],
+            'output_keys' => ['ok', 'audio_id', 'mime', 'size', 'duration_ms', 'sample_rate', 'channels', 'expires_at'],
+            'error_codes' => ['file_required', 'payload_too_large', 'invalid_audio', 'unsupported_audio_format', 'audio_too_long'],
+            'task_api' => [],
+        ],
+        [
+            'mode' => 'audio',
+            'pack_id' => 'llm-gemma4-12b',
+            'name' => 'Gemma 4 Audio Input',
+            'description' => 'Ask about a short WAV directly, or reuse a previously uploaded audio_id. This does not create sessions and does not replace Whisper ASR.',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data',
+            'endpoint' => 'api.php?mode=audio',
+            'url' => hub_public_api_mode_url('audio'),
+            'execution_type' => 'sync_api',
+            'runtime_level' => 'L5-benchmark-ready',
+            'task_type' => '',
+            'input_fields' => [
+                ['name' => 'audio', 'type' => 'file', 'required' => false, 'example' => 'sample.wav', 'mime' => 'audio/wav', 'max_mb' => 16],
+                ['name' => 'audio_id', 'type' => 'string', 'required' => false, 'default' => 'aud_...'],
+                ['name' => 'operation', 'type' => 'string', 'required' => false, 'default' => 'understand'],
+                ['name' => 'text', 'type' => 'string', 'required' => false, 'default' => '這段錄音的重點是什麼？'],
+                ['name' => 'max_tokens', 'type' => 'integer', 'required' => false, 'default' => 512],
+                ['name' => 'real_inference', 'type' => 'boolean', 'required' => false, 'default' => true],
+            ],
+            'output_keys' => ['ok', 'mock', 'runtime_level', 'model', 'operation', 'answer', 'transcript', 'summary', 'tags', 'audio', 'usage', 'elapsed_ms'],
+            'error_codes' => ['file_required', 'payload_too_large', 'invalid_audio', 'unsupported_audio_format', 'audio_too_long', 'audio_not_found', 'model_not_ready', 'audio_failed'],
             'task_api' => [],
         ],
     ];

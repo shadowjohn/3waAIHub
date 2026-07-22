@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -140,6 +141,8 @@ class TtsRequest(BaseModel):
     seed: int | None = None
     format: str = "wav"
     reference_wav_path: str | None = None
+    prompt_wav_path: str | None = None
+    prompt_text: str | None = None
     voice_profile_id: int | None = None
     reference_audio_sha256: str | None = None
 
@@ -151,6 +154,11 @@ class VoiceDesignRequest(BaseModel):
 
 def response_error(status: int, error: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status, content={"success": False, "error": error, "message": message})
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(_: Any, __: RequestValidationError) -> JSONResponse:
+    return response_error(400, "bad_request", "Invalid TTS request.")
 
 
 def tts_text(request: TtsRequest) -> str:
@@ -214,6 +222,20 @@ def validate_reference_path(path: str | None) -> Path | None:
     return real
 
 
+def validate_clone_inputs(request: TtsRequest) -> tuple[Path, Path | None]:
+    reference = validate_reference_path(request.reference_wav_path)
+    if reference is None:
+        raise ValueError("voice_profile_required")
+    if request.mode != "ultimate_clone":
+        return reference, None
+    prompt = validate_reference_path(request.prompt_wav_path)
+    if prompt is None or prompt != reference:
+        raise ValueError("ultimate_clone_prompt_wav_required")
+    if not (request.prompt_text or "").strip():
+        raise ValueError("ultimate_clone_prompt_text_required")
+    return reference, prompt
+
+
 def voxcpm_model() -> Any:
     global _MODEL
     if _MODEL is not None:
@@ -238,11 +260,12 @@ def write_real_wav(path: Path, request: TtsRequest, seed: int) -> int:
         "cfg_value": 2.0,
         "inference_timesteps": 10,
     }
-    if request.mode == "clone":
-        reference = validate_reference_path(request.reference_wav_path)
-        if reference is None:
-            raise ValueError("voice_profile_required")
+    if request.mode in {"clone", "ultimate_clone"}:
+        reference, prompt = validate_clone_inputs(request)
         kwargs["reference_wav_path"] = str(reference)
+        if request.mode == "ultimate_clone":
+            kwargs["prompt_wav_path"] = str(prompt)
+            kwargs["prompt_text"] = request.prompt_text.strip()
     wav = model.generate(**kwargs)
     sample_rate = int(getattr(getattr(model, "tts_model", None), "sample_rate", env_int("VOXCPM2_SAMPLE_RATE", 48000)))
     sf.write(str(path), wav, sample_rate)
@@ -276,7 +299,7 @@ def manifest_payload(request: TtsRequest, filename: str, sample_rate: int, durat
         "artifact": filename,
         "mock": mock,
         "real_inference_requested": real_requested,
-        "notice": "AI 合成語音；clone mode requires a managed voice profile.",
+        "notice": "AI 合成語音；clone modes require a managed voice profile.",
     }
 
 
@@ -296,7 +319,7 @@ def health() -> dict[str, Any]:
             "soundfile": importlib.util.find_spec("soundfile") is not None,
         },
         "sample_rate": env_int("VOXCPM2_SAMPLE_RATE", 48000),
-        "modes": ["design", "clone"],
+        "modes": ["design", "clone", "ultimate_clone"],
         "lifecycle": os.getenv("VOXCPM2_GPU_POLICY", "exclusive_gpu"),
         "storage": storage,
         "errors": errors,
@@ -314,7 +337,7 @@ def models() -> dict[str, Any]:
                 "capability": "text_to_speech",
                 "runtime_level": runtime_level(),
                 "sample_rate": env_int("VOXCPM2_SAMPLE_RATE", 48000),
-                "modes": ["design", "clone"],
+                "modes": ["design", "clone", "ultimate_clone"],
             }
         ],
     }
@@ -337,17 +360,17 @@ def tts(request: TtsRequest) -> JSONResponse:
     started = time.perf_counter()
     if request.format.lower() != "wav":
         return response_error(400, "format_not_supported", "Only wav output is supported in this phase.")
-    if request.mode == "ultimate_clone":
-        return response_error(501, "ultimate_clone_not_ready", "Ultimate clone is planned for a later phase.")
-    if request.mode not in {"design", "clone"}:
-        return response_error(400, "bad_request", "mode must be design or clone.")
+    if request.mode not in {"design", "clone", "ultimate_clone"}:
+        return response_error(400, "bad_request", "mode must be design, clone, or ultimate_clone.")
     if len(request.text) > env_int("VOXCPM2_MAX_INPUT_CHARS", 6000):
         return response_error(413, "input_too_long", "Input text is too long.")
-    if request.mode == "clone":
+    if request.mode in {"clone", "ultimate_clone"}:
         try:
-            validate_reference_path(request.reference_wav_path)
+            validate_clone_inputs(request)
         except ValueError as exc:
-            return response_error(403 if str(exc) == "voice_profile_forbidden" else 400, str(exc), "Clone mode requires a managed voice profile.")
+            code = str(exc)
+            message = "Ultimate clone requires a confirmed managed voice profile." if request.mode == "ultimate_clone" else "Clone mode requires a managed voice profile."
+            return response_error(403 if code == "voice_profile_forbidden" else 400, code, message)
 
     configure_env()
     seed = request.seed if request.seed is not None else env_int("VOXCPM2_DEFAULT_SEED", 42)
@@ -367,8 +390,8 @@ def tts(request: TtsRequest) -> JSONResponse:
     except RuntimeError as exc:
         code = str(exc) if str(exc) in {"runtime_dependency_missing", "model_load_failed"} else "tts_failed"
         return response_error(501 if code == "runtime_dependency_missing" else 500, code, "VoxCPM2 runtime is not ready.")
-    except Exception as exc:
-        return response_error(500, "tts_failed", str(exc).splitlines()[0][:240])
+    except Exception:
+        return response_error(500, "tts_failed", "TTS inference failed.")
 
     manifest = manifest_payload(request, filename, sample_rate, duration_ms, seed, mock, chunks, real_requested)
     manifest["elapsed_ms"] = int(round((time.perf_counter() - started) * 1000))

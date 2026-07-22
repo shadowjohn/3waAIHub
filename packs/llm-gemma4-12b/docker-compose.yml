@@ -1,6 +1,8 @@
 services:
   vllm:
-    image: vllm/vllm-openai:latest
+    image: 3waaihub-gemma4-vllm:0.1.0
+    build:
+      context: ./vllm
     env_file:
       - .env
     entrypoint: ["/bin/bash", "-lc"]
@@ -13,6 +15,7 @@ services:
         --max-model-len "${VLLM_MAX_MODEL_LEN:-16384}"
         --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.64}"
         --max-num-seqs "${VLLM_MAX_NUM_SEQS:-1}"
+        --limit-mm-per-prompt '{"image":1,"audio":1}'
     gpus: all
     environment:
       NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"

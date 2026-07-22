@@ -1188,7 +1188,21 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     $environment = (string)($options['environment'] ?? 'production');
     $hotReload = !empty($options['hot_reload']) ? 1 : 0;
     $idempotent = !empty($options['idempotent']) || $legacyIdempotent;
-    $envValues = hub_pack_env_values($manifest, is_array($options['env'] ?? null) ? $options['env'] : []);
+    $installEnv = is_array($options['env'] ?? null) ? $options['env'] : [];
+    $envValues = hub_pack_env_values($manifest, $installEnv);
+    $environmentOverrides = [];
+    foreach ($installEnv as $key => $value) {
+        $key = (string)$key;
+        if (!array_key_exists($key, $envValues) || !is_scalar($value)) {
+            continue;
+        }
+        $environmentOverrides[$key] = (string)$value;
+    }
+    foreach (hub_get_pack_settings_schema((string)$manifest['id']) as $key => $item) {
+        if (array_key_exists($key, $environmentOverrides)) {
+            $environmentOverrides[$key] = hub_validate_service_setting_value($item, $environmentOverrides[$key]);
+        }
+    }
 
     hub_validate_service_instance_input($serviceKey, $mode, $name, $portMode, $environment);
     $existingByKey = hub_get_service_by_key($db, $serviceKey);
@@ -1221,7 +1235,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     $envFile = $runtimeDir . '/.env';
     $portEnv = hub_pack_port_env($manifest);
     file_put_contents($envFile, hub_generate_service_env($manifest, $envValues, $portEnv, (int)($localPort ?? 0), $runtimeDir, $storage));
-    file_put_contents(hub_path($composeFile), $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort));
+    file_put_contents(hub_path($composeFile), $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort, $envValues));
     chmod($envFile, 0664);
     chmod(hub_path($composeFile), 0664);
 
@@ -1240,7 +1254,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         ':hot_reload' => $hotReload,
         ':environment' => $environment,
         ':execution_type' => (string)$manifest['execution_type'],
-        ':environment_json' => json_encode($envValues, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ':environment_json' => json_encode($environmentOverrides, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
         ':pack_id' => (string)$manifest['id'],
         ':pack_version' => (string)$manifest['version'],
         ':service_key' => $serviceKey,
@@ -1279,6 +1293,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     if ($service) {
         hub_ensure_service_settings($db, $service);
         hub_write_service_env($db, $service);
+        hub_write_service_compose($db, $service);
     }
 
     return [
@@ -1549,7 +1564,7 @@ function hub_service_key_requests_gpu(string $serviceKey): bool
     return preg_match('/(^|[-_])gpu($|[-_])/', strtolower($serviceKey)) === 1;
 }
 
-function hub_pack_requests_gpu(array $manifest, string $serviceKey = ''): bool
+function hub_pack_requests_gpu(array $manifest, string $serviceKey = '', array $envValues = []): bool
 {
     if (!empty($manifest['hardware']['gpu_required'])) {
         return true;
@@ -1565,11 +1580,13 @@ function hub_pack_requests_gpu(array $manifest, string $serviceKey = ''): bool
         if (!is_array($item)) {
             continue;
         }
-        $name = strtoupper((string)($item['name'] ?? ''));
+        $envName = (string)($item['name'] ?? '');
+        $name = strtoupper($envName);
         if ($name !== 'USE_GPU' && !str_ends_with($name, '_USE_GPU')) {
             continue;
         }
-        $default = strtolower(trim((string)($item['default'] ?? '0')));
+        $value = array_key_exists($envName, $envValues) ? $envValues[$envName] : ($item['default'] ?? '0');
+        $default = strtolower(trim((string)$value));
 
         return !in_array($default, ['', '0', 'false', 'no', 'off'], true);
     }
@@ -1577,7 +1594,7 @@ function hub_pack_requests_gpu(array $manifest, string $serviceKey = ''): bool
     return false;
 }
 
-function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort): string
+function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort, array $envValues = []): string
 {
     $manifest = $pack['manifest'];
     if (($manifest['id'] ?? '') === 'translate-gemma12b') {
@@ -1613,7 +1630,7 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
         . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . (int)$manifest['runtime']['default_internal_port'] . '"' . "\n"
         . "    restart: unless-stopped\n";
 
-    if (hub_pack_requests_gpu($manifest, $serviceKey)) {
+    if (hub_pack_requests_gpu($manifest, $serviceKey, $envValues)) {
         $visibleDevices = (($manifest['id'] ?? '') === 'yolo-serving' && $serviceKey === 'yolo-gpu0') ? '0' : 'all';
         $compose .= "    gpus: all\n"
             . "    environment:\n"
@@ -1676,12 +1693,15 @@ function hub_generate_llm_gemma4_compose(array $pack, string $serviceKey, int $l
     $manifest = $pack['manifest'];
     $portEnv = hub_pack_port_env($manifest);
     $buildContext = $pack['dir'] . '/service';
+    $vllmBuildContext = $pack['dir'] . '/vllm';
     $imageTag = hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
     $internalPort = (int)($manifest['runtime']['default_internal_port'] ?? 8000);
 
     return "services:\n"
         . "  vllm:\n"
-        . "    image: vllm/vllm-openai:latest\n"
+        . "    image: 3waaihub-gemma4-vllm:0.1.0\n"
+        . "    build:\n"
+        . "      context: {$vllmBuildContext}\n"
         . "    container_name: 3waaihub-{$serviceKey}-vllm\n"
         . "    env_file:\n"
         . "      - .env\n"
@@ -1695,6 +1715,7 @@ function hub_generate_llm_gemma4_compose(array $pack, string $serviceKey, int $l
         . '        --max-model-len "${VLLM_MAX_MODEL_LEN:-16384}"' . "\n"
         . '        --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.64}"' . "\n"
         . '        --max-num-seqs "${VLLM_MAX_NUM_SEQS:-1}"' . "\n"
+        . "        --limit-mm-per-prompt '{\"image\":1,\"audio\":1}'\n"
         . "    gpus: all\n"
         . "    environment:\n"
         . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"

@@ -11,7 +11,7 @@
   "runtime_ready": true,
   "default_mode": "chat",
   "description": "3waAIHub chat adapter backed by an internal vLLM Gemma 4 12B Q4 runtime.",
-  "capabilities": ["chat", "reasoning"],
+  "capabilities": ["chat", "reasoning", "vision", "audio_understanding", "audio_transcription"],
   "provider": "gemma4",
   "runtime_driver": "vllm-sidecar",
   "runtime": {
@@ -182,6 +182,117 @@
           "real_inference": true
         }
       ]
+    }
+  },
+  "audio_contract": {
+    "endpoint": "/audio",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {"name": "audio", "type": "file", "required": false, "example": "sample.wav", "mime": "audio/wav", "max_mb": 16},
+        {"name": "audio_id", "type": "string", "required": false, "example": "aud_0123456789abcdefghij"},
+        {"name": "operation", "type": "string", "required": false, "default": "understand", "enum": ["understand", "transcribe", "summarize"]},
+        {"name": "text", "type": "string", "required": false, "default": "這段錄音的重點是什麼？"},
+        {"name": "max_tokens", "type": "integer", "required": false, "default": 512},
+        {"name": "real_inference", "type": "boolean", "required": false, "default": false}
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "audio", "usage", "elapsed_ms"]
+    },
+    "errors": [
+      "bad_request",
+      "file_required",
+      "payload_too_large",
+      "invalid_audio",
+      "unsupported_audio_format",
+      "audio_too_long",
+      "audio_not_found",
+      "model_not_ready",
+      "vllm_unavailable",
+      "vllm_timeout",
+      "vllm_bad_response",
+      "audio_failed"
+    ],
+    "limits": {
+      "max_upload_mb": 16,
+      "max_duration_sec": 30,
+      "sample_rate": 16000,
+      "channels": 1
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {
+          "id": "gemma4_mock_audio",
+          "name": "Gemma 4 mock audio smoke",
+          "type": "api",
+          "mode": "audio",
+          "method": "POST",
+          "content_type": "multipart/form-data",
+          "body_json": {
+            "audio": true,
+            "operation": "understand",
+            "text": "這段錄音的重點是什麼？",
+            "real_inference": 0,
+            "max_tokens": 128
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "audio", "usage", "elapsed_ms"],
+          "expected_mock": true
+        },
+        {
+          "id": "gemma4_real_audio_transcribe_zh",
+          "name": "Gemma 4 real audio transcribe smoke",
+          "type": "api",
+          "mode": "audio",
+          "method": "POST",
+          "content_type": "multipart/form-data",
+          "fixture": "packs/llm-gemma4-12b/demo/audio_zh_smoke.wav",
+          "fixture_field": "audio",
+          "form": {
+            "operation": "transcribe",
+            "max_tokens": "256"
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "audio", "usage", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_audio_text_non_empty": true,
+          "real_inference": true
+        },
+        {
+          "id": "gemma4_real_audio_understand",
+          "name": "Gemma 4 real audio understanding smoke",
+          "type": "api",
+          "mode": "audio",
+          "method": "POST",
+          "content_type": "multipart/form-data",
+          "fixture": "packs/llm-gemma4-12b/demo/audio_zh_smoke.wav",
+          "fixture_field": "audio",
+          "form": {
+            "operation": "understand",
+            "text": "請用正體中文說明這段音訊內容。",
+            "max_tokens": "256"
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "audio", "usage", "elapsed_ms"],
+          "expected_mock": false,
+          "expected_audio_text_non_empty": true,
+          "real_inference": true
+        }
+      ]
+    }
+  },
+  "audio_asset_contract": {
+    "upload_mode": "audio_upload",
+    "ask_mode": "audio",
+    "ttl_days": 7,
+    "limits": {
+      "max_upload_mb": 16,
+      "max_duration_sec": 30,
+      "sample_rate": 16000,
+      "channels": 1
+    },
+    "output": {
+      "required_keys": ["ok", "audio_id", "mime", "size", "duration_ms", "sample_rate", "channels", "expires_at"]
     }
   },
   "hardware": {

@@ -229,7 +229,7 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(($translateSchema['OLLAMA_MODEL']['model_selector']['type'] ?? '') === 'ollama_tag', 'OLLAMA_MODEL selector missing');
 
     $whisper = hub_get_pack('whisper-asr')['manifest'];
-    hub_test_assert($whisper['runtime_level'] === 'L3-storage-mount', 'Whisper ASR runtime level mismatch');
+    hub_test_assert($whisper['runtime_level'] === 'L5-benchmark-ready', 'Whisper ASR runtime level mismatch');
     hub_test_assert(($whisper['target_level'] ?? '') === 'L5-benchmark-ready', 'Whisper ASR target level mismatch');
     hub_test_assert(($whisper['gateway']['invoke_path'] ?? '') === '/asr/audio', 'Whisper ASR gateway endpoint mismatch');
     $whisperSchema = hub_get_pack_settings_schema('whisper-asr');
