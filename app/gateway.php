@@ -36,6 +36,19 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
 
         return hub_gateway_finish($db, $logService, $mode, $photoResponse, $started, $requestId, $authContext);
     }
+    if (!$service && hub_is_audio_api_mode($mode)) {
+        $clientIp = hub_get_client_ip();
+        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
+        $authContext = $auth['context'] ?? [];
+        if (empty($auth['ok'])) {
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
+        }
+        $audioResponse = hub_audio_api_dispatch($db, $mode, $authContext);
+        $logService = is_array($audioResponse['service'] ?? null) ? $audioResponse['service'] : null;
+        unset($audioResponse['service']);
+
+        return hub_gateway_finish($db, $logService, $mode, $audioResponse, $started, $requestId, $authContext);
+    }
     if (!$service && hub_is_yolo_model_api_mode($mode)) {
         $clientIp = hub_get_client_ip();
         $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
@@ -340,6 +353,11 @@ function hub_is_photo_api_mode(string $mode): bool
     return array_key_exists($mode, hub_photo_modes());
 }
 
+function hub_is_audio_api_mode(string $mode): bool
+{
+    return in_array($mode, ['audio_upload', 'audio'], true);
+}
+
 function hub_is_yolo_model_api_mode(string $mode): bool
 {
     return in_array($mode, ['yolo_model_register', 'yolo_model_status', 'yolo_model_assign_gpu', 'yolo_model_unassign_gpu'], true);
@@ -560,6 +578,184 @@ function hub_photo_api_dispatch(PDO $db, string $mode, array $authContext): arra
         'photo' => hub_api_photo($db, $authContext),
         default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown_mode']),
     };
+}
+
+function hub_audio_api_dispatch(PDO $db, string $mode, array $authContext): array
+{
+    return match ($mode) {
+        'audio_upload' => hub_api_audio_upload($db, $authContext),
+        'audio' => hub_api_audio($db, $authContext),
+        default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown_mode']),
+    };
+}
+
+function hub_api_audio_upload(PDO $db, array $authContext): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'audio_upload requires POST');
+    }
+    foreach (['audio_path', 'file_path', 'host_path', 'container_path', 'storage_relpath', 'audio_url', 'audio_internal_path'] as $blocked) {
+        if (array_key_exists($blocked, $_POST)) {
+            return hub_gateway_error(400, 'bad_request', 'client audio paths are not accepted');
+        }
+    }
+    try {
+        $asset = hub_audio_store_upload($db, is_array($_FILES['audio'] ?? null) ? $_FILES['audio'] : [], $authContext);
+    } catch (RuntimeException $e) {
+        return hub_gateway_error(match ($e->getMessage()) {
+            'payload_too_large', 'audio_too_long' => 413,
+            'unsupported_audio_format' => 415,
+            default => 400,
+        }, $e->getMessage(), $e->getMessage());
+    } catch (Throwable) {
+        return hub_gateway_error(500, 'storage_failed', 'audio storage failed');
+    }
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'audio_id' => $asset['audio_id'],
+        'mime' => $asset['mime'],
+        'size' => (int)$asset['byte_size'],
+        'duration_ms' => (int)$asset['duration_ms'],
+        'sample_rate' => (int)$asset['sample_rate'],
+        'channels' => (int)$asset['channels'],
+        'expires_at' => $asset['expires_at'],
+    ]);
+}
+
+function hub_api_audio(PDO $db, array $authContext): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'audio requires POST');
+    }
+    $payload = $_POST;
+    if (empty($payload) && str_contains(strtolower((string)($_SERVER['CONTENT_TYPE'] ?? '')), 'application/json')) {
+        $json = json_decode((string)file_get_contents('php://input'), true);
+        $payload = is_array($json) ? $json : [];
+    }
+    foreach (['audio_path', 'file_path', 'host_path', 'container_path', 'storage_relpath', 'audio_url', 'audio_internal_path'] as $blocked) {
+        if (array_key_exists($blocked, $payload)) {
+            return hub_gateway_error(400, 'bad_request', 'client audio paths are not accepted');
+        }
+    }
+    $audioId = trim((string)($payload['audio_id'] ?? ''));
+    $hasUpload = is_array($_FILES['audio'] ?? null) && (int)($_FILES['audio']['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK;
+    if (!$hasUpload && $audioId === '') {
+        return hub_gateway_error(400, 'file_required', 'audio upload is required');
+    }
+    $assetPath = null;
+    if ($audioId !== '') {
+        $asset = hub_audio_get_asset_for_auth($db, $audioId, $authContext);
+        $assetPath = $asset ? hub_audio_asset_host_path($asset) : null;
+        if (!$asset || $assetPath === null) {
+            return hub_gateway_error(404, 'audio_not_found', 'audio was not found or is not available');
+        }
+    }
+
+    $serviceLookup = hub_audio_service_for_request($db, hub_get_client_ip(), $authContext);
+    if (isset($serviceLookup['response'])) {
+        return $serviceLookup['response'];
+    }
+    $service = $serviceLookup['service'];
+    $url = preg_replace('#/chat$#', '/audio', (string)$service['internal_url']) ?: (string)$service['internal_url'];
+    if ($audioId !== '') {
+        $response = hub_proxy_audio_asset_request($url, hub_service_gateway_timeout_sec($service), (string)$assetPath, [
+            'operation' => (string)($payload['operation'] ?? 'understand'),
+            'text' => (string)($payload['text'] ?? ''),
+            'max_tokens' => (string)($payload['max_tokens'] ?? '512'),
+            'real_inference' => (string)($payload['real_inference'] ?? '0'),
+        ]);
+    } else {
+        $response = hub_proxy_request($url, hub_service_gateway_timeout_sec($service));
+    }
+    $response = hub_audio_normalize_proxy_response($response);
+    $response['service'] = $service;
+
+    return $response;
+}
+
+function hub_audio_service_for_request(PDO $db, string $clientIp, array $authContext): array
+{
+    $service = hub_get_service_by_key($db, 'gemma4-main');
+    if (
+        !$service
+        || (int)$service['enabled'] !== 1
+        || (string)$service['install_status'] !== 'installed'
+        || (string)$service['runtime_status'] !== 'running'
+    ) {
+        return ['response' => hub_gateway_error(503, 'model_not_ready', 'audio service is not ready')];
+    }
+    if (!hub_gateway_service_ip_allowed_after_auth($db, $service, $clientIp, $authContext)) {
+        return ['service' => $service, 'response' => hub_gateway_error(403, 'ip_not_allowed', 'client IP is not allowed for this service')];
+    }
+
+    return ['service' => $service];
+}
+
+function hub_audio_normalize_proxy_response(array $response): array
+{
+    $status = (int)($response['status'] ?? 0);
+    if ($status < 200 || $status >= 400) {
+        return $response;
+    }
+    $payload = json_decode((string)($response['body'] ?? ''), true);
+    if (!is_array($payload) || ($payload['ok'] ?? null) === false) {
+        return $response;
+    }
+
+    $usage = is_array($payload['usage'] ?? null) ? $payload['usage'] : [];
+    $payload['ok'] = true;
+    $payload['mock'] = (bool)($payload['mock'] ?? false);
+    $payload['runtime_level'] = (string)($payload['runtime_level'] ?? 'L5-benchmark-ready');
+    $payload['model'] = (string)($payload['model'] ?? 'gemma4-12b');
+    $payload['operation'] = (string)($payload['operation'] ?? 'understand');
+    $payload['answer'] = (string)($payload['answer'] ?? '');
+    $payload['transcript'] = (string)($payload['transcript'] ?? '');
+    $payload['summary'] = (string)($payload['summary'] ?? '');
+    $payload['tags'] = is_array($payload['tags'] ?? null) ? array_values($payload['tags']) : [];
+    $payload['audio'] = is_array($payload['audio'] ?? null) ? $payload['audio'] : [];
+    $payload['usage'] = [
+        'prompt_tokens' => (int)($usage['prompt_tokens'] ?? 0),
+        'completion_tokens' => (int)($usage['completion_tokens'] ?? 0),
+        'total_tokens' => (int)($usage['total_tokens'] ?? 0),
+    ];
+    $payload['elapsed_ms'] = (int)($payload['elapsed_ms'] ?? 0);
+
+    return hub_gateway_json($status, $payload);
+}
+
+function hub_proxy_audio_asset_request(string $url, int $timeoutSec, string $audioPath, array $fields): array
+{
+    $ch = curl_init($url);
+    if ($ch === false) {
+        return hub_gateway_json(502, ['ok' => false, 'error' => 'curl unavailable']);
+    }
+    $fields['audio'] = new CURLFile($audioPath, 'audio/wav', 'audio.wav');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER => true,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_TIMEOUT => max(1, $timeoutSec),
+        CURLOPT_POSTFIELDS => $fields,
+    ]);
+    $raw = curl_exec($ch);
+    if ($raw === false) {
+        $errno = curl_errno($ch);
+        curl_close($ch);
+        return match ($errno) {
+            CURLE_OPERATION_TIMEDOUT => hub_gateway_error(504, 'gateway_timeout', 'service gateway timeout'),
+            CURLE_COULDNT_CONNECT => hub_gateway_error(503, 'service_unavailable', 'service is unavailable'),
+            default => hub_gateway_error(502, 'proxy_error', 'service proxy error'),
+        };
+    }
+    $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 502;
+    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE) ?: 0;
+    $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: 'application/json';
+    $body = substr($raw, $headerSize);
+    curl_close($ch);
+
+    return ['status' => $status, 'headers' => ['Content-Type: ' . $contentType], 'body' => $body];
 }
 
 function hub_api_photo_upload(PDO $db, array $authContext): array

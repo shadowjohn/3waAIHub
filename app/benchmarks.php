@@ -62,6 +62,10 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         $contract = $pack['manifest']['photo_contract'];
         $case = hub_l5_benchmark_case($contract, $caseId);
     }
+    if (!$case && is_array($pack['manifest']['audio_contract'] ?? null)) {
+        $contract = $pack['manifest']['audio_contract'];
+        $case = hub_l5_benchmark_case($contract, $caseId);
+    }
     if (!$case) {
         throw new RuntimeException('benchmark case not declared.');
     }
@@ -73,6 +77,9 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     if (($pack['id'] ?? '') === 'llm-gemma4-12b' && $mode === 'photo') {
         return hub_benchmark_gemma4_photo_case($db, $pack, $case, $service, $serviceId, $mode);
     }
+    if (($pack['id'] ?? '') === 'llm-gemma4-12b' && $mode === 'audio') {
+        return hub_benchmark_gemma4_audio_case($db, $pack, $case, $service, $serviceId, $mode);
+    }
 
     $bodyJson = $case['body_json'] ?? null;
     $jsonBody = is_array($bodyJson) ? json_encode($bodyJson, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) : '';
@@ -82,7 +89,8 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         throw new RuntimeException('benchmark fixture missing.');
     }
     $fixtureField = preg_match('/^[a-zA-Z0-9_-]+$/', (string)($case['fixture_field'] ?? 'image')) ? (string)($case['fixture_field'] ?? 'image') : 'image';
-    $fixtureMime = str_ends_with(strtolower($fixture), '.pdf') ? 'application/pdf' : 'image/png';
+    $fixtureLower = strtolower($fixture);
+    $fixtureMime = str_ends_with($fixtureLower, '.pdf') ? 'application/pdf' : (str_ends_with($fixtureLower, '.wav') ? 'audio/wav' : 'image/png');
 
     [$oldServer, $oldFiles, $oldPost] = [$_SERVER, $_FILES, $_POST];
     $_SERVER['REQUEST_METHOD'] = strtoupper((string)($case['method'] ?? $contract['method'] ?? 'POST'));
@@ -284,6 +292,102 @@ function hub_benchmark_gemma4_photo_real_response(PDO $db, array $case, array $s
     ), (string)$asset['image_id']);
 }
 
+function hub_benchmark_gemma4_audio_case(PDO $db, array $pack, array $case, array $service, int $serviceId, string $mode): array
+{
+    $bodyJson = is_array($case['body_json'] ?? null) ? $case['body_json'] : [];
+    $realInference = !empty($case['real_inference']);
+    if ($realInference) {
+        $response = hub_benchmark_gemma4_audio_real_response($case, $service);
+    } else {
+        $response = hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest'], $bodyJson + ['audio' => true]));
+    }
+
+    $payload = json_decode((string)$response['body'], true);
+    $expectedKeys = array_map('strval', $case['expected_keys'] ?? $pack['manifest']['audio_contract']['output']['required_keys'] ?? []);
+    $missing = [];
+    foreach ($expectedKeys as $key) {
+        if (!is_array($payload) || !array_key_exists($key, $payload)) {
+            $missing[] = $key;
+        }
+    }
+
+    $audioText = trim((string)($payload['transcript'] ?? '') . ' ' . (string)($payload['answer'] ?? '') . ' ' . (string)($payload['summary'] ?? ''));
+    $bodyText = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
+    $contractFailed = (int)$response['status'] !== 200
+        || $missing !== []
+        || !is_array($payload['tags'] ?? null)
+        || str_contains($bodyText, HUB_DATA_DIR)
+        || str_contains($bodyText, 'storage_relpath')
+        || str_contains($bodyText, 'audio_internal_path');
+    if (!empty($case['expected_audio_text_non_empty']) && $audioText === '') {
+        $contractFailed = true;
+    }
+    if (array_key_exists('expected_mock', $case) && is_array($payload) && (bool)($payload['mock'] ?? null) !== (bool)$case['expected_mock']) {
+        $contractFailed = true;
+    }
+    if ($contractFailed) {
+        throw new RuntimeException('benchmark contract check failed.');
+    }
+
+    return [
+        'case_id' => (string)$case['id'],
+        'pack_id' => (string)$pack['id'],
+        'service_id' => $serviceId,
+        'mode' => $mode,
+        'http_status' => (int)$response['status'],
+        'expected_keys_pass' => true,
+        'real_inference' => $realInference,
+        'mock' => is_array($payload) ? ($payload['mock'] ?? null) : null,
+        'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
+        'operation' => is_array($payload) ? (string)($payload['operation'] ?? '') : '',
+        'audio_text_length' => strlen($audioText),
+        'fixture' => (string)($case['fixture'] ?? ''),
+    ];
+}
+
+function hub_benchmark_gemma4_audio_real_response(array $case, array $service): array
+{
+    $fixture = HUB_ROOT . '/' . ltrim((string)($case['fixture'] ?? ''), '/');
+    if (!is_file($fixture)) {
+        throw new RuntimeException('benchmark fixture missing.');
+    }
+    $url = preg_replace('#/chat$#', '/audio', (string)$service['internal_url']) ?: (string)$service['internal_url'];
+    $fields = is_array($case['form'] ?? null) ? array_map('strval', $case['form']) : [];
+    $fields['real_inference'] = '1';
+    $fields['audio'] = new CURLFile($fixture, 'audio/wav', basename($fixture));
+
+    $ch = curl_init($url);
+    if ($ch === false) {
+        return hub_gateway_json(502, ['ok' => false, 'error' => 'curl unavailable']);
+    }
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER => true,
+        CURLOPT_POSTFIELDS => $fields,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_TIMEOUT => max(1, hub_service_gateway_timeout_sec($service)),
+    ]);
+    $raw = curl_exec($ch);
+    if ($raw === false) {
+        $errno = curl_errno($ch);
+        curl_close($ch);
+        return match ($errno) {
+            CURLE_OPERATION_TIMEDOUT => hub_gateway_error(504, 'gateway_timeout', 'service gateway timeout'),
+            CURLE_COULDNT_CONNECT => hub_gateway_error(503, 'service_unavailable', 'service is unavailable'),
+            default => hub_gateway_error(502, 'proxy_error', 'service proxy error'),
+        };
+    }
+
+    $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 502;
+    $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE) ?: 0;
+    $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: 'application/json';
+    $body = substr($raw, $headerSize);
+    curl_close($ch);
+
+    return hub_audio_normalize_proxy_response(['status' => $status, 'headers' => ['Content-Type: ' . $contentType], 'body' => $body]);
+}
+
 function hub_benchmark_proxy_json(array $service, int $timeoutSec, string $jsonBody): array
 {
     $ch = curl_init((string)$service['internal_url']);
@@ -372,6 +476,22 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
         ];
     }
     if (($manifest['id'] ?? '') === 'llm-gemma4-12b') {
+        if (!empty($input['audio'])) {
+            return [
+                'ok' => true,
+                'mock' => true,
+                'runtime_level' => $runtimeLevel,
+                'model' => 'gemma4-12b',
+                'operation' => (string)($input['operation'] ?? 'understand'),
+                'answer' => '這是一段 Gemma 4 audio benchmark mock 音訊。',
+                'transcript' => '今天下午兩點，請檢查 NSR 的 RC 閥。',
+                'summary' => '檢查 NSR RC 閥的提醒。',
+                'tags' => ['mock', 'audio'],
+                'audio' => ['duration_ms' => 6000, 'sample_rate' => 16000, 'channels' => 1],
+                'usage' => ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0],
+                'elapsed_ms' => 0,
+            ];
+        }
         if (!empty($input['photo'])) {
             return [
                 'ok' => true,

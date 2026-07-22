@@ -1,5 +1,55 @@
 # 3waAIHub History
 
+## PhaseL-1E Gemma 4 Audio Asset Reuse
+
+Implemented:
+
+- Added `audio_assets` SQLite table for short-lived Gemma4 audio uploads.
+- Added managed `audio_id` storage under `data/uploads/audio/{audio_id}/original.wav`.
+- Added strict WAV validation: 16kHz mono, <= 30 seconds, <= 16MB.
+- Added protected Gateway mode `api.php?mode=audio_upload`.
+- Extended `api.php?mode=audio` to accept either direct `audio` upload or owned `audio_id`.
+- Customer tokens granted `audio` now also receive `audio_upload`.
+- Playground, public docs, API examples, quickstart, and Pack manifest now document `audio_upload -> audio_id -> audio`.
+
+Skipped:
+
+- server-side audio sessions
+- MP3 / M4A conversion
+- long audio chunking
+- timestamps / diarization / VAD
+- permanent audio library
+
+## PhaseL-1D Gemma 4 Audio Input Smoke
+
+Implemented:
+
+- Added direct vLLM audio smoke script for `input_audio` payload validation.
+- Added a small 16kHz mono WAV fixture for audio pipeline smoke.
+- Built Gemma4 vLLM sidecar image with `vllm[audio]` extras.
+- Preserved image support with `--limit-mm-per-prompt '{"image":1,"audio":1}'`.
+- Added Pack-local `POST /audio` adapter.
+- Added protected Gateway mode `api.php?mode=audio`.
+- Added Playground `mode=audio` form and examples.
+- Added public API docs, quickstart, manifest contract, and benchmark cases.
+
+Verified:
+
+- Direct vLLM audio request returns non-empty model output.
+- Gemma4 real chat benchmark PASS.
+- Gemma4 real photo benchmark PASS.
+- `/audio` adapter mock and real request path PASS.
+- PHP test runner PASS during implementation.
+
+Skipped:
+
+- persisted `audio_assets` / `audio_id`
+- long audio chunking
+- MP3 / M4A conversion
+- timestamps / diarization / VAD
+- streaming microphone
+- replacing Whisper ASR
+
 ## PhaseL-1C Gemma 4 Photo Vision
 
 Implemented:

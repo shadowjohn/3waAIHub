@@ -6,7 +6,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 目前通用 Job Runtime 薄版已完成；外部資料庫、Volume Resource Profile 與任意服務自動發佈仍在後續階段。Local Job Runtime 薄版已完成，YOLO `yolo_predict` / `yolo_train` / `yolo_export_onnx` 已接真實 Ultralytics runner。Runtime portability guardrails 已建立，Linux 仍是預設執行主機，但新 runtime 邏輯需分離 host path、container path 與 platform target。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`hello` L5 reference Pack、`ocr-ppocrv5` / `yolo` / `sam3` / `translate-gemma12b` / `tts-voxcpm2` / `structure-ppstructurev3` / `docparser` L5 benchmark-ready Pack，以及 `whisper-asr` experimental Pack。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics、Pack hardware preflight、`hello` L5 reference Pack、`ocr-ppocrv5` / `yolo` / `sam3` / `translate-gemma12b` / `tts-voxcpm2` / `structure-ppstructurev3` / `docparser` / `llm-gemma4-12b` L5 benchmark-ready Pack，以及 `whisper-asr` experimental Pack。
 
 ## 功能
 
@@ -1092,6 +1092,34 @@ curl -X POST "https://nature.focusit.tw/3waAIHub/api.php?mode=photo" \
   -H "Authorization: Bearer <TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"image_id":"img_...","text":"這張圖裡有什麼？","max_tokens":256,"real_inference":true}'
+```
+
+### llm-gemma4-12b Audio Input
+
+`mode=audio` 是 Gemma4 的短音訊理解 smoke。可直接送 WAV，也可先用 `mode=audio_upload` 上傳取得 `audio_id` 後反覆追問；不建立 session，長音訊與正式 ASR 仍交給 `whisper-asr`。
+
+限制：
+
+- `POST multipart/form-data`
+- 欄位：`audio` 或 `audio_id`
+- WAV only
+- 16kHz mono
+- 30 秒內
+- 16MB 內
+- `audio_id` TTL：7 天
+
+```bash
+curl -X POST "https://nature.focusit.tw/3waAIHub/api.php?mode=audio_upload" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio=@sample.wav"
+
+curl -X POST "https://nature.focusit.tw/3waAIHub/api.php?mode=audio" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio_id=aud_..." \
+  -F "operation=understand" \
+  -F "text=這段錄音的重點是什麼？" \
+  -F "max_tokens=512" \
+  -F "real_inference=1"
 ```
 
 ### docparser Runtime Level

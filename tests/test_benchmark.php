@@ -289,6 +289,34 @@ hub_test('L5 Gemma4 photo contract benchmark records mock without GPU', function
     hub_test_assert((int)$db->query("SELECT COUNT(*) FROM benchmark_runs WHERE benchmark_key = 'gemma4_real_photo_general'")->fetchColumn() === 1, 'Gemma4 real photo benchmark run must be recorded');
 });
 
+hub_test('L5 Gemma4 audio contract benchmark records mock without GPU', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'llm-gemma4-12b', [
+        'service_key' => 'gemma4-main',
+        'name' => 'Gemma4 Main',
+        'mode' => 'chat',
+        'port_mode' => 'manual',
+        'local_port' => 18110,
+        'environment' => 'production',
+        'idempotent' => true,
+    ]);
+
+    $contract = hub_get_pack('llm-gemma4-12b')['manifest']['audio_contract'] ?? [];
+    hub_test_assert(hub_l5_benchmark_case($contract, 'gemma4_mock_audio') !== null, 'gemma4_mock_audio case missing');
+    foreach (['gemma4_real_audio_transcribe_zh', 'gemma4_real_audio_understand'] as $caseId) {
+        $case = hub_l5_benchmark_case($contract, $caseId);
+        hub_test_assert($case !== null, $caseId . ' case missing');
+        hub_test_assert(!empty($case['real_inference']), $caseId . ' must be marked real_inference');
+        hub_test_assert(trim((string)($case['fixture'] ?? '')) !== '', $caseId . ' must declare fixture');
+        hub_test_assert((string)($case['fixture_field'] ?? '') === 'audio', $caseId . ' must upload audio field');
+    }
+
+    $mock = hub_run_benchmark_case($db, 'gemma4_mock_audio', 'llm-gemma4-12b');
+    hub_test_assert($mock['status'] === 'pass', 'gemma4_mock_audio did not pass');
+    hub_test_assert(($mock['result']['expected_keys_pass'] ?? false) === true, 'Gemma4 audio mock expected keys check failed');
+    hub_test_assert(($mock['result']['mock'] ?? null) === true, 'Gemma4 audio mock benchmark must stay mock');
+});
+
 hub_test('L5 DocParser contract benchmark submits async PDF tasks', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'docparser', [
