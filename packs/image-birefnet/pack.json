@@ -6,7 +6,7 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L2-deps-import",
+  "runtime_level": "L3-storage-mount",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": false,
   "default_mode": "background_remove",
@@ -113,7 +113,12 @@
     {"name": "BIREFNET_MODEL_DIR", "default": "/models/birefnet", "required": true},
     {"name": "BIREFNET_CACHE_DIR", "default": "/cache/birefnet", "required": true},
     {"name": "BIREFNET_SERVICE_DATA_DIR", "default": "/data/service", "required": true},
-    {"name": "BIREFNET_MAX_UPLOAD_MB", "default": "50", "required": true}
+    {"name": "BIREFNET_MAX_UPLOAD_MB", "default": "50", "required": true},
+    {"name": "HF_HOME", "default": "/models/birefnet/huggingface", "required": true},
+    {"name": "HF_HUB_OFFLINE", "default": "1", "required": true},
+    {"name": "TRANSFORMERS_OFFLINE", "default": "1", "required": true},
+    {"name": "XDG_CACHE_HOME", "default": "/cache/birefnet/xdg", "required": true},
+    {"name": "HOME", "default": "/cache/birefnet/home", "required": true}
   ],
   "preflight": {
     "checks": ["docker", "docker_compose", "storage"]

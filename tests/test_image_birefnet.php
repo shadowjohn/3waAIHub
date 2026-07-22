@@ -6,7 +6,7 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-birefnet pack missing or invalid');
     $manifest = $pack['manifest'];
 
-    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L2-deps-import', 'BiRefNet runtime level mismatch');
+    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L3-storage-mount', 'BiRefNet runtime level mismatch');
     hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'BiRefNet target mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'background_remove', 'BiRefNet mode mismatch');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'BiRefNet execution type mismatch');
@@ -53,7 +53,7 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     hub_test_assert(($contract['errors'] ?? []) === $expectedErrors, 'BiRefNet error contract mismatch');
 
     $base = HUB_ROOT . '/packs/image-birefnet';
-    foreach (['pack.json', 'docker-compose.yml', 'service/Dockerfile', 'service/requirements.txt', 'service/app.py'] as $file) {
+    foreach (['pack.json', 'docker-compose.yml', 'service/Dockerfile', 'service/requirements.txt', 'service/app.py', 'service/provision_offline_assets.py', 'service/storage_smoke.py'] as $file) {
         hub_test_assert(is_file($base . '/' . $file), 'BiRefNet runtime file missing ' . $file);
     }
     $app = (string)file_get_contents($base . '/service/app.py');
@@ -67,8 +67,53 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     }
     $dockerfile = (string)file_get_contents($base . '/service/Dockerfile');
     hub_test_assert(str_contains($dockerfile, 'python3 /app/smoke.py'), 'BiRefNet dependency smoke missing');
-    hub_test_assert(str_contains($dockerfile, 'python3 -m unittest -v test_image_pipeline.py'), 'BiRefNet pipeline test missing from build');
+    hub_test_assert(str_contains($dockerfile, 'test_image_pipeline.py test_provision_offline_assets.py'), 'BiRefNet unit tests missing from build');
+    hub_test_assert(!str_contains($dockerfile, 'python3 /app/provision_offline_assets.py'), 'BiRefNet build must not download model assets');
+
+    $provisioner = (string)file_get_contents($base . '/service/provision_offline_assets.py');
+    hub_test_assert(str_contains($provisioner, 'ZhengPeng7/BiRefNet'), 'BiRefNet pinned repository missing');
+    hub_test_assert(str_contains($provisioner, 'e2bf8e4460fc8fa32bba5ea4d94b3233d367b0e4'), 'BiRefNet pinned revision missing');
+    hub_test_assert(str_contains($provisioner, 'snapshot_download'), 'BiRefNet explicit provisioner missing');
+
+    $compose = (string)file_get_contents($base . '/docker-compose.yml');
+    foreach (['HF_HOME: /models/birefnet/huggingface', 'HF_HUB_OFFLINE: "1"', 'TRANSFORMERS_OFFLINE: "1"', 'XDG_CACHE_HOME: /cache/birefnet/xdg', 'HOME: /cache/birefnet/home'] as $needle) {
+        hub_test_assert(str_contains($compose, $needle), 'BiRefNet offline compose env missing ' . $needle);
+    }
 
     $catalogIds = array_column(json_decode((string)file_get_contents(HUB_ROOT . '/packs/catalog.json'), true)['packs'] ?? [], 'id');
     hub_test_assert(in_array('image-birefnet', $catalogIds, true), 'BiRefNet catalog entry missing');
+});
+
+hub_test('BiRefNet install generates GPU-first compose and permits explicit CPU override', function (): void {
+    $db = hub_test_reset_db();
+    $gpu = hub_install_pack($db, 'image-birefnet', [
+        'service_key' => 'birefnet-gpu',
+        'mode' => 'background_remove',
+        'name' => 'BiRefNet GPU',
+        'port_mode' => 'manual',
+        'local_port' => 18112,
+    ]);
+    $gpuCompose = (string)file_get_contents(hub_path($gpu['service']['compose_file']));
+    $gpuEnv = (string)file_get_contents(dirname(hub_path($gpu['service']['compose_file'])) . '/.env');
+    hub_test_assert(str_contains($gpuCompose, 'gpus: all'), 'BiRefNet default install must request GPU');
+    foreach (['${AIHUB_MODELS_DIR}/birefnet:/models/birefnet', '${AIHUB_CACHE_DIR}/birefnet:/cache/birefnet', '${SERVICE_DATA_DIR}:/data/service'] as $needle) {
+        hub_test_assert(str_contains($gpuCompose, $needle), 'BiRefNet generated compose missing ' . $needle);
+    }
+    foreach (['BIREFNET_USE_GPU=1', 'BIREFNET_DEVICE=auto', 'HF_HOME=/models/birefnet/huggingface', 'HF_HUB_OFFLINE=1', 'TRANSFORMERS_OFFLINE=1'] as $needle) {
+        hub_test_assert(str_contains($gpuEnv, $needle), 'BiRefNet generated GPU env missing ' . $needle);
+    }
+
+    $cpu = hub_install_pack($db, 'image-birefnet', [
+        'service_key' => 'birefnet-cpu',
+        'mode' => 'background_remove_cpu',
+        'name' => 'BiRefNet CPU',
+        'port_mode' => 'manual',
+        'local_port' => 18113,
+        'env' => ['BIREFNET_USE_GPU' => '0', 'BIREFNET_DEVICE' => 'cpu'],
+    ]);
+    $cpuCompose = (string)file_get_contents(hub_path($cpu['service']['compose_file']));
+    $cpuEnv = (string)file_get_contents(dirname(hub_path($cpu['service']['compose_file'])) . '/.env');
+    hub_test_assert(!str_contains($cpuCompose, 'gpus: all'), 'BiRefNet CPU override must not request GPU');
+    hub_test_assert(str_contains($cpuEnv, 'BIREFNET_USE_GPU=0'), 'BiRefNet CPU env must disable GPU');
+    hub_test_assert(str_contains($cpuEnv, 'BIREFNET_DEVICE=cpu'), 'BiRefNet CPU env must select CPU');
 });

@@ -12,6 +12,11 @@ services:
       BIREFNET_CACHE_DIR: /cache/birefnet
       BIREFNET_SERVICE_DATA_DIR: /data/service
       BIREFNET_MAX_UPLOAD_MB: ${BIREFNET_MAX_UPLOAD_MB:-50}
+      HF_HOME: /models/birefnet/huggingface
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      XDG_CACHE_HOME: /cache/birefnet/xdg
+      HOME: /cache/birefnet/home
       PYTHONUNBUFFERED: "1"
     gpus: all
     volumes:
