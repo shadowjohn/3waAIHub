@@ -1,6 +1,11 @@
 <?php
 declare(strict_types=1);
 
+$hubPlaygroundVoiceProfiles = HUB_ROOT . '/admin/_playground_voice_profiles.php';
+if (is_file($hubPlaygroundVoiceProfiles)) {
+    require_once $hubPlaygroundVoiceProfiles;
+}
+
 hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', function (): void {
     $pack = hub_get_pack('tts-voxcpm2');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'tts-voxcpm2 pack must be valid');
@@ -1425,19 +1430,23 @@ hub_test('VoxCPM2 appears in customer playground when user and token allow tts',
 
 hub_test('VoxCPM2 playground manages voice profiles with request-scoped TTS tokens', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    $helperFile = HUB_ROOT . '/admin/_playground_voice_profiles.php';
+    hub_test_assert(is_file($helperFile), 'playground voice-profile helper include missing');
+    $helper = (string)file_get_contents($helperFile);
 
     foreach (['voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'] as $action) {
         hub_test_assert(str_contains($source, 'name="action" value="' . $action . '"'), 'playground must provide POST action ' . $action);
     }
+    hub_test_assert(str_contains($source, "require_once __DIR__ . '/_playground_voice_profiles.php';"), 'playground must load the voice-profile helper');
     foreach ([
         "hub_gateway_authenticate_api_token(\$db, 'tts', hub_get_client_ip(), \$token)",
         'hub_create_uploaded_voice_profile',
         'hub_confirm_voice_profile_prompt',
         'hub_retry_voice_profile_transcription',
-        'hub_check_csrf()',
     ] as $needle) {
-        hub_test_assert(str_contains($source, $needle), 'playground voice-profile flow missing ' . $needle);
+        hub_test_assert(str_contains($helper, $needle), 'playground voice-profile helper missing ' . $needle);
     }
+    hub_test_assert(str_contains($source, 'hub_check_csrf()'), 'playground voice-profile flow must keep CSRF protection');
 
     $examplesStart = strpos($source, 'function hub_playground_examples');
     $ttsExamplesStart = $examplesStart === false ? false : strpos($source, "if (\$mode === 'tts') {", $examplesStart);
@@ -1451,6 +1460,9 @@ hub_test('VoxCPM2 playground manages voice profiles with request-scoped TTS toke
 });
 
 hub_test('VoxCPM2 playground resolves voice-profile ownership from the TTS token', function (): void {
+    $helperFile = HUB_ROOT . '/admin/_playground_voice_profiles.php';
+    hub_test_assert(is_file($helperFile), 'playground TTS token helper include missing');
+    require_once $helperFile;
     hub_test_assert(function_exists('hub_playground_tts_member_id'), 'playground TTS token helper missing');
 
     $db = hub_test_reset_db();
@@ -1477,14 +1489,10 @@ hub_test('VoxCPM2 playground resolves voice-profile ownership from the TTS token
 
 hub_test('VoxCPM2 playground rejects foreign token voice-profile mutations with a redacted error', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
-    foreach ([
-        'hub_confirm_voice_profile_prompt($db, (int)($_POST[\'voice_profile_id\'] ?? 0), $memberId',
-        'hub_retry_voice_profile_transcription($db, (int)($_POST[\'voice_profile_id\'] ?? 0), $memberId)',
-        '} catch (Throwable) {',
-        'hub_playground_voice_profile_error_result()',
-    ] as $needle) {
-        hub_test_assert(str_contains($source, $needle), 'playground controller boundary missing ' . $needle);
-    }
+    $helperFile = HUB_ROOT . '/admin/_playground_voice_profiles.php';
+    hub_test_assert(str_contains($source, "require_once __DIR__ . '/_playground_voice_profiles.php';"), 'playground controller must load its voice-profile dispatcher');
+    hub_test_assert(is_file($helperFile), 'playground voice-profile dispatcher include missing');
+    require_once $helperFile;
 
     $db = hub_test_reset_db();
     $ownerMemberId = hub_create_api_member($db, 'Playground Profile Owner');
@@ -1507,15 +1515,21 @@ hub_test('VoxCPM2 playground rejects foreign token voice-profile mutations with 
     try {
         $tokenMemberId = hub_playground_tts_member_id($db, (string)$foreignToken['plain_token']);
         hub_test_assert($tokenMemberId === $foreignMemberId, 'playground must derive the mutation owner from the supplied token');
-        hub_test_assert(hub_test_throws(static fn (): array => hub_confirm_voice_profile_prompt($db, $profileId, $tokenMemberId, 'foreign transcript')), 'foreign TTS token must not confirm another owner profile');
-        hub_test_assert(hub_test_throws(static fn (): array => hub_retry_voice_profile_transcription($db, $profileId, $tokenMemberId)), 'foreign TTS token must not retry another owner profile');
+        $confirm = hub_playground_voice_profile_dispatch($db, 'voice_profile_confirm', (string)$foreignToken['plain_token'], [
+            'voice_profile_id' => $profileId,
+            'prompt_text' => 'foreign transcript',
+        ], []);
+        $retry = hub_playground_voice_profile_dispatch($db, 'voice_profile_retry_asr', (string)$foreignToken['plain_token'], [
+            'voice_profile_id' => $profileId,
+        ], []);
         hub_test_assert((hub_get_voice_profile($db, $profileId)['prompt_text'] ?? null) === null, 'foreign token mutation must leave the owner profile unchanged');
 
-        $error = hub_playground_voice_profile_error_result();
-        $body = (string)($error['pretty_body'] ?? '');
-        hub_test_assert(($error['error'] ?? '') === 'voice_profile_request_failed', 'playground controller error must stay generic');
-        foreach ([$wav, 'foreign transcript', 'voice_profile_forbidden'] as $secret) {
-            hub_test_assert(!str_contains($body, $secret), 'playground controller error must redact ' . $secret);
+        foreach ([$confirm, $retry] as $error) {
+            $body = (string)($error['pretty_body'] ?? '');
+            hub_test_assert(($error['error'] ?? '') === 'voice_profile_request_failed', 'playground controller error must stay generic');
+            foreach ([$wav, 'foreign transcript', 'voice_profile_forbidden'] as $secret) {
+                hub_test_assert(!str_contains($body, $secret), 'playground controller error must redact ' . $secret);
+            }
         }
     } finally {
         $_SERVER = $oldServer;
