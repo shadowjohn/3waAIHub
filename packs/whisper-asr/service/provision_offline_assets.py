@@ -14,6 +14,9 @@ from offline_paths import (
     ALIGNMENT_MODEL_NAME,
     ALIGNMENT_WEIGHT,
     ASR_MODEL_DIR,
+    CKIP_MARKER,
+    CKIP_MODEL_DIR,
+    CKIP_MODEL_REPOSITORY,
     HUGGINGFACE_CACHE_DIR,
     PYANNOTE_CONFIG,
     PYANNOTE_EMBEDDING,
@@ -22,6 +25,7 @@ from offline_paths import (
     PYANNOTE_SEGMENTATION,
     TORCH_CACHE_DIR,
     alignment_cache_manifest,
+    ckip_cache_manifest,
     pyannote_cache_manifest,
     pyannote_config_text,
 )
@@ -102,6 +106,12 @@ def validate_local_diarization() -> None:
     whisperx.DiarizationPipeline(model_name=str(PYANNOTE_CONFIG), use_auth_token=None, device="cpu")
 
 
+def validate_local_ckip() -> None:
+    from ckip_transformers.nlp import CkipWordSegmenter
+
+    CkipWordSegmenter(model_name=str(CKIP_MODEL_DIR), device=-1)
+
+
 def prepare_pyannote_snapshot(snapshot_download: object, token: str) -> None:
     downloader = snapshot_download
     if not callable(downloader):
@@ -123,6 +133,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Preprovision offline Whisper ASR assets")
     parser.add_argument("--languages", default=ALIGNMENT_LANGUAGE, help="Fixed WhisperX alignment language (en)")
     parser.add_argument("--with-diarization", action="store_true", help="Provision the local pyannote assets using the trusted token")
+    parser.add_argument("--with-ckip", action="store_true", help="Provision the local CKIP word-segmentation model")
     args = parser.parse_args()
     selected_languages = languages(args.languages)
     token = os.environ.get("AIHUB_SECRET_PYANNOTE_TOKEN", "") if args.with_diarization else ""
@@ -139,11 +150,18 @@ def main() -> int:
     from huggingface_hub import snapshot_download
 
     snapshot_download("Systran/faster-whisper-large-v3", local_dir=str(ASR_MODEL_DIR))
+    if args.with_ckip:
+        snapshot_download(CKIP_MODEL_REPOSITORY, local_dir=str(CKIP_MODEL_DIR))
+        for name in ("config.json", "model.safetensors", "vocab.txt"):
+            require_regular_file(CKIP_MODEL_DIR / name, "ckip_snapshot_unavailable")
     for language in selected_languages:
         precache_alignment(language)
     require_regular_file(ALIGNMENT_WEIGHT, "alignment_cache_unavailable")
     configure_offline_cache()
     write_atomic(ALIGNMENT_MARKER, (json.dumps(alignment_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
+    if args.with_ckip:
+        validate_local_ckip()
+        write_atomic(CKIP_MARKER, (json.dumps(ckip_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
     if args.with_diarization:
         PYANNOTE_MODEL_DIR.mkdir(parents=True, exist_ok=True)
         prepare_pyannote_snapshot(snapshot_download, token)

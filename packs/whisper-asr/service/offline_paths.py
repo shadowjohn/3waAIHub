@@ -18,6 +18,10 @@ PYANNOTE_SEGMENTATION = PYANNOTE_MODEL_DIR / "models" / "pyannote_segmentation-3
 PYANNOTE_EMBEDDING = PYANNOTE_MODEL_DIR / "models" / "pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
 PYANNOTE_MARKER = PYANNOTE_MODEL_DIR / ".aihub-pyannote-ready.json"
 
+CKIP_MODEL_REPOSITORY = "ckiplab/bert-base-chinese-ws"
+CKIP_MODEL_DIR = Path("/cache/whisper/ckip/bert-base-chinese-ws")
+CKIP_MARKER = CKIP_MODEL_DIR / ".aihub-ckip-ready.json"
+
 
 def alignment_cache_manifest() -> dict[str, object]:
     return {
@@ -36,6 +40,15 @@ def pyannote_cache_manifest() -> dict[str, object]:
         "config_path": str(PYANNOTE_CONFIG),
         "segmentation_path": str(PYANNOTE_SEGMENTATION),
         "embedding_path": str(PYANNOTE_EMBEDDING),
+    }
+
+
+def ckip_cache_manifest() -> dict[str, object]:
+    return {
+        "schema": "aihub-whisper-ckip/v1",
+        "repository": CKIP_MODEL_REPOSITORY,
+        "model_path": str(CKIP_MODEL_DIR),
+        "breaker": "ckip-transformers-0.3.4",
     }
 
 

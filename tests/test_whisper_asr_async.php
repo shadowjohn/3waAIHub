@@ -695,6 +695,7 @@ hub_test('Whisper ASR provisioning needs the pyannote token only for explicit di
     $provisioner = HUB_ROOT . '/packs/whisper-asr/service/provision_offline_assets.py';
     $script = <<<'PY'
 import importlib.util
+import json
 import os
 import sys
 import tempfile
@@ -719,12 +720,18 @@ with tempfile.TemporaryDirectory() as directory:
     provision.PYANNOTE_SEGMENTATION = provision.PYANNOTE_MODEL_DIR / "models" / "pyannote_segmentation-3.0.bin"
     provision.PYANNOTE_EMBEDDING = provision.PYANNOTE_MODEL_DIR / "models" / "pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
     provision.PYANNOTE_MARKER = provision.PYANNOTE_MODEL_DIR / ".aihub-pyannote-ready.json"
+    provision.CKIP_MODEL_DIR = root / "cache" / "ckip" / "bert-base-chinese-ws"
+    provision.CKIP_MARKER = provision.CKIP_MODEL_DIR / ".aihub-ckip-ready.json"
     calls = []
+    ckip_loads = []
 
     def snapshot_download(repo_id, local_dir, allow_patterns=None, token=None):
         calls.append((repo_id, token))
         target = Path(local_dir)
         target.mkdir(parents=True, exist_ok=True)
+        if repo_id == "ckiplab/bert-base-chinese-ws":
+            for name in ("config.json", "model.safetensors", "vocab.txt"):
+                (target / name).write_text("snapshot", encoding="utf-8")
         for name in allow_patterns or []:
             (target / name).write_text("snapshot", encoding="utf-8")
         return str(target)
@@ -736,16 +743,29 @@ with tempfile.TemporaryDirectory() as directory:
 
     previous_hub = sys.modules.get("huggingface_hub")
     previous_whisperx = sys.modules.get("whisperx")
+    previous_ckip = sys.modules.get("ckip_transformers")
+    previous_ckip_nlp = sys.modules.get("ckip_transformers.nlp")
     sys.modules["huggingface_hub"] = types.SimpleNamespace(snapshot_download=snapshot_download)
     sys.modules["whisperx"] = types.SimpleNamespace(load_align_model=align_loader, DiarizationPipeline=lambda **kwargs: object())
+    ckip_module = types.ModuleType("ckip_transformers")
+    ckip_nlp = types.ModuleType("ckip_transformers.nlp")
+    ckip_nlp.CkipWordSegmenter = lambda **kwargs: ckip_loads.append(kwargs) or object()
+    ckip_module.nlp = ckip_nlp
+    sys.modules["ckip_transformers"] = ckip_module
+    sys.modules["ckip_transformers.nlp"] = ckip_nlp
     original_argv = sys.argv
     original_token = os.environ.pop("AIHUB_SECRET_PYANNOTE_TOKEN", None)
     try:
         provision.storage_root = lambda name, expected: expected
         sys.argv = ["provision"]
         assert provision.main() == 0
-        assert all(not repo.startswith("pyannote/") for repo, token in calls)
-        assert provision.ALIGNMENT_MARKER.is_file() and not provision.PYANNOTE_MARKER.exists()
+        assert all(not repo.startswith(("pyannote/", "ckiplab/")) for repo, token in calls)
+        assert provision.ALIGNMENT_MARKER.is_file() and not provision.PYANNOTE_MARKER.exists() and not provision.CKIP_MARKER.exists()
+        sys.argv = ["provision", "--with-ckip"]
+        assert provision.main() == 0
+        assert ("ckiplab/bert-base-chinese-ws", None) in calls
+        assert ckip_loads == [{"model_name": str(provision.CKIP_MODEL_DIR), "device": -1}]
+        assert json.loads(provision.CKIP_MARKER.read_text(encoding="utf-8")) == provision.ckip_cache_manifest()
         sys.argv = ["provision", "--with-diarization"]
         try:
             provision.main()
@@ -765,6 +785,14 @@ with tempfile.TemporaryDirectory() as directory:
             sys.modules.pop("whisperx", None)
         else:
             sys.modules["whisperx"] = previous_whisperx
+        if previous_ckip is None:
+            sys.modules.pop("ckip_transformers", None)
+        else:
+            sys.modules["ckip_transformers"] = previous_ckip
+        if previous_ckip_nlp is None:
+            sys.modules.pop("ckip_transformers.nlp", None)
+        else:
+            sys.modules["ckip_transformers.nlp"] = previous_ckip_nlp
 PY;
     $result = hub_run_command(['python3', '-c', $script, $provisioner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper provisioning option matrix failed: ' . ($result['stderr'] ?? ''));
@@ -848,4 +876,27 @@ PY;
     $shellSource = (string)file_get_contents(HUB_ROOT . '/packs/whisper-asr/jobs/provision_offline_models.sh');
     hub_test_assert(str_contains($provisionSource, 'AIHUB_SECRET_PYANNOTE_TOKEN') && str_contains($shellSource, '--env AIHUB_SECRET_PYANNOTE_TOKEN')
         && str_contains($shellSource, 'dst=/models') && str_contains($shellSource, 'dst=/cache'), 'only the trusted provisioning action may supply the pyannote credential to the controlled runtime paths');
+});
+
+hub_test('Whisper CKIP offline asset paths declare the exact ready marker', function (): void {
+    $paths = HUB_ROOT . '/packs/whisper-asr/service/offline_paths.py';
+    $script = <<<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+import offline_paths
+
+assert offline_paths.CKIP_MODEL_REPOSITORY == "ckiplab/bert-base-chinese-ws"
+assert offline_paths.CKIP_MODEL_DIR == Path("/cache/whisper/ckip/bert-base-chinese-ws")
+assert offline_paths.CKIP_MARKER == offline_paths.CKIP_MODEL_DIR / ".aihub-ckip-ready.json"
+assert offline_paths.ckip_cache_manifest() == {
+    "schema": "aihub-whisper-ckip/v1",
+    "repository": "ckiplab/bert-base-chinese-ws",
+    "model_path": "/cache/whisper/ckip/bert-base-chinese-ws",
+    "breaker": "ckip-transformers-0.3.4",
+}
+PY;
+    $result = hub_run_command(['python3', '-c', $script, $paths], 20);
+    hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper CKIP offline path contract failed: ' . ($result['stderr'] ?? ''));
 });

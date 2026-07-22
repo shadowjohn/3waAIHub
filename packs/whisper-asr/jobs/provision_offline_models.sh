@@ -19,6 +19,11 @@ case "${AIHUB_WHISPER_PROVISION_DIARIZATION:-0}" in
     ;;
   *) echo 'AIHUB_WHISPER_PROVISION_DIARIZATION must be 0 or 1' >&2; exit 64 ;;
 esac
+case "${AIHUB_WHISPER_PROVISION_CKIP:-0}" in
+  0) ;;
+  1) provision_args+=(--with-ckip) ;;
+  *) echo 'AIHUB_WHISPER_PROVISION_CKIP must be 0 or 1' >&2; exit 64 ;;
+esac
 
 exec docker run --rm \
   --mount "type=bind,src=$AIHUB_MODELS_DIR,dst=/models" \
@@ -27,5 +32,5 @@ exec docker run --rm \
   --env AIHUB_CACHE_DIR=/cache \
   "${docker_env[@]}" \
   --entrypoint /app/provision-offline-assets \
-  3waaihub/whisper-asr:0.1.0 \
+  3waaihub/whisper-asr:0.1.1 \
   "${provision_args[@]}"
