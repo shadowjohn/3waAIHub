@@ -1,6 +1,33 @@
 <?php
 declare(strict_types=1);
 
+function hub_test_voxcpm2_remove(string $path): void
+{
+    if (is_file($path) || is_link($path)) {
+        unlink($path);
+        return;
+    }
+    if (!is_dir($path)) {
+        return;
+    }
+    foreach (scandir($path) ?: [] as $name) {
+        if ($name !== '.' && $name !== '..') {
+            hub_test_voxcpm2_remove($path . '/' . $name);
+        }
+    }
+    rmdir($path);
+}
+
+function hub_test_voxcpm2_job_workspace(): string
+{
+    $workspace = sys_get_temp_dir() . '/3waaihub_voxcpm2_job_' . bin2hex(random_bytes(8));
+    if (!mkdir($workspace . '/input', 0700, true) || !mkdir($workspace . '/output', 0700, true) || !mkdir($workspace . '/checkpoints', 0700, true)) {
+        throw new RuntimeException('Cannot create VoxCPM2 job workspace.');
+    }
+
+    return $workspace;
+}
+
 $hubPlaygroundVoiceProfiles = HUB_ROOT . '/admin/_playground_voice_profiles.php';
 if (is_file($hubPlaygroundVoiceProfiles)) {
     require_once $hubPlaygroundVoiceProfiles;
@@ -1796,6 +1823,291 @@ hub_test('VoxCPM2 acceptance set covers Traditional Chinese maintenance text', f
     }
 });
 
+hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe artifacts', function (): void {
+    $pack = hub_get_pack('tts-voxcpm2');
+    hub_test_assert(is_array($pack) && ($pack['status'] ?? '') === 'ok', 'VoxCPM2 Pack must validate before its long-form job is usable');
+    $manifest = $pack['manifest'];
+    $job = hub_pack_async_job_contract($manifest, 'synthesize');
+    hub_test_assert(is_array($job), 'VoxCPM2 synthesize job contract missing');
+    hub_test_assert(($job['input_fields'] ?? []) === ['text', 'mode', 'voice_prompt', 'control', 'seed', 'seed_policy', 'model', 'voice_profile_id', 'waveform_preview'], 'long-form input must be a closed Pack allowlist');
+    hub_test_assert(($job['source_required'] ?? true) === false && ($job['source_artifact_types'] ?? null) === [], 'long-form synthesis must receive text and managed voice context, never an external audio source');
+    hub_test_assert(($job['runner'] ?? []) === [
+        'image' => '3waaihub/tts-voxcpm2:0.1.0',
+        'entrypoint' => ['/app/voice-generate'],
+        'args' => ['--workspace', '{workspace}', '--input', '{input_dir}', '--output', '{output_dir}', '--runner-config', '{input_dir}/runner_config.json'],
+        'output_dir' => 'output',
+        'accelerator' => 'gpu',
+        'required_vram_mb' => 9600,
+        'timeout_seconds' => 7200,
+        'executor' => 'container',
+        'asset_mounts' => [[
+            'id' => 'voxcpm2_model',
+            'storage' => 'models',
+            'host_subdir' => 'voxcpm2/model',
+            'container_path' => '/models/voxcpm2/model',
+            'required_paths' => ['config.json'],
+        ]],
+    ], 'long-form synthesis must use the generic GPU container runner with only its controlled model mount');
+    hub_test_assert(($job['runner_config'] ?? []) === [
+        'alias_input' => 'model',
+        'model_allowlist' => 'voxcpm2',
+        'aliases' => [
+            'voxcpm2' => [
+                'model' => '/models/voxcpm2/model',
+                'label' => 'VoxCPM2',
+                'version' => '2.0.3',
+                'sample_rate' => 48000,
+            ],
+        ],
+        'default_alias' => 'voxcpm2',
+    ], 'model, version, and sample rate must be a frozen task snapshot');
+    hub_test_assert(($manifest['hardware']['gpu_required'] ?? null) === true && ($manifest['hardware']['cpu_fallback'] ?? null) === false, 'long-form synthesis must not declare a CPU path');
+    hub_test_assert(array_column($job['artifact_contract']['artifacts'] ?? [], 'type') === ['generated_audio', 'synthesis_metadata', 'waveform_preview'], 'long-form artifact contract mismatch');
+    foreach (['jobs/voice_generate.sh', 'service/job.py', 'service/long_form.py', 'service/long_form_smoke.py'] as $asset) {
+        hub_test_assert(is_file(HUB_ROOT . '/packs/tts-voxcpm2/' . $asset), 'long-form job asset missing ' . $asset);
+    }
+    $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/service/Dockerfile');
+    foreach (['long_form.py', 'job.py', 'voice_generate.sh', 'voice-generate'] as $needle) {
+        hub_test_assert(str_contains($dockerfile, $needle), 'controlled job image must install ' . $needle);
+    }
+});
+
+hub_test('VoxCPM2 long-form fake runner is deterministic, resumable, and emits no public checkpoint', function (): void {
+    $service = HUB_ROOT . '/packs/tts-voxcpm2/service';
+    $workspace = hub_test_voxcpm2_job_workspace();
+    $request = [
+        'text' => 'Dr. Lin 說：「8,500 rpm 時，RC Valve 的間隙是 0.7 mm。」請確認 PGM-III 與 91201-KV3-831。',
+        'mode' => 'design',
+        'voice_prompt' => '沉穩的台灣男性技師',
+        'control' => '清楚、稍慢',
+        'seed' => 42,
+        'seed_policy' => 'derived_per_chunk',
+        'waveform_preview' => true,
+    ];
+    $pack = hub_get_pack('tts-voxcpm2');
+    $contract = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), 'synthesize');
+    $config = hub_pack_job_runner_config_for_task((array)$contract, $request);
+    hub_test_assert($config === [
+        'allowlist' => 'voxcpm2',
+        'alias' => 'voxcpm2',
+        'model' => [
+        'model' => '/models/voxcpm2/model',
+        'label' => 'VoxCPM2',
+        'version' => '2.0.3',
+        'sample_rate' => 48000,
+        ],
+    ], 'ordinary design synthesis without a model must use the fixed runner default');
+    file_put_contents($workspace . '/input/request.json', json_encode($request, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n", LOCK_EX);
+    file_put_contents($workspace . '/input/runner_config.json', json_encode($config, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n", LOCK_EX);
+    file_put_contents($workspace . '/input/source', 'managed-source-not-a-path', LOCK_EX);
+    try {
+        $planScript = <<<'PY'
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("long_form", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+text = 'Dr. Lin 說：「8,500 rpm 時，RC Valve 的間隙是 0.7 mm。」請確認 PGM-III 與 91201-KV3-831。'
+first = module.make_plan(text, 42, 'derived_per_chunk', 42)
+second = module.make_plan(text, 42, 'derived_per_chunk', 42)
+assert module.canonical_json(first) == module.canonical_json(second)
+assert first['normalization'] == 'semantic-v1'
+assert ''.join(chunk['text'] for chunk in first['chunks']) == first['normalized_input']
+assert '8,500 rpm' in first['normalized_input'] and '0.7 mm' in first['normalized_input']
+assert all('word_alignment' not in chunk for chunk in first['chunks'])
+unit_chunks = module.split_semantic_v1('A' * 41 + 'N·m。tail', 42)
+assert all(not (left.endswith('N') and right.startswith('·m')) for left, right in zip(unit_chunks, unit_chunks[1:]))
+assert 'N·m' in ''.join(unit_chunks)
+PY;
+        $plan = hub_run_command(['python3', '-c', $planScript, $service . '/long_form.py'], 10);
+        hub_test_assert(($plan['exit_code'] ?? 1) === 0, 'semantic-v1 plan must be byte-deterministic: ' . ($plan['stderr'] ?? ''));
+
+        $command = ['env', 'VOXCPM2_JOB_FAKE_SYNTHESIS=1', 'python3', $service . '/job.py', '--workspace', $workspace, '--input', $workspace . '/input', '--output', $workspace . '/output', '--runner-config', $workspace . '/input/runner_config.json'];
+        $first = hub_run_command($command, 30);
+        hub_test_assert(($first['exit_code'] ?? 1) === 0, 'deterministic fake long-form synthesis must run without a model: ' . ($first['stderr'] ?? ''));
+        $audio = $workspace . '/output/generated_audio.wav';
+        $metadata = $workspace . '/output/synthesis_metadata.json';
+        $waveform = $workspace . '/output/waveform_preview.json';
+        $checkpoint = $workspace . '/checkpoints/plan/chunks.json';
+        hub_test_assert(is_file($audio) && is_file($metadata) && is_file($waveform) && is_file($checkpoint), 'job must emit only declared artifacts plus a private checkpoint');
+        $audioHash = hash_file('sha256', $audio);
+        $metadataValue = json_decode((string)file_get_contents($metadata), true);
+        hub_test_assert(is_array($metadataValue), 'synthesis metadata must be JSON');
+        foreach (['normalized_input', 'plan', 'model', 'voice_context', 'chunks', 'final_format', 'loudness', 'timeline'] as $key) {
+            hub_test_assert(array_key_exists($key, $metadataValue), 'synthesis metadata missing ' . $key);
+        }
+        hub_test_assert(($metadataValue['plan']['normalization'] ?? '') === 'semantic-v1', 'metadata must preserve the immutable semantic plan');
+        hub_test_assert(($metadataValue['model']['model'] ?? '') === '/models/voxcpm2/model' && ($metadataValue['controls']['task_seed'] ?? null) === 42, 'runner defaults must be recorded in an ordinary design result');
+        hub_test_assert(!str_contains((string)file_get_contents($metadata), $workspace), 'metadata must not disclose workspace paths');
+        $second = hub_run_command($command, 30);
+        hub_test_assert(($second['exit_code'] ?? 1) === 0 && $audioHash === hash_file('sha256', $audio), 'resume must reuse matching chunk checkpoints deterministically');
+        hub_test_assert(!is_file($workspace . '/output/chunks.json') && !is_dir($workspace . '/output/checkpoints'), 'checkpoints must never be public artifacts');
+    } finally {
+        hub_test_voxcpm2_remove($workspace);
+    }
+});
+
+hub_test('VoxCPM2 long-form admission freezes only manifest controls and rejects profile misuse', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+    $route = hub_resolve_audio_async_route($db, 'voice_generate');
+    $design = hub_pack_job_normalize_request_input([
+        'text' => 'RC Valve 8,500 rpm',
+        'voice_prompt' => '沉穩的台灣男性技師',
+        'control' => '清楚、稍慢',
+    ], $route);
+    hub_test_assert($design === [
+        'text' => 'RC Valve 8,500 rpm',
+        'voice_prompt' => '沉穩的台灣男性技師',
+        'control' => '清楚、稍慢',
+    ], 'design tasks must persist only supplied manifest controls; the pinned runner supplies its fixed defaults');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input(['text' => 'x', 'voice_prompt' => 'voice', 'voice_profile_id' => 1], $route)), 'design must reject clone profile IDs at Pack admission');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input(['text' => 'x', 'voice_prompt' => 'voice', 'reference_wav_path' => '/host.wav'], $route)), 'async tasks must reject external reference paths');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input(['text' => 'x', 'voice_prompt' => 'voice', 'model' => 'anything-else'], $route)), 'async tasks must reject arbitrary model controls');
+});
+
+hub_test('VoxCPM2 install builds and verifies the controlled long-form runner image', function (): void {
+    $db = hub_test_reset_db();
+    $commands = [];
+    $built = false;
+    $installed = hub_install_pack($db, 'tts-voxcpm2', [
+        'idempotent' => true,
+        'runner_build_runner' => static function (array $command, int $timeoutSeconds) use (&$commands, &$built): array {
+            $commands[] = $command;
+            if (($command[1] ?? '') === 'image' && ($command[2] ?? '') === 'inspect') {
+                return $built ? ['exit_code' => 0, 'stdout' => 'sha256:voxcpm2', 'stderr' => ''] : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'missing'];
+            }
+            if (($command[1] ?? '') === 'build') {
+                $built = true;
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            }
+            throw new RuntimeException('unexpected VoxCPM2 runner image command');
+        },
+    ]);
+    hub_test_assert($commands === [
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.0'],
+        ['docker', 'build', '--tag', '3waaihub/tts-voxcpm2:0.1.0', '--file', HUB_ROOT . '/packs/tts-voxcpm2/service/Dockerfile', HUB_ROOT . '/packs/tts-voxcpm2'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.0'],
+    ] && ($installed['service']['install_status'] ?? '') === 'installed', 'runner image must be built only from the Pack-controlled context and verified before install');
+});
+
+hub_test('VoxCPM2 async clone resolves one owned profile into a path-free snapshot and controlled mount', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $owner = hub_create_api_member($db, 'Async Clone Owner');
+        $other = hub_create_api_member($db, 'Async Clone Other');
+        $ownerToken = hub_create_api_token($db, $owner, 'async clone owner', null, null);
+        $otherToken = hub_create_api_token($db, $other, 'async clone other', null, null);
+        hub_test_audio_allow($db, [$ownerToken, $otherToken], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $profilePath = hub_voice_profile_storage_dir() . '/async_clone_reference.wav';
+        file_put_contents($profilePath, 'RIFFmanaged-profile', LOCK_EX);
+        $profileId = hub_create_voice_profile($db, $owner, [
+            'name' => 'Async clone profile',
+            'reference_audio_path' => $profilePath,
+            'consent_type' => 'self_recorded',
+            'usage_scope' => 'private',
+        ]);
+        $input = [
+            'text' => 'RC Valve 8,500 rpm',
+            'mode' => 'clone',
+            'voice_profile_id' => (string)$profileId,
+            'control' => '清楚、稍慢',
+        ];
+        $accepted = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], $input);
+        hub_test_assert($accepted['status'] === 200, 'owned clone profile must be admitted');
+        $task = hub_get_task($db, (int)(hub_test_audio_payload($accepted)['task_id'] ?? 0));
+        $snapshot = $task['input']['voice_context'] ?? null;
+        hub_test_assert(is_array($snapshot) && $snapshot === [
+            'mode' => 'clone',
+            'voice_profile_id' => $profileId,
+            'reference_audio_sha256' => hash_file('sha256', $profilePath),
+            'container_path' => '/data/voice_profiles/reference.wav',
+        ], 'task must persist only immutable profile identity/hash and its fixed container path');
+        hub_test_assert(!str_contains((string)json_encode($task['input']), $profilePath), 'task input must never persist a host profile path');
+
+        $route = hub_resolve_audio_async_route($db, 'voice_generate');
+        $mount = hub_pack_job_resolve_voice_profile_mount($db, $task, hub_pack_job_contract_from_snapshot($task));
+        hub_test_assert($mount === ['source' => realpath($profilePath), 'container_path' => '/data/voice_profiles/reference.wav'], 'generic runner must derive the sole read-only profile mount from the trusted snapshot');
+        $runner = $route['runner'];
+        $runner['asset_mounts'] = [];
+        $command = hub_pack_job_default_runner_command([
+            'workspace' => hub_test_voxcpm2_job_workspace(),
+            'run' => ['run_id' => 'voice-profile-mount-test'],
+            'runner' => array_replace($runner, ['voice_profile_mount' => $mount]),
+        ])['command'];
+        $profileMount = 'type=bind,src=' . realpath($profilePath) . ',dst=/data/voice_profiles/reference.wav,readonly';
+        hub_test_assert(in_array($profileMount, $command, true) && !str_contains(implode("\n", $command), 'async_clone_reference.wav') === false, 'runner command must receive only the Hub-derived read-only reference mount');
+
+        $legacyContract = json_decode((string)$task['job_contract_json'], true, 512, JSON_THROW_ON_ERROR);
+        unset($legacyContract['voice_context']['design_prompt_input']);
+        $legacyJson = json_encode($legacyContract, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $legacyTask = $task;
+        $legacyTask['job_contract_json'] = $legacyJson;
+        $legacyTask['job_contract_digest'] = hash('sha256', $legacyJson);
+        $legacyResolved = hub_pack_job_contract_from_snapshot($legacyTask);
+        hub_test_assert(array_keys($legacyResolved['voice_context'] ?? []) === ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path']
+            && hub_pack_job_voice_context_snapshot($legacyResolved['voice_context'], ['mode' => 'design'], null) === [], 'valid legacy design/clone contracts must canonicalize without adding a client path or prompt control');
+        hub_test_assert(hub_pack_job_resolve_voice_profile_mount($db, $legacyTask, $legacyResolved) === $mount, 'valid legacy clone contracts must preserve the owned profile hash and controlled mount');
+        $legacyPromptInput = $legacyTask['input'];
+        $legacyPromptInput['voice_prompt'] = 'forbidden clone prompt';
+        hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_voice_context_snapshot($legacyResolved['voice_context'], $legacyPromptInput, $snapshot)), 'legacy clone contracts must not bypass the prompt prohibition before GPU work');
+        $db->prepare('UPDATE tasks SET job_contract_json = :json, job_contract_digest = :digest WHERE id = :id')->execute([
+            ':json' => $legacyJson,
+            ':digest' => $legacyTask['job_contract_digest'],
+            ':id' => (int)$task['id'],
+        ]);
+        $task = $legacyTask;
+
+        $beforeClonePrompt = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+        $clonePrompt = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], $input + ['voice_prompt' => 'must be rejected before GPU']);
+        hub_test_assert($clonePrompt['status'] === 400 && (hub_test_audio_payload($clonePrompt)['error'] ?? '') === 'invalid_request'
+            && (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $beforeClonePrompt, 'clone voice_prompt must be rejected at gateway admission before a task or GPU work exists');
+
+        $modelDir = hub_test_models_dir() . '/voxcpm2/model';
+        if (!is_dir($modelDir) && !mkdir($modelDir, 0700, true) && !is_dir($modelDir)) {
+            throw new RuntimeException('Cannot create VoxCPM2 model fixture.');
+        }
+        file_put_contents($modelDir . '/config.json', '{}', LOCK_EX);
+        $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        $dockerRun = [];
+        hub_run_pack_job_task($db, $claimed ?? [], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+            'command_runner' => static function (array $command, int $timeout) use (&$dockerRun): array {
+                if (($command[1] ?? '') === 'run') {
+                    $dockerRun = $command;
+                    return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'synthetic runner failure'];
+                }
+                if (($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect') {
+                    return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such container'];
+                }
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            },
+        ]);
+        $checkpointMount = 'type=bind,src=' . hub_task_result_dir((int)$task['id']) . '/workspace/checkpoints,dst=/workspace/checkpoints';
+        hub_test_assert(in_array($profileMount, $dockerRun, true) && in_array($checkpointMount, $dockerRun, true)
+            && !in_array('type=bind,src=' . hub_task_result_dir((int)$task['id']) . '/workspace/input/source,dst=/workspace/input/source,readonly', $dockerRun, true), 'default executor must retain the clone mount and writable private checkpoints after execution starts');
+
+        $crossMember = hub_test_audio_request($db, 'voice_generate', (string)$otherToken['plain_token'], $input);
+        hub_test_assert($crossMember['status'] === 403 && (hub_test_audio_payload($crossMember)['error'] ?? '') === 'voice_profile_forbidden', 'another member must not clone an owned profile');
+        $design = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], array_replace($input, ['mode' => 'design', 'voice_prompt' => 'voice']));
+        hub_test_assert($design['status'] === 400 && (hub_test_audio_payload($design)['error'] ?? '') === 'invalid_request', 'design must reject a profile ID');
+        $external = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], $input + ['reference_wav_path' => '/host/reference.wav']);
+        hub_test_assert($external['status'] === 400 && (hub_test_audio_payload($external)['error'] ?? '') === 'forbidden_task_control', 'async clone must reject external reference paths');
+
+        unlink($profilePath);
+        hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_voice_profile_mount($db, $task, hub_pack_job_contract_from_snapshot($task))), 'profile file changes or removal must fail before GPU work');
+        foreach ([$task] as $item) {
+            if (is_array($item) && isset($item['id'])) {
+                hub_test_voxcpm2_remove(hub_task_result_dir((int)$item['id']));
+            }
+        }
+    });
+});
 hub_test('VoxCPM2 three-mode smoke runbook keeps the safe operator contract', function (): void {
     $path = HUB_ROOT . '/docs/operations/voxcpm2-three-mode-smoke.md';
     hub_test_assert(is_file($path), 'VoxCPM2 three-mode smoke runbook missing');

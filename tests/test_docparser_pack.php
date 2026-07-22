@@ -902,6 +902,7 @@ hub_test('DocParser repair submit is owned by API member and rejects unsafe sour
         hub_test_assert(($repairTask['task_type'] ?? '') === 'docparser_repair_translation', 'repair submit queued task type mismatch');
         hub_test_assert(($repairTask['queue_name'] ?? '') === 'ocr', 'repair submit default queue must be ocr');
         hub_test_assert(($repairTask['input']['source_task_id'] ?? 0) === $sourceTaskId, 'repair submit source task id mismatch');
+        hub_test_assert((int)($repairTask['source_task_id'] ?? 0) === $sourceTaskId, 'repair submit must persist source task lineage in the task column');
         hub_test_assert(($repairTask['input']['block_ids'] ?? []) === ['p1-b1'], 'repair submit sanitized block ids mismatch');
         hub_test_assert((int)($repairTask['input']['api_member_id'] ?? 0) === $memberA, 'repair submit must store member ownership');
     } finally {

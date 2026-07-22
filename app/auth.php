@@ -380,14 +380,20 @@ function hub_csrf_token(): string
     return $_SESSION['csrf_token'];
 }
 
-function hub_check_csrf(): void
+function hub_check_csrf(bool $terminate = true): bool
 {
     hub_start_session();
     $token = $_POST['csrf_token'] ?? '';
     if (!is_string($token) || !hash_equals($_SESSION['csrf_token'] ?? '', $token)) {
-        http_response_code(400);
-        exit('Bad request');
+        if ($terminate) {
+            http_response_code(400);
+            exit('Bad request');
+        }
+
+        return false;
     }
+
+    return true;
 }
 
 function hub_audit(PDO $db, string $username, string $action, string $details): void

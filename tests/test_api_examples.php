@@ -50,3 +50,23 @@ hub_test('api examples documentation exists', function (): void {
     hub_test_assert(str_contains($benchmarkPage, 'sam3_mock_image'), 'benchmark page must show SAM3 mock benchmark');
     hub_test_assert(str_contains($benchmarkPage, 'sam3_real_image'), 'benchmark page must show SAM3 real benchmark');
 });
+
+hub_test('audio task documentation publishes async delivery and runtime contracts', function (): void {
+    $apiExamples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
+    foreach (['mode=audio_cleanup', 'mode=speech_transcribe', 'mode=voice_generate', 'callback_target', 'source_artifact_id', 'task_artifacts_ack', 'X-AIHub-Signature'] as $needle) {
+        hub_test_assert(str_contains($apiExamples, $needle), 'audio API examples missing ' . $needle);
+    }
+    $quickstart = (string)file_get_contents(HUB_ROOT . '/docs/client_quickstart.md');
+    foreach (['task_status', 'task_result', 'artifact', 'polling fallback', 'HMAC'] as $needle) {
+        hub_test_assert(str_contains($quickstart, $needle), 'audio quickstart missing ' . $needle);
+    }
+    $runtime = (string)file_get_contents(HUB_ROOT . '/docs/pack_runtime_contract_v0.1.md');
+    hub_test_assert(str_contains($runtime, 'gpu:0') && str_contains($runtime, 'cleanup_failed'), 'runtime contract must publish fenced GPU cleanup');
+    $localJob = (string)file_get_contents(HUB_ROOT . '/docs/local_job_contract_v0.1.md');
+    hub_test_assert(str_contains($localJob, 'pack_job') && str_contains($localJob, 'checkpoint'), 'local job contract must publish generic Pack jobs and checkpoints');
+    $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
+    hub_test_assert(is_file(HUB_ROOT . '/scripts/audio_packs_acceptance.php') && str_contains($readme, 'scripts/audio_packs_acceptance.php'), 'README must publish the real audio acceptance command only after it exists');
+    foreach (['php scripts/init_db.php', 'scripts/callback_worker.php', 'scripts/prune_retention.php', 'php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_real_wav', 'Task 13', 'sync_max_duration_seconds=30'] as $needle) {
+        hub_test_assert(str_contains($readme, $needle), 'README audio operations missing ' . $needle);
+    }
+});

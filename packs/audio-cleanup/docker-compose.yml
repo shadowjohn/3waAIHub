@@ -1,0 +1,5 @@
+services:
+  cleanup:
+    image: 3waaihub/audio-cleanup:0.1.0
+    build:
+      context: ./service

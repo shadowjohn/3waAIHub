@@ -24,7 +24,7 @@ hub_test('sqlite safety storage defaults exist', function (): void {
         'AIHUB_DB_MAX_SIZE_MB' => '1024',
         'AIHUB_LOG_RETENTION_DAYS' => '14',
         'AIHUB_METRIC_RETENTION_DAYS' => '14',
-        'AIHUB_TASK_RETENTION_DAYS' => '30',
+        'AIHUB_TASK_RETENTION_DAYS' => '180',
         'AIHUB_MAX_TASK_LOG_ROWS' => '1000',
         'AIHUB_MAX_RESULT_JSON_BYTES' => '262144',
     ];

@@ -10,11 +10,16 @@
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "asr",
-  "description": "Whisper-compatible audio transcription API with GPU-first faster-whisper inference and CPU fallback.",
+  "description": "Whisper-compatible audio transcription API with GPU-first faster-whisper inference, CPU fallback, and an opt-in GPU Pack job for managed audio artifacts.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
     "default_internal_port": 8000
+  },
+  "runner_build": {
+    "context": ".",
+    "dockerfile": "service/Dockerfile",
+    "image": "3waaihub/whisper-asr:0.1.0"
   },
   "gateway": {
     "health_path": "/health",
@@ -23,6 +28,137 @@
     "timeout_sec": 180,
     "max_upload_mb": 100
   },
+  "model_allowlist": {
+    "whisper": {
+      "aliases": {
+        "large_v3": {
+          "model": "/models/whisper/asr/large-v3",
+          "label": "large-v3"
+        }
+      }
+    }
+  },
+  "async_jobs": [
+    {
+      "job": "transcribe",
+      "input": {
+        "fields": ["model", "language", "word_timestamps", "diarization", "min_speakers", "max_speakers", "output_srt", "output_vtt"],
+        "source_artifact_types": ["audio", "cleaned_audio", "vocals_audio"],
+        "request_schema": {
+          "model": {"type": "string", "required": false, "enum": ["large_v3"], "default": "large_v3", "max_length": 32},
+          "language": {"type": "string", "required": false, "default": "auto", "max_length": 16},
+          "word_timestamps": {"type": "boolean", "required": false, "default": false, "requires_when": {"equals": true, "field": "language", "not_equals": "auto"}},
+          "diarization": {"type": "boolean", "required": false, "default": false},
+          "min_speakers": {"type": "integer", "required": false, "min": 1, "max": 100, "requires": {"diarization": true}},
+          "max_speakers": {"type": "integer", "required": false, "min": 1, "max": 100, "requires": {"diarization": true}, "gte_field": "min_speakers"},
+          "output_srt": {"type": "boolean", "required": false, "default": false},
+          "output_vtt": {"type": "boolean", "required": false, "default": false}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/whisper-asr:0.1.0",
+        "entrypoint": ["/app/speech-transcribe"],
+        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 10000,
+        "timeout_seconds": 3600,
+        "executor": "container",
+        "asset_mounts": [
+          {
+            "id": "whisper_asr_large_v3",
+            "storage": "models",
+            "host_subdir": "whisper/asr/large-v3",
+            "container_path": "/models/whisper/asr/large-v3",
+            "required_paths": ["config.json", "model.bin", "tokenizer.json"]
+          },
+          {
+            "id": "whisper_alignment_torch",
+            "storage": "cache",
+            "host_subdir": "whisper/torch",
+            "container_path": "/cache/whisper/torch",
+            "required_paths": [".aihub-alignment-ready.json", "wav2vec2_fairseq_base_ls960_asr_ls960.pth"],
+            "when": {"input": "word_timestamps", "equals": true},
+            "marker_json": {
+              "path": ".aihub-alignment-ready.json",
+              "required_strings": {
+                "schema": "aihub-whisper-alignment/v1",
+                "language": "en",
+                "model_name": "WAV2VEC2_ASR_BASE_960H",
+                "model_dir": "/cache/whisper/torch",
+                "weight_path": "/cache/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth"
+              },
+              "exact_keys": ["schema", "language", "model_name", "model_dir", "weight_path", "alignment_languages"],
+              "string_lists": {"alignment_languages": ["en"]},
+              "input_membership": {"input": "language", "list_field": "alignment_languages"}
+            }
+          },
+          {
+            "id": "whisper_pyannote_diarization",
+            "storage": "cache",
+            "host_subdir": "whisper/pyannote/speaker-diarization-3.1",
+            "container_path": "/cache/whisper/pyannote/speaker-diarization-3.1",
+            "required_paths": [".aihub-pyannote-ready.json", "config.yaml", "models/pyannote_segmentation-3.0.bin", "models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"],
+            "when": {"input": "diarization", "equals": true},
+            "marker_json": {
+              "path": ".aihub-pyannote-ready.json",
+              "required_strings": {
+                "schema": "aihub-whisper-pyannote/v1",
+                "config_path": "/cache/whisper/pyannote/speaker-diarization-3.1/config.yaml",
+                "segmentation_path": "/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_segmentation-3.0.bin",
+                "embedding_path": "/cache/whisper/pyannote/speaker-diarization-3.1/models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin"
+              },
+              "exact_keys": ["schema", "config_path", "segmentation_path", "embedding_path"]
+            }
+          }
+        ]
+      },
+      "runner_config": {
+        "alias_input": "model",
+        "model_allowlist": "whisper"
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "transcript_json",
+            "path": "transcript.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 4194304,
+            "json": {"required_keys": ["text", "segments", "language", "model", "word_timestamps"]}
+          },
+          {
+            "type": "transcription_report",
+            "path": "transcription_report.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 65536,
+            "json": {"required_keys": ["model", "language", "word_timestamps", "diarization", "segment_count", "elapsed_seconds"]}
+          },
+          {
+            "type": "subtitle_srt",
+            "path": "subtitle.srt",
+            "mime_types": ["application/x-subrip", "text/plain"],
+            "max_bytes": 4194304,
+            "when": {"input": "output_srt", "equals": true}
+          },
+          {
+            "type": "subtitle_vtt",
+            "path": "subtitle.vtt",
+            "mime_types": ["text/vtt", "text/plain"],
+            "max_bytes": 4194304,
+            "when": {"input": "output_vtt", "equals": true}
+          },
+          {
+            "type": "speaker_timeline",
+            "path": "speaker_timeline.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 1048576,
+            "when": {"input": "diarization", "equals": true},
+            "json": {"required_keys": ["speakers"]}
+          }
+        ]
+      }
+    }
+  ],
   "hardware": {
     "gpu_required": false,
     "gpu_supported": true,

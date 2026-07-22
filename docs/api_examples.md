@@ -534,6 +534,82 @@ curl -X POST "<BASE_URL>?mode=task_submit" \
 
 Use block IDs from `quality_report.missing_translation_blocks` or `missing_translation_block_ids_by_type`. Repair only retranslates selected DocIR blocks, rewrites the original task artifacts, and skips blocks that already have valid translations.
 
+## Async Audio Pack Tasks
+
+All audio jobs use `POST multipart/form-data` and a Bearer token with the requested mode. `audio_cleanup` and `speech_transcribe` require exactly one source: one upload or one owned `source_artifact_id`. `voice_generate` is text-only and rejects both source forms. The server resolves Pack/job/version; clients never send Pack paths, Docker controls, or callback URLs. A submission returns `task_id`, `status_url`, `result_url`, `log_url`, `cancel_url`, and `artifact_url_template`.
+
+### `mode=audio_cleanup`
+
+```bash
+curl -X POST "<BASE_URL>?mode=audio_cleanup" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "source=@sample.wav" \
+  -F "operation=separate_and_enhance" \
+  -F "demucs_model=balanced" \
+  -F "callback_target=myai"
+```
+
+### `mode=speech_transcribe`
+
+```bash
+curl -X POST "<BASE_URL>?mode=speech_transcribe" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "source=@sample.wav" \
+  -F "model=large_v3" \
+  -F "language=auto" \
+  -F "output_srt=1" \
+  -F "callback_target=myai"
+```
+
+To chain an owned cleanup result instead of uploading it again, omit `source` and send the artifact ID. The source must be an allowed, unexpired artifact owned by the same API member.
+
+```bash
+curl -X POST "<BASE_URL>?mode=speech_transcribe" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "source_artifact_id=123" \
+  -F "language=auto"
+```
+
+The client must send a normal `Content-Length` header for artifact-only requests; curl supplies it for this multipart request.
+
+### `mode=voice_generate`
+
+```bash
+curl -X POST "<BASE_URL>?mode=voice_generate" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "text=請檢查 RC Valve 間隙。" \
+  -F "mode=design" \
+  -F "voice_prompt=沉穩的台灣男性技師" \
+  -F "seed=42" \
+  -F "callback_target=myai"
+```
+
+`mode=clone` replaces the design prompt with one owned managed `voice_profile_id`; it never accepts an uploaded reference file or `source_artifact_id`.
+
+`mode=clone` uses one managed `voice_profile_id`; it does not accept a server path. Upload byte limits come from the resolved Pack. Use the async modes for work larger than a sync diagnostic sample.
+
+### Callback, polling, download, and ACK
+
+An operator registers the HTTPS callback target and secret out of band; a submitter passes only its pre-registered `callback_target` alias. Terminal events are `task.completed` and `task.failed`. Verify the exact raw JSON body with the target secret:
+
+```text
+X-AIHub-Event: task.completed
+X-AIHub-Delivery: <delivery_id>
+X-AIHub-Timestamp: <unix timestamp>
+X-AIHub-Signature: sha256=<hex HMAC-SHA256(raw_body, callback_secret)>
+```
+
+Deduplicate `X-AIHub-Delivery` and return HTTP 2xx for a repeat. Callbacks retry; polling is the fallback and diagnostic path:
+
+```bash
+curl -H "Authorization: Bearer <TOKEN>" "<BASE_URL>?mode=task_status&task_id=<TASK_ID>"
+curl -H "Authorization: Bearer <TOKEN>" "<BASE_URL>?mode=task_result&task_id=<TASK_ID>"
+curl -H "Authorization: Bearer <TOKEN>" -OJ "<BASE_URL>?mode=artifact&artifact_id=<ARTIFACT_ID>"
+curl -X POST "<BASE_URL>?mode=task_artifacts_ack" -H "Authorization: Bearer <TOKEN>" -F "task_id=<TASK_ID>" -F "artifact_id=<ARTIFACT_ID>"
+```
+
+ACK records receipt and can shorten retention, but never deletes a file immediately. Defaults are one hour for failed partial uploads, 24 hours for workspace/temporary files, seven days for source media, 30 days for result artifacts, and 180 days for audit metadata. A purged artifact returns `410 Gone`.
+
 Figure crop download:
 
 ```text

@@ -18,8 +18,8 @@ hub_test('Whisper ASR pack has L5 GPU-first runtime files', function (): void {
     }
 
     $dockerfile = (string)file_get_contents($base . '/Dockerfile');
-    foreach (['ct2-nvidia.conf', 'nvidia/cublas/lib', 'nvidia/cudnn/lib', 'ldconfig', 'python3 -m unittest -v test_app.py'] as $needle) {
-        hub_test_assert(str_contains($dockerfile, $needle), 'whisper-asr Dockerfile missing CUDA loader setup: ' . $needle);
+    foreach (['FROM nvidia/cuda:', 'whisperx==3.3.1', 'python3 -m unittest -v test_app.py', 'speech_transcribe.sh'] as $needle) {
+        hub_test_assert(str_contains($dockerfile, $needle) || str_contains((string)file_get_contents($base . '/requirements.txt'), $needle), 'whisper-asr Job image missing ' . $needle);
     }
 
     $manifest = hub_get_pack('whisper-asr')['manifest'];
@@ -45,11 +45,6 @@ hub_test('Whisper ASR pack has L5 GPU-first runtime files', function (): void {
     hub_test_assert(($whisperSchema['USE_GPU']['default'] ?? '') === '1', 'whisper-asr USE_GPU must default to GPU allocation');
     hub_test_assert(($whisperSchema['USE_GPU']['restart_required'] ?? false) === true, 'whisper-asr USE_GPU must require restart');
 
-    $requirements = (string)file_get_contents($base . '/requirements.txt');
-    foreach (['nvidia-cublas-cu12', 'nvidia-cudnn-cu12==9.'] as $needle) {
-        hub_test_assert(str_contains($requirements, $needle), 'whisper-asr requirements missing ' . $needle);
-    }
-
     $smoke = (string)file_get_contents($base . '/smoke.py');
     foreach (['fastapi', 'faster_whisper'] as $needle) {
         hub_test_assert(str_contains($smoke, $needle), 'whisper-asr smoke.py missing ' . $needle);
@@ -66,20 +61,38 @@ hub_test('Whisper ASR pack has L5 GPU-first runtime files', function (): void {
 
 hub_test('Whisper ASR service instance generates GPU compose and gateway response', function (): void {
     $db = hub_test_reset_db();
+    $built = false;
+    $commands = [];
     $installed = hub_install_pack($db, 'whisper-asr', [
         'service_key' => 'asr-main',
         'mode' => 'asr',
         'name' => 'Whisper ASR Main',
         'port_mode' => 'manual',
         'local_port' => 18107,
+        'runner_build_runner' => static function (array $command, int $timeoutSeconds) use (&$built, &$commands): array {
+            $commands[] = $command;
+            if (($command[1] ?? '') === 'image' && ($command[2] ?? '') === 'inspect') {
+                return $built
+                    ? ['exit_code' => 0, 'stdout' => 'sha256:test-whisper-asr', 'stderr' => '']
+                    : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such image'];
+            }
+            if (($command[1] ?? '') === 'build') {
+                $built = true;
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            }
+            throw new RuntimeException('unexpected Whisper runner image lifecycle command');
+        },
     ]);
 
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
     $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
     hub_test_assert(str_contains($compose, '127.0.0.1:${ASR_LOCAL_PORT:-18107}:8000'), 'whisper-asr compose port binding mismatch');
+    hub_test_assert(str_contains($compose, 'context: ' . HUB_ROOT . '/packs/whisper-asr') && str_contains($compose, 'dockerfile: service/Dockerfile'), 'whisper-asr generated compose must include its controlled Pack job launcher');
+    hub_test_assert(str_contains($compose, 'image: 3waaihub/whisper-asr:0.1.0'), 'whisper-asr service image must match the generic Pack runner image');
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/whisper:/models/whisper'), 'whisper-asr compose must mount model storage');
     hub_test_assert(str_contains($compose, '${AIHUB_CACHE_DIR}/whisper:/cache/whisper'), 'whisper-asr compose must mount cache storage');
     hub_test_assert(str_contains($compose, '${SERVICE_DATA_DIR}:/data/service'), 'whisper-asr compose must mount service data');
+    hub_test_assert($built && in_array(['docker', 'build', '--tag', '3waaihub/whisper-asr:0.1.0', '--file', HUB_ROOT . '/packs/whisper-asr/service/Dockerfile', HUB_ROOT . '/packs/whisper-asr'], $commands, true), 'install must build and verify the declared generic Pack runner image');
     hub_test_assert(str_contains($compose, 'gpus: all'), 'whisper-asr generated compose must request GPUs via USE_GPU=1');
     foreach ([
         'WHISPER_MODEL_DIR=/models/whisper',
@@ -99,7 +112,7 @@ hub_test('Whisper ASR service instance generates GPU compose and gateway respons
         hub_test_assert(str_contains($env, $needle), 'whisper-asr env missing ' . $needle);
     }
 
-    $updated = hub_update_service_settings($db, (int)$installed['service']['id'], ['USE_GPU' => '0']);
+    $updated = hub_update_service_settings($db, (int)$installed['service']['id'], ['USE_GPU' => '0', 'WHISPER_REAL_INFERENCE' => '0']);
     hub_test_assert($updated['changed'] === true, 'whisper-asr USE_GPU update must change service settings');
     $cpuEnv = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
     hub_test_assert(str_contains($cpuEnv, 'USE_GPU=0'), 'whisper-asr USE_GPU update must rewrite env');
@@ -234,4 +247,38 @@ hub_test('VoxCPM2 operations smoke keeps GPU, artifact, privacy, and cleanup con
     foreach (['/park/', '/data/voice_profiles/', 'sample.wav', 'git@', 'nvapi-', 'ghp_', 'github_pat_', 'docker compose down -v', 'rm -rf'] as $forbidden) {
         hub_test_assert(!str_contains($document, $forbidden), 'VoxCPM2 operations smoke must not contain ' . $forbidden);
     }
+});
+
+hub_test('real audio Pack acceptance client has a closed public API contract', function (): void {
+    $script = HUB_ROOT . '/scripts/audio_packs_acceptance.php';
+    hub_test_assert(is_file($script), 'real audio acceptance client must exist outside ordinary CI');
+    $source = (string)file_get_contents($script);
+    foreach ([
+        '--pack',
+        '--fixture',
+        '--callback-target',
+        '--voice-profile-id',
+        '--json',
+        'audio-cleanup',
+        'whisper-asr',
+        'tts-voxcpm2',
+        'nvidia-smi',
+        "'docker', 'info'",
+        'hub_audio_acceptance_submit',
+        'hub_audio_acceptance_poll',
+        'hash_file',
+        'source_artifact_id',
+    ] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'real audio acceptance client missing ' . $needle);
+    }
+});
+
+hub_test('real audio Pack acceptance client returns JSON for a JSON configuration error', function (): void {
+    $script = HUB_ROOT . '/scripts/audio_packs_acceptance.php';
+    $output = [];
+    $exitCode = 0;
+    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' --json 2>&1', $output, $exitCode);
+    $payload = json_decode(implode("\n", $output), true);
+    hub_test_assert($exitCode === 1, 'acceptance client configuration error must fail');
+    hub_test_assert(is_array($payload) && ($payload['ok'] ?? true) === false && !empty($payload['error']), 'acceptance client --json must return a JSON error payload');
 });

@@ -1,7 +1,9 @@
 services:
   whisper-asr:
     build:
-      context: ./service
+      context: .
+      dockerfile: service/Dockerfile
+    image: 3waaihub/whisper-asr:0.1.0
     env_file:
       - .env
     gpus: all

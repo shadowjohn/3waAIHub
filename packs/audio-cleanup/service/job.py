@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""GPU-only Pack runner for the Hub-managed audio-cleanup workspace."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import time
+from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
+from typing import Any
+
+
+DEMUCS_MODEL_DIR = Path(os.environ.get("AIHUB_DEMUCS_MODEL_DIR", "/opt/aihub/models/demucs"))
+DEEPFILTERNET_MODEL_DIR = Path(os.environ.get("AIHUB_DEEPFILTERNET_MODEL_DIR", "/opt/aihub/models/deepfilternet"))
+TORCH_HOME = Path(os.environ.get("TORCH_HOME", "/opt/aihub/models/torch"))
+DEMUCS_MODEL_FILES = {
+    "htdemucs": ("htdemucs.yaml", "955717e8-8726e21a.th"),
+    "htdemucs_ft": ("htdemucs_ft.yaml", "f7e0c4bc-ba3fe64a.th", "d12395a8-e57c48e6.th", "92cfc3b6-ef3bcb9c.th", "04573f0d-f3cf25b2.th"),
+}
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError(f"invalid_json:{path.name}")
+    return value
+
+
+def run(argv: list[str]) -> None:
+    try:
+        subprocess.run(argv, check=True)
+    except FileNotFoundError as error:
+        raise RuntimeError(f"dependency_missing:{argv[0]}") from error
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"runner_failed:{argv[0]}:{error.returncode}") from error
+
+
+def audio_properties(path: Path) -> dict[str, Any]:
+    try:
+        probe = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,sample_rate,channels", "-of", "json", str(path)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        payload = json.loads(probe.stdout)
+    except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+        raise RuntimeError("audio_probe_failed") from error
+    stream = next((item for item in payload.get("streams", []) if item.get("codec_type") == "audio"), None)
+    if not isinstance(stream, dict):
+        raise RuntimeError("audio_probe_failed")
+    try:
+        values = {
+            "sample_rate": int(stream["sample_rate"]),
+            "channels": int(stream["channels"]),
+            "duration_seconds": float(payload["format"]["duration"]),
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        raise RuntimeError("audio_probe_failed") from error
+    if values["sample_rate"] < 1 or values["channels"] < 1 or values["duration_seconds"] < 0:
+        raise RuntimeError("audio_probe_failed")
+    return values
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def package_version(name: str) -> str:
+    try:
+        return version(name)
+    except PackageNotFoundError as error:
+        raise RuntimeError(f"dependency_missing:{name}") from error
+
+
+def require_cuda() -> None:
+    try:
+        import torch
+    except ImportError as error:
+        raise RuntimeError("dependency_missing:torch") from error
+    torch.hub.set_dir(str(TORCH_HOME))
+    if not torch.cuda.is_available():
+        raise RuntimeError("gpu_unavailable")
+
+
+def require_demucs_model(model_name: Any) -> Path:
+    if not isinstance(model_name, str) or model_name not in DEMUCS_MODEL_FILES:
+        raise RuntimeError("model_not_allowlisted:demucs")
+    missing = [name for name in DEMUCS_MODEL_FILES[model_name] if not (DEMUCS_MODEL_DIR / name).is_file()]
+    if missing:
+        raise RuntimeError(f"model_assets_missing:demucs:{model_name}")
+    return DEMUCS_MODEL_DIR
+
+
+def require_deepfilter_model() -> Path:
+    checkpoints = DEEPFILTERNET_MODEL_DIR / "checkpoints"
+    if not (DEEPFILTERNET_MODEL_DIR / "config.ini").is_file() or not checkpoints.is_dir() or not any(checkpoints.glob("*.ckpt*")):
+        raise RuntimeError("model_assets_missing:deepfilternet")
+    return DEEPFILTERNET_MODEL_DIR
+
+
+def one_file(root: Path, name: str) -> Path:
+    matches = list(root.rglob(name))
+    if len(matches) != 1 or not matches[0].is_file():
+        raise RuntimeError(f"expected_output_missing:{name}")
+    return matches[0]
+
+
+def demucs(source: Path, work: Path, model: dict[str, Any]) -> tuple[Path, Path, str]:
+    model_name = model.get("model")
+    segment_seconds = model.get("segment_seconds")
+    shifts = model.get("shifts")
+    if (isinstance(segment_seconds, bool) or not isinstance(segment_seconds, (int, float))
+            or not math.isfinite(float(segment_seconds)) or not 0 < float(segment_seconds) <= 7.8
+            or isinstance(shifts, bool) or not isinstance(shifts, int) or not 0 <= shifts <= 10):
+        raise RuntimeError("model_config_invalid:demucs")
+    model_repo = require_demucs_model(model_name)
+    run([
+        sys.executable,
+        "-m",
+        "demucs",
+        "--repo",
+        str(model_repo),
+        "--two-stems",
+        "vocals",
+        "--device",
+        "cuda",
+        "--name",
+        model_name,
+        "--segment",
+        str(segment_seconds),
+        "--shifts",
+        str(shifts),
+        "--out",
+        str(work),
+        str(source),
+    ])
+    return one_file(work, "vocals.wav"), one_file(work, "no_vocals.wav"), f"{model_name}@{model.get('version', package_version('demucs'))}"
+
+
+def deep_filter(source: Path, work: Path) -> tuple[Path, str]:
+    model_dir = require_deepfilter_model()
+    run(["deepFilter", "--model-base-dir", str(model_dir), "--output-dir", str(work), str(source)])
+    return one_file(work, "*.wav"), package_version("DeepFilterNet")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--runner-config", required=True)
+    args = parser.parse_args()
+    workspace = Path(args.workspace).resolve()
+    input_dir = Path(args.input).resolve()
+    output_dir = Path(args.output).resolve()
+    if input_dir != workspace / "input" or output_dir != workspace / "output":
+        raise RuntimeError("workspace_invalid")
+    request = read_json(input_dir / "request.json")
+    runner_config = read_json(Path(args.runner_config))
+    source = input_dir / "source"
+    operation = request.get("operation")
+    model = runner_config.get("model")
+    if operation not in {"separate", "enhance", "separate_and_enhance"} or not source.is_file() or not isinstance(model, dict):
+        raise RuntimeError("request_invalid")
+    require_cuda()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    scratch = workspace / ".cleanup-work"
+    if scratch.exists():
+        shutil.rmtree(scratch)
+    scratch.mkdir()
+    started = time.monotonic()
+    source_audio = audio_properties(source)
+    source_sha256 = file_sha256(source)
+    outputs: dict[str, dict[str, Any]] = {}
+    versions: dict[str, str] = {}
+    chain: list[str] = []
+    try:
+        vocals = background = None
+        if operation in {"separate", "separate_and_enhance"}:
+            vocals, background, demucs_version = demucs(source, scratch / "demucs", model)
+            shutil.copyfile(vocals, output_dir / "vocals.wav")
+            shutil.copyfile(background, output_dir / "background.wav")
+            outputs["vocals_audio"] = audio_properties(output_dir / "vocals.wav")
+            outputs["background_audio"] = audio_properties(output_dir / "background.wav")
+            versions["demucs"] = demucs_version
+            chain.append("demucs")
+        if operation in {"enhance", "separate_and_enhance"}:
+            enhanced_input = vocals if vocals is not None else source
+            cleaned, deepfilter_version = deep_filter(enhanced_input, scratch / "deepfilternet")
+            shutil.copyfile(cleaned, output_dir / "cleaned.wav")
+            outputs["cleaned_audio"] = audio_properties(output_dir / "cleaned.wav")
+            versions["deepfilternet"] = deepfilter_version
+            chain.append("deepfilternet")
+        report = {
+            "operation": operation,
+            "actual_chain": chain,
+            "model_versions": versions,
+            "source_audio": source_audio,
+            "source_sha256": source_sha256,
+            "outputs": outputs,
+            "elapsed_seconds": max(0.0, time.monotonic() - started),
+            "warnings": [],
+        }
+        (output_dir / "cleanup_report.json").write_text(json.dumps(report, ensure_ascii=False) + "\n", encoding="utf-8")
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except RuntimeError as error:
+        print(f"audio_cleanup_failed:{error}", file=sys.stderr)
+        raise SystemExit(1)

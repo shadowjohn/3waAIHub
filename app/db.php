@@ -216,8 +216,20 @@ CREATE TABLE IF NOT EXISTS task_artifacts (
     path TEXT NOT NULL,
     mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
     size_bytes INTEGER NOT NULL DEFAULT 0,
+    metadata_json TEXT NULL,
     created_at TEXT NOT NULL,
     FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS task_artifact_holds (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_artifact_id INTEGER NOT NULL,
+    downstream_task_id INTEGER NOT NULL,
+    held_at TEXT NOT NULL,
+    released_at TEXT NULL,
+    UNIQUE(source_artifact_id, downstream_task_id),
+    FOREIGN KEY(source_artifact_id) REFERENCES task_artifacts(id) ON DELETE CASCADE,
+    FOREIGN KEY(downstream_task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS service_ip_whitelists (
@@ -555,6 +567,54 @@ CREATE TABLE IF NOT EXISTS runtime_resource_samples (
     gpu_json TEXT NULL,
     FOREIGN KEY(run_id) REFERENCES runtime_runs(run_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS task_callback_targets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_member_id INTEGER NOT NULL,
+    target_alias TEXT NOT NULL,
+    callback_url TEXT NOT NULL,
+    signing_secret TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(owner_member_id, target_alias),
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS task_callback_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_id TEXT NOT NULL UNIQUE,
+    callback_target_id INTEGER NOT NULL,
+    task_id INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NULL,
+    claim_token TEXT NULL,
+    claim_expires_at TEXT NULL,
+    delivered_at TEXT NULL,
+    last_http_status INTEGER NULL,
+    last_error TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(callback_target_id, task_id, event_type),
+    FOREIGN KEY(callback_target_id) REFERENCES task_callback_targets(id) ON DELETE CASCADE,
+    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS runtime_resource_leases (
+    resource_key TEXT PRIMARY KEY,
+    runtime_run_id TEXT NULL,
+    worker_id TEXT NULL,
+    lease_token TEXT NULL,
+    state TEXT NOT NULL,
+    acquired_at TEXT NULL,
+    heartbeat_at TEXT NULL,
+    lease_expires_at TEXT NULL,
+    last_error TEXT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(runtime_run_id) REFERENCES runtime_runs(run_id) ON DELETE SET NULL
+);
 SQL);
 
     hub_add_column_if_missing($db, 'users', 'role', "TEXT NOT NULL DEFAULT 'system_admin'");
@@ -659,6 +719,55 @@ SQL);
     hub_add_column_if_missing($db, 'command_jobs', 'stage', 'TEXT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'current_message', 'TEXT NULL');
     hub_add_column_if_missing($db, 'command_jobs', 'error_code', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'owner_member_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'tasks', 'owner_token_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'tasks', 'requested_mode', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'pack_id', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'pack_version', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'job', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'job_contract_json', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'job_contract_digest', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'runtime_mode', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'accelerator', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'route_resolved_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'source_artifact_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'tasks', 'source_task_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'tasks', 'retry_of_task_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'tasks', 'callback_target_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'tasks', 'waiting_reason', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'next_attempt_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'error_code', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'source_expires_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'workspace_expires_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'source_state', "TEXT NOT NULL DEFAULT 'available'");
+    hub_add_column_if_missing($db, 'tasks', 'workspace_state', "TEXT NOT NULL DEFAULT 'active'");
+    hub_add_column_if_missing($db, 'tasks', 'retention_state', "TEXT NOT NULL DEFAULT 'active'");
+    hub_add_column_if_missing($db, 'tasks', 'purged_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'freed_bytes', 'INTEGER NOT NULL DEFAULT 0');
+    hub_add_column_if_missing($db, 'tasks', 'purge_claim_token', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'purge_claimed_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'purge_error', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'metadata_purge_claim_token', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'metadata_purge_claimed_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'partial_purge_error', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'partial_purge_retry_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_callback_deliveries', 'claim_token', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_callback_deliveries', 'claim_expires_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'artifact_type', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'sha256', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'metadata_json', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'expires_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'state', "TEXT NOT NULL DEFAULT 'available'");
+    hub_add_column_if_missing($db, 'task_artifacts', 'pinned_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'legal_hold', 'INTEGER NOT NULL DEFAULT 0');
+    hub_add_column_if_missing($db, 'task_artifacts', 'acknowledged_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'last_accessed_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'purged_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'purge_error', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'purge_claim_token', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'purge_claimed_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'download_claim_token', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'task_artifacts', 'download_claim_expires_at', 'TEXT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_service_key ON services(service_key) WHERE service_key IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_local_port ON services(local_port) WHERE local_port IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_service_ip_whitelists_unique ON service_ip_whitelists(service_id, ip_rule)');
@@ -743,9 +852,67 @@ SQL);
     hub_add_column_if_missing($db, 'runtime_runs', 'cancel_reason', 'TEXT NULL');
     hub_add_column_if_missing($db, 'runtime_runs', 'timeout_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'runtime_runs', 'cancelled_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'task_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'attempt_no', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'container_id', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'gpu_process_baseline_json', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'runtime_runs', 'owned_gpu_pids_json', 'TEXT NULL');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_claim ON runtime_runs(state, id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_runs_stale ON runtime_runs(state, lease_expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_targets_alias ON task_callback_targets(target_alias)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_due ON task_callback_deliveries(delivered_at, next_attempt_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_claim ON task_callback_deliveries(delivered_at, claim_expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_task_id ON task_callback_deliveries(task_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifact_holds_active ON task_artifact_holds(source_artifact_id, released_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifacts_retention ON task_artifacts(state, expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifacts_download_claim ON task_artifacts(download_claim_expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_metadata_retention ON tasks(status, finished_at, metadata_purge_claim_token)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_partial_candidates ON tasks(status, updated_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_partial_retry ON tasks(partial_purge_retry_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_state_expires ON runtime_resource_leases(state, lease_expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_run_id ON runtime_resource_leases(runtime_run_id)');
+    $db->prepare(
+        "INSERT OR IGNORE INTO runtime_resource_leases (resource_key, state, updated_at) VALUES ('gpu:0', 'available', :updated_at)"
+    )->execute([':updated_at' => hub_now()]);
     $db->exec("UPDATE runtime_runs SET state = 'succeeded' WHERE state = 'success'");
+    $db->exec("UPDATE tasks SET status = 'timed_out' WHERE status = 'timeout'");
+}
+
+function hub_runtime_schema_missing(PDO $db): array
+{
+    $required = [
+        'task_callback_targets' => ['id', 'owner_member_id', 'target_alias', 'callback_url', 'signing_secret', 'enabled', 'created_at', 'updated_at'],
+        'task_callback_deliveries' => ['id', 'delivery_id', 'callback_target_id', 'task_id', 'event_type', 'payload_json', 'attempt_count', 'next_attempt_at', 'claim_token', 'claim_expires_at', 'delivered_at', 'last_http_status', 'last_error', 'created_at', 'updated_at'],
+        'runtime_resource_leases' => ['resource_key', 'runtime_run_id', 'worker_id', 'lease_token', 'state', 'acquired_at', 'heartbeat_at', 'lease_expires_at', 'last_error', 'updated_at'],
+        'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
+        'task_artifacts' => ['artifact_type', 'sha256', 'metadata_json', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
+        'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],
+        'runtime_runs' => ['task_id', 'attempt_no', 'container_id', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],
+    ];
+    $tables = array_fill_keys($db->query("SELECT name FROM sqlite_master WHERE type = 'table'")->fetchAll(PDO::FETCH_COLUMN), true);
+    $missing = [];
+
+    foreach ($required as $table => $columns) {
+        if (!isset($tables[$table])) {
+            $missing[] = $table;
+            continue;
+        }
+        $present = array_fill_keys(array_column($db->query('PRAGMA table_info(' . $table . ')')->fetchAll(), 'name'), true);
+        foreach ($columns as $column) {
+            if (!isset($present[$column])) {
+                $missing[] = $table . '.' . $column;
+            }
+        }
+        if ($table === 'runtime_resource_leases' && isset($present['resource_key'])) {
+            $lease = $db->prepare('SELECT 1 FROM runtime_resource_leases WHERE resource_key = :resource_key');
+            $lease->execute([':resource_key' => 'gpu:0']);
+            if ($lease->fetchColumn() === false) {
+                $missing[] = 'runtime_resource_leases.gpu:0';
+            }
+        }
+    }
+
+    return $missing;
 }
 
 function hub_add_column_if_missing(PDO $db, string $table, string $column, string $definition): void
