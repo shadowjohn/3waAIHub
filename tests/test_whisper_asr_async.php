@@ -417,7 +417,7 @@ reflow_calls = []
 subtitle_reflow = types.ModuleType("subtitle_reflow")
 
 def reflow_legacy_segments(segments, *args, **kwargs):
-    reflow_calls.append((segments, args, kwargs))
+    reflow_calls.append((json.loads(json.dumps(segments)), args, kwargs))
     return reflowed_segments, {"subtitle_breaker": subtitle_breaker[0]}
 
 subtitle_reflow.reflow_legacy_segments = reflow_legacy_segments
@@ -442,7 +442,11 @@ def transcribe(model, source, language, words):
 
 job.transcribe = transcribe
 job.load_alignment = lambda language: loads.append(("align", language)) or object()
-job.align = lambda loader, segments, source, language: segments
+
+def align(loader, segments, source, language):
+    return [segment | {"words": [word | {"word": "aligned"} for word in segment.get("words", [])]} for segment in segments]
+
+job.align = align
 job.load_diarization = lambda: loads.append(("diarize", "local-model")) or object()
 job.diarize = lambda loader, source, minimum, maximum: [{"start": 0.0, "end": 1.0, "speaker": "internal"}]
 
@@ -476,18 +480,20 @@ result = run(base | {"language": "zh", "output_srt": True, "subtitle_reflow": "l
 assert loads == [("asr", "/models/whisper/asr/large-v3")] and transcriptions == [("zh", True)], "legacy subtitle reflow must request native words without WhisperX alignment"
 assert "words" not in result["transcript"]["segments"][0], "legacy subtitle reflow must not expose native words in transcript JSON"
 assert result["srt"] == expected_srt and result["report"]["subtitle_breaker"] == "ckip" and len(reflow_calls) == 1, "legacy reflow must write CKIP-reflowed SRT cues and report the actual breaker"
+assert reflow_calls[0][0] == [{"start": 0.0, "end": 1.0, "text": "hello", "words": [{"start": 0.0, "end": 1.0, "word": "hello"}]}], "legacy reflow must receive native words before transcript serialization"
 loads.clear()
 transcriptions.clear()
 result = run(base | {"word_timestamps": True, "language": "en", "output_vtt": True})
 assert loads == [("asr", "/models/whisper/asr/large-v3"), ("align", "en")] and transcriptions == [("en", True)], "explicit word timestamps must retain WhisperX alignment"
-assert result["transcript"]["segments"][0]["words"] == [{"start": 0.0, "end": 1.0, "word": "hello"}], "explicit word timestamps must retain aligned words in transcript JSON"
+assert result["transcript"]["segments"][0]["words"] == [{"start": 0.0, "end": 1.0, "word": "aligned"}], "explicit word timestamps must retain aligned words in transcript JSON"
 loads.clear()
 transcriptions.clear()
 reflow_calls.clear()
 subtitle_breaker[0] = "jieba"
 result = run(base | {"word_timestamps": True, "language": "en", "output_vtt": True, "subtitle_reflow": "legacy_adaptive_v1"})
 assert loads == [("asr", "/models/whisper/asr/large-v3"), ("align", "en")] and transcriptions == [("en", True)], "legacy reflow with explicit words must still load WhisperX alignment"
-assert result["transcript"]["segments"][0]["words"] == [{"start": 0.0, "end": 1.0, "word": "hello"}], "legacy reflow with explicit words must retain aligned transcript words"
+assert reflow_calls[0][0] == [{"start": 0.0, "end": 1.0, "text": "hello", "words": [{"start": 0.0, "end": 1.0, "word": "aligned"}]}], "legacy reflow with explicit words must receive WhisperX-aligned words before transcript serialization"
+assert result["transcript"]["segments"][0]["words"] == [{"start": 0.0, "end": 1.0, "word": "aligned"}], "legacy reflow with explicit words must retain aligned transcript words"
 assert result["vtt"] == expected_vtt and result["report"]["subtitle_breaker"] == "jieba" and len(reflow_calls) == 1, "legacy reflow must write Jieba-reflowed VTT cues and report the actual breaker"
 loads.clear()
 transcriptions.clear()
