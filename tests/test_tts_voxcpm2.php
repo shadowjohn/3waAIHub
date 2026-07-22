@@ -16,7 +16,7 @@ hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', funct
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/v1/tts', 'VoxCPM2 gateway endpoint mismatch');
     hub_test_assert(in_array('design', $manifest['tts_modes'] ?? [], true), 'VoxCPM2 must support design mode');
     hub_test_assert(in_array('clone', $manifest['tts_modes'] ?? [], true), 'VoxCPM2 must support controlled clone mode');
-    hub_test_assert(!in_array('ultimate_clone', $manifest['tts_modes'] ?? [], true), 'Ultimate clone must stay out of v0.1 supported modes');
+    hub_test_assert(in_array('ultimate_clone', $manifest['tts_modes'] ?? [], true), 'VoxCPM2 must support Ultimate Clone');
     hub_test_assert(($manifest['lifecycle']['lifecycle'] ?? '') === 'on_demand', 'VoxCPM2 lifecycle mismatch');
     hub_test_assert(($manifest['lifecycle']['gpu_policy'] ?? '') === 'exclusive_gpu', 'VoxCPM2 GPU policy mismatch');
     hub_test_assert((int)($manifest['lifecycle']['idle_unload_seconds'] ?? 0) === 900, 'VoxCPM2 idle unload mismatch');
@@ -40,15 +40,15 @@ hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', funct
     hub_test_assert(is_file(HUB_ROOT . '/packs/tts-voxcpm2/acceptance/zh_tw_tts_cases.json'), 'VoxCPM2 acceptance set missing');
 });
 
-hub_test('VoxCPM2 service app exposes TTS voice-design and controlled clone only', function (): void {
+hub_test('VoxCPM2 service app exposes TTS voice-design and managed clone modes', function (): void {
     $app = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/service/app.py');
     foreach (['@app.get("/health")', '@app.get("/v1/models")', '@app.post("/v1/voice-design")', '@app.post("/v1/tts")'] as $needle) {
         hub_test_assert(str_contains($app, $needle), 'VoxCPM2 app missing ' . $needle);
     }
-    foreach (['/clone', 'prompt_wav_path', 'WebSocket'] as $needle) {
+    foreach (['/clone', 'WebSocket'] as $needle) {
         hub_test_assert(!str_contains($app, $needle), 'VoxCPM2 app must not expose separate clone/streaming surface: ' . $needle);
     }
-    foreach (['split_text', 'seed', 'artifact_url', 'sample_rate', 'duration_ms', 'manifest', 'reference_wav_path', 'clone'] as $needle) {
+    foreach (['split_text', 'seed', 'artifact_url', 'sample_rate', 'duration_ms', 'manifest', 'reference_wav_path', 'prompt_wav_path', 'prompt_text', 'clone', 'ultimate_clone'] as $needle) {
         hub_test_assert(str_contains($app, $needle), 'VoxCPM2 app missing TTS behavior ' . $needle);
     }
     hub_test_assert(str_contains($app, 'return "L5-benchmark-ready"'), 'VoxCPM2 app must expose L5 runtime level');
@@ -1320,6 +1320,73 @@ hub_test('VoxCPM2 gateway rewrites clone profile IDs without exposing host paths
 
     $blocked = hub_prepare_tts_voxcpm2_payload($db, $installed['service'], [], json_encode($payload, JSON_UNESCAPED_UNICODE));
     hub_test_assert(($blocked['response']['status'] ?? 0) === 403, 'clone without token member must be rejected');
+});
+
+hub_test('VoxCPM2 gateway injects only confirmed Ultimate Clone prompts', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'tts-voxcpm2', [
+        'service_key' => 'voxcpm2-ultimate',
+        'mode' => 'tts',
+        'name' => 'VoxCPM2 Ultimate Clone',
+        'enabled' => 1,
+    ]);
+    $memberId = hub_create_api_member($db, 'Ultimate Clone Owner');
+    $token = hub_create_api_token($db, $memberId, 'Ultimate Clone token', null, null);
+    $dir = hub_voice_profile_storage_dir();
+    if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create voice profile test dir.');
+    }
+    $wav = $dir . '/ultimate_reference.wav';
+    $promptText = '已確認的私密參考字幕';
+    file_put_contents($wav, 'RIFFmock');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Ultimate profile',
+        'reference_audio_path' => $wav,
+        'prompt_text' => $promptText,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $payload = [
+        'mode' => 'ultimate_clone',
+        'text' => '要說的內容。',
+        'voice_profile_id' => $profileId,
+        'format' => 'wav',
+    ];
+    $context = ['member_id' => $memberId, 'token_id' => (int)$token['token_id']];
+
+    try {
+        $unconfirmed = hub_prepare_tts_voxcpm2_payload($db, $installed['service'], $context, json_encode($payload, JSON_UNESCAPED_UNICODE));
+        $unconfirmedBody = json_decode((string)($unconfirmed['response']['body'] ?? ''), true);
+        hub_test_assert(($unconfirmed['response']['status'] ?? 0) === 409 && ($unconfirmedBody['error'] ?? '') === 'voice_profile_transcript_unconfirmed', 'ultimate clone must reject an unconfirmed transcript');
+
+        hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $promptText);
+        $prepared = hub_prepare_tts_voxcpm2_payload($db, $installed['service'], $context, json_encode($payload, JSON_UNESCAPED_UNICODE));
+        $body = json_decode((string)($prepared['body'] ?? ''), true);
+        hub_test_assert(($body['reference_wav_path'] ?? '') === '/data/voice_profiles/ultimate_reference.wav', 'ultimate clone must map the managed reference WAV');
+        hub_test_assert(($body['prompt_wav_path'] ?? '') === ($body['reference_wav_path'] ?? ''), 'ultimate clone must use the same managed prompt WAV');
+        hub_test_assert(($body['prompt_text'] ?? '') === $promptText, 'ultimate clone must inject the confirmed transcript');
+        hub_test_assert(!str_contains((string)$prepared['body'], HUB_ROOT), 'ultimate clone must not expose host paths');
+
+        foreach (['reference_audio_path', 'prompt_wav_path', 'prompt_audio_path', 'prompt_text'] as $forgedKey) {
+            $forged = $payload;
+            $forged[$forgedKey] = $forgedKey === 'prompt_text' ? 'forged transcript' : '/tmp/forged.wav';
+            $blocked = hub_prepare_tts_voxcpm2_payload($db, $installed['service'], $context, json_encode($forged, JSON_UNESCAPED_UNICODE));
+            hub_test_assert(($blocked['response']['status'] ?? 0) === 400, 'gateway must reject forged ' . $forgedKey);
+        }
+
+        $audit = $db->query('SELECT action, mode, details_json FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $profileId . " AND action = 'use' ORDER BY id DESC LIMIT 1")->fetch();
+        hub_test_assert(($audit['mode'] ?? '') === 'ultimate_clone', 'ultimate clone use must be audited by mode');
+        hub_test_assert(!str_contains((string)($audit['details_json'] ?? ''), $promptText), 'ultimate transcript must not enter audit metadata');
+        $app = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/service/app.py');
+        hub_test_assert(preg_match('/def manifest_payload\(.*?\n\n/s', $app, $manifestMatch) === 1 && !str_contains($manifestMatch[0], 'prompt_text'), 'TTS artifact manifest must not contain the prompt transcript');
+        hub_test_assert(str_contains($app, 'kwargs["prompt_wav_path"] = str(prompt)') && str_contains($app, 'kwargs["prompt_text"] = request.prompt_text.strip()'), 'Ultimate Clone must pass managed prompt inputs to VoxCPM2');
+        hub_test_assert(str_contains($app, '@app.exception_handler(RequestValidationError)') && !str_contains($app, 'str(exc).splitlines()'), 'TTS errors must not echo the internal prompt transcript');
+    } finally {
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
 });
 
 hub_test('VoxCPM2 appears in customer playground when user and token allow tts', function (): void {

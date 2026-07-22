@@ -161,21 +161,18 @@ function hub_prepare_tts_voxcpm2_payload(PDO $db, array $service, array $authCon
     if (!is_array($payload)) {
         return ['response' => hub_gateway_error(400, 'bad_request', 'JSON body is required')];
     }
-    foreach (['reference_audio_path', 'prompt_wav_path', 'prompt_audio_path'] as $blockedKey) {
+    foreach (['reference_audio_path', 'prompt_wav_path', 'prompt_audio_path', 'prompt_text'] as $blockedKey) {
         if (array_key_exists($blockedKey, $payload)) {
             return ['response' => hub_gateway_error(400, 'bad_request', 'server-side audio paths are not accepted')];
         }
     }
 
     $ttsMode = trim((string)($payload['mode'] ?? 'design')) ?: 'design';
-    if ($ttsMode === 'ultimate_clone') {
-        return ['response' => hub_gateway_error(501, 'ultimate_clone_not_ready', 'Ultimate clone will be added in a later phase')];
-    }
-    if (!in_array($ttsMode, ['design', 'clone'], true)) {
-        return ['response' => hub_gateway_error(400, 'bad_request', 'mode must be design or clone')];
+    if (!in_array($ttsMode, ['design', 'clone', 'ultimate_clone'], true)) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'mode must be design, clone, or ultimate_clone')];
     }
 
-    if ($ttsMode === 'clone') {
+    if (in_array($ttsMode, ['clone', 'ultimate_clone'], true)) {
         if (empty($authContext['member_id'])) {
             return ['response' => hub_gateway_error(403, 'voice_profile_forbidden', 'Voice clone requires an owned voice profile')];
         }
@@ -189,13 +186,20 @@ function hub_prepare_tts_voxcpm2_payload(PDO $db, array $service, array $authCon
             $payload['voice_profile_id'] = (int)$profile['id'];
             $payload['reference_audio_sha256'] = (string)$profile['reference_audio_sha256'];
             unset($payload['reference_audio_id']);
+            if ($ttsMode === 'ultimate_clone') {
+                if (trim((string)($profile['prompt_text'] ?? '')) === '' || empty($profile['prompt_text_confirmed_at'])) {
+                    return ['response' => hub_gateway_error(409, 'voice_profile_transcript_unconfirmed', 'Ultimate clone requires a confirmed voice profile transcript')];
+                }
+                $payload['prompt_wav_path'] = $payload['reference_wav_path'];
+                $payload['prompt_text'] = (string)$profile['prompt_text'];
+            }
             hub_record_voice_profile_audit(
                 $db,
                 (int)$profile['id'],
                 (int)$profile['owner_member_id'],
                 isset($authContext['token_id']) ? (int)$authContext['token_id'] : null,
                 'use',
-                'clone',
+                $ttsMode,
                 [
                     'service_id' => (int)($service['id'] ?? 0),
                     'mode' => (string)($service['mode'] ?? 'tts'),
