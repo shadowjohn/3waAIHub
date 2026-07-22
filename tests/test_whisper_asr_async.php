@@ -12,7 +12,14 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
     $manifest = $pack['manifest'];
     $job = hub_pack_async_job_contract($manifest, 'transcribe');
     hub_test_assert(is_array($job), 'Whisper ASR transcribe job contract missing');
-    hub_test_assert(($job['input_fields'] ?? []) === ['model', 'language', 'word_timestamps', 'diarization', 'min_speakers', 'max_speakers', 'output_srt', 'output_vtt'], 'Whisper input field allowlist mismatch');
+    hub_test_assert(($job['input_fields'] ?? []) === ['model', 'language', 'word_timestamps', 'diarization', 'min_speakers', 'max_speakers', 'output_srt', 'output_vtt', 'subtitle_reflow'], 'Whisper input field allowlist mismatch');
+    hub_test_assert(($job['request_schema']['subtitle_reflow'] ?? null) === [
+        'type' => 'string',
+        'required' => false,
+        'enum' => ['none', 'legacy_adaptive_v1'],
+        'default' => 'none',
+        'max_length' => 32,
+    ], 'Whisper subtitle reflow must use the fixed compatibility-mode contract');
     hub_test_assert(($job['request_schema']['word_timestamps']['requires_when'] ?? null) === ['equals' => true, 'field' => 'language', 'not_equals' => 'auto'], 'Word timestamps must require an explicit alignment language at admission');
     hub_test_assert(($job['source_artifact_types'] ?? []) === ['audio', 'cleaned_audio', 'vocals_audio'], 'Whisper must accept managed audio sources only');
     hub_test_assert(($job['runner']['accelerator'] ?? '') === 'gpu' && ($job['runner']['required_vram_mb'] ?? 0) === 10000 && ($job['runner']['executor'] ?? '') === 'container', 'Whisper transcription must use the generic GPU container runner');
@@ -90,7 +97,8 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
     $asrAssets = [
         ['id' => 'whisper_asr_large_v3', 'source' => $models . '/whisper/asr/large-v3', 'container_path' => '/models/whisper/asr/large-v3'],
     ];
-    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => false, 'diarization' => false]) === $asrAssets, 'basic ASR must preflight only the fixed CTranslate2 model');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'none']) === $asrAssets, 'basic ASR without subtitle reflow must preflight only the fixed CTranslate2 model');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'zh', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1'])), 'legacy subtitle reflow must preflight its missing CKIP assets before GPU work');
     hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => true, 'diarization' => false])), 'word timestamps must preflight the missing alignment cache before GPU work');
     hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => false, 'diarization' => true])), 'diarization must preflight its missing local model before GPU work');
 
@@ -333,14 +341,16 @@ hub_test('Whisper ASR normalizes only typed transcription controls', function ()
         'max_speakers' => '3',
         'output_srt' => '0',
         'output_vtt' => '1',
+        'subtitle_reflow' => 'legacy_adaptive_v1',
     ], $route);
-    hub_test_assert($input === ['model' => 'large_v3', 'language' => 'zh', 'word_timestamps' => true, 'diarization' => true, 'min_speakers' => 2, 'max_speakers' => 3, 'output_srt' => false, 'output_vtt' => true], 'Whisper controls must normalize to fixed scalar types');
+    hub_test_assert($input === ['model' => 'large_v3', 'language' => 'zh', 'word_timestamps' => true, 'diarization' => true, 'min_speakers' => 2, 'max_speakers' => 3, 'output_srt' => false, 'output_vtt' => true, 'subtitle_reflow' => 'legacy_adaptive_v1'], 'Whisper controls must normalize to fixed scalar types');
     $basicAuto = hub_pack_job_normalize_request_input(['language' => 'auto', 'word_timestamps' => false], $route);
     hub_test_assert(($basicAuto['language'] ?? null) === 'auto' && ($basicAuto['word_timestamps'] ?? null) === false, 'Basic ASR must keep auto language valid when word timestamps are disabled');
     foreach ([
         ['model' => 'large_v3', 'diarization' => false, 'min_speakers' => 2],
         ['model' => 'large_v3', 'diarization' => true, 'min_speakers' => 4, 'max_speakers' => 3],
         ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => true],
+        ['model' => 'large_v3', 'subtitle_reflow' => 'unsupported'],
         ['model' => 'host-path'],
     ] as $invalid) {
         hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input($invalid, $route)), 'Whisper invalid typed controls must be rejected');
@@ -354,7 +364,7 @@ hub_test('Whisper ASR job enqueue stores defaulted transcription controls', func
     $token = hub_create_api_token($db, $member, 'whisper defaults token', null, null);
     $taskId = hub_enqueue_owned_pack_job($db, hub_resolve_audio_async_route($db, 'speech_transcribe'), [], $member, (int)$token['token_id'], '203.0.113.51');
     $task = hub_get_task($db, $taskId);
-    hub_test_assert(($task['input'] ?? null) === ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => false, 'diarization' => false, 'output_srt' => false, 'output_vtt' => false], 'generic Pack enqueue must persist the normalized defaults');
+    hub_test_assert(($task['input'] ?? null) === ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => false, 'diarization' => false, 'output_srt' => false, 'output_vtt' => false, 'subtitle_reflow' => 'none'], 'generic Pack enqueue must persist the normalized defaults');
 });
 
 hub_test('Whisper ASR runner loads optional models only when requested', function (): void {
@@ -371,12 +381,21 @@ spec = importlib.util.spec_from_file_location("whisper_asr_job", sys.argv[1])
 job = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(job)
 loads = []
+transcriptions = []
 job.require_asr_assets = lambda: None
 job.require_alignment_assets = lambda language: None
 job.require_diarization_assets = lambda: None
 job.require_cuda = lambda: None
 job.load_asr = lambda model: loads.append(("asr", model)) or object()
-job.transcribe = lambda model, source, language, words: ([{"start": 0.0, "end": 1.0, "text": "hello"}], "en")
+
+def transcribe(model, source, language, words):
+    transcriptions.append((language, words))
+    segment = {"start": 0.0, "end": 1.0, "text": "hello"}
+    if words:
+        segment["words"] = [{"start": 0.0, "end": 1.0, "word": "hello"}]
+    return [segment], "en"
+
+job.transcribe = transcribe
 job.load_alignment = lambda language: loads.append(("align", language)) or object()
 job.align = lambda loader, segments, source, language: segments
 job.load_diarization = lambda: loads.append(("diarize", "local-model")) or object()
@@ -399,15 +418,23 @@ def run(request):
             "report": (output_dir / "transcription_report.json").read_text(encoding="utf-8"),
         }
 
-base = {"model": "large_v3", "language": "auto", "word_timestamps": False, "diarization": False, "output_srt": False, "output_vtt": False}
+base = {"model": "large_v3", "language": "auto", "word_timestamps": False, "diarization": False, "output_srt": False, "output_vtt": False, "subtitle_reflow": "none"}
 result = run(base)
-assert result["transcript"]["text"] == "hello" and loads == [("asr", "/models/whisper/asr/large-v3")]
+assert result["transcript"]["text"] == "hello" and loads == [("asr", "/models/whisper/asr/large-v3")] and transcriptions == [(None, False)], "plain ASR must not request native words or optional models"
 loads.clear()
-run(base | {"word_timestamps": True, "language": "en"})
-assert loads == [("asr", "/models/whisper/asr/large-v3"), ("align", "en")]
+transcriptions.clear()
+result = run(base | {"language": "zh", "output_srt": True, "subtitle_reflow": "legacy_adaptive_v1"})
+assert loads == [("asr", "/models/whisper/asr/large-v3")] and transcriptions == [("zh", True)], "legacy subtitle reflow must request native words without WhisperX alignment"
+assert "words" not in result["transcript"]["segments"][0], "legacy subtitle reflow must not expose native words in transcript JSON"
 loads.clear()
+transcriptions.clear()
+result = run(base | {"word_timestamps": True, "language": "en", "output_vtt": True})
+assert loads == [("asr", "/models/whisper/asr/large-v3"), ("align", "en")] and transcriptions == [("en", True)], "explicit word timestamps must retain WhisperX alignment"
+assert result["transcript"]["segments"][0]["words"] == [{"start": 0.0, "end": 1.0, "word": "hello"}], "explicit word timestamps must retain aligned words in transcript JSON"
+loads.clear()
+transcriptions.clear()
 result = run(base | {"diarization": True, "min_speakers": 1, "max_speakers": 2, "output_srt": True, "output_vtt": True})
-assert loads == [("asr", "/models/whisper/asr/large-v3"), ("diarize", "local-model")]
+assert loads == [("asr", "/models/whisper/asr/large-v3"), ("diarize", "local-model")] and transcriptions == [(None, False)]
 assert {"subtitle.srt", "subtitle.vtt", "speaker_timeline.json"} <= result["files"]
 assert result["speaker"] == "speaker_01"
 PY;
@@ -479,7 +506,7 @@ try:
             (input_dir / "runner_config.json").write_text(json.dumps({"model": {"model": str(job.ASR_MODEL_DIR), "label": "large-v3"}}), encoding="utf-8")
             job.run_job(workspace, input_dir, output_dir, input_dir / "runner_config.json")
 
-        base = {"model": "large_v3", "language": "auto", "word_timestamps": False, "diarization": False, "output_srt": False, "output_vtt": False}
+        base = {"model": "large_v3", "language": "auto", "word_timestamps": False, "diarization": False, "output_srt": False, "output_vtt": False, "subtitle_reflow": "none"}
         run(base)
         assert loads == [("asr", str(job.ASR_MODEL_DIR))]
         loads.clear()
@@ -527,6 +554,64 @@ finally:
 PY;
     $result = hub_run_command(['python3', '-c', $script, $runner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper optional-asset preflight matrix failed: ' . ($result['stderr'] ?? ''));
+});
+
+hub_test('Whisper legacy adaptive reflow preserves native word boundaries and diagnoses CKIP fallback', function (): void {
+    $runner = hub_test_whisper_async_runner();
+    $script = <<<'PY'
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+from subtitle_reflow import reflow_legacy_segments
+
+segments = [{
+    "start": -10.0,
+    "end": 10.0,
+    "text": "今天，我們測試 AI Hub。完成。",
+    "words": [
+        {"start": 0.10, "end": 0.40, "word": "今天"},
+        {"start": 0.45, "end": 0.80, "word": "我們"},
+        {"start": 0.82, "end": 1.10, "word": "測試"},
+        {"start": 1.12, "end": 1.30, "word": "AI"},
+        {"start": 1.32, "end": 1.62, "word": "Hub"},
+        {"start": 1.90, "end": 2.20, "word": "完成"},
+    ],
+}]
+tokens = ["今天", "，", "我們", "測試", "AI", "Hub", "。", "完成", "。"]
+expected = [
+    {"start": 0.10, "end": 1.62, "text": "今天，我們測試 AI Hub。"},
+    {"start": 1.90, "end": 2.20, "text": "完成。"},
+]
+
+primary_calls = []
+def ckip_segment(text):
+    primary_calls.append(text)
+    return tokens
+
+def jieba_segment(text):
+    raise AssertionError("Jieba must not run after CKIP succeeds")
+
+reflowed, diagnostic = reflow_legacy_segments(segments, ckip_segment=ckip_segment, jieba_segment=jieba_segment)
+assert reflowed == expected
+assert primary_calls == ["今天，我們測試 AI Hub。完成。"]
+assert diagnostic == {"tokenizer": "ckip", "ckip_error": None}
+
+fallback_calls = []
+def broken_ckip(text):
+    raise RuntimeError("ckip model unavailable")
+
+def fallback_jieba(text):
+    fallback_calls.append(text)
+    return tokens
+
+fallback, fallback_diagnostic = reflow_legacy_segments(segments, ckip_segment=broken_ckip, jieba_segment=fallback_jieba)
+assert fallback == expected
+assert fallback_calls == ["今天，我們測試 AI Hub。完成。"]
+assert fallback_diagnostic == {"tokenizer": "jieba", "ckip_error": "ckip model unavailable"}
+PY;
+    $result = hub_run_command(['python3', '-c', $script, $runner], 20);
+    hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper legacy subtitle reflow fixture failed: ' . ($result['stderr'] ?? ''));
 });
 
 hub_test('Whisper ASR provisioning needs the pyannote token only for explicit diarization assets', function (): void {
