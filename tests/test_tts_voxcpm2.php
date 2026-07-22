@@ -1423,6 +1423,57 @@ hub_test('VoxCPM2 appears in customer playground when user and token allow tts',
     hub_test_assert(str_contains($ttsBranch, 'name="real_inference" type="checkbox" value="1" checked'), 'playground TTS real inference must be checked by default');
 });
 
+hub_test('VoxCPM2 playground manages voice profiles with request-scoped TTS tokens', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+
+    foreach (['voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'] as $action) {
+        hub_test_assert(str_contains($source, 'name="action" value="' . $action . '"'), 'playground must provide POST action ' . $action);
+    }
+    foreach ([
+        "hub_gateway_authenticate_api_token(\$db, 'tts', hub_get_client_ip(), \$token)",
+        'hub_create_uploaded_voice_profile',
+        'hub_confirm_voice_profile_prompt',
+        'hub_retry_voice_profile_transcription',
+        'hub_check_csrf()',
+    ] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'playground voice-profile flow missing ' . $needle);
+    }
+
+    $ttsExamplesStart = strpos($source, "if (\$mode === 'tts') {");
+    $ttsExamplesEnd = strpos($source, "if (\$mode === 'chat') {", $ttsExamplesStart);
+    hub_test_assert($ttsExamplesStart !== false && $ttsExamplesEnd !== false, 'playground TTS example block missing');
+    $ttsExamples = substr($source, $ttsExamplesStart, $ttsExamplesEnd - $ttsExamplesStart);
+    foreach (['reference_audio_path', 'prompt_wav_path', 'prompt_audio_path'] as $forbidden) {
+        hub_test_assert(!str_contains($ttsExamples, $forbidden), 'browser TTS payload must not contain ' . $forbidden);
+    }
+    hub_test_assert(!str_contains($source, 'mode=voice_profile_transcribe'), 'playground must not expose a public voice-profile transcription API mode');
+});
+
+hub_test('VoxCPM2 playground resolves voice-profile ownership from the TTS token', function (): void {
+    hub_test_assert(function_exists('hub_playground_tts_member_id'), 'playground TTS token helper missing');
+
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Playground Voice Token Owner');
+    $token = hub_create_api_token($db, $memberId, 'Playground TTS token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'tts');
+    $unscoped = hub_create_api_token($db, $memberId, 'Playground unscoped token', null, null);
+    $oldServer = $_SERVER;
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.34';
+
+    try {
+        hub_test_assert(
+            hub_playground_tts_member_id($db, (string)$token['plain_token']) === $memberId,
+            'playground must use the authenticated TTS token member as voice-profile owner'
+        );
+        hub_test_assert(
+            hub_test_throws(static fn (): int => hub_playground_tts_member_id($db, (string)$unscoped['plain_token'])),
+            'playground must reject a token without TTS access'
+        );
+    } finally {
+        $_SERVER = $oldServer;
+    }
+});
+
 hub_test('VoxCPM2 playground exposes generated WAV through authenticated audio player', function (): void {
     $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
     hub_test_assert(str_contains($playground, 'playground_artifact.php'), 'playground must link TTS artifacts through admin artifact endpoint');

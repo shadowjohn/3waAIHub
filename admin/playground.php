@@ -64,14 +64,57 @@ function hub_playground_local_api_url(string $mode): string
     return 'http://127.0.0.1' . hub_playground_base_path() . '/api.php?mode=' . rawurlencode($mode);
 }
 
-function hub_playground_mask_token(string $token): string
+function hub_playground_tts_member_id(PDO $db, string $token): int
 {
-    $token = trim($token);
-    if ($token === '') {
-        return '';
+    $auth = hub_gateway_authenticate_api_token($db, 'tts', hub_get_client_ip(), $token);
+    $memberId = (int)($auth['context']['member_id'] ?? 0);
+    if (empty($auth['ok']) || $memberId < 1) {
+        throw new InvalidArgumentException('voice_profile_token_invalid');
     }
 
-    return substr($token, 0, 12) . '...';
+    return $memberId;
+}
+
+function hub_playground_voice_profile_result(array $operation): array
+{
+    $profile = is_array($operation['profile'] ?? null) ? $operation['profile'] : [];
+    $transcription = is_array($operation['transcription'] ?? null) ? $operation['transcription'] : [];
+    $body = [
+        'ok' => true,
+        'voice_profile' => [
+            'id' => (int)($profile['id'] ?? 0),
+            'name' => (string)($profile['name'] ?? ''),
+            'transcription_status' => (string)($profile['transcription_status'] ?? 'pending'),
+        ],
+        'cache_hit' => !empty($operation['cache_hit']),
+    ];
+    $error = trim((string)($transcription['error'] ?? ''));
+    if (in_array($error, ['asr_unavailable', 'asr_failed', 'transcription_pending', 'transcription_lost_lease', 'transcription_save_failed'], true)) {
+        $body['transcription'] = ['ok' => false, 'error' => $error];
+    }
+
+    return [
+        'ok' => true,
+        'status' => 200,
+        'elapsed_ms' => 0,
+        'request_id' => '',
+        'error' => '',
+        'message' => '',
+        'pretty_body' => json_encode($body, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+    ];
+}
+
+function hub_playground_voice_profile_error_result(): array
+{
+    return [
+        'ok' => false,
+        'status' => 400,
+        'elapsed_ms' => 0,
+        'request_id' => '',
+        'error' => 'voice_profile_request_failed',
+        'message' => __('Voice Profile 操作失敗。'),
+        'pretty_body' => json_encode(['ok' => false, 'error' => 'voice_profile_request_failed'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE),
+    ];
 }
 
 function hub_playground_request_payload(string $mode): array
@@ -664,13 +707,32 @@ if ($selectedService) {
 $profiles = hub_playground_profiles();
 $profile = $profiles[$selectedMode] ?? $profiles['hello'];
 $result = null;
-$token = '';
 $readinessNotice = $selectedService ? hub_playground_basic_readiness($selectedService) : null;
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && ($_POST['action'] ?? '') === 'execute') {
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && in_array((string)($_POST['action'] ?? ''), ['execute', 'voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'], true)) {
     hub_check_csrf();
-    $token = trim((string)($_POST['bearer_token'] ?? ''));
-    $guard = $selectedService ? hub_playground_readiness_guard($selectedService) : ['error' => 'service_not_found', 'message' => __('找不到可測試的服務。')];
-    $result = $guard === null ? hub_playground_execute($selectedMode, $token) : hub_playground_guard_result($guard);
+    $action = (string)$_POST['action'];
+    if ($action === 'execute') {
+        $token = trim((string)($_POST['bearer_token'] ?? ''));
+        $guard = $selectedService ? hub_playground_readiness_guard($selectedService) : ['error' => 'service_not_found', 'message' => __('找不到可測試的服務。')];
+        $result = $guard === null ? hub_playground_execute($selectedMode, $token) : hub_playground_guard_result($guard);
+    } else {
+        try {
+            $memberId = hub_playground_tts_member_id($db, trim((string)($_POST['bearer_token'] ?? '')));
+            $operation = match ($action) {
+                'voice_profile_upload' => hub_create_uploaded_voice_profile($db, $memberId, is_array($_FILES['reference_wav'] ?? null) ? $_FILES['reference_wav'] : [], [
+                    'name' => (string)($_POST['voice_profile_name'] ?? ''),
+                    'consent_type' => (string)($_POST['consent_type'] ?? ''),
+                    'usage_scope' => 'private',
+                    'visibility' => 'private',
+                ]),
+                'voice_profile_confirm' => ['profile' => hub_confirm_voice_profile_prompt($db, (int)($_POST['voice_profile_id'] ?? 0), $memberId, (string)($_POST['prompt_text'] ?? ''))],
+                'voice_profile_retry_asr' => hub_retry_voice_profile_transcription($db, (int)($_POST['voice_profile_id'] ?? 0), $memberId),
+            };
+            $result = hub_playground_voice_profile_result($operation);
+        } catch (Throwable) {
+            $result = hub_playground_voice_profile_error_result();
+        }
+    }
 }
 $examples = hub_playground_examples($selectedMode);
 $audioUrl = $selectedService && $selectedMode === 'tts' ? hub_playground_tts_audio_url($selectedService, $result) : '';
@@ -753,14 +815,12 @@ hub_admin_header(__('API 測試場'), $user);
             <input type="hidden" name="action" value="execute">
             <input type="hidden" name="mode" value="<?= hub_h($selectedMode) ?>">
             <label>Bearer Token</label>
-            <input id="bearer-token-input" name="bearer_token" type="password" placeholder="<TOKEN>">
+            <input id="bearer-token-input" name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off">
             <div class="hub-actions">
                 <button type="button" data-token-toggle data-target="bearer-token-input"><?= hub_h(__('顯示 token')) ?></button>
                 <button type="button" data-copy-target="copy-auth-header"><?= hub_h(__('複製 Authorization header')) ?></button>
             </div>
             <p class="muted">Authorization header：<code id="copy-auth-header"><?= hub_h($authHeaderExample) ?></code></p>
-            <?php if ($token !== ''): ?><p class="muted"><?= hub_h(__('本次使用 token：')) ?><code><?= hub_h(hub_playground_mask_token($token)) ?></code></p><?php endif; ?>
-
             <?php if ($selectedMode === 'translate'): ?>
                 <label><?= hub_h(__('來源語言')) ?> source_lang</label>
                 <input name="source_lang" value="en">
@@ -849,6 +909,51 @@ hub_admin_header(__('API 測試場'), $user);
             <?php endif; ?>
             <div class="hub-actions"><button class="primary" type="submit"><?= hub_h(__('執行測試')) ?></button></div>
         </form>
+        <?php if ($selectedMode === 'tts'): ?>
+            <hr>
+            <h3>Voice Profile</h3>
+            <p class="muted"><?= hub_h(__('管理 Basic Clone 的參考 WAV；Bearer token 僅用於本次請求。')) ?></p>
+            <form method="post" enctype="multipart/form-data">
+                <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
+                <input type="hidden" name="action" value="voice_profile_upload">
+                <input type="hidden" name="mode" value="tts">
+                <label>Bearer Token</label>
+                <input name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off" required>
+                <label><?= hub_h(__('Voice Profile 名稱')) ?></label>
+                <input name="voice_profile_name" required>
+                <label><?= hub_h(__('授權類型')) ?></label>
+                <select name="consent_type">
+                    <option value="self_recorded">self_recorded</option>
+                    <option value="explicit_permission">explicit_permission</option>
+                    <option value="licensed_voice">licensed_voice</option>
+                </select>
+                <label><?= hub_h(__('參考 WAV')) ?></label>
+                <input name="reference_wav" type="file" accept="audio/wav,.wav" required>
+                <div class="hub-actions"><button class="primary" type="submit"><?= hub_h(__('上傳並轉錄')) ?></button></div>
+            </form>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
+                <input type="hidden" name="action" value="voice_profile_confirm">
+                <input type="hidden" name="mode" value="tts">
+                <label>Bearer Token</label>
+                <input name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off" required>
+                <label>Voice Profile ID</label>
+                <input name="voice_profile_id" type="number" min="1" required>
+                <label><?= hub_h(__('確認後的轉錄文字')) ?></label>
+                <textarea name="prompt_text" rows="3" required></textarea>
+                <div class="hub-actions"><button type="submit"><?= hub_h(__('確認轉錄文字')) ?></button></div>
+            </form>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
+                <input type="hidden" name="action" value="voice_profile_retry_asr">
+                <input type="hidden" name="mode" value="tts">
+                <label>Bearer Token</label>
+                <input name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off" required>
+                <label>Voice Profile ID</label>
+                <input name="voice_profile_id" type="number" min="1" required>
+                <div class="hub-actions"><button type="submit"><?= hub_h(__('重新嘗試 ASR')) ?></button></div>
+            </form>
+        <?php endif; ?>
     </section>
 </div>
 
