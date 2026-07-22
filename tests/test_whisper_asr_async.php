@@ -53,6 +53,23 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
             ],
         ],
         [
+            'id' => 'whisper_ckip_bert_base',
+            'storage' => 'cache',
+            'host_subdir' => 'whisper/ckip/bert-base-chinese-ws',
+            'container_path' => '/cache/whisper/ckip/bert-base-chinese-ws',
+            'required_paths' => ['.aihub-ckip-ready.json', 'config.json', 'pytorch_model.bin', 'vocab.txt'],
+            'when' => ['input' => 'subtitle_reflow', 'equals' => 'legacy_adaptive_v1'],
+            'marker_json' => [
+                'path' => '.aihub-ckip-ready.json',
+                'required_strings' => [
+                    'schema' => 'aihub-whisper-ckip/v1',
+                    'model_name' => 'ckiplab/bert-base-chinese-ws',
+                    'model_dir' => '/cache/whisper/ckip/bert-base-chinese-ws',
+                ],
+                'exact_keys' => ['schema', 'model_name', 'model_dir'],
+            ],
+        ],
+        [
             'id' => 'whisper_pyannote_diarization',
             'storage' => 'cache',
             'host_subdir' => 'whisper/pyannote/speaker-diarization-3.1',
@@ -111,6 +128,18 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
     ];
     hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'en', 'word_timestamps' => true, 'diarization' => false]) === $alignmentAssets, 'word timestamps must mount only its exact local alignment cache');
 
+    mkdir($cache . '/whisper/ckip/bert-base-chinese-ws', 0775, true);
+    foreach (['config.json', 'pytorch_model.bin', 'vocab.txt'] as $path) {
+        file_put_contents($cache . '/whisper/ckip/bert-base-chinese-ws/' . $path, 'model', LOCK_EX);
+    }
+    file_put_contents($cache . '/whisper/ckip/bert-base-chinese-ws/.aihub-ckip-ready.json', '{"schema":"aihub-whisper-ckip/v1","model_name":"ckiplab/bert-base-chinese-ws","model_dir":"/cache/whisper/ckip/bert-base-chinese-ws"}', LOCK_EX);
+    $ckipAssets = [
+        ...$asrAssets,
+        ['id' => 'whisper_ckip_bert_base', 'source' => $cache . '/whisper/ckip/bert-base-chinese-ws', 'container_path' => '/cache/whisper/ckip/bert-base-chinese-ws'],
+    ];
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'zh', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1']) === $ckipAssets, 'legacy subtitle reflow must mount only its exact ready CKIP model');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'en', 'word_timestamps' => true, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1']) === [...$alignmentAssets, $ckipAssets[1]], 'legacy subtitle reflow with explicit words must mount CKIP and WhisperX alignment together');
+
     mkdir($cache . '/whisper/pyannote/speaker-diarization-3.1/models', 0775, true);
     foreach (['config.yaml', 'models/pyannote_segmentation-3.0.bin', 'models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin'] as $path) {
         file_put_contents($cache . '/whisper/pyannote/speaker-diarization-3.1/' . $path, 'model', LOCK_EX);
@@ -131,12 +160,13 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
     $previousToken = getenv('AIHUB_SECRET_PYANNOTE_TOKEN');
     putenv('AIHUB_SECRET_PYANNOTE_TOKEN=test-env-only-token');
     try {
-        $allAssets = [...$alignmentAssets, $diarizationAssets[1]];
+        $allAssets = [...$alignmentAssets, $ckipAssets[1], $diarizationAssets[1]];
         foreach ([
             'basic' => [$asrAssets, [$asrAssets[0]['source']]],
             'alignment' => [$alignmentAssets, [$asrAssets[0]['source'], $alignmentAssets[1]['source']]],
+            'legacy_reflow' => [$ckipAssets, [$asrAssets[0]['source'], $ckipAssets[1]['source']]],
             'diarization' => [$diarizationAssets, [$asrAssets[0]['source'], $diarizationAssets[1]['source']]],
-            'both' => [$allAssets, [$asrAssets[0]['source'], $alignmentAssets[1]['source'], $diarizationAssets[1]['source']]],
+            'both' => [$allAssets, [$asrAssets[0]['source'], $alignmentAssets[1]['source'], $ckipAssets[1]['source'], $diarizationAssets[1]['source']]],
         ] as [$assets, $expectedSources]) {
             $command = hub_pack_job_default_runner_command([
                 'workspace' => $workspace,
@@ -374,9 +404,24 @@ import importlib.util
 import json
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]).parent))
+reflowed_segments = [
+    {"start": 0.10, "end": 1.62, "text": "今天，我們測試 AI Hub。"},
+    {"start": 1.90, "end": 2.20, "text": "完成。"},
+]
+subtitle_breaker = ["ckip"]
+reflow_calls = []
+subtitle_reflow = types.ModuleType("subtitle_reflow")
+
+def reflow_legacy_segments(segments, *args, **kwargs):
+    reflow_calls.append((segments, args, kwargs))
+    return reflowed_segments, {"subtitle_breaker": subtitle_breaker[0]}
+
+subtitle_reflow.reflow_legacy_segments = reflow_legacy_segments
+sys.modules["subtitle_reflow"] = subtitle_reflow
 spec = importlib.util.spec_from_file_location("whisper_asr_job", sys.argv[1])
 job = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(job)
@@ -415,10 +460,14 @@ def run(request):
             "transcript": json.loads((output_dir / "transcript.json").read_text(encoding="utf-8")),
             "files": {path.name for path in output_dir.iterdir()},
             "speaker": json.loads((output_dir / "speaker_timeline.json").read_text(encoding="utf-8"))["speakers"][0]["speaker"] if (output_dir / "speaker_timeline.json").is_file() else None,
-            "report": (output_dir / "transcription_report.json").read_text(encoding="utf-8"),
+            "srt": (output_dir / "subtitle.srt").read_text(encoding="utf-8") if (output_dir / "subtitle.srt").is_file() else None,
+            "vtt": (output_dir / "subtitle.vtt").read_text(encoding="utf-8") if (output_dir / "subtitle.vtt").is_file() else None,
+            "report": json.loads((output_dir / "transcription_report.json").read_text(encoding="utf-8")),
         }
 
 base = {"model": "large_v3", "language": "auto", "word_timestamps": False, "diarization": False, "output_srt": False, "output_vtt": False, "subtitle_reflow": "none"}
+expected_srt = "1\n00:00:00,100 --> 00:00:01,620\n今天，我們測試 AI Hub。\n\n2\n00:00:01,900 --> 00:00:02,200\n完成。\n"
+expected_vtt = "WEBVTT\n\n00:00:00.100 --> 00:00:01.620\n今天，我們測試 AI Hub。\n\n00:00:01.900 --> 00:00:02.200\n完成。\n"
 result = run(base)
 assert result["transcript"]["text"] == "hello" and loads == [("asr", "/models/whisper/asr/large-v3")] and transcriptions == [(None, False)], "plain ASR must not request native words or optional models"
 loads.clear()
@@ -426,11 +475,20 @@ transcriptions.clear()
 result = run(base | {"language": "zh", "output_srt": True, "subtitle_reflow": "legacy_adaptive_v1"})
 assert loads == [("asr", "/models/whisper/asr/large-v3")] and transcriptions == [("zh", True)], "legacy subtitle reflow must request native words without WhisperX alignment"
 assert "words" not in result["transcript"]["segments"][0], "legacy subtitle reflow must not expose native words in transcript JSON"
+assert result["srt"] == expected_srt and result["report"]["subtitle_breaker"] == "ckip" and len(reflow_calls) == 1, "legacy reflow must write CKIP-reflowed SRT cues and report the actual breaker"
 loads.clear()
 transcriptions.clear()
 result = run(base | {"word_timestamps": True, "language": "en", "output_vtt": True})
 assert loads == [("asr", "/models/whisper/asr/large-v3"), ("align", "en")] and transcriptions == [("en", True)], "explicit word timestamps must retain WhisperX alignment"
 assert result["transcript"]["segments"][0]["words"] == [{"start": 0.0, "end": 1.0, "word": "hello"}], "explicit word timestamps must retain aligned words in transcript JSON"
+loads.clear()
+transcriptions.clear()
+reflow_calls.clear()
+subtitle_breaker[0] = "jieba"
+result = run(base | {"word_timestamps": True, "language": "en", "output_vtt": True, "subtitle_reflow": "legacy_adaptive_v1"})
+assert loads == [("asr", "/models/whisper/asr/large-v3"), ("align", "en")] and transcriptions == [("en", True)], "legacy reflow with explicit words must still load WhisperX alignment"
+assert result["transcript"]["segments"][0]["words"] == [{"start": 0.0, "end": 1.0, "word": "hello"}], "legacy reflow with explicit words must retain aligned transcript words"
+assert result["vtt"] == expected_vtt and result["report"]["subtitle_breaker"] == "jieba" and len(reflow_calls) == 1, "legacy reflow must write Jieba-reflowed VTT cues and report the actual breaker"
 loads.clear()
 transcriptions.clear()
 result = run(base | {"diarization": True, "min_speakers": 1, "max_speakers": 2, "output_srt": True, "output_vtt": True})
@@ -592,10 +650,23 @@ def ckip_segment(text):
 def jieba_segment(text):
     raise AssertionError("Jieba must not run after CKIP succeeds")
 
-reflowed, diagnostic = reflow_legacy_segments(segments, ckip_segment=ckip_segment, jieba_segment=jieba_segment)
+reflowed, diagnostic = reflow_legacy_segments(segments, free_vram_mb=4096, ckip_segment=ckip_segment, jieba_segment=jieba_segment)
 assert reflowed == expected
 assert primary_calls == ["今天，我們測試 AI Hub。完成。"]
-assert diagnostic == {"tokenizer": "ckip", "ckip_error": None}
+assert diagnostic == {"subtitle_breaker": "ckip", "ckip_error": None}
+
+low_vram_calls = []
+def ckip_must_not_run(text):
+    raise AssertionError("CKIP must be skipped below 4 GiB free VRAM")
+
+def low_vram_jieba(text):
+    low_vram_calls.append(text)
+    return tokens
+
+low_vram, low_vram_diagnostic = reflow_legacy_segments(segments, free_vram_mb=4095, ckip_segment=ckip_must_not_run, jieba_segment=low_vram_jieba)
+assert low_vram == expected
+assert low_vram_calls == ["今天，我們測試 AI Hub。完成。"]
+assert low_vram_diagnostic == {"subtitle_breaker": "jieba", "ckip_error": None}
 
 fallback_calls = []
 def broken_ckip(text):
@@ -605,10 +676,10 @@ def fallback_jieba(text):
     fallback_calls.append(text)
     return tokens
 
-fallback, fallback_diagnostic = reflow_legacy_segments(segments, ckip_segment=broken_ckip, jieba_segment=fallback_jieba)
+fallback, fallback_diagnostic = reflow_legacy_segments(segments, free_vram_mb=4096, ckip_segment=broken_ckip, jieba_segment=fallback_jieba)
 assert fallback == expected
 assert fallback_calls == ["今天，我們測試 AI Hub。完成。"]
-assert fallback_diagnostic == {"tokenizer": "jieba", "ckip_error": "ckip model unavailable"}
+assert fallback_diagnostic == {"subtitle_breaker": "jieba", "ckip_error": "ckip model unavailable"}
 PY;
     $result = hub_run_command(['python3', '-c', $script, $runner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper legacy subtitle reflow fixture failed: ' . ($result['stderr'] ?? ''));
