@@ -347,3 +347,42 @@ hub_test('L5 DocParser contract benchmark submits async PDF tasks', function ():
     hub_test_assert($readiness['checks']['latest_benchmark_pass'] === true, 'DocParser readiness must see latest benchmark pass');
     hub_test_assert($readiness['pass_count'] === $readiness['total_count'], 'DocParser readiness must be fully green after submit benchmark pass');
 });
+
+hub_test('L5 binary benchmark validates PNG dimensions and declared response headers without JSON keys', function (): void {
+    $fixture = HUB_ROOT . '/packs/image-birefnet/demo/smoke.png';
+    $png = (string)file_get_contents($fixture);
+    $size = getimagesizefromstring($png);
+    hub_test_assert(is_array($size), 'BiRefNet binary benchmark fixture is not a PNG');
+    $result = hub_benchmark_binary_response_result([
+        'expected_content_type' => 'image/png',
+        'expected_png' => true,
+        'expected_dimensions_from_fixture' => true,
+        'expected_response_headers' => [
+            'X-3waAIHub-Model',
+            'X-3waAIHub-Device',
+            'X-3waAIHub-Elapsed-Ms',
+            'X-3waAIHub-Width',
+            'X-3waAIHub-Height',
+        ],
+        'expected_keys' => ['must_not_be_checked_for_binary'],
+    ], [
+        'status' => 200,
+        'headers' => [
+            'Content-Type: image/png',
+            'X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision',
+            'X-3waAIHub-Device: cuda',
+            'X-3waAIHub-Elapsed-Ms: 12',
+            'X-3waAIHub-Width: ' . $size[0],
+            'X-3waAIHub-Height: ' . $size[1],
+        ],
+        'body' => $png,
+    ], $fixture);
+
+    hub_test_assert($result === [
+        'content_type' => 'image/png',
+        'output_bytes' => strlen($png),
+        'width' => $size[0],
+        'height' => $size[1],
+        'response_headers_pass' => true,
+    ], 'binary benchmark result mismatch');
+});

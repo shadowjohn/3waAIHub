@@ -383,6 +383,9 @@ function hub_public_api_multipart_fields(array $service): array
         }
         $type = (string)($field['type'] ?? '');
         if ($type === 'file') {
+            if (empty($field['required'])) {
+                continue;
+            }
             $sample = (string)($field['example'] ?? '');
             if ($sample === '') {
                 $sample = $name === 'audio' ? 'sample.wav' : ($name === 'file' ? 'sample.pdf' : 'sample.png');
@@ -443,6 +446,9 @@ function hub_public_api_examples(array $service): array
                 continue;
             }
             if (($field['type'] ?? '') === 'file') {
+                if (empty($field['required'])) {
+                    continue;
+                }
                 $sample = (string)($field['example'] ?? '');
                 if ($sample === '') {
                     $sample = $name === 'audio' ? 'sample.wav' : ($name === 'file' ? 'sample.pdf' : 'sample.png');

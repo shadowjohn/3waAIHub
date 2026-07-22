@@ -62,7 +62,7 @@ def main() -> int:
     print(json.dumps({
         "ok": ok,
         "status": response.status_code,
-        "runtime_level": "L4b-real-inference",
+        "runtime_level": "L5-benchmark-ready",
         "device": response.headers.get("X-3waAIHub-Device", ""),
         "elapsed_ms": int(elapsed) if elapsed.isdigit() else 0,
         "model": response.headers.get("X-3waAIHub-Model", ""),

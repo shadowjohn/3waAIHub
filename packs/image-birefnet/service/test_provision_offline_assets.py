@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,6 +60,9 @@ class ProvisionOfflineAssetsTest(unittest.TestCase):
                 ready,
             )
             self.assertFalse((model_root / "ready.json.tmp").exists())
+            self.assertEqual(stat.S_IMODE(model_root.stat().st_mode), 0o755)
+            self.assertEqual(stat.S_IMODE((model_root / "ready.json").stat().st_mode), 0o644)
+            self.assertEqual(stat.S_IMODE((model_root / "snapshot" / "model.safetensors").stat().st_mode), 0o644)
 
     def test_provision_rejects_incomplete_snapshot_and_removes_temporary_marker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

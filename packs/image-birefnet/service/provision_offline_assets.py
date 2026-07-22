@@ -109,6 +109,14 @@ def provision(
             "files": files,
         }
         _write_ready(ready_path, payload)
+        model_root.chmod(0o755)
+        for current_root, directories, _filenames in os.walk(snapshot_dir):
+            Path(current_root).chmod(0o755)
+            for name in directories:
+                (Path(current_root) / name).chmod(0o755)
+        for row in files:
+            (snapshot_dir / row["path"]).chmod(0o644)
+        ready_path.chmod(0o644)
         return payload
     except Exception:
         temporary_ready.unlink(missing_ok=True)

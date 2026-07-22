@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import tempfile
+import threading
 import time
-from pathlib import Path
 
 from fastapi import FastAPI, File, Form, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from image_pipeline import PipelineError, decode_image, parse_options, postprocess_mask, prediction_to_mask, render_png
@@ -16,19 +16,26 @@ from provision_offline_assets import MODEL_REPOSITORY, MODEL_REVISION
 
 app = FastAPI(title="3waAIHub BiRefNet Adapter", version="0.1.0")
 MODEL_HEADER = f"{MODEL_REPOSITORY}@{MODEL_REVISION}"
+MAX_AXIS_PX = 8192
+MAX_DECODED_PIXELS = 10_000_000
+_INFERENCE_LOCK = threading.Lock()
 
 
 @app.get("/health")
 def health() -> dict[str, object]:
+    dependencies = {
+        name: importlib.util.find_spec(name) is not None
+        for name in ("torch", "transformers", "PIL", "numpy")
+    }
+    model = model_health()
+    ready = bool(model["model_present"]) and all(dependencies.values())
     return {
-        "ok": True,
-        "runtime_level": "L4b-real-inference",
-        "runtime_ready": True,
-        "dependencies": {
-            name: importlib.util.find_spec(name) is not None
-            for name in ("torch", "transformers", "PIL", "numpy")
-        },
-        **model_health(),
+        "ok": ready,
+        "ready": ready,
+        "runtime_level": "L5-benchmark-ready",
+        "runtime_ready": ready,
+        "dependencies": dependencies,
+        **model,
     }
 
 
@@ -78,6 +85,42 @@ def cpu_fallback_enabled() -> bool:
     return os.getenv("BIREFNET_CPU_FALLBACK", "1").strip().lower() not in {"0", "false", "no", "off"}
 
 
+def process_request(source_bytes: bytes, background_bytes: bytes | None, options, byte_limit: int):
+    with _INFERENCE_LOCK:
+        source = decode_image(
+            source_bytes,
+            max_bytes=byte_limit,
+            max_axis=MAX_AXIS_PX,
+            max_pixels=MAX_DECODED_PIXELS,
+        )
+        decoded_background = None if background_bytes is None else decode_image(
+            background_bytes,
+            max_bytes=byte_limit,
+            max_axis=MAX_AXIS_PX,
+            max_pixels=MAX_DECODED_PIXELS,
+        )
+        model, device = load_model()
+        try:
+            alpha = infer_alpha(source.convert("RGB"), model, device)
+        except Exception as exc:
+            if device != "cuda" or not cpu_fallback_enabled() or not is_cuda_out_of_memory(exc):
+                raise
+            reset_model()
+            cpu_environment = dict(os.environ)
+            cpu_environment["BIREFNET_USE_GPU"] = "0"
+            cpu_environment["BIREFNET_DEVICE"] = "cpu"
+            model, device = load_model(environment=cpu_environment)
+            alpha = infer_alpha(source.convert("RGB"), model, device)
+
+        alpha = postprocess_mask(
+            alpha,
+            size=source.size,
+            feather_px=options.feather_px,
+            edge_offset_px=options.edge_offset_px,
+        )
+        return render_png(source, alpha, options, decoded_background), source.size, device
+
+
 @app.post("/remove-background/image")
 async def remove_background(
     image: UploadFile | None = File(default=None),
@@ -111,58 +154,19 @@ async def remove_background(
         return error_response(400, exc.code, exc.message)
 
     try:
-        service_data = Path(os.getenv("BIREFNET_SERVICE_DATA_DIR", "/data/service"))
-        temporary_root = service_data / "tmp"
-        temporary_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary_root.chmod(0o700)
-        with tempfile.TemporaryDirectory(prefix="request-", dir=temporary_root) as workspace_name:
-            workspace = Path(workspace_name)
-            workspace.chmod(0o700)
-            byte_limit = max_upload_bytes()
-            source_bytes = await bounded_upload(image, byte_limit)
-            (workspace / "source.upload").write_bytes(source_bytes)
-            source = decode_image(source_bytes, max_bytes=byte_limit, max_axis=8192, max_pixels=40_000_000)
-            decoded_background = None
-            if background_image is not None:
-                background_bytes = await bounded_upload(background_image, byte_limit)
-                (workspace / "background.upload").write_bytes(background_bytes)
-                decoded_background = decode_image(
-                    background_bytes,
-                    max_bytes=byte_limit,
-                    max_axis=8192,
-                    max_pixels=40_000_000,
-                )
-
-            model, device = load_model()
-            try:
-                alpha = infer_alpha(source.convert("RGB"), model, device)
-            except TimeoutError:
-                raise
-            except Exception as exc:
-                if device != "cuda" or not cpu_fallback_enabled() or not is_cuda_out_of_memory(exc):
-                    raise
-                reset_model()
-                cpu_environment = dict(os.environ)
-                cpu_environment["BIREFNET_USE_GPU"] = "0"
-                cpu_environment["BIREFNET_DEVICE"] = "cpu"
-                model, device = load_model(environment=cpu_environment)
-                alpha = infer_alpha(source.convert("RGB"), model, device)
-
-            alpha = postprocess_mask(
-                alpha,
-                size=source.size,
-                feather_px=options.feather_px,
-                edge_offset_px=options.edge_offset_px,
-            )
-            encoded = render_png(source, alpha, options, decoded_background)
-            output_path = workspace / "output.png"
-            output_path.write_bytes(encoded)
-            response_bytes = output_path.read_bytes()
+        byte_limit = max_upload_bytes()
+        source_bytes = await bounded_upload(image, byte_limit)
+        background_bytes = await bounded_upload(background_image, byte_limit) if background_image is not None else None
+        response_bytes, source_size, device = await run_in_threadpool(
+            process_request,
+            source_bytes,
+            background_bytes,
+            options,
+            byte_limit,
+        )
     except ModelRuntimeError as exc:
         status = 404 if exc.code == "model_not_present" else 503
         return error_response(status, exc.code, "BiRefNet model is unavailable")
-    except TimeoutError:
-        return error_response(504, "inference_timeout", "BiRefNet inference timed out")
     except PipelineError as exc:
         if exc.code == "payload_too_large":
             return error_response(413, exc.code, exc.message)
@@ -182,7 +186,7 @@ async def remove_background(
             "X-3waAIHub-Model": MODEL_HEADER,
             "X-3waAIHub-Device": device,
             "X-3waAIHub-Elapsed-Ms": str(elapsed_ms),
-            "X-3waAIHub-Width": str(source.width),
-            "X-3waAIHub-Height": str(source.height),
+            "X-3waAIHub-Width": str(source_size[0]),
+            "X-3waAIHub-Height": str(source_size[1]),
         },
     )

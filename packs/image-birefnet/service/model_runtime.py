@@ -45,7 +45,7 @@ def _snapshot_files(snapshot: Path) -> set[str]:
     return files
 
 
-def verify_ready(model_root: Path = DEFAULT_MODEL_ROOT) -> dict[str, Any]:
+def read_ready_marker(model_root: Path = DEFAULT_MODEL_ROOT) -> tuple[Path, dict[str, Any]]:
     try:
         root = Path(model_root)
         snapshot = root / "snapshot"
@@ -60,7 +60,16 @@ def verify_ready(model_root: Path = DEFAULT_MODEL_ROOT) -> dict[str, Any]:
             or not isinstance(payload.get("files"), list)
         ):
             raise ModelRuntimeError("model_load_failed")
+        return snapshot, payload
+    except ModelRuntimeError:
+        raise
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ModelRuntimeError("model_load_failed") from exc
 
+
+def verify_ready(model_root: Path = DEFAULT_MODEL_ROOT) -> dict[str, Any]:
+    try:
+        snapshot, payload = read_ready_marker(model_root)
         snapshot_root = snapshot.resolve(strict=True)
         listed: set[str] = set()
         for row in payload["files"]:
@@ -97,7 +106,7 @@ def verify_ready(model_root: Path = DEFAULT_MODEL_ROOT) -> dict[str, Any]:
         return payload
     except ModelRuntimeError:
         raise
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, TypeError) as exc:
         raise ModelRuntimeError("model_load_failed") from exc
 
 
@@ -188,7 +197,8 @@ def model_health(environment: Mapping[str, str] | None = None) -> dict[str, Any]
     error = ""
     revision = ""
     try:
-        revision = str(verify_ready(root)["revision"])
+        _snapshot, marker = read_ready_marker(root)
+        revision = str(marker["revision"])
     except ModelRuntimeError as exc:
         error = exc.code
     with _MODEL_LOCK:
@@ -198,11 +208,7 @@ def model_health(environment: Mapping[str, str] | None = None) -> dict[str, Any]
         "model_revision": revision or None,
         "requested_device": values.get("BIREFNET_DEVICE", "auto"),
         "effective_device": effective,
-        "storage": {
-            "models": values.get("BIREFNET_MODEL_DIR", str(DEFAULT_MODEL_ROOT)),
-            "cache": values.get("BIREFNET_CACHE_DIR", "/cache/birefnet"),
-            "service_data": values.get("BIREFNET_SERVICE_DATA_DIR", "/data/service"),
-        },
+        "model_path": values.get("BIREFNET_MODEL_DIR", str(DEFAULT_MODEL_ROOT)),
     }
     if error:
         result["error"] = error

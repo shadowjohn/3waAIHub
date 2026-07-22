@@ -1410,6 +1410,17 @@ function hub_pack_storage_runtime_env(array $manifest): array
     $modelDir = $paths['models'] ?? '';
     $cacheDir = $paths['cache'] ?? '';
     $serviceDataDir = $paths['service_data'] ?? ($paths['service'] ?? '');
+    if ((string)($manifest['id'] ?? '') === 'image-birefnet' && $modelDir !== '') {
+        return [
+            'BIREFNET_MODEL_DIR' => $modelDir,
+            'HF_HOME' => '/tmp/huggingface',
+            'HF_HUB_OFFLINE' => '1',
+            'TRANSFORMERS_OFFLINE' => '1',
+            'XDG_CACHE_HOME' => '/tmp/xdg',
+            'HOME' => '/tmp/home',
+            'PYTHONUNBUFFERED' => '1',
+        ];
+    }
     if ($modelDir === '' || $cacheDir === '' || $serviceDataDir === '') {
         return [];
     }
@@ -1473,17 +1484,6 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'BIOCLIP_CACHE_DIR' => $cacheDir,
             'BIOCLIP_SERVICE_DATA_DIR' => $serviceDataDir,
             'HF_HOME' => $modelDir . '/huggingface',
-            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
-            'HOME' => $cacheDir . '/home',
-            'PYTHONUNBUFFERED' => '1',
-        ],
-        'image-birefnet' => [
-            'BIREFNET_MODEL_DIR' => $modelDir,
-            'BIREFNET_CACHE_DIR' => $cacheDir,
-            'BIREFNET_SERVICE_DATA_DIR' => $serviceDataDir,
-            'HF_HOME' => $modelDir . '/huggingface',
-            'HF_HUB_OFFLINE' => '1',
-            'TRANSFORMERS_OFFLINE' => '1',
             'XDG_CACHE_HOME' => $cacheDir . '/xdg',
             'HOME' => $cacheDir . '/home',
             'PYTHONUNBUFFERED' => '1',

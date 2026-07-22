@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import io
 import os
-import stat
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 import torch
@@ -57,10 +54,8 @@ class EndpointTest(unittest.TestCase):
             (encoded(Image.new("RGB", (4, 3), "green"), "PNG"), "source.png", (4, 3)),
             (encoded(Image.new("RGB", (5, 4), "blue"), "WEBP"), "source.webp", (5, 4)),
         ]
-        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
-            "BIREFNET_SERVICE_DATA_DIR": temporary,
-            "BIREFNET_MAX_UPLOAD_MB": "50",
-        }), patch.object(service_app, "load_model", return_value=(FakeModel(), "cpu")):
+        with patch.dict(os.environ, {"BIREFNET_MAX_UPLOAD_MB": "50"}), \
+             patch.object(service_app, "load_model", return_value=(FakeModel(), "cpu")):
             for source, filename, expected_size in sources:
                 with self.subTest(filename=filename):
                     response = self.post(source, filename)
@@ -80,10 +75,22 @@ class EndpointTest(unittest.TestCase):
             self.assertEqual(Image.open(io.BytesIO(mask.content)).mode, "L")
             composite = self.post(sources[1][0], data={"output": "composite", "background": "white"})
             self.assertEqual(Image.open(io.BytesIO(composite.content)).mode, "RGB")
-            workspace = Path(temporary) / "tmp"
-            self.assertTrue(workspace.is_dir())
-            self.assertEqual(stat.S_IMODE(workspace.stat().st_mode), 0o700)
-            self.assertEqual(list(workspace.iterdir()), [])
+
+    def test_health_is_not_ready_when_the_model_marker_is_missing(self) -> None:
+        with patch.object(service_app, "model_health", return_value={
+            "model_present": False,
+            "model_revision": None,
+            "requested_device": "auto",
+            "effective_device": None,
+            "model_path": "/models/birefnet",
+            "error": "model_not_present",
+        }):
+            response = self.client.get("/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["ok"])
+        self.assertFalse(response.json()["ready"])
+        self.assertFalse(response.json()["runtime_ready"])
 
     def test_invalid_options_fail_before_model_load(self) -> None:
         source = encoded(Image.new("RGB", (2, 2), "red"), "PNG")
@@ -106,6 +113,14 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual((oversized.status_code, oversized.json()["error"]), (413, "payload_too_large"))
         loader.assert_not_called()
 
+    def test_decoded_pixel_limit_rejects_before_model_load(self) -> None:
+        source = encoded(Image.new("RGB", (4, 3), "red"), "PNG")
+        with patch.object(service_app, "MAX_DECODED_PIXELS", 10), patch.object(service_app, "load_model") as loader:
+            response = self.post(source)
+
+        self.assertEqual((response.status_code, response.json()["error"]), (400, "invalid_image"))
+        loader.assert_not_called()
+
     def test_cuda_out_of_memory_resets_and_retries_complete_request_on_cpu_once(self) -> None:
         source = encoded(Image.new("RGB", (2, 2), "red"), "PNG")
         load = Mock(side_effect=[(object(), "cuda"), (object(), "cpu")])
@@ -123,26 +138,21 @@ class EndpointTest(unittest.TestCase):
         self.assertEqual(retry_environment["BIREFNET_USE_GPU"], "0")
         self.assertEqual(retry_environment["BIREFNET_DEVICE"], "cpu")
 
-    def test_cpu_failure_and_timeout_return_sanitized_json(self) -> None:
+    def test_cpu_failures_return_sanitized_json(self) -> None:
         source = encoded(Image.new("RGB", (2, 2), "red"), "PNG")
-        with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, {
-            "BIREFNET_SERVICE_DATA_DIR": temporary,
-        }):
-            with patch.object(service_app, "load_model", return_value=(FakeModel(RuntimeError("secret/source.png")), "cpu")):
-                failed = self.post(source)
-            self.assertEqual(failed.status_code, 500)
-            self.assertEqual(failed.json()["error"], "inference_failed")
-            self.assertNotIn("secret", failed.text)
-            self.assertFalse(failed.content.startswith(b"\x89PNG"))
-            self.assertEqual(list((Path(temporary) / "tmp").iterdir()), [])
+        with patch.object(service_app, "load_model", return_value=(FakeModel(RuntimeError("secret/source.png")), "cpu")):
+            failed = self.post(source)
+        self.assertEqual(failed.status_code, 500)
+        self.assertEqual(failed.json()["error"], "inference_failed")
+        self.assertNotIn("secret", failed.text)
+        self.assertFalse(failed.content.startswith(b"\x89PNG"))
 
-            with patch.object(service_app, "load_model", return_value=(object(), "cpu")), \
-                 patch.object(service_app, "infer_alpha", side_effect=TimeoutError("late /private/path")):
-                timed_out = self.post(source)
-            self.assertEqual(timed_out.status_code, 504)
-            self.assertEqual(timed_out.json()["error"], "inference_timeout")
-            self.assertNotIn("private", timed_out.text)
-            self.assertEqual(list((Path(temporary) / "tmp").iterdir()), [])
+        with patch.object(service_app, "load_model", return_value=(object(), "cpu")), \
+             patch.object(service_app, "infer_alpha", side_effect=TimeoutError("late /private/path")):
+            timed_out = self.post(source)
+        self.assertEqual(timed_out.status_code, 500)
+        self.assertEqual(timed_out.json()["error"], "inference_failed")
+        self.assertNotIn("private", timed_out.text)
 
 
 if __name__ == "__main__":

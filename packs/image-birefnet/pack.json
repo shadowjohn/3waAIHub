@@ -6,7 +6,7 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L4b-real-inference",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "background_remove",
@@ -63,7 +63,6 @@
       "model_not_present",
       "model_load_failed",
       "inference_failed",
-      "inference_timeout",
       "runtime_not_ready",
       "gateway_timeout"
     ],
@@ -72,12 +71,42 @@
       "max_upload_mb": 50,
       "max_request_mb": 101,
       "max_axis_px": 8192,
-      "max_decoded_pixels": 40000000,
+      "max_decoded_pixels": 10000000,
       "max_concurrency": 1
     },
     "benchmark": {
-      "supported": false,
-      "cases": []
+      "supported": true,
+      "cases": [
+        {
+          "id": "birefnet_real_image",
+          "mode": "background_remove",
+          "method": "POST",
+          "fixture": "packs/image-birefnet/demo/acceptance/white_product.png",
+          "fixture_field": "image",
+          "form": {"output": "cutout", "defringe": "0"},
+          "real_inference": true,
+          "expected_content_type": "image/png",
+          "expected_png": true,
+          "expected_dimensions_from_fixture": true,
+          "expected_response_headers": [
+            "X-3waAIHub-Model",
+            "X-3waAIHub-Device",
+            "X-3waAIHub-Elapsed-Ms",
+            "X-3waAIHub-Width",
+            "X-3waAIHub-Height"
+          ]
+        }
+      ]
+    },
+    "quality_benchmark": {
+      "runner": "service/acceptance.py",
+      "f_score_min": 0.80,
+      "mae_max": 0.10,
+      "fixtures": [
+        {"id": "person_hair", "image": "demo/acceptance/person_hair.png", "mask": "demo/acceptance/person_hair_mask.png"},
+        {"id": "white_product", "image": "demo/acceptance/white_product.png", "mask": "demo/acceptance/white_product_mask.png"},
+        {"id": "animal_fur", "image": "demo/acceptance/animal_fur.png", "mask": "demo/acceptance/animal_fur_mask.png"}
+      ]
     }
   },
   "hardware": {
@@ -95,9 +124,7 @@
   },
   "storage": {
     "mounts": [
-      {"type": "models", "host_subdir": "birefnet", "container_path": "/models/birefnet", "read_only": false},
-      {"type": "cache", "host_subdir": "birefnet", "container_path": "/cache/birefnet", "read_only": false},
-      {"type": "service_data", "host_subdir": "", "container_path": "/data/service", "read_only": false}
+      {"type": "models", "host_subdir": "birefnet", "container_path": "/models/birefnet", "read_only": true}
     ]
   },
   "settings_schema": [
@@ -111,14 +138,12 @@
     {"name": "BIREFNET_DEVICE", "default": "auto", "required": true},
     {"name": "BIREFNET_CPU_FALLBACK", "default": "1", "required": true},
     {"name": "BIREFNET_MODEL_DIR", "default": "/models/birefnet", "required": true},
-    {"name": "BIREFNET_CACHE_DIR", "default": "/cache/birefnet", "required": true},
-    {"name": "BIREFNET_SERVICE_DATA_DIR", "default": "/data/service", "required": true},
     {"name": "BIREFNET_MAX_UPLOAD_MB", "default": "50", "required": true},
-    {"name": "HF_HOME", "default": "/models/birefnet/huggingface", "required": true},
+    {"name": "HF_HOME", "default": "/tmp/huggingface", "required": true},
     {"name": "HF_HUB_OFFLINE", "default": "1", "required": true},
     {"name": "TRANSFORMERS_OFFLINE", "default": "1", "required": true},
-    {"name": "XDG_CACHE_HOME", "default": "/cache/birefnet/xdg", "required": true},
-    {"name": "HOME", "default": "/cache/birefnet/home", "required": true}
+    {"name": "XDG_CACHE_HOME", "default": "/tmp/xdg", "required": true},
+    {"name": "HOME", "default": "/tmp/home", "required": true}
   ],
   "preflight": {
     "checks": ["docker", "docker_compose", "storage"]

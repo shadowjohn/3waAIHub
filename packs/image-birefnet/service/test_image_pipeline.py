@@ -7,6 +7,7 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
+from acceptance import score_masks
 from image_pipeline import (
     PipelineError,
     cover_background,
@@ -26,6 +27,14 @@ def png_bytes(image: Image.Image) -> bytes:
 
 
 class ImagePipelineTest(unittest.TestCase):
+    def test_acceptance_scores_each_alpha_mask(self) -> None:
+        truth = np.array([[0.0, 0.25], [0.75, 1.0]], dtype=np.float32)
+        perfect = score_masks(truth, truth)
+        self.assertEqual(perfect, {"mae": 0.0, "precision": 1.0, "recall": 1.0, "f_score": 1.0})
+        wrong = score_masks(np.zeros((2, 2), dtype=np.float32), truth)
+        self.assertEqual((wrong["precision"], wrong["recall"], wrong["f_score"]), (0.0, 0.0, 0.0))
+        self.assertEqual(wrong["mae"], 0.5)
+
     def test_parse_options_enforces_ranges_and_output_background_matrix(self) -> None:
         valid = [
             ({}, False, ("cutout", "transparent")),

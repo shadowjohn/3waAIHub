@@ -183,6 +183,15 @@ class ModelLoaderTest(unittest.TestCase):
                 {"trust_remote_code": True, "local_files_only": True},
             )])
 
+    def test_health_reads_the_pinned_marker_without_hashing_model_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.ready_model_root(temporary)
+            with patch("model_runtime._hash_file", side_effect=AssertionError("health must not hash model files")):
+                health = app.model_health({"BIREFNET_MODEL_DIR": str(root), "BIREFNET_DEVICE": "auto"})
+
+            self.assertTrue(health["model_present"])
+            self.assertEqual(health["model_revision"], app.MODEL_REVISION)
+
     def test_checksum_failure_prevents_model_factory_call(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = self.ready_model_root(temporary)

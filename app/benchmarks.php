@@ -127,6 +127,19 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         $_POST = $oldPost;
     }
 
+    if (trim((string)($case['expected_content_type'] ?? '')) !== '') {
+        return [
+            'case_id' => $caseId,
+            'pack_id' => (string)$pack['id'],
+            'service_id' => $serviceId,
+            'mode' => $mode,
+            'http_status' => (int)$response['status'],
+            'real_inference' => $realInference,
+            'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
+            'fixture' => (string)($case['fixture'] ?? ''),
+        ] + hub_benchmark_binary_response_result($case, $response, $fixture);
+    }
+
     $payload = json_decode((string)$response['body'], true);
     $expectedKeys = array_map('strval', $case['expected_keys'] ?? $contract['output']['required_keys'] ?? []);
     $missing = [];
@@ -210,6 +223,51 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
         'effective_device' => (string)($device['effective'] ?? ''),
         'runtime_level' => (string)($pack['manifest']['runtime_level'] ?? ''),
         'fixture' => (string)($case['fixture'] ?? ''),
+    ];
+}
+
+function hub_benchmark_binary_response_result(array $case, array $response, string $fixture): array
+{
+    $headers = [];
+    foreach ($response['headers'] ?? [] as $header) {
+        if (!is_string($header) || !str_contains($header, ':')) {
+            continue;
+        }
+        [$name, $value] = explode(':', $header, 2);
+        $headers[strtolower(trim($name))] = trim($value);
+    }
+    $expectedType = strtolower(trim((string)$case['expected_content_type']));
+    $body = (string)($response['body'] ?? '');
+    $size = !empty($case['expected_png']) ? getimagesizefromstring($body) : false;
+    $failed = (int)($response['status'] ?? 0) !== 200
+        || strtolower((string)($headers['content-type'] ?? '')) !== $expectedType
+        || (!empty($case['expected_png']) && (!str_starts_with($body, "\x89PNG\r\n\x1a\n") || !is_array($size) || ($size['mime'] ?? '') !== 'image/png'));
+
+    if (!empty($case['expected_dimensions_from_fixture'])) {
+        $fixtureSize = is_file($fixture) ? getimagesize($fixture) : false;
+        $failed = $failed || !is_array($size) || !is_array($fixtureSize) || $size[0] !== $fixtureSize[0] || $size[1] !== $fixtureSize[1];
+    }
+    foreach (array_map('strval', $case['expected_response_headers'] ?? []) as $name) {
+        $failed = $failed || trim((string)($headers[strtolower($name)] ?? '')) === '';
+    }
+    if (is_array($size)) {
+        $failed = $failed
+            || (isset($headers['x-3waaihub-width']) && (int)$headers['x-3waaihub-width'] !== $size[0])
+            || (isset($headers['x-3waaihub-height']) && (int)$headers['x-3waaihub-height'] !== $size[1]);
+    }
+    if (isset($headers['x-3waaihub-elapsed-ms'])) {
+        $failed = $failed || !ctype_digit($headers['x-3waaihub-elapsed-ms']) || (int)$headers['x-3waaihub-elapsed-ms'] < 1;
+    }
+    if ($failed) {
+        throw new RuntimeException('benchmark contract check failed.');
+    }
+
+    return [
+        'content_type' => $expectedType,
+        'output_bytes' => strlen($body),
+        'width' => is_array($size) ? (int)$size[0] : 0,
+        'height' => is_array($size) ? (int)$size[1] : 0,
+        'response_headers_pass' => true,
     ];
 }
 

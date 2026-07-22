@@ -110,6 +110,10 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     hub_test_assert(str_contains((string)$backgroundRemove['examples']['js_fetch'], 'await res.blob()'), 'BiRefNet JS example must read a blob');
     hub_test_assert(str_contains((string)$backgroundRemove['examples']['js_fetch'], 'URL.createObjectURL'), 'BiRefNet JS example must create an object URL');
     hub_test_assert(!str_contains((string)$backgroundRemove['examples']['js_fetch'], 'res.json()'), 'BiRefNet JS success example must not decode PNG as JSON');
+    foreach (['curl', 'php', 'js_fetch'] as $exampleType) {
+        hub_test_assert(!str_contains((string)$backgroundRemove['examples'][$exampleType], 'background_image'), 'BiRefNet default ' . $exampleType . ' example must omit optional background image');
+    }
+    hub_test_assert(substr_count((string)$backgroundRemove['examples']['js_fetch'], 'const fileInput') === 1, 'BiRefNet JS example must declare one required file input');
     $photoFields = [];
     foreach ($photo['input_fields'] ?? [] as $field) {
         if (is_array($field)) {
