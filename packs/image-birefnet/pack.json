@@ -6,7 +6,7 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L3-storage-mount",
+  "runtime_level": "L4a-model-init-smoke",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": false,
   "default_mode": "background_remove",

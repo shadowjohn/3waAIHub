@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
+
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
+
+from model_runtime import ModelRuntimeError, load_model, model_health, reset_model
 
 
 app = FastAPI(title="3waAIHub BiRefNet Adapter", version="0.1.0")
@@ -11,8 +15,13 @@ app = FastAPI(title="3waAIHub BiRefNet Adapter", version="0.1.0")
 def health() -> dict[str, object]:
     return {
         "ok": True,
-        "runtime_level": "L3-storage-mount",
+        "runtime_level": "L4a-model-init-smoke",
         "runtime_ready": False,
+        "dependencies": {
+            name: importlib.util.find_spec(name) is not None
+            for name in ("torch", "transformers", "PIL", "numpy")
+        },
+        **model_health(),
     }
 
 
