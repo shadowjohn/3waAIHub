@@ -182,11 +182,19 @@ function hub_test_teardown_data_root(): void
 function hub_test_clear_data_root(): void
 {
     $dataRoot = hub_test_data_root();
-    foreach (scandir($dataRoot) ?: [] as $entry) {
-        if ($entry === '.' || $entry === '..') {
+    // Only task-ID-addressed data needs clearing between SQLite resets.
+    // Keep the rest of the isolated data root intact so tests can prove that
+    // test reset does not erase unrelated managed uploads.
+    foreach (['uploads/tasks', 'results'] as $relativePath) {
+        $path = $dataRoot . DIRECTORY_SEPARATOR . $relativePath;
+        clearstatcache(true, $path);
+        if (!file_exists($path)) {
             continue;
         }
-        hub_test_remove_data_tree($dataRoot . DIRECTORY_SEPARATOR . $entry);
+        if (is_link($path) || !is_dir($path) || realpath($path) !== $path || !str_starts_with($path, $dataRoot . DIRECTORY_SEPARATOR)) {
+            throw new RuntimeException('Test task data reset target is invalid.');
+        }
+        hub_test_remove_data_tree($path);
     }
     hub_ensure_runtime_dirs();
 }

@@ -791,7 +791,7 @@ function hub_prepare_task_log_message(int $taskId, string $message): string
     }
 
     $relativePath = 'data/logs/tasks/task_' . $taskId . '.log';
-    $path = HUB_ROOT . '/' . $relativePath;
+    $path = hub_path($relativePath);
     $line = '[' . hub_now() . '] ' . $message . PHP_EOL;
     if (file_put_contents($path, $line, FILE_APPEND | LOCK_EX) === false) {
         throw new RuntimeException('Cannot write task log file.');
