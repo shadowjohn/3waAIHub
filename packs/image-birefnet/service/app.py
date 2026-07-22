@@ -11,7 +11,7 @@ app = FastAPI(title="3waAIHub BiRefNet Adapter", version="0.1.0")
 def health() -> dict[str, object]:
     return {
         "ok": True,
-        "runtime_level": "L1-contract",
+        "runtime_level": "L2-deps-import",
         "runtime_ready": False,
     }
 

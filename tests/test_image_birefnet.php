@@ -6,12 +6,12 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-birefnet pack missing or invalid');
     $manifest = $pack['manifest'];
 
-    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L1-contract', 'BiRefNet must start at L1');
+    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L2-deps-import', 'BiRefNet runtime level mismatch');
     hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'BiRefNet target mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'background_remove', 'BiRefNet mode mismatch');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'BiRefNet execution type mismatch');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/remove-background/image', 'BiRefNet endpoint mismatch');
-    hub_test_assert(($manifest['gateway']['max_upload_mb'] ?? 0) === 50, 'BiRefNet upload limit mismatch');
+    hub_test_assert(($manifest['gateway']['max_upload_mb'] ?? 0) === 101, 'BiRefNet aggregate upload limit mismatch');
     hub_test_assert(($manifest['hardware']['gpu_required'] ?? true) === false, 'BiRefNet must retain CPU fallback');
     hub_test_assert(($manifest['hardware']['gpu_supported'] ?? false) === true, 'BiRefNet must advertise GPU support');
     hub_test_assert(($manifest['hardware']['cpu_fallback'] ?? false) === true, 'BiRefNet CPU fallback missing');
@@ -43,6 +43,7 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     hub_test_assert(($fields['edge_offset_px']['min'] ?? null) === -20 && ($fields['edge_offset_px']['max'] ?? null) === 20, 'BiRefNet edge offset range mismatch');
     hub_test_assert(($contract['limits']['max_axis_px'] ?? 0) === 8192, 'BiRefNet axis limit mismatch');
     hub_test_assert(($contract['limits']['max_decoded_pixels'] ?? 0) === 40000000, 'BiRefNet pixel limit mismatch');
+    hub_test_assert(($contract['limits']['max_upload_mb'] ?? 0) === 50, 'BiRefNet per-file upload limit mismatch');
 
     $expectedErrors = [
         'file_required', 'payload_too_large', 'unsupported_media_type', 'invalid_image',
@@ -60,6 +61,13 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     hub_test_assert(str_contains($app, '@app.post("/remove-background/image")'), 'BiRefNet invoke endpoint missing');
     hub_test_assert(str_contains($app, 'runtime_not_ready'), 'BiRefNet L1 endpoint must fail closed');
     hub_test_assert(!str_contains($app, 'mock'), 'BiRefNet must not expose placeholder inference');
+    $requirements = (string)file_get_contents($base . '/service/requirements.txt');
+    foreach (['torch==', 'torchvision==', 'transformers==', 'timm==', 'kornia==', 'einops=='] as $dependency) {
+        hub_test_assert(str_contains($requirements, $dependency), 'BiRefNet dependency missing ' . $dependency);
+    }
+    $dockerfile = (string)file_get_contents($base . '/service/Dockerfile');
+    hub_test_assert(str_contains($dockerfile, 'python3 /app/smoke.py'), 'BiRefNet dependency smoke missing');
+    hub_test_assert(str_contains($dockerfile, 'python3 -m unittest -v test_image_pipeline.py'), 'BiRefNet pipeline test missing from build');
 
     $catalogIds = array_column(json_decode((string)file_get_contents(HUB_ROOT . '/packs/catalog.json'), true)['packs'] ?? [], 'id');
     hub_test_assert(in_array('image-birefnet', $catalogIds, true), 'BiRefNet catalog entry missing');

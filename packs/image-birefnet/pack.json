@@ -6,7 +6,7 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L1-contract",
+  "runtime_level": "L2-deps-import",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": false,
   "default_mode": "background_remove",
@@ -21,7 +21,7 @@
     "invoke_path": "/remove-background/image",
     "methods": ["POST"],
     "timeout_sec": 180,
-    "max_upload_mb": 50
+    "max_upload_mb": 101
   },
   "l5_contract": {
     "endpoint": "/remove-background/image",
@@ -70,6 +70,7 @@
     "limits": {
       "timeout_sec": 180,
       "max_upload_mb": 50,
+      "max_request_mb": 101,
       "max_axis_px": 8192,
       "max_decoded_pixels": 40000000,
       "max_concurrency": 1
@@ -79,19 +80,6 @@
       "cases": []
     }
   },
-  "error_codes": [
-    "file_required",
-    "payload_too_large",
-    "unsupported_media_type",
-    "invalid_image",
-    "invalid_parameter",
-    "model_not_present",
-    "model_load_failed",
-    "inference_failed",
-    "inference_timeout",
-    "runtime_not_ready",
-    "gateway_timeout"
-  ],
   "hardware": {
     "gpu_required": false,
     "gpu_supported": true,
@@ -116,8 +104,7 @@
     {"key": "BIREFNET_USE_GPU", "label": "Use GPU", "type": "boolean", "default": "1", "required": true, "restart_required": true},
     {"key": "BIREFNET_DEVICE", "label": "Device", "type": "select", "default": "auto", "options": ["auto", "cuda", "cpu"], "required": true, "restart_required": true},
     {"key": "BIREFNET_CPU_FALLBACK", "label": "CPU fallback", "type": "boolean", "default": "1", "required": true, "restart_required": true},
-    {"key": "BIREFNET_MAX_UPLOAD_MB", "label": "Max upload MB", "type": "integer", "default": "50", "min": 1, "max": 50, "required": true, "restart_required": true},
-    {"key": "KEEP_WARM", "label": "Keep model warm", "type": "boolean", "default": "0", "required": true, "restart_required": true}
+    {"key": "BIREFNET_MAX_UPLOAD_MB", "label": "Max upload MB", "type": "integer", "default": "50", "min": 1, "max": 50, "required": true, "restart_required": true}
   ],
   "env": [
     {"name": "BIREFNET_USE_GPU", "default": "1", "required": true},
@@ -126,8 +113,7 @@
     {"name": "BIREFNET_MODEL_DIR", "default": "/models/birefnet", "required": true},
     {"name": "BIREFNET_CACHE_DIR", "default": "/cache/birefnet", "required": true},
     {"name": "BIREFNET_SERVICE_DATA_DIR", "default": "/data/service", "required": true},
-    {"name": "BIREFNET_MAX_UPLOAD_MB", "default": "50", "required": true},
-    {"name": "KEEP_WARM", "default": "0", "required": true}
+    {"name": "BIREFNET_MAX_UPLOAD_MB", "default": "50", "required": true}
   ],
   "preflight": {
     "checks": ["docker", "docker_compose", "storage"]
