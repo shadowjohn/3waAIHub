@@ -158,3 +158,77 @@ hub_test('Whisper ASR install-time CPU override survives non-GPU settings update
     hub_update_service_settings($db, (int)$service['id'], ['WHISPER_MODEL' => 'base']);
     hub_test_assert(!str_contains((string)file_get_contents($composePath), 'gpus: all'), 'non-GPU settings update must preserve Whisper CPU compose');
 });
+
+hub_test('VoxCPM2 operations smoke keeps GPU, artifact, privacy, and cleanup contracts', function (): void {
+    $path = HUB_ROOT . '/docs/operations/voxcpm2-three-mode-smoke.md';
+    hub_test_assert(is_file($path), 'VoxCPM2 operations smoke document missing');
+    $document = (string)file_get_contents($path);
+
+    foreach ([
+        'hub_get_service_by_mode',
+        'hub_list_service_settings',
+        'hub_path',
+        'CONSENTED_WAV',
+        'WHISPER_REAL_INFERENCE=1',
+        'real_inference=1',
+        '($device["effective"] ?? "") !== "cuda"',
+        '($payload["mock"] ?? null) !== false',
+        'TTS_COMPOSE',
+        'TTS_COMPOSE_CMD',
+        'gpus: all',
+        'docker exec "$TTS_CONTAINER_ID" python3 -c',
+        'torch.cuda.is_available()',
+        'torch.cuda.get_device_name(0)',
+        '`design`, `clone`, and `ultimate_clone` sequentially',
+        'success: true',
+        'mock: false',
+        'real_inference_requested: true',
+        '/artifacts/tts_*.wav',
+        'independently playable/downloadable WAV player',
+        'voice_profile_transcript_unconfirmed',
+        'trap cleanup EXIT',
+        'ASR_STARTED_BY_SMOKE',
+        'TTS_STARTED_BY_SMOKE',
+        '"${ASR_COMPOSE_CMD[@]}" stop || true',
+        '"${TTS_COMPOSE_CMD[@]}" stop || true',
+        'rm -f "${ASR_HEALTH_JSON:-}"',
+        'does not remove volumes',
+    ] as $needle) {
+        hub_test_assert(str_contains($document, $needle), 'VoxCPM2 operations smoke missing ' . $needle);
+    }
+    hub_test_assert(
+        preg_match('/grep -Eq [^\n]+\$TTS_COMPOSE/', $document) === 1
+        && preg_match('/TTS_CONTAINER_ID=.*TTS_COMPOSE_CMD.*ps --status running -q/', $document) === 1
+        && preg_match('/docker exec "\$TTS_CONTAINER_ID" python3 -c .*torch\.cuda\.is_available\(\).*torch\.cuda\.get_device_name\(0\)/', $document) === 1,
+        'VoxCPM2 operations smoke must assert generated TTS GPU compose and container GPU visibility'
+    );
+    foreach ([
+        'ASR health' => '/curl --fail --silent --show-error --connect-timeout \\d+ --max-time \\d+ "\\$ASR_HEALTH_URL"/',
+        'ASR inference' => '/curl --silent --show-error --connect-timeout \\d+ --max-time \\d+ --output "\\$ASR_RESPONSE_JSON" --write-out .*?"\\$ASR_INFER_URL"/s',
+        'TTS health' => '/curl --fail --silent --show-error --connect-timeout \\d+ --max-time \\d+ "\\$TTS_HEALTH_URL"/',
+    ] as $name => $pattern) {
+        hub_test_assert(
+            preg_match($pattern, $document) === 1,
+            'VoxCPM2 operations smoke must bound connect and total time for ' . $name
+        );
+    }
+    hub_test_assert(
+        preg_match('/`design`, `clone`, and `ultimate_clone` sequentially.*success: true.*mock: false.*real_inference_requested: true.*\/artifacts\/tts_\*\.wav.*WAV player/s', $document) === 1,
+        'VoxCPM2 operations smoke must require a real playable artifact for every comparison mode'
+    );
+    $cleanupPositions = array_map(
+        static fn (string $needle): int|false => strpos($document, $needle),
+        ['cleanup() {', '"${TTS_COMPOSE_CMD[@]}" stop || true', '"${ASR_COMPOSE_CMD[@]}" stop || true', 'rm -f "${ASR_HEALTH_JSON:-}"', 'exit "$status"']
+    );
+    hub_test_assert(
+        !in_array(false, $cleanupPositions, true)
+        && $cleanupPositions[0] < $cleanupPositions[1]
+        && $cleanupPositions[1] < $cleanupPositions[2]
+        && $cleanupPositions[2] < $cleanupPositions[3]
+        && $cleanupPositions[3] < $cleanupPositions[4],
+        'VoxCPM2 operations smoke cleanup must preserve failure status after stopping smoke-started services'
+    );
+    foreach (['/park/', '/data/voice_profiles/', 'sample.wav', 'git@', 'nvapi-', 'ghp_', 'github_pat_', 'docker compose down -v', 'rm -rf'] as $forbidden) {
+        hub_test_assert(!str_contains($document, $forbidden), 'VoxCPM2 operations smoke must not contain ' . $forbidden);
+    }
+});
