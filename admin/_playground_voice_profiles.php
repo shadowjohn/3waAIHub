@@ -259,6 +259,11 @@ function hub_playground_voice_profile_draft_prefill(PDO $db, string $token, int 
     }
 }
 
+function hub_playground_voice_profile_selected_id(array $post): int
+{
+    return max(0, (int)($post['voice_profile_id'] ?? 0));
+}
+
 function hub_playground_voice_profile_dispatch(PDO $db, string $action, string $token, array $post, array $files): array
 {
     try {

@@ -167,3 +167,51 @@ hub_test('playground owner-only draft prefill keeps transcript out of action res
     $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
     hub_test_assert(str_contains($playground, 'load_voice_profile_draft') && str_contains($playground, 'hub_h($voiceProfileDraftPrefill)'), 'draft action must be CSRF-rendered into the confirmation textarea without browser-side transcript handling');
 });
+
+hub_test('playground draft postback keeps the selected owned profile for confirmation', function (): void {
+    hub_test_assert(function_exists('hub_playground_voice_profile_selected_id'), 'playground selected voice-profile helper is missing');
+
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Draft Postback Owner');
+    $firstPath = hub_voice_profile_storage_dir() . '/playground_draft_first.wav';
+    $secondPath = hub_voice_profile_storage_dir() . '/playground_draft_second.wav';
+    file_put_contents($firstPath, 'RIFFfirst');
+    file_put_contents($secondPath, 'RIFFsecond');
+    $firstProfileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'First owned draft',
+        'reference_audio_path' => $firstPath,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $secondProfileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Second owned draft',
+        'reference_audio_path' => $secondPath,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+
+    try {
+        $postback = [
+            'action' => 'voice_profile_confirm',
+            'load_voice_profile_draft' => '1',
+            'voice_profile_id' => (string)$secondProfileId,
+        ];
+        hub_test_assert(hub_playground_voice_profile_selected_id($postback) === $secondProfileId, 'draft postback must preserve the submitted second profile ID');
+        hub_test_assert(hub_playground_voice_profile_selected_id($postback) !== $firstProfileId, 'draft postback must not fall back to the first owned profile');
+    } finally {
+        foreach ([$firstProfileId, $secondProfileId] as $profileId) {
+            if (hub_get_voice_profile($db, $profileId) !== null) {
+                hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+            }
+        }
+    }
+
+    $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(
+        str_contains($playground, '$selectedManagementProfileId = hub_playground_voice_profile_selected_id($_POST);')
+        && str_contains($playground, '$ttsProfileId === $selectedManagementProfileId ? \'selected\' : \'\''),
+        'confirmation profile select must render the postback profile as selected'
+    );
+});

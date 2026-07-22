@@ -653,6 +653,7 @@ if ($selectedMode === 'tts' && ($profileToken !== '' || $action === 'voice_profi
         $result = $ttsProfileOptions;
     }
 }
+$selectedManagementProfileId = hub_playground_voice_profile_selected_id($_POST);
 $audioUrls = $selectedService && $selectedMode === 'tts' && is_array($result) ? hub_playground_tts_audio_urls($selectedService, $result) : [];
 $audioUrl = $selectedService && $selectedMode === 'tts' && $audioUrls === [] ? hub_playground_tts_audio_url($selectedService, $result) : '';
 $authHeaderExample = 'Authorization: Bearer <TOKEN>';
@@ -874,7 +875,8 @@ hub_admin_header(__('API 測試場'), $user);
                 <select name="voice_profile_id" required>
                     <option value=""><?= hub_h(__('請先載入可用 Voice Profile')) ?></option>
                     <?php foreach ($ttsManagementProfiles as $ttsProfile): ?>
-                        <option value="<?= (int)$ttsProfile['id'] ?>"><?= hub_h((string)$ttsProfile['name']) ?> #<?= (int)$ttsProfile['id'] ?></option>
+                        <?php $ttsProfileId = (int)$ttsProfile['id']; ?>
+                        <option value="<?= $ttsProfileId ?>" <?= $ttsProfileId === $selectedManagementProfileId ? 'selected' : '' ?>><?= hub_h((string)$ttsProfile['name']) ?> #<?= $ttsProfileId ?></option>
                     <?php endforeach; ?>
                 </select>
                 <label><?= hub_h(__('確認後的轉錄文字')) ?></label>
