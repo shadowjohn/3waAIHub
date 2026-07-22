@@ -30,6 +30,10 @@ if (!is_file($tmp) || !chmod($tmp, 0600)) {
 
 $db = new PDO('sqlite:' . $tmp);
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$tables = $db->query("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")->fetchAll(PDO::FETCH_COLUMN);
+foreach ($tables as $table) {
+    $db->exec('DELETE FROM "' . str_replace('"', '""', (string)$table) . '"');
+}
 hub_seed_admin_user($db);
 hub_seed_hello_service($db);
 hub_ensure_default_storage_settings($db);
