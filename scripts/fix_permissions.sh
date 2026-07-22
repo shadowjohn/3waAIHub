@@ -36,7 +36,7 @@ find . \( -path './.git' -o -path './data' \) -prune -o -type d -exec chmod u+rw
 find . \( -path './.git' -o -path './data' \) -prune -o -type f -exec chmod u+rw,go+r {} +
 find . \( -path './.git' -o -path './data' \) -prune -o -type f -perm -0100 -exec chmod go+rx {} +
 
-for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/yolo/registry /DATA/models/ollama /DATA/models/sam3; do
+for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/yolo/registry /DATA/models/ollama /DATA/models/sam3 /DATA/models/birefnet; do
   mkdir -p "$dir" 2>/dev/null || true
   chmod u+rwx,g+rwx,o+rx "$dir" 2>/dev/null || true
 done
