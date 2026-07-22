@@ -1803,9 +1803,12 @@ hub_test('VoxCPM2 three-mode smoke runbook keeps the safe operator contract', fu
 
     foreach ([
         'app/bootstrap.php',
+        'compose_project',
         'hub_get_storage_setting($db, "AIHUB_MODELS_DIR")',
         'WHISPER_REAL_INFERENCE=1',
         'docker compose',
+        '-p "$ASR_COMPOSE_PROJECT"',
+        '-p "$TTS_COMPOSE_PROJECT"',
         'up -d --build',
         'nvidia-smi',
         'python3 -m unittest -v test_app.py',

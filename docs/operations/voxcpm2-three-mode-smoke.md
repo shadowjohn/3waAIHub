@@ -11,9 +11,9 @@ cd "$(git rev-parse --show-toplevel)"
 php -r '
 require "app/bootstrap.php";
 $db = hub_db();
-$stmt = $db->query("SELECT pack_id, service_key, compose_file FROM services WHERE pack_id IN (\"whisper-asr\", \"tts-voxcpm2\") ORDER BY pack_id, id");
+$stmt = $db->query("SELECT pack_id, service_key, compose_file, compose_project FROM services WHERE pack_id IN (\"whisper-asr\", \"tts-voxcpm2\") ORDER BY pack_id, id");
 foreach ($stmt as $service) {
-    printf("pack=%s service_key=%s compose=%s\\n", $service["pack_id"], $service["service_key"], hub_path((string)$service["compose_file"]));
+    printf("pack=%s service_key=%s compose=%s compose_project=%s\\n", $service["pack_id"], $service["service_key"], hub_path((string)$service["compose_file"]), $service["compose_project"]);
 }
 printf("AIHUB_MODELS_DIR=%s\\n", hub_get_storage_setting($db, "AIHUB_MODELS_DIR"));
 '
@@ -24,8 +24,10 @@ Select the ASR and TTS rows to exercise, then enter the values just printed. Do 
 ```bash
 read -r -p 'ASR service key: ' ASR_SERVICE_KEY
 read -r -p 'ASR Compose path: ' ASR_COMPOSE
+read -r -p 'ASR Compose project: ' ASR_COMPOSE_PROJECT
 read -r -p 'TTS service key: ' TTS_SERVICE_KEY
 read -r -p 'TTS Compose path: ' TTS_COMPOSE
+read -r -p 'TTS Compose project: ' TTS_COMPOSE_PROJECT
 ```
 
 `AIHUB_MODELS_DIR` is the current deployment configuration for model storage. Use its discovered value when checking capacity or deployed files; do not replace it with a stale hard-coded models root.
@@ -35,11 +37,11 @@ read -r -p 'TTS Compose path: ' TTS_COMPOSE
 The generated Compose files include their adjacent `.env` files. Build and start both selected services, then verify the host GPU and run the unit tests in the running containers.
 
 ```bash
-docker compose --env-file "$(dirname "$ASR_COMPOSE")/.env" -f "$ASR_COMPOSE" up -d --build
-docker compose --env-file "$(dirname "$TTS_COMPOSE")/.env" -f "$TTS_COMPOSE" up -d --build
+docker compose --env-file "$(dirname "$ASR_COMPOSE")/.env" -f "$ASR_COMPOSE" -p "$ASR_COMPOSE_PROJECT" up -d --build
+docker compose --env-file "$(dirname "$TTS_COMPOSE")/.env" -f "$TTS_COMPOSE" -p "$TTS_COMPOSE_PROJECT" up -d --build
 nvidia-smi
-docker compose --env-file "$(dirname "$ASR_COMPOSE")/.env" -f "$ASR_COMPOSE" exec -T "$ASR_SERVICE_KEY" python3 -m unittest -v test_app.py
-docker compose --env-file "$(dirname "$TTS_COMPOSE")/.env" -f "$TTS_COMPOSE" exec -T "$TTS_SERVICE_KEY" python3 -m unittest -v test_app.py
+docker compose --env-file "$(dirname "$ASR_COMPOSE")/.env" -f "$ASR_COMPOSE" -p "$ASR_COMPOSE_PROJECT" exec -T "$ASR_SERVICE_KEY" python3 -m unittest -v test_app.py
+docker compose --env-file "$(dirname "$TTS_COMPOSE")/.env" -f "$TTS_COMPOSE" -p "$TTS_COMPOSE_PROJECT" exec -T "$TTS_SERVICE_KEY" python3 -m unittest -v test_app.py
 ```
 
 For the GPU Compose services, the Docker NVIDIA runtime is required to start the GPU container. An ASR CPU fallback occurs only inside a successfully started container; it is not a replacement for a missing host GPU runtime. `WHISPER_REAL_INFERENCE=1` must be present in the selected ASR service configuration for this procedure.
