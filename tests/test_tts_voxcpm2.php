@@ -1558,6 +1558,36 @@ hub_test('VoxCPM2 playground compares all modes sequentially and keeps each resu
     }
 });
 
+hub_test('VoxCPM2 playground keeps the protected single-result audio fallback', function (): void {
+    $oldPost = $_POST;
+    $_POST = ['tts_mode' => 'design'];
+
+    try {
+        $result = hub_playground_execute_tts('test-token', static function (string $ttsMode): array {
+            return [
+                'ok' => true,
+                'status' => 200,
+                'body' => json_encode(['artifact_url' => '/artifacts/tts_' . $ttsMode . '.wav']),
+                'pretty_body' => '{}',
+            ];
+        });
+    } finally {
+        $_POST = $oldPost;
+    }
+
+    hub_test_assert(!array_key_exists('results', $result), 'single TTS execution must retain its direct gateway result');
+    hub_test_assert(hub_playground_tts_audio_urls(['id' => 9], $result, static function (): string {
+        throw new RuntimeException('single TTS result must not use the comparison audio mapper');
+    }) === [], 'single TTS execution must leave comparison audio URLs empty');
+
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(str_contains($source, 'hub_playground_tts_audio_url($selectedService, $result)'), 'single TTS result must use the protected artifact fallback');
+    $singleAudioStart = strpos($source, "elseif (\$audioUrl !== '')");
+    $singleAudioEnd = $singleAudioStart === false ? false : strpos($source, '<?php endif; ?>', $singleAudioStart);
+    $singleAudio = $singleAudioStart === false || $singleAudioEnd === false ? '' : substr($source, $singleAudioStart, $singleAudioEnd - $singleAudioStart);
+    hub_test_assert(str_contains($singleAudio, '<audio controls src="<?= hub_h($audioUrl) ?>"></audio>'), 'single TTS result must render its protected audio player');
+});
+
 hub_test('VoxCPM2 playground preserves an unconfirmed Ultimate Clone result', function (): void {
     $oldPost = $_POST;
     $_POST = ['compare_all' => '1', 'voice_profile_id' => '42'];
