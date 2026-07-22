@@ -5,6 +5,10 @@ $hubPlaygroundVoiceProfiles = HUB_ROOT . '/admin/_playground_voice_profiles.php'
 if (is_file($hubPlaygroundVoiceProfiles)) {
     require_once $hubPlaygroundVoiceProfiles;
 }
+$hubPlaygroundTtsArtifacts = HUB_ROOT . '/admin/_playground_tts_artifacts.php';
+if (is_file($hubPlaygroundTtsArtifacts)) {
+    require_once $hubPlaygroundTtsArtifacts;
+}
 
 hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', function (): void {
     $pack = hub_get_pack('tts-voxcpm2');
@@ -1558,6 +1562,20 @@ hub_test('VoxCPM2 playground compares all modes sequentially and keeps each resu
     }
 });
 
+hub_test('VoxCPM2 playground maps single TTS artifacts through the protected endpoint', function (): void {
+    $artifactHelpers = HUB_ROOT . '/admin/_playground_tts_artifacts.php';
+    hub_test_assert(is_file($artifactHelpers), 'side-effect-free TTS artifact helpers missing');
+    hub_test_assert(function_exists('hub_playground_tts_audio_url'), 'protected TTS artifact URL helper missing');
+
+    $service = ['id' => 9];
+    $result = ['ok' => true, 'body' => json_encode(['artifact_url' => '/artifacts/tts_design.wav'])];
+    hub_test_assert(hub_playground_tts_audio_url($service, $result) === 'playground_artifact.php?service_id=9&file=tts_design.wav', 'single TTS artifact must use the protected endpoint URL');
+
+    foreach (['https://example.test/tts_design.wav', '/artifacts/tts_design.mp3'] as $unsafeArtifactUrl) {
+        hub_test_assert(hub_playground_tts_audio_url($service, ['ok' => true, 'body' => json_encode(['artifact_url' => $unsafeArtifactUrl])]) === '', 'unsafe TTS artifact URL must be rejected');
+    }
+});
+
 hub_test('VoxCPM2 playground keeps the protected single-result audio fallback', function (): void {
     $oldPost = $_POST;
     $_POST = ['tts_mode' => 'design'];
@@ -1721,7 +1739,10 @@ hub_test('VoxCPM2 playground rejects foreign token voice-profile mutations with 
 
 hub_test('VoxCPM2 playground exposes generated WAV through authenticated audio player', function (): void {
     $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
-    hub_test_assert(str_contains($playground, 'playground_artifact.php'), 'playground must link TTS artifacts through admin artifact endpoint');
+    $artifactHelpers = HUB_ROOT . '/admin/_playground_tts_artifacts.php';
+    hub_test_assert(is_file($artifactHelpers), 'playground TTS artifact helper missing');
+    hub_test_assert(str_contains($playground, "require_once __DIR__ . '/_playground_tts_artifacts.php';"), 'playground must load the TTS artifact helper');
+    hub_test_assert(str_contains((string)file_get_contents($artifactHelpers), 'playground_artifact.php'), 'playground must link TTS artifacts through admin artifact endpoint');
     hub_test_assert(str_contains($playground, '<audio controls'), 'playground must render an audio player for TTS artifacts');
 
     $artifactPage = HUB_ROOT . '/admin/playground_artifact.php';

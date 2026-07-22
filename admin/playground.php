@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/../app/bootstrap.php';
 require_once __DIR__ . '/_layout.php';
+require_once __DIR__ . '/_playground_tts_artifacts.php';
 require_once __DIR__ . '/_playground_voice_profiles.php';
 
 function hub_playground_profiles(): array
@@ -372,33 +373,6 @@ function hub_playground_pretty_json(string $body): string
     }
 
     return (string)json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-}
-
-function hub_playground_tts_artifact_file(array $result): string
-{
-    $payload = json_decode((string)($result['body'] ?? ''), true);
-    $artifactUrl = is_array($payload) ? (string)($payload['artifact_url'] ?? '') : '';
-    if ($artifactUrl === '' || !str_starts_with($artifactUrl, '/artifacts/')) {
-        return '';
-    }
-    $file = basename($artifactUrl);
-    return preg_match('/^tts_[A-Za-z0-9_-]+\.wav$/', $file) === 1 ? $file : '';
-}
-
-function hub_playground_tts_audio_url(array $service, ?array $result): string
-{
-    if ($result === null || empty($result['ok'])) {
-        return '';
-    }
-    $file = hub_playground_tts_artifact_file($result);
-    if ($file === '') {
-        return '';
-    }
-
-    return 'playground_artifact.php?' . http_build_query([
-        'service_id' => (int)$service['id'],
-        'file' => $file,
-    ]);
 }
 
 function hub_playground_examples(string $mode): array

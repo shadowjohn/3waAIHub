@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/_playground_tts_artifacts.php';
+
 function hub_playground_tts_member_id(PDO $db, string $token): int
 {
     $auth = hub_gateway_authenticate_api_token($db, 'tts', hub_get_client_ip(), $token);
