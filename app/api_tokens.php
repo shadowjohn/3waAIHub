@@ -47,6 +47,21 @@ function hub_update_api_member(PDO $db, int $memberId, string $name, string $con
     ]);
 }
 
+function hub_delete_api_member(PDO $db, int $memberId): void
+{
+    if (!hub_get_api_member($db, $memberId)) {
+        throw new InvalidArgumentException('找不到 API 會員。');
+    }
+
+    $stmt = $db->prepare('SELECT COUNT(*) FROM users WHERE api_member_id = :member_id');
+    $stmt->execute([':member_id' => $memberId]);
+    if ((int)$stmt->fetchColumn() > 0) {
+        throw new InvalidArgumentException('此 API 會員已連結客戶帳號，請從客戶管理刪除客戶。');
+    }
+
+    $db->prepare('DELETE FROM api_members WHERE id = :id')->execute([':id' => $memberId]);
+}
+
 function hub_get_api_member(PDO $db, int $memberId): ?array
 {
     $stmt = $db->prepare('SELECT * FROM api_members WHERE id = :id');
@@ -161,6 +176,15 @@ function hub_revoke_api_token(PDO $db, int $tokenId): void
 {
     $stmt = $db->prepare('UPDATE api_tokens SET enabled = 0, revoked_at = :revoked_at, updated_at = :updated_at WHERE id = :id');
     $stmt->execute([':revoked_at' => hub_now(), ':updated_at' => hub_now(), ':id' => $tokenId]);
+}
+
+function hub_delete_api_token(PDO $db, int $tokenId): void
+{
+    if (!hub_get_api_token($db, $tokenId)) {
+        throw new InvalidArgumentException('找不到 API Token。');
+    }
+
+    $db->prepare('DELETE FROM api_tokens WHERE id = :id')->execute([':id' => $tokenId]);
 }
 
 function hub_set_api_token_enabled(PDO $db, int $tokenId, bool $enabled): void

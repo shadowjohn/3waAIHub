@@ -7,6 +7,21 @@ require_once __DIR__ . '/_layout.php';
 $db = hub_db();
 hub_migrate($db);
 $user = hub_require_system_admin($db);
+$message = '';
+$error = '';
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
+    hub_check_csrf();
+    try {
+        if ((string)($_POST['action'] ?? '') === 'delete') {
+            $error = hub_delete_customer_user($db, (int)($_POST['user_id'] ?? 0)) ?? '';
+            if ($error === '') {
+                $message = '客戶帳號及其 API 憑證已刪除。';
+            }
+        }
+    } catch (Throwable $e) {
+        $error = $e->getMessage();
+    }
+}
 $users = hub_list_users($db);
 
 hub_admin_header('客戶管理', $user);
@@ -20,6 +35,9 @@ hub_admin_header('客戶管理', $user);
         <a class="button" href="customer_edit.php?action=create">建立客戶</a>
     </div>
 </section>
+
+<?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
+<?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 
 <section class="panel">
     <table>
@@ -49,7 +67,16 @@ hub_admin_header('客戶管理', $user);
                 <td><?= $row['api_member_id'] ? hub_h((string)$row['api_member_name']) : '<span class="muted">-</span>' ?></td>
                 <td><?= (int)($row['token_count'] ?? 0) ?></td>
                 <td><?= hub_h((string)($row['last_login_at'] ?? '-')) ?></td>
-                <td><a class="button" href="customer_edit.php?id=<?= (int)$row['id'] ?>">編輯</a></td>
+                <td class="actions">
+                    <a class="button" href="customer_edit.php?id=<?= (int)$row['id'] ?>">編輯</a>
+                    <?php if ((string)$row['role'] === 'customer'): ?>
+                        <form method="post">
+                            <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
+                            <input type="hidden" name="user_id" value="<?= (int)$row['id'] ?>">
+                            <button class="danger" name="action" value="delete" type="submit" onclick="return confirm('確定要刪除此客戶及其 API 憑證？');">刪除</button>
+                        </form>
+                    <?php endif; ?>
+                </td>
             </tr>
         <?php endforeach; ?>
         </tbody>

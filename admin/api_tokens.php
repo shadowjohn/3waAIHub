@@ -38,6 +38,9 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         } elseif ($action === 'revoke') {
             hub_revoke_api_token($db, (int)($_POST['token_id'] ?? 0));
             $message = 'Token 已撤銷。';
+        } elseif ($action === 'delete') {
+            hub_delete_api_token($db, (int)($_POST['token_id'] ?? 0));
+            $message = 'Token 已刪除。';
         }
     } catch (Throwable $e) {
         $error = $e->getMessage();
@@ -100,6 +103,7 @@ hub_admin_header('API Token', $user);
                             <?php endif; ?>
                             <button class="danger" name="action" value="revoke" type="submit">撤銷</button>
                         <?php endif; ?>
+                        <button class="danger" name="action" value="delete" type="submit" onclick="return confirm('確定要永久刪除此 Token？');">刪除</button>
                     </form>
                 </td>
             </tr>

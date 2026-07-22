@@ -173,6 +173,42 @@ function hub_update_user_admin(PDO $db, int $userId, array $input): ?string
     return null;
 }
 
+function hub_delete_customer_user(PDO $db, int $userId): ?string
+{
+    $user = hub_get_user($db, $userId);
+    if (!$user) {
+        return '找不到帳號。';
+    }
+    if ((string)$user['role'] !== 'customer') {
+        return '僅能刪除 customer 帳號。';
+    }
+    $error = hub_can_delete_user($db, $userId);
+    if ($error !== null) {
+        return $error;
+    }
+
+    $memberId = (int)($user['api_member_id'] ?? 0);
+    $db->beginTransaction();
+    try {
+        $db->prepare('DELETE FROM users WHERE id = :id')->execute([':id' => $userId]);
+        if ($memberId > 0) {
+            $stmt = $db->prepare('SELECT COUNT(*) FROM users WHERE api_member_id = :member_id');
+            $stmt->execute([':member_id' => $memberId]);
+            if ((int)$stmt->fetchColumn() === 0) {
+                hub_delete_api_member($db, $memberId);
+            }
+        }
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+
+    return null;
+}
+
 function hub_update_current_user_profile(PDO $db, int $userId, array $input): void
 {
     $stmt = $db->prepare(

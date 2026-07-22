@@ -17,6 +17,9 @@ hub_test('PhaseAuth-1 migrates users role fields and protects default admin', fu
     hub_test_assert(function_exists('hub_require_system_admin'), 'system admin role guard missing');
     hub_test_assert(function_exists('hub_create_customer_user'), 'customer create helper missing');
     hub_test_assert(function_exists('hub_create_customer_token'), 'customer token helper missing');
+    hub_test_assert(function_exists('hub_delete_customer_user'), 'customer delete helper missing');
+    hub_test_assert(function_exists('hub_delete_api_member'), 'API member delete helper missing');
+    hub_test_assert(function_exists('hub_delete_api_token'), 'API Token delete helper missing');
 
     hub_test_assert(hub_user_admin_update_error($db, (int)$admin['id'], ['role' => 'customer']) !== null, 'protected admin must not be downgraded');
     hub_test_assert(hub_user_admin_update_error($db, (int)$admin['id'], ['is_enabled' => 0]) !== null, 'protected admin must not be disabled');
@@ -53,6 +56,68 @@ hub_test('PhaseAuth-1 creates customer linked to api member with allowed modes a
     hub_test_assert(!hub_customer_owns_token($db, $customerId, (int)$otherToken['token_id']), 'customer must not own other token');
 });
 
+hub_test('PhaseAuth-1 deletes customer credentials and standalone API credentials safely', function (): void {
+    $db = hub_test_reset_db();
+    hub_set_service_enabled($db, 'hello', true);
+
+    $customerId = hub_create_customer_user($db, [
+        'username' => 'delete_customer',
+        'password' => 'customer123',
+        'modes' => ['hello'],
+    ]);
+    $customer = hub_get_user($db, $customerId);
+    $customerToken = hub_create_customer_token($db, $customerId, 'Delete customer token');
+    $customerMemberId = (int)$customer['api_member_id'];
+    $linkedMemberDeleteError = '';
+    try {
+        hub_delete_api_member($db, $customerMemberId);
+    } catch (InvalidArgumentException $e) {
+        $linkedMemberDeleteError = $e->getMessage();
+    }
+    hub_test_assert($linkedMemberDeleteError !== '', 'linked customer member must not be deleted directly');
+    hub_test_assert(hub_get_api_member($db, $customerMemberId) !== null, 'linked customer member must remain intact');
+
+    hub_test_assert(hub_delete_customer_user($db, $customerId) === null, 'customer deletion must succeed');
+    hub_test_assert(hub_get_user($db, $customerId) === null, 'customer account must be deleted');
+    hub_test_assert(hub_get_api_member($db, $customerMemberId) === null, 'customer API member must be deleted');
+    hub_test_assert(hub_get_api_token($db, (int)$customerToken['token_id']) === null, 'customer Token must be deleted');
+
+    $sharedFirstId = hub_create_customer_user($db, [
+        'username' => 'shared_first',
+        'password' => 'customer123',
+        'modes' => ['hello'],
+    ]);
+    $sharedSecondId = hub_create_customer_user($db, [
+        'username' => 'shared_second',
+        'password' => 'customer123',
+        'modes' => ['hello'],
+    ]);
+    $sharedMemberId = (int)hub_get_user($db, $sharedFirstId)['api_member_id'];
+    $db->prepare('UPDATE users SET api_member_id = :member_id WHERE id = :id')
+        ->execute([':member_id' => $sharedMemberId, ':id' => $sharedSecondId]);
+    hub_test_assert(hub_delete_customer_user($db, $sharedFirstId) === null, 'customer deletion must not fail for a shared API member');
+    hub_test_assert(hub_get_api_member($db, $sharedMemberId) !== null, 'shared API member must remain for the other customer');
+    hub_test_assert(hub_delete_customer_user($db, $sharedSecondId) === null, 'last shared customer deletion must succeed');
+    hub_test_assert(hub_get_api_member($db, $sharedMemberId) === null, 'unshared API member must be deleted with its last customer');
+
+    $memberId = hub_create_api_member($db, 'Standalone member');
+    $token = hub_create_api_token($db, $memberId, 'Delete Token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'hello', (int)hub_get_service_by_mode($db, 'hello')['id']);
+    hub_add_api_token_ip_rule($db, (int)$token['token_id'], '203.0.113.10');
+    hub_record_api_token_usage($db, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']], 'hello', true, 10, 0, 20);
+    hub_delete_api_token($db, (int)$token['token_id']);
+    hub_test_assert(hub_get_api_token($db, (int)$token['token_id']) === null, 'API Token must be deleted');
+    hub_test_assert(hub_list_api_token_permissions($db, (int)$token['token_id']) === [], 'Token permissions must cascade on deletion');
+    hub_test_assert(hub_list_api_token_ip_rules($db, (int)$token['token_id']) === [], 'Token IP rules must cascade on deletion');
+    $usageCount = (int)$db->query('SELECT COUNT(*) FROM api_token_usage_daily')->fetchColumn();
+    hub_test_assert($usageCount === 0, 'Token usage must cascade on deletion');
+
+    $memberToken = hub_create_api_token($db, $memberId, 'Delete member Token', null, null);
+    hub_delete_api_member($db, $memberId);
+    hub_test_assert(hub_get_api_member($db, $memberId) === null, 'standalone API member must be deleted');
+    hub_test_assert(hub_get_api_token($db, (int)$memberToken['token_id']) === null, 'member Token must cascade on member deletion');
+});
+
 hub_test('PhaseAuth-1 portal and admin page guards are present', function (): void {
     foreach (['my_services.php', 'my_tokens.php', 'my_ip_whitelist.php', 'my_usage.php', 'my_profile.php', 'change_password.php'] as $file) {
         $path = HUB_ROOT . '/admin/' . $file;
@@ -65,6 +130,13 @@ hub_test('PhaseAuth-1 portal and admin page guards are present', function (): vo
         $source = (string)file_get_contents(HUB_ROOT . '/admin/' . $file);
         hub_test_assert(str_contains($source, 'hub_require_system_admin'), 'admin page must require system_admin ' . $file);
     }
+
+    $customers = (string)file_get_contents(HUB_ROOT . '/admin/customers.php');
+    $members = (string)file_get_contents(HUB_ROOT . '/admin/api_members.php');
+    $tokens = (string)file_get_contents(HUB_ROOT . '/admin/api_tokens.php');
+    hub_test_assert(str_contains($customers, 'hub_delete_customer_user'), 'customer admin page must provide delete action');
+    hub_test_assert(str_contains($members, 'hub_delete_api_member'), 'API member admin page must provide delete action');
+    hub_test_assert(str_contains($tokens, 'hub_delete_api_token'), 'API Token admin page must provide delete action');
 
     $layout = (string)file_get_contents(HUB_ROOT . '/admin/_layout.php');
     foreach (['我的服務', '我的 Token', 'IP 白名單', '用量統計', '帳號資料', '變更密碼'] as $label) {
