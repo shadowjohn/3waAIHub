@@ -4,6 +4,10 @@ services:
       context: ./service
     env_file:
       - .env
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
     ports:
       - "127.0.0.1:${ASR_LOCAL_PORT:-18107}:8000"
     volumes:

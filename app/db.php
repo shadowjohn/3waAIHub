@@ -383,6 +383,19 @@ CREATE TABLE IF NOT EXISTS voice_profile_audit_logs (
     FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS playground_tts_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    service_id INTEGER NOT NULL,
+    owner_member_id INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(service_id, filename),
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS photo_assets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     image_id TEXT NOT NULL UNIQUE,
@@ -697,6 +710,7 @@ SQL);
     }
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_profile ON voice_profile_audit_logs(voice_profile_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_owner ON voice_profile_audit_logs(owner_member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_playground_tts_artifacts_owner ON playground_tts_artifacts(owner_member_id, service_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_expires_at ON photo_assets(expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_sha256 ON photo_assets(sha256)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_owner_member ON photo_assets(owner_member_id)');

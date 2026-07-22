@@ -1,6 +1,6 @@
 # VoxCPM2 Three-Mode Real-Inference Smoke
 
-Use this runbook only with a short WAV for which the API-member owner has recorded consent. It validates Whisper GPU inference first, then the authenticated TTS Playground flow. Do not commit the WAV, a token, a transcript, model files, generated audio, or copied logs.
+Use this runbook only with a short WAV for which the API-member owner has recorded consent. It validates Whisper GPU inference first, then the authenticated TTS Playground flow. It does not authorize use of non-consented voice audio. Do not commit the WAV, a token, a transcript, model files, generated audio, or copied logs.
 
 Run the shell steps from the 3waAIHub checkout with `bash`. The Docker user must already have Docker socket access.
 
@@ -36,18 +36,21 @@ $asrSettings = hub_list_service_settings($db, (int)$services['ASR']['id']);
 $ttsSettings = hub_list_service_settings($db, (int)$services['TTS']['id']);
 $values = [
     'ASR_SERVICE_ID' => (string)$services['ASR']['id'],
-    'ASR_PROJECT' => (string)$services['ASR']['compose_project'],
+    'ASR_SERVICE_KEY' => (string)$services['ASR']['service_key'],
+    'ASR_COMPOSE_PROJECT' => (string)$services['ASR']['compose_project'],
     'ASR_COMPOSE' => hub_path((string)$services['ASR']['compose_file']),
     'ASR_ENV' => dirname(hub_path((string)$services['ASR']['compose_file'])) . '/.env',
     'ASR_HEALTH_URL' => (string)$services['ASR']['health_url'],
     'ASR_INFER_URL' => (string)$services['ASR']['internal_url'],
     'ASR_USE_GPU' => (string)($asrSettings['USE_GPU']['value'] ?? ''),
     'TTS_SERVICE_ID' => (string)$services['TTS']['id'],
-    'TTS_PROJECT' => (string)$services['TTS']['compose_project'],
+    'TTS_SERVICE_KEY' => (string)$services['TTS']['service_key'],
+    'TTS_COMPOSE_PROJECT' => (string)$services['TTS']['compose_project'],
     'TTS_COMPOSE' => hub_path((string)$services['TTS']['compose_file']),
     'TTS_ENV' => dirname(hub_path((string)$services['TTS']['compose_file'])) . '/.env',
     'TTS_HEALTH_URL' => (string)$services['TTS']['health_url'],
     'TTS_REAL_INFERENCE' => (string)($ttsSettings['VOXCPM2_REAL_INFERENCE']['value'] ?? ''),
+    'AIHUB_MODELS_DIR' => hub_get_storage_setting($db, "AIHUB_MODELS_DIR"),
 ];
 foreach ($values as $key => $value) {
     printf("%s=%s\n", $key, escapeshellarg($value));
@@ -75,19 +78,19 @@ docker run --rm --gpus all nvidia/cuda:12.9.0-base-ubuntu24.04 nvidia-smi -L
 
 grep -Eq '^[[:space:]]*gpus:[[:space:]]+all[[:space:]]*$' "$ASR_COMPOSE"
 grep -Eq '^[[:space:]]*gpus:[[:space:]]+all[[:space:]]*$' "$TTS_COMPOSE"
-ASR_COMPOSE_CMD=(docker compose --env-file "$ASR_ENV" -p "$ASR_PROJECT" -f "$ASR_COMPOSE")
-TTS_COMPOSE_CMD=(docker compose --env-file "$TTS_ENV" -p "$TTS_PROJECT" -f "$TTS_COMPOSE")
+ASR_COMPOSE_CMD=(docker compose --env-file "$ASR_ENV" -p "$ASR_COMPOSE_PROJECT" -f "$ASR_COMPOSE")
+TTS_COMPOSE_CMD=(docker compose --env-file "$TTS_ENV" -p "$TTS_COMPOSE_PROJECT" -f "$TTS_COMPOSE")
 "${ASR_COMPOSE_CMD[@]}" config -q
 "${TTS_COMPOSE_CMD[@]}" config -q
 ```
 
-The NVIDIA container command may pull its image once. A failure here is a Docker/NVIDIA runtime problem; fix it before starting Whisper. The CPU fallback inside faster-whisper happens only after a GPU-capable container starts and is not a replacement for a working Docker GPU runtime.
+The NVIDIA container command may pull its image once. A failure here is a Docker NVIDIA runtime problem; fix it before starting Whisper. The CPU fallback inside faster-whisper happens only after a GPU-capable container starts and is not a replacement for a working Docker GPU runtime.
 
 The persisted `USE_GPU=1` setting and the TTS GPU-required pack must both have produced a generated compose entry of `gpus: all`; the preceding `grep` commands make that a pre-start requirement.
 
 ## 3. Rebuild And Verify GPU-Only Whisper ASR
 
-`WHISPER_REAL_INFERENCE=1` is required. Keep the response files temporary: this check prints only metadata and transcript byte length, never the transcript itself.
+`WHISPER_REAL_INFERENCE=1` is required. Keep the response files temporary: this check prints only metadata and transcript byte length, never the transcript itself. A real ASR response has `"mock": false`; GPU success also reports `"effective": "cuda"`.
 
 Run this block and the TTS check in the same Bash process. Its `EXIT` trap preserves the command failure code, prints local compose diagnostics on failure, and stops only services this smoke started.
 
@@ -125,13 +128,11 @@ ASR_WAS_RUNNING="$("${ASR_COMPOSE_CMD[@]}" ps --status running -q)"
 TTS_WAS_RUNNING="$("${TTS_COMPOSE_CMD[@]}" ps --status running -q)"
 if [ -z "$ASR_WAS_RUNNING" ]; then ASR_STARTED_BY_SMOKE=1; fi
 
-"${ASR_COMPOSE_CMD[@]}" build --progress=plain
-"${ASR_COMPOSE_CMD[@]}" up -d
+"${ASR_COMPOSE_CMD[@]}" up -d --build
 
 if [ -z "$TTS_WAS_RUNNING" ]; then
     TTS_STARTED_BY_SMOKE=1
-    "${TTS_COMPOSE_CMD[@]}" build --progress=plain
-    "${TTS_COMPOSE_CMD[@]}" up -d
+    "${TTS_COMPOSE_CMD[@]}" up -d --build
 fi
 
 ASR_HEALTH_JSON="$(mktemp)"
@@ -192,6 +193,8 @@ echo "VoxCPM2 health PASS\n";
 TTS_CONTAINER_ID="$("${TTS_COMPOSE_CMD[@]}" ps --status running -q | sed -n '1p')"
 test -n "$TTS_CONTAINER_ID"
 docker exec "$TTS_CONTAINER_ID" python3 -c 'import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0))'
+"${ASR_COMPOSE_CMD[@]}" exec -T "$ASR_SERVICE_KEY" python3 -m unittest -v test_app.py
+"${TTS_COMPOSE_CMD[@]}" exec -T "$TTS_SERVICE_KEY" python3 -m unittest -v test_app.py
 rm -f "$TTS_HEALTH_JSON"
 ```
 
@@ -199,7 +202,7 @@ rm -f "$TTS_HEALTH_JSON"
 
 1. Sign in and open `admin/playground.php?mode=tts`. Select the installed TTS service, enter a fresh API token with `tts` permission only in the Bearer Token field, and leave `真實推論` selected. The field is request-local; do not paste it into shell history, screenshots, or deployment notes.
 2. In **Voice Profile**, upload the same consented WAV, choose the correct consent type, and select the resulting profile. A first upload creates an owner-only profile; an identical upload by the same member may say it reused the cache. Verify the displayed ASR status becomes `ready / draft`. For `pending`, wait and reload; for `failed`, inspect ASR diagnostics and use `重試字幕` only after the cause is fixed.
-3. Review and edit the drafted text manually, then click `確認字幕`. Verify the profile changes to `ready / confirmed`. Until then Ultimate Clone must fail with `voice_profile_transcript_unconfirmed`; this is a required ownership and transcript-confirmation guard, not a TTS fault.
+3. Review and edit the drafted text manually, then click `確認字幕`. Verify the profile changes to `ready / confirmed`. Before confirmation, Ultimate Clone must return HTTP `409` with `voice_profile_transcript_unconfirmed`; this is a required ownership and transcript-confirmation guard, not a TTS fault.
 4. Enter the desired output text, choose the confirmed profile, and click `三種比較`. The Playground invokes `design`, `clone`, and `ultimate_clone` sequentially. For each result, require a 2xx HTTP status, `success: true`, `mock: false`, `real_inference_requested: true`, a `/artifacts/tts_*.wav` value, and an independently playable/downloadable WAV player. Any 5xx, missing player, or mock response fails the smoke.
 
 Basic and Ultimate clone fields follow the [official VoxCPM2 model card](https://huggingface.co/openbmb/VoxCPM2). Whisper CUDA requirements follow the [official faster-whisper CUDA 12/cuDNN 9 notes](https://github.com/SYSTRAN/faster-whisper/blob/master/README.md).

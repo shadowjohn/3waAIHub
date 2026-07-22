@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../app/bootstrap.php';
+require_once __DIR__ . '/_playground_tts_artifacts.php';
 
 function hub_playground_artifact_path(array $service, string $file): ?string
 {
@@ -27,22 +28,8 @@ if (!$service || (string)($service['pack_id'] ?? '') !== 'tts-voxcpm2') {
     exit('not found');
 }
 
-$allowed = hub_is_system_admin($user);
-if (!$allowed) {
-    foreach (hub_playground_service_options($db, $user) as $allowedService) {
-        if ((int)$allowedService['id'] === (int)$service['id']) {
-            $allowed = true;
-            break;
-        }
-    }
-}
-if (!$allowed) {
-    http_response_code(403);
-    exit('forbidden');
-}
-
 $path = hub_playground_artifact_path($service, (string)($_GET['file'] ?? ''));
-if ($path === null) {
+if ($path === null || !hub_playground_tts_artifact_access_allowed($db, $user, $service, (string)($_GET['file'] ?? ''))) {
     http_response_code(404);
     exit('not found');
 }

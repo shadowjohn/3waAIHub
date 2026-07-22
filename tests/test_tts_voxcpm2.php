@@ -1,6 +1,15 @@
 <?php
 declare(strict_types=1);
 
+$hubPlaygroundVoiceProfiles = HUB_ROOT . '/admin/_playground_voice_profiles.php';
+if (is_file($hubPlaygroundVoiceProfiles)) {
+    require_once $hubPlaygroundVoiceProfiles;
+}
+$hubPlaygroundTtsArtifacts = HUB_ROOT . '/admin/_playground_tts_artifacts.php';
+if (is_file($hubPlaygroundTtsArtifacts)) {
+    require_once $hubPlaygroundTtsArtifacts;
+}
+
 hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', function (): void {
     $pack = hub_get_pack('tts-voxcpm2');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'tts-voxcpm2 pack must be valid');
@@ -39,7 +48,6 @@ hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', funct
     }
     hub_test_assert(is_file(HUB_ROOT . '/packs/tts-voxcpm2/acceptance/zh_tw_tts_cases.json'), 'VoxCPM2 acceptance set missing');
 });
-
 hub_test('VoxCPM2 service app exposes TTS voice-design and managed clone modes', function (): void {
     $app = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/service/app.py');
     foreach (['@app.get("/health")', '@app.get("/v1/models")', '@app.post("/v1/voice-design")', '@app.post("/v1/tts")'] as $needle) {
@@ -1412,7 +1420,7 @@ hub_test('VoxCPM2 appears in customer playground when user and token allow tts',
     hub_test_assert($modes === ['tts'], 'customer playground must show tts when user and own token allow it');
 
     $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
-    foreach (['api.php?mode=tts', 'voice_prompt', 'name="voice_profile_id"', 'ultimate_clone'] as $needle) {
+    foreach (['api.php?mode=tts', 'voice_prompt', 'voice_profile_id', 'compare_all', 'ultimate_clone'] as $needle) {
         hub_test_assert(str_contains($source, $needle), 'playground TTS UI missing ' . $needle);
     }
     hub_test_assert(!str_contains($source, 'name="reference_audio_id"'), 'playground must not accept arbitrary voice profile IDs');
@@ -1424,35 +1432,351 @@ hub_test('VoxCPM2 appears in customer playground when user and token allow tts',
     hub_test_assert(str_contains($ttsBranch, 'name="real_inference" type="checkbox" value="1" checked'), 'playground TTS real inference must be checked by default');
 });
 
-hub_test('VoxCPM2 playground keeps Voice Profile actions owner-scoped and compares all three modes', function (): void {
+hub_test('VoxCPM2 playground provides managed three-mode comparison controls', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
 
-    foreach ([
-        'hub_ensure_user_api_member',
-        'hub_playground_active_voice_profiles',
-        'owner_member_id = :owner_member_id AND deleted_at IS NULL',
-        'voice_profile_upload',
-        'hub_create_uploaded_voice_profile',
-        'voice_profile_confirm',
-        'hub_confirm_voice_profile_prompt',
-        'voice_profile_retry',
-        'hub_retry_voice_profile_transcription',
-        'hub_voice_profile_transcription_is_stale',
-        'voice_profile_wav',
-        'tts_compare',
-        "['design', 'clone', 'ultimate_clone']",
-        'voice_profile_transcript_unconfirmed',
-        'hub_playground_tts_audio_url($selectedService, $compareResult)',
-    ] as $needle) {
-        hub_test_assert(str_contains($source, $needle), 'playground Voice Profile workflow missing ' . $needle);
+    foreach (['value="ultimate_clone"', 'name="compare_all"', 'name="reference_wav"', 'name="prompt_text"', 'name="voice_profile_id"', '$audioUrls'] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'playground TTS comparison UI missing ' . $needle);
     }
-    hub_test_assert(!str_contains($source, 'hub_playground_mask_token'), 'playground must not display submitted bearer tokens');
-    hub_test_assert(!str_contains($source, 'reference_audio_path'), 'playground must not expose Voice Profile host paths');
+    hub_test_assert(!str_contains($source, 'name="reference_audio_id"'), 'playground must not expose a free-form reference audio ID');
+
+    $examplesStart = strpos($source, 'function hub_playground_examples');
+    $ttsExamplesStart = $examplesStart === false ? false : strpos($source, "if (\$mode === 'tts') {", $examplesStart);
+    $ttsExamplesEnd = strpos($source, "if (\$mode === 'chat') {", $ttsExamplesStart);
+    hub_test_assert($ttsExamplesStart !== false && $ttsExamplesEnd !== false, 'playground TTS example block missing');
+    $ttsExamples = substr($source, $ttsExamplesStart, $ttsExamplesEnd - $ttsExamplesStart);
+    foreach (['prompt_text', 'reference_wav_path', 'prompt_wav_path', 'reference_audio_path'] as $forbidden) {
+        hub_test_assert(!str_contains($ttsExamples, $forbidden), 'browser TTS examples must not expose ' . $forbidden);
+    }
+    $helper = (string)file_get_contents(HUB_ROOT . '/admin/_playground_voice_profiles.php');
+    hub_test_assert(str_contains($source, 'hub_playground_tts_audio_urls($selectedService, $result)') && str_contains($helper, 'hub_playground_tts_audio_url'), 'comparison audio must use the protected artifact URL helper');
+});
+
+hub_test('VoxCPM2 playground lists only active profiles accessible to the bearer token member', function (): void {
+    hub_test_assert(function_exists('hub_playground_tts_active_profiles'), 'playground active profile selector helper missing');
+
+    $db = hub_test_reset_db();
+    $viewerId = hub_create_api_member($db, 'Playground profile viewer');
+    $ownerId = hub_create_api_member($db, 'Playground profile owner');
+    $token = hub_create_api_token($db, $viewerId, 'Playground profile viewer TTS token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'tts');
+    $wav = hub_voice_profile_storage_dir() . '/playground_selector.wav';
+    file_put_contents($wav, 'RIFFselector');
+    $ownId = hub_create_voice_profile($db, $viewerId, [
+        'name' => 'Viewer active',
+        'reference_audio_path' => $wav,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $sharedId = hub_create_voice_profile($db, $ownerId, [
+        'name' => 'Shared active',
+        'reference_audio_path' => $wav,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'shared',
+    ]);
+    $privateId = hub_create_voice_profile($db, $ownerId, [
+        'name' => 'Private foreign',
+        'reference_audio_path' => $wav,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $deletedId = hub_create_voice_profile($db, $viewerId, [
+        'name' => 'Viewer deleted',
+        'reference_audio_path' => $wav,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    hub_soft_delete_voice_profile($db, $deletedId, $viewerId);
+    $oldServer = $_SERVER;
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.38';
+
+    try {
+        $profiles = hub_playground_tts_active_profiles($db, (string)$token['plain_token']);
+        $managementProfiles = hub_playground_tts_owned_profiles($db, (string)$token['plain_token']);
+    } finally {
+        $_SERVER = $oldServer;
+    }
+
+    $ids = array_map(static fn (array $profile): int => (int)$profile['id'], $profiles);
+    sort($ids);
+    $expected = [$ownId, $sharedId];
+    sort($expected);
+    hub_test_assert($ids === $expected, 'profile selector must include only active owned or shared profiles');
+    hub_test_assert(!in_array($privateId, $ids, true) && !in_array($deletedId, $ids, true), 'profile selector must not expose private foreign or deleted profiles');
+    hub_test_assert(array_map(static fn (array $profile): int => (int)$profile['id'], $managementProfiles) === [$ownId], 'management selectors must exclude shared profiles because their mutations are owner-only');
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(str_contains($source, 'foreach ($ttsProfiles as $ttsProfile)') && substr_count($source, 'foreach ($ttsManagementProfiles as $ttsProfile)') === 2, 'execution and management selectors must use their distinct profile lists');
+});
+
+hub_test('VoxCPM2 playground returns a safe error when loading profiles with an invalid token', function (): void {
+    hub_test_assert(function_exists('hub_playground_tts_profile_options_result'), 'playground profile-load action helper missing');
+
+    $db = hub_test_reset_db();
+    $result = hub_playground_tts_profile_options_result($db, 'invalid-playground-token');
+    hub_test_assert(empty($result['ok']) && ($result['error'] ?? '') === 'voice_profile_request_failed', 'invalid profile load must return a generic action error');
+    foreach (['invalid-playground-token', HUB_ROOT, 'reference_audio_path'] as $secret) {
+        hub_test_assert(!str_contains((string)($result['pretty_body'] ?? ''), $secret), 'profile-load error must not expose token or storage details');
+    }
+
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(str_contains($source, "\$action === 'voice_profile_list'") && str_contains($source, 'hub_playground_tts_profile_options_result'), 'profile-load action must render the safe helper result');
+});
+
+hub_test('VoxCPM2 playground compares all modes sequentially and keeps each result', function (): void {
+    hub_test_assert(function_exists('hub_playground_execute_tts'), 'playground TTS comparison executor missing');
+    hub_test_assert(function_exists('hub_playground_tts_audio_urls'), 'playground TTS audio URL mapper missing');
+
+    $oldPost = $_POST;
+    $_POST = [
+        'tts_mode' => 'clone',
+        'compare_all' => '1',
+        'text' => '比較三個聲音模式。',
+        'voice_prompt' => '清楚自然',
+        'voice_profile_id' => '42',
+        'control' => '稍慢',
+        'seed' => '42',
+        'real_inference' => '1',
+    ];
+    $order = [];
+
+    try {
+        $result = hub_playground_execute_tts('test-token', static function (string $ttsMode, array $payload, string $token) use (&$order): array {
+            $expected = ['design', 'clone', 'ultimate_clone'];
+            hub_test_assert($ttsMode === $expected[count($order)], 'comparison must wait for the preceding mode before the next request');
+            hub_test_assert($payload['mode'] === $ttsMode, 'each comparison request must contain its own mode');
+            hub_test_assert(($payload['voice_profile_id'] ?? null) === 42, 'clone requests must use the selected managed profile ID');
+            hub_test_assert(!array_key_exists('prompt_text', $payload), 'playground must not send profile transcripts to the gateway');
+            hub_test_assert($token === 'test-token', 'comparison must keep the transient bearer token server-side');
+            $order[] = $ttsMode;
+
+            return [
+                'ok' => true,
+                'status' => 200,
+                'elapsed_ms' => 1,
+                'request_id' => $ttsMode,
+                'error' => '',
+                'message' => '',
+                'body' => json_encode(['artifact_url' => '/artifacts/tts_' . $ttsMode . '.wav']),
+                'pretty_body' => '{}',
+            ];
+        });
+    } finally {
+        $_POST = $oldPost;
+    }
+
+    hub_test_assert($order === ['design', 'clone', 'ultimate_clone'], 'comparison must invoke modes in the documented sequence');
+    hub_test_assert(array_keys($result['results'] ?? []) === ['design', 'clone', 'ultimate_clone'], 'comparison must retain independent results for every mode');
+    $audioUrls = hub_playground_tts_audio_urls(['id' => 9], $result, static function (array $service, ?array $ttsResult): string {
+        $artifact = json_decode((string)($ttsResult['body'] ?? ''), true);
+        return 'playground_artifact.php?service_id=' . (int)$service['id'] . '&file=' . basename((string)($artifact['artifact_url'] ?? ''));
+    });
+    hub_test_assert(array_keys($audioUrls) === ['design', 'clone', 'ultimate_clone'], 'comparison must retain independent audio URLs for every mode');
+    foreach ($audioUrls as $ttsMode => $audioUrl) {
+        hub_test_assert(str_contains($audioUrl, 'playground_artifact.php?') && str_contains($audioUrl, 'file=tts_' . $ttsMode . '.wav'), 'comparison audio URL must use the protected artifact endpoint');
+    }
+});
+
+hub_test('VoxCPM2 playground maps single TTS artifacts through the protected endpoint', function (): void {
+    $artifactHelpers = HUB_ROOT . '/admin/_playground_tts_artifacts.php';
+    hub_test_assert(is_file($artifactHelpers), 'side-effect-free TTS artifact helpers missing');
+    hub_test_assert(function_exists('hub_playground_tts_audio_url'), 'protected TTS artifact URL helper missing');
+
+    $service = ['id' => 9];
+    $result = ['ok' => true, 'body' => json_encode(['artifact_url' => '/artifacts/tts_design.wav'])];
+    hub_test_assert(hub_playground_tts_audio_url($service, $result) === 'playground_artifact.php?service_id=9&file=tts_design.wav', 'single TTS artifact must use the protected endpoint URL');
+
+    foreach (['https://example.test/tts_design.wav', '/artifacts/tts_design.mp3'] as $unsafeArtifactUrl) {
+        hub_test_assert(hub_playground_tts_audio_url($service, ['ok' => true, 'body' => json_encode(['artifact_url' => $unsafeArtifactUrl])]) === '', 'unsafe TTS artifact URL must be rejected');
+    }
+});
+
+hub_test('VoxCPM2 playground keeps the protected single-result audio fallback', function (): void {
+    $oldPost = $_POST;
+    $_POST = ['tts_mode' => 'design'];
+
+    try {
+        $result = hub_playground_execute_tts('test-token', static function (string $ttsMode): array {
+            return [
+                'ok' => true,
+                'status' => 200,
+                'body' => json_encode(['artifact_url' => '/artifacts/tts_' . $ttsMode . '.wav']),
+                'pretty_body' => '{}',
+            ];
+        });
+    } finally {
+        $_POST = $oldPost;
+    }
+
+    hub_test_assert(!array_key_exists('results', $result), 'single TTS execution must retain its direct gateway result');
+    hub_test_assert(hub_playground_tts_audio_urls(['id' => 9], $result, static function (): string {
+        throw new RuntimeException('single TTS result must not use the comparison audio mapper');
+    }) === [], 'single TTS execution must leave comparison audio URLs empty');
+
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(str_contains($source, 'hub_playground_tts_audio_url($selectedService, $result)'), 'single TTS result must use the protected artifact fallback');
+    $singleAudioStart = strpos($source, "elseif (\$audioUrl !== '')");
+    $singleAudioEnd = $singleAudioStart === false ? false : strpos($source, '<?php endif; ?>', $singleAudioStart);
+    $singleAudio = $singleAudioStart === false || $singleAudioEnd === false ? '' : substr($source, $singleAudioStart, $singleAudioEnd - $singleAudioStart);
+    hub_test_assert(str_contains($singleAudio, '<audio controls src="<?= hub_h($audioUrl) ?>"></audio>'), 'single TTS result must render its protected audio player');
+});
+
+hub_test('VoxCPM2 playground preserves an unconfirmed Ultimate Clone result', function (): void {
+    $oldPost = $_POST;
+    $_POST = ['compare_all' => '1', 'voice_profile_id' => '42'];
+
+    try {
+        $result = hub_playground_execute_tts('test-token', static function (string $ttsMode): array {
+            if ($ttsMode === 'ultimate_clone') {
+                return ['ok' => false, 'status' => 409, 'error' => 'voice_profile_transcript_unconfirmed', 'message' => 'confirmed transcript required', 'pretty_body' => '{}'];
+            }
+
+            return ['ok' => true, 'status' => 200, 'body' => json_encode(['artifact_url' => '/artifacts/tts_' . $ttsMode . '.wav']), 'pretty_body' => '{}'];
+        });
+    } finally {
+        $_POST = $oldPost;
+    }
+
+    hub_test_assert(($result['results']['design']['ok'] ?? false) === true && ($result['results']['clone']['ok'] ?? false) === true, 'successful design and clone results must remain available');
+    hub_test_assert(($result['results']['ultimate_clone']['status'] ?? 0) === 409 && ($result['results']['ultimate_clone']['error'] ?? '') === 'voice_profile_transcript_unconfirmed', 'unconfirmed Ultimate Clone must remain its own result');
+});
+
+hub_test('VoxCPM2 playground gives an all-failed comparison a concrete aggregate error', function (): void {
+    $oldPost = $_POST;
+    $_POST = ['compare_all' => '1', 'voice_profile_id' => '42'];
+
+    try {
+        $result = hub_playground_execute_tts('test-token', static function (string $ttsMode): array {
+            return ['ok' => false, 'status' => 409, 'error' => 'voice_profile_transcript_unconfirmed', 'message' => $ttsMode, 'pretty_body' => '{}'];
+        });
+    } finally {
+        $_POST = $oldPost;
+    }
+
+    hub_test_assert(empty($result['ok']) && ($result['status'] ?? null) === 500 && ($result['error'] ?? '') === 'tts_comparison_failed', 'all-failed comparison must not be reported as mixed');
+    hub_test_assert(array_keys($result['results'] ?? []) === ['design', 'clone', 'ultimate_clone'], 'all-failed comparison must preserve each mode result');
+});
+
+hub_test('VoxCPM2 playground manages voice profiles with request-scoped TTS tokens', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    $helperFile = HUB_ROOT . '/admin/_playground_voice_profiles.php';
+    hub_test_assert(is_file($helperFile), 'playground voice-profile helper include missing');
+    $helper = (string)file_get_contents($helperFile);
+
+    foreach (['voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'] as $action) {
+        hub_test_assert(str_contains($source, 'name="action" value="' . $action . '"'), 'playground must provide POST action ' . $action);
+    }
+    hub_test_assert(str_contains($source, "require_once __DIR__ . '/_playground_voice_profiles.php';"), 'playground must load the voice-profile helper');
+    foreach ([
+        "hub_gateway_authenticate_api_token(\$db, 'tts', hub_get_client_ip(), \$token)",
+        'hub_create_uploaded_voice_profile',
+        'hub_confirm_voice_profile_prompt',
+        'hub_retry_voice_profile_transcription',
+    ] as $needle) {
+        hub_test_assert(str_contains($helper, $needle), 'playground voice-profile helper missing ' . $needle);
+    }
+    hub_test_assert(str_contains($source, 'hub_check_csrf()'), 'playground voice-profile flow must keep CSRF protection');
+
+    $examplesStart = strpos($source, 'function hub_playground_examples');
+    $ttsExamplesStart = $examplesStart === false ? false : strpos($source, "if (\$mode === 'tts') {", $examplesStart);
+    $ttsExamplesEnd = strpos($source, "if (\$mode === 'chat') {", $ttsExamplesStart);
+    hub_test_assert($examplesStart !== false && $ttsExamplesStart !== false && $ttsExamplesEnd !== false, 'playground TTS example block missing');
+    $ttsExamples = substr($source, $ttsExamplesStart, $ttsExamplesEnd - $ttsExamplesStart);
+    foreach (['reference_audio_path', 'prompt_wav_path', 'prompt_audio_path'] as $forbidden) {
+        hub_test_assert(!str_contains($ttsExamples, $forbidden), 'browser TTS payload must not contain ' . $forbidden);
+    }
+    hub_test_assert(!str_contains($source, 'mode=voice_profile_transcribe'), 'playground must not expose a public voice-profile transcription API mode');
+});
+
+hub_test('VoxCPM2 playground resolves voice-profile ownership from the TTS token', function (): void {
+    $helperFile = HUB_ROOT . '/admin/_playground_voice_profiles.php';
+    hub_test_assert(is_file($helperFile), 'playground TTS token helper include missing');
+    require_once $helperFile;
+    hub_test_assert(function_exists('hub_playground_tts_member_id'), 'playground TTS token helper missing');
+
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Playground Voice Token Owner');
+    $token = hub_create_api_token($db, $memberId, 'Playground TTS token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'tts');
+    $unscoped = hub_create_api_token($db, $memberId, 'Playground unscoped token', null, null);
+    $oldServer = $_SERVER;
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.34';
+
+    try {
+        hub_test_assert(
+            hub_playground_tts_member_id($db, (string)$token['plain_token']) === $memberId,
+            'playground must use the authenticated TTS token member as voice-profile owner'
+        );
+        hub_test_assert(
+            hub_test_throws(static fn (): int => hub_playground_tts_member_id($db, (string)$unscoped['plain_token'])),
+            'playground must reject a token without TTS access'
+        );
+    } finally {
+        $_SERVER = $oldServer;
+    }
+});
+
+hub_test('VoxCPM2 playground rejects foreign token voice-profile mutations with a redacted error', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    $helperFile = HUB_ROOT . '/admin/_playground_voice_profiles.php';
+    hub_test_assert(str_contains($source, "require_once __DIR__ . '/_playground_voice_profiles.php';"), 'playground controller must load its voice-profile dispatcher');
+    hub_test_assert(is_file($helperFile), 'playground voice-profile dispatcher include missing');
+    require_once $helperFile;
+
+    $db = hub_test_reset_db();
+    $ownerMemberId = hub_create_api_member($db, 'Playground Profile Owner');
+    $foreignMemberId = hub_create_api_member($db, 'Playground Profile Foreign Member');
+    $foreignToken = hub_create_api_token($db, $foreignMemberId, 'Playground foreign TTS token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$foreignToken['token_id'], 'tts');
+    $dir = hub_voice_profile_storage_dir();
+    $wav = $dir . '/playground_foreign_owner.wav';
+    file_put_contents($wav, 'RIFFmock');
+    $profileId = hub_create_voice_profile($db, $ownerMemberId, [
+        'name' => 'Owner-only profile',
+        'reference_audio_path' => $wav,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $oldServer = $_SERVER;
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.35';
+
+    try {
+        $tokenMemberId = hub_playground_tts_member_id($db, (string)$foreignToken['plain_token']);
+        hub_test_assert($tokenMemberId === $foreignMemberId, 'playground must derive the mutation owner from the supplied token');
+        $confirm = hub_playground_voice_profile_dispatch($db, 'voice_profile_confirm', (string)$foreignToken['plain_token'], [
+            'voice_profile_id' => $profileId,
+            'prompt_text' => 'foreign transcript',
+        ], []);
+        $retry = hub_playground_voice_profile_dispatch($db, 'voice_profile_retry_asr', (string)$foreignToken['plain_token'], [
+            'voice_profile_id' => $profileId,
+        ], []);
+        hub_test_assert((hub_get_voice_profile($db, $profileId)['prompt_text'] ?? null) === null, 'foreign token mutation must leave the owner profile unchanged');
+
+        foreach ([$confirm, $retry] as $error) {
+            $body = (string)($error['pretty_body'] ?? '');
+            hub_test_assert(($error['error'] ?? '') === 'voice_profile_request_failed', 'playground controller error must stay generic');
+            foreach ([$wav, 'foreign transcript', 'voice_profile_forbidden'] as $secret) {
+                hub_test_assert(!str_contains($body, $secret), 'playground controller error must redact ' . $secret);
+            }
+        }
+    } finally {
+        $_SERVER = $oldServer;
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $ownerMemberId, true);
+        }
+    }
 });
 
 hub_test('VoxCPM2 playground exposes generated WAV through authenticated audio player', function (): void {
     $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
-    hub_test_assert(str_contains($playground, 'playground_artifact.php'), 'playground must link TTS artifacts through admin artifact endpoint');
+    $artifactHelpers = HUB_ROOT . '/admin/_playground_tts_artifacts.php';
+    hub_test_assert(is_file($artifactHelpers), 'playground TTS artifact helper missing');
+    hub_test_assert(str_contains($playground, "require_once __DIR__ . '/_playground_tts_artifacts.php';"), 'playground must load the TTS artifact helper');
+    hub_test_assert(str_contains((string)file_get_contents($artifactHelpers), 'playground_artifact.php'), 'playground must link TTS artifacts through admin artifact endpoint');
     hub_test_assert(str_contains($playground, '<audio controls'), 'playground must render an audio player for TTS artifacts');
 
     $artifactPage = HUB_ROOT . '/admin/playground_artifact.php';
@@ -1469,5 +1793,40 @@ hub_test('VoxCPM2 acceptance set covers Traditional Chinese maintenance text', f
     $joined = json_encode($cases, JSON_UNESCAPED_UNICODE);
     foreach (['8,500 rpm', '0.7 mm', '12 N·m', 'NSR', 'RC Valve', 'PGM-III', '6902', '91201-KV3-831', '臺', '閥', '機車', '汽缸'] as $needle) {
         hub_test_assert(str_contains((string)$joined, $needle), 'VoxCPM2 acceptance set missing ' . $needle);
+    }
+});
+
+hub_test('VoxCPM2 three-mode smoke runbook keeps the safe operator contract', function (): void {
+    $path = HUB_ROOT . '/docs/operations/voxcpm2-three-mode-smoke.md';
+    hub_test_assert(is_file($path), 'VoxCPM2 three-mode smoke runbook missing');
+    $doc = (string)file_get_contents($path);
+
+    foreach ([
+        'app/bootstrap.php',
+        'compose_project',
+        'hub_get_storage_setting($db, "AIHUB_MODELS_DIR")',
+        'WHISPER_REAL_INFERENCE=1',
+        'docker compose',
+        '-p "$ASR_COMPOSE_PROJECT"',
+        '-p "$TTS_COMPOSE_PROJECT"',
+        'up -d --build',
+        'nvidia-smi',
+        'python3 -m unittest -v test_app.py',
+        'mock": false',
+        'effective": "cuda"',
+        'ultimate_clone',
+        'voice_profile_transcript_unconfirmed',
+        '409',
+        'CPU fallback',
+        'Docker NVIDIA runtime',
+        'does not authorize use of non-consented voice audio',
+        'https://github.com/SYSTRAN/faster-whisper/blob/master/README.md',
+        'https://huggingface.co/openbmb/VoxCPM2',
+    ] as $needle) {
+        hub_test_assert(str_contains($doc, $needle), 'three-mode smoke runbook missing ' . $needle);
+    }
+
+    foreach (['/DATA/models', 'Authorization: Bearer', 'reference_audio_path', 'prompt_wav_path', 'request_id'] as $forbidden) {
+        hub_test_assert(!str_contains($doc, $forbidden), 'three-mode smoke runbook must not include ' . $forbidden);
     }
 });

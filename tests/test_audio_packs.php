@@ -35,7 +35,10 @@ hub_test('Whisper ASR pack has L5 GPU-first runtime files', function (): void {
     hub_test_assert(($gpuEnv['default'] ?? '') === '1', 'whisper-asr manifest must request GPUs with USE_GPU=1');
 
     $sourceCompose = (string)file_get_contents(HUB_ROOT . '/packs/whisper-asr/docker-compose.yml');
-    hub_test_assert(!str_contains($sourceCompose, 'gpus: all'), 'whisper-asr source compose must remain CPU-safe for direct development');
+    hub_test_assert(str_contains($sourceCompose, 'gpus: all'), 'whisper-asr source compose must request GPUs for direct development');
+    hub_test_assert(str_contains($sourceCompose, 'NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"'), 'whisper-asr source compose must default visible GPUs to all');
+    hub_test_assert(str_contains($sourceCompose, 'NVIDIA_DRIVER_CAPABILITIES: "compute,utility"'), 'whisper-asr source compose must expose NVIDIA compute and utility capabilities');
+    hub_test_assert(!str_contains($sourceCompose, '/DATA/'), 'whisper-asr source compose must not hard-code a host storage path');
 
     $whisperSchema = hub_get_pack_settings_schema('whisper-asr');
     hub_test_assert(($whisperSchema['USE_GPU']['type'] ?? '') === 'boolean', 'whisper-asr USE_GPU must be a boolean setting');

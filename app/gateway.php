@@ -1,40 +1,48 @@
 <?php
 declare(strict_types=1);
 
-function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null): array
+function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null, array $internalRequest = []): array
 {
     $started = microtime(true);
     $requestId = hub_new_request_id();
     $authContext = [];
+    $clientIp = trim((string)($internalRequest['client_ip'] ?? hub_get_client_ip())) ?: hub_get_client_ip();
+    $providedToken = array_key_exists('bearer_token', $internalRequest) ? (string)$internalRequest['bearer_token'] : null;
+    $rawBody = array_key_exists('raw_body', $internalRequest) ? (string)$internalRequest['raw_body'] : null;
+    $requestMethod = strtoupper(trim((string)($internalRequest['method'] ?? $_SERVER['REQUEST_METHOD'] ?? 'GET'))) ?: 'GET';
+    $requestContext = [
+        'client_ip' => $clientIp,
+        'method' => $requestMethod,
+        'request_uri' => (string)($internalRequest['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? ''),
+        'upload_bytes' => $rawBody === null ? hub_gateway_upload_bytes() : strlen($rawBody),
+    ];
     if (!preg_match('/^[a-zA-Z0-9_-]+$/', $mode)) {
-        return hub_gateway_finish($db, null, $mode, hub_gateway_error(400, 'bad_request', 'invalid mode'), $started, $requestId);
+        return hub_gateway_finish($db, null, $mode, hub_gateway_error(400, 'bad_request', 'invalid mode'), $started, $requestId, [], $requestContext);
     }
     if ($mode === 'yolo_gpu_internal') {
-        return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId);
+        return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
     }
     $service = hub_get_service_by_mode($db, $mode);
     if (!$service && hub_is_task_api_mode($mode)) {
-        $clientIp = hub_get_client_ip();
-        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
+        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp, $providedToken);
         $authContext = $auth['context'] ?? [];
         if (empty($auth['ok'])) {
-            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
         }
 
-        return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode, $authContext), $started, $requestId, $authContext);
+        return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode, $authContext), $started, $requestId, $authContext, $requestContext);
     }
     if (!$service && hub_is_photo_api_mode($mode)) {
-        $clientIp = hub_get_client_ip();
-        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
+        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp, $providedToken);
         $authContext = $auth['context'] ?? [];
         if (empty($auth['ok'])) {
-            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
         }
         $photoResponse = hub_photo_api_dispatch($db, $mode, $authContext);
         $logService = is_array($photoResponse['service'] ?? null) ? $photoResponse['service'] : null;
         unset($photoResponse['service']);
 
-        return hub_gateway_finish($db, $logService, $mode, $photoResponse, $started, $requestId, $authContext);
+        return hub_gateway_finish($db, $logService, $mode, $photoResponse, $started, $requestId, $authContext, $requestContext);
     }
     if (!$service && hub_is_audio_api_mode($mode)) {
         $clientIp = hub_get_client_ip();
@@ -50,46 +58,44 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         return hub_gateway_finish($db, $logService, $mode, $audioResponse, $started, $requestId, $authContext);
     }
     if (!$service && hub_is_yolo_model_api_mode($mode)) {
-        $clientIp = hub_get_client_ip();
-        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
+        $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp, $providedToken);
         $authContext = $auth['context'] ?? [];
         if (empty($auth['ok'])) {
-            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext);
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
         }
 
-        return hub_gateway_finish($db, null, $mode, hub_yolo_model_api_dispatch($db, $mode), $started, $requestId, $authContext);
+        return hub_gateway_finish($db, null, $mode, hub_yolo_model_api_dispatch($db, $mode), $started, $requestId, $authContext, $requestContext);
     }
     if (!$service) {
-        return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId);
+        return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
     }
-    $clientIp = hub_get_client_ip();
-    $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp);
+    $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp, $providedToken);
     $authContext = $auth['context'] ?? [];
     if (empty($auth['ok'])) {
-        return hub_gateway_finish($db, $service, $mode, $auth['response'], $started, $requestId, $authContext);
+        return hub_gateway_finish($db, $service, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
     }
     if ((int)$service['enabled'] !== 1) {
-        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(503, 'service_disabled', 'service is disabled'), $started, $requestId, $authContext);
+        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(503, 'service_disabled', 'service is disabled'), $started, $requestId, $authContext, $requestContext);
     }
     if (in_array((string)$service['runtime_status'], ['pending', 'not_ready'], true) || (string)$service['install_status'] !== 'installed') {
-        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(503, 'runtime_not_ready', 'service runtime is not ready'), $started, $requestId, $authContext);
+        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(503, 'runtime_not_ready', 'service runtime is not ready'), $started, $requestId, $authContext, $requestContext);
     }
     if (!hub_gateway_service_ip_allowed_after_auth($db, $service, $clientIp, $authContext)) {
-        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(403, 'ip_not_allowed', 'client IP is not allowed for this service'), $started, $requestId, $authContext);
+        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(403, 'ip_not_allowed', 'client IP is not allowed for this service'), $started, $requestId, $authContext, $requestContext);
     }
-    if (!hub_service_method_allowed($service, (string)($_SERVER['REQUEST_METHOD'] ?? 'GET'))) {
-        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(405, 'method_not_allowed', 'HTTP method is not allowed for this mode'), $started, $requestId, $authContext);
+    if (!hub_service_method_allowed($service, $requestMethod)) {
+        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(405, 'method_not_allowed', 'HTTP method is not allowed for this mode'), $started, $requestId, $authContext, $requestContext);
     }
-    if (!hub_service_upload_size_allowed($service, (string)($_SERVER['CONTENT_LENGTH'] ?? ''))) {
-        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows'), $started, $requestId, $authContext);
+    if (!hub_service_upload_size_allowed($service, (string)($rawBody === null ? $_SERVER['CONTENT_LENGTH'] ?? '' : strlen($rawBody)))) {
+        return hub_gateway_finish($db, $service, $mode, hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows'), $started, $requestId, $authContext, $requestContext);
     }
 
     $timeoutSec = hub_service_gateway_timeout_sec($service);
     $prepared = [];
     if ($requester === null || (string)($service['pack_id'] ?? '') === 'yolo-serving') {
-        $prepared = hub_gateway_prepare_service_request($db, $service, $authContext);
+        $prepared = hub_gateway_prepare_service_request($db, $service, $authContext, $rawBody);
         if (isset($prepared['response'])) {
-            return hub_gateway_finish($db, $service, $mode, $prepared['response'], $started, $requestId, $authContext);
+            return hub_gateway_finish($db, $service, $mode, $prepared['response'], $started, $requestId, $authContext, $requestContext);
         }
         if (is_array($prepared['service'] ?? null)) {
             $service = $prepared['service'];
@@ -97,13 +103,14 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         }
     }
     if (hub_service_is_internal_task($service)) {
-        return hub_gateway_finish($db, $service, $mode, hub_dispatch_internal_task_service($db, $service, $authContext), $started, $requestId, $authContext);
+        return hub_gateway_finish($db, $service, $mode, hub_dispatch_internal_task_service($db, $service, $authContext), $started, $requestId, $authContext, $requestContext);
     }
     $requester ??= static fn (array $service, int $timeoutSec): array => hub_proxy_request(
         $service['internal_url'],
         $timeoutSec,
         is_string($prepared['body'] ?? null) ? (string)$prepared['body'] : null,
-        is_string($prepared['content_type'] ?? null) ? (string)$prepared['content_type'] : null
+        is_string($prepared['content_type'] ?? null) ? (string)$prepared['content_type'] : null,
+        $requestMethod
     );
 
     $response = $requester($service, $timeoutSec);
@@ -118,13 +125,13 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         $response = $requester($service, $timeoutSec);
     }
 
-    return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext);
+    return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext, $requestContext);
 }
 
-function hub_gateway_prepare_service_request(PDO $db, array $service, array $authContext): array
+function hub_gateway_prepare_service_request(PDO $db, array $service, array $authContext, ?string $rawBody = null): array
 {
     return match ((string)($service['pack_id'] ?? '')) {
-        'tts-voxcpm2' => hub_prepare_tts_voxcpm2_payload($db, $service, $authContext, (string)file_get_contents('php://input')),
+        'tts-voxcpm2' => hub_prepare_tts_voxcpm2_payload($db, $service, $authContext, $rawBody ?? (string)file_get_contents('php://input')),
         'yolo-serving' => hub_prepare_yolo_serving_payload($db, $service),
         default => [],
     };
@@ -1280,14 +1287,14 @@ function hub_api_load_task(PDO $db): ?array
     return $taskId > 0 ? hub_get_task($db, $taskId) : null;
 }
 
-function hub_proxy_request(string $url, int $timeoutSec = 60, ?string $bodyOverride = null, ?string $contentTypeOverride = null): array
+function hub_proxy_request(string $url, int $timeoutSec = 60, ?string $bodyOverride = null, ?string $contentTypeOverride = null, ?string $methodOverride = null): array
 {
     $ch = curl_init($url);
     if ($ch === false) {
         return hub_gateway_json(502, ['ok' => false, 'error' => 'curl unavailable']);
     }
 
-    $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+    $method = $methodOverride ?? $_SERVER['REQUEST_METHOD'] ?? 'GET';
     $headers = [];
     $hasUploads = !empty($_FILES);
     if (!$hasUploads && $contentTypeOverride !== null) {
@@ -1362,7 +1369,7 @@ function hub_gateway_error(int $status, string $errorCode, string $message): arr
     return hub_gateway_json($status, ['ok' => false, 'error' => $errorCode, 'message' => $message]);
 }
 
-function hub_gateway_finish(PDO $db, ?array $service, string $mode, array $response, float $started, string $requestId, array $authContext = []): array
+function hub_gateway_finish(PDO $db, ?array $service, string $mode, array $response, float $started, string $requestId, array $authContext = [], array $requestContext = []): array
 {
     $status = (int)$response['status'];
     $response = hub_gateway_attach_request_id($response, $requestId);
@@ -1379,15 +1386,19 @@ function hub_gateway_finish(PDO $db, ?array $service, string $mode, array $respo
         $elapsedMs,
         $requestId,
         $authContext,
-        hub_gateway_upload_bytes(),
-        strlen((string)($response['body'] ?? ''))
+        hub_gateway_upload_bytes(isset($requestContext['upload_bytes']) ? (int)$requestContext['upload_bytes'] : null),
+        strlen((string)($response['body'] ?? '')),
+        $requestContext
     );
 
     return $response;
 }
 
-function hub_gateway_upload_bytes(): int
+function hub_gateway_upload_bytes(?int $providedBytes = null): int
 {
+    if ($providedBytes !== null) {
+        return max(0, $providedBytes);
+    }
     $contentLength = trim((string)($_SERVER['CONTENT_LENGTH'] ?? ''));
     if ($contentLength !== '' && ctype_digit($contentLength)) {
         return (int)$contentLength;
