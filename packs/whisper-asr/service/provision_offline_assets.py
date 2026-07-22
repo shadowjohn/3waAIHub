@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from offline_paths import (
@@ -29,6 +30,8 @@ from offline_paths import (
     pyannote_cache_manifest,
     pyannote_config_text,
 )
+
+CKIP_CACHE_ROOT = Path("/cache")
 
 
 def storage_root(name: str, expected: Path) -> Path:
@@ -76,9 +79,14 @@ def require_regular_file(path: Path, error_code: str) -> None:
 
 def write_atomic(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_bytes(content)
-    temporary.replace(path)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+        Path(temporary).replace(path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def copy_regular_file(source: Path, destination: Path) -> None:
@@ -110,6 +118,36 @@ def validate_local_ckip() -> None:
     from ckip_transformers.nlp import CkipWordSegmenter
 
     CkipWordSegmenter(model_name=str(CKIP_MODEL_DIR), device=-1)
+
+
+def require_ckip_model_directory() -> None:
+    try:
+        parts = CKIP_MODEL_DIR.relative_to(CKIP_CACHE_ROOT).parts
+    except ValueError as error:
+        raise RuntimeError("ckip_directory_invalid") from error
+    current = CKIP_CACHE_ROOT
+    if current.is_symlink() or not current.is_dir():
+        raise RuntimeError("ckip_directory_invalid")
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            raise RuntimeError("ckip_directory_invalid")
+        if current.exists():
+            if not current.is_dir():
+                raise RuntimeError("ckip_directory_invalid")
+        else:
+            current.mkdir()
+            if current.is_symlink() or not current.is_dir():
+                raise RuntimeError("ckip_directory_invalid")
+
+
+def invalidate_ckip_marker() -> None:
+    if CKIP_MARKER.is_symlink():
+        CKIP_MARKER.unlink()
+    elif CKIP_MARKER.exists():
+        if not CKIP_MARKER.is_file():
+            raise RuntimeError("ckip_marker_invalid")
+        CKIP_MARKER.unlink()
 
 
 def prepare_pyannote_snapshot(snapshot_download: object, token: str) -> None:
@@ -151,8 +189,11 @@ def main() -> int:
 
     snapshot_download("Systran/faster-whisper-large-v3", local_dir=str(ASR_MODEL_DIR))
     if args.with_ckip:
+        require_ckip_model_directory()
+        invalidate_ckip_marker()
         snapshot_download(CKIP_MODEL_REPOSITORY, local_dir=str(CKIP_MODEL_DIR))
-        for name in ("config.json", "model.safetensors", "vocab.txt"):
+        require_ckip_model_directory()
+        for name in ("config.json", "pytorch_model.bin", "vocab.txt"):
             require_regular_file(CKIP_MODEL_DIR / name, "ckip_snapshot_unavailable")
     for language in selected_languages:
         precache_alignment(language)
@@ -161,6 +202,7 @@ def main() -> int:
     write_atomic(ALIGNMENT_MARKER, (json.dumps(alignment_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
     if args.with_ckip:
         validate_local_ckip()
+        require_ckip_model_directory()
         write_atomic(CKIP_MARKER, (json.dumps(ckip_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
     if args.with_diarization:
         PYANNOTE_MODEL_DIR.mkdir(parents=True, exist_ok=True)

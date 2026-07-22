@@ -722,15 +722,21 @@ with tempfile.TemporaryDirectory() as directory:
     provision.PYANNOTE_MARKER = provision.PYANNOTE_MODEL_DIR / ".aihub-pyannote-ready.json"
     provision.CKIP_MODEL_DIR = root / "cache" / "ckip" / "bert-base-chinese-ws"
     provision.CKIP_MARKER = provision.CKIP_MODEL_DIR / ".aihub-ckip-ready.json"
+    provision.CKIP_CACHE_ROOT = root / "cache"
     calls = []
     ckip_loads = []
+    fail_ckip_snapshot = [False]
 
     def snapshot_download(repo_id, local_dir, allow_patterns=None, token=None):
         calls.append((repo_id, token))
         target = Path(local_dir)
         target.mkdir(parents=True, exist_ok=True)
         if repo_id == "ckiplab/bert-base-chinese-ws":
-            for name in ("config.json", "model.safetensors", "vocab.txt"):
+            if fail_ckip_snapshot[0]:
+                assert not provision.CKIP_MARKER.exists(), "CKIP marker must be removed before snapshot mutation"
+                (target / "config.json").write_text("incomplete", encoding="utf-8")
+                raise RuntimeError("ckip_snapshot_failed")
+            for name in ("config.json", "pytorch_model.bin", "vocab.txt"):
                 (target / name).write_text("snapshot", encoding="utf-8")
         for name in allow_patterns or []:
             (target / name).write_text("snapshot", encoding="utf-8")
@@ -766,6 +772,14 @@ with tempfile.TemporaryDirectory() as directory:
         assert ("ckiplab/bert-base-chinese-ws", None) in calls
         assert ckip_loads == [{"model_name": str(provision.CKIP_MODEL_DIR), "device": -1}]
         assert json.loads(provision.CKIP_MARKER.read_text(encoding="utf-8")) == provision.ckip_cache_manifest()
+        fail_ckip_snapshot[0] = True
+        try:
+            provision.main()
+        except RuntimeError as error:
+            assert str(error) == "ckip_snapshot_failed"
+        else:
+            raise AssertionError("failed CKIP reprovisioning must fail")
+        assert not provision.CKIP_MARKER.exists(), "failed CKIP reprovisioning must not leave a ready marker"
         sys.argv = ["provision", "--with-diarization"]
         try:
             provision.main()
@@ -899,4 +913,52 @@ assert offline_paths.ckip_cache_manifest() == {
 PY;
     $result = hub_run_command(['python3', '-c', $script, $paths], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper CKIP offline path contract failed: ' . ($result['stderr'] ?? ''));
+});
+
+hub_test('Whisper CKIP provisioning rejects symlinked cache paths and safe-writes markers', function (): void {
+    $provisioner = HUB_ROOT . '/packs/whisper-asr/service/provision_offline_assets.py';
+    $script = <<<'PY'
+import importlib.util
+import sys
+import tempfile
+from pathlib import Path
+
+service_dir = Path(sys.argv[1]).parent
+sys.path.insert(0, str(service_dir))
+spec = importlib.util.spec_from_file_location("whisper_asr_provision", sys.argv[1])
+provision = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(provision)
+
+with tempfile.TemporaryDirectory() as directory:
+    root = Path(directory)
+    cache = root / "cache"
+    cache.mkdir()
+    provision.CKIP_CACHE_ROOT = cache
+    provision.CKIP_MODEL_DIR = cache / "whisper" / "ckip" / "bert-base-chinese-ws"
+    provision.CKIP_MARKER = provision.CKIP_MODEL_DIR / ".aihub-ckip-ready.json"
+    provision.require_ckip_model_directory()
+    protected = root / "protected"
+    protected.write_bytes(b"protected")
+    predictable_temp = provision.CKIP_MARKER.with_name(provision.CKIP_MARKER.name + ".tmp")
+    predictable_temp.symlink_to(protected)
+    provision.write_atomic(provision.CKIP_MARKER, b"ready")
+    assert protected.read_bytes() == b"protected"
+    assert provision.CKIP_MARKER.read_bytes() == b"ready"
+
+    linked = cache / "whisper"
+    provision.CKIP_MARKER.unlink()
+    predictable_temp.unlink()
+    provision.CKIP_MODEL_DIR.rmdir()
+    provision.CKIP_MODEL_DIR.parent.rmdir()
+    linked.rmdir()
+    linked.symlink_to(root / "outside", target_is_directory=True)
+    try:
+        provision.require_ckip_model_directory()
+    except RuntimeError as error:
+        assert str(error) == "ckip_directory_invalid"
+    else:
+        raise AssertionError("symlinked CKIP cache ancestor must be rejected")
+PY;
+    $result = hub_run_command(['python3', '-c', $script, $provisioner], 20);
+    hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper CKIP symlink safety contract failed: ' . ($result['stderr'] ?? ''));
 });
