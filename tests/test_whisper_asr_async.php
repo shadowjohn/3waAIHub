@@ -944,6 +944,7 @@ with tempfile.TemporaryDirectory() as directory:
     provision.write_atomic(provision.CKIP_MARKER, b"ready")
     assert protected.read_bytes() == b"protected"
     assert provision.CKIP_MARKER.read_bytes() == b"ready"
+    assert provision.CKIP_MARKER.stat().st_mode & 0o777 == 0o644
 
     linked = cache / "whisper"
     provision.CKIP_MARKER.unlink()
