@@ -6,7 +6,8 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-birefnet pack missing or invalid');
     $manifest = $pack['manifest'];
 
-    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4a-model-init-smoke', 'BiRefNet runtime level mismatch');
+    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4b-real-inference', 'BiRefNet runtime level mismatch');
+    hub_test_assert(($manifest['runtime_ready'] ?? false) === true, 'BiRefNet runtime must be ready after real inference');
     hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'BiRefNet target mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'background_remove', 'BiRefNet mode mismatch');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'BiRefNet execution type mismatch');
@@ -53,13 +54,15 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     hub_test_assert(($contract['errors'] ?? []) === $expectedErrors, 'BiRefNet error contract mismatch');
 
     $base = HUB_ROOT . '/packs/image-birefnet';
-    foreach (['pack.json', 'docker-compose.yml', 'service/Dockerfile', 'service/requirements.txt', 'service/app.py', 'service/model_runtime.py', 'service/model_smoke.py', 'service/provision_offline_assets.py', 'service/storage_smoke.py'] as $file) {
+    foreach (['pack.json', 'docker-compose.yml', 'demo/smoke.png', 'service/Dockerfile', 'service/requirements.txt', 'service/app.py', 'service/inference_smoke.py', 'service/model_runtime.py', 'service/model_smoke.py', 'service/provision_offline_assets.py', 'service/storage_smoke.py'] as $file) {
         hub_test_assert(is_file($base . '/' . $file), 'BiRefNet runtime file missing ' . $file);
     }
     $app = (string)file_get_contents($base . '/service/app.py');
     hub_test_assert(str_contains($app, '@app.get("/health")'), 'BiRefNet health endpoint missing');
     hub_test_assert(str_contains($app, '@app.post("/remove-background/image")'), 'BiRefNet invoke endpoint missing');
-    hub_test_assert(str_contains($app, 'runtime_not_ready'), 'BiRefNet L1 endpoint must fail closed');
+    hub_test_assert(str_contains($app, 'infer_alpha'), 'BiRefNet real inference path missing');
+    hub_test_assert(str_contains($app, 'torch.cuda.OutOfMemoryError'), 'BiRefNet CUDA OOM fallback check missing');
+    hub_test_assert(str_contains($app, 'TemporaryDirectory'), 'BiRefNet private request workspace missing');
     hub_test_assert(!str_contains($app, 'mock'), 'BiRefNet must not expose placeholder inference');
     $requirements = (string)file_get_contents($base . '/service/requirements.txt');
     foreach (['torch==', 'torchvision==', 'transformers==', 'timm==', 'kornia==', 'einops=='] as $dependency) {
@@ -67,7 +70,7 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     }
     $dockerfile = (string)file_get_contents($base . '/service/Dockerfile');
     hub_test_assert(str_contains($dockerfile, 'python3 /app/smoke.py'), 'BiRefNet dependency smoke missing');
-    hub_test_assert(str_contains($dockerfile, 'test_app.py test_image_pipeline.py test_provision_offline_assets.py'), 'BiRefNet unit tests missing from build');
+    hub_test_assert(str_contains($dockerfile, 'test_app.py test_endpoint.py test_image_pipeline.py test_provision_offline_assets.py'), 'BiRefNet unit tests missing from build');
     hub_test_assert(!str_contains($dockerfile, 'python3 /app/provision_offline_assets.py'), 'BiRefNet build must not download model assets');
 
     $provisioner = (string)file_get_contents($base . '/service/provision_offline_assets.py');
@@ -84,6 +87,10 @@ hub_test('BiRefNet pack starts with the approved binary API contract', function 
     hub_test_assert(str_contains($modelSmoke, 'verify_ready()'), 'BiRefNet model smoke must verify checksums');
     hub_test_assert(str_contains($modelSmoke, 'load_model()'), 'BiRefNet model smoke must initialize the model');
     hub_test_assert(!str_contains($modelSmoke, 'Image.open'), 'BiRefNet L4a smoke must not run image inference');
+    $inferenceSmoke = (string)file_get_contents($base . '/service/inference_smoke.py');
+    hub_test_assert(str_contains($inferenceSmoke, 'requests.post'), 'BiRefNet inference smoke must use HTTP');
+    hub_test_assert(str_contains($inferenceSmoke, '--expect-device'), 'BiRefNet inference smoke must verify GPU and CPU device');
+    hub_test_assert(!str_contains($inferenceSmoke, 'in-process'), 'BiRefNet inference smoke must not bypass HTTP');
 
     $compose = (string)file_get_contents($base . '/docker-compose.yml');
     foreach (['HF_HOME: /models/birefnet/huggingface', 'HF_HUB_OFFLINE: "1"', 'TRANSFORMERS_OFFLINE: "1"', 'XDG_CACHE_HOME: /cache/birefnet/xdg', 'HOME: /cache/birefnet/home'] as $needle) {

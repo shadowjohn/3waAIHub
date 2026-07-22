@@ -152,6 +152,17 @@ def postprocess_mask(
     return result
 
 
+def prediction_to_mask(prediction: object, size: tuple[int, int]) -> Image.Image:
+    values = np.asarray(prediction, dtype=np.float32)
+    if values.ndim != 2 or values.size == 0 or not np.isfinite(values).all():
+        raise PipelineError("inference_failed", "model prediction is invalid")
+    pixels = np.rint(np.clip(values, 0.0, 1.0) * 255.0).astype(np.uint8)
+    mask = Image.fromarray(pixels, mode="L")
+    if mask.size != size:
+        mask = mask.resize(size, Image.Resampling.BICUBIC)
+    return mask
+
+
 def defringe_rgb(rgb: Image.Image, alpha: Image.Image) -> Image.Image:
     colors = np.asarray(rgb.convert("RGB"), dtype=np.uint8).copy()
     opacity = np.asarray(alpha.convert("L"), dtype=np.uint8)

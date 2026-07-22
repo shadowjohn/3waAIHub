@@ -12,6 +12,7 @@ from image_pipeline import (
     cover_background,
     decode_image,
     defringe_rgb,
+    prediction_to_mask,
     parse_options,
     postprocess_mask,
     render_png,
@@ -86,6 +87,19 @@ class ImagePipelineTest(unittest.TestCase):
         feathered = postprocess_mask(mask, size=(5, 5), feather_px=1, edge_offset_px=0)
         values = np.asarray(feathered)
         self.assertTrue(bool(((values > 0) & (values < 255)).any()))
+
+    def test_prediction_to_mask_clamps_float_values_and_resizes_to_source(self) -> None:
+        prediction = np.array([[-1.0, 0.5], [1.0, 2.0]], dtype=np.float32)
+        mask = prediction_to_mask(prediction, (4, 3))
+        self.assertEqual((mask.mode, mask.size), ("L", (4, 3)))
+        self.assertEqual(mask.getpixel((0, 0)), 0)
+        self.assertEqual(mask.getpixel((3, 2)), 255)
+        self.assertTrue(bool(((np.asarray(mask) > 0) & (np.asarray(mask) < 255)).any()))
+
+        with self.assertRaisesRegex(PipelineError, "inference_failed"):
+            prediction_to_mask(np.array([1.0, 2.0], dtype=np.float32), (2, 2))
+        with self.assertRaisesRegex(PipelineError, "inference_failed"):
+            prediction_to_mask(np.array([[float("nan")]], dtype=np.float32), (1, 1))
 
     def test_defringe_repairs_only_qualified_partial_edges(self) -> None:
         rgb = Image.new("RGB", (6, 1), (100, 50, 25))

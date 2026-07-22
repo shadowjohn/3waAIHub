@@ -15,11 +15,11 @@ RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 
-COPY app.py image_pipeline.py model_runtime.py model_smoke.py provision_offline_assets.py \
-    smoke.py storage_smoke.py test_app.py test_image_pipeline.py test_provision_offline_assets.py ./
+COPY app.py image_pipeline.py inference_smoke.py model_runtime.py model_smoke.py provision_offline_assets.py \
+    smoke.py storage_smoke.py test_app.py test_endpoint.py test_image_pipeline.py test_provision_offline_assets.py ./
 RUN mkdir -p /tmp/home /tmp/hf /tmp/xdg \
     && HOME=/tmp/home HF_HOME=/tmp/hf XDG_CACHE_HOME=/tmp/xdg python3 /app/smoke.py \
-    && python3 -m unittest -v test_app.py test_image_pipeline.py test_provision_offline_assets.py \
+    && python3 -m unittest -v test_app.py test_endpoint.py test_image_pipeline.py test_provision_offline_assets.py \
     && rm -rf /tmp/home /tmp/hf /tmp/xdg
 
 EXPOSE 8000
