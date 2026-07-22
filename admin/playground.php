@@ -19,6 +19,7 @@ function hub_playground_profiles(): array
         'chat' => ['label' => 'Chat', 'method' => 'POST', 'kind' => 'json'],
         'photo' => ['label' => '圖片問答', 'method' => 'POST', 'kind' => 'photo'],
         'audio' => ['label' => '音訊理解', 'method' => 'POST', 'kind' => 'audio'],
+        'background_remove' => ['label' => 'BiRefNet 去背', 'method' => 'POST', 'kind' => 'background_remove'],
     ];
 }
 
@@ -115,6 +116,24 @@ function hub_playground_request_payload(string $mode): array
             'output_format' => trim((string)($_POST['output_format'] ?? 'metadata')) ?: 'metadata',
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
+    }
+    if ($mode === 'background_remove') {
+        $output = trim((string)($_POST['output'] ?? 'cutout')) ?: 'cutout';
+        $background = trim((string)($_POST['background'] ?? 'transparent')) ?: 'transparent';
+        $payload = [
+            'output' => $output,
+            'feather_px' => trim((string)($_POST['feather_px'] ?? '0')) ?: '0',
+            'edge_offset_px' => trim((string)($_POST['edge_offset_px'] ?? '0')) ?: '0',
+            'defringe' => !empty($_POST['defringe']) ? '1' : '0',
+        ];
+        if ($output === 'composite') {
+            $payload['background'] = $background;
+            if ($background === 'color') {
+                $payload['background_color'] = trim((string)($_POST['background_color'] ?? '#ffffff')) ?: '#ffffff';
+            }
+        }
+
+        return $payload;
     }
     if (in_array($mode, ['ocr', 'yolo'], true)) {
         return ['real_inference' => !empty($_POST['real_inference']) ? 1 : 0];
@@ -241,32 +260,16 @@ function hub_playground_finish_curl($ch, float $started): array
 
     $status = curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 0;
     $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE) ?: 0;
+    $contentType = curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: 'application/json';
     curl_close($ch);
     $rawHeaders = substr($raw, 0, $headerSize);
     $body = substr($raw, $headerSize);
-    $requestId = '';
-    foreach (preg_split('/\R/', $rawHeaders) ?: [] as $line) {
-        if (stripos($line, 'X-3waAIHub-Request-Id:') === 0) {
-            $requestId = trim(substr($line, strlen('X-3waAIHub-Request-Id:')));
-        }
+    $result = hub_playground_parse_response((int)$status, $rawHeaders, (string)$contentType, $body, $elapsedMs);
+    if (empty($result['ok'])) {
+        $result['message'] = hub_playground_error_message((int)$status, '', (string)($result['error'] ?? ''));
     }
-    $payload = json_decode($body, true);
-    if ($requestId === '' && is_array($payload) && is_string($payload['request_id'] ?? null)) {
-        $requestId = $payload['request_id'];
-    }
-    $gatewayError = is_array($payload) ? (string)($payload['error'] ?? $payload['error_code'] ?? '') : '';
-    $ok = $status >= 200 && $status < 400;
 
-    return [
-        'ok' => $ok,
-        'status' => $status,
-        'elapsed_ms' => $elapsedMs,
-        'request_id' => $requestId,
-        'error' => $ok ? '' : ($gatewayError ?: 'request_failed'),
-        'message' => $ok ? '' : hub_playground_error_message((int)$status, '', $gatewayError),
-        'body' => $body,
-        'pretty_body' => hub_playground_pretty_json($body),
-    ];
+    return $result;
 }
 
 function hub_playground_execute(string $mode, string $token, ?array $requestPayload = null): array
@@ -282,7 +285,7 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
 
     $url = hub_playground_local_api_url($mode);
     $started = microtime(true);
-    $headers = ['Accept: application/json'];
+    $headers = ['Accept: ' . ($mode === 'background_remove' ? 'image/png' : 'application/json')];
     $token = trim($token);
     if ($token !== '') {
         $headers[] = 'Authorization: Bearer ' . $token;
@@ -369,6 +372,16 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
                     (string)($file['type'] ?? ($mode === 'audio' ? 'audio/wav' : 'application/octet-stream')),
                     (string)($file['name'] ?? $fieldName)
                 );
+            }
+            if ($mode === 'background_remove' && ($payload['background'] ?? '') === 'image') {
+                $backgroundFile = $_FILES['background_image'] ?? null;
+                if (is_array($backgroundFile) && (int)($backgroundFile['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+                    $payload['background_image'] = new CURLFile(
+                        (string)$backgroundFile['tmp_name'],
+                        (string)($backgroundFile['type'] ?? 'application/octet-stream'),
+                        (string)($backgroundFile['name'] ?? 'background_image')
+                    );
+                }
             }
             $options[CURLOPT_POSTFIELDS] = $payload;
         }
@@ -618,6 +631,59 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'background_remove') {
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n"
+            . "  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n"
+            . "  -H \"Accept: image/png\" $curlContinuation\n"
+            . "  -F \"image=@sample.png\" $curlContinuation\n"
+            . "  -F \"output=cutout\" $curlContinuation\n"
+            . "  -F \"feather_px=0\" $curlContinuation\n"
+            . "  -F \"edge_offset_px=0\" $curlContinuation\n"
+            . "  -F \"defringe=1\" $curlContinuation\n"
+            . "  --output background-removed.png";
+        $php = <<<PHP
+\$fields = [
+    'image' => new CURLFile('/path/to/sample.png'),
+    'output' => 'cutout',
+    'feather_px' => '0',
+    'edge_offset_px' => '0',
+    'defringe' => '1',
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>', 'Accept: image/png'],
+    CURLOPT_POSTFIELDS => \$fields,
+]);
+\$png = curl_exec(\$ch);
+\$status = curl_getinfo(\$ch, CURLINFO_HTTP_CODE);
+\$mime = curl_getinfo(\$ch, CURLINFO_CONTENT_TYPE);
+if (\$png === false || \$status !== 200 || \$mime !== 'image/png') {
+    throw new RuntimeException('background_remove failed');
+}
+file_put_contents('background-removed.png', \$png);
+PHP;
+        $js = <<<JS
+const form = new FormData();
+const sourceInput = document.querySelector('input[name="image"]');
+form.append('image', sourceInput.files[0]);
+form.append('output', 'cutout');
+form.append('feather_px', '0');
+form.append('edge_offset_px', '0');
+form.append('defringe', '1');
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer <TOKEN>', Accept: 'image/png' },
+  body: form
+});
+if (!res.ok) throw new Error(await res.text());
+const blob = await res.blob();
+const objectUrl = URL.createObjectURL(blob);
+console.log(objectUrl);
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
 
     $field = $mode === 'structure' ? 'file' : 'image';
     $extra = $mode === 'sam3' ? " $curlContinuation\n  -F prompt_type=auto $curlContinuation\n  -F output_format=metadata" : '';
@@ -711,11 +777,29 @@ $authHeaderExample = 'Authorization: Bearer <TOKEN>';
 
 hub_admin_header(__('API 測試場'), $user);
 ?>
+<style>
+.birefnet-preview {
+    display: grid;
+    min-height: 18rem;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--border, #cbd5e1);
+    background-color: #fff;
+    background-image: conic-gradient(#e5e7eb 25%, #fff 0 50%, #e5e7eb 0 75%, #fff 0);
+    background-size: 24px 24px;
+}
+.birefnet-preview img {
+    display: block;
+    max-width: 100%;
+    max-height: 70vh;
+    object-fit: contain;
+}
+</style>
 <section class="panel">
     <h1><?= hub_h(__('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(__('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(__('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(__('需要 Bearer Token')) ?></strong>。<?= hub_h(__('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(__('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code></p>
+    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=background_remove</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -828,6 +912,36 @@ hub_admin_header(__('API 測試場'), $user);
                 <label>seed</label>
                 <input name="seed" type="number" value="42">
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實推論')) ?></label>
+            <?php elseif ($selectedMode === 'background_remove'): ?>
+                <?php
+                $birefnetOutput = in_array((string)($_POST['output'] ?? ''), ['cutout', 'mask', 'composite'], true) ? (string)$_POST['output'] : 'cutout';
+                $birefnetBackground = in_array((string)($_POST['background'] ?? ''), ['transparent', 'white', 'color', 'image'], true) ? (string)$_POST['background'] : 'transparent';
+                $birefnetColor = preg_match('/^#[0-9a-fA-F]{6}$/', (string)($_POST['background_color'] ?? '')) ? (string)$_POST['background_color'] : '#ffffff';
+                ?>
+                <label><?= hub_h(__('來源圖片')) ?></label>
+                <input name="image" type="file" accept="image/jpeg,image/png,image/webp" required>
+                <label><?= hub_h(__('輸出')) ?> output</label>
+                <select name="output">
+                    <option value="cutout" <?= $birefnetOutput === 'cutout' ? 'selected' : '' ?>>cutout</option>
+                    <option value="mask" <?= $birefnetOutput === 'mask' ? 'selected' : '' ?>>mask</option>
+                    <option value="composite" <?= $birefnetOutput === 'composite' ? 'selected' : '' ?>>composite</option>
+                </select>
+                <label><?= hub_h(__('背景')) ?> background</label>
+                <select name="background">
+                    <option value="transparent" <?= $birefnetBackground === 'transparent' ? 'selected' : '' ?>>transparent</option>
+                    <option value="white" <?= $birefnetBackground === 'white' ? 'selected' : '' ?>>white</option>
+                    <option value="color" <?= $birefnetBackground === 'color' ? 'selected' : '' ?>>color</option>
+                    <option value="image" <?= $birefnetBackground === 'image' ? 'selected' : '' ?>>image</option>
+                </select>
+                <label><?= hub_h(__('背景色')) ?> background_color</label>
+                <input name="background_color" type="color" value="<?= hub_h($birefnetColor) ?>">
+                <label><?= hub_h(__('背景圖片')) ?> background_image</label>
+                <input name="background_image" type="file" accept="image/jpeg,image/png,image/webp">
+                <label><?= hub_h(__('邊緣羽化')) ?> feather_px</label>
+                <input name="feather_px" type="number" min="0" max="20" step="0.5" value="<?= hub_h((string)($_POST['feather_px'] ?? '0')) ?>">
+                <label><?= hub_h(__('邊緣收縮／膨脹')) ?> edge_offset_px</label>
+                <input name="edge_offset_px" type="number" min="-20" max="20" step="1" value="<?= hub_h((string)($_POST['edge_offset_px'] ?? '0')) ?>">
+                <label><input name="defringe" type="checkbox" value="1" <?= ($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST' || !empty($_POST['defringe']) ? 'checked' : '' ?>> <?= hub_h(__('移除邊緣雜色')) ?></label>
             <?php elseif (in_array($selectedMode, ['ocr', 'yolo'], true)): ?>
                 <label><?= hub_h(__('圖片')) ?></label>
                 <input name="image" type="file" accept="image/*">
@@ -993,6 +1107,25 @@ hub_admin_header(__('API 測試場'), $user);
                 <div class="hub-meta-value"><code><?= hub_h((string)$result['error']) ?></code> <?= hub_h((string)($result['message'] ?? '')) ?></div>
             <?php endif; ?>
         </div>
+        <?php if ($selectedMode === 'background_remove' && (string)($result['preview_data_uri'] ?? '') !== ''): ?>
+            <?php $birefnetMetadata = is_array($result['metadata'] ?? null) ? $result['metadata'] : []; ?>
+            <div class="birefnet-preview">
+                <img id="birefnet-preview-image" src="<?= hub_h((string)$result['preview_data_uri']) ?>" alt="<?= hub_h(__('去背輸出預覽')) ?>">
+            </div>
+            <div class="hub-actions">
+                <a id="birefnet-download" class="button" href="#" download="background-removed.png"><?= hub_h(__('下載 PNG')) ?></a>
+            </div>
+            <div class="hub-meta">
+                <div class="hub-meta-label">X-3waAIHub-Model</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($birefnetMetadata['model'] ?? '-')) ?></code></div>
+                <div class="hub-meta-label">device</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($birefnetMetadata['device'] ?? '-')) ?></code></div>
+                <div class="hub-meta-label">size</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($birefnetMetadata['width'] ?? '-')) ?> x <?= hub_h((string)($birefnetMetadata['height'] ?? '-')) ?></code></div>
+                <div class="hub-meta-label">inference elapsed_ms</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($birefnetMetadata['elapsed_ms'] ?? '-')) ?></code></div>
+            </div>
+        <?php endif; ?>
         <?php if ($selectedMode === 'tts' && is_array($result['results'] ?? null)): ?>
             <?php foreach ($result['results'] as $ttsMode => $ttsResult): ?>
                 <div class="hub-card">
@@ -1038,6 +1171,9 @@ hub_admin_header(__('API 測試場'), $user);
     <p id="playground-copy-status" class="muted"></p>
 </section>
 <script>
+const birefnetPreview = document.getElementById('birefnet-preview-image');
+const birefnetDownload = document.getElementById('birefnet-download');
+if (birefnetPreview && birefnetDownload) birefnetDownload.href = birefnetPreview.src;
 document.querySelectorAll('[data-token-toggle]').forEach((button) => {
     button.addEventListener('click', () => {
         const input = document.getElementById(button.dataset.target || '');

@@ -361,7 +361,78 @@ function hub_list_customer_usage(PDO $db, int $userId): array
 
 function hub_playground_supported_modes(): array
 {
-    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'tts', 'chat', 'photo', 'audio'];
+    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'tts', 'chat', 'photo', 'audio', 'background_remove'];
+}
+
+function hub_playground_parse_response(int $status, string $rawHeaders, string $contentType, string $body, int $elapsedMs): array
+{
+    $allowedHeaders = hub_proxy_allowed_response_headers($rawHeaders, $contentType);
+    $headers = [];
+    foreach ($allowedHeaders as $header) {
+        [$name, $value] = array_pad(explode(':', $header, 2), 2, '');
+        $headers[strtolower(trim($name))] = trim($value);
+    }
+    $requestId = '';
+    if (preg_match_all('/^X-3waAIHub-Request-Id:\s*([A-Za-z0-9_-]{1,128})\s*$/mi', $rawHeaders, $matches) > 0) {
+        $requestIds = $matches[1];
+        $requestId = (string)end($requestIds);
+    }
+    $responseType = strtolower((string)($headers['content-type'] ?? ''));
+    $httpOk = $status >= 200 && $status < 400;
+    $binaryPng = $httpOk && $responseType === 'image/png' && str_starts_with($body, "\x89PNG\r\n\x1a\n");
+    if ($binaryPng) {
+        $metadata = [
+            'model' => (string)($headers['x-3waaihub-model'] ?? ''),
+            'device' => (string)($headers['x-3waaihub-device'] ?? ''),
+            'elapsed_ms' => (int)($headers['x-3waaihub-elapsed-ms'] ?? 0),
+            'width' => (int)($headers['x-3waaihub-width'] ?? 0),
+            'height' => (int)($headers['x-3waaihub-height'] ?? 0),
+        ];
+
+        return [
+            'ok' => true,
+            'status' => $status,
+            'elapsed_ms' => $elapsedMs,
+            'request_id' => $requestId,
+            'error' => '',
+            'message' => '',
+            'body' => '',
+            'content_type' => 'image/png',
+            'response_headers' => $headers,
+            'metadata' => $metadata,
+            'preview_data_uri' => 'data:image/png;base64,' . base64_encode($body),
+            'pretty_body' => json_encode([
+                'ok' => true,
+                'content_type' => 'image/png',
+                'bytes' => strlen($body),
+                'metadata' => $metadata,
+            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ];
+    }
+
+    $payload = json_decode($body, true);
+    $gatewayError = is_array($payload) ? (string)($payload['error'] ?? $payload['error_code'] ?? '') : '';
+    if ($requestId === '' && is_array($payload) && is_string($payload['request_id'] ?? null)) {
+        $requestId = $payload['request_id'];
+    }
+    $ok = $httpOk && is_array($payload);
+
+    return [
+        'ok' => $ok,
+        'status' => $status,
+        'elapsed_ms' => $elapsedMs,
+        'request_id' => $requestId,
+        'error' => $ok ? '' : ($gatewayError ?: 'request_failed'),
+        'message' => $ok ? '' : (is_array($payload) ? (string)($payload['message'] ?? '') : ''),
+        'body' => $body,
+        'content_type' => $responseType,
+        'response_headers' => $headers,
+        'metadata' => [],
+        'preview_data_uri' => '',
+        'pretty_body' => is_array($payload)
+            ? json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)
+            : $body,
+    ];
 }
 
 function hub_playground_service_options(PDO $db, ?array $user = null): array

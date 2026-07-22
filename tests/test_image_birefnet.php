@@ -203,3 +203,51 @@ hub_test('BiRefNet binary gateway preserves PNG bytes metadata request id and ac
     hub_test_assert((int)$log['response_bytes'] === strlen($png), 'BiRefNet PNG output byte accounting mismatch');
     hub_test_assert((int)$log['ok'] === 1 && $log['error_code'] === null, 'BiRefNet PNG success log mismatch');
 });
+
+hub_test('BiRefNet playground parses PNG metadata without exposing binary body', function (): void {
+    hub_test_assert(in_array('background_remove', hub_playground_supported_modes(), true), 'BiRefNet mode missing from playground allowlist');
+    $png = "\x89PNG\r\n\x1a\n" . random_bytes(32);
+    $headers = "HTTP/1.1 200 OK\r\n"
+        . "Content-Type: image/png\r\n"
+        . "X-3waAIHub-Request-Id: req_birefnet_playground\r\n"
+        . "X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision\r\n"
+        . "X-3waAIHub-Device: cuda\r\n"
+        . "X-3waAIHub-Elapsed-Ms: 12\r\n"
+        . "X-3waAIHub-Width: 1280\r\n"
+        . "X-3waAIHub-Height: 720\r\n\r\n";
+    $result = hub_playground_parse_response(200, $headers, 'image/png', $png, 14);
+    hub_test_assert(($result['ok'] ?? false) === true, 'BiRefNet playground PNG parse failed');
+    hub_test_assert(($result['body'] ?? null) === '', 'BiRefNet playground must not retain raw PNG as response text');
+    hub_test_assert(str_starts_with((string)($result['preview_data_uri'] ?? ''), 'data:image/png;base64,'), 'BiRefNet playground preview data URI missing');
+    hub_test_assert(base64_decode(substr((string)$result['preview_data_uri'], strlen('data:image/png;base64,')), true) === $png, 'BiRefNet playground preview bytes changed');
+    hub_test_assert(($result['metadata'] ?? []) === [
+        'model' => 'ZhengPeng7/BiRefNet@revision',
+        'device' => 'cuda',
+        'elapsed_ms' => 12,
+        'width' => 1280,
+        'height' => 720,
+    ], 'BiRefNet playground metadata mismatch');
+    hub_test_assert(!str_contains((string)$result['pretty_body'], "\x89PNG"), 'BiRefNet playground pretty body contains PNG bytes');
+});
+
+hub_test('BiRefNet playground exposes only the approved single-image controls and preview', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    foreach ([
+        "'background_remove' => ['label' => 'BiRefNet 去背'",
+        'name="image" type="file"',
+        'name="background_image" type="file"',
+        'name="output"',
+        'name="background"',
+        'name="feather_px" type="number"',
+        'name="edge_offset_px" type="number"',
+        'name="defringe" type="checkbox"',
+        'name="background_color" type="color"',
+        'preview_data_uri',
+        'download="background-removed.png"',
+        'X-3waAIHub-Model',
+        'await res.blob()',
+    ] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'BiRefNet playground UI missing ' . $needle);
+    }
+    hub_test_assert(!str_contains($source, "'background_remove' => ['label' => 'BiRefNet 去背', 'method' => 'POST', 'kind' => 'json']"), 'BiRefNet playground must not use JSON response handling');
+});
