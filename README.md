@@ -58,6 +58,16 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 完整定位請見 `docs/service_platform_vision_v0.1.md`。Runtime portability 護欄請見 `docs/runtime_portability_guardrails.md`。
 
+## 近期 TODO
+
+優先順序先保守維持：
+
+1. Runtime worker 營運穩定性：完成實際 cancel / timeout 停止流程、retry policy、concurrency limit 與 GPU / CPU resource lock。
+2. YOLO serving 驗收補強：以 NatureWeb 真實 `model_ref` 驗 CPU / GPU predict、補 read-only slot list；`replace=true` 先列後續，不擋 MVP。
+3. SAM3 實務輸出：保留 `points` / `guidance_mask` / `output_format=png` contract，後續再補 mask overlay viewer。
+4. Windows control plane：維持 Core preview；Linux Docker / GPU Pack 仍走 Linux runtime 或未來 Remote Agent。
+5. Resource Profile：External Database Profile、Controlled Volume Binding、Generic Service Publishing 仍列規劃中。
+
 ## 安裝
 
 ```bash

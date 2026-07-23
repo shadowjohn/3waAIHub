@@ -3138,3 +3138,13 @@ Implemented:
 Deferred:
 
 - Mask overlay viewer.
+
+## README TODO Refresh
+
+Updated README with the current near-term TODO priorities:
+
+- Runtime worker reliability.
+- YOLO serving runtime acceptance and slot visibility.
+- SAM3 practical mask workflow follow-up.
+- Windows control plane boundary.
+- Future resource profiles.
