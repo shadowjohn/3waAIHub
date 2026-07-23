@@ -867,6 +867,7 @@ hub_admin_header(__('API 測試場'), $user);
         <h2><?= hub_h(__('請求')) ?></h2>
         <form method="post" enctype="multipart/form-data">
             <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
+            <input type="hidden" name="action" value="execute">
             <input type="hidden" name="mode" value="<?= hub_h($selectedMode) ?>">
             <label>Bearer Token</label>
             <input id="bearer-token-input" name="bearer_token" type="password" placeholder="<TOKEN>" autocomplete="off">

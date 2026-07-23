@@ -22,6 +22,7 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     }
     hub_test_assert(str_contains($page, 'Content-Type: application/json'), 'translate example must include JSON content type');
     hub_test_assert(str_contains($page, 'multipart/form-data'), 'image examples must mention multipart/form-data');
+    hub_test_assert(str_contains($page, 'name="action" value="execute"'), 'playground request form must dispatch execution');
     hub_test_assert(str_contains($page, 'Authorization: Bearer <TOKEN>'), 'examples must use token placeholder');
     hub_test_assert(!str_contains($page, '3wa_live_'), 'playground must not embed real token');
 
