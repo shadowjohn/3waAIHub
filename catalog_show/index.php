@@ -83,19 +83,32 @@ hub_catalog_show_header('3waAIHub 火力展示', $user);
                             <label>圖片</label>
                             <input name="image" type="file" accept="image/*">
                         <?php endif; ?>
+                        <?php if ($item['kind'] === 'audio'): ?>
+                            <label>音訊檔</label>
+                            <input name="audio" type="file" accept="audio/wav,.wav">
+                        <?php endif; ?>
                         <?php if ($item['kind'] === 'document'): ?>
                             <label>PDF</label>
                             <input name="file" type="file" accept="application/pdf">
                         <?php endif; ?>
-                        <?php if (in_array($selected, ['chat', 'photo', 'sam3'], true)): ?>
+                        <?php if (in_array($selected, ['chat', 'photo', 'sam3', 'audio'], true)): ?>
                             <label>提示文字</label>
-                            <textarea name="text" rows="4"><?= hub_h($selected === 'sam3' ? 'mammal/insect/plant' : ($selected === 'photo' ? '這張圖裡有什麼？' : '請用正體中文介紹 3waAIHub。')) ?></textarea>
+                            <textarea name="text" rows="4"><?= hub_h($selected === 'sam3' ? 'mammal/insect/plant' : ($selected === 'photo' ? '這張圖裡有什麼？' : ($selected === 'audio' ? '這段錄音的重點是什麼？' : '請用正體中文介紹 3waAIHub。'))) ?></textarea>
                         <?php endif; ?>
                         <?php if ($selected === 'photo'): ?>
                             <label>圖片 ID image_id（已上傳過可直接填）</label>
                             <input name="image_id" placeholder="img_...">
                             <label>最大輸出 token 數 max_tokens</label>
                             <input name="max_tokens" type="number" min="32" max="2048" value="256">
+                        <?php endif; ?>
+                        <?php if ($selected === 'audio'): ?>
+                            <label>音訊 ID audio_id（已上傳過可直接填）</label>
+                            <input name="audio_id" placeholder="aud_...">
+                            <label>操作 operation</label>
+                            <select name="operation"><option value="understand">understand</option><option value="summarize">summarize</option><option value="transcribe">transcribe</option></select>
+                            <label>最大輸出 token 數 max_tokens</label>
+                            <input name="max_tokens" type="number" min="32" max="2048" value="512">
+                            <p class="muted">第一次上傳後會自動帶入 <code>audio_id</code>，下一次追問可不必重傳檔案。</p>
                         <?php endif; ?>
                         <?php if ($selected === 'chat'): ?>
                             <label>最大輸出 token 數 max_tokens</label>

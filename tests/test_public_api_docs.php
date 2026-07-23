@@ -83,6 +83,8 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
         str_contains($sam3Curl, "-F 'points_json={\"points\":[[320,240]],\"labels\":[1]}'"),
         'SAM3 curl must preserve exact points_json JSON inside a single-quoted argument'
     );
+    hub_test_assert(str_contains((string)$sam3['examples']['curl'], "output_format=png"), 'SAM3 public docs must show png output format');
+    hub_test_assert(str_contains((string)$sam3['examples']['curl'], "guidance_mask=@sample.png"), 'SAM3 public docs must show guidance_mask upload');
     if (hub_platform_id() === 'windows') {
         hub_test_assert(str_starts_with($sam3Curl, 'curl.exe -X POST'), 'Windows SAM3 curl must use curl.exe');
         hub_test_assert(str_contains($sam3Curl, " `\n"), 'Windows SAM3 curl must use backtick continuations');

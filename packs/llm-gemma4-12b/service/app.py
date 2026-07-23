@@ -158,18 +158,32 @@ def validate_wav_bytes(data: bytes) -> dict[str, Any]:
 
 def audio_prompt(operation: str, text: str) -> str:
     if operation == "transcribe":
-        return "請忠實轉錄這段音訊，只輸出逐字稿。無法辨識的片段以［聽不清楚］表示。"
+        return (
+            "Chinese voice. Transcribe exactly what the speaker said into Traditional Chinese. "
+            "Return transcript only. Do not repeat this instruction. Do not guess. "
+            "If most of the audio is unclear, return ［聽不清楚］."
+        )
     if operation == "summarize":
         return (
-            "請使用正體中文回答。請根據音訊輸出 JSON："
-            "{\"summary\":\"音訊摘要\",\"answer\":null,\"transcript\":null,\"tags\":[\"最多八個短標籤\"]}"
+            "Chinese voice. Listen to the audio and return only valid JSON in Traditional Chinese: "
+            "{\"summary\":\"音訊摘要\",\"answer\":null,\"transcript\":null,\"tags\":[\"最多八個短標籤\"]}. "
+            "Do not guess unclear speech. If unclear, set summary to 聽不清楚."
         )
     question = text.strip() or "這段音訊的重點是什麼？"
     return (
-        "請使用正體中文回答。請根據音訊與使用者問題輸出 JSON："
-        "{\"answer\":\"針對問題的完整回答\",\"summary\":\"一句摘要\",\"transcript\":null,\"tags\":[\"最多八個短標籤\"]}"
-        f"\n使用者問題：{question}"
+        "Chinese voice. Answer the user's question based only on the audio. "
+        "Return only valid JSON in Traditional Chinese: "
+        "{\"answer\":\"針對問題的完整回答\",\"summary\":\"一句摘要\",\"transcript\":null,\"tags\":[\"最多八個短標籤\"]}. "
+        "Do not guess unclear speech. If unclear, set answer to 聽不清楚. "
+        f"User question: {question}"
     )
+
+
+def audio_runtime_warnings(operation: str) -> list[str]:
+    warnings = ["gemma4_audio_experimental"]
+    if operation == "transcribe":
+        warnings.append("gemma4_audio_not_reliable_asr")
+    return warnings
 
 
 app = FastAPI(title="3waAIHub Gemma 4 Chat Adapter")
@@ -419,6 +433,7 @@ async def audio(
             "transcript": "mock transcription" if operation == "transcribe" else None,
             "summary": "Gemma 4 Audio mock summary" if operation == "summarize" else None,
             "tags": [],
+            "warnings": audio_runtime_warnings(operation),
             "audio": audio_meta,
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             "elapsed_ms": elapsed,
@@ -426,20 +441,26 @@ async def audio(
 
     payload = {
         "model": served_model(),
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": audio_prompt(operation, text)},
-                {
-                    "type": "input_audio",
-                    "input_audio": {
-                        "data": base64.b64encode(data).decode("ascii"),
-                        "format": "wav",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a precise audio analysis assistant. Follow the user instruction and analyze the audio.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": audio_prompt(operation, text)},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": base64.b64encode(data).decode("ascii"),
+                            "format": "wav",
+                        },
                     },
-                },
-            ],
-        }],
-        "temperature": 0.1,
+                ],
+            },
+        ],
+        "temperature": env_float("GEMMA4_AUDIO_TEMPERATURE", 0.0),
         "max_tokens": max_tokens,
         "stream": False,
     }
@@ -470,19 +491,25 @@ async def audio(
     transcript: str | None = None
     summary: str | None = None
     tags: list[str] = []
+    warnings = audio_runtime_warnings(operation)
     if operation == "transcribe":
         transcript = output_text
     else:
         parsed = parse_model_json(output_text)
         if parsed is None:
-            return error_response(502, "audio_failed", "Gemma 4 audio response was not valid JSON.")
-        answer = str(parsed.get("answer") or "").strip() or None
-        transcript_value = parsed.get("transcript")
-        summary_value = parsed.get("summary")
-        transcript = str(transcript_value).strip() if transcript_value is not None and str(transcript_value).strip() != "" else None
-        summary = str(summary_value).strip() if summary_value is not None and str(summary_value).strip() != "" else None
-        raw_tags = parsed.get("tags") if isinstance(parsed.get("tags"), list) else []
-        tags = [str(tag).strip() for tag in raw_tags if str(tag).strip()][:8]
+            warnings.append("audio_output_not_json")
+            if operation == "summarize":
+                summary = output_text
+            else:
+                answer = output_text
+        else:
+            answer = str(parsed.get("answer") or "").strip() or None
+            transcript_value = parsed.get("transcript")
+            summary_value = parsed.get("summary")
+            transcript = str(transcript_value).strip() if transcript_value is not None and str(transcript_value).strip() != "" else None
+            summary = str(summary_value).strip() if summary_value is not None and str(summary_value).strip() != "" else None
+            raw_tags = parsed.get("tags") if isinstance(parsed.get("tags"), list) else []
+            tags = [str(tag).strip() for tag in raw_tags if str(tag).strip()][:8]
 
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     elapsed = int((time.monotonic() - started) * 1000)
@@ -496,6 +523,7 @@ async def audio(
         "transcript": transcript,
         "summary": summary,
         "tags": tags,
+        "warnings": warnings,
         "audio": audio_meta,
         "usage": {
             "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),

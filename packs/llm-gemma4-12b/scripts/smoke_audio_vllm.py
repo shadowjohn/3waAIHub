@@ -61,19 +61,25 @@ def main() -> int:
 
     payload = {
         "model": args.model,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "請用正體中文簡短說明這段音訊內容。"},
-                {
-                    "type": "input_audio",
-                    "input_audio": {
-                        "data": base64.b64encode(audio_data).decode("ascii"),
-                        "format": "wav",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a precise audio analysis assistant. Follow the user instruction and analyze the audio.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Chinese voice. What did the speaker say? Answer briefly in Traditional Chinese."},
+                    {
+                        "type": "input_audio",
+                        "input_audio": {
+                            "data": base64.b64encode(audio_data).decode("ascii"),
+                            "format": "wav",
+                        },
                     },
-                },
-            ],
-        }],
+                ],
+            },
+        ],
         "max_tokens": 256,
         "temperature": 0.1,
         "stream": False,

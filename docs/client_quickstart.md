@@ -173,7 +173,7 @@ curl -X POST "<BASE_URL>?mode=photo" \
 
 ### `mode=audio_upload` + `mode=audio`
 
-Gemma4 audio input 適合短音訊理解、摘要或輔助轉錄；可直接送 WAV，也可先上傳一次取得 `audio_id` 後反覆追問。長音訊 ASR 請使用 Whisper ASR Pack。
+Gemma4 audio input 適合短音訊理解、摘要或輔助轉錄；可直接送 WAV，也可先上傳一次取得 `audio_id` 後反覆追問。Gemma4 Audio 是實驗性音訊理解，非正式 ASR；逐字稿或長音訊請使用 Whisper ASR Pack。
 
 ```bash
 curl -X POST "<BASE_URL>?mode=audio_upload" \
@@ -193,14 +193,15 @@ curl -X POST "<BASE_URL>?mode=audio" \
 - request contract: `POST multipart/form-data`, field `audio` or `audio_id`; optional `operation=understand|transcribe|summarize`, `text`, `max_tokens`, `real_inference`
 - audio limits: WAV only, 16kHz mono, <= 30 seconds, <= 16MB
 - audio asset TTL: 7 days
-- response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `operation`, `answer`, `transcript`, `summary`, `tags`, `audio`, `usage`, `elapsed_ms`
+- response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `operation`, `answer`, `transcript`, `summary`, `tags`, `warnings`, `audio`, `usage`, `elapsed_ms`
 - error contract: `file_required`, `payload_too_large`, `invalid_audio`, `unsupported_audio_format`, `audio_too_long`, `audio_not_found`, `model_not_ready`, `audio_failed`
 
 ### `mode=sam3`
 
-- request contract: `POST multipart/form-data`, field `image`, optional `prompt_type`, `points_json`, `text`, `output_format`, `real_inference`
+- request contract: `POST multipart/form-data`, field `image`, optional `guidance_mask`, `prompt_type`, `points_json`, `text`, `output_format`, `real_inference`; `points_json.labels` uses `1` for target selection and `0` for exclusion, with at least one positive label required. For `prompt_type=guidance_mask`, upload a same-size PNG where non-transparent pixels are positive guidance and transparent pixels are neutral.
 - response contract: JSON with `ok`, `mock`, `runtime_level`, `model`, `masks`, `prompt_type`, `elapsed_ms`; each mask includes `bbox`, `score`, `confidence`, `label_name`, and optional legacy `polygon` plus `polygons[].outer/holes`
-- error contract: `bad_request`, `model_not_present`, `invalid_prompt`, `inference_failed`, `inference_timeout`
+- binary response: `output_format=png` returns a same-size white/opaque foreground and transparent-background `image/png`; save it as `mask.png`.
+- error contract: `bad_request`, `model_not_present`, `invalid_prompt`, `invalid_guidance_mask`, `guidance_mask_size_mismatch`, `no_positive_guidance`, `inference_failed`, `inference_timeout`
 
 ### `mode=docparser`
 

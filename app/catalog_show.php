@@ -39,6 +39,13 @@ function hub_catalog_show_items(): array
             'kind' => 'photo',
             'sample' => '這張圖裡有什麼？',
         ],
+        'audio' => [
+            'title' => 'Gemma Audio',
+            'name' => '音訊理解',
+            'summary' => '先上傳短 WAV 取得 audio_id，再針對同一段音訊追問。',
+            'kind' => 'audio',
+            'sample' => '這段錄音的重點是什麼？',
+        ],
         'docparser' => [
             'title' => 'DocParser',
             'name' => '文件解析機',
@@ -144,6 +151,7 @@ function hub_catalog_show_session_token(PDO $db, array $user, string $mode): str
     $token = hub_create_api_token($db, $memberId, 'Catalog Show admin session token', null, null);
     $modes = array_keys(hub_catalog_show_items());
     $modes[] = 'photo_upload';
+    $modes[] = 'audio_upload';
     foreach (array_unique($modes) as $allowedMode) {
         $service = hub_get_service_by_mode($db, $allowedMode);
         hub_add_api_token_mode_permission($db, (int)$token['token_id'], $allowedMode, $service ? (int)$service['id'] : null);

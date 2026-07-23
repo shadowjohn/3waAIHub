@@ -49,6 +49,15 @@ hub_test('Gemma4 audio adapter exposes one-shot WAV endpoint contract', function
     ] as $needle) {
         hub_test_assert(str_contains($app, $needle), 'Gemma4 audio adapter missing ' . $needle);
     }
+    hub_test_assert(str_contains($app, '"role": "system"'), 'Gemma4 audio adapter must send system message.');
+    hub_test_assert(str_contains($app, 'precise audio analysis assistant'), 'Gemma4 audio adapter system prompt missing.');
+    hub_test_assert(str_contains($app, 'Chinese voice'), 'Gemma4 audio adapter must use English audio prompt hint.');
+    hub_test_assert(strpos($app, '{"type": "text", "text": audio_prompt') < strpos($app, '"type": "input_audio"'), 'Gemma4 audio adapter must send text prompt before audio.');
+
+    $smoke = (string)file_get_contents($root . '/scripts/smoke_audio_vllm.py');
+    hub_test_assert(str_contains($smoke, '"role": "system"'), 'Gemma4 audio smoke script must send system message.');
+    hub_test_assert(str_contains($smoke, 'Chinese voice. What did the speaker say?'), 'Gemma4 audio smoke script must use English audio prompt hint.');
+    hub_test_assert(strpos($smoke, 'Chinese voice. What did the speaker say?') < strpos($smoke, '"type": "input_audio"'), 'Gemma4 audio smoke script must send text prompt before audio.');
 });
 
 hub_test('Gemma4 audio test assets use private temporary storage', function (): void {
@@ -223,15 +232,32 @@ hub_test('Gemma4 audio upload helper and audio_id path are protected Gateway mod
     hub_test_assert(str_contains((string)$ask['body'], 'model_not_ready'), 'audio_id path must report model_not_ready when service is unavailable');
 });
 
+hub_test('Gemma4 audio modes are selectable on admin token permission page', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/api_token_permissions.php');
+
+    hub_test_assert(str_contains($source, 'hub_audio_modes()'), 'token permission page must load audio pseudo modes.');
+    hub_test_assert(str_contains($source, 'Audio Mode'), 'token permission page must render audio mode section.');
+    hub_test_assert(function_exists('hub_audio_modes'), 'audio mode label helper missing.');
+    hub_test_assert(array_keys(hub_audio_modes()) === ['audio_upload', 'audio'], 'audio mode helper must expose upload and ask modes.');
+});
+
+hub_test('Gemma4 audio modes are selectable on customer edit page', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/customer_edit.php');
+
+    hub_test_assert(str_contains($source, 'hub_audio_modes()'), 'customer edit page must load audio pseudo modes.');
+    hub_test_assert(str_contains($source, 'internal audio API'), 'customer edit page must render audio pseudo mode endpoint.');
+});
+
 hub_test('Gemma4 audio gateway proxy success response is normalized', function (): void {
     $response = hub_audio_normalize_proxy_response(hub_gateway_json(200, [
         'ok' => true,
         'operation' => 'transcribe',
         'transcript' => '測試音訊文字',
+        'warnings' => ['gemma4_audio_experimental', 'gemma4_audio_not_reliable_asr'],
     ]));
     $body = json_decode((string)$response['body'], true);
 
-    foreach (['ok', 'mock', 'runtime_level', 'model', 'operation', 'answer', 'transcript', 'summary', 'tags', 'audio', 'usage', 'elapsed_ms'] as $key) {
+    foreach (['ok', 'mock', 'runtime_level', 'model', 'operation', 'answer', 'transcript', 'summary', 'tags', 'warnings', 'audio', 'usage', 'elapsed_ms'] as $key) {
         hub_test_assert(array_key_exists($key, $body), 'audio success response missing ' . $key);
     }
     hub_test_assert($body['ok'] === true, 'audio ok must stay true.');
@@ -242,6 +268,7 @@ hub_test('Gemma4 audio gateway proxy success response is normalized', function (
     hub_test_assert($body['answer'] === '', 'audio answer must default empty.');
     hub_test_assert($body['summary'] === '', 'audio summary must default empty.');
     hub_test_assert($body['tags'] === [], 'audio tags must default empty array.');
+    hub_test_assert($body['warnings'] === ['gemma4_audio_experimental', 'gemma4_audio_not_reliable_asr'], 'audio warnings must be preserved.');
     hub_test_assert($body['usage'] === ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0], 'audio usage default mismatch.');
 });
 
@@ -262,7 +289,7 @@ hub_test('Gemma4 audio manifest playground docs and benchmark contract are decla
     foreach (['audio_path', 'host_path', 'container_path', 'audio_url'] as $field) {
         hub_test_assert(!in_array($field, $inputFields, true), 'audio contract leaks path field ' . $field);
     }
-    foreach (['ok', 'mock', 'runtime_level', 'model', 'operation', 'answer', 'transcript', 'summary', 'tags', 'audio', 'usage', 'elapsed_ms'] as $key) {
+    foreach (['ok', 'mock', 'runtime_level', 'model', 'operation', 'answer', 'transcript', 'summary', 'tags', 'warnings', 'audio', 'usage', 'elapsed_ms'] as $key) {
         hub_test_assert(in_array($key, $contract['output']['required_keys'] ?? [], true), 'audio contract output missing ' . $key);
     }
     foreach (['file_required', 'payload_too_large', 'invalid_audio', 'unsupported_audio_format', 'audio_too_long', 'audio_failed'] as $errorCode) {
@@ -278,7 +305,7 @@ hub_test('Gemma4 audio manifest playground docs and benchmark contract are decla
     }
 
     $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
-    foreach (["'audio' =>", 'operation', 'transcribe', 'summarize', 'mode=audio', 'mode=audio_upload', 'audio_id', 'audio/wav'] as $needle) {
+    foreach (["'audio' =>", 'operation', 'transcribe', 'summarize', 'mode=audio', 'mode=audio_upload', 'audio_id', 'audio/wav', '非正式 ASR'] as $needle) {
         hub_test_assert(str_contains($playground, $needle), 'audio playground missing ' . $needle);
     }
     foreach (['host_path', 'container_path', 'audio_url'] as $forbidden) {
@@ -287,7 +314,7 @@ hub_test('Gemma4 audio manifest playground docs and benchmark contract are decla
 
     $examples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
     $quickstart = (string)file_get_contents(HUB_ROOT . '/docs/client_quickstart.md');
-    foreach (['mode=audio_upload', 'mode=audio', 'audio=@sample.wav', 'audio_id', 'operation=understand', 'real_inference=1', '<TOKEN>'] as $needle) {
+    foreach (['mode=audio_upload', 'mode=audio', 'audio=@sample.wav', 'audio_id', 'operation=understand', 'real_inference=1', '<TOKEN>', '非正式 ASR'] as $needle) {
         hub_test_assert(str_contains($examples, $needle), 'audio API examples missing ' . $needle);
         hub_test_assert(str_contains($quickstart, $needle), 'audio client quickstart missing ' . $needle);
     }

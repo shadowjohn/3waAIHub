@@ -1,6 +1,14 @@
 <?php
 declare(strict_types=1);
 
+function hub_audio_modes(): array
+{
+    return [
+        'audio_upload' => 'Audio Upload',
+        'audio' => 'Audio Understanding',
+    ];
+}
+
 function hub_audio_generate_audio_id(): string
 {
     return 'aud_' . rtrim(strtr(base64_encode(random_bytes(18)), '+/', '-_'), '=');

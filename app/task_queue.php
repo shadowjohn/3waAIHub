@@ -1919,6 +1919,26 @@ function hub_pack_job_artifact_mime_types(mixed $values): array
     return array_keys($types);
 }
 
+function hub_pack_job_artifact_mime_allowed(string $mime, array $definition): bool
+{
+    $allowed = $definition['mime_types'] ?? [];
+    if (!is_array($allowed)) {
+        return false;
+    }
+    if (in_array($mime, $allowed, true)) {
+        return true;
+    }
+    if (
+        isset($definition['text'])
+        && in_array('text/plain', $allowed, true)
+        && in_array($mime, ['application/x-subrip', 'text/x-subrip', 'text/srt'], true)
+    ) {
+        return true;
+    }
+
+    return false;
+}
+
 function hub_pack_job_contract_artifacts(array $jobContract): array
 {
     $artifacts = $jobContract['artifacts'] ?? null;
@@ -2683,7 +2703,7 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
         hub_pack_job_validate_artifact_size($size, (int)$definition['max_bytes']);
         $sha256 = hub_pack_job_sha256_file($path, (int)$definition['max_bytes']);
         $mime = hub_pack_job_detect_mime($path);
-        if ($sha256 === null || !in_array($mime, $definition['mime_types'], true)) {
+        if ($sha256 === null || !hub_pack_job_artifact_mime_allowed($mime, $definition)) {
             hub_pack_job_output_contract_invalid('artifact_metadata_invalid');
         }
         hub_pack_job_validate_json_output($path, $definition, $size, $taskInput);

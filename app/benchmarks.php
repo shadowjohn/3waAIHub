@@ -357,7 +357,10 @@ function hub_benchmark_gemma4_audio_case(PDO $db, array $pack, array $case, arra
     if ($realInference) {
         $response = hub_benchmark_gemma4_audio_real_response($case, $service);
     } else {
-        $response = hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest'], $bodyJson + ['audio' => true]));
+        $response = hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest'], $bodyJson + [
+            'audio' => true,
+            'warnings' => ['gemma4_audio_experimental'],
+        ]));
     }
 
     $payload = json_decode((string)$response['body'], true);
@@ -545,6 +548,7 @@ function hub_benchmark_mock_payload(array $manifest, array $input = []): array
                 'transcript' => '今天下午兩點，請檢查 NSR 的 RC 閥。',
                 'summary' => '檢查 NSR RC 閥的提醒。',
                 'tags' => ['mock', 'audio'],
+                'warnings' => ['gemma4_audio_experimental'],
                 'audio' => ['duration_ms' => 6000, 'sample_rate' => 16000, 'channels' => 1],
                 'usage' => ['prompt_tokens' => 0, 'completion_tokens' => 0, 'total_tokens' => 0],
                 'elapsed_ms' => 0,

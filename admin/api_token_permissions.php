@@ -22,6 +22,7 @@ $enabledModes = array_column(hub_list_api_token_permissions($db, (int)$token['id
 $services = hub_list_services($db);
 $taskModes = hub_task_api_modes();
 $photoModes = hub_photo_modes();
+$audioModes = hub_audio_modes();
 
 hub_admin_header('Token Mode 權限', $user);
 ?>
@@ -41,6 +42,10 @@ hub_admin_header('Token Mode 權限', $user);
         <?php endforeach; ?>
         <h2>Photo Vision Mode（圖片理解）</h2>
         <?php foreach ($photoModes as $mode => $label): ?>
+            <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
+        <?php endforeach; ?>
+        <h2>Audio Mode（音訊理解）</h2>
+        <?php foreach ($audioModes as $mode => $label): ?>
             <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
         <?php endforeach; ?>
         <p><button class="primary" type="submit">儲存</button> <a class="button" href="api_tokens.php?member_id=<?= (int)$token['member_id'] ?>">返回 Token 列表</a></p>

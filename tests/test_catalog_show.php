@@ -18,7 +18,7 @@ hub_test('PhaseShow-1 catalog show contract files and labels exist', function ()
         hub_test_assert(str_contains($index, $needle), 'catalog_show index missing ' . $needle);
     }
     $helpers = (string)file_get_contents(HUB_ROOT . '/app/catalog_show.php');
-    foreach (['OCR', 'YOLO', 'SAM3', 'Gemma Chat', 'Photo Vision', 'DocParser'] as $needle) {
+    foreach (['OCR', 'YOLO', 'SAM3', 'Gemma Chat', 'Photo Vision', 'Gemma Audio', 'DocParser'] as $needle) {
         hub_test_assert(str_contains($helpers, $needle), 'catalog_show items missing ' . $needle);
     }
     hub_test_assert(!str_contains($index, '3wa_live_'), 'catalog_show must not embed real token');
@@ -62,8 +62,15 @@ hub_test('PhaseShow-1 catalog show filters user modes by owned token permissions
 
 hub_test('PhaseShow-1 catalog show proxy keeps gateway auth boundary', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/catalog_show/api_proxy.php');
-    foreach (['hub_require_login', 'hub_catalog_show_session_token', 'Authorization: Bearer', 'hub_check_csrf'] as $needle) {
+    foreach (['hub_require_login', 'hub_catalog_show_session_token', 'Authorization: Bearer', 'hub_check_csrf', 'audio_upload', 'audio_id_required'] as $needle) {
         hub_test_assert(str_contains($source, $needle), 'catalog_show proxy missing ' . $needle);
     }
     hub_test_assert(!str_contains($source, 'AIHUB_REQUIRE_API_TOKEN'), 'catalog_show proxy must not disable gateway token auth');
+
+    $index = (string)file_get_contents(HUB_ROOT . '/catalog_show/index.php');
+    foreach (['name="audio"', 'name="audio_id"', 'operation'] as $needle) {
+        hub_test_assert(str_contains($index, $needle), 'catalog_show audio form missing ' . $needle);
+    }
+    $js = (string)file_get_contents(HUB_ROOT . '/catalog_show/assets/catalog.js');
+    hub_test_assert(str_contains($js, "['audio_id', 'image_id']"), 'catalog_show JS must preserve reusable asset ids.');
 });

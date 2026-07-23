@@ -228,7 +228,7 @@ No session is stored. Send prior context in `text` when needed.
 
 ## Gemma 4 Audio Input
 
-Status: PhaseL-1E audio asset reuse. `mode=audio` 可直接送短 WAV，也可先 `audio_upload` 取得 `audio_id` 後反覆追問；不建立 session，也不取代 Whisper ASR。
+Status: PhaseL-1E audio asset reuse. `mode=audio` 可直接送短 WAV，也可先 `audio_upload` 取得 `audio_id` 後反覆追問；不建立 session。Gemma4 Audio 是實驗性音訊理解，非正式 ASR；逐字稿或長音訊請使用 Whisper ASR Pack。
 
 ```bash
 curl -X POST "<BASE_URL>?mode=audio_upload" \
@@ -253,7 +253,7 @@ Contract:
 - Limits: WAV only, 16kHz mono, <= 30 seconds, <= 16MB
 - Asset TTL: 7 days
 - Upload output keys: `ok`, `audio_id`, `mime`, `size`, `duration_ms`, `sample_rate`, `channels`, `expires_at`
-- Required output keys: `ok`, `mock`, `runtime_level`, `model`, `operation`, `answer`, `transcript`, `summary`, `tags`, `audio`, `usage`, `elapsed_ms`
+- Required output keys: `ok`, `mock`, `runtime_level`, `model`, `operation`, `answer`, `transcript`, `summary`, `tags`, `warnings`, `audio`, `usage`, `elapsed_ms`
 - Errors: `file_required`, `payload_too_large`, `invalid_audio`, `unsupported_audio_format`, `audio_too_long`, `audio_not_found`, `model_not_ready`, `audio_failed`
 
 Benchmark:
@@ -396,7 +396,7 @@ php scripts/benchmark.php --service=bioclip-main --case=bioclip_real_image
 
 ## POST SAM3
 
-Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。mask metadata 會回 `bbox`、`score`、`confidence`、`label_name`；`output_format=metadata|polygon|rle|both` 可選 legacy 多 contour `polygon`、前端友善 `polygons[].outer/holes` 或 raw uncompressed row-major RLE。
+Status: L5 benchmark ready. 預設仍回 mock JSON；表單加 `real_inference=1` 時執行單張圖片 real segmentation smoke。mask metadata 會回 `bbox`、`score`、`confidence`、`label_name`；`output_format=metadata|polygon|rle|both|png` 可選 legacy 多 contour `polygon`、前端友善 `polygons[].outer/holes`、raw uncompressed row-major RLE，或直接回白色不透明／透明背景的 `image/png`。
 
 ```bash
 curl -X POST "<BASE_URL>?mode=sam3" \
@@ -424,6 +424,36 @@ curl -X POST "<BASE_URL>?mode=sam3" \
   -F 'points_json={"points":[[320,240]],"labels":[1]}' \
   -F "real_inference=1" \
   -F "output_format=both"
+```
+
+Points labels: `1` = 選取目標，`0` = 排除目標；至少需要一個 `1`，可傳多個正負點。
+
+PNG mask output:
+
+```bash
+curl -X POST "<BASE_URL>?mode=sam3" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
+  -F "prompt_type=points" \
+  -F 'points_json={"points":[[320,240]],"labels":[1]}' \
+  -F "real_inference=1" \
+  -F "output_format=png" \
+  -o mask.png
+```
+
+Guidance mask prompt:
+
+`guidance_mask` 必須是與原圖同尺寸的 PNG；非透明像素代表要選取的目標，透明像素為中立，不代表負提示。
+
+```bash
+curl -X POST "<BASE_URL>?mode=sam3" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@packs/sam3/demo/camera_cat.png" \
+  -F "guidance_mask=@guidance.png" \
+  -F "prompt_type=guidance_mask" \
+  -F "real_inference=1" \
+  -F "output_format=png" \
+  -o mask.png
 ```
 
 Semantic text prompt:

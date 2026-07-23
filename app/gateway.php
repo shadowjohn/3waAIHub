@@ -1047,6 +1047,7 @@ function hub_audio_normalize_proxy_response(array $response): array
     $payload['transcript'] = (string)($payload['transcript'] ?? '');
     $payload['summary'] = (string)($payload['summary'] ?? '');
     $payload['tags'] = is_array($payload['tags'] ?? null) ? array_values($payload['tags']) : [];
+    $payload['warnings'] = is_array($payload['warnings'] ?? null) ? array_values($payload['warnings']) : [];
     $payload['audio'] = is_array($payload['audio'] ?? null) ? $payload['audio'] : [];
     $payload['usage'] = [
         'prompt_tokens' => (int)($usage['prompt_tokens'] ?? 0),

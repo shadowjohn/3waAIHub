@@ -10,7 +10,7 @@ from typing import Any
 
 import numpy as np
 from fastapi import FastAPI, File, Form, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
 
 from geometry import polygon_from_mask, polygons_from_mask, rle_from_mask
@@ -22,7 +22,8 @@ _SAM_MODEL: Any | None = None
 _SAM_CHECKPOINT = ""
 _SAM_SEMANTIC_PREDICTOR: Any | None = None
 _SAM_SEMANTIC_CHECKPOINT = ""
-OUTPUT_FORMATS = {"metadata", "polygon", "rle", "both"}
+OUTPUT_FORMATS = {"metadata", "polygon", "rle", "both", "png"}
+PROMPT_TYPES = {"auto", "points", "boxes", "text", "guidance_mask"}
 
 
 class Sam3Error(Exception):
@@ -358,6 +359,33 @@ def image_info(data: bytes) -> tuple[int, int]:
         raise Sam3Error("bad_image", "Uploaded file is not a readable image.", 400) from exc
 
 
+def parse_guidance_mask(data: bytes, width: int, height: int) -> np.ndarray:
+    if not data:
+        raise Sam3Error("invalid_guidance_mask", "guidance_mask PNG is required for prompt_type=guidance_mask.", 400)
+    try:
+        with Image.open(BytesIO(data)) as image:
+            if image.format != "PNG":
+                raise Sam3Error("invalid_guidance_mask", "guidance_mask must be a PNG image.", 400)
+            if image.size != (width, height):
+                raise Sam3Error("guidance_mask_size_mismatch", "guidance_mask must match the input image dimensions.", 400)
+            alpha = np.asarray(image.convert("RGBA").getchannel("A"))
+    except Sam3Error:
+        raise
+    except (UnidentifiedImageError, OSError) as exc:
+        raise Sam3Error("invalid_guidance_mask", "guidance_mask must be a readable PNG image.", 400) from exc
+
+    # transparent pixels are neutral; every non-transparent pixel is positive guidance.
+    bitmap = alpha > 0
+    if not bool(bitmap.any()):
+        raise Sam3Error("no_positive_guidance", "guidance_mask must contain at least one non-transparent pixel.", 400)
+    return bitmap
+
+
+def guidance_bbox(bitmap: np.ndarray) -> list[int]:
+    ys, xs = np.where(bitmap)
+    return [int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max())]
+
+
 def parse_json(value: str, fallback: Any) -> Any:
     if not value.strip():
         return fallback
@@ -370,7 +398,7 @@ def parse_json(value: str, fallback: Any) -> Any:
 def normalize_output_format(value: str) -> str:
     output_format = (value or "metadata").strip().lower()
     if output_format not in OUTPUT_FORMATS:
-        raise Sam3Error("invalid_output_format", "output_format must be metadata, polygon, rle, or both.", 400)
+        raise Sam3Error("invalid_output_format", "output_format must be metadata, polygon, rle, both, or png.", 400)
     return output_format
 
 
@@ -395,13 +423,19 @@ def parse_points_prompt(value: str) -> tuple[list[list[float]], list[int] | None
             raise Sam3Error("invalid_prompt", "points_json points must be numeric.", 400) from exc
 
     if labels is None:
-        return normalized, None
+        labels = [1] * len(normalized)
+        return normalized, labels
     if not isinstance(labels, list) or len(labels) != len(normalized):
         raise Sam3Error("invalid_prompt", "points_json labels length must match points.", 400)
     try:
-        return normalized, [int(label) for label in labels]
+        normalized_labels = [int(label) for label in labels]
     except (TypeError, ValueError) as exc:
         raise Sam3Error("invalid_prompt", "points_json labels must be integers.", 400) from exc
+    if any(label not in {0, 1} for label in normalized_labels):
+        raise Sam3Error("invalid_prompt", "points_json labels must be 0 or 1; 1 selects target, 0 excludes target.", 400)
+    if 1 not in normalized_labels:
+        raise Sam3Error("invalid_prompt", "points_json labels must include at least one positive label (1).", 400)
+    return normalized, normalized_labels
 
 
 def parse_text_prompt(value: str) -> list[str]:
@@ -501,9 +535,39 @@ def mask_items(results: Any, output_format: str, label_hints: list[str] | None =
     return items
 
 
-def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points_json: str, boxes_json: str, text_prompt: str, output_format: str) -> dict[str, Any]:
-    if prompt_type not in {"auto", "points", "boxes", "text"}:
-        raise Sam3Error("invalid_prompt", "prompt_type must be auto, points, boxes, or text.", 400)
+def mask_png(bitmap: np.ndarray, width: int, height: int) -> bytes:
+    image = Image.fromarray((bitmap.astype("uint8") * 255), mode="L")
+    if image.size != (width, height):
+        image = image.resize((width, height), Image.Resampling.NEAREST)
+    alpha = image
+    rgba = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+    rgba.putalpha(alpha)
+    buffer = BytesIO()
+    rgba.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def merged_mask_png(results: Any, width: int, height: int) -> bytes:
+    merged: np.ndarray | None = None
+    for result in results or []:
+        masks = getattr(result, "masks", None)
+        data = getattr(masks, "data", None)
+        if data is None:
+            continue
+        array = to_numpy(data)
+        if array.ndim == 2:
+            array = array[None, :, :]
+        for mask in array:
+            bitmap = np.asarray(mask) > 0.5
+            merged = bitmap if merged is None else np.logical_or(merged, bitmap)
+    if merged is None:
+        merged = np.zeros((height, width), dtype=bool)
+    return mask_png(merged, width, height)
+
+
+def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points_json: str, boxes_json: str, text_prompt: str, output_format: str, guidance_bitmap: np.ndarray | None = None) -> dict[str, Any]:
+    if prompt_type not in PROMPT_TYPES:
+        raise Sam3Error("invalid_prompt", "prompt_type must be auto, points, boxes, text, or guidance_mask.", 400)
 
     checkpoint = current_checkpoint()
     kwargs: dict[str, Any] = {"source": str(image_path), "device": effective_device(), "verbose": False}
@@ -522,6 +586,11 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
     elif prompt_type == "text":
         model = sam_semantic_predictor(checkpoint)
         kwargs["text"] = parse_text_prompt(text_prompt)
+    elif prompt_type == "guidance_mask":
+        if guidance_bitmap is None:
+            raise Sam3Error("invalid_guidance_mask", "guidance_mask PNG is required for prompt_type=guidance_mask.", 400)
+        model = sam_model(checkpoint)
+        kwargs["bboxes"] = [guidance_bbox(guidance_bitmap)]
     else:
         model = sam_model(checkpoint)
 
@@ -543,6 +612,15 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
         raise Sam3Error("inference_failed", message, 502) from exc
 
     text_prompts = kwargs.get("text", [])
+    if output_format == "png":
+        return {
+            "ok": True,
+            "mock": False,
+            "runtime_level": runtime_level(),
+            "output_format": output_format,
+            "png": merged_mask_png(results, width, height),
+            "elapsed_ms": int(round((time.perf_counter() - started) * 1000)),
+        }
     return {
         "ok": True,
         "mock": False,
@@ -561,6 +639,7 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
 @app.post("/segment/image")
 async def segment_image(
     image: UploadFile = File(...),
+    guidance_mask: UploadFile | None = File(None),
     prompt_type: str = Form("auto"),
     points_json: str = Form(""),
     boxes_json: str = Form(""),
@@ -581,12 +660,18 @@ async def segment_image(
         image_path: Path | None = None
         try:
             width, height = image_info(data)
+            guidance_bitmap = None
+            if (prompt_type or "auto") == "guidance_mask":
+                guidance_bitmap = parse_guidance_mask(await guidance_mask.read() if guidance_mask is not None else b"", width, height)
             suffix = Path(image.filename or "upload.png").suffix or ".png"
             with tempfile.NamedTemporaryFile(prefix="sam3-", suffix=suffix, delete=False) as handle:
                 handle.write(data)
                 image_path = Path(handle.name)
             semantic_text = text_prompt or text
-            return JSONResponse(content=run_sam3(image_path, width, height, prompt_type or "auto", points_json, boxes_json, semantic_text, normalized_output_format))
+            payload = run_sam3(image_path, width, height, prompt_type or "auto", points_json, boxes_json, semantic_text, normalized_output_format, guidance_bitmap)
+            if isinstance(payload.get("png"), bytes):
+                return Response(content=payload["png"], media_type="image/png", headers={"X-SAM3-Output-Format": "png"})
+            return JSONResponse(content=payload)
         except Sam3Error as exc:
             return error_response(exc.status_code, exc.code, exc.message)
         finally:
@@ -594,21 +679,47 @@ async def segment_image(
                 image_path.unlink(missing_ok=True)
 
     mock_text_prompts: list[str] = []
-    if (prompt_type or "auto") == "text":
+    mock_points: list[list[float]] = []
+    mock_guidance: np.ndarray | None = None
+    normalized_prompt_type = prompt_type or "auto"
+    if normalized_prompt_type not in PROMPT_TYPES:
+        return error_response(400, "invalid_prompt", "prompt_type must be auto, points, boxes, text, or guidance_mask.")
+    if normalized_prompt_type == "points":
+        try:
+            mock_points, _ = parse_points_prompt(points_json)
+        except Sam3Error as exc:
+            return error_response(exc.status_code, exc.code, exc.message)
+    if normalized_prompt_type == "guidance_mask":
+        try:
+            width, height = image_info(data)
+            mock_guidance = parse_guidance_mask(await guidance_mask.read() if guidance_mask is not None else b"", width, height)
+        except Sam3Error as exc:
+            return error_response(exc.status_code, exc.code, exc.message)
+    if normalized_prompt_type == "text":
         try:
             mock_text_prompts = parse_text_prompt(text_prompt or text)
         except Sam3Error as exc:
             return error_response(exc.status_code, exc.code, exc.message)
+    if normalized_output_format == "png":
+        try:
+            width, height = image_info(data)
+        except Sam3Error as exc:
+            return error_response(exc.status_code, exc.code, exc.message)
+        if mock_guidance is not None:
+            return Response(content=mask_png(mock_guidance, width, height), media_type="image/png", headers={"X-SAM3-Output-Format": "png"})
+        return Response(content=merged_mask_png([], width, height), media_type="image/png", headers={"X-SAM3-Output-Format": "png"})
 
     return JSONResponse(content={
         "ok": True,
         "mock": True,
         "runtime_level": runtime_level(),
-        "prompt_type": prompt_type or "auto",
-        "text_prompt": text_prompt or text if (prompt_type or "auto") == "text" else "",
+        "prompt_type": normalized_prompt_type,
+        "text_prompt": text_prompt or text if normalized_prompt_type == "text" else "",
         "text_prompts": mock_text_prompts,
         "output_format": normalized_output_format,
         "masks": [],
+        "points": mock_points,
+        "guidance_bbox": guidance_bbox(mock_guidance) if mock_guidance is not None else [],
         "boxes": [],
         "elapsed_ms": 0,
         "message": "SAM3 mock segmentation",

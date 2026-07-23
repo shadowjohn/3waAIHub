@@ -15,6 +15,8 @@ for the `gemma4_unified` architecture and compressed-tensors path.
 
 PhaseL-1A kept the Hub boundary small: text-only, non-streaming JSON, and Q4 real inference through a thin adapter. PhaseL-1C added `image_id` based Photo Vision. PhaseL-1D added short WAV one-shot audio input smoke. PhaseL-1E adds short-lived `audio_id` reuse.
 
+Gemma4 Audio is experimental audio understanding, not production ASR. Use Whisper ASR for reliable transcription or long audio.
+
 Default single-user runtime tuning:
 
 - `VLLM_GPU_MEMORY_UTILIZATION=0.64`

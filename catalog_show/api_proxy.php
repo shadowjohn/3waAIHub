@@ -78,6 +78,47 @@ function hub_catalog_show_call_gateway(string $mode, string $token): array
         ]);
     }
 
+    if ($mode === 'audio') {
+        $file = $_FILES['audio'] ?? null;
+        $audioId = trim((string)($_POST['audio_id'] ?? ''));
+        if ($audioId === '' && is_array($file) && (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+            $upload = hub_catalog_show_curl('audio_upload', $headers);
+            curl_setopt_array($upload, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => [
+                    'audio' => new CURLFile((string)$file['tmp_name'], (string)($file['type'] ?? 'audio/wav'), (string)($file['name'] ?? 'audio.wav')),
+                ],
+            ]);
+            $uploadResult = hub_catalog_show_finish_curl($upload);
+            if (empty($uploadResult['ok'])) {
+                return $uploadResult;
+            }
+            $audioId = (string)($uploadResult['json']['audio_id'] ?? '');
+        }
+        if ($audioId === '') {
+            return ['ok' => false, 'status' => 400, 'error' => 'audio_id_required', 'message' => '請上傳 WAV 或填入 audio_id。'];
+        }
+
+        $ch = hub_catalog_show_curl($mode, $headers);
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => [
+                'audio_id' => $audioId,
+                'operation' => trim((string)($_POST['operation'] ?? 'understand')) ?: 'understand',
+                'text' => trim((string)($_POST['text'] ?? '這段錄音的重點是什麼？')),
+                'max_tokens' => (string)max(32, (int)($_POST['max_tokens'] ?? 512)),
+                'real_inference' => !empty($_POST['real_inference']) ? '1' : '0',
+            ],
+        ]);
+        $result = hub_catalog_show_finish_curl($ch);
+        $result['audio_id'] = $audioId;
+        if (is_array($result['json'])) {
+            $result['json']['audio_id'] = $audioId;
+        }
+
+        return $result;
+    }
+
     if (in_array($mode, ['chat'], true)) {
         return hub_catalog_show_post_json($mode, $headers, [
             'text' => trim((string)($_POST['text'] ?? '請用正體中文介紹 3waAIHub。')),

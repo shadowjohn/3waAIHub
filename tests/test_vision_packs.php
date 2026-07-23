@@ -59,7 +59,7 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'sam3 target_level must be L5-benchmark-ready');
             hub_test_assert(($manifest['category'] ?? '') === 'vision', 'sam3 category must be vision');
             hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/segment/image', 'sam3 gateway endpoint mismatch');
-            foreach (['model_not_present', 'model_load_failed', 'runtime_dependency_missing', 'bad_image', 'invalid_prompt', 'invalid_output_format', 'polygon_extract_failed', 'rle_encode_failed', 'gpu_unavailable', 'inference_failed', 'inference_timeout'] as $errorCode) {
+            foreach (['model_not_present', 'model_load_failed', 'runtime_dependency_missing', 'bad_image', 'invalid_prompt', 'invalid_output_format', 'invalid_guidance_mask', 'guidance_mask_size_mismatch', 'no_positive_guidance', 'polygon_extract_failed', 'rle_encode_failed', 'gpu_unavailable', 'inference_failed', 'inference_timeout'] as $errorCode) {
                 hub_test_assert(in_array($errorCode, $manifest['error_codes'] ?? [], true), 'sam3 error_codes missing ' . $errorCode);
             }
             hub_test_assert(is_file($base . '/smoke.py'), 'sam3 service missing smoke.py');
@@ -88,10 +88,23 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             foreach (['output_format', 'invalid_output_format', 'polygon_from_mask', 'polygons_from_mask', 'rle_from_mask'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 L5.1 app missing geometry output path: ' . $needle);
             }
+            foreach (['image/png', 'merged_mask_png', 'labels must be 0 or 1', 'at least one positive label', 'labels = [1] * len(normalized)', 'mock_points'] as $needle) {
+                hub_test_assert(str_contains($app, $needle), 'sam3 practical mask output missing ' . $needle);
+            }
+            foreach (['guidance_mask', 'parse_guidance_mask', 'invalid_guidance_mask', 'guidance_mask_size_mismatch', 'no_positive_guidance', 'transparent pixels are neutral'] as $needle) {
+                hub_test_assert(str_contains($app, $needle), 'sam3 guidance mask support missing ' . $needle);
+            }
             foreach (['"confidence"', '"label_name"', '"polygons"'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 mask contract missing ' . $needle);
             }
-            foreach (['SAM3SemanticPredictor', 'prompt_type not in {"auto", "points", "boxes", "text"}', 'parse_text_prompt', 'text_prompt'] as $needle) {
+            $fieldsByName = [];
+            foreach ($manifest['l5_contract']['input']['fields'] ?? [] as $field) {
+                $fieldsByName[(string)($field['name'] ?? '')] = $field;
+            }
+            $outputEnum = $fieldsByName['output_format']['enum'] ?? [];
+            hub_test_assert(in_array('png', $outputEnum, true), 'sam3 output_format enum must include png');
+            hub_test_assert(isset($fieldsByName['guidance_mask']), 'sam3 contract must include guidance_mask field');
+            foreach (['SAM3SemanticPredictor', 'PROMPT_TYPES', 'guidance_mask', 'parse_text_prompt', 'text_prompt'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 semantic prompt path missing ' . $needle);
             }
             foreach (['YOLO(', 'download'] as $needle) {

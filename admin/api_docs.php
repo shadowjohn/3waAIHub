@@ -138,7 +138,7 @@ hub_admin_header('API 文件', $user);
 </section>
 <section class="panel">
     <h2>POST Translate</h2>
-    <p class="muted">狀態：L5 可驗收。預設為 mock 模式；真實推論使用 <code>real_inference=1</code>。幾何輸出使用 <code>output_format=metadata|polygon|rle|both</code>。</p>
+    <p class="muted">狀態：L5 可驗收。預設為 mock 模式；真實推論使用 <code>real_inference=1</code>。</p>
     <h3>Mock 模式</h3>
     <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('translate')) ?>" <?= hub_h($curlContinuation) ?>
   -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
@@ -175,6 +175,7 @@ hub_admin_header('API 文件', $user);
   -F "real_inference=1" <?= hub_h($curlContinuation) ?>
   -F "output_format=polygon"</pre>
     <h3>點位 prompt</h3>
+    <p class="muted"><code>points_json.labels</code>：<code>1</code> 選取目標，<code>0</code> 排除目標；至少需要一個 <code>1</code>，負點只用來修正排除範圍。</p>
     <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" <?= hub_h($curlContinuation) ?>
   -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
   -F "image=@packs/sam3/demo/camera_cat.png" <?= hub_h($curlContinuation) ?>
@@ -182,6 +183,26 @@ hub_admin_header('API 文件', $user);
   -F 'points_json={"points":[[320,240]],"labels":[1]}' <?= hub_h($curlContinuation) ?>
   -F "real_inference=1" <?= hub_h($curlContinuation) ?>
   -F "output_format=both"</pre>
+    <h3>PNG mask output</h3>
+    <p class="muted"><code>output_format=png</code> 會回傳同尺寸 PNG：白色不透明為選取區域，透明為背景。</p>
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -F "image=@packs/sam3/demo/camera_cat.png" <?= hub_h($curlContinuation) ?>
+  -F "prompt_type=points" <?= hub_h($curlContinuation) ?>
+  -F 'points_json={"points":[[320,240]],"labels":[1]}' <?= hub_h($curlContinuation) ?>
+  -F "real_inference=1" <?= hub_h($curlContinuation) ?>
+  -F "output_format=png" <?= hub_h($curlContinuation) ?>
+  -o mask.png</pre>
+    <h3>手繪 guidance mask</h3>
+    <p class="muted"><code>guidance_mask</code> 必須是與原圖同尺寸的 PNG；非透明像素代表要選取的目標，透明像素為中立，不代表負提示。</p>
+    <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" <?= hub_h($curlContinuation) ?>
+  -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
+  -F "image=@packs/sam3/demo/camera_cat.png" <?= hub_h($curlContinuation) ?>
+  -F "guidance_mask=@guidance.png" <?= hub_h($curlContinuation) ?>
+  -F "prompt_type=guidance_mask" <?= hub_h($curlContinuation) ?>
+  -F "real_inference=1" <?= hub_h($curlContinuation) ?>
+  -F "output_format=png" <?= hub_h($curlContinuation) ?>
+  -o mask.png</pre>
     <h3>語意文字 prompt</h3>
     <pre><?= hub_h($curlExecutable) ?> -X POST "<?= hub_h(hub_api_docs_mode_url('sam3')) ?>" <?= hub_h($curlContinuation) ?>
   -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>

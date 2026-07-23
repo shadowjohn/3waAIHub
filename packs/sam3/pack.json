@@ -36,15 +36,23 @@
           "max_mb": 50
         },
         {
+          "name": "guidance_mask",
+          "type": "file",
+          "required": false,
+          "description": "PNG mask for prompt_type=guidance_mask. Must match image dimensions. Non-transparent pixels are positive guidance; transparent pixels are neutral."
+        },
+        {
           "name": "prompt_type",
           "type": "string",
           "required": false,
-          "default": "auto"
+          "default": "auto",
+          "enum": ["auto", "points", "boxes", "text", "guidance_mask"]
         },
         {
           "name": "points_json",
           "type": "json",
-          "required": false
+          "required": false,
+          "description": "For prompt_type=points. Format: {\"points\":[[x,y]],\"labels\":[1]}; labels: 1 selects target, 0 excludes target. At least one positive label is required; negative points only refine exclusion."
         },
         {
           "name": "boxes_json",
@@ -68,14 +76,22 @@
           "type": "string",
           "required": false,
           "default": "metadata",
-          "enum": ["metadata", "polygon", "rle", "both"]
+          "enum": ["metadata", "polygon", "rle", "both", "png"],
+          "example": "png",
+          "description": "png returns a merged binary image/png mask response instead of JSON. White/opaque is selected foreground; transparent is background."
         }
       ]
     },
     "output": {
       "required_keys": ["ok", "mock", "runtime_level", "prompt_type", "output_format", "masks", "elapsed_ms"],
       "mask_keys": ["id", "score", "confidence", "label_name", "bbox", "area"],
-      "mask_optional_keys": ["polygon", "polygons", "rle"]
+      "mask_optional_keys": ["polygon", "polygons", "rle"],
+      "binary_formats": {
+          "png": {
+            "content_type": "image/png",
+            "description": "Merged binary mask PNG. White/opaque is selected foreground, transparent is background."
+          }
+      }
     },
     "errors": [
       "bad_request",
@@ -85,6 +101,9 @@
       "bad_image",
       "invalid_prompt",
       "invalid_output_format",
+      "invalid_guidance_mask",
+      "guidance_mask_size_mismatch",
+      "no_positive_guidance",
       "polygon_extract_failed",
       "rle_encode_failed",
       "gpu_unavailable",
@@ -138,6 +157,19 @@
           "expected_model_checkpoint": true,
           "expected_mask_key": "polygon",
           "real_inference": true
+        },
+        {
+          "id": "sam3_real_png_mask",
+          "name": "SAM3 real image PNG mask smoke",
+          "type": "api",
+          "mode": "sam3",
+          "method": "POST",
+          "fixture": "packs/sam3/demo/camera_cat.png",
+          "form": {
+            "output_format": "png"
+          },
+          "expected_content_type": "image/png",
+          "real_inference": true
         }
       ]
     }
@@ -150,6 +182,9 @@
     "bad_image",
     "invalid_prompt",
     "invalid_output_format",
+    "invalid_guidance_mask",
+    "guidance_mask_size_mismatch",
+    "no_positive_guidance",
     "polygon_extract_failed",
     "rle_encode_failed",
     "gpu_unavailable",

@@ -221,7 +221,7 @@ function hub_public_api_gemma4_services(): array
             'mode' => 'audio',
             'pack_id' => 'llm-gemma4-12b',
             'name' => 'Gemma 4 Audio Input',
-            'description' => 'Ask about a short WAV directly, or reuse a previously uploaded audio_id. This does not create sessions and does not replace Whisper ASR.',
+            'description' => 'Ask about a short WAV directly, or reuse a previously uploaded audio_id. Gemma4 Audio is experimental audio understanding, not production ASR; use Whisper ASR for reliable transcription.',
             'method' => 'POST',
             'content_type' => 'multipart/form-data',
             'endpoint' => 'api.php?mode=audio',
@@ -237,7 +237,7 @@ function hub_public_api_gemma4_services(): array
                 ['name' => 'max_tokens', 'type' => 'integer', 'required' => false, 'default' => 512],
                 ['name' => 'real_inference', 'type' => 'boolean', 'required' => false, 'default' => true],
             ],
-            'output_keys' => ['ok', 'mock', 'runtime_level', 'model', 'operation', 'answer', 'transcript', 'summary', 'tags', 'audio', 'usage', 'elapsed_ms'],
+            'output_keys' => ['ok', 'mock', 'runtime_level', 'model', 'operation', 'answer', 'transcript', 'summary', 'tags', 'warnings', 'audio', 'usage', 'elapsed_ms'],
             'error_codes' => ['file_required', 'payload_too_large', 'invalid_audio', 'unsupported_audio_format', 'audio_too_long', 'audio_not_found', 'model_not_ready', 'audio_failed'],
             'task_api' => [],
         ],
@@ -383,7 +383,7 @@ function hub_public_api_multipart_fields(array $service): array
         }
         $type = (string)($field['type'] ?? '');
         if ($type === 'file') {
-            if (empty($field['required'])) {
+            if (empty($field['required']) && !(($service['mode'] ?? '') === 'sam3' && $name === 'guidance_mask')) {
                 continue;
             }
             $sample = (string)($field['example'] ?? '');
@@ -395,6 +395,14 @@ function hub_public_api_multipart_fields(array $service): array
         }
         if ($name === 'points_json') {
             $fields[] = $name . '={"points":[[320,240]],"labels":[1]}';
+            continue;
+        }
+        if (($service['mode'] ?? '') === 'sam3' && $name === 'prompt_type') {
+            $fields[] = $name . '=guidance_mask';
+            continue;
+        }
+        if (($service['mode'] ?? '') === 'sam3' && $name === 'output_format') {
+            $fields[] = $name . '=png';
             continue;
         }
         $fields[] = $name . '=' . (string)($field['default'] ?? ($name === 'real_inference' ? '1' : ''));
@@ -437,6 +445,7 @@ function hub_public_api_examples(array $service): array
         }
         $phpLines = ["\$fields = ["];
         $jsLines = ["const formData = new FormData();"];
+        $fileInputCount = 0;
         foreach ($service['input_fields'] as $field) {
             if (!is_array($field)) {
                 continue;
@@ -454,11 +463,21 @@ function hub_public_api_examples(array $service): array
                     $sample = $name === 'audio' ? 'sample.wav' : ($name === 'file' ? 'sample.pdf' : 'sample.png');
                 }
                 $phpLines[] = '    ' . var_export($name, true) . ' => new CURLFile(' . var_export('/path/to/' . $sample, true) . '),';
-                $jsLines[] = "const fileInput = document.querySelector('input[name=\"" . addcslashes($name, "\\'") . "\"]');";
-                $jsLines[] = 'formData.append(' . var_export($name, true) . ', fileInput.files[0]);';
+                $inputVar = $fileInputCount === 0 ? 'fileInput' : preg_replace('/[^A-Za-z0-9_]/', '_', $name) . 'Input';
+                $fileInputCount++;
+                $jsLines[] = "const {$inputVar} = document.querySelector('input[name=\"" . addcslashes($name, "\\'") . "\"]');";
+                $jsLines[] = 'formData.append(' . var_export($name, true) . ', ' . $inputVar . '.files[0]);';
                 continue;
             }
-            $value = $name === 'points_json' ? '{"points":[[320,240]],"labels":[1]}' : (string)($field['default'] ?? ($name === 'real_inference' ? '1' : ''));
+            if ($name === 'points_json') {
+                $value = '{"points":[[320,240]],"labels":[1]}';
+            } elseif (($service['mode'] ?? '') === 'sam3' && $name === 'prompt_type') {
+                $value = 'guidance_mask';
+            } elseif (($service['mode'] ?? '') === 'sam3' && $name === 'output_format') {
+                $value = 'png';
+            } else {
+                $value = (string)($field['example'] ?? ($field['default'] ?? ($name === 'real_inference' ? '1' : '')));
+            }
             $phpLines[] = '    ' . var_export($name, true) . ' => ' . var_export($value, true) . ',';
             $jsLines[] = 'formData.append(' . var_export($name, true) . ', ' . json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ');';
         }

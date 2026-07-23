@@ -383,6 +383,16 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
                     );
                 }
             }
+            if ($mode === 'sam3') {
+                $guidanceFile = $_FILES['guidance_mask'] ?? null;
+                if (is_array($guidanceFile) && (int)($guidanceFile['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK) {
+                    $payload['guidance_mask'] = new CURLFile(
+                        (string)$guidanceFile['tmp_name'],
+                        (string)($guidanceFile['type'] ?? 'image/png'),
+                        (string)($guidanceFile['name'] ?? 'guidance_mask.png')
+                    );
+                }
+            }
             $options[CURLOPT_POSTFIELDS] = $payload;
         }
     }
@@ -998,14 +1008,18 @@ hub_admin_header(__('API 測試場'), $user);
                 <input name="max_tokens" type="number" min="32" max="2048" value="512">
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實音訊理解')) ?></label>
                 <p class="muted"><?= hub_h(__('可直接上傳 WAV，或先用 mode=audio_upload 取得 audio_id 後重複追問；只支援 16kHz mono WAV、30 秒內、16MB 內。')) ?></p>
+                <p class="muted"><?= hub_h(__('Gemma4 Audio 目前是實驗性音訊理解，非正式 ASR；逐字稿或長音訊請改用 Whisper ASR。')) ?></p>
             <?php elseif ($selectedMode === 'sam3'): ?>
                 <label><?= hub_h(__('圖片')) ?></label>
                 <input name="image" type="file" accept="image/*">
+                <label><?= hub_h(__('手繪提示遮罩')) ?> guidance_mask</label>
+                <input name="guidance_mask" type="file" accept="image/png">
+                <p class="muted">prompt_type=guidance_mask <?= hub_h(__('時上傳同尺寸 PNG；非透明像素代表要選取的目標，透明像素為中立。')) ?></p>
                 <label><?= hub_h(__('提示類型')) ?> prompt_type</label>
                 <input name="prompt_type" value="auto">
                 <label><?= hub_h(__('點位 JSON')) ?> points_json</label>
                 <textarea name="points_json" rows="3" placeholder='{"points":[[320,240]],"labels":[1]}'></textarea>
-                <p class="muted">prompt_type=points <?= hub_h(__('時填入，例如')) ?> <code>{"points":[[320,240]],"labels":[1]}</code></p>
+                <p class="muted">prompt_type=points <?= hub_h(__('時填入，例如')) ?> <code>{"points":[[320,240]],"labels":[1]}</code>；labels: <code>1</code> <?= hub_h(__('選取')) ?>、<code>0</code> <?= hub_h(__('排除')) ?>，至少需要一個 <code>1</code>。</p>
                 <label><?= hub_h(__('語意文字')) ?></label>
                 <input name="text" value="<?= hub_h((string)($_POST['text'] ?? 'mammal/insect/plant')) ?>">
                 <p class="muted">prompt_type=text <?= hub_h(__('時填入語意 prompt，例如')) ?> <code>mammal/insect/plant</code>。</p>
@@ -1015,6 +1029,7 @@ hub_admin_header(__('API 測試場'), $user);
                     <option value="polygon">polygon</option>
                     <option value="rle">rle</option>
                     <option value="both">both</option>
+                    <option value="png">png</option>
                 </select>
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實推論')) ?></label>
             <?php else: ?>

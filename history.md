@@ -3111,3 +3111,30 @@ Follow-up:
 - Documented `/DATA/models/yolo/registry` web-user write permissions and installer ACL repair.
 - Corrected `yolo_model_status` examples to GET query usage.
 - Added GPU service runtime availability to status responses so stopped `yolo-gpu0` no longer looks GPU ready.
+
+## SAM3 API Practical Mask Output
+
+Refined SAM3 segmentation output for frontend editing workflows.
+
+Implemented:
+
+- `prompt_type=points` now treats labels explicitly:
+  - `1` selects the target.
+  - `0` excludes the target.
+  - Multiple positive and negative points are supported.
+- Invalid point labels now return a stable `invalid_prompt` error.
+- `output_format=png` returns a merged black/white `image/png` mask.
+- `prompt_type=guidance_mask` accepts same-size PNG guidance masks:
+  - Non-transparent pixels are positive guidance.
+  - Transparent pixels are neutral.
+  - `output_format=png` returns white/opaque foreground and transparent background.
+- Existing JSON outputs remain available:
+  - `metadata`
+  - `polygon`
+  - `rle`
+  - `both`
+- Public API docs, admin API docs, playground, client quickstart, and examples now document PNG mask output.
+
+Deferred:
+
+- Mask overlay viewer.

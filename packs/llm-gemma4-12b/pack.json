@@ -199,7 +199,7 @@
       ]
     },
     "output": {
-      "required_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "audio", "usage", "elapsed_ms"]
+      "required_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "warnings", "audio", "usage", "elapsed_ms"]
     },
     "errors": [
       "bad_request",
@@ -238,7 +238,7 @@
             "real_inference": 0,
             "max_tokens": 128
           },
-          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "audio", "usage", "elapsed_ms"],
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "warnings", "audio", "usage", "elapsed_ms"],
           "expected_mock": true
         },
         {
@@ -254,7 +254,7 @@
             "operation": "transcribe",
             "max_tokens": "256"
           },
-          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "audio", "usage", "elapsed_ms"],
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "warnings", "audio", "usage", "elapsed_ms"],
           "expected_mock": false,
           "expected_audio_text_non_empty": true,
           "real_inference": true
@@ -273,7 +273,7 @@
             "text": "請用正體中文說明這段音訊內容。",
             "max_tokens": "256"
           },
-          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "audio", "usage", "elapsed_ms"],
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "operation", "answer", "transcript", "summary", "tags", "warnings", "audio", "usage", "elapsed_ms"],
           "expected_mock": false,
           "expected_audio_text_non_empty": true,
           "real_inference": true
