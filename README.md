@@ -123,6 +123,8 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 >
 > Windows Core 的不適用能力顯示 N/A，不顯示成系統故障。
 
+Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。IIS 的 PHP FastCGI application 需要以系統管理員權限註冊，並指向選定的 `php-cgi.exe`；`web.config` 不應寫死其他機器的 PHP 路徑。登入 session 會保存在 `data/sessions/`，而專案的 `web.config` 會封鎖 `data/` 的直接 HTTP 存取；IIS App Pool identity 必須對 `data/` 具備修改權限。
+
 啟動 Core 測試可用：
 
 ```powershell

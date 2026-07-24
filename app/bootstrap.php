@@ -25,6 +25,7 @@ if ($hubDbPath !== '' && $hubTestDataDir !== '') {
 
 define('HUB_DATA_DIR', $hubDataDir);
 define('HUB_TEST_DATA_DIR_ACTIVE', $hubTestDataDirActive);
+define('HUB_SESSION_DIR', HUB_DATA_DIR . '/sessions');
 $hubDbPath = $hubDbPath !== '' ? $hubDbPath : HUB_DATA_DIR . '/3waaihub.sqlite';
 define('HUB_DB_PATH', $hubDbPath);
 define('HUB_LOG_DIR', HUB_DATA_DIR . '/logs');
@@ -67,7 +68,7 @@ require_once __DIR__ . '/gateway.php';
 
 function hub_ensure_runtime_dirs(): void
 {
-    foreach ([HUB_DATA_DIR, HUB_LOG_DIR, HUB_JOB_LOG_DIR, HUB_TASK_LOG_DIR, HUB_DATA_DIR . '/jobs', HUB_DATA_DIR . '/results', HUB_DATA_DIR . '/uploads', HUB_DATA_DIR . '/uploads/voice_profiles', HUB_DATA_DIR . '/uploads/photo', HUB_DATA_DIR . '/uploads/audio', HUB_DATA_DIR . '/cache', HUB_LOG_DIR . '/install', HUB_SERVICE_DIR] as $dir) {
+    foreach ([HUB_DATA_DIR, HUB_SESSION_DIR, HUB_LOG_DIR, HUB_JOB_LOG_DIR, HUB_TASK_LOG_DIR, HUB_DATA_DIR . '/jobs', HUB_DATA_DIR . '/results', HUB_DATA_DIR . '/uploads', HUB_DATA_DIR . '/uploads/voice_profiles', HUB_DATA_DIR . '/uploads/photo', HUB_DATA_DIR . '/uploads/audio', HUB_DATA_DIR . '/cache', HUB_LOG_DIR . '/install', HUB_SERVICE_DIR] as $dir) {
         if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
             throw new RuntimeException('Cannot create runtime directory: ' . $dir);
         }
@@ -101,6 +102,10 @@ function hub_now(): string
 function hub_start_session(): void
 {
     if (PHP_SAPI !== 'cli' && session_status() !== PHP_SESSION_ACTIVE) {
+        if (!is_dir(HUB_SESSION_DIR) && !mkdir(HUB_SESSION_DIR, 0775, true) && !is_dir(HUB_SESSION_DIR)) {
+            throw new RuntimeException('Cannot create session directory: ' . HUB_SESSION_DIR);
+        }
+        session_save_path(HUB_SESSION_DIR);
         session_start();
     }
 }

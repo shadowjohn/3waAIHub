@@ -94,6 +94,17 @@ hub_test('PhaseAuth-1A.2 captcha failures are audited but do not lock IP', funct
     hub_test_assert(str_contains($loginSource, "'captcha_failed'"), 'login page should audit captcha failures separately');
 });
 
+hub_test('PhaseAuth-1A.2 IIS login sessions stay inside the active Hub data root', function (): void {
+    hub_test_assert(HUB_TEST_DATA_DIR_ACTIVE, 'Windows test data root must activate before session storage is resolved');
+    hub_test_assert(defined('HUB_SESSION_DIR'), 'session directory constant missing');
+    hub_test_assert(HUB_SESSION_DIR === HUB_DATA_DIR . '/sessions', 'session directory must follow the active Hub data root');
+
+    $bootstrap = (string)file_get_contents(HUB_ROOT . '/app/bootstrap.php');
+    $webConfig = (string)(@file_get_contents(HUB_ROOT . '/web.config') ?: '');
+    hub_test_assert(str_contains($bootstrap, 'session_save_path(HUB_SESSION_DIR);'), 'login sessions must not rely on the IIS process temp directory');
+    hub_test_assert(str_contains($webConfig, '<add segment="data" />'), 'IIS must block direct access to Hub runtime data');
+});
+
 hub_test('PhaseAuth-1A.2 login lockout defaults and schema exist', function (): void {
     $db = hub_test_reset_db();
     hub_ensure_default_storage_settings($db);
