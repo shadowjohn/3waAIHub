@@ -31,6 +31,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $root = hub_models_root($db);
 $usage = hub_get_disk_usage_for_path($root);
 $scan = hub_scan_model_assets($db, ['max_depth' => 5, 'limit' => 300]);
+$assetTypeCounts = array_count_values(array_map(
+    static fn (array $asset): string => (string)($asset['type'] ?? 'file'),
+    $scan['assets']
+));
 $commonDirs = ['paddleocr', 'yolo', 'ollama', 'sam3', 'whisper', 'huggingface'];
 $linkMap = hub_model_service_link_map($db);
 $linkedServices = [];
@@ -81,6 +85,21 @@ hub_admin_header('模型倉庫', $user);
                 <div class="hub-meta-value"><?= count($linkMap) ?></div>
                 <div class="hub-meta-label">service_key</div>
                 <div class="hub-meta-value"><?= $linkedServices === [] ? hub_h(__('尚無連結服務')) : hub_h(implode(', ', array_keys($linkedServices))) ?></div>
+            </div>
+        </article>
+        <article class="hub-card">
+            <h2><?= hub_h(__('檔案統計')) ?></h2>
+            <div class="hub-meta">
+                <div class="hub-meta-label"><?= hub_h(__('掃描項目')) ?></div>
+                <div class="hub-meta-value"><?= count($scan['assets']) ?></div>
+                <div class="hub-meta-label"><?= hub_h(__('影像檔案')) ?></div>
+                <div class="hub-meta-value"><?= (int)($assetTypeCounts['image_file'] ?? 0) ?> <span class="muted">png / jpg / jpeg</span></div>
+                <div class="hub-meta-label"><?= hub_h(__('標記檔案')) ?></div>
+                <div class="hub-meta-value"><?= (int)($assetTypeCounts['label_file'] ?? 0) ?> <span class="muted">YOLO txt</span></div>
+                <div class="hub-meta-label"><?= hub_h(__('模型檔案')) ?></div>
+                <div class="hub-meta-value"><?= (int)($assetTypeCounts['model_file'] ?? 0) ?></div>
+                <div class="hub-meta-label"><?= hub_h(__('框架與設定檔')) ?></div>
+                <div class="hub-meta-value"><?= (int)($assetTypeCounts['framework_file'] ?? 0) ?></div>
             </div>
         </article>
     </div>

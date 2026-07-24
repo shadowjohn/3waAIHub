@@ -81,6 +81,24 @@ workspace/progress.ndjson
 workspace/result.json
 ```
 
+`result.json.dataset_stats` 會回報訓練素材盤點：
+
+```json
+{
+  "image_extensions": ["png", "jpg", "jpeg"],
+  "image_count": 120,
+  "label_count": 118,
+  "missing_label_count": 2,
+  "images_by_extension": {
+    "png": 20,
+    "jpg": 80,
+    "jpeg": 20
+  }
+}
+```
+
+`missing_label_count` 以 `datasets/**/images/.../*.png|jpg|jpeg` 對應 `datasets/**/labels/.../*.txt` 計算，用來快速發現已上傳圖片但標記檔未補齊的情況。
+
 NatureWeb 這類既有專案可把 job root 指到自己的 project root，只要 workspace 在 root 底下即可：
 
 ```bash

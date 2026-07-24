@@ -34,6 +34,8 @@ function hub_model_asset_type(string $path): string
     return match (strtolower(pathinfo($path, PATHINFO_EXTENSION))) {
         'pt', 'pth', 'onnx', 'safetensors', 'bin', 'gguf' => 'model_file',
         'pdiparams', 'pdmodel', 'yml', 'yaml', 'json' => 'framework_file',
+        'png', 'jpg', 'jpeg' => 'image_file',
+        'txt' => str_contains(str_replace('\\', '/', $path), '/labels/') ? 'label_file' : 'file',
         default => is_file($path) ? 'file' : 'missing',
     };
 }

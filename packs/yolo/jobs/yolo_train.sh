@@ -25,6 +25,50 @@ JSON
   exit "$code"
 }
 
+dataset_stats_json() {
+  python3 - "$AIHUB_WORKSPACE" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+workspace = Path(sys.argv[1])
+root = workspace / "datasets"
+image_exts = {".png", ".jpg", ".jpeg"}
+stats = {
+    "image_extensions": ["png", "jpg", "jpeg"],
+    "image_count": 0,
+    "label_count": 0,
+    "missing_label_count": 0,
+    "images_by_extension": {"png": 0, "jpg": 0, "jpeg": 0},
+}
+
+if root.is_dir():
+    labels = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.txt")
+        if path.is_file() and "labels" in path.relative_to(root).parts
+    }
+    stats["label_count"] = len(labels)
+    for image in root.rglob("*"):
+        suffix = image.suffix.lower()
+        if not image.is_file() or suffix not in image_exts:
+            continue
+        stats["image_count"] += 1
+        stats["images_by_extension"][suffix.lstrip(".")] += 1
+        parts = list(image.relative_to(root).parts)
+        if "images" not in parts:
+            stats["missing_label_count"] += 1
+            continue
+        idx = parts.index("images")
+        parts[idx] = "labels"
+        parts[-1] = Path(parts[-1]).with_suffix(".txt").name
+        if "/".join(parts) not in labels:
+            stats["missing_label_count"] += 1
+
+print(json.dumps(stats, ensure_ascii=False, separators=(",", ":")))
+PY
+}
+
 if [[ ! -f "$AIHUB_WORKSPACE/data.yaml" ]]; then
   fail_job 11 missing_data_yaml "workspace/data.yaml is required."
 fi
@@ -36,13 +80,14 @@ if [[ ! -d "$AIHUB_WORKSPACE/datasets" ]]; then
 fi
 
 progress running "YOLO train starting"
+dataset_stats="$(dataset_stats_json)"
 
 if [[ "${AIHUB_YOLO_TRAIN_DRY_RUN:-0}" == "1" ]]; then
   printf 'epoch,train/box_loss,metrics/mAP50(B)\n0,0,0\n' > "$AIHUB_WORKSPACE/runs/train/output/results.csv"
   printf 'dry-run best weights\n' > "$AIHUB_WORKSPACE/runs/train/output/weights/best.pt"
   printf '{"ok":true,"dry_run":true,"predictions":[]}\n' > "$AIHUB_WORKSPACE/runs/detect/val/predictions.json"
   cat > "$AIHUB_RESULT_JSON" <<JSON
-{"ok":true,"mock":false,"dry_run":true,"pack_id":"yolo","job_key":"yolo_train","runtime_contract":"0.1","artifacts":[{"path":"runs/train/output/results.csv","type":"metrics_csv"},{"path":"runs/train/output/weights/best.pt","type":"model_weights"},{"path":"runs/detect/val/predictions.json","type":"validation_predictions"}]}
+{"ok":true,"mock":false,"dry_run":true,"pack_id":"yolo","job_key":"yolo_train","runtime_contract":"0.1","dataset_stats":$dataset_stats,"artifacts":[{"path":"runs/train/output/results.csv","type":"metrics_csv"},{"path":"runs/train/output/weights/best.pt","type":"model_weights"},{"path":"runs/detect/val/predictions.json","type":"validation_predictions"}]}
 JSON
   write_status success 0
   progress success "YOLO train dry-run completed"
@@ -112,6 +157,41 @@ def fail(code, error, message):
     status_path.write_text(json.dumps({"status": "failed", "pack_id": "yolo", "job_key": "yolo_train", "exit_code": code}, separators=(",", ":")) + "\n", encoding="utf-8")
     emit("failed", message)
     sys.exit(code)
+
+def dataset_stats():
+    root = workspace / "datasets"
+    image_exts = {".png", ".jpg", ".jpeg"}
+    stats = {
+        "image_extensions": ["png", "jpg", "jpeg"],
+        "image_count": 0,
+        "label_count": 0,
+        "missing_label_count": 0,
+        "images_by_extension": {"png": 0, "jpg": 0, "jpeg": 0},
+    }
+    if not root.is_dir():
+        return stats
+    labels = {
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*.txt")
+        if path.is_file() and "labels" in path.relative_to(root).parts
+    }
+    stats["label_count"] = len(labels)
+    for image in root.rglob("*"):
+        suffix = image.suffix.lower()
+        if not image.is_file() or suffix not in image_exts:
+            continue
+        stats["image_count"] += 1
+        stats["images_by_extension"][suffix.lstrip(".")] += 1
+        parts = list(image.relative_to(root).parts)
+        if "images" not in parts:
+            stats["missing_label_count"] += 1
+            continue
+        idx = parts.index("images")
+        parts[idx] = "labels"
+        parts[-1] = Path(parts[-1]).with_suffix(".txt").name
+        if "/".join(parts) not in labels:
+            stats["missing_label_count"] += 1
+    return stats
 
 try:
     from ultralytics import YOLO
@@ -196,6 +276,7 @@ result_path.write_text(json.dumps({
     "model": model_name,
     "device": device,
     "metrics": metrics,
+    "dataset_stats": dataset_stats(),
     "artifacts": [
         {"path": "runs/train/output/results.csv", "type": "metrics_csv"},
         {"path": "runs/train/output/weights/best.pt", "type": "model_weights"},

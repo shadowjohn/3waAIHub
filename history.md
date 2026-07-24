@@ -3148,3 +3148,23 @@ Updated README with the current near-term TODO priorities:
 - SAM3 practical mask workflow follow-up.
 - Windows control plane boundary.
 - Future resource profiles.
+
+## Model Inventory Image Counts and YOLO Dataset Stats
+
+Improved dataset visibility for NatureWeb-style YOLO training workspaces.
+
+Implemented:
+
+- Model inventory now classifies `.png`, `.jpg`, and `.jpeg` files as `image_file`.
+- YOLO `labels/*.txt` files are classified as `label_file`.
+- `admin/models.php` shows scanned file statistics, including image and label file counts.
+- `yolo_train` writes `result.json.dataset_stats` for:
+  - image count
+  - label count
+  - missing label count
+  - image counts by `png` / `jpg` / `jpeg`
+
+Notes:
+
+- Image upload already accepted JPEG/PNG/WebP by MIME; this change fixes inventory and training dataset visibility.
+- YOLO training behavior was not changed.

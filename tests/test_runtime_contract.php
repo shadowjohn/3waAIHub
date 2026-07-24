@@ -122,7 +122,13 @@ hub_test('YOLO local train validates workspace and writes real runner contract',
     $root = sys_get_temp_dir() . '/3waaihub_yolo_train_' . getmypid();
     hub_test_runtime_rm($root);
     $workspace = $root . '/jobs/yolo/train-001';
-    mkdir($workspace . '/datasets', 0775, true);
+    mkdir($workspace . '/datasets/my_dataset/images/train', 0775, true);
+    mkdir($workspace . '/datasets/my_dataset/images/val', 0775, true);
+    mkdir($workspace . '/datasets/my_dataset/labels/train', 0775, true);
+    file_put_contents($workspace . '/datasets/my_dataset/images/train/a.jpg', 'fake-image');
+    file_put_contents($workspace . '/datasets/my_dataset/images/train/b.jpeg', 'fake-image');
+    file_put_contents($workspace . '/datasets/my_dataset/images/val/c.png', 'fake-image');
+    file_put_contents($workspace . '/datasets/my_dataset/labels/train/a.txt', "0 0.5 0.5 1 1\n");
     file_put_contents($workspace . '/data.yaml', "path: datasets\ntrain: images/train\nval: images/val\nnames:\n  0: object\n");
     file_put_contents($workspace . '/train_config.json', json_encode([
         'model' => 'yolo11n.pt',
@@ -156,6 +162,12 @@ hub_test('YOLO local train validates workspace and writes real runner contract',
     hub_test_assert(($result['ok'] ?? false) === true, 'yolo_train result must be ok');
     hub_test_assert(($result['mock'] ?? true) === false, 'yolo_train must not report mock true');
     hub_test_assert(($result['job_key'] ?? '') === 'yolo_train', 'yolo_train result must include job_key');
+    hub_test_assert((int)($result['dataset_stats']['image_count'] ?? 0) === 3, 'yolo_train must count jpg/jpeg/png dataset images');
+    hub_test_assert((int)($result['dataset_stats']['images_by_extension']['jpg'] ?? 0) === 1, 'yolo_train jpg count mismatch');
+    hub_test_assert((int)($result['dataset_stats']['images_by_extension']['jpeg'] ?? 0) === 1, 'yolo_train jpeg count mismatch');
+    hub_test_assert((int)($result['dataset_stats']['images_by_extension']['png'] ?? 0) === 1, 'yolo_train png count mismatch');
+    hub_test_assert((int)($result['dataset_stats']['label_count'] ?? 0) === 1, 'yolo_train label count mismatch');
+    hub_test_assert((int)($result['dataset_stats']['missing_label_count'] ?? 0) === 2, 'yolo_train missing label count mismatch');
     hub_test_assert(is_file($workspace . '/runs/train/output/results.csv'), 'yolo_train must write results.csv');
     hub_test_assert(is_file($workspace . '/runs/train/output/weights/best.pt'), 'yolo_train must write best.pt');
     hub_test_assert(is_file($workspace . '/runs/detect/val/predictions.json'), 'yolo_train must write predictions.json');

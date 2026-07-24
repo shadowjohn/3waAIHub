@@ -810,6 +810,8 @@ workspace/
    └─ detect/val/predictions.json
 ```
 
+`result.json` 會回 `dataset_stats`，統計 `datasets/` 底下的 `.png` / `.jpg` / `.jpeg` 圖片、YOLO `.txt` label 數量，以及可由 `images/...` 對應到 `labels/...` 但缺少標記檔的圖片數。
+
 NatureWeb 類型專案可把 `AIHUB_LOCAL_JOB_ROOT` 指到自己的 project root，workspace 放在 root 底下，不需要搬資料：
 
 ```bash

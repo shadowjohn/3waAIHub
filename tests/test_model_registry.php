@@ -6,8 +6,14 @@ hub_test('model registry scans models root safely and skips symlinks', function 
     hub_test_assert(is_file(HUB_ROOT . '/admin/models.php'), 'admin/models.php missing');
     $root = sys_get_temp_dir() . '/3waaihub_models_' . bin2hex(random_bytes(4));
     mkdir($root . '/yolo', 0775, true);
+    mkdir($root . '/yolo/datasets/images/train', 0775, true);
+    mkdir($root . '/yolo/datasets/labels/train', 0775, true);
     mkdir($root . '/paddleocr/home/.paddlex', 0775, true);
     file_put_contents($root . '/yolo/yolo11n.pt', 'model');
+    file_put_contents($root . '/yolo/datasets/images/train/a.jpg', 'image');
+    file_put_contents($root . '/yolo/datasets/images/train/b.jpeg', 'image');
+    file_put_contents($root . '/yolo/datasets/images/train/c.png', 'image');
+    file_put_contents($root . '/yolo/datasets/labels/train/a.txt', "0 0.5 0.5 1 1\n");
     symlink('/etc', $root . '/bad-link');
     hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', $root);
     hub_install_pack($db, 'yolo', [
@@ -36,15 +42,29 @@ hub_test('model registry scans models root safely and skips symlinks', function 
 
     $modelsPage = (string)file_get_contents(HUB_ROOT . '/admin/models.php');
     hub_test_assert(str_contains($modelsPage, '可用 / 總量'), 'models page must show free / total heading');
+    hub_test_assert(str_contains($modelsPage, '影像檔案'), 'models page must show image file count label');
+    hub_test_assert(str_contains($modelsPage, 'png / jpg / jpeg'), 'models page must explain supported image extensions');
+    hub_test_assert(str_contains($modelsPage, '標記檔案'), 'models page must show label file count label');
+    hub_test_assert(str_contains($modelsPage, 'YOLO txt'), 'models page must explain YOLO label extension');
     hub_test_assert(strpos($modelsPage, "usage['free_bytes']") < strpos($modelsPage, "usage['total_bytes']"), 'models page must render free bytes before total bytes');
 
-    $scan = hub_scan_model_assets($db, ['max_depth' => 4, 'limit' => 50]);
+    $scan = hub_scan_model_assets($db, ['max_depth' => 5, 'limit' => 50]);
     $paths = array_column($scan['assets'], 'relative_path');
     hub_test_assert(in_array('yolo/yolo11n.pt', $paths, true), 'YOLO model file missing from scan');
+    foreach (['yolo/datasets/images/train/a.jpg', 'yolo/datasets/images/train/b.jpeg', 'yolo/datasets/images/train/c.png'] as $imagePath) {
+        hub_test_assert(in_array($imagePath, $paths, true), 'dataset image missing from scan: ' . $imagePath);
+    }
+    hub_test_assert(in_array('yolo/datasets/labels/train/a.txt', $paths, true), 'dataset label missing from scan');
     hub_test_assert(in_array('paddleocr/home/.paddlex', $paths, true), 'PaddleOCR model directory missing from scan');
     foreach ($scan['assets'] as $asset) {
         if ($asset['relative_path'] === 'yolo/yolo11n.pt') {
             hub_test_assert(in_array('yolo-test-main', $asset['linked_services'], true), 'linked YOLO service missing');
+        }
+        if (in_array($asset['relative_path'], ['yolo/datasets/images/train/a.jpg', 'yolo/datasets/images/train/b.jpeg', 'yolo/datasets/images/train/c.png'], true)) {
+            hub_test_assert($asset['type'] === 'image_file', 'jpg/jpeg/png dataset assets must be classified as image_file');
+        }
+        if ($asset['relative_path'] === 'yolo/datasets/labels/train/a.txt') {
+            hub_test_assert($asset['type'] === 'label_file', 'YOLO labels/*.txt assets must be classified as label_file');
         }
         if ($asset['relative_path'] === 'bad-link') {
             hub_test_assert($asset['type'] === 'symlink' && !empty($asset['skipped']), 'symlink must be marked skipped');
