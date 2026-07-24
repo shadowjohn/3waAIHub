@@ -1,6 +1,20 @@
 <?php
 declare(strict_types=1);
 
+hub_test('PhaseUI-4 services worker command hint is host portable', function (): void {
+    $page = (string)file_get_contents(HUB_ROOT . '/admin/services.php');
+
+    foreach ([
+        'function hub_services_worker_command',
+        "hub_platform_id() === 'windows'",
+        'hub_powershell_single_quoted_literal($script)',
+        'escapeshellarg($script)',
+        'hub_services_worker_command())',
+    ] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'services worker command missing portable clause: ' . $needle);
+    }
+});
+
 hub_test('PhaseUI-4 services management card UI contract is present', function (): void {
     $page = (string)file_get_contents(HUB_ROOT . '/admin/services.php');
     $combined = $page . (string)file_get_contents(HUB_ROOT . '/app/command_queue.php');

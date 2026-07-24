@@ -23,6 +23,15 @@ function hub_services_is_ajax(): bool
     return strtolower((string)($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '')) === 'xmlhttprequest';
 }
 
+function hub_services_worker_command(): string
+{
+    $script = HUB_ROOT . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'command_worker.php';
+
+    return hub_platform_id() === 'windows'
+        ? 'php ' . hub_powershell_single_quoted_literal($script) . ' --limit=5'
+        : 'sudo php ' . escapeshellarg($script) . ' --limit=5';
+}
+
 function hub_services_runtime_level(array $service): string
 {
     $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
@@ -166,7 +175,7 @@ hub_admin_header('服務管理', $user);
     <?php if ($queuedJobCount > 0): ?>
         <div class="notice">
             目前有 <?= (int)$queuedJobCount ?> 筆背景工作排隊中。可先在主機執行：
-            <pre class="inline-pre">sudo php <?= hub_h(HUB_ROOT . '/scripts/command_worker.php') ?> --limit=5</pre>
+            <pre class="inline-pre"><?= hub_h(hub_services_worker_command()) ?></pre>
             <p class="muted">長期建議用具 Docker 權限的本機帳號常駐執行 worker，不要把 www-data 加進 docker 群組。</p>
         </div>
     <?php endif; ?>
