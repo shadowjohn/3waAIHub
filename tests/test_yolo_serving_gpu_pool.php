@@ -373,13 +373,23 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
     hub_test_assert(($statusService['content_type'] ?? null) === '', 'YOLO status GET should not advertise a request Content-Type.');
 
     $source = (string)file_get_contents(HUB_ROOT . '/packs/yolo-serving/service/app.py');
-    foreach (['@app.get("/models")', '@app.get("/models/{slot_no}/status")', '@app.post("/models/warm"', '@app.post("/models/unload"'] as $needle) {
+    foreach (['@app.get("/models")', '@app.get("/models/{slot_no}/status")', '@app.post("/models/warm"', '@app.post("/models/unload"', 'def parse_int(', 'imgsz: str | None = Form(None)', 'max_det: str | None = Form(None)', 'imgsz=parse_int(imgsz, 640, "imgsz")', 'max_det=parse_int(max_det, 300, "max_det")'] as $needle) {
         hub_test_assert(str_contains($source, $needle), 'YOLO serving runtime missing ' . $needle);
     }
     hub_test_assert(substr_count($source, '"fallback": bool(fallback_reason)') >= 2, 'YOLO predict response should expose top-level fallback flag.');
 
+    $job = (string)file_get_contents(HUB_ROOT . '/packs/yolo/jobs/yolo_predict.sh');
+    foreach (['imgsz = int(request.get("imgsz", 640))', 'max_det = int(request.get("max_det", 300))', 'imgsz=imgsz', 'max_det=max_det'] as $needle) {
+        hub_test_assert(str_contains($job, $needle), 'YOLO local predict runner missing ' . $needle);
+    }
+
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
     hub_test_assert(str_contains($readme, '/DATA/models/yolo/registry'), 'README should document YOLO registry write permissions.');
+    hub_test_assert(str_contains($readme, 'imgsz') && str_contains($readme, 'max_det'), 'README should document yolo_predict imgsz/max_det.');
+    hub_test_assert(str_contains($html, 'imgsz') && str_contains($html, 'max_det'), 'Public docs should document yolo_predict imgsz/max_det.');
+    $adminDocs = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
+    hub_test_assert(str_contains($adminDocs, 'hub_api_docs_multipart_curl_fields'), 'Admin API docs should include non-file multipart fields in generated curl examples.');
+    hub_test_assert(str_contains($adminDocs, '$multipartExtra'), 'Admin API docs should append multipart defaults/examples to curl examples.');
     $fixPermissions = (string)file_get_contents(HUB_ROOT . '/scripts/fix_permissions.sh');
     hub_test_assert(str_contains($fixPermissions, '/DATA/models/yolo/registry'), 'fix_permissions should prepare YOLO registry directory.');
     hub_test_assert(str_contains($fixPermissions, 'setfacl'), 'fix_permissions should apply ACL when available.');

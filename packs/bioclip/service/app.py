@@ -52,7 +52,7 @@ def configure_bioclip_env() -> None:
 def effective_device() -> str:
     import torch
 
-    requested = os.getenv("BIOCLIP_DEVICE", "cuda")
+    requested = os.getenv("BIOCLIP_DEVICE", "cpu")
     if requested == "auto":
         return "cuda" if torch.cuda.is_available() else "cpu"
     if requested == "cuda" and not torch.cuda.is_available():
@@ -133,7 +133,7 @@ def health() -> dict[str, Any]:
         "ready": not errors,
         "runtime_level": runtime_level(),
         "real_inference": env_enabled(os.getenv("BIOCLIP_REAL_INFERENCE")),
-        "model": os.getenv("BIOCLIP_MODEL", "hf-hub:imageomics/bioclip"),
+        "model": os.getenv("BIOCLIP_MODEL", "hf-hub:imageomics/bioclip-2"),
         "runtime": dependency_status(),
         "storage": storage,
         "errors": errors,
@@ -143,7 +143,7 @@ def health() -> dict[str, Any]:
 def bioclip_model() -> tuple[Any, Any, Any, str]:
     global _BIOCLIP_MODEL, _BIOCLIP_PREPROCESS, _BIOCLIP_TOKENIZER, _BIOCLIP_MODEL_NAME, _BIOCLIP_DEVICE
     configure_bioclip_env()
-    model_name = os.getenv("BIOCLIP_MODEL", "hf-hub:imageomics/bioclip")
+    model_name = os.getenv("BIOCLIP_MODEL", "hf-hub:imageomics/bioclip-2")
     device = effective_device()
     if _BIOCLIP_MODEL is not None and _BIOCLIP_MODEL_NAME == model_name and _BIOCLIP_DEVICE == device:
         return _BIOCLIP_MODEL, _BIOCLIP_PREPROCESS, _BIOCLIP_TOKENIZER, device
@@ -201,13 +201,13 @@ def run_bioclip(image_bytes: bytes, candidate_labels: str) -> dict[str, Any]:
         "ok": True,
         "mock": False,
         "runtime_level": runtime_level(),
-        "model": os.getenv("BIOCLIP_MODEL", "hf-hub:imageomics/bioclip"),
+        "model": os.getenv("BIOCLIP_MODEL", "hf-hub:imageomics/bioclip-2"),
         "labels": [
             {"label": labels[int(index)], "score": float(score)}
             for score, index in zip(scores.detach().cpu().tolist(), indices.detach().cpu().tolist())
         ],
         "device": {
-            "requested": os.getenv("BIOCLIP_DEVICE", "cuda"),
+            "requested": os.getenv("BIOCLIP_DEVICE", "cpu"),
             "effective": device,
         },
         "image": {
@@ -258,7 +258,7 @@ async def classify_image(
         "ok": True,
         "mock": True,
         "runtime_level": runtime_level(),
-        "model": os.getenv("BIOCLIP_MODEL", "hf-hub:imageomics/bioclip"),
+        "model": os.getenv("BIOCLIP_MODEL", "hf-hub:imageomics/bioclip-2"),
         "labels": [{"label": label, "score": 1.0}],
         "filename": image.filename,
         "bytes": len(data),

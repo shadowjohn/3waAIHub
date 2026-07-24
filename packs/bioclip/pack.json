@@ -105,15 +105,15 @@
     }
   },
   "hardware": {
-    "gpu_required": true,
+    "gpu_required": false,
     "gpu_supported": true,
-    "min_vram_mb": 4096,
-    "cpu_fallback": false,
-    "min_compute_capability": "8.0"
+    "min_vram_mb": 0,
+    "cpu_fallback": true,
+    "min_compute_capability": "0.0"
   },
   "queue": {
     "supported": true,
-    "default_queue": "gpu",
+    "default_queue": "default",
     "max_concurrency": 1
   },
   "storage": {
@@ -143,7 +143,7 @@
       "key": "BIOCLIP_MODEL",
       "label": "BioCLIP model",
       "type": "text",
-      "default": "hf-hub:imageomics/bioclip",
+      "default": "hf-hub:imageomics/bioclip-2",
       "required": true,
       "restart_required": true
     },
@@ -151,7 +151,7 @@
       "key": "BIOCLIP_DEVICE",
       "label": "Device",
       "type": "select",
-      "default": "cuda",
+      "default": "cpu",
       "options": ["auto", "cpu", "cuda"],
       "required": true,
       "restart_required": true
@@ -189,12 +189,12 @@
   "env": [
     {
       "name": "BIOCLIP_MODEL",
-      "default": "hf-hub:imageomics/bioclip",
+      "default": "hf-hub:imageomics/bioclip-2",
       "required": true
     },
     {
       "name": "BIOCLIP_DEVICE",
-      "default": "cuda",
+      "default": "cpu",
       "required": true
     },
     {
@@ -217,10 +217,6 @@
     "checks": [
       "docker",
       "docker_compose",
-      "nvidia_smi",
-      "docker_gpus",
-      "vram",
-      "compute_capability",
       "storage"
     ]
   },

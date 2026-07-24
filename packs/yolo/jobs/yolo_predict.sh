@@ -151,12 +151,19 @@ else:
 device = str(request.get("device") or ("0" if os.environ.get("AIHUB_GPU_INDEXES") else "cpu"))
 conf = float(request.get("conf", 0.25))
 iou = float(request.get("iou", 0.7))
+try:
+    imgsz = int(request.get("imgsz", 640))
+    max_det = int(request.get("max_det", 300))
+except (TypeError, ValueError):
+    fail(24, "invalid_predict_option", "imgsz and max_det must be integers.")
+if imgsz < 1 or max_det < 1:
+    fail(24, "invalid_predict_option", "imgsz and max_det must be greater than 0.")
 
 output.mkdir(parents=True, exist_ok=True)
 labels_dir.mkdir(parents=True, exist_ok=True)
 try:
     model = YOLO(model_source)
-    results = model.predict(source=[str(workspace / str(p)) for p in images], conf=conf, iou=iou, device=device, verbose=False)
+    results = model.predict(source=[str(workspace / str(p)) for p in images], conf=conf, iou=iou, imgsz=imgsz, max_det=max_det, device=device, verbose=False)
 except Exception as exc:
     fail(23, "predict_failed", str(exc))
 

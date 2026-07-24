@@ -640,6 +640,9 @@ function hub_yolo_inject_predict_payload(array $model, string $executionPolicy, 
     $_POST['model_sha256'] = (string)$model['sha256'];
     $_POST['execution_policy'] = $executionPolicy;
     $_POST['device'] = $device;
+    if (trim((string)($_POST['imgsz'] ?? '')) === '' && (int)($model['imgsz'] ?? 0) > 0) {
+        $_POST['imgsz'] = (string)(int)$model['imgsz'];
+    }
     if ($deployment) {
         $_POST['slot_no'] = (string)(int)$deployment['slot_no'];
     } else {

@@ -64,6 +64,10 @@ hub_test('YOLO serving CPU pack installs yolo_predict service with read-only reg
     foreach (['model_ref', 'version_id', 'model_version_id', 'device_used', 'fallback_reason', 'detections'] as $key) {
         hub_test_assert(in_array($key, $requiredKeys, true), 'yolo-serving contract missing output key ' . $key);
     }
+    $inputFields = array_column($pack['manifest']['l5_contract']['input']['fields'] ?? [], null, 'name');
+    foreach (['conf', 'iou', 'imgsz', 'max_det'] as $field) {
+        hub_test_assert(isset($inputFields[$field]), 'yolo-serving contract missing input field ' . $field);
+    }
 
     $installed = hub_install_pack($db, 'yolo-serving', [
         'service_key' => 'yolo-cpu',
@@ -145,7 +149,14 @@ hub_test('YOLO serving gateway registers models and injects container path for p
         file_put_contents($image, 'fake-image');
         $_SERVER['REQUEST_METHOD'] = 'POST';
         $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=yolo_predict';
-        $_POST = ['model_ref' => 'yolo:natureweb:training-result-47:v1', 'execution_policy' => 'auto'];
+        $_POST = [
+            'model_ref' => 'yolo:natureweb:training-result-47:v1',
+            'execution_policy' => 'auto',
+            'conf' => '0.31',
+            'iou' => '0.62',
+            'imgsz' => '800',
+            'max_det' => '123',
+        ];
         $_FILES = ['image' => [
             'name' => 'sample.jpg',
             'type' => 'image/jpeg',
@@ -158,6 +169,8 @@ hub_test('YOLO serving gateway registers models and injects container path for p
             hub_test_assert($_POST['model_path'] === '/models/registry/natureweb/training-result-47/v1/model.pt', 'gateway must inject container registry path');
             hub_test_assert($_POST['device'] === 'cpu', '1A must route to CPU device only');
             hub_test_assert($_POST['model_version_id'] > 0, 'gateway must inject model version id');
+            hub_test_assert($_POST['conf'] === '0.31' && $_POST['iou'] === '0.62', 'gateway must preserve conf and iou');
+            hub_test_assert($_POST['imgsz'] === '800' && $_POST['max_det'] === '123', 'gateway must preserve imgsz and max_det');
 
             return hub_gateway_json(200, [
                 'ok' => true,

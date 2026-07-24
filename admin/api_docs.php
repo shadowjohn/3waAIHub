@@ -19,6 +19,37 @@ function hub_api_docs_mode_url(string $mode): string
     return hub_api_docs_public_base_url() . '?mode=' . rawurlencode($mode);
 }
 
+function hub_api_docs_multipart_curl_fields(array $contract, string $curlContinuation): string
+{
+    $lines = [];
+    foreach (($contract['input']['fields'] ?? []) as $field) {
+        if (!is_array($field)) {
+            continue;
+        }
+
+        $name = (string)($field['name'] ?? '');
+        if ($name === '' || (string)($field['type'] ?? '') === 'file') {
+            continue;
+        }
+
+        $value = $field['default'] ?? ($field['example'] ?? null);
+        if ($value === null || $value === '') {
+            continue;
+        }
+        if (is_bool($value)) {
+            $value = $value ? '1' : '0';
+        } elseif (is_array($value)) {
+            $value = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
+        } else {
+            $value = (string)$value;
+        }
+        $value = str_replace(["\\", "\"", "\r", "\n"], ["\\\\", "\\\"", ' ', ' '], $value);
+        $lines[] = '  -F "' . $name . '=' . $value . '"';
+    }
+
+    return $lines === [] ? '' : ' ' . $curlContinuation . "\n" . implode(' ' . $curlContinuation . "\n", $lines);
+}
+
 $db = hub_db();
 // hub_require_login is enforced by the stricter system_admin guard.
 $user = hub_require_system_admin($db);
@@ -87,6 +118,7 @@ hub_admin_header('API 文件', $user);
                 break;
             }
         }
+        $multipartExtra = hub_api_docs_multipart_curl_fields($contract, $curlContinuation);
         ?>
         <h3><?= hub_h((string)($item['pack']['manifest']['name'] ?? $packId)) ?><?= (($item['pack']['manifest']['role'] ?? '') === 'reference') ? ' / 參考 Pack' : '' ?></h3>
         <table>
@@ -109,7 +141,7 @@ hub_admin_header('API 文件', $user);
         <?php else: ?>
         <pre><?= hub_h($curlExecutable) ?> -X <?= hub_h($method) ?> "<?= hub_h($contractUrl) ?>" <?= hub_h($curlContinuation) ?>
   -H "Authorization: Bearer 3wa_live_xxx" <?= hub_h($curlContinuation) ?>
-  -F "<?= hub_h($fileField) ?>=@<?= hub_h($sampleFile) ?>"</pre>
+  -F "<?= hub_h($fileField) ?>=@<?= hub_h($sampleFile) ?>"<?= hub_h($multipartExtra) ?></pre>
         <?php endif; ?>
     <?php endforeach; ?>
 </section>

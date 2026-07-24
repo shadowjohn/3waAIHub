@@ -37,7 +37,9 @@ workspace/
   "images": ["input/sample.jpg"],
   "model": "yolo11n.pt",
   "conf": 0.25,
-  "iou": 0.7
+  "iou": 0.7,
+  "imgsz": 640,
+  "max_det": 300
 }
 ```
 

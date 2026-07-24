@@ -361,7 +361,7 @@ function hub_list_customer_usage(PDO $db, int $userId): array
 
 function hub_playground_supported_modes(): array
 {
-    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'tts', 'chat', 'photo', 'audio', 'background_remove'];
+    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'bioclip', 'tts', 'chat', 'photo', 'audio', 'background_remove'];
 }
 
 function hub_playground_parse_response(int $status, string $rawHeaders, string $contentType, string $body, int $elapsedMs): array

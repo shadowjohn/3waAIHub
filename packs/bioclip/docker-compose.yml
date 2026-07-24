@@ -8,15 +8,14 @@ services:
       BIOCLIP_MODEL_DIR: /models/bioclip
       BIOCLIP_CACHE_DIR: /cache/bioclip
       BIOCLIP_SERVICE_DATA_DIR: /data/service
-      BIOCLIP_MODEL: ${BIOCLIP_MODEL:-hf-hub:imageomics/bioclip}
-      BIOCLIP_DEVICE: ${BIOCLIP_DEVICE:-cuda}
+      BIOCLIP_MODEL: ${BIOCLIP_MODEL:-hf-hub:imageomics/bioclip-2}
+      BIOCLIP_DEVICE: ${BIOCLIP_DEVICE:-cpu}
       BIOCLIP_REAL_INFERENCE: ${BIOCLIP_REAL_INFERENCE:-1}
       BIOCLIP_TOP_K: ${BIOCLIP_TOP_K:-5}
       HF_HOME: /models/bioclip/huggingface
       XDG_CACHE_HOME: /cache/bioclip/xdg
       HOME: /cache/bioclip/home
       PYTHONUNBUFFERED: "1"
-    gpus: all
     volumes:
       - "${AIHUB_MODELS_DIR:-/DATA/models}/bioclip:/models/bioclip"
       - "${AIHUB_CACHE_DIR:-/DATA/3waAIHub/data/cache}/bioclip:/cache/bioclip"

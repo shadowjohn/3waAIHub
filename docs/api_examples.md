@@ -336,7 +336,9 @@ curl -X POST "<BASE_URL>?mode=yolo_predict" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "image=@sample.jpg" \
   -F "model_ref=yolo:natureweb:training-result-47:v1" \
-  -F "execution_policy=auto"
+  -F "execution_policy=auto" \
+  -F "imgsz=800" \
+  -F "max_det=300"
 ```
 
 Predict response includes:
@@ -346,6 +348,13 @@ Predict response includes:
 - `device_used`
 - `fallback_reason`
 - `detections`
+
+Optional predict controls:
+
+- `conf`
+- `iou`
+- `imgsz`: defaults to registry metadata when available, otherwise `640`
+- `max_det`: defaults to `300`
 
 `execution_policy`:
 

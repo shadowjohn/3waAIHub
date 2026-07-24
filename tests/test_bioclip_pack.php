@@ -8,6 +8,8 @@ hub_test('BioCLIP pack has L5 benchmark-ready runtime files', function (): void 
     hub_test_assert(($manifest['runtime_level'] ?? '') === 'L5-benchmark-ready', 'BioCLIP runtime level mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'bioclip', 'BioCLIP default mode mismatch');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/classify/image', 'BioCLIP endpoint mismatch');
+    hub_test_assert(($manifest['hardware']['gpu_required'] ?? true) === false, 'BioCLIP should not require GPU by default');
+    hub_test_assert(($manifest['hardware']['cpu_fallback'] ?? false) === true, 'BioCLIP should support CPU fallback');
     $contract = $manifest['l5_contract'] ?? [];
     hub_test_assert(is_array($contract) && $contract !== [], 'BioCLIP l5_contract missing');
     foreach (['endpoint', 'method', 'content_type', 'input', 'output', 'errors', 'benchmark'] as $field) {
@@ -58,14 +60,15 @@ hub_test('BioCLIP service instance generates storage env compose and gateway moc
         'BIOCLIP_CACHE_DIR=/cache/bioclip',
         'BIOCLIP_SERVICE_DATA_DIR=/data/service',
         'BIOCLIP_REAL_INFERENCE=1',
-        'BIOCLIP_MODEL=hf-hub:imageomics/bioclip',
-        'BIOCLIP_DEVICE=cuda',
+        'BIOCLIP_MODEL=hf-hub:imageomics/bioclip-2',
+        'BIOCLIP_DEVICE=cpu',
         'HF_HOME=/models/bioclip/huggingface',
         'XDG_CACHE_HOME=/cache/bioclip/xdg',
         'HOME=/cache/bioclip/home',
     ] as $needle) {
         hub_test_assert(str_contains($env, $needle), 'BioCLIP env missing ' . $needle);
     }
+    hub_test_assert(!str_contains($compose, 'gpus: all'), 'BioCLIP CPU default compose must not require Docker GPU runtime');
 
     hub_set_service_enabled($db, 'bioclip', true);
     hub_update_service_status($db, (int)$installed['service']['id'], 'running');
@@ -89,4 +92,21 @@ hub_test('BioCLIP service instance generates storage env compose and gateway moc
         $_SERVER = $oldServer;
     }
     hub_test_assert($response['status'] === 200, 'BioCLIP gateway mock should pass');
+});
+
+hub_test('BioCLIP is exposed in API playground examples', function (): void {
+    $page = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+
+    hub_test_assert(in_array('bioclip', hub_playground_supported_modes(), true), 'BioCLIP must be allowed in playground mode filter');
+    foreach ([
+        "'bioclip' => ['label' => 'BioCLIP'",
+        'api.php?mode=bioclip',
+        'name="candidate_labels"',
+        'plant,insect,bird,mammal,cat,dog',
+        '候選標籤',
+        '真實物種辨識',
+        'candidate_labels=plant,insect,bird,mammal,cat,dog',
+    ] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'BioCLIP playground missing ' . $needle);
+    }
 });

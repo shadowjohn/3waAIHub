@@ -153,13 +153,39 @@
         {
           "name": "model_ref",
           "type": "string",
-          "required": true
+          "required": true,
+          "example": "yolo:natureweb:training-result-47:v1"
         },
         {
           "name": "execution_policy",
           "type": "string",
           "required": false,
           "default": "auto"
+        },
+        {
+          "name": "conf",
+          "type": "number",
+          "required": false,
+          "default": 0.25
+        },
+        {
+          "name": "iou",
+          "type": "number",
+          "required": false,
+          "default": 0.7
+        },
+        {
+          "name": "imgsz",
+          "type": "integer",
+          "required": false,
+          "default": 640,
+          "description": "Gateway uses model registry metadata imgsz when available; otherwise 640."
+        },
+        {
+          "name": "max_det",
+          "type": "integer",
+          "required": false,
+          "default": 300
         }
       ]
     },

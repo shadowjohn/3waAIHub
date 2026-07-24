@@ -14,6 +14,7 @@ function hub_playground_profiles(): array
         'ocr' => ['label' => 'OCR', 'method' => 'POST', 'kind' => 'image'],
         'yolo' => ['label' => 'YOLO', 'method' => 'POST', 'kind' => 'image'],
         'sam3' => ['label' => 'SAM3', 'method' => 'POST', 'kind' => 'sam3'],
+        'bioclip' => ['label' => 'BioCLIP', 'method' => 'POST', 'kind' => 'bioclip'],
         'tts' => ['label' => 'TTS', 'method' => 'POST', 'kind' => 'json'],
         'structure' => ['label' => 'Structure', 'method' => 'POST', 'kind' => 'document'],
         'chat' => ['label' => 'Chat', 'method' => 'POST', 'kind' => 'json'],
@@ -114,6 +115,12 @@ function hub_playground_request_payload(string $mode): array
             'points_json' => trim((string)($_POST['points_json'] ?? '')),
             'text' => trim((string)($_POST['text'] ?? '')),
             'output_format' => trim((string)($_POST['output_format'] ?? 'metadata')) ?: 'metadata',
+            'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
+        ];
+    }
+    if ($mode === 'bioclip') {
+        return [
+            'candidate_labels' => trim((string)($_POST['candidate_labels'] ?? 'plant,insect,bird,mammal,cat,dog')),
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
     }
@@ -694,6 +701,41 @@ console.log(objectUrl);
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'bioclip') {
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n"
+            . "  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n"
+            . "  -F \"image=@sample.png\" $curlContinuation\n"
+            . "  -F \"candidate_labels=plant,insect,bird,mammal,cat,dog\" $curlContinuation\n"
+            . "  -F \"real_inference=1\"";
+        $php = <<<PHP
+\$fields = [
+    'image' => new CURLFile('/path/to/sample.png'),
+    'candidate_labels' => 'plant,insect,bird,mammal,cat,dog',
+    'real_inference' => '1',
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>'],
+    CURLOPT_POSTFIELDS => \$fields,
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const form = new FormData();
+form.append('image', fileInput.files[0]);
+form.append('candidate_labels', 'plant,insect,bird,mammal,cat,dog');
+form.append('real_inference', '1');
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer <TOKEN>' },
+  body: form
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
 
     $field = $mode === 'structure' ? 'file' : 'image';
     $extra = $mode === 'sam3' ? " $curlContinuation\n  -F prompt_type=auto $curlContinuation\n  -F output_format=metadata" : '';
@@ -809,7 +851,7 @@ hub_admin_header(__('API 測試場'), $user);
     <h1><?= hub_h(__('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(__('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(__('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(__('需要 Bearer Token')) ?></strong>。<?= hub_h(__('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(__('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=background_remove</code></p>
+    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=background_remove</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -953,6 +995,13 @@ hub_admin_header(__('API 測試場'), $user);
                 <label><?= hub_h(__('邊緣收縮／膨脹')) ?> edge_offset_px</label>
                 <input name="edge_offset_px" type="number" min="-20" max="20" step="1" value="<?= hub_h((string)($_POST['edge_offset_px'] ?? '0')) ?>">
                 <label><input name="defringe" type="checkbox" value="1" <?= ($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST' || !empty($_POST['defringe']) ? 'checked' : '' ?>> <?= hub_h(__('移除邊緣雜色')) ?></label>
+            <?php elseif ($selectedMode === 'bioclip'): ?>
+                <label><?= hub_h(__('圖片')) ?></label>
+                <input name="image" type="file" accept="image/jpeg,image/png,image/webp">
+                <label><?= hub_h(__('候選標籤')) ?> candidate_labels</label>
+                <textarea name="candidate_labels" rows="3">plant,insect,bird,mammal,cat,dog</textarea>
+                <p class="muted"><?= hub_h(__('可填逗號分隔標籤，或 JSON array；BioCLIP 會依候選標籤做 zero-shot 分類。')) ?></p>
+                <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實物種辨識')) ?></label>
             <?php elseif (in_array($selectedMode, ['ocr', 'yolo'], true)): ?>
                 <label><?= hub_h(__('圖片')) ?></label>
                 <input name="image" type="file" accept="image/*">

@@ -113,6 +113,17 @@ def parse_float(value: str | None, fallback: float, name: str) -> float:
     return parsed
 
 
+def parse_int(value: str | None, fallback: int, name: str) -> int:
+    raw = str(fallback) if value in (None, "") else str(value)
+    try:
+        parsed = int(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"{name} must be an integer") from exc
+    if parsed < 1:
+        raise HTTPException(status_code=400, detail=f"{name} must be greater than 0")
+    return parsed
+
+
 def detection_items(result: Any, model: Any) -> list[dict[str, Any]]:
     names = getattr(result, "names", {}) or getattr(model, "names", {})
     boxes = getattr(result, "boxes", None)
@@ -338,6 +349,8 @@ async def detect_image(
     fallback_reason: str = Form(""),
     conf: str | None = Form(None),
     iou: str | None = Form(None),
+    imgsz: str | None = Form(None),
+    max_det: str | None = Form(None),
 ) -> dict[str, Any] | JSONResponse:
     started = time.perf_counter()
     data = await image.read()
@@ -393,6 +406,8 @@ async def detect_image(
             source=str(image_path),
             conf=parse_float(conf, 0.25, "conf"),
             iou=parse_float(iou, 0.7, "iou"),
+            imgsz=parse_int(imgsz, 640, "imgsz"),
+            max_det=parse_int(max_det, 300, "max_det"),
             device=inference_device,
             verbose=False,
         )

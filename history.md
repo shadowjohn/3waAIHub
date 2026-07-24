@@ -3168,3 +3168,55 @@ Notes:
 
 - Image upload already accepted JPEG/PNG/WebP by MIME; this change fixes inventory and training dataset visibility.
 - YOLO training behavior was not changed.
+
+## BioCLIP 2 Default Model
+
+Upgraded the BioCLIP Pack default model from BioCLIP 1 to BioCLIP 2.
+
+Implemented:
+
+- `BIOCLIP_MODEL` default is now `hf-hub:imageomics/bioclip-2`.
+- New installs and generated service env files use BioCLIP 2 by default.
+- Existing adapter behavior remains unchanged: OpenCLIP real inference, same `/classify/image` contract, same benchmarks.
+
+Deferred:
+
+- Taxonomy-specific candidate label presets.
+- BioCLIP 2.5 evaluation.
+
+## BioCLIP Playground Example
+
+Added BioCLIP to `admin/playground.php` so the API testing page can exercise `mode=bioclip`.
+
+Implemented:
+
+- BioCLIP service selector profile.
+- Multipart image upload form.
+- `candidate_labels` input.
+- Real inference checkbox label for species classification.
+- curl / PHP / JS fetch examples using `api.php?mode=bioclip`.
+- Customer playground allowlist now includes `bioclip`.
+
+## BioCLIP CPU Resident Default
+
+Kept BioCLIP2 as a CPU-resident service by default after real-machine smoke showed warmed CPU inference is fast enough for interactive testing.
+
+Implemented:
+
+- `BIOCLIP_DEVICE` default changed to `cpu`.
+- BioCLIP hardware metadata now says GPU is optional, not required.
+- Default compose no longer requires Docker GPU runtime.
+- Tests lock the CPU default so new installs do not accidentally consume VRAM.
+
+## YOLO Predict Control Parameters
+
+Expanded YOLO serving and local predict runner controls for NatureWeb.
+
+Implemented:
+
+- `yolo_predict` now accepts optional `imgsz` and `max_det` alongside existing `conf` / `iou`.
+- Gateway preserves client `conf` / `iou` / `imgsz` / `max_det`.
+- Gateway injects model registry `imgsz` when the client omits it.
+- `packs/yolo-serving/service/app.py` validates integer controls and passes `imgsz` / `max_det` into Ultralytics `model.predict(...)`.
+- `packs/yolo/jobs/yolo_predict.sh` reads `imgsz` / `max_det` from `request.json`.
+- Pack contract, public docs, API examples, and Local Job docs document the new fields.
