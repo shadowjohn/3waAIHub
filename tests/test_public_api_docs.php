@@ -7,7 +7,7 @@ function hub_test_make_documentable_pack(PDO $db, string $packId, array $state =
     hub_test_assert($pack !== null && ($pack['status'] ?? '') === 'ok', 'test Pack unavailable: ' . $packId);
     $manifest = $pack['manifest'];
     $installed = hub_install_pack($db, $packId, [
-        'service_key' => (string)($manifest['install']['default_service_key'] ?? ($packId . '-main')),
+        'service_key' => (string)($state['service_key'] ?? $manifest['install']['default_service_key'] ?? ($packId . '-main')),
         'idempotent' => true,
     ]);
     $service = $installed['service'];
@@ -142,6 +142,12 @@ if (getenv('AIHUB_PUBLIC_API_TEST_PROXY') === '1' || $path === '/healthy') {
     echo '{"ok":true}';
     return;
 }
+if ($path === '/oversized') {
+    $body = str_repeat('x', 65537);
+    header('Content-Length: ' . strlen($body));
+    echo $body;
+    return;
+}
 if ($path === '/stall') {
     $body = '{"ok":true}';
     header('Content-Length: ' . strlen($body));
@@ -169,6 +175,10 @@ PHP);
             'mode' => 'multi_stalled',
             'health_url' => 'http://127.0.0.1:' . $stalled['port'] . '/stall',
         ]);
+        hub_test_make_documentable_pack($db, 'translate-gemma12b', [
+            'mode' => 'multi_oversized',
+            'health_url' => 'http://127.0.0.1:' . $direct['port'] . '/oversized',
+        ]);
         $batchModes = array_column(hub_public_api_services($db), 'mode');
 
         $db->exec('UPDATE services SET enabled = 0');
@@ -188,6 +198,7 @@ PHP);
 
         hub_test_assert(in_array('multi_healthy', $batchModes, true), 'completed local HTTP 200 health response rejected');
         hub_test_assert(!in_array('multi_stalled', $batchModes, true), 'timed-out partial health response accepted');
+        hub_test_assert(!in_array('multi_oversized', $batchModes, true), 'oversized health response accepted');
         hub_test_assert(!in_array('proxy_guard', $proxyModes, true), 'loopback health request inherited a proxy');
     } finally {
         foreach ($originalEnvironment as $key => $value) {
@@ -197,6 +208,48 @@ PHP);
                 putenv($key . '=' . $value);
             }
         }
+        hub_test_public_api_stop_servers($servers);
+        if (is_file($routerDir . '/router.php')) {
+            unlink($routerDir . '/router.php');
+        }
+        if (is_dir($routerDir)) {
+            rmdir($routerDir);
+        }
+    }
+});
+
+hub_test('Public API health batch bounds huge candidate sets', function (): void {
+    if (hub_platform_id() !== 'linux' || !function_exists('curl_multi_init') || !function_exists('proc_open')) {
+        hub_test_skip('real curl_multi stress test requires Linux, cURL multi, and proc_open');
+    }
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $servers = [];
+    $routerDir = sys_get_temp_dir() . '/3waaihub_public_api_stress_' . bin2hex(random_bytes(8));
+    try {
+        if (!mkdir($routerDir, 0775, true) && !is_dir($routerDir)) {
+            throw new RuntimeException('cannot create public API stress server directory');
+        }
+        $router = $routerDir . '/router.php';
+        file_put_contents($router, <<<'PHP'
+<?php
+header('Content-Type: application/json');
+echo '{"ok":true}';
+PHP);
+        $servers[] = hub_test_public_api_start_server($router);
+        $url = 'http://127.0.0.1:' . $servers[0]['port'] . '/health';
+        $services = [];
+        for ($id = 1; $id <= 10000; $id++) {
+            $services[] = ['id' => $id, 'health_url' => $url];
+        }
+
+        $started = microtime(true);
+        $healthy = hub_public_api_healthy_service_ids($services);
+        $elapsed = microtime(true) - $started;
+
+        hub_test_assert($elapsed < 1.5, '10,000-candidate health batch exceeded 1.5 seconds: ' . number_format($elapsed, 3));
+        hub_test_assert(count($healthy) <= 128, 'health batch probed more than 128 HTTP services');
+    } finally {
         hub_test_public_api_stop_servers($servers);
         if (is_file($routerDir . '/router.php')) {
             unlink($routerDir . '/router.php');
@@ -273,6 +326,50 @@ hub_test('Public API inventory requires installed enabled running and healthy se
     hub_test_assert(!str_contains($emptyHtml, 'href="#local-jobs"'), 'empty public docs must hide the YOLO Local Jobs tab');
     hub_test_assert(!str_contains($emptyHtml, '<section id="local-jobs"'), 'empty public docs must hide the YOLO Local Jobs section');
     hub_test_assert(!str_contains($emptyHtml, '<article class="card">'), 'empty public docs must not render service cards');
+});
+
+hub_test('Public API Gemma derived contracts require gemma4-main', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $healthy = static fn (array $service): bool => true;
+    $derivedModes = ['photo_upload', 'photo', 'audio_upload', 'audio'];
+
+    $customDb = hub_test_reset_db();
+    hub_test_make_documentable_pack($customDb, 'llm-gemma4-12b', ['service_key' => 'gemma-custom']);
+    $customModes = array_column(hub_public_api_services($customDb, $healthy), 'mode');
+    hub_test_assert(array_intersect($derivedModes, $customModes) === [], 'custom Gemma service advertised canonical derived routes');
+
+    $canonicalDb = hub_test_reset_db();
+    hub_test_make_documentable_pack($canonicalDb, 'llm-gemma4-12b');
+    $canonicalModes = array_column(hub_public_api_services($canonicalDb, $healthy), 'mode');
+    hub_test_assert(array_diff($derivedModes, $canonicalModes) === [], 'gemma4-main did not advertise every derived route');
+});
+
+hub_test('Public API YOLO derived contracts require yolo-cpu', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $healthy = static fn (array $service): bool => true;
+    $derivedModes = ['yolo_model_register', 'yolo_model_status', 'yolo_model_assign_gpu', 'yolo_model_unassign_gpu'];
+
+    $customDb = hub_test_reset_db();
+    hub_test_make_documentable_pack($customDb, 'yolo-serving', ['service_key' => 'yolo-custom']);
+    $customModes = array_column(hub_public_api_services($customDb, $healthy), 'mode');
+    hub_test_assert(array_intersect($derivedModes, $customModes) === [], 'custom YOLO service advertised canonical derived routes');
+
+    $canonicalDb = hub_test_reset_db();
+    hub_test_make_documentable_pack($canonicalDb, 'yolo-serving');
+    $canonicalModes = array_column(hub_public_api_services($canonicalDb, $healthy), 'mode');
+    hub_test_assert(array_diff($derivedModes, $canonicalModes) === [], 'yolo-cpu did not advertise every derived route');
+});
+
+hub_test('Public API DB contract wins a derived mode collision', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $healthy = static fn (array $service): bool => true;
+
+    $db = hub_test_reset_db();
+    hub_test_make_documentable_pack($db, 'llm-gemma4-12b');
+    hub_test_make_documentable_pack($db, 'hello', ['mode' => 'photo_upload']);
+    $servicesByMode = array_column(hub_public_api_services($db, $healthy), null, 'mode');
+
+    hub_test_assert(($servicesByMode['photo_upload']['pack_id'] ?? '') === 'hello', 'derived contract overwrote a real DB service mode');
 });
 
 hub_test('Public API docs gate DocParser and YOLO sections independently', function (): void {
