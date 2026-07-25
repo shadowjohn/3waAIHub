@@ -637,7 +637,7 @@ CREATE TABLE IF NOT EXISTS cluster_stations (
 );
 
 CREATE TABLE IF NOT EXISTS cluster_routes (
-    route_id TEXT PRIMARY KEY,
+    route_id TEXT NOT NULL PRIMARY KEY,
     station_id INTEGER NOT NULL,
     member_id INTEGER NULL,
     token_id INTEGER NULL,

@@ -57,6 +57,27 @@ hub_test('cluster router migration creates all persistence tables', function ():
     }
 });
 
+hub_test('cluster router rejects NULL route IDs', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $stationId = hub_cluster_save_paired_station($db, hub_test_cluster_station_pairing());
+
+        hub_test_assert(hub_test_throws(static function () use ($db, $stationId): void {
+            $db->prepare(
+                'INSERT INTO cluster_routes (route_id, station_id, mode, state, created_at, updated_at)
+                 VALUES (:route_id, :station_id, :mode, :state, :created_at, :updated_at)'
+            )->execute([
+                ':route_id' => null,
+                ':station_id' => $stationId,
+                ':mode' => 'vision',
+                ':state' => 'created',
+                ':created_at' => hub_now(),
+                ':updated_at' => hub_now(),
+            ]);
+        }), 'cluster route NULL ID must reject');
+    });
+});
+
 hub_test('cluster router encrypts station tokens at rest and decrypts internal records', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
@@ -93,6 +114,30 @@ hub_test('cluster router rejects an invalid secret and invalid station base URLs
             'https:///missing-host',
         ] as $value) {
             hub_test_assert(hub_test_throws(static fn (): string => hub_cluster_validate_station_base_url($value)), 'invalid station base URL must reject: ' . $value);
+        }
+    });
+});
+
+hub_test('cluster router rejects invalid explicit ports in station and pairing URLs', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        foreach ([
+            'https://station.example:0/aihub',
+            'https://station.example:65536/aihub',
+        ] as $url) {
+            hub_test_assert(hub_test_throws(static fn (): string => hub_cluster_validate_station_base_url($url)), 'invalid station port must reject: ' . $url);
+        }
+
+        $db = hub_test_reset_db();
+        $invite = str_repeat('d', 64);
+        foreach ([0, 65536] as $port) {
+            $requested = false;
+            $rejected = hub_test_throws(function () use ($db, $port, $invite, &$requested): array {
+                return hub_cluster_import_pairing_link($db, 'https://station.example:' . $port . '/cluster_pair.php#invite=' . $invite, static function () use (&$requested): array {
+                    $requested = true;
+                    return ['status' => 200, 'body' => json_encode(hub_test_cluster_station_pairing(), JSON_THROW_ON_ERROR)];
+                });
+            });
+            hub_test_assert($rejected && !$requested, 'invalid pairing port must reject before requesting: ' . $port);
         }
     });
 });

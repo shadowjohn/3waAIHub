@@ -67,6 +67,7 @@ function hub_cluster_validate_station_base_url(string $value): string
         || !filter_var($value, FILTER_VALIDATE_URL)
         || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['http', 'https'], true)
         || trim((string)($parts['host'] ?? '')) === ''
+        || (isset($parts['port']) && ((int)$parts['port'] < 1 || (int)$parts['port'] > 65535))
         || isset($parts['user'])
         || isset($parts['pass'])
         || isset($parts['fragment'])
@@ -119,6 +120,7 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
         || !filter_var($pairingLink, FILTER_VALIDATE_URL)
         || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['http', 'https'], true)
         || trim((string)($parts['host'] ?? '')) === ''
+        || (isset($parts['port']) && ((int)$parts['port'] < 1 || (int)$parts['port'] > 65535))
         || isset($parts['user'])
         || isset($parts['pass'])
         || str_contains($pairingLink, '?')
@@ -148,13 +150,16 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
         if ($handle === false) {
             throw new RuntimeException('pairing failed');
         }
-        curl_setopt_array($handle, [
+        if (!curl_setopt_array($handle, [
             CURLOPT_POST => true,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER => array_map(static fn (string $name, string $value): string => $name . ': ' . $value, array_keys($request['headers']), $request['headers']),
             CURLOPT_CONNECTTIMEOUT => 3,
             CURLOPT_TIMEOUT => 10,
-        ]);
+        ])) {
+            curl_close($handle);
+            throw new RuntimeException('pairing failed');
+        }
         $body = curl_exec($handle);
         $status = (int)(curl_getinfo($handle, CURLINFO_RESPONSE_CODE) ?: 0);
         curl_close($handle);
