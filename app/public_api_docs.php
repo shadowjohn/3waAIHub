@@ -670,6 +670,7 @@ function hub_public_api_manifest(PDO $db, ?callable $healthProbe = null): array
 function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healthProbe = null): string
 {
     $services = hub_public_api_services($db, $healthProbe);
+    $packIds = array_fill_keys(array_column($services, 'pack_id'), true);
     $t = static fn (string $value): string => hub_h(__($value));
     ob_start();
     ?>
@@ -709,10 +710,14 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
         <p class="muted"><?= $t('這份文件只提供外部介接所需資訊，不包含後台管理連結、內部部署資訊、主機檔案路徑或 token 明文。') ?></p>
         <p><?= $t('認證方式') ?>：<code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
         <p>API Endpoint：<code><?= hub_h(hub_public_api_base_url()) ?>?mode=&lt;mode&gt;</code></p>
-        <p>DocParser <?= $t('局部補翻譯') ?>：<?= $t('看') ?> <code>quality_report.missing_translation_blocks</code>，<?= $t('再送') ?> <code>task_type=docparser_repair_translation</code>、<code>task_id</code>、<code>block_ids</code> <?= $t('到') ?> <code><?= hub_h(hub_public_api_base_url()) ?>?mode=task_submit</code>。<?= $t('此流程只重翻指定 block，不重跑 OCR / layout / figure extraction。') ?></p>
+        <?php if (isset($packIds['docparser'])): ?>
+            <p>DocParser <?= $t('局部補翻譯') ?>：<?= $t('看') ?> <code>quality_report.missing_translation_blocks</code>，<?= $t('再送') ?> <code>task_type=docparser_repair_translation</code>、<code>task_id</code>、<code>block_ids</code> <?= $t('到') ?> <code><?= hub_h(hub_public_api_base_url()) ?>?mode=task_submit</code>。<?= $t('此流程只重翻指定 block，不重跑 OCR / layout / figure extraction。') ?></p>
+        <?php endif; ?>
         <nav class="tabs" aria-label="<?= $t('公開 API 文件區段') ?>">
             <a class="tab" href="#api">API modes / <?= $t('API 模式') ?></a>
-            <a class="tab" href="#local-jobs">Local Jobs / <?= $t('本機工作') ?></a>
+            <?php if (isset($packIds['yolo'])): ?>
+                <a class="tab" href="#local-jobs">Local Jobs / <?= $t('本機工作') ?></a>
+            <?php endif; ?>
         </nav>
         <?= hub_i18n_language_selector() ?>
         <?php if ($user !== null): ?>
@@ -724,7 +729,11 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
             <h2>API modes / <?= $t('API 模式') ?></h2>
             <span class="muted">HTTP Gateway</span>
         </div>
-        <p><?php foreach ($services as $service): ?><code><?= hub_h((string)$service['mode']) ?></code> <?php endforeach; ?></p>
+        <?php if ($services === []): ?>
+            <p><?= $t('目前沒有健康且可用的 API 服務。') ?></p>
+        <?php else: ?>
+            <p><?php foreach ($services as $service): ?><code><?= hub_h((string)$service['mode']) ?></code> <?php endforeach; ?></p>
+        <?php endif; ?>
     </section>
     <section class="grid">
         <?php foreach ($services as $service): ?>
@@ -766,7 +775,8 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
             </article>
         <?php endforeach; ?>
     </section>
-    <section id="local-jobs" class="panel">
+    <?php if (isset($packIds['yolo'])): ?>
+        <section id="local-jobs" class="panel">
         <div class="section-title">
             <h2>Local Jobs / <?= $t('本機工作') ?></h2>
             <span class="muted">Local Job Contract v0.1</span>
@@ -811,7 +821,8 @@ bin/aihub-run yolo_export_onnx --pack yolo --workspace &lt;WORKSPACE&gt;</pre>
                 </table>
             </article>
         </div>
-    </section>
+        </section>
+    <?php endif; ?>
 </main>
 </body>
 </html>

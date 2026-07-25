@@ -401,9 +401,6 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
     hub_test_assert(str_contains($readme, '/DATA/models/yolo/registry'), 'README should document YOLO registry write permissions.');
     hub_test_assert(str_contains($readme, 'imgsz') && str_contains($readme, 'max_det'), 'README should document yolo_predict imgsz/max_det.');
     hub_test_assert(str_contains($html, 'imgsz') && str_contains($html, 'max_det'), 'Public docs should document yolo_predict imgsz/max_det.');
-    $adminDocs = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
-    hub_test_assert(str_contains($adminDocs, 'hub_api_docs_multipart_curl_fields'), 'Admin API docs should include non-file multipart fields in generated curl examples.');
-    hub_test_assert(str_contains($adminDocs, '$multipartExtra'), 'Admin API docs should append multipart defaults/examples to curl examples.');
     $fixPermissions = (string)file_get_contents(HUB_ROOT . '/scripts/fix_permissions.sh');
     hub_test_assert(str_contains($fixPermissions, '/DATA/models/yolo/registry'), 'fix_permissions should prepare YOLO registry directory.');
     hub_test_assert(str_contains($fixPermissions, 'setfacl'), 'fix_permissions should apply ACL when available.');

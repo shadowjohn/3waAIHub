@@ -13,7 +13,7 @@ hub_test('PhaseDX-3.1 home pages expose public API docs links and open access de
     }
 
     $adminDocs = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
-    hub_test_assert(str_contains($adminDocs, 'hub_require_login'), 'admin/api_docs.php must still require login');
+    hub_test_assert(preg_match('/^\s*\$user\s*=\s*hub_require_system_admin\(\$db\);$/m', $adminDocs) === 1, 'admin/api_docs.php must require a system admin');
 
     $db = hub_test_reset_db();
     hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS') === '1', 'public docs default must remain enabled');

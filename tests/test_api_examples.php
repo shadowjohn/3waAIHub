@@ -28,20 +28,6 @@ hub_test('api examples documentation exists', function (): void {
     hub_test_assert(($contracts['ocr-ppocrv5']['contract']['endpoint'] ?? '') === '/ocr/image', 'OCR API contract endpoint mismatch');
     hub_test_assert(in_array('real_inference', array_column($contracts['ocr-ppocrv5']['contract']['input']['fields'] ?? [], 'name'), true), 'OCR API contract must expose real_inference');
     hub_test_assert(is_file(HUB_ROOT . '/admin/pack_readiness.php'), 'pack readiness page missing');
-    $apiDocsPage = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
-    hub_test_assert(str_contains($apiDocsPage, 'hub_pack_api_contracts'), 'admin API docs must read pack contracts');
-    hub_test_assert(str_contains($apiDocsPage, 'hub_api_docs_mode_url'), 'admin API docs must generate URLs from current host');
-    hub_test_assert(!str_contains($apiDocsPage, 'http://localhost/3waAIHub/api.php'), 'admin API docs must not hardcode localhost API URLs');
-    hub_test_assert(str_contains($apiDocsPage, '參考 Pack'), 'admin API docs must show hello reference pack');
-    hub_test_assert(str_contains($apiDocsPage, 'Mock 模式'), 'admin API docs must show OCR mock mode');
-    hub_test_assert(str_contains($apiDocsPage, '真實推論模式'), 'admin API docs must show OCR real inference mode');
-    hub_test_assert(str_contains($apiDocsPage, "hub_api_docs_mode_url('translate')"), 'admin API docs must show translate mode');
-    hub_test_assert(str_contains($apiDocsPage, "hub_api_docs_mode_url('sam3')"), 'admin API docs must show sam3 mode');
-    hub_test_assert(str_contains($apiDocsPage, 'prompt_type=text'), 'admin API docs must show SAM3 semantic prompt mode');
-    hub_test_assert(str_contains($apiDocsPage, 'Content-Type: application/json'), 'admin API docs must show JSON curl');
-    foreach (['hub_platform_id()', '$curlExecutable', '$curlContinuation', 'curl.exe'] as $needle) {
-        hub_test_assert(str_contains($apiDocsPage, $needle), 'admin API docs must select platform curl syntax: ' . $needle);
-    }
     $benchmarkPage = (string)file_get_contents(HUB_ROOT . '/admin/benchmarks.php');
     hub_test_assert(str_contains($benchmarkPage, 'ocr_mock_image'), 'benchmark page must show OCR mock benchmark');
     hub_test_assert(str_contains($benchmarkPage, 'ocr_real_image'), 'benchmark page must show OCR real benchmark');

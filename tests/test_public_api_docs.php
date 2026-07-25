@@ -267,6 +267,154 @@ hub_test('Public API inventory requires installed enabled running and healthy se
     $emptyDb->exec('DELETE FROM services');
     $emptyManifest = hub_public_api_manifest($emptyDb, static fn (array $service): bool => true);
     hub_test_assert(($emptyManifest['services'] ?? null) === [], 'empty inventory must not fall back to repository Packs');
+    $emptyHtml = hub_public_api_docs_html($emptyDb, null, static fn (array $service): bool => true);
+    hub_test_assert(str_contains($emptyHtml, '目前沒有健康且可用的 API 服務。'), 'empty public docs must show the API empty state');
+    hub_test_assert(!str_contains($emptyHtml, 'quality_report.missing_translation_blocks'), 'empty public docs must hide the DocParser repair hint');
+    hub_test_assert(!str_contains($emptyHtml, 'href="#local-jobs"'), 'empty public docs must hide the YOLO Local Jobs tab');
+    hub_test_assert(!str_contains($emptyHtml, '<section id="local-jobs"'), 'empty public docs must hide the YOLO Local Jobs section');
+    hub_test_assert(!str_contains($emptyHtml, '<article class="card">'), 'empty public docs must not render service cards');
+});
+
+hub_test('Public API docs gate DocParser and YOLO sections independently', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $healthy = static fn (array $service): bool => true;
+    $render = static function (array $packIds) use ($healthy): string {
+        $db = hub_test_reset_db();
+        foreach ($packIds as $packId) {
+            hub_test_make_documentable_pack($db, $packId);
+        }
+
+        return hub_public_api_docs_html($db, null, $healthy);
+    };
+    $docParserHint = 'quality_report.missing_translation_blocks';
+    $localJobsTab = 'href="#local-jobs"';
+    $localJobsSection = '<section id="local-jobs"';
+
+    $ordinaryHtml = $render(['hello']);
+    hub_test_assert(!str_contains($ordinaryHtml, $docParserHint), 'ordinary live service must not show the DocParser repair hint');
+    hub_test_assert(!str_contains($ordinaryHtml, $localJobsTab) && !str_contains($ordinaryHtml, $localJobsSection), 'ordinary live service must not show YOLO Local Jobs');
+
+    $docParserHtml = $render(['hello', 'docparser']);
+    hub_test_assert(str_contains($docParserHtml, $docParserHint), 'live DocParser must show the repair hint');
+    hub_test_assert(!str_contains($docParserHtml, $localJobsTab) && !str_contains($docParserHtml, $localJobsSection), 'live DocParser without YOLO must not show Local Jobs');
+
+    $yoloHtml = $render(['hello', 'yolo']);
+    hub_test_assert(!str_contains($yoloHtml, $docParserHint), 'live YOLO without DocParser must not show the repair hint');
+    hub_test_assert(str_contains($yoloHtml, $localJobsTab) && str_contains($yoloHtml, $localJobsSection), 'live YOLO must show Local Jobs');
+});
+
+hub_test('Admin API docs render canonical mixed live contracts in one health batch', function (): void {
+    if (hub_platform_id() !== 'linux' || !function_exists('curl_multi_init') || !function_exists('proc_open')) {
+        hub_test_skip('authenticated admin render test requires Linux, cURL multi, and proc_open');
+    }
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $servers = [];
+    $routerDir = sys_get_temp_dir() . '/3waaihub_admin_api_docs_' . bin2hex(random_bytes(8));
+    $countFile = $routerDir . '/count.log';
+    $countEnvironment = 'AIHUB_ADMIN_API_DOCS_TEST_COUNT_FILE';
+    $originalEnvironment = getenv($countEnvironment);
+    $originalSession = $_SESSION ?? [];
+    $originalServer = $_SERVER;
+    $originalGet = $_GET;
+    $bufferLevel = ob_get_level();
+
+    try {
+        if (!mkdir($routerDir, 0775, true) && !is_dir($routerDir)) {
+            throw new RuntimeException('cannot create admin API docs test server directory');
+        }
+        file_put_contents($countFile, '');
+        $router = $routerDir . '/router.php';
+        file_put_contents($router, <<<'PHP'
+<?php
+$countFile = (string)getenv('AIHUB_ADMIN_API_DOCS_TEST_COUNT_FILE');
+if ($countFile !== '') {
+    file_put_contents($countFile, "1\n", FILE_APPEND | LOCK_EX);
+}
+header('Content-Type: application/json');
+echo '{"ok":true}';
+PHP);
+        putenv($countEnvironment . '=' . $countFile);
+        $servers[] = hub_test_public_api_start_server($router);
+        $healthBase = 'http://127.0.0.1:' . $servers[0]['port'];
+
+        $db = hub_test_reset_db();
+        $serviceRows = [];
+        foreach (['hello', 'translate-gemma12b', 'image-birefnet'] as $packId) {
+            $serviceRows[] = hub_test_make_documentable_pack($db, $packId, ['health_url' => $healthBase . '/' . $packId]);
+        }
+        $serviceRows[] = hub_test_make_documentable_pack($db, 'docparser');
+        $httpRows = array_filter($serviceRows, static fn (array $service): bool => !hub_service_is_internal_task($service));
+        hub_test_assert(count($httpRows) === 3, 'admin API docs fixture must contain three HTTP service rows');
+
+        $_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['HTTP_HOST'] = 'api-docs.test:9443';
+        $_SERVER['HTTPS'] = 'on';
+        $_SERVER['SCRIPT_NAME'] = '/hub/admin/api_docs.php';
+        $_GET = [];
+
+        ob_start();
+        require HUB_ROOT . '/admin/api_docs.php';
+        $html = (string)ob_get_clean();
+
+        $healthHits = count(file($countFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []);
+        hub_test_assert($healthHits === count($httpRows), 'admin API docs must run exactly one health batch for all HTTP service rows');
+        $baseUrl = 'https://api-docs.test:9443/hub/api.php';
+        foreach (['hello', 'translate', 'background_remove', 'docparser'] as $mode) {
+            hub_test_assert(str_contains($html, 'api.php?mode=' . $mode), 'admin API docs missing canonical mode endpoint: ' . $mode);
+            hub_test_assert(str_contains($html, $baseUrl . '?mode=' . $mode), 'admin API docs curl example must use the current host: ' . $mode);
+        }
+        foreach (['hello', 'translate-gemma12b', 'image-birefnet', 'docparser'] as $packId) {
+            hub_test_assert(str_contains($html, $packId), 'admin API docs missing Pack: ' . $packId);
+        }
+        foreach (['Mode', 'Pack', 'endpoint', 'HTTP 方法', 'Request Content-Type', 'Response Content-Type', 'runtime_level', 'execution_type', '輸入欄位', '輸出 Keys', 'Response Headers', 'Task API', '錯誤碼'] as $field) {
+            hub_test_assert(str_contains($html, $field), 'admin API docs missing rendered field: ' . $field);
+        }
+        foreach (['GET', 'POST', 'application/json', 'multipart/form-data', 'image/png', 'L5-benchmark-ready', 'sync_api', 'async_task'] as $value) {
+            hub_test_assert(str_contains($html, $value), 'admin API docs missing contract value: ' . $value);
+        }
+        hub_test_assert(substr_count($html, '<th>task_type</th>') === 1 && str_contains($html, 'docparser_parse'), 'admin API docs must render only the DocParser task_type');
+        hub_test_assert(str_contains($html, '&quot;name&quot;: &quot;image&quot;') && str_contains($html, '&quot;ok&quot;'), 'admin API docs missing canonical input/output contracts');
+        hub_test_assert(str_contains($html, 'X-3waAIHub-Model') && str_contains($html, 'X-3waAIHub-Elapsed-Ms'), 'admin API docs missing binary response headers');
+        hub_test_assert(str_contains($html, 'task_status') && str_contains($html, 'task_result'), 'admin API docs missing task API references');
+        hub_test_assert(str_contains($html, 'unknown_mode') && str_contains($html, 'file_required'), 'admin API docs missing canonical errors');
+        hub_test_assert(substr_count($html, '<h4>curl 範例</h4>') === 4, 'admin API docs must render one canonical curl example per service');
+        $translateCurlStart = strpos($html, $baseUrl . '?mode=translate');
+        $translateCurlEnd = $translateCurlStart === false ? false : strpos($html, '</pre>', $translateCurlStart);
+        hub_test_assert($translateCurlStart !== false && $translateCurlEnd !== false, 'admin API docs missing the Translate curl example');
+        $translateCurl = substr($html, $translateCurlStart, $translateCurlEnd - $translateCurlStart);
+        hub_test_assert(
+            str_contains($translateCurl, '-H &quot;Content-Type: application/json&quot;')
+            && str_contains($translateCurl, '-d &#039;{')
+            && str_contains($translateCurl, '&quot;text&quot;: &quot;That was a wonderful time.&quot;'),
+            'admin API docs Translate curl must include the JSON header, body flag, and representative payload'
+        );
+        hub_test_assert(str_contains($html, 'Authorization: Bearer &lt;TOKEN&gt;') && str_contains($html, 'image=@sample.png') && str_contains($html, '--output result.png') && str_contains($html, 'file=@manual.pdf'), 'admin API docs missing canonical multipart, binary, or async curl details');
+        hub_test_assert(str_contains($html, '</html>') && !str_contains($html, 'Fatal error'), 'admin API docs render must complete without fatal output');
+    } finally {
+        while (ob_get_level() > $bufferLevel) {
+            ob_end_clean();
+        }
+        $_SESSION = $originalSession;
+        $_SERVER = $originalServer;
+        $_GET = $originalGet;
+        if ($originalEnvironment === false) {
+            putenv($countEnvironment);
+        } else {
+            putenv($countEnvironment . '=' . $originalEnvironment);
+        }
+        hub_test_public_api_stop_servers($servers);
+        foreach ([$routerDir . '/router.php', $countFile] as $path) {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+        if (is_dir($routerDir)) {
+            rmdir($routerDir);
+        }
+    }
 });
 
 hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', function (): void {
@@ -422,6 +570,8 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     hub_test_assert(str_contains($docsHtml, 'mode'), 'public docs must keep technical values');
     hub_test_assert(str_contains($docsHtml, 'docparser_parse'), 'public docs must document DocParser task type');
     hub_test_assert(str_contains($docsHtml, 'docparser_repair_translation'), 'public docs must document DocParser repair task type');
+    hub_test_assert(str_contains($docsHtml, 'quality_report.missing_translation_blocks'), 'public docs must show the DocParser repair hint when DocParser is live');
+    hub_test_assert(str_contains($docsHtml, '<section id="local-jobs"'), 'public docs must show the YOLO Local Jobs section when YOLO is live');
     hub_test_assert(str_contains($docsHtml, 'multipart/form-data'), 'public docs must document DocParser multipart upload');
     hub_test_assert(str_contains($docsHtml, 'file=@manual.pdf'), 'public docs must show DocParser PDF file upload');
     hub_test_assert(str_contains($docsHtml, 'mode=task_status&amp;task_id='), 'public docs must show task_status URL');
@@ -433,12 +583,29 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     }
 });
 
+hub_test('Admin API docs architecture keeps one shared canonical inventory', function (): void {
+    $adminDocs = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
+    hub_test_assert(preg_match('/^\s*\$user\s*=\s*hub_require_system_admin\(\$db\);$/m', $adminDocs) === 1, 'admin API docs must require a system admin');
+    hub_test_assert(str_contains($adminDocs, "require_once __DIR__ . '/../app/public_api_docs.php';"), 'admin API docs must load the shared public docs helpers');
+    hub_test_assert(substr_count($adminDocs, 'hub_public_api_services($db)') === 1, 'admin API docs must load canonical live contracts exactly once');
+    foreach ([
+        'hub_list_services($db)',
+        'hub_pack_api_contracts()',
+        'function hub_api_docs_public_base_url',
+        'function hub_api_docs_mode_url',
+        'function hub_api_docs_multipart_curl_fields',
+        '<h2>GET hello</h2>',
+        '<h2>POST OCR</h2>',
+        '<h2>POST Translate</h2>',
+        '<h2>POST SAM3</h2>',
+    ] as $removedAdminSource) {
+        hub_test_assert(!str_contains($adminDocs, $removedAdminSource), 'admin API docs still contain duplicate source: ' . $removedAdminSource);
+    }
+});
+
 hub_test('PhaseDX-3 public API docs files and settings UI contract are present', function (): void {
     hub_test_assert(is_file(HUB_ROOT . '/public_api_docs.php'), 'public_api_docs.php missing');
     hub_test_assert(is_file(HUB_ROOT . '/api_manifest.json.php'), 'api_manifest.json.php missing');
-
-    $adminDocs = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
-    hub_test_assert(str_contains($adminDocs, 'hub_require_login'), 'admin/api_docs.php must still require login');
 
     $settingsPage = (string)file_get_contents(HUB_ROOT . '/admin/settings.php');
     foreach (['AIHUB_PUBLIC_API_DOCS', 'AIHUB_PUBLIC_API_MANIFEST', 'AIHUB_PUBLIC_API_LOCAL_ONLY', '未登入 API 文件', '未登入 Agent Manifest', '僅允許本機讀取'] as $needle) {
