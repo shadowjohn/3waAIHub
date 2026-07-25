@@ -929,6 +929,51 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     }
 });
 
+hub_test('Agent manifest smoke validates live-contract metadata without Pack inference', function (): void {
+    $scriptPath = HUB_ROOT . '/scripts/agent_manifest_smoke.php';
+    hub_test_assert(is_file($scriptPath), 'scripts/agent_manifest_smoke.php missing');
+    require_once $scriptPath;
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $db = hub_test_reset_db();
+    foreach ([
+        'hello',
+        'ocr-ppocrv5',
+        'yolo',
+        'yolo-serving',
+        'translate-gemma12b',
+        'sam3',
+        'llm-gemma4-12b',
+        'image-birefnet',
+        'docparser',
+    ] as $packId) {
+        hub_test_make_documentable_pack($db, $packId);
+    }
+    hub_test_make_documentable_pack($db, 'tts-voxcpm2', ['mode' => 'voice_generate']);
+    $manifest = hub_public_api_manifest($db, static fn (array $service): bool => true);
+
+    $errors = hub_agent_manifest_smoke_validate($manifest);
+    hub_test_assert($errors === [], 'generated public manifest must pass agent smoke validation: ' . implode('; ', $errors));
+
+    $invalid = $manifest;
+    $invalid['services'][0]['endpoint'] = 'api.php?mode=wrong';
+    hub_test_assert(hub_agent_manifest_smoke_validate($invalid) !== [], 'endpoint/mode drift must fail agent smoke validation');
+
+    $voiceIndex = array_search('voice_generate', array_column($invalid['services'], 'mode'), true);
+    hub_test_assert(is_int($voiceIndex), 'voice_generate fixture missing from agent smoke manifest');
+    foreach ($invalid['services'][$voiceIndex]['input_fields'] as &$field) {
+        if (is_array($field) && ($field['name'] ?? '') === 'file') {
+            unset($field['example_include']);
+        }
+    }
+    unset($field);
+    $errors = hub_agent_manifest_smoke_validate($invalid);
+    hub_test_assert(
+        (bool)array_filter($errors, static fn (string $error): bool => str_contains($error, 'example_include')),
+        'required one_of example must retain its example_include marker'
+    );
+});
+
 hub_test('Admin API docs architecture keeps one shared canonical inventory', function (): void {
     $adminDocs = (string)file_get_contents(HUB_ROOT . '/admin/api_docs.php');
     hub_test_assert(preg_match('/^\s*\$user\s*=\s*hub_require_system_admin\(\$db\);$/m', $adminDocs) === 1, 'admin API docs must require a system admin');

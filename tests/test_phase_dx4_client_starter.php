@@ -59,6 +59,20 @@ hub_test('PhaseDX-4 API smoke client script exposes safe CLI contract', function
     }
 });
 
+hub_test('PhaseDX-4 agent manifest smoke CLI exposes token-free contract', function (): void {
+    $scriptPath = HUB_ROOT . '/scripts/agent_manifest_smoke.php';
+    hub_test_assert(is_file($scriptPath), 'scripts/agent_manifest_smoke.php missing');
+
+    $output = [];
+    $exitCode = 1;
+    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($scriptPath) . ' --help 2>&1', $output, $exitCode);
+    hub_test_assert($exitCode === 0, 'agent manifest smoke --help must exit 0');
+    $help = implode("\n", $output);
+    foreach (['Usage:', '--manifest-url=', '--timeout='] as $needle) {
+        hub_test_assert(str_contains($help, $needle), 'agent manifest smoke help missing ' . $needle);
+    }
+});
+
 hub_test('PhaseDX-4 public docs and playground examples use current host URLs', function (): void {
     $db = hub_test_reset_db();
     $db->exec(
