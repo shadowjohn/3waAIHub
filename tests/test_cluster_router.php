@@ -517,7 +517,7 @@ hub_test('cluster router returns null when no station is eligible', function ():
     }
 });
 
-hub_test('cluster child config encrypts its dedicated token and limits permissions to selected modes', function (): void {
+hub_test('unpaired cluster child limits its token to status and selected modes', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
         hub_test_cluster_publish_mode($db, 'ocr');
@@ -528,17 +528,18 @@ hub_test('cluster child config encrypts its dedicated token and limits permissio
         sort($permissions);
 
         hub_test_assert(!empty($configured['enabled']), 'node must be enabled');
-        hub_test_assert($permissions === ['artifact', 'cluster_status', 'ocr', 'task_cancel', 'task_log', 'task_result', 'task_status'], 'node token must include only async control-plane permissions and selected published modes');
+        hub_test_assert($permissions === ['cluster_status', 'ocr'], 'unpaired node token must include only cluster status and selected published modes');
         $plainToken = hub_cluster_node_reveal_token($db);
         hub_test_assert($plainToken !== '', 'admin reveal helper must return the token');
-        hub_test_assert(!empty(hub_authenticate_api_token($db, '203.0.113.44', $plainToken, 'task_status')['ok']), 'node token must authenticate native task followups');
+        hub_test_assert(empty(hub_authenticate_api_token($db, '203.0.113.44', $plainToken, 'task_status')['ok']), 'unpaired node token must not authenticate native task followups');
+        hub_test_assert(array_intersect($permissions, ['task_retry', 'task_artifacts_ack', 'task_artifact_retention']) === [], 'node token must never gain retry, ACK, or retention permissions');
         foreach (['AIHUB_CLUSTER_NODE_TOKEN_CIPHERTEXT', 'AIHUB_CLUSTER_NODE_TOKEN_IV', 'AIHUB_CLUSTER_NODE_TOKEN_TAG'] as $key) {
             hub_test_assert(!str_contains(hub_get_storage_setting($db, $key), '3wa_live_'), 'node token storage must be encrypted');
         }
     });
 });
 
-hub_test('cluster child pairing consumes one invitation binds the router IP and regeneration revokes prior access', function (): void {
+hub_test('cluster child pairing grants and clearing or regeneration removes control-plane rights', function (): void {
     hub_test_with_cluster_secret(function (): void {
         hub_test_with_cluster_pair_url(function (): void {
             $db = hub_test_reset_db();
@@ -551,18 +552,38 @@ hub_test('cluster child pairing consumes one invitation binds the router IP and 
             hub_test_assert(hub_test_throws(static fn (): array => hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '203.0.113.44', 'Primary Router')), 'pair invitation must be one-time');
             $ipRules = hub_list_api_token_ip_rules($db, $oldTokenId);
             hub_test_assert(count($ipRules) === 1 && (string)$ipRules[0]['ip_rule'] === '203.0.113.44', 'paired token must bind to the caller IP');
+            $pairedPermissions = array_column(hub_list_api_token_permissions($db, $oldTokenId), 'mode');
+            sort($pairedPermissions);
+            hub_test_assert($pairedPermissions === ['artifact', 'cluster_status', 'ocr', 'task_cancel', 'task_log', 'task_result', 'task_status'], 'paired node token must gain only the fixed async control plane');
+            hub_test_assert(!empty(hub_authenticate_api_token($db, '203.0.113.44', (string)$paired['station_token'], 'task_status')['ok']), 'paired node token must authenticate native task followups from its router peer');
+
+            hub_cluster_node_clear_pairing($db);
+            $clearedPermissions = array_column(hub_list_api_token_permissions($db, $oldTokenId), 'mode');
+            sort($clearedPermissions);
+            hub_test_assert($clearedPermissions === ['cluster_status', 'ocr'], 'clearing a pairing must remove control-plane permissions');
+            hub_test_assert(empty(hub_authenticate_api_token($db, '203.0.113.44', (string)$paired['station_token'], 'task_status')['ok']), 'clearing a pairing must block native task followups');
+            $replacementInvite = hub_cluster_create_pair_invitation($db);
+            hub_cluster_accept_pair_invitation($db, (string)$replacementInvite['invite'], '203.0.113.44', 'Primary Router');
 
             $regenerated = hub_cluster_node_regenerate_token($db);
             $newTokenId = (int)hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_TOKEN_ID');
             hub_test_assert($newTokenId !== $oldTokenId, 'regeneration must replace the station token');
             hub_test_assert((int)(hub_get_api_token($db, $oldTokenId)['enabled'] ?? 1) === 0, 'regeneration must revoke the old token');
+            hub_test_assert(hub_list_api_token_permissions($db, $oldTokenId) === [], 'regeneration must remove the old token control-plane permissions');
             hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME') === '', 'regeneration must clear the paired router');
             hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT') === '', 'regeneration must clear the legacy invitation expiry');
             hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT') === $regenerated['expires_at'], 'regeneration must set the exact invitation expiry key');
             hub_test_assert((string)$regenerated['invite'] !== '', 'regeneration must issue a new invitation');
+            $regeneratedPermissions = array_column(hub_list_api_token_permissions($db, $newTokenId), 'mode');
+            sort($regeneratedPermissions);
+            hub_test_assert($regeneratedPermissions === ['cluster_status', 'ocr'], 'regenerated unpaired node token must lose control-plane permissions');
+            hub_test_assert(empty(hub_authenticate_api_token($db, '203.0.113.44', hub_cluster_node_reveal_token($db), 'task_status')['ok']), 'regenerated unpaired node token must not authenticate task followups');
 
+            $regeneratedToken = hub_cluster_node_reveal_token($db);
             hub_cluster_node_configure($db, false, []);
             hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT') === '' && hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT') === '', 'disabling must clear both invitation expiry keys');
+            hub_test_assert(empty(hub_authenticate_api_token($db, '203.0.113.44', $regeneratedToken, 'task_status')['ok']), 'disabling must keep control-plane followups unavailable');
+            hub_test_assert(hub_list_api_token_permissions($db, $newTokenId) === [], 'disabling must remove the active child token permissions');
         });
     });
 });
@@ -1264,6 +1285,90 @@ hub_test('cluster router result maps artifacts and proxies only mapped artifacts
 
         hub_test_assert($artifact['status'] === 200 && $artifact['body'] === 'png-data' && ($artifact['headers'][0] ?? '') === 'Content-Type: image/png', 'known artifacts must preserve permitted proxy content types');
         hub_test_assert($unknown['status'] === 404 && str_contains($unknown['body'], 'artifact_not_found') && $requests === 2, 'unknown or nested artifact IDs must reject before dispatch');
+    });
+});
+
+hub_test('cluster router preserves and maps native oversized result artifacts only after task identity matches', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_router_async_route($db, ['station_token' => 'summary_artifact_station_token']);
+        $summary = hub_cluster_dispatch_followup($db, 'cluster_task_result', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => hub_gateway_json(200, [
+            'ok' => true,
+            'task_id' => 'remote_task_42',
+            'result' => [
+                'stored_as_artifact' => true,
+                'artifact_id' => 17,
+                'path' => '/private/task/remote_task_42.json',
+                'bytes' => 4096,
+            ],
+        ]));
+
+        $summaryPayload = json_decode($summary['body'], true, 64, JSON_THROW_ON_ERROR);
+        hub_test_assert($summary['status'] === 200 && ($summaryPayload['result'] ?? null) === ['stored_as_artifact' => true, 'artifact_id' => 17, 'bytes' => 4096], 'native oversized result summaries must retain only safe artifact fields');
+        $mapped = $db->query("SELECT remote_artifact_id FROM cluster_route_artifacts WHERE route_id = '" . $fixture['route_id'] . "'")->fetchAll(PDO::FETCH_COLUMN);
+        hub_test_assert($mapped === ['17'], 'native oversized result artifact must be authorized for the exact route');
+
+        $artifact = hub_cluster_dispatch_followup($db, 'cluster_artifact', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id'], 'artifact_id' => '17'],
+        ], static function (array $request): array {
+            hub_test_assert($request['query'] === ['mode' => 'artifact', 'artifact_id' => '17'], 'oversized result artifact must use the pinned native artifact ID');
+            return ['status' => 200, 'raw_headers' => "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n", 'body' => '{}'];
+        });
+        hub_test_assert($artifact['status'] === 200, 'mapped oversized result artifact must proxy through the router');
+
+        $mismatch = hub_cluster_dispatch_followup($db, 'cluster_task_result', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => hub_gateway_json(200, [
+            'ok' => true,
+            'task_id' => 'different_remote_task',
+            'result' => ['stored_as_artifact' => true, 'artifact_id' => 99],
+        ]));
+        $mappedAfterMismatch = $db->query("SELECT remote_artifact_id FROM cluster_route_artifacts WHERE route_id = '" . $fixture['route_id'] . "' ORDER BY remote_artifact_id")->fetchAll(PDO::FETCH_COLUMN);
+        hub_test_assert($mismatch['status'] === 502 && str_contains($mismatch['body'], 'router_response_invalid') && $mappedAfterMismatch === ['17'], 'mismatched native task IDs must not expose or map artifacts');
+    });
+});
+
+hub_test('cluster router projects bounded sanitized native task logs', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_router_async_route($db, ['station_token' => 'log_station_token']);
+        $logs = [];
+        for ($index = 0; $index < 105; $index++) {
+            $logs[] = [
+                'id' => $index + 1,
+                'task_id' => 'remote_task_42',
+                'level' => 'info',
+                'message' => 'queued remote_task_42 at https://station.internal:8080/aihub/api.php?task_id=remote_task_42 ' . str_repeat('x', 1600),
+                'created_at' => '2026-07-26 12:00:00',
+                'unsafe' => 'discard me',
+            ];
+        }
+        $response = hub_cluster_dispatch_followup($db, 'cluster_task_log', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => hub_gateway_json(200, ['ok' => true, 'task_id' => 'remote_task_42', 'logs' => $logs]));
+
+        $payload = json_decode($response['body'], true, 64, JSON_THROW_ON_ERROR);
+        $firstLog = $payload['logs'][0] ?? [];
+        hub_test_assert($response['status'] === 200 && count($payload['logs'] ?? []) === 100 && array_keys($firstLog) === ['level', 'message', 'created_at'], 'native logs must retain only capped safe fields');
+        hub_test_assert(str_starts_with((string)($firstLog['message'] ?? ''), 'queued ') && strlen((string)($firstLog['message'] ?? '')) <= 1024, 'safe log messages must arrive with a bounded length');
+        hub_test_assert(!str_contains($response['body'], 'remote_task_42') && !str_contains($response['body'], 'station.internal') && !str_contains($response['body'], 'discard me'), 'log projection must redact remote task IDs, station links, and unsafe fields');
+
+        $invalid = hub_cluster_dispatch_followup($db, 'cluster_task_log', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => hub_gateway_json(200, ['ok' => true, 'task_id' => 'remote_task_42', 'logs' => 'not-a-native-log-list']));
+        hub_test_assert($invalid['status'] === 502 && str_contains($invalid['body'], 'router_response_invalid'), 'invalid native log shapes must not masquerade as empty logs');
     });
 });
 
