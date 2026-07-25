@@ -947,6 +947,8 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_routes_member_token ON cluster_routes(member_id, token_id, created_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_route ON cluster_route_accesses(route_id, created_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_usage ON cluster_route_accesses(member_id, token_id, access_kind, created_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_station_usage ON cluster_route_accesses(station_id, mode, member_id, token_id, created_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_mode_usage ON cluster_route_accesses(mode, station_id, member_id, token_id, created_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_artifacts_route ON cluster_route_artifacts(route_id)');
     $db->prepare(
         "INSERT OR IGNORE INTO runtime_resource_leases (resource_key, state, updated_at) VALUES ('gpu:0', 'available', :updated_at)"

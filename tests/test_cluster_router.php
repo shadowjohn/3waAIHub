@@ -189,6 +189,10 @@ hub_test('cluster router migration creates all persistence tables', function ():
     foreach (['cluster_stations', 'cluster_routes', 'cluster_route_accesses', 'cluster_route_artifacts'] as $table) {
         hub_test_assert(isset($tables[$table]), 'cluster router table missing: ' . $table);
     }
+    $accessIndexes = array_column($db->query('PRAGMA index_list(cluster_route_accesses)')->fetchAll(), 'name');
+    foreach (['idx_cluster_route_accesses_station_usage', 'idx_cluster_route_accesses_mode_usage'] as $index) {
+        hub_test_assert(in_array($index, $accessIndexes, true), 'cluster usage index missing: ' . $index);
+    }
 });
 
 hub_test('cluster router rejects NULL route IDs', function (): void {
@@ -1937,6 +1941,21 @@ hub_test('cluster admin page exposes guarded controls without station encryption
     }
     hub_test_assert(str_contains($layout, 'cluster.php') && str_contains($layout, 'Cluster'), 'admin navigation must link to Cluster');
     hub_test_assert(str_contains($members, 'Cluster 用量') && str_contains($tokens, 'Cluster 用量'), 'member and token pages must link to filtered Cluster usage');
+    hub_test_assert(str_contains($page, '$refreshed = hub_cluster_refresh_station_now') && str_contains($page, "!empty(\$refreshed['last_error']) || empty(\$refreshed['fresh'])"), 'cluster admin refresh must reject failed or stale inventory results');
+    hub_test_assert(str_contains($page, 'hub_cluster_pair_invitation_is_current') && str_contains($page, "unset(\$_SESSION['hub_cluster_pair_invite'])"), 'cluster admin must clear stale invitation secrets before rendering a pairing link');
+});
+
+hub_test('cluster pairing invitation helper rejects replaced and expired secrets', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $initial = hub_cluster_node_configure($db, true, []);
+        $replacement = hub_cluster_create_pair_invitation($db);
+
+        hub_test_assert(!hub_cluster_pair_invitation_is_current($db, (string)$initial['invite']), 'replaced invitation secret must not remain current');
+        hub_test_assert(hub_cluster_pair_invitation_is_current($db, (string)$replacement['invite']), 'current invitation secret must match the stored hash and expiry');
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT', date('Y-m-d H:i:s', time() - 1));
+        hub_test_assert(!hub_cluster_pair_invitation_is_current($db, (string)$replacement['invite']), 'expired invitation secret must not remain current');
+    });
 });
 
 hub_test('cluster admin pairing descriptor keeps cluster pair at the application root', function (): void {

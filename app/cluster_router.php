@@ -2396,6 +2396,20 @@ function hub_cluster_pair_invitation_expires_at(PDO $db): string
     return $legacyExpiresAt;
 }
 
+function hub_cluster_pair_invitation_is_current(PDO $db, string $invite): bool
+{
+    if (preg_match('/\A[a-f0-9]{64}\z/', $invite) !== 1) {
+        return false;
+    }
+    $expiresAt = strtotime(hub_cluster_pair_invitation_expires_at($db));
+    $inviteHash = hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_HASH');
+
+    return $expiresAt !== false
+        && $expiresAt > time()
+        && preg_match('/\A[0-9a-f]{64}\z/', $inviteHash) === 1
+        && hash_equals($inviteHash, hash('sha256', $invite));
+}
+
 function hub_cluster_node_pairing_descriptor(PDO $db): array
 {
     $host = preg_replace('/[^A-Za-z0-9.:\-\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost')) ?: 'localhost';

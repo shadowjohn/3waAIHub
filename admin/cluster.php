@@ -77,7 +77,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                     ->execute([':enabled' => $enabled ? 1 : 0, ':updated_at' => hub_now(), ':id' => (int)$station['id']]);
                 $message = $enabled ? '子節點已啟用。' : '子節點已停用。';
             } else {
-                hub_cluster_refresh_station_now($db, $station, true, null);
+                $refreshed = hub_cluster_refresh_station_now($db, $station, true, null);
+                if (!empty($refreshed['last_error']) || empty($refreshed['fresh'])) {
+                    throw new RuntimeException('子節點庫存重新整理失敗。');
+                }
                 $message = '子節點庫存已重新整理。';
             }
         } else {
@@ -92,9 +95,14 @@ $nodeEnabled = hub_cluster_node_enabled($db);
 $routerEnabled = hub_cluster_router_enabled($db);
 $selectedModes = hub_cluster_node_selected_published_modes($db);
 $publishedModes = hub_cluster_node_published_modes($db);
-$pairingInvite = $_SESSION['hub_cluster_pair_invite'] ?? '';
-$pairingInvite = is_string($pairingInvite) && preg_match('/\A[a-f0-9]{64}\z/', $pairingInvite) === 1 ? $pairingInvite : '';
 $routerName = hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME');
+$pairingInvite = $_SESSION['hub_cluster_pair_invite'] ?? '';
+$pairingInviteNeedsRenewal = false;
+if (!is_string($pairingInvite) || !hub_cluster_pair_invitation_is_current($db, $pairingInvite)) {
+    unset($_SESSION['hub_cluster_pair_invite']);
+    $pairingInvite = '';
+    $pairingInviteNeedsRenewal = $nodeEnabled && $routerName === '';
+}
 $pairingLink = '';
 $nodeToken = '';
 if ($nodeEnabled) {
@@ -211,6 +219,7 @@ hub_admin_header('Cluster', $user);
             <h2>子入口節點</h2>
             <label>子節點 Token</label>
             <input readonly value="<?= hub_h($nodeToken) ?>" onclick="this.select();">
+            <?php if ($pairingInviteNeedsRenewal): ?><p class="notice">配對邀請已失效，請更新配對邀請。</p><?php endif; ?>
             <?php if ($pairingLink !== ''): ?><label>配對連結</label><input readonly value="<?= hub_h($pairingLink) ?>" onclick="this.select();"><?php endif; ?>
             <form method="post">
                 <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
