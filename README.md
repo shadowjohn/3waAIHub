@@ -127,7 +127,13 @@ GTX 1050／1050 Ti／1080／1080 Ti（Pascal）會選取 `pascal-cu118` profile�
 >
 > Windows Core 的不適用能力顯示 N/A，不顯示成系統故障。
 
-Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。IIS 的 PHP FastCGI application 需要以系統管理員權限註冊，並指向選定的 `php-cgi.exe`；`web.config` 不應寫死其他機器的 PHP 路徑。登入 session 會保存在 `data/sessions/`，而專案的 `web.config` 會封鎖 `data/` 的直接 HTTP 存取；IIS App Pool identity 必須對 `data/` 具備修改權限。
+Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。以系統管理員 PowerShell 執行 `scripts/windows/configure-iis-fastcgi.ps1`，它會建立指定 IIS virtual directory、註冊選定的 `php-cgi.exe`，並只對該 Hub location 加入 PHP handler；`web.config` 不應寫死其他機器的 PHP 路徑。登入 session 會保存在 `data/sessions/`，而專案的 `web.config` 會封鎖 `data/` 的直接 HTTP 存取；IIS App Pool identity 必須對 `data/` 具備修改權限。
+
+```powershell
+.\scripts\windows\configure-iis-fastcgi.ps1 `
+  -PhpCgiPath 'C:\PHP\php-cgi.exe' `
+  -PhysicalPath 'D:\DATA\3waAIHub'
+```
 
 啟動 Core 測試可用：
 
