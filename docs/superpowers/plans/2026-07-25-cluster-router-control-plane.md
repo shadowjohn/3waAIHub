@@ -111,15 +111,17 @@ The child Token is generated when child-node role is enabled, stored with the sa
 Append a test that creates a `hello`-permitted Token and proves identity authentication can be strict without creating a service request:
 
 ```php
-$identity = hub_authenticate_api_token($db, '203.0.113.10', $token['plain_token'], null, false, false);
+$identity = hub_authenticate_api_token($db, '203.0.113.10', $token['plain_token']);
 hub_test_assert(($identity['ok'] ?? false) === true, 'strict identity authentication must accept a valid Token');
 hub_test_assert((int)$identity['context']['member_id'] === $memberId, 'strict identity authentication must return member ownership');
 
-$missing = hub_authenticate_api_token($db, '127.0.0.1', '', null, false, false);
+hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '0');
+hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '1');
+$missing = hub_authenticate_api_token($db, '127.0.0.1', '');
 hub_test_assert(($missing['response']['status'] ?? 0) === 401, 'Router authentication must not accept localhost without a Token');
 ```
 
-Keep the existing Gateway tests unchanged so the current localhost bypass and mode-denial behavior remain covered.
+Use a Token with no service permissions and also assert its `token_id`, `last_used_at`, and `last_used_ip` after the successful strict call. Keep the existing Gateway tests unchanged so the current localhost bypass and mode-denial behavior remain covered.
 
 - [ ] **Step 2: Run the focused suite to verify RED**
 
@@ -139,34 +141,23 @@ Move the body of `hub_gateway_authenticate_api_token()` into this helper, retain
 function hub_authenticate_api_token(
     PDO $db,
     string $clientIp,
-    ?string $providedToken = null,
-    ?string $requiredMode = null,
-    bool $allowLocalhostBypass = true,
-    bool $allowAnonymous = true
+    string $providedToken,
+    ?string $requiredMode = null
 ): array
 ```
 
-The two empty-token branches must be exactly gated as follows:
+The strict helper must not read the request header or apply any bypass. Its empty-Token branch is always:
 
 ```php
-if ($plainToken === '' && $allowLocalhostBypass && $tokenCameFromRequest
-    && hub_is_localhost_ip($clientIp)
-    && hub_get_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN') === '1') {
-    return ['ok' => true, 'context' => []];
-}
-if ($plainToken === '' && $allowAnonymous
-    && hub_get_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN') !== '1') {
-    return ['ok' => true, 'context' => []];
+if ($providedToken === '') {
+    return ['ok' => false, 'response' => hub_gateway_error(401, 'missing_token', 'API token is required'), 'context' => []];
 }
 ```
 
-When `$requiredMode` is non-null, call `hub_api_token_mode_allowed()` and preserve the current `token_mode_not_allowed` response. Replace `hub_gateway_authenticate_api_token()` with this wrapper so all existing callers retain their current contract:
+When `$requiredMode` is non-null, call `hub_api_token_mode_allowed()` and preserve the current `token_mode_not_allowed` response. Keep header extraction and the two original bypasses in `hub_gateway_authenticate_api_token()` before it delegates a nonempty Token. Its final delegation is:
 
 ```php
-function hub_gateway_authenticate_api_token(PDO $db, string $mode, string $clientIp, ?string $providedToken = null): array
-{
-    return hub_authenticate_api_token($db, $clientIp, $providedToken, $mode);
-}
+return hub_authenticate_api_token($db, $clientIp, $plainToken, $mode);
 ```
 
 - [ ] **Step 4: Run the focused suite to verify GREEN**
@@ -361,7 +352,7 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'GET') {
     hub_send_gateway_response(hub_gateway_error(405, 'method_not_allowed', 'cluster status requires GET'));
     exit;
 }
-$auth = hub_authenticate_api_token($db, hub_get_client_ip(), null, 'cluster_status', false, false);
+$auth = hub_authenticate_api_token($db, hub_get_client_ip(), hub_bearer_token_from_request(), 'cluster_status');
 if (empty($auth['ok'])) {
     hub_send_gateway_response($auth['response']);
     exit;
@@ -473,7 +464,7 @@ While creating a route, use `BEGIN IMMEDIATE` and count only rows in `state = 'p
 // ponytail: SQLite route count is sufficient for one Router; use a shared limiter only after multi-Router traffic exists.
 ```
 
-For an initial request, call `hub_authenticate_api_token($db, $clientIp, $customerToken, $mode, false, false)`, force a due inventory refresh, select a station, then verify the selected cached service contract permits the exact request method. Reject nested `$_FILES` arrays with `400 unsupported_multipart_shape`; use the existing flat `hub_proxy_post_fields($_POST, $_FILES)` behavior for normal multipart uploads.
+For an initial request, call `hub_authenticate_api_token($db, $clientIp, $customerToken, $mode)`, force a due inventory refresh, select a station, then verify the selected cached service contract permits the exact request method. Reject nested `$_FILES` arrays with `400 unsupported_multipart_shape`; use the existing flat `hub_proxy_post_fields($_POST, $_FILES)` behavior for normal multipart uploads.
 
 Build the station URL only as:
 
