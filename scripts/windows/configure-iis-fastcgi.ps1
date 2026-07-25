@@ -78,7 +78,7 @@ $handlerName = '3waAIHub PHP FastCGI'
 $handlers = Invoke-AppCmd @('list', 'config', $iisLocation, '-section:system.webServer/handlers', '/config:*')
 if ($handlers -notmatch [regex]::Escape($handlerName)) {
     $handler = "/+[name='$handlerName',path='*.php',verb='GET,HEAD,POST',modules='FastCgiModule',scriptProcessor='$PhpCgiPath',resourceType='Either',requireAccess='Script']"
-    Invoke-AppCmd @('set', 'config', $iisLocation, '-section:system.webServer/handlers', $handler) | Out-Null
+    Invoke-AppCmd @('set', 'config', $iisLocation, '-section:system.webServer/handlers', $handler, '/commit:apphost') | Out-Null
     Write-Host 'IIS PHP handler: REGISTERED'
 } else {
     Write-Host 'IIS PHP handler: EXISTS'
