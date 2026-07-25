@@ -806,6 +806,20 @@ function hub_public_api_manifest(PDO $db, ?callable $healthProbe = null): array
             'header' => 'Authorization: Bearer <TOKEN>',
         ],
         'base_endpoint' => 'api.php',
+        'input_field_extensions' => [
+            'one_of' => [
+                'type' => 'array<string>',
+                'description' => 'Names the mutually exclusive input fields in one group.',
+            ],
+            'one_of_required' => [
+                'type' => 'boolean',
+                'description' => 'When true, exactly one field named by one_of is required.',
+            ],
+            'example_include' => [
+                'type' => 'boolean',
+                'description' => 'When true, generated examples include this optional field.',
+            ],
+        ],
         'services' => hub_public_api_services($db, $healthProbe),
     ];
 }
