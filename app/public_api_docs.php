@@ -95,15 +95,135 @@ function hub_public_api_contract_for_manifest(array $manifest): array
     ];
 }
 
-function hub_public_api_services(PDO $db): array
+function hub_public_api_health_response_ok(int $status, string $body): bool
 {
+    if ($status < 200 || $status >= 400) {
+        return false;
+    }
+    $payload = json_decode($body, true);
+
+    return !is_array($payload)
+        || ((!array_key_exists('ok', $payload) || $payload['ok'] !== false)
+            && (!array_key_exists('ready', $payload) || $payload['ready'] !== false));
+}
+
+function hub_public_api_health_url_allowed(string $url): bool
+{
+    $parts = parse_url($url);
+    if (!is_array($parts) || strtolower((string)($parts['scheme'] ?? '')) !== 'http' || isset($parts['user']) || isset($parts['pass'])) {
+        return false;
+    }
+    $host = strtolower(trim((string)($parts['host'] ?? ''), '[]'));
+
+    return in_array($host, ['127.0.0.1', '::1', 'localhost'], true);
+}
+
+function hub_public_api_healthy_service_ids(array $services, ?callable $probe = null): array
+{
+    $healthy = [];
+    $pending = [];
+    foreach ($services as $service) {
+        $id = (int)($service['id'] ?? 0);
+        if ($id < 1) {
+            continue;
+        }
+        if (hub_service_is_internal_task($service)) {
+            $healthy[$id] = true;
+            continue;
+        }
+        if (!hub_public_api_health_url_allowed((string)($service['health_url'] ?? ''))) {
+            continue;
+        }
+        if ($probe !== null) {
+            if ($probe($service) === true) {
+                $healthy[$id] = true;
+            }
+            continue;
+        }
+        $pending[$id] = $service;
+    }
+    if ($pending === [] || !function_exists('curl_multi_init')) {
+        return $healthy;
+    }
+
+    $multi = curl_multi_init();
+    $handles = [];
+    foreach ($pending as $id => $service) {
+        $handle = curl_init((string)$service['health_url']);
+        if ($handle === false) {
+            continue;
+        }
+        curl_setopt_array($handle, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT_MS => 250,
+            CURLOPT_TIMEOUT_MS => 750,
+            CURLOPT_NOSIGNAL => true,
+            CURLOPT_PROXY => '',
+        ]);
+        curl_multi_add_handle($multi, $handle);
+        $handles[$id] = $handle;
+    }
+
+    $deadline = microtime(true) + 1.0;
+    do {
+        $result = curl_multi_exec($multi, $running);
+        if ($result !== CURLM_OK || $running === 0 || microtime(true) >= $deadline) {
+            break;
+        }
+        if (curl_multi_select($multi, min(0.05, max(0.001, $deadline - microtime(true)))) === -1) {
+            usleep(10000);
+        }
+    } while (true);
+
+    $completed = [];
+    while (($info = curl_multi_info_read($multi)) !== false) {
+        if (($info['msg'] ?? null) !== CURLMSG_DONE) {
+            continue;
+        }
+        foreach ($handles as $id => $handle) {
+            if (($info['handle'] ?? null) === $handle) {
+                $completed[$id] = ($info['result'] ?? null) === CURLE_OK;
+                break;
+            }
+        }
+    }
+
+    foreach ($handles as $id => $handle) {
+        $body = curl_multi_getcontent($handle);
+        $status = (int)curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        if (($completed[$id] ?? false) && hub_public_api_health_response_ok($status, (string)$body)) {
+            $healthy[$id] = true;
+        }
+        curl_multi_remove_handle($multi, $handle);
+        curl_close($handle);
+    }
+    curl_multi_close($multi);
+
+    return $healthy;
+}
+
+function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
+{
+    $candidates = array_values(array_filter(
+        hub_list_services($db),
+        static fn (array $service): bool =>
+            (string)($service['install_status'] ?? '') === 'installed'
+            && (int)($service['enabled'] ?? 0) === 1
+            && (string)($service['runtime_status'] ?? '') === 'running'
+    ));
+    $healthyIds = hub_public_api_healthy_service_ids($candidates, $healthProbe);
     $services = [];
-    foreach (hub_list_packs() as $pack) {
-        if (($pack['status'] ?? '') !== 'ok') {
+    $documentedPacks = [];
+    foreach ($candidates as $row) {
+        if (!isset($healthyIds[(int)$row['id']])) {
+            continue;
+        }
+        $pack = hub_get_pack((string)($row['pack_id'] ?? ''));
+        if ($pack === null || ($pack['status'] ?? '') !== 'ok') {
             continue;
         }
         $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
-        $mode = (string)($manifest['default_mode'] ?? '');
+        $mode = trim((string)($row['mode'] ?? ''));
         if ($mode === '') {
             continue;
         }
@@ -137,23 +257,24 @@ function hub_public_api_services(PDO $db): array
             'task_api' => hub_public_api_task_api_refs($taskApi),
         ];
         $service['examples'] = hub_public_api_examples($service);
-        $services[] = $service;
+        $services[$mode] = $service;
+        $documentedPacks[(string)$service['pack_id']] = true;
     }
-    if (hub_get_pack('llm-gemma4-12b') !== null) {
+    if (isset($documentedPacks['llm-gemma4-12b'])) {
         foreach (hub_public_api_gemma4_services() as $service) {
             $service['examples'] = hub_public_api_examples($service);
-            $services[] = $service;
+            $services[(string)$service['mode']] = $service;
         }
     }
-    if (hub_get_pack('yolo-serving') !== null) {
+    if (isset($documentedPacks['yolo-serving'])) {
         foreach (hub_public_api_yolo_model_services() as $service) {
             $service['examples'] = hub_public_api_examples($service);
-            $services[] = $service;
+            $services[(string)$service['mode']] = $service;
         }
     }
 
-    usort($services, static fn (array $a, array $b): int => strcmp((string)$a['mode'], (string)$b['mode']));
-    return $services;
+    ksort($services);
+    return array_values($services);
 }
 
 function hub_public_api_gemma4_services(): array
@@ -532,7 +653,7 @@ function hub_public_api_examples(array $service): array
     return ['curl' => $curl, 'php' => $php, 'js_fetch' => $js];
 }
 
-function hub_public_api_manifest(PDO $db): array
+function hub_public_api_manifest(PDO $db, ?callable $healthProbe = null): array
 {
     return [
         'name' => '3waAIHub',
@@ -542,13 +663,13 @@ function hub_public_api_manifest(PDO $db): array
             'header' => 'Authorization: Bearer <TOKEN>',
         ],
         'base_endpoint' => 'api.php',
-        'services' => hub_public_api_services($db),
+        'services' => hub_public_api_services($db, $healthProbe),
     ];
 }
 
-function hub_public_api_docs_html(PDO $db, ?array $user = null): string
+function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healthProbe = null): string
 {
-    $services = hub_public_api_services($db);
+    $services = hub_public_api_services($db, $healthProbe);
     $t = static fn (string $value): string => hub_h(__($value));
     ob_start();
     ?>

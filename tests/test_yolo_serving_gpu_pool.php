@@ -352,12 +352,26 @@ hub_test('YOLO gateway routes model_ref through GPU hot slot or CPU fallback saf
 
 hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (): void {
     $db = hub_test_reset_db();
-    $html = hub_public_api_docs_html($db);
+    $pack = hub_get_pack('yolo-serving');
+    hub_test_assert($pack !== null && ($pack['status'] ?? '') === 'ok', 'YOLO serving Pack should be available.');
+    $installed = hub_install_pack($db, 'yolo-serving', [
+        'service_key' => (string)$pack['manifest']['install']['default_service_key'],
+        'idempotent' => true,
+    ]);
+    $service = $installed['service'];
+    hub_test_assert(is_array($service), 'YOLO serving service should be installed.');
+    $db->prepare(
+        "UPDATE services SET install_status = 'installed', enabled = 1, runtime_status = 'running', status = 'running'
+         WHERE id = ?"
+    )->execute([(int)$service['id']]);
+    $healthy = static fn (array $service): bool => true;
+
+    $html = hub_public_api_docs_html($db, null, $healthy);
     hub_test_assert(str_contains($html, 'yolo_model_assign_gpu'), 'Public docs should mention GPU assign mode.');
     hub_test_assert(str_contains($html, 'yolo_model_unassign_gpu'), 'Public docs should mention GPU unassign mode.');
     hub_test_assert(str_contains($html, '?mode=yolo_model_status&amp;model_ref='), 'Public docs should show yolo_model_status as GET query.');
 
-    $manifest = hub_public_api_manifest($db);
+    $manifest = hub_public_api_manifest($db, $healthy);
     $modes = array_column($manifest['services'], 'mode');
     hub_test_assert(in_array('yolo_model_assign_gpu', $modes, true), 'Agent manifest should include GPU assign mode.');
     hub_test_assert(in_array('yolo_model_unassign_gpu', $modes, true), 'Agent manifest should include GPU unassign mode.');

@@ -1,12 +1,294 @@
 <?php
 declare(strict_types=1);
 
+function hub_test_make_documentable_pack(PDO $db, string $packId, array $state = []): array
+{
+    $pack = hub_get_pack($packId);
+    hub_test_assert($pack !== null && ($pack['status'] ?? '') === 'ok', 'test Pack unavailable: ' . $packId);
+    $manifest = $pack['manifest'];
+    $installed = hub_install_pack($db, $packId, [
+        'service_key' => (string)($manifest['install']['default_service_key'] ?? ($packId . '-main')),
+        'idempotent' => true,
+    ]);
+    $service = $installed['service'];
+    $stmt = $db->prepare(
+        'UPDATE services SET mode = :mode, health_url = :health_url, install_status = :install_status,
+            enabled = :enabled, runtime_status = :runtime_status, status = :status WHERE id = :id'
+    );
+    $stmt->execute([
+        ':mode' => (string)($state['mode'] ?? $service['mode']),
+        ':health_url' => (string)($state['health_url'] ?? $service['health_url']),
+        ':install_status' => (string)($state['install_status'] ?? 'installed'),
+        ':enabled' => (int)($state['enabled'] ?? 1),
+        ':runtime_status' => (string)($state['runtime_status'] ?? 'running'),
+        ':status' => (string)($state['status'] ?? 'running'),
+        ':id' => (int)$service['id'],
+    ]);
+
+    return hub_get_service($db, (int)$service['id']) ?: [];
+}
+
+function hub_test_public_api_free_port(): int
+{
+    $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+    if ($socket === false) {
+        throw new RuntimeException('cannot allocate public API test port: ' . $error);
+    }
+    $address = (string)stream_socket_get_name($socket, false);
+    fclose($socket);
+    $separator = strrpos($address, ':');
+    if ($separator === false) {
+        throw new RuntimeException('cannot parse public API test port');
+    }
+
+    return (int)substr($address, $separator + 1);
+}
+
+function hub_test_public_api_start_server(string $router, array $environment = []): array
+{
+    $port = hub_test_public_api_free_port();
+    $stdout = tempnam(sys_get_temp_dir(), '3waaihub_public_api_out_');
+    $stderr = tempnam(sys_get_temp_dir(), '3waaihub_public_api_err_');
+    if ($stdout === false || $stderr === false) {
+        if (is_string($stdout) && is_file($stdout)) {
+            unlink($stdout);
+        }
+        if (is_string($stderr) && is_file($stderr)) {
+            unlink($stderr);
+        }
+        throw new RuntimeException('cannot allocate public API server logs');
+    }
+    $process = proc_open(
+        [PHP_BINARY, '-S', '127.0.0.1:' . $port, $router],
+        [0 => ['pipe', 'r'], 1 => ['file', $stdout, 'a'], 2 => ['file', $stderr, 'a']],
+        $pipes,
+        HUB_ROOT,
+        hub_process_environment($environment)
+    );
+    if (!is_resource($process)) {
+        unlink($stdout);
+        unlink($stderr);
+        throw new RuntimeException('cannot start public API test server');
+    }
+    fclose($pipes[0]);
+    $server = ['port' => $port, 'process' => $process, 'stdout' => $stdout, 'stderr' => $stderr];
+
+    $deadline = microtime(true) + 5.0;
+    do {
+        $socket = @stream_socket_client('tcp://127.0.0.1:' . $port, $errno, $error, 0.1);
+        if ($socket !== false) {
+            fclose($socket);
+            return $server;
+        }
+        if (empty(proc_get_status($process)['running'])) {
+            $message = trim((string)file_get_contents($stderr));
+            hub_test_public_api_stop_servers([$server]);
+            throw new RuntimeException('public API test server exited: ' . $message);
+        }
+        usleep(50000);
+    } while (microtime(true) < $deadline);
+
+    hub_test_public_api_stop_servers([$server]);
+    throw new RuntimeException('public API test server did not become ready');
+}
+
+function hub_test_public_api_stop_servers(array $servers): void
+{
+    foreach (array_reverse($servers) as $server) {
+        if (is_resource($server['process'])) {
+            $status = proc_get_status($server['process']);
+            if (!empty($status['running'])) {
+                proc_terminate($server['process']);
+                usleep(100000);
+                if (!empty(proc_get_status($server['process'])['running'])) {
+                    proc_terminate($server['process'], 9);
+                }
+            }
+            proc_close($server['process']);
+        }
+        foreach (['stdout', 'stderr'] as $key) {
+            if (is_file((string)$server[$key])) {
+                unlink((string)$server[$key]);
+            }
+        }
+    }
+}
+
+hub_test('Public API production health batch requires completed direct loopback transfers', function (): void {
+    if (hub_platform_id() !== 'linux' || !function_exists('curl_multi_init') || !function_exists('proc_open')) {
+        hub_test_skip('real curl_multi loopback test requires Linux, cURL multi, and proc_open');
+    }
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $servers = [];
+    $routerDir = sys_get_temp_dir() . '/3waaihub_public_api_health_' . bin2hex(random_bytes(8));
+    $proxyKeys = ['http_proxy', 'HTTP_PROXY', 'https_proxy', 'HTTPS_PROXY', 'all_proxy', 'ALL_PROXY', 'no_proxy', 'NO_PROXY'];
+    $originalEnvironment = [];
+    foreach ($proxyKeys as $key) {
+        $originalEnvironment[$key] = getenv($key);
+        putenv($key);
+    }
+
+    try {
+        if (!mkdir($routerDir, 0775, true) && !is_dir($routerDir)) {
+            throw new RuntimeException('cannot create public API health server directory');
+        }
+        $router = $routerDir . '/router.php';
+        file_put_contents($router, <<<'PHP'
+<?php
+$path = (string)parse_url((string)($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
+header('Content-Type: application/json');
+if (getenv('AIHUB_PUBLIC_API_TEST_PROXY') === '1' || $path === '/healthy') {
+    echo '{"ok":true}';
+    return;
+}
+if ($path === '/stall') {
+    $body = '{"ok":true}';
+    header('Content-Length: ' . strlen($body));
+    ob_implicit_flush(true);
+    echo '{"ok":';
+    flush();
+    usleep(1500000);
+    echo 'true}';
+    return;
+}
+echo '{"ok":false}';
+PHP);
+
+        $servers[] = hub_test_public_api_start_server($router);
+        $servers[] = hub_test_public_api_start_server($router);
+        $servers[] = hub_test_public_api_start_server($router, ['AIHUB_PUBLIC_API_TEST_PROXY' => '1']);
+        [$direct, $stalled, $proxy] = $servers;
+
+        $db = hub_test_reset_db();
+        $healthyRow = hub_test_make_documentable_pack($db, 'hello', [
+            'mode' => 'multi_healthy',
+            'health_url' => 'http://127.0.0.1:' . $direct['port'] . '/healthy',
+        ]);
+        hub_test_make_documentable_pack($db, 'image-birefnet', [
+            'mode' => 'multi_stalled',
+            'health_url' => 'http://127.0.0.1:' . $stalled['port'] . '/stall',
+        ]);
+        $batchModes = array_column(hub_public_api_services($db), 'mode');
+
+        $db->exec('UPDATE services SET enabled = 0');
+        $db->prepare(
+            "UPDATE services SET mode = 'proxy_guard', health_url = :health_url, enabled = 1,
+                install_status = 'installed', runtime_status = 'running', status = 'running' WHERE id = :id"
+        )->execute([
+            ':health_url' => 'http://127.0.0.1:' . $direct['port'] . '/reject',
+            ':id' => (int)$healthyRow['id'],
+        ]);
+        foreach (['http_proxy', 'HTTP_PROXY', 'all_proxy', 'ALL_PROXY'] as $key) {
+            putenv($key . '=http://127.0.0.1:' . $proxy['port']);
+        }
+        putenv('no_proxy=');
+        putenv('NO_PROXY=');
+        $proxyModes = array_column(hub_public_api_services($db), 'mode');
+
+        hub_test_assert(in_array('multi_healthy', $batchModes, true), 'completed local HTTP 200 health response rejected');
+        hub_test_assert(!in_array('multi_stalled', $batchModes, true), 'timed-out partial health response accepted');
+        hub_test_assert(!in_array('proxy_guard', $proxyModes, true), 'loopback health request inherited a proxy');
+    } finally {
+        foreach ($originalEnvironment as $key => $value) {
+            if ($value === false) {
+                putenv($key);
+            } else {
+                putenv($key . '=' . $value);
+            }
+        }
+        hub_test_public_api_stop_servers($servers);
+        if (is_file($routerDir . '/router.php')) {
+            unlink($routerDir . '/router.php');
+        }
+        if (is_dir($routerDir)) {
+            rmdir($routerDir);
+        }
+    }
+});
+
+hub_test('Public API inventory requires installed enabled running and healthy services', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $db = hub_test_reset_db();
+
+    hub_test_make_documentable_pack($db, 'hello', ['mode' => 'hello_live']);
+    hub_test_make_documentable_pack($db, 'ocr-ppocrv5', ['enabled' => 0]);
+    hub_test_make_documentable_pack($db, 'yolo', ['runtime_status' => 'stopped', 'status' => 'stopped']);
+    hub_test_make_documentable_pack($db, 'translate-gemma12b', ['install_status' => 'pending']);
+    hub_test_make_documentable_pack($db, 'sam3', ['health_url' => 'http://198.51.100.8/health']);
+    hub_test_make_documentable_pack($db, 'image-birefnet');
+    hub_test_make_documentable_pack($db, 'docparser');
+    hub_test_make_documentable_pack($db, 'llm-gemma4-12b');
+    hub_test_make_documentable_pack($db, 'yolo-serving');
+
+    $probedModes = [];
+    $probe = static function (array $service) use (&$probedModes): bool {
+        $probedModes[] = (string)$service['mode'];
+        return in_array((string)$service['mode'], ['hello_live', 'chat'], true);
+    };
+    $services = hub_public_api_services($db, $probe);
+    $modes = array_column($services, 'mode');
+
+    hub_test_assert(in_array('hello_live', $modes, true), 'service row mode must be documented');
+    hub_test_assert(in_array('docparser', $modes, true), 'running internal task must be documented');
+    hub_test_assert(in_array('photo_upload', $modes, true), 'healthy Gemma parent must expose photo APIs');
+    hub_test_assert(!in_array('ocr', $modes, true), 'disabled service must be hidden');
+    hub_test_assert(!in_array('yolo', $modes, true), 'stopped service must be hidden');
+    hub_test_assert(!in_array('translate', $modes, true), 'not-installed service must be hidden');
+    hub_test_assert(!in_array('sam3', $modes, true), 'non-loopback health URL must be hidden');
+    hub_test_assert(!in_array('sam3', $probedModes, true), 'non-loopback health URL must be rejected before probing');
+    hub_test_assert(!in_array('background_remove', $modes, true), 'failed health probe must hide service');
+    hub_test_assert(in_array('hello_live', $modes, true), 'unhealthy service must not hide a healthy sibling');
+    hub_test_assert(!in_array('yolo_model_register', $modes, true), 'unhealthy YOLO parent must hide derived APIs');
+
+    $allHealthy = hub_public_api_services($db, static fn (array $service): bool => true);
+    $allHealthyModes = array_column($allHealthy, 'mode');
+    hub_test_assert(!in_array('sam3', $allHealthyModes, true), 'non-loopback URL must stay hidden when probe returns true');
+    hub_test_assert(in_array('yolo_model_register', $allHealthyModes, true), 'healthy YOLO parent must expose derived APIs');
+
+    $gemmaUnhealthy = hub_public_api_services(
+        $db,
+        static fn (array $service): bool => (string)$service['mode'] !== 'chat'
+    );
+    hub_test_assert(!in_array('photo_upload', array_column($gemmaUnhealthy, 'mode'), true), 'unhealthy Gemma parent must hide photo APIs');
+
+    hub_test_assert(hub_public_api_health_url_allowed('http://127.0.0.1/health'), 'IPv4 loopback health URL rejected');
+    hub_test_assert(hub_public_api_health_url_allowed('http://[::1]/health'), 'IPv6 loopback health URL rejected');
+    hub_test_assert(hub_public_api_health_url_allowed('http://localhost/health'), 'localhost health URL rejected');
+    hub_test_assert(!hub_public_api_health_url_allowed('https://localhost/health'), 'HTTPS health URL accepted');
+    hub_test_assert(!hub_public_api_health_url_allowed('http://user@localhost/health'), 'health URL userinfo accepted');
+    hub_test_assert(hub_public_api_health_response_ok(200, '{"ok":true}'), 'healthy JSON response rejected');
+    hub_test_assert(hub_public_api_health_response_ok(204, ''), 'empty success response rejected');
+    hub_test_assert(!hub_public_api_health_response_ok(503, '{"ok":true}'), 'HTTP failure accepted');
+    hub_test_assert(!hub_public_api_health_response_ok(200, '{"ok":false}'), 'ok=false accepted');
+    hub_test_assert(!hub_public_api_health_response_ok(200, '{"ready":false}'), 'ready=false accepted');
+
+    $emptyDb = hub_test_reset_db();
+    $emptyDb->exec('DELETE FROM services');
+    $emptyManifest = hub_public_api_manifest($emptyDb, static fn (array $service): bool => true);
+    hub_test_assert(($emptyManifest['services'] ?? null) === [], 'empty inventory must not fall back to repository Packs');
+});
+
 hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', function (): void {
     $helperPath = HUB_ROOT . '/app/public_api_docs.php';
     hub_test_assert(is_file($helperPath), 'app/public_api_docs.php missing');
     require_once $helperPath;
 
     $db = hub_test_reset_db();
+    foreach ([
+        'hello',
+        'ocr-ppocrv5',
+        'yolo',
+        'yolo-serving',
+        'translate-gemma12b',
+        'sam3',
+        'llm-gemma4-12b',
+        'image-birefnet',
+        'docparser',
+    ] as $packId) {
+        hub_test_make_documentable_pack($db, $packId);
+    }
+    $healthy = static fn (array $service): bool => true;
 
     hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS') === '1', 'public docs default must be enabled');
     hub_test_assert(hub_get_storage_setting($db, 'AIHUB_PUBLIC_API_MANIFEST') === '1', 'public manifest default must be enabled');
@@ -22,7 +304,7 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
     hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_LOCAL_ONLY', '1');
     hub_test_assert(hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS') === false, 'local-only docs must block external IP when enabled');
 
-    $manifest = hub_public_api_manifest($db);
+    $manifest = hub_public_api_manifest($db, $healthy);
     $json = json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     hub_test_assert(is_array($manifest['services'] ?? null), 'manifest services missing');
     foreach (['hello', 'ocr', 'yolo', 'translate', 'sam3', 'yolo_model_register', 'yolo_model_status'] as $mode) {
@@ -131,7 +413,7 @@ hub_test('PhaseDX-3 public API docs policy settings and manifest are safe', func
         hub_test_assert(!str_contains($json, $secret), 'manifest must not leak ' . $secret);
     }
 
-    $docsHtml = hub_public_api_docs_html($db);
+    $docsHtml = hub_public_api_docs_html($db, null, $healthy);
     hub_test_assert(str_contains($docsHtml, '3waAIHub API 介接文件'), 'public docs title missing');
     foreach (['API modes', 'Local Jobs', 'bin/aihub-run', 'yolo_train', 'request.json', 'progress.ndjson', 'result.json', 'Local Job Contract v0.1'] as $needle) {
         hub_test_assert(str_contains($docsHtml, $needle), 'public docs local job section missing ' . $needle);

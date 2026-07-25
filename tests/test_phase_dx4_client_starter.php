@@ -61,12 +61,16 @@ hub_test('PhaseDX-4 API smoke client script exposes safe CLI contract', function
 
 hub_test('PhaseDX-4 public docs and playground examples use current host URLs', function (): void {
     $db = hub_test_reset_db();
+    $db->exec(
+        "UPDATE services SET install_status = 'installed', enabled = 1, runtime_status = 'running', status = 'running'
+         WHERE mode = 'hello'"
+    );
     $_SERVER['HTTPS'] = 'on';
     $_SERVER['HTTP_HOST'] = 'nature.focusit.tw';
     $_SERVER['SCRIPT_NAME'] = '/3waAIHub/public_api_docs.php';
 
     require_once HUB_ROOT . '/app/public_api_docs.php';
-    $services = hub_public_api_services($db);
+    $services = hub_public_api_services($db, static fn (array $service): bool => true);
     $hello = null;
     foreach ($services as $service) {
         if ((string)$service['mode'] === 'hello') {
