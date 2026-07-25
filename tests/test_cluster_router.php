@@ -157,7 +157,7 @@ function hub_test_with_cluster_http_internal(callable $fn): void
 
 function hub_test_with_cluster_pair_url(callable $fn): void
 {
-    $keys = ['HTTPS', 'HTTP_HOST', 'SCRIPT_NAME'];
+    $keys = ['HTTPS', 'HTTP_HOST', 'SCRIPT_NAME', 'SERVER_NAME', 'SERVER_PORT'];
     $previous = [];
     foreach ($keys as $key) {
         $previous[$key] = array_key_exists($key, $_SERVER) ? $_SERVER[$key] : null;
@@ -1614,7 +1614,10 @@ hub_test('cluster child followup redacts native spool paths and bare station hos
                 $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, null, ['owner_member_id' => $memberId, 'owner_token_id' => hub_cluster_node_token_id($db)]);
             }
             hub_test_assert($taskId === 42, 'test task must exercise the native task_42 spool path');
-            hub_add_task_log($db, $taskId, 'info', 'station.internal station.internal. station.internal:8080 [fd00:beef::1]:443 fd00:beef::1 ::ffff:192.168.1.25 [face] [cab] remote task 42 ' . str_repeat('x', 4097));
+            $_SERVER['HTTP_HOST'] = 'station.internal:8080';
+            $_SERVER['SERVER_NAME'] = 'station.internal';
+            $_SERVER['SERVER_PORT'] = '8080';
+            hub_add_task_log($db, $taskId, 'info', 'station.internal station.internal. station.internal:8080 config.json task.log release.v1 [fd00:beef::1]:443 fd00:beef::1. ::ffff:192.168.1.25. [face] [cab] remote task 42 ' . str_repeat('x', 4097));
             hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '203.0.113.44', 'Primary Router');
 
             $response = hub_cluster_child_followup_dispatch($db, [
@@ -1626,9 +1629,22 @@ hub_test('cluster child followup redacts native spool paths and bare station hos
             $payload = json_decode($response['body'], true, 64, JSON_THROW_ON_ERROR);
             hub_test_assert($response['status'] === 200 && !empty($payload['logs']), 'paired child control plane must return projected native logs');
             $projectedLogs = json_encode($payload['logs'], JSON_THROW_ON_ERROR);
-            hub_test_assert(!str_contains($projectedLogs, '42') && !str_contains($projectedLogs, 'task_42.log') && !str_contains($projectedLogs, 'station.internal') && !str_contains($projectedLogs, '[fd00:beef::1]:443') && !str_contains($projectedLogs, 'fd00:beef::1') && !str_contains($projectedLogs, '::ffff:192.168.1.25') && !str_contains($projectedLogs, '192.168.1.25') && str_contains($projectedLogs, '[face]') && str_contains($projectedLogs, '[cab]'), 'child logs must redact bare hosts and validated IPv6 without altering ordinary bracket text');
+            hub_test_assert(!str_contains($projectedLogs, '42') && !str_contains($projectedLogs, 'task_42.log') && !str_contains($projectedLogs, 'station.internal') && !str_contains($projectedLogs, '[fd00:beef::1]:443') && !str_contains($projectedLogs, 'fd00:beef::1') && !str_contains($projectedLogs, '::ffff:192.168.1.25') && !str_contains($projectedLogs, '192.168.1.25') && str_contains($projectedLogs, '[redacted-ipv6].') && str_contains($projectedLogs, '[face]') && str_contains($projectedLogs, '[cab]') && str_contains($projectedLogs, 'config.json') && str_contains($projectedLogs, 'task.log') && str_contains($projectedLogs, 'release.v1'), 'child logs must redact known local authorities and IPv6 without changing filenames, versions, or ordinary bracket text');
         });
     });
+});
+
+hub_test('cluster child log terms redact only known local authorities', function (): void {
+    $terms = hub_cluster_child_local_authority_terms([
+        'HTTPS' => 'on',
+        'HTTP_HOST' => 'node.example',
+        'SERVER_NAME' => 'node.example',
+        'SERVER_ADDR' => '192.0.2.10',
+        'SERVER_PORT' => '443',
+    ]);
+    $message = hub_cluster_redact_log_references('node.example station.internal config.json task.log release.v1', $terms, true);
+
+    hub_test_assert(!str_contains($message, 'node.example') && str_contains($message, 'station.internal') && str_contains($message, 'config.json') && str_contains($message, 'task.log') && str_contains($message, 'release.v1'), 'child logs must redact only validated local authority terms, not arbitrary dotted values');
 });
 
 hub_test('cluster router emits relative links and allowlists initial async fields', function (): void {

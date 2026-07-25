@@ -772,37 +772,120 @@ function hub_cluster_station_redaction_terms(array $station): array
         if (!in_array($scheme, ['http', 'https'], true)) {
             continue;
         }
-        $authority = str_contains($host, ':') ? '[' . $host . ']' : $host;
         $actualPort = is_array($parts) && isset($parts['port']) ? (int)$parts['port'] : 0;
         $defaultPort = $scheme === 'https' ? 443 : 80;
-        $terms[rtrim($baseUrl, '/')] = true;
-        $terms[$scheme . '://' . $authority] = true;
-        $terms[$authority] = true;
-        foreach (array_unique(array_filter([$actualPort, $defaultPort], static fn (int $port): bool => $port > 0)) as $port) {
-            $terms[$authority . ':' . $port] = true;
-        }
-        if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
-            $terms[$host] = true;
-            continue;
-        }
-        if (filter_var($host, FILTER_VALIDATE_IP) === false) {
-            $host = rtrim($host, '.');
-            if ($host === '') {
-                continue;
-            }
-            $terms[$host] = true;
-            $terms[$host . '.'] = true;
-            foreach (array_unique(array_filter([$actualPort, $defaultPort], static fn (int $port): bool => $port > 0)) as $port) {
-                $terms[$host . ':' . $port] = true;
-                $terms[$host . '.:' . $port] = true;
+        $terms[] = rtrim($baseUrl, '/');
+        $terms = array_merge($terms, hub_cluster_authority_redaction_terms($host, $defaultPort, $actualPort, $scheme));
+    }
+
+    return hub_cluster_sort_redaction_terms($terms);
+}
+
+function hub_cluster_authority_redaction_terms(string $host, int $defaultPort, ?int $actualPort = null, ?string $scheme = null): array
+{
+    $host = trim($host, '[]');
+    $isIpv6 = filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false;
+    $isIp = filter_var($host, FILTER_VALIDATE_IP) !== false;
+    if ($host === '' || (!$isIp && !hub_cluster_valid_redaction_hostname($host))) {
+        return [];
+    }
+    $authority = $isIpv6 ? '[' . $host . ']' : $host;
+    $terms = [$authority];
+    if ($scheme !== null && in_array($scheme, ['http', 'https'], true)) {
+        $terms[] = $scheme . '://' . $authority;
+    }
+    foreach (array_unique(array_filter([$actualPort, $defaultPort], static fn (?int $port): bool => is_int($port) && $port > 0 && $port <= 65535)) as $port) {
+        $terms[] = $authority . ':' . $port;
+    }
+    if ($isIpv6) {
+        $terms[] = $host;
+    } elseif (!$isIp) {
+        $host = rtrim($host, '.');
+        if ($host !== '') {
+            $terms[] = $host;
+            $terms[] = $host . '.';
+            foreach (array_unique(array_filter([$actualPort, $defaultPort], static fn (?int $port): bool => is_int($port) && $port > 0 && $port <= 65535)) as $port) {
+                $terms[] = $host . ':' . $port;
+                $terms[] = $host . '.:' . $port;
             }
         }
     }
 
-    $terms = array_keys($terms);
+    return $terms;
+}
+
+function hub_cluster_valid_redaction_hostname(string $host): bool
+{
+    $host = rtrim($host, '.');
+    return $host !== '' && strlen($host) <= 253
+        && preg_match('/\A(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\z/', $host) === 1;
+}
+
+function hub_cluster_sort_redaction_terms(array $terms): array
+{
+    $terms = array_values(array_unique(array_filter($terms, static fn (mixed $term): bool => is_string($term) && $term !== '')));
     usort($terms, static fn (string $left, string $right): int => (strlen($right) <=> strlen($left)) ?: strcmp($left, $right));
 
     return $terms;
+}
+
+function hub_cluster_child_local_authority_terms(?array $server = null): array
+{
+    $server ??= $_SERVER;
+    $https = !empty($server['HTTPS']) && $server['HTTPS'] !== 'off';
+    $defaultPort = $https ? 443 : 80;
+    $serverPort = hub_cluster_child_local_port($server['SERVER_PORT'] ?? null);
+    $terms = [];
+    foreach (['HTTP_HOST', 'SERVER_NAME', 'SERVER_ADDR'] as $key) {
+        $authority = hub_cluster_child_local_authority($server[$key] ?? null);
+        if ($authority === null) {
+            continue;
+        }
+        $terms = array_merge($terms, hub_cluster_authority_redaction_terms(
+            $authority['host'],
+            $defaultPort,
+            $authority['port'] ?? $serverPort
+        ));
+    }
+
+    return hub_cluster_sort_redaction_terms($terms);
+}
+
+function hub_cluster_child_local_authority(mixed $value): ?array
+{
+    if (!is_scalar($value)) {
+        return null;
+    }
+    $value = trim((string)$value);
+    if ($value === '') {
+        return null;
+    }
+    if (filter_var($value, FILTER_VALIDATE_IP)) {
+        return ['host' => $value, 'port' => null];
+    }
+    if (preg_match('/\A\[([0-9A-Fa-f:.]+)\](?::([1-9]\d{0,4}))?\z/', $value, $matches) === 1) {
+        $port = isset($matches[2]) ? (int)$matches[2] : null;
+        return filter_var($matches[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false && ($port === null || $port <= 65535)
+            ? ['host' => $matches[1], 'port' => $port]
+            : null;
+    }
+    if (preg_match('/\A([A-Za-z0-9][A-Za-z0-9.-]*)(?::([1-9]\d{0,4}))?\z/', $value, $matches) !== 1) {
+        return null;
+    }
+    $port = isset($matches[2]) ? (int)$matches[2] : null;
+    return hub_cluster_valid_redaction_hostname($matches[1]) && ($port === null || $port <= 65535)
+        ? ['host' => $matches[1], 'port' => $port]
+        : null;
+}
+
+function hub_cluster_child_local_port(mixed $value): ?int
+{
+    if (!is_scalar($value) || preg_match('/\A[1-9]\d{0,4}\z/', (string)$value) !== 1) {
+        return null;
+    }
+    $port = (int)$value;
+
+    return $port <= 65535 ? $port : null;
 }
 
 function hub_cluster_redact_log_references(string $message, array $terms = [], bool $redactGenericOrigins = false): string
@@ -828,11 +911,18 @@ function hub_cluster_redact_log_references(string $message, array $terms = [], b
         $message = is_string($bracketed) ? $bracketed : '';
         $redacted = preg_replace_callback(
             '~(?<![0-9A-Za-z:.])(?=[0-9A-Fa-f:.]*:)([0-9A-Fa-f:.]{2,})(?![0-9A-Za-z:.])~',
-            static fn (array $matches): string => filter_var($matches[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? '[redacted-ipv6]' : $matches[1],
+            static function (array $matches): string {
+                $candidate = $matches[1];
+                $core = rtrim($candidate, '.');
+                $punctuation = substr($candidate, strlen($core));
+
+                return filter_var($core, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false
+                    ? '[redacted-ipv6]' . $punctuation
+                    : $candidate;
+            },
             $message
         );
         $message = is_string($redacted) ? $redacted : '';
-        $message = preg_replace('~(?<![A-Za-z0-9.-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.?(?![A-Za-z0-9.-])~', '[redacted-host]', $message) ?? '';
     }
 
     return $message;
@@ -950,7 +1040,7 @@ function hub_cluster_child_project_task_logs(array $logs, int $taskId): array
             continue;
         }
         $message = preg_replace('~(?:[A-Za-z0-9._/-]*/)?data/logs/tasks/task_[^\s]+~i', '[redacted-log]', $log['message']) ?? '';
-        $message = hub_cluster_redact_log_references($message, [], true);
+        $message = hub_cluster_redact_log_references($message, hub_cluster_child_local_authority_terms(), true);
         $message = preg_replace('~(?<![A-Za-z0-9.-])(?:[A-Za-z0-9.-]+|(?:\d{1,3}\.){3}\d{1,3}):\d{1,5}(?![A-Za-z0-9.-])~', '[redacted-host]', $message) ?? '';
         $message = str_replace((string)$taskId, '[redacted-task]', $message);
         $safe[] = [
