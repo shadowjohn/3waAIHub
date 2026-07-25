@@ -219,14 +219,36 @@ function hub_public_api_healthy_service_ids(array $services, ?callable $probe = 
     return $healthy;
 }
 
+function hub_public_api_service_mode_uses_pack(array $service): bool
+{
+    $mode = trim((string)($service['mode'] ?? ''));
+    if ($mode === 'yolo_gpu_internal' || hub_is_task_api_mode($mode)) {
+        return false;
+    }
+    if (!hub_is_audio_async_mode($mode)) {
+        return true;
+    }
+
+    return (string)($service['pack_id'] ?? '') === (string)(hub_audio_async_routes()[$mode]['pack_id'] ?? '');
+}
+
 function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
 {
+    $rows = hub_list_services($db);
+    $registeredModes = [];
+    foreach ($rows as $row) {
+        $mode = trim((string)($row['mode'] ?? ''));
+        if ($mode !== '') {
+            $registeredModes[$mode] = true;
+        }
+    }
     $candidates = array_values(array_filter(
-        hub_list_services($db),
+        $rows,
         static fn (array $service): bool =>
             (string)($service['install_status'] ?? '') === 'installed'
             && (int)($service['enabled'] ?? 0) === 1
             && (string)($service['runtime_status'] ?? '') === 'running'
+            && hub_public_api_service_mode_uses_pack($service)
     ));
     $healthyIds = hub_public_api_healthy_service_ids($candidates, $healthProbe);
     $services = [];
@@ -285,7 +307,7 @@ function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
     }
     if (isset($derivedParents['gemma4-main'])) {
         foreach (hub_public_api_gemma4_services() as $service) {
-            if (isset($services[(string)$service['mode']])) {
+            if (isset($registeredModes[(string)$service['mode']])) {
                 continue;
             }
             $service['examples'] = hub_public_api_examples($service);
@@ -294,7 +316,7 @@ function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
     }
     if (isset($derivedParents['yolo-cpu'])) {
         foreach (hub_public_api_yolo_model_services() as $service) {
-            if (isset($services[(string)$service['mode']])) {
+            if (isset($registeredModes[(string)$service['mode']])) {
                 continue;
             }
             $service['examples'] = hub_public_api_examples($service);

@@ -348,6 +348,44 @@ hub_test('Public API inventory requires installed enabled running and healthy se
     hub_test_assert(!str_contains($emptyHtml, '<article class="card">'), 'empty public docs must not render service cards');
 });
 
+hub_test('Public API inventory hides unconditionally reserved DB service modes', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $rendered = [];
+
+    foreach (['task_status', 'yolo_gpu_internal'] as $mode) {
+        $db = hub_test_reset_db();
+        hub_test_make_documentable_pack($db, 'hello', ['mode' => $mode]);
+        if (in_array($mode, array_column(hub_public_api_services($db, static fn (array $service): bool => true), 'mode'), true)) {
+            $rendered[] = $mode;
+        }
+    }
+
+    hub_test_assert($rendered === [], 'reserved gateway modes rendered Pack contracts: ' . implode(', ', $rendered));
+});
+
+hub_test('Public API audio async DB modes require their canonical owning packs', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $unexpected = [];
+    $missing = [];
+
+    foreach (hub_audio_async_routes() as $mode => $route) {
+        $mismatchDb = hub_test_reset_db();
+        hub_test_make_documentable_pack($mismatchDb, 'hello', ['mode' => $mode]);
+        if (in_array($mode, array_column(hub_public_api_services($mismatchDb, static fn (array $service): bool => true), 'mode'), true)) {
+            $unexpected[] = $mode;
+        }
+
+        $ownerDb = hub_test_reset_db();
+        hub_test_make_documentable_pack($ownerDb, (string)$route['pack_id'], ['mode' => $mode]);
+        if (!in_array($mode, array_column(hub_public_api_services($ownerDb, static fn (array $service): bool => true), 'mode'), true)) {
+            $missing[] = $mode;
+        }
+    }
+
+    hub_test_assert($unexpected === [], 'mismatched Packs rendered audio async contracts: ' . implode(', ', $unexpected));
+    hub_test_assert($missing === [], 'canonical audio Packs lost async contracts: ' . implode(', ', $missing));
+});
+
 hub_test('Public API Gemma derived contracts require gemma4-main', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
     $healthy = static fn (array $service): bool => true;
@@ -390,6 +428,27 @@ hub_test('Public API DB contract wins a derived mode collision', function (): vo
     $servicesByMode = array_column(hub_public_api_services($db, $healthy), null, 'mode');
 
     hub_test_assert(($servicesByMode['photo_upload']['pack_id'] ?? '') === 'hello', 'derived contract overwrote a real DB service mode');
+});
+
+hub_test('Public API unhealthy DB mode reserves its gateway collision', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $db = hub_test_reset_db();
+    hub_test_make_documentable_pack($db, 'llm-gemma4-12b');
+    hub_test_make_documentable_pack($db, 'hello', [
+        'mode' => 'photo_upload',
+        'enabled' => 0,
+        'runtime_status' => 'stopped',
+        'status' => 'stopped',
+        'health_url' => 'http://127.0.0.1:1/health',
+    ]);
+    $modes = array_column(
+        hub_public_api_services($db, static fn (array $service): bool => (string)$service['pack_id'] === 'llm-gemma4-12b'),
+        'mode'
+    );
+
+    hub_test_assert(!in_array('photo_upload', $modes, true), 'derived contract ignored an unhealthy DB mode collision');
+    hub_test_assert(in_array('photo', $modes, true), 'healthy canonical Gemma parent lost unrelated derived modes');
 });
 
 hub_test('Public API docs gate DocParser and YOLO sections independently', function (): void {
