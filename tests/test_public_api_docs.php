@@ -260,6 +260,26 @@ PHP);
     }
 });
 
+hub_test('Public API health cap keeps later internal-task services healthy', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $db = hub_test_reset_db();
+    $internal = hub_test_make_documentable_pack($db, 'docparser');
+    hub_test_assert(
+        hub_service_is_internal_task($internal) && (string)$internal['health_url'] === 'internal-task:health',
+        'internal-task fixture is invalid'
+    );
+    $services = [];
+    for ($id = 1000; $id < 1129; $id++) {
+        $services[] = ['id' => $id, 'health_url' => 'http://127.0.0.1:1/health'];
+    }
+    $services[] = $internal;
+
+    $healthy = hub_public_api_healthy_service_ids($services);
+
+    hub_test_assert(isset($healthy[(int)$internal['id']]), 'HTTP probe cap hid a later internal-task service');
+});
+
 hub_test('Public API inventory requires installed enabled running and healthy services', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
     $db = hub_test_reset_db();

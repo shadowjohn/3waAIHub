@@ -124,9 +124,6 @@ function hub_public_api_healthy_service_ids(array $services, ?callable $probe = 
     $healthy = [];
     $pending = [];
     foreach ($services as $service) {
-        if ($probe === null && (count($pending) >= 128 || microtime(true) >= $deadline)) {
-            break;
-        }
         $id = (int)($service['id'] ?? 0);
         if ($id < 1) {
             continue;
