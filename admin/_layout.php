@@ -73,6 +73,7 @@ function hub_admin_header(string $title, array $user): void
             <a href="customers.php"><?= hub_h(__('客戶管理')) ?></a>
             <a href="api_members.php"><?= hub_h(__('API 金鑰')) ?></a>
             <a href="api_usage.php"><?= hub_h(__('API 記錄')) ?></a>
+            <a href="cluster.php">Cluster</a>
             <a href="playground.php"><?= hub_h(__('API 測試場')) ?></a>
             <a href="log_explorer.php"><?= hub_h(__('記錄中心')) ?></a>
             <a href="benchmarks.php"><?= hub_h(__('Benchmark 測試')) ?></a>

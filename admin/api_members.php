@@ -46,6 +46,7 @@ hub_admin_header('API 金鑰', $user);
                     <a class="button" href="api_member_edit.php?id=<?= (int)$member['id'] ?>">編輯</a>
                     <a class="button" href="api_tokens.php?member_id=<?= (int)$member['id'] ?>">Token</a>
                     <a class="button" href="api_usage.php?member_id=<?= (int)$member['id'] ?>">用量</a>
+                    <a class="button" href="cluster.php?view=usage&amp;member_id=<?= (int)$member['id'] ?>">Cluster 用量</a>
                     <form method="post">
                         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
                         <input type="hidden" name="member_id" value="<?= (int)$member['id'] ?>">

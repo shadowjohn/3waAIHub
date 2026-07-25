@@ -328,10 +328,198 @@ function hub_cluster_list_stations(PDO $db): array
 {
     return $db->query(
         'SELECT id, station_key, display_name, public_base_url, internal_base_url, priority, enabled,
-                manifest_json, manifest_fetched_at, status_json, status_fetched_at, last_error, created_at, updated_at
+                manifest_json, manifest_fetched_at, status_json, status_fetched_at, last_error, created_at, updated_at,
+                CASE WHEN token_ciphertext <> \'\' AND token_iv <> \'\' AND token_tag <> \'\' THEN 1 ELSE 0 END AS token_configured
          FROM cluster_stations
          ORDER BY priority DESC, id ASC'
     )->fetchAll();
+}
+
+function hub_cluster_station_dashboard_rows(PDO $db): array
+{
+    $activeRoutes = $db->query(
+        'SELECT station_id, COUNT(*) AS active_route_count
+         FROM cluster_routes
+         WHERE completed_at IS NULL
+         GROUP BY station_id'
+    )->fetchAll(PDO::FETCH_KEY_PAIR);
+    $rows = [];
+    foreach (hub_cluster_list_stations($db) as $station) {
+        $inventory = hub_cluster_station_inventory($station);
+        $manifest = json_decode((string)($station['manifest_json'] ?? ''), true);
+        $manifestModes = is_array($manifest['modes'] ?? null) ? $manifest['modes'] : [];
+        $statusModes = array_fill_keys($inventory['modes'], true);
+        $modeNames = [];
+        foreach (array_merge($manifestModes, $inventory['modes']) as $mode) {
+            if (is_string($mode) && preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $mode) === 1) {
+                $modeNames[$mode] = true;
+            }
+        }
+        ksort($modeNames, SORT_STRING);
+        $modeReadiness = [];
+        foreach (array_keys($modeNames) as $mode) {
+            $modeReadiness[] = ['mode' => $mode, 'ready' => isset($statusModes[$mode])];
+        }
+        $status = json_decode((string)($station['status_json'] ?? ''), true);
+        $status = is_array($status) ? $status : [];
+        $rows[] = [
+            'id' => (int)$station['id'],
+            'station_key' => (string)$station['station_key'],
+            'display_name' => (string)$station['display_name'],
+            'public_base_url' => (string)$station['public_base_url'],
+            'internal_base_url' => (string)($station['internal_base_url'] ?? ''),
+            'priority' => (int)$station['priority'],
+            'enabled' => !empty($station['enabled']),
+            'token_configured' => !empty($station['token_configured']),
+            'manifest_fetched_at' => (string)($station['manifest_fetched_at'] ?? ''),
+            'status_fetched_at' => (string)($station['status_fetched_at'] ?? ''),
+            'fresh' => !empty($inventory['fresh']),
+            'last_error' => (string)($inventory['last_error'] ?? ''),
+            'modes' => $inventory['modes'],
+            'mode_readiness' => $modeReadiness,
+            'gpu_free_vram_mb' => (int)$inventory['gpu_free_vram_mb'],
+            'gpu_total_vram_mb' => (int)($status['gpu']['memory_total_mb'] ?? 0),
+            'active_gpu_leases' => (int)$inventory['active_gpu_leases'],
+            'queued_jobs' => (int)$inventory['queued_jobs'],
+            'running_jobs' => (int)$inventory['running_jobs'],
+            'active_route_count' => (int)($activeRoutes[(int)$station['id']] ?? 0),
+        ];
+    }
+
+    return $rows;
+}
+
+function hub_cluster_recent_routes(PDO $db, array $filters = [], int $limit = 100): array
+{
+    [$where, $params] = hub_cluster_usage_filter_sql($filters, 'r', 'route_');
+    $limit = max(1, min(500, $limit));
+    $stmt = $db->prepare(
+        'SELECT r.route_id, r.station_id, r.member_id, r.token_id, r.mode, r.state, r.remote_status,
+                r.is_async, r.created_at, r.updated_at, r.completed_at,
+                m.name AS member_name, t.token_name, t.token_prefix, s.display_name AS station_name,
+                (SELECT COUNT(*) FROM cluster_route_accesses a WHERE a.route_id = r.route_id) AS accesses,
+                (SELECT COALESCE(SUM(a.upload_bytes), 0) FROM cluster_route_accesses a WHERE a.route_id = r.route_id) AS upload_bytes,
+                (SELECT COALESCE(SUM(a.response_bytes), 0) FROM cluster_route_accesses a WHERE a.route_id = r.route_id) AS response_bytes
+         FROM cluster_routes r
+         LEFT JOIN api_members m ON m.id = r.member_id
+         LEFT JOIN api_tokens t ON t.id = r.token_id
+         JOIN cluster_stations s ON s.id = r.station_id
+         WHERE ' . $where . '
+         ORDER BY r.created_at DESC, r.route_id DESC
+         LIMIT :limit'
+    );
+    foreach ($params as $name => $value) {
+        $stmt->bindValue($name, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+    }
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->execute();
+
+    return $stmt->fetchAll();
+}
+
+function hub_cluster_usage_summary(PDO $db, array $filters = []): array
+{
+    [$accessWhere, $accessParams] = hub_cluster_usage_filter_sql($filters, 'a', 'access_');
+    $access = $db->prepare(
+        'SELECT COUNT(*) AS accesses,
+                COALESCE(SUM(CASE WHEN access_kind = \'submit\' THEN 1 ELSE 0 END), 0) AS work_requests,
+                COALESCE(SUM(CASE WHEN ok = 1 THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END), 0) AS failed_count,
+                COALESCE(SUM(upload_bytes), 0) AS upload_bytes,
+                COALESCE(SUM(response_bytes), 0) AS response_bytes
+         FROM cluster_route_accesses a
+         WHERE ' . $accessWhere
+    );
+    $access->execute($accessParams);
+    $totals = $access->fetch() ?: [];
+
+    [$activeWhere, $activeParams] = hub_cluster_usage_filter_sql($filters, 'r', 'active_');
+    $active = $db->prepare('SELECT COUNT(*) FROM cluster_routes r WHERE ' . $activeWhere . ' AND r.completed_at IS NULL');
+    $active->execute($activeParams);
+
+    [$startWhere, $startParams] = hub_cluster_usage_filter_sql($filters, 'r', 'start_');
+    [$endWhere, $endParams] = hub_cluster_usage_filter_sql($filters, 'r', 'end_');
+    $events = $db->prepare(
+        'SELECT r.created_at AS event_at, 1 AS delta
+         FROM cluster_routes r
+         WHERE ' . $startWhere . '
+         UNION ALL
+         SELECT r.completed_at AS event_at, -1 AS delta
+         FROM cluster_routes r
+         WHERE ' . $endWhere . ' AND r.completed_at IS NOT NULL
+         ORDER BY event_at ASC, delta ASC'
+    );
+    $events->execute(array_merge($startParams, $endParams));
+    $concurrency = 0;
+    $peakConcurrency = 0;
+    foreach ($events->fetchAll() as $event) {
+        $concurrency = max(0, $concurrency + (int)$event['delta']);
+        $peakConcurrency = max($peakConcurrency, $concurrency);
+    }
+
+    return [
+        'work_requests' => (int)($totals['work_requests'] ?? 0),
+        'accesses' => (int)($totals['accesses'] ?? 0),
+        'success_count' => (int)($totals['success_count'] ?? 0),
+        'failed_count' => (int)($totals['failed_count'] ?? 0),
+        'active_routes' => (int)$active->fetchColumn(),
+        'peak_concurrency' => $peakConcurrency,
+        'upload_bytes' => (int)($totals['upload_bytes'] ?? 0),
+        'response_bytes' => (int)($totals['response_bytes'] ?? 0),
+    ];
+}
+
+function hub_cluster_usage_rows(PDO $db, array $filters = []): array
+{
+    [$where, $params] = hub_cluster_usage_filter_sql($filters, 'a', 'usage_');
+    $stmt = $db->prepare(
+        'SELECT a.member_id, a.token_id, a.station_id, m.name AS member_name,
+                t.token_name, t.token_prefix, s.display_name AS station_name,
+                COUNT(*) AS accesses,
+                COALESCE(SUM(CASE WHEN a.access_kind = \'submit\' THEN 1 ELSE 0 END), 0) AS work_requests,
+                COALESCE(SUM(CASE WHEN a.ok = 1 THEN 1 ELSE 0 END), 0) AS success_count,
+                COALESCE(SUM(CASE WHEN a.ok = 0 THEN 1 ELSE 0 END), 0) AS failed_count,
+                COALESCE(SUM(a.upload_bytes), 0) AS upload_bytes,
+                COALESCE(SUM(a.response_bytes), 0) AS response_bytes
+         FROM cluster_route_accesses a
+         LEFT JOIN api_members m ON m.id = a.member_id
+         LEFT JOIN api_tokens t ON t.id = a.token_id
+         LEFT JOIN cluster_stations s ON s.id = a.station_id
+         WHERE ' . $where . '
+         GROUP BY a.member_id, a.token_id, a.station_id
+         ORDER BY accesses DESC, a.member_id ASC, a.token_id ASC, a.station_id ASC'
+    );
+    $stmt->execute($params);
+
+    return $stmt->fetchAll();
+}
+
+function hub_cluster_usage_filter_sql(array $filters, string $alias, string $prefix): array
+{
+    $clauses = ['1 = 1'];
+    $params = [];
+    foreach (['member_id', 'token_id', 'station_id'] as $field) {
+        if (!array_key_exists($field, $filters) || $filters[$field] === null || $filters[$field] === '') {
+            continue;
+        }
+        $value = $filters[$field];
+        if ((!is_int($value) && !is_string($value)) || preg_match('/\A[1-9]\d*\z/', (string)$value) !== 1) {
+            throw new InvalidArgumentException('cluster usage filters are invalid');
+        }
+        $parameter = ':' . $prefix . $field;
+        $clauses[] = $alias . '.' . $field . ' = ' . $parameter;
+        $params[$parameter] = (int)$value;
+    }
+    if (array_key_exists('mode', $filters) && $filters['mode'] !== null && $filters['mode'] !== '') {
+        if (!is_string($filters['mode']) || preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $filters['mode']) !== 1) {
+            throw new InvalidArgumentException('cluster usage filters are invalid');
+        }
+        $parameter = ':' . $prefix . 'mode';
+        $clauses[] = $alias . '.mode = ' . $parameter;
+        $params[$parameter] = $filters['mode'];
+    }
+
+    return [implode(' AND ', $clauses), $params];
 }
 
 function hub_cluster_station_token(array $station): string
@@ -1639,7 +1827,7 @@ function hub_cluster_router_complete_route(
             ':member_id' => !empty($authContext['member_id']) ? (int)$authContext['member_id'] : null,
             ':token_id' => !empty($authContext['token_id']) ? (int)$authContext['token_id'] : null,
             ':mode' => $mode,
-            ':access_kind' => $proxying ? 'proxy' : 'direct',
+            ':access_kind' => 'submit',
             ':request_id' => $requestId,
             ':status_code' => $status,
             ':ok' => $status >= 200 && $status < 400 ? 1 : 0,
@@ -2213,6 +2401,9 @@ function hub_cluster_node_pairing_descriptor(PDO $db): array
     $host = preg_replace('/[^A-Za-z0-9.:\-\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost')) ?: 'localhost';
     $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/cluster_pair.php'));
     $path = rtrim(dirname($script), '/');
+    if (str_ends_with($path, '/admin')) {
+        $path = substr($path, 0, -strlen('/admin'));
+    }
     $baseUrl = ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https' ? 'https' : 'http')
         . '://' . $host . ($path === '' || $path === '.' ? '/' : $path . '/');
     $publicBaseUrl = hub_cluster_validate_station_base_url($baseUrl);

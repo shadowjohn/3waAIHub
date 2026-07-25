@@ -1780,3 +1780,176 @@ hub_test('cluster router followups never retry pinned stations and reserve priva
         hub_test_assert($response['status'] === 503 && str_contains($response['body'], 'station_unavailable') && $calls === 1, 'pinned transport failures must return 503 without retrying another station');
     });
 });
+
+hub_test('cluster admin usage helpers count submit events and keep station presentation secret-free', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $station = hub_test_cluster_router_station($db);
+        $customer = hub_test_cluster_router_customer_token($db, []);
+        $memberId = (int)$db->query('SELECT member_id FROM api_tokens WHERE id = ' . (int)$customer['token_id'])->fetchColumn();
+        $now = hub_now();
+        $db->prepare(
+            'UPDATE cluster_stations
+             SET manifest_json = :manifest_json, manifest_fetched_at = :manifest_fetched_at,
+                 status_json = :status_json, status_fetched_at = :status_fetched_at
+             WHERE id = :id'
+        )->execute([
+            ':manifest_json' => json_encode(['modes' => ['vision', 'tts']], JSON_THROW_ON_ERROR),
+            ':manifest_fetched_at' => $now,
+            ':status_json' => json_encode([
+                'modes' => ['vision'],
+                'gpu' => ['memory_free_mb' => 4096, 'memory_total_mb' => 8192],
+                'active_gpu_leases' => 2,
+                'queued_jobs' => 3,
+                'running_jobs' => 4,
+            ], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => $now,
+            ':id' => (int)$station['id'],
+        ]);
+        $route = $db->prepare(
+            'INSERT INTO cluster_routes
+                (route_id, station_id, member_id, token_id, mode, state, created_at, updated_at, completed_at)
+             VALUES
+                (:route_id, :station_id, :member_id, :token_id, :mode, :state, :created_at, :updated_at, :completed_at)'
+        );
+        foreach ([
+            ['route_admin_1', 'succeeded', '2026-01-01 10:00:00', '2026-01-01 11:00:00'],
+            ['route_admin_2', 'failed', '2026-01-01 10:30:00', '2026-01-01 12:00:00'],
+            ['route_admin_3', 'active', '2026-01-01 10:45:00', null],
+        ] as [$routeId, $state, $createdAt, $completedAt]) {
+            $route->execute([
+                ':route_id' => $routeId,
+                ':station_id' => (int)$station['id'],
+                ':member_id' => $memberId,
+                ':token_id' => (int)$customer['token_id'],
+                ':mode' => 'vision',
+                ':state' => $state,
+                ':created_at' => $createdAt,
+                ':updated_at' => $completedAt ?? $createdAt,
+                ':completed_at' => $completedAt,
+            ]);
+        }
+        $access = $db->prepare(
+            'INSERT INTO cluster_route_accesses
+                (route_id, station_id, member_id, token_id, mode, access_kind, status_code, ok, elapsed_ms, upload_bytes, response_bytes, created_at)
+             VALUES
+                (:route_id, :station_id, :member_id, :token_id, :mode, :access_kind, :status_code, :ok, 0, :upload_bytes, :response_bytes, :created_at)'
+        );
+        foreach ([
+            ['route_admin_1', 'submit', 200, 1, 100, 200],
+            ['route_admin_1', 'proxy', 200, 1, 0, 20],
+            ['route_admin_2', 'submit', 500, 0, 50, 10],
+            ['route_admin_3', 'submit', 202, 1, 25, 40],
+        ] as [$routeId, $kind, $statusCode, $ok, $uploadBytes, $responseBytes]) {
+            $access->execute([
+                ':route_id' => $routeId,
+                ':station_id' => (int)$station['id'],
+                ':member_id' => $memberId,
+                ':token_id' => (int)$customer['token_id'],
+                ':mode' => 'vision',
+                ':access_kind' => $kind,
+                ':status_code' => $statusCode,
+                ':ok' => $ok,
+                ':upload_bytes' => $uploadBytes,
+                ':response_bytes' => $responseBytes,
+                ':created_at' => '2026-01-01 10:00:00',
+            ]);
+        }
+
+        $filters = [
+            'member_id' => $memberId,
+            'token_id' => (int)$customer['token_id'],
+            'station_id' => (int)$station['id'],
+            'mode' => 'vision',
+        ];
+        $summary = hub_cluster_usage_summary($db, $filters);
+        $rows = hub_cluster_usage_rows($db, $filters);
+        $dashboard = hub_cluster_station_dashboard_rows($db);
+        $recent = hub_cluster_recent_routes($db, $filters, 10);
+
+        hub_test_assert($summary === [
+            'work_requests' => 3,
+            'accesses' => 4,
+            'success_count' => 3,
+            'failed_count' => 1,
+            'active_routes' => 1,
+            'peak_concurrency' => 3,
+            'upload_bytes' => 175,
+            'response_bytes' => 270,
+        ], 'cluster usage summary must count submit work separately from all access events and sweep route lifetimes');
+        hub_test_assert(count($rows) === 1 && (int)$rows[0]['work_requests'] === 3 && (int)$rows[0]['accesses'] === 4, 'cluster usage rows must group the selected member token and station events');
+        hub_test_assert(count($recent) === 3 && !str_contains(json_encode($recent, JSON_THROW_ON_ERROR), '3wa_live_station_secret'), 'recent routes must be presentation-safe');
+        hub_test_assert(count($dashboard) === 1, 'station dashboard must include the paired station');
+        hub_test_assert(!empty($dashboard[0]['token_configured']), 'station dashboard must expose only configured token state');
+        hub_test_assert(!empty($dashboard[0]['fresh']), 'station dashboard must use cached freshness');
+        hub_test_assert((int)$dashboard[0]['active_route_count'] === 1, 'station dashboard must count active Router routes');
+        hub_test_assert(($dashboard[0]['mode_readiness'] ?? []) === [
+            ['mode' => 'tts', 'ready' => false],
+            ['mode' => 'vision', 'ready' => true],
+        ], 'station dashboard must show manifest and status readiness per mode');
+        hub_test_assert(!str_contains(json_encode($dashboard, JSON_THROW_ON_ERROR), '3wa_live_station_secret'), 'station dashboard must never expose a decrypted station token');
+        hub_test_assert(hub_test_throws(static fn (): array => hub_cluster_usage_summary($db, ['station_id' => '1 OR 1=1'])), 'cluster usage filters must reject untrusted station values');
+    });
+});
+
+hub_test('cluster admin child controls retain only published modes and force one station refresh', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_test_cluster_publish_mode($db, 'vision');
+        $configured = hub_cluster_node_configure($db, true, ['vision', 'not_running']);
+        $permissions = array_column(hub_list_api_token_permissions($db, hub_cluster_node_token_id($db)), 'mode');
+        sort($permissions);
+        hub_test_assert(($configured['modes'] ?? []) === ['vision'] && $permissions === ['cluster_status', 'vision'], 'child mode controls must keep only currently published modes plus managed status');
+
+        $station = hub_test_cluster_router_station($db);
+        $requests = [];
+        hub_cluster_refresh_station_now($db, $station, true, static function (array $request) use (&$requests): array {
+            $requests[] = $request;
+            if (str_ends_with((string)$request['url'], '/api_manifest.json.php')) {
+                return ['status' => 200, 'body' => json_encode(['services' => [['mode' => 'vision']]], JSON_THROW_ON_ERROR)];
+            }
+
+            return ['status' => 200, 'body' => json_encode([
+                'ok' => true,
+                'snapshot_at' => hub_now(),
+                'gpu' => ['available' => true],
+                'active_gpu_leases' => 0,
+                'queued_jobs' => 0,
+                'running_jobs' => 0,
+                'modes' => ['vision'],
+            ], JSON_THROW_ON_ERROR)];
+        });
+        hub_test_assert(count($requests) === 2, 'forced station refresh must fetch only the selected station inventory');
+    });
+});
+
+hub_test('cluster admin page exposes guarded controls without station encryption internals', function (): void {
+    $page = (string)file_get_contents(HUB_ROOT . '/admin/cluster.php');
+    $layout = (string)file_get_contents(HUB_ROOT . '/admin/_layout.php');
+    $members = (string)file_get_contents(HUB_ROOT . '/admin/api_members.php');
+    $tokens = (string)file_get_contents(HUB_ROOT . '/admin/api_tokens.php');
+
+    foreach (['hub_require_system_admin($db)', 'hub_check_csrf()', 'save_roles', 'save_child_modes', 'regenerate_node_token', 'renew_invitation', 'pair_child', 'toggle_station', 'refresh_station', '子入口節點', '統一入口', '子節點 Token', '新增子節點', 'cluster.php?view=usage'] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'cluster admin page missing required control: ' . $needle);
+    }
+    foreach (['token_ciphertext', 'token_iv', 'token_tag', 'hub_cluster_station_token('] as $needle) {
+        hub_test_assert(!str_contains($page, $needle), 'cluster admin page must not reference station token internals: ' . $needle);
+    }
+    hub_test_assert(str_contains($layout, 'cluster.php') && str_contains($layout, 'Cluster'), 'admin navigation must link to Cluster');
+    hub_test_assert(str_contains($members, 'Cluster 用量') && str_contains($tokens, 'Cluster 用量'), 'member and token pages must link to filtered Cluster usage');
+});
+
+hub_test('cluster admin pairing descriptor keeps cluster pair at the application root', function (): void {
+    $previous = $_SERVER;
+    $_SERVER['HTTPS'] = 'on';
+    $_SERVER['HTTP_HOST'] = 'station.example';
+    $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/cluster.php';
+
+    try {
+        $db = hub_test_reset_db();
+        $descriptor = hub_cluster_node_pairing_descriptor($db);
+        hub_test_assert($descriptor['public_base_url'] === 'https://station.example/3waAIHub/', 'admin pairing links must resolve cluster_pair.php at the application root');
+    } finally {
+        $_SERVER = $previous;
+    }
+});
