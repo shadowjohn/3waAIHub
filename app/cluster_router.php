@@ -580,7 +580,7 @@ function hub_cluster_rewrite_contract_endpoint(array $service, string $stationAp
     $stationParts = parse_url($stationApiBase);
     $stationApiPattern = null;
     if (is_array($stationParts) && isset($stationParts['scheme'], $stationParts['host'], $stationParts['path'])) {
-        $host = (string)$stationParts['host'];
+        $host = trim((string)$stationParts['host'], '[]');
         $authority = str_contains($host, ':') ? '[' . $host . ']' : $host;
         $origin = (string)$stationParts['scheme'] . '://' . $authority . (isset($stationParts['port']) ? ':' . (int)$stationParts['port'] : '');
         $stationApiPattern = '~(?i:' . preg_quote($origin, '~') . ')' . preg_quote((string)$stationParts['path'], '~') . '~';

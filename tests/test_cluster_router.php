@@ -1886,6 +1886,17 @@ hub_test('cluster public contract rewrite removes mixed-case station origins', f
     hub_test_assert(!str_contains(strtolower($json), 'station.example') && !str_contains($json, 'remote_task_42') && str_contains($json, 'cluster_api.php?mode=cluster_task_status&task_id={task_id}'), 'mixed-case station origins must not leak from public contracts');
 });
 
+hub_test('cluster public contract rewrite removes bracketed IPv6 station origins', function (): void {
+    $service = hub_cluster_rewrite_contract_endpoint([
+        'url' => 'https://[fd00:beef::1]:8080/aihub/api.php?mode=vision',
+        'task_api' => ['status' => 'GET https://[fd00:beef::1]:8080/aihub/api.php?mode=task_status&task_id=remote_task_42'],
+        'examples' => ['curl' => "curl 'https://[fd00:beef::1]:8080/aihub/api.php?mode=task_status&task_id=remote_task_42'"],
+    ], 'https://[fd00:beef::1]:8080/aihub/api.php', 'cluster_api.php');
+    $json = json_encode($service, JSON_THROW_ON_ERROR);
+
+    hub_test_assert(!str_contains($json, 'fd00:beef::1') && !str_contains($json, 'remote_task_42') && str_contains($json, 'cluster_api.php?mode=cluster_task_status&task_id={task_id}'), 'bracketed IPv6 station origins must not leak from public contracts');
+});
+
 hub_test('cluster router followups never retry pinned stations and reserve private modes', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
