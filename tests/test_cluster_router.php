@@ -23,7 +23,7 @@ function hub_test_cluster_station_pairing(): array
         'station_key' => 'taipei_gpu_1',
         'display_name' => 'Taipei GPU 1',
         'public_base_url' => 'https://station.example/aihub',
-        'internal_base_url' => 'http://station.internal:8080/aihub',
+        'internal_base_url' => 'https://station.internal:8080/aihub',
         'priority' => 7,
         'enabled' => true,
         'station_token' => '3wa_live_station_secret',
@@ -61,6 +61,22 @@ function hub_test_cluster_publish_mode(PDO $db, string $mode, bool $running = tr
         ':updated_at' => hub_now(),
         ':existing_mode' => $existingMode,
     ]);
+}
+
+function hub_test_with_cluster_http_internal(callable $fn): void
+{
+    $previous = getenv('AIHUB_CLUSTER_ALLOW_HTTP_INTERNAL');
+    putenv('AIHUB_CLUSTER_ALLOW_HTTP_INTERNAL=1');
+
+    try {
+        $fn();
+    } finally {
+        if ($previous === false) {
+            putenv('AIHUB_CLUSTER_ALLOW_HTTP_INTERNAL');
+        } else {
+            putenv('AIHUB_CLUSTER_ALLOW_HTTP_INTERNAL=' . $previous);
+        }
+    }
 }
 
 hub_test('cluster router migration creates all persistence tables', function (): void {
@@ -190,6 +206,7 @@ hub_test('cluster router rejects an invalid secret and invalid station base URLs
         );
         foreach ([
             'ftp://station.example',
+            'http://192.168.1.106/aihub',
             'https://user:pass@station.example',
             'https://station.example/path#fragment',
             'https://station.example/path?query=1',
@@ -197,6 +214,28 @@ hub_test('cluster router rejects an invalid secret and invalid station base URLs
         ] as $value) {
             hub_test_assert(hub_test_throws(static fn (): string => hub_cluster_validate_station_base_url($value)), 'invalid station base URL must reject: ' . $value);
         }
+    });
+});
+
+hub_test('cluster router permits explicit HTTP only for private literal stations', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_http_internal(function (): void {
+            hub_test_assert(
+                hub_cluster_validate_station_base_url('http://192.168.1.106/aihub') === 'http://192.168.1.106/aihub/',
+                'explicit internal HTTP allowance must accept private LAN stations'
+            );
+            foreach (['http://203.0.113.10/aihub', 'http://169.254.169.254/aihub', 'http://station.example/aihub'] as $url) {
+                hub_test_assert(hub_test_throws(static fn (): string => hub_cluster_validate_station_base_url($url)), 'internal HTTP allowance must reject non-private targets: ' . $url);
+            }
+
+            $db = hub_test_reset_db();
+            $station = hub_cluster_import_pairing_link(
+                $db,
+                'http://192.168.1.106/cluster_pair.php#invite=' . str_repeat('e', 64),
+                static fn (): array => ['status' => 200, 'body' => json_encode(hub_test_cluster_station_pairing(), JSON_THROW_ON_ERROR)]
+            );
+            hub_test_assert((int)($station['id'] ?? 0) > 0, 'private HTTP pairing import must use the same station URL validation');
+        });
     });
 });
 
@@ -228,8 +267,8 @@ hub_test('cluster router prefers an internal station base URL for requests', fun
     hub_test_assert(
         hub_cluster_station_request_base_url([
             'public_base_url' => 'https://station.example/public/',
-            'internal_base_url' => 'http://station.internal:8080/private/',
-        ]) === 'http://station.internal:8080/private/',
+            'internal_base_url' => 'https://station.internal:8080/private/',
+        ]) === 'https://station.internal:8080/private/',
         'internal station URL must be preferred for requests'
     );
     hub_test_assert(
@@ -248,7 +287,7 @@ hub_test('cluster router creates only hashed node pairing invitations', function
     hub_test_assert(preg_match('/^[a-f0-9]{64}$/', (string)($invitation['invite'] ?? '')) === 1, 'pair invitation must be 64 hex chars');
     hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_HASH') === hash('sha256', $invitation['invite']), 'only pair invitation hash must be stored');
     hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_HASH') !== $invitation['invite'], 'raw invitation must not be stored');
-    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT') === $invitation['expires_at'], 'pair invitation expiry must use the node setting');
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT') === $invitation['expires_at'], 'pair invitation expiry must use the node setting');
     $expiresAt = strtotime((string)($invitation['expires_at'] ?? ''));
     hub_test_assert($expiresAt !== false && $expiresAt >= $before + 899 && $expiresAt <= $after + 901, 'pair invitation must expire in 15 minutes');
 
@@ -395,23 +434,48 @@ hub_test('cluster child config encrypts its dedicated token and limits permissio
 
 hub_test('cluster child pairing consumes one invitation binds the router IP and regeneration revokes prior access', function (): void {
     hub_test_with_cluster_secret(function (): void {
-        $db = hub_test_reset_db();
-        hub_test_cluster_publish_mode($db, 'ocr');
-        $configured = hub_cluster_node_configure($db, true, ['ocr']);
-        $oldTokenId = (int)hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_TOKEN_ID');
-        $paired = hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '203.0.113.44', 'Primary Router');
+        hub_test_with_cluster_http_internal(function (): void {
+            $db = hub_test_reset_db();
+            hub_test_cluster_publish_mode($db, 'ocr');
+            $configured = hub_cluster_node_configure($db, true, ['ocr']);
+            $oldTokenId = (int)hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_TOKEN_ID');
+            $paired = hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '203.0.113.44', 'Primary Router');
 
-        hub_test_assert((string)$paired['station_token'] === hub_cluster_node_reveal_token($db), 'pairing must return the existing station token');
-        hub_test_assert(hub_test_throws(static fn (): array => hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '203.0.113.44', 'Primary Router')), 'pair invitation must be one-time');
-        $ipRules = hub_list_api_token_ip_rules($db, $oldTokenId);
-        hub_test_assert(count($ipRules) === 1 && (string)$ipRules[0]['ip_rule'] === '203.0.113.44', 'paired token must bind to the caller IP');
+            hub_test_assert((string)$paired['station_token'] === hub_cluster_node_reveal_token($db), 'pairing must return the existing station token');
+            hub_test_assert(hub_test_throws(static fn (): array => hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '203.0.113.44', 'Primary Router')), 'pair invitation must be one-time');
+            $ipRules = hub_list_api_token_ip_rules($db, $oldTokenId);
+            hub_test_assert(count($ipRules) === 1 && (string)$ipRules[0]['ip_rule'] === '203.0.113.44', 'paired token must bind to the caller IP');
 
-        $regenerated = hub_cluster_node_regenerate_token($db);
-        $newTokenId = (int)hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_TOKEN_ID');
-        hub_test_assert($newTokenId !== $oldTokenId, 'regeneration must replace the station token');
-        hub_test_assert((int)(hub_get_api_token($db, $oldTokenId)['enabled'] ?? 1) === 0, 'regeneration must revoke the old token');
-        hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME') === '', 'regeneration must clear the paired router');
-        hub_test_assert((string)$regenerated['invite'] !== '', 'regeneration must issue a new invitation');
+            $regenerated = hub_cluster_node_regenerate_token($db);
+            $newTokenId = (int)hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_TOKEN_ID');
+            hub_test_assert($newTokenId !== $oldTokenId, 'regeneration must replace the station token');
+            hub_test_assert((int)(hub_get_api_token($db, $oldTokenId)['enabled'] ?? 1) === 0, 'regeneration must revoke the old token');
+            hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME') === '', 'regeneration must clear the paired router');
+            hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT') === '', 'regeneration must clear the legacy invitation expiry');
+            hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT') === $regenerated['expires_at'], 'regeneration must set the exact invitation expiry key');
+            hub_test_assert((string)$regenerated['invite'] !== '', 'regeneration must issue a new invitation');
+
+            hub_cluster_node_configure($db, false, []);
+            hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT') === '' && hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT') === '', 'disabling must clear both invitation expiry keys');
+        });
+    });
+});
+
+hub_test('cluster child accepts a current legacy invitation expiry then clears both keys', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_http_internal(function (): void {
+            $db = hub_test_reset_db();
+            hub_test_cluster_publish_mode($db, 'ocr');
+            $configured = hub_cluster_node_configure($db, true, ['ocr']);
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT', '');
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT', $configured['expires_at']);
+            hub_test_assert(hub_cluster_pair_invitation_expires_at($db) === $configured['expires_at'], 'current legacy invitation expiry must migrate to the exact key');
+            hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT') === $configured['expires_at'], 'legacy invitation expiry migration must persist the exact key');
+
+            $paired = hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '203.0.113.45', 'Legacy Router');
+            hub_test_assert((string)($paired['station_token'] ?? '') !== '', 'current legacy invitation expiry must remain pairable');
+            hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT') === '' && hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT') === '', 'pair consumption must clear exact and legacy invitation expiry keys');
+        });
     });
 });
 
@@ -444,7 +508,8 @@ hub_test('cluster inventory refresh fetches manifest then authenticated status w
         $station = hub_cluster_get_station($db, $stationId);
         hub_test_assert($station !== null, 'paired station missing');
         $requests = [];
-        $refreshed = hub_cluster_refresh_station($db, $station, static function (array $request) use (&$requests): array {
+        $snapshotAt = hub_now();
+        $refreshed = hub_cluster_refresh_station($db, $station, static function (array $request) use (&$requests, $snapshotAt): array {
             $requests[] = $request;
             if (str_ends_with((string)$request['url'], '/api_manifest.json.php')) {
                 return ['status' => 200, 'body' => json_encode(['services' => [['mode' => 'ocr']]], JSON_THROW_ON_ERROR)];
@@ -452,7 +517,7 @@ hub_test('cluster inventory refresh fetches manifest then authenticated status w
 
             return ['status' => 200, 'body' => json_encode([
                 'ok' => true,
-                'snapshot_at' => hub_now(),
+                'snapshot_at' => $snapshotAt,
                 'gpu' => ['available' => true],
                 'active_gpu_leases' => 0,
                 'queued_jobs' => 0,
@@ -469,6 +534,7 @@ hub_test('cluster inventory refresh fetches manifest then authenticated status w
 
         $stored = hub_cluster_get_station($db, $stationId);
         hub_test_assert($stored !== null && hub_cluster_station_is_fresh($stored), 'freshness requires both stored snapshots');
+        hub_test_assert($stored['status_fetched_at'] === $snapshotAt, 'status freshness must use the verified child snapshot time');
         $skippedRequests = 0;
         hub_cluster_refresh_station($db, $stored, static function () use (&$skippedRequests): array {
             $skippedRequests++;
@@ -490,5 +556,78 @@ hub_test('cluster inventory refresh reports malformed responses without raw resp
 
         hub_test_assert((string)($refreshed['last_error'] ?? '') === 'manifest_invalid', 'malformed manifest must have a compact error');
         hub_test_assert(!str_contains(json_encode($refreshed, JSON_THROW_ON_ERROR), '3wa_live_station_secret'), 'refresh errors must not leak raw response or token');
+    });
+});
+
+hub_test('cluster inventory rejects stale malformed and future status snapshots', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        foreach ([date('Y-m-d H:i:s', time() - 31), 'not-a-timestamp', date('Y-m-d H:i:s', time() + 300)] as $snapshotAt) {
+            $db = hub_test_reset_db();
+            $stationId = hub_cluster_save_paired_station($db, hub_test_cluster_station_pairing());
+            $station = hub_cluster_get_station($db, $stationId);
+            hub_test_assert($station !== null, 'paired station missing');
+            $refreshed = hub_cluster_refresh_station($db, $station, static function (array $request) use ($snapshotAt): array {
+                if (str_ends_with((string)$request['url'], '/api_manifest.json.php')) {
+                    return ['status' => 200, 'body' => json_encode(['services' => [['mode' => 'ocr']]], JSON_THROW_ON_ERROR)];
+                }
+
+                return ['status' => 200, 'body' => json_encode([
+                    'ok' => true,
+                    'snapshot_at' => $snapshotAt,
+                    'gpu' => ['available' => true],
+                    'active_gpu_leases' => 0,
+                    'queued_jobs' => 0,
+                    'running_jobs' => 0,
+                    'modes' => ['ocr'],
+                ], JSON_THROW_ON_ERROR)];
+            });
+            hub_test_assert((string)($refreshed['last_error'] ?? '') === 'status_invalid' && empty($refreshed['fresh']), 'invalid remote snapshot time must not become fresh');
+        }
+    });
+});
+
+hub_test('cluster inventory retries partial and stale snapshots without waiting on updated_at', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $stationId = hub_cluster_save_paired_station($db, hub_test_cluster_station_pairing());
+        $station = hub_cluster_get_station($db, $stationId);
+        hub_test_assert($station !== null, 'paired station missing');
+        hub_cluster_refresh_station($db, $station, static function (array $request): array {
+            if (str_ends_with((string)$request['url'], '/api_manifest.json.php')) {
+                return ['status' => 200, 'body' => json_encode(['services' => [['mode' => 'ocr']]], JSON_THROW_ON_ERROR)];
+            }
+
+            return ['status' => 200, 'body' => '{bad-status}'];
+        });
+
+        $requests = 0;
+        $retry = static function (array $request) use (&$requests): array {
+            $requests++;
+            if (str_ends_with((string)$request['url'], '/api_manifest.json.php')) {
+                return ['status' => 200, 'body' => json_encode(['services' => [['mode' => 'ocr']]], JSON_THROW_ON_ERROR)];
+            }
+
+            return ['status' => 200, 'body' => json_encode([
+                'ok' => true,
+                'snapshot_at' => hub_now(),
+                'gpu' => ['available' => true],
+                'active_gpu_leases' => 0,
+                'queued_jobs' => 0,
+                'running_jobs' => 0,
+                'modes' => ['ocr'],
+            ], JSON_THROW_ON_ERROR)];
+        };
+        $stored = hub_cluster_get_station($db, $stationId);
+        hub_test_assert($stored !== null, 'partial station missing');
+        $recovered = hub_cluster_refresh_station($db, $stored, $retry);
+        hub_test_assert($requests === 2 && !empty($recovered['fresh']), 'partial refresh must retry immediately instead of trusting updated_at');
+
+        $db->prepare('UPDATE cluster_stations SET status_fetched_at = :status_fetched_at, updated_at = :updated_at WHERE id = :id')
+            ->execute([':status_fetched_at' => date('Y-m-d H:i:s', time() - 11), ':updated_at' => hub_now(), ':id' => $stationId]);
+        $requests = 0;
+        $stored = hub_cluster_get_station($db, $stationId);
+        hub_test_assert($stored !== null, 'stale station missing');
+        hub_cluster_refresh_station($db, $stored, $retry);
+        hub_test_assert($requests === 2, 'stale successful snapshot must refresh even when updated_at is current');
     });
 });

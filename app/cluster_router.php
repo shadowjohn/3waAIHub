@@ -61,17 +61,19 @@ function hub_cluster_validate_station_base_url(string $value): string
 {
     $value = trim($value);
     $parts = parse_url($value);
+    $scheme = strtolower((string)($parts['scheme'] ?? ''));
     if (
         $value === ''
         || $parts === false
         || !filter_var($value, FILTER_VALIDATE_URL)
-        || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['http', 'https'], true)
+        || !in_array($scheme, ['http', 'https'], true)
         || trim((string)($parts['host'] ?? '')) === ''
         || (isset($parts['port']) && ((int)$parts['port'] < 1 || (int)$parts['port'] > 65535))
         || isset($parts['user'])
         || isset($parts['pass'])
         || isset($parts['fragment'])
         || str_contains($value, '?')
+        || ($scheme === 'http' && (!hub_cluster_allow_http_internal() || !hub_cluster_private_http_host_allowed((string)$parts['host'])))
     ) {
         throw new InvalidArgumentException('Station base URL is invalid.');
     }
@@ -82,8 +84,33 @@ function hub_cluster_validate_station_base_url(string $value): string
         $path = '/';
     }
 
-    return strtolower((string)$parts['scheme']) . '://' . (string)$parts['host']
+    return $scheme . '://' . (string)$parts['host']
         . (isset($parts['port']) ? ':' . (int)$parts['port'] : '') . $path;
+}
+
+function hub_cluster_allow_http_internal(): bool
+{
+    return getenv('AIHUB_CLUSTER_ALLOW_HTTP_INTERNAL') === '1';
+}
+
+function hub_cluster_private_http_host_allowed(string $host): bool
+{
+    $host = trim($host, '[]');
+    if ($host === 'localhost') {
+        return true;
+    }
+    if (!filter_var($host, FILTER_VALIDATE_IP)) {
+        return false;
+    }
+    if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+        $parts = array_map('intval', explode('.', $host));
+        return $parts[0] === 10
+            || ($parts[0] === 172 && $parts[1] >= 16 && $parts[1] <= 31)
+            || ($parts[0] === 192 && $parts[1] === 168)
+            || $parts[0] === 127;
+    }
+
+    return $host === '::1' || str_starts_with(strtolower($host), 'fc') || str_starts_with(strtolower($host), 'fd');
 }
 
 function hub_cluster_station_request_base_url(array $station): string
@@ -108,7 +135,8 @@ function hub_cluster_create_pair_invitation(PDO $db): array
     }
     $expiresAt = date('Y-m-d H:i:s', time() + 900);
     hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_HASH', hash('sha256', $invite));
-    hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT', $expiresAt);
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT', $expiresAt);
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT', '');
 
     return ['invite' => $invite, 'expires_at' => $expiresAt];
 }
@@ -137,6 +165,11 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
     $routerName = function_exists('mb_substr') ? mb_substr($routerName, 0, 120, 'UTF-8') : substr($routerName, 0, 120);
     $requestUrl = strtolower((string)$parts['scheme']) . '://' . (string)$parts['host']
         . (isset($parts['port']) ? ':' . (int)$parts['port'] : '') . (string)$parts['path'];
+    try {
+        hub_cluster_validate_station_base_url($requestUrl);
+    } catch (Throwable) {
+        throw new InvalidArgumentException('pairing failed');
+    }
     $request = [
         'url' => $requestUrl,
         'method' => 'POST',
@@ -461,7 +494,7 @@ function hub_cluster_accept_pair_invitation(PDO $db, string $invite, string $cli
     $db->beginTransaction();
     try {
         $tokenId = hub_cluster_node_token_id($db);
-        $expiresAt = strtotime(hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT'));
+        $expiresAt = strtotime(hub_cluster_pair_invitation_expires_at($db));
         $inviteHash = hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_HASH');
         if (
             !hub_cluster_node_enabled($db)
@@ -484,8 +517,7 @@ function hub_cluster_accept_pair_invitation(PDO $db, string $invite, string $cli
         $db->prepare('DELETE FROM api_token_ip_whitelists WHERE token_id = :token_id')->execute([':token_id' => $tokenId]);
         hub_add_api_token_ip_rule($db, $tokenId, $clientIp, 'cluster router');
         hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME', $routerName);
-        hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_HASH', '');
-        hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT', '');
+        hub_cluster_clear_pair_invitation($db);
         $pairing = hub_cluster_node_pairing_descriptor($db);
         $pairing['station_token'] = $plainToken;
         $db->commit();
@@ -539,7 +571,7 @@ function hub_cluster_station_is_fresh(array $station, ?int $now = null): bool
     $now ??= time();
     foreach (['manifest_fetched_at', 'status_fetched_at'] as $field) {
         $fetchedAt = strtotime((string)($station[$field] ?? ''));
-        if ($fetchedAt === false || $fetchedAt > $now || ($now - $fetchedAt) > 30) {
+        if ($fetchedAt === false || $fetchedAt > $now + 5 || ($now - $fetchedAt) > 30) {
             return false;
         }
     }
@@ -656,13 +688,34 @@ function hub_cluster_node_clear_token(PDO $db): void
 
 function hub_cluster_node_clear_pairing(PDO $db): void
 {
+    hub_cluster_clear_pair_invitation($db);
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME', '');
+}
+
+function hub_cluster_clear_pair_invitation(PDO $db): void
+{
     foreach ([
         'AIHUB_CLUSTER_PAIR_INVITE_HASH',
+        'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT',
         'AIHUB_CLUSTER_PAIR_EXPIRES_AT',
-        'AIHUB_CLUSTER_NODE_ROUTER_NAME',
     ] as $key) {
         hub_set_storage_setting($db, $key, '');
     }
+}
+
+function hub_cluster_pair_invitation_expires_at(PDO $db): string
+{
+    $expiresAt = hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT');
+    if ($expiresAt !== '') {
+        return $expiresAt;
+    }
+    $legacyExpiresAt = hub_get_storage_setting($db, 'AIHUB_CLUSTER_PAIR_EXPIRES_AT');
+    $legacyTimestamp = strtotime($legacyExpiresAt);
+    if ($legacyTimestamp !== false && $legacyTimestamp > time()) {
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_PAIR_INVITE_EXPIRES_AT', $legacyExpiresAt);
+    }
+
+    return $legacyExpiresAt;
 }
 
 function hub_cluster_node_pairing_descriptor(PDO $db): array
@@ -761,13 +814,11 @@ function hub_cluster_station_refresh_due(array $station, ?int $now = null): bool
     $now ??= time();
     $manifestAt = strtotime((string)($station['manifest_fetched_at'] ?? ''));
     $statusAt = strtotime((string)($station['status_fetched_at'] ?? ''));
-    if ($manifestAt === false && $statusAt === false && trim((string)($station['last_error'] ?? '')) === '') {
+    if ($manifestAt === false || $statusAt === false || $manifestAt > $now || $statusAt > $now) {
         return true;
     }
-    $updatedAt = strtotime((string)($station['updated_at'] ?? ''));
-    $lastAttempt = max($manifestAt === false ? 0 : $manifestAt, $statusAt === false ? 0 : $statusAt, $updatedAt === false ? 0 : $updatedAt);
 
-    return $lastAttempt === 0 || ($now - $lastAttempt) >= 10;
+    return ($now - $manifestAt) >= 10 || ($now - $statusAt) >= 10;
 }
 
 function hub_cluster_default_station_fetcher(array $request): array
@@ -845,6 +896,10 @@ function hub_cluster_compact_status_snapshot(array $status): ?array
     ) {
         return null;
     }
+    $snapshotAt = hub_cluster_verified_status_snapshot_at($status['snapshot_at']);
+    if ($snapshotAt === null) {
+        return null;
+    }
     foreach (['active_gpu_leases', 'queued_jobs', 'running_jobs'] as $field) {
         if (!is_int($status[$field] ?? null) || $status[$field] < 0) {
             return null;
@@ -865,7 +920,7 @@ function hub_cluster_compact_status_snapshot(array $status): ?array
     }
 
     return [
-        'snapshot_at' => $status['snapshot_at'],
+        'snapshot_at' => $snapshotAt,
         'gpu' => $gpu,
         'active_gpu_leases' => $status['active_gpu_leases'],
         'queued_jobs' => $status['queued_jobs'],
@@ -889,18 +944,38 @@ function hub_cluster_store_station_manifest(PDO $db, int $stationId, array $snap
 
 function hub_cluster_store_station_status(PDO $db, int $stationId, array $snapshot): void
 {
-    $now = hub_now();
     $db->prepare(
         'UPDATE cluster_stations
          SET status_json = :status_json, status_fetched_at = :fetched_at, last_error = :last_error, updated_at = :updated_at
          WHERE id = :id'
     )->execute([
         ':status_json' => json_encode($snapshot, JSON_THROW_ON_ERROR),
-        ':fetched_at' => $now,
+        ':fetched_at' => $snapshot['snapshot_at'],
         ':last_error' => '',
-        ':updated_at' => $now,
+        ':updated_at' => hub_now(),
         ':id' => $stationId,
     ]);
+}
+
+function hub_cluster_verified_status_snapshot_at(string $value, ?int $now = null): ?string
+{
+    $now ??= time();
+    $timezone = new DateTimeZone(date_default_timezone_get());
+    $snapshot = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $value, $timezone);
+    $errors = DateTimeImmutable::getLastErrors();
+    if (
+        $snapshot === false
+        || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))
+        || $snapshot->format('Y-m-d H:i:s') !== $value
+    ) {
+        return null;
+    }
+    $timestamp = $snapshot->getTimestamp();
+    if ($timestamp < $now - 30 || $timestamp > $now + 5) {
+        return null;
+    }
+
+    return $snapshot->format('Y-m-d H:i:s');
 }
 
 function hub_cluster_store_station_refresh_error(PDO $db, int $stationId, string $error): array
