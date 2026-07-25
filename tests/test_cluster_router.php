@@ -1541,7 +1541,7 @@ hub_test('cluster router redacts configured station origins including bare hosts
             'public_base_url' => 'https://station.internal:8080/aihub',
             'internal_base_url' => 'https://[fd00:beef::1]:8080/aihub',
         ]);
-        $message = 'bare station.internal full https://station.internal:8080/aihub/api.php ipv6 [fd00:beef::1]:8080 full6 https://[fd00:beef::1]:8080/aihub/api.php';
+        $message = 'bare station.internal dotted station.internal. default station.internal:443 full https://station.internal:8080/aihub/api.php ipv6 [fd00:beef::1]:8080 ipv6default [fd00:beef::1]:443 raw fd00:beef::1 full6 https://[fd00:beef::1]:8080/aihub/api.php';
         $response = hub_cluster_dispatch_followup($db, 'cluster_task_log', [
             'bearer_token' => (string)$fixture['customer']['plain_token'],
             'client_ip' => '203.0.113.10',
@@ -1556,7 +1556,22 @@ hub_test('cluster router redacts configured station origins including bare hosts
             ]],
         ]));
 
-        hub_test_assert($response['status'] === 200 && !str_contains($response['body'], 'station.internal') && !str_contains($response['body'], 'fd00:beef::1'), 'public log projection must redact configured station hosts, authorities, and URLs');
+        foreach (['https://station.internal:8080/aihub/api.php', 'station.internal', 'station.internal:443', 'station.internal.', '[fd00:beef::1]:8080', '[fd00:beef::1]:443', 'fd00:beef::1'] as $origin) {
+            hub_test_assert(!str_contains($response['body'], $origin), 'public log projection must redact configured station authority form: ' . $origin);
+        }
+    });
+});
+
+hub_test('cluster station redaction terms include scheme defaults and sort longest first', function (): void {
+    hub_test_with_cluster_http_internal(function (): void {
+        $terms = hub_cluster_station_redaction_terms([
+            'public_base_url' => 'https://station.internal/aihub',
+            'internal_base_url' => 'http://192.168.1.25/aihub',
+        ]);
+        $lengths = array_map('strlen', $terms);
+        $descending = $lengths;
+        rsort($descending, SORT_NUMERIC);
+        hub_test_assert(in_array('station.internal:443', $terms, true) && in_array('192.168.1.25:80', $terms, true) && $lengths === $descending, 'validated station bases must derive scheme-default authorities in longest-first order');
     });
 });
 
@@ -1575,13 +1590,15 @@ hub_test('cluster router result projection discards configured station origins',
             'ok' => true,
             'task_id' => 'remote_task_42',
             'result' => [
-                'message' => 'https://station.internal:8080/aihub [fd00:beef::1]:8080',
+                'message' => 'https://station.internal:8080/aihub station.internal:443 station.internal. [fd00:beef::1]:8080 [fd00:beef::1]:443 fd00:beef::1',
                 'metadata' => ['origin' => 'station.internal'],
             ],
             'cluster_artifact_index' => [],
         ]));
 
-        hub_test_assert($response['status'] === 200 && !str_contains($response['body'], 'station.internal') && !str_contains($response['body'], 'fd00:beef::1'), 'public result projection must discard configured station origins from child data');
+        foreach (['station.internal', 'station.internal:443', 'station.internal.', '[fd00:beef::1]:8080', '[fd00:beef::1]:443', 'fd00:beef::1'] as $origin) {
+            hub_test_assert($response['status'] === 200 && !str_contains($response['body'], $origin), 'public result projection must discard configured station authority form: ' . $origin);
+        }
     });
 });
 
@@ -1597,7 +1614,7 @@ hub_test('cluster child followup redacts native spool paths and bare station hos
                 $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, null, ['owner_member_id' => $memberId, 'owner_token_id' => hub_cluster_node_token_id($db)]);
             }
             hub_test_assert($taskId === 42, 'test task must exercise the native task_42 spool path');
-            hub_add_task_log($db, $taskId, 'info', 'station.internal:8080 remote task 42 ' . str_repeat('x', 4097));
+            hub_add_task_log($db, $taskId, 'info', 'station.internal:8080 [fd00:beef::1]:443 fd00:beef::1 remote task 42 ' . str_repeat('x', 4097));
             hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '203.0.113.44', 'Primary Router');
 
             $response = hub_cluster_child_followup_dispatch($db, [
@@ -1609,7 +1626,7 @@ hub_test('cluster child followup redacts native spool paths and bare station hos
             $payload = json_decode($response['body'], true, 64, JSON_THROW_ON_ERROR);
             hub_test_assert($response['status'] === 200 && !empty($payload['logs']), 'paired child control plane must return projected native logs');
             $projectedLogs = json_encode($payload['logs'], JSON_THROW_ON_ERROR);
-            hub_test_assert(!str_contains($projectedLogs, '42') && !str_contains($projectedLogs, 'task_42.log') && !str_contains($projectedLogs, 'station.internal:8080'), 'native spool paths, task IDs, and bare station hosts must be redacted from log entries');
+            hub_test_assert(!str_contains($projectedLogs, '42') && !str_contains($projectedLogs, 'task_42.log') && !str_contains($projectedLogs, 'station.internal:8080') && !str_contains($projectedLogs, '[fd00:beef::1]:443') && !str_contains($projectedLogs, 'fd00:beef::1'), 'native spool paths, task IDs, station hosts, and generic IPv6 must be redacted from log entries');
         });
     });
 });

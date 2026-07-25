@@ -742,15 +742,8 @@ function hub_cluster_router_public_task_logs(PDO $db, array $route, array $paylo
 function hub_cluster_router_redact_log_message(PDO $db, array $route, string $message, string $remoteTaskId): string
 {
     $station = hub_cluster_get_station($db, (int)($route['station_id'] ?? 0));
-    if (is_array($station)) {
-        foreach (hub_cluster_router_station_redaction_origins($station) as $origin) {
-            $quoted = preg_quote($origin, '~');
-            $message = preg_replace('~https?://' . $quoted . '(?=[/\\s<>"\']|$)[^\\s<>"\']*~i', '[redacted-url]', $message) ?? '';
-            $message = preg_replace('~(?<![A-Za-z0-9._:\-\[\]])' . $quoted . '(?![A-Za-z0-9._:\-\[\]])~i', '[redacted-station]', $message) ?? '';
-        }
-    }
+    $message = hub_cluster_redact_log_references($message, is_array($station) ? hub_cluster_station_redaction_terms($station) : [], true);
     $message = preg_replace('~(?:[A-Za-z0-9._/-]*/)?data/logs/tasks/task_[^\s]+~i', '[redacted-log]', $message) ?? '';
-    $message = preg_replace('~https?://[^\s<>"\']+~i', '[redacted-url]', $message) ?? '';
     if ($remoteTaskId !== '') {
         $message = ctype_digit($remoteTaskId)
             ? str_replace($remoteTaskId, '[redacted-task]', $message)
@@ -760,28 +753,83 @@ function hub_cluster_router_redact_log_message(PDO $db, array $route, string $me
     return $message;
 }
 
-function hub_cluster_router_station_redaction_origins(array $station): array
+function hub_cluster_station_redaction_terms(array $station): array
 {
-    $origins = [];
+    $terms = [];
     foreach (['public_base_url', 'internal_base_url'] as $field) {
         $baseUrl = trim((string)($station[$field] ?? ''));
-        $parts = $baseUrl === '' ? false : parse_url($baseUrl);
+        try {
+            $baseUrl = hub_cluster_validate_station_base_url($baseUrl);
+        } catch (Throwable) {
+            continue;
+        }
+        $parts = parse_url($baseUrl);
         $host = is_array($parts) ? trim((string)($parts['host'] ?? ''), '[]') : '';
         if ($host === '') {
             continue;
         }
-        $authority = str_contains($host, ':') ? '[' . $host . ']' : $host;
-        $port = is_array($parts) && isset($parts['port']) ? (int)$parts['port'] : 0;
-        if ($port > 0) {
-            $origins[$authority . ':' . $port] = true;
+        $scheme = is_array($parts) ? strtolower((string)($parts['scheme'] ?? '')) : '';
+        if (!in_array($scheme, ['http', 'https'], true)) {
+            continue;
         }
-        $origins[$authority] = true;
+        $authority = str_contains($host, ':') ? '[' . $host . ']' : $host;
+        $actualPort = is_array($parts) && isset($parts['port']) ? (int)$parts['port'] : 0;
+        $defaultPort = $scheme === 'https' ? 443 : 80;
+        $terms[rtrim($baseUrl, '/')] = true;
+        $terms[$scheme . '://' . $authority] = true;
+        $terms[$authority] = true;
+        foreach (array_unique(array_filter([$actualPort, $defaultPort], static fn (int $port): bool => $port > 0)) as $port) {
+            $terms[$authority . ':' . $port] = true;
+        }
+        if (filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+            $terms[$host] = true;
+            continue;
+        }
+        if (filter_var($host, FILTER_VALIDATE_IP) === false) {
+            $host = rtrim($host, '.');
+            if ($host === '') {
+                continue;
+            }
+            $terms[$host] = true;
+            $terms[$host . '.'] = true;
+            foreach (array_unique(array_filter([$actualPort, $defaultPort], static fn (int $port): bool => $port > 0)) as $port) {
+                $terms[$host . ':' . $port] = true;
+                $terms[$host . '.:' . $port] = true;
+            }
+        }
     }
 
-    $origins = array_keys($origins);
-    usort($origins, static fn (string $left, string $right): int => strlen($right) <=> strlen($left));
+    $terms = array_keys($terms);
+    usort($terms, static fn (string $left, string $right): int => (strlen($right) <=> strlen($left)) ?: strcmp($left, $right));
 
-    return $origins;
+    return $terms;
+}
+
+function hub_cluster_redact_log_references(string $message, array $terms = [], bool $redactGenericIpv6 = false): string
+{
+    foreach ($terms as $term) {
+        if (!is_string($term) || $term === '') {
+            continue;
+        }
+        $quoted = preg_quote($term, '~');
+        if (str_contains($term, '://')) {
+            $message = preg_replace('~' . $quoted . '(?=[/\\s<>"\']|$)[^\\s<>"\']*~i', '[redacted-url]', $message) ?? '';
+        } else {
+            $message = preg_replace('~(?<![A-Za-z0-9._:\-\[\]])' . $quoted . '(?![A-Za-z0-9._:\-\[\]])~i', '[redacted-station]', $message) ?? '';
+        }
+    }
+    $message = preg_replace('~https?://[^\s<>"\']+~i', '[redacted-url]', $message) ?? '';
+    if ($redactGenericIpv6) {
+        $message = preg_replace('~(?<![A-Fa-f0-9:])\[[0-9A-Fa-f:.]+\](?::\d{1,5})?(?![A-Fa-f0-9:])~', '[redacted-ipv6]', $message) ?? '';
+        $redacted = preg_replace_callback(
+            '~(?<![0-9A-Za-z:])(?=[0-9A-Fa-f:]*:)([0-9A-Fa-f:]{2,})(?![0-9A-Za-z:])~',
+            static fn (array $matches): string => filter_var($matches[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? '[redacted-ipv6]' : $matches[1],
+            $message
+        );
+        $message = is_string($redacted) ? $redacted : '';
+    }
+
+    return $message;
 }
 
 function hub_cluster_router_bound_log_message(string $message): string
@@ -896,7 +944,7 @@ function hub_cluster_child_project_task_logs(array $logs, int $taskId): array
             continue;
         }
         $message = preg_replace('~(?:[A-Za-z0-9._/-]*/)?data/logs/tasks/task_[^\s]+~i', '[redacted-log]', $log['message']) ?? '';
-        $message = preg_replace('~https?://[^\s<>"\']+~i', '[redacted-url]', $message) ?? '';
+        $message = hub_cluster_redact_log_references($message, [], true);
         $message = preg_replace('~(?<![A-Za-z0-9.-])(?:[A-Za-z0-9.-]+|(?:\d{1,3}\.){3}\d{1,3}):\d{1,5}(?![A-Za-z0-9.-])~', '[redacted-host]', $message) ?? '';
         $message = str_replace((string)$taskId, '[redacted-task]', $message);
         $safe[] = [
