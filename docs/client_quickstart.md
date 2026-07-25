@@ -11,6 +11,17 @@ Public Docs 是說明書，Bearer Token 才是鑰匙。
 5. 執行 `scripts/api_smoke_client.php` 驗證 token、mode、gateway、runtime 都可用。
 6. 外部系統複製 curl / PHP / JS fetch 範例開始介接。
 
+## Agent Manifest Intake
+
+Agent 產生 request 前，先不帶 token 驗證目前主機實際公開的 manifest；這個命令只讀取 manifest，不會呼叫 Pack inference：
+
+```bash
+php scripts/agent_manifest_smoke.php \
+  --manifest-url=https://your-host/3waAIHub/api_manifest.json.php
+```
+
+`input_field_extensions` 定義 `one_of`、`one_of_required` 與 `example_include`。必要的 `one_of` 群組必須恰好選一個欄位；`example_include` 指出 curl 預設範例會採用的選擇。通過後再以 Bearer Token 執行下方的 API smoke。
+
 非同步文件任務流程：
 
 1. `POST multipart/form-data` 上傳 PDF，取得 `task_id`。

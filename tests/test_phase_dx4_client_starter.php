@@ -73,6 +73,18 @@ hub_test('PhaseDX-4 agent manifest smoke CLI exposes token-free contract', funct
     }
 });
 
+hub_test('PhaseDX-4 client documentation publishes agent manifest intake', function (): void {
+    $quickstart = (string)file_get_contents(HUB_ROOT . '/docs/client_quickstart.md');
+    foreach (['scripts/agent_manifest_smoke.php', '--manifest-url=', 'input_field_extensions', 'one_of', 'example_include'] as $needle) {
+        hub_test_assert(str_contains($quickstart, $needle), 'client quickstart missing agent manifest intake detail: ' . $needle);
+    }
+
+    $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
+    foreach (['scripts/agent_manifest_smoke.php', 'input_field_extensions'] as $needle) {
+        hub_test_assert(str_contains($readme, $needle), 'README missing agent manifest intake detail: ' . $needle);
+    }
+});
+
 hub_test('PhaseDX-4 public docs and playground examples use current host URLs', function (): void {
     $db = hub_test_reset_db();
     $db->exec(

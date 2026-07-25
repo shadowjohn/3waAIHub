@@ -404,6 +404,7 @@ curl "<BASE_URL>?mode=hello" \
 - `public_api_docs.php`：公開 API 文件，預設允許未登入讀取。
 - `api_manifest.json.php`：給 AI agent / Codex / MCP 讀取的 machine-readable contract，預設允許未登入讀取。
 - `docs/client_quickstart.md`：Client Integration Starter Kit，整理交付流程、最小 curl / PHP / JS fetch 範例與 smoke client。
+- Agent 可先執行 `php scripts/agent_manifest_smoke.php --manifest-url=https://your-host/3waAIHub/api_manifest.json.php` 驗證 live manifest；其中 `input_field_extensions` 說明 `one_of`、`one_of_required` 與 `example_include`，不需要 Token 也不會觸發 Pack inference。
 
 公開 API 文件、Agent Manifest 與後台 API 文件都由本機 services inventory 產生。開啟文件時，HTTP Pack 會平行執行 loopback health probes，整批最多等待一秒；單一 probe 失敗只會隱藏該 Pack contract，不會讓文件失敗。`internal-task:health` 依 installed + enabled + running 語意判定；inventory 為空時，絕不 fallback 顯示 repository 中所有 Pack。對 HTTP Pack，文件 inventory 只呼叫各 Pack 的 health endpoint，不會觸發 inference、model download 或 container recovery；health implementation 本身仍可能執行目錄與 writability probes。
 
