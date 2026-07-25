@@ -514,7 +514,7 @@ git commit -m "fix: align API documentation surfaces"
 Replace the opening Pack inventory sentence with one that distinguishes current levels:
 
 ```markdown
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics 與 Pack hardware preflight。L5 benchmark-ready Pack 包含 `hello`、`ocr-ppocrv5`、`yolo`、`sam3`、`translate-gemma12b`、`tts-voxcpm2`、`structure-ppstructurev3`、`docparser`、`llm-gemma4-12b`、`image-birefnet` 與 `bioclip`；`taiwan-address` 為 L3 trusted upstream adapter，`audio-cleanup` 為 L1 contract，`whisper-asr` 仍標示為 experimental。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics 與 Pack hardware preflight。Pack 能力層級：`hello`、`ocr-ppocrv5`、`yolo`、`sam3`、`translate-gemma12b`、`structure-ppstructurev3`、`docparser`、`llm-gemma4-12b`、`image-birefnet`、`bioclip`、`whisper-asr` 已達 L5 benchmark-ready；`tts-voxcpm2` 是 experimental 且已達 L5 benchmark-ready；`taiwan-address` 是 L3 trusted upstream adapter；`rag-nemotron` 是 `L3-adapter`；`yolo-serving` 是 `L3-storage-mount`；`audio-cleanup` 是 L1 contract。
 ```
 
 Add this feature bullet after the current API documentation bullets:
@@ -551,7 +551,7 @@ Expected:
 - `rg` finds the live policy, current Pack levels, and retained Windows/WSL guidance.
 - `git diff --check` prints nothing.
 - PHP tests report `failures=0`.
-- web self-check reports success.
+- `scripts/self_check.php` reports `self_check ok`, and `scripts/bootstrap_self_check.sh` reports `bootstrap_self_check ok`.
 
 - [ ] **Step 4: Confirm no generated or runtime files entered the diff**
 
