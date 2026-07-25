@@ -687,6 +687,7 @@ CREATE TABLE IF NOT EXISTS cluster_route_artifacts (
 );
 SQL);
 
+    hub_migrate_cluster_routes_route_id_not_null($db);
     hub_add_column_if_missing($db, 'users', 'role', "TEXT NOT NULL DEFAULT 'system_admin'");
     hub_add_column_if_missing($db, 'users', 'api_member_id', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'users', 'display_name', 'TEXT NULL');
@@ -952,6 +953,86 @@ SQL);
     )->execute([':updated_at' => hub_now()]);
     $db->exec("UPDATE runtime_runs SET state = 'succeeded' WHERE state = 'success'");
     $db->exec("UPDATE tasks SET status = 'timed_out' WHERE status = 'timeout'");
+}
+
+function hub_migrate_cluster_routes_route_id_not_null(PDO $db): void
+{
+    $columns = array_column($db->query('PRAGMA table_info(cluster_routes)')->fetchAll(), null, 'name');
+    if (!isset($columns['route_id'])) {
+        throw new RuntimeException('Cluster routes schema is invalid.');
+    }
+    if ((int)$columns['route_id']['notnull'] === 1) {
+        return;
+    }
+    if ((int)$db->query('SELECT COUNT(*) FROM cluster_routes WHERE route_id IS NULL')->fetchColumn() > 0) {
+        throw new RuntimeException('Cluster route migration requires non-null route IDs.');
+    }
+    if ($db->inTransaction()) {
+        throw new RuntimeException('Cluster route migration requires no active transaction.');
+    }
+
+    $indexes = $db->query(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'cluster_routes' AND sql IS NOT NULL"
+    )->fetchAll(PDO::FETCH_COLUMN);
+    $foreignKeysEnabled = (int)$db->query('PRAGMA foreign_keys')->fetchColumn() === 1;
+    if ($foreignKeysEnabled) {
+        $db->exec('PRAGMA foreign_keys = OFF');
+    }
+
+    $started = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $started = true;
+        $db->exec(<<<'SQL'
+CREATE TABLE cluster_routes_rebuild (
+    route_id TEXT NOT NULL PRIMARY KEY,
+    station_id INTEGER NOT NULL,
+    member_id INTEGER NULL,
+    token_id INTEGER NULL,
+    mode TEXT NOT NULL,
+    remote_task_id TEXT NULL,
+    is_async INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL,
+    remote_status TEXT NULL,
+    expires_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT NULL,
+    FOREIGN KEY(station_id) REFERENCES cluster_stations(id) ON DELETE CASCADE,
+    FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
+);
+
+INSERT INTO cluster_routes_rebuild (
+    route_id, station_id, member_id, token_id, mode, remote_task_id, is_async, state,
+    remote_status, expires_at, created_at, updated_at, completed_at
+)
+SELECT
+    route_id, station_id, member_id, token_id, mode, remote_task_id, is_async, state,
+    remote_status, expires_at, created_at, updated_at, completed_at
+FROM cluster_routes;
+
+DROP TABLE cluster_routes;
+ALTER TABLE cluster_routes_rebuild RENAME TO cluster_routes;
+SQL);
+        foreach ($indexes as $indexSql) {
+            $db->exec((string)$indexSql);
+        }
+        $db->exec('COMMIT');
+        $started = false;
+    } catch (Throwable $e) {
+        if ($started) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        throw $e;
+    } finally {
+        if ($foreignKeysEnabled) {
+            $db->exec('PRAGMA foreign_keys = ON');
+        }
+    }
 }
 
 function hub_runtime_schema_missing(PDO $db): array

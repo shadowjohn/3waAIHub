@@ -78,6 +78,70 @@ hub_test('cluster router rejects NULL route IDs', function (): void {
     });
 });
 
+hub_test('cluster router upgrades legacy nullable route IDs without losing valid routes or indexes', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $stationId = hub_cluster_save_paired_station($db, hub_test_cluster_station_pairing());
+        $db->exec('PRAGMA foreign_keys = OFF');
+        $db->exec('DROP TABLE cluster_routes');
+        $db->exec(<<<'SQL'
+CREATE TABLE cluster_routes (
+    route_id TEXT PRIMARY KEY,
+    station_id INTEGER NOT NULL,
+    member_id INTEGER NULL,
+    token_id INTEGER NULL,
+    mode TEXT NOT NULL,
+    remote_task_id TEXT NULL,
+    is_async INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL,
+    remote_status TEXT NULL,
+    expires_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT NULL,
+    FOREIGN KEY(station_id) REFERENCES cluster_stations(id) ON DELETE CASCADE,
+    FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
+);
+SQL);
+        $db->exec('CREATE INDEX idx_cluster_routes_legacy_remote_task ON cluster_routes(remote_task_id)');
+        $db->prepare(
+            'INSERT INTO cluster_routes (route_id, station_id, mode, remote_task_id, state, created_at, updated_at)
+             VALUES (:route_id, :station_id, :mode, :remote_task_id, :state, :created_at, :updated_at)'
+        )->execute([
+            ':route_id' => 'route_legacy_1',
+            ':station_id' => $stationId,
+            ':mode' => 'vision',
+            ':remote_task_id' => 'remote_legacy_1',
+            ':state' => 'created',
+            ':created_at' => hub_now(),
+            ':updated_at' => hub_now(),
+        ]);
+        $db->exec('PRAGMA foreign_keys = ON');
+
+        hub_migrate($db);
+        hub_migrate($db);
+
+        $columns = array_column($db->query('PRAGMA table_info(cluster_routes)')->fetchAll(), null, 'name');
+        hub_test_assert((int)$columns['route_id']['notnull'] === 1, 'legacy cluster route ID must become NOT NULL');
+        hub_test_assert((string)$db->query("SELECT remote_task_id FROM cluster_routes WHERE route_id = 'route_legacy_1'")->fetchColumn() === 'remote_legacy_1', 'legacy valid route must survive rebuild');
+        $indexes = array_column($db->query('PRAGMA index_list(cluster_routes)')->fetchAll(), 'name');
+        hub_test_assert(in_array('idx_cluster_routes_legacy_remote_task', $indexes, true), 'legacy route index must survive rebuild');
+        hub_test_assert(hub_test_throws(static function () use ($db, $stationId): void {
+            $db->prepare(
+                'INSERT INTO cluster_routes (route_id, station_id, mode, state, created_at, updated_at)
+                 VALUES (NULL, :station_id, :mode, :state, :created_at, :updated_at)'
+            )->execute([
+                ':station_id' => $stationId,
+                ':mode' => 'vision',
+                ':state' => 'created',
+                ':created_at' => hub_now(),
+                ':updated_at' => hub_now(),
+            ]);
+        }), 'upgraded cluster route NULL ID must reject');
+    });
+});
+
 hub_test('cluster router encrypts station tokens at rest and decrypts internal records', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
