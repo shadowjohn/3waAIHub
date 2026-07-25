@@ -573,6 +573,156 @@ function hub_cluster_router_enabled(PDO $db): bool
     return hub_get_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED') === '1';
 }
 
+function hub_cluster_rewrite_contract_endpoint(array $service, string $stationApiBase, string $routerApiBase): array
+{
+    $stationApiBase = rtrim(trim($stationApiBase), '/');
+    $routerApiBase = trim($routerApiBase);
+    $rewrite = static function (mixed $value) use (&$rewrite, $stationApiBase, $routerApiBase): mixed {
+        if (is_array($value)) {
+            foreach ($value as $key => $item) {
+                $value[$key] = $rewrite($item);
+            }
+
+            return $value;
+        }
+        if (!is_string($value)) {
+            return $value;
+        }
+        if ($stationApiBase !== '') {
+            $value = str_replace($stationApiBase, $routerApiBase, $value);
+        }
+
+        return (string)preg_replace('~(?<![A-Za-z0-9_])api\.php\?~', $routerApiBase . '?', $value);
+    };
+
+    return $rewrite($service);
+}
+
+function hub_cluster_public_manifest(PDO $db): array
+{
+    $inventories = [];
+    $contracts = [];
+    $stations = [];
+    foreach (hub_cluster_list_stations($db) as $station) {
+        $inventory = hub_cluster_station_inventory($station);
+        if (empty($inventory['enabled']) || empty($inventory['fresh'])) {
+            continue;
+        }
+        $snapshot = json_decode((string)($station['manifest_json'] ?? ''), true);
+        $services = is_array($snapshot['services'] ?? null) ? $snapshot['services'] : [];
+        foreach ($services as $service) {
+            $mode = is_array($service) ? trim((string)($service['mode'] ?? '')) : '';
+            if (preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $mode) !== 1) {
+                continue;
+            }
+            $contracts[(int)$station['id']][$mode] = $service;
+        }
+        $inventory['modes'] = array_values(array_filter(
+            $inventory['modes'],
+            static fn (mixed $mode): bool => is_string($mode) && isset($contracts[(int)$station['id']][$mode])
+        ));
+        if ($inventory['modes'] === []) {
+            continue;
+        }
+        $inventories[] = $inventory;
+        $stations[(int)$station['id']] = $station;
+    }
+
+    $modes = [];
+    foreach ($inventories as $inventory) {
+        foreach ($inventory['modes'] as $mode) {
+            $modes[$mode] = true;
+        }
+    }
+    ksort($modes, SORT_STRING);
+    $services = [];
+    foreach (array_keys($modes) as $mode) {
+        $selected = hub_cluster_select_station($mode, $inventories);
+        $stationId = (int)($selected['id'] ?? 0);
+        if ($selected === null || !isset($stations[$stationId], $contracts[$stationId][$mode])) {
+            continue;
+        }
+        $station = $stations[$stationId];
+        $service = $contracts[$stationId][$mode];
+        foreach (['public_base_url', 'internal_base_url'] as $field) {
+            $base = trim((string)($station[$field] ?? ''));
+            if ($base === '') {
+                continue;
+            }
+            try {
+                $service = hub_cluster_rewrite_contract_endpoint(
+                    $service,
+                    hub_cluster_validate_station_base_url($base) . 'api.php',
+                    hub_cluster_router_api_base_url()
+                );
+            } catch (Throwable) {
+                continue;
+            }
+        }
+        $services[] = $service;
+    }
+
+    return [
+        'base_endpoint' => hub_cluster_router_api_base_url(),
+        'auth' => ['type' => 'bearer', 'header' => 'Authorization: Bearer <TOKEN>'],
+        'generated_at' => hub_now(),
+        'inventory_note' => 'Router inventory refresh may temporarily remove unavailable modes.',
+        'services' => $services,
+    ];
+}
+
+function hub_cluster_public_api_docs_html(PDO $db): string
+{
+    $manifest = hub_cluster_public_manifest($db);
+    $json = static fn (mixed $value): string => (string)json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    ob_start();
+    ?>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>3waAIHub Router API</title>
+    <style>
+        body { color: #1d2430; font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; }
+        main { max-width: 960px; margin: 24px auto; padding: 0 16px; }
+        section { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; margin: 14px 0; padding: 16px; }
+        code, pre { overflow-wrap: anywhere; white-space: pre-wrap; }
+        pre { background: #f6f7f9; border: 1px solid #d9dee7; padding: 12px; }
+    </style>
+</head>
+<body>
+<main>
+    <h1>3waAIHub Router API</h1>
+    <p>Base endpoint: <code><?= hub_h((string)$manifest['base_endpoint']) ?></code></p>
+    <p><?= hub_h((string)$manifest['inventory_note']) ?></p>
+    <?php foreach ($manifest['services'] as $service): ?>
+        <section>
+            <h2><code><?= hub_h((string)($service['mode'] ?? '')) ?></code></h2>
+            <p>Method: <code><?= hub_h((string)($service['method'] ?? '')) ?></code></p>
+            <p>Content type: <code><?= hub_h((string)($service['content_type'] ?? '')) ?></code></p>
+            <p>Router endpoint: <code><?= hub_h((string)($service['endpoint'] ?? '')) ?></code></p>
+            <h3>Fields</h3>
+            <pre><?= hub_h($json($service['input_fields'] ?? [])) ?></pre>
+            <h3>Output</h3>
+            <pre><?= hub_h($json($service['output_keys'] ?? [])) ?></pre>
+            <h3>Errors</h3>
+            <pre><?= hub_h($json($service['error_codes'] ?? [])) ?></pre>
+            <h3>curl</h3>
+            <pre><?= hub_h((string)($service['examples']['curl'] ?? '')) ?></pre>
+            <h3>PHP</h3>
+            <pre><?= hub_h((string)($service['examples']['php'] ?? '')) ?></pre>
+            <h3>JS</h3>
+            <pre><?= hub_h((string)($service['examples']['js_fetch'] ?? '')) ?></pre>
+        </section>
+    <?php endforeach; ?>
+</main>
+</body>
+</html>
+<?php
+    return (string)ob_get_clean();
+}
+
 function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array $seams = []): array
 {
     $requestId = hub_new_request_id();
@@ -2576,14 +2726,21 @@ function hub_cluster_refresh_json_payload(mixed $response): ?array
 function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
 {
     $modes = [];
+    $services = [];
     foreach ($manifest['services'] as $service) {
         if (!is_array($service) || !is_string($service['mode'] ?? null) || preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $service['mode']) !== 1) {
             return null;
         }
-        $modes[$service['mode']] = true;
+        $mode = $service['mode'];
+        $modes[$mode] = true;
+        $services[$mode] = array_intersect_key($service, array_flip([
+            'mode', 'pack_id', 'name', 'description', 'method', 'content_type', 'endpoint', 'url',
+            'execution_type', 'runtime_level', 'task_type', 'input_fields', 'output_keys',
+            'response_content_type', 'response_headers', 'error_codes', 'task_api', 'examples',
+        ]));
     }
 
-    return ['modes' => array_keys($modes)];
+    return ['modes' => array_keys($modes), 'services' => array_values($services)];
 }
 
 function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = null): ?array

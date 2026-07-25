@@ -1760,6 +1760,86 @@ hub_test('cluster router refuses self dispatch without a verified paired router 
     });
 });
 
+hub_test('cluster public manifest selects only fresh contracts and rewrites router endpoints', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fresh = hub_test_cluster_router_station($db, [
+            'station_key' => 'public_ocr_station',
+            'public_base_url' => 'https://configured.station.example/aihub',
+            'internal_base_url' => 'https://configured.internal.example:8443/aihub',
+            'station_token' => 'configured_station_secret',
+        ]);
+        $stale = hub_test_cluster_router_station($db, [
+            'station_key' => 'public_tts_station',
+            'public_base_url' => 'https://stale.station.example/aihub',
+            'internal_base_url' => 'https://stale.internal.example:8443/aihub',
+            'station_token' => 'stale_station_secret',
+        ]);
+        $contract = [
+            'mode' => 'ocr',
+            'method' => 'POST',
+            'content_type' => 'application/json',
+            'endpoint' => 'api.php?mode=ocr',
+            'url' => 'https://configured.station.example/aihub/api.php?mode=ocr',
+            'input_fields' => [['name' => '<script>', 'type' => 'string', 'required' => true]],
+            'output_keys' => ['ok', 'text'],
+            'error_codes' => ['bad_request'],
+            'task_api' => ['status_url' => 'https://configured.station.example/aihub/api.php?mode=task_status&task_id=<TASK_ID>'],
+            'examples' => [
+                'curl' => "curl 'https://configured.station.example/aihub/api.php?mode=ocr'",
+                'php' => "curl_init('https://configured.station.example/aihub/api.php?mode=ocr');",
+                'js_fetch' => "fetch('https://configured.station.example/aihub/api.php?mode=ocr');",
+            ],
+        ];
+        $now = hub_now();
+        $store = $db->prepare(
+            'UPDATE cluster_stations
+             SET manifest_json = :manifest_json, manifest_fetched_at = :manifest_fetched_at,
+                 status_json = :status_json, status_fetched_at = :status_fetched_at
+             WHERE id = :id'
+        );
+        $store->execute([
+            ':manifest_json' => json_encode(['modes' => ['ocr'], 'services' => [$contract]], JSON_THROW_ON_ERROR),
+            ':manifest_fetched_at' => $now,
+            ':status_json' => json_encode(['modes' => ['ocr'], 'gpu' => ['memory_free_mb' => 4096], 'active_gpu_leases' => 0, 'queued_jobs' => 0, 'running_jobs' => 0], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => $now,
+            ':id' => (int)$fresh['id'],
+        ]);
+        $store->execute([
+            ':manifest_json' => json_encode(['modes' => ['tts'], 'services' => [array_replace($contract, ['mode' => 'tts'])]], JSON_THROW_ON_ERROR),
+            ':manifest_fetched_at' => date('Y-m-d H:i:s', time() - 31),
+            ':status_json' => json_encode(['modes' => ['tts'], 'gpu' => ['memory_free_mb' => 4096], 'active_gpu_leases' => 0, 'queued_jobs' => 0, 'running_jobs' => 0], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => date('Y-m-d H:i:s', time() - 31),
+            ':id' => (int)$stale['id'],
+        ]);
+
+        $manifest = hub_cluster_public_manifest($db);
+        $json = json_encode($manifest, JSON_THROW_ON_ERROR);
+        $service = $manifest['services'][0] ?? [];
+        $docs = hub_cluster_public_api_docs_html($db);
+
+        hub_test_assert(array_column($manifest['services'], 'mode') === ['ocr'], 'only the fresh selected service may be public');
+        hub_test_assert(($manifest['base_endpoint'] ?? '') === 'cluster_api.php' && str_contains((string)($manifest['inventory_note'] ?? ''), 'temporarily remove unavailable modes'), 'manifest must publish the Router base and inventory caveat');
+        hub_test_assert(($service['endpoint'] ?? '') === 'cluster_api.php?mode=ocr' && str_contains((string)($service['examples']['curl'] ?? ''), 'cluster_api.php?mode=ocr'), 'all public service endpoints must use the Router');
+        hub_test_assert(str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, '<script>'), 'public docs must render the same Router contract with escaped fields');
+        foreach (['configured.station.example', 'configured.internal.example', 'stale.station.example', 'configured_station_secret', '3wa_live_', 'token_ciphertext', 'token_iv', 'token_tag'] as $secret) {
+            hub_test_assert(!str_contains($json, $secret), 'public manifest leaked station detail: ' . $secret);
+        }
+    });
+});
+
+hub_test('cluster public contract rewrite removes a selected station base from endpoints and examples', function (): void {
+    $service = hub_cluster_rewrite_contract_endpoint([
+        'endpoint' => 'api.php?mode=vision',
+        'url' => 'https://station.example/aihub/api.php?mode=vision',
+        'task_api' => ['status_url' => 'https://station.example/aihub/api.php?mode=task_status'],
+        'examples' => ['curl' => "curl 'https://station.example/aihub/api.php?mode=vision'"],
+    ], 'https://station.example/aihub/api.php', 'cluster_api.php');
+    $json = json_encode($service, JSON_THROW_ON_ERROR);
+
+    hub_test_assert(!str_contains($json, 'station.example') && str_contains($json, 'cluster_api.php?mode=vision'), 'rewritten contracts must expose Router URLs only');
+});
+
 hub_test('cluster router followups never retry pinned stations and reserve private modes', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

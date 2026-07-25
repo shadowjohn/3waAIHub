@@ -124,3 +124,28 @@ hub_test('PhaseDX-4 public docs and playground examples use current host URLs', 
     $translateExamples = hub_playground_examples('translate');
     hub_test_assert(str_contains($translateExamples['curl'], ' ' . $continuation . "\n"), 'playground must use the current platform continuation');
 });
+
+hub_test('cluster Router public entry documents and endpoints remain disclosure-safe', function (): void {
+    $guidePath = HUB_ROOT . '/docs/cluster-router.md';
+    $manifestPath = HUB_ROOT . '/cluster_manifest.json.php';
+    $docsPath = HUB_ROOT . '/cluster_public_api_docs.php';
+    foreach ([$guidePath, $manifestPath, $docsPath] as $path) {
+        hub_test_assert(is_file($path), 'cluster Router public file missing: ' . basename($path));
+    }
+    $guide = (string)file_get_contents($guidePath);
+    $sources = $guide . "\n" . (string)file_get_contents($manifestPath) . "\n" . (string)file_get_contents($docsPath);
+
+    foreach (['cluster_api.php', 'cluster_pair.php', 'cluster_status.php', 'AIHUB_CLUSTER_SECRET_KEY', '子入口節點', '統一入口', 'cluster_status'] as $needle) {
+        hub_test_assert(str_contains($sources, $needle), 'cluster Router public material missing ' . $needle);
+    }
+    foreach (['3wa_live_', '#invite=', 'token_ciphertext', 'token_iv', 'token_tag', 'configured_station_secret', 'https://configured.station.example'] as $secret) {
+        hub_test_assert(!str_contains($sources, $secret), 'cluster Router public material leaked ' . $secret);
+    }
+    foreach ([$manifestPath, $docsPath] as $path) {
+        $source = (string)file_get_contents($path);
+        hub_test_assert(str_contains($source, 'hub_cluster_router_enabled($db)') && str_contains($source, "hub_gateway_error(404, 'router_disabled'"), 'public endpoint must gate disabled Router safely');
+        hub_test_assert((fileperms($path) & 0111) === 0111, 'public endpoint must be executable: ' . basename($path));
+    }
+    hub_test_assert(str_contains((string)file_get_contents($manifestPath), "hub_public_api_allowed(\$db, 'AIHUB_PUBLIC_API_MANIFEST')"), 'public manifest must use the manifest allow switch');
+    hub_test_assert(str_contains((string)file_get_contents($docsPath), "hub_public_api_allowed(\$db, 'AIHUB_PUBLIC_API_DOCS')"), 'public docs must use the docs allow switch');
+});

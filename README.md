@@ -403,6 +403,7 @@ curl "<BASE_URL>?mode=hello" \
 
 - `public_api_docs.php`：公開 API 文件，預設允許未登入讀取。
 - `api_manifest.json.php`：給 AI agent / Codex / MCP 讀取的 machine-readable contract，預設允許未登入讀取。
+- [Unified Router entry guide](docs/cluster-router.md)：Router 客戶入口、配對與復原流程；live [Router docs](cluster_public_api_docs.php) 與 [Router manifest](cluster_manifest.json.php) 只列目前可用的統一服務。
 - `docs/client_quickstart.md`：Client Integration Starter Kit，整理交付流程、最小 curl / PHP / JS fetch 範例與 smoke client。
 - Agent 可先執行 `php scripts/agent_manifest_smoke.php --manifest-url=https://your-host/3waAIHub/api_manifest.json.php` 驗證 live manifest；其中 `input_field_extensions` 說明 `one_of`、`one_of_required` 與 `example_include`，不需要 Token 也不會觸發 Pack inference。
 

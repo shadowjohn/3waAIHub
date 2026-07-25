@@ -2,6 +2,15 @@
 
 Public Docs 是說明書，Bearer Token 才是鑰匙。
 
+## Unified Router Entry
+
+若客戶使用 Unified Router，唯一的 API entry 改為 `cluster_api.php`，discovery manifest 改為 `cluster_manifest.json.php`，人類文件為 `cluster_public_api_docs.php`。Router 會發出客戶 Token；mode contract、Bearer header 與 request format 不變。直接連單一節點時，既有的 `api.php`、`public_api_docs.php`、`api_manifest.json.php` 文件仍然保留。
+
+```text
+https://your-router/3waAIHub/cluster_api.php
+https://your-router/3waAIHub/cluster_manifest.json.php
+```
+
 建議交付流程：
 
 1. 系統管理員建立客戶。
