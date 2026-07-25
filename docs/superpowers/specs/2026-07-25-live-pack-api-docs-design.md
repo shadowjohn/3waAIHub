@@ -28,40 +28,27 @@ If more than one eligible row refers to the same Pack, each distinct service mod
 
 ## Live Health Rule
 
-Opening any of the three documentation surfaces performs a fresh health check after the database prefilter.
+Opening any documentation surface performs a fresh health check after the database prefilter.
 
-HTTP services are checked concurrently with PHP cURL multi:
-
-- only loopback HTTP URLs generated for Hub services are accepted;
-- connection timeout is 250 milliseconds;
-- individual request timeout is 750 milliseconds;
-- the whole concurrent batch has a one-second upper bound;
-- HTTP 200 through 399 is healthy unless a JSON body explicitly contains `ok: false` or `ready: false`.
+HTTP services are checked concurrently with PHP cURL multi. Only loopback HTTP URLs generated for Hub services are accepted, and the whole batch has a one-second upper bound. HTTP 200 through 399 is healthy unless a JSON body explicitly contains `ok: false` or `ready: false`.
 
 No model inference or GPU work is performed. A health endpoint should only report readiness.
 
 An `internal-task:health` service has no HTTP process to probe. It is healthy when its database row passes the installed, enabled, and running checks, matching the existing internal-task health semantics.
 
-If cURL is unavailable, a URL is invalid, a request times out, or a response is unhealthy, that service is omitted. One failed service never prevents the documentation page or manifest from loading. Health results are reused only inside the current request; there is no persistent cache because each document open is intended to reflect current availability.
+If cURL is unavailable, a URL is invalid, a request times out, or a response is unhealthy, that service is omitted. One failed service never prevents the documentation page or manifest from loading. There is no persistent cache because each document open is intended to reflect current availability.
 
 ## Shared Data Flow
 
-`app/public_api_docs.php` will own one shared eligibility function. It will:
+`hub_public_api_services()` remains the single contract builder. Its flow is:
 
 1. read candidate service rows from the database;
 2. apply the installed, enabled, and running prefilter;
 3. batch-check HTTP health;
-4. return only eligible service rows;
-5. resolve each row to its Pack manifest and build the existing public contract shape.
+4. resolve eligible rows to Pack manifests;
+5. return the existing public contract shape.
 
-The health operation accepts an optional callback for deterministic tests. Production callers use the live cURL implementation.
-
-Both public outputs continue through `hub_public_api_services()`:
-
-- `hub_public_api_docs_html()` renders its cards from the filtered contracts;
-- `hub_public_api_manifest()` emits the same contracts in `services`.
-
-The admin page uses the same eligible service rows and Pack IDs for its service table and Pack contract sections. It does not maintain a second interpretation of availability.
+`hub_public_api_docs_html()`, `hub_public_api_manifest()`, and `admin/api_docs.php` all render this returned contract list directly. The admin page drops its separate service-instance table and `hub_pack_api_contracts()` flow; service operations remain available on the existing Services pages.
 
 ## Derived And Hard-Coded APIs
 
@@ -97,7 +84,7 @@ This is a focused refresh, not a rewrite of the README.
 
 ## Testing
 
-`tests/test_public_api_docs.php` will cover the shared rule with temporary service rows and a fake health callback:
+`tests/test_public_api_docs.php` will cover the shared rule with temporary service rows and an injected health result:
 
 - installed, enabled, running, and healthy is visible;
 - not installed, disabled, stopped, timeout, non-success HTTP, `ok: false`, and `ready: false` are hidden;
@@ -108,7 +95,7 @@ This is a focused refresh, not a rewrite of the README.
 - an empty inventory produces `services: []` and the HTML empty state;
 - DocParser and YOLO-only prose does not appear without its eligible parent Pack.
 
-The admin documentation test will verify that it still requires a system administrator, uses the shared eligible inventory, and no longer contains the duplicated Pack-specific sections.
+The admin documentation test will verify that it still requires a system administrator, renders the shared contract list, and no longer contains the service table or duplicated Pack-specific sections.
 
 The normal PHP test suite and web self-checks will run after implementation.
 
