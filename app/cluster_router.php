@@ -743,16 +743,14 @@ function hub_cluster_router_redact_log_message(PDO $db, array $route, string $me
 {
     $station = hub_cluster_get_station($db, (int)($route['station_id'] ?? 0));
     if (is_array($station)) {
-        foreach (['public_base_url', 'internal_base_url'] as $field) {
-            $baseUrl = rtrim((string)($station[$field] ?? ''), '/');
-            if ($baseUrl !== '') {
-                $message = str_replace($baseUrl, '[redacted-url]', $message);
-            }
+        foreach (hub_cluster_router_station_redaction_origins($station) as $origin) {
+            $quoted = preg_quote($origin, '~');
+            $message = preg_replace('~https?://' . $quoted . '(?=[/\\s<>"\']|$)[^\\s<>"\']*~i', '[redacted-url]', $message) ?? '';
+            $message = preg_replace('~(?<![A-Za-z0-9._:\-\[\]])' . $quoted . '(?![A-Za-z0-9._:\-\[\]])~i', '[redacted-station]', $message) ?? '';
         }
     }
     $message = preg_replace('~(?:[A-Za-z0-9._/-]*/)?data/logs/tasks/task_[^\s]+~i', '[redacted-log]', $message) ?? '';
     $message = preg_replace('~https?://[^\s<>"\']+~i', '[redacted-url]', $message) ?? '';
-    $message = preg_replace('~(?<![A-Za-z0-9.-])(?:[A-Za-z0-9.-]+|(?:\d{1,3}\.){3}\d{1,3}):\d{1,5}(?![A-Za-z0-9.-])~', '[redacted-host]', $message) ?? '';
     if ($remoteTaskId !== '') {
         $message = ctype_digit($remoteTaskId)
             ? str_replace($remoteTaskId, '[redacted-task]', $message)
@@ -760,6 +758,30 @@ function hub_cluster_router_redact_log_message(PDO $db, array $route, string $me
     }
 
     return $message;
+}
+
+function hub_cluster_router_station_redaction_origins(array $station): array
+{
+    $origins = [];
+    foreach (['public_base_url', 'internal_base_url'] as $field) {
+        $baseUrl = trim((string)($station[$field] ?? ''));
+        $parts = $baseUrl === '' ? false : parse_url($baseUrl);
+        $host = is_array($parts) ? trim((string)($parts['host'] ?? ''), '[]') : '';
+        if ($host === '') {
+            continue;
+        }
+        $authority = str_contains($host, ':') ? '[' . $host . ']' : $host;
+        $port = is_array($parts) && isset($parts['port']) ? (int)$parts['port'] : 0;
+        if ($port > 0) {
+            $origins[$authority . ':' . $port] = true;
+        }
+        $origins[$authority] = true;
+    }
+
+    $origins = array_keys($origins);
+    usort($origins, static fn (string $left, string $right): int => strlen($right) <=> strlen($left));
+
+    return $origins;
 }
 
 function hub_cluster_router_bound_log_message(string $message): string
@@ -1773,7 +1795,36 @@ function hub_cluster_node_sync_token_permissions(PDO $db, int $tokenId): void
         throw new RuntimeException('cluster node token is unavailable');
     }
 
-    hub_set_api_token_mode_permissions($db, $tokenId, array_merge(['cluster_status'], hub_cluster_node_selected_published_modes($db)));
+    hub_set_api_token_mode_permissions($db, $tokenId, hub_cluster_node_expected_permissions($db));
+}
+
+function hub_cluster_node_reconcile_token_permissions(PDO $db, ?int $candidateTokenId = null): void
+{
+    $tokenId = hub_cluster_node_token_id($db);
+    if (!hub_cluster_node_enabled($db) || $tokenId < 1 || ($candidateTokenId !== null && $candidateTokenId !== $tokenId)) {
+        return;
+    }
+    $token = hub_get_api_token($db, $tokenId);
+    if ($token === null || (int)$token['enabled'] !== 1 || !empty($token['revoked_at'])) {
+        return;
+    }
+    $expected = hub_cluster_node_expected_permissions($db);
+    $actual = array_map(static fn (array $permission): string => (string)$permission['mode'], hub_list_api_token_permissions($db, $tokenId));
+    sort($expected, SORT_STRING);
+    sort($actual, SORT_STRING);
+    if ($actual !== $expected) {
+        hub_set_api_token_mode_permissions($db, $tokenId, $expected);
+    }
+}
+
+function hub_cluster_node_expected_permissions(PDO $db): array
+{
+    return array_merge(['cluster_status'], hub_cluster_node_selected_published_modes($db));
+}
+
+function hub_cluster_node_token_is_current(PDO $db, int $tokenId): bool
+{
+    return $tokenId > 0 && hub_cluster_node_enabled($db) && $tokenId === hub_cluster_node_token_id($db);
 }
 
 function hub_cluster_node_revoke_token(PDO $db, int $tokenId): void

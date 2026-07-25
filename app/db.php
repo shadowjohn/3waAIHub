@@ -953,6 +953,9 @@ SQL);
     )->execute([':updated_at' => hub_now()]);
     $db->exec("UPDATE runtime_runs SET state = 'succeeded' WHERE state = 'success'");
     $db->exec("UPDATE tasks SET status = 'timed_out' WHERE status = 'timeout'");
+    if (function_exists('hub_cluster_node_reconcile_token_permissions')) {
+        hub_cluster_node_reconcile_token_permissions($db);
+    }
 }
 
 function hub_migrate_cluster_routes_route_id_not_null(PDO $db): void

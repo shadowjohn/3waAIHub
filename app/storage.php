@@ -106,6 +106,9 @@ function hub_ensure_default_storage_settings(PDO $db): void
         ]);
     }
     hub_migrate_public_api_open_access_defaults($db);
+    if (function_exists('hub_cluster_node_reconcile_token_permissions')) {
+        hub_cluster_node_reconcile_token_permissions($db);
+    }
 }
 
 function hub_migrate_public_api_open_access_defaults(PDO $db): void

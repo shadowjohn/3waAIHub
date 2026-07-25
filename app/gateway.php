@@ -48,6 +48,9 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
             }
             return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
         }
+        if (hub_gateway_current_node_token_direct_task_control_denied($db, $mode, $authContext)) {
+            return hub_gateway_finish($db, null, $mode, hub_gateway_error(403, 'cluster_node_task_control_forbidden', 'cluster node task control is unavailable'), $started, $requestId, $authContext, $requestContext);
+        }
 
         return hub_gateway_finish($db, null, $mode, hub_task_api_dispatch($db, $mode, $authContext), $started, $requestId, $authContext, $requestContext);
     }
@@ -158,6 +161,12 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     }
 
     return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext, $requestContext);
+}
+
+function hub_gateway_current_node_token_direct_task_control_denied(PDO $db, string $mode, array $authContext): bool
+{
+    return in_array($mode, ['task_status', 'task_result', 'task_log', 'task_cancel', 'artifact'], true)
+        && hub_cluster_node_token_is_current($db, (int)($authContext['token_id'] ?? 0));
 }
 
 function hub_gateway_invoke_requester(callable $requester, array $service, int $timeoutSec): array

@@ -645,6 +645,60 @@ hub_test('cluster child followup requires the paired node token, source, and whi
     });
 });
 
+hub_test('cluster node reconciliation removes legacy task permissions and direct task control stays denied', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_test_cluster_publish_mode($db, 'vision');
+        hub_cluster_node_configure($db, true, ['vision']);
+        $token = hub_cluster_node_reveal_token($db);
+        $tokenId = hub_cluster_node_token_id($db);
+        foreach (['task_status', 'task_result', 'task_log', 'task_cancel', 'artifact'] as $mode) {
+            hub_add_api_token_mode_permission($db, $tokenId, $mode);
+        }
+
+        hub_migrate($db);
+        $permissions = array_column(hub_list_api_token_permissions($db, $tokenId), 'mode');
+        hub_test_assert($permissions === ['cluster_status', 'vision'], 'migration reconciliation must remove all legacy node task-control permissions');
+
+        hub_add_api_token_mode_permission($db, $tokenId, 'task_result');
+        hub_ensure_default_storage_settings($db);
+        $permissions = array_column(hub_list_api_token_permissions($db, $tokenId), 'mode');
+        hub_test_assert($permissions === ['cluster_status', 'vision'], 'startup reconciliation must remove later stale node task-control permissions');
+
+        hub_add_api_token_mode_permission($db, $tokenId, 'task_status');
+        $response = hub_gateway_dispatch($db, 'task_status', null, [
+            'bearer_token' => $token,
+            'client_ip' => '203.0.113.44',
+            'method' => 'GET',
+            'query' => ['task_id' => '1'],
+        ]);
+        $permissions = array_column(hub_list_api_token_permissions($db, $tokenId), 'mode');
+        hub_test_assert($response['status'] === 403 && $permissions === ['cluster_status', 'vision'], 'node authentication must reconcile stale permissions before direct task control can run');
+    });
+});
+
+hub_test('cluster node authentication removes unpublished selected modes before dispatch', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_test_cluster_publish_mode($db, 'vision');
+        hub_cluster_node_configure($db, true, ['vision']);
+        $token = hub_cluster_node_reveal_token($db);
+        $tokenId = hub_cluster_node_token_id($db);
+        hub_test_assert(!empty(hub_authenticate_api_token($db, '203.0.113.44', $token, 'vision')['ok']), 'published selected modes must authenticate for the node token');
+
+        hub_test_cluster_publish_mode($db, 'vision', false);
+        $auth = hub_authenticate_api_token($db, '203.0.113.44', $token, 'vision');
+        $response = hub_gateway_dispatch($db, 'vision', null, [
+            'bearer_token' => $token,
+            'client_ip' => '203.0.113.44',
+            'method' => 'POST',
+            'raw_body' => '{}',
+        ]);
+        $permissions = array_column(hub_list_api_token_permissions($db, $tokenId), 'mode');
+        hub_test_assert(empty($auth['ok']) && $response['status'] === 403 && $permissions === ['cluster_status'], 'node authentication must remove unavailable selected modes before dispatch');
+    });
+});
+
 hub_test('cluster child result builds a bounded authoritative artifact index from task storage', function (): void {
     hub_test_with_cluster_secret(function (): void {
         hub_test_with_cluster_pair_url(function (): void {
@@ -1477,6 +1531,57 @@ hub_test('cluster router projects bounded sanitized native task logs', function 
             'query' => ['task_id' => $fixture['route_id']],
         ], static fn (): array => hub_gateway_json(200, ['ok' => true, 'task_id' => 'remote_task_42', 'logs' => 'not-a-native-log-list']));
         hub_test_assert($invalid['status'] === 502 && str_contains($invalid['body'], 'router_response_invalid'), 'invalid native log shapes must not masquerade as empty logs');
+    });
+});
+
+hub_test('cluster router redacts configured station origins including bare hosts and IPv6 authorities', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_router_async_route($db, [
+            'public_base_url' => 'https://station.internal:8080/aihub',
+            'internal_base_url' => 'https://[fd00:beef::1]:8080/aihub',
+        ]);
+        $message = 'bare station.internal full https://station.internal:8080/aihub/api.php ipv6 [fd00:beef::1]:8080 full6 https://[fd00:beef::1]:8080/aihub/api.php';
+        $response = hub_cluster_dispatch_followup($db, 'cluster_task_log', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => hub_gateway_json(200, [
+            'ok' => true,
+            'task_id' => 'remote_task_42',
+            'logs' => [[
+                'level' => 'info',
+                'message' => $message,
+                'created_at' => '2026-07-26 12:00:00',
+            ]],
+        ]));
+
+        hub_test_assert($response['status'] === 200 && !str_contains($response['body'], 'station.internal') && !str_contains($response['body'], 'fd00:beef::1'), 'public log projection must redact configured station hosts, authorities, and URLs');
+    });
+});
+
+hub_test('cluster router result projection discards configured station origins', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_router_async_route($db, [
+            'public_base_url' => 'https://station.internal:8080/aihub',
+            'internal_base_url' => 'https://[fd00:beef::1]:8080/aihub',
+        ]);
+        $response = hub_cluster_dispatch_followup($db, 'cluster_task_result', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => hub_gateway_json(200, [
+            'ok' => true,
+            'task_id' => 'remote_task_42',
+            'result' => [
+                'message' => 'https://station.internal:8080/aihub [fd00:beef::1]:8080',
+                'metadata' => ['origin' => 'station.internal'],
+            ],
+            'cluster_artifact_index' => [],
+        ]));
+
+        hub_test_assert($response['status'] === 200 && !str_contains($response['body'], 'station.internal') && !str_contains($response['body'], 'fd00:beef::1'), 'public result projection must discard configured station origins from child data');
     });
 });
 

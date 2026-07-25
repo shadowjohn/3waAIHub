@@ -358,6 +358,9 @@ function hub_authenticate_api_token(
     if (!empty($token['valid_until']) && (string)$token['valid_until'] < $now) {
         return ['ok' => false, 'response' => hub_gateway_error(403, 'token_expired', 'API token is expired'), 'context' => $context];
     }
+    if (function_exists('hub_cluster_node_reconcile_token_permissions')) {
+        hub_cluster_node_reconcile_token_permissions($db, (int)$token['id']);
+    }
     if (!hub_api_token_ip_allowed($db, (int)$token['id'], $clientIp)) {
         return ['ok' => false, 'response' => hub_gateway_error(403, 'token_ip_not_allowed', 'client IP is not allowed for this token'), 'context' => $context];
     }
