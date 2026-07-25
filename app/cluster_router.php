@@ -438,13 +438,13 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     $selfStation = hub_cluster_router_station_is_self($db, $station);
     $stationToken = '';
     $stationUrl = '';
-    if (!$selfStation) {
-        try {
-            $stationToken = hub_cluster_station_token($station);
+    try {
+        $stationToken = hub_cluster_station_token($station);
+        if (!$selfStation) {
             $stationUrl = hub_cluster_station_request_base_url($station) . 'api.php';
-        } catch (Throwable) {
-            return $finish(hub_gateway_error(503, 'router_unavailable', 'selected cluster station is unavailable'));
         }
+    } catch (Throwable) {
+        return $finish(hub_gateway_error(503, 'router_unavailable', 'selected cluster station is unavailable'));
     }
 
     $routeId = hub_cluster_router_admit_route($db, $station, (array)$auth['context'], $mode, !$selfStation);
@@ -458,7 +458,9 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $dispatcher = is_callable($seams['direct_dispatcher'] ?? null)
                 ? $seams['direct_dispatcher']
                 : static fn (PDO $db, string $mode, array $internalRequest): array => hub_gateway_dispatch($db, $mode, null, $internalRequest);
-            $result = $dispatcher($db, $mode, $normalized);
+            $directRequest = $normalized;
+            $directRequest['bearer_token'] = $stationToken;
+            $result = $dispatcher($db, $mode, $directRequest);
             if (!is_array($result)) {
                 throw new RuntimeException('invalid direct response');
             }
@@ -475,6 +477,14 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
                 'response_limit_bytes' => hub_cluster_proxy_response_limit_bytes(),
             ];
             $response = hub_cluster_router_proxy_response($transport($proxyRequest), $stationToken);
+        }
+        $payload = hub_cluster_router_json_payload($response);
+        if ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300 && is_array($payload) && is_scalar($payload['task_id'] ?? null)) {
+            $payload = hub_cluster_rewrite_async_response($db, [
+                'route_id' => $routeId,
+                'station_id' => (int)$station['id'],
+            ], $payload, hub_cluster_router_api_base_url());
+            $response = hub_cluster_router_with_json_payload($response, $payload);
         }
     } catch (Throwable) {
         $response = hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
@@ -546,6 +556,405 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
 function hub_cluster_router_requested_mode(mixed $value): ?string
 {
     return is_string($value) && $value !== '' ? $value : null;
+}
+
+function hub_cluster_router_api_base_url(): string
+{
+    $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (string)($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https';
+    $host = preg_replace('/[^A-Za-z0-9.:\-\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost')) ?: 'localhost';
+    $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/cluster_api.php'));
+    if (!str_ends_with($script, '/cluster_api.php')) {
+        $script = rtrim(str_replace('\\', '/', dirname($script)), '/') . '/cluster_api.php';
+    }
+
+    return ($https ? 'https' : 'http') . '://' . $host . $script;
+}
+
+function hub_cluster_router_task_links(string $routeId, string $routerBase): array
+{
+    $prefix = rtrim($routerBase, '?') . (str_contains($routerBase, '?') ? '&' : '?');
+    $taskId = rawurlencode($routeId);
+
+    return [
+        'status_url' => $prefix . 'mode=cluster_task_status&task_id=' . $taskId,
+        'result_url' => $prefix . 'mode=cluster_task_result&task_id=' . $taskId,
+        'log_url' => $prefix . 'mode=cluster_task_log&task_id=' . $taskId,
+        'cancel_url' => $prefix . 'mode=cluster_task_cancel&task_id=' . $taskId,
+        'artifact_url_template' => $prefix . 'mode=cluster_artifact&task_id=' . $taskId . '&artifact_id={artifact_id}',
+    ];
+}
+
+function hub_cluster_rewrite_async_response(PDO $db, array $route, array $payload, string $routerBase): array
+{
+    $routeId = (string)($route['route_id'] ?? '');
+    $remoteTaskId = $payload['task_id'] ?? null;
+    if (!hub_cluster_router_valid_route_id($routeId) || !is_scalar($remoteTaskId)) {
+        return $payload;
+    }
+    $remoteTaskId = (string)$remoteTaskId;
+    $now = hub_now();
+    $stmt = $db->prepare(
+        "UPDATE cluster_routes
+         SET remote_task_id = :remote_task_id, is_async = 1, state = 'active', remote_status = 'active', updated_at = :updated_at, completed_at = NULL
+         WHERE route_id = :route_id"
+    );
+    $stmt->execute([
+        ':remote_task_id' => $remoteTaskId,
+        ':updated_at' => $now,
+        ':route_id' => $routeId,
+    ]);
+    if ($stmt->rowCount() !== 1) {
+        throw new RuntimeException('cluster route is unavailable');
+    }
+
+    return hub_cluster_router_rewrite_task_payload($db, $route, $payload, $routerBase, $remoteTaskId);
+}
+
+function hub_cluster_router_rewrite_task_payload(PDO $db, array $route, array $payload, string $routerBase, string $remoteTaskId): array
+{
+    $routeId = (string)($route['route_id'] ?? '');
+    $stationUrls = [];
+    $stationId = (int)($route['station_id'] ?? 0);
+    if ($stationId > 0) {
+        $station = hub_cluster_get_station($db, $stationId);
+        foreach (['public_base_url', 'internal_base_url'] as $field) {
+            if (is_string($station[$field] ?? null) && $station[$field] !== '') {
+                $stationUrls[] = rtrim($station[$field], '/');
+            }
+        }
+    }
+    $rewrite = static function (mixed $value) use (&$rewrite, $remoteTaskId, $routeId, $stationUrls, $routerBase): mixed {
+        if (is_array($value)) {
+            $rewritten = [];
+            foreach ($value as $key => $item) {
+                $rewritten[$key] = $rewrite($item);
+                if (is_string($key) && in_array($key, ['task_id', 'remote_task_id'], true) && is_scalar($item)) {
+                    $rewritten[$key] = $routeId;
+                }
+            }
+
+            return $rewritten;
+        }
+        if (!is_string($value)) {
+            return $value;
+        }
+        $value = str_replace($remoteTaskId, $routeId, $value);
+
+        return str_replace($stationUrls, $routerBase, $value);
+    };
+    $payload = $rewrite($payload);
+    $payload['task_id'] = $routeId;
+
+    return array_replace($payload, hub_cluster_router_task_links($routeId, $routerBase));
+}
+
+function hub_cluster_router_valid_route_id(string $routeId): bool
+{
+    return preg_match('/\Aroute_[a-f0-9]{32}\z/', $routeId) === 1;
+}
+
+function hub_cluster_router_json_payload(array $response): ?array
+{
+    $body = $response['body'] ?? null;
+    if (!is_string($body)) {
+        return null;
+    }
+    try {
+        $payload = json_decode($body, true, 64, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return null;
+    }
+
+    return is_array($payload) ? $payload : null;
+}
+
+function hub_cluster_router_with_json_payload(array $response, array $payload): array
+{
+    $body = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+    $response['body'] = $body;
+
+    return $response;
+}
+
+function hub_cluster_router_is_followup_mode(string $mode): bool
+{
+    return in_array($mode, ['cluster_task_status', 'cluster_task_result', 'cluster_task_log', 'cluster_task_cancel', 'cluster_artifact'], true);
+}
+
+function hub_cluster_get_route_for_customer(PDO $db, string $routeId, array $auth): ?array
+{
+    $memberId = (int)($auth['member_id'] ?? 0);
+    $tokenId = (int)($auth['token_id'] ?? 0);
+    if (!hub_cluster_router_valid_route_id($routeId) || $memberId < 1 || $tokenId < 1) {
+        return null;
+    }
+    $stmt = $db->prepare(
+        'SELECT * FROM cluster_routes
+         WHERE route_id = :route_id AND member_id = :member_id AND token_id = :token_id AND is_async = 1
+         LIMIT 1'
+    );
+    $stmt->execute([':route_id' => $routeId, ':member_id' => $memberId, ':token_id' => $tokenId]);
+    $route = $stmt->fetch();
+
+    return $route === false ? null : $route;
+}
+
+function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $request = [], ?callable $requester = null): array
+{
+    $requestId = hub_new_request_id();
+    $started = microtime(true);
+    $finish = static fn (array $response): array => hub_cluster_router_finish_response($response, $requestId);
+    if (!hub_cluster_router_is_followup_mode($routerMode)) {
+        return $finish(hub_gateway_error(404, 'unknown_mode', 'mode is not registered'));
+    }
+    $clientIp = trim(is_scalar($request['client_ip'] ?? null) ? (string)$request['client_ip'] : hub_get_client_ip()) ?: hub_get_client_ip();
+    $providedToken = array_key_exists('bearer_token', $request)
+        ? (is_string($request['bearer_token']) ? $request['bearer_token'] : '')
+        : hub_bearer_token_from_request();
+    $auth = hub_authenticate_api_token($db, $clientIp, $providedToken);
+    if (empty($auth['ok'])) {
+        return $finish($auth['response']);
+    }
+    $routeId = hub_cluster_router_followup_query_value($request, 'task_id');
+    $route = $routeId === null ? null : hub_cluster_get_route_for_customer($db, $routeId, (array)$auth['context']);
+    if ($route === null) {
+        return $finish(hub_gateway_error(404, 'route_not_found', 'cluster route was not found'));
+    }
+    $complete = static function (array $response, ?string $terminalState = null, bool $direct = false) use ($db, $route, $auth, $routerMode, $requestId, $started, $finish): array {
+        hub_cluster_router_complete_followup(
+            $db,
+            $route,
+            (array)$auth['context'],
+            $routerMode,
+            $direct,
+            $response,
+            $requestId,
+            (int)round((microtime(true) - $started) * 1000),
+            $terminalState
+        );
+
+        return $finish($response);
+    };
+    $remoteArtifactId = null;
+    if ($routerMode === 'cluster_artifact') {
+        $remoteArtifactId = hub_cluster_router_followup_query_value($request, 'artifact_id');
+        if ($remoteArtifactId === null || !hub_cluster_router_route_has_artifact($db, (string)$route['route_id'], $remoteArtifactId)) {
+            return $complete(hub_gateway_error(404, 'artifact_not_found', 'artifact was not found'));
+        }
+    }
+    $station = hub_cluster_get_station($db, (int)$route['station_id']);
+    if ($station === null || empty($station['enabled'])) {
+        return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
+    }
+    try {
+        $stationToken = hub_cluster_station_token($station);
+    } catch (Throwable) {
+        return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'), null, hub_cluster_router_station_is_self($db, $station));
+    }
+    [$mode, $method] = match ($routerMode) {
+        'cluster_task_status' => ['task_status', 'GET'],
+        'cluster_task_result' => ['task_result', 'GET'],
+        'cluster_task_log' => ['task_log', 'GET'],
+        'cluster_task_cancel' => ['task_cancel', 'POST'],
+        'cluster_artifact' => ['artifact', 'GET'],
+    };
+    $query = $routerMode === 'cluster_artifact'
+        ? ['mode' => $mode, 'artifact_id' => $remoteArtifactId]
+        : ['mode' => $mode, 'task_id' => (string)$route['remote_task_id']];
+    $selfStation = hub_cluster_router_station_is_self($db, $station);
+    if ($selfStation) {
+        try {
+            $response = hub_cluster_router_direct_followup($db, $mode, $method, $query, $stationToken, $clientIp);
+        } catch (Throwable) {
+            return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'), null, true);
+        }
+    } else {
+        try {
+            $stationUrl = hub_cluster_station_request_base_url($station) . 'api.php';
+            $transport = $requester ?? 'hub_cluster_proxy_transport';
+            $rawResponse = $transport([
+                'url' => $stationUrl,
+                'query' => $query,
+                'method' => $method,
+                'headers' => ['Authorization' => 'Bearer ' . $stationToken] + hub_cluster_router_safe_request_headers($request),
+                'body' => '',
+                'follow_redirects' => false,
+                'response_limit_bytes' => hub_cluster_proxy_response_limit_bytes(),
+            ]);
+            if (!is_array($rawResponse) || array_key_exists('error', $rawResponse)) {
+                return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
+            }
+            $response = hub_cluster_router_proxy_response($rawResponse, $stationToken);
+        } catch (Throwable) {
+            return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
+        }
+    }
+    $payload = hub_cluster_router_json_payload($response);
+    if (is_array($payload)) {
+        if ($routerMode === 'cluster_task_result') {
+            hub_cluster_sync_route_artifacts($db, $route, $payload);
+        }
+        if (is_scalar($payload['task_id'] ?? null)) {
+            $payload = hub_cluster_router_rewrite_task_payload(
+                $db,
+                $route,
+                $payload,
+                hub_cluster_router_api_base_url(),
+                (string)$route['remote_task_id']
+            );
+            $response = hub_cluster_router_with_json_payload($response, $payload);
+        }
+    }
+
+    return $complete($response, hub_cluster_router_terminal_state($routerMode, $payload), $selfStation);
+}
+
+function hub_cluster_router_followup_query_value(array $request, string $key): ?string
+{
+    $query = array_key_exists('query', $request) ? $request['query'] : ($_GET ?? []);
+    if (!is_array($query) || !array_key_exists($key, $query) || !is_scalar($query[$key])) {
+        return null;
+    }
+    $value = (string)$query[$key];
+
+    return $value !== '' && strlen($value) <= 1024 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1 ? $value : null;
+}
+
+function hub_cluster_router_route_has_artifact(PDO $db, string $routeId, string $remoteArtifactId): bool
+{
+    $stmt = $db->prepare(
+        'SELECT 1 FROM cluster_route_artifacts WHERE route_id = :route_id AND remote_artifact_id = :remote_artifact_id LIMIT 1'
+    );
+    $stmt->execute([':route_id' => $routeId, ':remote_artifact_id' => $remoteArtifactId]);
+
+    return $stmt->fetchColumn() !== false;
+}
+
+function hub_cluster_sync_route_artifacts(PDO $db, array $route, array $payload): void
+{
+    $routeId = (string)($route['route_id'] ?? '');
+    if (!hub_cluster_router_valid_route_id($routeId)) {
+        return;
+    }
+    $artifactIds = [];
+    $discover = static function (mixed $value) use (&$discover, &$artifactIds): void {
+        if (!is_array($value)) {
+            return;
+        }
+        foreach ($value as $key => $item) {
+            if ($key === 'artifact_id' && is_scalar($item)) {
+                $artifactIds[(string)$item] = true;
+            }
+            $discover($item);
+        }
+    };
+    $discover($payload);
+    if ($artifactIds === []) {
+        return;
+    }
+    $stmt = $db->prepare(
+        'INSERT OR IGNORE INTO cluster_route_artifacts (route_id, remote_artifact_id, created_at)
+         VALUES (:route_id, :remote_artifact_id, :created_at)'
+    );
+    $now = hub_now();
+    foreach (array_keys($artifactIds) as $artifactId) {
+        $stmt->execute([':route_id' => $routeId, ':remote_artifact_id' => $artifactId, ':created_at' => $now]);
+    }
+}
+
+function hub_cluster_router_direct_followup(PDO $db, string $mode, string $method, array $query, string $stationToken, string $clientIp): array
+{
+    $previousGet = $_GET;
+    $previousPost = $_POST;
+    $hadRequestMethod = array_key_exists('REQUEST_METHOD', $_SERVER);
+    $previousRequestMethod = $_SERVER['REQUEST_METHOD'] ?? null;
+    $_GET = $query;
+    $_POST = [];
+    $_SERVER['REQUEST_METHOD'] = $method;
+    try {
+        return hub_gateway_dispatch($db, $mode, null, [
+            'bearer_token' => $stationToken,
+            'client_ip' => $clientIp,
+            'method' => $method,
+            'raw_body' => '',
+            'request_uri' => '/api.php?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986),
+        ]);
+    } finally {
+        $_GET = $previousGet;
+        $_POST = $previousPost;
+        if ($hadRequestMethod) {
+            $_SERVER['REQUEST_METHOD'] = $previousRequestMethod;
+        } else {
+            unset($_SERVER['REQUEST_METHOD']);
+        }
+    }
+}
+
+function hub_cluster_router_terminal_state(string $routerMode, ?array $payload): ?string
+{
+    $status = is_scalar($payload['status'] ?? null) ? strtolower((string)$payload['status']) : '';
+    return match ($status) {
+        'success', 'succeeded', 'completed' => 'succeeded',
+        'failed', 'failure', 'error' => 'failed',
+        'cancelled', 'canceled' => 'cancelled',
+        default => $routerMode === 'cluster_task_result' && !empty($payload['ok']) ? 'succeeded' : null,
+    };
+}
+
+function hub_cluster_router_complete_followup(
+    PDO $db,
+    array $route,
+    array $authContext,
+    string $routerMode,
+    bool $direct,
+    array $response,
+    string $requestId,
+    int $elapsedMs,
+    ?string $terminalState
+): void {
+    try {
+        $status = (int)($response['status'] ?? 502);
+        [$errorCode] = $status >= 400 ? hub_gateway_response_error($response) : [null];
+        if (!is_string($errorCode) || preg_match('/\A[a-z0-9_-]{1,64}\z/i', $errorCode) !== 1) {
+            $errorCode = null;
+        }
+        $now = hub_now();
+        if ($terminalState !== null) {
+            $db->prepare(
+                'UPDATE cluster_routes
+                 SET state = :state, remote_status = :remote_status, updated_at = :updated_at, completed_at = :completed_at
+                 WHERE route_id = :route_id'
+            )->execute([
+                ':state' => $terminalState,
+                ':remote_status' => (string)$status,
+                ':updated_at' => $now,
+                ':completed_at' => $now,
+                ':route_id' => (string)$route['route_id'],
+            ]);
+        }
+        $db->prepare(
+            'INSERT INTO cluster_route_accesses
+                (route_id, station_id, member_id, token_id, mode, access_kind, request_id, status_code, ok, error_code, elapsed_ms, upload_bytes, response_bytes, created_at)
+             VALUES
+                (:route_id, :station_id, :member_id, :token_id, :mode, :access_kind, :request_id, :status_code, :ok, :error_code, :elapsed_ms, 0, :response_bytes, :created_at)'
+        )->execute([
+            ':route_id' => (string)$route['route_id'],
+            ':station_id' => (int)$route['station_id'],
+            ':member_id' => !empty($authContext['member_id']) ? (int)$authContext['member_id'] : null,
+            ':token_id' => !empty($authContext['token_id']) ? (int)$authContext['token_id'] : null,
+            ':mode' => $routerMode,
+            ':access_kind' => $direct ? 'direct' : 'proxy',
+            ':request_id' => $requestId,
+            ':status_code' => $status,
+            ':ok' => $status >= 200 && $status < 400 ? 1 : 0,
+            ':error_code' => $errorCode,
+            ':elapsed_ms' => max(0, $elapsedMs),
+            ':response_bytes' => hub_gateway_response_output_bytes($response),
+            ':created_at' => $now,
+        ]);
+    } catch (Throwable) {
+        // Follow-up accounting must not replace the customer response.
+    }
 }
 
 function hub_cluster_router_read_request_body(array $request): array
@@ -771,12 +1180,15 @@ function hub_cluster_router_complete_route(
             $errorCode = null;
         }
         $now = hub_now();
+        $ok = $status >= 200 && $status < 400;
         $db->prepare(
-            'UPDATE cluster_routes
-             SET state = :state, remote_status = :remote_status, updated_at = :updated_at, completed_at = :completed_at
-             WHERE route_id = :route_id'
+            "UPDATE cluster_routes
+             SET state = CASE WHEN is_async = 1 AND remote_task_id IS NOT NULL AND CAST(:ok AS INTEGER) = 1 THEN 'active' WHEN CAST(:ok AS INTEGER) = 1 THEN 'completed' ELSE 'failed' END,
+                 remote_status = :remote_status, updated_at = :updated_at,
+                 completed_at = CASE WHEN is_async = 1 AND remote_task_id IS NOT NULL AND CAST(:ok AS INTEGER) = 1 THEN NULL ELSE :completed_at END
+             WHERE route_id = :route_id"
         )->execute([
-            ':state' => $status >= 200 && $status < 400 ? 'completed' : 'failed',
+            ':ok' => $ok ? 1 : 0,
             ':remote_status' => (string)$status,
             ':updated_at' => $now,
             ':completed_at' => $now,

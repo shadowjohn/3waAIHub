@@ -12,4 +12,8 @@ if ($mode === null) {
     hub_send_gateway_response(hub_gateway_error(400, 'bad_request', 'invalid mode'));
 }
 
+if (hub_cluster_router_is_followup_mode($mode)) {
+    hub_send_gateway_response(hub_cluster_dispatch_followup($db, $mode));
+}
+
 hub_send_gateway_response(hub_cluster_dispatch($db, $mode));
