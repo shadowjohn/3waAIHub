@@ -972,3 +972,111 @@ hub_test('cluster router rejects oversized remote responses without forwarding a
         });
     });
 });
+
+hub_test('cluster router preserves only safe downstream content headers from captured responses', function (): void {
+    foreach (['application/json; charset=utf-8', 'image/png', 'audio/mpeg'] as $mime) {
+        $response = hub_cluster_router_proxy_response([
+            'status' => 200,
+            'raw_headers' => "HTTP/1.1 200 OK\r\nContent-Type: {$mime}\r\nX-3waAIHub-Device: cuda\r\nSet-Cookie: station=session\r\nAuthorization: Bearer leaked\r\nConnection: close\r\nX-Forwarded-For: 203.0.113.1\r\n",
+            'body' => 'safe-body',
+        ], 'station_token');
+
+        hub_test_assert($response['headers'][0] === 'Content-Type: ' . $mime, 'captured downstream MIME must be preserved');
+        hub_test_assert(in_array('X-3waAIHub-Device: cuda', $response['headers'], true), 'allowlisted downstream API header must be preserved');
+        hub_test_assert(!str_contains(implode("\n", $response['headers']), 'Cookie') && !str_contains(implode("\n", $response['headers']), 'Authorization') && !str_contains(implode("\n", $response['headers']), 'Forwarded'), 'unsafe downstream headers must be ignored');
+    }
+
+    $unsafe = hub_cluster_router_proxy_response([
+        'status' => 200,
+        'raw_headers' => "HTTP/1.1 200 OK\r\nContent-Type: text/plain\x00bad\r\n",
+        'body' => 'safe-body',
+    ], 'station_token');
+    hub_test_assert($unsafe['headers'][0] === 'Content-Type: application/octet-stream', 'invalid captured content types must fall back safely');
+});
+
+hub_test('cluster router reaps only expired proxy admissions before enforcing capacity', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_router_env('AIHUB_CLUSTER_ROUTER_MAX_PROXY_TRANSFERS', '1', function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            $token = hub_test_cluster_router_customer_token($db, ['vision']);
+            $station = hub_test_cluster_router_station($db, ['station_key' => 'reaper_gpu']);
+            $request = hub_test_cluster_router_request((string)$token['plain_token']);
+            $seams = [
+                'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => 'reaper_gpu'])],
+            ];
+            $insert = static function (string $routeId, string $updatedAt) use ($db, $station): void {
+                $db->prepare(
+                    "INSERT INTO cluster_routes (route_id, station_id, mode, is_async, state, created_at, updated_at)
+                     VALUES (:route_id, :station_id, 'vision', 0, 'proxying', :created_at, :updated_at)"
+                )->execute([
+                    ':route_id' => $routeId,
+                    ':station_id' => (int)$station['id'],
+                    ':created_at' => $updatedAt,
+                    ':updated_at' => $updatedAt,
+                ]);
+            };
+            $staleAt = date('Y-m-d H:i:s', time() - hub_cluster_proxy_stale_after_seconds() - 1);
+            $insert('route_stale_proxy', $staleAt);
+            $calls = 0;
+            $reaped = hub_cluster_dispatch($db, 'vision', $request, $seams + [
+                'transport' => static function () use (&$calls): array {
+                    $calls++;
+                    return hub_gateway_json(200, ['ok' => true]);
+                },
+            ]);
+
+            hub_test_assert($reaped['status'] === 200 && $calls === 1, 'expired proxy rows must not consume new admission capacity');
+            hub_test_assert((string)$db->query("SELECT state FROM cluster_routes WHERE route_id = 'route_stale_proxy'")->fetchColumn() === 'failed', 'expired proxy row must be terminalized during admission');
+
+            $insert('route_fresh_proxy', hub_now());
+            $fresh = hub_cluster_dispatch($db, 'vision', $request, $seams + [
+                'transport' => static function () use (&$calls): array {
+                    $calls++;
+                    return hub_gateway_json(200, ['ok' => true]);
+                },
+            ]);
+            hub_test_assert($fresh['status'] === 429 && $calls === 1, 'fresh proxy rows must retain capacity until completion or expiry');
+        });
+    });
+});
+
+hub_test('cluster router bounds declared and streamed request bodies', function (): void {
+    hub_test_with_cluster_router_env('AIHUB_CLUSTER_ROUTER_MAX_REQUEST_MB', '1', function (): void {
+        $limit = hub_cluster_proxy_request_limit_bytes();
+        $declared = hub_cluster_router_normalize_request('vision', [
+            'method' => 'POST',
+            'headers' => ['Content-Type' => 'application/json'],
+            'files' => [],
+            'content_length' => (string)($limit + 1),
+            'raw_body' => '',
+            'query' => [],
+        ]);
+        $stream = fopen('php://temp', 'w+b');
+        if ($stream === false) {
+            throw new RuntimeException('cannot create request test stream');
+        }
+        fwrite($stream, str_repeat('x', $limit + 1));
+        rewind($stream);
+        try {
+            $streamed = hub_cluster_router_normalize_request('vision', [
+                'method' => 'POST',
+                'headers' => ['Content-Type' => 'application/json'],
+                'files' => [],
+                'content_length' => '',
+                'body_stream' => $stream,
+                'query' => [],
+            ]);
+        } finally {
+            fclose($stream);
+        }
+
+        hub_test_assert(($declared['response']['status'] ?? 0) === 413 && str_contains((string)($declared['response']['body'] ?? ''), 'router_request_too_large'), 'oversized declared request bodies must fail before reading');
+        hub_test_assert(($streamed['response']['status'] ?? 0) === 413 && str_contains((string)($streamed['response']['body'] ?? ''), 'router_request_too_large'), 'oversized unknown-length request streams must stop at the cap');
+    });
+});
+
+hub_test('cluster router endpoint mode helper rejects nested query values', function (): void {
+    hub_test_assert(hub_cluster_router_requested_mode('vision') === 'vision', 'scalar mode must pass through unchanged');
+    hub_test_assert(hub_cluster_router_requested_mode('') === null && hub_cluster_router_requested_mode(['vision']) === null, 'empty or nested mode query values must reject without casting');
+});

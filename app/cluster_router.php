@@ -510,9 +510,9 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
     if (!is_array($files) || $files !== []) {
         return ['response' => hub_gateway_error(415, 'router_upload_unsupported', 'file uploads are not supported by the cluster router')];
     }
-    $rawBody = array_key_exists('raw_body', $request) ? $request['raw_body'] : file_get_contents('php://input');
-    if (!is_string($rawBody)) {
-        return ['response' => hub_gateway_error(400, 'bad_request', 'invalid request body')];
+    $body = hub_cluster_router_read_request_body($request);
+    if (isset($body['response'])) {
+        return $body;
     }
     $inputQuery = array_key_exists('query', $request) ? $request['query'] : ($_GET ?? []);
     if (!is_array($inputQuery)) {
@@ -537,10 +537,75 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
     return [
         'method' => $method,
         'headers' => $headers,
-        'raw_body' => $rawBody,
+        'raw_body' => $body['body'],
         'query' => $query,
         'request_uri' => (string)($request['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? ''),
     ];
+}
+
+function hub_cluster_router_requested_mode(mixed $value): ?string
+{
+    return is_string($value) && $value !== '' ? $value : null;
+}
+
+function hub_cluster_router_read_request_body(array $request): array
+{
+    $limit = hub_cluster_proxy_request_limit_bytes();
+    $contentLength = array_key_exists('content_length', $request) ? $request['content_length'] : ($_SERVER['CONTENT_LENGTH'] ?? '');
+    if (hub_cluster_router_content_length_exceeds($contentLength, $limit)) {
+        return ['response' => hub_gateway_error(413, 'router_request_too_large', 'request body is too large for the cluster router')];
+    }
+    if (array_key_exists('raw_body', $request)) {
+        if (!is_string($request['raw_body'])) {
+            return ['response' => hub_gateway_error(400, 'bad_request', 'invalid request body')];
+        }
+        if (strlen($request['raw_body']) > $limit) {
+            return ['response' => hub_gateway_error(413, 'router_request_too_large', 'request body is too large for the cluster router')];
+        }
+
+        return ['body' => $request['raw_body']];
+    }
+    $providedStream = array_key_exists('body_stream', $request);
+    $stream = $providedStream ? $request['body_stream'] : @fopen('php://input', 'rb');
+    if (!is_resource($stream)) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'invalid request body')];
+    }
+    $body = '';
+    try {
+        while (!feof($stream)) {
+            $chunk = fread($stream, min(8192, $limit - strlen($body) + 1));
+            if ($chunk === false || ($chunk === '' && !feof($stream))) {
+                return ['response' => hub_gateway_error(400, 'bad_request', 'invalid request body')];
+            }
+            if (strlen($body) + strlen($chunk) > $limit) {
+                return ['response' => hub_gateway_error(413, 'router_request_too_large', 'request body is too large for the cluster router')];
+            }
+            $body .= $chunk;
+        }
+    } finally {
+        if (!$providedStream) {
+            fclose($stream);
+        }
+    }
+
+    return ['body' => $body];
+}
+
+function hub_cluster_router_content_length_exceeds(mixed $value, int $limit): bool
+{
+    if (is_int($value)) {
+        return $value > $limit;
+    }
+    if (!is_string($value) || !ctype_digit(trim($value))) {
+        return false;
+    }
+    $value = ltrim(trim($value), '0');
+    if ($value === '') {
+        return false;
+    }
+    $limit = (string)$limit;
+
+    return strlen($value) > strlen($limit) || (strlen($value) === strlen($limit) && $value > $limit);
 }
 
 function hub_cluster_router_safe_request_headers(array $request): array
@@ -592,7 +657,10 @@ function hub_cluster_router_admit_route(PDO $db, array $station, array $authCont
     try {
         $db->exec('BEGIN IMMEDIATE');
         $started = true;
-        // ponytail: local SQLite admission; move this counter to shared coordination only when routers span databases.
+        // ponytail: local SQLite admission; 60-second proxy timeout plus 30-second grace, use shared coordination only when routers span databases.
+        if ($proxying) {
+            hub_cluster_router_reap_expired_proxy_routes($db, hub_now());
+        }
         if ($proxying && (int)$db->query("SELECT COUNT(*) FROM cluster_routes WHERE state = 'proxying'")->fetchColumn() >= hub_cluster_proxy_transfer_limit()) {
             $db->exec('COMMIT');
             return null;
@@ -650,6 +718,38 @@ function hub_cluster_proxy_response_limit_bytes(): int
     $megabytes = is_string($value) && ctype_digit($value) && (int)$value >= 1 && (int)$value <= 1024 ? (int)$value : 64;
 
     return $megabytes * 1024 * 1024;
+}
+
+function hub_cluster_proxy_request_limit_bytes(): int
+{
+    $value = getenv('AIHUB_CLUSTER_ROUTER_MAX_REQUEST_MB');
+    $megabytes = is_string($value) && ctype_digit($value) && (int)$value >= 1 && (int)$value <= 1024 ? (int)$value : 64;
+
+    return $megabytes * 1024 * 1024;
+}
+
+function hub_cluster_proxy_timeout_sec(): int
+{
+    return 60;
+}
+
+function hub_cluster_proxy_stale_after_seconds(): int
+{
+    return hub_cluster_proxy_timeout_sec() + 30;
+}
+
+function hub_cluster_router_reap_expired_proxy_routes(PDO $db, string $now): void
+{
+    $cutoff = date('Y-m-d H:i:s', strtotime($now) - hub_cluster_proxy_stale_after_seconds());
+    $db->prepare(
+        "UPDATE cluster_routes
+         SET state = 'failed', remote_status = 'router_timeout', updated_at = :updated_at, completed_at = :completed_at
+         WHERE state = 'proxying' AND updated_at < :cutoff"
+    )->execute([
+        ':updated_at' => $now,
+        ':completed_at' => $now,
+        ':cutoff' => $cutoff,
+    ]);
 }
 
 function hub_cluster_router_complete_route(
@@ -728,26 +828,46 @@ function hub_cluster_router_proxy_response(mixed $response, string $stationToken
         return hub_gateway_error(502, 'router_response_too_large', 'cluster station response is too large');
     }
     $headers = is_array($response['headers'] ?? null) ? $response['headers'] : [];
-    $contentType = '';
-    foreach ($headers as $header) {
-        if (!is_string($header) || !str_contains($header, ':')) {
-            continue;
-        }
-        [$name, $value] = explode(':', $header, 2);
-        if (strtolower(trim($name)) === 'content-type') {
-            $contentType = trim($value);
-            break;
-        }
-    }
     $rawHeaders = is_string($response['raw_headers'] ?? null)
         ? $response['raw_headers']
         : 'HTTP/1.1 ' . $status . "\r\n" . implode("\r\n", array_filter($headers, 'is_string'));
+    $contentType = hub_cluster_router_response_content_type($rawHeaders, $headers);
     $safeHeaders = hub_proxy_allowed_response_headers($rawHeaders, $contentType);
     if (str_contains($body, $stationToken) || array_filter($safeHeaders, static fn (string $header): bool => str_contains($header, $stationToken)) !== []) {
         return hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
     }
 
     return ['status' => $status, 'headers' => $safeHeaders, 'body' => $body];
+}
+
+function hub_cluster_router_response_content_type(string $rawHeaders, array $headers): string
+{
+    foreach ([hub_cluster_router_final_response_headers($rawHeaders), $headers] as $source) {
+        foreach ($source as $header) {
+            if (!is_string($header) || !str_contains($header, ':')) {
+                continue;
+            }
+            [$name, $value] = explode(':', $header, 2);
+            $value = trim($value);
+            if (strtolower(trim($name)) === 'content-type' && strlen($value) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1) {
+                return $value;
+            }
+        }
+    }
+
+    return '';
+}
+
+function hub_cluster_router_final_response_headers(string $rawHeaders): array
+{
+    $blocks = preg_split('/\n\n+/', trim(str_replace("\r\n", "\n", $rawHeaders))) ?: [];
+    foreach (array_reverse($blocks) as $block) {
+        if (preg_match('/^HTTP\/\S+\s+\d{3}(?:\s|$)/', $block) === 1) {
+            return array_values(array_filter(preg_split('/\n/', $block) ?: [], static fn (string $line): bool => str_contains($line, ':')));
+        }
+    }
+
+    return [];
 }
 
 function hub_cluster_proxy_transport(array $request): array
@@ -785,7 +905,7 @@ function hub_cluster_proxy_transport(array $request): array
         CURLOPT_HEADER => false,
         CURLOPT_HTTPHEADER => $headers,
         CURLOPT_CONNECTTIMEOUT => 3,
-        CURLOPT_TIMEOUT => 60,
+        CURLOPT_TIMEOUT => hub_cluster_proxy_timeout_sec(),
         CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_MAXREDIRS => 0,
         CURLOPT_PROXY => '',
@@ -825,7 +945,12 @@ function hub_cluster_proxy_transport(array $request): array
         return ['error' => $timedOut ? 'timeout' : 'proxy'];
     }
 
-    return ['status' => $status, 'raw_headers' => $rawHeaders, 'body' => $responseBody];
+    return [
+        'status' => $status,
+        'headers' => hub_cluster_router_final_response_headers($rawHeaders),
+        'raw_headers' => $rawHeaders,
+        'body' => $responseBody,
+    ];
 }
 
 function hub_cluster_router_finish_response(array $response, string $requestId): array
