@@ -1784,7 +1784,13 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             'input_fields' => [['name' => '<script>', 'type' => 'string', 'required' => true]],
             'output_keys' => ['ok', 'text'],
             'error_codes' => ['bad_request'],
-            'task_api' => ['status_url' => 'https://configured.station.example/aihub/api.php?mode=task_status&task_id=<TASK_ID>'],
+            'task_api' => [
+                'status' => 'GET https://configured.station.example/aihub/api.php?mode=task_status&task_id=remote_task_42',
+                'result' => 'GET https://configured.station.example/aihub/api.php?mode=task_result&task_id=remote_task_42',
+                'log' => 'GET https://configured.station.example/aihub/api.php?mode=task_log&task_id=remote_task_42',
+                'cancel' => 'POST https://configured.station.example/aihub/api.php?mode=task_cancel&task_id=remote_task_42',
+                'artifact' => 'GET https://configured.station.example/aihub/api.php?mode=artifact&artifact_id={artifact_id}',
+            ],
             'examples' => [
                 'curl' => "curl 'https://configured.station.example/aihub/api.php?mode=ocr'",
                 'php' => "curl_init('https://configured.station.example/aihub/api.php?mode=ocr');",
@@ -1821,8 +1827,15 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
         hub_test_assert(array_column($manifest['services'], 'mode') === ['ocr'], 'only the fresh selected service may be public');
         hub_test_assert(($manifest['base_endpoint'] ?? '') === 'cluster_api.php' && str_contains((string)($manifest['inventory_note'] ?? ''), 'temporarily remove unavailable modes'), 'manifest must publish the Router base and inventory caveat');
         hub_test_assert(($service['endpoint'] ?? '') === 'cluster_api.php?mode=ocr' && str_contains((string)($service['examples']['curl'] ?? ''), 'cluster_api.php?mode=ocr'), 'all public service endpoints must use the Router');
+        hub_test_assert(($service['task_api'] ?? []) === [
+            'status' => 'GET cluster_api.php?mode=cluster_task_status&task_id={task_id}',
+            'result' => 'GET cluster_api.php?mode=cluster_task_result&task_id={task_id}',
+            'log' => 'GET cluster_api.php?mode=cluster_task_log&task_id={task_id}',
+            'cancel' => 'POST cluster_api.php?mode=cluster_task_cancel&task_id={task_id}',
+            'artifact' => 'GET cluster_api.php?mode=cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
+        ], 'public async contracts must expose opaque Router followups');
         hub_test_assert(str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, '<script>'), 'public docs must render the same Router contract with escaped fields');
-        foreach (['configured.station.example', 'configured.internal.example', 'stale.station.example', 'configured_station_secret', '3wa_live_', 'token_ciphertext', 'token_iv', 'token_tag'] as $secret) {
+        foreach (['configured.station.example', 'configured.internal.example', 'stale.station.example', 'configured_station_secret', 'remote_task_42', 'mode=task_', '3wa_live_', 'token_ciphertext', 'token_iv', 'token_tag'] as $secret) {
             hub_test_assert(!str_contains($json, $secret), 'public manifest leaked station detail: ' . $secret);
         }
     });
@@ -1832,12 +1845,34 @@ hub_test('cluster public contract rewrite removes a selected station base from e
     $service = hub_cluster_rewrite_contract_endpoint([
         'endpoint' => 'api.php?mode=vision',
         'url' => 'https://station.example/aihub/api.php?mode=vision',
-        'task_api' => ['status_url' => 'https://station.example/aihub/api.php?mode=task_status'],
-        'examples' => ['curl' => "curl 'https://station.example/aihub/api.php?mode=vision'"],
+        'task_api' => [
+            'status' => 'GET https://station.example/aihub/api.php?mode=task_status&task_id=remote_task_42',
+            'result' => 'GET api.php?mode=task_result&task_id={task_id}',
+            'log' => 'GET https://station.example/aihub/api.php?mode=task_log&task_id={task_id}',
+            'cancel' => 'POST api.php?mode=task_cancel&task_id={task_id}',
+            'artifact' => 'GET https://station.example/aihub/api.php?mode=artifact&artifact_id={artifact_id}',
+        ],
+        'links' => [
+            'status_url' => 'https://station.example/aihub/api.php?mode=task_status&task_id=remote_task_42',
+            'result_url' => 'api.php?mode=task_result&task_id={task_id}',
+            'log_url' => 'https://station.example/aihub/api.php?mode=task_log&task_id={task_id}',
+            'cancel_url' => 'api.php?mode=task_cancel&task_id={task_id}',
+            'artifact_url_template' => 'https://station.example/aihub/api.php?mode=artifact&artifact_id={artifact_id}',
+        ],
+        'examples' => ['curl' => "curl 'https://station.example/aihub/api.php?mode=task_status&task_id=remote_task_42'"],
     ], 'https://station.example/aihub/api.php', 'cluster_api.php');
     $json = json_encode($service, JSON_THROW_ON_ERROR);
 
-    hub_test_assert(!str_contains($json, 'station.example') && str_contains($json, 'cluster_api.php?mode=vision'), 'rewritten contracts must expose Router URLs only');
+    foreach ([
+        'cluster_api.php?mode=cluster_task_status&task_id={task_id}',
+        'cluster_api.php?mode=cluster_task_result&task_id={task_id}',
+        'cluster_api.php?mode=cluster_task_log&task_id={task_id}',
+        'cluster_api.php?mode=cluster_task_cancel&task_id={task_id}',
+        'cluster_api.php?mode=cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
+    ] as $endpoint) {
+        hub_test_assert(str_contains($json, $endpoint), 'async contract must use the Router followup template: ' . $endpoint);
+    }
+    hub_test_assert(!str_contains($json, 'station.example') && !str_contains($json, 'remote_task_42') && !str_contains($json, 'mode=task_') && str_contains($json, 'cluster_api.php?mode=vision'), 'rewritten contracts must expose Router URLs only');
 });
 
 hub_test('cluster router followups never retry pinned stations and reserve private modes', function (): void {

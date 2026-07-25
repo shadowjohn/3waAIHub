@@ -577,7 +577,14 @@ function hub_cluster_rewrite_contract_endpoint(array $service, string $stationAp
 {
     $stationApiBase = rtrim(trim($stationApiBase), '/');
     $routerApiBase = trim($routerApiBase);
-    $rewrite = static function (mixed $value) use (&$rewrite, $stationApiBase, $routerApiBase): mixed {
+    $followups = [
+        'task_status' => 'cluster_task_status&task_id={task_id}',
+        'task_result' => 'cluster_task_result&task_id={task_id}',
+        'task_log' => 'cluster_task_log&task_id={task_id}',
+        'task_cancel' => 'cluster_task_cancel&task_id={task_id}',
+        'artifact' => 'cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
+    ];
+    $rewrite = static function (mixed $value) use (&$rewrite, $stationApiBase, $routerApiBase, $followups): mixed {
         if (is_array($value)) {
             foreach ($value as $key => $item) {
                 $value[$key] = $rewrite($item);
@@ -591,8 +598,17 @@ function hub_cluster_rewrite_contract_endpoint(array $service, string $stationAp
         if ($stationApiBase !== '') {
             $value = str_replace($stationApiBase, $routerApiBase, $value);
         }
+        $value = (string)preg_replace('~(?<![A-Za-z0-9_])api\.php\?~', $routerApiBase . '?', $value);
+        foreach ($followups as $nativeMode => $routerMode) {
+            $pattern = '~([?&])(?:(?:task_id|artifact_id)=[^&\s\'\"]*&)*mode=' . preg_quote($nativeMode, '~') . '(?:&[^&\s\'\"]*)*~';
+            $value = preg_replace_callback(
+                $pattern,
+                static fn (array $matches): string => $matches[1] . 'mode=' . $routerMode,
+                $value
+            ) ?? $value;
+        }
 
-        return (string)preg_replace('~(?<![A-Za-z0-9_])api\.php\?~', $routerApiBase . '?', $value);
+        return $value;
     };
 
     return $rewrite($service);
