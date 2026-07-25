@@ -587,10 +587,13 @@ hub_test('cluster inventory refresh reports malformed responses without raw resp
     });
 });
 
-hub_test('cluster inventory rejects stale malformed and future status snapshots', function (): void {
+hub_test('cluster inventory normalizes small future skew and rejects invalid status snapshots', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $now = time();
-        hub_test_assert(hub_cluster_verified_status_snapshot_at(date('Y-m-d H:i:s', $now + 1), $now) === null, 'a one-second future snapshot must reject');
+        hub_test_assert(
+            hub_cluster_verified_status_snapshot_at(date('Y-m-d H:i:s', $now + 1), $now) === date('Y-m-d H:i:s', $now),
+            'a small future snapshot must normalize to the router receipt time'
+        );
         foreach ([date('Y-m-d H:i:s', $now - 31), 'not-a-timestamp', date('Y-m-d H:i:s', $now + 300)] as $snapshotAt) {
             $db = hub_test_reset_db();
             $stationId = hub_cluster_save_paired_station($db, hub_test_cluster_station_pairing());

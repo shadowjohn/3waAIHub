@@ -791,8 +791,9 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
     } catch (Throwable) {
         return hub_cluster_store_station_refresh_error($db, $stationId, 'status_fetch_failed');
     }
+    $statusReceivedAt = time();
     $status = hub_cluster_refresh_json_payload($statusResponse);
-    $statusSnapshot = $status === null ? null : hub_cluster_compact_status_snapshot($status);
+    $statusSnapshot = $status === null ? null : hub_cluster_compact_status_snapshot($status, $statusReceivedAt);
     if ($statusSnapshot === null) {
         return hub_cluster_store_station_refresh_error($db, $stationId, 'status_invalid');
     }
@@ -887,7 +888,7 @@ function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
     return ['modes' => array_keys($modes)];
 }
 
-function hub_cluster_compact_status_snapshot(array $status): ?array
+function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = null): ?array
 {
     if (
         ($status['ok'] ?? null) !== true
@@ -897,7 +898,7 @@ function hub_cluster_compact_status_snapshot(array $status): ?array
     ) {
         return null;
     }
-    $snapshotAt = hub_cluster_verified_status_snapshot_at($status['snapshot_at']);
+    $snapshotAt = hub_cluster_verified_status_snapshot_at($status['snapshot_at'], $receivedAt);
     if ($snapshotAt === null) {
         return null;
     }
@@ -972,11 +973,11 @@ function hub_cluster_verified_status_snapshot_at(string $value, ?int $now = null
         return null;
     }
     $timestamp = $snapshot->getTimestamp();
-    if ($timestamp < $now - 30 || $timestamp > $now) {
+    if ($timestamp < $now - 30 || $timestamp > $now + 5) {
         return null;
     }
 
-    return $snapshot->format('Y-m-d H:i:s');
+    return date('Y-m-d H:i:s', min($timestamp, $now));
 }
 
 function hub_cluster_store_station_refresh_error(PDO $db, int $stationId, string $error): array
