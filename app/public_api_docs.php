@@ -248,16 +248,33 @@ function hub_public_api_audio_async_contract(array $route): array
         }
         $fields[] = $field;
     }
+    $fields[] = ['name' => 'callback', 'type' => 'boolean', 'required' => false];
+    $fields[] = ['name' => 'callback_target', 'type' => 'string', 'required' => false];
     if ($route['source_required']) {
-        array_unshift($fields, [
-            'name' => 'file',
-            'type' => 'file',
-            'required' => true,
-            'example' => 'sample.wav',
-            'max_mb' => intdiv((int)$route['max_upload_bytes'] + 1048575, 1048576),
-            'max_bytes' => (int)$route['max_upload_bytes'],
-            'source_artifact_types' => array_values($route['source_artifact_types']),
-        ]);
+        $oneOf = ['file', 'source_artifact_id'];
+        array_unshift(
+            $fields,
+            [
+                'name' => 'file',
+                'type' => 'file',
+                'required' => false,
+                'example_include' => true,
+                'example' => 'sample.wav',
+                'max_mb' => intdiv((int)$route['max_upload_bytes'] + 1048575, 1048576),
+                'max_bytes' => (int)$route['max_upload_bytes'],
+                'source_artifact_types' => array_values($route['source_artifact_types']),
+                'one_of' => $oneOf,
+                'one_of_required' => true,
+            ],
+            [
+                'name' => 'source_artifact_id',
+                'type' => 'integer',
+                'required' => false,
+                'min' => 1,
+                'one_of' => $oneOf,
+                'one_of_required' => true,
+            ]
+        );
     }
 
     return [
@@ -616,7 +633,7 @@ function hub_public_api_multipart_fields(array $service): array
         }
         $type = (string)($field['type'] ?? '');
         if ($type === 'file') {
-            if (empty($field['required']) && !(($service['mode'] ?? '') === 'sam3' && $name === 'guidance_mask')) {
+            if (empty($field['required']) && empty($field['example_include']) && !(($service['mode'] ?? '') === 'sam3' && $name === 'guidance_mask')) {
                 continue;
             }
             $sample = (string)($field['example'] ?? '');
@@ -702,7 +719,7 @@ function hub_public_api_examples(array $service): array
                 continue;
             }
             if (($field['type'] ?? '') === 'file') {
-                if (empty($field['required'])) {
+                if (empty($field['required']) && empty($field['example_include'])) {
                     continue;
                 }
                 $sample = (string)($field['example'] ?? '');

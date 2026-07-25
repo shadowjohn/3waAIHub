@@ -427,19 +427,41 @@ hub_test('Public API audio async contracts use normalized job routes', function 
         }
 
         if ($route['source_required']) {
+            $oneOf = ['file', 'source_artifact_id'];
             hub_test_assert(
                 ($fields['file']['type'] ?? '') === 'file'
-                && ($fields['file']['required'] ?? false) === true
+                && ($fields['file']['required'] ?? true) === false
+                && ($fields['file']['example_include'] ?? false) === true
                 && ($fields['file']['example'] ?? '') === 'sample.wav'
                 && ($fields['file']['max_bytes'] ?? 0) === $route['max_upload_bytes']
-                && ($fields['file']['source_artifact_types'] ?? null) === $route['source_artifact_types'],
+                && ($fields['file']['source_artifact_types'] ?? null) === $route['source_artifact_types']
+                && ($fields['file']['one_of'] ?? null) === $oneOf
+                && ($fields['file']['one_of_required'] ?? false) === true,
                 'audio async upload field mismatch: ' . $mode
+            );
+            hub_test_assert(
+                ($fields['source_artifact_id']['type'] ?? '') === 'integer'
+                && ($fields['source_artifact_id']['required'] ?? true) === false
+                && ($fields['source_artifact_id']['min'] ?? 0) === 1
+                && ($fields['source_artifact_id']['one_of'] ?? null) === $oneOf
+                && ($fields['source_artifact_id']['one_of_required'] ?? false) === true,
+                'audio async source artifact alternative mismatch: ' . $mode
             );
             hub_test_assert(str_contains((string)$service['examples']['curl'], 'file=@sample.wav'), 'audio async curl upload missing: ' . $mode);
             hub_test_assert(str_contains((string)$service['examples']['php'], "new CURLFile('/path/to/sample.wav'"), 'audio async PHP upload missing: ' . $mode);
             hub_test_assert(str_contains((string)$service['examples']['js_fetch'], "formData.append('file', fileInput.files[0])"), 'audio async JS upload missing: ' . $mode);
+            foreach ($service['examples'] as $exampleType => $example) {
+                hub_test_assert(!str_contains((string)$example, 'source_artifact_id'), 'audio async default ' . $exampleType . ' example includes both source alternatives: ' . $mode);
+            }
+            $html = hub_public_api_docs_html($db, null, static fn (array $service): bool => true);
+            hub_test_assert(
+                str_contains($html, '&quot;one_of&quot;')
+                && str_contains($html, '&quot;one_of_required&quot;: true'),
+                'audio async one-of metadata missing from rendered HTML: ' . $mode
+            );
         } else {
             hub_test_assert(!isset($fields['file']), 'source-free audio async route rendered an upload: ' . $mode);
+            hub_test_assert(!isset($fields['source_artifact_id']), 'source-free audio async route rendered a source artifact alternative: ' . $mode);
             hub_test_assert(!str_contains((string)$service['examples']['curl'], '=@'), 'source-free audio async curl rendered an upload: ' . $mode);
             hub_test_assert(!str_contains((string)$service['examples']['php'], 'CURLFile'), 'source-free audio async PHP rendered an upload: ' . $mode);
         }
@@ -485,6 +507,32 @@ hub_test('Public API audio async contracts use normalized job routes', function 
         $json = json_encode($service, JSON_UNESCAPED_SLASHES);
         foreach (['pack_version', 'job_contract', '/models/', '/cache/', '/data/'] as $internal) {
             hub_test_assert(!str_contains((string)$json, $internal), 'audio async docs leaked internal route data: ' . $internal);
+        }
+    }
+});
+
+hub_test('Public API audio async contracts expose optional callback controls', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    foreach (hub_audio_async_routes() as $mode => $owner) {
+        $db = hub_test_reset_db();
+        hub_test_make_documentable_pack($db, (string)$owner['pack_id'], ['mode' => $mode]);
+        $services = array_column(hub_public_api_services($db, static fn (array $service): bool => true), null, 'mode');
+        $service = $services[$mode] ?? null;
+        $fields = is_array($service) ? array_column($service['input_fields'], null, 'name') : [];
+
+        hub_test_assert(
+            ($fields['callback']['type'] ?? '') === 'boolean'
+            && ($fields['callback']['required'] ?? true) === false
+            && ($fields['callback_target']['type'] ?? '') === 'string'
+            && ($fields['callback_target']['required'] ?? true) === false,
+            'audio async callback fields missing: ' . $mode
+        );
+        foreach ($service['examples'] as $exampleType => $example) {
+            hub_test_assert(
+                !str_contains((string)$example, 'callback'),
+                'audio async default ' . $exampleType . ' example includes callbacks: ' . $mode
+            );
         }
     }
 });
