@@ -119,6 +119,9 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
         || !filter_var($pairingLink, FILTER_VALIDATE_URL)
         || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['http', 'https'], true)
         || trim((string)($parts['host'] ?? '')) === ''
+        || isset($parts['user'])
+        || isset($parts['pass'])
+        || str_contains($pairingLink, '?')
         || !str_ends_with((string)($parts['path'] ?? ''), '/cluster_pair.php')
         || preg_match('/\Ainvite=([0-9a-fA-F]{64})\z/', $fragment, $matches) !== 1
     ) {
@@ -127,8 +130,10 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
 
     $routerName = trim(hub_site_title($db));
     $routerName = function_exists('mb_substr') ? mb_substr($routerName, 0, 120, 'UTF-8') : substr($routerName, 0, 120);
+    $requestUrl = strtolower((string)$parts['scheme']) . '://' . (string)$parts['host']
+        . (isset($parts['port']) ? ':' . (int)$parts['port'] : '') . (string)$parts['path'];
     $request = [
-        'url' => substr($pairingLink, 0, strrpos($pairingLink, '#')),
+        'url' => $requestUrl,
         'method' => 'POST',
         'headers' => [
             'X-3waAIHub-Pair-Invite' => $matches[1],

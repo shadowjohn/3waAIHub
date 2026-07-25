@@ -136,7 +136,7 @@ hub_test('cluster router pairing import sends invites only in headers and saves 
         $seenRequest = [];
         $station = hub_cluster_import_pairing_link(
             $db,
-            'https://station.example/cluster_pair.php#invite=' . $invite,
+            'https://station.example:8443/cluster_pair.php#invite=' . $invite,
             static function (array $request) use (&$seenRequest): array {
                 $seenRequest = $request;
                 return [
@@ -146,8 +146,9 @@ hub_test('cluster router pairing import sends invites only in headers and saves 
             }
         );
 
-        hub_test_assert(($seenRequest['url'] ?? '') === 'https://station.example/cluster_pair.php', 'pair requester URL must omit invite fragment');
+        hub_test_assert(($seenRequest['url'] ?? '') === 'https://station.example:8443/cluster_pair.php', 'pair requester URL must omit invite fragment and retain port');
         hub_test_assert(!str_contains((string)($seenRequest['url'] ?? ''), $invite), 'pair requester URL must not expose invite');
+        hub_test_assert(!str_contains((string)($seenRequest['url'] ?? ''), '?'), 'pair requester URL must not contain a query');
         hub_test_assert(($seenRequest['headers']['X-3waAIHub-Pair-Invite'] ?? '') === $invite, 'pair requester must receive invite header');
         hub_test_assert(strlen((string)($seenRequest['headers']['X-3waAIHub-Router-Name'] ?? '')) <= 120, 'pair requester router name must be limited');
         hub_test_assert((int)($station['id'] ?? 0) > 0, 'pair import must return saved station');
@@ -181,6 +182,27 @@ hub_test('cluster router rejects malformed pairing links and invalid pairing res
     });
 });
 
+hub_test('cluster router rejects credential-bearing and query-bearing pairing links before requesting', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $invite = str_repeat('c', 64);
+        foreach ([
+            'https://router:secret@station.example/cluster_pair.php#invite=' . $invite,
+            'https://station.example/cluster_pair.php?scope=local#invite=' . $invite,
+            'https://station.example/cluster_pair.php?#invite=' . $invite,
+        ] as $link) {
+            $requested = false;
+            $rejected = hub_test_throws(function () use ($db, $link, &$requested): array {
+                return hub_cluster_import_pairing_link($db, $link, static function () use (&$requested): array {
+                    $requested = true;
+                    return ['status' => 200, 'body' => json_encode(hub_test_cluster_station_pairing(), JSON_THROW_ON_ERROR)];
+                });
+            });
+            hub_test_assert($rejected && !$requested, 'credential-bearing or query-bearing pairing link must reject before requesting');
+        }
+    });
+});
+
 hub_test('cluster router selects the highest-priority healthy station', function (): void {
     $selected = hub_cluster_select_station('vision', [
         hub_test_cluster_station_fixture(['id' => 2, 'priority' => 5]),
@@ -202,6 +224,16 @@ hub_test('cluster router favors lower-priority unpressured stations over pressur
         ]);
         hub_test_assert((int)($selected['id'] ?? 0) === 2, 'unpressured station must outrank preferred pressured station');
     }
+});
+
+hub_test('cluster router falls back to priority ordering when every eligible station is pressured', function (): void {
+    $selected = hub_cluster_select_station('vision', [
+        hub_test_cluster_station_fixture(['id' => 3, 'priority' => 5, 'gpu_free_vram_mb' => 0, 'active_gpu_leases' => 1, 'queued_jobs' => 1]),
+        hub_test_cluster_station_fixture(['id' => 2, 'priority' => 10, 'gpu_free_vram_mb' => 0, 'active_gpu_leases' => 1, 'queued_jobs' => 1]),
+        hub_test_cluster_station_fixture(['id' => 1, 'priority' => 10, 'gpu_free_vram_mb' => 0, 'active_gpu_leases' => 1, 'queued_jobs' => 1]),
+    ]);
+
+    hub_test_assert((int)($selected['id'] ?? 0) === 1, 'all-pressured eligible stations must fall back to priority then ID ordering');
 });
 
 hub_test('cluster router returns null when no station is eligible', function (): void {
