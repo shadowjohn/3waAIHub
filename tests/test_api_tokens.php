@@ -43,6 +43,24 @@ hub_test('API token gateway authenticates by Bearer token and records usage', fu
     hub_test_assert((int)$usage['success_count'] === 1, 'usage success count mismatch');
 });
 
+hub_test('API token identity helper authenticates strictly without a mode requirement', function (): void {
+    $db = hub_test_reset_db();
+    hub_set_service_enabled($db, 'hello', true);
+
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $memberId = hub_create_api_member($db, 'Identity Client');
+    $token = hub_create_api_token($db, $memberId, 'identity token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'hello', (int)$service['id']);
+
+    $identity = hub_authenticate_api_token($db, '203.0.113.10', $token['plain_token'], null, false, false);
+    hub_test_assert(!empty($identity['ok']), 'strict helper must authenticate a valid token');
+    hub_test_assert((int)$identity['context']['member_id'] === $memberId, 'strict helper must return the token member');
+
+    $missing = hub_authenticate_api_token($db, '127.0.0.1', '', null, false, false);
+    hub_test_assert(empty($missing['ok']) && ($missing['response']['status'] ?? 0) === 401, 'strict helper must reject a missing token');
+});
+
 hub_test('admin API usage page renders byte totals and numeric columns for scanning', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/admin/api_usage.php');
 
