@@ -232,6 +232,59 @@ function hub_public_api_service_mode_uses_pack(array $service): bool
     return (string)($service['pack_id'] ?? '') === (string)(hub_audio_async_routes()[$mode]['pack_id'] ?? '');
 }
 
+function hub_public_api_audio_async_contract(array $route): array
+{
+    $fields = [];
+    foreach ($route['request_schema'] as $name => $definition) {
+        $field = ['name' => (string)$name] + $definition;
+        if (!array_key_exists('default', $field)) {
+            if (is_array($field['enum'] ?? null) && $field['enum'] !== []) {
+                $field['example'] = $field['enum'][0];
+            } elseif ($name === 'text') {
+                $field['example'] = 'Hello from 3waAIHub.';
+            } elseif ($name === 'voice_prompt') {
+                $field['example'] = 'A calm, warm narrator.';
+            }
+        }
+        $fields[] = $field;
+    }
+    if ($route['source_required']) {
+        array_unshift($fields, [
+            'name' => 'file',
+            'type' => 'file',
+            'required' => true,
+            'example' => 'sample.wav',
+            'max_mb' => intdiv((int)$route['max_upload_bytes'] + 1048575, 1048576),
+            'max_bytes' => (int)$route['max_upload_bytes'],
+            'source_artifact_types' => array_values($route['source_artifact_types']),
+        ]);
+    }
+
+    return [
+        'method' => 'POST',
+        'content_type' => 'multipart/form-data',
+        'execution_type' => 'async_task',
+        'task_type' => 'pack_job',
+        'input' => ['fields' => $fields],
+        'output' => ['required_keys' => ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template']],
+        'task_api' => [
+            'status' => 'GET api.php?mode=task_status&task_id={task_id}',
+            'result' => 'GET api.php?mode=task_result&task_id={task_id}',
+            'log' => 'GET api.php?mode=task_log&task_id={task_id}',
+            'cancel' => 'POST api.php?mode=task_cancel&task_id={task_id}',
+            'artifact' => 'GET api.php?mode=artifact&artifact_id={artifact_id}',
+        ],
+        'errors' => [
+            'method_not_allowed', 'member_required', 'length_required', 'payload_too_large',
+            'callback_target_not_found', 'callback_target_disabled', 'capability_unavailable',
+            'invalid_request', 'voice_profile_required', 'voice_profile_forbidden',
+            'forbidden_task_control', 'source_not_allowed', 'source_required',
+            'source_ambiguous', 'source_artifact_invalid', 'source_artifact_not_found',
+            'task_upload_workspace_conflict', 'missing_token', 'token_mode_not_allowed',
+        ],
+    ];
+}
+
 function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
 {
     $rows = hub_list_services($db);
@@ -266,7 +319,15 @@ function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
         if ($mode === '') {
             continue;
         }
-        $contract = hub_public_api_contract_for_manifest($manifest);
+        if (hub_is_audio_async_mode($mode)) {
+            try {
+                $contract = hub_public_api_audio_async_contract(hub_resolve_audio_async_route($db, $mode));
+            } catch (RuntimeException) {
+                continue;
+            }
+        } else {
+            $contract = hub_public_api_contract_for_manifest($manifest);
+        }
         $method = hub_public_api_method($manifest, $contract);
         $contentType = hub_public_api_content_type($method, $contract);
         $fields = is_array($contract['input']['fields'] ?? null) ? $contract['input']['fields'] : [];
@@ -285,7 +346,7 @@ function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
             'content_type' => $contentType,
             'endpoint' => 'api.php?mode=' . $mode,
             'url' => hub_public_api_mode_url($mode),
-            'execution_type' => (string)($manifest['execution_type'] ?? ''),
+            'execution_type' => (string)($contract['execution_type'] ?? $manifest['execution_type'] ?? ''),
             'runtime_level' => (string)($manifest['runtime_level'] ?? ''),
             'task_type' => (string)($contract['task_type'] ?? ''),
             'input_fields' => $fields,
@@ -526,7 +587,7 @@ function hub_public_api_json_body(array $service): array
             continue;
         }
         $name = (string)($field['name'] ?? '');
-        if ($name === '' || $name === 'mode' || ($field['type'] ?? '') === 'file') {
+        if ($name === '' || ($name === 'mode' && !hub_is_audio_async_mode((string)($service['mode'] ?? ''))) || ($field['type'] ?? '') === 'file') {
             continue;
         }
         $body[$name] = match ($name) {
@@ -550,7 +611,7 @@ function hub_public_api_multipart_fields(array $service): array
             continue;
         }
         $name = (string)($field['name'] ?? '');
-        if ($name === '' || $name === 'mode') {
+        if ($name === '' || ($name === 'mode' && !hub_is_audio_async_mode((string)($service['mode'] ?? '')))) {
             continue;
         }
         $type = (string)($field['type'] ?? '');
@@ -577,14 +638,28 @@ function hub_public_api_multipart_fields(array $service): array
             $fields[] = $name . '=png';
             continue;
         }
-        $fields[] = $name . '=' . (string)($field['default'] ?? ($name === 'real_inference' ? '1' : ''));
+        $fields[] = $name . '=' . hub_public_api_example_field_value($field);
     }
 
     return $fields;
 }
 
+function hub_public_api_example_field_value(array $field): string
+{
+    $value = $field['example'] ?? $field['default'] ?? (($field['name'] ?? '') === 'real_inference' ? true : '');
+
+    return is_bool($value) ? ($value ? '1' : '0') : (string)$value;
+}
+
 function hub_public_api_examples(array $service): array
 {
+    if (($service['execution_type'] ?? '') === 'async_task') {
+        $service['input_fields'] = array_values(array_filter(
+            $service['input_fields'],
+            static fn (mixed $field): bool => is_array($field)
+                && (!empty($field['required']) || array_key_exists('default', $field) || array_key_exists('example', $field))
+        ));
+    }
     $url = (string)$service['url'];
     $method = (string)$service['method'];
     $contentType = (string)$service['content_type'];
@@ -623,7 +698,7 @@ function hub_public_api_examples(array $service): array
                 continue;
             }
             $name = (string)($field['name'] ?? '');
-            if ($name === '' || $name === 'mode') {
+            if ($name === '' || ($name === 'mode' && !hub_is_audio_async_mode((string)($service['mode'] ?? '')))) {
                 continue;
             }
             if (($field['type'] ?? '') === 'file') {
@@ -648,7 +723,7 @@ function hub_public_api_examples(array $service): array
             } elseif (($service['mode'] ?? '') === 'sam3' && $name === 'output_format') {
                 $value = 'png';
             } else {
-                $value = (string)($field['example'] ?? ($field['default'] ?? ($name === 'real_inference' ? '1' : '')));
+                $value = hub_public_api_example_field_value($field);
             }
             $phpLines[] = '    ' . var_export($name, true) . ' => ' . var_export($value, true) . ',';
             $jsLines[] = 'formData.append(' . var_export($name, true) . ', ' . json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . ');';

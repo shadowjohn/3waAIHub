@@ -386,6 +386,124 @@ hub_test('Public API audio async DB modes require their canonical owning packs',
     hub_test_assert($missing === [], 'canonical audio Packs lost async contracts: ' . implode(', ', $missing));
 });
 
+hub_test('Public API audio async contracts use normalized job routes', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $outputKeys = ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'];
+    $taskRefs = ['status', 'result', 'log', 'cancel', 'artifact'];
+
+    foreach (hub_audio_async_routes() as $mode => $owner) {
+        $db = hub_test_reset_db();
+        hub_test_make_documentable_pack($db, (string)$owner['pack_id'], ['mode' => $mode]);
+        $route = hub_resolve_audio_async_route($db, $mode);
+        $services = array_column(hub_public_api_services($db, static fn (array $service): bool => true), null, 'mode');
+        $service = $services[$mode] ?? null;
+
+        hub_test_assert(is_array($service), 'audio async contract missing: ' . $mode);
+        hub_test_assert(
+            $service['method'] === 'POST'
+            && $service['content_type'] === 'multipart/form-data'
+            && $service['execution_type'] === 'async_task'
+            && $service['task_type'] === 'pack_job',
+            'audio async transport contract mismatch: ' . $mode
+        );
+        hub_test_assert($service['output_keys'] === $outputKeys, 'audio async output contract mismatch: ' . $mode);
+        hub_test_assert(array_keys($service['task_api']) === $taskRefs, 'audio async task API refs mismatch: ' . $mode);
+        foreach (['status', 'result', 'log', 'cancel'] as $taskMode) {
+            hub_test_assert(str_contains((string)$service['task_api'][$taskMode], 'mode=task_' . $taskMode), 'audio async task ref mismatch: ' . $mode . '/' . $taskMode);
+        }
+        hub_test_assert(str_contains((string)$service['task_api']['artifact'], 'mode=artifact'), 'audio async artifact ref mismatch: ' . $mode);
+        foreach (['payload_too_large', 'invalid_request', 'source_ambiguous', 'missing_token'] as $error) {
+            hub_test_assert(in_array($error, $service['error_codes'], true), 'audio async error contract missing ' . $error . ': ' . $mode);
+        }
+
+        $fields = array_column($service['input_fields'], null, 'name');
+        foreach ($route['request_schema'] as $name => $definition) {
+            hub_test_assert(isset($fields[$name]), 'audio async request field missing: ' . $mode . '/' . $name);
+            foreach (['type', 'required', 'default', 'enum', 'max_length', 'min', 'max', 'requires', 'gte_field', 'requires_when'] as $constraint) {
+                if (array_key_exists($constraint, $definition)) {
+                    hub_test_assert(($fields[$name][$constraint] ?? null) === $definition[$constraint], 'audio async field constraint mismatch: ' . $mode . '/' . $name . '/' . $constraint);
+                }
+            }
+        }
+
+        if ($route['source_required']) {
+            hub_test_assert(
+                ($fields['file']['type'] ?? '') === 'file'
+                && ($fields['file']['required'] ?? false) === true
+                && ($fields['file']['example'] ?? '') === 'sample.wav'
+                && ($fields['file']['max_bytes'] ?? 0) === $route['max_upload_bytes']
+                && ($fields['file']['source_artifact_types'] ?? null) === $route['source_artifact_types'],
+                'audio async upload field mismatch: ' . $mode
+            );
+            hub_test_assert(str_contains((string)$service['examples']['curl'], 'file=@sample.wav'), 'audio async curl upload missing: ' . $mode);
+            hub_test_assert(str_contains((string)$service['examples']['php'], "new CURLFile('/path/to/sample.wav'"), 'audio async PHP upload missing: ' . $mode);
+            hub_test_assert(str_contains((string)$service['examples']['js_fetch'], "formData.append('file', fileInput.files[0])"), 'audio async JS upload missing: ' . $mode);
+        } else {
+            hub_test_assert(!isset($fields['file']), 'source-free audio async route rendered an upload: ' . $mode);
+            hub_test_assert(!str_contains((string)$service['examples']['curl'], '=@'), 'source-free audio async curl rendered an upload: ' . $mode);
+            hub_test_assert(!str_contains((string)$service['examples']['php'], 'CURLFile'), 'source-free audio async PHP rendered an upload: ' . $mode);
+        }
+
+        $exampleInput = [];
+        foreach ($fields as $field) {
+            if (($field['type'] ?? '') === 'file') {
+                continue;
+            }
+            if (array_key_exists('example', $field)) {
+                $exampleInput[(string)$field['name']] = $field['example'];
+            } elseif (array_key_exists('default', $field)) {
+                $exampleInput[(string)$field['name']] = $field['default'];
+            }
+        }
+        hub_test_assert(
+            !hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input($exampleInput, $route)),
+            'audio async documented example input is invalid: ' . $mode
+        );
+
+        if ($mode === 'audio_cleanup') {
+            $operation = (string)($fields['operation']['example'] ?? $fields['operation']['default'] ?? '');
+            hub_test_assert($operation !== '' && in_array($operation, $fields['operation']['enum'] ?? [], true), 'audio cleanup example operation is invalid');
+            hub_test_assert(str_contains((string)$service['examples']['curl'], 'operation=' . $operation), 'audio cleanup curl operation missing');
+        } elseif ($mode === 'speech_transcribe') {
+            foreach (['model', 'language', 'word_timestamps', 'diarization'] as $field) {
+                hub_test_assert(isset($fields[$field]), 'speech transcribe async field missing: ' . $field);
+            }
+            hub_test_assert(str_contains((string)$service['examples']['curl'], 'model=large_v3'), 'speech transcribe async model missing from curl');
+        } else {
+            $text = (string)($fields['text']['example'] ?? $fields['text']['default'] ?? '');
+            $voicePrompt = (string)($fields['voice_prompt']['example'] ?? $fields['voice_prompt']['default'] ?? '');
+            $voiceMode = (string)($fields['mode']['example'] ?? $fields['mode']['default'] ?? '');
+            hub_test_assert($text !== '' && $voiceMode === 'design' && $voicePrompt !== '', 'voice generate examples must use nonempty text/design fields');
+            hub_test_assert(
+                str_contains((string)$service['examples']['curl'], 'text=' . $text)
+                && str_contains((string)$service['examples']['curl'], 'mode=design')
+                && str_contains((string)$service['examples']['curl'], 'voice_prompt=' . $voicePrompt),
+                'voice generate multipart example fields missing'
+            );
+        }
+
+        $json = json_encode($service, JSON_UNESCAPED_SLASHES);
+        foreach (['pack_version', 'job_contract', '/models/', '/cache/', '/data/'] as $internal) {
+            hub_test_assert(!str_contains((string)$json, $internal), 'audio async docs leaked internal route data: ' . $internal);
+        }
+    }
+});
+
+hub_test('Public API hides stale audio async Pack versions', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $db = hub_test_reset_db();
+    $row = hub_test_make_documentable_pack($db, 'audio-cleanup', ['mode' => 'audio_cleanup']);
+    $db->prepare('UPDATE services SET pack_version = :pack_version WHERE id = :id')->execute([
+        ':pack_version' => 'stale-version',
+        ':id' => (int)$row['id'],
+    ]);
+
+    $modes = array_column(hub_public_api_services($db, static fn (array $service): bool => true), 'mode');
+
+    hub_test_assert(!in_array('audio_cleanup', $modes, true), 'stale audio async Pack version remained documented');
+});
+
 hub_test('Public API Gemma derived contracts require gemma4-main', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
     $healthy = static fn (array $service): bool => true;
