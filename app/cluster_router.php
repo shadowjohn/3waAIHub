@@ -829,26 +829,57 @@ function hub_cluster_sort_redaction_terms(array $terms): array
     return $terms;
 }
 
-function hub_cluster_child_local_authority_terms(?array $server = null): array
+function hub_cluster_child_local_authority_terms(?array $server = null, ?string $hostname = null, ?string $canonicalHost = null): array
 {
     $server ??= $_SERVER;
     $https = !empty($server['HTTPS']) && $server['HTTPS'] !== 'off';
     $defaultPort = $https ? 443 : 80;
     $serverPort = hub_cluster_child_local_port($server['SERVER_PORT'] ?? null);
     $terms = [];
-    foreach (['HTTP_HOST', 'SERVER_NAME', 'SERVER_ADDR'] as $key) {
-        $authority = hub_cluster_child_local_authority($server[$key] ?? null);
+    $trusted = [];
+    $hostname ??= gethostname() ?: '';
+    $canonicalHost ??= trim((string)(getenv('AIHUB_CLUSTER_CANONICAL_HOST') ?: ''));
+    foreach ([$server['SERVER_ADDR'] ?? null, $hostname, $canonicalHost] as $value) {
+        $authority = hub_cluster_child_local_authority($value);
         if ($authority === null) {
             continue;
         }
+        $key = hub_cluster_child_local_authority_key($authority['host']);
+        if ($key === null) {
+            continue;
+        }
+        $trusted[$key] = true;
         $terms = array_merge($terms, hub_cluster_authority_redaction_terms(
             $authority['host'],
             $defaultPort,
             $authority['port'] ?? $serverPort
         ));
     }
+    $requestAuthority = hub_cluster_child_local_authority($server['HTTP_HOST'] ?? null);
+    $requestKey = $requestAuthority === null ? null : hub_cluster_child_local_authority_key($requestAuthority['host']);
+    if ($requestAuthority !== null && $requestKey !== null && isset($trusted[$requestKey])) {
+        $terms = array_merge($terms, hub_cluster_authority_redaction_terms(
+            $requestAuthority['host'],
+            $defaultPort,
+            $requestAuthority['port'] ?? $serverPort
+        ));
+    }
 
     return hub_cluster_sort_redaction_terms($terms);
+}
+
+function hub_cluster_child_local_authority_key(string $host): ?string
+{
+    $host = trim($host, '[]');
+    if (filter_var($host, FILTER_VALIDATE_IP)) {
+        $packed = inet_pton($host);
+        return is_string($packed) ? 'ip:' . bin2hex($packed) : null;
+    }
+    if (!hub_cluster_valid_redaction_hostname($host)) {
+        return null;
+    }
+
+    return 'host:' . strtolower(rtrim($host, '.'));
 }
 
 function hub_cluster_child_local_authority(mixed $value): ?array
