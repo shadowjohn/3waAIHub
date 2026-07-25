@@ -21,6 +21,7 @@ function hub_playground_profiles(): array
         'photo' => ['label' => '圖片問答', 'method' => 'POST', 'kind' => 'photo'],
         'audio' => ['label' => '音訊理解', 'method' => 'POST', 'kind' => 'audio'],
         'background_remove' => ['label' => 'BiRefNet 去背', 'method' => 'POST', 'kind' => 'background_remove'],
+        'taiwan_address' => ['label' => '台灣地址洗滌／地理編碼', 'method' => 'POST', 'kind' => 'json'],
     ];
 }
 
@@ -90,6 +91,13 @@ function hub_playground_request_payload(string $mode): array
             'max_tokens' => (int)($_POST['max_tokens'] ?? 256),
             'enable_thinking' => !empty($_POST['enable_thinking']),
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
+        ];
+    }
+    if ($mode === 'taiwan_address') {
+        return [
+            'operation' => trim((string)($_POST['operation'] ?? 'getAddress_XY')) ?: 'getAddress_XY',
+            'address' => trim((string)($_POST['address'] ?? '台中市南區新和街1號')),
+            'limit' => (int)($_POST['limit'] ?? 10),
         ];
     }
     if ($mode === 'photo') {
@@ -483,6 +491,44 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'taiwan_address') {
+        $json = '{"operation":"getAddress_XY","address":"台中市南區新和街1號","limit":10}';
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
+        $php = <<<PHP
+\$payload = [
+    'operation' => 'getAddress_XY',
+    'address' => '台中市南區新和街1號',
+    'limit' => 10,
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer <TOKEN>',
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode(\$payload, JSON_UNESCAPED_UNICODE),
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer <TOKEN>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    operation: 'getAddress_XY',
+    address: '台中市南區新和街1號',
+    limit: 10
+  })
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
     if ($mode === 'tts') {
         $json = '{"mode":"design","text":"RC 閥是用來控制二行程引擎排氣時機的重要機構。","voice_prompt":"沉穩的台灣男性技師，語速稍慢，清楚自然","seed":42,"format":"wav"}';
         $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
@@ -851,7 +897,7 @@ hub_admin_header(__('API 測試場'), $user);
     <h1><?= hub_h(__('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(__('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(__('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(__('需要 Bearer Token')) ?></strong>。<?= hub_h(__('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(__('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=background_remove</code></p>
+    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -936,6 +982,19 @@ hub_admin_header(__('API 測試場'), $user);
                 <label><?= hub_h(__('文字')) ?></label>
                 <textarea name="text" rows="5">That was a wonderful time.</textarea>
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實推論')) ?></label>
+            <?php elseif ($selectedMode === 'taiwan_address'): ?>
+                <?php $addressOperation = (string)($_POST['operation'] ?? 'getAddress_XY'); ?>
+                <label><?= hub_h(__('操作')) ?> operation</label>
+                <select name="operation">
+                    <?php foreach (['getAddress_XY', 'autocomplete', 'searchAll'] as $operation): ?>
+                        <option value="<?= hub_h($operation) ?>" <?= $addressOperation === $operation ? 'selected' : '' ?>><?= hub_h($operation) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <label><?= hub_h(__('地址／地標')) ?> address</label>
+                <input name="address" value="<?= hub_h((string)($_POST['address'] ?? '台中市南區新和街1號')) ?>" required>
+                <label><?= hub_h(__('最多結果數')) ?> limit</label>
+                <input name="limit" type="number" min="1" max="100" value="<?= hub_h((string)($_POST['limit'] ?? '10')) ?>">
+                <p class="muted"><?= hub_h(__('Adapter 只會轉送固定 operation 與欄位；不接受 caller 指定 upstream URL。')) ?></p>
             <?php elseif ($selectedMode === 'tts'): ?>
                 <label>TTS <?= hub_h(__('模式')) ?></label>
                 <select name="tts_mode">

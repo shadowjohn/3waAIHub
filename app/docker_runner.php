@@ -609,9 +609,19 @@ function hub_restart_service(PDO $db, array $service): array
         return $unsupported;
     }
 
-    $result = hub_run_service_compose_command($db, null, $service, ['restart', '--timeout', '5'], 10, 'docker_restart', 0, 0);
+    $requiresRecreate = (int)($service['restart_required'] ?? 0) === 1;
+    $args = $requiresRecreate ? ['up', '-d', '--force-recreate'] : ['restart', '--timeout', '5'];
+    $stage = $requiresRecreate ? 'docker_recreate' : 'docker_restart';
+    $result = hub_run_service_compose_command($db, null, $service, $args, 20, $stage, 0, 0);
     hub_add_service_log($db, (int)$service['id'], 'restart', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
+        if ($requiresRecreate) {
+            $db->prepare('UPDATE services SET restart_required = 0, updated_at = :updated_at WHERE id = :id')->execute([
+                ':updated_at' => hub_now(),
+                ':id' => (int)$service['id'],
+            ]);
+            $service = hub_get_service($db, (int)$service['id']) ?: $service;
+        }
         hub_refresh_service_status($db, $service);
     } else {
         hub_update_service_status($db, (int)$service['id'], 'error');

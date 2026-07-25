@@ -35,6 +35,15 @@ hub_test('Taiwan address pack keeps trusted upstream and quality contracts expli
     foreach (['## POST Taiwan Address', 'mode=taiwan_address', 'TWADDR_UPSTREAM_URL', 'operation_not_allowed', 'quality_flag'] as $needle) {
         hub_test_assert(str_contains($examples, $needle), 'Taiwan address API example missing ' . $needle);
     }
+
+    $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(in_array('taiwan_address', hub_playground_supported_modes(), true), 'Taiwan address mode must be visible in the Playground allowlist');
+    foreach (["'taiwan_address' => ['label' => '台灣地址洗滌／地理編碼'", "\$selectedMode === 'taiwan_address'", "'operation' => trim"] as $needle) {
+        hub_test_assert(str_contains($playground, $needle), 'Taiwan address Playground contract missing ' . $needle);
+    }
+
+    $dockerRunner = (string)file_get_contents(HUB_ROOT . '/app/docker_runner.php');
+    hub_test_assert(str_contains($dockerRunner, "['up', '-d', '--force-recreate']"), 'restart-required settings must recreate the Compose container');
 });
 
 hub_test('Taiwan address service instance writes only declared trusted upstream settings', function (): void {
