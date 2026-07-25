@@ -2,7 +2,8 @@ param(
     [string]$InstallRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
     [string]$ModelsRoot = 'D:\DATA\models',
     [string]$WslDistro = 'Ubuntu-24.04',
-    [string]$LinuxDataRoot = '/DATA'
+    [string]$LinuxDataRoot = '/DATA',
+    [switch]$ReadOnly
 )
 
 Set-StrictMode -Version Latest
@@ -91,7 +92,7 @@ if ($env:AIHUB_WINDOWS_INSTALLER_TEST_EXCEPTION -eq '1') {
 
 Write-Host 'Mode: WslRuntime'
 Write-Host 'Role: WSL Runtime (Preview)'
-Write-Host 'Check: read-only'
+Write-Host $(if ($ReadOnly) { 'Check: read-only' } else { 'Preflight: passed; continuing installation' })
 Write-Host "InstallRoot: $InstallRoot"
 Write-Host "ModelsRoot: $ModelsRoot"
 Write-Host "WslDistro: $WslDistro"

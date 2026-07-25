@@ -54,7 +54,7 @@ switch ($Mode) {
         exit $LASTEXITCODE
     }
     'WslRuntime' {
-        & $checkWsl -InstallRoot $InstallRoot -ModelsRoot $ModelsRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot
+        & $checkWsl -InstallRoot $InstallRoot -ModelsRoot $ModelsRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot -ReadOnly:$Check
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         if ($Check) { exit 0 }
 
