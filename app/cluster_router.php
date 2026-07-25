@@ -577,6 +577,14 @@ function hub_cluster_rewrite_contract_endpoint(array $service, string $stationAp
 {
     $stationApiBase = rtrim(trim($stationApiBase), '/');
     $routerApiBase = trim($routerApiBase);
+    $stationParts = parse_url($stationApiBase);
+    $stationApiPattern = null;
+    if (is_array($stationParts) && isset($stationParts['scheme'], $stationParts['host'], $stationParts['path'])) {
+        $host = (string)$stationParts['host'];
+        $authority = str_contains($host, ':') ? '[' . $host . ']' : $host;
+        $origin = (string)$stationParts['scheme'] . '://' . $authority . (isset($stationParts['port']) ? ':' . (int)$stationParts['port'] : '');
+        $stationApiPattern = '~(?i:' . preg_quote($origin, '~') . ')' . preg_quote((string)$stationParts['path'], '~') . '~';
+    }
     $followups = [
         'task_status' => 'cluster_task_status&task_id={task_id}',
         'task_result' => 'cluster_task_result&task_id={task_id}',
@@ -584,7 +592,7 @@ function hub_cluster_rewrite_contract_endpoint(array $service, string $stationAp
         'task_cancel' => 'cluster_task_cancel&task_id={task_id}',
         'artifact' => 'cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
     ];
-    $rewrite = static function (mixed $value) use (&$rewrite, $stationApiBase, $routerApiBase, $followups): mixed {
+    $rewrite = static function (mixed $value) use (&$rewrite, $stationApiPattern, $routerApiBase, $followups): mixed {
         if (is_array($value)) {
             foreach ($value as $key => $item) {
                 $value[$key] = $rewrite($item);
@@ -595,8 +603,12 @@ function hub_cluster_rewrite_contract_endpoint(array $service, string $stationAp
         if (!is_string($value)) {
             return $value;
         }
-        if ($stationApiBase !== '') {
-            $value = str_replace($stationApiBase, $routerApiBase, $value);
+        if ($stationApiPattern !== null) {
+            $value = preg_replace_callback(
+                $stationApiPattern,
+                static fn (): string => $routerApiBase,
+                $value
+            ) ?? $value;
         }
         $value = (string)preg_replace('~(?<![A-Za-z0-9_])api\.php\?~', $routerApiBase . '?', $value);
         foreach ($followups as $nativeMode => $routerMode) {

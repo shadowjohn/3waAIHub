@@ -140,6 +140,8 @@ hub_test('cluster Router public entry documents and endpoints remain disclosure-
         'export AIHUB_CLUSTER_SECRET_KEY="$(openssl rand -hex 32)"',
         'php scripts/agent_manifest_smoke.php --manifest-url=https://router.example/3waAIHub/cluster_manifest.json.php',
         'php scripts/cluster_refresh.php --force', '新增子節點', 'priority', 'route', 'byte',
+        'transfers the existing child Token exactly once', 'binds it to the unified Router source IP',
+        'never paste child Tokens or pairing invitations in tickets, chat, or public logs',
     ] as $needle) {
         hub_test_assert(str_contains($sources, $needle), 'cluster Router public material missing ' . $needle);
     }
