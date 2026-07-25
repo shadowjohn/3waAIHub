@@ -15,6 +15,7 @@ The initial stations are:
 ## Boundaries
 
 - Add a new public `cluster_api.php` entry. Existing station-local `api.php` remains unchanged and can still be used for maintenance or direct integrations.
+- Only a system administrator can enable either Cluster role. `Enable child entry node` publishes a one-time pairing invitation; `Enable unified entry` enables the Router and the child-node management console.
 - The Router is the client Token authority. It reuses the Router host's existing `api_members`, `api_tokens`, and mode permissions.
 - Each target station receives a dedicated Router station Token, limited by mode and Router source IP. Customer Tokens never leave the Router.
 - A station can host the Router role later, but V1 has one configured active Router. There is no election, replicated database, or automatic failover.
@@ -24,13 +25,15 @@ The initial stations are:
 
 An administrator creates one customer account and one or more customer Tokens at the Router using the existing API member screens. Each customer Token retains its normal mode permissions and is valid only at the common entry.
 
-Each execution station has one private Router station Token. It is shown only as masked configuration on the station detail page, is restricted to the Router source IP, and is never shown to a customer. The Router validates the customer Token, then replaces it with the selected station Token before forwarding.
+Each execution station creates one private Router station Token when its child-node role is enabled. It is restricted to the paired Router source IP and encrypted by both child and Router. The child-node system-admin page may show the complete Token for maintenance; Router station detail pages show only a mask, and it is never shown to a customer. The Router validates the customer Token, then replaces it with the selected station Token before forwarding.
 
 Existing 3wa customer Tokens work through the first Router without replacement. Existing 5090/1080 customer Tokens remain direct-station credentials; central access receives a newly issued 3wa Token during an explicit migration window.
 
 ## Station Inventory
 
-The Router stores a small station registry: station id, display name, public base URL, internal base URL when available, priority, enabled flag, and its private station Token.
+When a system administrator enables `Enable child entry node`, that station creates a dedicated child Token, stores it encrypted, and shows its complete copyable value only on that system-admin page. The administrator also checks which currently installed/running service modes the child is willing to supply; `cluster_status` is always included. The child reports only that selected mode list to the Router. The page also shows a copyable pairing link. The link contains a short-lived, one-time invitation in its URL fragment, so normal link navigation does not send the invitation to a web-server log. A system administrator at an enabled unified entry pastes the link into its child-node form. The Router exchanges the invitation in a request header; the child IP-restricts the selected Token to the Router source and returns its station description and Token over the one-time pairing exchange. The Router stores its copy encrypted and immediately invalidates the invitation. Regenerating a child Token revokes the old Token and requires the unified entry to pair again.
+
+The Router stores the paired station's id, display name, public base URL, internal base URL when available, priority, enabled flag, and encrypted private station Token. V1 has one paired unified entry per child node; re-pairing revokes the previous child Token and creates a fresh invitation.
 
 It polls each enabled station's `api_manifest.json.php`. The manifest is already the canonical list of installed, enabled, running, healthy Pack APIs, so the Router does not probe Pack endpoints itself.
 
@@ -41,17 +44,19 @@ Each station adds an authenticated internal cluster-status response with only ro
 - active GPU leases and queued/running Pack jobs;
 - current enabled service modes.
 
-The Router polls every 10 seconds, marks an inventory stale after 30 seconds, and never selects stale or unreachable stations.
+The Router refreshes due station inventory at most once every 10 seconds during Router traffic, an explicit console refresh, or the optional refresh command; it marks an inventory stale after 30 seconds and never selects stale or unreachable stations.
 
 ## Request Routing
 
 1. The client calls `cluster_api.php?mode=<mode>` with its existing Router Token.
 2. The Router validates token, IP policy, member permissions, method, and request-size rules before selecting a station.
 3. Candidates must publish the requested mode and have a fresh status snapshot.
-4. The Router ranks candidates by free VRAM, active lease/queue pressure, then configured priority. It prefers itself only when the other values tie.
+4. The Router normally selects the highest configured performance priority that is healthy (for the first deployment, 3wa before 1080 when both offer the same mode). It overflows to a lower-priority station only when the preferred station has insufficient free VRAM, an active GPU lease, or queue pressure. Equal eligible stations use free VRAM as the final tie-breaker; a Router host is not implicitly preferred.
 5. The Router forwards the original GET, JSON body, multipart upload, or binary response using the selected station Token. It records the client member, mode, station, and route id.
 
 Routing is decided once. After dispatch, V1 never retries the request on another station because the remote execution may already have started.
+
+A Router selecting itself calls the existing Gateway directly rather than opening a second HTTP request to its own web server. V1 limits live proxy transfers and buffered remote response size so a burst fails cleanly with a Router capacity error instead of consuming unbounded PHP workers or memory; full artifact streaming is deferred until real artifact sizes require it.
 
 ## Usage Ledger
 
@@ -69,11 +74,15 @@ The Router rewrites `status_url`, `result_url`, `log_url`, `cancel_url`, and art
 
 ## Operations
 
-Add an admin cluster console with host cards. Each card shows station freshness, GPU/queue summary, published service count, enabled state, and recent route pressure. Operators may disable a station manually; disabled or stale stations are excluded immediately.
+Add an admin cluster console with the two role toggles first. When child-node role is on, it shows the complete copyable child Token, selected-mode checkboxes, copyable invitation link, and pairing state. When unified-entry role is on, it shows a paste field for child-node links plus host cards. Each card shows station freshness, GPU/queue summary, published service count, enabled state, and recent route pressure. Operators may disable a station manually; disabled or stale stations are excluded immediately.
 
 A host detail page lists the station's published services, per-mode readiness, recent routes, and masked Router station Token configuration. Existing API member and Token pages gain cluster usage summaries for the account and Token; no separate customer or billing model is created.
 
 Router API logs are the customer audit record. Station logs identify the Router station Token and retain their normal local execution diagnostics.
+
+## Documentation
+
+Ship a separate unified-entry client guide. It documents only the common `cluster_api.php` URL, Router-issued customer Token, live service inventory, synchronous calls, and pinned async follow-ups. It must not expose station URLs, Router station Tokens, pairing invitations, or operator-only routing policy. The Router's human API page and machine-readable manifest expose only modes that are currently safe to route; the admin console links to a separate operations section for the two role toggles, pairing, station registry, private Tokens, and recovery procedures.
 
 ## Deliberately Deferred
 
