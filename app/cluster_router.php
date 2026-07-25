@@ -385,6 +385,460 @@ function hub_cluster_router_enabled(PDO $db): bool
     return hub_get_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED') === '1';
 }
 
+function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array $seams = []): array
+{
+    $requestId = hub_new_request_id();
+    $started = microtime(true);
+    $finish = static fn (array $response): array => hub_cluster_router_finish_response($response, $requestId);
+    if (!hub_cluster_router_enabled($db)) {
+        return $finish(hub_gateway_error(404, 'router_disabled', 'cluster router is disabled'));
+    }
+    if (!preg_match('/^[a-zA-Z0-9_-]+$/', $mode)) {
+        return $finish(hub_gateway_error(400, 'bad_request', 'invalid mode'));
+    }
+    if ($mode === 'yolo_gpu_internal') {
+        return $finish(hub_gateway_error(404, 'unknown_mode', 'mode is not registered'));
+    }
+
+    $clientIp = trim((string)($request['client_ip'] ?? hub_get_client_ip())) ?: hub_get_client_ip();
+    $providedToken = array_key_exists('bearer_token', $request) ? (string)$request['bearer_token'] : hub_bearer_token_from_request();
+    $auth = hub_authenticate_api_token($db, $clientIp, $providedToken, $mode);
+    if (empty($auth['ok'])) {
+        return $finish($auth['response']);
+    }
+
+    $normalized = hub_cluster_router_normalize_request($mode, $request);
+    if (isset($normalized['response'])) {
+        return $finish($normalized['response']);
+    }
+    $normalized['client_ip'] = $clientIp;
+    $normalized['bearer_token'] = $providedToken;
+
+    $refreshDue = is_callable($seams['refresh_due'] ?? null)
+        ? $seams['refresh_due']
+        : static fn (): array => hub_cluster_refresh_due_stations($db);
+    try {
+        $inventory = $refreshDue();
+    } catch (Throwable) {
+        return $finish(hub_gateway_error(503, 'router_unavailable', 'cluster inventory is unavailable'));
+    }
+    if (!is_array($inventory)) {
+        return $finish(hub_gateway_error(503, 'router_unavailable', 'cluster inventory is unavailable'));
+    }
+    $selectedInventory = hub_cluster_select_station($mode, $inventory);
+    if ($selectedInventory === null) {
+        return $finish(hub_gateway_error(503, 'router_unavailable', 'no eligible cluster station is available'));
+    }
+    $stationId = (int)($selectedInventory['id'] ?? 0);
+    $station = $stationId > 0 ? hub_cluster_get_station($db, $stationId) : null;
+    if ($station === null || empty($station['enabled'])) {
+        return $finish(hub_gateway_error(503, 'router_unavailable', 'no eligible cluster station is available'));
+    }
+
+    $selfStation = hub_cluster_router_station_is_self($db, $station);
+    $stationToken = '';
+    $stationUrl = '';
+    if (!$selfStation) {
+        try {
+            $stationToken = hub_cluster_station_token($station);
+            $stationUrl = hub_cluster_station_request_base_url($station) . 'api.php';
+        } catch (Throwable) {
+            return $finish(hub_gateway_error(503, 'router_unavailable', 'selected cluster station is unavailable'));
+        }
+    }
+
+    $routeId = hub_cluster_router_admit_route($db, $station, (array)$auth['context'], $mode, !$selfStation);
+    if ($routeId === null) {
+        return $finish(hub_gateway_error(429, 'router_busy', 'cluster router is busy'));
+    }
+
+    $response = hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
+    try {
+        if ($selfStation) {
+            $dispatcher = is_callable($seams['direct_dispatcher'] ?? null)
+                ? $seams['direct_dispatcher']
+                : static fn (PDO $db, string $mode, array $internalRequest): array => hub_gateway_dispatch($db, $mode, null, $internalRequest);
+            $result = $dispatcher($db, $mode, $normalized);
+            if (!is_array($result)) {
+                throw new RuntimeException('invalid direct response');
+            }
+            $response = $result;
+        } else {
+            $transport = is_callable($seams['transport'] ?? null) ? $seams['transport'] : 'hub_cluster_proxy_transport';
+            $proxyRequest = [
+                'url' => $stationUrl,
+                'query' => $normalized['query'],
+                'method' => $normalized['method'],
+                'headers' => ['Authorization' => 'Bearer ' . $stationToken] + $normalized['headers'],
+                'body' => $normalized['raw_body'],
+                'follow_redirects' => false,
+                'response_limit_bytes' => hub_cluster_proxy_response_limit_bytes(),
+            ];
+            $response = hub_cluster_router_proxy_response($transport($proxyRequest), $stationToken);
+        }
+    } catch (Throwable) {
+        $response = hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
+    } finally {
+        hub_cluster_router_complete_route(
+            $db,
+            $routeId,
+            $station,
+            (array)$auth['context'],
+            $mode,
+            !$selfStation,
+            $response,
+            $requestId,
+            (int)round((microtime(true) - $started) * 1000),
+            strlen($normalized['raw_body'])
+        );
+    }
+
+    return $finish($response);
+}
+
+function hub_cluster_router_normalize_request(string $mode, array $request): array
+{
+    $method = strtoupper(trim((string)($request['method'] ?? $_SERVER['REQUEST_METHOD'] ?? 'GET')));
+    if (preg_match('/^[A-Z]{1,10}$/', $method) !== 1) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'invalid request method')];
+    }
+    $headers = hub_cluster_router_safe_request_headers($request);
+    if (preg_match('/^multipart\/form-data(?:;|$)/i', (string)($headers['Content-Type'] ?? '')) === 1) {
+        return ['response' => hub_gateway_error(415, 'router_upload_unsupported', 'file uploads are not supported by the cluster router')];
+    }
+    $files = array_key_exists('files', $request) ? $request['files'] : ($_FILES ?? []);
+    if (!is_array($files) || $files !== []) {
+        return ['response' => hub_gateway_error(415, 'router_upload_unsupported', 'file uploads are not supported by the cluster router')];
+    }
+    $rawBody = array_key_exists('raw_body', $request) ? $request['raw_body'] : file_get_contents('php://input');
+    if (!is_string($rawBody)) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'invalid request body')];
+    }
+    $inputQuery = array_key_exists('query', $request) ? $request['query'] : ($_GET ?? []);
+    if (!is_array($inputQuery)) {
+        return ['response' => hub_gateway_error(400, 'router_request_unsupported', 'request query is not supported')];
+    }
+    $query = [];
+    foreach ($inputQuery as $key => $value) {
+        if ($key === 'mode') {
+            continue;
+        }
+        if (!is_string($key) || preg_match('/^[A-Za-z][A-Za-z0-9_-]{0,63}$/', $key) !== 1 || !is_scalar($value)) {
+            return ['response' => hub_gateway_error(400, 'router_request_unsupported', 'request query is not supported')];
+        }
+        $value = (string)$value;
+        if (strlen($value) > 1024 || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+            return ['response' => hub_gateway_error(400, 'router_request_unsupported', 'request query is not supported')];
+        }
+        $query[$key] = $value;
+    }
+    $query['mode'] = $mode;
+
+    return [
+        'method' => $method,
+        'headers' => $headers,
+        'raw_body' => $rawBody,
+        'query' => $query,
+        'request_uri' => (string)($request['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? ''),
+    ];
+}
+
+function hub_cluster_router_safe_request_headers(array $request): array
+{
+    $source = array_key_exists('headers', $request)
+        ? $request['headers']
+        : [
+            'Content-Type' => $_SERVER['CONTENT_TYPE'] ?? '',
+            'Accept' => $_SERVER['HTTP_ACCEPT'] ?? '',
+        ];
+    if (!is_array($source)) {
+        return [];
+    }
+    $headers = [];
+    foreach ($source as $name => $value) {
+        if (!is_string($name) || !is_scalar($value)) {
+            continue;
+        }
+        $canonical = match (strtolower(trim($name))) {
+            'content-type' => 'Content-Type',
+            'accept' => 'Accept',
+            default => null,
+        };
+        $value = trim((string)$value);
+        if ($canonical !== null && $value !== '' && strlen($value) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1) {
+            $headers[$canonical] = $value;
+        }
+    }
+
+    return $headers;
+}
+
+function hub_cluster_router_station_is_self(PDO $db, array $station): bool
+{
+    $selfKey = trim(hub_get_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY'));
+
+    return preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/i', $selfKey) === 1
+        && hash_equals($selfKey, (string)($station['station_key'] ?? ''));
+}
+
+function hub_cluster_router_admit_route(PDO $db, array $station, array $authContext, string $mode, bool $proxying): ?string
+{
+    $stationId = (int)($station['id'] ?? 0);
+    $routeId = hub_cluster_router_route_id();
+    if ($stationId < 1 || $routeId === '') {
+        return null;
+    }
+    $started = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $started = true;
+        // ponytail: local SQLite admission; move this counter to shared coordination only when routers span databases.
+        if ($proxying && (int)$db->query("SELECT COUNT(*) FROM cluster_routes WHERE state = 'proxying'")->fetchColumn() >= hub_cluster_proxy_transfer_limit()) {
+            $db->exec('COMMIT');
+            return null;
+        }
+        $now = hub_now();
+        $db->prepare(
+            'INSERT INTO cluster_routes
+                (route_id, station_id, member_id, token_id, mode, is_async, state, created_at, updated_at)
+             VALUES
+                (:route_id, :station_id, :member_id, :token_id, :mode, 0, :state, :created_at, :updated_at)'
+        )->execute([
+            ':route_id' => $routeId,
+            ':station_id' => $stationId,
+            ':member_id' => !empty($authContext['member_id']) ? (int)$authContext['member_id'] : null,
+            ':token_id' => !empty($authContext['token_id']) ? (int)$authContext['token_id'] : null,
+            ':mode' => $mode,
+            ':state' => $proxying ? 'proxying' : 'dispatching',
+            ':created_at' => $now,
+            ':updated_at' => $now,
+        ]);
+        $db->exec('COMMIT');
+
+        return $routeId;
+    } catch (Throwable) {
+        if ($started) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+
+        return null;
+    }
+}
+
+function hub_cluster_router_route_id(): string
+{
+    try {
+        return 'route_' . bin2hex(random_bytes(16));
+    } catch (Throwable) {
+        return '';
+    }
+}
+
+function hub_cluster_proxy_transfer_limit(): int
+{
+    $value = getenv('AIHUB_CLUSTER_ROUTER_MAX_PROXY_TRANSFERS');
+
+    return is_string($value) && ctype_digit($value) && (int)$value >= 1 && (int)$value <= 1024 ? (int)$value : 8;
+}
+
+function hub_cluster_proxy_response_limit_bytes(): int
+{
+    $value = getenv('AIHUB_CLUSTER_ROUTER_MAX_PROXY_RESPONSE_MB');
+    $megabytes = is_string($value) && ctype_digit($value) && (int)$value >= 1 && (int)$value <= 1024 ? (int)$value : 64;
+
+    return $megabytes * 1024 * 1024;
+}
+
+function hub_cluster_router_complete_route(
+    PDO $db,
+    string $routeId,
+    array $station,
+    array $authContext,
+    string $mode,
+    bool $proxying,
+    array $response,
+    string $requestId,
+    int $elapsedMs,
+    int $uploadBytes
+): void {
+    try {
+        $status = (int)($response['status'] ?? 502);
+        [$errorCode] = $status >= 400 ? hub_gateway_response_error($response) : [null];
+        if (!is_string($errorCode) || preg_match('/\A[a-z0-9_-]{1,64}\z/i', $errorCode) !== 1) {
+            $errorCode = null;
+        }
+        $now = hub_now();
+        $db->prepare(
+            'UPDATE cluster_routes
+             SET state = :state, remote_status = :remote_status, updated_at = :updated_at, completed_at = :completed_at
+             WHERE route_id = :route_id'
+        )->execute([
+            ':state' => $status >= 200 && $status < 400 ? 'completed' : 'failed',
+            ':remote_status' => (string)$status,
+            ':updated_at' => $now,
+            ':completed_at' => $now,
+            ':route_id' => $routeId,
+        ]);
+        $db->prepare(
+            'INSERT INTO cluster_route_accesses
+                (route_id, station_id, member_id, token_id, mode, access_kind, request_id, status_code, ok, error_code, elapsed_ms, upload_bytes, response_bytes, created_at)
+             VALUES
+                (:route_id, :station_id, :member_id, :token_id, :mode, :access_kind, :request_id, :status_code, :ok, :error_code, :elapsed_ms, :upload_bytes, :response_bytes, :created_at)'
+        )->execute([
+            ':route_id' => $routeId,
+            ':station_id' => (int)$station['id'],
+            ':member_id' => !empty($authContext['member_id']) ? (int)$authContext['member_id'] : null,
+            ':token_id' => !empty($authContext['token_id']) ? (int)$authContext['token_id'] : null,
+            ':mode' => $mode,
+            ':access_kind' => $proxying ? 'proxy' : 'direct',
+            ':request_id' => $requestId,
+            ':status_code' => $status,
+            ':ok' => $status >= 200 && $status < 400 ? 1 : 0,
+            ':error_code' => $errorCode,
+            ':elapsed_ms' => max(0, $elapsedMs),
+            ':upload_bytes' => max(0, $uploadBytes),
+            ':response_bytes' => hub_gateway_response_output_bytes($response),
+            ':created_at' => $now,
+        ]);
+    } catch (Throwable) {
+        // Route accounting must not replace a completed customer response.
+    }
+}
+
+function hub_cluster_router_proxy_response(mixed $response, string $stationToken): array
+{
+    if (!is_array($response)) {
+        return hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
+    }
+    if (($response['error'] ?? null) === 'timeout') {
+        return hub_gateway_error(504, 'router_timeout', 'cluster station did not respond in time');
+    }
+    if (!empty($response['too_large'])) {
+        return hub_gateway_error(502, 'router_response_too_large', 'cluster station response is too large');
+    }
+    $status = (int)($response['status'] ?? 0);
+    $body = $response['body'] ?? null;
+    if ($status < 100 || $status > 599 || !is_string($body)) {
+        return hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
+    }
+    if (strlen($body) > hub_cluster_proxy_response_limit_bytes()) {
+        return hub_gateway_error(502, 'router_response_too_large', 'cluster station response is too large');
+    }
+    $headers = is_array($response['headers'] ?? null) ? $response['headers'] : [];
+    $contentType = '';
+    foreach ($headers as $header) {
+        if (!is_string($header) || !str_contains($header, ':')) {
+            continue;
+        }
+        [$name, $value] = explode(':', $header, 2);
+        if (strtolower(trim($name)) === 'content-type') {
+            $contentType = trim($value);
+            break;
+        }
+    }
+    $rawHeaders = is_string($response['raw_headers'] ?? null)
+        ? $response['raw_headers']
+        : 'HTTP/1.1 ' . $status . "\r\n" . implode("\r\n", array_filter($headers, 'is_string'));
+    $safeHeaders = hub_proxy_allowed_response_headers($rawHeaders, $contentType);
+    if (str_contains($body, $stationToken) || array_filter($safeHeaders, static fn (string $header): bool => str_contains($header, $stationToken)) !== []) {
+        return hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
+    }
+
+    return ['status' => $status, 'headers' => $safeHeaders, 'body' => $body];
+}
+
+function hub_cluster_proxy_transport(array $request): array
+{
+    if (!function_exists('curl_init')) {
+        return ['error' => 'proxy'];
+    }
+    $url = (string)($request['url'] ?? '');
+    $query = is_array($request['query'] ?? null) ? $request['query'] : [];
+    if ($url === '' || !str_ends_with($url, '/api.php')) {
+        return ['error' => 'proxy'];
+    }
+    $target = $url . ($query === [] ? '' : '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986));
+    $handle = curl_init($target);
+    if ($handle === false) {
+        return ['error' => 'proxy'];
+    }
+    $headers = [];
+    foreach (['Authorization', 'Content-Type', 'Accept'] as $name) {
+        $value = $request['headers'][$name] ?? null;
+        if (is_string($value) && $value !== '' && strlen($value) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1) {
+            $headers[] = $name . ': ' . $value;
+        }
+    }
+    $method = (string)($request['method'] ?? 'GET');
+    $body = is_string($request['body'] ?? null) ? $request['body'] : '';
+    $limit = (int)($request['response_limit_bytes'] ?? hub_cluster_proxy_response_limit_bytes());
+    $limit = $limit > 0 ? $limit : hub_cluster_proxy_response_limit_bytes();
+    $rawHeaders = '';
+    $responseBody = '';
+    $tooLarge = false;
+    $configured = curl_setopt_array($handle, [
+        CURLOPT_CUSTOMREQUEST => $method,
+        CURLOPT_RETURNTRANSFER => false,
+        CURLOPT_HEADER => false,
+        CURLOPT_HTTPHEADER => $headers,
+        CURLOPT_CONNECTTIMEOUT => 3,
+        CURLOPT_TIMEOUT => 60,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_MAXREDIRS => 0,
+        CURLOPT_PROXY => '',
+        CURLOPT_NOPROXY => '*',
+        CURLOPT_HEADERFUNCTION => static function ($handle, string $chunk) use (&$rawHeaders): int {
+            if (strlen($rawHeaders) + strlen($chunk) > 32768) {
+                return 0;
+            }
+            $rawHeaders .= $chunk;
+
+            return strlen($chunk);
+        },
+        CURLOPT_WRITEFUNCTION => static function ($handle, string $chunk) use (&$responseBody, &$tooLarge, $limit): int {
+            if (strlen($responseBody) + strlen($chunk) > $limit) {
+                $tooLarge = true;
+                return 0;
+            }
+            $responseBody .= $chunk;
+
+            return strlen($chunk);
+        },
+    ]);
+    if (defined('CURLOPT_PROTOCOLS') && defined('CURLPROTO_HTTP') && defined('CURLPROTO_HTTPS')) {
+        curl_setopt($handle, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+    }
+    if ($configured && !in_array($method, ['GET', 'HEAD'], true)) {
+        $configured = curl_setopt($handle, CURLOPT_POSTFIELDS, $body);
+    }
+    $result = $configured ? curl_exec($handle) : false;
+    $status = (int)(curl_getinfo($handle, CURLINFO_RESPONSE_CODE) ?: 0);
+    $timedOut = curl_errno($handle) === CURLE_OPERATION_TIMEDOUT;
+    curl_close($handle);
+    if ($tooLarge) {
+        return ['too_large' => true];
+    }
+    if ($result === false) {
+        return ['error' => $timedOut ? 'timeout' : 'proxy'];
+    }
+
+    return ['status' => $status, 'raw_headers' => $rawHeaders, 'body' => $responseBody];
+}
+
+function hub_cluster_router_finish_response(array $response, string $requestId): array
+{
+    foreach ($response['headers'] ?? [] as $header) {
+        if (is_string($header) && str_starts_with(strtolower($header), 'x-3waaihub-request-id:')) {
+            return $response;
+        }
+    }
+
+    return hub_gateway_attach_request_id($response, $requestId);
+}
+
 function hub_cluster_node_configure(PDO $db, bool $enabled, array $selectedModes): array
 {
     $selectedModes = hub_cluster_node_selected_published_modes($db, $selectedModes);

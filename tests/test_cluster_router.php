@@ -45,6 +45,59 @@ function hub_test_cluster_station_fixture(array $overrides = []): array
     ], $overrides);
 }
 
+function hub_test_cluster_router_customer_token(PDO $db, array $modes): array
+{
+    $memberId = hub_create_api_member($db, 'Cluster Router Customer');
+    $token = hub_create_api_token($db, $memberId, 'cluster router token', null, null);
+    foreach ($modes as $mode) {
+        hub_add_api_token_mode_permission($db, (int)$token['token_id'], $mode);
+    }
+
+    return $token;
+}
+
+function hub_test_cluster_router_station(PDO $db, array $overrides = []): array
+{
+    $pairing = array_replace(hub_test_cluster_station_pairing(), $overrides);
+    $stationId = hub_cluster_save_paired_station($db, $pairing);
+    $station = hub_cluster_get_station($db, $stationId);
+    if ($station === null) {
+        throw new RuntimeException('cluster router station missing');
+    }
+
+    return $station;
+}
+
+function hub_test_cluster_router_request(string $token, array $overrides = []): array
+{
+    return array_replace([
+        'bearer_token' => $token,
+        'client_ip' => '203.0.113.10',
+        'method' => 'POST',
+        'raw_body' => '{"text":"hello"}',
+        'query' => [],
+        'headers' => ['Content-Type' => 'application/json'],
+        'files' => [],
+        'request_uri' => '/cluster_api.php?mode=vision',
+    ], $overrides);
+}
+
+function hub_test_with_cluster_router_env(string $key, string $value, callable $fn): void
+{
+    $previous = getenv($key);
+    putenv($key . '=' . $value);
+
+    try {
+        $fn();
+    } finally {
+        if ($previous === false) {
+            putenv($key);
+        } else {
+            putenv($key . '=' . $previous);
+        }
+    }
+}
+
 function hub_test_cluster_publish_mode(PDO $db, string $mode, bool $running = true): void
 {
     $existingMode = hub_get_service_by_mode($db, 'hello') === null ? $mode : 'hello';
@@ -670,5 +723,252 @@ hub_test('cluster inventory backs off failed partial refreshes but retries stale
         hub_test_assert($stored !== null, 'stale station missing');
         hub_cluster_refresh_station($db, $stored, $retry);
         hub_test_assert($requests === 2, 'stale successful snapshot must refresh even when updated_at is current');
+    });
+});
+
+hub_test('cluster router dispatch returns 404 while routing is disabled', function (): void {
+    $db = hub_test_reset_db();
+    $refreshes = 0;
+
+    $response = hub_cluster_dispatch($db, 'vision', [], [
+        'refresh_due' => static function () use (&$refreshes): array {
+            $refreshes++;
+            return [];
+        },
+    ]);
+
+    hub_test_assert($response['status'] === 404 && str_contains($response['body'], 'router_disabled'), 'disabled router must return a safe 404');
+    hub_test_assert($refreshes === 0, 'disabled router must not refresh stations');
+});
+
+hub_test('cluster router dispatch uses strict customer authentication and mode permissions', function (): void {
+    $db = hub_test_reset_db();
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '0');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '1');
+    $token = hub_test_cluster_router_customer_token($db, []);
+    $refreshes = 0;
+    $seams = [
+        'refresh_due' => static function () use (&$refreshes): array {
+            $refreshes++;
+            return [];
+        },
+    ];
+
+    $missing = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request('', ['client_ip' => '127.0.0.1']), $seams);
+    $denied = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token']), $seams);
+
+    hub_test_assert($missing['status'] === 401 && str_contains($missing['body'], 'missing_token'), 'router must not use legacy anonymous or localhost authentication');
+    hub_test_assert($denied['status'] === 403 && str_contains($denied['body'], 'token_mode_not_allowed'), 'router must require the customer token mode permission');
+    hub_test_assert($refreshes === 0, 'unauthenticated requests must not refresh stations');
+});
+
+hub_test('cluster router dispatch refreshes then selects only a fresh eligible station', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $token = hub_test_cluster_router_customer_token($db, ['vision']);
+        $stale = hub_test_cluster_router_station($db, ['station_key' => 'stale_gpu', 'priority' => 99, 'station_token' => 'stale_station_token']);
+        $fresh = hub_test_cluster_router_station($db, [
+            'station_key' => 'fresh_gpu',
+            'priority' => 1,
+            'station_token' => 'fresh_station_token',
+            'internal_base_url' => 'https://fresh.internal/aihub',
+        ]);
+        $refreshes = 0;
+        $proxied = [];
+
+        $response = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token']), [
+            'refresh_due' => static function () use (&$refreshes, $stale, $fresh): array {
+                $refreshes++;
+                return [
+                    hub_test_cluster_station_fixture(['id' => (int)$stale['id'], 'priority' => 99, 'fresh' => false]),
+                    hub_test_cluster_station_fixture(['id' => (int)$fresh['id'], 'priority' => 1, 'station_key' => 'fresh_gpu']),
+                ];
+            },
+            'transport' => static function (array $request) use (&$proxied): array {
+                $proxied[] = $request;
+                return hub_gateway_json(200, ['ok' => true]);
+            },
+        ]);
+
+        hub_test_assert($response['status'] === 200 && $refreshes === 1 && count($proxied) === 1, 'router must refresh before one eligible dispatch');
+        hub_test_assert(($proxied[0]['headers']['Authorization'] ?? '') === 'Bearer fresh_station_token', 'router must select only the fresh eligible station');
+        $route = $db->query('SELECT station_id, state FROM cluster_routes ORDER BY created_at DESC LIMIT 1')->fetch();
+        hub_test_assert((int)($route['station_id'] ?? 0) === (int)$fresh['id'] && ($route['state'] ?? '') === 'completed', 'router must record the selected station without secrets');
+    });
+});
+
+hub_test('cluster router dispatches a configured self station directly without HTTP', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $token = hub_test_cluster_router_customer_token($db, ['vision']);
+        $station = hub_test_cluster_router_station($db, ['station_key' => 'self_station', 'station_token' => 'self_station_token']);
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY', 'self_station');
+        $direct = 0;
+        $http = 0;
+
+        $response = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token']), [
+            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => 'self_station'])],
+            'direct_dispatcher' => static function (PDO $db, string $mode, array $request) use (&$direct): array {
+                $direct++;
+                return hub_gateway_json(200, ['ok' => true, 'mode' => $mode]);
+            },
+            'transport' => static function () use (&$http): array {
+                $http++;
+                return hub_gateway_error(500, 'unexpected_http', 'unexpected HTTP');
+            },
+        ]);
+
+        hub_test_assert($response['status'] === 200 && $direct === 1 && $http === 0, 'configured self station must dispatch once in-process without HTTP');
+    });
+});
+
+hub_test('cluster router remote dispatch uses station auth safe headers and no redirects', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $token = hub_test_cluster_router_customer_token($db, ['vision']);
+        $station = hub_test_cluster_router_station($db, ['station_key' => 'remote_gpu', 'station_token' => 'remote_station_token']);
+        $proxied = [];
+        $request = hub_test_cluster_router_request((string)$token['plain_token'], [
+            'headers' => [
+                'Authorization' => 'Bearer customer_token',
+                'Cookie' => 'session=customer',
+                'Proxy-Authorization' => 'Basic customer',
+                'X-Forwarded-For' => '203.0.113.99',
+                'Forwarded' => 'for=203.0.113.99',
+                'Content-Type' => 'application/json; charset=utf-8',
+                'Accept' => 'application/json',
+            ],
+            'query' => ['task_id' => '42'],
+        ]);
+
+        $response = hub_cluster_dispatch($db, 'vision', $request, [
+            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => 'remote_gpu'])],
+            'transport' => static function (array $request) use (&$proxied): array {
+                $proxied[] = $request;
+                return [
+                    'status' => 200,
+                    'headers' => ['Content-Type: application/json', 'Set-Cookie: station=secret'],
+                    'body' => '{"ok":true}',
+                ];
+            },
+        ]);
+
+        hub_test_assert($response['status'] === 200 && count($proxied) === 1, 'remote station must receive one dispatch');
+        hub_test_assert(($proxied[0]['url'] ?? '') === 'https://station.internal:8080/aihub/api.php', 'remote target must be the validated station api endpoint');
+        hub_test_assert(($proxied[0]['query'] ?? []) === ['task_id' => '42', 'mode' => 'vision'], 'remote target must receive only the fixed API query contract');
+        hub_test_assert(($proxied[0]['headers'] ?? []) === [
+            'Authorization' => 'Bearer remote_station_token',
+            'Content-Type' => 'application/json; charset=utf-8',
+            'Accept' => 'application/json',
+        ], 'remote request must use station auth and the narrow safe header set only');
+        hub_test_assert(($proxied[0]['follow_redirects'] ?? true) === false, 'remote dispatch must forbid redirects');
+        hub_test_assert(!str_contains(implode("\n", $response['headers']), 'Set-Cookie'), 'remote response headers must remain filtered');
+    });
+});
+
+hub_test('cluster router rejects multipart and uploaded file proxy requests before dispatch', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $token = hub_test_cluster_router_customer_token($db, ['vision']);
+        $station = hub_test_cluster_router_station($db, ['station_key' => 'upload_gpu']);
+        $transportCalls = 0;
+        $seams = [
+            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => 'upload_gpu'])],
+            'transport' => static function () use (&$transportCalls): array {
+                $transportCalls++;
+                return hub_gateway_json(200, ['ok' => true]);
+            },
+        ];
+
+        $multipart = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token'], [
+            'headers' => ['Content-Type' => 'multipart/form-data; boundary=test'],
+        ]), $seams);
+        $uploaded = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token'], [
+            'files' => ['source' => ['error' => UPLOAD_ERR_OK]],
+        ]), $seams);
+
+        hub_test_assert($multipart['status'] === 415 && $uploaded['status'] === 415, 'router must return a stable upload proxy rejection');
+        hub_test_assert(str_contains($multipart['body'], 'router_upload_unsupported') && str_contains($uploaded['body'], 'router_upload_unsupported'), 'router upload rejection code mismatch');
+        hub_test_assert($transportCalls === 0, 'unsupported uploads must not begin a dispatch');
+    });
+});
+
+hub_test('cluster router does not retry another station after remote dispatch failure', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $token = hub_test_cluster_router_customer_token($db, ['vision']);
+        $first = hub_test_cluster_router_station($db, ['station_key' => 'first_gpu', 'priority' => 9, 'station_token' => 'first_token']);
+        $second = hub_test_cluster_router_station($db, ['station_key' => 'second_gpu', 'priority' => 1, 'station_token' => 'second_token']);
+        $calls = 0;
+
+        $response = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token']), [
+            'refresh_due' => static fn (): array => [
+                hub_test_cluster_station_fixture(['id' => (int)$first['id'], 'priority' => 9, 'station_key' => 'first_gpu']),
+                hub_test_cluster_station_fixture(['id' => (int)$second['id'], 'priority' => 1, 'station_key' => 'second_gpu']),
+            ],
+            'transport' => static function () use (&$calls): array {
+                $calls++;
+                throw new RuntimeException('remote connection failed');
+            },
+        ]);
+
+        hub_test_assert($response['status'] === 502 && str_contains($response['body'], 'router_proxy_failed'), 'remote failures must return a generic router error');
+        hub_test_assert($calls === 1, 'router must never retry a second station after dispatch begins');
+    });
+});
+
+hub_test('cluster router atomically admits proxy capacity and releases it after completion', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_router_env('AIHUB_CLUSTER_ROUTER_MAX_PROXY_TRANSFERS', '1', function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            $token = hub_test_cluster_router_customer_token($db, ['vision']);
+            $station = hub_test_cluster_router_station($db, ['station_key' => 'capacity_gpu']);
+            $request = hub_test_cluster_router_request((string)$token['plain_token']);
+            $baseSeams = [
+                'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => 'capacity_gpu'])],
+            ];
+            $nested = [];
+            $outer = hub_cluster_dispatch($db, 'vision', $request, $baseSeams + [
+                'transport' => static function () use (&$nested, $db, $request, $baseSeams): array {
+                    $nested = hub_cluster_dispatch($db, 'vision', $request, $baseSeams + [
+                        'transport' => static fn (): array => hub_gateway_json(200, ['ok' => true]),
+                    ]);
+                    return hub_gateway_json(200, ['ok' => true]);
+                },
+            ]);
+            $after = hub_cluster_dispatch($db, 'vision', $request, $baseSeams + [
+                'transport' => static fn (): array => hub_gateway_json(200, ['ok' => true]),
+            ]);
+
+            hub_test_assert($outer['status'] === 200 && ($nested['status'] ?? 0) === 429 && str_contains((string)($nested['body'] ?? ''), 'router_busy'), 'active proxy admission must reject at capacity');
+            hub_test_assert($after['status'] === 200, 'completed proxy admission must release capacity');
+            hub_test_assert((int)$db->query("SELECT COUNT(*) FROM cluster_routes WHERE state = 'proxying'")->fetchColumn() === 0, 'proxy capacity rows must be terminal after dispatch');
+        });
+    });
+});
+
+hub_test('cluster router rejects oversized remote responses without forwarding a partial body', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_router_env('AIHUB_CLUSTER_ROUTER_MAX_PROXY_RESPONSE_MB', '1', function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            $token = hub_test_cluster_router_customer_token($db, ['vision']);
+            $station = hub_test_cluster_router_station($db, ['station_key' => 'large_response_gpu']);
+
+            $response = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token']), [
+                'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => 'large_response_gpu'])],
+                'transport' => static fn (): array => ['status' => 200, 'headers' => ['Content-Type: application/json'], 'body' => str_repeat('x', 1024 * 1024 + 1)],
+            ]);
+
+            hub_test_assert($response['status'] === 502 && str_contains($response['body'], 'router_response_too_large'), 'oversized proxy response must have a stable 502');
+            hub_test_assert(!str_contains($response['body'], str_repeat('x', 64)), 'oversized proxy response must not leak a partial downstream body');
+        });
     });
 });
