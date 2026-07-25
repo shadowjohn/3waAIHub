@@ -96,9 +96,6 @@ function hub_cluster_allow_http_internal(): bool
 function hub_cluster_private_http_host_allowed(string $host): bool
 {
     $host = trim($host, '[]');
-    if ($host === 'localhost') {
-        return true;
-    }
     if (!filter_var($host, FILTER_VALIDATE_IP)) {
         return false;
     }
@@ -571,7 +568,7 @@ function hub_cluster_station_is_fresh(array $station, ?int $now = null): bool
     $now ??= time();
     foreach (['manifest_fetched_at', 'status_fetched_at'] as $field) {
         $fetchedAt = strtotime((string)($station[$field] ?? ''));
-        if ($fetchedAt === false || $fetchedAt > $now + 5 || ($now - $fetchedAt) > 30) {
+        if ($fetchedAt === false || $fetchedAt > $now || ($now - $fetchedAt) > 30) {
             return false;
         }
     }
@@ -812,6 +809,10 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
 function hub_cluster_station_refresh_due(array $station, ?int $now = null): bool
 {
     $now ??= time();
+    if (trim((string)($station['last_error'] ?? '')) !== '') {
+        $lastAttempt = strtotime((string)($station['updated_at'] ?? ''));
+        return $lastAttempt === false || ($now - $lastAttempt) >= 10;
+    }
     $manifestAt = strtotime((string)($station['manifest_fetched_at'] ?? ''));
     $statusAt = strtotime((string)($station['status_fetched_at'] ?? ''));
     if ($manifestAt === false || $statusAt === false || $manifestAt > $now || $statusAt > $now) {
@@ -971,7 +972,7 @@ function hub_cluster_verified_status_snapshot_at(string $value, ?int $now = null
         return null;
     }
     $timestamp = $snapshot->getTimestamp();
-    if ($timestamp < $now - 30 || $timestamp > $now + 5) {
+    if ($timestamp < $now - 30 || $timestamp > $now) {
         return null;
     }
 

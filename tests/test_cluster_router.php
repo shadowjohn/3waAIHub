@@ -79,6 +79,30 @@ function hub_test_with_cluster_http_internal(callable $fn): void
     }
 }
 
+function hub_test_with_cluster_pair_url(callable $fn): void
+{
+    $keys = ['HTTPS', 'HTTP_HOST', 'SCRIPT_NAME'];
+    $previous = [];
+    foreach ($keys as $key) {
+        $previous[$key] = array_key_exists($key, $_SERVER) ? $_SERVER[$key] : null;
+    }
+    $_SERVER['HTTPS'] = 'on';
+    $_SERVER['HTTP_HOST'] = 'station.example';
+    $_SERVER['SCRIPT_NAME'] = '/cluster_pair.php';
+
+    try {
+        $fn();
+    } finally {
+        foreach ($previous as $key => $value) {
+            if ($value === null) {
+                unset($_SERVER[$key]);
+            } else {
+                $_SERVER[$key] = $value;
+            }
+        }
+    }
+}
+
 hub_test('cluster router migration creates all persistence tables', function (): void {
     $db = hub_test_reset_db();
     $tables = array_fill_keys(
@@ -224,7 +248,11 @@ hub_test('cluster router permits explicit HTTP only for private literal stations
                 hub_cluster_validate_station_base_url('http://192.168.1.106/aihub') === 'http://192.168.1.106/aihub/',
                 'explicit internal HTTP allowance must accept private LAN stations'
             );
-            foreach (['http://203.0.113.10/aihub', 'http://169.254.169.254/aihub', 'http://station.example/aihub'] as $url) {
+            hub_test_assert(
+                hub_cluster_validate_station_base_url('http://127.0.0.1/aihub') === 'http://127.0.0.1/aihub/',
+                'explicit internal HTTP allowance must accept literal loopback IPs'
+            );
+            foreach (['http://203.0.113.10/aihub', 'http://169.254.169.254/aihub', 'http://localhost/aihub', 'http://station.example/aihub'] as $url) {
                 hub_test_assert(hub_test_throws(static fn (): string => hub_cluster_validate_station_base_url($url)), 'internal HTTP allowance must reject non-private targets: ' . $url);
             }
 
@@ -434,7 +462,7 @@ hub_test('cluster child config encrypts its dedicated token and limits permissio
 
 hub_test('cluster child pairing consumes one invitation binds the router IP and regeneration revokes prior access', function (): void {
     hub_test_with_cluster_secret(function (): void {
-        hub_test_with_cluster_http_internal(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
             $db = hub_test_reset_db();
             hub_test_cluster_publish_mode($db, 'ocr');
             $configured = hub_cluster_node_configure($db, true, ['ocr']);
@@ -463,7 +491,7 @@ hub_test('cluster child pairing consumes one invitation binds the router IP and 
 
 hub_test('cluster child accepts a current legacy invitation expiry then clears both keys', function (): void {
     hub_test_with_cluster_secret(function (): void {
-        hub_test_with_cluster_http_internal(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
             $db = hub_test_reset_db();
             hub_test_cluster_publish_mode($db, 'ocr');
             $configured = hub_cluster_node_configure($db, true, ['ocr']);
@@ -561,7 +589,9 @@ hub_test('cluster inventory refresh reports malformed responses without raw resp
 
 hub_test('cluster inventory rejects stale malformed and future status snapshots', function (): void {
     hub_test_with_cluster_secret(function (): void {
-        foreach ([date('Y-m-d H:i:s', time() - 31), 'not-a-timestamp', date('Y-m-d H:i:s', time() + 300)] as $snapshotAt) {
+        $now = time();
+        hub_test_assert(hub_cluster_verified_status_snapshot_at(date('Y-m-d H:i:s', $now + 1), $now) === null, 'a one-second future snapshot must reject');
+        foreach ([date('Y-m-d H:i:s', $now - 31), 'not-a-timestamp', date('Y-m-d H:i:s', $now + 300)] as $snapshotAt) {
             $db = hub_test_reset_db();
             $stationId = hub_cluster_save_paired_station($db, hub_test_cluster_station_pairing());
             $station = hub_cluster_get_station($db, $stationId);
@@ -586,7 +616,7 @@ hub_test('cluster inventory rejects stale malformed and future status snapshots'
     });
 });
 
-hub_test('cluster inventory retries partial and stale snapshots without waiting on updated_at', function (): void {
+hub_test('cluster inventory backs off failed partial refreshes but retries stale successful snapshots', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
         $stationId = hub_cluster_save_paired_station($db, hub_test_cluster_station_pairing());
@@ -619,8 +649,16 @@ hub_test('cluster inventory retries partial and stale snapshots without waiting 
         };
         $stored = hub_cluster_get_station($db, $stationId);
         hub_test_assert($stored !== null, 'partial station missing');
+        $skipped = hub_cluster_refresh_station($db, $stored, $retry);
+        hub_test_assert($requests === 0 && (string)$skipped['last_error'] === 'status_invalid', 'failed partial refresh must respect its ten-second attempt backoff');
+
+        $db->prepare('UPDATE cluster_stations SET updated_at = :updated_at WHERE id = :id')
+            ->execute([':updated_at' => date('Y-m-d H:i:s', time() - 11), ':id' => $stationId]);
+        $stored = hub_cluster_get_station($db, $stationId);
+        hub_test_assert($stored !== null, 'backoff station missing');
+        $requests = 0;
         $recovered = hub_cluster_refresh_station($db, $stored, $retry);
-        hub_test_assert($requests === 2 && !empty($recovered['fresh']), 'partial refresh must retry immediately instead of trusting updated_at');
+        hub_test_assert($requests === 2 && !empty($recovered['fresh']), 'partial refresh must retry once its failure backoff elapses');
 
         $db->prepare('UPDATE cluster_stations SET status_fetched_at = :status_fetched_at, updated_at = :updated_at WHERE id = :id')
             ->execute([':status_fetched_at' => date('Y-m-d H:i:s', time() - 11), ':updated_at' => hub_now(), ':id' => $stationId]);
