@@ -6,7 +6,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 
 目前通用 Job Runtime 薄版已完成；外部資料庫、Volume Resource Profile 與任意服務自動發佈仍在後續階段。Local Job Runtime 薄版已完成，YOLO `yolo_predict` / `yolo_train` / `yolo_export_onnx` 已接真實 Ultralytics runner。Runtime portability guardrails 已建立，Linux 仍是預設執行主機，但新 runtime 邏輯需分離 host path、container path 與 platform target。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics 與 Pack hardware preflight。Pack 能力層級：`hello`、`ocr-ppocrv5`、`yolo`、`sam3`、`translate-gemma12b`、`tts-voxcpm2`、`structure-ppstructurev3`、`docparser`、`llm-gemma4-12b`、`image-birefnet`、`bioclip` 已達 L5 benchmark-ready；`taiwan-address` 是 L3 trusted upstream adapter；`audio-cleanup` 是 L1 contract；`whisper-asr` 仍是 experimental。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics 與 Pack hardware preflight。Pack 能力層級：`hello`、`ocr-ppocrv5`、`yolo`、`sam3`、`translate-gemma12b`、`structure-ppstructurev3`、`docparser`、`llm-gemma4-12b`、`image-birefnet`、`bioclip`、`whisper-asr` 已達 L5 benchmark-ready；`tts-voxcpm2` 是 experimental 且已達 L5 benchmark-ready；`taiwan-address` 是 L3 trusted upstream adapter；`rag-nemotron` 是 `L3-adapter`；`yolo-serving` 是 `L3-storage-mount`；`audio-cleanup` 是 L1 contract。
 
 ## 功能
 
@@ -405,7 +405,7 @@ curl "<BASE_URL>?mode=hello" \
 - `api_manifest.json.php`：給 AI agent / Codex / MCP 讀取的 machine-readable contract，預設允許未登入讀取。
 - `docs/client_quickstart.md`：Client Integration Starter Kit，整理交付流程、最小 curl / PHP / JS fetch 範例與 smoke client。
 
-公開 API 文件、Agent Manifest 與後台 API 文件都由本機 services inventory 產生。開啟文件時，HTTP Pack 會平行執行 loopback health probes，整批最多等待一秒；單一 probe 失敗只會隱藏該 Pack contract，不會讓文件失敗。`internal-task:health` 依 installed + enabled + running 語意判定；inventory 為空時，絕不 fallback 顯示 repository 中所有 Pack。文件 health 檢查不執行模型推論、不啟動 Docker、不寫入 cache，也不進行自動復原。
+公開 API 文件、Agent Manifest 與後台 API 文件都由本機 services inventory 產生。開啟文件時，HTTP Pack 會平行執行 loopback health probes，整批最多等待一秒；單一 probe 失敗只會隱藏該 Pack contract，不會讓文件失敗。`internal-task:health` 依 installed + enabled + running 語意判定；inventory 為空時，絕不 fallback 顯示 repository 中所有 Pack。對 HTTP Pack，文件 inventory 只呼叫各 Pack 的 health endpoint，不會觸發 inference、model download 或 container recovery；health implementation 本身仍可能執行目錄與 writability probes。
 
 公開 API 文件與 Agent Manifest 只提供外部介接資訊：`mode`、`pack_id`、`method`、`content-type`、request fields、response keys、error codes 與 `<TOKEN>` 範例；未登入存取時不顯示 admin links。登入後的 Public API Docs 可顯示 Playground link；Agent Manifest 維持 machine-readable，不提供 admin navigation。後台 API 文件共用同一份即時 inventory，但保留經驗證登入後的管理導覽與 API member / usage links。三個介面都不暴露 internal ports、paths 或 tokens，也不顯示 local_port、Docker compose path、host model path、log path、SQLite path 或 token 明文。
 
@@ -1058,7 +1058,7 @@ L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；�
 
 ### whisper-asr Runtime Level
 
-`whisper-asr` 目前仍是 experimental GPU-first ASR Pack：
+`whisper-asr` 目前是 L5 `benchmark-ready` GPU-first ASR Pack：
 
 - `POST /asr/audio` 預設執行 real inference；`WHISPER_DEVICE=auto` 會先嘗試 CUDA `float16`，失敗後以 CPU `int8` fallback。
 - 模型以 faster-whisper 的 `download_root=/models/whisper` 載入，並使用本機掛載的 `${AIHUB_MODELS_DIR}/whisper:/models/whisper` 作為模型快取。
@@ -1249,7 +1249,7 @@ PhaseDoc-1B does not do image OCR overlay, technical drawing understanding, VLM 
 
 ### tts-voxcpm2 Runtime Level
 
-`tts-voxcpm2` 是 L5 `benchmark-ready` VoxCPM2 TTS Pack，用於驗證受管控的語音合成服務骨架與真實 VoxCPM2 推論 smoke：
+`tts-voxcpm2` 是 experimental 且已達 L5 `benchmark-ready` 的 VoxCPM2 TTS Pack，用於驗證受管控的語音合成服務骨架與真實 VoxCPM2 推論 smoke：
 
 - `GET /health`
 - `GET /v1/models`

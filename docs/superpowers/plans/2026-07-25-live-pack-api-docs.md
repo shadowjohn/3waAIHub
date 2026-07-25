@@ -542,7 +542,8 @@ Run:
 rg -n "即時 inventory|整批最多等待一秒|image-birefnet|bioclip|taiwan-address|Windows Core|WSL Runtime" README.md
 git diff --check
 AIHUB_TEST_QUIET=1 php scripts/run_tests.php
-php scripts/web_self_check.php
+php -d zend.assertions=1 -d assert.exception=1 scripts/self_check.php
+./scripts/bootstrap_self_check.sh
 ```
 
 Expected:
