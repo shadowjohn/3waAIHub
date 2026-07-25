@@ -615,6 +615,76 @@ CREATE TABLE IF NOT EXISTS runtime_resource_leases (
     updated_at TEXT NOT NULL,
     FOREIGN KEY(runtime_run_id) REFERENCES runtime_runs(run_id) ON DELETE SET NULL
 );
+
+CREATE TABLE IF NOT EXISTS cluster_stations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    station_key TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    public_base_url TEXT NOT NULL,
+    internal_base_url TEXT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    token_ciphertext TEXT NOT NULL,
+    token_iv TEXT NOT NULL,
+    token_tag TEXT NOT NULL,
+    manifest_json TEXT NULL,
+    manifest_fetched_at TEXT NULL,
+    status_json TEXT NULL,
+    status_fetched_at TEXT NULL,
+    last_error TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cluster_routes (
+    route_id TEXT PRIMARY KEY,
+    station_id INTEGER NOT NULL,
+    member_id INTEGER NULL,
+    token_id INTEGER NULL,
+    mode TEXT NOT NULL,
+    remote_task_id TEXT NULL,
+    is_async INTEGER NOT NULL DEFAULT 0,
+    state TEXT NOT NULL,
+    remote_status TEXT NULL,
+    expires_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT NULL,
+    FOREIGN KEY(station_id) REFERENCES cluster_stations(id) ON DELETE CASCADE,
+    FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS cluster_route_accesses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    route_id TEXT NOT NULL,
+    station_id INTEGER NULL,
+    member_id INTEGER NULL,
+    token_id INTEGER NULL,
+    mode TEXT NOT NULL,
+    access_kind TEXT NOT NULL,
+    request_id TEXT NULL,
+    status_code INTEGER NOT NULL,
+    ok INTEGER NOT NULL DEFAULT 0,
+    error_code TEXT NULL,
+    elapsed_ms INTEGER NOT NULL DEFAULT 0,
+    upload_bytes INTEGER NOT NULL DEFAULT 0,
+    response_bytes INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(route_id) REFERENCES cluster_routes(route_id) ON DELETE CASCADE,
+    FOREIGN KEY(station_id) REFERENCES cluster_stations(id) ON DELETE SET NULL,
+    FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS cluster_route_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    route_id TEXT NOT NULL,
+    remote_artifact_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(route_id, remote_artifact_id),
+    FOREIGN KEY(route_id) REFERENCES cluster_routes(route_id) ON DELETE CASCADE
+);
 SQL);
 
     hub_add_column_if_missing($db, 'users', 'role', "TEXT NOT NULL DEFAULT 'system_admin'");
@@ -871,6 +941,12 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_partial_retry ON tasks(partial_purge_retry_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_state_expires ON runtime_resource_leases(state, lease_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_run_id ON runtime_resource_leases(runtime_run_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_stations_enabled ON cluster_stations(enabled, priority DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_routes_station_state ON cluster_routes(station_id, state, updated_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_routes_member_token ON cluster_routes(member_id, token_id, created_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_route ON cluster_route_accesses(route_id, created_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_usage ON cluster_route_accesses(member_id, token_id, access_kind, created_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_artifacts_route ON cluster_route_artifacts(route_id)');
     $db->prepare(
         "INSERT OR IGNORE INTO runtime_resource_leases (resource_key, state, updated_at) VALUES ('gpu:0', 'available', :updated_at)"
     )->execute([':updated_at' => hub_now()]);

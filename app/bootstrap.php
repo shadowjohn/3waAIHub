@@ -65,6 +65,7 @@ require_once __DIR__ . '/host_metrics.php';
 require_once __DIR__ . '/benchmarks.php';
 require_once __DIR__ . '/docker_runner.php';
 require_once __DIR__ . '/gateway.php';
+require_once __DIR__ . '/cluster_router.php';
 
 function hub_ensure_runtime_dirs(): void
 {
