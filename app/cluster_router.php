@@ -805,7 +805,7 @@ function hub_cluster_station_redaction_terms(array $station): array
     return $terms;
 }
 
-function hub_cluster_redact_log_references(string $message, array $terms = [], bool $redactGenericIpv6 = false): string
+function hub_cluster_redact_log_references(string $message, array $terms = [], bool $redactGenericOrigins = false): string
 {
     foreach ($terms as $term) {
         if (!is_string($term) || $term === '') {
@@ -819,14 +819,20 @@ function hub_cluster_redact_log_references(string $message, array $terms = [], b
         }
     }
     $message = preg_replace('~https?://[^\s<>"\']+~i', '[redacted-url]', $message) ?? '';
-    if ($redactGenericIpv6) {
-        $message = preg_replace('~(?<![A-Fa-f0-9:])\[[0-9A-Fa-f:.]+\](?::\d{1,5})?(?![A-Fa-f0-9:])~', '[redacted-ipv6]', $message) ?? '';
+    if ($redactGenericOrigins) {
+        $bracketed = preg_replace_callback(
+            '~(?<![A-Fa-f0-9:])\[([0-9A-Fa-f:.]+)\](?::\d{1,5})?(?![A-Fa-f0-9:])~',
+            static fn (array $matches): string => filter_var($matches[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? '[redacted-ipv6]' : $matches[0],
+            $message
+        );
+        $message = is_string($bracketed) ? $bracketed : '';
         $redacted = preg_replace_callback(
-            '~(?<![0-9A-Za-z:])(?=[0-9A-Fa-f:]*:)([0-9A-Fa-f:]{2,})(?![0-9A-Za-z:])~',
+            '~(?<![0-9A-Za-z:.])(?=[0-9A-Fa-f:.]*:)([0-9A-Fa-f:.]{2,})(?![0-9A-Za-z:.])~',
             static fn (array $matches): string => filter_var($matches[1], FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? '[redacted-ipv6]' : $matches[1],
             $message
         );
         $message = is_string($redacted) ? $redacted : '';
+        $message = preg_replace('~(?<![A-Za-z0-9.-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.?(?![A-Za-z0-9.-])~', '[redacted-host]', $message) ?? '';
     }
 
     return $message;
