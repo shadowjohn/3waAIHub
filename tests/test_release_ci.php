@@ -161,3 +161,15 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
         hub_test_assert(!str_contains($ps1, $needle), 'install.ps1 must stay app-only preview: ' . $needle);
     }
 });
+
+hub_test('test runner uses an explicit static control-plane suite manifest', function (): void {
+    $runner = (string)file_get_contents(HUB_ROOT . '/scripts/run_tests.php');
+    $manifestPath = HUB_ROOT . '/tests/suites/control-plane.php';
+
+    hub_test_assert(is_file($manifestPath), 'control-plane suite manifest is missing');
+    hub_test_assert(str_contains($runner, "'control-plane'"), 'test runner must recognize the control-plane suite');
+    hub_test_assert(str_contains($runner, 'suite='), 'test runner must print the selected suite');
+    hub_test_assert(str_contains($runner, 'tests/suites'), 'test runner must load suite manifests from the static suite directory');
+    $ci = (string)file_get_contents(HUB_ROOT . '/.github/workflows/ci.yml');
+    hub_test_assert(str_contains($ci, 'php scripts/run_tests.php --suite=control-plane'), 'Windows CI must select the control-plane suite explicitly');
+});

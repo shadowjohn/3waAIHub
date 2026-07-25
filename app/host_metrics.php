@@ -328,6 +328,9 @@ function hub_gpu_compute_capability_for_name(string $name): ?string
         'RTX 3070' => '8.6',
         'RTX 3060' => '8.6',
         'GTX 1080 Ti' => '6.1',
+        'GTX 1080' => '6.1',
+        'GTX 1050 Ti' => '6.1',
+        'GTX 1050' => '6.1',
     ];
 
     foreach ($map as $needle => $capability) {
@@ -348,10 +351,12 @@ function hub_station_hardware_profile(PDO $db, ?string $platform = null): array
     $docker = is_array($data['docker'] ?? null) ? $data['docker'] : [];
     $gpuName = (string)($gpu['name'] ?? '');
     $linuxDockerTarget = hub_platform_target_supported('linux-docker', $platform);
+    $wslDockerTarget = hub_platform_target_supported('windows-wsl2-linux-docker', $platform);
 
     return [
         'snapshot_at' => (string)($latest['created_at'] ?? ''),
         'linux_docker_target' => $linuxDockerTarget,
+        'windows_wsl2_linux_docker_target' => $wslDockerTarget,
         'gpu' => [
             'available' => !empty($gpu['available']),
             'name' => $gpuName,
@@ -422,19 +427,22 @@ function hub_pack_preflight(PDO $db, array $manifest, ?string $platform = null):
     $profile = hub_station_hardware_profile($db, $platform);
     $checks = (array)($manifest['preflight']['checks'] ?? []);
     $results = [];
+    $target = null;
 
     if ((string)($manifest['runtime']['kind'] ?? '') === 'docker') {
-        $target = $profile['linux_docker_target'];
+        $target = hub_pack_runtime_target_resolution($manifest, $platform);
+        $targetLabel = (string)($target['target'] ?? 'linux-docker');
         $results['platform_target'] = hub_preflight_row(
             'platform_target',
             !empty($target['supported']) ? 'pass' : 'fail',
-            !empty($target['supported']) ? 'linux-docker target 可執行' : (string)($target['reason'] ?? HUB_WINDOWS_LINUX_DOCKER_UNSUPPORTED)
+            !empty($target['supported']) ? $targetLabel . ' target 可執行' : (string)($target['reason'] ?? HUB_WINDOWS_LINUX_DOCKER_UNSUPPORTED)
         );
     }
 
     foreach ($checks as $check) {
         $key = (string)$check;
-        $results[$key] = hub_pack_preflight_check($db, $manifest, $profile, $key);
+        $results[$key] = hub_wsl_runtime_preflight_check($target, $key)
+            ?? hub_pack_preflight_check($db, $manifest, $profile, $key);
     }
 
     $failed = count(array_filter($results, static fn (array $row): bool => $row['status'] === 'fail'));
@@ -449,6 +457,21 @@ function hub_pack_preflight(PDO $db, array $manifest, ?string $platform = null):
             'total' => count($results),
         ],
     ];
+}
+
+function hub_wsl_runtime_preflight_check(?array $target, string $check): ?array
+{
+    if (
+        $target === null
+        ||
+        ($target['target'] ?? '') !== 'windows-wsl2-linux-docker'
+        || empty($target['supported'])
+        || !in_array($check, ['docker', 'docker_compose'], true)
+    ) {
+        return null;
+    }
+
+    return hub_preflight_row($check, 'pass', 'WSL Runtime readiness confirmed');
 }
 
 function hub_pack_preflight_check(PDO $db, array $manifest, array $profile, string $check): array

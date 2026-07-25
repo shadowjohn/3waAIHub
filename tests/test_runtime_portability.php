@@ -92,6 +92,34 @@ hub_test('runtime target resolution never aliases direct Windows Linux Docker th
     hub_test_assert(!function_exists('hub_wrap_wsl_command'), 'Windows-1 must not add WSL command wrapping');
 });
 
+hub_test('explicit Pack WSL metadata selects only the declared WSL target', function (): void {
+    $profile = [
+        'runtime_targets' => [
+            'windows-wsl2-linux-docker' => [
+                'supported' => true,
+                'distro' => 'Ubuntu-24.04',
+                'runtime_root' => '/DATA/3waAIHub-runtime',
+            ],
+        ],
+    ];
+    $manifest = hub_normalize_pack_manifest([
+        'runtime' => ['kind' => 'docker', 'windows_wsl_compose' => true],
+        'platform_targets' => [
+            'linux-docker' => true,
+            'windows-wsl2-linux-docker' => true,
+        ],
+    ]);
+
+    $wsl = hub_pack_runtime_target_resolution($manifest, 'windows', $profile);
+    hub_test_assert($wsl['target'] === 'windows-wsl2-linux-docker' && $wsl['supported'] === true, 'declared Pack WSL target must resolve from readiness profile');
+
+    $direct = hub_pack_runtime_target_resolution([
+        'runtime' => ['kind' => 'docker'],
+        'platform_targets' => ['linux-docker' => true],
+    ], 'windows', $profile);
+    hub_test_assert($direct['target'] === 'linux-docker' && $direct['supported'] === false, 'ordinary Docker Packs must stay direct-target blocked on Windows');
+});
+
 hub_test('runtime profile loader reads host-local readiness metadata', function (): void {
     $path = sys_get_temp_dir() . '/3waaihub_runtime_profile_' . getmypid() . '.json';
     try {

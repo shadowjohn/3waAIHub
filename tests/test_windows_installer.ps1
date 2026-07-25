@@ -7,8 +7,14 @@ $source = Get-Content -LiteralPath $installer -Raw -Encoding UTF8
 $checkCoreSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\check-core.ps1') -Raw -Encoding UTF8
 $checkWslSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\check-wsl-runtime.ps1') -Raw -Encoding UTF8
 $coreSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\install-core.ps1') -Raw -Encoding UTF8
+$installWsl = Join-Path $PSScriptRoot '..\scripts\windows\install-wsl-runtime.ps1'
+$installWslSource = if (Test-Path -LiteralPath $installWsl) { Get-Content -LiteralPath $installWsl -Raw -Encoding UTF8 } else { '' }
+$wslProfileScript = Join-Path $PSScriptRoot '..\scripts\windows\wsl-yolo-runtime-profile.ps1'
 $initDbSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\init_db.php') -Raw -Encoding UTF8
 $profileWriter = Join-Path $PSScriptRoot '..\scripts\windows\write-runtime-profile.ps1'
+$profileWriterSource = Get-Content -LiteralPath $profileWriter -Raw -Encoding UTF8
+$yoloDefaultDockerfile = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\packs\yolo\service\Dockerfile') -Raw -Encoding UTF8
+$yoloPascalDockerfile = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\packs\yolo\service\Dockerfile.pascal-cu118') -Raw -Encoding UTF8
 $uninstallSource = Get-Content -LiteralPath $uninstaller -Raw -Encoding UTF8
 
 function Assert-InstallerContract {
@@ -70,6 +76,28 @@ Assert-InstallerContract ($checkCoreSource -match 'Core readiness:') 'Core readi
 Assert-InstallerContract ($checkCoreSource -match 'IIS readiness:') 'IIS readiness must be reported independently of Core'
 Assert-InstallerContract ($checkWslSource -match 'Get-WslDistroVersion') 'WSL check must parse exact distro rows through a helper'
 Assert-InstallerContract ($checkWslSource -match 'Assert-LinuxDataRoot') 'WSL check must validate LinuxDataRoot before invoking WSL'
+Assert-InstallerContract (Test-Path -LiteralPath $installWsl) 'WSL runtime installer must exist'
+Assert-InstallerContract ($source -match '\$installWsl') 'installer must delegate non-check WSL Runtime setup'
+Assert-InstallerContract ($checkWslSource -match 'php --version') 'WSL readiness must require PHP CLI for aihub-run'
+Assert-InstallerContract ($checkWslSource -match 'PDO SQLite in distro') 'WSL readiness must require PDO SQLite for aihub-run'
+Assert-InstallerContract ($installWslSource -match 'apt-get install -y php-cli') 'WSL installer must install PHP CLI through the distro package manager'
+Assert-InstallerContract ($installWslSource -match 'php-sqlite3') 'WSL installer must install PHP SQLite support through the distro package manager'
+Assert-InstallerContract ($installWslSource -match "tr -d '\\015'") 'WSL installer must normalize copied shell scripts to LF'
+Assert-InstallerContract ($installWslSource -match 'Get-WslYoloRuntimeProfile') 'WSL installer must select the YOLO runtime profile from Pack metadata'
+Assert-InstallerContract ($installWslSource -match '\$wslCommand = if') 'WSL installer must resolve its executable before passing it to Get-Command'
+Assert-InstallerContract ($installWslSource -match 'function Test-WslCommand') 'WSL installer must treat missing prerequisites as a probe result before attempting repair'
+Assert-InstallerContract ($installWslSource -match 'function Invoke-WslScript') 'WSL installer must send multi-line sync commands through a single WSL-safe payload'
+Assert-InstallerContract ($installWslSource -match 'packs/hello') 'WSL runtime must include the hello Pack required by database seeding'
+Assert-InstallerContract ($profileWriterSource -notmatch '(?m)^exit 0\s*$') 'runtime profile writer must return to the WSL installer after writing'
+Assert-InstallerContract ($installWslSource -match 'com\.3waaihub\.yolo\.runtime_profile') 'WSL installer must verify the existing YOLO image profile before reuse'
+Assert-InstallerContract ($yoloDefaultDockerfile -match 'runtime_profile="default"') 'default YOLO image must declare its runtime profile'
+Assert-InstallerContract ($yoloPascalDockerfile -match 'runtime_profile="pascal-cu118"') 'Pascal YOLO image must declare its runtime profile'
+Assert-InstallerContract (Test-Path -LiteralPath $wslProfileScript) 'WSL YOLO runtime profile helper must exist'
+if (Test-Path -LiteralPath $wslProfileScript) {
+    . $wslProfileScript
+    $pascalProfile = Get-WslYoloRuntimeProfile -InstallRoot $repo -GpuName 'NVIDIA GeForce GTX 1080'
+    Assert-InstallerContract ($pascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the Pascal CUDA 11.8 profile'
+}
 Assert-InstallerContract ($source -notmatch 'Docker\.DockerDesktop') 'Core installer must not install Docker Desktop'
 Assert-InstallerContract (($checkCoreSource + $checkWslSource) -notmatch 'Docker\.DockerDesktop|Enable-WindowsOptionalFeature|Install-WindowsFeature|dism\.exe') 'installer checks must not mutate Windows features or install Docker Desktop'
 Assert-InstallerContract ($checkCoreSource -notmatch '\b(New-Item|Set-Content|Add-Content|Copy-Item|Remove-Item)\b') 'Core -Check source must stay read-only'
@@ -137,7 +165,7 @@ Assert-InstallerContract ($exceptionResult.ExitCode -ne 0) 'WslRuntime script ex
 $profileRoot = Join-Path (Split-Path $repo -Parent) ('3waaihub-installer-profile-' + [guid]::NewGuid().ToString('N'))
 try {
     & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' 6>&1 2>&1 | Out-Null
-    Assert-InstallerContract ($LASTEXITCODE -eq 0) 'runtime profile writer must succeed'
+    Assert-InstallerContract ($?) 'runtime profile writer must succeed'
     $profilePath = Join-Path $profileRoot 'data\runtime_profile.json'
     $profile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InstallerContract (-not $profile.runtime_targets.'windows-wsl2-linux-docker'.supported) 'WSL target must default to unsupported until readiness passes'
@@ -146,9 +174,14 @@ try {
     Assert-InstallerContract (@(Get-ChildItem -LiteralPath (Join-Path $profileRoot 'data') -Filter '*.tmp').Count -eq 0) 'atomic profile writer must not leave temporary files'
 
     & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' -WslReady 6>&1 2>&1 | Out-Null
-    Assert-InstallerContract ($LASTEXITCODE -eq 0) 'ready runtime profile writer must succeed'
+    Assert-InstallerContract ($?) 'ready runtime profile writer must succeed'
     $readyProfile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InstallerContract ($readyProfile.runtime_targets.'windows-wsl2-linux-docker'.supported) 'WSL target may be supported after readiness passes'
+
+    & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' -WslReady -YoloRuntimeProfile 'pascal-cu118' 6>&1 2>&1 | Out-Null
+    Assert-InstallerContract ($?) 'Pascal WSL runtime profile writer must succeed'
+    $pascalRuntimeProfile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.yolo -eq 'pascal-cu118') 'runtime profile must persist the selected YOLO Pascal profile'
 } finally {
     if (Test-Path -LiteralPath $profileRoot) {
         Remove-Item -LiteralPath $profileRoot -Recurse -Force

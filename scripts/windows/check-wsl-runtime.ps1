@@ -7,6 +7,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'wsl-yolo-runtime-profile.ps1')
 
 function Invoke-Captured {
     param([string[]]$Command)
@@ -137,17 +138,28 @@ Write-Check 'Docker daemon in distro' ($daemon.ExitCode -eq 0) $daemon.Output 'S
 $compose = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', 'docker compose version')
 Write-Check 'Docker Compose in distro' ($compose.ExitCode -eq 0) $compose.Output 'sudo apt-get install -y docker-compose-plugin'
 
+$php = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', 'php --version')
+Write-Check 'PHP CLI in distro' ($php.ExitCode -eq 0) $php.Output 'Run .\install.ps1 -Mode WslRuntime to install php-cli into the existing distro.'
+$pdoSqlite = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', "php -m | grep -qi '^pdo_sqlite$'")
+Write-Check 'PHP PDO SQLite in distro' ($pdoSqlite.ExitCode -eq 0) $pdoSqlite.Output 'Run .\install.ps1 -Mode WslRuntime to install php-sqlite3 into the existing distro.'
+
 $nvidia = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', 'nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader')
 Write-Check 'nvidia-smi in distro' ($nvidia.ExitCode -eq 0) $nvidia.Output 'Install/update NVIDIA Windows driver with WSL CUDA support.'
+$gpuName = if ($nvidia.ExitCode -eq 0) { (($nvidia.Output -split '\r?\n')[0] -split ',')[0].Trim() } else { '' }
+$yoloProfile = if ($gpuName -ne '') { Get-WslYoloRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName } else { $null }
+if ($null -ne $yoloProfile) {
+    Write-Check 'YOLO GPU profile' $true $yoloProfile.Id
+}
 
 $dataFs = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', "findmnt -n -o FSTYPE -T '$LinuxDataRoot' 2>/dev/null")
 $isExt4 = $dataFs.ExitCode -eq 0 -and $dataFs.Output -match 'ext4'
 Write-Check "$LinuxDataRoot filesystem" $isExt4 $dataFs.Output "sudo mkdir -p $LinuxDataRoot/3waAIHub-runtime $LinuxDataRoot/models && keep runtime data on WSL ext4, not /mnt/d"
 
-$gpuSmoke = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', 'docker run --rm --pull=never --gpus all nvidia/cuda:12.9.0-base-ubuntu22.04 nvidia-smi')
-Write-Check 'Container GPU smoke' ($gpuSmoke.ExitCode -eq 0) $gpuSmoke.Output "wsl.exe -d $WslDistro -- docker pull nvidia/cuda:12.9.0-base-ubuntu22.04"
+$gpuSmokeImage = if ($null -ne $yoloProfile) { [string]$yoloProfile.gpu_smoke_image } else { 'nvidia/cuda:12.9.0-base-ubuntu22.04' }
+$gpuSmoke = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', "docker run --rm --pull=never --gpus all '$gpuSmokeImage' nvidia-smi")
+Write-Check 'Container GPU smoke' ($gpuSmoke.ExitCode -eq 0) $gpuSmoke.Output "wsl.exe -d $WslDistro -- docker pull $gpuSmokeImage"
 
-$ready = $version2 -and $docker.ExitCode -eq 0 -and $daemon.ExitCode -eq 0 -and $compose.ExitCode -eq 0 -and $nvidia.ExitCode -eq 0 -and $isExt4 -and $gpuSmoke.ExitCode -eq 0
+$ready = $version2 -and $docker.ExitCode -eq 0 -and $daemon.ExitCode -eq 0 -and $compose.ExitCode -eq 0 -and $php.ExitCode -eq 0 -and $pdoSqlite.ExitCode -eq 0 -and $nvidia.ExitCode -eq 0 -and $isExt4 -and $gpuSmoke.ExitCode -eq 0
 Write-Readiness $ready
 
 exit 0

@@ -100,7 +100,7 @@ jobs:
 
       - name: Tests
         shell: powershell
-        run: php scripts/run_tests.php
+        run: php scripts/run_tests.php --suite=control-plane
 
       - name: WSL runtime readiness (preview)
         shell: powershell

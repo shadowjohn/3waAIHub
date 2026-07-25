@@ -92,6 +92,7 @@ $db = hub_db();
 $user = hub_require_system_admin($db);
 $message = '';
 $error = '';
+$installedServiceId = 0;
 
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     hub_check_csrf();
@@ -106,6 +107,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'hot_reload' => !empty($_POST['hot_reload']),
         ]);
         $message = __('已安裝 Service Instance：') . $result['service']['service_key'];
+        $installedServiceId = (int)$result['service']['id'];
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
@@ -128,7 +130,7 @@ $preflightLabels = [
 
 hub_admin_header('HubPack 套件', $user);
 ?>
-<?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
+<?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?><?php if ($installedServiceId > 0): ?> <a href="service_settings.php?service_id=<?= $installedServiceId ?>">設定 trusted upstream</a><?php endif; ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <section class="panel">
     <h1><?= hub_h(__('HubPack 套件')) ?></h1>

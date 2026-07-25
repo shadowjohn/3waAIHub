@@ -123,6 +123,15 @@
       "path": "packs/docparser",
       "category": "document",
       "description": "Technical manual PDF complete delivery orchestrator."
+    },
+    {
+      "id": "taiwan-address",
+      "name": "Taiwan Address Wash and Geocode",
+      "version": "0.1.0",
+      "category": "gis",
+      "description": "Trusted-upstream adapter for the offline Taiwan address wash and geocoding service.",
+      "path": "packs/taiwan-address",
+      "featured": true
     }
   ]
 }

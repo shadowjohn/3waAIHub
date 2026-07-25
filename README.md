@@ -99,21 +99,25 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core
 # 僅在要用 IIS 部署時，以系統管理員 PowerShell 執行：
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -InstallIis
+# 先做不變更系統的 readiness 檢查；READY 後移除 -Check 才會安裝 WSL runtime。
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode WslRuntime -InstallRoot "D:\DATA\3waAIHub" -ModelsRoot "D:\DATA\models" -WslDistro "Ubuntu-24.04" -LinuxDataRoot "/DATA" -Check
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode WslRuntime -InstallRoot "D:\DATA\3waAIHub" -ModelsRoot "D:\DATA\models" -WslDistro "Ubuntu-24.04" -LinuxDataRoot "/DATA"
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 ```
 
 `Core` 是 Windows Control Plane preview：檢查 PHP / SQLite，建立 `data/` runtime 目錄並初始化 SQLite，並把 `-ModelsRoot` 寫入 Hub Settings 的 `AIHUB_MODELS_DIR`。既有 PHP 只會檢查，絕不修改外部 `php.ini`；若缺少或不符合需求，才下載官方 PHP 8.3 NTS x64 FastCGI、比對官方 SHA-256 後安裝到 `<InstallRoot>\tools\php`，並只設定這份 managed PHP 的 `Asia/Taipei`、`short_open_tag` 與必要 extensions。IIS `WebAdministration` 不需下載第三方套件；要啟用時，`-InstallIis` 會以系統管理員權限啟用 Windows 內建 IIS／管理腳本工具，不會自動重開機，且 `-Check` 永遠不變更系統。Core readiness 與 IIS readiness 分開報告，前者可用 `php -S` 運作，不會因 IIS 尚未配置而變成 Core not ready。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、IIS、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
 
-`WslRuntime -Check` 只做 read-only readiness report：檢查 WSL2、指定 Ubuntu distro、distro 內 Docker Engine / Compose、`nvidia-smi` 與 `/DATA` 是否在 WSL ext4。第一版不自動啟用 Windows Features、不安裝 Docker Desktop、不改顯示卡驅動、不建立 WSL runtime data。
+`WslRuntime -Check` 只做 read-only readiness report：檢查 WSL2、指定 Ubuntu distro、distro 內 Docker Engine / Compose、PHP CLI、PDO SQLite、`nvidia-smi`、依 GPU 選出的 YOLO profile，以及 `/DATA` 是否在 WSL ext4。移除 `-Check` 後，安裝器只在既有 distro 內補齊 `php-cli`／`php-sqlite3`、同步最小 runtime 到 `/DATA/3waAIHub-runtime`（shell job 強制 LF）、建立 SQLite 與 runtime profile，並依 Pack metadata 建立對應 YOLO image。它不自動啟用 Windows Features、不安裝 Docker Desktop、不改顯示卡驅動；Docker Engine 必須已由 Docker Desktop WSL2 backend 或 distro 自行提供。
 
 | Windows 主機 | 3waAIHub 角色建議 |
 | --- | --- |
 | Windows 11 | 建議 `3waAIHub Core（Control Plane）` + `WSL Runtime（Preview）` |
 | Windows Server | 預設 `3waAIHub Core（Control Plane）`；`WSL Runtime（Preview）` 選配；`Remote Linux Agent` 推薦；不建議或嘗試安裝 Docker Desktop |
 
-`windows-wsl2-linux-docker` 在 Windows-1 只提供 readiness/profile，不執行 Local Job。Windows 直接選用 `linux-docker` 時，會在呼叫 Docker 前以 `exit 78`、`error_code=platform_target_unsupported` 回報不支援。
+`windows-wsl2-linux-docker` 目前提供固定 distro／`/DATA/3waAIHub-runtime`／YOLO Local Job vertical slice；Windows control plane 尚不會把 UI 或 queue 的 `linux-docker` job 自動改送 WSL。Windows 直接選用 `linux-docker` 時，仍會在呼叫 Docker 前以 `exit 78`、`error_code=platform_target_unsupported` 回報不支援。
+
+GTX 1050／1050 Ti／1080／1080 Ti（Pascal）會選取 `pascal-cu118` profile，使用 CUDA 11.8 與 PyTorch CU118；較新 NVIDIA GPU 使用 default profile。YOLO model 仍由 `/DATA/models/yolo` 管理，安裝器不下載模型。
 
 > Windows 是 Control Plane preview；Linux Docker/GPU Pack 只能由 Linux runtime 或未來 Remote Agent 執行。
 >
@@ -129,6 +133,12 @@ Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。IIS
 
 ```powershell
 php -S 127.0.0.1:8080
+```
+
+測試 runner 使用顯式 suite allowlist：Linux 無參數執行完整回歸；Windows Control Plane 使用下列指令，Linux Docker/GPU runtime 不會被當成 Windows 本機能力測試。
+
+```powershell
+php scripts/run_tests.php --suite=control-plane
 ```
 
 ## 預設帳號
@@ -614,6 +624,10 @@ PhaseP-2 起，Pack 可用 `settings_schema` 宣告可調 runtime/model 設定�
 ## Local HubPack Catalog
 
 HubPack 是模板，HubService 是安裝後的 service instance。同一個 pack 可以安裝多次，每次使用不同的 `service_key` / `mode` / `local_port`。
+
+### Taiwan Address Wash and Geocode Pack
+
+`taiwan-address` 是給既有台灣地址洗滌／地理編碼 PHP 服務的受控 adapter Pack。第一版只保存可信 `api.php` upstream 設定，既有 IIS/PHP 與 7.4 GiB SQLite 資料庫保持原地、不會被 Hub 安裝器搬移或改寫。API caller 只能選固定 operation，不能指定 upstream URL；回傳的 `result_label`、`quality_flag`、`include_in_coverage`、`geo_check_status` 與 `geo_warning_code` 保留原始品質語意。Windows Core 僅能管理與設定這個 Pack，實際 Docker adapter 仍須由 WSL/Linux runtime 執行。
 
 Local Catalog 會掃描：
 
@@ -1292,7 +1306,7 @@ php scripts/collect_host_metrics.php --force
 - GPU compute capability
 - storage writable
 
-compute capability 目前使用簡單 map，已涵蓋 RTX 5090 / RTX 5060 Ti / RTX 40/30 系與 GTX 1080 Ti；之後需要更準再接 deviceQuery。
+compute capability 目前使用簡單 map，已涵蓋 RTX 5090 / RTX 5060 Ti / RTX 40/30 系與 GTX 1050 / 1050 Ti / 1080 / 1080 Ti；之後需要更準再接 deviceQuery。
 
 `pack.json` schema v0.1 必要欄位：
 

@@ -63,7 +63,12 @@ function hub_execute_command_job(PDO $db, array $job): array
     }
 
     $requiresLinuxDocker = in_array($action, ['permissions_fix', 'docker_prune_check', 'docker_builder_prune', 'ollama_model_pull'], true)
-        || ($service !== null && !hub_service_is_internal_task($service) && str_starts_with($action, 'service_'));
+        || (
+            $service !== null
+            && !hub_service_is_internal_task($service)
+            && str_starts_with($action, 'service_')
+            && hub_service_runtime_resolution($service)['target'] === 'linux-docker'
+        );
     if ($requiresLinuxDocker) {
         $unsupported = hub_linux_docker_unsupported_result();
         if ($unsupported !== null) {

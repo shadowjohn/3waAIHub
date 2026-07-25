@@ -1,0 +1,158 @@
+{
+  "schema_version": "0.1",
+  "id": "taiwan-address",
+  "name": "Taiwan Address Wash and Geocode",
+  "version": "0.1.0",
+  "category": "gis",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L3-trusted-upstream-adapter",
+  "target_level": "L3-trusted-upstream-adapter",
+  "runtime_ready": true,
+  "default_mode": "taiwan_address",
+  "description": "A controlled Hub adapter for a trusted Taiwan address wash and geocoding PHP service.",
+  "platform_targets": {
+    "linux-docker": {
+      "supported": true,
+      "source": "declared",
+      "reason": null
+    },
+    "windows-wsl2-linux-docker": {
+      "supported": true,
+      "source": "declared",
+      "reason": "Uses the explicitly configured WSL Runtime; direct linux-docker remains unavailable on Windows."
+    }
+  },
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000,
+    "windows_wsl_compose": true
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/lookup",
+    "methods": ["POST"],
+    "timeout_sec": 15,
+    "max_upload_mb": 1
+  },
+  "l5_contract": {
+    "endpoint": "/lookup",
+    "method": "POST",
+    "content_type": "application/json",
+    "input": {
+      "fields": [
+        {
+          "name": "operation",
+          "type": "text",
+          "required": true,
+          "description": "Allowed address operation, for example autocomplete, searchAll, or getAddress_XY."
+        },
+        {
+          "name": "q",
+          "type": "text",
+          "required": false,
+          "description": "Address, landmark, or POI query."
+        },
+        {
+          "name": "address",
+          "type": "text",
+          "required": false,
+          "description": "Address query alias."
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "default": 10
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok"],
+      "quality_fields": ["result_label", "quality_flag", "include_in_coverage", "geo_check_status", "geo_warning_code"]
+    },
+    "errors": [
+      "invalid_json",
+      "operation_not_allowed",
+      "upstream_not_configured",
+      "upstream_unavailable",
+      "upstream_invalid_response",
+      "gateway_timeout"
+    ],
+    "limits": {
+      "timeout_sec": 15,
+      "max_upload_mb": 1,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": false,
+      "cases": []
+    }
+  },
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": false,
+    "min_vram_mb": 0,
+    "cpu_fallback": true
+  },
+  "queue": {
+    "supported": false,
+    "default_queue": "default",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": []
+  },
+  "settings_schema": [
+    {
+      "key": "TWADDR_UPSTREAM_URL",
+      "label": "Trusted upstream API URL",
+      "type": "text",
+      "default": "",
+      "required": false,
+      "restart_required": true,
+      "help": "Existing trusted api.php URL. On Windows WSL Runtime, use the IIS address visible from Docker, e.g. http://host.docker.internal/wash_taiwan_address_php/api.php. This adapter never accepts an upstream URL from API callers."
+    },
+    {
+      "key": "TWADDR_TIMEOUT_SEC",
+      "label": "Upstream timeout seconds",
+      "type": "integer",
+      "default": "10",
+      "min": 1,
+      "max": 30,
+      "required": true,
+      "restart_required": true
+    }
+  ],
+  "env": [
+    {
+      "name": "TWADDR_UPSTREAM_URL",
+      "default": "",
+      "required": false
+    },
+    {
+      "name": "TWADDR_TIMEOUT_SEC",
+      "default": "10",
+      "required": true
+    }
+  ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose"
+    ]
+  },
+  "service": {
+    "default_local_port": 18118,
+    "local_port_env": "TWADDR_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "taiwan-address-main",
+    "compose_project": "3waaihub_taiwan_address"
+  },
+  "capabilities": {
+    "benchmark_supported": false,
+    "supports_hot_reload": false
+  }
+}

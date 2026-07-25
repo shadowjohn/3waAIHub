@@ -208,6 +208,10 @@ hub_test('legacy ASR and TTS sync requests require the bounded diagnostic path',
 });
 
 hub_test('real-inference sync requester failures finalize their GPU lease', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Linux shell fake runtime is not available on Windows control-plane hosts');
+    }
+
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
     hub_set_service_enabled($db, 'asr', true);
@@ -220,7 +224,7 @@ hub_test('real-inference sync requester failures finalize their GPU lease', func
     $pathBackup = getenv('PATH');
     $bin = hub_test_gateway_fake_audio_runtime_bin();
     try {
-        putenv('PATH=' . $bin . ':' . $pathBackup);
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $pathBackup);
         $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
         $_SERVER['REQUEST_METHOD'] = 'POST';
         $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=asr';
@@ -249,6 +253,10 @@ hub_test('real-inference sync requester failures finalize their GPU lease', func
 });
 
 hub_test('successful real-inference sync diagnostics leave no error code', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Linux shell fake runtime is not available on Windows control-plane hosts');
+    }
+
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
     hub_set_service_enabled($db, 'asr', true);
@@ -261,7 +269,7 @@ hub_test('successful real-inference sync diagnostics leave no error code', funct
     $pathBackup = getenv('PATH');
     $bin = hub_test_gateway_fake_audio_runtime_bin();
     try {
-        putenv('PATH=' . $bin . ':' . $pathBackup);
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $pathBackup);
         $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
         $_SERVER['REQUEST_METHOD'] = 'POST';
         $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=asr';

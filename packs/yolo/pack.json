@@ -23,6 +23,24 @@
     "compose_file": "docker-compose.yml",
     "default_internal_port": 8000
   },
+  "wsl_runtime_profiles": {
+    "default": {
+      "id": "default",
+      "image": "3waaihub-yolo-main:0.1.0",
+      "dockerfile": "service/Dockerfile",
+      "gpu_smoke_image": "nvidia/cuda:12.9.0-base-ubuntu22.04",
+      "min_compute_capability": "8.0",
+      "gpu_name_patterns": []
+    },
+    "pascal-cu118": {
+      "id": "pascal-cu118",
+      "image": "3waaihub-yolo-main:0.1.0",
+      "dockerfile": "service/Dockerfile.pascal-cu118",
+      "gpu_smoke_image": "nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04",
+      "min_compute_capability": "6.1",
+      "gpu_name_patterns": ["GTX 1050", "GTX 1080"]
+    }
+  },
   "gateway": {
     "health_path": "/health",
     "invoke_path": "/detect/image",

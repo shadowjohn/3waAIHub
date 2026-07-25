@@ -51,6 +51,15 @@ hub_test('station hardware profile maps GPU and pack preflight blocks weak compu
     hub_test_assert($preflight['checks']['compute_capability']['status'] === 'fail', 'GTX 1080 Ti should fail compute capability preflight');
 });
 
+hub_test('Pascal GTX cards retain their compute capability for profile selection', function (): void {
+    hub_test_assert(hub_gpu_compute_capability_for_name('NVIDIA GeForce GTX 1080') === '6.1', 'GTX 1080 compute capability mismatch');
+    hub_test_assert(hub_gpu_compute_capability_for_name('NVIDIA GeForce GTX 1050 Ti') === '6.1', 'GTX 1050 Ti compute capability mismatch');
+
+    $profile = hub_get_pack('yolo')['manifest']['wsl_runtime_profiles']['pascal-cu118'] ?? [];
+    hub_test_assert(($profile['min_compute_capability'] ?? '') === '6.1', 'Pascal profile compute capability mismatch');
+    hub_test_assert(($profile['dockerfile'] ?? '') === 'service/Dockerfile.pascal-cu118', 'Pascal profile Dockerfile mismatch');
+});
+
 hub_test('host metric failures provide repair suggestions', function (): void {
     $suggestions = hub_host_metric_fix_suggestions([
         'gpu' => [
@@ -101,4 +110,14 @@ hub_test('Windows pack preflight stays blocked even when Docker and GPU host fac
     hub_test_assert($preflight['summary']['status'] === 'fail', 'favorable host facts must not enable a Windows Linux Pack');
     hub_test_assert(($preflight['checks']['platform_target']['status'] ?? '') === 'fail', 'platform target preflight gate missing');
     hub_test_assert(($preflight['checks']['docker']['status'] ?? '') === 'pass', 'Docker daemon must remain a separate host fact');
+});
+
+hub_test('explicit WSL Pack readiness supplies Docker checks without enabling direct Linux Docker', function (): void {
+    $target = [
+        'target' => 'windows-wsl2-linux-docker',
+        'supported' => true,
+    ];
+    hub_test_assert((hub_wsl_runtime_preflight_check($target, 'docker')['status'] ?? '') === 'pass', 'WSL readiness must satisfy Docker preflight for an explicit WSL Pack');
+    hub_test_assert((hub_wsl_runtime_preflight_check($target, 'docker_compose')['status'] ?? '') === 'pass', 'WSL readiness must satisfy Compose preflight for an explicit WSL Pack');
+    hub_test_assert(hub_wsl_runtime_preflight_check(['target' => 'linux-docker', 'supported' => true], 'docker') === null, 'native target must retain its ordinary Docker probe');
 });

@@ -4,6 +4,8 @@ param(
     [string]$LinuxDataRoot = '/DATA',
     [ValidateSet('production', 'preview')]
     [string]$SupportLevel = 'preview',
+    [ValidateSet('default', 'pascal-cu118')]
+    [string]$YoloRuntimeProfile = 'default',
     [switch]$WslReady
 )
 
@@ -31,6 +33,9 @@ $profile = [ordered]@{
             runtime_root = "$LinuxDataRoot/3waAIHub-runtime"
             models_root = "$LinuxDataRoot/models"
             provides = @('linux-docker')
+            pack_profiles = [ordered]@{
+                yolo = $YoloRuntimeProfile
+            }
             reason = if ($WslReady) { $null } else { 'WSL Runtime readiness has not passed' }
         }
         'linux-docker' = [ordered]@{
@@ -70,4 +75,3 @@ try {
     }
 }
 Write-Host "Runtime profile written: $path"
-exit 0

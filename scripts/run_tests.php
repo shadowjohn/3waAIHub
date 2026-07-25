@@ -5,6 +5,18 @@ define('HUB_TESTING', true);
 putenv('AIHUB_TEST_DB=' . (getenv('AIHUB_TEST_DB') ?: sys_get_temp_dir() . '/3waaihub_test.sqlite'));
 putenv('AIHUB_TEST_DATA_DIR=' . (getenv('AIHUB_TEST_DATA_DIR') ?: sys_get_temp_dir() . '/3waaihub_test_data_' . bin2hex(random_bytes(16))));
 
+$suite = 'full';
+foreach (array_slice($argv, 1) as $argument) {
+    if (str_starts_with($argument, '--suite=')) {
+        $suite = substr($argument, strlen('--suite='));
+        continue;
+    }
+
+    fwrite(STDERR, 'Unknown argument: ' . $argument . PHP_EOL);
+    echo 'suite=' . $suite . ' tests=0 failures=1 skipped=0' . PHP_EOL;
+    exit(2);
+}
+
 require __DIR__ . '/../app/bootstrap.php';
 hub_cli_only();
 hub_ensure_runtime_dirs();
@@ -68,7 +80,7 @@ function hub_test_teardown_voice_profile_storage(): void
 {
     $dir = hub_voice_profile_storage_dir();
     $realDir = hub_test_voice_profile_cleanup_dir($dir);
-    if ($dir !== $realDir) {
+    if (!hub_storage_paths_equal($dir, $realDir)) {
         throw new RuntimeException('Test voice profile storage must be the generated directory.');
     }
     hub_test_remove_voice_profile_storage_dir($realDir);
@@ -119,7 +131,7 @@ function hub_test_teardown_audio_asset_storage(): void
 {
     $dir = hub_audio_upload_root();
     $realDir = hub_test_audio_asset_cleanup_dir($dir);
-    if ($dir !== $realDir) {
+    if (!hub_storage_paths_equal($dir, $realDir)) {
         throw new RuntimeException('Test audio asset storage must be the generated directory.');
     }
     hub_test_clear_audio_asset_storage($realDir);
@@ -263,7 +275,62 @@ function hub_test_throws(callable $fn): bool
     return false;
 }
 
-foreach (glob(HUB_ROOT . '/tests/test_*.php') ?: [] as $file) {
+function hub_test_suite_files(string $suite): array
+{
+    if ($suite === 'full') {
+        return glob(HUB_ROOT . '/tests/test_*.php') ?: [];
+    }
+
+    if ($suite !== 'control-plane') {
+        throw new InvalidArgumentException('Unknown suite: ' . $suite);
+    }
+
+    $manifestPath = HUB_ROOT . '/tests/suites/' . $suite . '.php';
+    if (!is_file($manifestPath)) {
+        throw new RuntimeException('Suite manifest is missing: ' . $suite);
+    }
+    $files = require $manifestPath;
+    if (!is_array($files) || $files === []) {
+        throw new RuntimeException('Suite manifest must return a non-empty file list: ' . $suite);
+    }
+
+    $testsRoot = realpath(HUB_ROOT . '/tests');
+    if ($testsRoot === false) {
+        throw new RuntimeException('Tests directory is missing.');
+    }
+    $normalize = static function (string $path): string {
+        $path = str_replace('\\', '/', $path);
+        return hub_platform_id() === 'windows' ? strtolower($path) : $path;
+    };
+    $testsPrefix = rtrim($normalize($testsRoot), '/') . '/';
+    $seen = [];
+    foreach ($files as $file) {
+        if (!is_string($file) || !is_file($file)) {
+            throw new RuntimeException('Suite manifest references a missing regular file.');
+        }
+        $realFile = realpath($file);
+        if ($realFile === false || !str_starts_with($normalize($realFile), $testsPrefix)) {
+            throw new RuntimeException('Suite manifest file must stay inside tests/.');
+        }
+        $key = $normalize($realFile);
+        if (isset($seen[$key])) {
+            throw new RuntimeException('Suite manifest contains a duplicate test file: ' . basename($realFile));
+        }
+        $seen[$key] = true;
+    }
+
+    return $files;
+}
+
+try {
+    $testFiles = hub_test_suite_files($suite);
+} catch (Throwable $e) {
+    fwrite(STDERR, $e->getMessage() . PHP_EOL);
+    echo 'suite=' . $suite . ' tests=0 failures=1 skipped=0' . PHP_EOL;
+    exit(2);
+}
+
+foreach ($testFiles as $file) {
     require $file;
 }
 
@@ -305,5 +372,5 @@ try {
     echo '[FAIL] Test runtime data teardown: ' . $e->getMessage() . PHP_EOL;
 }
 
-echo 'tests=' . count($tests) . ' failures=' . $failures . ' skipped=' . $skipped . PHP_EOL;
+echo 'suite=' . $suite . ' tests=' . count($tests) . ' failures=' . $failures . ' skipped=' . $skipped . PHP_EOL;
 exit($failures === 0 ? 0 : 1);

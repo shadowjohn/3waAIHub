@@ -243,6 +243,167 @@ function hub_service_start_command(array $service): array
     return hub_compose_command($service, ['up', '-d']);
 }
 
+function hub_service_runtime_resolution(array $service, ?string $platform = null, ?array $profile = null): array
+{
+    $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
+    if (!$pack || !is_array($pack['manifest'] ?? null)) {
+        return hub_runtime_target_resolution('linux-docker', $platform, $profile);
+    }
+
+    return hub_pack_runtime_target_resolution($pack['manifest'], $platform, $profile);
+}
+
+function hub_service_uses_wsl_runtime(array $service, ?string $platform = null, ?array $profile = null): bool
+{
+    $resolution = hub_service_runtime_resolution($service, $platform, $profile);
+    return $resolution['target'] === 'windows-wsl2-linux-docker' && !empty($resolution['supported']);
+}
+
+function hub_service_runtime_unsupported_result(array $service): ?array
+{
+    $resolution = hub_service_runtime_resolution($service);
+    if (!empty($resolution['supported'])) {
+        if ($resolution['target'] === 'windows-wsl2-linux-docker' && hub_wsl_service_runtime($service) === null) {
+            return hub_unsupported_runtime_result('windows-wsl2-linux-docker', 'WSL Runtime profile is invalid. Run install.ps1 -Mode WslRuntime -Check.');
+        }
+        return null;
+    }
+
+    return hub_unsupported_runtime_result((string)$resolution['target'], (string)($resolution['reason'] ?? 'Runtime target is not available.'));
+}
+
+function hub_wsl_service_runtime(array $service): ?array
+{
+    $resolution = hub_service_runtime_resolution($service);
+    if ($resolution['target'] !== 'windows-wsl2-linux-docker' || empty($resolution['supported'])) {
+        return null;
+    }
+
+    $profile = is_array($resolution['profile'] ?? null) ? $resolution['profile'] : [];
+    $distro = trim((string)($profile['distro'] ?? ''));
+    $runtimeRoot = trim((string)($profile['runtime_root'] ?? ''));
+    if (preg_match('/^[A-Za-z0-9._-]+$/', $distro) !== 1 || $runtimeRoot === '') {
+        return null;
+    }
+
+    try {
+        $runtimeRoot = hub_container_path($runtimeRoot);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+
+    return ['distro' => $distro, 'runtime_root' => $runtimeRoot];
+}
+
+function hub_wsl_shell_literal(string $value): string
+{
+    return "'" . str_replace("'", "'\"'\"'", $value) . "'";
+}
+
+function hub_windows_powershell_literal(string $value): string
+{
+    return "'" . str_replace("'", "''", $value) . "'";
+}
+
+function hub_wsl_script_command(array $runtime, string $script): array
+{
+    $payload = base64_encode(str_replace("\r", '', $script));
+    $wsl = trim((string)(getenv('AIHUB_WSL_EXECUTABLE') ?: 'C:\\Windows\\System32\\wsl.exe'));
+    $bashCommand = 'printf %s ' . $payload . ' | base64 -d | bash';
+    // PHP proc_open(array) can quote wsl.exe arguments incorrectly on Windows; PowerShell preserves native argv here.
+    $command = '& ' . hub_windows_powershell_literal($wsl)
+        . ' -d ' . hub_windows_powershell_literal((string)$runtime['distro'])
+        . ' -- bash -lc ' . hub_windows_powershell_literal($bashCommand)
+        . '; exit $LASTEXITCODE';
+    return ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $command];
+}
+
+function hub_wsl_service_compose_command(array $service, array $args): array
+{
+    $runtime = hub_wsl_service_runtime($service);
+    $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
+    if ($runtime === null || !$pack || !is_array($pack['manifest'] ?? null)) {
+        throw new RuntimeException('WSL Runtime is not ready for this service.');
+    }
+
+    $packId = (string)($pack['manifest']['id'] ?? '');
+    $serviceKey = (string)($service['service_key'] ?? '');
+    $port = (int)($service['local_port'] ?? 0);
+    if (
+        preg_match('/^[a-z0-9][a-z0-9_-]*$/', $packId) !== 1
+        || preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1
+        || $port < 1 || $port > 65535
+    ) {
+        throw new RuntimeException('Invalid WSL service configuration.');
+    }
+
+    $environment = [];
+    $sourceEnvironment = hub_compose_env($service);
+    foreach ((array)($pack['manifest']['env'] ?? []) as $item) {
+        $key = (string)($item['name'] ?? '');
+        $value = (string)($sourceEnvironment[$key] ?? $item['default'] ?? '');
+        if (preg_match('/^[A-Z][A-Z0-9_]*$/', $key) !== 1 || str_contains($value, "\0") || preg_match('/[\r\n]/', $value) === 1) {
+            throw new RuntimeException('Invalid WSL service environment.');
+        }
+        $environment[$key] = $value;
+    }
+    $environment[hub_pack_port_env($pack['manifest'])] = (string)$port;
+
+    $runtimeRoot = (string)$runtime['runtime_root'];
+    $packRoot = $runtimeRoot . '/packs/' . $packId;
+    $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
+    $compose = "services:\n  adapter:\n    image: " . json_encode(hub_service_image_tag($service), JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot . '/service', JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - .env\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    restart: unless-stopped\n";
+    $env = '';
+    foreach ($environment as $key => $value) {
+        $env .= $key . '=' . $value . "\n";
+    }
+
+    $composeArgs = array_values($args);
+    $dockerCommand = 'docker compose';
+    if (($progressIndex = array_search('--progress=plain', $composeArgs, true)) !== false) {
+        unset($composeArgs[$progressIndex]);
+        $composeArgs = array_values($composeArgs);
+        $dockerCommand .= ' --progress=plain';
+    }
+    $dockerCommand .= ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
+    foreach ($composeArgs as $arg) {
+        $dockerCommand .= ' ' . hub_wsl_shell_literal((string)$arg);
+    }
+    $script = "set -eu\n"
+        . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
+        . 'env_payload=' . hub_wsl_shell_literal(base64_encode($env)) . "\n"
+        . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
+        . 'if [ ! -d "$pack_root/service" ]; then echo "WSL Pack source unavailable: $pack_root/service. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
+        . 'install -d -m 0775 "$service_root"' . "\n"
+        . 'printf %s "$env_payload" | base64 -d > "$service_root/.env"' . "\n"
+        . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
+        . $dockerCommand . "\n";
+
+    return hub_wsl_script_command($runtime, $script);
+}
+
+function hub_service_image_exists(array $service): bool
+{
+    if (!hub_service_uses_wsl_runtime($service)) {
+        return hub_docker_image_exists(hub_service_image_tag($service));
+    }
+
+    $runtime = hub_wsl_service_runtime($service);
+    if ($runtime === null) {
+        return false;
+    }
+    $script = 'docker image inspect ' . hub_wsl_shell_literal(hub_service_image_tag($service)) . ' >/dev/null';
+    return hub_run_command(hub_wsl_script_command($runtime, $script), 30)['exit_code'] === 0;
+}
+
+function hub_run_service_compose_command(PDO $db, ?array $job, array $service, array $args, int $timeoutSeconds, string $stage, int $minProgress, int $maxProgress): array
+{
+    $usesWsl = hub_service_uses_wsl_runtime($service);
+    $command = $usesWsl ? hub_wsl_service_compose_command($service, $args) : hub_compose_command($service, $args);
+    return hub_run_service_command($db, $job, $command, $timeoutSeconds, hub_compose_env($service), $stage, $minProgress, $maxProgress, !$usesWsl);
+}
+
 function hub_docker_image_exists(string $image): bool
 {
     return hub_run_command(['docker', 'image', 'inspect', $image], 30)['exit_code'] === 0;
@@ -268,12 +429,12 @@ function hub_refresh_service_status(PDO $db, array $service): string|array
         return $status;
     }
 
-    $unsupported = hub_linux_docker_unsupported_result();
+    $unsupported = hub_service_runtime_unsupported_result($service);
     if ($unsupported !== null) {
         return $unsupported;
     }
 
-    $result = hub_run_linux_docker_command(hub_compose_command($service, ['ps']), 20, hub_compose_env($service));
+    $result = hub_run_service_compose_command($db, null, $service, ['ps'], 20, 'status', 0, 0);
     if ($result['exit_code'] !== 0) {
         hub_add_service_log($db, (int)$service['id'], 'status', $result['output'], (int)$result['exit_code']);
         hub_update_service_status($db, (int)$service['id'], 'error');
@@ -294,7 +455,7 @@ function hub_start_service(PDO $db, array $service): array
 function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 {
     if (!hub_service_is_internal_task($service)) {
-        $unsupported = hub_linux_docker_unsupported_result();
+        $unsupported = hub_service_runtime_unsupported_result($service);
         if ($unsupported !== null) {
             return $unsupported;
         }
@@ -331,7 +492,7 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
     }
 
     hub_job_progress($db, $job, 'check_image_cache', 10, 'Checking Docker image: ' . hub_service_image_tag($service));
-    if (!hub_docker_image_exists(hub_service_image_tag($service))) {
+    if (!hub_service_image_exists($service)) {
         if (hub_get_storage_setting($db, 'AIHUB_AUTO_BUILD_MISSING_IMAGE') !== '1') {
             return ['exit_code' => 4, 'stdout' => '', 'stderr' => 'Docker image missing. Please build first: ' . hub_service_image_tag($service), 'output' => 'Docker image missing. Please build first: ' . hub_service_image_tag($service)];
         }
@@ -342,7 +503,7 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
     }
 
     hub_job_progress($db, $job, 'docker_up', 80, 'Starting container.');
-    $result = hub_run_service_command($db, $job, hub_service_start_command($service), 10, hub_compose_env($service), 'docker_up', 80, 89);
+    $result = hub_run_service_compose_command($db, $job, $service, ['up', '-d'], 10, 'docker_up', 80, 89);
     hub_add_service_log($db, (int)$service['id'], 'start', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_set_service_enabled($db, $service['mode'], true);
@@ -359,7 +520,7 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 function hub_build_service(PDO $db, array $service, ?array $job = null): array
 {
     if (!hub_service_is_internal_task($service)) {
-        $unsupported = hub_linux_docker_unsupported_result();
+        $unsupported = hub_service_runtime_unsupported_result($service);
         if ($unsupported !== null) {
             return $unsupported;
         }
@@ -374,7 +535,7 @@ function hub_build_service(PDO $db, array $service, ?array $job = null): array
         return $result;
     }
     hub_job_progress($db, $job, 'docker_build', 20, 'Building image: ' . hub_service_image_tag($service));
-    $result = hub_run_service_command($db, $job, hub_service_build_command($service), 900, hub_compose_env($service), 'docker_build', 20, 70);
+    $result = hub_run_service_compose_command($db, $job, $service, ['build', '--progress=plain'], 900, 'docker_build', 20, 70);
     $summary = $result['exit_code'] === 0
         ? 'Image build completed: ' . hub_service_image_tag($service)
         : substr(hub_command_error_summary($result), 0, 1000);
@@ -418,12 +579,12 @@ function hub_stop_service(PDO $db, array $service): array
         return $result;
     }
 
-    $unsupported = hub_linux_docker_unsupported_result();
+    $unsupported = hub_service_runtime_unsupported_result($service);
     if ($unsupported !== null) {
         return $unsupported;
     }
 
-    $result = hub_run_linux_docker_command(hub_compose_command($service, ['down', '--timeout', '5']), 10, hub_compose_env($service));
+    $result = hub_run_service_compose_command($db, null, $service, ['down', '--timeout', '5'], 10, 'docker_down', 0, 0);
     hub_add_service_log($db, (int)$service['id'], 'stop', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_set_service_enabled($db, $service['mode'], false);
@@ -443,12 +604,12 @@ function hub_restart_service(PDO $db, array $service): array
         return $result;
     }
 
-    $unsupported = hub_linux_docker_unsupported_result();
+    $unsupported = hub_service_runtime_unsupported_result($service);
     if ($unsupported !== null) {
         return $unsupported;
     }
 
-    $result = hub_run_command(hub_compose_command($service, ['restart', '--timeout', '5']), 10, hub_compose_env($service));
+    $result = hub_run_service_compose_command($db, null, $service, ['restart', '--timeout', '5'], 10, 'docker_restart', 0, 0);
     hub_add_service_log($db, (int)$service['id'], 'restart', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_refresh_service_status($db, $service);
@@ -467,21 +628,23 @@ function hub_tail_service_logs(PDO $db, array $service): array
         return $result;
     }
 
-    $unsupported = hub_linux_docker_unsupported_result();
+    $unsupported = hub_service_runtime_unsupported_result($service);
     if ($unsupported !== null) {
         return $unsupported;
     }
 
-    $result = hub_run_command(hub_compose_command($service, ['logs', '--tail', '200']), 30, hub_compose_env($service));
+    $result = hub_run_service_compose_command($db, null, $service, ['logs', '--tail', '200'], 30, 'docker_logs', 0, 0);
     hub_add_service_log($db, (int)$service['id'], 'docker_logs', $result['output'], (int)$result['exit_code']);
 
     return $result;
 }
 
-function hub_run_service_command(PDO $db, ?array $job, array $command, int $timeoutSeconds, array $env, string $stage, int $minProgress, int $maxProgress): array
+function hub_run_service_command(PDO $db, ?array $job, array $command, int $timeoutSeconds, array $env, string $stage, int $minProgress, int $maxProgress, bool $requiresLinuxDocker = true): array
 {
     if (!$job) {
-        return hub_run_linux_docker_command($command, $timeoutSeconds, $env);
+        return $requiresLinuxDocker
+            ? hub_run_linux_docker_command($command, $timeoutSeconds, $env)
+            : hub_run_command($command, $timeoutSeconds, $env);
     }
 
     $job = hub_prepare_command_job_logs($db, $job);

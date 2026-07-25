@@ -34,6 +34,7 @@ $scriptRoot = $PSScriptRoot
 $checkCore = Join-Path $scriptRoot 'scripts\windows\check-core.ps1'
 $installCore = Join-Path $scriptRoot 'scripts\windows\install-core.ps1'
 $checkWsl = Join-Path $scriptRoot 'scripts\windows\check-wsl-runtime.ps1'
+$installWsl = Join-Path $scriptRoot 'scripts\windows\install-wsl-runtime.ps1'
 
 Write-Host "[3waAIHub] Windows role installer"
 Write-Host "[3waAIHub] Mode: $Mode"
@@ -57,7 +58,8 @@ switch ($Mode) {
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
         if ($Check) { exit 0 }
 
-        throw 'WslRuntime install is preview check-only in this build. Run with -Check.'
+        & $installWsl -InstallRoot $InstallRoot -ModelsRoot $ModelsRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot
+        exit $LASTEXITCODE
     }
     'NativeAgent' {
         Write-Host 'Role: Windows Native Agent'

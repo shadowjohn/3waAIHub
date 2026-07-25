@@ -64,6 +64,40 @@ Benchmark:
 php scripts/benchmark.php --pack=hello --case=hello_api
 ```
 
+## POST Taiwan Address
+
+Status: trusted-upstream adapter. Install the `taiwan-address` Pack, set its service setting `TWADDR_UPSTREAM_URL` to the existing trusted `api.php`, then restart the service. Clients select a fixed `operation`; they cannot provide an upstream URL.
+
+```bash
+curl -X POST "<BASE_URL>?mode=taiwan_address" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "operation": "getAddress_XY",
+    "address": "台中市南區新和街1號"
+  }'
+```
+
+Alias and POI lookup uses the same endpoint:
+
+```json
+{
+  "operation": "searchAlias",
+  "q": "國網中心",
+  "limit": 1
+}
+```
+
+Do not convert aliases, POI, fallback, or approximate results into official addresses. Preserve `result_label`, `quality_flag`, `include_in_coverage`, `geo_check_status`, and `geo_warning_code` from returned items.
+
+Contract:
+
+- Method: `POST`
+- Content-Type: `application/json`
+- Operations: `cities`, `autocomplete`, `searchAddress`, `searchAlias`, `searchAll`, `getAddress_XY`, `nearestAddress`, `bboxAddress`, `searchPoi`, and the OpenData search operations
+- Errors: `operation_not_allowed`, `upstream_not_configured`, `upstream_unavailable`, `upstream_invalid_response`, `gateway_timeout`
+- Windows Core can manage this Pack, but its Docker adapter must run through WSL/Linux runtime.
+
 ## POST OCR
 
 Status: L5 benchmark ready. 預設仍回 mock JSON；設定 `OCR_REAL_INFERENCE=1` 或表單加 `real_inference=1` 時執行 PaddleOCR。

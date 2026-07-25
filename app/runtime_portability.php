@@ -120,6 +120,20 @@ function hub_platform_target_supported(string $target, ?string $platform = null)
     return hub_runtime_target_resolution($target, $platform);
 }
 
+function hub_pack_runtime_target_resolution(array $manifest, ?string $platform = null, ?array $profile = null): array
+{
+    $platform = hub_platform_id($platform);
+    $targets = hub_normalize_platform_targets($manifest);
+    $usesWslCompose = !empty($manifest['runtime']['windows_wsl_compose']);
+    $wslDeclared = !empty($targets['windows-wsl2-linux-docker']['supported']);
+
+    if ($platform === 'windows' && $usesWslCompose && $wslDeclared) {
+        return hub_runtime_target_resolution('windows-wsl2-linux-docker', $platform, $profile);
+    }
+
+    return hub_runtime_target_resolution('linux-docker', $platform, $profile);
+}
+
 function hub_unsupported_runtime_result(string $target, string $message): array
 {
     $stderr = 'unsupported: ' . $message;
