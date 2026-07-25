@@ -326,22 +326,11 @@ function hub_bearer_token_from_request(): string
 function hub_authenticate_api_token(
     PDO $db,
     string $clientIp,
-    ?string $providedToken = null,
-    ?string $requiredMode = null,
-    bool $allowLocalhostBypass = true,
-    bool $allowAnonymous = true
+    string $providedToken,
+    ?string $requiredMode = null
 ): array
 {
-    $tokenCameFromRequest = $providedToken === null;
-    $plainToken = $providedToken ?? hub_bearer_token_from_request();
-    if ($plainToken === '' && $allowLocalhostBypass && $tokenCameFromRequest && hub_is_localhost_ip($clientIp) && hub_get_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN') === '1') {
-        return ['ok' => true, 'context' => []];
-    }
-    if ($plainToken === '' && $allowAnonymous && hub_get_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN') !== '1') {
-        return ['ok' => true, 'context' => []];
-    }
-
-    if ($plainToken === '') {
+    if ($providedToken === '') {
         return ['ok' => false, 'response' => hub_gateway_error(401, 'missing_token', 'API token is required'), 'context' => []];
     }
 
@@ -352,7 +341,7 @@ function hub_authenticate_api_token(
          WHERE t.token_hash = :token_hash
          LIMIT 1'
     );
-    $stmt->execute([':token_hash' => hub_hash_api_token($plainToken)]);
+    $stmt->execute([':token_hash' => hub_hash_api_token($providedToken)]);
     $token = $stmt->fetch();
     if (!$token) {
         return ['ok' => false, 'response' => hub_gateway_error(401, 'invalid_token', 'API token is invalid'), 'context' => []];
@@ -384,7 +373,19 @@ function hub_authenticate_api_token(
 
 function hub_gateway_authenticate_api_token(PDO $db, string $mode, string $clientIp, ?string $providedToken = null): array
 {
-    return hub_authenticate_api_token($db, $clientIp, $providedToken, $mode);
+    $tokenCameFromRequest = $providedToken === null;
+    $plainToken = $providedToken ?? hub_bearer_token_from_request();
+    if ($plainToken === '' && $tokenCameFromRequest && hub_is_localhost_ip($clientIp) && hub_get_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN') === '1') {
+        return ['ok' => true, 'context' => []];
+    }
+    if ($plainToken === '' && hub_get_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN') !== '1') {
+        return ['ok' => true, 'context' => []];
+    }
+    if ($plainToken === '') {
+        return ['ok' => false, 'response' => hub_gateway_error(401, 'missing_token', 'API token is required'), 'context' => []];
+    }
+
+    return hub_authenticate_api_token($db, $clientIp, $plainToken, $mode);
 }
 
 function hub_record_api_token_usage(PDO $db, array $context, string $mode, bool $ok, int $elapsedMs, int $uploadBytes, int $responseBytes): void
