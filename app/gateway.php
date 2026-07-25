@@ -1993,6 +1993,15 @@ function hub_api_artifact(PDO $db, array $authContext = []): array
         return hub_gateway_error(410, 'artifact_purged', 'artifact has been purged');
     }
 
+    return hub_gateway_stream_task_artifact($db, $artifact);
+}
+
+function hub_gateway_stream_task_artifact(PDO $db, array $artifact): array
+{
+    $artifactId = (int)($artifact['id'] ?? 0);
+    if ($artifactId < 1) {
+        return hub_gateway_json(404, ['ok' => false, 'error' => 'artifact not found']);
+    }
     $path = hub_artifact_safe_path($artifact['path']);
     if ($path === null) {
         return hub_gateway_json(403, ['ok' => false, 'error' => 'artifact path rejected']);
@@ -2010,6 +2019,121 @@ function hub_api_artifact(PDO $db, array $authContext = []): array
     $response['stream_download_token'] = $downloadToken;
 
     return $response;
+}
+
+function hub_gateway_cluster_child_followup(PDO $db, string $mode, int $taskId, int $memberId, int $tokenId, ?int $artifactId = null): array
+{
+    if (!in_array($mode, ['task_status', 'task_result', 'task_log', 'task_cancel', 'artifact'], true) || $taskId < 1 || $memberId < 1 || $tokenId < 1) {
+        return hub_gateway_error(404, 'unknown_mode', 'mode is not registered');
+    }
+    $task = hub_get_task($db, $taskId);
+    if ($task === null || (int)($task['owner_member_id'] ?? 0) !== $memberId || (int)($task['owner_token_id'] ?? 0) !== $tokenId) {
+        return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
+    }
+
+    return match ($mode) {
+        'task_status' => hub_gateway_json(200, [
+            'ok' => true,
+            'task_id' => $taskId,
+            'status' => (string)($task['status'] ?? ''),
+            'progress' => (int)($task['progress'] ?? 0),
+            'cancel_requested' => (string)($task['input']['cancel_requested'] ?? '') === '1',
+        ]),
+        'task_result' => hub_gateway_cluster_child_task_result($db, $task),
+        'task_log' => hub_gateway_json(200, [
+            'ok' => true,
+            'task_id' => $taskId,
+            'logs' => hub_cluster_child_project_task_logs(hub_list_task_logs($db, $taskId), $taskId),
+        ]),
+        'task_cancel' => hub_gateway_cluster_child_task_cancel($db, $task),
+        'artifact' => hub_gateway_cluster_child_artifact($db, $task, $artifactId),
+    };
+}
+
+function hub_gateway_cluster_child_task_result(PDO $db, array $task): array
+{
+    $taskId = (int)($task['id'] ?? 0);
+    if (($task['status'] ?? '') !== 'success') {
+        return hub_gateway_json(409, ['ok' => false, 'task_id' => $taskId, 'status' => (string)($task['status'] ?? '')]);
+    }
+    $artifacts = hub_gateway_cluster_child_artifact_index($db, $taskId);
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'task_id' => $taskId,
+        'result' => hub_gateway_cluster_child_result_summary($task, $artifacts),
+        'cluster_artifact_index' => $artifacts,
+    ]);
+}
+
+function hub_gateway_cluster_child_artifact_index(PDO $db, int $taskId): array
+{
+    $stmt = $db->prepare(
+        "SELECT id, size_bytes FROM task_artifacts
+         WHERE task_id = :task_id AND state = 'available' AND purged_at IS NULL
+         ORDER BY id ASC LIMIT 128"
+    );
+    $stmt->execute([':task_id' => $taskId]);
+    $artifacts = [];
+    foreach ($stmt->fetchAll() as $artifact) {
+        $id = (int)($artifact['id'] ?? 0);
+        if ($id > 0) {
+            $artifacts[] = ['id' => $id, 'size_bytes' => max(0, (int)($artifact['size_bytes'] ?? 0))];
+        }
+    }
+
+    return $artifacts;
+}
+
+function hub_gateway_cluster_child_result_summary(array $task, array $artifacts): array
+{
+    $result = $task['result'] ?? null;
+    $artifactId = is_array($result) && (($result['stored_as_artifact'] ?? false) === true)
+        ? (int)($result['artifact_id'] ?? 0)
+        : 0;
+    $known = array_fill_keys(array_map(static fn (array $artifact): int => (int)$artifact['id'], $artifacts), true);
+    if ($artifactId > 0 && isset($known[$artifactId])) {
+        $summary = ['stored_as_artifact' => true, 'artifact_id' => $artifactId];
+        if (is_int($result['bytes'] ?? null) && $result['bytes'] >= 0) {
+            $summary['bytes'] = $result['bytes'];
+        }
+
+        return $summary;
+    }
+
+    return [];
+}
+
+function hub_gateway_cluster_child_task_cancel(PDO $db, array $task): array
+{
+    $taskId = (int)($task['id'] ?? 0);
+    if (!hub_cancel_task($db, $taskId)) {
+        return hub_gateway_json(409, ['ok' => false, 'task_id' => $taskId, 'status' => (string)($task['status'] ?? '')]);
+    }
+    $updated = hub_get_task($db, $taskId);
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'task_id' => $taskId,
+        'status' => (string)($updated['status'] ?? 'cancelled'),
+        'cancel_requested' => (string)($updated['input']['cancel_requested'] ?? '') === '1',
+    ]);
+}
+
+function hub_gateway_cluster_child_artifact(PDO $db, array $task, ?int $artifactId): array
+{
+    if ($artifactId === null || $artifactId < 1) {
+        return hub_gateway_json(404, ['ok' => false, 'error' => 'artifact not found']);
+    }
+    $artifact = hub_get_task_artifact($db, $artifactId);
+    if ($artifact === null || (int)($artifact['task_id'] ?? 0) !== (int)($task['id'] ?? 0)) {
+        return hub_gateway_json(404, ['ok' => false, 'error' => 'artifact not found']);
+    }
+    if (($artifact['state'] ?? '') === 'purged' || !empty($artifact['purged_at'])) {
+        return hub_gateway_error(410, 'artifact_purged', 'artifact has been purged');
+    }
+
+    return hub_gateway_stream_task_artifact($db, $artifact);
 }
 
 function hub_api_load_task(PDO $db, array $authContext = []): ?array
