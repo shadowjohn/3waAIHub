@@ -949,7 +949,7 @@ hub_test('Agent manifest smoke validates live-contract metadata without Pack inf
     ] as $packId) {
         hub_test_make_documentable_pack($db, $packId);
     }
-    hub_test_make_documentable_pack($db, 'tts-voxcpm2', ['mode' => 'voice_generate']);
+    hub_test_make_documentable_pack($db, 'whisper-asr', ['mode' => 'speech_transcribe']);
     $manifest = hub_public_api_manifest($db, static fn (array $service): bool => true);
 
     $errors = hub_agent_manifest_smoke_validate($manifest);
@@ -959,9 +959,9 @@ hub_test('Agent manifest smoke validates live-contract metadata without Pack inf
     $invalid['services'][0]['endpoint'] = 'api.php?mode=wrong';
     hub_test_assert(hub_agent_manifest_smoke_validate($invalid) !== [], 'endpoint/mode drift must fail agent smoke validation');
 
-    $voiceIndex = array_search('voice_generate', array_column($invalid['services'], 'mode'), true);
-    hub_test_assert(is_int($voiceIndex), 'voice_generate fixture missing from agent smoke manifest');
-    foreach ($invalid['services'][$voiceIndex]['input_fields'] as &$field) {
+    $sourceIndex = array_search('speech_transcribe', array_column($invalid['services'], 'mode'), true);
+    hub_test_assert(is_int($sourceIndex), 'speech_transcribe fixture missing from agent smoke manifest');
+    foreach ($invalid['services'][$sourceIndex]['input_fields'] as &$field) {
         if (is_array($field) && ($field['name'] ?? '') === 'file') {
             unset($field['example_include']);
         }
