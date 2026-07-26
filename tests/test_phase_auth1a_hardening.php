@@ -114,3 +114,9 @@ hub_test('PhaseAuth-1A.1 login hardening and role nav behave as expected', funct
         hub_test_assert(str_contains($adminNav, $label), 'system_admin nav missing ' . $label);
     }
 });
+
+hub_test('PhaseAuth-1A.1 customer admin directory landing returns to the customer portal', function (): void {
+    $adminIndex = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
+
+    hub_test_assert(str_contains($adminIndex, 'hub_require_login($db)') && str_contains($adminIndex, "hub_redirect('my_services.php')"), 'admin directory landing must redirect customers to their portal');
+});
