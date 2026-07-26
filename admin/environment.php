@@ -39,6 +39,7 @@ function hub_env_section_label(string $section): string
         'memory' => '記憶體',
         'disk' => '磁碟與資料目錄',
         'command_worker' => '背景 Worker',
+        'web_protection' => 'Web 檔案防護',
     ][$section] ?? $section;
 }
 
@@ -134,6 +135,10 @@ function hub_env_key_label(string $key): string
         'last_log_at' => '最後 log 時間',
         'install_command' => '掛載指令',
         'manual_command' => 'Windows 手動執行指令',
+        'apache_active' => 'Apache 執行中',
+        'nginx_active' => 'Nginx 執行中',
+        'apache_rules_present' => 'Apache .htaccess 靜態規則完整',
+        'iis_rules_present' => 'IIS 規則完整',
     ][$key] ?? $key;
 }
 
@@ -444,6 +449,32 @@ hub_admin_header('系統環境', $user);
         <button class="primary" type="submit">執行環境檢測</button>
     </form>
 </section>
+<section class="panel" id="webProtectionLive">
+    <h2>即時 Web 檔案防護</h2>
+    <p class="muted" id="webProtectionLiveStatus">正在檢查同源保護規則...</p>
+</section>
+<script>
+(() => {
+    const root = new URL('../', window.location.href);
+    const targets = ['data/cluster.key', 'docs/cluster-router.md', 'scripts/init_db.php'];
+    const status = document.getElementById('webProtectionLiveStatus');
+    Promise.all(targets.map(async (path) => {
+        try {
+            const response = await fetch(new URL(path, root), {
+                method: 'HEAD',
+                credentials: 'same-origin',
+                cache: 'no-store',
+                redirect: 'manual',
+            });
+            return `${path}: ${[403, 404].includes(response.status) ? 'PASS' : `FAIL (${response.status})`}`;
+        } catch {
+            return `${path}: FAIL (network)`;
+        }
+    })).then((rows) => {
+        status.textContent = rows.join(' | ');
+    });
+})();
+</script>
 <?php if (!$snapshot): ?>
     <section class="panel muted">尚無環境快照，請先排程環境檢測並執行 command worker。</section>
     <section class="panel">
