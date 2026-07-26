@@ -25,7 +25,7 @@
 - Modify: `admin/api_token_permissions.php:23-53`
 - Test: `tests/test_cluster_router.php`
 
-- [ ] **Step 1: Write the failing Router-mode test**
+- [x] **Step 1: Write the failing Router-mode test**
 
 Add this test beside the existing public-manifest tests in `tests/test_cluster_router.php`:
 
@@ -61,13 +61,13 @@ hub_test('cluster router exposes fresh remote modes for customer permissions', f
 });
 ```
 
-- [ ] **Step 2: Run the suite to verify RED**
+- [x] **Step 2: Run the suite to verify RED**
 
 Run: `AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full`
 
 Expected: FAIL because `hub_cluster_router_available_modes()` does not exist.
 
-- [ ] **Step 3: Add the smallest Router-mode helper and permission section**
+- [x] **Step 3: Add the smallest Router-mode helper and permission section**
 
 After `hub_cluster_public_manifest()` in `app/cluster_router.php`, add a helper that returns sorted, validated Mode names only when `hub_cluster_router_enabled($db)` is true:
 
@@ -116,13 +116,13 @@ $routerModes = array_values(array_filter(
 
 Reuse the current CSRF form and `hub_set_api_token_mode_permissions()` save path.
 
-- [ ] **Step 4: Run the suite to verify GREEN**
+- [x] **Step 4: Run the suite to verify GREEN**
 
 Run: `AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full`
 
 Expected: PASS with zero failures.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
 git add app/cluster_router.php admin/api_token_permissions.php tests/test_cluster_router.php

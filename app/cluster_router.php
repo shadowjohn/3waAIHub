@@ -779,6 +779,23 @@ function hub_cluster_public_manifest(PDO $db): array
     ];
 }
 
+function hub_cluster_router_available_modes(PDO $db): array
+{
+    if (!hub_cluster_router_enabled($db)) {
+        return [];
+    }
+    $modes = [];
+    foreach (hub_cluster_public_manifest($db)['services'] as $service) {
+        $mode = is_array($service) ? trim((string)($service['mode'] ?? '')) : '';
+        if (preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $mode) === 1) {
+            $modes[$mode] = true;
+        }
+    }
+    ksort($modes, SORT_STRING);
+
+    return array_keys($modes);
+}
+
 function hub_cluster_public_api_docs_html(PDO $db): string
 {
     $manifest = hub_cluster_public_manifest($db);

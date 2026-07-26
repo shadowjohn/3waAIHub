@@ -1879,6 +1879,36 @@ hub_test('cluster router refuses self dispatch without a verified paired router 
     });
 });
 
+hub_test('cluster router exposes fresh remote modes for customer permissions', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_cluster_router_station($db, ['station_key' => 'remote_address']);
+        hub_cluster_store_station_manifest($db, (int)$station['id'], [
+            'modes' => ['taiwan_address'],
+            'services' => [[
+                'mode' => 'taiwan_address',
+                'name' => 'Taiwan Address',
+                'method' => 'POST',
+                'content_type' => 'application/json',
+                'endpoint' => 'api.php?mode=taiwan_address',
+            ]],
+        ]);
+        hub_cluster_store_station_status($db, (int)$station['id'], [
+            'snapshot_at' => hub_now(),
+            'gpu' => ['available' => true, 'memory_free_mb' => 1024],
+            'active_gpu_leases' => 0,
+            'queued_jobs' => 0,
+            'running_jobs' => 0,
+            'modes' => ['taiwan_address'],
+        ]);
+
+        hub_test_assert(hub_cluster_router_available_modes($db) === ['taiwan_address'], 'fresh Router-only modes must be available for Token permissions');
+        $page = (string)file_get_contents(HUB_ROOT . '/admin/api_token_permissions.php');
+        hub_test_assert(str_contains($page, 'hub_cluster_router_available_modes($db)') && str_contains($page, 'Cluster Router Mode'), 'Token permissions page must render live Router modes');
+    });
+});
+
 hub_test('cluster public manifest selects only fresh contracts and rewrites router endpoints', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

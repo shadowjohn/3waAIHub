@@ -23,6 +23,16 @@ $services = hub_list_services($db);
 $taskModes = hub_task_api_modes();
 $photoModes = hub_photo_modes();
 $audioModes = hub_audio_modes();
+$shownModes = array_fill_keys(array_merge(
+    array_column($services, 'mode'),
+    array_keys($taskModes),
+    array_keys($photoModes),
+    array_keys($audioModes),
+), true);
+$routerModes = array_values(array_filter(
+    hub_cluster_router_available_modes($db),
+    static fn (string $mode): bool => !isset($shownModes[$mode]),
+));
 
 hub_admin_header('Token Mode 權限', $user);
 ?>
@@ -48,6 +58,12 @@ hub_admin_header('Token Mode 權限', $user);
         <?php foreach ($audioModes as $mode => $label): ?>
             <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
         <?php endforeach; ?>
+        <?php if ($routerModes !== []): ?>
+            <h2>Cluster Router Mode</h2>
+            <?php foreach ($routerModes as $mode): ?>
+                <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code></label>
+            <?php endforeach; ?>
+        <?php endif; ?>
         <p><button class="primary" type="submit">儲存</button> <a class="button" href="api_tokens.php?member_id=<?= (int)$token['member_id'] ?>">返回 Token 列表</a></p>
     </form>
 </section>
