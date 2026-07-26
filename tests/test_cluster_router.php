@@ -1952,9 +1952,14 @@ hub_test('cluster router exposes fresh remote modes for customer permissions', f
 
 hub_test('cluster router guide documents the unified customer entry', function (): void {
     $guide = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
+    $clusterPage = (string)file_get_contents(HUB_ROOT . '/admin/cluster.php');
+    $layout = (string)file_get_contents(HUB_ROOT . '/admin/_layout.php');
+
     foreach (['Cluster Router Mode', '登錄 / 更新本機服務', 'cluster_api.php'] as $needle) {
         hub_test_assert(str_contains($guide, $needle), 'cluster guide must document ' . $needle);
     }
+    hub_test_assert(str_contains($clusterPage, 'cluster_public_api_docs.php'), 'Cluster admin page must link to the Router API documentation');
+    hub_test_assert(str_contains($layout, 'cluster_public_api_docs.php'), 'customer navigation must link to the Router API documentation');
 });
 
 hub_test('cluster public manifest selects only fresh contracts and rewrites router endpoints', function (): void {

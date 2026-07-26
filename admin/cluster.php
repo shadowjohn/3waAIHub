@@ -186,6 +186,7 @@ hub_admin_header('Cluster', $user);
 <div class="hub-tabs">
     <a class="button<?= $view === 'roles' ? ' primary' : '' ?>" href="cluster.php">角色與節點</a>
     <a class="button<?= $view === 'usage' ? ' primary' : '' ?>" href="cluster.php?view=usage">Cluster 用量</a>
+    <?php if ($routerEnabled): ?><a class="button" href="../cluster_public_api_docs.php" target="_blank" rel="noopener">統一入口 API 文件</a><?php endif; ?>
 </div>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
