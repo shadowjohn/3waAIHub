@@ -769,9 +769,6 @@ function hub_cluster_public_manifest(PDO $db): array
             if (preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $mode) !== 1) {
                 continue;
             }
-            if (preg_match('~^multipart/form-data(?:;|$)~i', trim((string)($service['content_type'] ?? ''))) === 1) {
-                continue;
-            }
             $contracts[(int)$station['id']][$mode] = $service;
         }
         $inventory['modes'] = array_values(array_filter(
@@ -1060,7 +1057,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $directRequest = $normalized;
             $directRequest['bearer_token'] = $stationToken;
             $directRequest['client_ip'] = $selfPeerIp;
-            $result = $dispatcher($db, $mode, $directRequest);
+            $result = hub_cluster_router_dispatch_self($db, $mode, $directRequest, $dispatcher);
             if (!is_array($result)) {
                 throw new RuntimeException('invalid direct response');
             }
@@ -1073,6 +1070,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
                 'method' => $normalized['method'],
                 'headers' => ['Authorization' => 'Bearer ' . $stationToken] + $normalized['headers'],
                 'body' => $normalized['raw_body'],
+                'form' => $normalized['form'] ?? null,
                 'follow_redirects' => false,
                 'response_limit_bytes' => hub_cluster_proxy_response_limit_bytes(),
             ];
@@ -1101,7 +1099,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $response,
             $requestId,
             (int)round((microtime(true) - $started) * 1000),
-            strlen($normalized['raw_body'])
+            (int)$normalized['request_bytes']
         );
     }
 
@@ -1115,17 +1113,7 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
         return ['response' => hub_gateway_error(400, 'bad_request', 'invalid request method')];
     }
     $headers = hub_cluster_router_safe_request_headers($request);
-    if (preg_match('/^multipart\/form-data(?:;|$)/i', (string)($headers['Content-Type'] ?? '')) === 1) {
-        return ['response' => hub_gateway_error(415, 'router_upload_unsupported', 'file uploads are not supported by the cluster router')];
-    }
-    $files = array_key_exists('files', $request) ? $request['files'] : ($_FILES ?? []);
-    if (!is_array($files) || $files !== []) {
-        return ['response' => hub_gateway_error(415, 'router_upload_unsupported', 'file uploads are not supported by the cluster router')];
-    }
-    $body = hub_cluster_router_read_request_body($request);
-    if (isset($body['response'])) {
-        return $body;
-    }
+    $contentLength = array_key_exists('content_length', $request) ? $request['content_length'] : ($_SERVER['CONTENT_LENGTH'] ?? '');
     $inputQuery = array_key_exists('query', $request) ? $request['query'] : ($_GET ?? []);
     if (!is_array($inputQuery)) {
         return ['response' => hub_gateway_error(400, 'router_request_unsupported', 'request query is not supported')];
@@ -1145,14 +1133,150 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
         $query[$key] = $value;
     }
     $query['mode'] = $mode;
+    $requestUri = (string)($request['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? '');
 
+    if (preg_match('/^multipart\/form-data(?:;|$)/i', (string)($headers['Content-Type'] ?? '')) === 1) {
+        if (hub_cluster_router_content_length_exceeds($contentLength, hub_cluster_proxy_request_limit_bytes())) {
+            return ['response' => hub_gateway_error(413, 'router_request_too_large', 'request body is too large for the cluster router')];
+        }
+        $post = hub_cluster_router_normalize_scalar_fields(array_key_exists('post', $request) ? $request['post'] : ($_POST ?? []));
+        $files = hub_cluster_router_normalize_uploaded_files(array_key_exists('files', $request) ? $request['files'] : ($_FILES ?? []));
+        if ($post === null || $files === null) {
+            return ['response' => hub_gateway_error(400, 'router_request_unsupported', 'multipart form is not supported')];
+        }
+        $requestBytes = hub_cluster_router_request_bytes($contentLength, $post, $files);
+        if ($requestBytes > hub_cluster_proxy_request_limit_bytes()) {
+            return ['response' => hub_gateway_error(413, 'router_request_too_large', 'request body is too large for the cluster router')];
+        }
+        unset($headers['Content-Type']);
+
+        return [
+            'method' => $method,
+            'headers' => $headers,
+            'raw_body' => '',
+            'form' => ['post' => $post, 'files' => $files],
+            'query' => $query,
+            'request_uri' => $requestUri,
+            'request_bytes' => $requestBytes,
+        ];
+    }
+    $files = array_key_exists('files', $request) ? $request['files'] : ($_FILES ?? []);
+    if (!is_array($files) || $files !== []) {
+        return ['response' => hub_gateway_error(415, 'router_upload_unsupported', 'file uploads are not supported by the cluster router')];
+    }
+    $body = hub_cluster_router_read_request_body($request);
+    if (isset($body['response'])) {
+        return $body;
+    }
     return [
         'method' => $method,
         'headers' => $headers,
         'raw_body' => $body['body'],
         'query' => $query,
-        'request_uri' => (string)($request['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? ''),
+        'request_uri' => $requestUri,
+        'request_bytes' => strlen($body['body']),
     ];
+}
+
+function hub_cluster_router_normalize_scalar_fields(mixed $source): ?array
+{
+    if (!is_array($source)) {
+        return null;
+    }
+    $fields = [];
+    foreach ($source as $key => $value) {
+        if (!is_string($key) || preg_match('/^[A-Za-z][A-Za-z0-9_-]{0,63}$/', $key) !== 1 || !is_scalar($value)) {
+            return null;
+        }
+        $value = (string)$value;
+        if (strlen($value) > 1024 || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+            return null;
+        }
+        $fields[$key] = $value;
+    }
+
+    return $fields;
+}
+
+function hub_cluster_router_normalize_uploaded_files(mixed $source): ?array
+{
+    if (!is_array($source)) {
+        return null;
+    }
+    $files = [];
+    foreach ($source as $field => $file) {
+        if (!is_string($field) || preg_match('/^[A-Za-z][A-Za-z0-9_-]{0,63}$/', $field) !== 1 || !is_array($file) || is_array($file['tmp_name'] ?? null)) {
+            return null;
+        }
+        $error = $file['error'] ?? UPLOAD_ERR_NO_FILE;
+        if (!is_int($error)) {
+            return null;
+        }
+        if ($error === UPLOAD_ERR_NO_FILE) {
+            continue;
+        }
+        $path = $file['tmp_name'] ?? null;
+        if ($error !== UPLOAD_ERR_OK || !is_string($path) || !is_file($path)) {
+            return null;
+        }
+        $size = filesize($path);
+        if ($size === false || $size < 0) {
+            return null;
+        }
+        $name = $file['name'] ?? $field;
+        if (!is_string($name)) {
+            return null;
+        }
+        $name = basename(str_replace('\\', '/', $name));
+        if ($name === '' || strlen($name) > 255 || preg_match('/[\x00-\x1F\x7F]/', $name) === 1) {
+            return null;
+        }
+        $type = $file['type'] ?? '';
+        $type = is_string($type) && preg_match('/\A[a-z0-9.+-]{1,127}\/[a-z0-9.+-]{1,127}\z/i', $type) === 1
+            ? $type
+            : 'application/octet-stream';
+        $files[$field] = ['name' => $name, 'type' => $type, 'tmp_name' => $path, 'error' => UPLOAD_ERR_OK, 'size' => (int)$size];
+    }
+
+    return $files;
+}
+
+function hub_cluster_router_request_bytes(mixed $contentLength, array $post, array $files): int
+{
+    $fallback = array_sum(array_map(static fn (string $value): int => strlen($value), $post));
+    foreach ($files as $file) {
+        $fallback += (int)($file['size'] ?? 0);
+    }
+    if (is_int($contentLength) && $contentLength >= 0) {
+        return max($contentLength, $fallback);
+    }
+    $contentLength = trim((string)$contentLength);
+
+    return ctype_digit($contentLength) ? max((int)$contentLength, $fallback) : $fallback;
+}
+
+function hub_cluster_router_dispatch_self(PDO $db, string $mode, array $request, callable $dispatcher): array
+{
+    $form = is_array($request['form'] ?? null) ? $request['form'] : null;
+    if ($form === null) {
+        return $dispatcher($db, $mode, $request);
+    }
+    $oldPost = $_POST;
+    $oldFiles = $_FILES;
+    $oldServer = $_SERVER;
+    try {
+        // ponytail: request-scoped relay; stream only if a supported pack exceeds the Router ceiling.
+        $_POST = (array)($form['post'] ?? []);
+        $_FILES = (array)($form['files'] ?? []);
+        $_SERVER['CONTENT_LENGTH'] = (string)($request['request_bytes'] ?? 0);
+        unset($request['raw_body']);
+
+        return $dispatcher($db, $mode, $request);
+    } finally {
+        $_POST = $oldPost;
+        $_FILES = $oldFiles;
+        $_SERVER = $oldServer;
+    }
 }
 
 function hub_cluster_router_requested_mode(mixed $value): ?string
@@ -2333,8 +2457,12 @@ function hub_cluster_proxy_transport(array $request): array
     if ($handle === false) {
         return ['error' => 'proxy'];
     }
+    $form = is_array($request['form'] ?? null) ? $request['form'] : null;
     $headers = [];
     foreach (['Authorization', 'Content-Type', 'Accept'] as $name) {
+        if ($form !== null && $name === 'Content-Type') {
+            continue;
+        }
         $value = $request['headers'][$name] ?? null;
         if (is_string($value) && $value !== '' && strlen($value) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1) {
             $headers[] = $name . ': ' . $value;
@@ -2380,7 +2508,11 @@ function hub_cluster_proxy_transport(array $request): array
         curl_setopt($handle, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
     }
     if ($configured && !in_array($method, ['GET', 'HEAD'], true)) {
-        $configured = curl_setopt($handle, CURLOPT_POSTFIELDS, $body);
+        $configured = curl_setopt(
+            $handle,
+            CURLOPT_POSTFIELDS,
+            $form === null ? $body : hub_proxy_post_fields((array)($form['post'] ?? []), (array)($form['files'] ?? []))
+        );
     }
     $result = $configured ? curl_exec($handle) : false;
     $status = (int)(curl_getinfo($handle, CURLINFO_RESPONSE_CODE) ?: 0);

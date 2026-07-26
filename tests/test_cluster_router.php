@@ -1216,31 +1216,110 @@ hub_test('cluster router remote dispatch uses station auth safe headers and no r
     });
 });
 
-hub_test('cluster router rejects multipart and uploaded file proxy requests before dispatch', function (): void {
+hub_test('cluster router relays validated multipart uploads and rejects malformed forms', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
         hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
         $token = hub_test_cluster_router_customer_token($db, ['vision']);
-        $station = hub_test_cluster_router_station($db, ['station_key' => 'upload_gpu']);
+        $station = hub_test_cluster_router_station($db, ['station_key' => 'upload_gpu', 'station_token' => 'remote_station_token']);
+        $fixture = HUB_ROOT . '/packs/yolo/demo/camera_cat.png';
+        $bytes = (int)filesize($fixture);
+        $requestBytes = $bytes + strlen('1') + strlen('0.25');
+        hub_test_assert($bytes > 0, 'multipart fixture must be available');
         $transportCalls = 0;
+        $proxied = [];
         $seams = [
             'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => 'upload_gpu'])],
-            'transport' => static function () use (&$transportCalls): array {
+            'transport' => static function (array $request) use (&$transportCalls, &$proxied): array {
                 $transportCalls++;
-                return hub_gateway_json(200, ['ok' => true]);
+                $proxied[] = $request;
+                return ['status' => 200, 'headers' => ['Content-Type: image/png'], 'body' => "\x89PNG\r\n\x1a\nrouter"];
             },
         ];
 
         $multipart = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token'], [
-            'headers' => ['Content-Type' => 'multipart/form-data; boundary=test'],
+            'headers' => ['Content-Type' => 'multipart/form-data; boundary=client-boundary', 'Accept' => 'image/png'],
+            'content_length' => (string)$requestBytes,
+            'raw_body' => '',
+            'post' => ['real_inference' => '1', 'conf' => '0.25'],
+            'files' => ['image' => [
+                'name' => 'camera_cat.png',
+                'type' => 'image/png',
+                'tmp_name' => $fixture,
+                'error' => UPLOAD_ERR_OK,
+                'size' => $bytes,
+            ]],
         ]), $seams);
-        $uploaded = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token'], [
-            'files' => ['source' => ['error' => UPLOAD_ERR_OK]],
+        $nested = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token'], [
+            'headers' => ['Content-Type' => 'multipart/form-data; boundary=client-boundary'],
+            'files' => ['image' => ['tmp_name' => [$fixture], 'error' => UPLOAD_ERR_OK]],
+        ]), $seams);
+        $missing = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token'], [
+            'headers' => ['Content-Type' => 'multipart/form-data; boundary=client-boundary'],
+            'files' => ['image' => ['tmp_name' => '/missing/file.png', 'error' => UPLOAD_ERR_OK]],
+        ]), $seams);
+        $badName = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token'], [
+            'headers' => ['Content-Type' => 'multipart/form-data; boundary=client-boundary'],
+            'files' => ['image' => ['name' => ['camera_cat.png'], 'tmp_name' => $fixture, 'error' => UPLOAD_ERR_OK]],
         ]), $seams);
 
-        hub_test_assert($multipart['status'] === 415 && $uploaded['status'] === 415, 'router must return a stable upload proxy rejection');
-        hub_test_assert(str_contains($multipart['body'], 'router_upload_unsupported') && str_contains($uploaded['body'], 'router_upload_unsupported'), 'router upload rejection code mismatch');
-        hub_test_assert($transportCalls === 0, 'unsupported uploads must not begin a dispatch');
+        hub_test_assert($multipart['status'] === 200 && str_starts_with((string)$multipart['body'], "\x89PNG\r\n\x1a\n"), 'Router must preserve a binary multipart child response');
+        hub_test_assert(($proxied[0]['headers'] ?? []) === ['Authorization' => 'Bearer remote_station_token', 'Accept' => 'image/png'], 'multipart relay must replace the client boundary and retain only safe headers');
+        hub_test_assert(($proxied[0]['form']['post'] ?? []) === ['real_inference' => '1', 'conf' => '0.25'], 'multipart relay must preserve flat form values');
+        hub_test_assert(is_file((string)($proxied[0]['form']['files']['image']['tmp_name'] ?? '')), 'multipart relay must pass a validated temporary upload');
+        hub_test_assert($nested['status'] === 400 && $missing['status'] === 400 && $badName['status'] === 400 && str_contains((string)$nested['body'], 'router_request_unsupported') && str_contains((string)$missing['body'], 'router_request_unsupported') && str_contains((string)$badName['body'], 'router_request_unsupported'), 'malformed multipart forms must fail before routing');
+        hub_test_assert($transportCalls === 1, 'invalid multipart forms must not begin a dispatch');
+        hub_test_assert((int)$db->query('SELECT upload_bytes FROM cluster_route_accesses ORDER BY id DESC LIMIT 1')->fetchColumn() === $requestBytes, 'Router multipart accounting must record the inbound request bytes');
+    });
+});
+
+hub_test('cluster router scopes multipart form globals for a self station', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'vision');
+            hub_cluster_node_configure($db, true, ['vision']);
+            $station = hub_cluster_register_self_station($db);
+            $token = hub_test_cluster_router_customer_token($db, ['vision']);
+            $fixture = HUB_ROOT . '/packs/yolo/demo/camera_cat.png';
+            $bytes = (int)filesize($fixture);
+            $captured = [];
+            $originalPost = $_POST;
+            $originalFiles = $_FILES;
+            $_POST = ['sentinel' => 'before'];
+            $_FILES = ['sentinel' => ['error' => UPLOAD_ERR_NO_FILE]];
+
+            try {
+                $response = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token'], [
+                    'headers' => ['Content-Type' => 'multipart/form-data; boundary=self-boundary'],
+                    'content_length' => (string)$bytes,
+                    'raw_body' => '',
+                    'post' => ['real_inference' => '1'],
+                    'files' => ['image' => [
+                        'name' => 'camera_cat.png',
+                        'type' => 'image/png',
+                        'tmp_name' => $fixture,
+                        'error' => UPLOAD_ERR_OK,
+                        'size' => $bytes,
+                    ]],
+                ]), [
+                    'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => (string)$station['station_key']])],
+                    'direct_dispatcher' => static function (PDO $db, string $mode, array $request) use (&$captured): array {
+                        $captured = ['post' => $_POST, 'files' => $_FILES, 'request' => $request];
+                        return hub_gateway_json(200, ['ok' => true, 'mode' => $mode]);
+                    },
+                ]);
+
+                hub_test_assert($response['status'] === 200, 'self station must accept a validated multipart form');
+                hub_test_assert(($captured['post'] ?? []) === ['real_inference' => '1'] && is_file((string)($captured['files']['image']['tmp_name'] ?? '')), 'self station must receive normalized multipart values');
+                hub_test_assert(!array_key_exists('raw_body', $captured['request'] ?? []), 'self multipart dispatch must not pass an empty raw body to the local gateway');
+                hub_test_assert($_POST === ['sentinel' => 'before'] && $_FILES === ['sentinel' => ['error' => UPLOAD_ERR_NO_FILE]], 'self multipart dispatch must restore request globals');
+            } finally {
+                $_POST = $originalPost;
+                $_FILES = $originalFiles;
+            }
+        });
     });
 });
 
@@ -2009,6 +2088,16 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
                 'js_fetch' => "fetch('https://configured.station.example/aihub/api.php?mode=ocr');",
             ],
         ];
+        $imageContract = array_replace($contract, [
+            'mode' => 'image_upload',
+            'content_type' => 'multipart/form-data',
+            'input_fields' => [['name' => 'image', 'type' => 'file', 'required' => true]],
+            'examples' => [
+                'curl' => "curl -F 'image=@sample.png' 'https://configured.station.example/aihub/api.php?mode=image_upload'",
+                'php' => "new CURLFile('/path/to/sample.png');",
+                'js_fetch' => 'const formData = new FormData();',
+            ],
+        ]);
         $now = hub_now();
         $store = $db->prepare(
             'UPDATE cluster_stations
@@ -2017,10 +2106,7 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
              WHERE id = :id'
         );
         $store->execute([
-            ':manifest_json' => json_encode(['modes' => ['ocr', 'image_upload'], 'services' => [$contract, array_replace($contract, [
-                'mode' => 'image_upload',
-                'content_type' => 'multipart/form-data',
-            ])]], JSON_THROW_ON_ERROR),
+            ':manifest_json' => json_encode(['modes' => ['ocr', 'image_upload'], 'services' => [$contract, $imageContract]], JSON_THROW_ON_ERROR),
             ':manifest_fetched_at' => $now,
             ':status_json' => json_encode(['modes' => ['ocr', 'image_upload'], 'gpu' => ['memory_free_mb' => 4096], 'active_gpu_leases' => 0, 'queued_jobs' => 0, 'running_jobs' => 0], JSON_THROW_ON_ERROR),
             ':status_fetched_at' => $now,
@@ -2036,7 +2122,13 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
 
         $manifest = hub_cluster_public_manifest($db);
         $json = json_encode($manifest, JSON_THROW_ON_ERROR);
-        $service = $manifest['services'][0] ?? [];
+        $servicesByMode = [];
+        foreach ($manifest['services'] as $service) {
+            if (is_array($service)) {
+                $servicesByMode[(string)($service['mode'] ?? '')] = $service;
+            }
+        }
+        $service = $servicesByMode['ocr'] ?? [];
         $docs = '';
         hub_test_with_cluster_pair_url(function () use ($db, &$docs): void {
             $_SERVER['HTTP_HOST'] = 'router.example';
@@ -2044,7 +2136,7 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             $docs = hub_cluster_public_api_docs_html($db);
         });
 
-        hub_test_assert(array_column($manifest['services'], 'mode') === ['ocr'], 'only fresh Router-compatible services may be public');
+        hub_test_assert(array_column($manifest['services'], 'mode') === ['image_upload', 'ocr'], 'all fresh Router-compatible services, including multipart modes, may be public');
         hub_test_assert(($manifest['base_endpoint'] ?? '') === 'cluster_api.php' && str_contains((string)($manifest['inventory_note'] ?? ''), 'temporarily remove unavailable modes'), 'manifest must publish the Router base and inventory caveat');
         hub_test_assert(($service['endpoint'] ?? '') === 'cluster_api.php?mode=ocr' && str_contains((string)($service['examples']['curl'] ?? ''), 'cluster_api.php?mode=ocr'), 'all public service endpoints must use the Router');
         hub_test_assert(($service['task_api'] ?? []) === [
@@ -2054,7 +2146,7 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             'cancel' => 'POST cluster_api.php?mode=cluster_task_cancel&task_id={task_id}',
             'artifact' => 'GET cluster_api.php?mode=cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
         ], 'public async contracts must expose opaque Router followups');
-        hub_test_assert(str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, 'name&quot;: &quot;<script>'), 'public docs must render the same Router contract with escaped fields');
+        hub_test_assert(str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, 'cluster_api.php?mode=image_upload') && str_contains($docs, '-F') && str_contains($docs, 'new CURLFile') && str_contains($docs, 'FormData') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, 'name&quot;: &quot;<script>'), 'public docs must render escaped JSON and form-aware Router contracts');
         hub_test_assert(
             str_contains($docs, 'https://router.example/3waAIHub/cluster_api.php')
             && str_contains($docs, 'Live catalog')
