@@ -40,6 +40,71 @@ function hub_powershell_single_quoted_literal(string $value): string
     return "'" . str_replace("'", "''", $value) . "'";
 }
 
+function hub_web_protection_nginx_snippet(): string
+{
+    return <<<'NGINX'
+# Replace /3waAIHub with the current Hub URL prefix.
+autoindex off;
+
+location ~ ^/3waAIHub/(?:app|crontab|data|docs|i18n|packs|scripts|templates|tests|tools)(?:/|$) { return 404; }
+location ~ ^/3waAIHub/(?:\.git|\.github|vendor|node_modules)(?:/|$) { return 404; }
+location ~ ^/3waAIHub/(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|package(?:-lock)?\.json)$ { return 404; }
+location ~ ^/3waAIHub/(?:.*/)?\. { return 404; }
+location ~* ^/3waAIHub/.*(?:\.sqlite(?:-.+)?|\.db|\.env|\.key|\.log|\.ps1|\.bat|\.cmd|\.sh|\.sql|\.ini|\.ya?ml|\.xml|\.bak|~)$ { return 404; }
+NGINX;
+}
+
+function hub_collect_web_protection_status(?string $platform = null, ?callable $runner = null, ?string $htaccess = null, ?string $webConfig = null): array
+{
+    $platform = hub_platform_id($platform);
+    if ($platform === 'windows') {
+        $webConfig ??= (string)(@file_get_contents(HUB_ROOT . DIRECTORY_SEPARATOR . 'web.config') ?: '');
+        $hasDirectoryBrowsingProtection = preg_match('/<directoryBrowse\s+enabled\s*=\s*"false"\s*\/?>/i', $webConfig) === 1;
+        $hasProtectedSegments = true;
+        foreach (['app', 'data'] as $segment) {
+            if (preg_match('/<add\s+segment\s*=\s*"' . preg_quote($segment, '/') . '"\s*\/?>/i', $webConfig) !== 1) {
+                $hasProtectedSegments = false;
+                break;
+            }
+        }
+        $hasSensitiveExtensions = true;
+        foreach (['.ps1', '.bat', '.cmd', '.sh', '.log', '.sqlite', '.db', '.sql', '.ini', '.yml', '.yaml', '.xml'] as $extension) {
+            if (preg_match('/<add\s+fileExtension\s*=\s*"' . preg_quote($extension, '/') . '"\s+allowed\s*=\s*"false"\s*\/?>/i', $webConfig) !== 1) {
+                $hasSensitiveExtensions = false;
+                break;
+            }
+        }
+
+        return [
+            'apache_active' => hub_not_applicable_status(),
+            'nginx_active' => hub_not_applicable_status(),
+            'iis_rules_present' => $hasDirectoryBrowsingProtection && $hasProtectedSegments && $hasSensitiveExtensions,
+        ];
+    }
+
+    $runner ??= 'hub_run_command';
+    $htaccess ??= (string)(@file_get_contents(HUB_ROOT . '/.htaccess') ?: '');
+    $apache = $runner(['systemctl', 'is-active', 'apache2'], 5);
+    $nginx = $runner(['systemctl', 'is-active', 'nginx'], 5);
+    $filesMatch = '';
+    if (preg_match('/<FilesMatch\s+"([^"]*)"/i', $htaccess, $matches) === 1) {
+        $filesMatch = $matches[1];
+    }
+
+    $apacheRulesPresent = preg_match('/^\s*Options\s+-Indexes\s*$/m', $htaccess) === 1
+        && str_contains($htaccess, 'RewriteRule ^(?:app|crontab|data|docs|i18n|packs|scripts|templates|tests|tools)(?:/|$) - [F,L]')
+        && str_contains($htaccess, 'RewriteRule ^(?:\\.git|\\.github|vendor|node_modules)(?:/|$) - [F,L]')
+        && str_contains($filesMatch, '\\.sqlite')
+        && str_contains($filesMatch, '\\.key')
+        && str_contains($filesMatch, '\\.sh');
+
+    return [
+        'apache_active' => ($apache['exit_code'] ?? 1) === 0,
+        'nginx_active' => ($nginx['exit_code'] ?? 1) === 0,
+        'apache_rules_present' => $apacheRulesPresent,
+    ];
+}
+
 function hub_collect_env_snapshot(?string $platform = null): array
 {
     hub_cli_only();
@@ -92,6 +157,7 @@ function hub_collect_env_snapshot(?string $platform = null): array
             'packs_readable' => is_readable(HUB_ROOT . '/packs'),
         ],
         'command_worker' => hub_collect_command_worker_status($platform),
+        'web_protection' => hub_collect_web_protection_status($platform),
     ];
 }
 

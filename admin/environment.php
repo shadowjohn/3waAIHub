@@ -323,6 +323,7 @@ function hub_env_fix_suggestions(array $data): array
     $docker = $data['docker'] ?? [];
     $disk = $data['disk'] ?? [];
     $worker = $data['command_worker'] ?? [];
+    $protection = is_array($data['web_protection'] ?? null) ? $data['web_protection'] : [];
     $workerUserValue = $host['server_user'] ?? '';
     $workerUser = is_scalar($workerUserValue) ? (string)$workerUserValue : '';
     $displayUser = $workerUser !== '' ? $workerUser : 'COMMAND_WORKER_USER';
@@ -406,6 +407,26 @@ function hub_env_fix_suggestions(array $data): array
             'commands' => $isWindows
                 ? hub_env_windows_core_command()
                 : "cd " . escapeshellarg(HUB_ROOT) . "\nsudo WEB_GROUP=www-data ./scripts/fix_permissions.sh",
+        ];
+    }
+
+    if (!$isWindows && ($protection['nginx_active'] ?? false) === true) {
+        $suggestions[] = [
+            'title' => '設定 Nginx 檔案防護',
+            'body' => 'Nginx 不讀 .htaccess。請把下列規則放進此站的 server 區塊，驗證 nginx -t 後再 reload。',
+            'commands' => hub_web_protection_nginx_snippet() . "\n\nsudo nginx -t\nsudo systemctl reload nginx",
+        ];
+    } elseif (!$isWindows && ($protection['apache_active'] ?? false) === true && ($protection['apache_rules_present'] ?? false) !== true) {
+        $suggestions[] = [
+            'title' => '修正 Apache 檔案防護',
+            'body' => 'Apache 正在提供 Hub，但 .htaccess 缺少必要規則。確認 AllowOverride Options FileInfo AuthConfig Limit 後重新套用專案的 .htaccess。',
+            'commands' => "sudo apache2ctl -t\nsudo systemctl reload apache2",
+        ];
+    } elseif ($isWindows && ($protection['iis_rules_present'] ?? false) !== true) {
+        $suggestions[] = [
+            'title' => '修正 IIS 檔案防護',
+            'body' => 'web.config 缺少 Hub 的 runtime data 或 directory browse 防護規則。請從主線還原 web.config 後重新套用 IIS site。',
+            'commands' => ".\\scripts\\windows\\configure-iis-fastcgi.ps1",
         ];
     }
 
