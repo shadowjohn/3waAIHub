@@ -66,6 +66,16 @@ hub_test('web protection probe reports local server state without network access
     hub_test_assert(($linux['apache_rules_present'] ?? false) === true, 'Apache protection rules should be present');
     hub_test_assert($commands === [['systemctl', 'is-active', 'apache2'], ['systemctl', 'is-active', 'nginx']], 'web protection probe commands mismatch');
 
+    $fallbackCommands = [];
+    $httpdLinux = hub_collect_web_protection_status('linux', static function (array $command, int $timeoutSeconds) use (&$fallbackCommands): array {
+        $fallbackCommands[] = $command;
+        $active = $command === ['systemctl', 'is-active', 'httpd'];
+        return ['exit_code' => $active ? 0 : 3, 'stdout' => $active ? 'active' : 'inactive', 'stderr' => '', 'output' => $active ? 'active' : 'inactive'];
+    }, $htaccess, '');
+    hub_test_assert(($httpdLinux['apache_active'] ?? false) === true, 'httpd fallback should mark Apache active');
+    hub_test_assert(($httpdLinux['nginx_active'] ?? true) === false, 'nginx should remain inactive in the httpd fixture');
+    hub_test_assert($fallbackCommands === [['systemctl', 'is-active', 'apache2'], ['systemctl', 'is-active', 'httpd'], ['systemctl', 'is-active', 'nginx']], 'httpd fallback probe commands mismatch');
+
     $nginxLinux = hub_collect_web_protection_status('linux', static function (array $command, int $timeoutSeconds): array {
         $active = $command === ['systemctl', 'is-active', 'nginx'];
         return ['exit_code' => $active ? 0 : 3, 'stdout' => $active ? 'active' : 'inactive', 'stderr' => '', 'output' => $active ? 'active' : 'inactive'];
@@ -105,6 +115,10 @@ hub_test('web protection probe reports local server state without network access
     hub_test_assert(($windows['iis_rules_present'] ?? false) === true, 'IIS protection rules should be present');
     hub_test_assert($windowsCalls === 0, 'Windows web protection probe must not run commands');
 
+    $commentedWebConfig = '<configuration><!--' . str_replace(['<?xml version="1.0" encoding="UTF-8"?>', '<configuration>', '</configuration>'], '', $webConfig) . '--></configuration>';
+    $commentedWindows = hub_collect_web_protection_status('windows', static fn (): array => [], '', $commentedWebConfig);
+    hub_test_assert(($commentedWindows['iis_rules_present'] ?? true) === false, 'IIS rules inside XML comments must not be reported as present');
+
     $incompleteWebConfig = str_replace('<add segment="docs" />', '', $webConfig);
     $incompleteWindows = hub_collect_web_protection_status('windows', static fn (): array => [], '', $incompleteWebConfig);
     hub_test_assert(($incompleteWindows['iis_rules_present'] ?? true) === false, 'IIS rules missing docs protection must be incomplete');
@@ -116,6 +130,12 @@ hub_test('web protection probe reports local server state without network access
     }, '', '<configuration />');
     hub_test_assert(($invalidWindows['iis_rules_present'] ?? true) === false, 'incomplete IIS rules must not be reported as present');
     hub_test_assert($invalidWindowsCalls === 0, 'Windows incomplete IIS probe must not run commands');
+});
+
+hub_test('Nginx protection advisory covers root mounts and location order', function (): void {
+    $snippet = hub_web_protection_nginx_snippet();
+    hub_test_assert(str_contains($snippet, 'Replace /3waAIHub with a non-root URL prefix, or remove that prefix entirely for a root mount (retain one leading slash).'), 'Nginx snippet missing root mount instruction');
+    hub_test_assert(str_contains($snippet, 'Put these regex locations before generic PHP regex locations and do not place them under a conflicting ^~ prefix.'), 'Nginx snippet missing location order warning');
 });
 
 hub_test('Windows host metrics keep Linux storage and memory unknown while native GPU stays probeable', function (): void {

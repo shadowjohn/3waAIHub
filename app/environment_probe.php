@@ -43,7 +43,8 @@ function hub_powershell_single_quoted_literal(string $value): string
 function hub_web_protection_nginx_snippet(): string
 {
     return <<<'NGINX'
-# Replace /3waAIHub with the current Hub URL prefix.
+# Replace /3waAIHub with a non-root URL prefix, or remove that prefix entirely for a root mount (retain one leading slash).
+# Put these regex locations before generic PHP regex locations and do not place them under a conflicting ^~ prefix.
 autoindex off;
 
 location ~* ^/3waAIHub/(?:app|crontab|data|docs|i18n|packs|scripts|templates|tests|tools)(?:/|$) { return 404; }
@@ -59,6 +60,7 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
     $platform = hub_platform_id($platform);
     if ($platform === 'windows') {
         $webConfig ??= (string)(@file_get_contents(HUB_ROOT . DIRECTORY_SEPARATOR . 'web.config') ?: '');
+        $webConfig = preg_replace('/<!--.*?-->/s', '', $webConfig) ?? '';
         $hasDirectoryBrowsingProtection = preg_match('/<directoryBrowse\s+enabled\s*=\s*"false"\s*\/?>/i', $webConfig) === 1;
         $hasProtectedSegments = true;
         foreach (['.env', '.env.example', '.git', '.github', 'app', 'crontab', 'data', 'docs', 'i18n', 'packs', 'scripts', 'templates', 'tests', 'tools'] as $segment) {
@@ -92,6 +94,11 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
     $runner ??= 'hub_run_command';
     $htaccess ??= (string)(@file_get_contents(HUB_ROOT . '/.htaccess') ?: '');
     $apache = $runner(['systemctl', 'is-active', 'apache2'], 5);
+    $apacheActive = ($apache['exit_code'] ?? 1) === 0;
+    if (!$apacheActive) {
+        $httpd = $runner(['systemctl', 'is-active', 'httpd'], 5);
+        $apacheActive = ($httpd['exit_code'] ?? 1) === 0;
+    }
     $nginx = $runner(['systemctl', 'is-active', 'nginx'], 5);
     $filesMatch = '';
     if (preg_match('/<FilesMatch\s+"([^"]*)"/i', $htaccess, $matches) === 1) {
@@ -112,7 +119,7 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
         && $hasFilesMatchProtection;
 
     return [
-        'apache_active' => ($apache['exit_code'] ?? 1) === 0,
+        'apache_active' => $apacheActive,
         'nginx_active' => ($nginx['exit_code'] ?? 1) === 0,
         'apache_rules_present' => $apacheRulesPresent,
     ];
