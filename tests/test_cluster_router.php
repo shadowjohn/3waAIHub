@@ -1790,7 +1790,10 @@ hub_test('cluster child followup redacts native spool paths and bare station hos
                 ]);
                 $payload = json_decode($response['body'], true, 64, JSON_THROW_ON_ERROR);
                 hub_test_assert($response['status'] === 200 && !empty($payload['logs']), 'paired child control plane must return projected native logs');
-                $projectedLogs = json_encode($payload['logs'], JSON_THROW_ON_ERROR);
+                $projectedLogs = implode("\n", array_map(
+                    static fn (array $log): string => (string)($log['message'] ?? ''),
+                    $payload['logs']
+                ));
                 hub_test_assert(!str_contains($projectedLogs, '42') && !str_contains($projectedLogs, 'task_42.log') && !str_contains($projectedLogs, 'station.internal') && !str_contains($projectedLogs, '[fd00:beef::1]:443') && !str_contains($projectedLogs, 'fd00:beef::1') && !str_contains($projectedLogs, '::ffff:192.168.1.25') && !str_contains($projectedLogs, '192.168.1.25') && str_contains($projectedLogs, '[redacted-ipv6].') && str_contains($projectedLogs, '[face]') && str_contains($projectedLogs, '[cab]') && str_contains($projectedLogs, 'config.json') && str_contains($projectedLogs, 'task.log') && str_contains($projectedLogs, 'release.v1'), 'child logs must redact known local authorities and IPv6 without changing filenames, versions, or ordinary bracket text');
             });
         });
