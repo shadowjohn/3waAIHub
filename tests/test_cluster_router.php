@@ -1947,6 +1947,13 @@ hub_test('cluster router exposes fresh remote modes for customer permissions', f
     });
 });
 
+hub_test('cluster router guide documents the unified customer entry', function (): void {
+    $guide = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
+    foreach (['Cluster Router Mode', '登錄 / 更新本機服務', 'cluster_api.php'] as $needle) {
+        hub_test_assert(str_contains($guide, $needle), 'cluster guide must document ' . $needle);
+    }
+});
+
 hub_test('cluster public manifest selects only fresh contracts and rewrites router endpoints', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

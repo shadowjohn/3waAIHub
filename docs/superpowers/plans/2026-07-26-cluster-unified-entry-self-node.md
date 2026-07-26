@@ -275,7 +275,7 @@ git commit -m "feat: register router host as local cluster station"
 - Modify: `docs/cluster-router.md`
 - Test: `tests/test_cluster_router.php`
 
-- [ ] **Step 1: Write the failing documentation contract test**
+- [x] **Step 1: Write the failing documentation contract test**
 
 Add a source-contract assertion that `docs/cluster-router.md` contains all three operator-facing terms:
 
@@ -286,13 +286,13 @@ foreach (['Cluster Router Mode', '登錄 / 更新本機服務', 'cluster_api.php
 }
 ```
 
-- [ ] **Step 2: Run the suite to verify RED**
+- [x] **Step 2: Run the suite to verify RED**
 
 Run: `AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full`
 
 Expected: FAIL because the guide does not yet describe the Router Token permission group or local registration action.
 
-- [ ] **Step 3: Update the concise customer and operator guide**
+- [x] **Step 3: Update the concise customer and operator guide**
 
 In `docs/cluster-router.md`:
 
@@ -304,7 +304,7 @@ In `docs/cluster-router.md`:
 
 Add the local Router-host operation: enable both roles, select running services under `子入口節點`, press `登錄 / 更新本機服務`, refresh the card, and confirm the selected Modes appear in `cluster_manifest.json.php`. State that this action uses an in-process local station; external 1080/5090 nodes continue to use their one-time pairing links.
 
-- [ ] **Step 4: Run PHP lint and the full suite**
+- [x] **Step 4: Run PHP lint and the full suite**
 
 Run:
 
@@ -317,7 +317,7 @@ AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full
 
 Expected: every syntax check reports `No syntax errors detected`; test summary reports `failures=0`.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```bash
 git add docs/cluster-router.md tests/test_cluster_router.php
