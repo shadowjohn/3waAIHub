@@ -848,52 +848,132 @@ function hub_cluster_router_available_modes(PDO $db): array
 function hub_cluster_public_api_docs_html(PDO $db): string
 {
     $manifest = hub_cluster_public_manifest($db);
+    $services = is_array($manifest['services'] ?? null) ? $manifest['services'] : [];
+    $apiUrl = hub_public_api_base_url();
+    $routerUrl = preg_replace('~api\.php\z~', 'cluster_api.php', $apiUrl) ?: 'cluster_api.php';
+    $example = static fn (string $value): string => str_replace('cluster_api.php', $routerUrl, $value);
     $json = static fn (mixed $value): string => (string)json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     ob_start();
     ?>
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>3waAIHub Router API</title>
+    <title>3waAIHub Cluster API</title>
     <style>
-        body { color: #1d2430; font-family: system-ui, sans-serif; margin: 0; background: #f6f7f9; }
-        main { max-width: 960px; margin: 24px auto; padding: 0 16px; }
-        section { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; margin: 14px 0; padding: 16px; }
-        code, pre { overflow-wrap: anywhere; white-space: pre-wrap; }
-        pre { background: #f6f7f9; border: 1px solid #d9dee7; padding: 12px; }
+        :root { color-scheme: light; --bg: #f6f7f9; --panel: #fff; --ink: #172033; --muted: #667085; --line: #d9dee7; --blue: #1769e0; --blue-soft: #eaf2ff; --green: #067647; --green-soft: #dcfae6; --code: #101828; --code-text: #f2f4f7; }
+        * { box-sizing: border-box; }
+        body { background: var(--bg); color: var(--ink); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.55; margin: 0; }
+        main { margin: 0 auto; max-width: 1120px; padding: 42px 20px 64px; }
+        h1, h2, h3, p { margin-top: 0; }
+        h1 { font-size: clamp(32px, 4vw, 52px); line-height: 1.1; margin-bottom: 12px; }
+        h2 { font-size: 22px; line-height: 1.25; }
+        h3 { font-size: 14px; margin-bottom: 8px; }
+        .portal-hero { border-bottom: 1px solid var(--line); padding-bottom: 32px; }
+        .eyebrow { color: var(--blue); font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+        .lede { color: var(--muted); font-size: 18px; max-width: 700px; }
+        .endpoint-block { margin-top: 24px; max-width: 880px; }
+        .endpoint-label, .auth-label { color: var(--muted); display: block; font-size: 13px; font-weight: 700; margin-bottom: 6px; }
+        .endpoint-row, .code-heading { align-items: center; display: flex; gap: 8px; }
+        .endpoint-row { background: var(--code); border-radius: 8px; padding: 10px 12px; }
+        .endpoint-row code { color: var(--code-text); flex: 1; min-width: 0; overflow-wrap: anywhere; }
+        .auth-line { margin: 12px 0 0; }
+        code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+        .auth-line code, .meta-value code, .mode-directory code { background: var(--blue-soft); color: #124b9f; padding: 2px 5px; }
+        .copy-button { background: var(--panel); border: 1px solid transparent; border-radius: 6px; color: var(--ink); cursor: pointer; flex: 0 0 auto; font: inherit; font-size: 13px; min-height: 34px; padding: 6px 10px; }
+        .copy-button:hover, .copy-button:focus-visible { border-color: var(--blue); color: var(--blue); outline: none; }
+        .catalog-summary { border-block: 1px solid var(--line); display: grid; gap: 16px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 30px 0 20px; padding: 18px 0; }
+        .summary-label { color: var(--muted); display: block; font-size: 13px; margin-bottom: 2px; }
+        .summary-value { font-size: 20px; font-weight: 700; overflow-wrap: anywhere; }
+        .live { color: var(--green); }
+        .mode-directory { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0 32px; }
+        .mode-directory a { border: 1px solid var(--line); color: var(--ink); padding: 7px 10px; text-decoration: none; }
+        .mode-directory a:hover, .mode-directory a:focus-visible { border-color: var(--blue); color: var(--blue); outline: none; }
+        .mode-directory code { background: transparent; color: inherit; padding: 0; }
+        .section-title { align-items: baseline; display: flex; gap: 12px; justify-content: space-between; margin-bottom: 14px; }
+        .section-title p { color: var(--muted); font-size: 14px; margin-bottom: 0; }
+        .service-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+        .service-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; min-width: 0; padding: 18px; scroll-margin-top: 16px; }
+        .service-card header { border-bottom: 1px solid var(--line); margin-bottom: 16px; padding-bottom: 12px; }
+        .service-card h2 { margin-bottom: 6px; overflow-wrap: anywhere; }
+        .service-card header p { color: var(--muted); font-size: 14px; margin-bottom: 0; }
+        .meta-grid { display: grid; gap: 10px 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 18px; }
+        .meta-label { color: var(--muted); display: block; font-size: 12px; margin-bottom: 2px; }
+        .meta-value { font-weight: 700; overflow-wrap: anywhere; }
+        .contract-block { margin-top: 18px; }
+        .code-heading { justify-content: space-between; }
+        .code-heading h3 { margin-bottom: 8px; }
+        pre { background: var(--code); color: var(--code-text); font: 13px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace; margin: 0; overflow: auto; padding: 12px; white-space: pre-wrap; word-break: break-word; }
+        .empty-state { background: var(--panel); border: 1px dashed var(--line); color: var(--muted); padding: 24px; text-align: center; }
+        .empty-state h2 { color: var(--ink); }
+        @media (max-width: 680px) { main { padding: 30px 16px 44px; } .catalog-summary, .meta-grid { grid-template-columns: 1fr; } .endpoint-row { align-items: stretch; flex-direction: column; } .copy-button { width: 100%; } .service-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
 <main>
-    <h1>3waAIHub Router API</h1>
-    <p>Base endpoint: <code><?= hub_h((string)$manifest['base_endpoint']) ?></code></p>
-    <p><?= hub_h((string)$manifest['inventory_note']) ?></p>
-    <?php if ($manifest['services'] === []): ?>
-        <section><h2>No Router modes are currently available.</h2><p>Retry shortly or contact the Router administrator.</p></section>
-    <?php endif; ?>
-    <?php foreach ($manifest['services'] as $service): ?>
-        <section>
-            <h2><code><?= hub_h((string)($service['mode'] ?? '')) ?></code></h2>
-            <p>Method: <code><?= hub_h((string)($service['method'] ?? '')) ?></code></p>
-            <p>Content type: <code><?= hub_h((string)($service['content_type'] ?? '')) ?></code></p>
-            <p>Router endpoint: <code><?= hub_h((string)($service['endpoint'] ?? '')) ?></code></p>
-            <h3>Fields</h3>
-            <pre><?= hub_h($json($service['input_fields'] ?? [])) ?></pre>
-            <h3>Output</h3>
-            <pre><?= hub_h($json($service['output_keys'] ?? [])) ?></pre>
-            <h3>Errors</h3>
-            <pre><?= hub_h($json($service['error_codes'] ?? [])) ?></pre>
-            <h3>curl</h3>
-            <pre><?= hub_h((string)($service['examples']['curl'] ?? '')) ?></pre>
-            <h3>PHP</h3>
-            <pre><?= hub_h((string)($service['examples']['php'] ?? '')) ?></pre>
-            <h3>JS</h3>
-            <pre><?= hub_h((string)($service['examples']['js_fetch'] ?? '')) ?></pre>
+    <header class="portal-hero">
+        <p class="eyebrow">3waAIHub / Unified entry</p>
+        <h1>Cluster API</h1>
+        <p class="lede">單一穩定入口，提供 Router 目前可用的 AI 服務。</p>
+        <div class="endpoint-block">
+            <span class="endpoint-label">Router endpoint</span>
+            <div class="endpoint-row"><code><?= hub_h($routerUrl) ?></code><button class="copy-button" type="button" data-copy="<?= hub_h($routerUrl) ?>" aria-label="Copy Router endpoint" title="Copy Router endpoint">Copy</button></div>
+        </div>
+        <p class="auth-line"><span class="auth-label">Authentication</span><code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
+    </header>
+
+    <section class="catalog-summary" aria-label="Live Router catalog">
+        <div><span class="summary-label">Available modes</span><strong class="summary-value"><?= count($services) ?></strong></div>
+        <div><span class="summary-label">Catalog status</span><strong class="summary-value live">Live catalog</strong></div>
+        <div><span class="summary-label">Updated</span><strong class="summary-value"><?= hub_h((string)$manifest['generated_at']) ?></strong></div>
+    </section>
+
+    <?php if ($services === []): ?>
+        <section class="empty-state"><h2>No Router modes are currently available.</h2><p>Retry shortly or contact the Router administrator.</p></section>
+    <?php else: ?>
+        <nav class="mode-directory" aria-label="Available Router modes">
+            <?php foreach ($services as $service): ?><a href="#mode-<?= hub_h((string)$service['mode']) ?>"><code><?= hub_h((string)$service['mode']) ?></code></a><?php endforeach; ?>
+        </nav>
+        <div class="section-title"><h2>Available modes</h2><p><?= hub_h((string)$manifest['inventory_note']) ?></p></div>
+        <section class="service-grid">
+            <?php foreach ($services as $service): ?>
+                <?php
+                $mode = (string)($service['mode'] ?? '');
+                $examples = is_array($service['examples'] ?? null) ? $service['examples'] : [];
+                $curl = $example((string)($examples['curl'] ?? ''));
+                $php = $example((string)($examples['php'] ?? ''));
+                $js = $example((string)($examples['js_fetch'] ?? ''));
+                ?>
+                <article class="service-card" id="mode-<?= hub_h($mode) ?>">
+                    <header><h2><code><?= hub_h($mode) ?></code></h2><p><?= hub_h((string)($service['name'] ?? '')) ?><?= ($service['description'] ?? '') !== '' ? ' - ' . hub_h((string)$service['description']) : '' ?></p></header>
+                    <div class="meta-grid">
+                        <div><span class="meta-label">Method</span><span class="meta-value"><code><?= hub_h((string)($service['method'] ?? '')) ?></code></span></div>
+                        <div><span class="meta-label">Content type</span><span class="meta-value"><code><?= hub_h((string)($service['content_type'] ?? '')) ?></code></span></div>
+                    </div>
+                    <div class="contract-block"><h3>Request fields</h3><pre><?= hub_h($json($service['input_fields'] ?? [])) ?></pre></div>
+                    <div class="contract-block"><h3>Response keys</h3><pre><?= hub_h($json($service['output_keys'] ?? [])) ?></pre></div>
+                    <div class="contract-block"><h3>Error codes</h3><pre><?= hub_h($json($service['error_codes'] ?? [])) ?></pre></div>
+                    <div class="contract-block"><div class="code-heading"><h3>curl</h3><button class="copy-button" type="button" data-copy="<?= hub_h($curl) ?>" aria-label="Copy curl example" title="Copy curl example">Copy</button></div><pre><?= hub_h($curl) ?></pre></div>
+                    <div class="contract-block"><div class="code-heading"><h3>PHP</h3><button class="copy-button" type="button" data-copy="<?= hub_h($php) ?>" aria-label="Copy PHP example" title="Copy PHP example">Copy</button></div><pre><?= hub_h($php) ?></pre></div>
+                    <div class="contract-block"><div class="code-heading"><h3>JavaScript</h3><button class="copy-button" type="button" data-copy="<?= hub_h($js) ?>" aria-label="Copy JavaScript example" title="Copy JavaScript example">Copy</button></div><pre><?= hub_h($js) ?></pre></div>
+                </article>
+            <?php endforeach; ?>
         </section>
-    <?php endforeach; ?>
+    <?php endif; ?>
 </main>
+<script>
+document.querySelectorAll('[data-copy]').forEach((button) => {
+    button.addEventListener('click', async () => {
+        try {
+            await navigator.clipboard.writeText(button.dataset.copy || '');
+            const label = button.textContent;
+            button.textContent = 'Copied';
+            window.setTimeout(() => { button.textContent = label; }, 1200);
+        } catch (_) {}
+    });
+});
+</script>
 </body>
 </html>
 <?php

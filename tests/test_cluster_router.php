@@ -2037,7 +2037,12 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
         $manifest = hub_cluster_public_manifest($db);
         $json = json_encode($manifest, JSON_THROW_ON_ERROR);
         $service = $manifest['services'][0] ?? [];
-        $docs = hub_cluster_public_api_docs_html($db);
+        $docs = '';
+        hub_test_with_cluster_pair_url(function () use ($db, &$docs): void {
+            $_SERVER['HTTP_HOST'] = 'router.example';
+            $_SERVER['SCRIPT_NAME'] = '/3waAIHub/cluster_public_api_docs.php';
+            $docs = hub_cluster_public_api_docs_html($db);
+        });
 
         hub_test_assert(array_column($manifest['services'], 'mode') === ['ocr'], 'only fresh Router-compatible services may be public');
         hub_test_assert(($manifest['base_endpoint'] ?? '') === 'cluster_api.php' && str_contains((string)($manifest['inventory_note'] ?? ''), 'temporarily remove unavailable modes'), 'manifest must publish the Router base and inventory caveat');
@@ -2049,9 +2054,19 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             'cancel' => 'POST cluster_api.php?mode=cluster_task_cancel&task_id={task_id}',
             'artifact' => 'GET cluster_api.php?mode=cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
         ], 'public async contracts must expose opaque Router followups');
-        hub_test_assert(str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, '<script>'), 'public docs must render the same Router contract with escaped fields');
+        hub_test_assert(str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, 'name&quot;: &quot;<script>'), 'public docs must render the same Router contract with escaped fields');
+        hub_test_assert(
+            str_contains($docs, 'https://router.example/3waAIHub/cluster_api.php')
+            && str_contains($docs, 'Live catalog')
+            && str_contains($docs, 'Available modes')
+            && str_contains($docs, 'href="#mode-ocr"')
+            && str_contains($docs, 'id="mode-ocr"')
+            && str_contains($docs, 'navigator.clipboard.writeText'),
+            'Cluster public docs must render the live developer portal contract'
+        );
         foreach (['configured.station.example', 'configured.internal.example', 'stale.station.example', 'configured_station_secret', 'remote_task_42', 'mode=task_', '3wa_live_', 'token_ciphertext', 'token_iv', 'token_tag'] as $secret) {
             hub_test_assert(!str_contains($json, $secret), 'public manifest leaked station detail: ' . $secret);
+            hub_test_assert(!str_contains($docs, $secret), 'public docs leaked station detail: ' . $secret);
         }
     });
 });
