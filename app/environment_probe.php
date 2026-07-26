@@ -61,14 +61,14 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
         $webConfig ??= (string)(@file_get_contents(HUB_ROOT . DIRECTORY_SEPARATOR . 'web.config') ?: '');
         $hasDirectoryBrowsingProtection = preg_match('/<directoryBrowse\s+enabled\s*=\s*"false"\s*\/?>/i', $webConfig) === 1;
         $hasProtectedSegments = true;
-        foreach (['app', 'data'] as $segment) {
+        foreach (['.env', '.env.example', '.git', '.github', 'app', 'crontab', 'data', 'docs', 'i18n', 'packs', 'scripts', 'templates', 'tests', 'tools'] as $segment) {
             if (preg_match('/<add\s+segment\s*=\s*"' . preg_quote($segment, '/') . '"\s*\/?>/i', $webConfig) !== 1) {
                 $hasProtectedSegments = false;
                 break;
             }
         }
         $hasSensitiveExtensions = true;
-        foreach (['.ps1', '.bat', '.cmd', '.sh', '.log', '.sqlite', '.db', '.sql', '.ini', '.yml', '.yaml', '.xml'] as $extension) {
+        foreach (['.ps1', '.bat', '.cmd', '.sh', '.md', '.log', '.sqlite', '.db', '.sql', '.ini', '.yml', '.yaml', '.xml'] as $extension) {
             if (preg_match('/<add\s+fileExtension\s*=\s*"' . preg_quote($extension, '/') . '"\s+allowed\s*=\s*"false"\s*\/?>/i', $webConfig) !== 1) {
                 $hasSensitiveExtensions = false;
                 break;
@@ -97,13 +97,19 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
     if (preg_match('/<FilesMatch\s+"([^"]*)"/i', $htaccess, $matches) === 1) {
         $filesMatch = $matches[1];
     }
+    $hasFilesMatchProtection = true;
+    foreach (['(^\\.', '\\.sqlite(?:-.+)?$', '\\.db$', '\\.env$', '\\.key$', '\\.log$', '\\.ps1$', '\\.bat$', '\\.cmd$', '\\.sh$', '\\.sql$', '\\.ini$', '\\.ya?ml$', '\\.xml$', '\\.bak$', '~$'] as $token) {
+        if (!str_contains($filesMatch, $token)) {
+            $hasFilesMatchProtection = false;
+            break;
+        }
+    }
 
     $apacheRulesPresent = preg_match('/^\s*Options\s+-Indexes\s*$/m', $htaccess) === 1
         && str_contains($htaccess, 'RewriteRule ^(?:app|crontab|data|docs|i18n|packs|scripts|templates|tests|tools)(?:/|$) - [F,L]')
         && str_contains($htaccess, 'RewriteRule ^(?:\\.git|\\.github|vendor|node_modules)(?:/|$) - [F,L]')
-        && str_contains($filesMatch, '\\.sqlite')
-        && str_contains($filesMatch, '\\.key')
-        && str_contains($filesMatch, '\\.sh');
+        && str_contains($htaccess, 'RewriteRule ^(?:README\\.md|history\\.md|install\\.sh|composer\\.(?:json|lock)|package(?:-lock)?\\.json)$ - [F,L]')
+        && $hasFilesMatchProtection;
 
     return [
         'apache_active' => ($apache['exit_code'] ?? 1) === 0,

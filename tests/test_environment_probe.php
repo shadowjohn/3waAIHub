@@ -74,6 +74,15 @@ hub_test('web protection probe reports local server state without network access
     hub_test_assert(($nginxLinux['nginx_active'] ?? false) === true, 'nginx should be active in the nginx fixture');
     hub_test_assert(($nginxLinux['apache_rules_present'] ?? true) === false, 'incomplete Apache rules must not be reported as present');
 
+    $incompleteHtaccess = str_replace('|\\.bak$', '', $htaccess);
+    $incompleteApache = hub_collect_web_protection_status('linux', static fn (): array => [
+        'exit_code' => 0,
+        'stdout' => 'active',
+        'stderr' => '',
+        'output' => 'active',
+    ], $incompleteHtaccess, '');
+    hub_test_assert(($incompleteApache['apache_rules_present'] ?? true) === false, 'Apache rules missing .bak protection must be incomplete');
+
     $darwinCalls = 0;
     $darwin = hub_collect_web_protection_status('darwin', static function (array $command, int $timeoutSeconds) use (&$darwinCalls): array {
         $darwinCalls++;
@@ -95,6 +104,10 @@ hub_test('web protection probe reports local server state without network access
     hub_test_assert(($windows['nginx_active'] ?? null) === hub_not_applicable_status(), 'Windows nginx status should be N/A');
     hub_test_assert(($windows['iis_rules_present'] ?? false) === true, 'IIS protection rules should be present');
     hub_test_assert($windowsCalls === 0, 'Windows web protection probe must not run commands');
+
+    $incompleteWebConfig = str_replace('<add segment="docs" />', '', $webConfig);
+    $incompleteWindows = hub_collect_web_protection_status('windows', static fn (): array => [], '', $incompleteWebConfig);
+    hub_test_assert(($incompleteWindows['iis_rules_present'] ?? true) === false, 'IIS rules missing docs protection must be incomplete');
 
     $invalidWindowsCalls = 0;
     $invalidWindows = hub_collect_web_protection_status('windows', static function (array $command, int $timeoutSeconds) use (&$invalidWindowsCalls): array {
