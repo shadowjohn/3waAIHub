@@ -424,7 +424,7 @@ function hub_env_fix_suggestions(array $data): array
     } elseif (!$isWindows && ($protection['apache_active'] ?? false) === true && ($protection['apache_rules_present'] ?? false) !== true) {
         $suggestions[] = [
             'title' => '修正 Apache 檔案防護',
-            'body' => 'Apache 正在提供 Hub，但 .htaccess 缺少必要規則。這裡只做 .htaccess 靜態完整性檢查；實際生效以 live HTTP 存取檢查為準。請確認 AllowOverride Options FileInfo AuthConfig Limit 後重新套用專案的 .htaccess。',
+            'body' => 'Apache 已啟用，但 .htaccess 缺少必要規則。這裡只做 .htaccess 靜態完整性檢查；實際生效以 live HTTP 存取檢查為準。請確認 AllowOverride Options FileInfo AuthConfig Limit 後重新套用專案的 .htaccess。',
             'commands' => "sudo apache2ctl -t\nsudo systemctl reload apache2",
         ];
     } elseif ($isWindows && ($protection['iis_rules_present'] ?? false) !== true) {

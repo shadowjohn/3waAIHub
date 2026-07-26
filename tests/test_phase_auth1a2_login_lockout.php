@@ -135,12 +135,35 @@ hub_test('System Environment page performs fixed same-origin web protection HEAD
     hub_test_assert($matched === 1, 'environment page missing web protection live script');
     $webProtectionScript = $matches[1] ?? '';
 
-    foreach (['data/cluster.key', 'docs/cluster-router.md', 'scripts/init_db.php', "method: 'HEAD'", "credentials: 'same-origin'", "cache: 'no-store'"] as $required) {
+    $targetsMatched = preg_match('/const\\s+targets\\s*=\\s*(\\[.*?\\]);/s', $webProtectionScript, $targetMatches);
+    hub_test_assert($targetsMatched === 1, 'web protection live script missing literal targets array');
+    $targetItems = preg_split('/\\s*,\\s*/', trim($targetMatches[1], "[] \\t\\r\\n"));
+    $targets = [];
+    foreach ($targetItems as $targetItem) {
+        $targetMatched = preg_match("/^'([^']+)'$/", $targetItem, $targetMatch);
+        hub_test_assert($targetMatched === 1, 'web protection live targets must be string literals');
+        $targets[] = $targetMatch[1];
+    }
+    hub_test_assert($targets === ['data/cluster.key', 'docs/cluster-router.md', 'scripts/init_db.php'], 'web protection live targets must contain exactly the fixed protected paths');
+
+    foreach (["new URL('../', window.location.href)", 'fetch(new URL(path, root)', "method: 'HEAD'", "credentials: 'same-origin'", "cache: 'no-store'", "redirect: 'manual'"] as $required) {
         hub_test_assert(str_contains($webProtectionScript, $required), 'web protection live script missing HEAD check contract: ' . $required);
     }
     hub_test_assert(str_contains($webProtectionScript, '[403, 404].includes(response.status)'), 'web protection live script missing response-status allowlist');
-    hub_test_assert(!str_contains($webProtectionScript, 'response.text('), 'web protection HEAD checks must not read response bodies as text');
-    hub_test_assert(!str_contains($webProtectionScript, 'response.json('), 'web protection HEAD checks must not read response bodies as JSON');
+    $responseProperties = [];
+    preg_match_all('/\\bresponse\\.([A-Za-z_$][A-Za-z0-9_$]*)\\b/', $webProtectionScript, $responseProperties);
+    hub_test_assert($responseProperties[1] === ['status', 'status'], 'web protection HEAD checks must read only the expected response.status uses');
+    hub_test_assert(preg_match('/\\bresponse\\s*\\[/', $webProtectionScript) !== 1, 'web protection HEAD checks must not use bracket response property access');
+
+    foreach ([
+        "if (!\$isWindows && (\$protection['nginx_active'] ?? false) === true)",
+        'hub_web_protection_nginx_snippet()',
+        "elseif (!\$isWindows && (\$protection['apache_active'] ?? false) === true && (\$protection['apache_rules_present'] ?? false) !== true)",
+        "Apache 已啟用，但 .htaccess 缺少必要規則。",
+        "elseif (\$isWindows && (\$protection['iis_rules_present'] ?? false) !== true)",
+    ] as $required) {
+        hub_test_assert(str_contains($environment, $required), 'environment page missing bounded web protection advice guard: ' . $required);
+    }
 });
 
 hub_test('PhaseAuth-1A.2 login lockout defaults and schema exist', function (): void {

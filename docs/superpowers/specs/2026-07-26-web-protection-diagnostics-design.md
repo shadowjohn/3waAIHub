@@ -44,8 +44,9 @@ The existing System Environment page receives a `Web Protection` section:
 
 ## Verification
 
-- Unit tests cover Apache/IIS/Nginx status and recommendation selection.
-- A page contract test requires the fixed same-origin `HEAD` paths and verifies
-  that no response body is consumed.
+- Unit tests cover Apache/IIS/Nginx status checks.
+- Static page source-contract tests cover the page-local Nginx/Apache/IIS advice
+  guards, require the fixed same-origin `HEAD` paths, and verify that only
+  response status is inspected.
 - Existing full PHP suite and Apache syntax/live `403` checks remain the
   release verification for this host.
