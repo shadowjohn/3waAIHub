@@ -62,7 +62,8 @@ function hub_cluster_secret_key(): string
             }
         }
         hub_cluster_secret_key_from_hex($value);
-        if (fwrite($handle, $value . PHP_EOL) !== strlen($value) + 1 || !fflush($handle)) {
+        $payload = $value . PHP_EOL;
+        if (fwrite($handle, $payload) !== strlen($payload) || !fflush($handle)) {
             throw new RuntimeException('Cluster secret is unavailable.');
         }
         @chmod($path, 0640);
