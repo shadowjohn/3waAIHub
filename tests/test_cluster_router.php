@@ -421,6 +421,7 @@ hub_test('cluster router pairing import sends invites only in headers and saves 
         hub_test_assert(($seenRequest['url'] ?? '') === 'https://station.example:8443/cluster_pair.php', 'pair requester URL must omit invite fragment and retain port');
         hub_test_assert(!str_contains((string)($seenRequest['url'] ?? ''), $invite), 'pair requester URL must not expose invite');
         hub_test_assert(!str_contains((string)($seenRequest['url'] ?? ''), '?'), 'pair requester URL must not contain a query');
+        hub_test_assert(($seenRequest['body'] ?? null) === '' && ($seenRequest['headers']['Content-Length'] ?? '') === '0', 'pair requester must send an explicit empty body for IIS compatibility');
         hub_test_assert(($seenRequest['headers']['X-3waAIHub-Pair-Invite'] ?? '') === $invite, 'pair requester must receive invite header');
         hub_test_assert(strlen((string)($seenRequest['headers']['X-3waAIHub-Router-Name'] ?? '')) <= 120, 'pair requester router name must be limited');
         hub_test_assert((int)($station['id'] ?? 0) > 0, 'pair import must return saved station');

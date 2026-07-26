@@ -171,9 +171,12 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
     $request = [
         'url' => $requestUrl,
         'method' => 'POST',
+        'body' => '',
         'headers' => [
             'X-3waAIHub-Pair-Invite' => $matches[1],
             'X-3waAIHub-Router-Name' => $routerName,
+            // IIS/HTTP.SYS rejects a bodyless POST without an explicit length.
+            'Content-Length' => '0',
         ],
     ];
     $requester ??= static function (array $request): array {
@@ -186,6 +189,7 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
         }
         if (!curl_setopt_array($handle, [
             CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => (string)($request['body'] ?? ''),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER => array_map(static fn (string $name, string $value): string => $name . ': ' . $value, array_keys($request['headers']), $request['headers']),
             CURLOPT_CONNECTTIMEOUT => 3,
