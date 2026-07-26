@@ -898,7 +898,7 @@ function hub_cluster_public_api_docs_html(PDO $db): string
         .service-card header { border-bottom: 1px solid var(--line); margin-bottom: 16px; padding-bottom: 12px; }
         .service-card h2 { margin-bottom: 6px; overflow-wrap: anywhere; }
         .service-card header p { color: var(--muted); font-size: 14px; margin-bottom: 0; }
-        .meta-grid { display: grid; gap: 10px 14px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 18px; }
+        .meta-grid { display: grid; gap: 10px 14px; grid-template-columns: max-content max-content; margin-bottom: 18px; }
         .meta-label { color: var(--muted); display: block; font-size: 12px; margin-bottom: 2px; }
         .meta-value { font-weight: 700; overflow-wrap: anywhere; }
         .contract-block { margin-top: 18px; }
@@ -907,7 +907,7 @@ function hub_cluster_public_api_docs_html(PDO $db): string
         pre { background: var(--code); color: var(--code-text); font: 13px/1.55 "SFMono-Regular", Consolas, "Liberation Mono", monospace; margin: 0; overflow: auto; padding: 12px; white-space: pre-wrap; word-break: break-word; }
         .empty-state { background: var(--panel); border: 1px dashed var(--line); color: var(--muted); padding: 24px; text-align: center; }
         .empty-state h2 { color: var(--ink); }
-        @media (max-width: 680px) { main { padding: 30px 16px 44px; } .catalog-summary, .meta-grid { grid-template-columns: 1fr; } .endpoint-row { align-items: stretch; flex-direction: column; } .copy-button { width: 100%; } .service-grid { grid-template-columns: 1fr; } }
+        @media (max-width: 680px) { main { padding: 30px 16px 44px; } .catalog-summary, .meta-grid { grid-template-columns: 1fr; } .endpoint-row { align-items: stretch; flex-direction: column; } .copy-button { width: 100%; } .section-title { align-items: flex-start; flex-direction: column; gap: 4px; } .service-grid { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>

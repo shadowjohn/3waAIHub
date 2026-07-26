@@ -20,7 +20,7 @@
 **Files:**
 - Modify: `tests/test_cluster_router.php:1968-2056`
 
-- [ ] **Step 1: Write the failing portal document test**
+- [x] **Step 1: Write the failing portal document test**
 
 Extend the existing fresh public-manifest fixture so it calls `hub_cluster_public_api_docs_html($db)` with an HTTPS request context and asserts that the rendered HTML contains the developer-portal contract:
 
@@ -44,7 +44,7 @@ Preserve and restore the changed `$_SERVER` keys in `finally`, following `hub_te
 
 Add assertions that the empty render still contains `No Router modes are currently available.` and that neither rendered document contains `configured.station.example`, `configured_station_secret`, or `remote_task_42`.
 
-- [ ] **Step 2: Run the full test suite and verify the new test fails**
+- [x] **Step 2: Run the full test suite and verify the new test fails**
 
 Run:
 
@@ -54,7 +54,7 @@ AIHUB_TEST_DB="$(mktemp /tmp/3waaihub_test_XXXXXX.sqlite)" AIHUB_TEST_QUIET=1 ph
 
 Expected: FAIL mentioning the missing developer-portal contract in the Cluster public docs test.
 
-- [ ] **Step 3: Commit the failing-test checkpoint only if execution needs a review boundary**
+- [x] **Step 3: Commit the failing-test checkpoint only if execution needs a review boundary**
 
 Do not commit a known-failing tree during normal inline execution. Keep the test staged only after Task 2 turns it green.
 
@@ -64,7 +64,7 @@ Do not commit a known-failing tree during normal inline execution. Keep the test
 - Modify: `app/cluster_router.php:848-900`
 - Test: `tests/test_cluster_router.php:1968-2056`
 
-- [ ] **Step 1: Add the display-only absolute Router endpoint**
+- [x] **Step 1: Add the display-only absolute Router endpoint**
 
 At the start of `hub_cluster_public_api_docs_html()`, derive the browser-facing endpoint from the existing public API URL without changing `hub_cluster_public_manifest()`:
 
@@ -79,7 +79,7 @@ $json = static fn (mixed $value): string => (string)json_encode($value, JSON_PRE
 
 Use `$routerUrl` only in human HTML and examples. Keep the JSON manifest's `base_endpoint` and service contract values unchanged and relative.
 
-- [ ] **Step 2: Replace the current document shell with the portal reading path**
+- [x] **Step 2: Replace the current document shell with the portal reading path**
 
 Render these semantic sections in order:
 
@@ -110,7 +110,7 @@ For each service use an `<article class="service-card" id="mode-...">` containin
 
 When `$services === []`, render the existing `No Router modes are currently available.` message in the portal's empty state after the summary. Do not display any station identity or diagnostics.
 
-- [ ] **Step 3: Apply responsive, restrained styling**
+- [x] **Step 3: Apply responsive, restrained styling**
 
 Replace the existing short style block with CSS that preserves the established light 3waAIHub colors and implements these required layout rules:
 
@@ -124,7 +124,7 @@ main { max-width: 1120px; margin: 0 auto; padding: 40px 20px 64px; }
 
 Use 8px-or-less radii, visible keyboard focus, `overflow-wrap:anywhere` for endpoint/code text, and no gradients, decorative imagery, charts, or animations.
 
-- [ ] **Step 4: Add progressive clipboard enhancement**
+- [x] **Step 4: Add progressive clipboard enhancement**
 
 At the end of the document include one small script that copies a button's `data-copy` value and briefly changes only that button's text:
 
@@ -145,7 +145,7 @@ document.querySelectorAll('[data-copy]').forEach((button) => {
 
 The document remains fully usable without JavaScript: all endpoint and example text remains visible.
 
-- [ ] **Step 5: Run PHP syntax validation and the full suite**
+- [x] **Step 5: Run PHP syntax validation and the full suite**
 
 Run:
 
@@ -157,7 +157,7 @@ AIHUB_TEST_DB="$(mktemp /tmp/3waaihub_test_XXXXXX.sqlite)" AIHUB_TEST_QUIET=1 ph
 
 Expected: each linter prints `No syntax errors detected`; suite prints `failures=0`.
 
-- [ ] **Step 6: Commit the green implementation**
+- [x] **Step 6: Commit the green implementation**
 
 ```bash
 git add app/cluster_router.php tests/test_cluster_router.php
@@ -169,7 +169,7 @@ git commit -m "feat: present cluster API as developer portal"
 **Files:**
 - Modify: none unless visual QA exposes a verified defect
 
-- [ ] **Step 1: Refresh the live catalog and save a desktop HTML response**
+- [x] **Step 1: Refresh the live catalog and inspect the public response**
 
 Run:
 
@@ -180,11 +180,11 @@ rg -n 'Cluster API|Live catalog|Available modes|cluster_api\.php|configured\.sta
 
 Expected: the first four terms appear; the configured station hostname and secret do not.
 
-- [ ] **Step 2: Inspect desktop and mobile renderings with Playwright**
+- [x] **Step 2: Inspect desktop and mobile renderings with Playwright**
 
 Open `https://3wa.tw/3waAIHub/cluster_public_api_docs.php` at `1440x1000` and `390x844`. Verify that the hero endpoint, summary values, mode directory, service cards, and code blocks are visible; mobile has one column; no text overlaps, clips, or causes the body to scroll horizontally.
 
-- [ ] **Step 3: Re-run the full suite after any visual correction**
+- [x] **Step 3: Re-run the full suite after any visual correction**
 
 Run:
 
