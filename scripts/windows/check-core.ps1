@@ -51,6 +51,12 @@ function Get-WindowsProductType {
     }
 }
 
+function Test-ClusterSecretValue {
+    param([AllowNull()][string]$Value)
+
+    return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -match '\A[0-9a-fA-F]{64}\z'
+}
+
 function Invoke-PhpProbe {
     param([string]$PhpExe, [string[]]$Arguments)
 
@@ -126,6 +132,15 @@ if ($hostProductType -eq 1) {
 
 $phpExe = Get-PhpCommand
 $phpOk = Test-PhpConfiguration $phpExe
+
+$clusterSecret = [Environment]::GetEnvironmentVariable('AIHUB_CLUSTER_SECRET_KEY', 'Machine')
+if (Test-ClusterSecretValue $clusterSecret) {
+    Write-Host 'Cluster secret: CONFIGURED (Machine environment; value hidden)'
+} elseif ([string]::IsNullOrWhiteSpace($clusterSecret)) {
+    Write-Host 'Cluster secret: MISSING (optional; run elevated: .\install.ps1 -Mode Core -InitializeClusterSecret)'
+} else {
+    Write-Host 'Cluster secret: INVALID (Machine environment must be 64 hexadecimal characters; installer will not overwrite it)'
+}
 
 $phpCgi = Get-Command php-cgi -ErrorAction SilentlyContinue
 $phpCgiOk = $null -ne $phpCgi

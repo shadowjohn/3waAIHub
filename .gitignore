@@ -16,6 +16,7 @@ data/results/*
 data/uploads/*
 data/cache/*
 data/services/*
+data/install/*
 data/test_services/*
 data/sessions/*
 !data/.gitkeep

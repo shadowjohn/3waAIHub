@@ -90,7 +90,8 @@ function hub_cluster_validate_station_base_url(string $value): string
 
 function hub_cluster_allow_http_internal(): bool
 {
-    return getenv('AIHUB_CLUSTER_ALLOW_HTTP_INTERNAL') === '1';
+    // 內網 AI 節點是預設拓撲；實際允許範圍仍由 private literal IP 檢查限制。
+    return getenv('AIHUB_CLUSTER_ALLOW_HTTP_INTERNAL') !== '0';
 }
 
 function hub_cluster_private_http_host_allowed(string $host): bool

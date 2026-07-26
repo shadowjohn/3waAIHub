@@ -105,6 +105,18 @@ hub_test('PhaseAuth-1A.2 IIS login sessions stay inside the active Hub data root
     hub_test_assert(str_contains($webConfig, '<add segment="data" />'), 'IIS must block direct access to Hub runtime data');
 });
 
+hub_test('IIS web.config blocks non-public source and deployment material', function (): void {
+    $webConfig = (string)(@file_get_contents(HUB_ROOT . '/web.config') ?: '');
+
+    hub_test_assert(str_contains($webConfig, '<directoryBrowse enabled="false" />'), 'IIS directory browsing must stay disabled');
+    foreach (['.git', '.github', '.env', '.env.example', 'app', 'crontab', 'data', 'docs', 'i18n', 'packs', 'scripts', 'tests', 'tools', 'templates'] as $segment) {
+        hub_test_assert(str_contains($webConfig, '<add segment="' . $segment . '" />'), 'IIS must hide non-public segment: ' . $segment);
+    }
+    foreach (['.ps1', '.bat', '.cmd', '.sh', '.md', '.log', '.sqlite', '.db', '.sql', '.ini', '.yml', '.yaml', '.xml'] as $extension) {
+        hub_test_assert(str_contains($webConfig, '<add fileExtension="' . $extension . '" allowed="false" />'), 'IIS must deny sensitive static extension: ' . $extension);
+    }
+});
+
 hub_test('PhaseAuth-1A.2 login lockout defaults and schema exist', function (): void {
     $db = hub_test_reset_db();
     hub_ensure_default_storage_settings($db);

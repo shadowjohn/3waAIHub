@@ -310,7 +310,6 @@ hub_test('cluster router rejects an invalid secret and invalid station base URLs
         );
         foreach ([
             'ftp://station.example',
-            'http://192.168.1.106/aihub',
             'https://user:pass@station.example',
             'https://station.example/path#fragment',
             'https://station.example/path?query=1',
@@ -321,29 +320,27 @@ hub_test('cluster router rejects an invalid secret and invalid station base URLs
     });
 });
 
-hub_test('cluster router permits explicit HTTP only for private literal stations', function (): void {
+hub_test('cluster router permits private literal HTTP stations by default', function (): void {
     hub_test_with_cluster_secret(function (): void {
-        hub_test_with_cluster_http_internal(function (): void {
-            hub_test_assert(
-                hub_cluster_validate_station_base_url('http://192.168.1.106/aihub') === 'http://192.168.1.106/aihub/',
-                'explicit internal HTTP allowance must accept private LAN stations'
-            );
-            hub_test_assert(
-                hub_cluster_validate_station_base_url('http://127.0.0.1/aihub') === 'http://127.0.0.1/aihub/',
-                'explicit internal HTTP allowance must accept literal loopback IPs'
-            );
-            foreach (['http://203.0.113.10/aihub', 'http://169.254.169.254/aihub', 'http://localhost/aihub', 'http://station.example/aihub'] as $url) {
-                hub_test_assert(hub_test_throws(static fn (): string => hub_cluster_validate_station_base_url($url)), 'internal HTTP allowance must reject non-private targets: ' . $url);
-            }
+        hub_test_assert(
+            hub_cluster_validate_station_base_url('http://192.168.1.106/aihub') === 'http://192.168.1.106/aihub/',
+            'private LAN HTTP must be allowed by default'
+        );
+        hub_test_assert(
+            hub_cluster_validate_station_base_url('http://127.0.0.1/aihub') === 'http://127.0.0.1/aihub/',
+            'literal loopback HTTP must be allowed by default'
+        );
+        foreach (['http://203.0.113.10/aihub', 'http://169.254.169.254/aihub', 'http://localhost/aihub', 'http://station.example/aihub'] as $url) {
+            hub_test_assert(hub_test_throws(static fn (): string => hub_cluster_validate_station_base_url($url)), 'default internal HTTP policy must reject non-private targets: ' . $url);
+        }
 
-            $db = hub_test_reset_db();
-            $station = hub_cluster_import_pairing_link(
-                $db,
-                'http://192.168.1.106/cluster_pair.php#invite=' . str_repeat('e', 64),
-                static fn (): array => ['status' => 200, 'body' => json_encode(hub_test_cluster_station_pairing(), JSON_THROW_ON_ERROR)]
-            );
-            hub_test_assert((int)($station['id'] ?? 0) > 0, 'private HTTP pairing import must use the same station URL validation');
-        });
+        $db = hub_test_reset_db();
+        $station = hub_cluster_import_pairing_link(
+            $db,
+            'http://192.168.1.106/cluster_pair.php#invite=' . str_repeat('e', 64),
+            static fn (): array => ['status' => 200, 'body' => json_encode(hub_test_cluster_station_pairing(), JSON_THROW_ON_ERROR)]
+        );
+        hub_test_assert((int)($station['id'] ?? 0) > 0, 'private HTTP pairing import must use the same station URL validation');
     });
 });
 

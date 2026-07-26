@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 return [
     __DIR__ . '/../test_command_queue.php',
+    __DIR__ . '/../test_cluster_admin.php',
     __DIR__ . '/../test_environment_probe.php',
     __DIR__ . '/../test_gateway.php',
     __DIR__ . '/../test_hardware_preflight.php',

@@ -99,6 +99,8 @@ Windows installer 依主機角色執行：
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core
+# 只有要啟用 Cluster Router 或子入口節點時，以系統管理員 PowerShell 初始化一次：
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -InitializeClusterSecret
 # 僅在要用 IIS 部署時，以系統管理員 PowerShell 執行：
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -InstallIis
 # 先做不變更系統的 readiness 檢查；READY 後移除 -Check 才會安裝 WSL runtime。
@@ -108,7 +110,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 ```
 
-`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite，建立 `data/` runtime 目錄並初始化 SQLite，並把 `-ModelsRoot` 寫入 Hub Settings 的 `AIHUB_MODELS_DIR`。既有 PHP 只會檢查，絕不修改外部 `php.ini`；若缺少或不符合需求，才下載官方 PHP 8.3 NTS x64 FastCGI、比對官方 SHA-256 後安裝到 `<InstallRoot>\tools\php`，並只設定這份 managed PHP 的 `Asia/Taipei`、`short_open_tag` 與必要 extensions。IIS `WebAdministration` 不需下載第三方套件；要啟用時，`-InstallIis` 會以系統管理員權限啟用 Windows 內建 IIS／管理腳本工具，不會自動重開機，且 `-Check` 永遠不變更系統。Core readiness 與 IIS readiness 分開報告，前者可用 `php -S` 運作，不會因 IIS 尚未配置而變成 Core not ready。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、IIS、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
+`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite，建立 `data/` runtime 目錄並初始化 SQLite，並把 `-ModelsRoot` 寫入 Hub Settings 的 `AIHUB_MODELS_DIR`。既有 PHP 只會檢查，絕不修改外部 `php.ini`；若缺少或不符合需求，才下載官方 PHP 8.3 NTS x64 FastCGI、比對官方 SHA-256 後安裝到 `<InstallRoot>\tools\php`，並只設定這份 managed PHP 的 `Asia/Taipei`、`short_open_tag` 與必要 extensions。IIS `WebAdministration` 不需下載第三方套件；要啟用時，`-InstallIis` 會以系統管理員權限啟用 Windows 內建 IIS／管理腳本工具，不會自動重開機，且 `-Check` 永遠不變更系統。`-InitializeClusterSecret` 只在 Machine environment 缺少 `AIHUB_CLUSTER_SECRET_KEY` 時產生 64 位十六進位 key，既有合法 key 絕不覆寫、值不輸出到畫面或 log；執行後須在受控維護時段重啟 IIS/WAS，讓 FastCGI 繼承新環境。這個 key 是每台 Hub 自己的加密材料，不必在節點間共享。Core readiness 與 IIS readiness 分開報告，前者可用 `php -S` 運作，不會因 IIS 尚未配置而變成 Core not ready。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、IIS、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
 
 `WslRuntime -Check` 只做 read-only readiness report：檢查 WSL2、指定 Ubuntu distro、distro 內 Docker Engine / Compose、PHP CLI、PDO SQLite、`nvidia-smi`、依 GPU 選出的 YOLO profile，以及 `/DATA` 是否在 WSL ext4。移除 `-Check` 後，安裝器只在既有 distro 內補齊 `php-cli`／`php-sqlite3`、同步最小 runtime 到 `/DATA/3waAIHub-runtime`（shell job 強制 LF）、建立 SQLite 與 runtime profile，並依 Pack metadata 建立對應 YOLO image。它不自動啟用 Windows Features、不安裝 Docker Desktop、不改顯示卡驅動；Docker Engine 必須已由 Docker Desktop WSL2 backend 或 distro 自行提供。
 
@@ -129,7 +131,9 @@ GTX 1050／1050 Ti／1080／1080 Ti（Pascal）會選取 `pascal-cu118` profile�
 >
 > Windows Core 的不適用能力顯示 N/A，不顯示成系統故障。
 
-Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。以系統管理員 PowerShell 執行 `scripts/windows/configure-iis-fastcgi.ps1`，它會建立指定 IIS virtual directory、註冊選定的 `php-cgi.exe`，並只對該 Hub location 加入 PHP handler；`web.config` 不應寫死其他機器的 PHP 路徑。登入 session 會保存在 `data/sessions/`，而專案的 `web.config` 會封鎖 `data/` 的直接 HTTP 存取；IIS App Pool identity 必須對 `data/` 具備修改權限。
+Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。以系統管理員 PowerShell 執行 `scripts/windows/configure-iis-fastcgi.ps1`，它會建立指定 IIS virtual directory、註冊選定的 `php-cgi.exe`，並只對該 Hub location 加入 PHP handler；`web.config` 不應寫死其他機器的 PHP 路徑，並預設以 `index.php` 處理根目錄與 `/admin/` 等目錄入口。它會關閉 directory browsing，並封鎖程式庫、部署腳本、測試、Pack metadata、runtime data、版本控制與敏感靜態副檔名的 HTTP 直接存取；公開 API、`admin/`、`catalog_show/` 與 `assets/` 維持可用。若沿用 MS4W_MSSQL 的 PHP，直接指定其中的 `php-cgi.exe` 即可；Cluster key 仍由 Windows Machine environment 提供，不修改該套件的 `php.ini`。登入 session 會保存在 `data/sessions/`，而 IIS App Pool identity 必須對 `data/` 具備修改權限。
+
+Windows 不掛 Linux cron。可在 Task Scheduler 匯入 `3waAIHub_Crontab.xml`，它每分鐘以 LocalSystem 執行 `command_worker.php --limit=5`，不需保存使用者帳密，並以 `IgnoreNew` 避免 worker 重入；log 寫到 `data/logs/command_worker_windows.log`。預設 XML 對應 `D:\DATA\3waAIHub`；執行 Core installer 後，會在 `data/install/3waAIHub_Crontab.xml` 產生已依 `InstallRoot` 改寫的版本。System task 需要由 Machine PATH 或 `<InstallRoot>\tools\php\php.exe` 找到 PHP；WSL/Docker Desktop 若是使用者專屬 distro，仍應以 WSL/Linux runtime 或 Remote Linux Agent 執行，不把它當作 System worker 的保證能力。
 
 ```powershell
 .\scripts\windows\configure-iis-fastcgi.ps1 `

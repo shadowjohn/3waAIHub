@@ -4,6 +4,7 @@ param(
     [ValidateSet(0, 1, 2, 3)]
     [int]$ProductType = 0,
     [switch]$InstallIis,
+    [switch]$InitializeClusterSecret,
     [string]$PhpZipUri,
     [string]$PhpZipSha256
 )
@@ -47,18 +48,18 @@ function Get-IisFeaturePlan {
     }
 }
 
-function Assert-IisInstallElevation {
+function Assert-ElevatedAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw '-InstallIis requires an elevated PowerShell session.'
+        throw 'This operation requires an elevated PowerShell session.'
     }
 }
 
 function Install-IisWebAdministration {
     param([int]$ProductType)
 
-    Assert-IisInstallElevation
+    Assert-ElevatedAdministrator
     $plan = Get-IisFeaturePlan $ProductType
     $restartNeeded = $false
 
@@ -274,6 +275,45 @@ function Configure-Php {
     return $phpIni
 }
 
+function Test-ClusterSecretValue {
+    param([AllowNull()][string]$Value)
+
+    return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -match '\A[0-9a-fA-F]{64}\z'
+}
+
+function New-ClusterSecretValue {
+    $bytes = [byte[]]::new(32)
+    $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $random.GetBytes($bytes)
+    } finally {
+        $random.Dispose()
+    }
+
+    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+function Initialize-ClusterSecret {
+    Assert-ElevatedAdministrator
+
+    $existing = [Environment]::GetEnvironmentVariable('AIHUB_CLUSTER_SECRET_KEY', 'Machine')
+    if (Test-ClusterSecretValue $existing) {
+        Write-Host '[3waAIHub] Cluster secret: EXISTS (Machine environment; unchanged)'
+        Write-InstallLog 'cluster_secret status=existing scope=machine'
+        return
+    }
+    if (-not [string]::IsNullOrWhiteSpace($existing)) {
+        throw 'AIHUB_CLUSTER_SECRET_KEY is invalid at Machine scope. Refusing to overwrite it.'
+    }
+
+    $secret = New-ClusterSecretValue
+    [Environment]::SetEnvironmentVariable('AIHUB_CLUSTER_SECRET_KEY', $secret, 'Machine')
+    $env:AIHUB_CLUSTER_SECRET_KEY = $secret
+    Write-Host '[3waAIHub] Cluster secret: INITIALIZED (Machine environment; value hidden)'
+    Write-Host '[3waAIHub] Restart IIS/WAS before enabling a Cluster role so FastCGI inherits the new value.'
+    Write-InstallLog 'cluster_secret status=initialized scope=machine'
+}
+
 function Invoke-PhpProbe {
     param([string]$PhpExe, [string[]]$Arguments)
 
@@ -340,6 +380,23 @@ function New-RuntimeDirs {
     }
 }
 
+function Write-WindowsWorkerTaskTemplate {
+    $templatePath = Join-Path $InstallRoot '3waAIHub_Crontab.xml'
+    if (-not (Test-Path -LiteralPath $templatePath)) {
+        throw 'Windows worker Task Scheduler XML template is missing.'
+    }
+
+    $resolvedRoot = (Resolve-Path -LiteralPath $InstallRoot).Path.TrimEnd('\\')
+    $content = Get-Content -LiteralPath $templatePath -Raw -Encoding Unicode
+    $rendered = $content.Replace('D:\DATA\3waAIHub', $resolvedRoot)
+    $targetDir = Join-Path $InstallRoot 'data\install'
+    $targetPath = Join-Path $targetDir '3waAIHub_Crontab.xml'
+    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    [System.IO.File]::WriteAllText($targetPath, $rendered, [System.Text.UnicodeEncoding]::new($false, $true))
+    Write-InstallLog "windows_worker_task_template path=$targetPath"
+    Write-Host "[3waAIHub] Windows worker Task Scheduler XML: $targetPath"
+}
+
 if ($env:AIHUB_WINDOWS_INSTALLER_TEST_FUNCTIONS_ONLY -eq '1') {
     return
 }
@@ -368,10 +425,15 @@ if (-not (Test-PhpConfiguration $phpExe)) {
 }
 
 New-RuntimeDirs
+Write-WindowsWorkerTaskTemplate
 
 Write-Host '[3waAIHub] Initializing SQLite...'
 & $phpExe scripts/init_db.php "--models-root=$ModelsRoot"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+if ($InitializeClusterSecret) {
+    Initialize-ClusterSecret
+}
 
 Write-Host '[3waAIHub] Done.'
 Write-Host 'Preview server:'

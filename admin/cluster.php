@@ -112,8 +112,12 @@ if ($nodeEnabled) {
         $nodeToken = '';
     }
     if ($routerName === '' && $pairingInvite !== '') {
-        $descriptor = hub_cluster_node_pairing_descriptor($db);
-        $pairingLink = rtrim((string)$descriptor['public_base_url'], '/') . '/cluster_pair.php#invite=' . rawurlencode($pairingInvite);
+        try {
+            $descriptor = hub_cluster_node_pairing_descriptor($db);
+            $pairingLink = rtrim((string)$descriptor['public_base_url'], '/') . '/cluster_pair.php#invite=' . rawurlencode($pairingInvite);
+        } catch (InvalidArgumentException) {
+            $error = $error !== '' ? $error : '無法依目前的主機網址產生配對連結。請使用 HTTPS 或私有 IP 位址開啟本頁。';
+        }
     }
 }
 

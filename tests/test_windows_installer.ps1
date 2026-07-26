@@ -13,9 +13,14 @@ $wslProfileScript = Join-Path $PSScriptRoot '..\scripts\windows\wsl-yolo-runtime
 $initDbSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\init_db.php') -Raw -Encoding UTF8
 $profileWriter = Join-Path $PSScriptRoot '..\scripts\windows\write-runtime-profile.ps1'
 $profileWriterSource = Get-Content -LiteralPath $profileWriter -Raw -Encoding UTF8
+$workerTaskTemplate = Join-Path $PSScriptRoot '..\3waAIHub_Crontab.xml'
+$workerTaskRunner = Join-Path $PSScriptRoot '..\scripts\windows\run-command-worker.ps1'
+$workerTaskTemplateSource = if (Test-Path -LiteralPath $workerTaskTemplate) { Get-Content -LiteralPath $workerTaskTemplate -Raw -Encoding Unicode } else { '' }
+$workerTaskRunnerSource = if (Test-Path -LiteralPath $workerTaskRunner) { Get-Content -LiteralPath $workerTaskRunner -Raw -Encoding UTF8 } else { '' }
 $yoloDefaultDockerfile = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\packs\yolo\service\Dockerfile') -Raw -Encoding UTF8
 $yoloPascalDockerfile = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\packs\yolo\service\Dockerfile.pascal-cu118') -Raw -Encoding UTF8
 $uninstallSource = Get-Content -LiteralPath $uninstaller -Raw -Encoding UTF8
+$webConfigSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\web.config') -Raw -Encoding UTF8
 
 function Assert-InstallerContract {
     param(
@@ -69,6 +74,29 @@ Assert-InstallerContract ($source -match '-InstallRoot \$InstallRoot -ModelsRoot
 Assert-InstallerContract ($initDbSource -match '--models-root') 'Core DB initialization must accept ModelsRoot'
 Assert-InstallerContract ($source -match '\[switch\]\$InstallIis') 'Core installer must expose explicit IIS installation opt-in'
 Assert-InstallerContract ($source -match '-InstallIis:\$InstallIis') 'Core installer must forward the IIS opt-in to the Core installer'
+Assert-InstallerContract ($source -match '\[switch\]\$InitializeClusterSecret') 'Core installer must expose explicit Cluster secret initialization'
+Assert-InstallerContract ($source -match '-InitializeClusterSecret:\$InitializeClusterSecret') 'Core installer must forward the Cluster secret opt-in to the Core installer'
+Assert-InstallerContract ($checkCoreSource -match 'Cluster secret:') 'Core readiness must report Cluster secret state without revealing it'
+Assert-InstallerContract ($coreSource -match 'function New-ClusterSecretValue') 'Core installer must generate a Cluster secret without shelling out'
+Assert-InstallerContract ($coreSource -match "SetEnvironmentVariable\('AIHUB_CLUSTER_SECRET_KEY'.*'Machine'\)") 'Core installer must persist a Cluster secret at Machine scope'
+Assert-InstallerContract ($webConfigSource -match '<defaultDocument>') 'IIS web.config must declare a default document'
+Assert-InstallerContract ($webConfigSource -match '<add value="index.php" />') 'IIS default document must route directory URLs to index.php'
+Assert-InstallerContract (Test-Path -LiteralPath $workerTaskTemplate) 'Windows command worker Task Scheduler XML must exist'
+Assert-InstallerContract ($workerTaskTemplateSource -match 'encoding="UTF-16"') 'Windows worker task XML must use the Task Scheduler UTF-16 declaration'
+$workerTaskTemplateBytes = [System.IO.File]::ReadAllBytes($workerTaskTemplate)
+Assert-InstallerContract ($workerTaskTemplateBytes.Length -ge 2 -and $workerTaskTemplateBytes[0] -eq 0xFF -and $workerTaskTemplateBytes[1] -eq 0xFE) 'Windows worker task XML must include a UTF-16 LE BOM'
+Assert-InstallerContract ($workerTaskTemplateSource -match 'D:\\DATA\\3waAIHub\\scripts\\windows\\run-command-worker\.ps1') 'Windows worker task must default to the documented install root'
+Assert-InstallerContract ($workerTaskTemplateSource -match '<Interval>PT1M</Interval>') 'Windows worker task must run every minute'
+Assert-InstallerContract ($workerTaskTemplateSource -match '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>') 'Windows worker task must prevent overlapping workers'
+Assert-InstallerContract ($workerTaskTemplateSource -match '<UserId>S-1-5-18</UserId>') 'Windows worker task must run as LocalSystem without storing a user password'
+Assert-InstallerContract ($workerTaskTemplateSource -notmatch '<LogonType>') 'Windows worker task must use the LocalSystem principal format accepted by Task Scheduler'
+Assert-InstallerContract (Test-Path -LiteralPath $workerTaskRunner) 'Windows command worker runner must exist'
+Assert-InstallerContract ($workerTaskRunnerSource -match 'command_worker\.php') 'Windows worker runner must execute command_worker.php'
+Assert-InstallerContract ($workerTaskRunnerSource -match '--limit=5') 'Windows worker runner must keep the bounded command worker limit'
+Assert-InstallerContract ($workerTaskRunnerSource -match 'function Write-WorkerLog') 'Windows worker runner must own compatible log writing'
+Assert-InstallerContract ($workerTaskRunnerSource -match 'System\.IO\.StreamWriter') 'Windows worker runner must use StreamWriter for compatible log encoding'
+Assert-InstallerContract ($workerTaskRunnerSource -notmatch 'AppendAllLines|AppendAllText') 'Windows worker runner must not depend on unavailable File append overloads'
+Assert-InstallerContract ($coreSource -match 'function Write-WindowsWorkerTaskTemplate') 'Core installer must materialize the Windows worker task template for custom roots'
 Assert-InstallerContract ($coreSource -match 'function Install-IisWebAdministration') 'Core installer must install IIS through a dedicated function'
 Assert-InstallerContract ($coreSource -match 'IIS-ManagementScriptingTools') 'Workstation IIS plan must include WebAdministration tooling'
 Assert-InstallerContract ($checkCoreSource -match '-InstallIis') 'Core readiness must show the IIS remediation command'
@@ -334,6 +362,11 @@ exit /b 9
 
     $managedPhpDir = Get-ManagedPhpInstallDir
     Assert-InstallerContract ($managedPhpDir -eq (Join-Path $runtimeRoot 'tools\php')) 'managed PHP must live below InstallRoot'
+
+    $generatedClusterSecret = New-ClusterSecretValue
+    Assert-InstallerContract ($generatedClusterSecret -match '\A[0-9a-f]{64}\z') 'generated Cluster secret must be 64 lowercase hexadecimal characters'
+    Assert-InstallerContract (Test-ClusterSecretValue $generatedClusterSecret) 'generated Cluster secret must validate'
+    Assert-InstallerContract (-not (Test-ClusterSecretValue 'not-a-cluster-secret')) 'invalid Cluster secret must be rejected'
 
     $workstationIisPlan = Get-IisFeaturePlan 1
     Assert-InstallerContract ($workstationIisPlan.HostKind -eq 'workstation') 'ProductType=1 must use the workstation IIS feature plan'

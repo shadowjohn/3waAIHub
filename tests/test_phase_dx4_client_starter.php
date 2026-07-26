@@ -152,7 +152,9 @@ hub_test('cluster Router public entry documents and endpoints remain disclosure-
     foreach ([$manifestPath, $docsPath] as $path) {
         $source = (string)file_get_contents($path);
         hub_test_assert(str_contains($source, 'hub_cluster_router_enabled($db)') && str_contains($source, "hub_gateway_error(404, 'router_disabled'"), 'public endpoint must gate disabled Router safely');
-        hub_test_assert((fileperms($path) & 0111) === 0111, 'public endpoint must be executable: ' . basename($path));
+        if (hub_platform_id() !== 'windows') {
+            hub_test_assert((fileperms($path) & 0111) === 0111, 'public endpoint must be executable: ' . basename($path));
+        }
     }
     hub_test_assert(str_contains((string)file_get_contents($manifestPath), "hub_public_api_allowed(\$db, 'AIHUB_PUBLIC_API_MANIFEST')"), 'public manifest must use the manifest allow switch');
     hub_test_assert(str_contains((string)file_get_contents($docsPath), "hub_public_api_allowed(\$db, 'AIHUB_PUBLIC_API_DOCS')"), 'public docs must use the docs allow switch');
