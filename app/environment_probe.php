@@ -46,10 +46,10 @@ function hub_web_protection_nginx_snippet(): string
 # Replace /3waAIHub with the current Hub URL prefix.
 autoindex off;
 
-location ~ ^/3waAIHub/(?:app|crontab|data|docs|i18n|packs|scripts|templates|tests|tools)(?:/|$) { return 404; }
-location ~ ^/3waAIHub/(?:\.git|\.github|vendor|node_modules)(?:/|$) { return 404; }
-location ~ ^/3waAIHub/(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|package(?:-lock)?\.json)$ { return 404; }
-location ~ ^/3waAIHub/(?:.*/)?\. { return 404; }
+location ~* ^/3waAIHub/(?:app|crontab|data|docs|i18n|packs|scripts|templates|tests|tools)(?:/|$) { return 404; }
+location ~* ^/3waAIHub/(?:\.git|\.github|vendor|node_modules)(?:/|$) { return 404; }
+location ~* ^/3waAIHub/(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|package(?:-lock)?\.json)$ { return 404; }
+location ~* ^/3waAIHub/(?:.*/)?\. { return 404; }
 location ~* ^/3waAIHub/.*(?:\.sqlite(?:-.+)?|\.db|\.env|\.key|\.log|\.ps1|\.bat|\.cmd|\.sh|\.sql|\.ini|\.ya?ml|\.xml|\.bak|~)$ { return 404; }
 NGINX;
 }
@@ -79,6 +79,13 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
             'apache_active' => hub_not_applicable_status(),
             'nginx_active' => hub_not_applicable_status(),
             'iis_rules_present' => $hasDirectoryBrowsingProtection && $hasProtectedSegments && $hasSensitiveExtensions,
+        ];
+    }
+    if ($platform !== 'linux') {
+        return [
+            'apache_active' => hub_not_applicable_status(),
+            'nginx_active' => hub_not_applicable_status(),
+            'apache_rules_present' => hub_not_applicable_status(),
         ];
     }
 

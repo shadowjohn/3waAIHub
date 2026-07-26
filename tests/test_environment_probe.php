@@ -74,6 +74,16 @@ hub_test('web protection probe reports local server state without network access
     hub_test_assert(($nginxLinux['nginx_active'] ?? false) === true, 'nginx should be active in the nginx fixture');
     hub_test_assert(($nginxLinux['apache_rules_present'] ?? true) === false, 'incomplete Apache rules must not be reported as present');
 
+    $darwinCalls = 0;
+    $darwin = hub_collect_web_protection_status('darwin', static function (array $command, int $timeoutSeconds) use (&$darwinCalls): array {
+        $darwinCalls++;
+        return ['exit_code' => 0, 'stdout' => 'active', 'stderr' => '', 'output' => 'active'];
+    }, $htaccess, '');
+    hub_test_assert(($darwin['apache_active'] ?? null) === hub_not_applicable_status(), 'Darwin Apache status should be N/A');
+    hub_test_assert(($darwin['nginx_active'] ?? null) === hub_not_applicable_status(), 'Darwin nginx status should be N/A');
+    hub_test_assert(($darwin['apache_rules_present'] ?? null) === hub_not_applicable_status(), 'Darwin Apache rules should be N/A');
+    hub_test_assert($darwinCalls === 0, 'Darwin web protection probe must not run commands');
+
     $windowsCalls = 0;
     $webConfig = (string)(@file_get_contents(HUB_ROOT . '/web.config') ?: '');
     $windows = hub_collect_web_protection_status('windows', static function (array $command, int $timeoutSeconds) use (&$windowsCalls): array {
