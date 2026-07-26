@@ -55,6 +55,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $invitation = hub_cluster_create_pair_invitation($db);
             $_SESSION['hub_cluster_pair_invite'] = (string)$invitation['invite'];
             $message = '配對邀請已更新。';
+        } elseif ($action === 'register_self_station') {
+            $station = hub_cluster_register_self_station($db);
+            hub_cluster_refresh_station_now($db, $station, true, null);
+            $message = '本機節點已登錄。';
         } elseif ($action === 'pair_child') {
             $pairingLink = $_POST['pairing_link'] ?? null;
             if (!is_string($pairingLink)) {
@@ -245,6 +249,16 @@ hub_admin_header('Cluster', $user);
                 <form method="post"><input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>"><button class="danger" name="action" value="regenerate_node_token" type="submit">重新產生 Token</button></form>
                 <form method="post"><input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>"><button name="action" value="renew_invitation" type="submit">更新配對邀請</button></form>
             </div>
+        </section>
+    <?php endif; ?>
+
+    <?php if ($nodeEnabled && $routerEnabled): ?>
+        <section class="panel">
+            <h2>本機節點</h2>
+            <form method="post">
+                <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
+                <button class="primary" name="action" value="register_self_station" type="submit">登錄 / 更新本機服務</button>
+            </form>
         </section>
     <?php endif; ?>
 

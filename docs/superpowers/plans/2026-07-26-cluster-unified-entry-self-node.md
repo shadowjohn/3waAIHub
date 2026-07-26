@@ -136,7 +136,7 @@ git commit -m "feat: expose router modes to token permissions"
 - Modify: `admin/cluster.php:24-86,220-260`
 - Test: `tests/test_cluster_router.php:1103-1134`
 
-- [ ] **Step 1: Write failing self-registration tests**
+- [x] **Step 1: Write failing self-registration tests**
 
 Replace the setup in the existing `cluster router dispatches a configured self station directly with its paired router IP` test with this registration flow and expected peer IP:
 
@@ -154,13 +154,13 @@ hub_test_assert(hub_cluster_node_has_verified_router_peer($db, hub_cluster_node_
 
 Keep the existing direct-dispatch seam, change its expected `client_ip` to `127.0.0.1`, and remove the hand-written pairing invitation, station record, and self-key setup. Add a second test that registers the local station, calls `hub_cluster_refresh_station()` with a fetcher that increments a counter, and asserts it returns fresh inventory with the counter still `0`. Add a third test that pairs the node to `198.51.100.44` through `hub_cluster_accept_pair_invitation()` and asserts local registration throws without changing that remote IP rule.
 
-- [ ] **Step 2: Run the suite to verify RED**
+- [x] **Step 2: Run the suite to verify RED**
 
 Run: `AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full`
 
 Expected: FAIL because `hub_cluster_register_self_station()` does not exist.
 
-- [ ] **Step 3: Implement local registration and in-process self refresh**
+- [x] **Step 3: Implement local registration and in-process self refresh**
 
 Require `app/public_api_docs.php` from `app/cluster_router.php` so the existing `hub_public_api_manifest($db)` builder is available without a web request.
 
@@ -256,13 +256,13 @@ When both roles are enabled, render this single control after the child-node ser
 
 Do not add a second Token UI or a manual station URL field.
 
-- [ ] **Step 4: Run the suite to verify GREEN**
+- [x] **Step 4: Run the suite to verify GREEN**
 
 Run: `AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full`
 
 Expected: PASS with zero failures, including the direct-dispatch and no-fetcher self-refresh tests.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 git add app/cluster_router.php admin/cluster.php tests/test_cluster_router.php

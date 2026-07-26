@@ -1106,20 +1106,22 @@ hub_test('cluster router dispatches a configured self station directly with its 
         $db = hub_test_reset_db();
         hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
         hub_test_cluster_publish_mode($db, 'vision');
-        $configured = hub_cluster_node_configure($db, true, ['vision']);
-        hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '198.51.100.44', 'Primary Router');
+        hub_cluster_node_configure($db, true, ['vision']);
+        $station = hub_cluster_register_self_station($db);
+        $rules = hub_enabled_api_token_ip_rules($db, hub_cluster_node_token_id($db));
+        hub_test_assert(hub_cluster_router_station_is_self($db, $station), 'registered local station must be the Router self station');
+        hub_test_assert(count($rules) === 1 && (string)$rules[0]['ip_rule'] === '127.0.0.1', 'local station Token must bind only to loopback');
+        hub_test_assert(hub_cluster_node_has_verified_router_peer($db, hub_cluster_node_token_id($db), '127.0.0.1'), 'local station must have a verified loopback Router peer');
         $token = hub_test_cluster_router_customer_token($db, ['vision']);
-        $station = hub_test_cluster_router_station($db, ['station_key' => 'self_station', 'station_token' => hub_cluster_node_reveal_token($db)]);
-        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY', 'self_station');
         $direct = 0;
         $http = 0;
 
         $response = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$token['plain_token']), [
-            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => 'self_station'])],
+            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => (string)$station['station_key']])],
             'direct_dispatcher' => static function (PDO $db, string $mode, array $request) use (&$direct): array {
                 $direct++;
                 hub_test_assert(($request['bearer_token'] ?? '') === hub_cluster_node_reveal_token($db), 'self dispatch must use the selected station token');
-                hub_test_assert(($request['client_ip'] ?? '') === '198.51.100.44', 'self dispatch must use the paired router IP, never the customer IP');
+                hub_test_assert(($request['client_ip'] ?? '') === '127.0.0.1', 'self dispatch must use the paired loopback IP, never the customer IP');
                 return hub_gateway_json(200, ['ok' => true, 'mode' => $mode]);
             },
             'transport' => static function () use (&$http): array {
@@ -1129,6 +1131,42 @@ hub_test('cluster router dispatches a configured self station directly with its 
         ]);
 
         hub_test_assert($response['status'] === 200 && $direct === 1 && $http === 0, 'configured self station must dispatch once in-process without HTTP');
+        });
+    });
+});
+
+hub_test('cluster router refreshes its local station without a remote fetch', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'vision');
+            hub_cluster_node_configure($db, true, ['vision']);
+            $station = hub_cluster_register_self_station($db);
+            $fetches = 0;
+
+            $refreshed = hub_cluster_refresh_station($db, $station, static function () use (&$fetches): array {
+                $fetches++;
+                throw new RuntimeException('self station must not fetch over HTTP');
+            });
+
+            hub_test_assert(!empty($refreshed['fresh']) && $fetches === 0, 'local station refresh must use in-process manifest and status data');
+        });
+    });
+});
+
+hub_test('cluster router local registration refuses a child paired to another router', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'vision');
+            $configured = hub_cluster_node_configure($db, true, ['vision']);
+            hub_cluster_accept_pair_invitation($db, (string)$configured['invite'], '198.51.100.44', 'External Router');
+
+            hub_test_assert(hub_test_throws(static fn (): array => hub_cluster_register_self_station($db)), 'local registration must not overwrite an external Router pairing');
+            $rules = hub_enabled_api_token_ip_rules($db, hub_cluster_node_token_id($db));
+            hub_test_assert(count($rules) === 1 && (string)$rules[0]['ip_rule'] === '198.51.100.44', 'rejected local registration must preserve the external Router peer');
         });
     });
 });

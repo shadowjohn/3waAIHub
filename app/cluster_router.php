@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/public_api_docs.php';
+
 function hub_cluster_secret_key_path(): string
 {
     return HUB_DATA_DIR . '/cluster.key';
@@ -304,6 +306,50 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
     }
 
     return $station;
+}
+
+function hub_cluster_register_self_station(PDO $db): array
+{
+    if (!hub_cluster_router_enabled($db) || !hub_cluster_node_enabled($db)) {
+        throw new RuntimeException('local cluster node requires both roles');
+    }
+    $tokenId = hub_cluster_node_token_id($db);
+    if ($tokenId < 1) {
+        throw new RuntimeException('local cluster node is unavailable');
+    }
+    if (
+        hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME') !== ''
+        && !hub_cluster_node_has_verified_router_peer($db, $tokenId, '127.0.0.1')
+    ) {
+        throw new RuntimeException('local cluster node is paired to another router');
+    }
+
+    $routerName = trim(hub_site_title($db));
+    $routerName = function_exists('mb_substr') ? mb_substr($routerName, 0, 120, 'UTF-8') : substr($routerName, 0, 120);
+    $pairing = hub_cluster_node_pairing_descriptor($db);
+    $pairing['station_token'] = hub_cluster_node_reveal_token($db);
+
+    $db->beginTransaction();
+    try {
+        $db->prepare('DELETE FROM api_token_ip_whitelists WHERE token_id = :token_id')->execute([':token_id' => $tokenId]);
+        hub_add_api_token_ip_rule($db, $tokenId, '127.0.0.1', 'cluster router');
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME', $routerName);
+        hub_cluster_clear_pair_invitation($db);
+        $stationId = hub_cluster_save_paired_station($db, $pairing);
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY', (string)$pairing['station_key']);
+        $station = hub_cluster_get_station($db, $stationId);
+        if ($station === null) {
+            throw new RuntimeException('local cluster station registration failed');
+        }
+        $db->commit();
+
+        return $station;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
 }
 
 function hub_cluster_save_paired_station(PDO $db, array $pairing): int
@@ -2737,19 +2783,28 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
         throw $e;
     }
 
-    try {
-        $baseUrl = hub_cluster_station_request_base_url($station);
-        $token = hub_cluster_station_token($station);
-    } catch (Throwable) {
-        return hub_cluster_store_station_refresh_error($db, $stationId, 'station_auth_failed');
+    $selfStation = hub_cluster_router_station_is_self($db, $station);
+    if ($selfStation) {
+        try {
+            $manifest = hub_public_api_manifest($db);
+        } catch (Throwable) {
+            return hub_cluster_store_station_refresh_error($db, $stationId, 'manifest_invalid');
+        }
+    } else {
+        try {
+            $baseUrl = hub_cluster_station_request_base_url($station);
+            $token = hub_cluster_station_token($station);
+        } catch (Throwable) {
+            return hub_cluster_store_station_refresh_error($db, $stationId, 'station_auth_failed');
+        }
+        $fetcher ??= 'hub_cluster_default_station_fetcher';
+        try {
+            $manifestResponse = $fetcher(['url' => $baseUrl . 'api_manifest.json.php', 'method' => 'GET', 'headers' => []]);
+        } catch (Throwable) {
+            return hub_cluster_store_station_refresh_error($db, $stationId, 'manifest_fetch_failed');
+        }
+        $manifest = hub_cluster_refresh_json_payload($manifestResponse);
     }
-    $fetcher ??= 'hub_cluster_default_station_fetcher';
-    try {
-        $manifestResponse = $fetcher(['url' => $baseUrl . 'api_manifest.json.php', 'method' => 'GET', 'headers' => []]);
-    } catch (Throwable) {
-        return hub_cluster_store_station_refresh_error($db, $stationId, 'manifest_fetch_failed');
-    }
-    $manifest = hub_cluster_refresh_json_payload($manifestResponse);
     if ($manifest === null || !is_array($manifest['services'] ?? null)) {
         return hub_cluster_store_station_refresh_error($db, $stationId, 'manifest_invalid');
     }
@@ -2759,23 +2814,28 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
     }
     hub_cluster_store_station_manifest($db, $stationId, $manifestSnapshot);
 
-    try {
-        $statusResponse = $fetcher([
-            'url' => $baseUrl . 'cluster_status.php',
-            'method' => 'GET',
-            'headers' => ['Authorization' => 'Bearer ' . $token],
-        ]);
-    } catch (Throwable) {
-        return hub_cluster_store_station_refresh_error($db, $stationId, 'status_fetch_failed');
-    }
-    $statusCode = is_array($statusResponse) ? (int)($statusResponse['status'] ?? 0) : 0;
-    if ($statusCode !== 200) {
-        $statusCode = $statusCode >= 100 && $statusCode <= 599 ? $statusCode : 0;
+    if ($selfStation) {
+        $status = hub_cluster_status_payload($db);
+        $statusReceivedAt = time();
+    } else {
+        try {
+            $statusResponse = $fetcher([
+                'url' => $baseUrl . 'cluster_status.php',
+                'method' => 'GET',
+                'headers' => ['Authorization' => 'Bearer ' . $token],
+            ]);
+        } catch (Throwable) {
+            return hub_cluster_store_station_refresh_error($db, $stationId, 'status_fetch_failed');
+        }
+        $statusCode = is_array($statusResponse) ? (int)($statusResponse['status'] ?? 0) : 0;
+        if ($statusCode !== 200) {
+            $statusCode = $statusCode >= 100 && $statusCode <= 599 ? $statusCode : 0;
 
-        return hub_cluster_store_station_refresh_error($db, $stationId, 'status_http_' . $statusCode);
+            return hub_cluster_store_station_refresh_error($db, $stationId, 'status_http_' . $statusCode);
+        }
+        $statusReceivedAt = time();
+        $status = hub_cluster_refresh_json_payload($statusResponse);
     }
-    $statusReceivedAt = time();
-    $status = hub_cluster_refresh_json_payload($statusResponse);
     $statusSnapshot = $status === null ? null : hub_cluster_compact_status_snapshot($status, $statusReceivedAt);
     if ($statusSnapshot === null) {
         return hub_cluster_store_station_refresh_error($db, $stationId, 'status_invalid');
