@@ -134,6 +134,12 @@ foreach ($stationRows as $stationRow) {
     }
 }
 $stationRoutes = $stationDetail === null ? [] : hub_cluster_recent_routes($db, ['station_id' => (int)$stationDetail['id']], 20);
+$stationRefreshError = $stationDetail === null ? '' : (string)($stationDetail['last_error'] ?? '');
+$stationRefreshErrorHint = match ($stationRefreshError) {
+    'status_http_401' => '子節點拒絕控制面 Token；請重新配對。',
+    'status_http_403' => '子節點在授權後拒絕 Status；請確認子節點的執行檔已更新至主線。',
+    default => '',
+};
 
 $usageFilters = [
     'member_id' => is_string($_GET['member_id'] ?? null) ? trim($_GET['member_id']) : '',
@@ -258,7 +264,7 @@ hub_admin_header('Cluster', $user);
                     <span class="hub-meta-label">優先度</span><span class="hub-meta-value"><?= (int)$stationDetail['priority'] ?></span>
                     <span class="hub-meta-label">Router Station Token</span><span class="hub-meta-value"><?= !empty($stationDetail['token_configured']) ? '已設定' : '未設定' ?></span>
                     <span class="hub-meta-label">Manifest / Status</span><span class="hub-meta-value"><?= hub_h((string)$stationDetail['manifest_fetched_at']) ?> / <?= hub_h((string)$stationDetail['status_fetched_at']) ?></span>
-                    <span class="hub-meta-label">Refresh Error</span><span class="hub-meta-value"><?= hub_h((string)$stationDetail['last_error']) ?></span>
+                    <span class="hub-meta-label">Refresh Error</span><span class="hub-meta-value"><?= hub_h($stationRefreshError) ?><?php if ($stationRefreshErrorHint !== ''): ?><br><small class="muted"><?= hub_h($stationRefreshErrorHint) ?></small><?php endif; ?></span>
                 </div>
                 <h3>Mode Readiness</h3>
                 <table><thead><tr><th>Mode</th><th>Ready</th></tr></thead><tbody><?php foreach ($stationDetail['mode_readiness'] as $mode): ?><tr><td><code><?= hub_h((string)$mode['mode']) ?></code></td><td class="<?= $mode['ready'] ? 'ok' : 'bad' ?>"><?= $mode['ready'] ? '是' : '否' ?></td></tr><?php endforeach; ?></tbody></table>

@@ -893,6 +893,26 @@ hub_test('cluster inventory refresh reports malformed responses without raw resp
     });
 });
 
+hub_test('cluster inventory refresh preserves a compact status HTTP failure without response or token leaks', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $stationId = hub_cluster_save_paired_station($db, hub_test_cluster_station_pairing());
+        $station = hub_cluster_get_station($db, $stationId);
+        hub_test_assert($station !== null, 'paired station missing');
+
+        $refreshed = hub_cluster_refresh_station($db, $station, static function (array $request): array {
+            if (str_ends_with((string)$request['url'], '/api_manifest.json.php')) {
+                return ['status' => 200, 'body' => json_encode(['services' => [['mode' => 'ocr']]], JSON_THROW_ON_ERROR)];
+            }
+
+            return ['status' => 403, 'body' => 'CLI only 3wa_live_station_secret'];
+        });
+
+        hub_test_assert((string)($refreshed['last_error'] ?? '') === 'status_http_403', 'status HTTP failure must retain only its status code');
+        hub_test_assert(!str_contains(json_encode($refreshed, JSON_THROW_ON_ERROR), '3wa_live_station_secret'), 'status HTTP failure must not leak raw response or token');
+    });
+});
+
 hub_test('cluster inventory normalizes small future skew and rejects invalid status snapshots', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $now = time();

@@ -2734,6 +2734,12 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
     } catch (Throwable) {
         return hub_cluster_store_station_refresh_error($db, $stationId, 'status_fetch_failed');
     }
+    $statusCode = is_array($statusResponse) ? (int)($statusResponse['status'] ?? 0) : 0;
+    if ($statusCode !== 200) {
+        $statusCode = $statusCode >= 100 && $statusCode <= 599 ? $statusCode : 0;
+
+        return hub_cluster_store_station_refresh_error($db, $stationId, 'status_http_' . $statusCode);
+    }
     $statusReceivedAt = time();
     $status = hub_cluster_refresh_json_payload($statusResponse);
     $statusSnapshot = $status === null ? null : hub_cluster_compact_status_snapshot($status, $statusReceivedAt);
