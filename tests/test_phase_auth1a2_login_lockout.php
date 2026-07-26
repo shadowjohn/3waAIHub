@@ -129,6 +129,16 @@ hub_test('Apache .htaccess blocks the same non-public runtime material', functio
     }
 });
 
+hub_test('System Environment page performs fixed same-origin web protection HEAD checks', function (): void {
+    $environment = (string)file_get_contents(HUB_ROOT . '/admin/environment.php');
+
+    foreach (['data/cluster.key', 'docs/cluster-router.md', 'scripts/init_db.php', "method: 'HEAD'", "credentials: 'same-origin'", "cache: 'no-store'"] as $required) {
+        hub_test_assert(str_contains($environment, $required), 'environment page missing web protection HEAD check contract: ' . $required);
+    }
+    hub_test_assert(!str_contains($environment, 'response.text('), 'web protection HEAD checks must not read response bodies as text');
+    hub_test_assert(!str_contains($environment, 'response.json('), 'web protection HEAD checks must not read response bodies as JSON');
+});
+
 hub_test('PhaseAuth-1A.2 login lockout defaults and schema exist', function (): void {
     $db = hub_test_reset_db();
     hub_ensure_default_storage_settings($db);
