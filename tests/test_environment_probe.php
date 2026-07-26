@@ -66,6 +66,14 @@ hub_test('web protection probe reports local server state without network access
     hub_test_assert(($linux['apache_rules_present'] ?? false) === true, 'Apache protection rules should be present');
     hub_test_assert($commands === [['systemctl', 'is-active', 'apache2'], ['systemctl', 'is-active', 'nginx']], 'web protection probe commands mismatch');
 
+    $nginxLinux = hub_collect_web_protection_status('linux', static function (array $command, int $timeoutSeconds): array {
+        $active = $command === ['systemctl', 'is-active', 'nginx'];
+        return ['exit_code' => $active ? 0 : 3, 'stdout' => $active ? 'active' : 'inactive', 'stderr' => '', 'output' => $active ? 'active' : 'inactive'];
+    }, 'Options -Indexes', '');
+    hub_test_assert(($nginxLinux['apache_active'] ?? true) === false, 'Apache should be inactive in the nginx fixture');
+    hub_test_assert(($nginxLinux['nginx_active'] ?? false) === true, 'nginx should be active in the nginx fixture');
+    hub_test_assert(($nginxLinux['apache_rules_present'] ?? true) === false, 'incomplete Apache rules must not be reported as present');
+
     $windowsCalls = 0;
     $webConfig = (string)(@file_get_contents(HUB_ROOT . '/web.config') ?: '');
     $windows = hub_collect_web_protection_status('windows', static function (array $command, int $timeoutSeconds) use (&$windowsCalls): array {
@@ -77,6 +85,14 @@ hub_test('web protection probe reports local server state without network access
     hub_test_assert(($windows['nginx_active'] ?? null) === hub_not_applicable_status(), 'Windows nginx status should be N/A');
     hub_test_assert(($windows['iis_rules_present'] ?? false) === true, 'IIS protection rules should be present');
     hub_test_assert($windowsCalls === 0, 'Windows web protection probe must not run commands');
+
+    $invalidWindowsCalls = 0;
+    $invalidWindows = hub_collect_web_protection_status('windows', static function (array $command, int $timeoutSeconds) use (&$invalidWindowsCalls): array {
+        $invalidWindowsCalls++;
+        return [];
+    }, '', '<configuration />');
+    hub_test_assert(($invalidWindows['iis_rules_present'] ?? true) === false, 'incomplete IIS rules must not be reported as present');
+    hub_test_assert($invalidWindowsCalls === 0, 'Windows incomplete IIS probe must not run commands');
 });
 
 hub_test('Windows host metrics keep Linux storage and memory unknown while native GPU stays probeable', function (): void {
