@@ -117,6 +117,18 @@ hub_test('IIS web.config blocks non-public source and deployment material', func
     }
 });
 
+hub_test('Apache .htaccess blocks the same non-public runtime material', function (): void {
+    $htaccess = (string)(@file_get_contents(HUB_ROOT . '/.htaccess') ?: '');
+
+    hub_test_assert(str_contains($htaccess, 'Options -Indexes'), 'Apache directory browsing must stay disabled');
+    foreach (['app', 'crontab', 'data', 'docs', 'i18n', 'packs', 'scripts', 'templates', 'tests', 'tools', '.git', '.github'] as $segment) {
+        hub_test_assert(str_contains($htaccess, $segment), 'Apache must hide non-public segment: ' . $segment);
+    }
+    foreach (['\\.key$', '\\.ps1$', '\\.bat$', '\\.cmd$', '\\.sql$', '\\.ini$', '\\.ya?ml$', '\\.xml$'] as $extension) {
+        hub_test_assert(str_contains($htaccess, $extension), 'Apache must deny sensitive static extension: ' . $extension);
+    }
+});
+
 hub_test('PhaseAuth-1A.2 login lockout defaults and schema exist', function (): void {
     $db = hub_test_reset_db();
     hub_ensure_default_storage_settings($db);

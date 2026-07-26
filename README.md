@@ -129,7 +129,7 @@ GTX 1050／1050 Ti／1080／1080 Ti（Pascal）會選取 `pascal-cu118` profile�
 >
 > Windows Core 的不適用能力顯示 N/A，不顯示成系統故障。
 
-Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。以系統管理員 PowerShell 執行 `scripts/windows/configure-iis-fastcgi.ps1`，它會建立指定 IIS virtual directory、註冊選定的 `php-cgi.exe`，並只對該 Hub location 加入 PHP handler；`web.config` 不應寫死其他機器的 PHP 路徑，並預設以 `index.php` 處理根目錄與 `/admin/` 等目錄入口。它會關閉 directory browsing，並封鎖程式庫、部署腳本、測試、Pack metadata、runtime data、版本控制與敏感靜態副檔名的 HTTP 直接存取；公開 API、`admin/`、`catalog_show/` 與 `assets/` 維持可用。若沿用 MS4W_MSSQL 的 PHP，直接指定其中的 `php-cgi.exe` 即可；Cluster key 仍由 Windows Machine environment 提供，不修改該套件的 `php.ini`。登入 session 會保存在 `data/sessions/`，而 IIS App Pool identity 必須對 `data/` 具備修改權限。
+Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。以系統管理員 PowerShell 執行 `scripts/windows/configure-iis-fastcgi.ps1`，它會建立指定 IIS virtual directory、註冊選定的 `php-cgi.exe`，並只對該 Hub location 加入 PHP handler；`web.config` 不應寫死其他機器的 PHP 路徑，並預設以 `index.php` 處理根目錄與 `/admin/` 等目錄入口。它會關閉 directory browsing，並封鎖程式庫、部署腳本、測試、Pack metadata、runtime data、版本控制與敏感靜態副檔名的 HTTP 直接存取；公開 API、`admin/`、`catalog_show/` 與 `assets/` 維持可用。若沿用 MS4W_MSSQL 的 PHP，直接指定其中的 `php-cgi.exe` 即可；Cluster key 會儲存在 `data/cluster.key`，不修改該套件的 `php.ini`。登入 session 會保存在 `data/sessions/`，而 IIS App Pool identity 必須對 `data/` 具備修改權限。
 
 Windows 不掛 Linux cron。可在 Task Scheduler 匯入 `3waAIHub_Crontab.xml`，它每分鐘以 LocalSystem 執行 `command_worker.php --limit=5`，不需保存使用者帳密，並以 `IgnoreNew` 避免 worker 重入；log 寫到 `data/logs/command_worker_windows.log`。預設 XML 對應 `D:\DATA\3waAIHub`；執行 Core installer 後，會在 `data/install/3waAIHub_Crontab.xml` 產生已依 `InstallRoot` 改寫的版本。System task 需要由 Machine PATH 或 `<InstallRoot>\tools\php\php.exe` 找到 PHP；WSL/Docker Desktop 若是使用者專屬 distro，仍應以 WSL/Linux runtime 或 Remote Linux Agent 執行，不把它當作 System worker 的保證能力。
 
@@ -1553,7 +1553,7 @@ php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_real_wav
 Apache 需允許此專案目錄使用：
 
 ```apache
-AllowOverride FileInfo AuthConfig Limit
+AllowOverride Options FileInfo AuthConfig Limit
 ```
 
 ## 驗證

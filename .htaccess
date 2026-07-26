@@ -1,6 +1,8 @@
+Options -Indexes
+
 <IfModule mod_rewrite.c>
 RewriteEngine On
-RewriteRule ^(?:app|data|packs|scripts)(?:/|$) - [F,L]
+RewriteRule ^(?:app|crontab|data|docs|i18n|packs|scripts|templates|tests|tools)(?:/|$) - [F,L]
 RewriteRule ^(?:\.git|\.github|vendor|node_modules)(?:/|$) - [F,L]
 RewriteRule ^(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|package(?:-lock)?\.json)$ - [F,L]
 </IfModule>
@@ -9,7 +11,7 @@ RewriteRule ^(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|packa
 SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
 </IfModule>
 
-<FilesMatch "(^\.|\.sqlite(?:-.+)?$|\.db$|\.env$|\.log$|\.sh$|\.bak$|~$)">
+<FilesMatch "(^\.|\.sqlite(?:-.+)?$|\.db$|\.env$|\.key$|\.log$|\.ps1$|\.bat$|\.cmd$|\.sh$|\.sql$|\.ini$|\.ya?ml$|\.xml$|\.bak$|~$)">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>
