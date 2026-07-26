@@ -61,8 +61,8 @@ hub_test('web protection probe reports local server state without network access
     $htaccess = (string)(@file_get_contents(HUB_ROOT . '/.htaccess') ?: '');
     $linux = hub_collect_web_protection_status('linux', $runner, $htaccess, '');
 
-    hub_test_assert(($linux['apache'] ?? false) === true, 'Apache should be active');
-    hub_test_assert(($linux['nginx'] ?? true) === false, 'nginx should be inactive');
+    hub_test_assert(($linux['apache_active'] ?? false) === true, 'Apache should be active');
+    hub_test_assert(($linux['nginx_active'] ?? true) === false, 'nginx should be inactive');
     hub_test_assert(($linux['apache_rules_present'] ?? false) === true, 'Apache protection rules should be present');
     hub_test_assert($commands === [['systemctl', 'is-active', 'apache2'], ['systemctl', 'is-active', 'nginx']], 'web protection probe commands mismatch');
 
@@ -73,8 +73,8 @@ hub_test('web protection probe reports local server state without network access
         return [];
     }, '', $webConfig);
 
-    hub_test_assert(($windows['apache'] ?? null) === hub_not_applicable_status(), 'Windows Apache status should be N/A');
-    hub_test_assert(($windows['nginx'] ?? null) === hub_not_applicable_status(), 'Windows nginx status should be N/A');
+    hub_test_assert(($windows['apache_active'] ?? null) === hub_not_applicable_status(), 'Windows Apache status should be N/A');
+    hub_test_assert(($windows['nginx_active'] ?? null) === hub_not_applicable_status(), 'Windows nginx status should be N/A');
     hub_test_assert(($windows['iis_rules_present'] ?? false) === true, 'IIS protection rules should be present');
     hub_test_assert($windowsCalls === 0, 'Windows web protection probe must not run commands');
 });
