@@ -24,7 +24,7 @@
 - Modify: `tests/test_cluster_router.php:1390-1425`
 - Modify: `tests/test_cluster_router.php:1975-2074`
 
-- [ ] **Step 1: Replace the upload-rejection test with remote relay coverage**
+- [x] **Step 1: Replace the upload-rejection test with remote relay coverage**
 
 Use the existing image fixture and Router seams:
 
@@ -57,7 +57,7 @@ hub_test_assert(str_starts_with((string)$response['body'], "\x89PNG\r\n\x1a\n"),
 
 Query the resulting `cluster_route_accesses.upload_bytes` and assert it equals `$bytes`.
 
-- [ ] **Step 2: Add invalid multipart and self-station regression tests**
+- [x] **Step 2: Add invalid multipart and self-station regression tests**
 
 Add one nested-file case and one nonexistent `tmp_name` case. Both must return `400 router_request_unsupported` without invoking transport.
 
@@ -84,7 +84,7 @@ try {
 
 Assert that the callback sees the normalized form/files, `raw_body` is absent from `$captured['request']`, and the sentinel globals are restored.
 
-- [ ] **Step 3: Extend the public-manifest fixture for a form contract**
+- [x] **Step 3: Extend the public-manifest fixture for a form contract**
 
 Change the existing `image_upload` fixture from an excluded service into a multipart contract with form-aware examples:
 
@@ -103,7 +103,7 @@ $imageContract = array_replace($contract, [
 
 Assert that the public manifest lists `['image_upload', 'ocr']`, rewrites the image endpoint to `cluster_api.php?mode=image_upload`, and that the public document contains `-F`, `new CURLFile`, and `FormData` without the configured station origin or station secret.
 
-- [ ] **Step 4: Run the full suite to prove the current Router fails**
+- [x] **Step 4: Run the full suite to prove the current Router fails**
 
 Run:
 
@@ -113,7 +113,7 @@ AIHUB_TEST_DB="$(mktemp /tmp/3waaihub_test_XXXXXX.sqlite)" AIHUB_TEST_QUIET=1 ph
 
 Expected: FAIL at the old `router_upload_unsupported` behavior or because the multipart public contract is absent.
 
-- [ ] **Step 5: Keep the failing checkpoint uncommitted**
+- [x] **Step 5: Keep the failing checkpoint uncommitted**
 
 Do not create a known-failing commit during inline execution. Continue directly to Task 2.
 
@@ -123,7 +123,7 @@ Do not create a known-failing commit during inline execution. Continue directly 
 - Modify: `app/cluster_router.php:1050-1145`
 - Modify: `app/cluster_router.php:2321-2395`
 
-- [ ] **Step 1: Add narrow form normalizers**
+- [x] **Step 1: Add narrow form normalizers**
 
 Add these helpers beside `hub_cluster_router_normalize_request()`:
 
@@ -183,7 +183,7 @@ function hub_cluster_router_normalize_uploaded_files(mixed $source): ?array
 
 Skip blank optional file controls. Reject nested arrays and malformed entries before routing. Do not add MIME-specific rules because the selected child service owns image, audio, and model validation.
 
-- [ ] **Step 2: Distinguish JSON from multipart during normalization**
+- [x] **Step 2: Distinguish JSON from multipart during normalization**
 
 At the top of `hub_cluster_router_normalize_request()`, retain method and Router request-size checks. Move the existing query validation before body selection so both paths share `$query`; capture `$requestUri` and `$contentLength` from the same request/server sources used by `hub_cluster_router_read_request_body()`. When the safe content type is multipart, return a normalized form rather than reading `php://input`:
 
@@ -206,7 +206,7 @@ if ($isMultipart) {
 
 Implement `hub_cluster_router_request_bytes()` beside the normalizers: use a valid declared content length when present; otherwise sum validated file sizes plus scalar value lengths. For the non-multipart path set `request_bytes` to `strlen($body['body'])` and retain rejection of nonempty files.
 
-- [ ] **Step 3: Send remote forms through the existing cURL file builder**
+- [x] **Step 3: Send remote forms through the existing cURL file builder**
 
 In `hub_cluster_dispatch()`, include the normalized form and record `request_bytes`:
 
@@ -240,7 +240,7 @@ if ($configured && !in_array($method, ['GET', 'HEAD'], true)) {
 
 This reuses the existing `CURLFile` construction and lets cURL generate the outbound multipart boundary.
 
-- [ ] **Step 4: Scope form globals for self-station dispatch**
+- [x] **Step 4: Scope form globals for self-station dispatch**
 
 Add `hub_cluster_router_dispatch_self()` and call it from the current self-station branch:
 
@@ -270,7 +270,7 @@ function hub_cluster_router_dispatch_self(PDO $db, string $mode, array $request,
 
 Keep this helper in `app/cluster_router.php`; do not modify the gateway or introduce a second upload abstraction. `finally` prevents one PHP-FPM request from contaminating another.
 
-- [ ] **Step 5: Run the full test suite and make the relay green**
+- [x] **Step 5: Run the full test suite and make the relay green**
 
 Run:
 
@@ -280,7 +280,7 @@ AIHUB_TEST_DB="$(mktemp /tmp/3waaihub_test_XXXXXX.sqlite)" AIHUB_TEST_QUIET=1 ph
 
 Expected: `suite=full ... failures=0`.
 
-- [ ] **Step 6: Commit the relay implementation**
+- [x] **Step 6: Commit the relay implementation**
 
 ```bash
 git add app/cluster_router.php tests/test_cluster_router.php
@@ -294,7 +294,7 @@ git commit -m "feat: relay multipart requests through cluster"
 - Modify: `tests/test_cluster_router.php:1975-2074`
 - Modify: `docs/superpowers/plans/2026-07-26-cluster-multipart-relay.md`
 
-- [ ] **Step 1: Remove the Router-only multipart catalog exclusion**
+- [x] **Step 1: Remove the Router-only multipart catalog exclusion**
 
 Delete only this filter from `hub_cluster_public_manifest()`:
 
@@ -306,7 +306,7 @@ if (preg_match('~^multipart/form-data(?:;|$)~i', trim((string)($service['content
 
 Keep fresh-station filtering, endpoint rewriting, and the no-station-detail contract unchanged. The existing portal consumes the form-aware examples already supplied by a service contract, so do not duplicate an example generator.
 
-- [ ] **Step 2: Validate discovery, permissions, and form-aware portal examples**
+- [x] **Step 2: Validate discovery, permissions, and form-aware portal examples**
 
 Run:
 
