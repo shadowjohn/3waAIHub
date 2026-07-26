@@ -275,45 +275,6 @@ function Configure-Php {
     return $phpIni
 }
 
-function Test-ClusterSecretValue {
-    param([AllowNull()][string]$Value)
-
-    return -not [string]::IsNullOrWhiteSpace($Value) -and $Value -match '\A[0-9a-fA-F]{64}\z'
-}
-
-function New-ClusterSecretValue {
-    $bytes = [byte[]]::new(32)
-    $random = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-    try {
-        $random.GetBytes($bytes)
-    } finally {
-        $random.Dispose()
-    }
-
-    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
-}
-
-function Initialize-ClusterSecret {
-    Assert-ElevatedAdministrator
-
-    $existing = [Environment]::GetEnvironmentVariable('AIHUB_CLUSTER_SECRET_KEY', 'Machine')
-    if (Test-ClusterSecretValue $existing) {
-        Write-Host '[3waAIHub] Cluster secret: EXISTS (Machine environment; unchanged)'
-        Write-InstallLog 'cluster_secret status=existing scope=machine'
-        return
-    }
-    if (-not [string]::IsNullOrWhiteSpace($existing)) {
-        throw 'AIHUB_CLUSTER_SECRET_KEY is invalid at Machine scope. Refusing to overwrite it.'
-    }
-
-    $secret = New-ClusterSecretValue
-    [Environment]::SetEnvironmentVariable('AIHUB_CLUSTER_SECRET_KEY', $secret, 'Machine')
-    $env:AIHUB_CLUSTER_SECRET_KEY = $secret
-    Write-Host '[3waAIHub] Cluster secret: INITIALIZED (Machine environment; value hidden)'
-    Write-Host '[3waAIHub] Restart IIS/WAS before enabling a Cluster role so FastCGI inherits the new value.'
-    Write-InstallLog 'cluster_secret status=initialized scope=machine'
-}
-
 function Invoke-PhpProbe {
     param([string]$PhpExe, [string[]]$Arguments)
 
@@ -432,7 +393,8 @@ Write-Host '[3waAIHub] Initializing SQLite...'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if ($InitializeClusterSecret) {
-    Initialize-ClusterSecret
+    Write-Host '[3waAIHub] -InitializeClusterSecret is deprecated; Cluster creates data\cluster.key when needed.'
+    Write-InstallLog 'cluster_secret status=deferred store=data/cluster.key'
 }
 
 Write-Host '[3waAIHub] Done.'

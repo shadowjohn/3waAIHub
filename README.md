@@ -99,8 +99,6 @@ Windows installer 依主機角色執行：
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core
-# 只有要啟用 Cluster Router 或子入口節點時，以系統管理員 PowerShell 初始化一次：
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -InitializeClusterSecret
 # 僅在要用 IIS 部署時，以系統管理員 PowerShell 執行：
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -InstallIis
 # 先做不變更系統的 readiness 檢查；READY 後移除 -Check 才會安裝 WSL runtime。
@@ -110,7 +108,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 ```
 
-`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite，建立 `data/` runtime 目錄並初始化 SQLite，並把 `-ModelsRoot` 寫入 Hub Settings 的 `AIHUB_MODELS_DIR`。既有 PHP 只會檢查，絕不修改外部 `php.ini`；若缺少或不符合需求，才下載官方 PHP 8.3 NTS x64 FastCGI、比對官方 SHA-256 後安裝到 `<InstallRoot>\tools\php`，並只設定這份 managed PHP 的 `Asia/Taipei`、`short_open_tag` 與必要 extensions。IIS `WebAdministration` 不需下載第三方套件；要啟用時，`-InstallIis` 會以系統管理員權限啟用 Windows 內建 IIS／管理腳本工具，不會自動重開機，且 `-Check` 永遠不變更系統。`-InitializeClusterSecret` 只在 Machine environment 缺少 `AIHUB_CLUSTER_SECRET_KEY` 時產生 64 位十六進位 key，既有合法 key 絕不覆寫、值不輸出到畫面或 log；執行後須在受控維護時段重啟 IIS/WAS，讓 FastCGI 繼承新環境。這個 key 是每台 Hub 自己的加密材料，不必在節點間共享。Core readiness 與 IIS readiness 分開報告，前者可用 `php -S` 運作，不會因 IIS 尚未配置而變成 Core not ready。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、IIS、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
+`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite，建立 `data/` runtime 目錄並初始化 SQLite，並把 `-ModelsRoot` 寫入 Hub Settings 的 `AIHUB_MODELS_DIR`。既有 PHP 只會檢查，絕不修改外部 `php.ini`；若缺少或不符合需求，才下載官方 PHP 8.3 NTS x64 FastCGI、比對官方 SHA-256 後安裝到 `<InstallRoot>\tools\php`，並只設定這份 managed PHP 的 `Asia/Taipei`、`short_open_tag` 與必要 extensions。IIS `WebAdministration` 不需下載第三方套件；要啟用時，`-InstallIis` 會以系統管理員權限啟用 Windows 內建 IIS／管理腳本工具，不會自動重開機，且 `-Check` 永遠不變更系統。Cluster 首次使用時會在 `data/cluster.key` 建立每台 Hub 自己的加密材料；舊版 `AIHUB_CLUSTER_SECRET_KEY` 只會被讀取一次並遷入該檔案，之後不再依賴環境變數。移機時搬遷 `data/` 即可保留配對，若要建立全新身份則不搬此檔並重新配對。Core readiness 與 IIS readiness 分開報告，前者可用 `php -S` 運作，不會因 IIS 尚未配置而變成 Core not ready。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、IIS、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
 
 `WslRuntime -Check` 只做 read-only readiness report：檢查 WSL2、指定 Ubuntu distro、distro 內 Docker Engine / Compose、PHP CLI、PDO SQLite、`nvidia-smi`、依 GPU 選出的 YOLO profile，以及 `/DATA` 是否在 WSL ext4。移除 `-Check` 後，安裝器只在既有 distro 內補齊 `php-cli`／`php-sqlite3`、同步最小 runtime 到 `/DATA/3waAIHub-runtime`（shell job 強制 LF）、建立 SQLite 與 runtime profile，並依 Pack metadata 建立對應 YOLO image。它不自動啟用 Windows Features、不安裝 Docker Desktop、不改顯示卡驅動；Docker Engine 必須已由 Docker Desktop WSL2 backend 或 distro 自行提供。
 

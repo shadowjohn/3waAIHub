@@ -1,9 +1,13 @@
 <?php
 declare(strict_types=1);
 
-function hub_cluster_secret_key(): string
+function hub_cluster_secret_key_path(): string
 {
-    $value = trim((string)(getenv('AIHUB_CLUSTER_SECRET_KEY') ?: ''));
+    return HUB_DATA_DIR . '/cluster.key';
+}
+
+function hub_cluster_secret_key_from_hex(string $value): string
+{
     if (preg_match('/\A[0-9a-fA-F]{64}\z/', $value) !== 1) {
         throw new InvalidArgumentException('Cluster secret is invalid.');
     }
@@ -14,6 +18,64 @@ function hub_cluster_secret_key(): string
     }
 
     return $key;
+}
+
+function hub_cluster_secret_key(): string
+{
+    hub_ensure_runtime_dirs();
+    $path = hub_cluster_secret_key_path();
+    $handle = @fopen($path, 'rb');
+    if ($handle !== false) {
+        try {
+            if (!flock($handle, LOCK_SH)) {
+                throw new RuntimeException('Cluster secret is unavailable.');
+            }
+            $value = trim((string)stream_get_contents($handle));
+            if ($value === '') {
+                throw new RuntimeException('Cluster secret is unavailable.');
+            }
+
+            return hub_cluster_secret_key_from_hex($value);
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    $handle = @fopen($path, 'x+');
+    if ($handle === false) {
+        throw new RuntimeException('Cluster secret is unavailable.');
+    }
+
+    $initialized = false;
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            throw new RuntimeException('Cluster secret is unavailable.');
+        }
+        // Keep old installations working once, then persist the key with the Hub data.
+        $value = trim((string)(getenv('AIHUB_CLUSTER_SECRET_KEY') ?: ''));
+        if ($value === '') {
+            try {
+                $value = bin2hex(random_bytes(32));
+            } catch (Throwable) {
+                throw new RuntimeException('Cluster secret is unavailable.');
+            }
+        }
+        hub_cluster_secret_key_from_hex($value);
+        if (fwrite($handle, $value . PHP_EOL) !== strlen($value) + 1 || !fflush($handle)) {
+            throw new RuntimeException('Cluster secret is unavailable.');
+        }
+        @chmod($path, 0640);
+        $initialized = true;
+
+        return hub_cluster_secret_key_from_hex($value);
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+        if (!$initialized) {
+            @unlink($path);
+        }
+    }
 }
 
 function hub_cluster_encrypt_station_token(string $plainToken): array

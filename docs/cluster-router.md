@@ -22,11 +22,7 @@ Synchronous modes return their normal Router response. An asynchronous submit re
 
 # Operator Setup and Recovery
 
-Set the same `AIHUB_CLUSTER_SECRET_KEY` in the web-server environment and every CLI environment that runs Hub commands. Generate it once, then keep the value out of tickets, chat, and logs:
-
-```bash
-export AIHUB_CLUSTER_SECRET_KEY="$(openssl rand -hex 32)"
-```
+The Hub creates its own `data/cluster.key` the first time a Cluster role needs it. Do not put this key in a table, environment variable, ticket, chat, or log. A legacy `AIHUB_CLUSTER_SECRET_KEY` is migrated into the local key file once, then is no longer required. Move `data/` together with the Hub when preserving an installation; for a new host identity, start with a new key and pair the child nodes again.
 
 For each 子入口節點, enable the child-node role, choose the services it may publish, and reveal its child Token only through the authenticated admin UI. Paste its short-lived `cluster_pair.php` link into `新增子節點` on the 統一入口; it transfers the existing child Token exactly once and binds it to the unified Router source IP. Operators must never paste child Tokens or pairing invitations in tickets, chat, or public logs. Configure the paired station priority and enabled state, then refresh the station cards before sending traffic. `cluster_status.php` and the `cluster_status` permission are control-plane checks, not customer endpoints.
 

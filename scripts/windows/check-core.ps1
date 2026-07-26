@@ -133,13 +133,11 @@ if ($hostProductType -eq 1) {
 $phpExe = Get-PhpCommand
 $phpOk = Test-PhpConfiguration $phpExe
 
-$clusterSecret = [Environment]::GetEnvironmentVariable('AIHUB_CLUSTER_SECRET_KEY', 'Machine')
-if (Test-ClusterSecretValue $clusterSecret) {
-    Write-Host 'Cluster secret: CONFIGURED (Machine environment; value hidden)'
-} elseif ([string]::IsNullOrWhiteSpace($clusterSecret)) {
-    Write-Host 'Cluster secret: MISSING (optional; run elevated: .\install.ps1 -Mode Core -InitializeClusterSecret)'
+$clusterSecretPath = Join-Path $InstallRoot 'data\cluster.key'
+if (Test-Path -LiteralPath $clusterSecretPath) {
+    Write-Host 'Cluster secret: CONFIGURED (local Hub data; value hidden)'
 } else {
-    Write-Host 'Cluster secret: INVALID (Machine environment must be 64 hexadecimal characters; installer will not overwrite it)'
+    Write-Host 'Cluster secret: PENDING (created locally when a Cluster role is enabled)'
 }
 
 $phpCgi = Get-Command php-cgi -ErrorAction SilentlyContinue

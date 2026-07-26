@@ -17,6 +17,77 @@ function hub_test_with_cluster_secret(callable $fn): void
     }
 }
 
+hub_test('cluster router creates and reuses a local secret without an environment variable', function (): void {
+    $path = hub_cluster_secret_key_path();
+    $previous = getenv('AIHUB_CLUSTER_SECRET_KEY');
+    @unlink($path);
+    putenv('AIHUB_CLUSTER_SECRET_KEY');
+
+    try {
+        $first = hub_cluster_secret_key();
+        $second = hub_cluster_secret_key();
+
+        hub_test_assert(is_file($path), 'cluster secret must be persisted locally');
+        hub_test_assert($first === $second && strlen($first) === 32, 'local cluster secret must be stable and 32 bytes');
+        if (DIRECTORY_SEPARATOR === '/') {
+            hub_test_assert((fileperms($path) & 0777) === 0640, 'local cluster secret must permit the Hub runtime group to read it');
+        }
+    } finally {
+        @unlink($path);
+        if ($previous === false) {
+            putenv('AIHUB_CLUSTER_SECRET_KEY');
+        } else {
+            putenv('AIHUB_CLUSTER_SECRET_KEY=' . $previous);
+        }
+    }
+});
+
+hub_test('cluster router migrates a legacy environment secret into local Hub data', function (): void {
+    $path = hub_cluster_secret_key_path();
+    $previous = getenv('AIHUB_CLUSTER_SECRET_KEY');
+    $legacy = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+    @unlink($path);
+    putenv('AIHUB_CLUSTER_SECRET_KEY=' . $legacy);
+
+    try {
+        $first = hub_cluster_secret_key();
+        putenv('AIHUB_CLUSTER_SECRET_KEY');
+        $second = hub_cluster_secret_key();
+
+        hub_test_assert(is_file($path), 'legacy cluster secret must migrate into local Hub data');
+        hub_test_assert($first === $second && bin2hex($first) === $legacy, 'migrated cluster secret must remain available without its environment variable');
+    } finally {
+        @unlink($path);
+        if ($previous === false) {
+            putenv('AIHUB_CLUSTER_SECRET_KEY');
+        } else {
+            putenv('AIHUB_CLUSTER_SECRET_KEY=' . $previous);
+        }
+    }
+});
+
+hub_test('cluster router reads an existing local secret without write access', function (): void {
+    $path = hub_cluster_secret_key_path();
+    $previous = getenv('AIHUB_CLUSTER_SECRET_KEY');
+    $secret = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+    @unlink($path);
+    file_put_contents($path, $secret . PHP_EOL);
+    chmod($path, 0440);
+    putenv('AIHUB_CLUSTER_SECRET_KEY');
+
+    try {
+        hub_test_assert(bin2hex(hub_cluster_secret_key()) === $secret, 'existing read-only cluster secret must remain usable');
+    } finally {
+        @chmod($path, 0640);
+        @unlink($path);
+        if ($previous === false) {
+            putenv('AIHUB_CLUSTER_SECRET_KEY');
+        } else {
+            putenv('AIHUB_CLUSTER_SECRET_KEY=' . $previous);
+        }
+    }
+});
+
 function hub_test_cluster_station_pairing(): array
 {
     return [
@@ -300,8 +371,10 @@ hub_test('cluster router encrypts station tokens at rest and decrypts internal r
 
 hub_test('cluster router rejects an invalid secret and invalid station base URLs', function (): void {
     hub_test_with_cluster_secret(function (): void {
+        @unlink(hub_cluster_secret_key_path());
         putenv('AIHUB_CLUSTER_SECRET_KEY=not-a-valid-key');
         hub_test_assert(hub_test_throws(static fn (): string => hub_cluster_secret_key()), 'invalid cluster secret must reject');
+        hub_test_assert(!is_file(hub_cluster_secret_key_path()), 'invalid legacy secret must not leave an unusable local key file');
 
         putenv('AIHUB_CLUSTER_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
         hub_test_assert(

@@ -49,7 +49,7 @@ switch ($Mode) {
                 Write-Host '[3waAIHub] -InstallIis is ignored during -Check.'
             }
             if ($InitializeClusterSecret) {
-                Write-Host '[3waAIHub] -InitializeClusterSecret is ignored during -Check.'
+                Write-Host '[3waAIHub] -InitializeClusterSecret is deprecated; Cluster creates data\cluster.key when needed.'
             }
             exit 0
         }

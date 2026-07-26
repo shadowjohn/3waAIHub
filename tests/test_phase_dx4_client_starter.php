@@ -136,8 +136,7 @@ hub_test('cluster Router public entry documents and endpoints remain disclosure-
     $sources = $guide . "\n" . (string)file_get_contents($manifestPath) . "\n" . (string)file_get_contents($docsPath);
 
     foreach ([
-        'cluster_api.php', 'cluster_pair.php', 'cluster_status.php', 'AIHUB_CLUSTER_SECRET_KEY', '子入口節點', '統一入口', 'cluster_status',
-        'export AIHUB_CLUSTER_SECRET_KEY="$(openssl rand -hex 32)"',
+        'cluster_api.php', 'cluster_pair.php', 'cluster_status.php', 'data/cluster.key', '子入口節點', '統一入口', 'cluster_status',
         'php scripts/agent_manifest_smoke.php --manifest-url=https://router.example/3waAIHub/cluster_manifest.json.php',
         'php scripts/cluster_refresh.php --force', '新增子節點', 'priority', 'route', 'byte',
         'transfers the existing child Token exactly once', 'binds it to the unified Router source IP',

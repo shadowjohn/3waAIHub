@@ -1,5 +1,6 @@
 data/*.sqlite
 data/*.sqlite-*
+data/cluster.key
 data/runtime_profile.json
 *.sqlite
 *.sqlite-*
