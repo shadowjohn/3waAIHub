@@ -319,7 +319,7 @@ curl --fail --silent --show-error https://3wa.tw/3waAIHub/cluster_public_api_doc
 
 Expected: both linters report no syntax errors, the full suite reports `failures=0`, and the live portal lists the 5090 multipart modes with form-aware examples.
 
-- [ ] **Step 3: Run one real 5090 Router smoke with an authorized customer token**
+- [x] **Step 3: Run one real 5090 Router smoke with an authorized customer token**
 
 On the Router host, set a shell-only token variable and run YOLO through the single entry:
 
@@ -336,7 +336,9 @@ unset AIHUB_ROUTER_SMOKE_TOKEN
 
 Expected: a JSON response with `"ok":true`, `"mock":false`, and detections from the 5090 child. Do not save or commit the token.
 
-- [ ] **Step 4: Record completed verification and commit**
+Verified on 2026-07-26 with a temporary customer token restricted to `yolo` only. The live multipart call to `cluster_api.php?mode=yolo` returned HTTP `200`, `ok: true`, `mock: false`, and one detection; the test member and token were deleted in `finally`.
+
+- [x] **Step 4: Record completed verification and commit**
 
 Mark the completed checkboxes in this plan, then run:
 
