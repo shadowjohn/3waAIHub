@@ -1954,12 +1954,22 @@ hub_test('cluster router guide documents the unified customer entry', function (
     $guide = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
     $clusterPage = (string)file_get_contents(HUB_ROOT . '/admin/cluster.php');
     $layout = (string)file_get_contents(HUB_ROOT . '/admin/_layout.php');
+    $manifestEndpoint = (string)file_get_contents(HUB_ROOT . '/cluster_manifest.json.php');
+    $docsEndpoint = (string)file_get_contents(HUB_ROOT . '/cluster_public_api_docs.php');
 
     foreach (['Cluster Router Mode', '登錄 / 更新本機服務', 'cluster_api.php'] as $needle) {
         hub_test_assert(str_contains($guide, $needle), 'cluster guide must document ' . $needle);
     }
     hub_test_assert(str_contains($clusterPage, 'cluster_public_api_docs.php'), 'Cluster admin page must link to the Router API documentation');
     hub_test_assert(str_contains($layout, 'cluster_public_api_docs.php'), 'customer navigation must link to the Router API documentation');
+    hub_test_assert(str_contains($manifestEndpoint, 'hub_cluster_refresh_due_stations($db)') && str_contains($docsEndpoint, 'hub_cluster_refresh_due_stations($db)'), 'public Router discovery must refresh due station inventory');
+});
+
+hub_test('cluster public docs explain an empty Router inventory', function (): void {
+    $db = hub_test_reset_db();
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+
+    hub_test_assert(str_contains(hub_cluster_public_api_docs_html($db), 'No Router modes are currently available.'), 'empty Router docs must explain that no mode is available');
 });
 
 hub_test('cluster public manifest selects only fresh contracts and rewrites router endpoints', function (): void {
@@ -2007,9 +2017,12 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
              WHERE id = :id'
         );
         $store->execute([
-            ':manifest_json' => json_encode(['modes' => ['ocr'], 'services' => [$contract]], JSON_THROW_ON_ERROR),
+            ':manifest_json' => json_encode(['modes' => ['ocr', 'image_upload'], 'services' => [$contract, array_replace($contract, [
+                'mode' => 'image_upload',
+                'content_type' => 'multipart/form-data',
+            ])]], JSON_THROW_ON_ERROR),
             ':manifest_fetched_at' => $now,
-            ':status_json' => json_encode(['modes' => ['ocr'], 'gpu' => ['memory_free_mb' => 4096], 'active_gpu_leases' => 0, 'queued_jobs' => 0, 'running_jobs' => 0], JSON_THROW_ON_ERROR),
+            ':status_json' => json_encode(['modes' => ['ocr', 'image_upload'], 'gpu' => ['memory_free_mb' => 4096], 'active_gpu_leases' => 0, 'queued_jobs' => 0, 'running_jobs' => 0], JSON_THROW_ON_ERROR),
             ':status_fetched_at' => $now,
             ':id' => (int)$fresh['id'],
         ]);
@@ -2026,7 +2039,7 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
         $service = $manifest['services'][0] ?? [];
         $docs = hub_cluster_public_api_docs_html($db);
 
-        hub_test_assert(array_column($manifest['services'], 'mode') === ['ocr'], 'only the fresh selected service may be public');
+        hub_test_assert(array_column($manifest['services'], 'mode') === ['ocr'], 'only fresh Router-compatible services may be public');
         hub_test_assert(($manifest['base_endpoint'] ?? '') === 'cluster_api.php' && str_contains((string)($manifest['inventory_note'] ?? ''), 'temporarily remove unavailable modes'), 'manifest must publish the Router base and inventory caveat');
         hub_test_assert(($service['endpoint'] ?? '') === 'cluster_api.php?mode=ocr' && str_contains((string)($service['examples']['curl'] ?? ''), 'cluster_api.php?mode=ocr'), 'all public service endpoints must use the Router');
         hub_test_assert(($service['task_api'] ?? []) === [

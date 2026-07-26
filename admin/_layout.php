@@ -6,7 +6,7 @@ function hub_admin_header(string $title, array $user): void
     $siteTitle = hub_site_title();
     $siteSubtitle = hub_site_subtitle();
     $isAdmin = hub_is_system_admin($user);
-    $customerDocsUrl = !$isAdmin && hub_cluster_router_enabled(hub_db()) ? '../cluster_public_api_docs.php' : '../public_api_docs.php';
+    $showClusterDocs = !$isAdmin && hub_cluster_router_enabled(hub_db());
     ?>
 <!doctype html>
 <html lang="zh-Hant">
@@ -89,7 +89,8 @@ function hub_admin_header(string $title, array $user): void
             <a href="my_profile.php"><?= hub_h(__('帳號資料')) ?></a>
             <a href="change_password.php"><?= hub_h(__('變更密碼')) ?></a>
             <a href="playground.php"><?= hub_h(__('API 測試場')) ?></a>
-            <a href="<?= hub_h($customerDocsUrl) ?>"><?= hub_h(__('API 文件')) ?></a>
+            <a href="../public_api_docs.php"><?= hub_h(__('API 文件')) ?></a>
+            <?php if ($showClusterDocs): ?><a href="../cluster_public_api_docs.php">Cluster API 文件</a><?php endif; ?>
         <?php endif; ?>
         <?= hub_i18n_language_selector() ?>
         <a href="logout.php"><?= hub_h(__('登出')) ?> <?= hub_h($user['username']) ?></a>

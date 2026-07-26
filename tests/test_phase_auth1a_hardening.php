@@ -90,6 +90,7 @@ hub_test('PhaseAuth-1A.1 login hardening and role nav behave as expected', funct
     hub_test_assert(!hub_login($db, 'nav_customer', 'customer123'), 'disabled user login must be rejected');
 
     $db->prepare('UPDATE users SET is_enabled = 1 WHERE id = :id')->execute([':id' => $customerId]);
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
     $_SESSION = [];
     hub_test_assert(hub_login($db, 'nav_customer', 'customer123'), 'enabled customer login should pass');
     $customer = hub_get_user($db, $customerId);
@@ -102,6 +103,7 @@ hub_test('PhaseAuth-1A.1 login hardening and role nav behave as expected', funct
     foreach (['我的服務', '我的 Token', '我的用量', '帳號資料', '變更密碼', 'API 文件', 'API 測試場', '登出'] as $label) {
         hub_test_assert(str_contains($customerNav, $label), 'customer nav missing ' . $label);
     }
+    hub_test_assert(str_contains($customerNav, 'href="../public_api_docs.php"') && str_contains($customerNav, 'href="../cluster_public_api_docs.php"'), 'customer navigation must keep local and Cluster API documentation separate');
     foreach (['服務管理', 'HubPack 套件', '安裝套件', '模型倉庫', '系統設定', '系統環境', '記錄中心', '客戶管理'] as $label) {
         hub_test_assert(!str_contains($customerNav, $label), 'customer nav must not show ' . $label);
     }

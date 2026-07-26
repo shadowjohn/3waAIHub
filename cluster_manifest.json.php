@@ -15,5 +15,7 @@ if (!hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_MANIFEST')) {
     hub_send_gateway_response(hub_gateway_error(403, 'public_docs_forbidden', 'Public API manifest is disabled or local-only.'));
 }
 
+hub_cluster_refresh_due_stations($db);
+
 header('Content-Type: application/json; charset=utf-8');
 echo json_encode(hub_cluster_public_manifest($db), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);

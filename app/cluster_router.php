@@ -769,6 +769,9 @@ function hub_cluster_public_manifest(PDO $db): array
             if (preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $mode) !== 1) {
                 continue;
             }
+            if (preg_match('~^multipart/form-data(?:;|$)~i', trim((string)($service['content_type'] ?? ''))) === 1) {
+                continue;
+            }
             $contracts[(int)$station['id']][$mode] = $service;
         }
         $inventory['modes'] = array_values(array_filter(
@@ -867,6 +870,9 @@ function hub_cluster_public_api_docs_html(PDO $db): string
     <h1>3waAIHub Router API</h1>
     <p>Base endpoint: <code><?= hub_h((string)$manifest['base_endpoint']) ?></code></p>
     <p><?= hub_h((string)$manifest['inventory_note']) ?></p>
+    <?php if ($manifest['services'] === []): ?>
+        <section><h2>No Router modes are currently available.</h2><p>Retry shortly or contact the Router administrator.</p></section>
+    <?php endif; ?>
     <?php foreach ($manifest['services'] as $service): ?>
         <section>
             <h2><code><?= hub_h((string)($service['mode'] ?? '')) ?></code></h2>

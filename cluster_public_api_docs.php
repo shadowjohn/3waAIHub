@@ -18,5 +18,7 @@ if (!hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_DOCS')) {
     exit;
 }
 
+hub_cluster_refresh_due_stations($db);
+
 header('Content-Type: text/html; charset=utf-8');
 echo hub_cluster_public_api_docs_html($db);
