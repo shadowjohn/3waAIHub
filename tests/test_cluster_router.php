@@ -824,9 +824,18 @@ hub_test('cluster child status stays lightweight and filters unavailable selecte
             ->execute([':task_type' => 'test', ':status' => 'queued', ':created_at' => $now, ':updated_at' => $now]);
         $db->prepare('INSERT INTO tasks (task_type, status, created_at, updated_at) VALUES (:task_type, :status, :created_at, :updated_at)')
             ->execute([':task_type' => 'test', ':status' => 'running', ':created_at' => $now, ':updated_at' => $now]);
+        hub_save_host_metric_snapshot($db, [
+            'gpu' => [
+                'available' => true,
+                'name' => 'Snapshot GPU',
+                'memory_total_mb' => 8192,
+                'memory_free_mb' => 4096,
+            ],
+        ]);
 
         $payload = hub_cluster_status_payload($db);
         hub_test_assert(array_keys($payload) === ['ok', 'snapshot_at', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes'], 'status payload must keep its exact lightweight shape');
+        hub_test_assert(($payload['gpu']['name'] ?? '') === 'Snapshot GPU' && ($payload['gpu']['memory_free_mb'] ?? 0) === 4096, 'status payload must use the latest stored host GPU metric without running a host command');
         hub_test_assert($payload['modes'] === ['ocr'], 'status payload must include selected running modes only');
         hub_test_assert($payload['active_gpu_leases'] === 1 && $payload['queued_jobs'] === 1 && $payload['running_jobs'] === 1, 'status payload counters must reflect current work');
 

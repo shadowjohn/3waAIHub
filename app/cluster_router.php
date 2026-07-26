@@ -2462,6 +2462,10 @@ function hub_cluster_node_has_verified_router_peer(PDO $db, int $tokenId, ?strin
 function hub_cluster_status_payload(PDO $db): array
 {
     $now = hub_now();
+    $latestMetrics = hub_latest_host_metric_snapshot($db);
+    $gpu = is_array($latestMetrics['data']['gpu'] ?? null)
+        ? $latestMetrics['data']['gpu']
+        : ['available' => false, 'reason' => 'host_metrics_unavailable'];
     $lease = $db->prepare(
         "SELECT COUNT(*) FROM runtime_resource_leases
          WHERE state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
@@ -2473,7 +2477,7 @@ function hub_cluster_status_payload(PDO $db): array
     return [
         'ok' => true,
         'snapshot_at' => $now,
-        'gpu' => hub_collect_gpu_metric(),
+        'gpu' => $gpu,
         'active_gpu_leases' => (int)$lease->fetchColumn(),
         'queued_jobs' => (int)$queued,
         'running_jobs' => (int)$running,
