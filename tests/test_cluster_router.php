@@ -369,6 +369,25 @@ hub_test('cluster router encrypts station tokens at rest and decrypts internal r
     });
 });
 
+hub_test('cluster router deletes a station with only its dependent routes', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_router_async_route($db);
+        $stationId = (int)$fixture['station']['id'];
+        $otherStation = hub_test_cluster_router_station($db, [
+            'station_key' => 'taipei_gpu_2',
+            'public_base_url' => 'https://station-two.example/aihub',
+            'station_token' => '3wa_live_station_secret_two',
+        ]);
+
+        hub_cluster_delete_station($db, $stationId);
+
+        hub_test_assert(hub_cluster_get_station($db, $stationId) === null, 'deleted station must not remain');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM cluster_routes WHERE station_id = ' . $stationId)->fetchColumn() === 0, 'station routes must cascade on delete');
+        hub_test_assert(hub_cluster_get_station($db, (int)$otherStation['id']) !== null, 'deleting one station must not affect another');
+    });
+});
+
 hub_test('cluster router rejects an invalid secret and invalid station base URLs', function (): void {
     hub_test_with_cluster_secret(function (): void {
         @unlink(hub_cluster_secret_key_path());
@@ -2170,7 +2189,7 @@ hub_test('cluster admin page exposes guarded controls without station encryption
     $members = (string)file_get_contents(HUB_ROOT . '/admin/api_members.php');
     $tokens = (string)file_get_contents(HUB_ROOT . '/admin/api_tokens.php');
 
-    foreach (['hub_require_system_admin($db)', 'hub_check_csrf()', 'save_roles', 'save_child_modes', 'regenerate_node_token', 'renew_invitation', 'pair_child', 'toggle_station', 'refresh_station', '子入口節點', '統一入口', '子節點 Token', '新增子節點', 'cluster.php?view=usage'] as $needle) {
+    foreach (['hub_require_system_admin($db)', 'hub_check_csrf()', 'save_roles', 'save_child_modes', 'regenerate_node_token', 'renew_invitation', 'pair_child', 'toggle_station', 'refresh_station', 'delete_station', '子入口節點', '統一入口', '子節點 Token', '新增子節點', 'cluster.php?view=usage'] as $needle) {
         hub_test_assert(str_contains($page, $needle), 'cluster admin page missing required control: ' . $needle);
     }
     foreach (['token_ciphertext', 'token_iv', 'token_tag', 'hub_cluster_station_token('] as $needle) {

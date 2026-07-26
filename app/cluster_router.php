@@ -392,6 +392,18 @@ function hub_cluster_get_station(PDO $db, int $stationId): ?array
     return $station === false ? null : $station;
 }
 
+function hub_cluster_delete_station(PDO $db, int $stationId): void
+{
+    if ($stationId < 1) {
+        throw new InvalidArgumentException('station delete failed');
+    }
+    $stmt = $db->prepare('DELETE FROM cluster_stations WHERE id = :id');
+    $stmt->execute([':id' => $stationId]);
+    if ($stmt->rowCount() !== 1) {
+        throw new RuntimeException('station delete failed');
+    }
+}
+
 function hub_cluster_list_stations(PDO $db): array
 {
     return $db->query(
