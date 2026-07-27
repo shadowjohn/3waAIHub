@@ -1073,18 +1073,28 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
                 'form' => $normalized['form'] ?? null,
                 'follow_redirects' => false,
                 'response_limit_bytes' => hub_cluster_proxy_response_limit_bytes(),
+                'timeout_sec' => hub_cluster_proxy_timeout_sec($mode),
             ];
             $response = hub_cluster_router_proxy_response($transport($proxyRequest), $stationToken);
         }
         $payload = hub_cluster_router_json_payload($response);
         if ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
-        } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300 && is_array($payload) && is_scalar($payload['task_id'] ?? null)) {
-            $payload = hub_cluster_rewrite_async_response($db, [
-                'route_id' => $routeId,
-                'station_id' => (int)$station['id'],
-            ], $payload, hub_cluster_router_api_base_url());
-            $response = hub_cluster_router_with_json_payload($response, $payload);
+        } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300 && is_array($payload)) {
+            if ($mode === 'tts') {
+                try {
+                    $payload = hub_cluster_rewrite_tts_response($db, ['route_id' => $routeId], $payload, hub_cluster_router_api_base_url());
+                    $response = hub_cluster_router_with_json_payload($response, $payload);
+                } catch (Throwable) {
+                    $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+                }
+            } elseif (is_scalar($payload['task_id'] ?? null)) {
+                $payload = hub_cluster_rewrite_async_response($db, [
+                    'route_id' => $routeId,
+                    'station_id' => (int)$station['id'],
+                ], $payload, hub_cluster_router_api_base_url());
+                $response = hub_cluster_router_with_json_payload($response, $payload);
+            }
         }
     } catch (Throwable) {
         $response = hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
@@ -1301,6 +1311,69 @@ function hub_cluster_router_task_links(string $routeId, string $routerBase): arr
         'cancel_url' => $prefix . 'mode=cluster_task_cancel&task_id=' . $taskId,
         'artifact_url_template' => $prefix . 'mode=cluster_artifact&task_id=' . $taskId . '&artifact_id={artifact_id}',
     ];
+}
+
+function hub_cluster_tts_artifact_filename(mixed $file): ?string
+{
+    if (!is_string($file) || preg_match('/\Atts_[a-f0-9]{12}\.(?:wav|json)\z/', $file) !== 1) {
+        return null;
+    }
+
+    return $file;
+}
+
+function hub_cluster_tts_artifact_file_from_url(mixed $value): ?string
+{
+    if (!is_string($value) || preg_match('~\A/artifacts/(tts_[a-f0-9]{12}\.(?:wav|json))\z~', $value, $matches) !== 1) {
+        return null;
+    }
+
+    return hub_cluster_tts_artifact_filename($matches[1]);
+}
+
+function hub_cluster_router_tts_artifact_url(string $routeId, string $file, string $routerBase): string
+{
+    if (!hub_cluster_router_valid_route_id($routeId) || hub_cluster_tts_artifact_filename($file) === null) {
+        throw new InvalidArgumentException('cluster TTS artifact is invalid');
+    }
+    $prefix = rtrim($routerBase, '?') . (str_contains($routerBase, '?') ? '&' : '?');
+
+    return $prefix . 'mode=cluster_tts_artifact&route_id=' . rawurlencode($routeId) . '&file=' . rawurlencode($file);
+}
+
+function hub_cluster_rewrite_tts_response(PDO $db, array $route, array $payload, string $routerBase): array
+{
+    $routeId = (string)($route['route_id'] ?? '');
+    $audio = hub_cluster_tts_artifact_file_from_url($payload['artifact_url'] ?? null);
+    if (!hub_cluster_router_valid_route_id($routeId) || $audio === null || !str_ends_with($audio, '.wav')) {
+        throw new UnexpectedValueException('invalid TTS artifact response');
+    }
+    $files = ['artifact_url' => $audio];
+    if (array_key_exists('manifest', $payload)) {
+        $manifest = hub_cluster_tts_artifact_file_from_url($payload['manifest']);
+        $expectedManifest = preg_replace('/\.wav\z/', '.json', $audio);
+        if ($manifest === null || $manifest !== $expectedManifest) {
+            throw new UnexpectedValueException('invalid TTS manifest response');
+        }
+        $files['manifest'] = $manifest;
+    }
+    $stmt = $db->prepare(
+        'INSERT OR IGNORE INTO cluster_route_artifacts (route_id, remote_artifact_id, created_at)
+         VALUES (:route_id, :remote_artifact_id, :created_at)'
+    );
+    $now = hub_now();
+    foreach ($files as $file) {
+        $stmt->execute([
+            ':route_id' => $routeId,
+            ':remote_artifact_id' => $file,
+            ':created_at' => $now,
+        ]);
+    }
+    foreach ($files as $key => $file) {
+        $payload[$key] = hub_cluster_router_tts_artifact_url($routeId, $file, $routerBase);
+    }
+
+    return $payload;
 }
 
 function hub_cluster_rewrite_async_response(PDO $db, array $route, array $payload, string $routerBase): array
@@ -1726,7 +1799,7 @@ function hub_cluster_router_with_json_payload(array $response, array $payload): 
 
 function hub_cluster_router_is_followup_mode(string $mode): bool
 {
-    return in_array($mode, ['cluster_task_status', 'cluster_task_result', 'cluster_task_log', 'cluster_task_cancel', 'cluster_artifact'], true);
+    return in_array($mode, ['cluster_task_status', 'cluster_task_result', 'cluster_task_log', 'cluster_task_cancel', 'cluster_artifact', 'cluster_tts_artifact'], true);
 }
 
 function hub_cluster_child_followup_dispatch(PDO $db, array $request = []): array
@@ -1776,6 +1849,69 @@ function hub_cluster_child_followup_numeric_query_value(mixed $query, string $ke
     return (int)$value;
 }
 
+function hub_cluster_child_tts_artifact_path(array $service, string $file): ?string
+{
+    if ((string)($service['pack_id'] ?? '') !== 'tts-voxcpm2' || hub_cluster_tts_artifact_filename($file) === null) {
+        return null;
+    }
+    $runtimeDir = dirname(hub_path((string)($service['compose_file'] ?? '')));
+    $base = realpath($runtimeDir . '/artifacts');
+    $path = $base === false ? false : realpath($base . '/' . $file);
+    if ($base === false || $path === false || !is_file($path) || !str_starts_with($path, $base . DIRECTORY_SEPARATOR)) {
+        return null;
+    }
+
+    return $path;
+}
+
+function hub_cluster_child_tts_artifact_dispatch(PDO $db, array $request = []): array
+{
+    $query = array_key_exists('query', $request) ? $request['query'] : $_GET;
+    $method = strtoupper(trim((string)($request['method'] ?? $_SERVER['REQUEST_METHOD'] ?? 'GET'))) ?: 'GET';
+    if ($method !== 'GET') {
+        return hub_gateway_error(405, 'method_not_allowed', 'method is not allowed');
+    }
+    $clientIp = trim(is_scalar($request['client_ip'] ?? null) ? (string)$request['client_ip'] : hub_get_client_ip()) ?: hub_get_client_ip();
+    $providedToken = array_key_exists('bearer_token', $request)
+        ? (is_string($request['bearer_token']) ? $request['bearer_token'] : '')
+        : hub_bearer_token_from_request();
+    $auth = hub_authenticate_api_token($db, $clientIp, $providedToken, 'cluster_status');
+    $context = (array)($auth['context'] ?? []);
+    $tokenId = (int)($context['token_id'] ?? 0);
+    if (empty($auth['ok']) || !hub_cluster_node_enabled($db) || $tokenId !== hub_cluster_node_token_id($db)) {
+        return hub_gateway_error(403, 'cluster_followup_forbidden', 'cluster followup is not available');
+    }
+    $file = is_array($query) && array_key_exists('file', $query) && is_scalar($query['file'])
+        ? hub_cluster_tts_artifact_filename((string)$query['file'])
+        : null;
+    if ($file === null) {
+        return hub_gateway_error(404, 'artifact_not_found', 'artifact was not found');
+    }
+    $service = hub_get_service_by_mode($db, 'tts');
+    $path = $service === null ? null : hub_cluster_child_tts_artifact_path($service, $file);
+    if ($path === null) {
+        return hub_gateway_error(404, 'artifact_not_found', 'artifact was not found');
+    }
+    clearstatcache(true, $path);
+    $size = filesize($path);
+    if ($size === false || $size < 0 || $size > hub_cluster_proxy_response_limit_bytes()) {
+        return hub_gateway_error(404, 'artifact_not_found', 'artifact was not found');
+    }
+    $body = @file_get_contents($path);
+    if (!is_string($body) || strlen($body) !== $size) {
+        return hub_gateway_error(404, 'artifact_not_found', 'artifact was not found');
+    }
+
+    return [
+        'status' => 200,
+        'headers' => [
+            'Content-Type: ' . (str_ends_with($file, '.wav') ? 'audio/wav' : 'application/json; charset=utf-8'),
+            'X-Content-Type-Options: nosniff',
+        ],
+        'body' => $body,
+    ];
+}
+
 function hub_cluster_child_project_task_logs(array $logs, int $taskId): array
 {
     $safe = [];
@@ -1821,6 +1957,25 @@ function hub_cluster_get_route_for_customer(PDO $db, string $routeId, array $aut
     return $route === false ? null : $route;
 }
 
+function hub_cluster_get_tts_artifact_route_for_customer(PDO $db, string $routeId, array $auth): ?array
+{
+    $memberId = (int)($auth['member_id'] ?? 0);
+    $tokenId = (int)($auth['token_id'] ?? 0);
+    if (!hub_cluster_router_valid_route_id($routeId) || $memberId < 1 || $tokenId < 1) {
+        return null;
+    }
+    $stmt = $db->prepare(
+        "SELECT * FROM cluster_routes
+         WHERE route_id = :route_id AND member_id = :member_id AND token_id = :token_id
+           AND mode = 'tts' AND is_async = 0
+         LIMIT 1"
+    );
+    $stmt->execute([':route_id' => $routeId, ':member_id' => $memberId, ':token_id' => $tokenId]);
+    $route = $stmt->fetch();
+
+    return $route === false ? null : $route;
+}
+
 function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $request = [], ?callable $requester = null): array
 {
     $requestId = hub_new_request_id();
@@ -1837,8 +1992,15 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
     if (empty($auth['ok'])) {
         return $finish($auth['response']);
     }
-    $routeId = hub_cluster_router_followup_query_value($request, 'task_id');
-    $route = $routeId === null ? null : hub_cluster_get_route_for_customer($db, $routeId, (array)$auth['context']);
+    $ttsArtifact = $routerMode === 'cluster_tts_artifact'
+        ? hub_cluster_tts_artifact_filename(hub_cluster_router_followup_query_value($request, 'file'))
+        : null;
+    $routeId = hub_cluster_router_followup_query_value($request, $routerMode === 'cluster_tts_artifact' ? 'route_id' : 'task_id');
+    $route = $routeId === null
+        ? null
+        : ($routerMode === 'cluster_tts_artifact'
+            ? hub_cluster_get_tts_artifact_route_for_customer($db, $routeId, (array)$auth['context'])
+            : hub_cluster_get_route_for_customer($db, $routeId, (array)$auth['context']));
     if ($route === null) {
         return $finish(hub_gateway_error(404, 'route_not_found', 'cluster route was not found'));
     }
@@ -1863,6 +2025,8 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
         if ($remoteArtifactId === null || !hub_cluster_router_route_has_artifact($db, (string)$route['route_id'], $remoteArtifactId)) {
             return $complete(hub_gateway_error(404, 'artifact_not_found', 'artifact was not found'));
         }
+    } elseif ($routerMode === 'cluster_tts_artifact' && ($ttsArtifact === null || !hub_cluster_router_route_has_artifact($db, (string)$route['route_id'], $ttsArtifact))) {
+        return $complete(hub_gateway_error(404, 'artifact_not_found', 'artifact was not found'));
     }
     $station = hub_cluster_get_station($db, (int)$route['station_id']);
     if ($station === null || empty($station['enabled'])) {
@@ -1879,10 +2043,13 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
         'cluster_task_log' => ['task_log', 'GET'],
         'cluster_task_cancel' => ['task_cancel', 'POST'],
         'cluster_artifact' => ['artifact', 'GET'],
+        'cluster_tts_artifact' => ['tts_artifact', 'GET'],
     };
-    $query = $routerMode === 'cluster_artifact'
-        ? ['mode' => $mode, 'task_id' => (string)$route['remote_task_id'], 'artifact_id' => $remoteArtifactId]
-        : ['mode' => $mode, 'task_id' => (string)$route['remote_task_id']];
+    $query = match ($routerMode) {
+        'cluster_artifact' => ['mode' => $mode, 'task_id' => (string)$route['remote_task_id'], 'artifact_id' => $remoteArtifactId],
+        'cluster_tts_artifact' => ['file' => $ttsArtifact],
+        default => ['mode' => $mode, 'task_id' => (string)$route['remote_task_id']],
+    };
     $selfStation = hub_cluster_router_station_is_self($db, $station);
     if ($selfStation) {
         $selfPeerIp = hub_cluster_router_self_station_peer_ip($db, $station, $stationToken);
@@ -1890,13 +2057,20 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
             return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'), null, true);
         }
         try {
-            $response = hub_cluster_router_direct_followup($db, $mode, $method, $query, $stationToken, $selfPeerIp);
+            $response = $routerMode === 'cluster_tts_artifact'
+                ? hub_cluster_child_tts_artifact_dispatch($db, [
+                    'bearer_token' => $stationToken,
+                    'client_ip' => $selfPeerIp,
+                    'method' => $method,
+                    'query' => $query,
+                ])
+                : hub_cluster_router_direct_followup($db, $mode, $method, $query, $stationToken, $selfPeerIp);
         } catch (Throwable) {
             return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'), null, true);
         }
     } else {
         try {
-            $stationUrl = hub_cluster_station_request_base_url($station) . 'cluster_followup.php';
+            $stationUrl = hub_cluster_station_request_base_url($station) . ($routerMode === 'cluster_tts_artifact' ? 'cluster_tts_artifact.php' : 'cluster_followup.php');
             $transport = $requester ?? 'hub_cluster_proxy_transport';
             $rawResponse = $transport([
                 'url' => $stationUrl,
@@ -1922,7 +2096,7 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
         }
         return $complete(hub_gateway_error(502, 'router_response_failed', 'cluster station response failed'), null, $selfStation);
     }
-    if ($routerMode === 'cluster_artifact') {
+    if (in_array($routerMode, ['cluster_artifact', 'cluster_tts_artifact'], true)) {
         return $complete($response, null, $selfStation);
     }
     if (!is_array($payload) || !hub_cluster_router_followup_task_matches($route, $payload)) {
@@ -2290,14 +2464,14 @@ function hub_cluster_proxy_request_limit_bytes(): int
     return $megabytes * 1024 * 1024;
 }
 
-function hub_cluster_proxy_timeout_sec(): int
+function hub_cluster_proxy_timeout_sec(?string $mode = null): int
 {
-    return 60;
+    return $mode === 'tts' ? 210 : 60;
 }
 
 function hub_cluster_proxy_stale_after_seconds(): int
 {
-    return hub_cluster_proxy_timeout_sec() + 30;
+    return hub_cluster_proxy_timeout_sec('tts') + 30;
 }
 
 function hub_cluster_router_reap_expired_proxy_routes(PDO $db, string $now): void
@@ -2449,7 +2623,7 @@ function hub_cluster_proxy_transport(array $request): array
     }
     $url = (string)($request['url'] ?? '');
     $query = is_array($request['query'] ?? null) ? $request['query'] : [];
-    if ($url === '' || (!str_ends_with($url, '/api.php') && !str_ends_with($url, '/cluster_followup.php'))) {
+    if ($url === '' || (!str_ends_with($url, '/api.php') && !str_ends_with($url, '/cluster_followup.php') && !str_ends_with($url, '/cluster_tts_artifact.php'))) {
         return ['error' => 'proxy'];
     }
     $target = $url . ($query === [] ? '' : '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986));
@@ -2472,6 +2646,8 @@ function hub_cluster_proxy_transport(array $request): array
     $body = is_string($request['body'] ?? null) ? $request['body'] : '';
     $limit = (int)($request['response_limit_bytes'] ?? hub_cluster_proxy_response_limit_bytes());
     $limit = $limit > 0 ? $limit : hub_cluster_proxy_response_limit_bytes();
+    $timeout = (int)($request['timeout_sec'] ?? hub_cluster_proxy_timeout_sec());
+    $timeout = $timeout >= 1 && $timeout <= 300 ? $timeout : hub_cluster_proxy_timeout_sec();
     $rawHeaders = '';
     $responseBody = '';
     $tooLarge = false;
@@ -2481,7 +2657,7 @@ function hub_cluster_proxy_transport(array $request): array
         CURLOPT_HEADER => false,
         CURLOPT_HTTPHEADER => $headers,
         CURLOPT_CONNECTTIMEOUT => 3,
-        CURLOPT_TIMEOUT => hub_cluster_proxy_timeout_sec(),
+        CURLOPT_TIMEOUT => $timeout,
         CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_MAXREDIRS => 0,
         CURLOPT_PROXY => '',
@@ -2836,12 +3012,37 @@ function hub_cluster_node_selected_modes(PDO $db): array
 function hub_cluster_node_published_modes(PDO $db): array
 {
     $rows = $db->query(
-        "SELECT mode FROM services
-         WHERE install_status = 'installed' AND enabled = 1 AND runtime_status = 'running'
+        "SELECT mode, pack_id, status, runtime_status FROM services
+         WHERE install_status = 'installed' AND enabled = 1
          ORDER BY mode ASC"
-    )->fetchAll(PDO::FETCH_COLUMN);
+    )->fetchAll();
 
-    return hub_cluster_node_normalize_modes($rows);
+    $modes = [];
+    foreach ($rows as $service) {
+        if (!is_array($service)) {
+            continue;
+        }
+        $mode = trim((string)($service['mode'] ?? ''));
+        if ($mode === '') {
+            continue;
+        }
+        if ((string)($service['runtime_status'] ?? '') === 'running' || hub_cluster_node_service_is_cleanly_unloaded_on_demand($service)) {
+            $modes[] = $mode;
+        }
+    }
+
+    return hub_cluster_node_normalize_modes($modes);
+}
+
+function hub_cluster_node_service_is_cleanly_unloaded_on_demand(array $service): bool
+{
+    if ((string)($service['status'] ?? '') !== 'stopped' || (string)($service['runtime_status'] ?? '') !== 'stopped') {
+        return false;
+    }
+    $packId = trim((string)($service['pack_id'] ?? ''));
+    $pack = $packId === '' ? null : hub_get_pack($packId);
+
+    return is_array($pack) && (($pack['manifest']['lifecycle']['lifecycle'] ?? '') === 'on_demand');
 }
 
 function hub_cluster_node_normalize_modes(array $modes): array

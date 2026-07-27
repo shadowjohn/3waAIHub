@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "tts-voxcpm2",
   "name": "VoxCPM2 Experimental TTS Service",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "category": "audio",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -316,6 +316,15 @@
       "help": "Default keeps the experimental adapter on deterministic mock WAV output until the model is installed and validated."
     },
     {
+      "key": "VOXCPM2_TORCH_COMPILE",
+      "label": "Enable torch compile warmup",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true,
+      "help": "Keep disabled on shared 16 GB GPUs. Enable only after validating the extra first-request memory and warmup time."
+    },
+    {
       "key": "VOXCPM2_DEFAULT_VOICE_PROMPT",
       "label": "Default voice prompt",
       "type": "text",
@@ -398,6 +407,11 @@
     },
     {
       "name": "VOXCPM2_REAL_INFERENCE",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_TORCH_COMPILE",
       "default": "0",
       "required": true
     },

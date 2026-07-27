@@ -106,6 +106,34 @@ hub_test('gateway normalizes proxy exceptions and sync terminal metadata', funct
     hub_test_assert(hub_audio_sync_terminal_result(hub_gateway_error(502, 'proxy_error', 'failed')) === ['state' => 'failed', 'result' => ['error' => 'sync_proxy_failed']], 'failed sync diagnostics must keep the proxy error code');
 });
 
+hub_test('audio sync requires a prewarmed runtime and treats an absent container as cleaned up', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Linux shell fake runtime is not available on Windows control-plane hosts');
+    }
+
+    hub_test_assert(!hub_audio_sync_service_is_ready(['runtime_status' => 'stopped']), 'stopped services must not be launched from an HTTP request');
+    hub_test_assert(hub_audio_sync_service_is_ready(['runtime_status' => 'running']), 'running services must be accepted for sync inference');
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true])['service'];
+    $_POST = ['real_inference' => 'true'];
+    $_SERVER['CONTENT_LENGTH'] = '0';
+    $admission = hub_validate_audio_sync_request($db, $service);
+    $payload = json_decode((string)($admission['response']['body'] ?? ''), true);
+    hub_test_assert(($admission['response']['status'] ?? 0) === 503 && ($payload['error'] ?? '') === 'runtime_not_ready', 'stopped TTS must return runtime_not_ready before it claims a GPU lease');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM runtime_runs WHERE pack_id = 'tts-voxcpm2'")->fetchColumn() === 0, 'stopped TTS must not create a sync runtime run');
+    hub_test_assert((string)$db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'available', 'stopped TTS must leave GPU available');
+    $bin = hub_test_gateway_fake_audio_runtime_bin();
+    $pathBackup = getenv('PATH');
+    try {
+        file_put_contents($bin . '/removed', '1');
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $pathBackup);
+        hub_test_assert(hub_audio_sync_remove_container('3waaihub-absent') === true, 'cleanup must be idempotent when the on-demand container is already absent');
+    } finally {
+        putenv($pathBackup === false ? 'PATH' : 'PATH=' . $pathBackup);
+        hub_test_gateway_remove_audio_runtime_bin($bin);
+    }
+});
+
 hub_test('non-audio gateway requester exceptions preserve existing behavior', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'translate-gemma12b', ['idempotent' => true]);

@@ -45,6 +45,17 @@ hub_test('PhaseP-1 generated compose has fixed image tag and start/build command
     hub_test_assert(!in_array('--build', hub_service_start_command($service), true), 'start command must not rebuild');
 });
 
+hub_test('PhaseP-1 Compose host commands do not inherit container-only HOME', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-host-env']);
+    $service = $installed['service'];
+
+    hub_test_assert((hub_compose_env($service)['HOME'] ?? null) === '/cache/voxcpm2/home', 'TTS container HOME must remain in its generated environment');
+    $hostEnvironment = hub_docker_command_environment();
+    hub_test_assert(($hostEnvironment['HOME'] ?? null) === HUB_DATA_DIR . '/docker-cli', 'Docker host command must use the Hub-controlled CLI home');
+    hub_test_assert(($hostEnvironment['DOCKER_CONFIG'] ?? null) === HUB_DATA_DIR . '/docker-cli', 'Docker host command must keep config outside the container HOME');
+});
+
 hub_test('PhaseP-1 default setting auto-builds missing images', function (): void {
     $db = hub_test_reset_db();
 

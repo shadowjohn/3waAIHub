@@ -244,7 +244,11 @@ def voxcpm_model() -> Any:
         raise RuntimeError("runtime_dependency_missing")
     from voxcpm import VoxCPM
 
-    _MODEL = VoxCPM.from_pretrained(os.getenv("VOXCPM2_MODEL_ID", "openbmb/VoxCPM2"), load_denoiser=False)
+    _MODEL = VoxCPM.from_pretrained(
+        os.getenv("VOXCPM2_MODEL_ID", "openbmb/VoxCPM2"),
+        load_denoiser=False,
+        optimize=env_enabled(os.getenv("VOXCPM2_TORCH_COMPILE")),
+    )
     return _MODEL
 
 
@@ -313,6 +317,7 @@ def health() -> dict[str, Any]:
         "runtime_level": runtime_level(),
         "model": os.getenv("VOXCPM2_MODEL_ID", "openbmb/VoxCPM2"),
         "real_inference": env_enabled(os.getenv("VOXCPM2_REAL_INFERENCE")),
+        "torch_compile": env_enabled(os.getenv("VOXCPM2_TORCH_COMPILE")),
         "dependency_available": importlib.util.find_spec("voxcpm") is not None and importlib.util.find_spec("soundfile") is not None,
         "dependencies": {
             "voxcpm": importlib.util.find_spec("voxcpm") is not None,

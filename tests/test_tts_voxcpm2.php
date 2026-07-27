@@ -75,6 +75,23 @@ hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', funct
     }
     hub_test_assert(is_file(HUB_ROOT . '/packs/tts-voxcpm2/acceptance/zh_tw_tts_cases.json'), 'VoxCPM2 acceptance set missing');
 });
+
+hub_test('VoxCPM2 generated Compose builds from the pack root', function (): void {
+    $pack = hub_get_pack('tts-voxcpm2');
+    hub_test_assert($pack !== null && $pack['status'] === 'ok', 'tts-voxcpm2 pack must be valid');
+
+    $compose = hub_generate_pack_compose($pack, 'tts-build-root', 18108);
+    hub_test_assert(str_contains($compose, 'context: ' . $pack['dir'] . "\n"), 'VoxCPM2 build context must include service and jobs directories');
+    hub_test_assert(str_contains($compose, 'dockerfile: service/Dockerfile'), 'VoxCPM2 build must retain its service Dockerfile');
+});
+
+hub_test('VoxCPM2 allows enough time for a first image build', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-build-timeout']);
+
+    hub_test_assert(hub_service_build_timeout_sec($installed['service']) === 1800, 'VoxCPM2 first build must allow time for its CUDA dependencies and image export');
+});
+
 hub_test('VoxCPM2 service app exposes TTS voice-design and managed clone modes', function (): void {
     $app = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/service/app.py');
     foreach (['@app.get("/health")', '@app.get("/v1/models")', '@app.post("/v1/voice-design")', '@app.post("/v1/tts")'] as $needle) {
@@ -104,6 +121,18 @@ hub_test('VoxCPM2 real inference requests cannot silently return mock audio', fu
     hub_test_assert(str_contains($requirements, 'soundfile'), 'VoxCPM2 runtime must include soundfile');
     hub_test_assert(str_contains($dockerfile, 'libsndfile1'), 'VoxCPM2 image must include libsndfile runtime dependency');
     hub_test_assert(str_contains($dockerfile, 'gcc'), 'VoxCPM2 image must include a C compiler for Triton warmup');
+});
+
+hub_test('VoxCPM2 defaults to no torch compile warmup on shared 16 GB GPUs', function (): void {
+    $app = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/service/app.py');
+    $pack = hub_get_pack('tts-voxcpm2');
+    hub_test_assert($pack !== null && $pack['status'] === 'ok', 'tts-voxcpm2 pack must be valid');
+
+    hub_test_assert(str_contains($app, 'VOXCPM2_TORCH_COMPILE'), 'VoxCPM2 app must make torch compile opt-in');
+    hub_test_assert(str_contains($app, 'optimize=env_enabled(os.getenv("VOXCPM2_TORCH_COMPILE"))'), 'VoxCPM2 must pass the opt-in compile setting to the model loader');
+    $settings = array_column($pack['manifest']['settings_schema'] ?? [], null, 'key');
+    hub_test_assert(($settings['VOXCPM2_TORCH_COMPILE']['default'] ?? null) === '0', 'VoxCPM2 torch compile must be disabled by default');
+    hub_test_assert(($settings['VOXCPM2_TORCH_COMPILE']['restart_required'] ?? null) === true, 'VoxCPM2 torch compile setting must require restart');
 });
 
 hub_test('VoxCPM2 voice profile drafts confirm per owner and accept explicit tokens', function (): void {
@@ -1270,6 +1299,7 @@ hub_test('VoxCPM2 install generates GPU compose storage env and gateway contract
         'VOXCPM2_SAMPLE_RATE=48000',
         'VOXCPM2_DEFAULT_SEED=42',
         'VOXCPM2_REAL_INFERENCE=0',
+        'VOXCPM2_TORCH_COMPILE=0',
         'VOXCPM2_GPU_POLICY=exclusive_gpu',
         'VOXCPM2_IDLE_UNLOAD_SECONDS=900',
     ] as $needle) {

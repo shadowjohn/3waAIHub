@@ -1620,7 +1620,7 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     $portEnv = hub_pack_port_env($manifest);
     $buildContext = $pack['dir'] . '/service';
     $dockerfile = '';
-    if (($manifest['id'] ?? '') === 'whisper-asr') {
+    if (in_array(($manifest['id'] ?? ''), ['tts-voxcpm2', 'whisper-asr'], true)) {
         $buildContext = $pack['dir'];
         $dockerfile = "      dockerfile: service/Dockerfile\n";
     }

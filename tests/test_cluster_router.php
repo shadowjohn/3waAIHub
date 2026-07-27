@@ -250,6 +250,117 @@ function hub_test_with_cluster_pair_url(callable $fn): void
     }
 }
 
+hub_test('cluster router gives real TTS requests their service timeout plus cleanup headroom', function (): void {
+    hub_test_assert(hub_cluster_proxy_timeout_sec('tts') === 210, 'TTS proxy timeout must cover 180 second inference plus cleanup');
+    hub_test_assert(hub_cluster_proxy_timeout_sec('hello') === 60, 'ordinary proxy timeout must stay bounded');
+    hub_test_assert(hub_cluster_proxy_stale_after_seconds() === 240, 'route reaping must not preempt a live TTS proxy');
+});
+
+hub_test('cluster router keeps a cleanly unloaded on-demand TTS pack in its published inventory', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-on-demand-inventory']);
+    $db->prepare(
+        "UPDATE services
+         SET enabled = 1, status = 'stopped', runtime_status = 'stopped'
+         WHERE id = :id"
+    )->execute([':id' => (int)$installed['service']['id']]);
+
+    hub_test_assert(in_array('tts', hub_cluster_node_published_modes($db), true), 'a cleanly stopped on-demand TTS pack must stay available for Router wake-up');
+    hub_cluster_node_configure($db, true, ['tts']);
+    hub_test_assert(in_array('tts', hub_cluster_node_selected_published_modes($db), true), 'selected on-demand TTS must remain in the node manifest after idle unload');
+
+    $db->prepare("UPDATE services SET status = 'failed', runtime_status = 'failed' WHERE id = :id")
+        ->execute([':id' => (int)$installed['service']['id']]);
+    hub_test_assert(!in_array('tts', hub_cluster_node_published_modes($db), true), 'failed on-demand TTS must not remain published');
+});
+
+hub_test('cluster router pins sync TTS artifacts to the submitting token and rewrites both artifact links', function (): void {
+    $db = hub_test_reset_db();
+    $station = hub_test_cluster_router_station($db);
+    $customer = hub_test_cluster_router_customer_token($db, ['tts']);
+    $memberId = (int)$db->query('SELECT member_id FROM api_tokens WHERE id = ' . (int)$customer['token_id'])->fetchColumn();
+    $routeId = 'route_' . str_repeat('b', 32);
+    $db->prepare(
+        "INSERT INTO cluster_routes
+            (route_id, station_id, member_id, token_id, mode, is_async, state, created_at, updated_at)
+         VALUES
+            (:route_id, :station_id, :member_id, :token_id, 'tts', 0, 'completed', :created_at, :updated_at)"
+    )->execute([
+        ':route_id' => $routeId,
+        ':station_id' => (int)$station['id'],
+        ':member_id' => $memberId,
+        ':token_id' => (int)$customer['token_id'],
+        ':created_at' => hub_now(),
+        ':updated_at' => hub_now(),
+    ]);
+
+    $rewritten = hub_cluster_rewrite_tts_response($db, ['route_id' => $routeId], [
+        'success' => true,
+        'artifact_url' => '/artifacts/tts_012345abcdef.wav',
+        'manifest' => '/artifacts/tts_012345abcdef.json',
+    ], 'cluster_api.php');
+
+    $expected = 'cluster_api.php?mode=cluster_tts_artifact&route_id=' . $routeId . '&file=tts_012345abcdef.wav';
+    hub_test_assert(($rewritten['artifact_url'] ?? '') === $expected, 'TTS audio URL must stay on the Router and carry the route mapping');
+    hub_test_assert(($rewritten['manifest'] ?? '') === str_replace('.wav', '.json', $expected), 'TTS manifest URL must use the same constrained Router relay');
+    $mapped = $db->query("SELECT remote_artifact_id FROM cluster_route_artifacts WHERE route_id = '" . $routeId . "' ORDER BY remote_artifact_id")->fetchAll(PDO::FETCH_COLUMN);
+    hub_test_assert($mapped === ['tts_012345abcdef.json', 'tts_012345abcdef.wav'], 'Router must pin only the response artifact filenames');
+
+    $auth = hub_authenticate_api_token($db, '203.0.113.10', (string)$customer['plain_token']);
+    hub_test_assert(hub_cluster_get_tts_artifact_route_for_customer($db, $routeId, (array)$auth['context']) !== null, 'submitting token must retain its TTS artifact route');
+    $other = hub_test_cluster_router_customer_token($db, ['tts']);
+    $otherAuth = hub_authenticate_api_token($db, '203.0.113.10', (string)$other['plain_token']);
+    hub_test_assert(hub_cluster_get_tts_artifact_route_for_customer($db, $routeId, (array)$otherAuth['context']) === null, 'other customer tokens must not read TTS artifact routes');
+    hub_test_assert(hub_cluster_tts_artifact_filename('tts_012345abcdef.wav') === 'tts_012345abcdef.wav', 'TTS WAV artifact names must be accepted');
+    hub_test_assert(hub_cluster_tts_artifact_filename('../tts_012345abcdef.wav') === null, 'TTS artifact traversal must be rejected');
+});
+
+hub_test('cluster router relays a pinned sync TTS artifact through the child control plane', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $station = hub_test_cluster_router_station($db);
+        $customer = hub_test_cluster_router_customer_token($db, ['tts']);
+        $memberId = (int)$db->query('SELECT member_id FROM api_tokens WHERE id = ' . (int)$customer['token_id'])->fetchColumn();
+        $routeId = 'route_' . str_repeat('c', 32);
+        $file = 'tts_abcdef012345.wav';
+        $db->prepare(
+            "INSERT INTO cluster_routes
+                (route_id, station_id, member_id, token_id, mode, is_async, state, created_at, updated_at)
+             VALUES
+                (:route_id, :station_id, :member_id, :token_id, 'tts', 0, 'completed', :created_at, :updated_at)"
+        )->execute([
+            ':route_id' => $routeId,
+            ':station_id' => (int)$station['id'],
+            ':member_id' => $memberId,
+            ':token_id' => (int)$customer['token_id'],
+            ':created_at' => hub_now(),
+            ':updated_at' => hub_now(),
+        ]);
+        $db->prepare(
+            'INSERT INTO cluster_route_artifacts (route_id, remote_artifact_id, created_at) VALUES (:route_id, :file, :created_at)'
+        )->execute([':route_id' => $routeId, ':file' => $file, ':created_at' => hub_now()]);
+        $requests = [];
+
+        $response = hub_cluster_dispatch_followup($db, 'cluster_tts_artifact', [
+            'bearer_token' => (string)$customer['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'method' => 'GET',
+            'query' => ['route_id' => $routeId, 'file' => $file],
+        ], static function (array $request) use (&$requests): array {
+            $requests[] = $request;
+            return [
+                'status' => 200,
+                'headers' => ['Content-Type: audio/wav'],
+                'body' => 'RIFFdemoWAVE',
+            ];
+        });
+
+        hub_test_assert($response['status'] === 200 && ($response['body'] ?? '') === 'RIFFdemoWAVE', 'Router must return the child WAV bytes without exposing station URLs');
+        hub_test_assert(count($requests) === 1 && ($requests[0]['url'] ?? '') === 'https://station.internal:8080/aihub/cluster_tts_artifact.php', 'TTS artifacts must use the constrained child relay endpoint');
+        hub_test_assert(($requests[0]['query'] ?? null) === ['file' => $file], 'TTS artifact relay must send only the pinned filename');
+    });
+});
+
 hub_test('cluster router migration creates all persistence tables', function (): void {
     $db = hub_test_reset_db();
     $tables = array_fill_keys(
@@ -736,6 +847,40 @@ hub_test('cluster child followup requires the paired node token, source, and whi
             $afterRegeneration = hub_cluster_child_followup_dispatch($db, $request);
             hub_test_assert($afterRegeneration['status'] === 403, 'regeneration must make the previous child control-plane credential unusable');
         });
+    });
+});
+
+hub_test('cluster child TTS artifact relay accepts only the node token and a constrained local artifact name', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $installed = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-artifact-child']);
+        $service = $installed['service'];
+        $db->prepare("UPDATE services SET enabled = 1, status = 'stopped', runtime_status = 'stopped' WHERE id = :id")
+            ->execute([':id' => (int)$service['id']]);
+        hub_cluster_node_configure($db, true, ['tts']);
+        $artifactDir = dirname(hub_path((string)$service['compose_file'])) . '/artifacts';
+        if (!is_dir($artifactDir) && !mkdir($artifactDir, 0770, true) && !is_dir($artifactDir)) {
+            throw new RuntimeException('Cannot create isolated TTS artifact directory.');
+        }
+        $file = 'tts_123456abcdef.wav';
+        file_put_contents($artifactDir . '/' . $file, 'RIFFdemoWAVE');
+        $token = hub_cluster_node_reveal_token($db);
+
+        $response = hub_cluster_child_tts_artifact_dispatch($db, [
+            'bearer_token' => $token,
+            'client_ip' => '203.0.113.44',
+            'method' => 'GET',
+            'query' => ['file' => $file],
+        ]);
+        $rejected = hub_cluster_child_tts_artifact_dispatch($db, [
+            'bearer_token' => $token,
+            'client_ip' => '203.0.113.44',
+            'method' => 'GET',
+            'query' => ['file' => '../' . $file],
+        ]);
+
+        hub_test_assert($response['status'] === 200 && ($response['body'] ?? '') === 'RIFFdemoWAVE', 'node token must retrieve only the generated local TTS artifact bytes');
+        hub_test_assert($rejected['status'] === 404, 'TTS artifact relay must reject traversal-like filenames');
     });
 });
 

@@ -223,6 +223,16 @@ function hub_compose_env(array $service): array
     return $env;
 }
 
+function hub_docker_command_environment(): array
+{
+    $home = HUB_DATA_DIR . '/docker-cli';
+    if (!is_dir($home) && !mkdir($home, 0770, true) && !is_dir($home)) {
+        throw new RuntimeException('Docker CLI home is unavailable.');
+    }
+
+    return ['HOME' => $home, 'DOCKER_CONFIG' => $home];
+}
+
 function hub_service_image_tag(array $service): string
 {
     return hub_pack_image_tag((string)($service['service_key'] ?? $service['mode']), (string)($service['pack_version'] ?? 'latest'));
@@ -401,12 +411,12 @@ function hub_run_service_compose_command(PDO $db, ?array $job, array $service, a
 {
     $usesWsl = hub_service_uses_wsl_runtime($service);
     $command = $usesWsl ? hub_wsl_service_compose_command($service, $args) : hub_compose_command($service, $args);
-    return hub_run_service_command($db, $job, $command, $timeoutSeconds, hub_compose_env($service), $stage, $minProgress, $maxProgress, !$usesWsl);
+    return hub_run_service_command($db, $job, $command, $timeoutSeconds, hub_docker_command_environment(), $stage, $minProgress, $maxProgress, !$usesWsl);
 }
 
 function hub_docker_image_exists(string $image): bool
 {
-    return hub_run_command(['docker', 'image', 'inspect', $image], 30)['exit_code'] === 0;
+    return hub_run_command(['docker', 'image', 'inspect', $image], 30, hub_docker_command_environment())['exit_code'] === 0;
 }
 
 function hub_compose_status_from_ps(string $output): string
@@ -517,6 +527,11 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
     return $result;
 }
 
+function hub_service_build_timeout_sec(array $service): int
+{
+    return (string)($service['pack_id'] ?? '') === 'tts-voxcpm2' ? 1800 : 900;
+}
+
 function hub_build_service(PDO $db, array $service, ?array $job = null): array
 {
     if (!hub_service_is_internal_task($service)) {
@@ -535,7 +550,7 @@ function hub_build_service(PDO $db, array $service, ?array $job = null): array
         return $result;
     }
     hub_job_progress($db, $job, 'docker_build', 20, 'Building image: ' . hub_service_image_tag($service));
-    $result = hub_run_service_compose_command($db, $job, $service, ['build', '--progress=plain'], 900, 'docker_build', 20, 70);
+    $result = hub_run_service_compose_command($db, $job, $service, ['build', '--progress=plain'], hub_service_build_timeout_sec($service), 'docker_build', 20, 70);
     $summary = $result['exit_code'] === 0
         ? 'Image build completed: ' . hub_service_image_tag($service)
         : substr(hub_command_error_summary($result), 0, 1000);

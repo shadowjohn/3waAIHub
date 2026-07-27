@@ -211,6 +211,9 @@ function hub_validate_audio_sync_request(PDO $db, array $service): array
     if (!hub_audio_sync_requires_gpu($db, $service)) {
         return [];
     }
+    if (!hub_audio_sync_service_is_ready($service)) {
+        return ['response' => hub_gateway_error(503, 'runtime_not_ready', 'sync service is not running')];
+    }
 
     $run = hub_audio_sync_create_runtime_run($db, $service);
     $lease = hub_runtime_gpu_acquire($db, $run, max(60, hub_service_gateway_timeout_sec($service) + 30));
@@ -227,7 +230,6 @@ function hub_validate_audio_sync_request(PDO $db, array $service): array
         hub_audio_sync_abort($db, $run, $lease, 'gpu_probe_failed');
         return ['response' => hub_gateway_error(503, 'runtime_not_ready', 'sync GPU inspection is unavailable')];
     }
-
     return ['route' => $route, 'run' => $run, 'lease' => $lease, 'baseline_pids' => $baseline];
 }
 
@@ -246,6 +248,11 @@ function hub_audio_sync_requires_gpu(PDO $db, array $service): bool
     }
 
     return hub_photo_parse_bool($configured) || hub_photo_parse_bool($requested);
+}
+
+function hub_audio_sync_service_is_ready(array $service): bool
+{
+    return (string)($service['runtime_status'] ?? '') === 'running';
 }
 
 function hub_audio_sync_request_control_keys(): array
@@ -422,8 +429,11 @@ function hub_audio_sync_gpu_processes(): ?array
 function hub_audio_sync_remove_container(string $container): bool
 {
     $before = hub_audio_sync_container_state($container);
-    if (!is_array($before) || empty($before['exists'])) {
+    if (!is_array($before)) {
         return false;
+    }
+    if (empty($before['exists'])) {
+        return true;
     }
     foreach ([['stop', '-t', '10'], ['container', 'rm', '-f']] as $command) {
         $output = [];
