@@ -95,6 +95,11 @@ function hub_h(?string $value): string
     return htmlspecialchars($value ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function hub_json_encode(mixed $value, int $flags = 0): string|false
+{
+    return json_encode($value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | $flags);
+}
+
 function hub_now(): string
 {
     return date('Y-m-d H:i:s');

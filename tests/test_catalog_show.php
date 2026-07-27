@@ -60,6 +60,18 @@ hub_test('PhaseShow-1 catalog show filters user modes by owned token permissions
     hub_test_assert(hub_catalog_show_pick_user_token($db, $customer, 'yolo') === null, 'catalog_show must not pick token for disallowed mode');
 });
 
+hub_test('catalog show response redacts the delegated Bearer token', function (): void {
+    $response = hub_catalog_show_public_response([
+        'ok' => true,
+        'status' => 200,
+        'token' => '3wa_live_upstream_value',
+    ], '3wa_live_delegated_value', 17);
+
+    hub_test_assert(!array_key_exists('token', $response), 'catalog_show response must not expose the delegated Bearer token');
+    hub_test_assert($response['token_prefix'] === '3wa_live_delegat', 'catalog_show response must retain only the token prefix for diagnostics');
+    hub_test_assert($response['elapsed_ms'] === 17, 'catalog_show response must retain elapsed timing');
+});
+
 hub_test('PhaseShow-1 catalog show proxy keeps gateway auth boundary', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/catalog_show/api_proxy.php');
     foreach (['hub_require_login', 'hub_catalog_show_session_token', 'Authorization: Bearer', 'hub_check_csrf', 'audio_upload', 'audio_id_required'] as $needle) {

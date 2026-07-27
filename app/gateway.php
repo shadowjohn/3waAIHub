@@ -567,7 +567,7 @@ function hub_prepare_tts_voxcpm2_payload(PDO $db, array $service, array $authCon
     }
 
     return [
-        'body' => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        'body' => hub_json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
         'content_type' => 'application/json',
     ];
 }
@@ -2319,8 +2319,11 @@ function hub_gateway_json(int $status, array $payload): array
 {
     return [
         'status' => $status,
-        'headers' => ['Content-Type: application/json; charset=utf-8'],
-        'body' => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        'headers' => [
+            'Content-Type: application/json; charset=utf-8',
+            'X-Content-Type-Options: nosniff',
+        ],
+        'body' => hub_json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
     ];
 }
 
@@ -2421,7 +2424,7 @@ function hub_gateway_attach_request_id(array $response, string $requestId): arra
     $payload = json_decode((string)($response['body'] ?? ''), true);
     if (is_array($payload) && !isset($payload['request_id'])) {
         $payload['request_id'] = $requestId;
-        $response['body'] = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        $response['body'] = hub_json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     }
 
     return $response;

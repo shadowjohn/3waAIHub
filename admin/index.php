@@ -507,7 +507,7 @@ hub_admin_header('儀表板', $user);
     </section>
     <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
     <script>
-    const metric = <?= json_encode($chartData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;
+    const metric = <?= hub_json_encode($chartData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>;
     function clampPercent(value) {
         const number = Number(value);
         if (!Number.isFinite(number)) return 0;
