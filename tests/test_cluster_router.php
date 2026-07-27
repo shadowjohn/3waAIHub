@@ -250,8 +250,9 @@ function hub_test_with_cluster_pair_url(callable $fn): void
     }
 }
 
-hub_test('cluster router gives real TTS requests their service timeout plus cleanup headroom', function (): void {
+hub_test('cluster router gives real audio requests their service timeout plus cleanup headroom', function (): void {
     hub_test_assert(hub_cluster_proxy_timeout_sec('tts') === 210, 'TTS proxy timeout must cover 180 second inference plus cleanup');
+    hub_test_assert(hub_cluster_proxy_timeout_sec('asr') === 210, 'ASR proxy timeout must cover cold model inference plus cleanup');
     hub_test_assert(hub_cluster_proxy_timeout_sec('hello') === 60, 'ordinary proxy timeout must stay bounded');
     hub_test_assert(hub_cluster_proxy_stale_after_seconds() === 240, 'route reaping must not preempt a live TTS proxy');
 });

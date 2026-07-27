@@ -2466,7 +2466,7 @@ function hub_cluster_proxy_request_limit_bytes(): int
 
 function hub_cluster_proxy_timeout_sec(?string $mode = null): int
 {
-    return $mode === 'tts' ? 210 : 60;
+    return in_array($mode, ['asr', 'tts'], true) ? 210 : 60;
 }
 
 function hub_cluster_proxy_stale_after_seconds(): int

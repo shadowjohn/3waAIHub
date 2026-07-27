@@ -41,6 +41,8 @@ hub_test('PhaseP-1 generated compose has fixed image tag and start/build command
 
     hub_test_assert(str_contains($compose, 'image: 3waaihub-ocr-main:0.1.0'), 'generated compose must include fixed image tag');
     hub_test_assert(hub_service_image_tag($service) === '3waaihub-ocr-main:0.1.0', 'service image tag mismatch');
+    $asr = hub_install_pack($db, 'whisper-asr', ['service_key' => 'asr-main'])['service'];
+    hub_test_assert(hub_service_image_tag($asr) === '3waaihub/whisper-asr:0.1.1', 'Whisper image checks must match its generated compose image');
     hub_test_assert(hub_compose_command($service, ['build', '--progress=plain']) === hub_service_build_command($service), 'build command must use plain progress');
     hub_test_assert(!in_array('--build', hub_service_start_command($service), true), 'start command must not rebuild');
 });
