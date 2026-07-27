@@ -9,9 +9,10 @@ hub_migrate($db);
 hub_ensure_default_storage_settings($db);
 
 header('Content-Type: application/json; charset=utf-8');
+header('X-Content-Type-Options: nosniff');
 if (!hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_MANIFEST')) {
     http_response_code(403);
-    echo json_encode([
+    echo hub_json_encode([
         'ok' => false,
         'error' => 'public_docs_forbidden',
         'message' => 'Public API manifest is disabled or local-only.',
@@ -19,4 +20,4 @@ if (!hub_public_api_allowed($db, 'AIHUB_PUBLIC_API_MANIFEST')) {
     exit;
 }
 
-echo json_encode(hub_public_api_manifest($db), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+echo hub_json_encode(hub_public_api_manifest($db), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);

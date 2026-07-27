@@ -173,3 +173,31 @@ hub_test('test runner uses an explicit static control-plane suite manifest', fun
     $ci = (string)file_get_contents(HUB_ROOT . '/.github/workflows/ci.yml');
     hub_test_assert(str_contains($ci, 'php scripts/run_tests.php --suite=control-plane'), 'Windows CI must select the control-plane suite explicitly');
 });
+
+hub_test('reported Pack images do not default to root', function (): void {
+    foreach ([
+        'packs/audio-cleanup/service/Dockerfile',
+        'packs/bioclip/service/Dockerfile',
+        'packs/hello/service/Dockerfile',
+        'packs/llm-gemma4-12b/service/Dockerfile',
+        'packs/llm-gemma4-12b/vllm/Dockerfile',
+        'packs/ocr-ppocrv5/service/Dockerfile',
+        'packs/rag-nemotron/service/Dockerfile',
+        'packs/sam3/service/Dockerfile',
+        'packs/structure-ppstructurev3/service/Dockerfile',
+        'packs/taiwan-address/service/Dockerfile',
+        'packs/translate-gemma12b/service/Dockerfile',
+        'packs/tts-voxcpm2/service/Dockerfile',
+        'packs/whisper-asr/service/Dockerfile',
+        'packs/yolo-serving/service/Dockerfile',
+        'packs/yolo/service/Dockerfile',
+        'packs/yolo/service/Dockerfile.pascal-cu118',
+    ] as $path) {
+        $dockerfile = (string)file_get_contents(HUB_ROOT . '/' . $path);
+        $lastUser = strrpos($dockerfile, 'USER ');
+        hub_test_assert(
+            $lastUser !== false && str_starts_with(substr($dockerfile, $lastUser), 'USER 65532:65532'),
+            'Pack image must finish as an unprivileged user: ' . $path
+        );
+    }
+});

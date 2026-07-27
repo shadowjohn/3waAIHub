@@ -8,19 +8,21 @@ $user = hub_require_login($db);
 hub_check_csrf();
 
 header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store');
+header('X-Content-Type-Options: nosniff');
 
 $mode = preg_replace('/[^a-zA-Z0-9_-]/', '', (string)($_POST['mode'] ?? ''));
 $items = hub_catalog_show_items();
 if ($mode === '' || !isset($items[$mode])) {
     http_response_code(400);
-    echo json_encode(['ok' => false, 'error' => 'bad_mode'], JSON_UNESCAPED_UNICODE);
+    echo hub_json_encode(['ok' => false, 'error' => 'bad_mode'], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 $allowedModes = hub_catalog_show_user_modes($db, $user);
 if (hub_is_customer($user) && !in_array($mode, $allowedModes, true)) {
     http_response_code(403);
-    echo json_encode(['ok' => false, 'error' => 'mode_not_allowed'], JSON_UNESCAPED_UNICODE);
+    echo hub_json_encode(['ok' => false, 'error' => 'mode_not_allowed'], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
@@ -31,12 +33,10 @@ if ($token === '') {
 
 $started = microtime(true);
 $response = hub_catalog_show_call_gateway($mode, $token);
-$response['elapsed_ms'] = (int)round((microtime(true) - $started) * 1000);
-$response['token_prefix'] = $token !== '' ? hub_api_token_prefix($token) : '';
-$response['token'] = $token;
+$response = hub_catalog_show_public_response($response, $token, (int)round((microtime(true) - $started) * 1000));
 
 http_response_code((int)($response['status'] ?? 200));
-echo json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+echo hub_json_encode($response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
 function hub_catalog_show_call_gateway(string $mode, string $token): array
 {

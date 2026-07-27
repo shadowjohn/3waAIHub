@@ -1,6 +1,15 @@
 <?php
 declare(strict_types=1);
 
+function hub_catalog_show_public_response(array $response, string $token, int $elapsedMs): array
+{
+    unset($response['token']);
+    $response['elapsed_ms'] = $elapsedMs;
+    $response['token_prefix'] = $token !== '' ? hub_api_token_prefix($token) : '';
+
+    return $response;
+}
+
 function hub_catalog_show_items(): array
 {
     return [

@@ -84,6 +84,24 @@ hub_test('admin dashboard primary labels use i18n helper', function (): void {
     }
 });
 
+hub_test('dashboard and playground script translations use HTML-safe JSON', function (): void {
+    $dashboard = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
+    hub_test_assert(
+        str_contains($dashboard, 'hub_json_encode($chartData, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)'),
+        'dashboard chart data must use the HTML-safe JSON encoder'
+    );
+
+    $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    foreach ([
+        "hub_json_encode(__('顯示 token'), JSON_UNESCAPED_UNICODE)",
+        "hub_json_encode(__('隱藏 token'), JSON_UNESCAPED_UNICODE)",
+        "hub_json_encode(__('請手動複製。'), JSON_UNESCAPED_UNICODE)",
+        "hub_json_encode(__('已複製。'), JSON_UNESCAPED_UNICODE)",
+    ] as $needle) {
+        hub_test_assert(str_contains($playground, $needle), 'playground script translation must use the HTML-safe JSON encoder: ' . $needle);
+    }
+});
+
 hub_test('admin models page primary labels use i18n helper', function (): void {
     $models = (string)file_get_contents(HUB_ROOT . '/admin/models.php');
     foreach ([

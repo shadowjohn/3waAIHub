@@ -1303,7 +1303,7 @@ document.querySelectorAll('[data-token-toggle]').forEach((button) => {
         const input = document.getElementById(button.dataset.target || '');
         if (!input) return;
         input.type = input.type === 'password' ? 'text' : 'password';
-        button.textContent = input.type === 'password' ? <?= json_encode(__('顯示 token'), JSON_UNESCAPED_UNICODE) ?> : <?= json_encode(__('隱藏 token'), JSON_UNESCAPED_UNICODE) ?>;
+        button.textContent = input.type === 'password' ? <?= hub_json_encode(__('顯示 token'), JSON_UNESCAPED_UNICODE) ?> : <?= hub_json_encode(__('隱藏 token'), JSON_UNESCAPED_UNICODE) ?>;
     });
 });
 document.querySelectorAll('[data-copy-target]').forEach((button) => {
@@ -1311,14 +1311,14 @@ document.querySelectorAll('[data-copy-target]').forEach((button) => {
         const target = document.getElementById(button.dataset.copyTarget || '');
         const status = document.getElementById('playground-copy-status');
         if (!target || !navigator.clipboard) {
-            if (status) status.textContent = <?= json_encode(__('請手動複製。'), JSON_UNESCAPED_UNICODE) ?>;
+            if (status) status.textContent = <?= hub_json_encode(__('請手動複製。'), JSON_UNESCAPED_UNICODE) ?>;
             return;
         }
         try {
             await navigator.clipboard.writeText(target.textContent || '');
-            if (status) status.textContent = <?= json_encode(__('已複製。'), JSON_UNESCAPED_UNICODE) ?>;
+            if (status) status.textContent = <?= hub_json_encode(__('已複製。'), JSON_UNESCAPED_UNICODE) ?>;
         } catch (e) {
-            if (status) status.textContent = <?= json_encode(__('請手動複製。'), JSON_UNESCAPED_UNICODE) ?>;
+            if (status) status.textContent = <?= hub_json_encode(__('請手動複製。'), JSON_UNESCAPED_UNICODE) ?>;
         }
     });
 });

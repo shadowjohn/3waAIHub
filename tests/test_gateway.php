@@ -60,6 +60,21 @@ hub_test('hello gateway and unknown mode keep expected contract', function (): v
     hub_test_assert($unknown['status'] === 404, 'unknown mode did not return 404');
 });
 
+hub_test('gateway JSON responses neutralize HTML delimiters and disable MIME sniffing', function (): void {
+    $response = hub_gateway_json(200, ['message' => '</script><script>alert(1)</script>']);
+
+    hub_test_assert(in_array('X-Content-Type-Options: nosniff', $response['headers'], true), 'gateway JSON responses must disable MIME sniffing');
+    hub_test_assert(!str_contains((string)$response['body'], '<'), 'gateway JSON responses must not emit HTML tag delimiters');
+    hub_test_assert(json_decode((string)$response['body'], true) === ['message' => '</script><script>alert(1)</script>'], 'gateway JSON responses must preserve the API payload');
+});
+
+hub_test('shared JSON encoder neutralizes HTML delimiters without changing values', function (): void {
+    $body = hub_json_encode(['message' => '<img src=x onerror=alert(1)>']);
+
+    hub_test_assert(!str_contains((string)$body, '<'), 'shared JSON encoder must not emit HTML tag delimiters');
+    hub_test_assert(json_decode((string)$body, true) === ['message' => '<img src=x onerror=alert(1)>'], 'shared JSON encoder must preserve decoded values');
+});
+
 hub_test('gateway applies manifest upload limit and timeout', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'translate-gemma12b', ['idempotent' => true]);
