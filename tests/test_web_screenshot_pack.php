@@ -111,6 +111,15 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
 
 hub_test('web capture Pack and README publish the allowlist bridge contract', function (): void {
     $db = hub_test_reset_db();
+    $pack = hub_get_pack('web-screenshot');
+    hub_test_assert(is_array($pack) && ($pack['status'] ?? '') === 'ok', 'Web Screenshot Pack must validate');
+    $manifest = $pack['manifest'];
+    $job = hub_pack_async_job_contract($manifest, 'capture');
+    hub_test_assert(is_array($job), 'Web Screenshot capture job contract missing');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.2'
+        && ($manifest['runner_build']['image'] ?? '') === '3waaihub/web-screenshot:0.1.2'
+        && ($job['runner']['image'] ?? '') === '3waaihub/web-screenshot:0.1.2'
+        && ($job['runner']['network_profile'] ?? '') === 'public_egress', 'web capture must retain the public-egress 0.1.2 Pack image contract');
     $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
     $route = hub_resolve_pack_job_async_route($db, 'web_capture');
     hub_test_assert(($installed['service']['pack_version'] ?? null) === '0.1.2'
@@ -121,7 +130,7 @@ hub_test('web capture Pack and README publish the allowlist bridge contract', fu
     hub_test_assert(is_string($section), 'README must document Web Screenshot allowed hosts');
     $section = strstr($section, "\n## ", true);
     hub_test_assert(is_string($section), 'Web Screenshot README section must end before the next top-level section');
-    foreach (['AIHUB_WEB_CAPTURE_ALLOWED_HOSTS', '設定 → API 與安全', "Docker's existing `bridge` network"] as $needle) {
+    foreach (['container-local fail-closed egress firewall', 'NET_ADMIN', 'non-root user', 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS', '設定 → API 與安全', "Docker's existing `bridge` network"] as $needle) {
         hub_test_assert(str_contains($section, $needle), 'Web Screenshot README section missing ' . $needle);
     }
     hub_test_assert(!str_contains($section, 'scripts/install_capture_egress_network.sh --check'), 'Web Screenshot README section must not require the obsolete egress installer');

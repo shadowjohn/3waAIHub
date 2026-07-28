@@ -337,9 +337,8 @@ curl http://localhost/3waAIHub/api.php?mode=hello
 
 ### Web Screenshot allowed hosts
 
-`web_capture` uses Docker's existing `bridge` network and does not require
-an iptables command or a dedicated Docker network. A system administrator
-maintains exact target hosts at **設定 → API 與安全** under
+`web_capture` uses Docker's existing `bridge` network and a container-local fail-closed egress firewall. It does not require a host iptables command or a dedicated Docker network. The immutable Web Screenshot container receives `NET_ADMIN` only while its trusted entrypoint installs and verifies the policy; it then removes capabilities and runs Chromium as a non-root user.
+A system administrator maintains exact target hosts at **設定 → API 與安全** under
 `AIHUB_WEB_CAPTURE_ALLOWED_HOSTS`; add one hostname per line.
 
 The Pack follows redirects only on the initial exact hostname. CDN resources
