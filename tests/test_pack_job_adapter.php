@@ -145,15 +145,21 @@ hub_test('Pack job container runner restricts network profiles', function (): vo
 
         $publicManifest = hub_test_adapter_manifest('adapter-network-public', '1.0.0');
         $publicManifest['async_jobs'][0]['runner']['network_profile'] = 'public_egress';
-        $public = hub_pack_async_job_contract($publicManifest, 'convert');
-        hub_test_assert(is_array($public), 'public egress must be a closed valid profile');
+        hub_test_assert(hub_pack_async_job_contract($publicManifest, 'convert') === null
+            && hub_validate_pack_manifest($publicManifest, sys_get_temp_dir()) !== [], 'generic Pack manifests must not obtain public egress');
+
+        $webScreenshot = hub_get_pack('web-screenshot')['manifest'];
+        $public = hub_pack_async_job_contract($webScreenshot, 'capture');
+        hub_test_assert(is_array($public) && ($public['runner']['network_profile'] ?? null) === 'public_egress', 'only the immutable Web Screenshot capture route may use public egress');
         $command = hub_pack_job_default_runner_command([
             'workspace' => $workspace,
-            'run' => ['run_id' => 'adapter-network-public'],
-            'runner' => hub_pack_job_runner_arguments($public['runner'], ['id' => 1], ['run_id' => 'adapter-network-public'], $workspace),
+            'run' => ['run_id' => 'web-screenshot-public'],
+            'runner' => hub_pack_job_runner_arguments($public['runner'], ['id' => 1], ['run_id' => 'web-screenshot-public'], $workspace),
         ])['command'];
-        $index = array_search('--network', $command, true);
-        hub_test_assert($index !== false && ($command[$index + 1] ?? null) === 'bridge', 'public egress must select only Docker bridge');
+        $network = array_search('--network', $command, true);
+        $capability = array_search('--cap-add', $command, true);
+        hub_test_assert($network !== false && ($command[$network + 1] ?? null) === 'bridge', 'Web Screenshot public egress must use Docker bridge');
+        hub_test_assert($capability !== false && ($command[$capability + 1] ?? null) === 'NET_ADMIN', 'Web Screenshot firewall setup must receive NET_ADMIN');
 
         $arbitraryManifest = hub_test_adapter_manifest('adapter-network-arbitrary', '1.0.0');
         $arbitraryManifest['async_jobs'][0]['runner']['network_profile'] = 'customer-network';

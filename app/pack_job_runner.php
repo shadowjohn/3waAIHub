@@ -523,7 +523,17 @@ function hub_pack_job_default_runner_command(array $context): array
         'public_egress' => 'bridge',
         default => 'none',
     };
-    $command = ['docker', 'run', '--pull=never', '--network', $network, '--mount', 'type=bind,src=' . $output . ',dst=' . $containerWorkspace . '/output', '--mount', 'type=bind,src=' . $checkpoints . ',dst=' . $containerWorkspace . '/checkpoints', '--name', $name];
+    $command = ['docker', 'run', '--pull=never', '--network', $network];
+    if (($runner['network_profile'] ?? 'isolated') === 'public_egress') {
+        $command[] = '--cap-add';
+        $command[] = 'NET_ADMIN';
+    }
+    $command[] = '--mount';
+    $command[] = 'type=bind,src=' . $output . ',dst=' . $containerWorkspace . '/output';
+    $command[] = '--mount';
+    $command[] = 'type=bind,src=' . $checkpoints . ',dst=' . $containerWorkspace . '/checkpoints';
+    $command[] = '--name';
+    $command[] = $name;
     $voiceProfileMount = $runner['voice_profile_mount'] ?? null;
     foreach (['source', 'request.json', 'runner_config.json'] as $file) {
         if ($file === 'source' && $voiceProfileMount !== null) {

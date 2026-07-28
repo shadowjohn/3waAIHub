@@ -250,6 +250,11 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
                 return null;
             }
         }
+        if ($runner !== null
+            && ($runner['network_profile'] ?? 'isolated') === 'public_egress'
+            && ((string)($manifest['id'] ?? '') !== 'web-screenshot' || $job !== 'capture')) {
+            return null;
+        }
         $runnerConfig = null;
         if (array_key_exists('runner_config', $definition)) {
             $runnerConfig = hub_pack_async_job_runner_config_from_manifest($definition['runner_config'], $manifest, $fields, $requestSchema);
