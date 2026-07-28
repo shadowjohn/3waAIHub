@@ -345,6 +345,19 @@ The Pack follows redirects only on the initial exact hostname. CDN resources
 remain subject to public-IP checks. Treat every allowed hostname as trusted:
 this mode is not a general arbitrary-URL screenshot service.
 
+Submit one allowed URL as JSON with an API token that has `web_capture`
+permission:
+
+```json
+POST api.php?mode=web_capture
+{"url":"https://3wa.tw/","width":1280,"height":720,"delay_seconds":0,"timeout_seconds":60}
+```
+
+The response is asynchronous: a successful request returns `status: "queued"`
+and `task_id`. Poll the returned `status_url`, then retrieve the PNG and
+capture report from `result_url`. The admin API Playground provides the same
+form and returns public task URLs rather than its internal loopback transport.
+
 `./install.sh` 若以 root 執行，會自動掛載 command worker cron。若以非 root 執行，請手動掛載：
 
 ```bash

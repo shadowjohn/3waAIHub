@@ -22,6 +22,7 @@ function hub_playground_profiles(): array
         'audio' => ['label' => '音訊理解', 'method' => 'POST', 'kind' => 'audio'],
         'background_remove' => ['label' => 'BiRefNet 去背', 'method' => 'POST', 'kind' => 'background_remove'],
         'taiwan_address' => ['label' => '台灣地址洗滌／地理編碼', 'method' => 'POST', 'kind' => 'json'],
+        'web_capture' => ['label' => 'Web Screenshot', 'method' => 'POST', 'kind' => 'json'],
     ];
 }
 
@@ -79,6 +80,23 @@ function hub_playground_request_payload(string $mode): array
             'text' => trim((string)($_POST['text'] ?? 'That was a wonderful time.')),
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
+    }
+    if ($mode === 'web_capture') {
+        $payload = [
+            'url' => trim((string)($_POST['url'] ?? 'https://3wa.tw/')),
+        ];
+        foreach (['width', 'height', 'delay_seconds', 'timeout_seconds', 'crop_x', 'crop_y', 'crop_width', 'crop_height'] as $field) {
+            $value = trim((string)($_POST[$field] ?? ''));
+            if ($value !== '') {
+                $payload[$field] = (int)$value;
+            }
+        }
+        $javascript = trim((string)($_POST['javascript'] ?? ''));
+        if ($javascript !== '') {
+            $payload['javascript'] = $javascript;
+        }
+
+        return $payload;
     }
     if ($mode === 'tts') {
         return hub_playground_tts_request_payload();
@@ -183,6 +201,9 @@ function hub_playground_basic_readiness(array $service): ?array
 
 function hub_playground_health_error(array $service): ?string
 {
+    if (hub_service_is_internal_task($service)) {
+        return null;
+    }
     $url = trim((string)($service['health_url'] ?? ''));
     if ($url === '' || !function_exists('curl_init')) {
         return null;
@@ -287,6 +308,36 @@ function hub_playground_finish_curl($ch, float $started): array
     return $result;
 }
 
+function hub_playground_public_task_links(array $result): array
+{
+    if (empty($result['ok'])) {
+        return $result;
+    }
+    $payload = json_decode((string)($result['body'] ?? ''), true);
+    $taskId = $payload['task_id'] ?? null;
+    if (!is_array($payload) || (!is_int($taskId) && !(is_string($taskId) && ctype_digit($taskId))) || (int)$taskId < 1) {
+        return $result;
+    }
+
+    $taskId = (int)$taskId;
+    foreach ([
+        'status_url' => 'task_status',
+        'result_url' => 'task_result',
+        'log_url' => 'task_log',
+        'cancel_url' => 'task_cancel',
+        'artifact_url_template' => 'artifact',
+    ] as $key => $mode) {
+        $payload[$key] = hub_playground_api_url($mode) . '&' . ($key === 'artifact_url_template' ? 'artifact_id={artifact_id}' : 'task_id=' . $taskId);
+    }
+    $body = hub_json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (is_string($body)) {
+        $result['body'] = $body;
+        $result['pretty_body'] = hub_playground_pretty_json($body);
+    }
+
+    return $result;
+}
+
 function hub_playground_execute(string $mode, string $token, ?array $requestPayload = null): array
 {
     $profiles = hub_playground_profiles();
@@ -350,7 +401,7 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
             CURLOPT_TIMEOUT => 180,
             CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
         ]);
-        return hub_playground_finish_curl($ch, $started);
+        return hub_playground_public_task_links(hub_playground_finish_curl($ch, $started));
     }
 
     $ch = curl_init($url);
@@ -413,7 +464,7 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
     }
 
     curl_setopt_array($ch, $options);
-    return hub_playground_finish_curl($ch, $started);
+    return hub_playground_public_task_links(hub_playground_finish_curl($ch, $started));
 }
 
 function hub_playground_pretty_json(string $body): string
@@ -485,6 +536,48 @@ const res = await fetch($jsUrl, {
     target_lang: 'zh-TW',
     text: 'That was a wonderful time.',
     real_inference: 0
+  })
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
+    if ($mode === 'web_capture') {
+        $json = '{"url":"https://3wa.tw/","width":1280,"height":720,"delay_seconds":0,"timeout_seconds":60}';
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
+        $php = <<<PHP
+\$payload = [
+    'url' => 'https://3wa.tw/',
+    'width' => 1280,
+    'height' => 720,
+    'delay_seconds' => 0,
+    'timeout_seconds' => 60,
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer <TOKEN>',
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode(\$payload, JSON_UNESCAPED_SLASHES),
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer <TOKEN>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    url: 'https://3wa.tw/',
+    width: 1280,
+    height: 720,
+    delay_seconds: 0,
+    timeout_seconds: 60
   })
 });
 console.log(await res.json());
@@ -897,7 +990,7 @@ hub_admin_header(__('API 測試場'), $user);
     <h1><?= hub_h(__('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(__('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(__('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(__('需要 Bearer Token')) ?></strong>。<?= hub_h(__('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(__('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code></p>
+    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -982,6 +1075,26 @@ hub_admin_header(__('API 測試場'), $user);
                 <label><?= hub_h(__('文字')) ?></label>
                 <textarea name="text" rows="5">That was a wonderful time.</textarea>
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實推論')) ?></label>
+            <?php elseif ($selectedMode === 'web_capture'): ?>
+                <label>URL</label>
+                <input name="url" type="url" value="<?= hub_h((string)($_POST['url'] ?? 'https://3wa.tw/')) ?>" required>
+                <label><?= hub_h(__('畫面寬度')) ?> width</label>
+                <input name="width" type="number" min="320" max="2560" value="<?= hub_h((string)($_POST['width'] ?? '1280')) ?>">
+                <label><?= hub_h(__('畫面高度')) ?> height</label>
+                <input name="height" type="number" min="320" max="2160" value="<?= hub_h((string)($_POST['height'] ?? '720')) ?>">
+                <label><?= hub_h(__('等待秒數')) ?> delay_seconds</label>
+                <input name="delay_seconds" type="number" min="0" max="60" value="<?= hub_h((string)($_POST['delay_seconds'] ?? '0')) ?>">
+                <label><?= hub_h(__('逾時秒數')) ?> timeout_seconds</label>
+                <input name="timeout_seconds" type="number" min="10" max="120" value="<?= hub_h((string)($_POST['timeout_seconds'] ?? '60')) ?>">
+                <label><?= hub_h(__('頁面 JavaScript（選填）')) ?> javascript</label>
+                <textarea name="javascript" rows="3" maxlength="16384"><?= hub_h((string)($_POST['javascript'] ?? '')) ?></textarea>
+                <label><?= hub_h(__('裁切起點 X／Y（選填，四個裁切欄位須一起填）')) ?></label>
+                <input name="crop_x" type="number" min="0" max="2559" value="<?= hub_h((string)($_POST['crop_x'] ?? '')) ?>">
+                <input name="crop_y" type="number" min="0" max="2159" value="<?= hub_h((string)($_POST['crop_y'] ?? '')) ?>">
+                <label><?= hub_h(__('裁切寬／高（選填）')) ?></label>
+                <input name="crop_width" type="number" min="1" max="2560" value="<?= hub_h((string)($_POST['crop_width'] ?? '')) ?>">
+                <input name="crop_height" type="number" min="1" max="2160" value="<?= hub_h((string)($_POST['crop_height'] ?? '')) ?>">
+                <p class="muted"><?= hub_h(__('只可擷取管理員 allowlist 中的公開主機；導頁僅限同一精確主機名。')) ?></p>
             <?php elseif ($selectedMode === 'taiwan_address'): ?>
                 <?php $addressOperation = (string)($_POST['operation'] ?? 'getAddress_XY'); ?>
                 <label><?= hub_h(__('操作')) ?> operation</label>

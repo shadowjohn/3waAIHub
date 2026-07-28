@@ -1298,7 +1298,8 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
 
     $isInternalTask = hub_pack_is_internal_task($manifest);
     $runnerBuildRunner = isset($options['runner_build_runner']) && is_callable($options['runner_build_runner']) ? $options['runner_build_runner'] : null;
-    if (hub_pack_container_runner_build_contract($manifest, (string)$pack['dir']) !== null
+    $provisionRunner = !array_key_exists('provision_runner', $options) || $options['provision_runner'] !== false;
+    if ($provisionRunner && hub_pack_container_runner_build_contract($manifest, (string)$pack['dir']) !== null
         && (!defined('HUB_TESTING') || HUB_TESTING !== true || $runnerBuildRunner !== null)) {
         hub_pack_provision_container_runner_image($pack, $runnerBuildRunner);
     }

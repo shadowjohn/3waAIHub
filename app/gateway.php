@@ -1274,11 +1274,16 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
         return hub_gateway_error(405, 'method_not_allowed', 'Pack job submission requires POST');
     }
+    $payload = $_POST;
+    if ($payload === [] && str_contains(strtolower((string)($_SERVER['CONTENT_TYPE'] ?? '')), 'application/json')) {
+        $json = json_decode((string)file_get_contents('php://input'), true);
+        $payload = is_array($json) ? $json : [];
+    }
     $ownerMemberId = (int)($authContext['member_id'] ?? 0);
     if ($ownerMemberId <= 0) {
         return hub_gateway_error(403, 'member_required', 'Pack job submission requires an API member');
     }
-    $sourceArtifactId = trim((string)($_POST['source_artifact_id'] ?? ''));
+    $sourceArtifactId = trim((string)($payload['source_artifact_id'] ?? ''));
     if ($sourceArtifactId !== '' && !hub_pack_job_task_has_valid_content_length()) {
         return hub_gateway_error(411, 'length_required', 'source artifact requests require Content-Length');
     }
@@ -1286,8 +1291,8 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         return hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows');
     }
     try {
-        $callbackTargetId = hub_pack_job_task_callback_target_id($db, $ownerMemberId, $_POST);
-        $taskInput = $_POST;
+        $callbackTargetId = hub_pack_job_task_callback_target_id($db, $ownerMemberId, $payload);
+        $taskInput = $payload;
         unset($taskInput['callback'], $taskInput['callback_target']);
         $input = hub_pack_job_task_input($taskInput, $route);
         if (($route['requested_mode'] ?? '') === 'web_capture') {

@@ -136,6 +136,151 @@ hub_test('web capture Pack and README publish the allowlist bridge contract', fu
     hub_test_assert(!str_contains($section, 'scripts/install_capture_egress_network.sh --check'), 'Web Screenshot README section must not require the obsolete egress installer');
 });
 
+hub_test('Web Screenshot marketplace installation queues the CLI worker', function (): void {
+    $db = hub_test_reset_db();
+    $script = "define('HUB_TESTING', true);"
+        . 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'marketplace-test'];"
+        . "\$_SERVER = ['REQUEST_METHOD' => 'POST', 'REMOTE_ADDR' => '203.0.113.71'];"
+        . "\$_POST = ['csrf_token' => 'marketplace-test', 'pack_id' => 'web-screenshot', 'service_key' => 'web-screenshot-main', 'name' => 'Web Screenshot', 'mode' => 'web_capture', 'port_mode' => 'auto', 'local_port' => '', 'environment' => 'production'];"
+        . 'require ' . var_export(HUB_ROOT . '/admin/marketplace.php', true) . ';';
+    $result = hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+    ]);
+
+    hub_test_assert($result['exit_code'] === 0, 'marketplace install request must complete without running Docker in the HTTP process: ' . $result['output']);
+    $service = hub_get_service_by_key($db, 'web-screenshot-main');
+    $job = $db->query("SELECT action, status, service_id FROM command_jobs ORDER BY id DESC LIMIT 1")->fetch();
+    hub_test_assert(is_array($service) && is_array($job)
+        && ($job['action'] ?? '') === 'service_install'
+        && ($job['status'] ?? '') === 'queued'
+        && (int)($job['service_id'] ?? 0) === (int)$service['id'], 'marketplace must queue Web Screenshot installation for the CLI command worker');
+});
+
+hub_test('Web Screenshot appears in the Playground with a URL request form', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'web_capture', true);
+    hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+
+    $script = "define('HUB_TESTING', true);"
+        . 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'playground-test'];"
+        . "\$_SERVER = ['REQUEST_METHOD' => 'GET', 'REMOTE_ADDR' => '203.0.113.71', 'SCRIPT_NAME' => '/3waAIHub/admin/playground.php', 'HTTP_HOST' => 'hub.test'];"
+        . "\$_GET = ['mode' => 'web_capture'];"
+        . 'require ' . var_export(HUB_ROOT . '/admin/playground.php', true) . ';';
+    $result = hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+    ]);
+
+    hub_test_assert($result['exit_code'] === 0, 'Web Screenshot Playground page must render: ' . $result['output']);
+    hub_test_assert(
+        str_contains($result['stdout'], 'web_capture / Web Screenshot')
+        && str_contains($result['stdout'], 'name="url"')
+        && str_contains($result['stdout'], 'https://3wa.tw/'),
+        'installed Web Screenshot must be selectable in the Playground with its URL request form'
+    );
+});
+
+hub_test('Playground task links retain the public origin instead of loopback', function (): void {
+    $server = $_SERVER;
+    $_SERVER = [
+        'HTTPS' => 'on',
+        'HTTP_HOST' => 'hub.example.test:9443',
+        'SCRIPT_NAME' => '/3waAIHub/admin/playground.php',
+    ];
+    try {
+        $result = hub_playground_public_task_links([
+            'ok' => true,
+            'body' => '{"ok":true,"task_id":7,"status":"queued","status_url":"http://127.0.0.1/3waAIHub/api.php?mode=task_status&task_id=7"}',
+            'pretty_body' => '{}',
+        ]);
+        $payload = json_decode((string)$result['body'], true);
+        hub_test_assert(is_array($payload)
+            && ($payload['status_url'] ?? '') === 'https://hub.example.test:9443/3waAIHub/api.php?mode=task_status&task_id=7'
+            && ($payload['result_url'] ?? '') === 'https://hub.example.test:9443/3waAIHub/api.php?mode=task_result&task_id=7'
+            && !str_contains((string)$result['pretty_body'], '127.0.0.1'), 'Playground must show public task links for loopback API responses');
+    } finally {
+        $_SERVER = $server;
+    }
+});
+
+hub_test('Web Screenshot Playground readiness does not HTTP-probe an internal task', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'web_capture', true);
+    hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+
+    $script = "define('HUB_TESTING', true);"
+        . 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'playground-test'];"
+        . "\$_SERVER = ['REQUEST_METHOD' => 'GET', 'REMOTE_ADDR' => '203.0.113.71', 'SCRIPT_NAME' => '/3waAIHub/admin/playground.php', 'HTTP_HOST' => 'hub.test'];"
+        . "\$_GET = ['mode' => 'web_capture'];"
+        . 'ob_start(); require ' . var_export(HUB_ROOT . '/admin/playground.php', true) . '; ob_end_clean();'
+        . "\$service = hub_get_service_by_key(hub_db(), 'web-screenshot-main');"
+        . 'echo json_encode(hub_playground_readiness_guard($service));';
+    $result = hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+    ]);
+
+    hub_test_assert($result['exit_code'] === 0, 'Web Screenshot Playground readiness check must run: ' . $result['output']);
+    hub_test_assert(trim($result['stdout']) === 'null', 'running internal tasks must not be HTTP-probed by the Playground');
+});
+
+hub_test('Web Screenshot accepts an API JSON request and queues a Pack job', function (): void {
+    if (hub_platform_id() !== 'linux' || !function_exists('curl_init') || !function_exists('proc_open')) {
+        hub_test_skip('Web Screenshot JSON API test requires Linux, cURL, and proc_open');
+    }
+
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
+    $memberId = hub_create_api_member($db, 'Web Screenshot JSON Owner');
+    $token = hub_create_api_token($db, $memberId, 'web screenshot JSON token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'web_capture', null);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+    hub_set_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS', '3wa.tw');
+
+    $server = hub_test_public_api_start_server(HUB_ROOT . '/api.php', [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+        'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
+    ]);
+    try {
+        $ch = curl_init('http://127.0.0.1:' . $server['port'] . '/api.php?mode=web_capture');
+        hub_test_assert($ch !== false, 'Web Screenshot JSON API test could not initialize cURL');
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_PROXY => '',
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_TIMEOUT => 10,
+            CURLOPT_HTTPHEADER => [
+                'Authorization: Bearer ' . $token['plain_token'],
+                'Content-Type: application/json',
+            ],
+            CURLOPT_POSTFIELDS => '{"url":"https://3wa.tw/","width":1280,"height":720,"delay_seconds":0,"timeout_seconds":60}',
+        ]);
+        $body = curl_exec($ch);
+        $status = (int)(curl_getinfo($ch, CURLINFO_RESPONSE_CODE) ?: 0);
+        curl_close($ch);
+
+        $payload = is_string($body) ? json_decode($body, true) : null;
+        hub_test_assert($status === 200 && is_array($payload) && ($payload['ok'] ?? false) === true && ($payload['status'] ?? '') === 'queued', 'JSON Web Screenshot request must create a queued task');
+        $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
+        hub_test_assert(is_array($task)
+            && ($task['requested_mode'] ?? '') === 'web_capture'
+            && json_decode((string)($task['input_json'] ?? ''), true) === [
+                'url' => 'https://3wa.tw/',
+                'width' => 1280,
+                'height' => 720,
+                'delay_seconds' => 0,
+                'timeout_seconds' => 60,
+            ], 'queued Web Screenshot task must retain the JSON contract fields');
+    } finally {
+        hub_test_public_api_stop_servers([$server]);
+    }
+});
+
 hub_test('web capture admission rejects caller controls and unsafe URLs', function (): void {
     hub_test_web_capture_isolate(static function (): void {
         $db = hub_test_reset_db();

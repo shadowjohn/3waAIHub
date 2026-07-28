@@ -105,9 +105,18 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'local_port' => trim((string)($_POST['local_port'] ?? '')),
             'environment' => (string)($_POST['environment'] ?? 'production'),
             'hot_reload' => !empty($_POST['hot_reload']),
+            'provision_runner' => false,
         ]);
-        $message = __('已安裝 Service Instance：') . $result['service']['service_key'];
         $installedServiceId = (int)$result['service']['id'];
+        $jobId = hub_enqueue_command_job(
+            $db,
+            'service_install',
+            $installedServiceId,
+            ['reason' => 'marketplace_install'],
+            (int)$user['id'],
+            $_SERVER['REMOTE_ADDR'] ?? null
+        );
+        $message = __('已建立 Service Instance：') . $result['service']['service_key'] . '；已排入背景工作 #' . $jobId . '。';
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }
