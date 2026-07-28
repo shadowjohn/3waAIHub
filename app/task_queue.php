@@ -1939,7 +1939,7 @@ function hub_pack_job_artifact_mime_allowed(string $mime, array $definition): bo
     return false;
 }
 
-function hub_pack_job_contract_artifacts(array $jobContract): array
+function hub_pack_job_contract_artifacts(array $jobContract, ?array $inputFields = null): array
 {
     $artifacts = $jobContract['artifacts'] ?? null;
     if (!is_array($artifacts) || !array_is_list($artifacts) || $artifacts === []) {
@@ -1968,10 +1968,26 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
         $maxBytes = hub_pack_job_artifact_max_bytes($definition['max_bytes'] ?? null);
         if (isset($definition['when'])) {
             $when = $definition['when'];
-            if (!is_array($when) || !is_string($when['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $when['input']) !== 1) {
+            if (!is_array($when)) {
                 hub_pack_job_output_contract_invalid('artifact_condition_invalid');
             }
-            if (array_keys($when) === ['input', 'equals']) {
+            if (array_keys($when) === ['all_present']) {
+                $fields = $when['all_present'];
+                if (!is_array($fields) || !array_is_list($fields) || $fields === [] || count($fields) > 64) {
+                    hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+                }
+                $seen = [];
+                foreach ($fields as $field) {
+                    if (!is_string($field) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $field) !== 1
+                        || isset($seen[$field]) || ($inputFields !== null && !in_array($field, $inputFields, true))) {
+                        hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+                    }
+                    $seen[$field] = true;
+                }
+                $definition['when']['all_present'] = array_keys($seen);
+            } elseif (!is_string($when['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $when['input']) !== 1) {
+                hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+            } elseif (array_keys($when) === ['input', 'equals']) {
                 if (is_array($when['equals']) || is_object($when['equals'])) {
                     hub_pack_job_output_contract_invalid('artifact_condition_invalid');
                 }
@@ -2095,6 +2111,15 @@ function hub_pack_job_report_attestation_contract(mixed $definition, array $arti
 function hub_pack_job_artifact_is_expected(array $definition, array $input): bool
 {
     if (isset($definition['when'])) {
+        if (isset($definition['when']['all_present'])) {
+            foreach ($definition['when']['all_present'] as $field) {
+                if (!array_key_exists($field, $input)) {
+                    return false;
+                }
+            }
+
+            return ($definition['required'] ?? true) === true;
+        }
         if (isset($definition['when']['in'])) {
             return ($definition['required'] ?? true) === true
                 && array_key_exists($definition['when']['input'], $input)

@@ -237,7 +237,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
             return null;
         }
         try {
-            $artifacts = hub_pack_job_contract_artifacts($output);
+            $artifacts = hub_pack_job_contract_artifacts($output, $fields);
             $attestation = hub_pack_job_report_attestation_contract($output['report_attestation'] ?? null, $artifacts);
         } catch (HubPackOutputContractInvalid) {
             return null;
@@ -603,7 +603,7 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
     $normalized = [];
     foreach ($schema as $name => $definition) {
         if (!is_string($name) || !isset($allowed[$name]) || !is_array($definition)
-            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length', 'min', 'max', 'requires', 'gte_field', 'requires_when']) !== []) {
+            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length', 'min', 'max', 'requires', 'requires_all', 'gte_field', 'gt_field', 'requires_when']) !== []) {
             return null;
         }
         $type = (string)($definition['type'] ?? 'string');
@@ -614,7 +614,7 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
         $item = ['type' => $type, 'required' => $required];
         if ($type === 'string') {
             $maxLength = $definition['max_length'] ?? 1024;
-            if (!is_int($maxLength) || $maxLength < 1 || $maxLength > 4096) {
+            if (!is_int($maxLength) || $maxLength < 1 || $maxLength > 16384) {
                 return null;
             }
             $enum = $definition['enum'] ?? null;
@@ -642,7 +642,7 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
                 return null;
             }
             $item += ['min' => $min, 'max' => $max];
-        } elseif (isset($definition['min']) || isset($definition['max']) || isset($definition['gte_field'])) {
+        } elseif (isset($definition['min']) || isset($definition['max']) || isset($definition['gte_field']) || array_key_exists('gt_field', $definition)) {
             return null;
         }
         if (isset($definition['requires'])) {
@@ -656,11 +656,31 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
             }
             $item['requires'] = $definition['requires'];
         }
+        if (array_key_exists('requires_all', $definition)) {
+            $peers = $definition['requires_all'];
+            if (!is_array($peers) || !array_is_list($peers) || $peers === []) {
+                return null;
+            }
+            $seen = [];
+            foreach ($peers as $field) {
+                if (!is_string($field) || !isset($allowed[$field]) || $field === $name || isset($seen[$field])) {
+                    return null;
+                }
+                $seen[$field] = true;
+            }
+            $item['requires_all'] = array_keys($seen);
+        }
         if (isset($definition['gte_field'])) {
             if ($type !== 'integer' || !is_string($definition['gte_field']) || !isset($allowed[$definition['gte_field']]) || $definition['gte_field'] === $name) {
                 return null;
             }
             $item['gte_field'] = $definition['gte_field'];
+        }
+        if (array_key_exists('gt_field', $definition)) {
+            if ($type !== 'integer' || !is_string($definition['gt_field']) || !isset($allowed[$definition['gt_field']]) || $definition['gt_field'] === $name) {
+                return null;
+            }
+            $item['gt_field'] = $definition['gt_field'];
         }
         if (array_key_exists('requires_when', $definition)) {
             $rule = $definition['requires_when'];
@@ -834,8 +854,19 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
                 throw new InvalidArgumentException('invalid_request');
             }
         }
+        foreach ((array)($definition['requires_all'] ?? []) as $field) {
+            if (!array_key_exists($field, $input)) {
+                throw new InvalidArgumentException('invalid_request');
+            }
+        }
         if (isset($definition['gte_field']) && array_key_exists($definition['gte_field'], $input)
             && $input[$name] < $input[$definition['gte_field']]) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+    }
+    foreach ($schema as $name => $definition) {
+        if (isset($definition['gt_field']) && array_key_exists($name, $input) && array_key_exists($definition['gt_field'], $input)
+            && $input[$name] <= $input[$definition['gt_field']]) {
             throw new InvalidArgumentException('invalid_request');
         }
     }
@@ -869,7 +900,7 @@ function hub_pack_job_contract_snapshot(array $contract, bool $allowLegacyVoiceC
     $attestation = null;
     try {
         $artifactDefinition = (array)($contract['artifact_contract'] ?? []);
-        $artifacts = hub_pack_job_contract_artifacts($artifactDefinition);
+        $artifacts = hub_pack_job_contract_artifacts($artifactDefinition, $fields ?? []);
         $attestation = hub_pack_job_report_attestation_contract($artifactDefinition['report_attestation'] ?? null, $artifacts);
     } catch (HubPackOutputContractInvalid) {
         $artifacts = null;

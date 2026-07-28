@@ -59,7 +59,8 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
         && ($route['job'] ?? '') === 'capture'
         && ($route['runtime_mode'] ?? '') === 'job'
         && ($route['accelerator'] ?? '') === 'cpu'
-        && ($route['runner']['accelerator'] ?? '') === 'cpu', 'web capture must persist its fixed CPU Pack route');
+        && ($route['runner']['accelerator'] ?? '') === 'cpu'
+        && ($route['input_fields'] ?? []) === ['url', 'width', 'height', 'delay_seconds', 'timeout_seconds', 'javascript', 'crop_x', 'crop_y', 'crop_width', 'crop_height'], 'web capture must persist its fixed CPU Pack route and declared inputs');
     hub_test_assert(hub_audio_async_routes() === [
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
         'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
@@ -90,9 +91,65 @@ hub_test('web capture admission rejects caller controls and unsafe URLs', functi
         $created = hub_test_web_capture_request($db, (string)$token['plain_token'], ['url' => 'HTTPS://8.8.8.8./capture']);
         $payload = hub_test_web_capture_payload($created);
         $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
-        hub_test_assert($created['status'] === 200 && ($task['input'] ?? null) === ['url' => 'https://8.8.8.8/capture']
+        hub_test_assert($created['status'] === 200 && ($task['input'] ?? null) === [
+            'url' => 'https://8.8.8.8/capture',
+            'width' => 1280,
+            'height' => 720,
+            'delay_seconds' => 0,
+            'timeout_seconds' => 60,
+        ]
             && ($task['accelerator'] ?? '') === 'cpu' && empty($task['source_artifact_id']), 'web capture must persist only the normalized URL on its fixed CPU task');
     });
+});
+
+hub_test('web capture admission rejects partial crops and impossible deadlines', function (): void {
+    hub_test_web_capture_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Web Capture Contract Owner');
+        $token = hub_create_api_token($db, $memberId, 'web capture contract token', null, null);
+        hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'web_capture', null);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $route = hub_resolve_pack_job_async_route($db, 'web_capture');
+        $cropFields = ['crop_x', 'crop_y', 'crop_width', 'crop_height'];
+        hub_test_assert(array_diff($cropFields, (array)($route['input_fields'] ?? [])) === []
+            && ($route['request_schema']['timeout_seconds']['gt_field'] ?? null) === 'delay_seconds', 'crop and deadline test inputs must be declared before admission is tested');
+
+        foreach ([
+            ['crop_x' => '0'],
+            ['crop_x' => '0', 'crop_y' => '0', 'crop_width' => '1'],
+            ['delay_seconds' => '30', 'timeout_seconds' => '30'],
+            ['delay_seconds' => '30', 'timeout_seconds' => '20'],
+        ] as $input) {
+            $response = hub_test_web_capture_request($db, (string)$token['plain_token'], ['url' => 'https://8.8.8.8/capture'] + $input);
+            hub_test_assert($response['status'] === 400 && (hub_test_web_capture_payload($response)['error'] ?? '') === 'invalid_request', 'partial crop and impossible deadline requests must fail contract admission');
+        }
+    });
+});
+
+hub_test('web capture crop artifact requires every crop input', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
+    $route = hub_resolve_pack_job_async_route($db, 'web_capture');
+    $artifacts = $route['artifact_contract']['artifacts'] ?? [];
+    $cropArtifact = null;
+    foreach ($artifacts as $artifact) {
+        if (($artifact['type'] ?? '') === 'cropped_screenshot') {
+            $cropArtifact = $artifact;
+            break;
+        }
+    }
+
+    hub_test_assert(is_array($cropArtifact)
+        && ($cropArtifact['when'] ?? null) === ['all_present' => ['crop_x', 'crop_y', 'crop_width', 'crop_height']], 'crop artifact must use the declared all-present condition');
+    hub_test_assert(!hub_pack_job_artifact_is_expected($cropArtifact, ['crop_x' => 0, 'crop_y' => 0, 'crop_width' => 1]), 'crop artifact must not be required for a partial crop');
+    hub_test_assert(hub_pack_job_artifact_is_expected($cropArtifact, ['crop_x' => 0, 'crop_y' => 0, 'crop_width' => 1, 'crop_height' => 1]), 'crop artifact must be required for a complete crop');
+
+    $invalid = hub_get_pack('web-screenshot')['manifest'];
+    $invalid['async_jobs'][0]['output']['artifacts'][1]['when'] = ['all_present' => ['crop_x', 'unknown_field']];
+    hub_test_assert(hub_pack_async_job_contract($invalid, 'capture') === null, 'all-present artifact fields must be declared request inputs');
 });
 
 hub_test('web capture public API contract has no source fields', function (): void {
