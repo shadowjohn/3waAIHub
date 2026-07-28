@@ -105,6 +105,13 @@ function hub_test_pack_job_png(int $width, int $height): string
         . $chunk('IEND', '');
 }
 
+function hub_test_pack_job_truncated_png(): string
+{
+    $ihdr = pack('NNC5', 1, 1, 8, 0, 0, 0, 0);
+
+    return "\x89PNG\r\n\x1a\n" . pack('N', strlen($ihdr)) . 'IHDR' . $ihdr . pack('N', crc32('IHDR' . $ihdr));
+}
+
 function hub_test_pack_job_image_contract(int $maxWidth = 2, int $maxHeight = 2, int $maxPixels = 4): array
 {
     return [
@@ -288,6 +295,9 @@ hub_test('Pack job image validation rejects fake, oversized, and symlinked PNG o
     $cases = [
         'fake' => static function (string $path): void {
             hub_test_pack_job_write($path, 'runner says this is a PNG');
+        },
+        'truncated' => static function (string $path): void {
+            hub_test_pack_job_write($path, hub_test_pack_job_truncated_png());
         },
         'dimensions' => static function (string $path): void {
             hub_test_pack_job_write($path, hub_test_pack_job_png(3, 1));

@@ -2553,6 +2553,18 @@ function hub_pack_job_validate_image_output(string $path, array $definition, str
         || $width > intdiv(PHP_INT_MAX, $height) || $width * $height > $definition['image']['max_pixels']) {
         hub_pack_job_output_contract_invalid('artifact_image_invalid');
     }
+    try {
+        $decoded = function_exists('imagecreatefrompng') ? @imagecreatefrompng($path) : false;
+    } catch (Throwable) {
+        $decoded = false;
+    }
+    if ($decoded === false) {
+        hub_pack_job_output_contract_invalid('artifact_image_invalid');
+    }
+    try {
+        @imagedestroy($decoded);
+    } catch (Throwable) {
+    }
 
     return ['width' => $width, 'height' => $height, 'format' => 'png'];
 }
