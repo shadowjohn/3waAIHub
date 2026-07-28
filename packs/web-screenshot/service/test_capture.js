@@ -11,8 +11,10 @@ const {
   buildCaptureReport,
   buildClientHints,
   captureNavigationDecision,
+  closeNonPrimaryPage,
   cropPng,
   parseCaptureRequest,
+  trackMainDocumentRoute,
   validateCropBounds,
 } = require('./capture');
 
@@ -85,6 +87,13 @@ async function test() {
     await captureNavigationDecision('document', false, true, 'https://tile.openstreetmap.org/popup', '3wa.tw', allowedHosts, resolve),
     { action: 'abort', mainBlocked: false, warning: true }
   );
+  let popupClosed = 0;
+  await closeNonPrimaryPage({}, {
+    url: () => 'about:blank',
+    isClosed: () => false,
+    close: async () => { popupClosed += 1; },
+  });
+  assert.equal(popupClosed, 1, 'a non-primary about:blank popup must close without waiting for a routed request');
   assert.equal(
     await assertMainDocumentAllowed({ url: () => 'https://3wa.tw/delayed' }, '3wa.tw', allowedHosts, resolve),
     'https://3wa.tw/delayed'
@@ -112,17 +121,47 @@ async function test() {
   );
   await dnsStarted;
   let releaseRoute;
-  const routeDecision = new Promise((resolveRoute) => { releaseRoute = resolveRoute; });
-  mainDocumentRoutes.add(routeDecision);
-  routeDecision.finally(() => mainDocumentRoutes.delete(routeDecision));
+  const routeDecision = trackMainDocumentRoute(mainDocumentRoutes, true, async () => {
+    await new Promise((resolveRoute) => { releaseRoute = resolveRoute; });
+  });
   releaseDns([{ address: '93.184.216.34', family: 4 }]);
   let guardSettled = false;
   guarded.then(() => { guardSettled = true; }, () => { guardSettled = true; });
   await new Promise(setImmediate);
-  assert.equal(guardSettled, false, 'guard must wait for an in-flight main document route');
+  assert.equal(guardSettled, false, 'finalization must wait for a primary document route through route.continue');
   mainDocumentBlocked = true;
   releaseRoute();
+  await routeDecision;
   await assert.rejects(() => guarded, /url_not_allowed/);
+
+  let writes = 0;
+  let outputBlocked = false;
+  let releaseOutputRoute;
+  let markOutputRouteStarted;
+  const outputRouteStarted = new Promise((resolveStarted) => { markOutputRouteStarted = resolveStarted; });
+  const outputRoutes = new Set();
+  trackMainDocumentRoute(outputRoutes, true, async () => {
+    markOutputRouteStarted();
+    await new Promise((resolveRoute) => { releaseOutputRoute = resolveRoute; });
+  });
+  await outputRouteStarted;
+  const finalize = async () => {
+    await assertMainDocumentAllowed(
+      { url: () => 'https://3wa.tw/output' },
+      '3wa.tw',
+      allowedHosts,
+      resolve,
+      outputRoutes,
+      () => outputBlocked
+    );
+    writes += 1;
+  };
+  setImmediate(() => {
+    outputBlocked = true;
+    releaseOutputRoute();
+  });
+  await assert.rejects(() => finalize(), /url_not_allowed/);
+  assert.equal(writes, 0, 'a blocked primary route must not publish a report');
 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'web-capture-'));
   try {
