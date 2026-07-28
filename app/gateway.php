@@ -1290,6 +1290,9 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         $taskInput = $_POST;
         unset($taskInput['callback'], $taskInput['callback_target']);
         $input = hub_pack_job_task_input($taskInput, $route);
+        if (($route['requested_mode'] ?? '') === 'web_capture') {
+            $input = hub_web_capture_validate_input($db, $input);
+        }
         $input = hub_pack_job_task_resolve_voice_context($db, $input, $route, $ownerMemberId, (int)($authContext['token_id'] ?? 0));
     } catch (InvalidArgumentException $e) {
         if (in_array($e->getMessage(), ['callback_target_not_found', 'callback_target_disabled'], true)) {
@@ -1297,6 +1300,9 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         }
         if ($e->getMessage() === 'capability_unavailable') {
             return hub_gateway_error(409, 'capability_unavailable', 'requested Pack job capability is not available');
+        }
+        if ($e->getMessage() === 'url_not_allowed') {
+            return hub_gateway_error(400, 'url_not_allowed', 'URL host is not allowed for web capture');
         }
         if ($e->getMessage() === 'invalid_request') {
             return hub_gateway_error(400, 'invalid_request', 'Pack job request does not match the Pack contract');
@@ -1488,12 +1494,7 @@ function hub_pack_job_task_input(array $input, array $route): array
         $filtered[$key] = $value;
     }
 
-    $input = hub_pack_job_normalize_request_input($filtered, $route);
-    if (($route['requested_mode'] ?? '') === 'web_capture') {
-        $input = hub_web_capture_validate_input($input);
-    }
-
-    return $input;
+    return hub_pack_job_normalize_request_input($filtered, $route);
 }
 
 function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $route, int $ownerMemberId, int $tokenId): array

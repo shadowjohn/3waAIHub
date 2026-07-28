@@ -152,7 +152,7 @@ function hub_pack_job_no_work_cleanup(): array
 function hub_pack_job_failure_code(Throwable $error, string $fallback = 'job_unavailable'): string
 {
     $message = $error->getMessage();
-    return in_array($message, ['pack_version_unavailable', 'job_unavailable', 'job_contract_unavailable'], true) ? $message : $fallback;
+    return in_array($message, ['pack_version_unavailable', 'job_unavailable', 'job_contract_unavailable', 'url_not_allowed'], true) ? $message : $fallback;
 }
 
 function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $code, string $message, array $cleanup, ?array $gpuLease): array
@@ -163,7 +163,7 @@ function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $
     return ['status' => (string)($task['status'] ?? 'failed'), 'error_code' => (string)($task['error_code'] ?? $code)];
 }
 
-function hub_pack_job_prepare_workspace(array $task, array $contract): string
+function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract): string
 {
     $taskId = (int)$task['id'];
     $taskRoot = hub_task_result_dir($taskId);
@@ -197,6 +197,9 @@ function hub_pack_job_prepare_workspace(array $task, array $contract): string
     }
     if (isset($input['voice_context'])) {
         $request['voice_context'] = $input['voice_context'];
+    }
+    if (($task['requested_mode'] ?? '') === 'web_capture') {
+        $request = hub_web_capture_prepare_runner_request($db, $request);
     }
     $source = null;
     if ((int)($task['source_artifact_id'] ?? 0) <= 0 && isset($input['source_upload_path'])) {
@@ -1052,7 +1055,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, $gpuLease);
             }
         }
-        $workspace = hub_pack_job_prepare_workspace($task, $contract);
+        $workspace = hub_pack_job_prepare_workspace($db, $task, $contract);
         hub_pack_job_copy_source_artifact($db, $task, $workspace);
         $audioProbe = isset($options['audio_probe']) && is_callable($options['audio_probe']) ? $options['audio_probe'] : null;
         $sourceAudioAttestation = isset($contract['artifact_contract']['report_attestation']) && is_file($workspace . '/input/source')

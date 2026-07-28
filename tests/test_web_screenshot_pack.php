@@ -129,18 +129,40 @@ hub_test('web capture admission rejects caller controls and unsafe URLs', functi
             hub_test_assert($response['status'] === 400 && (hub_test_web_capture_payload($response)['error'] ?? '') === 'invalid_request', 'unsafe web capture URL must be rejected: ' . $url);
         }
 
-        $created = hub_test_web_capture_request($db, (string)$token['plain_token'], ['url' => 'HTTPS://8.8.8.8./capture']);
-        $payload = hub_test_web_capture_payload($created);
-        $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
-        hub_test_assert($created['status'] === 200 && ($task['input'] ?? null) === [
-            'url' => 'https://8.8.8.8/capture',
-            'width' => 1280,
-            'height' => 720,
-            'delay_seconds' => 0,
-            'timeout_seconds' => 60,
-        ]
-            && ($task['accelerator'] ?? '') === 'cpu' && empty($task['source_artifact_id']), 'web capture must persist only the normalized URL on its fixed CPU task');
+        hub_set_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS', '3wa.tw');
+        $blocked = hub_test_web_capture_request($db, (string)$token['plain_token'], ['url' => 'https://8.8.8.8/capture']);
+        hub_test_assert($blocked['status'] === 400 && (hub_test_web_capture_payload($blocked)['error'] ?? '') === 'url_not_allowed', 'unlisted initial host must return the normal 400 error');
+
+        $normalized = hub_web_capture_validate_input($db, ['url' => 'HTTPS://3WA.TW./capture'], static fn (string $host): array => ['93.184.216.34']);
+        hub_test_assert($normalized['url'] === 'https://3wa.tw/capture', 'allowed hostname must normalize before enqueue');
+
+        $forged = hub_test_web_capture_request($db, (string)$token['plain_token'], ['url' => 'https://3wa.tw/', 'allowed_hosts' => 'evil.example']);
+        hub_test_assert($forged['status'] === 400, 'client must not inject the runner allowlist');
     });
+});
+
+hub_test('web capture checks the current allowlist before starting execution', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
+    hub_set_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS', '3wa.tw');
+    $route = hub_resolve_pack_job_async_route($db, 'web_capture');
+    $input = hub_web_capture_validate_input($db, ['url' => 'https://3wa.tw/capture'], static fn (string $host): array => ['93.184.216.34']);
+    $taskId = hub_enqueue_owned_pack_job($db, $route, $input, 1, null, '203.0.113.71');
+    $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+    hub_test_assert(is_array($task), 'valid web capture task must be claimed before the allowlist changes');
+
+    hub_set_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS', '');
+    $started = 0;
+    $result = hub_run_pack_job_task($db, $task, [
+        'executor' => static function () use (&$started): array {
+            $started++;
+            return ['exit_code' => 1, 'cleanup' => hub_pack_job_no_work_cleanup()];
+        },
+    ]);
+    $latest = hub_get_task($db, $taskId);
+    $run = $db->query('SELECT container_id, image_name, attempt_no FROM runtime_runs WHERE task_id = ' . $taskId)->fetch();
+    hub_test_assert(($result['status'] ?? '') === 'failed' && ($latest['error_code'] ?? '') === 'url_not_allowed' && $started === 0, 'a removed web capture host must fail before its executor starts');
+    hub_test_assert(!is_file(hub_task_result_dir($taskId) . '/workspace/input/request.json') && ($run['container_id'] ?? null) === null && ($run['image_name'] ?? null) === null && (int)($run['attempt_no'] ?? -1) === 0, 'a removed web capture host must not write a request or container start metadata');
 });
 
 hub_test('web capture admission rejects partial crops and impossible deadlines', function (): void {

@@ -85,7 +85,7 @@ function hub_web_capture_allowed_hosts_error_message(string $code): string
     };
 }
 
-function hub_web_capture_validate_input(array $input): array
+function hub_web_capture_validate_input(PDO $db, array $input, ?callable $resolvePublicIps = null): array
 {
     $url = $input['url'] ?? null;
     if (!is_string($url) || $url === '' || trim($url) !== $url) {
@@ -100,21 +100,38 @@ function hub_web_capture_validate_input(array $input): array
         throw new InvalidArgumentException('invalid_request');
     }
 
-    $host = strtolower(rtrim(trim((string)$parts['host'], '[]'), '.'));
+    $rawHost = strtolower(rtrim(trim((string)$parts['host'], '[]'), '.'));
     $port = $parts['port'] ?? null;
-    if ($host === '' || $host === 'localhost' || str_ends_with($host, '.localhost')
+    $resolve = $resolvePublicIps ?? 'hub_callback_resolve_public_ips';
+    if ($rawHost === '' || $rawHost === 'localhost' || str_ends_with($rawHost, '.localhost')
         || ($port !== null && !in_array((int)$port, [80, 443], true))
-        || hub_callback_resolve_public_ips($host) === []) {
+        || $resolve($rawHost) === []) {
         throw new InvalidArgumentException('invalid_request');
     }
 
-    $authority = filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false ? '[' . $host . ']' : $host;
-    if ($port !== null) {
-        $authority .= ':' . (int)$port;
+    $host = hub_web_capture_normalize_allowed_host($rawHost);
+    if ($host === null || !in_array($host, hub_web_capture_allowed_hosts($db), true)) {
+        throw new InvalidArgumentException('url_not_allowed');
     }
+
+    $authority = $host . ($port === null ? '' : ':' . (int)$port);
     $input['url'] = strtolower((string)$parts['scheme']) . '://' . $authority . (string)($parts['path'] ?? '')
         . (array_key_exists('query', $parts) ? '?' . (string)$parts['query'] : '')
         . (array_key_exists('fragment', $parts) ? '#' . (string)$parts['fragment'] : '');
 
     return $input;
+}
+
+function hub_web_capture_prepare_runner_request(PDO $db, array $request): array
+{
+    $parts = parse_url((string)($request['url'] ?? ''));
+    $host = is_array($parts) && isset($parts['host'])
+        ? hub_web_capture_normalize_allowed_host((string)$parts['host'])
+        : null;
+    $hosts = hub_web_capture_allowed_hosts($db);
+    if ($host === null || !in_array($host, $hosts, true)) {
+        throw new RuntimeException('url_not_allowed');
+    }
+
+    return $request + ['allowed_hosts' => $hosts];
 }
