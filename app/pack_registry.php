@@ -467,7 +467,7 @@ function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null
     $requiredVram = $runner['required_vram_mb'] ?? null;
     $timeout = $runner['timeout_seconds'] ?? null;
     $hasNetworkProfile = array_key_exists('network_profile', $runner);
-    $networkProfile = $runner['network_profile'] ?? 'isolated';
+    $networkProfile = $hasNetworkProfile ? $runner['network_profile'] : 'isolated';
     $executor = $runner['executor'] ?? null;
     if (preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
         || !is_array($entrypoint) || !array_is_list($entrypoint) || $entrypoint === []

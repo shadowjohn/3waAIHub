@@ -147,6 +147,11 @@ hub_test('Pack job container runner restricts network profiles', function (): vo
         $arbitraryManifest['async_jobs'][0]['runner']['network_profile'] = 'customer-network';
         hub_test_assert(hub_pack_async_job_contract($arbitraryManifest, 'convert') === null
             && hub_validate_pack_manifest($arbitraryManifest, sys_get_temp_dir()) !== [], 'arbitrary runner network names must be invalid manifests');
+
+        $nullManifest = hub_test_adapter_manifest('adapter-network-null', '1.0.0');
+        $nullManifest['async_jobs'][0]['runner']['network_profile'] = null;
+        hub_test_assert(hub_pack_async_job_contract($nullManifest, 'convert') === null
+            && hub_validate_pack_manifest($nullManifest, sys_get_temp_dir()) !== [], 'an explicit null runner network profile must be invalid');
     } finally {
         hub_test_adapter_remove($workspace);
     }
