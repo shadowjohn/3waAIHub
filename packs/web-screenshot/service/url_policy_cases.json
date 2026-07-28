@@ -1,0 +1,5 @@
+{
+  "valid_hosts": ["3wa.tw", "focusit.tw", "tile.openstreetmap.org"],
+  "invalid_hosts": ["https://3wa.tw", "3wa.tw:443", "*.3wa.tw", "127.0.0.1", "localhost", "metadata", "bad host", "例子.測試"],
+  "canonical_hosts": [{"input":"3WA.TW.","output":"3wa.tw"}]
+}

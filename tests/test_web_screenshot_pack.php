@@ -41,6 +41,44 @@ function hub_test_web_capture_isolate(callable $fn): void
     }
 }
 
+hub_test('web capture allowlist is normalized, bounded, and audited', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS') === implode("\n", [
+        '3wa.tw', 'fmg.wra.gov.tw', 'fmgb.wra.gov.tw', 'focusit.tw',
+        'focusit.com.tw', 'gis.tw', 'wmts.nlsc.gov.tw', 'maps.nlsc.gov.tw',
+        'mts1.google.com', 'api.maptiler.com', 'tile.openstreetmap.org',
+    ]), 'web capture defaults must seed the approved hosts');
+
+    $hosts = hub_web_capture_save_allowed_hosts($db, 'admin', " 3WA.TW.\nfocusit.tw\n3wa.tw\n");
+    hub_test_assert($hosts === ['3wa.tw', 'focusit.tw'], 'save must lower-case, trim, and deduplicate hosts');
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS') === "3wa.tw\nfocusit.tw", 'save must persist canonical newline text');
+    hub_test_assert($db->query("SELECT details FROM audit_logs WHERE action = 'web_capture_allowlist_updated' ORDER BY id DESC LIMIT 1")->fetchColumn() === 'added=0 removed=9 total=2', 'save must write a bounded allowlist audit summary');
+
+    $before = hub_get_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS');
+    try {
+        hub_web_capture_save_allowed_hosts($db, 'admin', "3wa.tw\nhttps://bad.example/");
+        throw new RuntimeException('invalid allowlist line must throw');
+    } catch (InvalidArgumentException $e) {
+        hub_test_assert($e->getMessage() === 'web_capture_allowed_hosts_invalid_line:2', 'invalid entry must identify its line');
+    }
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS') === $before, 'invalid input must not change the saved list');
+    hub_test_assert(hub_web_capture_parse_allowed_hosts("\n\n") === [], 'an empty allowlist must remain an explicit disable switch');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_web_capture_parse_allowed_hosts(implode("\n", array_map(static fn (int $i): string => "h{$i}.example", range(1, 129))))), 'more than 128 hosts must be rejected');
+
+    $cases = json_decode((string)file_get_contents(HUB_ROOT . '/packs/web-screenshot/service/url_policy_cases.json'), true, 512, JSON_THROW_ON_ERROR);
+    foreach ($cases['valid_hosts'] as $host) {
+        hub_test_assert(hub_web_capture_parse_allowed_hosts($host) === [$host], 'fixture valid host must parse: ' . $host);
+    }
+    foreach ($cases['invalid_hosts'] as $host) {
+        hub_test_assert(hub_test_throws(static fn (): array => hub_web_capture_parse_allowed_hosts($host)), 'fixture invalid host must be rejected: ' . $host);
+    }
+    foreach ($cases['canonical_hosts'] as $case) {
+        hub_test_assert(hub_web_capture_parse_allowed_hosts($case['input']) === [$case['output']], 'fixture canonical host must normalize');
+    }
+    $settingsSource = (string)file_get_contents(HUB_ROOT . '/admin/settings.php');
+    hub_test_assert(str_contains($settingsSource, '<textarea name="AIHUB_WEB_CAPTURE_ALLOWED_HOSTS"') && str_contains($settingsSource, 'hub_web_capture_save_allowed_hosts('), 'API settings must save the web capture allowlist textarea');
+});
+
 hub_test('web capture route is immutable and CPU backed', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
