@@ -91,8 +91,36 @@ async function captureNavigationDecision(kind, pageIsPrimary, isMainFrame, url, 
   }
 }
 
-function assertMainDocumentAllowed(page, initialHost, allowedHosts, resolve) {
-  return validateDocumentNavigation(page.url(), initialHost, allowedHosts, resolve);
+async function assertMainDocumentAllowed(
+  page,
+  initialHost,
+  allowedHosts,
+  resolve,
+  mainDocumentRoutes = new Set(),
+  isMainDocumentBlocked = () => false
+) {
+  for (;;) {
+    const routes = [...mainDocumentRoutes];
+    if (routes.length === 0) {
+      break;
+    }
+    await Promise.allSettled(routes);
+  }
+  if (isMainDocumentBlocked()) {
+    throw runnerError('url_not_allowed');
+  }
+  const href = await validateDocumentNavigation(page.url(), initialHost, allowedHosts, resolve);
+  for (;;) {
+    const routes = [...mainDocumentRoutes];
+    if (routes.length === 0) {
+      break;
+    }
+    await Promise.allSettled(routes);
+  }
+  if (isMainDocumentBlocked()) {
+    throw runnerError('url_not_allowed');
+  }
+  return href;
 }
 
 function buildClientHints(userAgent) {
@@ -240,6 +268,7 @@ async function runCapture() {
     context = await withinDeadline(browser.newContext(contextOptions(request)), deadline);
     const page = await withinDeadline(context.newPage(), deadline);
     let mainDocumentBlocked = false;
+    const mainDocumentRoutes = new Set();
     context.on('page', (candidate) => {
       if (candidate !== page) {
         candidate.once('requestfailed', (failedRequest) => {
@@ -254,13 +283,16 @@ async function runCapture() {
       let kind = 'resource';
       let routePage;
       let pageIsPrimary = false;
+      let isPrimaryMainDocument = false;
+      let decisionPromise;
       let decision;
       try {
         const frame = routeRequest.frame();
         routePage = frame.page();
         kind = routeRequest.isNavigationRequest() ? 'document' : 'resource';
         pageIsPrimary = routePage === page;
-        decision = await captureNavigationDecision(
+        isPrimaryMainDocument = kind === 'document' && pageIsPrimary && frame === page.mainFrame();
+        decisionPromise = captureNavigationDecision(
           kind,
           pageIsPrimary,
           frame === page.mainFrame(),
@@ -268,15 +300,25 @@ async function runCapture() {
           initialHost,
           request.allowedHosts
         );
+        if (isPrimaryMainDocument) {
+          mainDocumentRoutes.add(decisionPromise);
+        }
+        decision = await decisionPromise;
       } catch {
-        decision = { action: 'abort', mainBlocked: false, warning: true };
+        decision = { action: 'abort', mainBlocked: isPrimaryMainDocument, warning: !isPrimaryMainDocument };
       }
       if (decision.action === 'continue') {
+        if (isPrimaryMainDocument) {
+          mainDocumentRoutes.delete(decisionPromise);
+        }
         await route.continue();
         return;
       }
       if (decision.mainBlocked) {
         mainDocumentBlocked = true;
+      }
+      if (isPrimaryMainDocument) {
+        mainDocumentRoutes.delete(decisionPromise);
       }
       if (decision.warning) {
         addWarning(warnings, routeRequest.url(), 'url_not_allowed');
@@ -291,7 +333,14 @@ async function runCapture() {
       if (mainDocumentBlocked) {
         throw runnerError('url_not_allowed');
       }
-      return assertMainDocumentAllowed(page, initialHost, request.allowedHosts);
+      return assertMainDocumentAllowed(
+        page,
+        initialHost,
+        request.allowedHosts,
+        undefined,
+        mainDocumentRoutes,
+        () => mainDocumentBlocked
+      );
     };
 
     let response;
@@ -330,6 +379,8 @@ async function runCapture() {
       crop = { ...request.crop, image: { width: cropped.width, height: cropped.height, bytes: cropImage.bytes } };
     }
     const finalUrl = await withinDeadline(checkMainDocument(), deadline);
+    await withinDeadline(context.close(), deadline);
+    context = undefined;
     const report = buildCaptureReport({
       requestedUrl,
       finalUrl,

@@ -93,6 +93,36 @@ async function test() {
     () => assertMainDocumentAllowed({ url: () => 'https://tile.openstreetmap.org/delayed' }, '3wa.tw', allowedHosts, resolve),
     /url_not_allowed/
   );
+  let releaseDns;
+  let markDnsStarted;
+  const dnsStarted = new Promise((resolveStarted) => { markDnsStarted = resolveStarted; });
+  let mainDocumentBlocked = false;
+  const mainDocumentRoutes = new Set();
+  const delayedResolve = () => new Promise((resolveDns) => {
+    markDnsStarted();
+    releaseDns = resolveDns;
+  });
+  const guarded = assertMainDocumentAllowed(
+    { url: () => 'https://3wa.tw/race' },
+    '3wa.tw',
+    allowedHosts,
+    delayedResolve,
+    mainDocumentRoutes,
+    () => mainDocumentBlocked
+  );
+  await dnsStarted;
+  let releaseRoute;
+  const routeDecision = new Promise((resolveRoute) => { releaseRoute = resolveRoute; });
+  mainDocumentRoutes.add(routeDecision);
+  routeDecision.finally(() => mainDocumentRoutes.delete(routeDecision));
+  releaseDns([{ address: '93.184.216.34', family: 4 }]);
+  let guardSettled = false;
+  guarded.then(() => { guardSettled = true; }, () => { guardSettled = true; });
+  await new Promise(setImmediate);
+  assert.equal(guardSettled, false, 'guard must wait for an in-flight main document route');
+  mainDocumentBlocked = true;
+  releaseRoute();
+  await assert.rejects(() => guarded, /url_not_allowed/);
 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'web-capture-'));
   try {
