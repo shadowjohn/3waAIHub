@@ -92,6 +92,37 @@ function hub_test_pack_job_wav(): string
     return 'RIFF' . pack('V', 36) . 'WAVEfmt ' . pack('VvvVVvv', 16, 1, 1, 48000, 96000, 2, 16) . 'data' . pack('V', 0);
 }
 
+function hub_test_pack_job_png(int $width, int $height): string
+{
+    $chunk = static function (string $type, string $data): string {
+        return pack('N', strlen($data)) . $type . $data . pack('N', crc32($type . $data));
+    };
+    $rows = str_repeat("\x00" . str_repeat("\x00", $width), $height);
+
+    return "\x89PNG\r\n\x1a\n"
+        . $chunk('IHDR', pack('NNC5', $width, $height, 8, 0, 0, 0, 0))
+        . $chunk('IDAT', gzcompress($rows))
+        . $chunk('IEND', '');
+}
+
+function hub_test_pack_job_image_contract(int $maxWidth = 2, int $maxHeight = 2, int $maxPixels = 4): array
+{
+    return [
+        'artifacts' => [[
+            'type' => 'screenshot',
+            'path' => 'screenshot.png',
+            'mime_types' => ['image/png'],
+            'max_bytes' => 1048576,
+            'image' => [
+                'format' => 'png',
+                'max_width' => $maxWidth,
+                'max_height' => $maxHeight,
+                'max_pixels' => $maxPixels,
+            ],
+        ]],
+    ];
+}
+
 function hub_test_pack_job_audio_probe(string $path): array
 {
     hub_test_assert(is_file($path), 'audio probe must receive Hub-resolved output path');
@@ -219,6 +250,118 @@ hub_test('Pack job artifact validation recomputes trusted metadata and respects 
         hub_test_assert(count($withoutSubtitle) === 2, 'conditional output must be absent when its input flag is false');
     } finally {
         hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job image contracts accept only bounded PNG definitions', function (): void {
+    $valid = hub_test_pack_job_image_contract();
+    $normalized = hub_pack_job_contract_artifacts($valid);
+    hub_test_assert(($normalized[0]['image'] ?? null) === $valid['artifacts'][0]['image'], 'bounded PNG image contracts must be preserved');
+
+    foreach ([
+        ['format' => 'jpeg', 'max_width' => 2, 'max_height' => 2, 'max_pixels' => 4],
+        ['format' => 'png', 'max_width' => 2, 'max_height' => 2, 'max_pixels' => 5],
+        ['format' => 'png', 'max_width' => 0, 'max_height' => 2, 'max_pixels' => 1],
+        ['format' => 'png', 'max_width' => 2, 'max_height' => 2, 'max_pixels' => 4, 'extra' => true],
+    ] as $image) {
+        $invalid = $valid;
+        $invalid['artifacts'][0]['image'] = $image;
+        hub_test_assert(hub_test_pack_job_contract_fails(static fn (): array => hub_pack_job_contract_artifacts($invalid)), 'malformed or non-PNG image contracts must fail closed');
+    }
+    $invalid = $valid;
+    $invalid['artifacts'][0]['mime_types'] = ['image/jpeg'];
+    hub_test_assert(hub_test_pack_job_contract_fails(static fn (): array => hub_pack_job_contract_artifacts($invalid)), 'PNG image contracts must not allow non-PNG MIME types');
+});
+
+hub_test('Pack job image validation records Hub-derived PNG dimensions', function (): void {
+    $workspace = hub_test_pack_job_workspace();
+    try {
+        hub_test_pack_job_write($workspace . '/output/screenshot.png', hub_test_pack_job_png(1, 1));
+        $validated = hub_validate_pack_job_artifacts($workspace, [], hub_test_pack_job_image_contract());
+        hub_test_assert(($validated[0]['metadata'] ?? null) === ['width' => 1, 'height' => 1, 'format' => 'png'], 'valid PNG metadata must be recomputed by the Hub');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job image validation rejects fake, oversized, and symlinked PNG outputs', function (): void {
+    $cases = [
+        'fake' => static function (string $path): void {
+            hub_test_pack_job_write($path, 'runner says this is a PNG');
+        },
+        'dimensions' => static function (string $path): void {
+            hub_test_pack_job_write($path, hub_test_pack_job_png(3, 1));
+        },
+        'pixels' => static function (string $path): void {
+            hub_test_pack_job_write($path, hub_test_pack_job_png(2, 2));
+        },
+        'symlink' => static function (string $path): string {
+            $outside = tempnam(sys_get_temp_dir(), '3waaihub_png_');
+            if ($outside === false) {
+                throw new RuntimeException('Cannot create PNG symlink fixture.');
+            }
+            hub_test_pack_job_write($outside, hub_test_pack_job_png(1, 1));
+            if (!symlink($outside, $path)) {
+                throw new RuntimeException('Cannot create PNG symlink fixture.');
+            }
+
+            return $outside;
+        },
+    ];
+    foreach ($cases as $name => $write) {
+        $workspace = hub_test_pack_job_workspace();
+        $outside = null;
+        try {
+            $path = $workspace . '/output/screenshot.png';
+            $outside = $write($path);
+            $contract = $name === 'pixels' ? hub_test_pack_job_image_contract(2, 2, 3) : hub_test_pack_job_image_contract();
+            hub_test_assert(hub_test_pack_job_contract_fails(static fn (): array => hub_validate_pack_job_artifacts($workspace, [], $contract)), 'invalid ' . $name . ' PNG output must fail the contract');
+        } finally {
+            hub_test_pack_job_rm($workspace);
+            if (is_string($outside) && is_file($outside)) {
+                unlink($outside);
+            }
+        }
+    }
+});
+
+hub_test('Pack job image outputs enforce the web capture crop all-present condition', function (): void {
+    $pack = hub_get_pack('web-screenshot');
+    $contract = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), 'capture');
+    hub_test_assert(is_array($contract), 'web capture contract must be available for image validation');
+    $workspace = hub_test_pack_job_workspace();
+    try {
+        hub_test_pack_job_write($workspace . '/output/screenshot.png', hub_test_pack_job_png(1, 1));
+        hub_test_pack_job_write($workspace . '/output/cropped.png', hub_test_pack_job_png(1, 1));
+        hub_test_assert(hub_test_pack_job_contract_fails(static fn (): array => hub_validate_pack_job_artifacts($workspace, [], $contract['artifact_contract'])), 'crop output must be absent without every crop input');
+
+        unlink($workspace . '/output/cropped.png');
+        hub_test_assert(count(hub_validate_pack_job_artifacts($workspace, [], $contract['artifact_contract'])) === 1, 'screenshot output must validate without crop inputs');
+
+        $cropInput = ['crop_x' => 0, 'crop_y' => 0, 'crop_width' => 1, 'crop_height' => 1];
+        hub_test_assert(hub_test_pack_job_contract_fails(static fn (): array => hub_validate_pack_job_artifacts($workspace, $cropInput, $contract['artifact_contract'])), 'crop output must be present with every crop input');
+
+        hub_test_pack_job_write($workspace . '/output/cropped.png', hub_test_pack_job_png(1, 1));
+        hub_test_assert(count(hub_validate_pack_job_artifacts($workspace, $cropInput, $contract['artifact_contract'])) === 2, 'screenshot and crop outputs must validate with every crop input');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
+hub_test('Pack job invalid PNG terminalizes through the fenced failed callback path', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $targetId = hub_register_callback_target($db, $fixture['member_id'], 'invalid-png', 'https://8.8.8.8/callback');
+    $db->prepare('UPDATE tasks SET callback_target_id = :target_id WHERE id = :id')->execute([':target_id' => $targetId, ':id' => $fixture['task_id']]);
+    try {
+        hub_test_pack_job_write($fixture['workspace'] . '/output/screenshot.png', 'runner says this is a PNG');
+        $outcome = hub_finalize_pack_job_success($db, $fixture['task_id'], $fixture['run'], $fixture['workspace'], [], hub_test_pack_job_image_contract(), hub_test_pack_job_cleanup_asserted());
+        $task = hub_get_task($db, $fixture['task_id']);
+        $delivery = $db->query('SELECT event_type FROM task_callback_deliveries WHERE task_id = ' . $fixture['task_id'])->fetchColumn();
+        hub_test_assert(($outcome['ok'] ?? true) === false && ($outcome['error_code'] ?? '') === 'output_contract_invalid', 'invalid PNG must fail the success terminal request');
+        hub_test_assert(($task['status'] ?? '') === 'failed' && ($task['error_code'] ?? '') === 'output_contract_invalid' && (int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0 && $delivery === 'task.failed', 'invalid PNG must not publish success artifacts or a completed callback');
+    } finally {
+        hub_test_pack_job_rm($fixture['workspace']);
     }
 });
 

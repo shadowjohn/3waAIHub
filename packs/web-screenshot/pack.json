@@ -54,13 +54,15 @@
             "type": "screenshot",
             "path": "screenshot.png",
             "mime_types": ["image/png"],
-            "max_bytes": 16777216
+            "max_bytes": 16777216,
+            "image": {"format": "png", "max_width": 2560, "max_height": 2160, "max_pixels": 5529600}
           },
           {
             "type": "cropped_screenshot",
             "path": "cropped.png",
             "mime_types": ["image/png"],
             "max_bytes": 16777216,
+            "image": {"format": "png", "max_width": 2560, "max_height": 2160, "max_pixels": 5529600},
             "when": {"all_present": ["crop_x", "crop_y", "crop_width", "crop_height"]}
           }
         ]
