@@ -112,6 +112,51 @@ function hub_test_adapter_cleanup(): array
     return ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true];
 }
 
+hub_test('Pack job container runner restricts network profiles', function (): void {
+    $workspace = sys_get_temp_dir() . '/3waaihub_adapter_network_' . bin2hex(random_bytes(4));
+    if (!mkdir($workspace . '/input', 0700, true) || !mkdir($workspace . '/output', 0700, true)) {
+        throw new RuntimeException('Cannot create adapter network workspace.');
+    }
+    try {
+        $isolated = hub_pack_async_job_contract(hub_test_adapter_manifest('adapter-network-isolated', '1.0.0'), 'convert');
+        hub_test_assert(is_array($isolated) && !array_key_exists('network_profile', $isolated['runner']), 'an omitted runner network profile must preserve existing snapshot contracts');
+        $isolatedRunner = hub_pack_job_runner_arguments($isolated['runner'], ['id' => 1], ['run_id' => 'adapter-network-isolated'], $workspace);
+        hub_test_assert(($isolatedRunner['network_profile'] ?? null) === 'isolated', 'an omitted runner network profile must normalize to isolated at execution');
+        $isolatedCommand = hub_pack_job_default_runner_command([
+            'workspace' => $workspace,
+            'run' => ['run_id' => 'adapter-network-isolated'],
+            'runner' => $isolatedRunner,
+        ])['command'];
+        $isolatedNetwork = array_search('--network', $isolatedCommand, true);
+        hub_test_assert($isolatedNetwork !== false && ($isolatedCommand[$isolatedNetwork + 1] ?? null) === 'none' && !in_array('--gpus', $isolatedCommand, true), 'ordinary CPU Pack jobs must remain network-isolated without GPU access');
+
+        $captureManifest = hub_test_adapter_manifest('adapter-network-capture', '1.0.0');
+        $captureManifest['async_jobs'][0]['runner']['network_profile'] = 'capture_egress';
+        $capture = hub_pack_async_job_contract($captureManifest, 'convert');
+        hub_test_assert(is_array($capture) && ($capture['runner']['network_profile'] ?? null) === 'capture_egress', 'capture egress must be an accepted normalized runner profile');
+        $captureRunner = hub_pack_job_runner_arguments($capture['runner'], ['id' => 1], ['run_id' => 'adapter-network-capture'], $workspace);
+        $captureCommand = hub_pack_job_default_runner_command([
+            'workspace' => $workspace,
+            'run' => ['run_id' => 'adapter-network-capture'],
+            'runner' => $captureRunner,
+        ])['command'];
+        $captureNetwork = array_search('--network', $captureCommand, true);
+        hub_test_assert($captureNetwork !== false && ($captureCommand[$captureNetwork + 1] ?? null) === 'aihub-capture-egress' && !in_array('--gpus', $captureCommand, true), 'capture egress must use only its fixed Docker network without GPU access');
+
+        $arbitraryManifest = hub_test_adapter_manifest('adapter-network-arbitrary', '1.0.0');
+        $arbitraryManifest['async_jobs'][0]['runner']['network_profile'] = 'customer-network';
+        hub_test_assert(hub_pack_async_job_contract($arbitraryManifest, 'convert') === null
+            && hub_validate_pack_manifest($arbitraryManifest, sys_get_temp_dir()) !== [], 'arbitrary runner network names must be invalid manifests');
+
+        $nullManifest = hub_test_adapter_manifest('adapter-network-null', '1.0.0');
+        $nullManifest['async_jobs'][0]['runner']['network_profile'] = null;
+        hub_test_assert(hub_pack_async_job_contract($nullManifest, 'convert') === null
+            && hub_validate_pack_manifest($nullManifest, sys_get_temp_dir()) !== [], 'an explicit null runner network profile must be invalid');
+    } finally {
+        hub_test_adapter_remove($workspace);
+    }
+});
+
 hub_test('Pack job adapter uses the shared worker and only manifest runner controls', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_adapter_fixture($db);

@@ -479,6 +479,7 @@ function hub_pack_job_runner_arguments(array $runner, array $task, array $run, s
         'accelerator' => $runner['accelerator'],
         'required_vram_mb' => $runner['required_vram_mb'],
         'timeout_seconds' => $runner['timeout_seconds'],
+        'network_profile' => $runner['network_profile'] ?? 'isolated',
     ] + ($config === null ? [] : ['config' => $config])
         + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts])
         + ($voiceProfileMount === null ? [] : ['voice_profile_mount' => $voiceProfileMount]);
@@ -513,7 +514,8 @@ function hub_pack_job_default_runner_command(array $context): array
     if (!is_array($entrypoint) || $entrypoint === [] || !is_array($args)) {
         throw new RuntimeException('job_contract_unavailable');
     }
-    $command = ['docker', 'run', '--pull=never', '--network', 'none', '--mount', 'type=bind,src=' . $output . ',dst=' . $containerWorkspace . '/output', '--mount', 'type=bind,src=' . $checkpoints . ',dst=' . $containerWorkspace . '/checkpoints', '--name', $name];
+    $network = ($runner['network_profile'] ?? 'isolated') === 'capture_egress' ? 'aihub-capture-egress' : 'none';
+    $command = ['docker', 'run', '--pull=never', '--network', $network, '--mount', 'type=bind,src=' . $output . ',dst=' . $containerWorkspace . '/output', '--mount', 'type=bind,src=' . $checkpoints . ',dst=' . $containerWorkspace . '/checkpoints', '--name', $name];
     $voiceProfileMount = $runner['voice_profile_mount'] ?? null;
     foreach (['source', 'request.json', 'runner_config.json'] as $file) {
         if ($file === 'source' && $voiceProfileMount !== null) {

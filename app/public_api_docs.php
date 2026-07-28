@@ -225,14 +225,14 @@ function hub_public_api_service_mode_uses_pack(array $service): bool
     if ($mode === 'yolo_gpu_internal' || hub_is_task_api_mode($mode)) {
         return false;
     }
-    if (!hub_is_audio_async_mode($mode)) {
+    if (!hub_is_pack_job_async_mode($mode)) {
         return true;
     }
 
-    return (string)($service['pack_id'] ?? '') === (string)(hub_audio_async_routes()[$mode]['pack_id'] ?? '');
+    return (string)($service['pack_id'] ?? '') === (string)(hub_pack_job_async_routes()[$mode]['pack_id'] ?? '');
 }
 
-function hub_public_api_audio_async_contract(array $route): array
+function hub_public_api_pack_job_async_contract(array $route): array
 {
     $fields = [];
     foreach ($route['request_schema'] as $name => $definition) {
@@ -336,9 +336,9 @@ function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
         if ($mode === '') {
             continue;
         }
-        if (hub_is_audio_async_mode($mode)) {
+        if (hub_is_pack_job_async_mode($mode)) {
             try {
-                $contract = hub_public_api_audio_async_contract(hub_resolve_audio_async_route($db, $mode));
+                $contract = hub_public_api_pack_job_async_contract(hub_resolve_pack_job_async_route($db, $mode));
             } catch (RuntimeException) {
                 continue;
             }
@@ -604,7 +604,7 @@ function hub_public_api_json_body(array $service): array
             continue;
         }
         $name = (string)($field['name'] ?? '');
-        if ($name === '' || ($name === 'mode' && !hub_is_audio_async_mode((string)($service['mode'] ?? ''))) || ($field['type'] ?? '') === 'file') {
+        if ($name === '' || ($name === 'mode' && !hub_is_pack_job_async_mode((string)($service['mode'] ?? ''))) || ($field['type'] ?? '') === 'file') {
             continue;
         }
         $body[$name] = match ($name) {
@@ -628,7 +628,7 @@ function hub_public_api_multipart_fields(array $service): array
             continue;
         }
         $name = (string)($field['name'] ?? '');
-        if ($name === '' || ($name === 'mode' && !hub_is_audio_async_mode((string)($service['mode'] ?? '')))) {
+        if ($name === '' || ($name === 'mode' && !hub_is_pack_job_async_mode((string)($service['mode'] ?? '')))) {
             continue;
         }
         $type = (string)($field['type'] ?? '');
@@ -715,7 +715,7 @@ function hub_public_api_examples(array $service): array
                 continue;
             }
             $name = (string)($field['name'] ?? '');
-            if ($name === '' || ($name === 'mode' && !hub_is_audio_async_mode((string)($service['mode'] ?? '')))) {
+            if ($name === '' || ($name === 'mode' && !hub_is_pack_job_async_mode((string)($service['mode'] ?? '')))) {
                 continue;
             }
             if (($field['type'] ?? '') === 'file') {

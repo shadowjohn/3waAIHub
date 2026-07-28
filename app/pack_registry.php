@@ -95,25 +95,26 @@ function hub_get_pack(string $packId): ?array
     return null;
 }
 
-function hub_audio_async_routes(): array
+function hub_pack_job_async_routes(): array
 {
     return [
-        'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
-        'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
-        'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize'],
+        'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup', 'accelerator' => 'gpu'],
+        'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe', 'accelerator' => 'gpu'],
+        'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
+        'web_capture' => ['pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu'],
     ];
 }
 
-function hub_is_audio_async_mode(string $mode): bool
+function hub_is_pack_job_async_mode(string $mode): bool
 {
-    return array_key_exists($mode, hub_audio_async_routes());
+    return array_key_exists($mode, hub_pack_job_async_routes());
 }
 
-function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
+function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
 {
-    $route = hub_audio_async_routes()[$requestedMode] ?? null;
+    $route = hub_pack_job_async_routes()[$requestedMode] ?? null;
     if ($route === null) {
-        throw new InvalidArgumentException('unknown_audio_async_mode');
+        throw new InvalidArgumentException('unknown_pack_job_async_mode');
     }
 
     $pack = hub_get_pack((string)$route['pack_id']);
@@ -141,6 +142,9 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
     if ($jobContract === null) {
         throw new RuntimeException('pack_version_unavailable');
     }
+    if (($jobContract['runner']['accelerator'] ?? null) !== $route['accelerator']) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
 
     $snapshot = hub_pack_job_contract_snapshot($jobContract);
     return [
@@ -149,21 +153,21 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
         'pack_version' => $packVersion,
         'job' => $route['job'],
         'runtime_mode' => 'job',
-        'accelerator' => 'gpu',
+        'accelerator' => $route['accelerator'],
         'route_resolved_at' => hub_now(),
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
     ] + $jobContract;
 }
 
-function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
+function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
 {
     $requestedMode = (string)($snapshot['requested_mode'] ?? '');
-    if (!hub_is_audio_async_mode($requestedMode)) {
+    if (!hub_is_pack_job_async_mode($requestedMode)) {
         throw new RuntimeException('pack_version_unavailable');
     }
     hub_resolve_stored_pack_job($db, $snapshot);
-    $route = hub_resolve_audio_async_route($db, $requestedMode);
+    $route = hub_resolve_pack_job_async_route($db, $requestedMode);
     foreach (['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator'] as $field) {
         if (($snapshot[$field] ?? null) !== ($route[$field] ?? null)) {
             throw new RuntimeException('pack_version_unavailable');
@@ -171,6 +175,40 @@ function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
     }
 
     return $route;
+}
+
+function hub_audio_async_routes(): array
+{
+    $routes = [];
+    foreach (['audio_cleanup', 'speech_transcribe', 'voice_generate'] as $mode) {
+        $route = hub_pack_job_async_routes()[$mode];
+        $routes[$mode] = ['pack_id' => $route['pack_id'], 'job' => $route['job']];
+    }
+
+    return $routes;
+}
+
+function hub_is_audio_async_mode(string $mode): bool
+{
+    return array_key_exists($mode, hub_audio_async_routes());
+}
+
+function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
+{
+    if (!hub_is_audio_async_mode($requestedMode)) {
+        throw new InvalidArgumentException('unknown_audio_async_mode');
+    }
+
+    return hub_resolve_pack_job_async_route($db, $requestedMode);
+}
+
+function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
+{
+    if (!hub_is_audio_async_mode((string)($snapshot['requested_mode'] ?? ''))) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+
+    return hub_revalidate_pack_job_async_route($db, $snapshot);
 }
 
 function hub_pack_async_job_contract(array $manifest, string $job): ?array
@@ -199,7 +237,7 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
             return null;
         }
         try {
-            $artifacts = hub_pack_job_contract_artifacts($output);
+            $artifacts = hub_pack_job_contract_artifacts($output, $fields);
             $attestation = hub_pack_job_report_attestation_contract($output['report_attestation'] ?? null, $artifacts);
         } catch (HubPackOutputContractInvalid) {
             return null;
@@ -418,7 +456,7 @@ function hub_pack_async_job_runner_asset_mount_conditions_valid(array $mounts, a
 
 function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null, ?array $requestSchema = null): ?array
 {
-    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'executor', 'secret_env', 'asset_mounts']) !== []) {
+    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'network_profile', 'executor', 'secret_env', 'asset_mounts']) !== []) {
         return null;
     }
     $image = trim((string)($runner['image'] ?? ''));
@@ -428,13 +466,16 @@ function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null
     $accelerator = (string)($runner['accelerator'] ?? '');
     $requiredVram = $runner['required_vram_mb'] ?? null;
     $timeout = $runner['timeout_seconds'] ?? null;
+    $hasNetworkProfile = array_key_exists('network_profile', $runner);
+    $networkProfile = $hasNetworkProfile ? $runner['network_profile'] : 'isolated';
     $executor = $runner['executor'] ?? null;
     if (preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
         || !is_array($entrypoint) || !array_is_list($entrypoint) || $entrypoint === []
         || !is_array($args) || !array_is_list($args)
         || $outputDir !== 'output' || !in_array($accelerator, ['cpu', 'gpu'], true)
         || !is_int($requiredVram) || $requiredVram < 0 || $requiredVram > 1048576
-        || !is_int($timeout) || $timeout < 1 || $timeout > 86400) {
+        || !is_int($timeout) || $timeout < 1 || $timeout > 86400
+        || !is_string($networkProfile) || !in_array($networkProfile, ['isolated', 'capture_egress'], true)) {
         return null;
     }
     if ($executor !== null && $executor !== 'container') {
@@ -476,7 +517,8 @@ function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null
         'accelerator' => $accelerator,
         'required_vram_mb' => $requiredVram,
         'timeout_seconds' => $timeout,
-    ] + ($executor === null ? [] : ['executor' => $executor])
+    ] + ($hasNetworkProfile ? ['network_profile' => $networkProfile] : [])
+        + ($executor === null ? [] : ['executor' => $executor])
         + ($secretEnv === [] ? [] : ['secret_env' => $secretEnv])
         + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts]);
 }
@@ -565,7 +607,7 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
     $normalized = [];
     foreach ($schema as $name => $definition) {
         if (!is_string($name) || !isset($allowed[$name]) || !is_array($definition)
-            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length', 'min', 'max', 'requires', 'gte_field', 'requires_when']) !== []) {
+            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length', 'min', 'max', 'requires', 'requires_all', 'gte_field', 'gt_field', 'requires_when']) !== []) {
             return null;
         }
         $type = (string)($definition['type'] ?? 'string');
@@ -576,7 +618,7 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
         $item = ['type' => $type, 'required' => $required];
         if ($type === 'string') {
             $maxLength = $definition['max_length'] ?? 1024;
-            if (!is_int($maxLength) || $maxLength < 1 || $maxLength > 4096) {
+            if (!is_int($maxLength) || $maxLength < 1 || $maxLength > 16384) {
                 return null;
             }
             $enum = $definition['enum'] ?? null;
@@ -604,7 +646,7 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
                 return null;
             }
             $item += ['min' => $min, 'max' => $max];
-        } elseif (isset($definition['min']) || isset($definition['max']) || isset($definition['gte_field'])) {
+        } elseif (isset($definition['min']) || isset($definition['max']) || isset($definition['gte_field']) || array_key_exists('gt_field', $definition)) {
             return null;
         }
         if (isset($definition['requires'])) {
@@ -618,11 +660,31 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
             }
             $item['requires'] = $definition['requires'];
         }
+        if (array_key_exists('requires_all', $definition)) {
+            $peers = $definition['requires_all'];
+            if (!is_array($peers) || !array_is_list($peers) || $peers === []) {
+                return null;
+            }
+            $seen = [];
+            foreach ($peers as $field) {
+                if (!is_string($field) || !isset($allowed[$field]) || $field === $name || isset($seen[$field])) {
+                    return null;
+                }
+                $seen[$field] = true;
+            }
+            $item['requires_all'] = array_keys($seen);
+        }
         if (isset($definition['gte_field'])) {
             if ($type !== 'integer' || !is_string($definition['gte_field']) || !isset($allowed[$definition['gte_field']]) || $definition['gte_field'] === $name) {
                 return null;
             }
             $item['gte_field'] = $definition['gte_field'];
+        }
+        if (array_key_exists('gt_field', $definition)) {
+            if ($type !== 'integer' || !is_string($definition['gt_field']) || !isset($allowed[$definition['gt_field']]) || $definition['gt_field'] === $name) {
+                return null;
+            }
+            $item['gt_field'] = $definition['gt_field'];
         }
         if (array_key_exists('requires_when', $definition)) {
             $rule = $definition['requires_when'];
@@ -649,6 +711,9 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
         $normalized[$name] = $item;
     }
     foreach ($normalized as $name => $definition) {
+        if (isset($definition['gt_field']) && (($normalized[$definition['gt_field']]['type'] ?? null) !== 'integer')) {
+            return null;
+        }
         $rule = $definition['requires_when'] ?? null;
         if ($rule === null) {
             continue;
@@ -796,8 +861,19 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
                 throw new InvalidArgumentException('invalid_request');
             }
         }
+        foreach ((array)($definition['requires_all'] ?? []) as $field) {
+            if (!array_key_exists($field, $input)) {
+                throw new InvalidArgumentException('invalid_request');
+            }
+        }
         if (isset($definition['gte_field']) && array_key_exists($definition['gte_field'], $input)
             && $input[$name] < $input[$definition['gte_field']]) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+    }
+    foreach ($schema as $name => $definition) {
+        if (isset($definition['gt_field']) && array_key_exists($name, $input) && array_key_exists($definition['gt_field'], $input)
+            && $input[$name] <= $input[$definition['gt_field']]) {
             throw new InvalidArgumentException('invalid_request');
         }
     }
@@ -831,7 +907,7 @@ function hub_pack_job_contract_snapshot(array $contract, bool $allowLegacyVoiceC
     $attestation = null;
     try {
         $artifactDefinition = (array)($contract['artifact_contract'] ?? []);
-        $artifacts = hub_pack_job_contract_artifacts($artifactDefinition);
+        $artifacts = hub_pack_job_contract_artifacts($artifactDefinition, $fields ?? []);
         $attestation = hub_pack_job_report_attestation_contract($artifactDefinition['report_attestation'] ?? null, $artifacts);
     } catch (HubPackOutputContractInvalid) {
         $artifacts = null;

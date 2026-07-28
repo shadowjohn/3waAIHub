@@ -1,0 +1,12 @@
+{
+  "name": "3waaihub-web-screenshot",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "test": "node test_url_policy.js && node test_capture.js"
+  },
+  "dependencies": {
+    "playwright": "1.61.1",
+    "sharp": "0.34.5"
+  }
+}

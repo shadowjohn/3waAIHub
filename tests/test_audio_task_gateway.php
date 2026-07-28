@@ -407,7 +407,7 @@ hub_test('audio manual retry revalidates disabled cleanup capabilities before qu
             $token = hub_create_api_token($db, $memberId, 'cleanup retry token', null, null);
             $route = hub_resolve_audio_async_route($db, 'audio_cleanup');
             $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
-            $taskId = hub_enqueue_owned_pack_job($db, $route, hub_audio_task_input(['operation' => 'enhance'], $route), $memberId, (int)$token['token_id'], '203.0.113.51', [
+            $taskId = hub_enqueue_owned_pack_job($db, $route, hub_pack_job_task_input(['operation' => 'enhance'], $route), $memberId, (int)$token['token_id'], '203.0.113.51', [
                 'source_artifact_id' => $source['artifact_id'],
                 'source_task_id' => $source['task_id'],
             ]);

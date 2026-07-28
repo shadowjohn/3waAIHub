@@ -1,0 +1,14 @@
+[Unit]
+Description=3waAIHub capture egress firewall
+Requires=docker.service
+After=docker.service
+PartOf=docker.service
+Before=cron.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /DATA/3waAIHub/scripts/install_capture_egress_network.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

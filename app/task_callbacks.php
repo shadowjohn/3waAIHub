@@ -193,7 +193,7 @@ function hub_callback_target_id_for_member(PDO $db, int $ownerMemberId, string $
     return (int)$target['id'];
 }
 
-function hub_audio_callback_target_id(PDO $db, int $ownerMemberId, array $input): ?int
+function hub_pack_job_task_callback_target_id(PDO $db, int $ownerMemberId, array $input): ?int
 {
     $hasCallback = array_key_exists('callback', $input);
     $hasAlias = array_key_exists('callback_target', $input);

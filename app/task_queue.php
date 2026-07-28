@@ -346,7 +346,7 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     unset($input['cancel_requested'], $input['cancel_requested_at']);
     $voiceContext = $input['voice_context'] ?? null;
     unset($input['voice_context']);
-    $route = hub_revalidate_audio_async_route($db, $task);
+    $route = hub_revalidate_pack_job_async_route($db, $task);
     $sourceUploadPath = $input['source_upload_path'] ?? null;
     unset($input['source_upload_path'], $input['original_filename']);
     $input = hub_pack_job_normalize_request_input($input, $route);
@@ -1939,7 +1939,7 @@ function hub_pack_job_artifact_mime_allowed(string $mime, array $definition): bo
     return false;
 }
 
-function hub_pack_job_contract_artifacts(array $jobContract): array
+function hub_pack_job_contract_artifacts(array $jobContract, ?array $inputFields = null): array
 {
     $artifacts = $jobContract['artifacts'] ?? null;
     if (!is_array($artifacts) || !array_is_list($artifacts) || $artifacts === []) {
@@ -1951,7 +1951,7 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
     $types = [];
     $paths = [];
     foreach ($artifacts as $definition) {
-        if (!is_array($definition) || array_diff(array_keys($definition), ['type', 'path', 'mime_types', 'max_bytes', 'required', 'when', 'json', 'text', 'audio']) !== []) {
+        if (!is_array($definition) || array_diff(array_keys($definition), ['type', 'path', 'mime_types', 'max_bytes', 'required', 'when', 'json', 'text', 'audio', 'image']) !== []) {
             hub_pack_job_output_contract_invalid('artifact_contract_invalid');
         }
         $type = (string)($definition['type'] ?? '');
@@ -1968,10 +1968,26 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
         $maxBytes = hub_pack_job_artifact_max_bytes($definition['max_bytes'] ?? null);
         if (isset($definition['when'])) {
             $when = $definition['when'];
-            if (!is_array($when) || !is_string($when['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $when['input']) !== 1) {
+            if (!is_array($when)) {
                 hub_pack_job_output_contract_invalid('artifact_condition_invalid');
             }
-            if (array_keys($when) === ['input', 'equals']) {
+            if (array_keys($when) === ['all_present']) {
+                $fields = $when['all_present'];
+                if (!is_array($fields) || !array_is_list($fields) || $fields === [] || count($fields) > 64) {
+                    hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+                }
+                $seen = [];
+                foreach ($fields as $field) {
+                    if (!is_string($field) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $field) !== 1
+                        || isset($seen[$field]) || ($inputFields !== null && !in_array($field, $inputFields, true))) {
+                        hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+                    }
+                    $seen[$field] = true;
+                }
+                $definition['when']['all_present'] = array_keys($seen);
+            } elseif (!is_string($when['input'] ?? null) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $when['input']) !== 1) {
+                hub_pack_job_output_contract_invalid('artifact_condition_invalid');
+            } elseif (array_keys($when) === ['input', 'equals']) {
                 if (is_array($when['equals']) || is_object($when['equals'])) {
                     hub_pack_job_output_contract_invalid('artifact_condition_invalid');
                 }
@@ -1987,7 +2003,7 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
                 hub_pack_job_output_contract_invalid('artifact_condition_invalid');
             }
         }
-        foreach (['json', 'text', 'audio'] as $validator) {
+        foreach (['json', 'text', 'audio', 'image'] as $validator) {
             if (isset($definition[$validator]) && !is_array($definition[$validator])) {
                 hub_pack_job_output_contract_invalid('artifact_validator_invalid');
             }
@@ -2022,9 +2038,25 @@ function hub_pack_job_contract_artifacts(array $jobContract): array
         if (isset($definition['audio']) && $definition['audio'] !== []) {
             hub_pack_job_output_contract_invalid('artifact_audio_contract_invalid');
         }
+        if (array_key_exists('image', $definition)) {
+            $image = $definition['image'];
+            $keys = ['format', 'max_width', 'max_height', 'max_pixels'];
+            if (!is_array($image) || array_is_list($image) || array_diff(array_keys($image), $keys) !== [] || array_diff($keys, array_keys($image)) !== []
+                || ($image['format'] ?? null) !== 'png'
+                || !is_int($image['max_width'] ?? null) || $image['max_width'] < 1
+                || !is_int($image['max_height'] ?? null) || $image['max_height'] < 1
+                || !is_int($image['max_pixels'] ?? null) || $image['max_pixels'] < 1
+                || $image['max_width'] > intdiv(PHP_INT_MAX, $image['max_height'])
+                || $image['max_pixels'] > $image['max_width'] * $image['max_height']) {
+                hub_pack_job_output_contract_invalid('artifact_image_contract_invalid');
+            }
+        }
         $definition['type'] = $type;
         $definition['path'] = $path;
         $definition['mime_types'] = hub_pack_job_artifact_mime_types($definition['mime_types'] ?? null);
+        if (isset($definition['image']) && $definition['mime_types'] !== ['image/png']) {
+            hub_pack_job_output_contract_invalid('artifact_image_contract_invalid');
+        }
         $definition['max_bytes'] = $maxBytes;
         $types[$type] = true;
         $paths[$path] = true;
@@ -2095,6 +2127,15 @@ function hub_pack_job_report_attestation_contract(mixed $definition, array $arti
 function hub_pack_job_artifact_is_expected(array $definition, array $input): bool
 {
     if (isset($definition['when'])) {
+        if (isset($definition['when']['all_present'])) {
+            foreach ($definition['when']['all_present'] as $field) {
+                if (!array_key_exists($field, $input)) {
+                    return false;
+                }
+            }
+
+            return ($definition['required'] ?? true) === true;
+        }
         if (isset($definition['when']['in'])) {
             return ($definition['required'] ?? true) === true
                 && array_key_exists($definition['when']['input'], $input)
@@ -2498,6 +2539,36 @@ function hub_pack_job_validate_text_output(string $path, array $definition, int 
     }
 }
 
+function hub_pack_job_validate_image_output(string $path, array $definition, string $mime): array
+{
+    if (!isset($definition['image'])) {
+        return [];
+    }
+    $image = @getimagesize($path);
+    $width = is_array($image) ? ($image[0] ?? null) : null;
+    $height = is_array($image) ? ($image[1] ?? null) : null;
+    if ($mime !== 'image/png' || !is_array($image) || ($image[2] ?? null) !== IMAGETYPE_PNG
+        || !is_int($width) || $width < 1 || !is_int($height) || $height < 1
+        || $width > $definition['image']['max_width'] || $height > $definition['image']['max_height']
+        || $width > intdiv(PHP_INT_MAX, $height) || $width * $height > $definition['image']['max_pixels']) {
+        hub_pack_job_output_contract_invalid('artifact_image_invalid');
+    }
+    try {
+        $decoded = function_exists('imagecreatefrompng') ? @imagecreatefrompng($path) : false;
+    } catch (Throwable) {
+        $decoded = false;
+    }
+    if ($decoded === false) {
+        hub_pack_job_output_contract_invalid('artifact_image_invalid');
+    }
+    try {
+        @imagedestroy($decoded);
+    } catch (Throwable) {
+    }
+
+    return ['width' => $width, 'height' => $height, 'format' => 'png'];
+}
+
 function hub_pack_job_ffprobe(string $path): ?array
 {
     if (!function_exists('exec')) {
@@ -2716,7 +2787,10 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
             'size_bytes' => $size,
             'max_bytes' => (int)$definition['max_bytes'],
             'sha256' => $sha256,
-            'metadata' => hub_pack_job_validate_audio_output($path, $definition, $audioProbe),
+            'metadata' => array_merge(
+                hub_pack_job_validate_image_output($path, $definition, $mime),
+                hub_pack_job_validate_audio_output($path, $definition, $audioProbe)
+            ),
             'device' => (int)$stat['dev'],
             'inode' => (int)$stat['ino'],
         ];

@@ -23,20 +23,20 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
     }
     $service = hub_get_service_by_mode($db, $mode);
-    if (hub_is_audio_async_mode($mode)) {
+    if (hub_is_pack_job_async_mode($mode)) {
         $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp, $providedToken);
         $authContext = $auth['context'] ?? [];
         if (empty($auth['ok'])) {
             return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
         }
         try {
-            $route = hub_resolve_audio_async_route($db, $mode);
+            $route = hub_resolve_pack_job_async_route($db, $mode);
         } catch (RuntimeException $e) {
             $code = in_array($e->getMessage(), ['pack_not_installed', 'pack_version_unavailable'], true) ? $e->getMessage() : 'pack_not_installed';
             return hub_gateway_finish($db, null, $mode, hub_gateway_error(503, $code, $code), $started, $requestId, $authContext, $requestContext);
         }
 
-        return hub_gateway_finish($db, null, $mode, hub_api_audio_task_submit($db, $route, $authContext), $started, $requestId, $authContext, $requestContext);
+        return hub_gateway_finish($db, null, $mode, hub_api_pack_job_task_submit($db, $route, $authContext), $started, $requestId, $authContext, $requestContext);
     }
     if (hub_is_task_api_mode($mode)) {
         $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp, $providedToken);
@@ -1269,37 +1269,37 @@ function hub_task_api_dispatch(PDO $db, string $mode, array $authContext = []): 
     };
 }
 
-function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): array
+function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext): array
 {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
-        return hub_gateway_error(405, 'method_not_allowed', 'audio task submission requires POST');
+        return hub_gateway_error(405, 'method_not_allowed', 'Pack job submission requires POST');
     }
     $ownerMemberId = (int)($authContext['member_id'] ?? 0);
     if ($ownerMemberId <= 0) {
-        return hub_gateway_error(403, 'member_required', 'audio task submission requires an API member');
+        return hub_gateway_error(403, 'member_required', 'Pack job submission requires an API member');
     }
     $sourceArtifactId = trim((string)($_POST['source_artifact_id'] ?? ''));
-    if ($sourceArtifactId !== '' && !hub_audio_task_has_valid_content_length()) {
+    if ($sourceArtifactId !== '' && !hub_pack_job_task_has_valid_content_length()) {
         return hub_gateway_error(411, 'length_required', 'source artifact requests require Content-Length');
     }
-    if (!hub_audio_task_request_size_allowed($route)) {
+    if (!hub_pack_job_task_request_size_allowed($route)) {
         return hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows');
     }
     try {
-        $callbackTargetId = hub_audio_callback_target_id($db, $ownerMemberId, $_POST);
+        $callbackTargetId = hub_pack_job_task_callback_target_id($db, $ownerMemberId, $_POST);
         $taskInput = $_POST;
         unset($taskInput['callback'], $taskInput['callback_target']);
-        $input = hub_audio_task_input($taskInput, $route);
-        $input = hub_audio_task_resolve_voice_context($db, $input, $route, $ownerMemberId, (int)($authContext['token_id'] ?? 0));
+        $input = hub_pack_job_task_input($taskInput, $route);
+        $input = hub_pack_job_task_resolve_voice_context($db, $input, $route, $ownerMemberId, (int)($authContext['token_id'] ?? 0));
     } catch (InvalidArgumentException $e) {
         if (in_array($e->getMessage(), ['callback_target_not_found', 'callback_target_disabled'], true)) {
             return hub_gateway_error($e->getMessage() === 'callback_target_not_found' ? 404 : 409, $e->getMessage(), 'callback target is unavailable');
         }
         if ($e->getMessage() === 'capability_unavailable') {
-            return hub_gateway_error(409, 'capability_unavailable', 'requested audio capability is not available');
+            return hub_gateway_error(409, 'capability_unavailable', 'requested Pack job capability is not available');
         }
         if ($e->getMessage() === 'invalid_request') {
-            return hub_gateway_error(400, 'invalid_request', 'audio request does not match the Pack contract');
+            return hub_gateway_error(400, 'invalid_request', 'Pack job request does not match the Pack contract');
         }
         if ($e->getMessage() === 'voice_profile_required') {
             return hub_gateway_error(400, 'voice_profile_required', 'clone mode requires one owned managed voice profile');
@@ -1310,7 +1310,7 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
 
-    $uploads = hub_audio_task_uploads();
+    $uploads = hub_pack_job_task_uploads();
     $sourceRequired = ($route['source_required'] ?? true) === true;
     if (!$sourceRequired && ($sourceArtifactId !== '' || $uploads !== [])) {
         return hub_gateway_error(400, 'source_not_allowed', 'this Pack job does not accept a source file');
@@ -1351,7 +1351,7 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
         return hub_gateway_error(400, 'source_ambiguous', 'provide exactly one managed source');
     }
     $file = $uploads[0];
-    if (!hub_audio_task_upload_size_allowed($route, $file)) {
+    if (!hub_pack_job_task_upload_size_allowed($route, $file)) {
         return hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows');
     }
     $extension = strtolower(pathinfo((string)($file['name'] ?? ''), PATHINFO_EXTENSION));
@@ -1390,13 +1390,13 @@ function hub_api_audio_task_submit(PDO $db, array $route, array $authContext): a
     return hub_gateway_json(200, hub_task_submit_response($taskId));
 }
 
-function hub_audio_task_has_forbidden_control(array $input): bool
+function hub_pack_job_task_has_forbidden_control(array $input): bool
 {
     foreach ($input as $key => $value) {
-        if (!is_string($key) || hub_audio_task_is_reserved_control_key($key)) {
+        if (!is_string($key) || hub_pack_job_task_is_reserved_control_key($key)) {
             return true;
         }
-        if (is_array($value) && hub_audio_task_has_forbidden_control($value)) {
+        if (is_array($value) && hub_pack_job_task_has_forbidden_control($value)) {
             return true;
         }
     }
@@ -1404,7 +1404,7 @@ function hub_audio_task_has_forbidden_control(array $input): bool
     return false;
 }
 
-function hub_audio_task_is_reserved_control_key(string $key): bool
+function hub_pack_job_task_is_reserved_control_key(string $key): bool
 {
     $key = strtolower($key);
 
@@ -1415,7 +1415,7 @@ function hub_audio_task_is_reserved_control_key(string $key): bool
         || str_starts_with($key, 'callback_');
 }
 
-function hub_audio_task_uploads(): array
+function hub_pack_job_task_uploads(): array
 {
     $uploads = [];
     foreach ($_FILES as $file) {
@@ -1434,9 +1434,9 @@ function hub_audio_task_uploads(): array
     return $uploads;
 }
 
-function hub_audio_task_upload_size_allowed(array $route, array $file): bool
+function hub_pack_job_task_upload_size_allowed(array $route, array $file): bool
 {
-    if (!hub_audio_task_request_size_allowed($route)) {
+    if (!hub_pack_job_task_request_size_allowed($route)) {
         return false;
     }
     $maxUploadBytes = (int)$route['max_upload_bytes'];
@@ -1452,7 +1452,7 @@ function hub_audio_task_upload_size_allowed(array $route, array $file): bool
     return $actualSize !== false && $actualSize <= $maxUploadBytes;
 }
 
-function hub_audio_task_request_size_allowed(array $route): bool
+function hub_pack_job_task_request_size_allowed(array $route): bool
 {
     $maxUploadBytes = (int)($route['max_upload_bytes'] ?? 0);
     if ($maxUploadBytes <= 0) {
@@ -1463,14 +1463,14 @@ function hub_audio_task_request_size_allowed(array $route): bool
     return $contentLength === '' || (ctype_digit($contentLength) && (int)$contentLength <= $maxUploadBytes);
 }
 
-function hub_audio_task_has_valid_content_length(): bool
+function hub_pack_job_task_has_valid_content_length(): bool
 {
     return ctype_digit(trim((string)($_SERVER['CONTENT_LENGTH'] ?? '')));
 }
 
-function hub_audio_task_input(array $input, array $route): array
+function hub_pack_job_task_input(array $input, array $route): array
 {
-    if (hub_audio_task_has_forbidden_control($input)) {
+    if (hub_pack_job_task_has_forbidden_control($input)) {
         throw new InvalidArgumentException('forbidden_task_control');
     }
     $allowed = array_fill_keys((array)($route['input_fields'] ?? []), true);
@@ -1488,10 +1488,15 @@ function hub_audio_task_input(array $input, array $route): array
         $filtered[$key] = $value;
     }
 
-    return hub_pack_job_normalize_request_input($filtered, $route);
+    $input = hub_pack_job_normalize_request_input($filtered, $route);
+    if (($route['requested_mode'] ?? '') === 'web_capture') {
+        $input = hub_web_capture_validate_input($input);
+    }
+
+    return $input;
 }
 
-function hub_audio_task_resolve_voice_context(PDO $db, array $input, array $route, int $ownerMemberId, int $tokenId): array
+function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $route, int $ownerMemberId, int $tokenId): array
 {
     $definition = $route['voice_context'] ?? [];
     if (!is_array($definition) || $definition === []) {
@@ -1557,7 +1562,7 @@ function hub_api_task_submit(PDO $db, array $authContext = []): array
     if (!hub_is_valid_task_type($taskType)) {
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown task_type']);
     }
-    if ((empty($authContext['internal_task']) && $taskType === 'pack_job') || hub_audio_task_has_forbidden_control($_POST)) {
+    if ((empty($authContext['internal_task']) && $taskType === 'pack_job') || hub_pack_job_task_has_forbidden_control($_POST)) {
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
 
