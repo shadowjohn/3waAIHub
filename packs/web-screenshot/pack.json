@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "web-screenshot",
   "name": "Web Screenshot",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "category": "web",
   "type": "internal_task",
   "execution_type": "async_task",
@@ -16,7 +16,7 @@
   "runner_build": {
     "context": "service",
     "dockerfile": "Dockerfile",
-    "image": "3waaihub/web-screenshot:0.1.0"
+    "image": "3waaihub/web-screenshot:0.1.1"
   },
   "gateway": {
     "invoke_path": "task_submit:pack_job",
@@ -45,7 +45,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/web-screenshot:0.1.0",
+        "image": "3waaihub/web-screenshot:0.1.1",
         "entrypoint": ["/app/capture"],
         "args": [],
         "output_dir": "output",

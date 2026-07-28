@@ -7,13 +7,19 @@ const path = require('node:path');
 const sharp = require('sharp');
 const {
   FIXED_USER_AGENT,
+  assertMainDocumentAllowed,
   buildCaptureReport,
   buildClientHints,
+  captureNavigationDecision,
   cropPng,
+  parseCaptureRequest,
   validateCropBounds,
 } = require('./capture');
 
 async function test() {
+  const resolve = () => [{ address: '93.184.216.34', family: 4 }];
+  const allowedHosts = ['3wa.tw', 'tile.openstreetmap.org'];
+
   assert.equal(
     FIXED_USER_AGENT,
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36'
@@ -48,6 +54,45 @@ async function test() {
   ]);
   assert.equal(JSON.stringify(report).includes('secret'), false);
   assert.equal(JSON.stringify(report).includes('authorization'), false);
+
+  assert.deepEqual(parseCaptureRequest({
+    url: 'https://3wa.tw/',
+    allowed_hosts: allowedHosts,
+  }).allowedHosts, allowedHosts);
+  assert.throws(() => parseCaptureRequest({ url: 'https://3wa.tw/' }), /url_not_allowed/);
+
+  assert.deepEqual(
+    await captureNavigationDecision('document', true, true, 'https://3wa.tw/after-301', '3wa.tw', allowedHosts, resolve),
+    { action: 'continue' }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', true, true, 'https://tile.openstreetmap.org/redirect', '3wa.tw', allowedHosts, resolve),
+    { action: 'abort', mainBlocked: true, warning: false }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', true, false, 'https://3wa.tw/frame', '3wa.tw', allowedHosts, resolve),
+    { action: 'continue' }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', true, false, 'https://tile.openstreetmap.org/frame', '3wa.tw', allowedHosts, resolve),
+    { action: 'abort', mainBlocked: false, warning: true }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', false, true, 'https://3wa.tw/popup', '3wa.tw', allowedHosts, resolve),
+    { action: 'abort', mainBlocked: false, warning: true }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', false, true, 'https://tile.openstreetmap.org/popup', '3wa.tw', allowedHosts, resolve),
+    { action: 'abort', mainBlocked: false, warning: true }
+  );
+  assert.equal(
+    await assertMainDocumentAllowed({ url: () => 'https://3wa.tw/delayed' }, '3wa.tw', allowedHosts, resolve),
+    'https://3wa.tw/delayed'
+  );
+  await assert.rejects(
+    () => assertMainDocumentAllowed({ url: () => 'https://tile.openstreetmap.org/delayed' }, '3wa.tw', allowedHosts, resolve),
+    /url_not_allowed/
+  );
 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'web-capture-'));
   try {

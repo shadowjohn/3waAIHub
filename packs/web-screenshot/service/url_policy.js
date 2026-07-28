@@ -62,6 +62,32 @@ function resolvePublicHost(hostname) {
   return dns.lookup(hostname, { all: true, verbatim: true });
 }
 
+function canonicalHostname(hostname) {
+  return hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+}
+
+function validateAllowedHosts(hosts) {
+  if (!Array.isArray(hosts) || hosts.length === 0) {
+    throw policyError();
+  }
+  const normalized = [];
+  const seen = new Set();
+  for (const value of hosts) {
+    if (typeof value !== 'string') {
+      throw policyError();
+    }
+    const host = canonicalHostname(value);
+    if (host.length > 253 || host === 'localhost' || host.endsWith('.localhost') || net.isIP(host)
+      || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host)
+      || seen.has(host)) {
+      throw policyError();
+    }
+    seen.add(host);
+    normalized.push(host);
+  }
+  return normalized;
+}
+
 function validatePublicHttpUrl(value, resolve = resolvePublicHost) {
   let url;
   try {
@@ -74,7 +100,7 @@ function validatePublicHttpUrl(value, resolve = resolvePublicHost) {
     throw policyError();
   }
 
-  const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+  const hostname = canonicalHostname(url.hostname);
   if (hostname === '' || hostname === 'localhost' || hostname.endsWith('.localhost')) {
     throw policyError();
   }
@@ -100,4 +126,20 @@ function validatePublicHttpUrl(value, resolve = resolvePublicHost) {
     : accept(answers);
 }
 
-module.exports = { isPublicIp, policyError, resolvePublicHost, validatePublicHttpUrl };
+async function validateDocumentNavigation(value, initialHost, allowedHosts, resolve = resolvePublicHost) {
+  const href = await validatePublicHttpUrl(value, resolve);
+  if (canonicalHostname(new URL(href).hostname) !== initialHost
+    || !Array.isArray(allowedHosts) || !allowedHosts.includes(initialHost)) {
+    throw policyError();
+  }
+  return href;
+}
+
+module.exports = {
+  isPublicIp,
+  policyError,
+  resolvePublicHost,
+  validateAllowedHosts,
+  validateDocumentNavigation,
+  validatePublicHttpUrl,
+};

@@ -5,7 +5,11 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const sharp = require('sharp');
-const { validatePublicHttpUrl } = require('./url_policy');
+const {
+  validateAllowedHosts,
+  validateDocumentNavigation,
+  validatePublicHttpUrl,
+} = require('./url_policy');
 
 const REQUEST_PATH = '/workspace/input/request.json';
 const OUTPUT_DIR = '/workspace/output';
@@ -37,8 +41,8 @@ function parseCaptureRequest(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw runnerError('invalid_request');
   }
-  const allowed = new Set(['url', 'width', 'height', 'delay_seconds', 'timeout_seconds', 'javascript', 'crop_x', 'crop_y', 'crop_width', 'crop_height']);
-  if (Object.keys(value).some((key) => !allowed.has(key))) {
+  const allowedKeys = new Set(['url', 'width', 'height', 'delay_seconds', 'timeout_seconds', 'javascript', 'crop_x', 'crop_y', 'crop_width', 'crop_height', 'allowed_hosts']);
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
     throw runnerError('invalid_request');
   }
   if (typeof value.url !== 'string' || Buffer.byteLength(value.url) > 2048) {
@@ -51,6 +55,7 @@ function parseCaptureRequest(value) {
     delaySeconds: integer(value.delay_seconds, 0, 0, 60),
     timeoutSeconds: integer(value.timeout_seconds, 60, 10, 120),
     javascript: value.javascript,
+    allowedHosts: validateAllowedHosts(value.allowed_hosts),
   };
   if (request.timeoutSeconds <= request.delaySeconds
     || (request.javascript !== undefined && (typeof request.javascript !== 'string' || Buffer.byteLength(request.javascript) > 16384))) {
@@ -68,6 +73,26 @@ function parseCaptureRequest(value) {
     height: integer(value.crop_height, null, 1, 2160),
   };
   return request;
+}
+
+async function captureNavigationDecision(kind, pageIsPrimary, isMainFrame, url, initialHost, allowedHosts, resolve) {
+  if (kind !== 'document') {
+    await validatePublicHttpUrl(url, resolve);
+    return { action: 'continue' };
+  }
+  if (!pageIsPrimary) {
+    return { action: 'abort', mainBlocked: false, warning: true };
+  }
+  try {
+    await validateDocumentNavigation(url, initialHost, allowedHosts, resolve);
+    return { action: 'continue' };
+  } catch {
+    return { action: 'abort', mainBlocked: isMainFrame, warning: !isMainFrame };
+  }
+}
+
+function assertMainDocumentAllowed(page, initialHost, allowedHosts, resolve) {
+  return validateDocumentNavigation(page.url(), initialHost, allowedHosts, resolve);
 }
 
 function buildClientHints(userAgent) {
@@ -202,6 +227,10 @@ async function runCapture() {
   const request = await readRequest();
   const deadline = started + (request.timeoutSeconds * 1000);
   const requestedUrl = await withinDeadline(validatePublicHttpUrl(request.url), deadline);
+  const initialHost = new URL(requestedUrl).hostname.toLowerCase().replace(/\.$/, '');
+  if (!request.allowedHosts.includes(initialHost)) {
+    throw runnerError('url_not_allowed');
+  }
   const warnings = [];
   let browser;
   let context;
@@ -211,20 +240,59 @@ async function runCapture() {
     context = await withinDeadline(browser.newContext(contextOptions(request)), deadline);
     const page = await withinDeadline(context.newPage(), deadline);
     let mainDocumentBlocked = false;
+    context.on('page', (candidate) => {
+      if (candidate !== page) {
+        candidate.once('requestfailed', (failedRequest) => {
+          if (failedRequest.isNavigationRequest()) {
+            candidate.close().catch(() => {});
+          }
+        });
+      }
+    });
     await withinDeadline(context.route('**/*', async (route) => {
-      const navigation = route.request().isNavigationRequest() && route.request().frame() === page.mainFrame();
+      const routeRequest = route.request();
+      let kind = 'resource';
+      let routePage;
+      let pageIsPrimary = false;
+      let decision;
       try {
-        await validatePublicHttpUrl(route.request().url());
+        const frame = routeRequest.frame();
+        routePage = frame.page();
+        kind = routeRequest.isNavigationRequest() ? 'document' : 'resource';
+        pageIsPrimary = routePage === page;
+        decision = await captureNavigationDecision(
+          kind,
+          pageIsPrimary,
+          frame === page.mainFrame(),
+          routeRequest.url(),
+          initialHost,
+          request.allowedHosts
+        );
+      } catch {
+        decision = { action: 'abort', mainBlocked: false, warning: true };
+      }
+      if (decision.action === 'continue') {
         await route.continue();
-      } catch (error) {
-        if (navigation) {
-          mainDocumentBlocked = true;
-        } else {
-          addWarning(warnings, route.request().url(), error.code);
-        }
-        await route.abort('blockedbyclient');
+        return;
+      }
+      if (decision.mainBlocked) {
+        mainDocumentBlocked = true;
+      }
+      if (decision.warning) {
+        addWarning(warnings, routeRequest.url(), 'url_not_allowed');
+      }
+      await route.abort('blockedbyclient');
+      if (kind === 'document' && !pageIsPrimary && routePage) {
+        await routePage.close().catch(() => {});
       }
     }), deadline);
+
+    const checkMainDocument = () => {
+      if (mainDocumentBlocked) {
+        throw runnerError('url_not_allowed');
+      }
+      return assertMainDocumentAllowed(page, initialHost, request.allowedHosts);
+    };
 
     let response;
     try {
@@ -238,18 +306,22 @@ async function runCapture() {
     if (mainDocumentBlocked) {
       throw runnerError('url_not_allowed');
     }
+    await withinDeadline(checkMainDocument(), deadline);
     if (!response) {
       throw runnerError('navigation_failed');
     }
-    const finalUrl = await validatePublicHttpUrl(page.url());
     if (request.delaySeconds > 0) {
       await withinDeadline(page.waitForTimeout(request.delaySeconds * 1000), deadline);
     }
+    await withinDeadline(checkMainDocument(), deadline);
     if (request.javascript !== undefined) {
       await withinDeadline(page.evaluate(request.javascript), deadline);
     }
+    await withinDeadline(checkMainDocument(), deadline);
     await withinDeadline(page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve))), deadline);
+    await withinDeadline(checkMainDocument(), deadline);
     await withinDeadline(page.screenshot({ path: SCREENSHOT_PATH, type: 'png', fullPage: true }), deadline);
+    await withinDeadline(checkMainDocument(), deadline);
     const image = await withinDeadline(imageInfo(SCREENSHOT_PATH), deadline);
     let crop = null;
     if (request.crop) {
@@ -257,6 +329,7 @@ async function runCapture() {
       const cropImage = await withinDeadline(imageInfo(CROP_PATH), deadline);
       crop = { ...request.crop, image: { width: cropped.width, height: cropped.height, bytes: cropImage.bytes } };
     }
+    const finalUrl = await withinDeadline(checkMainDocument(), deadline);
     const report = buildCaptureReport({
       requestedUrl,
       finalUrl,
@@ -296,8 +369,10 @@ async function main() {
 
 module.exports = {
   FIXED_USER_AGENT,
+  assertMainDocumentAllowed,
   buildCaptureReport,
   buildClientHints,
+  captureNavigationDecision,
   contextOptions,
   cropPng,
   parseCaptureRequest,
