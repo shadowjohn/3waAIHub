@@ -8,8 +8,9 @@ Status: approved; ready for implementation planning
 
 Make Web Screenshot usable for known public sites without changing the host
 firewall. A system administrator maintains one global, exact-host allowlist.
-`web_capture` accepts only a URL whose host is on that list, and its browser
-cannot navigate a document to another host.
+`web_capture` accepts only a URL whose host is on that list. Its browser may
+follow a document redirect only when the target has the same exact hostname as
+the initial URL.
 
 This is a controlled v1 for known sites, not a claim that arbitrary public
 URLs are safe with application-layer checks alone.
@@ -90,14 +91,17 @@ task. Changes apply to all later submissions.
 The Node runner validates the Hub-provided list before launch. An empty,
 malformed, duplicate, wildcard, or noncanonical list is invalid.
 
-Every Playwright document navigation uses the exact-host rule:
+Every Playwright document navigation uses the exact-host rule. The initial
+host is the navigation origin for that task; being separately allowlisted does
+not permit a cross-host redirect.
 
 - Initial main-document navigation must be allowlisted.
-- HTTP redirects and later `window.location` navigation of the main document
-  must remain allowlisted; a block fails the task with `url_not_allowed`.
-- Iframe document navigation follows the same host rule. A blocked iframe is
-  aborted and becomes a bounded warning, so the allowed main page can still
-  be captured.
+- HTTP 301/302 and other redirects, plus later `window.location` navigation,
+  may remain on that same exact host; a cross-host main-document navigation
+  fails the task with `url_not_allowed`.
+- Iframe document navigation must also use the initial exact host. A blocked
+  iframe is aborted and becomes a bounded warning, so the allowed main page
+  can still be captured.
 
 Images, stylesheets, scripts, fonts, and other non-document subresources do
 not require list membership. They retain the existing public-HTTP(S) policy:
@@ -114,10 +118,11 @@ PHP tests cover default seeding, textarea normalization, invalid line numbers,
 empty-list behavior, settings write atomicity, the API's HTTP-200 rejection,
 and client attempts to inject an internal allowlist.
 
-Node tests cover runner-list validation, exact host matching, unallowlisted
-redirects and iframe navigation, delayed main-document navigation, and
-continued rejection of loopback/private DNS. Existing capture/crop and generic
-Pack runner tests remain in the full PHP harness.
+Node tests cover runner-list validation, exact host matching, a permitted
+same-host redirect, rejection of a cross-host redirect even when its target is
+separately allowlisted, iframe navigation, delayed main-document navigation,
+and continued rejection of loopback/private DNS. Existing capture/crop and
+generic Pack runner tests remain in the full PHP harness.
 
 The documentation describes the admin workflow and the intentional boundary:
 the allowlist enables known sites; it does not enable general-purpose arbitrary
