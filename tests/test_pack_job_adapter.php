@@ -168,6 +168,10 @@ hub_test('Pack job container runner restricts network profiles', function (): vo
         hub_test_assert(in_array($requestMount, $command, true) && !in_array($requestMount . ',readonly', $command, true), 'Web Screenshot request mount must remain writable for entrypoint ACL setup');
         hub_test_assert(in_array($configMount, $command, true), 'non-request public input mounts must remain readonly');
 
+        $edgeTts = hub_get_pack('edge-tts')['manifest'];
+        $edgePublic = hub_pack_async_job_contract($edgeTts, 'synthesize');
+        hub_test_assert(is_array($edgePublic) && ($edgePublic['runner']['network_profile'] ?? null) === 'public_egress', 'only the immutable Web Screenshot capture and Edge TTS synthesize routes may use public egress');
+
         $arbitraryManifest = hub_test_adapter_manifest('adapter-network-arbitrary', '1.0.0');
         $arbitraryManifest['async_jobs'][0]['runner']['network_profile'] = 'customer-network';
         hub_test_assert(hub_pack_async_job_contract($arbitraryManifest, 'convert') === null

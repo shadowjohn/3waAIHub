@@ -83,6 +83,15 @@
       "featured": true
     },
     {
+      "id": "edge-tts",
+      "name": "Edge TTS External Service",
+      "version": "0.1.0",
+      "category": "audio",
+      "description": "Experimental CPU-only text-to-speech adapter for Microsoft Edge's online speech service.",
+      "path": "packs/edge-tts",
+      "featured": true
+    },
+    {
       "id": "audio-cleanup",
       "name": "GPU Audio Cleanup",
       "version": "0.1.0",

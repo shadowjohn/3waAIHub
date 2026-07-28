@@ -1,0 +1,90 @@
+{
+  "schema_version": "0.1",
+  "id": "edge-tts",
+  "name": "Edge TTS External Service",
+  "version": "0.1.0",
+  "category": "audio",
+  "type": "internal_task",
+  "execution_type": "async_task",
+  "runtime_level": "L2-container-runner",
+  "runtime_ready": true,
+  "default_mode": "edge_tts",
+  "experimental": true,
+  "description": "Experimental CPU-only text-to-speech adapter for Microsoft Edge's online speech service.",
+  "runtime": {
+    "kind": "internal_task"
+  },
+  "gateway": {
+    "invoke_path": "task_submit:pack_job",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 1
+  },
+  "async_jobs": [
+    {
+      "job": "synthesize",
+      "input": {
+        "fields": ["text", "voice", "rate", "volume", "pitch"],
+        "source_artifact_types": [],
+        "source_required": false,
+        "request_schema": {
+          "text": {"type": "string", "required": true, "max_length": 4096},
+          "voice": {"type": "string", "required": false, "enum": ["zh-TW-HsiaoChenNeural", "zh-TW-HsiaoYuNeural", "zh-TW-YunJheNeural", "en-US-EmmaMultilingualNeural", "en-US-AndrewMultilingualNeural"], "default": "zh-TW-HsiaoChenNeural"},
+          "rate": {"type": "string", "required": false, "enum": ["-50%", "-25%", "+0%", "+25%", "+50%"], "default": "+0%"},
+          "volume": {"type": "string", "required": false, "enum": ["-50%", "-25%", "+0%", "+25%", "+50%"], "default": "+0%"},
+          "pitch": {"type": "string", "required": false, "enum": ["-50Hz", "-25Hz", "+0Hz", "+25Hz", "+50Hz"], "default": "+0Hz"}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/edge-tts:0.1.0",
+        "entrypoint": ["/app/edge-tts-entrypoint.sh", "/app/synthesize.py"],
+        "args": [],
+        "output_dir": "output",
+        "accelerator": "cpu",
+        "required_vram_mb": 0,
+        "timeout_seconds": 150,
+        "network_profile": "public_egress",
+        "executor": "container"
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "generated_audio",
+            "path": "generated_audio.mp3",
+            "mime_types": ["audio/mpeg"],
+            "max_bytes": 16777216,
+            "audio": {}
+          },
+          {
+            "type": "synthesis_metadata",
+            "path": "synthesis_metadata.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 65536,
+            "json": {"required_keys": ["provider", "client_version", "voice", "rate", "volume", "pitch", "format", "audio_bytes", "elapsed_seconds", "warnings"]}
+          }
+        ]
+      }
+    }
+  ],
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": false,
+    "min_vram_mb": 0
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "cpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": []
+  },
+  "env": [],
+  "preflight": {
+    "checks": ["docker"]
+  },
+  "install": {
+    "default_service_key": "edge-tts-main",
+    "compose_project": "3waaihub_edge_tts"
+  }
+}

@@ -101,6 +101,7 @@ function hub_pack_job_async_routes(): array
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup', 'accelerator' => 'gpu'],
         'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe', 'accelerator' => 'gpu'],
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
+        'edge_tts' => ['pack_id' => 'edge-tts', 'job' => 'synthesize', 'accelerator' => 'cpu'],
         'web_capture' => ['pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu'],
     ];
 }
@@ -252,7 +253,8 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         }
         if ($runner !== null
             && ($runner['network_profile'] ?? 'isolated') === 'public_egress'
-            && ((string)($manifest['id'] ?? '') !== 'web-screenshot' || $job !== 'capture')) {
+            && !(((string)($manifest['id'] ?? '') === 'web-screenshot' && $job === 'capture')
+                || ((string)($manifest['id'] ?? '') === 'edge-tts' && $job === 'synthesize'))) {
             return null;
         }
         $runnerConfig = null;
