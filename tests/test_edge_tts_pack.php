@@ -80,6 +80,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
     foreach (['FROM python:3.13-slim-bookworm', 'edge-tts==7.2.6', 'COPY edge-tts-entrypoint.sh synthesize.py test_egress_firewall.sh test_synthesize.py ./', 'python3 -m unittest -v test_synthesize.py'] as $needle) {
         hub_test_assert(str_contains($dockerfile, $needle), 'Edge TTS Dockerfile must pin and offline-test its runner: ' . $needle);
     }
+    hub_test_assert(!str_contains($dockerfile, 'mawk'), 'Edge TTS Dockerfile must not install unused mawk');
     hub_test_assert(($manifest['hardware'] ?? null) === [
         'gpu_required' => false,
         'gpu_supported' => false,
@@ -163,6 +164,15 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         'path' => 'packs/edge-tts',
         'featured' => true,
     ], 'Edge TTS must have the approved featured catalog entry');
+});
+
+hub_test('Edge TTS firewall setup is executed against command mocks', function (): void {
+    if (hub_platform_id() !== 'linux' || !function_exists('proc_open')) {
+        hub_test_skip('Edge TTS mocked firewall test requires Linux and proc_open');
+    }
+    $result = hub_run_command([HUB_ROOT . '/packs/edge-tts/service/test_egress_firewall.sh'], 20);
+    hub_test_assert(($result['exit_code'] ?? 1) === 0 && ($result['stdout'] ?? '') === 'test_egress_firewall: ok',
+        'Edge TTS firewall test must execute provider-only TCP 443, DNS removal, terminal DROP, and forced-failure sentinel checks: ' . ($result['output'] ?? ''));
 });
 
 hub_test('Edge TTS ready route still requires the administrator enable gate', function (): void {

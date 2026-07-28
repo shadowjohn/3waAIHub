@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends iptables mawk util-linux \
+    && apt-get install -y --no-install-recommends iptables util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system edge \
     && useradd --system --gid edge --home-dir /app --shell /usr/sbin/nologin edge
