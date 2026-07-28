@@ -15,6 +15,11 @@ the initial URL.
 This is a controlled v1 for known sites, not a claim that arbitrary public
 URLs are safe with application-layer checks alone.
 
+Administrators approve only hosts they trust. Application-layer URL checks do
+not provide a complete DNS-rebinding or non-HTTP egress boundary, so general
+user-supplied public URLs remain out of scope until a separate runtime
+containment design is adopted.
+
 ## Scope
 
 - Add a system-wide `AIHUB_WEB_CAPTURE_ALLOWED_HOSTS` setting on **設定 → API
@@ -28,6 +33,11 @@ URLs are safe with application-layer checks alone.
   focusit.tw
   focusit.com.tw
   gis.tw
+  wmts.nlsc.gov.tw
+  maps.nlsc.gov.tw
+  mts1.google.com
+  api.maptiler.com
+  tile.openstreetmap.org
   ```
 
 - Enforce the setting at API admission and in the Web Screenshot runner for
@@ -59,6 +69,8 @@ control characters, and malformed names are rejected. There may be at most
 Validation is transactional from the administrator's point of view: an
 invalid line produces a line-numbered message and leaves the current setting
 unchanged. Existing CSRF and system-administrator checks remain in force.
+Each successful change records the administrator, timestamp, and added/removed
+host counts in the existing audit log.
 
 `hub_ensure_default_storage_settings()` inserts the new default for both new
 and existing databases when it next runs; no schema migration is needed.
@@ -70,21 +82,18 @@ cannot supply an allowlist field.
 
 At admission, the gateway normalizes the requested URL, retains the current
 scheme/credential/port/public-DNS validation, then requires its normalized
-host to be an exact member of the configured list. If it is not, it returns:
+host to be an exact member of the configured list. If it is not, it returns
+the existing HTTP 400 `url_not_allowed` error and does not create a task.
+Authentication, HTTP method, and ordinary contract failures keep their
+existing HTTP 4xx responses.
 
-```json
-{"status":"NO","reason":"url_not_allowed"}
-```
-
-with HTTP 200 and does not create a task. Authentication, HTTP method, and
-ordinary contract failures keep their existing HTTP 4xx responses.
-
-For an admitted task, Hub writes a normalized snapshot of the allowed hosts
-into the read-only runner `request.json`. This field is Hub-generated after
-the client input is filtered, so it is not part of the external API contract
-and a caller attempting to send it is rejected. A queued task therefore has a
-stable policy; an administrator who must revoke a queued capture cancels that
-task. Changes apply to all later submissions.
+Immediately before a worker starts a container, Hub re-reads the allowlist and
+checks the task URL again. It then writes the normalized current list into the
+read-only runner `request.json`. This field is Hub-generated after client input
+is filtered, so it is not part of the external API contract and a caller
+attempting to send it is rejected. Removing a host therefore stops a queued
+task before it starts; a task already running keeps the policy with which its
+container began.
 
 ## Runner enforcement
 
@@ -102,6 +111,8 @@ not permit a cross-host redirect.
 - Iframe document navigation must also use the initial exact host. A blocked
   iframe is aborted and becomes a bounded warning, so the allowed main page
   can still be captured.
+- The context supports one page only. A popup or newly created page is closed
+  and cannot issue a document navigation.
 
 Images, stylesheets, scripts, fonts, and other non-document subresources do
 not require list membership. They retain the existing public-HTTP(S) policy:
@@ -115,14 +126,17 @@ produce a success result.
 ## Verification
 
 PHP tests cover default seeding, textarea normalization, invalid line numbers,
-empty-list behavior, settings write atomicity, the API's HTTP-200 rejection,
-and client attempts to inject an internal allowlist.
+empty-list behavior, settings write atomicity and audit logging, the API's
+HTTP-400 rejection, client attempts to inject an internal allowlist, and the
+worker's pre-start recheck after a host is removed.
 
 Node tests cover runner-list validation, exact host matching, a permitted
 same-host redirect, rejection of a cross-host redirect even when its target is
-separately allowlisted, iframe navigation, delayed main-document navigation,
-and continued rejection of loopback/private DNS. Existing capture/crop and
-generic Pack runner tests remain in the full PHP harness.
+separately allowlisted, iframe and popup navigation, delayed main-document
+navigation, and continued rejection of loopback/private DNS. URL edge-case
+fixtures are shared between the PHP and Node checks so hostname normalization
+cannot drift. Existing capture/crop and generic Pack runner tests remain in
+the full PHP harness.
 
 The documentation describes the admin workflow and the intentional boundary:
 the allowlist enables known sites; it does not enable general-purpose arbitrary
