@@ -113,8 +113,8 @@ hub_test('web capture Pack and README publish the allowlist bridge contract', fu
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
     $route = hub_resolve_pack_job_async_route($db, 'web_capture');
-    hub_test_assert(($installed['service']['pack_version'] ?? null) === '0.1.1'
-        && ($route['runner']['network_profile'] ?? null) === 'public_egress', 'web capture must install as the public-egress 0.1.1 Pack');
+    hub_test_assert(($installed['service']['pack_version'] ?? null) === '0.1.2'
+        && ($route['runner']['network_profile'] ?? null) === 'public_egress', 'web capture must install as the public-egress 0.1.2 Pack');
 
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
     $section = strstr($readme, '### Web Screenshot allowed hosts');

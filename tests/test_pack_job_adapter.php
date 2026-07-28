@@ -114,7 +114,9 @@ function hub_test_adapter_cleanup(): array
 
 hub_test('Pack job container runner restricts network profiles', function (): void {
     $workspace = sys_get_temp_dir() . '/3waaihub_adapter_network_' . bin2hex(random_bytes(4));
-    if (!mkdir($workspace . '/input', 0700, true) || !mkdir($workspace . '/output', 0700, true)) {
+    if (!mkdir($workspace . '/input', 0700, true) || !mkdir($workspace . '/output', 0700, true)
+        || file_put_contents($workspace . '/input/request.json', "{}\n") === false
+        || file_put_contents($workspace . '/input/runner_config.json', "{}\n") === false) {
         throw new RuntimeException('Cannot create adapter network workspace.');
     }
     try {
@@ -129,6 +131,9 @@ hub_test('Pack job container runner restricts network profiles', function (): vo
         ])['command'];
         $isolatedNetwork = array_search('--network', $isolatedCommand, true);
         hub_test_assert($isolatedNetwork !== false && ($isolatedCommand[$isolatedNetwork + 1] ?? null) === 'none' && !in_array('--gpus', $isolatedCommand, true), 'ordinary CPU Pack jobs must remain network-isolated without GPU access');
+        $requestMount = 'type=bind,src=' . $workspace . '/input/request.json,dst=/workspace/input/request.json';
+        $configMount = 'type=bind,src=' . $workspace . '/input/runner_config.json,dst=/workspace/input/runner_config.json,readonly';
+        hub_test_assert(in_array($requestMount . ',readonly', $isolatedCommand, true) && in_array($configMount, $isolatedCommand, true), 'generic input mounts must remain readonly');
 
         $captureManifest = hub_test_adapter_manifest('adapter-network-capture', '1.0.0');
         $captureManifest['async_jobs'][0]['runner']['network_profile'] = 'capture_egress';
@@ -160,6 +165,8 @@ hub_test('Pack job container runner restricts network profiles', function (): vo
         $capability = array_search('--cap-add', $command, true);
         hub_test_assert($network !== false && ($command[$network + 1] ?? null) === 'bridge', 'Web Screenshot public egress must use Docker bridge');
         hub_test_assert($capability !== false && ($command[$capability + 1] ?? null) === 'NET_ADMIN', 'Web Screenshot firewall setup must receive NET_ADMIN');
+        hub_test_assert(in_array($requestMount, $command, true) && !in_array($requestMount . ',readonly', $command, true), 'Web Screenshot request mount must remain writable for entrypoint ACL setup');
+        hub_test_assert(in_array($configMount, $command, true), 'non-request public input mounts must remain readonly');
 
         $arbitraryManifest = hub_test_adapter_manifest('adapter-network-arbitrary', '1.0.0');
         $arbitraryManifest['async_jobs'][0]['runner']['network_profile'] = 'customer-network';

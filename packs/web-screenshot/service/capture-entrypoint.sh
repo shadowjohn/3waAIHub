@@ -30,6 +30,13 @@ append_rule() {
   "$tool" -C "$chain" "$@"
 }
 
+grant_capture_workspace_access() {
+  setfacl -m u:capture:r-- /workspace/input/request.json
+  getfacl -cp /workspace/input/request.json | grep -Fqx 'user:capture:r--'
+  setfacl -m u:capture:rwx /workspace/output
+  getfacl -cp /workspace/output | grep -Fqx 'user:capture:rwx'
+}
+
 add_resolver_rules() {
   local resolver
   for resolver in "$@"; do
@@ -85,6 +92,8 @@ for range in "${ipv6_blocked[@]}"; do
 done
 append_rule ip6tables AIHUB_CAPTURE_OUTPUT6 -d 2000::/3 -p tcp -m multiport --dports 80,443 -j ACCEPT
 append_rule ip6tables AIHUB_CAPTURE_OUTPUT6 -j REJECT
+
+grant_capture_workspace_access
 
 exec setpriv --reuid=capture --regid=capture --clear-groups \
   --bounding-set=-all --ambient-caps=-all -- "$@"

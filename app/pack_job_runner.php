@@ -542,7 +542,8 @@ function hub_pack_job_default_runner_command(array $context): array
         $path = $workspace . '/input/' . $file;
         if (is_file($path) && !is_link($path)) {
             $command[] = '--mount';
-            $command[] = 'type=bind,src=' . $path . ',dst=' . $containerWorkspace . '/input/' . $file . ',readonly';
+            $command[] = 'type=bind,src=' . $path . ',dst=' . $containerWorkspace . '/input/' . $file
+                . ($file === 'request.json' && ($runner['network_profile'] ?? 'isolated') === 'public_egress' ? '' : ',readonly');
         }
     }
     foreach ((array)($runner['asset_mounts'] ?? []) as $asset) {
