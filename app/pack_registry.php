@@ -95,25 +95,26 @@ function hub_get_pack(string $packId): ?array
     return null;
 }
 
-function hub_audio_async_routes(): array
+function hub_pack_job_async_routes(): array
 {
     return [
-        'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
-        'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
-        'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize'],
+        'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup', 'accelerator' => 'gpu'],
+        'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe', 'accelerator' => 'gpu'],
+        'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
+        'web_capture' => ['pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu'],
     ];
 }
 
-function hub_is_audio_async_mode(string $mode): bool
+function hub_is_pack_job_async_mode(string $mode): bool
 {
-    return array_key_exists($mode, hub_audio_async_routes());
+    return array_key_exists($mode, hub_pack_job_async_routes());
 }
 
-function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
+function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
 {
-    $route = hub_audio_async_routes()[$requestedMode] ?? null;
+    $route = hub_pack_job_async_routes()[$requestedMode] ?? null;
     if ($route === null) {
-        throw new InvalidArgumentException('unknown_audio_async_mode');
+        throw new InvalidArgumentException('unknown_pack_job_async_mode');
     }
 
     $pack = hub_get_pack((string)$route['pack_id']);
@@ -141,6 +142,9 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
     if ($jobContract === null) {
         throw new RuntimeException('pack_version_unavailable');
     }
+    if (($jobContract['runner']['accelerator'] ?? null) !== $route['accelerator']) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
 
     $snapshot = hub_pack_job_contract_snapshot($jobContract);
     return [
@@ -149,21 +153,21 @@ function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
         'pack_version' => $packVersion,
         'job' => $route['job'],
         'runtime_mode' => 'job',
-        'accelerator' => 'gpu',
+        'accelerator' => $route['accelerator'],
         'route_resolved_at' => hub_now(),
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
     ] + $jobContract;
 }
 
-function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
+function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
 {
     $requestedMode = (string)($snapshot['requested_mode'] ?? '');
-    if (!hub_is_audio_async_mode($requestedMode)) {
+    if (!hub_is_pack_job_async_mode($requestedMode)) {
         throw new RuntimeException('pack_version_unavailable');
     }
     hub_resolve_stored_pack_job($db, $snapshot);
-    $route = hub_resolve_audio_async_route($db, $requestedMode);
+    $route = hub_resolve_pack_job_async_route($db, $requestedMode);
     foreach (['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator'] as $field) {
         if (($snapshot[$field] ?? null) !== ($route[$field] ?? null)) {
             throw new RuntimeException('pack_version_unavailable');
@@ -171,6 +175,40 @@ function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
     }
 
     return $route;
+}
+
+function hub_audio_async_routes(): array
+{
+    $routes = [];
+    foreach (['audio_cleanup', 'speech_transcribe', 'voice_generate'] as $mode) {
+        $route = hub_pack_job_async_routes()[$mode];
+        $routes[$mode] = ['pack_id' => $route['pack_id'], 'job' => $route['job']];
+    }
+
+    return $routes;
+}
+
+function hub_is_audio_async_mode(string $mode): bool
+{
+    return array_key_exists($mode, hub_audio_async_routes());
+}
+
+function hub_resolve_audio_async_route(PDO $db, string $requestedMode): array
+{
+    if (!hub_is_audio_async_mode($requestedMode)) {
+        throw new InvalidArgumentException('unknown_audio_async_mode');
+    }
+
+    return hub_resolve_pack_job_async_route($db, $requestedMode);
+}
+
+function hub_revalidate_audio_async_route(PDO $db, array $snapshot): array
+{
+    if (!hub_is_audio_async_mode((string)($snapshot['requested_mode'] ?? ''))) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+
+    return hub_revalidate_pack_job_async_route($db, $snapshot);
 }
 
 function hub_pack_async_job_contract(array $manifest, string $job): ?array

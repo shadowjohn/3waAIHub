@@ -1,0 +1,73 @@
+{
+  "schema_version": "0.1",
+  "id": "web-screenshot",
+  "name": "Web Screenshot",
+  "version": "0.1.0",
+  "category": "web",
+  "type": "internal_task",
+  "execution_type": "async_task",
+  "runtime_level": "L1-contract",
+  "runtime_ready": true,
+  "default_mode": "web_capture",
+  "description": "Capture a screenshot from one public HTTP or HTTPS URL.",
+  "runtime": {
+    "kind": "internal_task"
+  },
+  "gateway": {
+    "invoke_path": "task_submit:pack_job",
+    "methods": ["POST"],
+    "timeout_sec": 300,
+    "max_upload_mb": 1
+  },
+  "async_jobs": [
+    {
+      "job": "capture",
+      "input": {
+        "fields": ["url"],
+        "source_artifact_types": [],
+        "source_required": false,
+        "request_schema": {
+          "url": {"type": "string", "required": true, "max_length": 2048}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/web-screenshot:0.1.0",
+        "entrypoint": ["/app/capture"],
+        "args": [],
+        "output_dir": "output",
+        "accelerator": "cpu",
+        "required_vram_mb": 0,
+        "timeout_seconds": 300
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "screenshot",
+            "path": "screenshot.png",
+            "mime_types": ["image/png"],
+            "max_bytes": 16777216
+          }
+        ]
+      }
+    }
+  ],
+  "hardware": {
+    "gpu_required": false
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "cpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": []
+  },
+  "env": [],
+  "preflight": {
+    "checks": []
+  },
+  "install": {
+    "default_service_key": "web-screenshot-main",
+    "compose_project": "3waaihub_web_screenshot_main"
+  }
+}

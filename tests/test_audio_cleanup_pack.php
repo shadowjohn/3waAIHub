@@ -263,13 +263,13 @@ hub_test('audio-cleanup install does not mark its service installed when the con
 hub_test('audio-cleanup request schema rejects invalid operations and unavailable enhancement', function (): void {
     $pack = hub_get_pack('audio-cleanup');
     $route = hub_pack_async_job_contract($pack['manifest'], 'cleanup');
-    hub_test_assert(hub_test_throws(static fn (): array => hub_audio_task_input([], $route)), 'operation must be required');
-    hub_test_assert(hub_test_throws(static fn (): array => hub_audio_task_input(['operation' => 'anything'], $route)), 'unknown operation must be rejected');
-    hub_test_assert(hub_test_throws(static fn (): array => hub_audio_task_input(['operation' => 'separate', 'demucs_model' => 'host-path'], $route)), 'Demucs model must be an allowlisted alias');
-    hub_test_assert(hub_test_throws(static fn (): array => hub_audio_task_input(['operation' => 'enhance'], $route)), 'DeepFilterNet-disabled enhancement must be rejected');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_task_input([], $route)), 'operation must be required');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_task_input(['operation' => 'anything'], $route)), 'unknown operation must be rejected');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_task_input(['operation' => 'separate', 'demucs_model' => 'host-path'], $route)), 'Demucs model must be an allowlisted alias');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_task_input(['operation' => 'enhance'], $route)), 'DeepFilterNet-disabled enhancement must be rejected');
     $enabled = $route;
     $enabled['capabilities']['deepfilternet'] = true;
-    hub_test_assert(hub_audio_task_input(['operation' => 'enhance'], $enabled) === ['operation' => 'enhance', 'demucs_model' => 'balanced'], 'enabled enhancement must retain the normalized request');
+    hub_test_assert(hub_pack_job_task_input(['operation' => 'enhance'], $enabled) === ['operation' => 'enhance', 'demucs_model' => 'balanced'], 'enabled enhancement must retain the normalized request');
 
     $invalidAliasSchema = $pack['manifest'];
     $invalidAliasSchema['async_jobs'][0]['input']['request_schema']['demucs_model']['enum'] = ['host-path'];

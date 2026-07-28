@@ -346,7 +346,7 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     unset($input['cancel_requested'], $input['cancel_requested_at']);
     $voiceContext = $input['voice_context'] ?? null;
     unset($input['voice_context']);
-    $route = hub_revalidate_audio_async_route($db, $task);
+    $route = hub_revalidate_pack_job_async_route($db, $task);
     $sourceUploadPath = $input['source_upload_path'] ?? null;
     unset($input['source_upload_path'], $input['original_filename']);
     $input = hub_pack_job_normalize_request_input($input, $route);
