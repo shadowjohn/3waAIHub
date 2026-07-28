@@ -456,7 +456,7 @@ function hub_pack_async_job_runner_asset_mount_conditions_valid(array $mounts, a
 
 function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null, ?array $requestSchema = null): ?array
 {
-    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'executor', 'secret_env', 'asset_mounts']) !== []) {
+    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'network_profile', 'executor', 'secret_env', 'asset_mounts']) !== []) {
         return null;
     }
     $image = trim((string)($runner['image'] ?? ''));
@@ -466,13 +466,16 @@ function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null
     $accelerator = (string)($runner['accelerator'] ?? '');
     $requiredVram = $runner['required_vram_mb'] ?? null;
     $timeout = $runner['timeout_seconds'] ?? null;
+    $hasNetworkProfile = array_key_exists('network_profile', $runner);
+    $networkProfile = $runner['network_profile'] ?? 'isolated';
     $executor = $runner['executor'] ?? null;
     if (preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
         || !is_array($entrypoint) || !array_is_list($entrypoint) || $entrypoint === []
         || !is_array($args) || !array_is_list($args)
         || $outputDir !== 'output' || !in_array($accelerator, ['cpu', 'gpu'], true)
         || !is_int($requiredVram) || $requiredVram < 0 || $requiredVram > 1048576
-        || !is_int($timeout) || $timeout < 1 || $timeout > 86400) {
+        || !is_int($timeout) || $timeout < 1 || $timeout > 86400
+        || !is_string($networkProfile) || !in_array($networkProfile, ['isolated', 'capture_egress'], true)) {
         return null;
     }
     if ($executor !== null && $executor !== 'container') {
@@ -514,7 +517,8 @@ function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null
         'accelerator' => $accelerator,
         'required_vram_mb' => $requiredVram,
         'timeout_seconds' => $timeout,
-    ] + ($executor === null ? [] : ['executor' => $executor])
+    ] + ($hasNetworkProfile ? ['network_profile' => $networkProfile] : [])
+        + ($executor === null ? [] : ['executor' => $executor])
         + ($secretEnv === [] ? [] : ['secret_env' => $secretEnv])
         + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts]);
 }
