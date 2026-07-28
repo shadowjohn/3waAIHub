@@ -348,12 +348,14 @@ sudo bash scripts/install_capture_egress_network.sh --check
 ```bash
 sudo bash scripts/install_capture_egress_network.sh
 sudo install -D -m 0644 deploy/systemd/aihub-capture-egress.service /etc/systemd/system/aihub-capture-egress.service
+sudo install -D -m 0644 deploy/systemd/cron.service.d/aihub-capture-egress.conf /etc/systemd/system/cron.service.d/aihub-capture-egress.conf
 sudo systemctl daemon-reload
 sudo systemctl enable --now aihub-capture-egress.service
+sudo systemctl restart cron.service
 sudo bash scripts/install_capture_egress_network.sh --check
 ```
 
-此 unit 的預設專案位置是 `/DATA/3waAIHub`；其他部署路徑請先調整 unit 的 `ExecStart`。它會在 Docker 重啟後重套規則，並在實際執行 `task_worker.php` 的 `cron.service` 前完成。
+此 unit 的預設專案位置是 `/DATA/3waAIHub`；其他部署路徑請先調整 unit 的 `ExecStart`。cron drop-in 會要求 egress unit 先成功，Docker 重啟時兩者一起重啟；因此 egress 設定失敗會阻止 cron worker 啟動或重啟。
 
 `./install.sh` 若以 root 執行，會自動掛載 command worker cron。若以非 root 執行，請手動掛載：
 

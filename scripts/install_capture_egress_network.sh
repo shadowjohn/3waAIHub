@@ -6,11 +6,13 @@ subnet='172.31.240.0/24'
 chain='AIHUB_CAPTURE_EGRESS'
 
 network_ready() {
-    [ "$(docker network inspect -f '{{(index .IPAM.Config 0).Subnet}}|{{.EnableIPv6}}' "$network" 2>/dev/null)" = "$subnet|false" ]
+    [ "$(docker network inspect -f '{{.Driver}}|{{len .IPAM.Config}}|{{(index .IPAM.Config 0).Subnet}}|{{.EnableIPv6}}' "$network" 2>/dev/null)" = "bridge|1|$subnet|false" ]
 }
 
 jump_ready() {
-    iptables -C DOCKER-USER -s "$subnet" -j "$chain" >/dev/null 2>&1
+    local first_rule
+    first_rule=$(iptables -S DOCKER-USER 2>/dev/null | awk '$1 == "-A" { print; exit }') || return 1
+    [ "$first_rule" = "-A DOCKER-USER -s $subnet -j $chain" ]
 }
 
 case "${1:-}" in
@@ -45,4 +47,4 @@ for destination in 0.0.0.0/8 10/8 100.64/10 127/8 169.254/16 172.16/12 192.0.0/2
 done
 iptables -C "$chain" -p tcp -m multiport ! --dports 80,443 -j REJECT >/dev/null 2>&1 || iptables -A "$chain" -p tcp -m multiport ! --dports 80,443 -j REJECT
 iptables -C "$chain" -j RETURN >/dev/null 2>&1 || iptables -A "$chain" -j RETURN
-iptables -C DOCKER-USER -s "$subnet" -j "$chain" >/dev/null 2>&1 || iptables -A DOCKER-USER -s "$subnet" -j "$chain"
+jump_ready || iptables -I DOCKER-USER 1 -s "$subnet" -j "$chain"
