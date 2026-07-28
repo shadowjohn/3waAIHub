@@ -75,6 +75,12 @@ case "${1:-}" in
     printf '%s\n' '-N DOCKER-USER'
     case "$position" in
     front) printf '%s\n' '-A DOCKER-USER -s 172.31.240.0/24 -j AIHUB_CAPTURE_EGRESS' ;;
+    front-large)
+        printf '%s\n' '-A DOCKER-USER -s 172.31.240.0/24 -j AIHUB_CAPTURE_EGRESS'
+        for _ in {1..20000}; do
+            printf '%s\n' '-A DOCKER-USER -j ACCEPT'
+        done
+        ;;
     after-accept) printf '%s\n' '-A DOCKER-USER -j ACCEPT' '-A DOCKER-USER -s 172.31.240.0/24 -j AIHUB_CAPTURE_EGRESS' ;;
     missing) printf '%s\n' '-A DOCKER-USER -j ACCEPT' ;;
     esac
@@ -107,6 +113,13 @@ assert_contains 'iptables -S DOCKER-USER' "$check_log"
 assert_not_contains 'network create' "$check_log"
 assert_not_contains 'iptables -N' "$check_log"
 assert_not_contains 'iptables -A' "$check_log"
+
+log="$tmp/check-large-chain.log"
+if ! large_ready=$(run "$log" MOCK_NETWORK_EXISTS=1 MOCK_JUMP_POSITION=front-large "$script" --check); then
+    fail '--check must consume a large DOCKER-USER chain after the matching first rule'
+fi
+[ "$large_ready" = 'capture_egress=ready' ] || fail '--check must report ready for a large matching chain'
+assert_no_mutations "$log"
 
 log="$tmp/check-missing-jump.log"
 if run "$log" MOCK_NETWORK_EXISTS=1 MOCK_JUMP_POSITION=missing "$script" --check > "$tmp/check-missing-jump.out"; then

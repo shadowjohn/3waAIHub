@@ -11,7 +11,7 @@ network_ready() {
 
 jump_ready() {
     local first_rule
-    first_rule=$(iptables -S DOCKER-USER 2>/dev/null | awk '$1 == "-A" { print; exit }') || return 1
+    first_rule=$(iptables -S DOCKER-USER 2>/dev/null | awk '$1 == "-A" && first == "" { first = $0 } END { if (first != "") print first }') || return 1
     [ "$first_rule" = "-A DOCKER-USER -s $subnet -j $chain" ]
 }
 
