@@ -1,9 +1,9 @@
 {
   "name": "3waaihub-web-screenshot",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "scripts": {
-    "test": "node test_url_policy.js && node test_capture.js"
+    "test": "bash test_egress_firewall.sh && node test_url_policy.js && node test_capture.js"
   },
   "dependencies": {
     "playwright": "1.61.1",
