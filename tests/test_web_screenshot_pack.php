@@ -109,6 +109,24 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
     ] && !hub_is_audio_async_mode('web_capture'), 'audio compatibility routes must remain audio-only');
 });
 
+hub_test('web capture Pack and README publish the allowlist bridge contract', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
+    $route = hub_resolve_pack_job_async_route($db, 'web_capture');
+    hub_test_assert(($installed['service']['pack_version'] ?? null) === '0.1.1'
+        && ($route['runner']['network_profile'] ?? null) === 'public_egress', 'web capture must install as the public-egress 0.1.1 Pack');
+
+    $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
+    $section = strstr($readme, '### Web Screenshot allowed hosts');
+    hub_test_assert(is_string($section), 'README must document Web Screenshot allowed hosts');
+    $section = strstr($section, "\n## ", true);
+    hub_test_assert(is_string($section), 'Web Screenshot README section must end before the next top-level section');
+    foreach (['AIHUB_WEB_CAPTURE_ALLOWED_HOSTS', '設定 → API 與安全', "Docker's existing `bridge` network"] as $needle) {
+        hub_test_assert(str_contains($section, $needle), 'Web Screenshot README section missing ' . $needle);
+    }
+    hub_test_assert(!str_contains($section, 'scripts/install_capture_egress_network.sh --check'), 'Web Screenshot README section must not require the obsolete egress installer');
+});
+
 hub_test('web capture admission rejects caller controls and unsafe URLs', function (): void {
     hub_test_web_capture_isolate(static function (): void {
         $db = hub_test_reset_db();
