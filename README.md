@@ -44,6 +44,20 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
 - Marketplace Pack preflight，依最新 host metrics 判斷 Docker / GPU / VRAM / compute capability / storage
 
+## 3wa 節點定位
+
+`3wa` 的 RTX 5060 Ti 16 GB 節點可作為 Unified Router，但目前以語音能力為主要對外工作：正式 client 優先使用 async `voice_generate` 與 `speech_transcribe`；`tts` / `asr` sync API 保留給短請求診斷與 Router relay 驗證。所有客戶仍只使用 Router 配發的 Token 與 `cluster_api.php`，不需要知道實際執行節點。
+
+| 能力 | 3wa 運行定位 | 已完成的真實驗收 |
+| --- | --- | --- |
+| `voice_generate` / `tts` | 主要 GPU 語音生成 | Router relay 回傳真實 WAV，GPU lease 會正確釋放。 |
+| `speech_transcribe` / `asr` | 主要 GPU 語音辨識 | Router relay 回傳非 mock 中文辨識，faster-whisper 使用 CUDA `float16`。 |
+| `background_remove` | 可展示的影像能力 | BiRefNet 經 Router 回傳透明 PNG，已確認 CUDA 與 alpha 通道。 |
+| `ocr` | 可用的影像文字能力 | PP-OCRv5 經 Router 完成非 mock GPU 推論。 |
+| `rag` | 已完成本機 NIM 驗證，尚未公開 | Embed 與 Rerank 都已跑過真實 GPU 推論；未納入長期 GPU 排程前，不會列入 Router inventory。 |
+
+16 GB VRAM 主機應避免把 VoxCPM2、兩個 Nemotron NIM 與其他大型 GPU Pack 無限制地同時常駐。語音工作優先；RAG 目前保留映像與模型快取，日後把 Embed / Rerank NIM 納入受管服務與 GPU lease 後，才開放 `rag` mode 給客戶。
+
 ## 平台能力矩陣
 
 | 能力 | 狀態 |
@@ -1071,6 +1085,25 @@ L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；�
 - runtime 另掛載 `${AIHUB_CACHE_DIR}/whisper:/cache/whisper` 與 `${SERVICE_DATA_DIR}:/data/service`；`smoke.py` 仍只驗證依賴 import，不載入或下載模型。
 
 本階段不做 VAD、diarization、subtitle 或 streaming。
+
+### image-birefnet Runtime Level
+
+`image-birefnet` 是 L5 `benchmark-ready` 的單張圖片去背 Pack：
+
+- 對外 mode 為 `background_remove`，以 `multipart/form-data` 的 `image` 欄位上傳圖片。
+- 成功時直接回 `image/png`，保留透明 alpha；Gateway 會保留 `X-3waAIHub-Model`、`X-3waAIHub-Device`、尺寸與耗時 metadata。
+- 預設 GPU-first，GPU 不可用時才依 Pack 設定回退 CPU；client 不需傳 host path 或模型路徑。
+- 可用 `output=cutout` 取得透明 PNG；背景合成與邊緣參數仍由 Pack contract 控制。
+- 3wa 已完成從 `cluster_api.php` 上傳圖片、CUDA 推論、透明 PNG relay 與下載驗收。
+
+### rag-nemotron Runtime Level
+
+`rag-nemotron` 目前維持 L3 `adapter`，提供 `operation=embed` 與 `operation=rerank` 的文字 RAG contract。`real_inference=1` 時，adapter 只會轉呼叫已配置且 ready 的 Nemotron Embed / Rerank backend；backend 不可用時會回明確錯誤，不會把結果偽裝成 mock。
+
+- adapter 不內嵌 NIM 模型權重；NIM image、模型權重與快取都必須放在 repo 外的可持久化儲存。
+- `NEMOTRON_API_KEY` 是 service secret，不可寫入 README、Git 或 client request；只應由 Hub 的受保護 runtime `.env` 提供給 adapter。
+- 3wa 已分別完成 `llama-nemotron-embed-1b-v2` 的真實 2048 維 embedding，以及 `llama-nemotron-rerank-1b-v2` 的真實語意排序驗收。
+- 這只證明本機 NIM 與 adapter contract 可用，不表示 `rag` 已可長期公開。兩個 NIM 必須先成為受管服務並參與 GPU lease / VRAM 排程，才可在 16 GB 語音優先節點加入 Router inventory。
 
 ### structure-ppstructurev3 Runtime Level
 
