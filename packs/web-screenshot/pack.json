@@ -6,12 +6,17 @@
   "category": "web",
   "type": "internal_task",
   "execution_type": "async_task",
-  "runtime_level": "L1-contract",
+  "runtime_level": "L2-container-runner",
   "runtime_ready": true,
   "default_mode": "web_capture",
   "description": "Capture a screenshot from one public HTTP or HTTPS URL.",
   "runtime": {
     "kind": "internal_task"
+  },
+  "runner_build": {
+    "context": "service",
+    "dockerfile": "Dockerfile",
+    "image": "3waaihub/web-screenshot:0.1.0"
   },
   "gateway": {
     "invoke_path": "task_submit:pack_job",
@@ -46,31 +51,42 @@
         "output_dir": "output",
         "accelerator": "cpu",
         "required_vram_mb": 0,
-        "timeout_seconds": 300
+        "timeout_seconds": 135,
+        "network_profile": "capture_egress",
+        "executor": "container"
       },
       "output": {
         "artifacts": [
           {
-            "type": "screenshot",
+            "type": "screenshot_png",
             "path": "screenshot.png",
             "mime_types": ["image/png"],
-            "max_bytes": 16777216,
-            "image": {"format": "png", "max_width": 2560, "max_height": 2160, "max_pixels": 5529600}
+            "max_bytes": 52428800,
+            "image": {"format": "png", "max_width": 2560, "max_height": 30000, "max_pixels": 60000000}
           },
           {
-            "type": "cropped_screenshot",
-            "path": "cropped.png",
+            "type": "crop_png",
+            "path": "crop.png",
             "mime_types": ["image/png"],
-            "max_bytes": 16777216,
-            "image": {"format": "png", "max_width": 2560, "max_height": 2160, "max_pixels": 5529600},
-            "when": {"all_present": ["crop_x", "crop_y", "crop_width", "crop_height"]}
+            "max_bytes": 52428800,
+            "when": {"all_present": ["crop_x", "crop_y", "crop_width", "crop_height"]},
+            "image": {"format": "png", "max_width": 2560, "max_height": 30000, "max_pixels": 60000000}
+          },
+          {
+            "type": "capture_report",
+            "path": "capture_report.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 65536,
+            "json": {"required_keys": ["requested_url", "final_url", "http_status", "viewport", "image", "delay_seconds", "timeout_seconds", "javascript_executed", "crop", "elapsed_seconds", "playwright_version", "warnings"]}
           }
         ]
       }
     }
   ],
   "hardware": {
-    "gpu_required": false
+    "gpu_required": false,
+    "gpu_supported": false,
+    "min_vram_mb": 0
   },
   "queue": {
     "supported": true,
@@ -82,7 +98,7 @@
   },
   "env": [],
   "preflight": {
-    "checks": []
+    "checks": ["docker"]
   },
   "install": {
     "default_service_key": "web-screenshot-main",

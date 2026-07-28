@@ -105,6 +105,24 @@ function hub_test_pack_job_png(int $width, int $height): string
         . $chunk('IEND', '');
 }
 
+function hub_test_pack_job_capture_report(): string
+{
+    return json_encode([
+        'requested_url' => 'https://example.com/',
+        'final_url' => 'https://example.com/',
+        'http_status' => 200,
+        'viewport' => ['width' => 1, 'height' => 1],
+        'image' => ['width' => 1, 'height' => 1, 'bytes' => 1],
+        'delay_seconds' => 0,
+        'timeout_seconds' => 60,
+        'javascript_executed' => false,
+        'crop' => null,
+        'elapsed_seconds' => 0.1,
+        'playwright_version' => '1.61.1',
+        'warnings' => [],
+    ], JSON_THROW_ON_ERROR);
+}
+
 function hub_test_pack_job_truncated_png(): string
 {
     $ihdr = pack('NNC5', 1, 1, 8, 0, 0, 0, 0);
@@ -342,17 +360,18 @@ hub_test('Pack job image outputs enforce the web capture crop all-present condit
     $workspace = hub_test_pack_job_workspace();
     try {
         hub_test_pack_job_write($workspace . '/output/screenshot.png', hub_test_pack_job_png(1, 1));
-        hub_test_pack_job_write($workspace . '/output/cropped.png', hub_test_pack_job_png(1, 1));
+        hub_test_pack_job_write($workspace . '/output/capture_report.json', hub_test_pack_job_capture_report());
+        hub_test_pack_job_write($workspace . '/output/crop.png', hub_test_pack_job_png(1, 1));
         hub_test_assert(hub_test_pack_job_contract_fails(static fn (): array => hub_validate_pack_job_artifacts($workspace, [], $contract['artifact_contract'])), 'crop output must be absent without every crop input');
 
-        unlink($workspace . '/output/cropped.png');
-        hub_test_assert(count(hub_validate_pack_job_artifacts($workspace, [], $contract['artifact_contract'])) === 1, 'screenshot output must validate without crop inputs');
+        unlink($workspace . '/output/crop.png');
+        hub_test_assert(count(hub_validate_pack_job_artifacts($workspace, [], $contract['artifact_contract'])) === 2, 'screenshot and report outputs must validate without crop inputs');
 
         $cropInput = ['crop_x' => 0, 'crop_y' => 0, 'crop_width' => 1, 'crop_height' => 1];
         hub_test_assert(hub_test_pack_job_contract_fails(static fn (): array => hub_validate_pack_job_artifacts($workspace, $cropInput, $contract['artifact_contract'])), 'crop output must be present with every crop input');
 
-        hub_test_pack_job_write($workspace . '/output/cropped.png', hub_test_pack_job_png(1, 1));
-        hub_test_assert(count(hub_validate_pack_job_artifacts($workspace, $cropInput, $contract['artifact_contract'])) === 2, 'screenshot and crop outputs must validate with every crop input');
+        hub_test_pack_job_write($workspace . '/output/crop.png', hub_test_pack_job_png(1, 1));
+        hub_test_assert(count(hub_validate_pack_job_artifacts($workspace, $cropInput, $contract['artifact_contract'])) === 3, 'screenshot, crop, and report outputs must validate with every crop input');
     } finally {
         hub_test_pack_job_rm($workspace);
     }

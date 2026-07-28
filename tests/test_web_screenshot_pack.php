@@ -60,6 +60,9 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
         && ($route['runtime_mode'] ?? '') === 'job'
         && ($route['accelerator'] ?? '') === 'cpu'
         && ($route['runner']['accelerator'] ?? '') === 'cpu'
+        && ($route['runner']['required_vram_mb'] ?? null) === 0
+        && ($route['runner']['timeout_seconds'] ?? null) === 135
+        && ($route['runner']['network_profile'] ?? null) === 'capture_egress'
         && ($route['input_fields'] ?? []) === ['url', 'width', 'height', 'delay_seconds', 'timeout_seconds', 'javascript', 'crop_x', 'crop_y', 'crop_width', 'crop_height'], 'web capture must persist its fixed CPU Pack route and declared inputs');
     hub_test_assert(hub_audio_async_routes() === [
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
@@ -136,7 +139,7 @@ hub_test('web capture crop artifact requires every crop input', function (): voi
     $artifacts = $route['artifact_contract']['artifacts'] ?? [];
     $cropArtifact = null;
     foreach ($artifacts as $artifact) {
-        if (($artifact['type'] ?? '') === 'cropped_screenshot') {
+        if (($artifact['type'] ?? '') === 'crop_png') {
             $cropArtifact = $artifact;
             break;
         }
@@ -144,14 +147,20 @@ hub_test('web capture crop artifact requires every crop input', function (): voi
 
     hub_test_assert(is_array($cropArtifact)
         && ($cropArtifact['when'] ?? null) === ['all_present' => ['crop_x', 'crop_y', 'crop_width', 'crop_height']], 'crop artifact must use the declared all-present condition');
-    foreach ($artifacts as $artifact) {
+    $imageArtifacts = array_values(array_filter($artifacts, static fn (array $artifact): bool => isset($artifact['image'])));
+    hub_test_assert(count($imageArtifacts) === 2, 'web capture must declare complete and optional crop PNG outputs');
+    foreach ($imageArtifacts as $artifact) {
         hub_test_assert(($artifact['image'] ?? null) === [
             'format' => 'png',
             'max_width' => 2560,
-            'max_height' => 2160,
-            'max_pixels' => 5529600,
+            'max_height' => 30000,
+            'max_pixels' => 60000000,
         ], 'web capture artifacts must declare the bounded PNG output contract');
     }
+    $reportArtifact = array_values(array_filter($artifacts, static fn (array $artifact): bool => ($artifact['type'] ?? '') === 'capture_report'))[0] ?? null;
+    hub_test_assert(is_array($reportArtifact)
+        && ($reportArtifact['path'] ?? null) === 'capture_report.json'
+        && ($reportArtifact['json']['required_keys'] ?? null) === ['requested_url', 'final_url', 'http_status', 'viewport', 'image', 'delay_seconds', 'timeout_seconds', 'javascript_executed', 'crop', 'elapsed_seconds', 'playwright_version', 'warnings'], 'web capture must declare its redacted capture report');
     hub_test_assert(!hub_pack_job_artifact_is_expected($cropArtifact, ['crop_x' => 0, 'crop_y' => 0, 'crop_width' => 1]), 'crop artifact must not be required for a partial crop');
     hub_test_assert(hub_pack_job_artifact_is_expected($cropArtifact, ['crop_x' => 0, 'crop_y' => 0, 'crop_width' => 1, 'crop_height' => 1]), 'crop artifact must be required for a complete crop');
 
