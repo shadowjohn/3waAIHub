@@ -7,12 +7,17 @@
   "type": "internal_task",
   "execution_type": "async_task",
   "runtime_level": "L2-container-runner",
-  "runtime_ready": false,
+  "runtime_ready": true,
   "default_mode": "edge_tts",
   "experimental": true,
   "description": "Experimental CPU-only text-to-speech adapter for Microsoft Edge's online speech service.",
   "runtime": {
     "kind": "internal_task"
+  },
+  "runner_build": {
+    "context": "service",
+    "dockerfile": "Dockerfile",
+    "image": "3waaihub/edge-tts:0.1.0"
   },
   "gateway": {
     "invoke_path": "task_submit:pack_job",

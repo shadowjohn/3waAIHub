@@ -41,10 +41,10 @@ function hub_test_edge_tts_isolate(callable $fn): void
     }
 }
 
-hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (): void {
+hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', function (): void {
     $db = hub_test_reset_db();
     $pack = hub_get_pack('edge-tts');
-    hub_test_assert(is_array($pack) && ($pack['status'] ?? '') === 'ok', 'Edge TTS Pack must validate without a runner build context');
+    hub_test_assert(is_array($pack) && ($pack['status'] ?? '') === 'ok', 'Edge TTS Pack must validate with its runner build context');
     $manifest = $pack['manifest'];
     $job = hub_pack_async_job_contract($manifest, 'synthesize');
 
@@ -52,7 +52,7 @@ hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (
         && ($manifest['version'] ?? null) === '0.1.0'
         && ($manifest['category'] ?? null) === 'audio'
         && ($manifest['runtime_level'] ?? null) === 'L2-container-runner'
-        && ($manifest['runtime_ready'] ?? null) === false
+        && ($manifest['runtime_ready'] ?? null) === true
         && ($manifest['default_mode'] ?? null) === 'edge_tts'
         && ($manifest['experimental'] ?? null) === true
         && ($manifest['runtime'] ?? null) === ['kind' => 'internal_task']
@@ -63,7 +63,23 @@ hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (
             'max_upload_mb' => 1,
             'require_service_enabled' => true,
         ]
-        && !array_key_exists('runner_build', $manifest), 'Edge TTS must remain an internal async Pack without Task 2 runner_build metadata');
+        && ($manifest['runner_build'] ?? null) === [
+            'context' => 'service',
+            'dockerfile' => 'Dockerfile',
+            'image' => '3waaihub/edge-tts:0.1.0',
+        ], 'Edge TTS must publish its controlled Task 2 runner build metadata');
+    foreach (['Dockerfile', 'edge-tts-entrypoint.sh', 'synthesize.py', 'test_egress_firewall.sh', 'test_synthesize.py'] as $file) {
+        $path = HUB_ROOT . '/packs/edge-tts/service/' . $file;
+        hub_test_assert(is_file($path), 'Edge TTS runner asset must be present: ' . $file);
+    }
+    foreach (['edge-tts-entrypoint.sh', 'synthesize.py', 'test_egress_firewall.sh', 'test_synthesize.py'] as $file) {
+        $path = HUB_ROOT . '/packs/edge-tts/service/' . $file;
+        hub_test_assert((fileperms($path) & 0777) === 0755, 'Edge TTS runnable asset must use mode 0755: ' . $file);
+    }
+    $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/edge-tts/service/Dockerfile');
+    foreach (['FROM python:3.13-slim-bookworm', 'edge-tts==7.2.6', 'COPY edge-tts-entrypoint.sh synthesize.py test_egress_firewall.sh test_synthesize.py ./', 'python3 -m unittest -v test_synthesize.py'] as $needle) {
+        hub_test_assert(str_contains($dockerfile, $needle), 'Edge TTS Dockerfile must pin and offline-test its runner: ' . $needle);
+    }
     hub_test_assert(($manifest['hardware'] ?? null) === [
         'gpu_required' => false,
         'gpu_supported' => false,
@@ -149,7 +165,7 @@ hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (
     ], 'Edge TTS must have the approved featured catalog entry');
 });
 
-hub_test('Edge TTS route stays unavailable until its runner is ready', function (): void {
+hub_test('Edge TTS ready route still requires the administrator enable gate', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
 
@@ -181,14 +197,14 @@ hub_test('Edge TTS route stays unavailable until its runner is ready', function 
     }
     try {
         hub_resolve_pack_job_async_route($db, 'edge_tts');
-        throw new RuntimeException('Edge TTS route must not resolve before its runner is ready');
+        throw new RuntimeException('Edge TTS route must not resolve before an administrator enables it');
     } catch (RuntimeException $e) {
-        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'Edge TTS route must report its unready runner');
+        hub_test_assert($e->getMessage() === 'pack_service_disabled', 'Edge TTS route must report its disabled service gate');
     }
     hub_test_assert((int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0, 'unready Edge TTS must not create a task');
 });
 
-hub_test('Edge TTS keeps token permissions but rejects submission before runner readiness', function (): void {
+hub_test('Edge TTS queues only for an authorized token after administrator enablement', function (): void {
     hub_test_edge_tts_isolate(static function (): void {
         $db = hub_test_reset_db();
         hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
@@ -201,10 +217,10 @@ hub_test('Edge TTS keeps token permissions but rejects submission before runner 
         hub_test_assert($denied['status'] === 403 && (hub_test_edge_tts_payload($denied)['error'] ?? null) === 'token_mode_not_allowed', 'Edge TTS must require its token mode permission');
 
         hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'edge_tts', null);
-        $unready = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Queued']);
-        hub_test_assert($unready['status'] === 503 && (hub_test_edge_tts_payload($unready)['error'] ?? null) === 'pack_runtime_not_ready'
+        $disabled = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Queued']);
+        hub_test_assert($disabled['status'] === 503 && (hub_test_edge_tts_payload($disabled)['error'] ?? null) === 'pack_service_disabled'
             && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0,
-            'a permitted Edge TTS token must still not queue a task before runner readiness');
+            'a permitted Edge TTS token must not queue a task before an administrator enables the service');
 
         hub_install_pack($db, 'edge-tts', [
             'service_key' => 'edge-tts-other',
@@ -219,10 +235,26 @@ hub_test('Edge TTS keeps token permissions but rejects submission before runner 
         hub_set_service_enabled($db, 'edge_tts', true);
         hub_test_assert(hub_pack_job_async_route_service_enabled($db, 'edge-tts', $version, 'edge_tts'),
             'the enabled Edge TTS service must satisfy its explicit service gate');
+
+        $manifestPath = HUB_ROOT . '/packs/edge-tts/pack.json';
+        $manifestBefore = (string)file_get_contents($manifestPath);
+        $queued = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Taiwan Edge TTS']);
+        $payload = hub_test_edge_tts_payload($queued);
+        $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
+        hub_test_assert($queued['status'] === 200 && ($payload['ok'] ?? false) === true && ($payload['status'] ?? '') === 'queued'
+            && is_array($task) && ($task['requested_mode'] ?? '') === 'edge_tts'
+            && json_decode((string)($task['input_json'] ?? ''), true) === [
+                'text' => 'Taiwan Edge TTS',
+                'voice' => 'zh-TW-HsiaoChenNeural',
+                'rate' => '+0%',
+                'volume' => '+0%',
+                'pitch' => '+0Hz',
+            ] && (string)file_get_contents($manifestPath) === $manifestBefore,
+            'an enabled Edge TTS service must queue only the normalized request without mutating its tracked manifest');
     });
 });
 
-hub_test('Edge TTS public API stays hidden until its runner is ready', function (): void {
+hub_test('Edge TTS public API appears after its ready service is enabled', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
     hub_set_service_enabled($db, 'edge_tts', true);
@@ -236,7 +268,32 @@ hub_test('Edge TTS public API stays hidden until its runner is ready', function 
         }
     }
 
-    hub_test_assert($edgeTts === null, 'unready Edge TTS must stay out of the public API');
+    hub_test_assert(is_array($edgeTts) && ($edgeTts['mode'] ?? null) === 'edge_tts', 'ready enabled Edge TTS must appear in the public API');
+});
+
+hub_test('Edge TTS install builds and verifies its controlled runner image', function (): void {
+    $db = hub_test_reset_db();
+    $commands = [];
+    $built = false;
+    $installed = hub_install_pack($db, 'edge-tts', [
+        'idempotent' => true,
+        'runner_build_runner' => static function (array $command, int $timeoutSeconds) use (&$commands, &$built): array {
+            $commands[] = $command;
+            if (($command[1] ?? '') === 'image' && ($command[2] ?? '') === 'inspect') {
+                return $built ? ['exit_code' => 0, 'stdout' => 'sha256:edge-tts', 'stderr' => ''] : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'missing'];
+            }
+            if (($command[1] ?? '') === 'build') {
+                $built = true;
+                return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+            }
+            throw new RuntimeException('unexpected Edge TTS runner image command');
+        },
+    ]);
+    hub_test_assert($commands === [
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.1.0'],
+        ['docker', 'build', '--tag', '3waaihub/edge-tts:0.1.0', '--file', HUB_ROOT . '/packs/edge-tts/service/Dockerfile', HUB_ROOT . '/packs/edge-tts/service'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.1.0'],
+    ] && ($installed['service']['install_status'] ?? '') === 'installed', 'Edge TTS runner must build from its Pack-controlled context and be verified before installation');
 });
 
 hub_test('Edge TTS artifact contract is exact', function (): void {
