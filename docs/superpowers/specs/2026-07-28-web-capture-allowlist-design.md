@@ -44,11 +44,14 @@ containment design is adopted.
   document navigation.
 - Keep existing public-IP, scheme, credential, and port validation for every
   browser request.
+- Run this Pack only through the closed `public_egress` runner profile, which
+  maps to Docker's existing `bridge` network. It creates no Docker network and
+  executes no iptables command.
 - Document how an administrator adds a host.
 
 No new table, Pack setting, token-specific override, wildcard, external
-configuration service, Docker network, iptables rule, or host firewall change
-is in scope.
+configuration service, Docker-network creation, iptables rule, or host
+firewall change is in scope.
 
 ## Setting and validation
 
