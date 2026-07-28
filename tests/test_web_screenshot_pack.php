@@ -152,6 +152,13 @@ hub_test('web capture crop artifact requires every crop input', function (): voi
     hub_test_assert(hub_pack_async_job_contract($invalid, 'capture') === null, 'all-present artifact fields must be declared request inputs');
 });
 
+hub_test('web capture Pack rejects a gt_field string peer', function (): void {
+    $invalid = hub_get_pack('web-screenshot')['manifest'];
+    $invalid['async_jobs'][0]['input']['request_schema']['timeout_seconds']['gt_field'] = 'javascript';
+
+    hub_test_assert(hub_pack_async_job_contract($invalid, 'capture') === null, 'gt_field must reference an integer request field');
+});
+
 hub_test('web capture public API contract has no source fields', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);

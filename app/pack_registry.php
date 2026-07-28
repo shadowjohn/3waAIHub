@@ -707,6 +707,9 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
         $normalized[$name] = $item;
     }
     foreach ($normalized as $name => $definition) {
+        if (isset($definition['gt_field']) && (($normalized[$definition['gt_field']]['type'] ?? null) !== 'integer')) {
+            return null;
+        }
         $rule = $definition['requires_when'] ?? null;
         if ($rule === null) {
             continue;
