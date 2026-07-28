@@ -335,6 +335,26 @@ curl http://localhost/3waAIHub/api.php?mode=hello
 
 不要把 `www-data` 加進 docker 群組。Docker group 等同 root 權限。
 
+### Web Screenshot 外連前置條件（Linux Docker host）
+
+`web_capture` 只可使用 `aihub-capture-egress` 網路。先以不改變主機狀態的檢查確認前置條件：
+
+```bash
+sudo bash scripts/install_capture_egress_network.sh --check
+```
+
+成功時只會輸出 `capture_egress=ready`。若尚未準備完成，請在 Linux Docker host 安裝專用網路與防火牆規則；這會建立 Docker network 和 `AIHUB_CAPTURE_EGRESS` iptables chain：
+
+```bash
+sudo bash scripts/install_capture_egress_network.sh
+sudo install -D -m 0644 deploy/systemd/aihub-capture-egress.service /etc/systemd/system/aihub-capture-egress.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now aihub-capture-egress.service
+sudo bash scripts/install_capture_egress_network.sh --check
+```
+
+此 unit 的預設專案位置是 `/DATA/3waAIHub`；其他部署路徑請先調整 unit 的 `ExecStart`。它會在 Docker 重啟後重套規則，並在實際執行 `task_worker.php` 的 `cron.service` 前完成。
+
 `./install.sh` 若以 root 執行，會自動掛載 command worker cron。若以非 root 執行，請手動掛載：
 
 ```bash
