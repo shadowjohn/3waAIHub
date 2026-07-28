@@ -18,7 +18,8 @@
     "invoke_path": "task_submit:pack_job",
     "methods": ["POST"],
     "timeout_sec": 180,
-    "max_upload_mb": 1
+    "max_upload_mb": 1,
+    "require_service_enabled": true
   },
   "async_jobs": [
     {

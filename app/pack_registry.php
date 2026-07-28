@@ -111,6 +111,23 @@ function hub_is_pack_job_async_mode(string $mode): bool
     return array_key_exists($mode, hub_pack_job_async_routes());
 }
 
+function hub_pack_job_async_route_service_enabled(PDO $db, string $packId, string $packVersion, string $requestedMode): bool
+{
+    $enabled = $db->prepare(
+        "SELECT 1 FROM services
+         WHERE pack_id = :pack_id AND pack_version = :pack_version AND mode = :mode
+           AND install_status = 'installed' AND enabled = 1
+         LIMIT 1"
+    );
+    $enabled->execute([
+        ':pack_id' => $packId,
+        ':pack_version' => $packVersion,
+        ':mode' => $requestedMode,
+    ]);
+
+    return $enabled->fetchColumn() !== false;
+}
+
 function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
 {
     $route = hub_pack_job_async_routes()[$requestedMode] ?? null;
@@ -142,14 +159,8 @@ function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
     if (!in_array($packVersion, array_map('strval', $installedVersions), true)) {
         throw new RuntimeException('pack_version_unavailable');
     }
-    $enabled = $db->prepare(
-        "SELECT 1 FROM services
-         WHERE pack_id = :pack_id AND pack_version = :pack_version
-           AND install_status = 'installed' AND enabled = 1
-         LIMIT 1"
-    );
-    $enabled->execute([':pack_id' => $route['pack_id'], ':pack_version' => $packVersion]);
-    if ($enabled->fetchColumn() === false) {
+    if (($pack['manifest']['gateway']['require_service_enabled'] ?? false) === true
+        && !hub_pack_job_async_route_service_enabled($db, (string)$route['pack_id'], $packVersion, $requestedMode)) {
         throw new RuntimeException('pack_service_disabled');
     }
     $jobContract = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), (string)$route['job']);
@@ -1223,6 +1234,9 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     $gateway = is_array($manifest['gateway'] ?? null) ? $manifest['gateway'] : [];
     if (($gateway['invoke_path'] ?? '') === '') {
         $errors[] = 'Missing required gateway field: invoke_path';
+    }
+    if (array_key_exists('require_service_enabled', $gateway) && !is_bool($gateway['require_service_enabled'])) {
+        $errors[] = 'gateway.require_service_enabled must be boolean.';
     }
     if (!hub_pack_is_internal_task($manifest) && ($gateway['health_path'] ?? '') === '') {
         $errors[] = 'Missing required gateway field: health_path';

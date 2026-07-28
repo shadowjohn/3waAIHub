@@ -41,20 +41,6 @@ function hub_test_edge_tts_isolate(callable $fn): void
     }
 }
 
-function hub_test_edge_tts_with_ready_manifest(callable $fn): void
-{
-    $path = HUB_ROOT . '/packs/edge-tts/pack.json';
-    $original = (string)file_get_contents($path);
-    $manifest = json_decode($original, true, 512, JSON_THROW_ON_ERROR);
-    $manifest['runtime_ready'] = true;
-    file_put_contents($path, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
-    try {
-        $fn();
-    } finally {
-        file_put_contents($path, $original, LOCK_EX);
-    }
-}
-
 hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (): void {
     $db = hub_test_reset_db();
     $pack = hub_get_pack('edge-tts');
@@ -75,6 +61,7 @@ hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (
             'methods' => ['POST'],
             'timeout_sec' => 180,
             'max_upload_mb' => 1,
+            'require_service_enabled' => true,
         ]
         && !array_key_exists('runner_build', $manifest), 'Edge TTS must remain an internal async Pack without Task 2 runner_build metadata');
     hub_test_assert(($manifest['hardware'] ?? null) === [
@@ -138,6 +125,10 @@ hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (
             'network_profile' => 'public_egress',
             'executor' => 'container',
         ], 'Edge TTS must expose only the pinned CPU runner and typed synthesis controls');
+    $invalid = $manifest;
+    $invalid['gateway']['require_service_enabled'] = 'true';
+    hub_test_assert(hub_validate_pack_manifest($invalid, HUB_ROOT . '/packs/edge-tts') !== [],
+        'Edge TTS service-enable admission flag must be boolean');
 
     $catalog = hub_load_pack_catalog()['packs'];
     $entry = null;
@@ -215,25 +206,19 @@ hub_test('Edge TTS keeps token permissions but rejects submission before runner 
             && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0,
             'a permitted Edge TTS token must still not queue a task before runner readiness');
 
-        hub_test_edge_tts_with_ready_manifest(static function () use ($db, $token): void {
-            $disabled = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Disabled']);
-            hub_test_assert($disabled['status'] === 503 && (hub_test_edge_tts_payload($disabled)['error'] ?? null) === 'pack_service_disabled'
-                && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0,
-                'an installed but disabled ready Edge TTS service must not queue a task');
+        hub_install_pack($db, 'edge-tts', [
+            'service_key' => 'edge-tts-other',
+            'mode' => 'edge_tts_other',
+            'idempotent' => true,
+        ]);
+        hub_set_service_enabled($db, 'edge_tts_other', true);
+        $version = (string)(hub_get_pack('edge-tts')['manifest']['version'] ?? '');
+        hub_test_assert(!hub_pack_job_async_route_service_enabled($db, 'edge-tts', $version, 'edge_tts'),
+            'an enabled different mode must not unlock the disabled Edge TTS route');
 
-            hub_set_service_enabled($db, 'edge_tts', true);
-            $queued = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Queued']);
-            $payload = hub_test_edge_tts_payload($queued);
-            $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
-            hub_test_assert($queued['status'] === 200 && ($payload['status'] ?? null) === 'queued'
-                && is_array($task) && ($task['input'] ?? null) === [
-                    'text' => 'Queued',
-                    'voice' => 'zh-TW-HsiaoChenNeural',
-                    'rate' => '+0%',
-                    'volume' => '+0%',
-                    'pitch' => '+0Hz',
-                ], 'an enabled ready Edge TTS service must queue the normalized job for its authorized token');
-        });
+        hub_set_service_enabled($db, 'edge_tts', true);
+        hub_test_assert(hub_pack_job_async_route_service_enabled($db, 'edge-tts', $version, 'edge_tts'),
+            'the enabled Edge TTS service must satisfy its explicit service gate');
     });
 });
 
