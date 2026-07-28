@@ -7,7 +7,7 @@
   "type": "internal_task",
   "execution_type": "async_task",
   "runtime_level": "L2-container-runner",
-  "runtime_ready": true,
+  "runtime_ready": false,
   "default_mode": "edge_tts",
   "experimental": true,
   "description": "Experimental CPU-only text-to-speech adapter for Microsoft Edge's online speech service.",

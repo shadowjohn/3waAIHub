@@ -122,6 +122,9 @@ function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
     if (!$pack || ($pack['status'] ?? '') !== 'ok') {
         throw new RuntimeException('pack_not_installed');
     }
+    if (($pack['manifest']['runtime_ready'] ?? null) !== true) {
+        throw new RuntimeException('pack_runtime_not_ready');
+    }
     $packVersion = (string)($pack['manifest']['version'] ?? '');
     if ($packVersion === '') {
         throw new RuntimeException('pack_version_unavailable');

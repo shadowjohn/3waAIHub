@@ -52,7 +52,7 @@ hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (
         && ($manifest['version'] ?? null) === '0.1.0'
         && ($manifest['category'] ?? null) === 'audio'
         && ($manifest['runtime_level'] ?? null) === 'L2-container-runner'
-        && ($manifest['runtime_ready'] ?? null) === true
+        && ($manifest['runtime_ready'] ?? null) === false
         && ($manifest['default_mode'] ?? null) === 'edge_tts'
         && ($manifest['experimental'] ?? null) === true
         && ($manifest['runtime'] ?? null) === ['kind' => 'internal_task']
@@ -144,9 +144,9 @@ hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (
     ], 'Edge TTS must have the approved featured catalog entry');
 });
 
-hub_test('Edge TTS route normalizes only its declared synthesis input', function (): void {
+hub_test('Edge TTS route stays unavailable until its runner is ready', function (): void {
     $db = hub_test_reset_db();
-    $installed = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
 
     hub_test_assert((hub_pack_job_async_routes()['edge_tts'] ?? null) === [
         'pack_id' => 'edge-tts',
@@ -155,17 +155,8 @@ hub_test('Edge TTS route normalizes only its declared synthesis input', function
     ], 'Edge TTS must be registered as the fixed CPU async route');
     hub_test_assert(in_array('edge_tts', hub_playground_supported_modes(), true), 'Edge TTS must be selectable in the customer playground');
 
-    $route = hub_resolve_pack_job_async_route($db, 'edge_tts');
-    hub_test_assert(($route['pack_id'] ?? null) === 'edge-tts'
-        && ($route['pack_version'] ?? null) === ($installed['service']['pack_version'] ?? null)
-        && ($route['job'] ?? null) === 'synthesize'
-        && ($route['accelerator'] ?? null) === 'cpu'
-        && ($route['runner']['accelerator'] ?? null) === 'cpu'
-        && ($route['runner']['required_vram_mb'] ?? null) === 0
-        && ($route['runner']['timeout_seconds'] ?? null) === 150
-        && ($route['runner']['network_profile'] ?? null) === 'public_egress'
-        && ($route['runner']['executor'] ?? null) === 'container', 'Edge TTS route must resolve its immutable CPU contract');
-    hub_test_assert(hub_pack_job_normalize_request_input(['text' => 'Taiwan Edge TTS'], $route) === [
+    $job = hub_pack_async_job_contract(hub_get_pack('edge-tts')['manifest'], 'synthesize');
+    hub_test_assert(is_array($job) && hub_pack_job_normalize_request_input(['text' => 'Taiwan Edge TTS'], $job) === [
         'text' => 'Taiwan Edge TTS',
         'voice' => 'zh-TW-HsiaoChenNeural',
         'rate' => '+0%',
@@ -181,11 +172,18 @@ hub_test('Edge TTS route normalizes only its declared synthesis input', function
         ['text' => 'x', 'source_artifact_id' => 1],
         ['text' => 'x', 'callback_url' => 'https://example.test/callback'],
     ] as $input) {
-        hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input($input, $route)), 'Edge TTS must reject invalid undeclared local input');
+        hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input($input, $job)), 'Edge TTS must reject invalid undeclared local input');
     }
+    try {
+        hub_resolve_pack_job_async_route($db, 'edge_tts');
+        throw new RuntimeException('Edge TTS route must not resolve before its runner is ready');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'Edge TTS route must report its unready runner');
+    }
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0, 'unready Edge TTS must not create a task');
 });
 
-hub_test('Edge TTS admission requires mode permission and queues only valid source-free requests', function (): void {
+hub_test('Edge TTS keeps token permissions but rejects submission before runner readiness', function (): void {
     hub_test_edge_tts_isolate(static function (): void {
         $db = hub_test_reset_db();
         hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
@@ -198,36 +196,14 @@ hub_test('Edge TTS admission requires mode permission and queues only valid sour
         hub_test_assert($denied['status'] === 403 && (hub_test_edge_tts_payload($denied)['error'] ?? null) === 'token_mode_not_allowed', 'Edge TTS must require its token mode permission');
 
         hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'edge_tts', null);
-        $accepted = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Queued']);
-        $payload = hub_test_edge_tts_payload($accepted);
-        $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
-        hub_test_assert($accepted['status'] === 200 && ($payload['status'] ?? null) === 'queued'
-            && is_array($task) && ($task['requested_mode'] ?? null) === 'edge_tts'
-            && ($task['pack_id'] ?? null) === 'edge-tts'
-            && ($task['job'] ?? null) === 'synthesize'
-            && ($task['accelerator'] ?? null) === 'cpu'
-            && ($task['input'] ?? null) === [
-                'text' => 'Queued',
-                'voice' => 'zh-TW-HsiaoChenNeural',
-                'rate' => '+0%',
-                'volume' => '+0%',
-                'pitch' => '+0Hz',
-            ], 'a permitted Edge TTS request must queue only normalized manifest input');
-
-        foreach ([
-            ['voice' => 'zh-TW-HsiaoChenNeural'],
-            ['text' => 'bad enum', 'voice' => 'unknown'],
-            ['text' => 'unknown input', 'model' => 'anything'],
-            ['text' => 'source rejected', 'source_artifact_id' => '1'],
-            ['text' => 'callback rejected', 'callback_url' => 'https://example.test/callback'],
-        ] as $input) {
-            $response = hub_test_edge_tts_request($db, (string)$token['plain_token'], $input);
-            hub_test_assert($response['status'] === 400, 'Edge TTS must reject invalid, unknown, source, and direct callback input');
-        }
+        $unready = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Queued']);
+        hub_test_assert($unready['status'] === 503 && (hub_test_edge_tts_payload($unready)['error'] ?? null) === 'pack_runtime_not_ready'
+            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0,
+            'a permitted Edge TTS token must still not queue a task before runner readiness');
     });
 });
 
-hub_test('Edge TTS public API documents only its source-free synthesis controls', function (): void {
+hub_test('Edge TTS public API stays hidden until its runner is ready', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
     hub_set_service_enabled($db, 'edge_tts', true);
@@ -241,12 +217,7 @@ hub_test('Edge TTS public API documents only its source-free synthesis controls'
         }
     }
 
-    hub_test_assert(is_array($edgeTts), 'enabled running Edge TTS must be documented in the public API');
-    $fields = (array)($edgeTts['input_fields'] ?? []);
-    $declared = array_values(array_filter($fields, static fn (array $field): bool => !in_array($field['name'] ?? '', ['callback', 'callback_target'], true)));
-    hub_test_assert(array_column($declared, 'name') === ['text', 'voice', 'rate', 'volume', 'pitch']
-        && !in_array('file', array_column($fields, 'name'), true)
-        && !in_array('source_artifact_id', array_column($fields, 'name'), true), 'Edge TTS public API must expose its declared synthesis controls without source fields');
+    hub_test_assert($edgeTts === null, 'unready Edge TTS must stay out of the public API');
 });
 
 hub_test('Edge TTS artifact contract is exact', function (): void {

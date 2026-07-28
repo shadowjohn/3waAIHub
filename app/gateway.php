@@ -32,7 +32,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         try {
             $route = hub_resolve_pack_job_async_route($db, $mode);
         } catch (RuntimeException $e) {
-            $code = in_array($e->getMessage(), ['pack_not_installed', 'pack_version_unavailable'], true) ? $e->getMessage() : 'pack_not_installed';
+            $code = in_array($e->getMessage(), ['pack_not_installed', 'pack_runtime_not_ready', 'pack_version_unavailable'], true) ? $e->getMessage() : 'pack_not_installed';
             return hub_gateway_finish($db, null, $mode, hub_gateway_error(503, $code, $code), $started, $requestId, $authContext, $requestContext);
         }
 
