@@ -518,7 +518,11 @@ function hub_pack_job_default_runner_command(array $context): array
     if (!is_array($entrypoint) || $entrypoint === [] || !is_array($args)) {
         throw new RuntimeException('job_contract_unavailable');
     }
-    $network = ($runner['network_profile'] ?? 'isolated') === 'capture_egress' ? 'aihub-capture-egress' : 'none';
+    $network = match ($runner['network_profile'] ?? 'isolated') {
+        'capture_egress' => 'aihub-capture-egress',
+        'public_egress' => 'bridge',
+        default => 'none',
+    };
     $command = ['docker', 'run', '--pull=never', '--network', $network, '--mount', 'type=bind,src=' . $output . ',dst=' . $containerWorkspace . '/output', '--mount', 'type=bind,src=' . $checkpoints . ',dst=' . $containerWorkspace . '/checkpoints', '--name', $name];
     $voiceProfileMount = $runner['voice_profile_mount'] ?? null;
     foreach (['source', 'request.json', 'runner_config.json'] as $file) {

@@ -100,7 +100,7 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
         && ($route['runner']['accelerator'] ?? '') === 'cpu'
         && ($route['runner']['required_vram_mb'] ?? null) === 0
         && ($route['runner']['timeout_seconds'] ?? null) === 135
-        && ($route['runner']['network_profile'] ?? null) === 'capture_egress'
+        && ($route['runner']['network_profile'] ?? null) === 'public_egress'
         && ($route['input_fields'] ?? []) === ['url', 'width', 'height', 'delay_seconds', 'timeout_seconds', 'javascript', 'crop_x', 'crop_y', 'crop_width', 'crop_height'], 'web capture must persist its fixed CPU Pack route and declared inputs');
     hub_test_assert(hub_audio_async_routes() === [
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],

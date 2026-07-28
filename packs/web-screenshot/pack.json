@@ -52,7 +52,7 @@
         "accelerator": "cpu",
         "required_vram_mb": 0,
         "timeout_seconds": 135,
-        "network_profile": "capture_egress",
+        "network_profile": "public_egress",
         "executor": "container"
       },
       "output": {

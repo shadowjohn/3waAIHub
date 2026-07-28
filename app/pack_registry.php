@@ -475,7 +475,7 @@ function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null
         || $outputDir !== 'output' || !in_array($accelerator, ['cpu', 'gpu'], true)
         || !is_int($requiredVram) || $requiredVram < 0 || $requiredVram > 1048576
         || !is_int($timeout) || $timeout < 1 || $timeout > 86400
-        || !is_string($networkProfile) || !in_array($networkProfile, ['isolated', 'capture_egress'], true)) {
+        || !is_string($networkProfile) || !in_array($networkProfile, ['isolated', 'capture_egress', 'public_egress'], true)) {
         return null;
     }
     if ($executor !== null && $executor !== 'container') {

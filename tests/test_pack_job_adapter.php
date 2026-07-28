@@ -143,6 +143,18 @@ hub_test('Pack job container runner restricts network profiles', function (): vo
         $captureNetwork = array_search('--network', $captureCommand, true);
         hub_test_assert($captureNetwork !== false && ($captureCommand[$captureNetwork + 1] ?? null) === 'aihub-capture-egress' && !in_array('--gpus', $captureCommand, true), 'capture egress must use only its fixed Docker network without GPU access');
 
+        $publicManifest = hub_test_adapter_manifest('adapter-network-public', '1.0.0');
+        $publicManifest['async_jobs'][0]['runner']['network_profile'] = 'public_egress';
+        $public = hub_pack_async_job_contract($publicManifest, 'convert');
+        hub_test_assert(is_array($public), 'public egress must be a closed valid profile');
+        $command = hub_pack_job_default_runner_command([
+            'workspace' => $workspace,
+            'run' => ['run_id' => 'adapter-network-public'],
+            'runner' => hub_pack_job_runner_arguments($public['runner'], ['id' => 1], ['run_id' => 'adapter-network-public'], $workspace),
+        ])['command'];
+        $index = array_search('--network', $command, true);
+        hub_test_assert($index !== false && ($command[$index + 1] ?? null) === 'bridge', 'public egress must select only Docker bridge');
+
         $arbitraryManifest = hub_test_adapter_manifest('adapter-network-arbitrary', '1.0.0');
         $arbitraryManifest['async_jobs'][0]['runner']['network_profile'] = 'customer-network';
         hub_test_assert(hub_pack_async_job_contract($arbitraryManifest, 'convert') === null
