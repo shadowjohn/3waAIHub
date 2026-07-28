@@ -142,6 +142,16 @@ function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
     if (!in_array($packVersion, array_map('strval', $installedVersions), true)) {
         throw new RuntimeException('pack_version_unavailable');
     }
+    $enabled = $db->prepare(
+        "SELECT 1 FROM services
+         WHERE pack_id = :pack_id AND pack_version = :pack_version
+           AND install_status = 'installed' AND enabled = 1
+         LIMIT 1"
+    );
+    $enabled->execute([':pack_id' => $route['pack_id'], ':pack_version' => $packVersion]);
+    if ($enabled->fetchColumn() === false) {
+        throw new RuntimeException('pack_service_disabled');
+    }
     $jobContract = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), (string)$route['job']);
     if ($jobContract === null) {
         throw new RuntimeException('pack_version_unavailable');

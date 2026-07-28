@@ -41,6 +41,20 @@ function hub_test_edge_tts_isolate(callable $fn): void
     }
 }
 
+function hub_test_edge_tts_with_ready_manifest(callable $fn): void
+{
+    $path = HUB_ROOT . '/packs/edge-tts/pack.json';
+    $original = (string)file_get_contents($path);
+    $manifest = json_decode($original, true, 512, JSON_THROW_ON_ERROR);
+    $manifest['runtime_ready'] = true;
+    file_put_contents($path, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+    try {
+        $fn();
+    } finally {
+        file_put_contents($path, $original, LOCK_EX);
+    }
+}
+
 hub_test('Edge TTS Pack publishes the exact CPU-only async contract', function (): void {
     $db = hub_test_reset_db();
     $pack = hub_get_pack('edge-tts');
@@ -200,6 +214,26 @@ hub_test('Edge TTS keeps token permissions but rejects submission before runner 
         hub_test_assert($unready['status'] === 503 && (hub_test_edge_tts_payload($unready)['error'] ?? null) === 'pack_runtime_not_ready'
             && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0,
             'a permitted Edge TTS token must still not queue a task before runner readiness');
+
+        hub_test_edge_tts_with_ready_manifest(static function () use ($db, $token): void {
+            $disabled = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Disabled']);
+            hub_test_assert($disabled['status'] === 503 && (hub_test_edge_tts_payload($disabled)['error'] ?? null) === 'pack_service_disabled'
+                && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0,
+                'an installed but disabled ready Edge TTS service must not queue a task');
+
+            hub_set_service_enabled($db, 'edge_tts', true);
+            $queued = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Queued']);
+            $payload = hub_test_edge_tts_payload($queued);
+            $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
+            hub_test_assert($queued['status'] === 200 && ($payload['status'] ?? null) === 'queued'
+                && is_array($task) && ($task['input'] ?? null) === [
+                    'text' => 'Queued',
+                    'voice' => 'zh-TW-HsiaoChenNeural',
+                    'rate' => '+0%',
+                    'volume' => '+0%',
+                    'pitch' => '+0Hz',
+                ], 'an enabled ready Edge TTS service must queue the normalized job for its authorized token');
+        });
     });
 });
 
