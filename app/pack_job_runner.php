@@ -165,6 +165,20 @@ function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $
 
 function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract): string
 {
+    $input = is_array($task['input'] ?? null) ? $task['input'] : [];
+    $request = [];
+    foreach ((array)($contract['input_fields'] ?? []) as $field) {
+        if (array_key_exists($field, $input)) {
+            $request[$field] = $input[$field];
+        }
+    }
+    if (isset($input['voice_context'])) {
+        $request['voice_context'] = $input['voice_context'];
+    }
+    if (($task['requested_mode'] ?? '') === 'web_capture') {
+        $request = hub_web_capture_prepare_runner_request($db, $request);
+    }
+
     $taskId = (int)$task['id'];
     $taskRoot = hub_task_result_dir($taskId);
     if (is_link($taskRoot) || (!is_dir($taskRoot) && !mkdir($taskRoot, 0700, true))) {
@@ -187,19 +201,6 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract): 
     $workspace = realpath($workspace);
     if ($workspace === false || !str_starts_with($workspace, $taskRoot . DIRECTORY_SEPARATOR)) {
         throw new RuntimeException('workspace_unavailable');
-    }
-    $input = is_array($task['input'] ?? null) ? $task['input'] : [];
-    $request = [];
-    foreach ((array)($contract['input_fields'] ?? []) as $field) {
-        if (array_key_exists($field, $input)) {
-            $request[$field] = $input[$field];
-        }
-    }
-    if (isset($input['voice_context'])) {
-        $request['voice_context'] = $input['voice_context'];
-    }
-    if (($task['requested_mode'] ?? '') === 'web_capture') {
-        $request = hub_web_capture_prepare_runner_request($db, $request);
     }
     $source = null;
     if ((int)($task['source_artifact_id'] ?? 0) <= 0 && isset($input['source_upload_path'])) {

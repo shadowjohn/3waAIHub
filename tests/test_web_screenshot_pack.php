@@ -162,7 +162,7 @@ hub_test('web capture checks the current allowlist before starting execution', f
     $latest = hub_get_task($db, $taskId);
     $run = $db->query('SELECT container_id, image_name, attempt_no FROM runtime_runs WHERE task_id = ' . $taskId)->fetch();
     hub_test_assert(($result['status'] ?? '') === 'failed' && ($latest['error_code'] ?? '') === 'url_not_allowed' && $started === 0, 'a removed web capture host must fail before its executor starts');
-    hub_test_assert(!is_file(hub_task_result_dir($taskId) . '/workspace/input/request.json') && ($run['container_id'] ?? null) === null && ($run['image_name'] ?? null) === null && (int)($run['attempt_no'] ?? -1) === 0, 'a removed web capture host must not write a request or container start metadata');
+    hub_test_assert(!file_exists(hub_task_result_dir($taskId)) && !is_file(hub_task_result_dir($taskId) . '/workspace/input/request.json') && ($run['container_id'] ?? null) === null && ($run['image_name'] ?? null) === null && (int)($run['attempt_no'] ?? -1) === 0, 'a removed web capture host must not create a workspace, write a request, or record container start metadata');
 });
 
 hub_test('web capture admission rejects partial crops and impossible deadlines', function (): void {
