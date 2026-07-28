@@ -31,6 +31,8 @@ append_rule() {
 }
 
 grant_capture_workspace_access() {
+  setfacl -m u:capture:--x /workspace/input
+  getfacl -cp /workspace/input | grep -Fqx 'user:capture:--x'
   setfacl -m u:capture:r-- /workspace/input/request.json
   getfacl -cp /workspace/input/request.json | grep -Fqx 'user:capture:r--'
   setfacl -m u:capture:rwx /workspace/output

@@ -23,6 +23,7 @@ if [[ "$command_name" == id && "${1:-}" == -u ]]; then
 fi
 if [[ "$command_name" == getfacl && "${CAPTURE_ACL_INVALID:-}" != 1 ]]; then
   case "${!#}" in
+    /workspace/input) printf 'user:capture:--x\n' ;;
     /workspace/input/request.json) printf 'user:capture:r--\n' ;;
     /workspace/output) printf 'user:capture:rwx\n' ;;
   esac
@@ -87,11 +88,14 @@ assert_contains 'iptables -A AIHUB_CAPTURE_OUTPUT -d 172.16.0.0/12 -j REJECT' "$
 assert_contains 'iptables -A AIHUB_CAPTURE_OUTPUT -d 169.254.0.0/16 -j REJECT' "$LOG"
 assert_contains 'ip6tables -A AIHUB_CAPTURE_OUTPUT6 -d fc00::/7 -j REJECT' "$LOG"
 assert_contains 'ip6tables -A AIHUB_CAPTURE_OUTPUT6 -d fe80::/10 -j REJECT' "$LOG"
+assert_contains 'setfacl -m u:capture:--x /workspace/input' "$LOG"
+assert_contains 'getfacl -cp /workspace/input' "$LOG"
 assert_contains 'setfacl -m u:capture:r-- /workspace/input/request.json' "$LOG"
 assert_contains 'getfacl -cp /workspace/input/request.json' "$LOG"
 assert_contains 'setfacl -m u:capture:rwx /workspace/output' "$LOG"
 assert_contains 'getfacl -cp /workspace/output' "$LOG"
 assert_contains 'setpriv --reuid=capture --regid=capture --clear-groups --bounding-set=-all --ambient-caps=-all -- /app/capture' "$LOG"
+assert_before 'setfacl -m u:capture:--x /workspace/input' 'setpriv --reuid=capture --regid=capture --clear-groups --bounding-set=-all --ambient-caps=-all -- /app/capture' "$LOG"
 assert_before 'setfacl -m u:capture:r-- /workspace/input/request.json' 'setpriv --reuid=capture --regid=capture --clear-groups --bounding-set=-all --ambient-caps=-all -- /app/capture' "$LOG"
 assert_before 'setfacl -m u:capture:rwx /workspace/output' 'setpriv --reuid=capture --regid=capture --clear-groups --bounding-set=-all --ambient-caps=-all -- /app/capture' "$LOG"
 
