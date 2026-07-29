@@ -168,6 +168,7 @@ hub_test('test runner uses an explicit static control-plane suite manifest', fun
 
     hub_test_assert(is_file($manifestPath), 'control-plane suite manifest is missing');
     hub_test_assert(str_contains($runner, "'control-plane'"), 'test runner must recognize the control-plane suite');
+    hub_test_assert(str_contains($runner, "'admin-ui'"), 'run_tests must expose the focused admin-ui suite');
     hub_test_assert(str_contains($runner, 'suite='), 'test runner must print the selected suite');
     hub_test_assert(str_contains($runner, 'tests/suites'), 'test runner must load suite manifests from the static suite directory');
     $ci = (string)file_get_contents(HUB_ROOT . '/.github/workflows/ci.yml');

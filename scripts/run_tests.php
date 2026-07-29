@@ -287,7 +287,7 @@ function hub_test_suite_files(string $suite): array
         return glob(HUB_ROOT . '/tests/test_*.php') ?: [];
     }
 
-    if ($suite !== 'control-plane') {
+    if (!in_array($suite, ['control-plane', 'admin-ui'], true)) {
         throw new InvalidArgumentException('Unknown suite: ' . $suite);
     }
 
