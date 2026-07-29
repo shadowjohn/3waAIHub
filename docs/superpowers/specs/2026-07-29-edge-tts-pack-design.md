@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Status: approved; L2 implementation complete, L3--L5 promotion pending
+Status: approved; L2--L4b complete; L5 design approved, implementation pending
 
 ## Scope
 
@@ -99,7 +99,7 @@ or storage mount merely to claim a level that does not apply.
 | L2 | The pinned container runner, request/output contracts, CPU queue, and fail-closed fixed-provider egress self-check pass. |
 | L3 | Not applicable: the Pack has no model or persistent storage mount. `storage.mounts` remains empty. |
 | L4a | The Pack installs, is enabled, and its offline runner/egress checks pass on the target station. |
-| L4b | A controlled real smoke completes through the normal public API and task worker, publishes a valid MP3 and metadata, acknowledges the artifact, and proves no GPU lease. |
+| L4b | A controlled real smoke completes through the normal public API and task worker, publishes a valid MP3 and metadata, acknowledges the artifact, and proves no GPU lease. Completed on the target station on 2026-07-29. |
 | L5 | A declared async contract and an explicit station-only `async_complete` benchmark repeat the L4b path and persist only redacted acceptance facts. Marketplace L5 readiness may pass only after that benchmark passes. |
 
 The existing generic `async_submit` benchmark is insufficient for L5: it
@@ -108,6 +108,66 @@ case must wait for the actual task terminal state and validate the registered
 `generated_audio` and `synthesis_metadata` artifacts. It must be opt-in and
 never part of the ordinary offline test suite, because it calls the external
 provider.
+
+## L5 Station Acceptance Design
+
+L5 adds one station-only command:
+
+```text
+php scripts/edge_tts_acceptance.php
+```
+
+It receives the same-station API base URL and a caller-held Hub API Token only
+from `AIHUB_EDGE_TTS_ACCEPTANCE_BASE_URL` and
+`AIHUB_EDGE_TTS_ACCEPTANCE_TOKEN`. The Token needs only `edge_tts`,
+`task_status`, `task_result`, `artifact`, and `task_artifacts_ack`. It submits
+one fixed, short, non-confidential Chinese request with
+`include_subtitles=true` through `api.php?mode=edge_tts`. It polls the normal
+public task API; it never calls a Pack runner or task worker directly.
+
+On success, it requires exactly these registered artifact types:
+
+- `generated_audio`
+- `synthesis_metadata`
+- `subtitle_vtt`
+- `subtitle_srt`
+- `speech_timeline`
+
+The command downloads each artifact through the ordinary artifact API into a
+private temporary directory, verifies its declared size and SHA-256, validates
+MP3 with `ffprobe`, validates VTT/SRT syntax, validates the required JSON
+keys, and acknowledges every artifact. It then reads only this local task's
+runtime record to require `accelerator=cpu`, no GPU indexes, zero GPU metrics,
+no owned GPU PIDs, and no GPU resource lease. It removes its temporary files
+on every completion path.
+
+The command records the result with the existing `benchmark_runs` storage as
+`edge_tts_async_complete`. Its saved result contains only boolean acceptance
+checks, artifact type/mime/byte-count summaries, acknowledgement count, and
+elapsed time. It never records the submitted text, Hub Token, base URL, task
+or artifact IDs, artifact URLs, SHA-256 values, audio, captions, or provider
+responses. A failure stores only one bounded local code:
+`acceptance_submission_failed`, `acceptance_task_failed`,
+`acceptance_timeout`, `acceptance_artifact_invalid`, or
+`acceptance_runtime_invalid`.
+
+`pack.json` declares the public async `l5_contract`, sets
+`runtime_level` and `target_level` to `L5-benchmark-ready`, and declares
+`edge_tts_async_complete` as a real-inference, station-only benchmark case.
+The existing Pack Readiness calculation therefore stays unchanged: its real
+benchmark check becomes green only after a recorded passing acceptance run.
+The generic `scripts/benchmark.php` remains offline and must reject or leave
+this case unexecuted rather than calling the external provider.
+
+Cluster behavior remains unchanged. The existing Cluster manifest may publish
+`edge_tts` when the Pack is installed, enabled, and fresh; L5 adds readiness
+evidence only. Cluster callers still require their own allowed `edge_tts` and
+task/artifact Token modes.
+
+The implementation adds focused offline coverage for the L5 manifest contract,
+redacted benchmark-result shape, and acceptance validation using fake HTTP and
+runtime-record inputs. No real provider call runs in CI or the ordinary full
+test suite.
 
 ## Errors and Privacy
 
