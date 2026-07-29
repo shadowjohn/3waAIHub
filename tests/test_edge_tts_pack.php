@@ -49,7 +49,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
     $job = hub_pack_async_job_contract($manifest, 'synthesize');
 
     hub_test_assert(($manifest['id'] ?? null) === 'edge-tts'
-        && ($manifest['version'] ?? null) === '0.1.0'
+        && ($manifest['version'] ?? null) === '0.2.0'
         && ($manifest['category'] ?? null) === 'audio'
         && ($manifest['runtime_level'] ?? null) === 'L2-container-runner'
         && ($manifest['runtime_ready'] ?? null) === true
@@ -66,7 +66,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         && ($manifest['runner_build'] ?? null) === [
             'context' => 'service',
             'dockerfile' => 'Dockerfile',
-            'image' => '3waaihub/edge-tts:0.1.0',
+            'image' => '3waaihub/edge-tts:0.2.0',
         ], 'Edge TTS must publish its controlled Task 2 runner build metadata');
     foreach (['Dockerfile', 'edge-tts-entrypoint.sh', 'synthesize.py', 'test_egress_firewall.sh', 'test_synthesize.py'] as $file) {
         $path = HUB_ROOT . '/packs/edge-tts/service/' . $file;
@@ -77,7 +77,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         hub_test_assert((fileperms($path) & 0777) === 0755, 'Edge TTS runnable asset must use mode 0755: ' . $file);
     }
     hub_test_assert(hub_pack_container_runner_build_contract($manifest, HUB_ROOT . '/packs/edge-tts') === [
-        'image' => '3waaihub/edge-tts:0.1.0',
+        'image' => '3waaihub/edge-tts:0.2.0',
         'context' => HUB_ROOT . '/packs/edge-tts/service',
         'dockerfile' => HUB_ROOT . '/packs/edge-tts/service/Dockerfile',
     ], 'Edge TTS runner build must use the fixed service-directory context');
@@ -142,7 +142,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
             ],
         ]
         && ($job['runner'] ?? null) === [
-            'image' => '3waaihub/edge-tts:0.1.0',
+            'image' => '3waaihub/edge-tts:0.2.0',
             'entrypoint' => ['/app/edge-tts-entrypoint.sh', '/app/synthesize.py'],
             'args' => [],
             'output_dir' => 'output',
@@ -168,7 +168,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
     hub_test_assert($entry === [
         'id' => 'edge-tts',
         'name' => 'Edge TTS External Service',
-        'version' => '0.1.0',
+        'version' => '0.2.0',
         'category' => 'audio',
         'description' => 'Experimental CPU-only text-to-speech adapter for Microsoft Edge\'s online speech service.',
         'path' => 'packs/edge-tts',
@@ -348,9 +348,9 @@ hub_test('Edge TTS install builds and verifies its controlled runner image', fun
         },
     ]);
     hub_test_assert($commands === [
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.1.0'],
-        ['docker', 'build', '--tag', '3waaihub/edge-tts:0.1.0', '--file', HUB_ROOT . '/packs/edge-tts/service/Dockerfile', HUB_ROOT . '/packs/edge-tts/service'],
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.1.0'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.2.0'],
+        ['docker', 'build', '--tag', '3waaihub/edge-tts:0.2.0', '--file', HUB_ROOT . '/packs/edge-tts/service/Dockerfile', HUB_ROOT . '/packs/edge-tts/service'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.2.0'],
     ] && ($installed['service']['install_status'] ?? '') === 'installed', 'Edge TTS runner must build from its Pack-controlled context and be verified before installation');
 });
 

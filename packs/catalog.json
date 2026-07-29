@@ -85,7 +85,7 @@
     {
       "id": "edge-tts",
       "name": "Edge TTS External Service",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "category": "audio",
       "description": "Experimental CPU-only text-to-speech adapter for Microsoft Edge's online speech service.",
       "path": "packs/edge-tts",

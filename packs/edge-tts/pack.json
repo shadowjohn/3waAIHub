@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "edge-tts",
   "name": "Edge TTS External Service",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "category": "audio",
   "type": "internal_task",
   "execution_type": "async_task",
@@ -17,7 +17,7 @@
   "runner_build": {
     "context": "service",
     "dockerfile": "Dockerfile",
-    "image": "3waaihub/edge-tts:0.1.0"
+    "image": "3waaihub/edge-tts:0.2.0"
   },
   "gateway": {
     "invoke_path": "task_submit:pack_job",
@@ -43,7 +43,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/edge-tts:0.1.0",
+        "image": "3waaihub/edge-tts:0.2.0",
         "entrypoint": ["/app/edge-tts-entrypoint.sh", "/app/synthesize.py"],
         "args": [],
         "output_dir": "output",
