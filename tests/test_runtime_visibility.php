@@ -11,9 +11,11 @@ hub_test('PhaseRuntime-1B dashboard packs and nav expose runtime visibility', fu
     foreach (['Runtime 24h 執行數', '執行中 Runtime', '24h 失敗 Runtime', '支援 Job 的 Pack', '平台能力矩陣', '執行歷程', '資源取樣'] as $needle) {
         hub_test_assert(str_contains($dashboard, $needle), 'dashboard missing runtime visibility ' . $needle);
     }
-    foreach (['runtime_runs.php', '執行歷程'] as $needle) {
+    foreach (['log_explorer.php?tab=runs', '執行歷程'] as $needle) {
         hub_test_assert(str_contains($layout, $needle), 'admin nav missing runtime runs link ' . $needle);
     }
+    hub_test_assert(!str_contains($layout, 'href="runtime_runs.php'), 'legacy runtime list must stay out of normal navigation');
+    hub_test_assert(str_contains($dashboard, 'href="log_explorer.php?tab=runs"'), 'dashboard runtime link must use canonical Record Center');
     foreach (['Runtime：', 'Service', 'Job', 'Runtime Contract', 'Local Jobs', 'Preview Adapter', 'runtime_modes', 'local_jobs'] as $needle) {
         hub_test_assert(str_contains($packs, $needle), 'packs page missing runtime badge/content ' . $needle);
     }
@@ -74,12 +76,24 @@ hub_test('PhaseRuntime-1B runtime run list and detail render safely', function (
 
     $_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];
     $_SERVER['REQUEST_METHOD'] = 'GET';
+    $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/log_explorer.php';
     $_GET = [];
     ob_start();
-    require HUB_ROOT . '/admin/runtime_runs.php';
+    require HUB_ROOT . '/admin/log_explorer.php';
     $listHtml = (string)ob_get_clean();
     foreach (['Runtime 執行歷程', 'run_visibility_001', 'yolo_predict', 'succeeded', 'RAM 峰值', '查看詳情'] as $needle) {
         hub_test_assert(str_contains($listHtml, $needle), 'runtime runs list missing ' . $needle);
+    }
+    hub_test_assert(str_contains($listHtml, 'class="record-table-wrap"'), 'runtime table needs responsive overflow');
+    hub_test_assert(str_contains($listHtml, 'runtime_run.php?id=run_visibility_001'), 'runtime detail link missing from Record Center');
+
+    $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/runtime_runs.php';
+    $_GET = [];
+    ob_start();
+    require HUB_ROOT . '/admin/runtime_runs.php';
+    $legacyHtml = (string)ob_get_clean();
+    foreach (['Legacy debug 頁面', 'log_explorer.php?tab=runs', 'run_visibility_001'] as $needle) {
+        hub_test_assert(str_contains($legacyHtml, $needle), 'runtime legacy diagnostic missing ' . $needle);
     }
 
     $_GET = ['id' => 'run_visibility_001'];
@@ -90,4 +104,12 @@ hub_test('PhaseRuntime-1B runtime run list and detail render safely', function (
         hub_test_assert(str_contains($detailHtml, $needle), 'runtime run detail missing ' . $needle);
     }
     hub_test_assert(!str_contains($detailHtml, $workspace), 'runtime detail must not expose absolute workspace path');
+});
+
+hub_test('Runtime legacy source keeps direct diagnostics and canonical notice', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/runtime_runs.php');
+    hub_test_assert(str_contains($source, "/** @deprecated Canonical UI: admin/log_explorer.php?tab=runs */"), 'runtime legacy marker missing');
+    hub_test_assert(str_contains($source, 'class="notice legacy-debug"'), 'runtime legacy notice missing');
+    hub_test_assert(str_contains($source, 'log_explorer.php?tab=runs'), 'runtime canonical link missing');
+    hub_test_assert(!str_contains($source, 'hub_redirect(') && !str_contains($source, "require __DIR__ . '/log_explorer.php'"), 'runtime diagnostic must not redirect or include canonical UI');
 });

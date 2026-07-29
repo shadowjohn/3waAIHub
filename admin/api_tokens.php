@@ -88,7 +88,7 @@ hub_admin_header('API Token', $user);
                 <td class="actions">
                     <a class="button" href="api_token_permissions.php?token_id=<?= (int)$token['id'] ?>">Mode 權限</a>
                     <a class="button" href="api_token_whitelist.php?token_id=<?= (int)$token['id'] ?>">IP</a>
-                    <a class="button" href="api_usage.php?token_id=<?= (int)$token['id'] ?>">用量</a>
+                    <a class="button" href="log_explorer.php?tab=api&amp;token_id=<?= (int)$token['id'] ?>">用量</a>
                     <a class="button" href="cluster.php?view=usage&amp;token_id=<?= (int)$token['id'] ?>">Cluster 用量</a>
                     <form method="post">
                         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">

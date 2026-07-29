@@ -2,38 +2,25 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../app/bootstrap.php';
+require_once __DIR__ . '/../app/admin_records.php';
 require_once __DIR__ . '/_layout.php';
 require_once __DIR__ . '/_runtime.php';
 
+/** @deprecated Canonical UI: admin/log_explorer.php?tab=runs */
 $db = hub_db();
 hub_migrate($db);
 $user = hub_require_system_admin($db);
 
-$filters = [
-    'pack_id' => trim((string)($_GET['pack_id'] ?? '')),
-    'task' => trim((string)($_GET['task'] ?? '')),
-    'state' => trim((string)($_GET['state'] ?? '')),
-    'q' => trim((string)($_GET['q'] ?? '')),
-];
-$where = [];
-$params = [];
-foreach (['pack_id', 'task', 'state'] as $key) {
-    if ($filters[$key] !== '' && preg_match('/^[A-Za-z0-9_.:-]+$/', $filters[$key])) {
-        $where[] = $key . ' = :' . $key;
-        $params[':' . $key] = $filters[$key];
-    }
-}
-if ($filters['q'] !== '') {
-    $where[] = 'run_id LIKE :q';
-    $params[':q'] = '%' . $filters['q'] . '%';
-}
-$sql = 'SELECT * FROM runtime_runs' . ($where === [] ? '' : ' WHERE ' . implode(' AND ', $where)) . ' ORDER BY started_at DESC, id DESC LIMIT 100';
-$stmt = $db->prepare($sql);
-$stmt->execute($params);
-$runs = $stmt->fetchAll();
+$filters = hub_admin_record_runtime_filters($_GET);
+$runs = hub_admin_record_runtime_runs($db, $filters, 100);
 
 hub_admin_header('執行歷程', $user);
 ?>
+<section class="notice legacy-debug" role="note">
+    <strong><?= hub_h(__('Legacy debug 頁面')) ?></strong>
+    <?= hub_h(__('此頁已退出主選單，正式操作請使用「記錄中心」。')) ?>
+    <a href="log_explorer.php?tab=runs"><?= hub_h(__('前往執行歷程')) ?></a>
+</section>
 <section class="panel">
     <h1>Runtime 執行歷程</h1>
     <p class="muted">Local Job / aihub-run 的執行歷程。這裡只讀歷史，不提供重跑、刪除或取消。</p>

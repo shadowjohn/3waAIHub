@@ -1,9 +1,11 @@
 <?php
 declare(strict_types=1);
 
-require __DIR__ . '/../app/bootstrap.php';
-require __DIR__ . '/_layout.php';
+require_once __DIR__ . '/../app/bootstrap.php';
+require_once __DIR__ . '/../app/admin_records.php';
+require_once __DIR__ . '/_layout.php';
 
+/** @deprecated Canonical UI: admin/log_explorer.php?tab=api */
 $db = hub_db();
 hub_migrate($db);
 $user = hub_require_system_admin($db);
@@ -44,6 +46,11 @@ hub_admin_header('API 用量統計', $user);
     .usage-table th, .usage-table td { white-space: nowrap; }
     .usage-num { font-variant-numeric: tabular-nums; text-align: right; }
 </style>
+<section class="notice legacy-debug" role="note">
+    <strong><?= hub_h(__('Legacy debug 頁面')) ?></strong>
+    <?= hub_h(__('此頁已退出主選單，正式操作請使用「記錄中心」。')) ?>
+    <a href="log_explorer.php?tab=api"><?= hub_h(__('前往 API 記錄')) ?></a>
+</section>
 <section class="panel">
     <h1>API 用量統計</h1>
     <form method="get">

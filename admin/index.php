@@ -267,7 +267,7 @@ hub_admin_header('儀表板', $user);
     </div>
     <div class="hub-actions">
         <a class="button" href="services.php"><?= hub_h(__('服務管理')) ?></a>
-        <a class="button" href="runtime_runs.php"><?= hub_dash_t('執行歷程') ?></a>
+        <a class="button" href="log_explorer.php?tab=runs"><?= hub_dash_t('執行歷程') ?></a>
         <a class="button" href="playground.php"><?= hub_dash_t('API 測試場') ?></a>
         <a class="button" href="api_docs.php"><?= hub_dash_t('後台 API 文件') ?></a>
         <a class="button" href="packs.php"><?= hub_dash_t('HubPack 套件') ?></a>

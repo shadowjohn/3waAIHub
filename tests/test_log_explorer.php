@@ -10,6 +10,36 @@ hub_test('base64url IP filters decode then validate', function (): void {
     hub_test_assert(hub_decode_ip_get_filter(aihub_b64url_encode('192.168.1.0/999'), true) === null, 'invalid CIDR prefix should fail');
 });
 
+hub_test('Record Center API filters preserve base64url IP and validated tokens', function (): void {
+    $encoded = aihub_b64url_encode('192.168.1.11');
+    $filters = hub_admin_record_api_filters([
+        'client_ip_b64' => $encoded,
+        'mode' => 'hello',
+        'service_id' => '2',
+        'member_id' => '3',
+        'token_id' => '4',
+        'ok' => '0',
+        'status_code' => '404',
+        'error_code' => 'unknown_mode',
+        'method' => 'POST',
+        'request_id' => 'req_123',
+        'keyword' => 'needle',
+    ]);
+
+    hub_test_assert($filters['client_ip_b64'] === $encoded, 'valid client IP must remain base64url encoded');
+    hub_test_assert($filters['mode'] === 'hello' && $filters['error_code'] === 'unknown_mode', 'technical token filters changed');
+    hub_test_assert($filters['service_id'] === 2 && $filters['member_id'] === 3 && $filters['token_id'] === 4, 'numeric API filters changed');
+
+    $invalid = hub_admin_record_api_filters([
+        'client_ip_b64' => aihub_b64url_encode('../../etc/passwd'),
+        'mode' => ['hello'],
+        'status_code' => ['200'],
+        'method' => ["GET\nX-Test"],
+        'service_id' => ['2'],
+    ]);
+    hub_test_assert($invalid['client_ip_b64'] === '' && $invalid['mode'] === '' && $invalid['status_code'] === '' && $invalid['method'] === '' && $invalid['service_id'] === 0, 'invalid API filters must be discarded');
+});
+
 hub_test('api access query supports b64 client IP mode error and keyword filters', function (): void {
     $db = hub_test_reset_db();
     hub_insert_api_log_for_test($db, 'req_a', '192.168.1.10', 'hello', 200, 1, null, 'ok uri', 'normal ua');
@@ -35,6 +65,22 @@ hub_test('api access query supports b64 client IP mode error and keyword filters
 
     hub_test_assert(count($logs) === 1, 'b64 IP and keyword filters should match one row');
     hub_test_assert($logs[0]['request_id'] === 'req_b', 'request_id should be selected');
+});
+
+hub_test('Record Center keeps API filters pagination and detail links', function (): void {
+    $page = (string)file_get_contents(HUB_ROOT . '/admin/log_explorer.php');
+    foreach (['time_from', 'time_to', 'client_ip_b64', 'mode', 'service_id', 'member_id', 'token_id', 'ok', 'status_code', 'error_code', 'method', 'request_id', 'keyword'] as $filter) {
+        hub_test_assert(str_contains($page, $filter), 'API filter missing from canonical Record Center: ' . $filter);
+    }
+    foreach (['log_detail.php?id=', "unset(\$query['page'])", "'page=' . (\$page - 1)", "'page=' . (\$page + 1)"] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'API pagination/detail contract missing ' . $needle);
+    }
+
+    $legacy = (string)file_get_contents(HUB_ROOT . '/admin/api_usage.php');
+    hub_test_assert(str_contains($legacy, "/** @deprecated Canonical UI: admin/log_explorer.php?tab=api */"), 'API usage legacy marker missing');
+    hub_test_assert(str_contains($legacy, 'class="notice legacy-debug"'), 'API usage legacy notice missing');
+    hub_test_assert(str_contains($legacy, 'log_explorer.php?tab=api'), 'API usage canonical link missing');
+    hub_test_assert(!str_contains($legacy, 'hub_redirect(') && !str_contains($legacy, "require __DIR__ . '/log_explorer.php'"), 'API usage diagnostic must not redirect or include canonical UI');
 });
 
 hub_test('gateway generates request_id and stores it in api access logs', function (): void {
