@@ -124,10 +124,11 @@ function hub_edge_tts_acceptance_run(PDO $db, array $config, callable $http, cal
                 'pitch' => '+0Hz',
                 'include_subtitles' => '1',
             ]);
-            $taskId = (int)($submitted['task_id'] ?? 0);
-            if (($submitted['ok'] ?? false) !== true || $taskId < 1) {
+            $taskId = hub_edge_tts_acceptance_task_id($submitted['task_id'] ?? null, hub_edge_tts_acceptance_is_cluster($config));
+            if (($submitted['ok'] ?? false) !== true || $taskId === null) {
                 hub_edge_tts_acceptance_fail('edge_tts_acceptance_submission_failed');
             }
+            $followups = hub_edge_tts_acceptance_followups($config, $submitted, $taskId);
         } catch (HubEdgeTtsAcceptanceFailure $error) {
             throw $error;
         } catch (Throwable) {
@@ -135,9 +136,10 @@ function hub_edge_tts_acceptance_run(PDO $db, array $config, callable $http, cal
         }
 
         try {
-            hub_edge_tts_acceptance_poll($config, $http, $taskId);
-            $taskResult = hub_edge_tts_acceptance_json($config, $http, 'task_result', 'GET', ['task_id' => (string)$taskId]);
-            if (($taskResult['ok'] ?? false) !== true || (int)($taskResult['task_id'] ?? 0) !== $taskId || !is_array($taskResult['result']['artifacts'] ?? null)) {
+            hub_edge_tts_acceptance_poll($config, $http, $taskId, $followups['status_url'] ?? null);
+            $taskResult = hub_edge_tts_acceptance_json_url($config, $http, 'GET', $followups['result_url'] ?? '');
+            if (($taskResult['ok'] ?? false) !== true || !hub_edge_tts_acceptance_response_task_matches($taskResult, $taskId)
+                || !is_array($taskResult['result']['artifacts'] ?? null)) {
                 hub_edge_tts_acceptance_fail('edge_tts_acceptance_task_failed');
             }
         } catch (HubEdgeTtsAcceptanceFailure $error) {
@@ -147,12 +149,27 @@ function hub_edge_tts_acceptance_run(PDO $db, array $config, callable $http, cal
         }
 
         try {
-            $artifacts = hub_edge_tts_acceptance_verify_artifacts($config, $http, $command, $taskId, $taskResult['result']['artifacts'], $temporary);
+            $artifacts = hub_edge_tts_acceptance_verify_artifacts(
+                $config,
+                $http,
+                $command,
+                $taskId,
+                $taskResult['result']['artifacts'],
+                $temporary,
+                $followups['artifact_url_template'] ?? null,
+            );
             foreach ($artifacts as $artifact) {
-                $ack = hub_edge_tts_acceptance_json($config, $http, 'task_artifacts_ack', 'POST', [
-                    'task_id' => (string)$taskId,
-                    'artifact_id' => (string)$artifact['id'],
-                ]);
+                $ack = $followups['ack_url_template'] === null
+                    ? hub_edge_tts_acceptance_json($config, $http, 'task_artifacts_ack', 'POST', [
+                        'task_id' => $taskId,
+                        'artifact_id' => $artifact['id'],
+                    ])
+                    : hub_edge_tts_acceptance_json_url(
+                        $config,
+                        $http,
+                        'POST',
+                        hub_edge_tts_acceptance_fill_artifact_template($config, $followups['ack_url_template'], 'cluster_task_artifacts_ack', $taskId, $artifact['id']),
+                    );
                 if (($ack['ok'] ?? false) !== true) {
                     hub_edge_tts_acceptance_fail('edge_tts_acceptance_artifact_invalid');
                 }
@@ -197,11 +214,166 @@ function hub_edge_tts_acceptance_demo_url(string $baseUrl, string $voiceId, mixe
     return $baseUrl . $demoUrl;
 }
 
-function hub_edge_tts_acceptance_poll(array $config, callable $http, int $taskId): void
+function hub_edge_tts_acceptance_is_cluster(array $config): bool
+{
+    return str_ends_with((string)($config['base_url'] ?? ''), '/cluster_api.php');
+}
+
+function hub_edge_tts_acceptance_task_id(mixed $value, bool $cluster): ?string
+{
+    if (!is_int($value) && !is_string($value)) {
+        return null;
+    }
+    $taskId = (string)$value;
+    $pattern = $cluster ? '/\Aroute_[a-f0-9]{32}\z/' : '/\A[1-9]\d{0,17}\z/';
+
+    return preg_match($pattern, $taskId) === 1 ? $taskId : null;
+}
+
+function hub_edge_tts_acceptance_artifact_id(mixed $value): ?string
+{
+    if (!is_int($value) && !is_string($value)) {
+        return null;
+    }
+    $artifactId = (string)$value;
+
+    return preg_match('/\A[1-9]\d{0,17}\z/', $artifactId) === 1 ? $artifactId : null;
+}
+
+function hub_edge_tts_acceptance_response_task_matches(array $payload, string $taskId): bool
+{
+    $returned = $payload['task_id'] ?? null;
+    return (is_string($returned) || is_int($returned)) && hash_equals($taskId, (string)$returned);
+}
+
+function hub_edge_tts_acceptance_followups(array $config, array $submitted, string $taskId): array
+{
+    if (!hub_edge_tts_acceptance_is_cluster($config)) {
+        return [
+            'status_url' => hub_edge_tts_acceptance_url($config['base_url'], 'task_status', ['task_id' => $taskId]),
+            'result_url' => hub_edge_tts_acceptance_url($config['base_url'], 'task_result', ['task_id' => $taskId]),
+            'artifact_url_template' => null,
+            'ack_url_template' => null,
+        ];
+    }
+    $links = [];
+    foreach ([
+        'status_url' => ['mode' => 'cluster_task_status', 'template' => false],
+        'result_url' => ['mode' => 'cluster_task_result', 'template' => false],
+        'artifact_url_template' => ['mode' => 'cluster_artifact', 'template' => true],
+        'ack_url_template' => ['mode' => 'cluster_task_artifacts_ack', 'template' => true],
+    ] as $name => $definition) {
+        $links[$name] = hub_edge_tts_acceptance_cluster_link(
+            $config,
+            $submitted[$name] ?? null,
+            $definition['mode'],
+            $taskId,
+            $definition['template'],
+        );
+    }
+
+    return $links;
+}
+
+function hub_edge_tts_acceptance_cluster_link(array $config, mixed $value, string $mode, string $taskId, bool $artifactTemplate, ?string $artifactId = null): string
+{
+    if (!is_string($value) || strlen($value) < 1 || strlen($value) > 2048 || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+        throw new RuntimeException('cluster_link_invalid');
+    }
+    $base = parse_url((string)($config['base_url'] ?? ''));
+    $link = parse_url($value);
+    if (!is_array($base) || !is_array($link) || isset($link['user']) || isset($link['pass']) || isset($link['fragment'])
+        || !is_string($link['query'] ?? null) || $link['query'] === '') {
+        throw new RuntimeException('cluster_link_invalid');
+    }
+    $baseScheme = strtolower((string)($base['scheme'] ?? ''));
+    $baseHost = strtolower((string)($base['host'] ?? ''));
+    $basePath = (string)($base['path'] ?? '');
+    $basePort = hub_edge_tts_acceptance_url_port($baseScheme, $base['port'] ?? null);
+    if ($baseScheme === '' || $baseHost === '' || $basePath === '') {
+        throw new RuntimeException('cluster_link_invalid');
+    }
+    if (isset($link['scheme']) || isset($link['host']) || isset($link['port'])) {
+        if (strtolower((string)($link['scheme'] ?? '')) !== $baseScheme
+            || strtolower((string)($link['host'] ?? '')) !== $baseHost
+            || hub_edge_tts_acceptance_url_port($baseScheme, $link['port'] ?? null) !== $basePort) {
+            throw new RuntimeException('cluster_link_invalid');
+        }
+    }
+    $linkPath = (string)($link['path'] ?? '');
+    if ($linkPath !== '' && $linkPath !== $basePath && $linkPath !== basename($basePath)) {
+        throw new RuntimeException('cluster_link_invalid');
+    }
+    $query = hub_edge_tts_acceptance_url_query((string)$link['query']);
+    $expected = ['mode' => $mode, 'task_id' => $taskId];
+    if ($artifactTemplate || $artifactId !== null) {
+        $expected['artifact_id'] = $artifactTemplate ? '{artifact_id}' : $artifactId;
+    }
+    if (count($query) !== count($expected)) {
+        throw new RuntimeException('cluster_link_invalid');
+    }
+    foreach ($expected as $key => $expectedValue) {
+        if (!isset($query[$key]) || !hash_equals($expectedValue, $query[$key])) {
+            throw new RuntimeException('cluster_link_invalid');
+        }
+    }
+
+    return (string)$config['base_url'] . '?' . (string)$link['query'];
+}
+
+function hub_edge_tts_acceptance_url_port(string $scheme, mixed $port): int
+{
+    if ($port === null || $port === '') {
+        return $scheme === 'https' ? 443 : 80;
+    }
+
+    return is_int($port) && $port > 0 && $port <= 65535 ? $port : -1;
+}
+
+function hub_edge_tts_acceptance_url_query(string $query): array
+{
+    $values = [];
+    foreach (explode('&', $query) as $pair) {
+        if ($pair === '' || !str_contains($pair, '=')) {
+            throw new RuntimeException('cluster_link_invalid');
+        }
+        [$rawKey, $rawValue] = explode('=', $pair, 2);
+        if ($rawKey === '' || preg_match('/%(?![0-9A-Fa-f]{2})/', $rawKey . $rawValue) === 1) {
+            throw new RuntimeException('cluster_link_invalid');
+        }
+        $key = rawurldecode($rawKey);
+        $value = rawurldecode($rawValue);
+        if ($key === '' || str_contains($key, '[') || str_contains($key, ']') || isset($values[$key])
+            || preg_match('/[\x00-\x1F\x7F]/', $key . $value) === 1) {
+            throw new RuntimeException('cluster_link_invalid');
+        }
+        $values[$key] = $value;
+    }
+
+    return $values;
+}
+
+function hub_edge_tts_acceptance_fill_artifact_template(array $config, string $template, string $mode, string $taskId, string $artifactId): string
+{
+    if (substr_count($template, '{artifact_id}') !== 1) {
+        throw new RuntimeException('cluster_link_invalid');
+    }
+    $url = str_replace('{artifact_id}', rawurlencode($artifactId), $template);
+    hub_edge_tts_acceptance_cluster_link($config, $url, $mode, $taskId, false, $artifactId);
+
+    return $url;
+}
+
+function hub_edge_tts_acceptance_poll(array $config, callable $http, string $taskId, ?string $statusUrl = null): void
 {
     $deadline = microtime(true) + HUB_EDGE_TTS_ACCEPTANCE_POLL_TIMEOUT_SECONDS;
     do {
-        $status = hub_edge_tts_acceptance_json($config, $http, 'task_status', 'GET', ['task_id' => (string)$taskId]);
+        $status = $statusUrl === null
+            ? hub_edge_tts_acceptance_json($config, $http, 'task_status', 'GET', ['task_id' => $taskId])
+            : hub_edge_tts_acceptance_json_url($config, $http, 'GET', $statusUrl);
+        if (!hub_edge_tts_acceptance_response_task_matches($status, $taskId)) {
+            hub_edge_tts_acceptance_fail('edge_tts_acceptance_task_failed');
+        }
         $state = strtolower(trim((string)($status['status'] ?? '')));
         if (in_array($state, ['success', 'completed'], true)) {
             return;
@@ -215,7 +387,15 @@ function hub_edge_tts_acceptance_poll(array $config, callable $http, int $taskId
     hub_edge_tts_acceptance_fail('edge_tts_acceptance_task_failed');
 }
 
-function hub_edge_tts_acceptance_verify_artifacts(array $config, callable $http, callable $command, int $taskId, array $declared, array &$temporary): array
+function hub_edge_tts_acceptance_verify_artifacts(
+    array $config,
+    callable $http,
+    callable $command,
+    string $taskId,
+    array $declared,
+    array &$temporary,
+    ?string $artifactUrlTemplate = null,
+): array
 {
     $expected = [
         'generated_audio' => ['mime_types' => ['audio/mpeg'], 'max_bytes' => 16777216],
@@ -239,12 +419,15 @@ function hub_edge_tts_acceptance_verify_artifacts(array $config, callable $http,
     $verified = [];
     foreach ($expected as $type => $definition) {
         $artifact = $byType[$type];
-        $artifactId = (int)($artifact['id'] ?? $artifact['artifact_id'] ?? 0);
+        $artifactId = hub_edge_tts_acceptance_artifact_id($artifact['id'] ?? $artifact['artifact_id'] ?? null);
         $mime = strtolower(trim((string)($artifact['mime_type'] ?? '')));
-        if ($artifactId < 1 || !in_array($mime, $definition['mime_types'], true)) {
+        if ($artifactId === null || !in_array($mime, $definition['mime_types'], true)) {
             hub_edge_tts_acceptance_fail('edge_tts_acceptance_artifact_invalid');
         }
-        $response = hub_edge_tts_acceptance_request($config, $http, 'GET', hub_edge_tts_acceptance_url($config['base_url'], 'artifact', ['artifact_id' => (string)$artifactId]), '', (int)$definition['max_bytes']);
+        $url = $artifactUrlTemplate === null
+            ? hub_edge_tts_acceptance_url($config['base_url'], 'artifact', ['artifact_id' => $artifactId])
+            : hub_edge_tts_acceptance_fill_artifact_template($config, $artifactUrlTemplate, 'cluster_artifact', $taskId, $artifactId);
+        $response = hub_edge_tts_acceptance_request($config, $http, 'GET', $url, '', (int)$definition['max_bytes']);
         if (!hub_edge_tts_acceptance_http_ok($response) || !is_string($response['body'] ?? null)
             || !hub_edge_tts_acceptance_mime_matches($response['headers'] ?? [], $definition['mime_types'])) {
             hub_edge_tts_acceptance_fail('edge_tts_acceptance_artifact_invalid');
@@ -274,7 +457,7 @@ function hub_edge_tts_acceptance_verify_artifacts(array $config, callable $http,
     return $verified;
 }
 
-function hub_edge_tts_acceptance_local_runtime(PDO $db, int $taskId, array $config): array
+function hub_edge_tts_acceptance_local_runtime(PDO $db, string $taskId, array $config): array
 {
     $token = $db->prepare('SELECT id FROM api_tokens WHERE token_hash = :token_hash LIMIT 1');
     $token->execute([':token_hash' => (string)($config['token_hash'] ?? '')]);
@@ -284,6 +467,50 @@ function hub_edge_tts_acceptance_local_runtime(PDO $db, int $taskId, array $conf
     if ($tokenId < 1 || $packVersion === '') {
         throw new RuntimeException('local_task_identity_missing');
     }
+    if (preg_match('/\Aroute_[a-f0-9]{32}\z/', $taskId) === 1) {
+        return hub_edge_tts_acceptance_local_cluster_runtime($db, $taskId, $tokenId, $packVersion);
+    }
+    if (preg_match('/\A[1-9]\d{0,17}\z/', $taskId) !== 1) {
+        throw new RuntimeException('local_task_identity_missing');
+    }
+
+    return hub_edge_tts_acceptance_local_task_runtime($db, (int)$taskId, $packVersion, $tokenId);
+}
+
+function hub_edge_tts_acceptance_local_cluster_runtime(PDO $db, string $routeId, int $tokenId, string $packVersion): array
+{
+    $route = $db->prepare(
+        "SELECT route_id, station_id, token_id, mode, remote_task_id, is_async, state
+         FROM cluster_routes
+         WHERE route_id = :route_id AND token_id = :token_id
+         LIMIT 1"
+    );
+    $route->execute([':route_id' => $routeId, ':token_id' => $tokenId]);
+    $route = $route->fetch(PDO::FETCH_ASSOC);
+    $remoteTaskId = is_array($route) ? (string)($route['remote_task_id'] ?? '') : '';
+    $station = is_array($route) ? hub_cluster_get_station($db, (int)($route['station_id'] ?? 0)) : null;
+    $stationTokenId = hub_cluster_node_token_id($db);
+    $stationToken = $stationTokenId > 0 ? hub_get_api_token($db, $stationTokenId) : null;
+    if (!is_array($route)
+        || ($route['mode'] ?? '') !== 'edge_tts'
+        || (int)($route['is_async'] ?? 0) !== 1
+        || ($route['state'] ?? '') !== 'succeeded'
+        || preg_match('/\A[1-9]\d{0,17}\z/', $remoteTaskId) !== 1
+        || !is_array($station)
+        || !hub_cluster_router_station_is_self($db, $station)
+        || !hub_cluster_node_enabled($db)
+        || !is_array($stationToken)
+        || (int)($stationToken['enabled'] ?? 0) !== 1
+        || !empty($stationToken['revoked_at'])
+    ) {
+        throw new RuntimeException('local_cluster_route_unproven');
+    }
+
+    return hub_edge_tts_acceptance_local_task_runtime($db, (int)$remoteTaskId, $packVersion, $stationTokenId);
+}
+
+function hub_edge_tts_acceptance_local_task_runtime(PDO $db, int $taskId, string $packVersion, ?int $ownerTokenId): array
+{
     $task = $db->prepare('SELECT task_type, queue_name, accelerator, status, owner_token_id, requested_mode, pack_id, pack_version, job FROM tasks WHERE id = :task_id');
     $task->execute([':task_id' => $taskId]);
     $row = $task->fetch(PDO::FETCH_ASSOC);
@@ -292,7 +519,7 @@ function hub_edge_tts_acceptance_local_runtime(PDO $db, int $taskId, array $conf
         || ($row['queue_name'] ?? '') !== 'cpu'
         || ($row['accelerator'] ?? '') !== 'cpu'
         || ($row['status'] ?? '') !== 'success'
-        || (int)($row['owner_token_id'] ?? 0) !== $tokenId
+        || ($ownerTokenId !== null && (int)($row['owner_token_id'] ?? 0) !== $ownerTokenId)
         || ($row['requested_mode'] ?? '') !== 'edge_tts'
         || ($row['pack_id'] ?? '') !== 'edge-tts'
         || ($row['pack_version'] ?? '') !== $packVersion
@@ -397,7 +624,21 @@ function hub_edge_tts_acceptance_ffprobe(string $path, callable $command): bool
 function hub_edge_tts_acceptance_json(array $config, callable $http, string $mode, string $method = 'GET', array $fields = []): array
 {
     $url = hub_edge_tts_acceptance_url($config['base_url'], $mode, $method === 'GET' ? $fields : []);
-    $response = hub_edge_tts_acceptance_request($config, $http, $method, $url, $method === 'POST' ? http_build_query($fields, '', '&', PHP_QUERY_RFC3986) : '', HUB_EDGE_TTS_ACCEPTANCE_JSON_MAX_BYTES);
+    return hub_edge_tts_acceptance_json_url(
+        $config,
+        $http,
+        $method,
+        $url,
+        $method === 'POST' ? http_build_query($fields, '', '&', PHP_QUERY_RFC3986) : '',
+    );
+}
+
+function hub_edge_tts_acceptance_json_url(array $config, callable $http, string $method, string $url, string $body = ''): array
+{
+    if ($url === '') {
+        throw new RuntimeException('public_api_failed');
+    }
+    $response = hub_edge_tts_acceptance_request($config, $http, $method, $url, $body, HUB_EDGE_TTS_ACCEPTANCE_JSON_MAX_BYTES);
     $payload = json_decode((string)($response['body'] ?? ''), true);
     if (!hub_edge_tts_acceptance_http_ok($response) || !is_array($payload)) {
         throw new RuntimeException('public_api_failed');

@@ -42,15 +42,19 @@ php scripts/edge_tts_acceptance.php
 ```
 
 Cluster 改用同一服務對外的 `cluster_api.php`，例如
-`https://cluster.example/3waAIHub/cluster_api.php`；其餘命令不變。兩個環境變數以外
-沒有設定或 token CLI 選項。CLI 會驗證 URL 形狀，並以 Bearer 標頭發出不跟隨
-redirect（`non-redirect`）的請求。
+`https://cluster.example/3waAIHub/cluster_api.php`；其餘命令不變。Router 必須回傳目前
+版本的 opaque `status_url`、`result_url`、`artifact_url_template` 與
+`ack_url_template`，並在 result 中保留 artifact 的型別、MIME、大小與 SHA-256。CLI
+只會使用這些同源、同端點、non-redirect 的回傳 follow-up URL，不會重組或追隨站台連結。
+兩個環境變數以外沒有設定或 token CLI 選項。
 
 ## 驗收閉環與輸出
 
 成功路徑固定為：認證 GET 聲線清單 → 讀第一個聲線的 `demo_url` MP3 →
 POST `edge_tts` 非同步合成（`include_subtitles=true`）→ `task_status` →
 `task_result` → 下載並驗證五個 artifact → 每個 artifact `task_artifacts_ack`。
+Cluster follow-up 一律使用 Router 回傳的 opaque URL/template；不會把 `route_…` 當成數字
+task ID。
 
 五個 artifact 必須全數存在且型別正確；列出的標準 MIME 之外，字幕只接受下列相容
 MIME：
@@ -83,5 +87,8 @@ MIME：
 不要用 UI 顯示以外的 task、token 或 URL 資料補寫 benchmark。
 
 若失敗，先確認 service 仍 running、token mode/權限正確、公開基底 URL 指向正確
-`api.php` 或 `cluster_api.php`，以及安裝時已有生成的示範音檔。修復後重新執行同一指令；
-不要貼出 HTTP 回應本文、token、完整 URL、task/artifact ID 或生成音檔來排查。
+`api.php` 或 `cluster_api.php`，以及安裝時已有生成的示範音檔。對 Cluster，Hub 還必須能在
+本機以 customer token 綁定 Router route、self station 與對應的 Edge TTS CPU task；若工作
+實際只存在遠端 station，CLI 會以 `edge_tts_acceptance_task_failed` fail-closed，而不是用
+不完整的本機資料宣告 PASS。修復後重新執行同一指令；不要貼出 HTTP 回應本文、token、完整
+URL、task/artifact ID 或生成音檔來排查。

@@ -2079,7 +2079,7 @@ function hub_gateway_stream_task_artifact(PDO $db, array $artifact): array
 
 function hub_gateway_cluster_child_followup(PDO $db, string $mode, int $taskId, int $memberId, int $tokenId, ?int $artifactId = null): array
 {
-    if (!in_array($mode, ['task_status', 'task_result', 'task_log', 'task_cancel', 'artifact'], true) || $taskId < 1 || $memberId < 1 || $tokenId < 1) {
+    if (!in_array($mode, ['task_status', 'task_result', 'task_log', 'task_cancel', 'artifact', 'task_artifacts_ack'], true) || $taskId < 1 || $memberId < 1 || $tokenId < 1) {
         return hub_gateway_error(404, 'unknown_mode', 'mode is not registered');
     }
     $task = hub_get_task($db, $taskId);
@@ -2103,7 +2103,35 @@ function hub_gateway_cluster_child_followup(PDO $db, string $mode, int $taskId, 
         ]),
         'task_cancel' => hub_gateway_cluster_child_task_cancel($db, $task),
         'artifact' => hub_gateway_cluster_child_artifact($db, $task, $artifactId),
+        'task_artifacts_ack' => hub_gateway_cluster_child_task_artifacts_ack($db, $task, $memberId, $artifactId),
     };
+}
+
+function hub_gateway_cluster_child_task_artifacts_ack(PDO $db, array $task, int $memberId, ?int $artifactId): array
+{
+    $taskId = (int)($task['id'] ?? 0);
+    if ($artifactId === null || $artifactId < 1
+        || ($task['requested_mode'] ?? '') !== 'edge_tts'
+        || ($task['pack_id'] ?? '') !== 'edge-tts'
+        || ($task['job'] ?? '') !== 'synthesize') {
+        return hub_gateway_error(400, 'bad_request', 'artifact_id is required');
+    }
+    try {
+        if (!hub_ack_task_artifact($db, $memberId, $taskId, $artifactId)) {
+            return hub_gateway_error(404, 'artifact_not_found', 'artifact was not found');
+        }
+    } catch (RuntimeException $error) {
+        return hub_gateway_error(409, $error->getMessage(), 'artifact is unavailable');
+    }
+    $artifact = hub_get_task_artifact($db, $artifactId);
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'task_id' => $taskId,
+        'artifact_id' => $artifactId,
+        'acknowledged_at' => $artifact['acknowledged_at'] ?? null,
+        'expires_at' => $artifact['expires_at'] ?? null,
+    ]);
 }
 
 function hub_gateway_cluster_child_task_result(PDO $db, array $task): array
@@ -2112,7 +2140,7 @@ function hub_gateway_cluster_child_task_result(PDO $db, array $task): array
     if (($task['status'] ?? '') !== 'success') {
         return hub_gateway_json(409, ['ok' => false, 'task_id' => $taskId, 'status' => (string)($task['status'] ?? '')]);
     }
-    $artifacts = hub_gateway_cluster_child_artifact_index($db, $taskId);
+    $artifacts = hub_gateway_cluster_child_artifact_index($db, $task);
 
     return hub_gateway_json(200, [
         'ok' => true,
@@ -2122,10 +2150,14 @@ function hub_gateway_cluster_child_task_result(PDO $db, array $task): array
     ]);
 }
 
-function hub_gateway_cluster_child_artifact_index(PDO $db, int $taskId): array
+function hub_gateway_cluster_child_artifact_index(PDO $db, array $task): array
 {
+    $taskId = (int)($task['id'] ?? 0);
+    $includeMetadata = ($task['requested_mode'] ?? '') === 'edge_tts'
+        && ($task['pack_id'] ?? '') === 'edge-tts'
+        && ($task['job'] ?? '') === 'synthesize';
     $stmt = $db->prepare(
-        "SELECT id, size_bytes FROM task_artifacts
+        "SELECT id, artifact_type, mime_type, size_bytes, sha256 FROM task_artifacts
          WHERE task_id = :task_id AND state = 'available' AND purged_at IS NULL
          ORDER BY id ASC LIMIT 128"
     );
@@ -2134,7 +2166,19 @@ function hub_gateway_cluster_child_artifact_index(PDO $db, int $taskId): array
     foreach ($stmt->fetchAll() as $artifact) {
         $id = (int)($artifact['id'] ?? 0);
         if ($id > 0) {
-            $artifacts[] = ['id' => $id, 'size_bytes' => max(0, (int)($artifact['size_bytes'] ?? 0))];
+            $entry = ['id' => $id, 'size_bytes' => max(0, (int)($artifact['size_bytes'] ?? 0))];
+            if ($includeMetadata) {
+                if (is_string($artifact['artifact_type'] ?? null) && preg_match('/\A[a-z][a-z0-9_-]{0,63}\z/', $artifact['artifact_type']) === 1) {
+                    $entry['type'] = $artifact['artifact_type'];
+                }
+                if (is_string($artifact['mime_type'] ?? null) && preg_match('/\A[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\z/i', $artifact['mime_type']) === 1) {
+                    $entry['mime_type'] = strtolower($artifact['mime_type']);
+                }
+                if (is_string($artifact['sha256'] ?? null) && preg_match('/\A[a-f0-9]{64}\z/', $artifact['sha256']) === 1) {
+                    $entry['sha256'] = $artifact['sha256'];
+                }
+            }
+            $artifacts[] = $entry;
         }
     }
 

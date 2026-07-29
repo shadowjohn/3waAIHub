@@ -1935,6 +1935,81 @@ hub_test('cluster router result maps artifacts and proxies only mapped artifacts
     });
 });
 
+hub_test('cluster router retains validated artifact metadata and proxies opaque acknowledgements', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_router_async_route($db, ['station_token' => 'edge_tts_ack_station_token']);
+        $db->prepare("UPDATE cluster_routes SET mode = 'edge_tts' WHERE route_id = :route_id")
+            ->execute([':route_id' => $fixture['route_id']]);
+        $result = hub_cluster_dispatch_followup($db, 'cluster_task_result', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => hub_gateway_json(200, [
+            'ok' => true,
+            'task_id' => 'remote_task_42',
+            'cluster_artifact_index' => [[
+                'id' => 10,
+                'type' => 'generated_audio',
+                'mime_type' => 'audio/mpeg',
+                'size_bytes' => 7,
+                'sha256' => str_repeat('a', 64),
+            ]],
+        ]));
+        $payload = json_decode($result['body'], true, 64, JSON_THROW_ON_ERROR);
+        $links = hub_cluster_router_task_links((string)$fixture['route_id'], 'cluster_api.php', 'edge_tts');
+        hub_test_assert(($payload['result']['artifacts'] ?? null) === [[
+            'id' => 10,
+            'size_bytes' => 7,
+            'type' => 'generated_audio',
+            'mime_type' => 'audio/mpeg',
+            'sha256' => str_repeat('a', 64),
+        ]] && ($payload['ack_url_template'] ?? null) === $links['ack_url_template']
+            && hub_cluster_router_is_followup_mode('cluster_task_artifacts_ack'),
+            'the router must expose only validated artifact metadata plus its opaque ACK template');
+
+        $requests = 0;
+        $wrongMethod = hub_cluster_dispatch_followup($db, 'cluster_task_artifacts_ack', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'method' => 'GET',
+            'query' => ['task_id' => $fixture['route_id'], 'artifact_id' => '10'],
+        ], static function () use (&$requests): array {
+            $requests++;
+            return hub_gateway_json(200, ['ok' => true]);
+        });
+        hub_test_assert($wrongMethod['status'] === 405 && $requests === 0,
+            'a Cluster artifact acknowledgement must reject GET before authentication or station proxying');
+
+        $ack = hub_cluster_dispatch_followup($db, 'cluster_task_artifacts_ack', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'method' => 'POST',
+            'query' => ['task_id' => $fixture['route_id'], 'artifact_id' => '10'],
+        ], static function (array $request) use (&$requests): array {
+            $requests++;
+            hub_test_assert($request['method'] === 'POST' && $request['query'] === [
+                'mode' => 'task_artifacts_ack', 'task_id' => 'remote_task_42', 'artifact_id' => '10',
+            ], 'the router must ACK only the mapped remote task artifact through the station token');
+            return hub_gateway_json(200, ['ok' => true, 'task_id' => 'remote_task_42', 'artifact_id' => 10]);
+        });
+        $ackPayload = json_decode($ack['body'], true, 64, JSON_THROW_ON_ERROR);
+        $unknown = hub_cluster_dispatch_followup($db, 'cluster_task_artifacts_ack', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'method' => 'POST',
+            'query' => ['task_id' => $fixture['route_id'], 'artifact_id' => '11'],
+        ], static function () use (&$requests): array {
+            $requests++;
+            return hub_gateway_json(200, ['ok' => true]);
+        });
+        hub_test_assert($ack['status'] === 200 && ($ackPayload['ok'] ?? false) === true
+            && ($ackPayload['task_id'] ?? null) === $fixture['route_id']
+            && $unknown['status'] === 404 && $requests === 1,
+            'the router must hide remote ACK details and reject unmapped artifacts before dispatch');
+    });
+});
+
 hub_test('cluster router preserves and maps native oversized result artifacts only after task identity matches', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

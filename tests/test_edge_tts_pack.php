@@ -51,6 +51,14 @@ function hub_test_edge_tts_acceptance_env(): array
     ];
 }
 
+function hub_test_edge_tts_acceptance_cluster_env(): array
+{
+    return [
+        'AIHUB_EDGE_TTS_ACCEPTANCE_BASE_URL' => 'https://hub.example/3waAIHub/cluster_api.php',
+        'AIHUB_EDGE_TTS_ACCEPTANCE_TOKEN' => 'edge-tts-unit-token-secret',
+    ];
+}
+
 function hub_test_edge_tts_acceptance_artifacts(): array
 {
     return [
@@ -128,6 +136,56 @@ function hub_test_edge_tts_acceptance_insert_local_runtime(PDO $db, int $ownerTo
     ]);
 }
 
+function hub_test_edge_tts_acceptance_node_token(PDO $db): int
+{
+    $memberId = hub_create_api_member($db, 'Edge TTS acceptance Cluster node');
+    $token = hub_create_api_token($db, $memberId, 'edge tts acceptance node', null, null);
+    $tokenId = (int)$token['token_id'];
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ENABLED', '1');
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_TOKEN_ID', (string)$tokenId);
+
+    return $tokenId;
+}
+
+function hub_test_edge_tts_acceptance_cluster_route(PDO $db, int $tokenId, int $remoteTaskId = 4242): string
+{
+    $now = hub_now();
+    $stationKey = 'edge_tts_acceptance_self';
+    $db->prepare(
+        'INSERT INTO cluster_stations
+            (station_key, display_name, public_base_url, priority, enabled, token_ciphertext, token_iv, token_tag, created_at, updated_at)
+         VALUES
+            (:station_key, :display_name, :public_base_url, 0, 1, :token_ciphertext, :token_iv, :token_tag, :now, :now)'
+    )->execute([
+        ':station_key' => $stationKey,
+        ':display_name' => 'Edge TTS acceptance self',
+        ':public_base_url' => 'https://hub.example/3waAIHub',
+        ':token_ciphertext' => 'test',
+        ':token_iv' => 'test',
+        ':token_tag' => 'test',
+        ':now' => $now,
+    ]);
+    $stationId = (int)$db->lastInsertId();
+    $memberId = (int)$db->query('SELECT member_id FROM api_tokens WHERE id = ' . $tokenId)->fetchColumn();
+    $routeId = 'route_' . str_repeat('b', 32);
+    $db->prepare(
+        "INSERT INTO cluster_routes
+            (route_id, station_id, member_id, token_id, mode, remote_task_id, is_async, state, remote_status, created_at, updated_at, completed_at)
+         VALUES
+            (:route_id, :station_id, :member_id, :token_id, 'edge_tts', :remote_task_id, 1, 'succeeded', '200', :now, :now, :now)"
+    )->execute([
+        ':route_id' => $routeId,
+        ':station_id' => $stationId,
+        ':member_id' => $memberId,
+        ':token_id' => $tokenId,
+        ':remote_task_id' => (string)$remoteTaskId,
+        ':now' => $now,
+    ]);
+    hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY', $stationKey);
+
+    return $routeId;
+}
+
 function hub_test_edge_tts_acceptance_http(array &$requests, string $failure = ''): callable
 {
     $artifacts = hub_test_edge_tts_acceptance_artifacts();
@@ -199,6 +257,78 @@ function hub_test_edge_tts_acceptance_http(array &$requests, string $failure = '
             return ['status' => 200, 'headers' => ['Content-Type' => $artifact['mime_type']], 'body' => $artifact['body']];
         }
         return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => '{"ok":true}'];
+    };
+}
+
+function hub_test_edge_tts_acceptance_cluster_http(array &$requests, string $routeId, bool $badLink = false): callable
+{
+    $artifacts = hub_test_edge_tts_acceptance_artifacts();
+    $step = 0;
+    return static function (array $request) use (&$requests, &$step, $routeId, $badLink, $artifacts): array {
+        $requests[] = $request;
+        $headers = $request['headers'] ?? [];
+        hub_test_assert(($request['follow_redirects'] ?? true) === false
+            && ($headers['Authorization'] ?? null) === 'Bearer edge-tts-unit-token-secret',
+            'Cluster acceptance requests must use the supplied bearer token without redirects');
+        $current = $step++;
+        if ($current === 0) {
+            return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode(['ok' => true, 'voices' => [[
+                'id' => 'zh-TW-HsiaoChenNeural',
+                'demo_url' => '?mode=edge_tts&voice=zh-TW-HsiaoChenNeural',
+            ]]], JSON_THROW_ON_ERROR)];
+        }
+        if ($current === 1) {
+            return ['status' => 200, 'headers' => ['Content-Type' => 'audio/mpeg'], 'body' => "ID3\x04\x00\x00demo"];
+        }
+        if ($current === 2) {
+            $base = $badLink ? 'https://untrusted.example/cluster_api.php' : 'cluster_api.php';
+            return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode([
+                'ok' => true,
+                'task_id' => $routeId,
+                'status_url' => $base . '?mode=cluster_task_status&task_id=' . $routeId,
+                'result_url' => 'cluster_api.php?mode=cluster_task_result&task_id=' . $routeId,
+                'artifact_url_template' => 'cluster_api.php?mode=cluster_artifact&task_id=' . $routeId . '&artifact_id={artifact_id}',
+                'ack_url_template' => 'cluster_api.php?mode=cluster_task_artifacts_ack&task_id=' . $routeId . '&artifact_id={artifact_id}',
+            ], JSON_THROW_ON_ERROR)];
+        }
+        if ($current === 3) {
+            return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode([
+                'ok' => true, 'task_id' => $routeId, 'status' => 'success',
+            ], JSON_THROW_ON_ERROR)];
+        }
+        if ($current === 4) {
+            $result = [];
+            foreach ($artifacts as $type => $artifact) {
+                $result[] = [
+                    'id' => $artifact['id'],
+                    'type' => $type,
+                    'mime_type' => $artifact['mime_type'],
+                    'size_bytes' => strlen((string)$artifact['body']),
+                    'sha256' => hash('sha256', (string)$artifact['body']),
+                ];
+            }
+            return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode([
+                'ok' => true, 'task_id' => $routeId, 'result' => ['artifacts' => $result],
+            ], JSON_THROW_ON_ERROR)];
+        }
+        $artifactOffset = $current - 5;
+        $artifactValues = array_values($artifacts);
+        if ($artifactOffset >= 0 && $artifactOffset < count($artifactValues)) {
+            $artifact = $artifactValues[$artifactOffset];
+            hub_test_assert(($request['method'] ?? '') === 'GET'
+                && str_contains((string)($request['url'] ?? ''), 'mode=cluster_artifact&task_id=' . $routeId . '&artifact_id=' . $artifact['id']),
+                'Cluster acceptance must retrieve each artifact through the returned opaque route URL');
+            return ['status' => 200, 'headers' => ['Content-Type' => $artifact['mime_type']], 'body' => $artifact['body']];
+        }
+        $ackOffset = $current - 5 - count($artifactValues);
+        if ($ackOffset >= 0 && $ackOffset < count($artifactValues)) {
+            $artifact = $artifactValues[$ackOffset];
+            hub_test_assert(($request['method'] ?? '') === 'POST' && ($request['body'] ?? '') === ''
+                && str_contains((string)($request['url'] ?? ''), 'mode=cluster_task_artifacts_ack&task_id=' . $routeId . '&artifact_id=' . $artifact['id']),
+                'Cluster acceptance must acknowledge each artifact through the returned opaque route URL');
+            return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode(['ok' => true, 'task_id' => $routeId], JSON_THROW_ON_ERROR)];
+        }
+        throw new RuntimeException('unexpected Cluster acceptance request');
     };
 }
 
@@ -279,6 +409,65 @@ hub_test('Edge TTS acceptance completes only through ordered public routes and s
         && (($run['output']['result']['owned_runtime_pids_absent'] ?? false) === true)
         && array_filter($forbidden, static fn (string $value): bool => str_contains($redacted, $value)) === [],
         'Edge TTS acceptance must use only the ordered public API, validate CPU-only runtime facts, clean temporary files, and store redacted evidence');
+});
+
+hub_test('Edge TTS acceptance follows only validated opaque Cluster links and acknowledges artifacts', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    $tokenId = hub_test_edge_tts_acceptance_token($db);
+    $nodeTokenId = hub_test_edge_tts_acceptance_node_token($db);
+    hub_test_edge_tts_acceptance_insert_local_runtime($db, $nodeTokenId);
+    $routeId = hub_test_edge_tts_acceptance_cluster_route($db, $tokenId);
+    $requests = [];
+    $commands = [];
+    $run = hub_test_edge_tts_acceptance_main_output(
+        $db,
+        hub_test_edge_tts_acceptance_cluster_http($requests, $routeId),
+        hub_test_edge_tts_acceptance_command($commands),
+        hub_test_edge_tts_acceptance_cluster_env(),
+    );
+    $urls = array_column($requests, 'url');
+    hub_test_assert($run['exit'] === 0 && ($run['output']['ok'] ?? false) === true
+        && count($requests) === 15 && count($commands) === 2
+        && $urls[3] === 'https://hub.example/3waAIHub/cluster_api.php?mode=cluster_task_status&task_id=' . $routeId
+        && $urls[4] === 'https://hub.example/3waAIHub/cluster_api.php?mode=cluster_task_result&task_id=' . $routeId
+        && (($run['output']['result']['cpu_queue'] ?? false) === true),
+        'Cluster acceptance must retain its opaque route ID, follow only supplied same-origin links, validate artifacts, ACK each one, and bind local CPU evidence');
+});
+
+hub_test('Edge TTS acceptance rejects untrusted Cluster links and cannot attest a routed local collision', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    $tokenId = hub_test_edge_tts_acceptance_token($db);
+    hub_test_edge_tts_acceptance_insert_local_runtime($db, $tokenId);
+    $routeId = hub_test_edge_tts_acceptance_cluster_route($db, $tokenId);
+    $requests = [];
+    $commands = [];
+    $badLink = hub_test_edge_tts_acceptance_main_output(
+        $db,
+        hub_test_edge_tts_acceptance_cluster_http($requests, $routeId, true),
+        hub_test_edge_tts_acceptance_command($commands),
+        hub_test_edge_tts_acceptance_cluster_env(),
+    );
+    hub_test_assert($badLink['exit'] === 1 && ($badLink['output']['error'] ?? null) === 'edge_tts_acceptance_submission_failed' && count($requests) === 3,
+        'an off-origin Cluster follow-up URL must fail before polling or artifact access');
+
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    $tokenId = hub_test_edge_tts_acceptance_token($db);
+    hub_test_edge_tts_acceptance_node_token($db);
+    $differentOwner = hub_create_api_token($db, hub_create_api_member($db, 'Edge TTS acceptance wrong node'), 'wrong edge tts node', null, null);
+    hub_test_edge_tts_acceptance_insert_local_runtime($db, (int)$differentOwner['token_id']);
+    $routeId = hub_test_edge_tts_acceptance_cluster_route($db, $tokenId);
+    $requests = [];
+    $collision = hub_test_edge_tts_acceptance_main_output(
+        $db,
+        hub_test_edge_tts_acceptance_cluster_http($requests, $routeId),
+        hub_test_edge_tts_acceptance_command($commands),
+        hub_test_edge_tts_acceptance_cluster_env(),
+    );
+    hub_test_assert($collision['exit'] === 1 && ($collision['output']['error'] ?? null) === 'edge_tts_acceptance_task_failed',
+        'a valid Edge TTS local task owned by a token other than the active self-station token must never attest Cluster success');
 });
 
 hub_test('Edge TTS acceptance maps every workflow failure to its bounded public code', function (): void {
