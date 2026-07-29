@@ -25,7 +25,8 @@ printf '\n' >> "$LOG"
 case "$command_name" in
   id) [[ "${1:-}" == -u ]] && printf '0\n' ;;
   getent)
-    for address in ${EDGE_TTS_TEST_PROVIDER_IPS:-8.8.8.8}; do
+    provider_ips=${EDGE_TTS_TEST_PROVIDER_IPS-8.8.8.8}
+    for address in $provider_ips; do
       printf '%s STREAM speech.platform.bing.com\n' "$address"
     done
     ;;
@@ -118,16 +119,18 @@ assert_not_contains 'chmod' "$log"
 ! grep -Eq '^(iptables|ip6tables).* -d [^ ]*/' "$log" || { printf 'unexpected CIDR firewall rule\n' >&2; cat "$log" >&2; exit 1; }
 provider_rule='iptables -A AIHUB_EDGE_TTS_OUTPUT -d 8.8.8.8 -p tcp --dport 443 -j ACCEPT'
 [[ "$(grep -Fxc "$provider_rule" "$log")" == 1 ]] || { printf 'provider TCP 443 rule must be unique\n' >&2; cat "$log" >&2; exit 1; }
-if grep -F 'iptables -A AIHUB_EDGE_TTS_OUTPUT -d ' "$log" | grep -F -- '--dport 443' | grep -Fvx "$provider_rule" > /dev/null; then
-  printf 'unexpected TCP 443 destination\n' >&2
+tcp_443_accepts=$(grep -F 'iptables -A AIHUB_EDGE_TTS_OUTPUT ' "$log" | grep -F -- '-p tcp' | grep -F -- '--dport 443' | grep -F -- '-j ACCEPT' || true)
+[[ "$tcp_443_accepts" == "$provider_rule" ]] || {
+  printf 'TCP 443 ACCEPT must use only the pinned provider destination\n' >&2
   cat "$log" >&2
   exit 1
-fi
+}
 grep -Fqx '8.8.8.8 speech.platform.bing.com' "$hosts_file" || { printf 'provider IP was not pinned\n' >&2; exit 1; }
 
 empty_resolv="$tmpdir/empty-resolv.conf"
 : > "$empty_resolv"
 expect_upstream_failure empty_dns "EDGE_TTS_RESOLV_CONF=$empty_resolv"
+expect_upstream_failure empty_provider 'EDGE_TTS_TEST_PROVIDER_IPS='
 expect_upstream_failure private_or_reserved "EDGE_TTS_TEST_PROVIDER_IPS=127.0.0.1 192.0.2.1"
 expect_upstream_failure wildcard_or_cidr "EDGE_TTS_TEST_PROVIDER_IPS=0.0.0.0 0.0.0.0/0"
 expect_upstream_failure acl_invalid 'EDGE_TTS_ACL_INVALID=1'
