@@ -77,7 +77,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         hub_test_assert((fileperms($path) & 0777) === 0755, 'Edge TTS runnable asset must use mode 0755: ' . $file);
     }
     $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/edge-tts/service/Dockerfile');
-    foreach (['FROM python:3.13-slim-bookworm', 'edge-tts==7.2.6', 'COPY edge-tts-entrypoint.sh synthesize.py test_egress_firewall.sh test_synthesize.py ./', 'python3 -m unittest -v test_synthesize.py'] as $needle) {
+    foreach (['FROM python:3.13-slim-bookworm', 'edge-tts==7.2.6', 'COPY service/edge-tts-entrypoint.sh service/synthesize.py service/test_egress_firewall.sh service/test_synthesize.py ./', 'python3 -m unittest -v test_synthesize.py'] as $needle) {
         hub_test_assert(str_contains($dockerfile, $needle), 'Edge TTS Dockerfile must pin and offline-test its runner: ' . $needle);
     }
     hub_test_assert(!str_contains($dockerfile, 'mawk'), 'Edge TTS Dockerfile must not install unused mawk');
