@@ -186,6 +186,56 @@ hub_test('Pack job container runner restricts network profiles', function (): vo
     }
 });
 
+hub_test('Pack job runner errors require one bounded stderr sentinel', function (): void {
+    hub_test_assert(
+        hub_pack_job_runner_error_code(['stderr' => "transport failed\nAIHUB_ERROR_CODE=upstream_unavailable\n"]) === 'upstream_unavailable',
+        'one exact lowercase runner sentinel must be accepted'
+    );
+    foreach ([
+        ['stderr' => 'transport failed'],
+        ['stderr' => 'AIHUB_ERROR_CODE=not valid'],
+        ['stderr' => 'AIHUB_ERROR_CODE=UPPERCASE'],
+        ['stderr' => 'AIHUB_ERROR_CODE=' . str_repeat('a', 121)],
+        ['stderr' => "AIHUB_ERROR_CODE=first\nAIHUB_ERROR_CODE=second\n"],
+        ['stdout' => 'AIHUB_ERROR_CODE=from_stdout', 'error_code' => 'caller_supplied'],
+        ['stderr' => 'prefix AIHUB_ERROR_CODE=upstream_unavailable'],
+    ] as $result) {
+        hub_test_assert(hub_pack_job_runner_error_code($result) === null, 'only one exact trusted stderr sentinel is allowed');
+    }
+});
+
+hub_test('Pack job task persists a default runner stderr sentinel without exposing stderr', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db);
+    $executorResult = [];
+    try {
+        $task = hub_test_adapter_claim($db);
+        $outcome = hub_run_pack_job_task($db, $task, [
+            'executor' => static function (array $context) use (&$executorResult): array {
+                $executorResult = hub_pack_job_default_executor(
+                    $context,
+                    static fn (): array => ['exit_code' => 1, 'stderr' => 'No such container'],
+                    static fn (): array => [
+                        'exit_code' => 1,
+                        'stdout' => 'runner stdout must stay private',
+                        'stderr' => "transport failed\nAIHUB_ERROR_CODE=upstream_unavailable\nrunner stderr must stay private\n",
+                    ]
+                );
+
+                return $executorResult;
+            },
+        ]);
+        $latest = hub_get_task($db, $fixture['task_id']) ?? [];
+        $run = $db->query('SELECT error_code FROM runtime_runs WHERE task_id = ' . $fixture['task_id'])->fetch() ?: [];
+        $visible = json_encode([$outcome, $latest, $run, $executorResult], JSON_THROW_ON_ERROR);
+        hub_test_assert(($executorResult['error_code'] ?? null) === 'upstream_unavailable' && !array_key_exists('stdout', $executorResult) && !array_key_exists('stderr', $executorResult), 'default executor must return only the trusted error code');
+        hub_test_assert(($outcome['status'] ?? '') === 'failed' && ($outcome['error_code'] ?? '') === 'upstream_unavailable' && ($latest['error_code'] ?? '') === 'upstream_unavailable' && ($run['error_code'] ?? '') === 'upstream_unavailable', 'nonzero runner sentinel must become the terminal task error code');
+        hub_test_assert(!str_contains($visible, 'runner stdout must stay private') && !str_contains($visible, 'runner stderr must stay private') && !str_contains($visible, 'transport failed'), 'runner output must not reach task-visible results');
+    } finally {
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
 hub_test('Pack job adapter uses the shared worker and only manifest runner controls', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_adapter_fixture($db);

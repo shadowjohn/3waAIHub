@@ -694,6 +694,26 @@ function hub_pack_job_default_container_cleanup(callable $runner, string $name, 
     return ['cleanup' => hub_pack_job_no_work_cleanup(), 'owned_pids' => $ownedPids];
 }
 
+function hub_pack_job_runner_error_code(array $result): ?string
+{
+    $stderr = $result['stderr'] ?? null;
+    if (!is_string($stderr)) {
+        return null;
+    }
+    $errorCode = null;
+    foreach (preg_split('/\R/', $stderr) as $line) {
+        if (!str_starts_with($line, 'AIHUB_ERROR_CODE=')) {
+            continue;
+        }
+        if ($errorCode !== null || preg_match('/\AAIHUB_ERROR_CODE=([a-z0-9_]{1,120})\z/D', $line, $matches) !== 1) {
+            return null;
+        }
+        $errorCode = $matches[1];
+    }
+
+    return $errorCode;
+}
+
 function hub_pack_job_default_executor(array $context, ?callable $commandRunner = null, ?callable $processRunner = null): array
 {
     $execution = hub_pack_job_default_runner_command($context);
@@ -724,14 +744,17 @@ function hub_pack_job_default_executor(array $context, ?callable $commandRunner 
     if (!is_array($result)) {
         $result = ['exit_code' => 1];
     }
+    $exitCode = (int)($result['exit_code'] ?? 1);
+    $errorCode = $exitCode === 0 ? null : hub_pack_job_runner_error_code($result);
     $cleanup = hub_pack_job_default_container_cleanup($runner, $execution['name'], (int)$context['runner']['timeout_seconds']);
 
     return [
-        'exit_code' => (int)($result['exit_code'] ?? 1),
+        'exit_code' => $exitCode,
         'container_id' => $execution['name'],
         'owned_pids' => $cleanup['owned_pids'],
         'cleanup' => $cleanup['cleanup'],
-    ] + (isset($result['intent']) ? ['intent' => $result['intent']] : []);
+    ] + ($errorCode === null ? [] : ['error_code' => $errorCode])
+        + (isset($result['intent']) ? ['intent' => $result['intent']] : []);
 }
 
 function hub_pack_job_execution_details(array $details, array $fallback = []): array
