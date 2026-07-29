@@ -102,7 +102,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
             'compose_project' => '3waaihub_edge_tts',
         ], 'Edge TTS must use the fixed CPU operational contract');
     hub_test_assert(is_array($job)
-        && ($job['input_fields'] ?? null) === ['text', 'voice', 'rate', 'volume', 'pitch']
+        && ($job['input_fields'] ?? null) === ['text', 'voice', 'rate', 'volume', 'pitch', 'include_subtitles']
         && ($job['source_artifact_types'] ?? null) === []
         && ($job['source_required'] ?? null) === false
         && ($job['request_schema'] ?? null) === [
@@ -134,6 +134,11 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
                 'enum' => ['-50Hz', '-25Hz', '+0Hz', '+25Hz', '+50Hz'],
                 'max_length' => 1024,
                 'default' => '+0Hz',
+            ],
+            'include_subtitles' => [
+                'type' => 'boolean',
+                'required' => false,
+                'default' => false,
             ],
         ]
         && ($job['runner'] ?? null) === [
@@ -198,13 +203,23 @@ hub_test('Edge TTS ready route still requires the administrator enable gate', fu
         'rate' => '+0%',
         'volume' => '+0%',
         'pitch' => '+0Hz',
+        'include_subtitles' => false,
     ], 'Edge TTS must persist the manifest defaults with the supplied text');
+    hub_test_assert(hub_pack_job_normalize_request_input(['text' => 'Taiwan Edge TTS', 'include_subtitles' => 'true'], $job) === [
+        'text' => 'Taiwan Edge TTS',
+        'include_subtitles' => true,
+        'voice' => 'zh-TW-HsiaoChenNeural',
+        'rate' => '+0%',
+        'volume' => '+0%',
+        'pitch' => '+0Hz',
+    ], 'Edge TTS must normalize the declared true subtitle request to a boolean');
     foreach ([
         [],
         ['text' => 'x', 'voice' => 'unknown'],
         ['text' => 'x', 'rate' => '0%'],
         ['text' => 'x', 'volume' => '+75%'],
         ['text' => 'x', 'pitch' => '+10Hz'],
+        ['text' => 'x', 'include_subtitles' => 'yes'],
         ['text' => 'x', 'source_artifact_id' => 1],
         ['text' => 'x', 'callback_url' => 'https://example.test/callback'],
     ] as $input) {
@@ -253,19 +268,34 @@ hub_test('Edge TTS queues only for an authorized token after administrator enabl
 
         $manifestPath = HUB_ROOT . '/packs/edge-tts/pack.json';
         $manifestBefore = (string)file_get_contents($manifestPath);
-        $queued = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Taiwan Edge TTS']);
+        $queued = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Taiwan Edge TTS', 'include_subtitles' => 'true']);
         $payload = hub_test_edge_tts_payload($queued);
         $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
         hub_test_assert($queued['status'] === 200 && ($payload['ok'] ?? false) === true && ($payload['status'] ?? '') === 'queued'
             && is_array($task) && ($task['requested_mode'] ?? '') === 'edge_tts'
             && json_decode((string)($task['input_json'] ?? ''), true) === [
                 'text' => 'Taiwan Edge TTS',
+                'include_subtitles' => true,
                 'voice' => 'zh-TW-HsiaoChenNeural',
                 'rate' => '+0%',
                 'volume' => '+0%',
                 'pitch' => '+0Hz',
             ] && (string)file_get_contents($manifestPath) === $manifestBefore,
             'an enabled Edge TTS service must queue only the normalized request without mutating its tracked manifest');
+
+        $defaultQueued = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Taiwan Edge TTS defaults']);
+        $defaultPayload = hub_test_edge_tts_payload($defaultQueued);
+        $defaultTask = hub_get_task($db, (int)($defaultPayload['task_id'] ?? 0));
+        hub_test_assert($defaultQueued['status'] === 200 && ($defaultPayload['ok'] ?? false) === true && ($defaultPayload['status'] ?? '') === 'queued'
+            && is_array($defaultTask)
+            && json_decode((string)($defaultTask['input_json'] ?? ''), true) === [
+                'text' => 'Taiwan Edge TTS defaults',
+                'voice' => 'zh-TW-HsiaoChenNeural',
+                'rate' => '+0%',
+                'volume' => '+0%',
+                'pitch' => '+0Hz',
+                'include_subtitles' => false,
+            ], 'an omitted subtitle request must queue its false manifest default');
     });
 });
 
@@ -283,7 +313,20 @@ hub_test('Edge TTS public API appears after its ready service is enabled', funct
         }
     }
 
-    hub_test_assert(is_array($edgeTts) && ($edgeTts['mode'] ?? null) === 'edge_tts', 'ready enabled Edge TTS must appear in the public API');
+    $subtitleField = null;
+    foreach ((array)($edgeTts['input_fields'] ?? []) as $field) {
+        if (($field['name'] ?? null) === 'include_subtitles') {
+            $subtitleField = $field;
+            break;
+        }
+    }
+    hub_test_assert(is_array($edgeTts) && ($edgeTts['mode'] ?? null) === 'edge_tts'
+        && $subtitleField === [
+            'name' => 'include_subtitles',
+            'type' => 'boolean',
+            'required' => false,
+            'default' => false,
+        ], 'ready enabled Edge TTS must publish its boolean subtitle input in the public API');
 });
 
 hub_test('Edge TTS install builds and verifies its controlled runner image', function (): void {
@@ -331,8 +374,34 @@ hub_test('Edge TTS artifact contract is exact', function (): void {
                     'required_keys' => ['provider', 'client_version', 'voice', 'rate', 'volume', 'pitch', 'format', 'audio_bytes', 'elapsed_seconds', 'warnings'],
                 ],
             ],
+            [
+                'type' => 'subtitle_vtt',
+                'path' => 'subtitle.vtt',
+                'mime_types' => ['text/plain', 'text/vtt'],
+                'max_bytes' => 524288,
+                'when' => ['input' => 'include_subtitles', 'equals' => true],
+                'text' => ['max_bytes' => 524288],
+            ],
+            [
+                'type' => 'subtitle_srt',
+                'path' => 'subtitle.srt',
+                'mime_types' => ['text/plain', 'application/x-subrip', 'text/x-subrip', 'text/srt'],
+                'max_bytes' => 524288,
+                'when' => ['input' => 'include_subtitles', 'equals' => true],
+                'text' => ['max_bytes' => 524288],
+            ],
+            [
+                'type' => 'speech_timeline',
+                'path' => 'speech_timeline.json',
+                'mime_types' => ['application/json'],
+                'max_bytes' => 524288,
+                'when' => ['input' => 'include_subtitles', 'equals' => true],
+                'json' => [
+                    'required_keys' => ['version', 'unit', 'duration_ms', 'sentences', 'words'],
+                ],
+            ],
         ],
-    ], 'Edge TTS must require the fixed MP3 and synthesis metadata artifacts');
+    ], 'Edge TTS must require the fixed MP3, metadata, and requested subtitle artifacts');
 });
 
 hub_test('Edge TTS documentation preserves the external CPU-only operator contract', function (): void {

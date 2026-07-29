@@ -30,7 +30,7 @@
     {
       "job": "synthesize",
       "input": {
-        "fields": ["text", "voice", "rate", "volume", "pitch"],
+        "fields": ["text", "voice", "rate", "volume", "pitch", "include_subtitles"],
         "source_artifact_types": [],
         "source_required": false,
         "request_schema": {
@@ -38,7 +38,8 @@
           "voice": {"type": "string", "required": false, "enum": ["zh-TW-HsiaoChenNeural", "zh-TW-HsiaoYuNeural", "zh-TW-YunJheNeural", "en-US-EmmaMultilingualNeural", "en-US-AndrewMultilingualNeural"], "default": "zh-TW-HsiaoChenNeural"},
           "rate": {"type": "string", "required": false, "enum": ["-50%", "-25%", "+0%", "+25%", "+50%"], "default": "+0%"},
           "volume": {"type": "string", "required": false, "enum": ["-50%", "-25%", "+0%", "+25%", "+50%"], "default": "+0%"},
-          "pitch": {"type": "string", "required": false, "enum": ["-50Hz", "-25Hz", "+0Hz", "+25Hz", "+50Hz"], "default": "+0Hz"}
+          "pitch": {"type": "string", "required": false, "enum": ["-50Hz", "-25Hz", "+0Hz", "+25Hz", "+50Hz"], "default": "+0Hz"},
+          "include_subtitles": {"type": "boolean", "required": false, "default": false}
         }
       },
       "runner": {
@@ -67,6 +68,30 @@
             "mime_types": ["application/json"],
             "max_bytes": 65536,
             "json": {"required_keys": ["provider", "client_version", "voice", "rate", "volume", "pitch", "format", "audio_bytes", "elapsed_seconds", "warnings"]}
+          },
+          {
+            "type": "subtitle_vtt",
+            "path": "subtitle.vtt",
+            "mime_types": ["text/plain", "text/vtt"],
+            "max_bytes": 524288,
+            "when": {"input": "include_subtitles", "equals": true},
+            "text": {"max_bytes": 524288}
+          },
+          {
+            "type": "subtitle_srt",
+            "path": "subtitle.srt",
+            "mime_types": ["text/plain", "application/x-subrip", "text/x-subrip", "text/srt"],
+            "max_bytes": 524288,
+            "when": {"input": "include_subtitles", "equals": true},
+            "text": {"max_bytes": 524288}
+          },
+          {
+            "type": "speech_timeline",
+            "path": "speech_timeline.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 524288,
+            "when": {"input": "include_subtitles", "equals": true},
+            "json": {"required_keys": ["version", "unit", "duration_ms", "sentences", "words"]}
           }
         ]
       }
