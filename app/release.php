@@ -33,7 +33,16 @@ function hub_release_read_only_git_command(array $command): array
         return ['exit_code' => 126, 'stdout' => '', 'stderr' => 'command_not_allowed', 'output' => ''];
     }
 
-    $process = @proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, HUB_ROOT);
+    $environment = getenv();
+    $environment = is_array($environment) ? $environment : [];
+    $environment['GIT_OPTIONAL_LOCKS'] = '0';
+    $process = @proc_open(
+        $command,
+        [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        HUB_ROOT,
+        $environment
+    );
     if (!is_resource($process)) {
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'command_unavailable', 'output' => ''];
     }
@@ -75,7 +84,130 @@ function hub_release_read_only_git_command(array $command): array
     ];
 }
 
-function hub_release_local_git_report(?callable $runner = null): array
+function hub_release_local_cache_path(): string
+{
+    return HUB_DATA_DIR . '/cache/release_local.json';
+}
+
+function hub_release_write_local_cache(
+    array $report,
+    ?string $path = null,
+    ?callable $clock = null
+): void
+{
+    $path ??= hub_release_local_cache_path();
+    $clock ??= 'hub_now';
+    $buildId = is_string($report['build_id'] ?? null) ? $report['build_id'] : '';
+    $commit = is_string($report['commit'] ?? null) ? strtolower($report['commit']) : '';
+    $tag = is_string($report['tag'] ?? null) ? $report['tag'] : '';
+    $label = is_string($report['label'] ?? null) ? $report['label'] : '';
+    if (
+        preg_match('/\A\d{11}\z/', $buildId) !== 1
+        || preg_match('/\A[0-9a-f]{7,40}\z/', $commit) !== 1
+        || ($tag !== '' && preg_match('/\A\d{11}\z/', $tag) !== 1)
+        || !is_bool($report['dirty'] ?? null)
+        || strlen($label) > 160
+    ) {
+        throw new InvalidArgumentException('local_release_invalid');
+    }
+
+    $directory = dirname($path);
+    if (!is_dir($directory) && !mkdir($directory, 0775, true) && !is_dir($directory)) {
+        throw new RuntimeException('cache_unavailable');
+    }
+    $temporary = $path . '.tmp.' . bin2hex(random_bytes(8));
+    try {
+        $payload = [
+            'build_id' => $buildId,
+            'display_version' => hub_release_display_version($buildId),
+            'label' => $label,
+            'commit' => $commit,
+            'dirty' => $report['dirty'],
+            'tag' => $tag,
+            'snapshot_at' => $clock(),
+            'source' => 'cli_snapshot',
+        ];
+        $json = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        if (file_put_contents($temporary, $json . PHP_EOL, LOCK_EX) === false || !chmod($temporary, 0664)) {
+            throw new RuntimeException('cache_unavailable');
+        }
+        if (!rename($temporary, $path) || !chmod($path, 0664)) {
+            throw new RuntimeException('cache_unavailable');
+        }
+    } finally {
+        if (is_file($temporary)) {
+            unlink($temporary);
+        }
+    }
+}
+
+function hub_release_read_local_cache(?string $path = null): array
+{
+    $empty = [
+        'build_id' => HUB_VERSION,
+        'display_version' => hub_release_display_version(HUB_VERSION),
+        'label' => HUB_RELEASE_LABEL,
+        'commit' => '',
+        'dirty' => null,
+        'tag' => '',
+        'snapshot_at' => '',
+        'source' => 'unknown',
+    ];
+    $path ??= hub_release_local_cache_path();
+    if (!is_file($path)) {
+        return $empty;
+    }
+
+    $payload = json_decode((string)file_get_contents($path), true);
+    if (
+        !is_array($payload)
+        || !is_string($payload['build_id'] ?? null)
+        || preg_match('/\A\d{11}\z/', $payload['build_id']) !== 1
+        || !is_string($payload['commit'] ?? null)
+        || preg_match('/\A[0-9a-f]{7,40}\z/', $payload['commit']) !== 1
+        || !is_bool($payload['dirty'] ?? null)
+        || !is_string($payload['tag'] ?? null)
+        || ($payload['tag'] !== '' && preg_match('/\A\d{11}\z/', $payload['tag']) !== 1)
+        || !is_string($payload['label'] ?? null)
+        || strlen($payload['label']) > 160
+        || !is_string($payload['snapshot_at'] ?? null)
+        || preg_match('/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $payload['snapshot_at']) !== 1
+        || ($payload['source'] ?? null) !== 'cli_snapshot'
+    ) {
+        return $empty;
+    }
+    $timezone = new DateTimeZone(date_default_timezone_get());
+    $snapshot = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $payload['snapshot_at'], $timezone);
+    $dateErrors = DateTimeImmutable::getLastErrors();
+    if (
+        $snapshot === false
+        || ($dateErrors !== false && ($dateErrors['warning_count'] > 0 || $dateErrors['error_count'] > 0))
+        || $snapshot->format('Y-m-d H:i:s') !== $payload['snapshot_at']
+    ) {
+        return $empty;
+    }
+    $snapshotTime = $snapshot->getTimestamp();
+    if ($snapshotTime > time() + 30 || time() - $snapshotTime > 300) {
+        return $empty;
+    }
+
+    return [
+        'build_id' => $payload['build_id'],
+        'display_version' => hub_release_display_version($payload['build_id']),
+        'label' => $payload['label'],
+        'commit' => $payload['commit'],
+        'dirty' => $payload['dirty'],
+        'tag' => $payload['tag'],
+        'snapshot_at' => $payload['snapshot_at'],
+        'source' => 'cli_snapshot',
+    ];
+}
+
+function hub_release_local_git_report(
+    ?callable $runner = null,
+    ?string $cachePath = null,
+    bool $allowCache = true
+): array
 {
     $runner ??= 'hub_release_read_only_git_command';
     $commit = $runner(['git', '-C', HUB_ROOT, 'rev-parse', '--short=12', 'HEAD']);
@@ -94,7 +226,7 @@ function hub_release_local_git_report(?callable $runner = null): array
     ));
     rsort($releaseTags, SORT_STRING);
 
-    return [
+    $report = [
         'build_id' => HUB_VERSION,
         'display_version' => hub_release_display_version(HUB_VERSION),
         'label' => HUB_RELEASE_LABEL,
@@ -103,7 +235,23 @@ function hub_release_local_git_report(?callable $runner = null): array
             ? trim((string)($dirty['stdout'] ?? '')) !== ''
             : null,
         'tag' => $releaseTags[0] ?? '',
+        'snapshot_at' => hub_now(),
+        'source' => 'git',
     ];
+
+    return $allowCache && $report['commit'] === ''
+        ? hub_release_read_local_cache($cachePath)
+        : $report;
+}
+
+function hub_release_snapshot_local_git(?callable $runner = null, ?string $path = null): array
+{
+    $report = hub_release_local_git_report($runner, null, false);
+    if ($report['commit'] !== '' && is_bool($report['dirty'])) {
+        hub_release_write_local_cache($report, $path);
+    }
+
+    return $report;
 }
 
 function hub_release_runner_inventory(PDO $db): array
@@ -302,6 +450,10 @@ function hub_release_station_report(array $station, array $localReport): array
     $commit = is_string($git['commit'] ?? null) && preg_match('/\A[0-9a-f]{7,40}\z/', $git['commit']) === 1
         ? $git['commit']
         : '';
+    $tag = is_string($git['tag'] ?? null) && preg_match('/\A\d{11}\z/', $git['tag']) === 1
+        ? $git['tag']
+        : '';
+    $dirty = is_bool($git['dirty'] ?? null) ? $git['dirty'] : null;
     $packs = is_array($status['packs'] ?? null) ? $status['packs'] : null;
     $localPacks = is_array($localReport['packs'] ?? null) ? $localReport['packs'] : [];
     if ($packs !== null) {
@@ -320,6 +472,21 @@ function hub_release_station_report(array $station, array $localReport): array
         ? substr($status['health']['status'], 0, 32)
         : 'unknown';
     $localBuildId = (string)($localReport['git']['build_id'] ?? '');
+    $localCommit = (string)($localReport['git']['commit'] ?? '');
+    $localTag = (string)($localReport['git']['tag'] ?? '');
+    $localDirty = is_bool($localReport['git']['dirty'] ?? null) ? $localReport['git']['dirty'] : null;
+    $updateNeeded = null;
+    if ($buildId !== '' && preg_match('/\A\d{11}\z/', $localBuildId) === 1) {
+        if ($buildId !== $localBuildId) {
+            $updateNeeded = true;
+        } elseif ($commit !== '' && preg_match('/\A[0-9a-f]{7,40}\z/', $localCommit) === 1) {
+            if ($commit !== $localCommit || ($tag !== '' || $localTag !== '') && $tag !== $localTag || $dirty === true) {
+                $updateNeeded = true;
+            } elseif ($dirty === false && $localDirty === false) {
+                $updateNeeded = false;
+            }
+        }
+    }
 
     return [
         'display_name' => (string)($station['display_name'] ?? ''),
@@ -327,12 +494,34 @@ function hub_release_station_report(array $station, array $localReport): array
         'build_id' => $buildId,
         'display_version' => $buildId !== '' ? hub_release_display_version($buildId) : '',
         'commit' => $commit,
-        'dirty' => is_bool($git['dirty'] ?? null) ? $git['dirty'] : null,
+        'tag' => $tag,
+        'dirty' => $dirty,
         'health' => $health,
         'pack_compatible' => $packs === null ? null : $packs === $localPacks,
         'pack_count' => $packs === null ? null : count($packs),
-        'update_needed' => $buildId === '' || preg_match('/\A\d{11}\z/', $localBuildId) !== 1
-            ? null
-            : $buildId !== $localBuildId,
+        'update_needed' => $updateNeeded,
     ];
+}
+
+function hub_release_status_label(string $status): string
+{
+    $label = [
+        'ok' => '正常',
+        'degraded' => '異常',
+        'unknown' => '未知',
+        'none' => '無',
+        '' => '未知',
+    ][$status] ?? $status;
+
+    return __($label);
+}
+
+function hub_release_source_label(string $source): string
+{
+    return __([
+        'git' => '即時 Git',
+        'cli_snapshot' => 'CLI 快照',
+        'unknown' => '未知',
+        '' => '未知',
+    ][$source] ?? '未知');
 }

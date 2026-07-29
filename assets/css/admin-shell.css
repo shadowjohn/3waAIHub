@@ -4,7 +4,9 @@
    ========================================================= */
 
 /* ---------- 極淡背景：純色底 + 極淡格點，無動畫 ---------- */
+html { overflow-x: hidden; }
 body.app {
+  overflow-x: hidden;
   background-color: #F4F8FC;
   background-image: radial-gradient(circle, rgba(37, 99, 235, .10) 1.1px, transparent 1.1px);
   background-size: 48px 48px;

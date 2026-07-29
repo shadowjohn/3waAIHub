@@ -4,6 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/../app/bootstrap.php';
 
 hub_cli_only();
+hub_release_snapshot_local_git();
 $command = ['git', '-C', HUB_ROOT, 'ls-remote', '--tags', '--refs', 'origin'];
 $report = hub_release_check_remote(static function (array $requested) use ($command): array {
     if ($requested !== $command) {

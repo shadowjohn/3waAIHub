@@ -476,7 +476,7 @@ hub_admin_header('系統環境', $user);
             </tr>
             <tr>
                 <th><?= hub_h(__('Git commit')) ?></th>
-                <td><code><?= hub_h((string)($releaseReport['git']['commit'] ?: 'unknown')) ?></code></td>
+                <td><code><?= hub_h((string)($releaseReport['git']['commit'] ?: __('未知'))) ?></code></td>
             </tr>
             <tr>
                 <th><?= hub_h(__('工作樹狀態')) ?></th>
@@ -485,13 +485,22 @@ hub_admin_header('系統環境', $user);
                 </td>
             </tr>
             <tr>
+                <th><?= hub_h(__('版本資料來源')) ?></th>
+                <td>
+                    <?= hub_h(hub_release_source_label((string)($releaseReport['git']['source'] ?? 'unknown'))) ?>
+                    <?php if (($releaseReport['git']['snapshot_at'] ?? '') !== ''): ?>
+                        / <?= hub_h((string)$releaseReport['git']['snapshot_at']) ?>
+                    <?php endif; ?>
+                </td>
+            </tr>
+            <tr>
                 <th><?= hub_h(__('目前 Tag')) ?></th>
-                <td><code><?= hub_h((string)($releaseReport['git']['tag'] ?: 'none')) ?></code></td>
+                <td><code><?= hub_h((string)($releaseReport['git']['tag'] ?: __('無'))) ?></code></td>
             </tr>
             <tr>
                 <th><?= hub_h(__('遠端最新版本')) ?></th>
                 <td>
-                    <code><?= hub_h($latestRelease !== '' ? hub_release_display_version($latestRelease) : 'unknown') ?></code>
+                    <code><?= hub_h($latestRelease !== '' ? hub_release_display_version($latestRelease) : __('未知')) ?></code>
                     <?php if ($localUpdateNeeded !== null): ?>
                         <span class="<?= $localUpdateNeeded ? 'bad' : 'ok' ?>"><?= hub_h(__($localUpdateNeeded ? '可更新' : '已是最新')) ?></span>
                     <?php endif; ?>
@@ -499,7 +508,7 @@ hub_admin_header('系統環境', $user);
             </tr>
             <tr>
                 <th><?= hub_h(__('最後檢查時間')) ?></th>
-                <td><?= hub_h((string)($remoteRelease['checked_at'] ?: 'unknown')) ?><?php if ($remoteRelease['error'] !== ''): ?> / <code><?= hub_h((string)$remoteRelease['error']) ?></code><?php endif; ?></td>
+                <td><?= hub_h((string)($remoteRelease['checked_at'] ?: __('未知'))) ?><?php if ($remoteRelease['error'] !== ''): ?> / <code><?= hub_h((string)$remoteRelease['error']) ?></code><?php endif; ?></td>
             </tr>
             <tr>
                 <th><?= hub_h(__('Pack / Runner Digest')) ?></th>
@@ -518,6 +527,8 @@ hub_admin_header('系統環境', $user);
                     <th><?= hub_h(__('站台')) ?></th>
                     <th><?= hub_h(__('版本')) ?></th>
                     <th><?= hub_h(__('Commit')) ?></th>
+                    <th><?= hub_h(__('Tag')) ?></th>
+                    <th><?= hub_h(__('工作樹')) ?></th>
                     <th><?= hub_h(__('健康')) ?></th>
                     <th><?= hub_h(__('Pack 相容性')) ?></th>
                     <th><?= hub_h(__('更新狀態')) ?></th>
@@ -527,9 +538,13 @@ hub_admin_header('系統環境', $user);
                 <?php foreach ($stationReleaseReports as $stationRelease): ?>
                     <tr>
                         <td><?= hub_h((string)$stationRelease['display_name']) ?></td>
-                        <td><code><?= hub_h((string)($stationRelease['display_version'] ?: 'unknown')) ?></code></td>
-                        <td><code><?= hub_h((string)($stationRelease['commit'] ?: 'unknown')) ?></code></td>
-                        <td><code><?= hub_h((string)$stationRelease['health']) ?></code></td>
+                        <td><code><?= hub_h((string)($stationRelease['display_version'] ?: __('未知'))) ?></code></td>
+                        <td><code><?= hub_h((string)($stationRelease['commit'] ?: __('未知'))) ?></code></td>
+                        <td><code><?= hub_h((string)($stationRelease['tag'] ?: __('無'))) ?></code></td>
+                        <td class="<?= $stationRelease['dirty'] === null ? 'muted' : ($stationRelease['dirty'] ? 'bad' : 'ok') ?>">
+                            <?= hub_h(__($stationRelease['dirty'] === null ? '未知' : ($stationRelease['dirty'] ? '有未提交變更' : '乾淨'))) ?>
+                        </td>
+                        <td><?= hub_h(hub_release_status_label((string)$stationRelease['health'])) ?></td>
                         <td>
                             <?php if ($stationRelease['pack_compatible'] === null): ?>
                                 <span class="muted"><?= hub_h(__('未知')) ?></span>

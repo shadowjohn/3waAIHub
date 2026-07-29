@@ -460,6 +460,7 @@ body.app pre {
 .hub-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: 14px; }
 .hub-empty-state { padding: 18px; border: 1px dashed var(--border); border-radius: var(--r-sm); color: var(--fg-muted); text-align: center; }
 .hub-section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+body.app .table-wrap { max-width: 100%; overflow-x: auto; }
 
 .ajax-loading button { opacity: .65; }
 .ajax-job-new { background: #F0F9FF; }

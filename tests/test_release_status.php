@@ -31,6 +31,9 @@ hub_test('local Git report uses only bounded command arrays', function (): void 
     hub_test_assert($report['commit'] === 'abcdef123456', 'local commit mismatch');
     hub_test_assert($report['dirty'] === true, 'tracked dirty state mismatch');
     hub_test_assert($report['tag'] === '20260807001', 'greatest release tag mismatch');
+
+    $source = (string)file_get_contents(HUB_ROOT . '/app/release.php');
+    hub_test_assert(str_contains($source, 'GIT_OPTIONAL_LOCKS'), 'read-only Git probes must disable optional index locks');
 });
 
 hub_test('failed local Git status remains unknown', function (): void {
@@ -131,6 +134,55 @@ hub_test('remote release cache is atomic compact and credential free', function 
     hub_test_assert(glob($cachePath . '.tmp.*') === [], 'atomic cache temp file leaked');
 });
 
+hub_test('local release cache lets an unprivileged web runtime read CLI Git identity', function (): void {
+    hub_test_clear_data_root();
+    $cachePath = HUB_DATA_DIR . '/cache/release_local.json';
+    hub_release_write_local_cache([
+        'build_id' => HUB_VERSION,
+        'display_version' => hub_release_display_version(HUB_VERSION),
+        'label' => HUB_RELEASE_LABEL,
+        'commit' => 'abcdef123456',
+        'dirty' => false,
+        'tag' => '20260729001',
+    ], $cachePath);
+
+    $report = hub_release_local_git_report(static fn (array $command): array => [
+        'exit_code' => 1,
+        'stdout' => '',
+        'stderr' => 'permission denied',
+        'output' => '',
+    ], $cachePath);
+    hub_test_assert($report['commit'] === 'abcdef123456', 'web Git failure must fall back to the CLI snapshot');
+    hub_test_assert($report['dirty'] === false, 'cached dirty state mismatch');
+    hub_test_assert($report['tag'] === '20260729001', 'cached release tag mismatch');
+    hub_test_assert($report['source'] === 'cli_snapshot', 'cached release source mismatch');
+    hub_test_assert($report['snapshot_at'] !== '', 'cached release snapshot time missing');
+    hub_test_assert((fileperms($cachePath) & 0777) === 0664, 'local release cache mode must be 0664');
+
+    hub_release_write_local_cache([
+        'build_id' => HUB_VERSION,
+        'display_version' => hub_release_display_version(HUB_VERSION),
+        'label' => HUB_RELEASE_LABEL,
+        'commit' => 'fedcba654321',
+        'dirty' => false,
+        'tag' => '',
+    ], $cachePath, static fn (): string => '2020-01-01 00:00:00');
+    $stale = hub_release_read_local_cache($cachePath);
+    hub_test_assert($stale['commit'] === '', 'stale CLI snapshots must become unknown');
+    hub_test_assert($stale['source'] === 'unknown', 'stale CLI snapshot source must become unknown');
+
+    hub_release_write_local_cache([
+        'build_id' => HUB_VERSION,
+        'display_version' => hub_release_display_version(HUB_VERSION),
+        'label' => HUB_RELEASE_LABEL,
+        'commit' => 'fedcba654321',
+        'dirty' => false,
+        'tag' => '',
+    ], $cachePath, static fn (): string => date('Y-m-d H:i:60'));
+    $invalidTime = hub_release_read_local_cache($cachePath);
+    hub_test_assert($invalidTime['commit'] === '', 'impossible CLI snapshot times must be rejected');
+});
+
 hub_test('release update guidance preserves authority roles', function (): void {
     $linux = hub_release_update_commands('linux');
     $windows = hub_release_update_commands('windows');
@@ -172,6 +224,38 @@ hub_test('old Cluster stations degrade safely without release fields', function 
     ], $local);
     hub_test_assert($newer['update_needed'] === true, 'any station build mismatch must require alignment');
     hub_test_assert($newer['pack_compatible'] === true, 'matching station Pack inventory must be compatible');
+
+    $differentCommit = hub_release_station_report([
+        'display_name' => 'Different commit',
+        'status_json' => json_encode([
+            'release' => [
+                'build_id' => HUB_VERSION,
+                'commit' => 'fedcba654321',
+                'dirty' => false,
+                'tag' => '',
+            ],
+            'packs' => ['hello' => '0.1.0'],
+            'health' => ['status' => 'ok'],
+        ], JSON_THROW_ON_ERROR),
+    ], $local);
+    hub_test_assert($differentCommit['update_needed'] === true, 'same build with a different commit must require alignment');
+
+    $sameCommit = hub_release_station_report([
+        'display_name' => 'Aligned commit',
+        'status_json' => json_encode([
+            'release' => [
+                'build_id' => HUB_VERSION,
+                'commit' => 'abcdef123456',
+                'dirty' => false,
+                'tag' => '',
+            ],
+            'packs' => ['hello' => '0.1.0'],
+            'health' => ['status' => 'ok'],
+        ], JSON_THROW_ON_ERROR),
+    ], $local);
+    hub_test_assert($sameCommit['update_needed'] === false, 'same build and commit should be aligned');
+    hub_test_assert(hub_release_status_label('ok') === '正常', 'release status label mismatch');
+    hub_test_assert(hub_release_status_label('unknown') === '未知', 'unknown release label mismatch');
 });
 
 hub_test('release checker is CLI only and web pages cannot deploy', function (): void {
