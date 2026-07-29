@@ -36,6 +36,20 @@ function hub_test_admin_market_request(array $get = [], array $post = [], bool $
     return $result;
 }
 
+function hub_test_admin_services_request(): array
+{
+    $script = "define('HUB_TESTING', true);"
+        . 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];"
+        . "\$_SERVER = ['REQUEST_METHOD' => 'GET', 'REMOTE_ADDR' => '203.0.113.80'];"
+        . 'require ' . var_export(HUB_ROOT . '/admin/services.php', true) . ';';
+
+    return hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+        'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
+    ]);
+}
+
 hub_test('Market categories are exclusive and sum to all Packs', function (): void {
     $db = hub_test_reset_db();
     hub_i18n_import_seed($db);
@@ -273,6 +287,35 @@ hub_test('command job payload carries the actual service flags needed by polling
     hub_test_assert(($payload['service']['runtime_status'] ?? null) === 'stopped', 'job payload runtime state mismatch');
     hub_test_assert(($payload['service']['enabled'] ?? null) === 0, 'job payload enabled flag missing');
     hub_test_assert(($payload['service']['restart_required'] ?? null) === 1, 'job payload restart flag missing');
+    foreach (['total', 'running', 'stopped', 'disabled', 'active_jobs', 'failed_jobs'] as $key) {
+        hub_test_assert(array_key_exists($key, $payload['summary'] ?? []), 'job payload summary missing ' . $key);
+    }
+    hub_test_assert(($payload['summary']['total'] ?? null) === 1, 'service total summary mismatch');
+    hub_test_assert(($payload['summary']['running'] ?? null) === 0, 'stopped service must not count as running');
+    hub_test_assert(($payload['summary']['stopped'] ?? null) === 1, 'stopped service summary mismatch');
+    hub_test_assert(($payload['summary']['disabled'] ?? null) === 1, 'disabled service summary mismatch');
+    hub_test_assert(($payload['summary']['active_jobs'] ?? null) === 1, 'queued job must increment the active summary');
+    hub_test_assert(($payload['summary']['failed_jobs'] ?? null) === 0, 'queued job must not increment the failed summary');
+
+    $db->prepare("UPDATE command_jobs SET status = 'running' WHERE id = :id")->execute([':id' => $jobId]);
+    $runningJobPayload = hub_command_job_status_payload($db, $jobId);
+    hub_test_assert(($runningJobPayload['summary']['active_jobs'] ?? null) === 1, 'running job must remain in the active summary');
+    hub_test_assert(($runningJobPayload['summary']['failed_jobs'] ?? null) === 0, 'running job must not increment the failed summary');
+
+    $db->prepare(
+        "UPDATE services SET enabled = 1, status = 'running', runtime_status = 'running' WHERE id = :id"
+    )->execute([':id' => (int)$service['id']]);
+    $db->prepare("UPDATE command_jobs SET status = 'success' WHERE id = :id")->execute([':id' => $jobId]);
+    $successPayload = hub_command_job_status_payload($db, $jobId);
+    hub_test_assert(($successPayload['summary']['running'] ?? null) === 1, 'running service summary mismatch');
+    hub_test_assert(($successPayload['summary']['stopped'] ?? null) === 0, 'running service must leave the stopped summary');
+    hub_test_assert(($successPayload['summary']['disabled'] ?? null) === 0, 'enabled service must leave the disabled summary');
+    hub_test_assert(($successPayload['summary']['active_jobs'] ?? null) === 0, 'successful job must leave the active summary');
+
+    $db->prepare("UPDATE command_jobs SET status = 'failed' WHERE id = :id")->execute([':id' => $jobId]);
+    $failedPayload = hub_command_job_status_payload($db, $jobId);
+    hub_test_assert(($failedPayload['summary']['active_jobs'] ?? null) === 0, 'failed job must leave the active summary');
+    hub_test_assert(($failedPayload['summary']['failed_jobs'] ?? null) === 1, 'failed job must increment the failed summary');
 });
 
 hub_test('canonical service health requires a successful job and a running runtime', function (): void {
@@ -309,6 +352,46 @@ hub_test('canonical service health requires a successful job and a running runti
         str_contains($checking['stdout'], 'data-service-health class="hub-badge hub-badge-warn"')
             && str_contains($checking['stdout'], '健康檢查中'),
         'active health job must render as checking'
+    );
+});
+
+hub_test('legacy service health requires a successful job and a running runtime', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $serviceId = (int)$service['id'];
+    $jobId = hub_enqueue_command_job($db, 'service_health_check', $serviceId, ['reason' => 'legacy-health-render-test'], null, '127.0.0.1');
+    $db->prepare("UPDATE command_jobs SET status = 'success' WHERE id = :id")->execute([':id' => $jobId]);
+    $db->prepare(
+        "UPDATE services SET status = 'stopped', runtime_status = 'stopped' WHERE id = :id"
+    )->execute([':id' => $serviceId]);
+
+    $stopped = hub_test_admin_services_request();
+    hub_test_assert($stopped['exit_code'] === 0, 'legacy services render failed: ' . $stopped['output']);
+    hub_test_assert(
+        str_contains($stopped['stdout'], 'data-service-health class="hub-badge hub-badge-bad"')
+            && str_contains($stopped['stdout'], '健康異常'),
+        'legacy successful health job must remain unhealthy when the runtime is stopped'
+    );
+
+    $db->prepare(
+        "UPDATE services SET status = 'error', runtime_status = 'error' WHERE id = :id"
+    )->execute([':id' => $serviceId]);
+    $error = hub_test_admin_services_request();
+    hub_test_assert(
+        str_contains($error['stdout'], 'data-service-health class="hub-badge hub-badge-bad"')
+            && str_contains($error['stdout'], '健康異常'),
+        'legacy successful health job must remain unhealthy when the runtime is in error'
+    );
+
+    $db->prepare(
+        "UPDATE services SET status = 'running', runtime_status = 'running' WHERE id = :id"
+    )->execute([':id' => $serviceId]);
+    $running = hub_test_admin_services_request();
+    hub_test_assert(
+        str_contains($running['stdout'], 'data-service-health class="hub-badge hub-badge-ok"')
+            && str_contains($running['stdout'], '健康正常'),
+        'legacy successful health job with a running runtime must render healthy'
     );
 });
 

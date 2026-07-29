@@ -66,13 +66,13 @@ function hub_services_container_state(array $service): array
     return ['label' => '未知', 'badge' => '容器未知', 'class' => 'hub-badge-muted', 'text_class' => 'bad'];
 }
 
-function hub_services_health_state(?array $healthJob): array
+function hub_services_health_state(?array $healthJob, string $runtimeStatus): array
 {
     if (!$healthJob) {
         return ['label' => '未檢查', 'badge' => '健康未檢查', 'class' => 'hub-badge-muted', 'text_class' => ''];
     }
     $status = (string)$healthJob['status'];
-    if ($status === 'success') {
+    if ($status === 'success' && $runtimeStatus === 'running') {
         return ['label' => '正常', 'badge' => '健康正常', 'class' => 'hub-badge-ok', 'text_class' => 'ok'];
     }
     if (in_array($status, ['queued', 'running'], true)) {
@@ -214,7 +214,10 @@ hub_admin_header('服務管理', $user);
             $runtimeLevel = hub_services_runtime_level($service);
             $endpoint = hub_services_endpoint_label($service);
             $containerState = hub_services_container_state($service);
-            $healthState = hub_services_health_state($lastHealthJob);
+            $healthState = hub_services_health_state(
+                $lastHealthJob,
+                (string)($service['runtime_status'] ?? $service['status'] ?? '')
+            );
             $configState = hub_services_config_state($service);
             ?>
             <article class="hub-card service-card" data-service-row-id="<?= $serviceId ?>">

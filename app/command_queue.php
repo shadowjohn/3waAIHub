@@ -271,6 +271,8 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
         return null;
     }
     $service = (int)($job['service_id'] ?? 0) > 0 ? hub_get_service($db, (int)$job['service_id']) : null;
+    $services = hub_list_services($db);
+    $jobs = hub_list_command_jobs($db, 50);
 
     return [
         'id' => (int)$job['id'],
@@ -300,6 +302,23 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
             'enabled' => (int)($service['enabled'] ?? 0),
             'restart_required' => (int)($service['restart_required'] ?? 0),
         ] : null,
+        'summary' => [
+            'total' => count($services),
+            'running' => count(array_filter(
+                $services,
+                static fn (array $item): bool => (string)($item['runtime_status'] ?? $item['status']) === 'running'
+            )),
+            'stopped' => count(array_filter(
+                $services,
+                static fn (array $item): bool => (string)($item['runtime_status'] ?? $item['status']) !== 'running'
+            )),
+            'disabled' => count(array_filter($services, static fn (array $item): bool => (int)$item['enabled'] !== 1)),
+            'active_jobs' => count(array_filter(
+                $jobs,
+                static fn (array $item): bool => in_array((string)$item['status'], ['queued', 'running'], true)
+            )),
+            'failed_jobs' => count(array_filter($jobs, static fn (array $item): bool => (string)$item['status'] === 'failed')),
+        ],
     ];
 }
 

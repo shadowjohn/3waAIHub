@@ -113,7 +113,17 @@
         return 'bad hub-badge-bad';
     }
 
-    function updateServiceSummary() {
+    function updateServiceSummary(summary) {
+        var summaryKeys = ['total', 'running', 'stopped', 'disabled', 'active_jobs', 'failed_jobs'];
+        if (summary) {
+            $.each(summaryKeys, function (_, key) {
+                if (Object.prototype.hasOwnProperty.call(summary, key)) {
+                    $('[data-service-summary="' + key + '"] [data-service-summary-value]').text(Number(summary[key]) || 0);
+                }
+            });
+            return;
+        }
+
         var counts = {running: 0, stopped: 0, disabled: 0};
         $('[data-service-row-id][data-service-actual-status]').each(function () {
             var $row = $(this);
@@ -178,7 +188,7 @@
                     .text(serviceStatusLabel(displayedStatus));
             });
         }
-        updateServiceSummary();
+        updateServiceSummary(job.summary);
     }
 
     function updateServiceRow(job) {
@@ -304,6 +314,11 @@
             if (!jobId) {
                 return;
             }
+            var inFlightJobId = $box.data('poll-in-flight');
+            if (String(inFlightJobId || '') === String(jobId)) {
+                return;
+            }
+            $box.data('poll-in-flight', jobId);
             $.ajax({
                 method: 'GET',
                 url: 'job_status.php',
@@ -313,12 +328,22 @@
                 if (!response || !response.ok || !response.job) {
                     return;
                 }
+                if (String(response.job.id) !== String($box.attr('data-job-id'))) {
+                    return;
+                }
                 updateServiceJobBox($box, response.job);
                 updateJobRow(response.job);
             }).fail(function () {
+                if (String(jobId) !== String($box.attr('data-job-id'))) {
+                    return;
+                }
                 if (!$box.data('poll-error-shown')) {
                     $box.data('poll-error-shown', true);
                     showMessage(t('poll_failed', '讀取背景工作狀態失敗，請稍後重試或重新整理。'), true);
+                }
+            }).always(function () {
+                if ($box.data('poll-in-flight') === jobId) {
+                    $box.removeData('poll-in-flight');
                 }
             });
         });
@@ -355,6 +380,7 @@
             if (response.job && response.job.service_id) {
                 var $box = $('.service-job[data-service-id="' + response.job.service_id + '"]');
                 $box.attr('data-job-id', response.job.id);
+                $box.removeData('poll-error-shown');
                 updateServiceJobBox($box, response.job);
             }
         }).fail(function (xhr) {
