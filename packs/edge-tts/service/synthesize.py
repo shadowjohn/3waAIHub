@@ -15,7 +15,9 @@ from edge_tts import exceptions as edge_exceptions
 
 
 MAX_AUDIO_BYTES = 16 * 1024 * 1024
-ALLOWED_REQUEST = {"text", "voice", "rate", "volume", "pitch"}
+MAX_CAPTION_BYTES = 512 * 1024
+TICKS_PER_MILLISECOND = 10000
+ALLOWED_REQUEST = {"text", "voice", "rate", "volume", "pitch", "include_subtitles"}
 VOICES = {
     "zh-TW-HsiaoChenNeural",
     "zh-TW-HsiaoYuNeural",
@@ -48,7 +50,7 @@ def read_request(path: Path) -> dict[str, Any]:
     return value
 
 
-def validate_request(value: dict[str, Any]) -> dict[str, str]:
+def validate_request(value: dict[str, Any]) -> dict[str, Any]:
     if set(value) != ALLOWED_REQUEST:
         fail("edge_tts_failed")
     text = value.get("text")
@@ -56,6 +58,7 @@ def validate_request(value: dict[str, Any]) -> dict[str, str]:
     rate = value.get("rate")
     volume = value.get("volume")
     pitch = value.get("pitch")
+    include_subtitles = value.get("include_subtitles")
     try:
         text_bytes = len(text.encode("utf-8")) if isinstance(text, str) else 0
     except UnicodeEncodeError:
@@ -68,9 +71,17 @@ def validate_request(value: dict[str, Any]) -> dict[str, str]:
         or rate not in RATES
         or volume not in VOLUMES
         or pitch not in PITCHES
+        or not isinstance(include_subtitles, bool)
     ):
         fail("edge_tts_failed")
-    return {"text": text, "voice": voice, "rate": rate, "volume": volume, "pitch": pitch}
+    return {
+        "text": text,
+        "voice": voice,
+        "rate": rate,
+        "volume": volume,
+        "pitch": pitch,
+        "include_subtitles": include_subtitles,
+    }
 
 
 def client_version() -> str:
@@ -105,6 +116,118 @@ def write_metadata(path: Path, value: dict[str, Any]) -> None:
         fail("artifact_write_failed")
 
 
+def write_text_artifact(path: Path, value: str) -> None:
+    temporary = path.with_name("." + path.name + ".tmp")
+    try:
+        remove_if_regular(path)
+        remove_if_regular(temporary)
+        encoded = value.encode("utf-8")
+        if len(encoded) > MAX_CAPTION_BYTES:
+            fail("artifact_write_failed")
+        temporary.write_bytes(encoded)
+        temporary.replace(path)
+    except RunnerError:
+        raise
+    except (OSError, UnicodeEncodeError):
+        fail("artifact_write_failed")
+
+
+def boundary_entry(value: dict[str, Any]) -> dict[str, Any]:
+    offset = value.get("offset")
+    duration = value.get("duration")
+    text = value.get("text")
+    if (
+        not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or not isinstance(duration, int)
+        or isinstance(duration, bool)
+        or offset < 0
+        or duration <= 0
+        or not isinstance(text, str)
+        or not text
+    ):
+        fail("edge_tts_failed")
+    start_ms = offset // TICKS_PER_MILLISECOND
+    end_ms = (offset + duration + TICKS_PER_MILLISECOND - 1) // TICKS_PER_MILLISECOND
+    if end_ms <= start_ms:
+        end_ms = start_ms + 1
+    return {"text": text, "start_ms": start_ms, "end_ms": end_ms}
+
+
+def append_boundary(entries: list[dict[str, Any]], value: dict[str, Any]) -> None:
+    entry = boundary_entry(value)
+    if entries and entry["start_ms"] < entries[-1]["end_ms"]:
+        fail("edge_tts_failed")
+    entries.append(entry)
+
+
+def timestamp(milliseconds: int, separator: str) -> str:
+    hours, remaining = divmod(milliseconds, 3_600_000)
+    minutes, remaining = divmod(remaining, 60_000)
+    seconds, milliseconds = divmod(remaining, 1_000)
+    return f"{hours:02}:{minutes:02}:{seconds:02}{separator}{milliseconds:03}"
+
+
+def render_vtt(sentences: list[dict[str, Any]]) -> str:
+    return "WEBVTT\n\n" + "\n\n".join(
+        f"{timestamp(entry['start_ms'], '.')} --> {timestamp(entry['end_ms'], '.')}\n{entry['text']}"
+        for entry in sentences
+    ) + "\n"
+
+
+def render_srt(sentences: list[dict[str, Any]]) -> str:
+    return "\n\n".join(
+        f"{index}\n{timestamp(entry['start_ms'], ',')} --> {timestamp(entry['end_ms'], ',')}\n{entry['text']}"
+        for index, entry in enumerate(sentences, start=1)
+    ) + "\n"
+
+
+def stream_captioned_audio(request: dict[str, Any], temporary_audio: Path) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    sentences: list[dict[str, Any]] = []
+    words: list[dict[str, Any]] = []
+    audio_bytes = 0
+    try:
+        with temporary_audio.open("wb") as audio_file:
+            for event in edge_tts.Communicate(
+                request["text"],
+                request["voice"],
+                rate=request["rate"],
+                volume=request["volume"],
+                pitch=request["pitch"],
+            ).stream_sync():
+                if not isinstance(event, dict):
+                    fail("edge_tts_failed")
+                event_type = event.get("type")
+                if event_type == "audio":
+                    data = event.get("data")
+                    if not isinstance(data, bytes):
+                        fail("edge_tts_failed")
+                    audio_bytes += len(data)
+                    if audio_bytes > MAX_AUDIO_BYTES:
+                        fail("artifact_write_failed")
+                    audio_file.write(data)
+                elif event_type == "SentenceBoundary":
+                    append_boundary(sentences, event)
+                elif event_type == "WordBoundary":
+                    append_boundary(words, event)
+    except (asyncio.TimeoutError, TimeoutError):
+        fail("edge_tts_timeout")
+    except (aiohttp.ClientError, ConnectionError, OSError, ssl.SSLError, edge_exceptions.NoAudioReceived, edge_exceptions.WebSocketError):
+        fail("upstream_unavailable")
+    except RunnerError:
+        raise
+    except Exception:
+        fail("edge_tts_failed")
+    if not sentences or not words:
+        fail("edge_tts_failed")
+    return audio_bytes, sentences, words
+
+
+def remove_job_artifacts(paths: tuple[Path, ...]) -> None:
+    for path in paths:
+        remove_if_regular(path)
+
+
 def run_job(request_path: Path, output_dir: Path) -> None:
     request = validate_request(read_request(request_path))
     if not output_dir.is_dir() or output_dir.is_symlink():
@@ -112,25 +235,41 @@ def run_job(request_path: Path, output_dir: Path) -> None:
     audio_path = output_dir / "generated_audio.mp3"
     temporary_audio = output_dir / ".generated_audio.mp3.tmp"
     metadata_path = output_dir / "synthesis_metadata.json"
-    remove_if_regular(audio_path)
-    remove_if_regular(temporary_audio)
-    remove_if_regular(metadata_path)
+    vtt_path = output_dir / "subtitle.vtt"
+    srt_path = output_dir / "subtitle.srt"
+    timeline_path = output_dir / "speech_timeline.json"
+    artifacts = (
+        audio_path,
+        temporary_audio,
+        metadata_path,
+        metadata_path.with_name("." + metadata_path.name + ".tmp"),
+        vtt_path,
+        vtt_path.with_name("." + vtt_path.name + ".tmp"),
+        srt_path,
+        srt_path.with_name("." + srt_path.name + ".tmp"),
+        timeline_path,
+        timeline_path.with_name("." + timeline_path.name + ".tmp"),
+    )
+    remove_job_artifacts(artifacts)
     started = time.monotonic()
     try:
-        edge_tts.Communicate(
-            request["text"],
-            request["voice"],
-            rate=request["rate"],
-            volume=request["volume"],
-            pitch=request["pitch"],
-        ).save_sync(str(temporary_audio))
-    except (asyncio.TimeoutError, TimeoutError):
-        fail("edge_tts_timeout")
-    except (aiohttp.ClientError, ConnectionError, OSError, ssl.SSLError, edge_exceptions.NoAudioReceived, edge_exceptions.WebSocketError):
-        fail("upstream_unavailable")
-    except Exception:
-        fail("edge_tts_failed")
-    try:
+        if request["include_subtitles"]:
+            audio_bytes, sentences, words = stream_captioned_audio(request, temporary_audio)
+        else:
+            try:
+                edge_tts.Communicate(
+                    request["text"],
+                    request["voice"],
+                    rate=request["rate"],
+                    volume=request["volume"],
+                    pitch=request["pitch"],
+                ).save_sync(str(temporary_audio))
+            except (asyncio.TimeoutError, TimeoutError):
+                fail("edge_tts_timeout")
+            except (aiohttp.ClientError, ConnectionError, OSError, ssl.SSLError, edge_exceptions.NoAudioReceived, edge_exceptions.WebSocketError):
+                fail("upstream_unavailable")
+            except Exception:
+                fail("edge_tts_failed")
         if temporary_audio.is_symlink() or not temporary_audio.is_file():
             fail("artifact_write_failed")
         audio_bytes = temporary_audio.stat().st_size
@@ -149,9 +288,22 @@ def run_job(request_path: Path, output_dir: Path) -> None:
             "elapsed_seconds": max(0.0, time.monotonic() - started),
             "warnings": [],
         })
+        if request["include_subtitles"]:
+            duration_ms = max(entry["end_ms"] for entry in sentences + words)
+            write_text_artifact(vtt_path, render_vtt(sentences))
+            write_text_artifact(srt_path, render_srt(sentences))
+            write_text_artifact(timeline_path, json.dumps({
+                "version": 1,
+                "unit": "milliseconds",
+                "duration_ms": duration_ms,
+                "sentences": sentences,
+                "words": words,
+            }, ensure_ascii=True, separators=(",", ":")) + "\n")
     except RunnerError:
+        remove_job_artifacts(artifacts)
         raise
     except OSError:
+        remove_job_artifacts(artifacts)
         fail("artifact_write_failed")
 
 

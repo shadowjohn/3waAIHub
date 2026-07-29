@@ -37,9 +37,30 @@ class FailingCommunicate:
         raise self.error
 
 
+class StreamingCommunicate:
+    calls = []
+
+    def __init__(self, text, voice, rate, volume, pitch):
+        self.calls.append((text, voice, rate, volume, pitch))
+
+    def stream_sync(self):
+        yield {"type": "audio", "data": b"ID3fake-edge-tts"}
+        yield {"type": "SentenceBoundary", "offset": 0, "duration": 15000000, "text": "Hello world."}
+        yield {"type": "WordBoundary", "offset": 0, "duration": 5000000, "text": "Hello"}
+        yield {"type": "WordBoundary", "offset": 5000000, "duration": 10000000, "text": "world."}
+
+
+class InvalidStreamingCommunicate(StreamingCommunicate):
+    def stream_sync(self):
+        yield {"type": "audio", "data": b"ID3fake-edge-tts"}
+        yield {"type": "SentenceBoundary", "offset": 0, "duration": -1, "text": "Hello world."}
+        yield {"type": "WordBoundary", "offset": 0, "duration": 5000000, "text": "Hello"}
+
+
 class SynthesizeTest(unittest.TestCase):
     def setUp(self):
         FakeCommunicate.calls = []
+        StreamingCommunicate.calls = []
         self.tempdir = tempfile.TemporaryDirectory()
         self.workspace = Path(self.tempdir.name)
         self.input_dir = self.workspace / "input"
@@ -62,6 +83,7 @@ class SynthesizeTest(unittest.TestCase):
             "rate": "+0%",
             "volume": "+0%",
             "pitch": "+0Hz",
+            "include_subtitles": False,
         }
 
     def test_normalized_request_writes_audio_and_exact_metadata(self):
@@ -84,6 +106,44 @@ class SynthesizeTest(unittest.TestCase):
         self.assertIsInstance(metadata["elapsed_seconds"], float)
         self.assertEqual(metadata["warnings"], [])
         self.assertNotIn("Taiwan Edge TTS", json.dumps(metadata))
+        self.assertFalse((self.output_dir / "subtitle.vtt").exists())
+
+    def test_subtitle_request_writes_caption_artifacts_from_one_stream(self):
+        request = {**self.request(), "include_subtitles": True}
+        with patch.object(synthesize.edge_tts, "Communicate", StreamingCommunicate):
+            synthesize.run_job(self.write_request(request), self.output_dir)
+
+        self.assertEqual(StreamingCommunicate.calls, [("Taiwan Edge TTS", "zh-TW-HsiaoChenNeural", "+0%", "+0%", "+0Hz")])
+        self.assertEqual(
+            (self.output_dir / "subtitle.vtt").read_text(encoding="utf-8"),
+            "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nHello world.\n",
+        )
+        self.assertEqual(
+            (self.output_dir / "subtitle.srt").read_text(encoding="utf-8"),
+            "1\n00:00:00,000 --> 00:00:01,500\nHello world.\n",
+        )
+        self.assertEqual(
+            json.loads((self.output_dir / "speech_timeline.json").read_text(encoding="utf-8")),
+            {
+                "version": 1,
+                "unit": "milliseconds",
+                "duration_ms": 1500,
+                "sentences": [{"text": "Hello world.", "start_ms": 0, "end_ms": 1500}],
+                "words": [
+                    {"text": "Hello", "start_ms": 0, "end_ms": 500},
+                    {"text": "world.", "start_ms": 500, "end_ms": 1500},
+                ],
+            },
+        )
+
+    def test_invalid_caption_stream_leaves_no_artifacts(self):
+        request = {**self.request(), "include_subtitles": True}
+        with patch.object(synthesize.edge_tts, "Communicate", InvalidStreamingCommunicate):
+            with self.assertRaises(synthesize.RunnerError) as raised:
+                synthesize.run_job(self.write_request(request), self.output_dir)
+
+        self.assertEqual(raised.exception.code, "edge_tts_failed")
+        self.assertEqual(list(self.output_dir.iterdir()), [])
 
     def test_invalid_request_is_rejected_without_a_client_call(self):
         cases = [
