@@ -13,6 +13,17 @@
         return dictionary[key] || fallback;
     }
 
+    function showMessage(message, isError) {
+        $('#service-message')
+            .removeClass('notice error')
+            .addClass(isError ? 'error' : 'notice')
+            .attr('role', isError ? 'alert' : 'status')
+            .attr('aria-live', isError ? 'assertive' : 'polite')
+            .attr('aria-atomic', 'true')
+            .text(message)
+            .show();
+    }
+
     function refreshReadiness($button) {
         var packId = $button.data('pack-id');
         var $value = $('.pack-readiness-value[data-pack-id="' + packId + '"]');
@@ -41,4 +52,21 @@
     $(document).on('click', '.pack-readiness-refresh', function () {
         refreshReadiness($(this));
     });
+
+    document.addEventListener('invalid', function (event) {
+        var control = event.target;
+        if (!control || typeof control.closest !== 'function') {
+            return;
+        }
+        var details = control.closest('.pack-details');
+        if (!details) {
+            return;
+        }
+
+        details.open = true;
+        showMessage(t('required_fields', '請完成標示的必填欄位。'), true);
+        window.setTimeout(function () {
+            control.focus();
+        }, 0);
+    }, true);
 })(jQuery);

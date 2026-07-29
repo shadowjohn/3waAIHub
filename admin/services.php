@@ -175,7 +175,7 @@ hub_admin_header('服務管理', $user);
     <?= hub_h(__('此頁已退出主選單，正式操作請使用「安裝套件」。')) ?>
     <a href="marketplace.php?view=services"><?= hub_h(__('前往已安裝服務')) ?></a>
 </section>
-<div id="service-message" class="notice"<?= $message === '' ? ' style="display:none"' : '' ?>><?= hub_h($message) ?></div>
+<div id="service-message" class="notice" role="status" aria-live="polite" aria-atomic="true"<?= $message === '' ? ' style="display:none"' : '' ?>><?= hub_h($message) ?></div>
 <section class="panel">
     <h1>服務管理</h1>
     <p class="muted">服務操作會先排入背景工作，由 command worker 實際執行 Docker 指令。</p>
@@ -322,9 +322,29 @@ hub_admin_header('服務管理', $user);
     'health_ok' => __('健康正常'),
     'health_checking' => __('健康檢查中'),
     'health_failed' => __('健康異常'),
+    'enabled' => __('已啟用'),
+    'disabled' => __('已停用'),
+    'restart_required' => __('需重啟'),
+    'restart_applied' => __('設定已套用'),
     'poll_failed' => __('讀取背景工作狀態失敗，請稍後重試或重新整理。'),
     'action_failed' => __('操作失敗，請重新整理後再試。'),
     'queued' => __('已排入背景工作。'),
+    'job_failed_feedback' => __('背景工作失敗，已保留工作輸出。'),
+    'job_cancelled_feedback' => __('背景工作已取消，已保留工作輸出。'),
+    'job_timeout_feedback' => __('背景工作逾時，已保留工作輸出。'),
+    'action_service_start' => __('啟動服務'),
+    'action_service_stop' => __('停止服務'),
+    'action_service_restart' => __('重啟服務'),
+    'action_service_build' => __('建置服務'),
+    'action_service_rebuild' => __('重新建置'),
+    'action_service_health_check' => __('健康檢查'),
+    'action_service_install' => __('安裝服務'),
+    'job_status_queued' => __('排隊中'),
+    'job_status_running' => __('執行中'),
+    'job_status_success' => __('成功'),
+    'job_status_failed' => __('失敗'),
+    'job_status_cancelled' => __('已取消'),
+    'job_status_timeout' => __('逾時'),
     'copied' => __('API URL 已複製。'),
     'copy_failed' => __('無法自動複製，請手動複製。'),
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?></script>

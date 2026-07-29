@@ -287,6 +287,7 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
         'exit_code' => $job['exit_code'] === null ? null : (int)$job['exit_code'],
         'error_message' => (string)($job['error_message'] ?? ''),
         'error_code' => isset($job['error_code']) ? (string)$job['error_code'] : null,
+        'created_at' => (string)($job['created_at'] ?? ''),
         'updated_at' => (string)($job['updated_at'] ?? ''),
         'stdout_tail' => hub_tail_file((string)($job['stdout_path'] ?? '')),
         'stderr_tail' => hub_tail_file((string)($job['stderr_path'] ?? '')),
@@ -296,6 +297,8 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
             'status_label' => hub_command_status_label((string)$service['status']),
             'status_class' => hub_command_status_class((string)$service['status']),
             'runtime_status' => (string)($service['runtime_status'] ?? $service['status']),
+            'enabled' => (int)($service['enabled'] ?? 0),
+            'restart_required' => (int)($service['restart_required'] ?? 0),
         ] : null,
     ];
 }

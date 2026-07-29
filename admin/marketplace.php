@@ -74,7 +74,14 @@ $error = '';
 $installedServiceId = 0;
 
 if (($_GET['ajax'] ?? '') === 'readiness') {
-    $packId = (string)($_GET['pack_id'] ?? '');
+    $packIdValue = $_GET['pack_id'] ?? null;
+    if (
+        !is_string($packIdValue)
+        || preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/D', $packIdValue) !== 1
+    ) {
+        hub_marketplace_json(400, ['ok' => false, 'error' => __('無效的套件 ID。')]);
+    }
+    $packId = $packIdValue;
     $pack = hub_get_pack($packId);
     if (!$pack || ($pack['status'] ?? '') !== 'ok') {
         hub_marketplace_json(404, ['ok' => false, 'error' => __('找不到 HubPack。')]);
@@ -125,25 +132,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             );
             $message = __('已排入背景工作 #') . $jobId . __('，請等待 command worker 執行。');
             if ($isAjax) {
-                $job = hub_get_command_job($db, $jobId);
+                $job = hub_command_job_status_payload($db, $jobId);
+                if ($job === null) {
+                    hub_marketplace_json(500, ['ok' => false, 'error' => __('無法讀取背景工作狀態。')]);
+                }
+                $job['action_label'] = __(hub_command_action_label((string)$job['action']));
+                $job['status_label'] = __(hub_command_status_label((string)$job['status']));
                 hub_marketplace_json(200, [
                     'ok' => true,
                     'message' => $message,
-                    'job' => [
-                        'id' => $jobId,
-                        'action' => $queueAction,
-                        'action_label' => __(hub_command_action_label($queueAction)),
-                        'service_id' => (int)$service['id'],
-                        'service_name' => (string)$service['name'],
-                        'status' => $job['status'] ?? 'queued',
-                        'status_label' => __(hub_command_status_label((string)($job['status'] ?? 'queued'))),
-                        'status_class' => hub_command_status_class((string)($job['status'] ?? 'queued')),
-                        'progress' => (int)($job['progress'] ?? 0),
-                        'stage' => (string)($job['stage'] ?? ''),
-                        'current_message' => (string)($job['current_message'] ?? ''),
-                        'created_at' => $job['created_at'] ?? hub_now(),
-                        'updated_at' => $job['updated_at'] ?? hub_now(),
-                    ],
+                    'job' => $job,
                 ]);
             }
         }
@@ -192,12 +190,33 @@ $dictionary = [
     'health_ok' => __('健康正常'),
     'health_checking' => __('健康檢查中'),
     'health_failed' => __('健康異常'),
+    'enabled' => __('已啟用'),
+    'disabled' => __('已停用'),
+    'restart_required' => __('需重啟'),
+    'restart_applied' => __('設定已套用'),
     'poll_failed' => __('讀取背景工作狀態失敗，請稍後重試或重新整理。'),
     'action_failed' => __('操作失敗，請重新整理後再試。'),
     'queued' => __('已排入背景工作。'),
+    'job_failed_feedback' => __('背景工作失敗，已保留工作輸出。'),
+    'job_cancelled_feedback' => __('背景工作已取消，已保留工作輸出。'),
+    'job_timeout_feedback' => __('背景工作逾時，已保留工作輸出。'),
+    'action_service_start' => __('啟動服務'),
+    'action_service_stop' => __('停止服務'),
+    'action_service_restart' => __('重啟服務'),
+    'action_service_build' => __('建置服務'),
+    'action_service_rebuild' => __('重新建置'),
+    'action_service_health_check' => __('健康檢查'),
+    'action_service_install' => __('安裝服務'),
+    'job_status_queued' => __('排隊中'),
+    'job_status_running' => __('執行中'),
+    'job_status_success' => __('成功'),
+    'job_status_failed' => __('失敗'),
+    'job_status_cancelled' => __('已取消'),
+    'job_status_timeout' => __('逾時'),
     'refreshing' => __('刷新中'),
     'refresh' => __('刷新'),
     'readiness_failed' => __('讀取失敗'),
+    'required_fields' => __('請完成標示的必填欄位。'),
     'copied' => __('API URL 已複製。'),
     'copy_failed' => __('無法自動複製，請手動複製。'),
 ];
@@ -217,7 +236,7 @@ hub_admin_header(__('HubPack 套件'), $user);
         </a>
     </nav>
 
-    <div id="service-message" class="notice"<?= $message === '' ? ' style="display:none"' : '' ?>>
+    <div id="service-message" class="notice" role="status" aria-live="polite" aria-atomic="true"<?= $message === '' ? ' style="display:none"' : '' ?>>
         <?= hub_h($message) ?>
         <?php if ($installedServiceId > 0): ?>
             <a href="service_settings.php?service_id=<?= $installedServiceId ?>"><?= hub_h(__('設定服務')) ?></a>
@@ -442,8 +461,14 @@ hub_admin_header(__('HubPack 套件'), $user);
         $queuedJobCount = count(array_filter($jobs, static fn (array $job): bool => $job['status'] === 'queued'));
         $summary = [
             'total' => count($services),
-            'running' => count(array_filter($services, static fn (array $service): bool => (string)$service['status'] === 'running')),
-            'stopped' => count(array_filter($services, static fn (array $service): bool => (string)$service['status'] !== 'running')),
+            'running' => count(array_filter(
+                $services,
+                static fn (array $service): bool => (string)($service['runtime_status'] ?? $service['status']) === 'running'
+            )),
+            'stopped' => count(array_filter(
+                $services,
+                static fn (array $service): bool => (string)($service['runtime_status'] ?? $service['status']) !== 'running'
+            )),
             'disabled' => count(array_filter($services, static fn (array $service): bool => (int)$service['enabled'] !== 1)),
             'active_jobs' => count(array_filter($jobs, static fn (array $job): bool => in_array((string)$job['status'], ['queued', 'running'], true))),
             'failed_jobs' => count(array_filter($jobs, static fn (array $job): bool => (string)$job['status'] === 'failed')),
@@ -481,14 +506,17 @@ hub_admin_header(__('HubPack 套件'), $user);
 
         <section class="service-summary" aria-label="<?= hub_h(__('服務摘要')) ?>">
             <?php foreach ([
-                __('全部服務') => $summary['total'],
-                __('執行中') => $summary['running'],
-                __('已停止') => $summary['stopped'],
-                __('已停用') => $summary['disabled'],
-                __('背景工作執行中') => $summary['active_jobs'],
-                __('最近失敗工作') => $summary['failed_jobs'],
-            ] as $label => $count): ?>
-                <div class="service-stat"><span><?= hub_h($label) ?></span><strong><?= (int)$count ?></strong></div>
+                'total' => __('全部服務'),
+                'running' => __('執行中'),
+                'stopped' => __('已停止'),
+                'disabled' => __('已停用'),
+                'active_jobs' => __('背景工作執行中'),
+                'failed_jobs' => __('最近失敗工作'),
+            ] as $summaryKey => $label): ?>
+                <div class="service-stat" data-service-summary="<?= hub_h($summaryKey) ?>">
+                    <span><?= hub_h($label) ?></span>
+                    <strong data-service-summary-value><?= (int)$summary[$summaryKey] ?></strong>
+                </div>
             <?php endforeach; ?>
         </section>
 
@@ -502,7 +530,8 @@ hub_admin_header(__('HubPack 套件'), $user);
                     $activeJob = $activeJobsByService[$serviceId] ?? null;
                     $lastJob = $lastJobsByService[$serviceId] ?? null;
                     $healthJob = $lastHealthJobsByService[$serviceId] ?? null;
-                    $state = (string)($service['status'] ?? 'stopped');
+                    $actualState = (string)($service['runtime_status'] ?? $service['status'] ?? 'stopped');
+                    $state = $actualState;
                     if ($activeJob && (string)$activeJob['status'] === 'queued') {
                         $state = 'queued';
                     } elseif ($activeJob && (string)$activeJob['status'] === 'running') {
@@ -510,13 +539,15 @@ hub_admin_header(__('HubPack 套件'), $user);
                     } elseif ($state === 'error') {
                         $state = 'failed';
                     }
-                    $healthState = !$healthJob
-                        ? ['label' => __('健康未檢查'), 'class' => 'hub-badge-muted']
-                        : ((string)$healthJob['status'] === 'success'
-                            ? ['label' => __('健康正常'), 'class' => 'hub-badge-ok']
-                            : (in_array((string)$healthJob['status'], ['queued', 'running'], true)
-                                ? ['label' => __('健康檢查中'), 'class' => 'hub-badge-warn']
-                                : ['label' => __('健康異常'), 'class' => 'hub-badge-bad']));
+                    if (!$healthJob) {
+                        $healthState = ['label' => __('健康未檢查'), 'class' => 'hub-badge-muted'];
+                    } elseif (in_array((string)$healthJob['status'], ['queued', 'running'], true)) {
+                        $healthState = ['label' => __('健康檢查中'), 'class' => 'hub-badge-warn'];
+                    } elseif ((string)$healthJob['status'] === 'success' && $actualState === 'running') {
+                        $healthState = ['label' => __('健康正常'), 'class' => 'hub-badge-ok'];
+                    } else {
+                        $healthState = ['label' => __('健康異常'), 'class' => 'hub-badge-bad'];
+                    }
                     $runtimeLevel = hub_marketplace_service_runtime_level($service);
                     $endpoint = hub_marketplace_service_endpoint($service);
                     $apiUrl = '../api.php?mode=' . rawurlencode((string)$service['mode']);
@@ -524,7 +555,11 @@ hub_admin_header(__('HubPack 套件'), $user);
                         ? trim((string)($lastJob['error_message'] ?? ''))
                         : '';
                     ?>
-                    <article class="service-card" data-service-row-id="<?= $serviceId ?>">
+                    <article class="service-card"
+                             data-service-row-id="<?= $serviceId ?>"
+                             data-service-actual-status="<?= hub_h($actualState) ?>"
+                             data-service-enabled="<?= (int)$service['enabled'] === 1 ? '1' : '0' ?>"
+                             data-service-restart-required="<?= (int)($service['restart_required'] ?? 0) === 1 ? '1' : '0' ?>">
                         <header class="service-card-head">
                             <div>
                                 <h2><?= hub_h((string)$service['name']) ?></h2>
@@ -536,17 +571,20 @@ hub_admin_header(__('HubPack 套件'), $user);
                         </header>
 
                         <div class="service-badges">
-                            <span class="hub-badge <?= hub_h(hub_marketplace_service_status_class($state)) ?>">
-                                <?= hub_h(__('服務狀態')) ?>: <?= hub_h(hub_marketplace_service_status_label($state)) ?>
+                            <span data-service-status-summary data-service-status class="hub-badge <?= hub_h(hub_marketplace_service_status_class($state)) ?>">
+                                <?= hub_h(__('服務狀態')) ?>:
+                                <span data-service-status-label><?= hub_h(hub_marketplace_service_status_label($state)) ?></span>
                             </span>
-                            <span class="hub-badge <?= (int)$service['enabled'] === 1 ? 'hub-badge-ok' : 'hub-badge-muted' ?>">
-                                <?= hub_h((int)$service['enabled'] === 1 ? __('已啟用') : __('已停用')) ?>
+                            <span data-service-enabled-badge class="hub-badge <?= (int)$service['enabled'] === 1 ? 'hub-badge-ok' : 'hub-badge-muted' ?>">
+                                <span data-service-enabled-label><?= hub_h((int)$service['enabled'] === 1 ? __('已啟用') : __('已停用')) ?></span>
                             </span>
                             <span data-service-health class="hub-badge <?= hub_h((string)$healthState['class']) ?>">
                                 <span data-service-health-label><?= hub_h((string)$healthState['label']) ?></span>
                             </span>
-                            <span class="hub-badge <?= (int)($service['restart_required'] ?? 0) === 1 ? 'hub-badge-warn' : 'hub-badge-ok' ?>">
-                                <?= hub_h((int)($service['restart_required'] ?? 0) === 1 ? __('需重啟') : __('設定已套用')) ?>
+                            <span data-service-restart-badge class="hub-badge <?= (int)($service['restart_required'] ?? 0) === 1 ? 'hub-badge-warn' : 'hub-badge-ok' ?>">
+                                <span data-service-restart-label>
+                                    <?= hub_h((int)($service['restart_required'] ?? 0) === 1 ? __('需重啟') : __('設定已套用')) ?>
+                                </span>
                             </span>
                         </div>
 

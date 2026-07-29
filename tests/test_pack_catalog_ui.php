@@ -60,7 +60,7 @@ hub_test('canonical Market JS uses one page dictionary and canonical readiness e
 
     hub_test_assert(str_contains($marketplace, 'id="market-i18n"'), 'canonical Market dictionary node missing');
     hub_test_assert(str_contains($marketplace, 'hub_json_encode(')
-        && str_contains($marketplace, 'JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES'), 'Market dictionary must use HTML-safe JSON encoding');
+        && str_contains($marketplace, 'JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES'), 'Market dictionary must keep readable Unicode and slashes through the shared HTML-safe encoder');
     foreach ([$servicesJs, $packsJs] as $script) {
         hub_test_assert(substr_count($script, 'JSON.parse(') === 1, 'Market script must parse its page dictionary once');
         hub_test_assert(str_contains($script, "getElementById('market-i18n')"), 'Market script dictionary node lookup missing');
@@ -72,8 +72,95 @@ hub_test('canonical Market JS uses one page dictionary and canonical readiness e
     foreach (['refreshing', 'refresh', 'readiness_failed'] as $key) {
         hub_test_assert(str_contains($packsJs, "t('" . $key . "'"), 'Pack readiness feedback must use dictionary key ' . $key);
     }
-    foreach (['running', 'stopped', 'unknown', 'health_ok', 'health_checking', 'health_failed', 'poll_failed', 'action_failed', 'queued'] as $key) {
+    foreach ([
+        'running',
+        'stopped',
+        'unknown',
+        'health_ok',
+        'health_checking',
+        'health_failed',
+        'poll_failed',
+        'action_failed',
+        'queued',
+        'action_service_start',
+        'action_service_stop',
+        'action_service_restart',
+        'action_service_build',
+        'action_service_rebuild',
+        'action_service_health_check',
+        'job_status_queued',
+        'job_status_running',
+        'job_status_success',
+        'job_status_failed',
+        'job_status_cancelled',
+        'job_status_timeout',
+    ] as $key) {
         hub_test_assert(str_contains($servicesJs, "t('" . $key . "'"), 'service feedback must use dictionary key ' . $key);
+    }
+});
+
+hub_test('shared JSON encoder blocks script breakout in the Market dictionary', function (): void {
+    $payload = ['malicious' => '</script><img src=x onerror=alert(1)>'];
+    $encoded = hub_json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+    hub_test_assert(is_string($encoded), 'malicious dictionary payload must encode');
+    hub_test_assert(!str_contains($encoded, '</script>'), 'shared JSON encoder must not emit a raw closing script tag');
+    hub_test_assert(str_contains($encoded, '\\u003C/script\\u003E'), 'shared JSON encoder must hex-escape the opening angle brackets');
+    hub_test_assert(str_contains($encoded, '\\u003Cimg'), 'shared JSON encoder must hex-escape the injected element');
+});
+
+hub_test('Market scripts expose validation polling state and i18n consistency contracts', function (): void {
+    $marketplace = (string)file_get_contents(HUB_ROOT . '/admin/marketplace.php');
+    $servicesJs = (string)file_get_contents(HUB_ROOT . '/assets/js/services.js');
+    $packsJs = (string)file_get_contents(HUB_ROOT . '/assets/js/packs.js');
+
+    foreach ([
+        "document.addEventListener('invalid'",
+        "closest('.pack-details')",
+        'details.open = true',
+        'window.setTimeout',
+        'control.focus',
+        "t('required_fields'",
+    ] as $needle) {
+        hub_test_assert(str_contains($packsJs, $needle), 'Pack invalid-field enhancement missing ' . $needle);
+    }
+    hub_test_assert(!str_contains($packsJs, '.submit()'), 'Pack invalid handler must not submit the form');
+
+    foreach ([
+        'function jobActionLabel',
+        'function jobStatusLabel',
+        'function syncServiceState',
+        'function updateServiceSummary',
+        "job.status === 'success'",
+        "job.error_code !== 'platform_target_unsupported'",
+        'return submitServiceAction',
+        "['failed', 'cancelled', 'timeout'].indexOf(job.status)",
+        'window.location.reload()',
+        "serviceRuntimeStatus(job) === 'running'",
+        ".attr('role', isError ? 'alert' : 'status')",
+        ".attr('aria-live', isError ? 'assertive' : 'polite')",
+    ] as $needle) {
+        hub_test_assert(str_contains($servicesJs, $needle), 'Service polling contract missing ' . $needle);
+    }
+    hub_test_assert(!str_contains($servicesJs, 'job.action_label ||'), 'JS must map action codes through the page dictionary');
+    hub_test_assert(!str_contains($servicesJs, 'job.status_label ||'), 'JS must map job status codes through the page dictionary');
+
+    foreach ([
+        "'action_service_start' => __('啟動服務')",
+        "'action_service_stop' => __('停止服務')",
+        "'action_service_restart' => __('重啟服務')",
+        "'action_service_build' => __('建置服務')",
+        "'action_service_rebuild' => __('重新建置')",
+        "'action_service_health_check' => __('健康檢查')",
+        "'job_status_queued' => __('排隊中')",
+        "'job_status_running' => __('執行中')",
+        "'job_status_success' => __('成功')",
+        "'job_status_failed' => __('失敗')",
+        "'job_status_cancelled' => __('已取消')",
+        "'job_status_timeout' => __('逾時')",
+        "'required_fields' => __('請完成標示的必填欄位。')",
+    ] as $needle) {
+        hub_test_assert(str_contains($marketplace, $needle), 'canonical Market dictionary missing ' . $needle);
     }
 });
 

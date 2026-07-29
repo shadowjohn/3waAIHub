@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 require_once HUB_ROOT . '/app/admin_market.php';
 
-function hub_test_admin_market_request(array $get = [], array $post = [], bool $ajax = false): array
+function hub_test_admin_market_request(array $get = [], array $post = [], bool $ajax = false, bool $captureStatus = false): array
 {
     $server = [
         'REQUEST_METHOD' => $post === [] ? 'GET' : 'POST',
@@ -16,15 +16,24 @@ function hub_test_admin_market_request(array $get = [], array $post = [], bool $
     }
     $script = "define('HUB_TESTING', true);"
         . 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . ($captureStatus
+            ? "register_shutdown_function(static function (): void { fwrite(STDERR, '__HTTP_STATUS__=' . (string)http_response_code()); });"
+            : '')
         . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];"
         . '$_SERVER = ' . var_export($server, true) . ';'
         . '$_GET = ' . var_export($get, true) . ';'
         . '$_POST = ' . var_export($post, true) . ';'
         . 'require ' . var_export(HUB_ROOT . '/admin/marketplace.php', true) . ';';
 
-    return hub_run_command([PHP_BINARY, '-r', $script], 30, [
+    $result = hub_run_command([PHP_BINARY, '-r', $script], 30, [
         'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+        'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
     ]);
+    $result['http_status'] = preg_match('/__HTTP_STATUS__=([0-9]+)/', $result['stderr'], $match) === 1
+        ? (int)$match[1]
+        : null;
+
+    return $result;
 }
 
 hub_test('Market categories are exclusive and sum to all Packs', function (): void {
@@ -142,6 +151,16 @@ hub_test('canonical installed services keeps operations links polling and collap
         'playground.php?mode=',
         'data-copy-target=',
         'service-job',
+        'role="status" aria-live="polite" aria-atomic="true"',
+        'data-service-actual-status=',
+        'data-service-enabled=',
+        'data-service-restart-required=',
+        'data-service-status-summary',
+        'data-service-enabled-badge',
+        'data-service-restart-badge',
+        'data-service-summary="running"',
+        'data-service-summary="stopped"',
+        'data-service-summary="disabled"',
         '../assets/js/services.js',
     ] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'canonical services render missing ' . $needle);
@@ -181,6 +200,9 @@ hub_test('canonical service POST only queues the mapped command job', function (
         foreach (['id', 'action', 'action_label', 'service_id', 'service_name', 'status', 'status_label', 'status_class', 'progress'] as $key) {
             hub_test_assert(array_key_exists($key, $payload['job'] ?? []), 'service AJAX job shape missing ' . $key);
         }
+        foreach (['id', 'status', 'runtime_status', 'enabled', 'restart_required'] as $key) {
+            hub_test_assert(array_key_exists($key, $payload['job']['service'] ?? []), 'service AJAX nested state missing ' . $key);
+        }
     }
     hub_test_assert((int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn() === 6, 'service POST must create one job per action');
 });
@@ -207,12 +229,87 @@ hub_test('canonical service POST rejects unknown actions non-integer services an
 
 hub_test('canonical readiness endpoint returns JSON from marketplace', function (): void {
     hub_test_reset_db();
-    $result = hub_test_admin_market_request(['ajax' => 'readiness', 'pack_id' => 'hello'], [], true);
+    $result = hub_test_admin_market_request(['ajax' => 'readiness', 'pack_id' => 'hello'], [], true, true);
     $payload = json_decode($result['stdout'], true);
 
     hub_test_assert($result['exit_code'] === 0 && is_array($payload), 'readiness endpoint must return JSON');
+    hub_test_assert($result['http_status'] === 200, 'valid readiness request must return HTTP 200');
     hub_test_assert(($payload['ok'] ?? false) === true && ($payload['pack_id'] ?? '') === 'hello', 'canonical readiness payload mismatch');
     hub_test_assert((string)($payload['readiness'] ?? '') !== '', 'canonical readiness label missing');
+});
+
+hub_test('canonical readiness rejects non-scalar malformed and oversized Pack IDs without warnings', function (): void {
+    hub_test_reset_db();
+
+    foreach ([
+        ['ajax' => 'readiness', 'pack_id' => ['hello']],
+        ['ajax' => 'readiness', 'pack_id' => '../hello'],
+        ['ajax' => 'readiness', 'pack_id' => '-hello'],
+        ['ajax' => 'readiness', 'pack_id' => str_repeat('a', 129)],
+    ] as $query) {
+        $result = hub_test_admin_market_request($query, [], true, true);
+        $payload = json_decode($result['stdout'], true);
+
+        hub_test_assert($result['exit_code'] === 0 && is_array($payload), 'invalid readiness request must return canonical JSON');
+        hub_test_assert($result['http_status'] === 400, 'invalid readiness Pack ID must return HTTP 400');
+        hub_test_assert(($payload['ok'] ?? true) === false, 'invalid readiness Pack ID must report failure');
+        hub_test_assert(!str_contains($result['stderr'], 'Warning'), 'invalid readiness Pack ID must not emit a PHP warning');
+    }
+});
+
+hub_test('command job payload carries the actual service flags needed by polling', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $db->prepare(
+        "UPDATE services
+         SET enabled = 0, status = 'stopped', runtime_status = 'stopped', restart_required = 1
+         WHERE id = :id"
+    )->execute([':id' => (int)$service['id']]);
+    $jobId = hub_enqueue_command_job($db, 'service_start', (int)$service['id'], ['reason' => 'poll-state-test'], null, '127.0.0.1');
+
+    $payload = hub_command_job_status_payload($db, $jobId);
+
+    hub_test_assert(($payload['service']['runtime_status'] ?? null) === 'stopped', 'job payload runtime state mismatch');
+    hub_test_assert(($payload['service']['enabled'] ?? null) === 0, 'job payload enabled flag missing');
+    hub_test_assert(($payload['service']['restart_required'] ?? null) === 1, 'job payload restart flag missing');
+});
+
+hub_test('canonical service health requires a successful job and a running runtime', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $serviceId = (int)$service['id'];
+    $jobId = hub_enqueue_command_job($db, 'service_health_check', $serviceId, ['reason' => 'health-render-test'], null, '127.0.0.1');
+    $db->prepare("UPDATE command_jobs SET status = 'success' WHERE id = :id")->execute([':id' => $jobId]);
+    $db->prepare(
+        "UPDATE services SET status = 'stopped', runtime_status = 'stopped' WHERE id = :id"
+    )->execute([':id' => $serviceId]);
+
+    $stopped = hub_test_admin_market_request(['view' => 'services']);
+    hub_test_assert(
+        str_contains($stopped['stdout'], 'data-service-health class="hub-badge hub-badge-bad"')
+            && str_contains($stopped['stdout'], '健康異常'),
+        'successful health job must remain unhealthy when the runtime is stopped'
+    );
+
+    $db->prepare(
+        "UPDATE services SET status = 'running', runtime_status = 'running' WHERE id = :id"
+    )->execute([':id' => $serviceId]);
+    $running = hub_test_admin_market_request(['view' => 'services']);
+    hub_test_assert(
+        str_contains($running['stdout'], 'data-service-health class="hub-badge hub-badge-ok"')
+            && str_contains($running['stdout'], '健康正常'),
+        'successful health job with a running runtime must render healthy'
+    );
+
+    $db->prepare("UPDATE command_jobs SET status = 'running' WHERE id = :id")->execute([':id' => $jobId]);
+    $checking = hub_test_admin_market_request(['view' => 'services']);
+    hub_test_assert(
+        str_contains($checking['stdout'], 'data-service-health class="hub-badge hub-badge-warn"')
+            && str_contains($checking['stdout'], '健康檢查中'),
+        'active health job must render as checking'
+    );
 });
 
 hub_test('model labels cover both Pack surfaces required optional and malformed selectors', function (): void {
