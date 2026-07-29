@@ -20,6 +20,7 @@ function hub_docparser_cache_key(string $inputSha256, array $input, string $vers
         (string)($input['profile'] ?? 'technical_manual'),
         (string)($input['target_language'] ?? 'zh-TW'),
         (string)($input['translation_required'] ?? '1'),
+        hub_docparser_translation_policy($input),
         (string)($input['structure_mode'] ?? 'structure'),
         (string)($input['translate_mode'] ?? 'translate'),
         $version,
@@ -572,58 +573,156 @@ function hub_docparser_translatable_block_types(): array
     return ['paragraph', 'heading', 'caption', 'list', 'table'];
 }
 
+function hub_docparser_translation_policy(array $input): string
+{
+    $policy = strtolower(trim((string)($input['translation_policy'] ?? 'auto')));
+
+    return in_array($policy, ['auto', 'always', 'never'], true) ? $policy : 'auto';
+}
+
+function hub_docparser_target_is_chinese(string $targetLanguage): bool
+{
+    $targetLanguage = strtolower(str_replace('_', '-', trim($targetLanguage)));
+
+    return $targetLanguage === 'zh' || str_starts_with($targetLanguage, 'zh-');
+}
+
+function hub_docparser_count_pattern(string $pattern, string $text): int
+{
+    if (preg_match_all($pattern, $text, $matches) !== false) {
+        return count($matches[0] ?? []);
+    }
+
+    return 0;
+}
+
+function hub_docparser_text_satisfies_target_language(string $text, string $targetLanguage): bool
+{
+    $text = trim($text);
+    if ($text === '') {
+        return true;
+    }
+    if (!hub_docparser_identity_source_looks_translatable($text)) {
+        return true;
+    }
+    if (!hub_docparser_target_is_chinese($targetLanguage)) {
+        return false;
+    }
+
+    $han = hub_docparser_count_pattern('/\p{Han}/u', $text);
+    if ($han <= 0) {
+        return false;
+    }
+
+    $latin = hub_docparser_count_pattern('/[A-Za-z]/', $text);
+    $otherCjk = hub_docparser_count_pattern('/[\x{3040}-\x{30ff}\x{ac00}-\x{d7af}]/u', $text);
+    if ($han >= 2 && $latin === 0 && $otherCjk === 0) {
+        return true;
+    }
+
+    return $han >= 4 && ($latin + $otherCjk) <= ($han * 2);
+}
+
 function hub_docparser_translate_blocks(PDO $db, array $docir, array $input, ?int $taskId = null): array
 {
     $required = (string)($input['translation_required'] ?? '1') !== '0';
     $target = (string)($input['target_language'] ?? 'zh-TW');
-    if ($target === 'source') {
+    $policy = hub_docparser_translation_policy($input);
+    if ($target === 'source' || $policy === 'never') {
+        $docir['translation_stats'] = [
+            'policy' => $policy,
+            'translatable_blocks' => 0,
+            'translated_blocks' => 0,
+            'skipped_target_language_blocks' => 0,
+        ];
         return $docir;
     }
 
-    $service = hub_get_service_by_mode($db, (string)($input['translate_mode'] ?? 'translate'));
-    if (!$service || (int)($service['enabled'] ?? 0) !== 1) {
-        if ($required) {
-            throw new RuntimeException('blocked_dependency: translate service is unavailable.');
-        }
-        return $docir;
-    }
-
-    $translatableIndexes = [];
+    $translationPlan = [];
+    $translateIndexes = [];
+    $skippedTargetLanguage = 0;
     foreach ($docir['blocks'] as $index => $block) {
         $text = trim((string)($block['source_text'] ?? ''));
         if ($text !== '' && in_array((string)$block['type'], hub_docparser_translatable_block_types(), true)) {
-            $translatableIndexes[] = $index;
+            if ($policy === 'auto' && hub_docparser_text_satisfies_target_language($text, $target)) {
+                $translationPlan[$index] = 'target_language_identity';
+                $skippedTargetLanguage++;
+                continue;
+            }
+
+            $translationPlan[$index] = 'translate';
+            $translateIndexes[] = $index;
         }
     }
-    $total = count($translatableIndexes);
+    $total = count($translationPlan);
+    $translateTotal = count($translateIndexes);
     if ($taskId !== null) {
-        hub_add_task_log($db, $taskId, 'info', 'docparser_translate started blocks=' . $total);
+        hub_add_task_log($db, $taskId, 'info', 'docparser_translate planned blocks=' . $total . ' translate=' . $translateTotal . ' skipped_target_language=' . $skippedTargetLanguage . ' policy=' . $policy);
+    }
+
+    $service = null;
+    if ($translateTotal > 0) {
+        $service = hub_get_service_by_mode($db, (string)($input['translate_mode'] ?? 'translate'));
+        if (!$service || (int)($service['enabled'] ?? 0) !== 1) {
+            if ($required) {
+                throw new RuntimeException('blocked_dependency: translate service is unavailable.');
+            }
+            $docir['translation_stats'] = [
+                'policy' => $policy,
+                'translatable_blocks' => $total,
+                'translated_blocks' => 0,
+                'skipped_target_language_blocks' => $skippedTargetLanguage,
+                'translate_service_unavailable' => true,
+            ];
+            return $docir;
+        }
     }
 
     $done = 0;
-    foreach ($docir['blocks'] as &$block) {
+    foreach ($docir['blocks'] as $index => &$block) {
         if ($taskId !== null) {
             hub_abort_if_task_cancel_requested($db, $taskId);
         }
         $text = trim((string)($block['source_text'] ?? ''));
-        if ($text === '' || !in_array((string)$block['type'], hub_docparser_translatable_block_types(), true)) {
+        $strategy = $translationPlan[$index] ?? null;
+        if ($text === '' || $strategy === null) {
             continue;
         }
+        if ($strategy === 'target_language_identity') {
+            $block['translation'] = [
+                'language' => $target,
+                'text' => $text,
+                'source_block_id' => (string)($block['id'] ?? ''),
+                'strategy' => 'target_language_identity',
+            ];
+            continue;
+        }
+
         // ponytail: 先逐 block 翻譯，真的被延遲打到再補 batch。
         $block['translation'] = [
             'language' => $target,
-            'text' => hub_docparser_translate_text($service, $text, $target),
+            'text' => hub_docparser_translate_text($service ?? [], $text, $target),
             'source_block_id' => (string)($block['id'] ?? ''),
+            'strategy' => 'machine_translation',
         ];
         $done++;
-        if ($taskId !== null && ($done === $total || $done % 10 === 0)) {
-            $progress = 55 + (int)floor(($done / max(1, $total)) * 25);
+        if ($taskId !== null && ($done === $translateTotal || $done % 10 === 0)) {
+            $progress = 55 + (int)floor(($done / max(1, $translateTotal)) * 25);
             hub_update_task_progress($db, $taskId, min(80, $progress));
         }
     }
     unset($block);
+    if ($taskId !== null && $translateTotal === 0) {
+        hub_update_task_progress($db, $taskId, 80);
+    }
+    $docir['translation_stats'] = [
+        'policy' => $policy,
+        'translatable_blocks' => $total,
+        'translated_blocks' => $done,
+        'skipped_target_language_blocks' => $skippedTargetLanguage,
+    ];
     if ($taskId !== null) {
-        hub_add_task_log($db, $taskId, 'info', 'docparser_translate finished blocks=' . $done);
+        hub_add_task_log($db, $taskId, 'info', 'docparser_translate finished translated=' . $done . ' skipped_target_language=' . $skippedTargetLanguage);
     }
 
     return $docir;
@@ -1088,6 +1187,7 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
     $expectedFigureCountMin = max(0, (int) ($fixture['expected_figure_count_min'] ?? 0));
     $thresholds = is_array($fixture['quality_thresholds'] ?? null) ? $fixture['quality_thresholds'] : [];
     $figureCount = max($figureBlockCount, is_array($docir['figures'] ?? null) ? count($docir['figures']) : 0);
+    $translationStats = is_array($docir['translation_stats'] ?? null) ? $docir['translation_stats'] : [];
     $metrics = [
         'page_count' => $pageCount,
         'heading_count' => $headingCount,
@@ -1104,6 +1204,10 @@ function hub_docparser_quality_report(array $docir, array $outputs, array $fixtu
         'translation_block_coverage' => $coverage,
         'translation_coverage_by_type' => $coverageRatioByType,
         'translation_identity_ratio' => $identityRatio,
+        'translation_policy' => (string)($translationStats['policy'] ?? 'unknown'),
+        'translation_machine_blocks' => (int)($translationStats['translated_blocks'] ?? 0),
+        'translation_skipped_target_language_blocks' => (int)($translationStats['skipped_target_language_blocks'] ?? 0),
+        'translation_auto_skip_ratio' => $translatableCount > 0 ? ((int)($translationStats['skipped_target_language_blocks'] ?? 0) / $translatableCount) : 0.0,
         'protected_token_preservation' => $protected,
     ];
     $checks = [

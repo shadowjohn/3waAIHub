@@ -868,6 +868,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
         <p><?= $t('認證方式') ?>：<code>Authorization: Bearer &lt;TOKEN&gt;</code></p>
         <p>API Endpoint：<code><?= hub_h(hub_public_api_base_url()) ?>?mode=&lt;mode&gt;</code></p>
         <?php if (isset($packIds['docparser'])): ?>
+            <p>DocParser <code>translation_policy=auto</code>：<?= $t('預設只翻譯非中文 block；已是繁中目標語言的 block 會直接沿用原文，避免中文文件重複翻譯。需要全部硬翻時可送') ?> <code>translation_policy=always</code>。</p>
             <p>DocParser <?= $t('局部補翻譯') ?>：<?= $t('看') ?> <code>quality_report.missing_translation_blocks</code>，<?= $t('再送') ?> <code>task_type=docparser_repair_translation</code>、<code>task_id</code>、<code>block_ids</code> <?= $t('到') ?> <code><?= hub_h(hub_public_api_base_url()) ?>?mode=task_submit</code>。<?= $t('此流程只重翻指定 block，不重跑 OCR / layout / figure extraction。') ?></p>
         <?php endif; ?>
         <nav class="tabs" aria-label="<?= $t('公開 API 文件區段') ?>">

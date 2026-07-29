@@ -1689,6 +1689,7 @@ function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority
 
     $structureMode = (string)($_POST['structure_mode'] ?? 'structure');
     $translateMode = (string)($_POST['translate_mode'] ?? 'translate');
+    $translationPolicy = strtolower(trim((string)($_POST['translation_policy'] ?? 'auto')));
     $input = [
         'profile' => 'technical_manual',
         'structure_mode' => preg_match('/^[a-zA-Z0-9_-]+$/', $structureMode) ? $structureMode : 'structure',
@@ -1696,6 +1697,7 @@ function hub_api_docparser_task_submit(PDO $db, string $queueName, int $priority
         'source_language' => (string)($_POST['source_language'] ?? 'auto'),
         'target_language' => (string)($_POST['target_language'] ?? 'zh-TW'),
         'translation_required' => (string)($_POST['translation_required'] ?? '1') !== '0' ? '1' : '0',
+        'translation_policy' => in_array($translationPolicy, ['auto', 'always', 'never'], true) ? $translationPolicy : 'auto',
         'original_filename' => $filename,
     ];
     if (!empty($authContext['member_id'])) {

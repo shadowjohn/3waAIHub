@@ -558,8 +558,11 @@ curl -X POST "<BASE_URL>?mode=docparser" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "file=@manual.pdf" \
   -F "target_language=zh-TW" \
-  -F "translation_required=1"
+  -F "translation_required=1" \
+  -F "translation_policy=auto"
 ```
+
+`translation_policy=auto` is the default. When `target_language=zh-TW`, DocParser skips blocks that already look like target-language Chinese and only calls TranslateGemma for non-Chinese blocks. Use `translation_policy=always` only when every translatable block must be machine-translated; use `translation_policy=never` to disable translation.
 
 Submit response:
 

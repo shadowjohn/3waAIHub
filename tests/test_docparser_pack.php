@@ -13,7 +13,7 @@ hub_test('DocParser pack exposes L5 orchestrator contract', function (): void {
     hub_test_assert(($manifest['default_mode'] ?? '') === 'docparser', 'DocParser default mode mismatch');
     hub_test_assert(($manifest['runtime']['kind'] ?? '') === 'internal_task', 'DocParser must be internal task runtime');
 
-    foreach (['DOCPARSER_STRUCTURE_MODE', 'DOCPARSER_TRANSLATE_MODE', 'DOCPARSER_TARGET_LANGUAGE', 'DOCPARSER_TRANSLATION_REQUIRED', 'DOCPARSER_PROFILE'] as $key) {
+    foreach (['DOCPARSER_STRUCTURE_MODE', 'DOCPARSER_TRANSLATE_MODE', 'DOCPARSER_TARGET_LANGUAGE', 'DOCPARSER_TRANSLATION_REQUIRED', 'DOCPARSER_TRANSLATION_POLICY', 'DOCPARSER_PROFILE'] as $key) {
         hub_test_assert(isset(hub_get_pack_settings_schema('docparser')[$key]), 'DocParser settings_schema missing ' . $key);
     }
     $contract = hub_pack_l5_contract($manifest);
@@ -189,6 +189,7 @@ hub_test('DocParser PDF submit stores upload and enqueues ocr task with normaliz
         hub_test_assert(($input['profile'] ?? '') === 'technical_manual', 'profile must be technical_manual');
         hub_test_assert(($input['target_language'] ?? '') === 'zh-TW', 'target_language mismatch');
         hub_test_assert(($input['translation_required'] ?? '') === '1', 'translation_required mismatch');
+        hub_test_assert(($input['translation_policy'] ?? '') === 'auto', 'translation_policy mismatch');
         hub_test_assert(($input['input_file'] ?? '') === HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId . '/input.pdf', 'input_file path mismatch');
         hub_test_assert(is_file((string)$input['input_file']), 'stored PDF upload missing');
         hub_test_assert((string)file_get_contents((string)$input['input_file']) === "%PDF-1.4\nDocParser test\n", 'stored PDF upload content mismatch');
@@ -218,22 +219,17 @@ hub_test('DocParser PDF submit reuses fresh completed artifact cache for identic
     hub_test_assert($tmpFile !== false, 'temp PDF file must be created');
     file_put_contents($tmpFile, "%PDF-1.4\nDocParser cache test\n");
     $hash = hash_file('sha256', $tmpFile);
-    $cacheKey = hash('sha256', implode('|', [
-        $hash,
-        'technical_manual',
-        'zh-TW',
-        '1',
-        'structure',
-        'translate',
-        'docparser-v0.1',
-    ]));
-
-    $cachedTaskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, [
+    $cacheInput = [
         'profile' => 'technical_manual',
         'target_language' => 'zh-TW',
         'translation_required' => '1',
+        'translation_policy' => 'auto',
         'structure_mode' => 'structure',
         'translate_mode' => 'translate',
+    ];
+    $cacheKey = hub_docparser_cache_key((string)$hash, $cacheInput, 'docparser-v0.1');
+
+    $cachedTaskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, $cacheInput + [
         'docparser_cache_key' => $cacheKey,
         'docparser_cache_version' => 'docparser-v0.1',
     ], null, '127.0.0.1');
@@ -270,6 +266,7 @@ hub_test('DocParser PDF submit reuses fresh completed artifact cache for identic
         $_POST = [
             'target_language' => 'zh-TW',
             'translation_required' => '1',
+            'translation_policy' => 'auto',
             'structure_mode' => 'structure',
             'translate_mode' => 'translate',
         ];
@@ -413,7 +410,7 @@ hub_test('DocParser rejects .pdf upload without PDF magic and does not enqueue t
 hub_test('DocParser task type and gateway upload contract are present', function (): void {
     hub_test_assert(hub_is_valid_task_type('docparser_parse'), 'docparser_parse task type must be allowlisted');
     $gateway = (string)file_get_contents(HUB_ROOT . '/app/gateway.php');
-    foreach (['hub_api_docparser_task_submit', "'docparser_parse'", "'profile'", "'translation_required'", "'structure_mode'", "'translate_mode'"] as $needle) {
+    foreach (['hub_api_docparser_task_submit', "'docparser_parse'", "'profile'", "'translation_required'", "'translation_policy'", "'structure_mode'", "'translate_mode'"] as $needle) {
         hub_test_assert(str_contains($gateway, $needle), 'DocParser gateway missing ' . $needle);
     }
 });
@@ -1030,6 +1027,108 @@ hub_test('DocParser does not penalize Chinese source text that remains unchanged
     $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
 
     hub_test_assert((float)($quality['metrics']['translation_identity_ratio'] ?? 1) === 0.0, 'Chinese identity text should not count as fake translation for zh-TW');
+});
+
+hub_test('DocParser auto translation policy skips Chinese blocks without requiring TranslateGemma', function (): void {
+    $db = hub_test_reset_db();
+    $docir = hub_docparser_build_docir([
+        'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
+        'blocks' => [
+            ['id' => 'raw-1', 'page' => 1, 'order' => 1, 'type' => 'heading', 'text' => '維修手冊', 'bbox' => [10, 10, 160, 40]],
+            ['id' => 'raw-2', 'page' => 1, 'order' => 2, 'type' => 'paragraph', 'text' => 'RC 閥是用來控制二行程引擎排氣時機的重要機構。', 'bbox' => [10, 50, 500, 90]],
+            ['id' => 'raw-3', 'page' => 1, 'order' => 3, 'type' => 'table', 'html' => '<table><tr><td>鎖付扭力</td><td>12 N·m</td></tr></table>', 'bbox' => [10, 100, 500, 170]],
+            ['id' => 'raw-4', 'page' => 1, 'order' => 4, 'type' => 'heading', 'text' => '前言', 'bbox' => [10, 180, 160, 210]],
+        ],
+        'figures' => [],
+    ], [
+        'target_language' => 'zh-TW',
+    ]);
+
+    $translated = hub_docparser_translate_blocks($db, $docir, [
+        'target_language' => 'zh-TW',
+        'translation_required' => '1',
+        'translation_policy' => 'auto',
+    ]);
+
+    foreach ($translated['blocks'] as $block) {
+        hub_test_assert(
+            hub_docparser_valid_translation_text($block) === trim((string)($block['source_text'] ?? '')),
+            'Chinese target-language block should be satisfied with source text: ' . (string)($block['id'] ?? '')
+        );
+        hub_test_assert(($block['translation']['strategy'] ?? '') === 'target_language_identity', 'Chinese skip strategy missing');
+    }
+    hub_test_assert(($translated['translation_stats']['policy'] ?? '') === 'auto', 'translation policy metric missing');
+    hub_test_assert(($translated['translation_stats']['translated_blocks'] ?? -1) === 0, 'Chinese document should not call translate service');
+    hub_test_assert(($translated['translation_stats']['skipped_target_language_blocks'] ?? 0) === 4, 'Chinese skip count mismatch');
+
+    $outputs = hub_docparser_render_outputs($translated, ['target_language' => 'zh-TW']);
+    $quality = hub_docparser_quality_report($translated, $outputs, [
+        'quality_thresholds' => [
+            'translation_block_coverage' => 1.0,
+            'translation_identity_ratio_max' => 0.10,
+        ],
+    ]);
+    hub_test_assert(($quality['metrics']['translation_policy'] ?? '') === 'auto', 'quality report must expose translation policy');
+    hub_test_assert(($quality['metrics']['translation_skipped_target_language_blocks'] ?? 0) === 4, 'quality report must expose skipped Chinese blocks');
+    hub_test_assert((float)($quality['metrics']['translation_auto_skip_ratio'] ?? 0) === 1.0, 'quality report must expose auto skip ratio');
+});
+
+hub_test('DocParser auto translation policy still requires TranslateGemma for English blocks', function (): void {
+    $db = hub_test_reset_db();
+    $docir = hub_docparser_build_docir([
+        'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
+        'blocks' => [
+            ['id' => 'raw-1', 'page' => 1, 'order' => 1, 'type' => 'paragraph', 'text' => 'Inspect the main jet before installation.', 'bbox' => [10, 10, 300, 40]],
+        ],
+        'figures' => [],
+    ], [
+        'target_language' => 'zh-TW',
+    ]);
+
+    hub_test_assert(
+        hub_test_throws(fn () => hub_docparser_translate_blocks($db, $docir, [
+            'target_language' => 'zh-TW',
+            'translation_required' => '1',
+            'translation_policy' => 'auto',
+        ])),
+        'English block must still require a translate service in auto policy'
+    );
+});
+
+hub_test('DocParser always translation policy forces Chinese blocks through TranslateGemma', function (): void {
+    $db = hub_test_reset_db();
+    $docir = hub_docparser_build_docir([
+        'pages' => [['page' => 1, 'width' => 612, 'height' => 792]],
+        'blocks' => [
+            ['id' => 'raw-1', 'page' => 1, 'order' => 1, 'type' => 'paragraph', 'text' => '這是一段已經是繁體中文的內容。', 'bbox' => [10, 10, 300, 40]],
+        ],
+        'figures' => [],
+    ], [
+        'target_language' => 'zh-TW',
+    ]);
+
+    hub_test_assert(
+        hub_test_throws(fn () => hub_docparser_translate_blocks($db, $docir, [
+            'target_language' => 'zh-TW',
+            'translation_required' => '1',
+            'translation_policy' => 'always',
+        ])),
+        'always policy must force even Chinese blocks through translate service'
+    );
+});
+
+hub_test('DocParser translation policy participates in cache key', function (): void {
+    $input = [
+        'profile' => 'technical_manual',
+        'target_language' => 'zh-TW',
+        'translation_required' => '1',
+        'structure_mode' => 'structure',
+        'translate_mode' => 'translate',
+    ];
+    $autoKey = hub_docparser_cache_key('abc', $input + ['translation_policy' => 'auto'], 'docparser-v0.1');
+    $alwaysKey = hub_docparser_cache_key('abc', $input + ['translation_policy' => 'always'], 'docparser-v0.1');
+
+    hub_test_assert($autoKey !== $alwaysKey, 'translation policy must separate cached DocParser artifacts');
 });
 
 hub_test('DocParser quality gate keeps fallback markdown output out of completed status', function (): void {
