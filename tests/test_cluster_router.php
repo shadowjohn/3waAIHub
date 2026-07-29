@@ -1396,10 +1396,21 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
                 '/cluster_api.php?mode=edge_tts&voice[]=x&voice=' . rawurlencode($voice),
                 '/cluster_api.php?mode=edge_tts&voice%00x=x&voice=' . rawurlencode($voice),
             ];
+            $aliasUris = [
+                '/cluster_api.php?mode=edge_tts&voice[]=' . rawurlencode($voice),
+                '/cluster_api.php?mode=edge_tts&voice[0]=' . rawurlencode($voice),
+                '/cluster_api.php?mode=edge_tts&voice%00x=' . rawurlencode($voice),
+            ];
             $selfDuplicates = [];
             foreach ($duplicateUris as $duplicateUri) {
                 $selfDuplicates[] = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
                     'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $duplicateUri,
+                ]), $selfSeams);
+            }
+            $selfAliases = [];
+            foreach ($aliasUris as $aliasUri) {
+                $selfAliases[] = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                    'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $aliasUri,
                 ]), $selfSeams);
             }
             $directAfterDuplicate = $direct;
@@ -1412,6 +1423,7 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
             $selfListPayload = json_decode((string)$selfList['body'], true);
 
             hub_test_assert(array_filter($selfDuplicates, static fn (array $response): bool => ($response['status'] ?? 0) !== 400 || !str_contains((string)$response['body'], 'invalid_request')) === []
+                && array_filter($selfAliases, static fn (array $response): bool => ($response['status'] ?? 0) !== 400 || !str_contains((string)$response['body'], 'invalid_request')) === []
                 && $directAfterDuplicate === []
                 && ($selfList['status'] ?? 0) === 200 && ($selfListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
                 && ($selfDemo['body'] ?? '') === "\x49\x44\x33demo"
@@ -1445,6 +1457,12 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
                     'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $duplicateUri,
                 ]), $remoteSeams);
             }
+            $remoteAliases = [];
+            foreach ($aliasUris as $aliasUri) {
+                $remoteAliases[] = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
+                    'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $aliasUri,
+                ]), $remoteSeams);
+            }
             $proxiedAfterDuplicate = $proxied;
             $remoteList = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
                 'method' => 'GET', 'raw_body' => '', 'query' => [], 'headers' => [],
@@ -1458,6 +1476,7 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
             $remoteListPayload = json_decode((string)$remoteList['body'], true);
 
             hub_test_assert(array_filter($remoteDuplicates, static fn (array $response): bool => ($response['status'] ?? 0) !== 400 || !str_contains((string)$response['body'], 'invalid_request')) === []
+                && array_filter($remoteAliases, static fn (array $response): bool => ($response['status'] ?? 0) !== 400 || !str_contains((string)$response['body'], 'invalid_request')) === []
                 && $proxiedAfterDuplicate === []
                 && ($remoteList['status'] ?? 0) === 200 && ($remoteListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
                 && ($remoteDemo['body'] ?? '') === "\x49\x44\x33remote"
