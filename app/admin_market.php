@@ -49,8 +49,9 @@ function hub_admin_market_category_for_manifest(array $manifest): string
 
 function hub_admin_market_pack_description(PDO $db, array $pack): string
 {
-    $packId = (string)($pack['id'] ?? $pack['manifest']['id'] ?? '');
-    $fallback = (string)($pack['manifest']['description'] ?? '');
+    $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
+    $packId = (string)($pack['id'] ?? $manifest['id'] ?? '');
+    $fallback = (string)($manifest['description'] ?? $pack['description'] ?? '');
     return hub_i18n_seeded('pack.' . $packId . '.description', $fallback, null, $db);
 }
 

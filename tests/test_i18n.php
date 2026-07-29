@@ -1,6 +1,25 @@
 <?php
 declare(strict_types=1);
 
+function hub_test_admin_i18n_post(array $input): string
+{
+    $post = array_merge([
+        'csrf_token' => 'test',
+        'form_type' => 'i18n',
+        'tab' => 'i18n',
+        'action' => 'save',
+    ], $input);
+    $script = 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . '$_SESSION = ["user_id" => 1, "username" => "admin", "csrf_token" => "test"];'
+        . '$_SERVER["REQUEST_METHOD"] = "POST";'
+        . '$_POST = ' . var_export($post, true) . ';'
+        . 'ob_start(); require ' . var_export(HUB_ROOT . '/admin/settings.php', true) . '; echo ob_get_clean();';
+    $result = hub_run_command([PHP_BINARY, '-r', $script], 30);
+    hub_test_assert($result['exit_code'] === 0, 'settings i18n request failed: ' . $result['output']);
+
+    return (string)$result['stdout'];
+}
+
 hub_test('i18n sqlite table helper and language cookie contract work', function (): void {
     $db = hub_test_reset_db();
 
@@ -17,6 +36,29 @@ hub_test('i18n sqlite table helper and language cookie contract work', function 
     $_COOKIE['USER_LANG'] = 'ja';
     hub_test_assert(hub_i18n_current_lang() === 'ja', 'current lang should read USER_LANG cookie');
     $_COOKIE['USER_LANG'] = 'zh_TW';
+});
+
+hub_test('seed keys require a semantic dotted ASCII namespace', function (): void {
+    foreach (['pack.demo.description', 'ui.admin-title.copy_2', 'pack.3.description'] as $key) {
+        hub_test_assert(hub_i18n_is_seed_key($key), 'valid seed key rejected: ' . $key);
+    }
+    foreach (['.', 'foo', 'foo..bar', '3.14', 'foo.---.bar', 'foo.*.bar'] as $key) {
+        hub_test_assert(!hub_i18n_is_seed_key($key), 'malformed seed key accepted: ' . $key);
+    }
+});
+
+hub_test('missing keyed translations return fallback without natural translation lookup', function (): void {
+    $db = hub_test_reset_db();
+    $db->prepare('INSERT INTO i18n (title, lang, trans) VALUES (:title, :lang, :trans)')
+        ->execute([':title' => 'Manifest fallback', ':lang' => 'en', ':trans' => 'Translated fallback']);
+    $before = (int)$db->query("SELECT COUNT(*) FROM i18n WHERE title = 'Manifest fallback'")->fetchColumn();
+
+    hub_test_assert(
+        hub_i18n_seeded('pack.missing.description', 'Manifest fallback', 'en', $db) === 'Manifest fallback',
+        'missing keyed translation must return the original fallback'
+    );
+    $after = (int)$db->query("SELECT COUNT(*) FROM i18n WHERE title = 'Manifest fallback'")->fetchColumn();
+    hub_test_assert($after === $before, 'missing keyed translation must not add a natural fallback row');
 });
 
 hub_test('i18n seed imports without overwriting local translations', function (): void {
@@ -40,18 +82,59 @@ hub_test('i18n seed imports without overwriting local translations', function ()
     hub_test_assert(is_file(HUB_ROOT . '/scripts/export_i18n_seed.php'), 'export_i18n_seed.php missing');
 });
 
-hub_test('i18n seed accepts keyed Chinese rows only', function (): void {
+hub_test('i18n seed round-trip keeps keyed Chinese rows and rejects malformed input', function (): void {
     $db = hub_test_reset_db();
     $seed = sys_get_temp_dir() . '/3waaihub_i18n_keyed_seed_' . getmypid() . '.json';
     file_put_contents($seed, json_encode([
-        ['title' => 'pack.demo.description', 'lang' => 'zh_TW', 'trans' => '中文用途'],
+        ['title' => 'pack.demo.description', 'lang' => 'zh-TW', 'trans' => '中文用途'],
+        ['title' => 'ui.banner.title', 'lang' => 'zh_TW', 'trans' => '橫幅標題'],
+        ['title' => '控制台', 'lang' => 'en', 'trans' => 'Dashboard'],
         ['title' => '自然語句', 'lang' => 'zh_TW', 'trans' => '不應匯入'],
+        ['title' => 'foo..bar', 'lang' => 'zh_TW', 'trans' => '不應匯入'],
+        ['title' => '3.14', 'lang' => 'zh_TW', 'trans' => '不應匯入'],
+        ['title' => 'pack.unknown.description', 'lang' => 'xx', 'trans' => '不應匯入'],
+        ['title' => 'pack.missing.description', 'trans' => '不應匯入'],
+        'not-an-array',
     ], JSON_UNESCAPED_UNICODE));
 
-    hub_test_assert(hub_i18n_import_seed($db, $seed) === 1, 'only keyed zh_TW seed rows should import');
+    hub_test_assert(hub_i18n_import_seed($db, $seed) === 3, 'seed import must accept only valid rows');
     hub_test_assert(hub_i18n_seeded('pack.demo.description', 'Fallback', 'zh_TW', $db) === '中文用途', 'keyed Chinese seed missing');
     hub_test_assert(hub_i18n_seeded('', 'Fallback', 'zh_TW', $db) === 'Fallback', 'empty key should keep natural-language fallback');
     hub_test_assert(hub_i18n_import_seed($db, $seed) === 0, 'keyed seed import must remain idempotent');
+
+    $db->prepare('INSERT INTO i18n (title, lang, trans) VALUES (:title, :lang, :trans)')
+        ->execute([':title' => '直接寫入的自然語句', ':lang' => 'zh_TW', ':trans' => '不應匯出']);
+    $export = hub_i18n_export_seed($db);
+    $titles = array_column($export, 'title');
+    hub_test_assert(in_array('pack.demo.description', $titles, true), 'keyed zh_TW row missing from export');
+    hub_test_assert(in_array('ui.banner.title', $titles, true), 'non-Pack keyed zh_TW row missing from export');
+    hub_test_assert(!in_array('直接寫入的自然語句', $titles, true), 'natural zh_TW row must not export');
+
+    $roundTrip = sys_get_temp_dir() . '/3waaihub_i18n_roundtrip_' . getmypid() . '.json';
+    file_put_contents($roundTrip, json_encode($export, JSON_UNESCAPED_UNICODE));
+    $roundTripDb = new PDO('sqlite::memory:');
+    $roundTripDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    hub_migrate($roundTripDb);
+    hub_test_assert(hub_i18n_import_seed($roundTripDb, $roundTrip) === 3, 'exported seed must import without losing keyed zh_TW rows');
+});
+
+hub_test('admin i18n validation allows only keyed zh_TW titles', function (): void {
+    $db = hub_test_reset_db();
+
+    $html = hub_test_admin_i18n_post(['title' => '自然語句', 'lang' => 'zh_TW', 'trans' => '不應新增']);
+    hub_test_assert(str_contains($html, '正體中文翻譯標題必須是合法的命名空間 key。'), 'admin zh_TW validation error missing');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM i18n WHERE trans = '不應新增'")->fetchColumn() === 0, 'admin accepted natural zh_TW title');
+
+    hub_test_admin_i18n_post(['title' => 'ui.admin.notice', 'lang' => 'zh_TW', 'trans' => '管理通知']);
+    $id = (int)$db->query("SELECT id FROM i18n WHERE title = 'ui.admin.notice' AND lang = 'zh_TW'")->fetchColumn();
+    hub_test_assert($id > 0, 'admin rejected valid keyed zh_TW title');
+
+    hub_test_admin_i18n_post(['id' => $id, 'title' => 'foo..bar', 'lang' => 'zh_TW', 'trans' => '不應修改']);
+    $savedTitle = (string)$db->query('SELECT title FROM i18n WHERE id = ' . $id)->fetchColumn();
+    hub_test_assert($savedTitle === 'ui.admin.notice', 'admin update accepted malformed zh_TW key');
+
+    hub_test_admin_i18n_post(['title' => '自然語句', 'lang' => 'en', 'trans' => 'Natural phrase']);
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM i18n WHERE title = '自然語句' AND lang = 'en'")->fetchColumn() === 1, 'admin rejected natural title for non-zh_TW locale');
 });
 
 hub_test('admin i18n maintenance tab and language selectors are present', function (): void {

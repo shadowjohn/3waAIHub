@@ -123,11 +123,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $message = __('翻譯已刪除。');
             } else {
                 $title = trim((string)($_POST['title'] ?? ''));
-                $lang = hub_i18n_normalize_lang((string)($_POST['lang'] ?? ''));
+                $lang = is_string($_POST['lang'] ?? null) ? str_replace('-', '_', trim($_POST['lang'])) : '';
                 $trans = trim((string)($_POST['trans'] ?? ''));
                 $id = (int)($_POST['id'] ?? 0);
-                if ($title === '' || $lang === 'zh_TW' || $trans === '') {
-                    throw new RuntimeException(__('請填寫標題、非正體中文語系與翻譯內容。'));
+                if ($title === '' || !array_key_exists($lang, hub_i18n_languages()) || $trans === '') {
+                    throw new RuntimeException(__('請填寫標題、有效語系與翻譯內容。'));
+                }
+                if ($lang === 'zh_TW' && !hub_i18n_is_seed_key($title)) {
+                    throw new RuntimeException(__('正體中文翻譯標題必須是合法的命名空間 key。'));
                 }
                 if ($id > 0) {
                     $stmt = $db->prepare('UPDATE i18n SET title = :title, lang = :lang, trans = :trans WHERE id = :id');
@@ -332,7 +335,6 @@ hub_admin_header('系統設定', $user);
         <label><?= hub_settings_t('語系') ?> lang</label>
         <select name="lang" required>
             <?php foreach (hub_i18n_languages() as $code => $label): ?>
-                <?php if ($code === 'zh_TW') continue; ?>
                 <option value="<?= hub_h($code) ?>"<?= (string)($i18nEdit['lang'] ?? '') === $code ? ' selected' : '' ?>><?= hub_h($label) ?> / <?= hub_h($code) ?></option>
             <?php endforeach; ?>
         </select>

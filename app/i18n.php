@@ -16,6 +16,25 @@ function hub_i18n_languages(): array
     ];
 }
 
+function hub_i18n_is_seed_key(string $key): bool
+{
+    if (
+        !str_contains($key, '.')
+        || preg_match('/\A[A-Za-z0-9_.-]+\z/', $key) !== 1
+        || preg_match('/[A-Za-z]/', $key) !== 1
+    ) {
+        return false;
+    }
+
+    foreach (explode('.', $key) as $segment) {
+        if (preg_match('/[A-Za-z0-9]/', $segment) !== 1) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 function hub_i18n_normalize_lang(?string $lang): string
 {
     $lang = str_replace('-', '_', trim((string)$lang));
@@ -113,7 +132,7 @@ function hub_i18n_seeded(string $key, string $fallback, ?string $lang = null, ?P
         return $translation;
     }
 
-    return $lang === 'zh_TW' ? $fallback : __($fallback, $lang);
+    return $fallback;
 }
 
 function hub_i18n_translate_google(string $text, string $targetLang, string $sourceLang = 'auto'): string
@@ -196,11 +215,18 @@ function hub_i18n_import_seed(PDO $db, ?string $path = null): int
     );
     $count = 0;
     foreach ($rows as $row) {
-        $title = trim((string)($row['title'] ?? ''));
-        $lang = hub_i18n_normalize_lang((string)($row['lang'] ?? ''));
-        $trans = trim((string)($row['trans'] ?? ''));
-        $isKeyedSource = preg_match('/\A[a-z0-9_.-]+\z/i', $title) === 1 && str_contains($title, '.');
-        if ($title === '' || $trans === '' || ($lang === 'zh_TW' && !$isKeyedSource)) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $title = is_string($row['title'] ?? null) ? trim($row['title']) : '';
+        $lang = is_string($row['lang'] ?? null) ? str_replace('-', '_', trim($row['lang'])) : '';
+        $trans = is_string($row['trans'] ?? null) ? trim($row['trans']) : '';
+        if (
+            $title === ''
+            || $trans === ''
+            || !array_key_exists($lang, hub_i18n_languages())
+            || ($lang === 'zh_TW' && !hub_i18n_is_seed_key($title))
+        ) {
             continue;
         }
         $insert->execute([':title' => $title, ':lang' => $lang, ':trans' => $trans]);
@@ -218,15 +244,24 @@ function hub_i18n_export_seed(PDO $db): array
          INNER JOIN (
              SELECT title, lang, MAX(id) AS id
              FROM i18n
-             WHERE title != '' AND lang != '' AND lang != 'zh_TW' AND COALESCE(trans, '') != ''
+             WHERE title != '' AND lang != '' AND COALESCE(trans, '') != ''
              GROUP BY title, lang
          ) latest ON latest.id = i.id
          ORDER BY i.lang ASC, i.title ASC"
     )->fetchAll(PDO::FETCH_ASSOC);
 
-    return array_map(static fn (array $row): array => [
-        'title' => (string)$row['title'],
-        'lang' => hub_i18n_normalize_lang((string)$row['lang']),
-        'trans' => (string)$row['trans'],
-    ], $rows);
+    $export = [];
+    foreach ($rows as $row) {
+        $title = (string)$row['title'];
+        $lang = str_replace('-', '_', trim((string)$row['lang']));
+        if (
+            !array_key_exists($lang, hub_i18n_languages())
+            || ($lang === 'zh_TW' && !hub_i18n_is_seed_key($title))
+        ) {
+            continue;
+        }
+        $export[] = ['title' => $title, 'lang' => $lang, 'trans' => (string)$row['trans']];
+    }
+
+    return $export;
 }

@@ -14,6 +14,17 @@ hub_test('Market categories are exclusive and sum to all Packs', function (): vo
     hub_test_assert($sum === $catalog['counts']['all'], 'Market category counts overlap or omit a Pack');
     hub_test_assert(hub_admin_market_category('utility') === 'tools', 'legacy utility category must normalize to tools');
     hub_test_assert(hub_admin_market_category('unknown') === 'all', 'unknown category must normalize to all');
+
+    $tools = hub_admin_market_catalog($db, 'utility');
+    hub_test_assert($tools['active_category'] === 'tools', 'utility filter must activate tools');
+    hub_test_assert(count($tools['packs']) === $tools['counts']['tools'], 'filtered rows must match computed tools count');
+    foreach ($tools['packs'] as $pack) {
+        hub_test_assert($pack['market_category'] === 'tools', 'tools filter returned another category');
+    }
+
+    $installed = hub_admin_market_installed_stats($db);
+    hub_test_assert(($installed['hello']['count'] ?? 0) === 1, 'installed stats must count the seeded hello service');
+    hub_test_assert(($installed['hello']['first_service_id'] ?? 0) > 0, 'installed stats must expose first service ID');
 });
 
 hub_test('Market manifest categories follow the canonical mapping', function (): void {
@@ -43,4 +54,7 @@ hub_test('Pack purpose uses a keyed Chinese seed and manifest fallback', functio
 
     $unknown = ['id' => 'unseeded-pack', 'manifest' => ['description' => 'Manifest fallback']];
     hub_test_assert(hub_admin_market_pack_description($db, $unknown) === 'Manifest fallback', 'manifest description fallback mismatch');
+
+    $malformed = ['id' => 'malformed-pack', 'manifest' => 'invalid', 'description' => 'Top-level fallback'];
+    hub_test_assert(hub_admin_market_pack_description($db, $malformed) === 'Top-level fallback', 'top-level description fallback mismatch');
 });
