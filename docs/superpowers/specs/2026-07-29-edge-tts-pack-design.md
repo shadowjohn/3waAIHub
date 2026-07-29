@@ -2,7 +2,7 @@
 
 Date: 2026-07-29
 
-Status: approved design; implementation not started
+Status: approved; L2 implementation complete, L3--L5 promotion pending
 
 ## Scope
 
@@ -80,6 +80,26 @@ No host firewall or `nat.sh` rule is changed automatically. If the host
 blocks Docker egress, the task reports `upstream_unavailable`. The
 container never retries through a different provider and never silently
 returns generated content after a failed upstream request.
+
+## Promotion Ladder
+
+Edge TTS is a stateless external-provider job. It must not add a fake model
+or storage mount merely to claim a level that does not apply.
+
+| Level | Edge TTS acceptance |
+| --- | --- |
+| L2 | The pinned container runner, request/output contracts, CPU queue, and fail-closed fixed-provider egress self-check pass. |
+| L3 | Not applicable: the Pack has no model or persistent storage mount. `storage.mounts` remains empty. |
+| L4a | The Pack installs, is enabled, and its offline runner/egress checks pass on the target station. |
+| L4b | A controlled real smoke completes through the normal public API and task worker, publishes a valid MP3 and metadata, acknowledges the artifact, and proves no GPU lease. |
+| L5 | A declared async contract and an explicit station-only `async_complete` benchmark repeat the L4b path and persist only redacted acceptance facts. Marketplace L5 readiness may pass only after that benchmark passes. |
+
+The existing generic `async_submit` benchmark is insufficient for L5: it
+only verifies queue submission and then cancels the task. The Edge TTS L5
+case must wait for the actual task terminal state and validate the registered
+`generated_audio` and `synthesis_metadata` artifacts. It must be opt-in and
+never part of the ordinary offline test suite, because it calls the external
+provider.
 
 ## Errors and Privacy
 
