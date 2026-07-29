@@ -40,6 +40,15 @@ create_chain() {
   run_rule "$tool" -C OUTPUT -j "$chain"
 }
 
+grant_workspace_access() {
+  run_rule setfacl -m u:edge:--x /workspace/input
+  getfacl -cp /workspace/input 2>/dev/null | grep -Fqx 'user:edge:--x' || fail_upstream
+  run_rule setfacl -m u:edge:r-- /workspace/input/request.json
+  getfacl -cp /workspace/input/request.json 2>/dev/null | grep -Fqx 'user:edge:r--' || fail_upstream
+  run_rule setfacl -m u:edge:rwx /workspace/output
+  getfacl -cp /workspace/output 2>/dev/null | grep -Fqx 'user:edge:rwx' || fail_upstream
+}
+
 is_ipv4() {
   python3 - "$1" <<'PY'
 import ipaddress
@@ -113,18 +122,15 @@ for resolver in "${resolvers[@]}"; do
   remove_rule iptables "$CHAIN" -d "$resolver" -p udp --dport 53 -j ACCEPT
   remove_rule iptables "$CHAIN" -d "$resolver" -p tcp --dport 53 -j ACCEPT
 done
+remove_rule iptables "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+remove_rule ip6tables "$CHAIN6" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 remove_rule iptables "$CHAIN" -j DROP
 for address in "${provider_ips[@]}"; do
   append_rule iptables "$CHAIN" -d "$address" -p tcp --dport 443 -j ACCEPT
 done
 append_rule iptables "$CHAIN" -j DROP
 
-run_rule chown edge:edge /workspace/input
-run_rule chmod 0700 /workspace/input
-run_rule chown edge:edge /workspace/input/request.json
-run_rule chmod 0400 /workspace/input/request.json
-run_rule chown edge:edge /workspace/output
-run_rule chmod 0700 /workspace/output
+grant_workspace_access
 
 exec setpriv --reuid=edge --regid=edge --clear-groups \
   --bounding-set=-all --ambient-caps=-all -- "$@"

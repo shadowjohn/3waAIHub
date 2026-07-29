@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import ssl
 import time
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
 import edge_tts
+import aiohttp
+from edge_tts import exceptions as edge_exceptions
 
 
 MAX_AUDIO_BYTES = 16 * 1024 * 1024
@@ -123,7 +126,7 @@ def run_job(request_path: Path, output_dir: Path) -> None:
         ).save_sync(str(temporary_audio))
     except (asyncio.TimeoutError, TimeoutError):
         fail("edge_tts_timeout")
-    except (ConnectionError, OSError):
+    except (aiohttp.ClientError, ConnectionError, OSError, ssl.SSLError, edge_exceptions.NoAudioReceived, edge_exceptions.WebSocketError):
         fail("upstream_unavailable")
     except Exception:
         fail("edge_tts_failed")

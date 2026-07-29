@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
+import contextlib
 import importlib.util
+import io
 import json
+import ssl
 import tempfile
 import unittest
 from pathlib import Path
@@ -22,6 +25,16 @@ class FakeCommunicate:
 
     def save_sync(self, path):
         Path(path).write_bytes(b"ID3fake-edge-tts")
+
+
+class FailingCommunicate:
+    error = RuntimeError()
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def save_sync(self, path):
+        raise self.error
 
 
 class SynthesizeTest(unittest.TestCase):
@@ -86,6 +99,33 @@ class SynthesizeTest(unittest.TestCase):
                         synthesize.run_job(self.write_request(value), self.output_dir)
                     self.assertEqual(raised.exception.code, "edge_tts_failed")
         self.assertEqual(FakeCommunicate.calls, [])
+
+    def test_main_maps_client_failures_to_one_bounded_sentinel_without_artifacts(self):
+        request_path = self.write_request(self.request())
+
+        def runner_path(value):
+            if str(value) == "/workspace/input/request.json":
+                return request_path
+            if str(value) == "/workspace/output":
+                return self.output_dir
+            return Path(value)
+
+        cases = [
+            (ConnectionError("Taiwan Edge TTS connection"), "upstream_unavailable"),
+            (ssl.SSLError("Taiwan Edge TTS TLS"), "upstream_unavailable"),
+            (synthesize.edge_exceptions.WebSocketError("Taiwan Edge TTS websocket"), "upstream_unavailable"),
+            (synthesize.edge_exceptions.NoAudioReceived("Taiwan Edge TTS no audio"), "upstream_unavailable"),
+            (TimeoutError("Taiwan Edge TTS timeout"), "edge_tts_timeout"),
+            (RuntimeError("Taiwan Edge TTS internal"), "edge_tts_failed"),
+        ]
+        for error, code in cases:
+            with self.subTest(code=code, error=type(error).__name__), patch.object(synthesize, "Path", side_effect=runner_path), patch.object(synthesize.edge_tts, "Communicate", FailingCommunicate):
+                FailingCommunicate.error = error
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    self.assertEqual(synthesize.main(), 1)
+                self.assertEqual(stderr.getvalue(), f"AIHUB_ERROR_CODE={code}\n")
+                self.assertEqual(list(self.output_dir.iterdir()), [])
 
 
 if __name__ == "__main__":
