@@ -2,90 +2,12 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../app/bootstrap.php';
+require_once __DIR__ . '/../app/admin_market.php';
 require_once __DIR__ . '/_layout.php';
-
-function hub_marketplace_endpoint_label(array $manifest): string
-{
-    $gateway = is_array($manifest['gateway'] ?? null) ? $manifest['gateway'] : [];
-    $methods = array_map('strval', is_array($gateway['methods'] ?? null) ? $gateway['methods'] : []);
-    return trim(($methods === [] ? '' : implode('/', $methods)) . ' ' . (string)($gateway['invoke_path'] ?? ''));
-}
 
 function hub_marketplace_t(string $value): string
 {
     return hub_h(__($value));
-}
-
-function hub_marketplace_gpu_label(array $manifest): array
-{
-    $hardware = is_array($manifest['hardware'] ?? null) ? $manifest['hardware'] : [];
-    if (!empty($hardware['gpu_required'])) {
-        return ['label' => __('需要 GPU'), 'class' => 'hub-badge hub-badge-warn'];
-    }
-    if (!empty($hardware['gpu_supported'])) {
-        return ['label' => __('可用 GPU'), 'class' => 'hub-badge hub-badge-ok'];
-    }
-
-    return ['label' => __('不使用 GPU'), 'class' => 'hub-badge hub-badge-muted'];
-}
-
-function hub_marketplace_model_label(PDO $db, array $manifest): array
-{
-    $schema = is_array($manifest['settings_schema'] ?? null) ? $manifest['settings_schema'] : [];
-    $required = false;
-    foreach ($schema as $item) {
-        if (!is_array($item) || !is_array($item['model_selector'] ?? null)) {
-            continue;
-        }
-        $required = $required || !empty($item['required']);
-        $selector = $item['model_selector'];
-        $selectorType = (string)($selector['type'] ?? 'file');
-        $defaultValue = trim((string)($item['default'] ?? ''));
-        if ($defaultValue !== '') {
-            try {
-                $status = hub_model_selector_status($db, $selector, $defaultValue);
-                if (!empty($status['model_present']) || ($selectorType !== 'ollama_tag' && !empty($status['exists']))) {
-                    return ['label' => __('模型已就緒'), 'class' => 'hub-badge hub-badge-ok'];
-                }
-            } catch (Throwable) {
-                // Invalid pack selector settings should not break the marketplace page.
-            }
-        }
-        try {
-            $options = hub_model_selector_options($db, $selector);
-        } catch (Throwable) {
-            $options = [];
-        }
-        if ($options !== []) {
-            return ['label' => __('模型已就緒'), 'class' => 'hub-badge hub-badge-ok'];
-        }
-    }
-
-    return $required
-        ? ['label' => __('缺少模型'), 'class' => 'hub-badge hub-badge-bad']
-        : ['label' => ($schema === [] ? __('無模型需求') : __('模型可選')), 'class' => 'hub-badge hub-badge-muted'];
-}
-
-function hub_marketplace_runtime_label(string $runtimeLevel): string
-{
-    $runtime = strtolower($runtimeLevel);
-    if (str_contains($runtime, 'l5')) {
-        return __('L5 可驗收');
-    }
-    if (str_contains($runtime, 'l4b')) {
-        return __('L4b 真實推論');
-    }
-    if (str_contains($runtime, 'l4a')) {
-        return __('L4a 模型檢查');
-    }
-    if (str_contains($runtime, 'l3')) {
-        return __('L3 儲存掛載');
-    }
-    if (str_contains($runtime, 'l2')) {
-        return __('L2 依賴檢查');
-    }
-
-    return __('Runtime 未分級');
 }
 
 $db = hub_db();
@@ -126,10 +48,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     }
 }
 
-$installed = [];
-foreach ($db->query("SELECT pack_id, COUNT(*) AS count, GROUP_CONCAT(mode, ', ') AS modes FROM services WHERE pack_id IS NOT NULL GROUP BY pack_id")->fetchAll() as $row) {
-    $installed[(string)$row['pack_id']] = ['count' => (int)$row['count'], 'modes' => (string)($row['modes'] ?? '')];
-}
+$installed = hub_admin_market_installed_stats($db);
 $packs = hub_list_packs();
 $preflightLabels = [
     'docker' => 'Docker',
@@ -167,9 +86,9 @@ hub_admin_header('HubPack 套件', $user);
                 $defaultPort = (string)($manifest['service']['default_local_port'] ?? '');
                 $runtimeLevel = (string)($manifest['runtime_level'] ?? '');
                 $targetLevel = (string)($manifest['target_level'] ?? '');
-                $endpoint = hub_marketplace_endpoint_label($manifest);
-                $gpu = hub_marketplace_gpu_label($manifest);
-                $model = hub_marketplace_model_label($db, $manifest);
+                $endpoint = hub_admin_market_endpoint_label($manifest);
+                $gpu = hub_admin_market_gpu_label($manifest, 'marketplace');
+                $model = hub_admin_market_model_label($db, $manifest, 'marketplace');
                 $stats = $installed[$packId] ?? ['count' => 0, 'modes' => ''];
                 $preflight = hub_pack_preflight($db, $manifest);
                 ?>
@@ -180,7 +99,7 @@ hub_admin_header('HubPack 套件', $user);
                         <p><?= hub_h((string)$manifest['description']) ?></p>
                     <?php endif; ?>
                     <p>
-                        <span class="hub-badge <?= !empty($manifest['runtime_ready']) ? 'hub-badge-ok' : 'hub-badge-bad' ?>"><?= hub_h(hub_marketplace_runtime_label($runtimeLevel)) ?></span>
+                        <span class="hub-badge <?= !empty($manifest['runtime_ready']) ? 'hub-badge-ok' : 'hub-badge-bad' ?>"><?= hub_h(__(hub_admin_market_runtime_label($runtimeLevel))) ?></span>
                         <span class="<?= hub_h((string)$gpu['class']) ?>"><?= hub_h((string)$gpu['label']) ?></span>
                         <span class="<?= hub_h((string)$model['class']) ?>"><?= hub_h((string)$model['label']) ?></span>
                     </p>

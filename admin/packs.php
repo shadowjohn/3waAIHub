@@ -2,167 +2,8 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../app/bootstrap.php';
+require_once __DIR__ . '/../app/admin_market.php';
 require_once __DIR__ . '/_layout.php';
-
-function hub_pack_catalog_tab(string $rawTab): string
-{
-    $tabs = ['all', 'reference', 'vision', 'language', 'audio', 'utility', 'experimental'];
-    $activeTab = strtolower(trim($rawTab));
-    if (!in_array($activeTab, $tabs, true)) {
-        $activeTab = 'all';
-    }
-
-    return $activeTab;
-}
-
-function hub_pack_tab_label(string $tab): string
-{
-    return [
-        'all' => '全部',
-        'reference' => '參考樣板',
-        'vision' => '視覺影像',
-        'language' => '語言文字',
-        'audio' => '音訊語音',
-        'utility' => '工具',
-        'experimental' => '實驗中',
-    ][$tab] ?? '全部';
-}
-
-function hub_pack_catalog_tab_for_manifest(array $manifest): string
-{
-    $role = strtolower((string)($manifest['role'] ?? ''));
-    if ($role === 'reference') {
-        return 'reference';
-    }
-
-    $category = strtolower((string)($manifest['category'] ?? ''));
-    if (in_array($category, ['vision', 'ocr', 'segmentation', 'detection', 'object-detection'], true)) {
-        return 'vision';
-    }
-    if (in_array($category, ['language', 'translation', 'translate', 'llm'], true)) {
-        return 'language';
-    }
-    if ($category === 'audio') {
-        return 'audio';
-    }
-    if (in_array($category, ['utility', 'tool'], true)) {
-        return 'utility';
-    }
-
-    return 'experimental';
-}
-
-function hub_pack_runtime_badge_class(string $runtimeLevel): string
-{
-    $runtime = strtolower($runtimeLevel);
-    if (str_contains($runtime, 'l5')) {
-        return 'pack-badge pack-badge-ok';
-    }
-    if (str_contains($runtime, 'l4b')) {
-        return 'pack-badge pack-badge-blue';
-    }
-    if (str_contains($runtime, 'l4a')) {
-        return 'pack-badge pack-badge-purple';
-    }
-    if (str_contains($runtime, 'l3')) {
-        return 'pack-badge pack-badge-warn';
-    }
-    if (str_contains($runtime, 'l2')) {
-        return 'pack-badge pack-badge-muted';
-    }
-
-    return 'pack-badge pack-badge-muted';
-}
-
-function hub_pack_runtime_label(string $runtimeLevel): string
-{
-    $runtime = strtolower($runtimeLevel);
-    if (str_contains($runtime, 'l5')) {
-        return 'L5 可驗收';
-    }
-    if (str_contains($runtime, 'l4b')) {
-        return 'L4b 真實推論';
-    }
-    if (str_contains($runtime, 'l4a')) {
-        return 'L4a 模型檢查';
-    }
-    if (str_contains($runtime, 'l3')) {
-        return 'L3 儲存掛載';
-    }
-    if (str_contains($runtime, 'l2')) {
-        return 'L2 依賴檢查';
-    }
-
-    return 'Runtime 未分級';
-}
-
-function hub_gpu_requirement_label(array $manifest): array
-{
-    $hardware = is_array($manifest['hardware'] ?? null) ? $manifest['hardware'] : [];
-    if (!empty($hardware['gpu_required'])) {
-        return ['label' => '需要 GPU', 'class' => 'pack-badge pack-badge-blue'];
-    }
-    if (!empty($hardware['gpu_supported'])) {
-        if (!empty($hardware['cpu_fallback'])) {
-            return ['label' => '可退回 CPU', 'class' => 'pack-badge pack-badge-ok'];
-        }
-        return ['label' => '可用 GPU', 'class' => 'pack-badge pack-badge-warn'];
-    }
-
-    return ['label' => '不使用 GPU', 'class' => 'pack-badge pack-badge-muted'];
-}
-
-function hub_pack_model_requirement_label(PDO $db, array $manifest): array
-{
-    $schema = is_array($manifest['settings_schema'] ?? null) ? $manifest['settings_schema'] : [];
-    $selectors = [];
-    $hasRequiredSelector = false;
-    foreach ($schema as $item) {
-        if (!is_array($item) || !is_array($item['model_selector'] ?? null)) {
-            continue;
-        }
-        $selectors[] = $item['model_selector'];
-        $hasRequiredSelector = $hasRequiredSelector || !empty($item['required']);
-    }
-
-    if ($selectors === []) {
-        return ['label' => '無模型需求', 'class' => 'pack-badge pack-badge-muted'];
-    }
-
-    foreach ($selectors as $selector) {
-        try {
-            if (hub_model_selector_options($db, $selector) !== []) {
-                return ['label' => '模型已就緒', 'class' => 'pack-badge pack-badge-ok'];
-            }
-        } catch (Throwable) {
-            continue;
-        }
-    }
-
-    return $hasRequiredSelector
-        ? ['label' => '缺少模型', 'class' => 'pack-badge pack-badge-bad']
-        : ['label' => '模型可選', 'class' => 'pack-badge pack-badge-warn'];
-}
-
-function hub_pack_endpoint_label(array $manifest): string
-{
-    $gateway = is_array($manifest['gateway'] ?? null) ? $manifest['gateway'] : [];
-    $methods = array_map('strval', is_array($gateway['methods'] ?? null) ? $gateway['methods'] : []);
-    $methodLabel = $methods === [] ? '' : implode('/', $methods);
-    $path = (string)($gateway['invoke_path'] ?? '');
-
-    return trim($methodLabel . ' ' . $path);
-}
-
-function hub_pack_runtime_modes(array $manifest): array
-{
-    $modes = is_array($manifest['runtime_modes'] ?? null) ? array_map('strval', $manifest['runtime_modes']) : [];
-    if ($modes === []) {
-        $modes[] = ((string)($manifest['runtime']['kind'] ?? 'docker') === 'internal_task') ? 'job' : 'service';
-    }
-
-    return array_values(array_unique($modes));
-}
 
 function hub_pack_local_job_keys(array $manifest): array
 {
@@ -199,43 +40,11 @@ function hub_pack_platform_targets_label(array $manifest): string
     return implode("\n", $rows);
 }
 
-function hub_pack_installed_stats(PDO $db): array
-{
-    $stats = [];
-    $sql = "SELECT pack_id, COUNT(*) AS installed_count, GROUP_CONCAT(mode, ', ') AS modes, MIN(id) AS first_service_id
-            FROM services
-            WHERE pack_id IS NOT NULL AND pack_id <> ''
-            GROUP BY pack_id";
-    foreach ($db->query($sql)->fetchAll() as $row) {
-        $stats[(string)$row['pack_id']] = [
-            'count' => (int)$row['installed_count'],
-            'modes' => (string)($row['modes'] ?? ''),
-            'first_service_id' => (int)($row['first_service_id'] ?? 0),
-        ];
-    }
-
-    return $stats;
-}
-
-function hub_pack_readiness_label(PDO $db, string $packId, array $manifest): string
-{
-    if (!is_array($manifest['l5_contract'] ?? null)) {
-        return '尚未宣告 L5 contract';
-    }
-
-    try {
-        $readiness = hub_pack_l5_readiness($db, $packId);
-        return (int)$readiness['pass_count'] . '/' . (int)$readiness['total_count'];
-    } catch (Throwable $e) {
-        return '無法讀取：' . $e->getMessage();
-    }
-}
-
 function hub_pack_empty_state(string $tab): string
 {
     return [
         'audio' => '目前沒有音訊語音套件。',
-        'utility' => '目前沒有工具類套件。',
+        'tools' => '目前沒有工具類套件。',
         'experimental' => '目前沒有實驗中套件。',
         'reference' => '目前沒有參考樣板套件。',
         'vision' => '目前沒有視覺影像套件。',
@@ -263,7 +72,7 @@ if (($_GET['ajax'] ?? '') === 'readiness') {
     if (!$pack || $pack['status'] !== 'ok') {
         hub_packs_json(404, ['ok' => false, 'error' => '找不到 HubPack。']);
     }
-    $label = hub_pack_readiness_label($db, $packId, is_array($pack['manifest'] ?? null) ? $pack['manifest'] : []);
+    $label = hub_admin_market_readiness_label($db, $packId, is_array($pack['manifest'] ?? null) ? $pack['manifest'] : []);
     hub_packs_json(200, ['ok' => true, 'pack_id' => $packId, 'readiness' => $label]);
 }
 
@@ -281,22 +90,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     }
 }
 
-$activeTab = hub_pack_catalog_tab((string)($_GET['tab'] ?? 'all'));
-$tabs = ['all', 'reference', 'vision', 'language', 'audio', 'utility', 'experimental'];
-$installed = hub_pack_installed_stats($db);
-$packs = hub_list_packs();
-$visiblePacks = [];
-$tabCounts = array_fill_keys($tabs, 0);
-
-foreach ($packs as $pack) {
-    $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
-    $tab = hub_pack_catalog_tab_for_manifest($manifest);
-    $tabCounts[$tab] = ($tabCounts[$tab] ?? 0) + 1;
-    $tabCounts['all']++;
-    if ($activeTab === 'all' || $activeTab === $tab) {
-        $visiblePacks[] = $pack + ['catalog_tab' => $tab];
-    }
-}
+$catalog = hub_admin_market_catalog($db, (string)($_GET['tab'] ?? 'all'));
+$activeTab = $catalog['active_category'];
+$categories = hub_admin_market_categories();
+$tabs = array_keys($categories);
+$installed = hub_admin_market_installed_stats($db);
+$visiblePacks = $catalog['packs'];
+$tabCounts = $catalog['counts'];
 
 hub_admin_header('HubPack 套件', $user);
 ?>
@@ -334,13 +134,13 @@ hub_admin_header('HubPack 套件', $user);
     <div class="pack-tabs" aria-label="HubPack 分類">
         <?php foreach ($tabs as $tab): ?>
             <a class="pack-tab<?= $activeTab === $tab ? ' is-active' : '' ?>" href="packs.php?tab=<?= hub_h($tab) ?>">
-                <?= hub_h(hub_pack_tab_label($tab)) ?> <span class="muted">(<?= (int)($tabCounts[$tab] ?? 0) ?>)</span>
+                <?= hub_h((string)$categories[$tab]) ?> <span class="muted">(<?= (int)($tabCounts[$tab] ?? 0) ?>)</span>
             </a>
         <?php endforeach; ?>
     </div>
 </section>
 <section class="panel">
-    <h2><?= hub_h(hub_pack_tab_label($activeTab)) ?> HubPack</h2>
+    <h2><?= hub_h((string)$categories[$activeTab]) ?> HubPack</h2>
     <?php if ($visiblePacks === []): ?>
         <div class="pack-empty"><?= hub_h(hub_pack_empty_state($activeTab)) ?></div>
     <?php else: ?>
@@ -352,12 +152,12 @@ hub_admin_header('HubPack 套件', $user);
                 $runtimeLevel = (string)($manifest['runtime_level'] ?? '');
                 $targetLevel = (string)($manifest['target_level'] ?? '');
                 $stats = $installed[$packId] ?? ['count' => 0, 'modes' => '', 'first_service_id' => 0];
-                $gpu = hub_gpu_requirement_label($manifest);
-                $model = hub_pack_model_requirement_label($db, $manifest);
+                $gpu = hub_admin_market_gpu_label($manifest);
+                $model = hub_admin_market_model_label($db, $manifest);
                 $isReference = (string)($manifest['role'] ?? '') === 'reference';
-                $endpoint = hub_pack_endpoint_label($manifest);
+                $endpoint = hub_admin_market_endpoint_label($manifest);
                 $firstServiceId = (int)($stats['first_service_id'] ?? 0);
-                $runtimeModes = hub_pack_runtime_modes($manifest);
+                $runtimeModes = hub_admin_market_runtime_modes($manifest);
                 $localJobs = hub_pack_local_job_keys($manifest);
                 ?>
                 <article class="pack-card">
@@ -366,7 +166,7 @@ hub_admin_header('HubPack 套件', $user);
                             <h2><?= hub_h((string)($manifest['name'] ?? $packId)) ?></h2>
                             <div class="pack-id">pack_id: <code><?= hub_h($packId) ?></code></div>
                         </div>
-                        <span class="<?= hub_h(hub_pack_runtime_badge_class($runtimeLevel)) ?>"><?= hub_h(hub_pack_runtime_label($runtimeLevel)) ?></span>
+                        <span class="<?= hub_h(hub_admin_market_runtime_badge_class($runtimeLevel)) ?>"><?= hub_h(hub_admin_market_runtime_label($runtimeLevel)) ?></span>
                     </div>
                     <?php if ($isReference): ?>
                         <p class="pack-description"><strong>參考樣板</strong>：最小 L5 HubPack 樣板，用於驗證安裝、Gateway、Benchmark、準備狀態與 API 文件。</p>
@@ -391,7 +191,7 @@ hub_admin_header('HubPack 套件', $user);
                         <div class="pack-field-label">版本</div>
                         <div class="pack-field-value"><code><?= hub_h((string)($manifest['version'] ?? '')) ?></code></div>
                         <div class="pack-field-label">分類</div>
-                        <div class="pack-field-value"><?= hub_h(hub_pack_tab_label((string)($pack['catalog_tab'] ?? 'experimental'))) ?> / <code><?= hub_h((string)($manifest['category'] ?? '')) ?></code></div>
+                        <div class="pack-field-value"><?= hub_h((string)$categories[$pack['market_category']]) ?> / <code><?= hub_h((string)($manifest['category'] ?? '')) ?></code></div>
                         <div class="pack-field-label">類型</div>
                         <div class="pack-field-value"><code><?= hub_h((string)($manifest['type'] ?? '')) ?></code></div>
                         <div class="pack-field-label">角色</div>
@@ -431,7 +231,7 @@ hub_admin_header('HubPack 套件', $user);
                         <div class="pack-field-value">Installed: <?= (int)$stats['count'] ?><?php if ((string)$stats['modes'] !== ''): ?> / modes: <code><?= hub_h((string)$stats['modes']) ?></code><?php endif; ?></div>
                         <div class="pack-field-label">L5 準備狀態</div>
                         <div class="pack-field-value" data-readiness-url="packs.php?ajax=readiness">
-                            <span class="pack-readiness-value" data-pack-id="<?= hub_h($packId) ?>"><?= hub_h(hub_pack_readiness_label($db, $packId, $manifest)) ?></span>
+                            <span class="pack-readiness-value" data-pack-id="<?= hub_h($packId) ?>"><?= hub_h(hub_admin_market_readiness_label($db, $packId, $manifest)) ?></span>
                             <button class="pack-readiness-refresh" type="button" data-pack-id="<?= hub_h($packId) ?>">刷新</button>
                         </div>
                     </div>

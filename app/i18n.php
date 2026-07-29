@@ -97,6 +97,25 @@ function __(string $title, ?string $lang = null): string
     return $trans;
 }
 
+function hub_i18n_seeded(string $key, string $fallback, ?string $lang = null, ?PDO $db = null): string
+{
+    $key = trim($key);
+    $fallback = trim($fallback);
+    if ($key === '') {
+        return __($fallback, $lang);
+    }
+    $lang = hub_i18n_normalize_lang($lang ?? hub_i18n_current_lang());
+    $db ??= hub_db();
+    $stmt = $db->prepare('SELECT trans FROM i18n WHERE title = :title AND lang = :lang ORDER BY id DESC LIMIT 1');
+    $stmt->execute([':title' => $key, ':lang' => $lang]);
+    $translation = trim((string)($stmt->fetchColumn() ?: ''));
+    if ($translation !== '') {
+        return $translation;
+    }
+
+    return $lang === 'zh_TW' ? $fallback : __($fallback, $lang);
+}
+
 function hub_i18n_translate_google(string $text, string $targetLang, string $sourceLang = 'auto'): string
 {
     if (!function_exists('curl_init')) {
@@ -180,7 +199,8 @@ function hub_i18n_import_seed(PDO $db, ?string $path = null): int
         $title = trim((string)($row['title'] ?? ''));
         $lang = hub_i18n_normalize_lang((string)($row['lang'] ?? ''));
         $trans = trim((string)($row['trans'] ?? ''));
-        if ($title === '' || $trans === '' || $lang === 'zh_TW') {
+        $isKeyedSource = preg_match('/\A[a-z0-9_.-]+\z/i', $title) === 1 && str_contains($title, '.');
+        if ($title === '' || $trans === '' || ($lang === 'zh_TW' && !$isKeyedSource)) {
             continue;
         }
         $insert->execute([':title' => $title, ':lang' => $lang, ':trans' => $trans]);

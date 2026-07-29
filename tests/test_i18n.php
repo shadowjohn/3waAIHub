@@ -40,6 +40,20 @@ hub_test('i18n seed imports without overwriting local translations', function ()
     hub_test_assert(is_file(HUB_ROOT . '/scripts/export_i18n_seed.php'), 'export_i18n_seed.php missing');
 });
 
+hub_test('i18n seed accepts keyed Chinese rows only', function (): void {
+    $db = hub_test_reset_db();
+    $seed = sys_get_temp_dir() . '/3waaihub_i18n_keyed_seed_' . getmypid() . '.json';
+    file_put_contents($seed, json_encode([
+        ['title' => 'pack.demo.description', 'lang' => 'zh_TW', 'trans' => '中文用途'],
+        ['title' => '自然語句', 'lang' => 'zh_TW', 'trans' => '不應匯入'],
+    ], JSON_UNESCAPED_UNICODE));
+
+    hub_test_assert(hub_i18n_import_seed($db, $seed) === 1, 'only keyed zh_TW seed rows should import');
+    hub_test_assert(hub_i18n_seeded('pack.demo.description', 'Fallback', 'zh_TW', $db) === '中文用途', 'keyed Chinese seed missing');
+    hub_test_assert(hub_i18n_seeded('', 'Fallback', 'zh_TW', $db) === 'Fallback', 'empty key should keep natural-language fallback');
+    hub_test_assert(hub_i18n_import_seed($db, $seed) === 0, 'keyed seed import must remain idempotent');
+});
+
 hub_test('admin i18n maintenance tab and language selectors are present', function (): void {
     foreach ([
         HUB_ROOT . '/admin/settings.php',

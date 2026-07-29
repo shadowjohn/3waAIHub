@@ -2498,5 +2498,95 @@
         "title": "顯示 token",
         "lang": "zh_CN",
         "trans": "显示 token"
+    },
+    {
+        "title": "pack.hello.description",
+        "lang": "zh_TW",
+        "trans": "範例 API 服務，用來驗證 Pack 安裝、健康檢查與 Gateway。"
+    },
+    {
+        "title": "pack.ocr-ppocrv5.description",
+        "lang": "zh_TW",
+        "trans": "圖片文字辨識服務，可擷取中英文文字、座標與信心分數。"
+    },
+    {
+        "title": "pack.yolo.description",
+        "lang": "zh_TW",
+        "trans": "影像物件偵測服務，可回傳類別、信心分數與框選座標。"
+    },
+    {
+        "title": "pack.yolo-serving.description",
+        "lang": "zh_TW",
+        "trans": "受管的 YOLO 模型部署與 GPU 推論服務。"
+    },
+    {
+        "title": "pack.sam3.description",
+        "lang": "zh_TW",
+        "trans": "依提示分割影像目標，輸出遮罩、輪廓或 RLE。"
+    },
+    {
+        "title": "pack.image-birefnet.description",
+        "lang": "zh_TW",
+        "trans": "高品質圖片去背服務，輸出含透明背景的 PNG。"
+    },
+    {
+        "title": "pack.bioclip.description",
+        "lang": "zh_TW",
+        "trans": "以影像辨識生物物種並回傳候選分類與信心分數。"
+    },
+    {
+        "title": "pack.translate-gemma12b.description",
+        "lang": "zh_TW",
+        "trans": "以 Gemma 模型進行多語翻譯與正體中文輸出。"
+    },
+    {
+        "title": "pack.llm-gemma4-12b.description",
+        "lang": "zh_TW",
+        "trans": "整合文字對話、圖片理解與短音訊分析的多模態服務。"
+    },
+    {
+        "title": "pack.rag-nemotron.description",
+        "lang": "zh_TW",
+        "trans": "以 Nemotron Embedding 與 Rerank 強化文件檢索排序。"
+    },
+    {
+        "title": "pack.structure-ppstructurev3.description",
+        "lang": "zh_TW",
+        "trans": "解析文件版面、表格與區塊結構，供後續資料處理。"
+    },
+    {
+        "title": "pack.docparser.description",
+        "lang": "zh_TW",
+        "trans": "整合 PDF 轉換、OCR、版面、圖片與翻譯的文件處理流程。"
+    },
+    {
+        "title": "pack.taiwan-address.description",
+        "lang": "zh_TW",
+        "trans": "清理台灣地址並介接可信任的定位與門牌資料服務。"
+    },
+    {
+        "title": "pack.whisper-asr.description",
+        "lang": "zh_TW",
+        "trans": "將 WAV 語音辨識為文字，支援 GPU 非同步工作。"
+    },
+    {
+        "title": "pack.tts-voxcpm2.description",
+        "lang": "zh_TW",
+        "trans": "以參考聲音、字幕或設計描述產生語音的實驗服務。"
+    },
+    {
+        "title": "pack.edge-tts.description",
+        "lang": "zh_TW",
+        "trans": "輕量免 GPU 的多語語音生成與聲線試聽服務。"
+    },
+    {
+        "title": "pack.audio-cleanup.description",
+        "lang": "zh_TW",
+        "trans": "分離人聲與背景音，並可輸出增強後的乾淨音訊。"
+    },
+    {
+        "title": "pack.web-screenshot.description",
+        "lang": "zh_TW",
+        "trans": "在受控網路規則下擷取網頁畫面，供分析與自動化流程使用。"
     }
 ]
