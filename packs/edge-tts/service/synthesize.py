@@ -154,11 +154,14 @@ def boundary_entry(value: dict[str, Any]) -> dict[str, Any]:
     return {"text": text, "start_ms": start_ms, "end_ms": end_ms}
 
 
-def append_boundary(entries: list[dict[str, Any]], value: dict[str, Any]) -> None:
+def append_boundary(entries: list[dict[str, Any]], value: dict[str, Any], previous_end_ticks: int | None) -> int:
     entry = boundary_entry(value)
-    if entries and entry["start_ms"] < entries[-1]["end_ms"]:
+    offset = value["offset"]
+    end_ticks = offset + value["duration"]
+    if previous_end_ticks is not None and offset < previous_end_ticks:
         fail("edge_tts_failed")
     entries.append(entry)
+    return end_ticks
 
 
 def timestamp(milliseconds: int, separator: str) -> str:
@@ -185,6 +188,8 @@ def render_srt(sentences: list[dict[str, Any]]) -> str:
 def stream_captioned_audio(request: dict[str, Any], temporary_audio: Path) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
     sentences: list[dict[str, Any]] = []
     words: list[dict[str, Any]] = []
+    sentence_end_ticks: int | None = None
+    word_end_ticks: int | None = None
     audio_bytes = 0
     try:
         with temporary_audio.open("wb") as audio_file:
@@ -207,9 +212,9 @@ def stream_captioned_audio(request: dict[str, Any], temporary_audio: Path) -> tu
                         fail("artifact_write_failed")
                     audio_file.write(data)
                 elif event_type == "SentenceBoundary":
-                    append_boundary(sentences, event)
+                    sentence_end_ticks = append_boundary(sentences, event, sentence_end_ticks)
                 elif event_type == "WordBoundary":
-                    append_boundary(words, event)
+                    word_end_ticks = append_boundary(words, event, word_end_ticks)
     except (asyncio.TimeoutError, TimeoutError):
         fail("edge_tts_timeout")
     except (aiohttp.ClientError, ConnectionError, OSError, ssl.SSLError, edge_exceptions.NoAudioReceived, edge_exceptions.WebSocketError):
@@ -229,7 +234,6 @@ def remove_job_artifacts(paths: tuple[Path, ...]) -> None:
 
 
 def run_job(request_path: Path, output_dir: Path) -> None:
-    request = validate_request(read_request(request_path))
     if not output_dir.is_dir() or output_dir.is_symlink():
         fail("artifact_write_failed")
     audio_path = output_dir / "generated_audio.mp3"
@@ -250,6 +254,11 @@ def run_job(request_path: Path, output_dir: Path) -> None:
         timeline_path,
         timeline_path.with_name("." + timeline_path.name + ".tmp"),
     )
+    try:
+        request = validate_request(read_request(request_path))
+    except RunnerError:
+        remove_job_artifacts(artifacts)
+        raise
     remove_job_artifacts(artifacts)
     started = time.monotonic()
     try:

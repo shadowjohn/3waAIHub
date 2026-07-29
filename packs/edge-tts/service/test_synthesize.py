@@ -57,6 +57,15 @@ class InvalidStreamingCommunicate(StreamingCommunicate):
         yield {"type": "WordBoundary", "offset": 0, "duration": 5000000, "text": "Hello"}
 
 
+class SubMillisecondStreamingCommunicate(StreamingCommunicate):
+    def stream_sync(self):
+        yield {"type": "audio", "data": b"ID3fake-edge-tts"}
+        yield {"type": "SentenceBoundary", "offset": 0, "duration": 1, "text": "A"}
+        yield {"type": "SentenceBoundary", "offset": 1, "duration": 1, "text": "B"}
+        yield {"type": "WordBoundary", "offset": 0, "duration": 1, "text": "A"}
+        yield {"type": "WordBoundary", "offset": 1, "duration": 1, "text": "B"}
+
+
 class SynthesizeTest(unittest.TestCase):
     def setUp(self):
         FakeCommunicate.calls = []
@@ -141,6 +150,31 @@ class SynthesizeTest(unittest.TestCase):
         with patch.object(synthesize.edge_tts, "Communicate", InvalidStreamingCommunicate):
             with self.assertRaises(synthesize.RunnerError) as raised:
                 synthesize.run_job(self.write_request(request), self.output_dir)
+
+        self.assertEqual(raised.exception.code, "edge_tts_failed")
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_contiguous_sub_millisecond_boundaries_are_accepted(self):
+        request = {**self.request(), "include_subtitles": True}
+        with patch.object(synthesize.edge_tts, "Communicate", SubMillisecondStreamingCommunicate):
+            synthesize.run_job(self.write_request(request), self.output_dir)
+
+        timeline = json.loads((self.output_dir / "speech_timeline.json").read_text(encoding="utf-8"))
+        self.assertEqual(timeline["sentences"], [
+            {"text": "A", "start_ms": 0, "end_ms": 1},
+            {"text": "B", "start_ms": 0, "end_ms": 1},
+        ])
+        self.assertEqual(timeline["words"], [
+            {"text": "A", "start_ms": 0, "end_ms": 1},
+            {"text": "B", "start_ms": 0, "end_ms": 1},
+        ])
+
+    def test_invalid_request_cleans_existing_known_artifacts(self):
+        (self.output_dir / "subtitle.vtt").write_text("old", encoding="utf-8")
+        invalid_request = {**self.request(), "include_subtitles": "true"}
+
+        with self.assertRaises(synthesize.RunnerError) as raised:
+            synthesize.run_job(self.write_request(invalid_request), self.output_dir)
 
         self.assertEqual(raised.exception.code, "edge_tts_failed")
         self.assertEqual(list(self.output_dir.iterdir()), [])
