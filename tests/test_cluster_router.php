@@ -1391,10 +1391,17 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
                     return hub_gateway_json(200, ['ok' => true, 'voices' => [['id' => $voice, 'demo_url' => $demoUrl]]]);
                 },
             ];
-            $duplicateUri = '/cluster_api.php?mode=edge_tts&voice=' . rawurlencode($voice) . '&voice=' . rawurlencode($voice);
-            $selfDuplicate = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
-                'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $duplicateUri,
-            ]), $selfSeams);
+            $duplicateUris = [
+                '/cluster_api.php?mode=edge_tts&voice=' . rawurlencode($voice) . '&voice=' . rawurlencode($voice),
+                '/cluster_api.php?mode=edge_tts&voice[]=x&voice=' . rawurlencode($voice),
+                '/cluster_api.php?mode=edge_tts&voice%00x=x&voice=' . rawurlencode($voice),
+            ];
+            $selfDuplicates = [];
+            foreach ($duplicateUris as $duplicateUri) {
+                $selfDuplicates[] = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                    'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $duplicateUri,
+                ]), $selfSeams);
+            }
             $directAfterDuplicate = $direct;
             $selfList = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
                 'method' => 'GET', 'raw_body' => '', 'query' => [], 'headers' => [],
@@ -1404,7 +1411,7 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
             ]), $selfSeams);
             $selfListPayload = json_decode((string)$selfList['body'], true);
 
-            hub_test_assert(($selfDuplicate['status'] ?? 0) === 400 && str_contains((string)$selfDuplicate['body'], 'invalid_request')
+            hub_test_assert(array_filter($selfDuplicates, static fn (array $response): bool => ($response['status'] ?? 0) !== 400 || !str_contains((string)$response['body'], 'invalid_request')) === []
                 && $directAfterDuplicate === []
                 && ($selfList['status'] ?? 0) === 200 && ($selfListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
                 && ($selfDemo['body'] ?? '') === "\x49\x44\x33demo"
@@ -1432,9 +1439,12 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
                     };
                 },
             ];
-            $remoteDuplicate = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
-                'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $duplicateUri,
-            ]), $remoteSeams);
+            $remoteDuplicates = [];
+            foreach ($duplicateUris as $duplicateUri) {
+                $remoteDuplicates[] = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
+                    'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $duplicateUri,
+                ]), $remoteSeams);
+            }
             $proxiedAfterDuplicate = $proxied;
             $remoteList = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
                 'method' => 'GET', 'raw_body' => '', 'query' => [], 'headers' => [],
@@ -1447,7 +1457,7 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
             ]), $remoteSeams);
             $remoteListPayload = json_decode((string)$remoteList['body'], true);
 
-            hub_test_assert(($remoteDuplicate['status'] ?? 0) === 400 && str_contains((string)$remoteDuplicate['body'], 'invalid_request')
+            hub_test_assert(array_filter($remoteDuplicates, static fn (array $response): bool => ($response['status'] ?? 0) !== 400 || !str_contains((string)$response['body'], 'invalid_request')) === []
                 && $proxiedAfterDuplicate === []
                 && ($remoteList['status'] ?? 0) === 200 && ($remoteListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
                 && ($remoteDemo['body'] ?? '') === "\x49\x44\x33remote"

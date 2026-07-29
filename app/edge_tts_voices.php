@@ -72,7 +72,16 @@ function hub_edge_tts_demo_request_has_duplicate_voice(string $requestUri): bool
     $voices = 0;
     foreach (explode('&', $query) as $item) {
         $key = explode('=', $item, 2)[0];
-        if (urldecode($key) === 'voice' && ++$voices > 1) {
+        $key = urldecode($key);
+        $nulAt = strpos($key, "\0");
+        if ($nulAt !== false) {
+            $key = substr($key, 0, $nulAt);
+        }
+        $bracketAt = strpos($key, '[');
+        if ($bracketAt !== false) {
+            $key = substr($key, 0, $bracketAt);
+        }
+        if ($key === 'voice' && ++$voices > 1) {
             return true;
         }
     }
