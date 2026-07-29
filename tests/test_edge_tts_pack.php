@@ -432,9 +432,9 @@ function hub_test_edge_tts_write_demo_output(string $dir, array $voices, string 
     file_put_contents($dir . '/available.json', json_encode(['version' => 1, 'voices' => $available], JSON_THROW_ON_ERROR));
 }
 
-function hub_test_edge_tts_demo_runner(array &$commands, callable $writer, int $exitCode = 0): callable
+function hub_test_edge_tts_demo_runner(array &$commands, callable $writer, int $exitCode = 0, bool $incompleteCleanup = false): callable
 {
-    return static function (array $command, int $timeoutSeconds) use (&$commands, $writer, $exitCode): array {
+    return static function (array $command, int $timeoutSeconds) use (&$commands, $writer, $exitCode, $incompleteCleanup): array {
         $commands[] = $command;
         if (($command[0] ?? '') === 'docker' && ($command[1] ?? '') === 'run') {
             $mount = (string)($command[array_search('--mount', $command, true) + 1] ?? '');
@@ -444,7 +444,16 @@ function hub_test_edge_tts_demo_runner(array &$commands, callable $writer, int $
             return ['exit_code' => $exitCode, 'stdout' => '', 'stderr' => ''];
         }
         if (($command[0] ?? '') === 'docker' && ($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect') {
+            if ($incompleteCleanup) {
+                return ['exit_code' => 0, 'stdout' => '{"Running":false,"Pid":0}', 'stderr' => ''];
+            }
             return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such container'];
+        }
+        if ($incompleteCleanup && ($command[1] ?? '') === 'stop') {
+            return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+        }
+        if ($incompleteCleanup && ($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'rm') {
+            return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
         }
 
         throw new RuntimeException('unexpected Edge TTS demo command');
@@ -571,6 +580,35 @@ hub_test('Edge TTS failed idempotent reinstall preserves its existing row versio
         && (int)$db->query("SELECT COUNT(*) FROM services WHERE service_key = 'edge-tts-main'")->fetchColumn() === 1
         && file_get_contents($current . '/prior.mp3') === 'prior demos',
         'failed idempotent Edge TTS reinstall must leave its service row, prior version, and published demos unchanged');
+});
+
+hub_test('Edge TTS incomplete cleanup preserves prior demos and service state', function (): void {
+    $db = hub_test_reset_db();
+    $initial = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    $db->exec("UPDATE services SET pack_version = 'prior-edge-version' WHERE id = " . (int)$initial['service']['id']);
+    $before = hub_get_service_by_key($db, 'edge-tts-main');
+    $current = HUB_DATA_DIR . '/results/edge-tts-demos/edge-tts-main/current';
+    mkdir($current, 0755, true);
+    file_put_contents($current . '/prior.mp3', 'prior demos');
+    $voices = hub_test_edge_tts_demo_catalogue();
+    $commands = [];
+
+    try {
+        hub_install_pack($db, 'edge-tts', [
+            'idempotent' => true,
+            'edge_tts_demo_runner' => hub_test_edge_tts_demo_runner($commands, static function (string $dir) use ($voices): void {
+                hub_test_edge_tts_write_demo_output($dir, $voices);
+            }, 0, true),
+        ]);
+        throw new RuntimeException('incomplete Edge TTS cleanup must abort install');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'edge_tts_demo_initialization_failed', 'incomplete Edge TTS cleanup must expose only the stable error');
+    }
+
+    hub_test_assert($before === hub_get_service_by_key($db, 'edge-tts-main')
+        && file_get_contents($current . '/prior.mp3') === 'prior demos'
+        && count(array_filter($commands, static fn (array $command): bool => ($command[1] ?? '') === 'run')) === 1,
+        'unattested Edge TTS cleanup must not replace current or promote its existing service');
 });
 
 hub_test('Edge TTS artifact contract is exact', function (): void {

@@ -175,14 +175,16 @@ function hub_edge_tts_initialize_voice_demos(array $pack, string $serviceKey, ?c
             $image, '/app/generate_demos.py',
         ];
         $runner ??= 'hub_run_linux_docker_command';
+        $cleanup = [];
         try {
             $result = $runner($command, 300);
         } catch (Throwable) {
             hub_edge_tts_demo_failure();
         } finally {
-            hub_pack_job_default_container_cleanup($runner, $containerName, 300);
+            $cleanup = hub_pack_job_default_container_cleanup($runner, $containerName, 300);
         }
-        if (!is_array($result ?? null) || (int)($result['exit_code'] ?? 1) !== 0) {
+        if (!is_array($result ?? null) || (int)($result['exit_code'] ?? 1) !== 0
+            || ($cleanup['cleanup'] ?? null) !== hub_pack_job_no_work_cleanup()) {
             hub_edge_tts_demo_failure();
         }
         $verified = hub_edge_tts_demo_directory_entries($staging, $catalogue);
