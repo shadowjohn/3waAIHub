@@ -9,6 +9,7 @@ return [
     __DIR__ . '/../test_admin_shell.php',
     __DIR__ . '/../test_pack_catalog_ui.php',
     __DIR__ . '/../test_admin_records.php',
+    __DIR__ . '/../test_admin_dashboard.php',
     __DIR__ . '/../test_log_explorer.php',
     __DIR__ . '/../test_runtime_visibility.php',
     __DIR__ . '/../test_cluster_admin.php',

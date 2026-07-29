@@ -50,6 +50,10 @@ hub_test('PhaseUI-2 settings tabs and brand fields render expected contract', fu
     $dashboardPage = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
     hub_test_assert(str_contains($loginPage, 'hub_site_title'), 'login page must use configurable site title');
     hub_test_assert(str_contains($dashboardPage, 'hub_site_title'), 'dashboard must use configurable site title');
+    hub_test_assert(str_contains($dashboardPage, 'app/admin_dashboard.php'), 'dashboard must use the role-aware view model');
+    hub_test_assert(str_contains($dashboardPage, '../assets/css/admin-dashboard.css'), 'dashboard must load its accepted local stylesheet');
+    hub_test_assert(str_contains($dashboardPage, '../assets/js/vendor/chart.umd.js'), 'dashboard must use local Chart.js');
+    hub_test_assert(!str_contains($dashboardPage, 'cdn.jsdelivr.net'), 'dashboard must not load chart code from a CDN');
     foreach (['enctype="multipart/form-data"', 'branding_logo', 'image/png,image/webp,image/jpeg', 'branding-preview'] as $needle) {
         hub_test_assert(str_contains($settingsPage, $needle), 'settings page missing branding upload contract ' . $needle);
     }

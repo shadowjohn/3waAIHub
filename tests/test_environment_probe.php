@@ -276,6 +276,7 @@ hub_test('Windows environment UI renders N/A neutrally with unambiguous role lab
 
     $environment = (string)file_get_contents(HUB_ROOT . '/admin/environment.php');
     $dashboard = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
+    $dashboardJs = (string)file_get_contents(HUB_ROOT . '/assets/js/admin-dashboard.js');
     hub_test_assert(str_contains($environment, "status'] ?? '') === 'not_applicable'"), 'environment UI must detect N/A shape');
     hub_test_assert(str_contains($environment, 'class="muted"'), 'environment N/A must use neutral styling');
     hub_test_assert(!str_contains($environment, '-Mode '), 'environment UI must not advertise uncommitted installer modes');
@@ -287,8 +288,8 @@ hub_test('Windows environment UI renders N/A neutrally with unambiguous role lab
     hub_test_assert(str_contains($dashboard, '$memoryApplicable'), 'dashboard must gate RAM visualization by N/A status');
     hub_test_assert(str_contains($dashboard, '$linuxDiskApplicable'), 'dashboard must gate Linux filesystem labels by N/A status');
     hub_test_assert(str_contains($dashboard, '$dockerRootApplicable'), 'dashboard must gate Docker root visualization by N/A status');
-    hub_test_assert(str_contains($dashboard, 'metric.ramApplicable && ramChart'), 'dashboard JS must not initialize an N/A RAM chart');
-    hub_test_assert(str_contains($dashboard, 'metric.diskBars.length > 0 && diskChart'), 'dashboard JS must not initialize an empty disk chart');
+    hub_test_assert(str_contains($dashboardJs, 'metric.ramApplicable && ramChart'), 'dashboard JS must not initialize an N/A RAM chart');
+    hub_test_assert(str_contains($dashboardJs, 'metric.diskBars.length > 0 && diskChart'), 'dashboard JS must not initialize an empty disk chart');
     hub_test_assert(!str_contains($dashboard, "'ramPercent' => hub_dash_percent(\$host['ram_used_percent'] ?? 0)"), 'dashboard must not coerce N/A RAM to zero');
 });
 

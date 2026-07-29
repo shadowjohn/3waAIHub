@@ -224,6 +224,13 @@ hub_admin_header('Cluster', $user);
 <?php else: ?>
     <section class="panel">
         <h1>Cluster 角色</h1>
+        <?php if ($nodeEnabled && $routerEnabled): ?>
+            <div class="hub-actions cluster-aggregate-summary">
+                <span class="badge badge--info"><?= hub_h(__('聚合站台')) ?></span>
+                <span><?= number_format(count($stationRows)) ?> <?= hub_h(__('個子節點')) ?></span>
+                <span><?= number_format(count($selectedModes)) ?> <?= hub_h(__('個已發佈 Mode')) ?></span>
+            </div>
+        <?php endif; ?>
         <form method="post">
             <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
             <label><input type="checkbox" name="node_enabled" value="1"<?= $nodeEnabled ? ' checked' : '' ?>> 子入口節點</label>
