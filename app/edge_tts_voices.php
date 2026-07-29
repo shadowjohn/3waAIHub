@@ -143,7 +143,7 @@ function hub_edge_tts_cleanup_demo_directory(string $dir, string $parent): void
 function hub_edge_tts_initialize_voice_demos(array $pack, string $serviceKey, ?callable $runner = null): array
 {
     if ($runner === null && defined('HUB_TESTING') && HUB_TESTING === true) {
-        return ['test_internal_skipped' => true];
+        return ['succeeded' => 0, 'failed' => 0];
     }
     $staging = null;
     $parent = null;
@@ -196,8 +196,8 @@ function hub_edge_tts_initialize_voice_demos(array $pack, string $serviceKey, ?c
             }
         }
         if (!rename($staging, $current)) {
-            if (is_dir($backup)) {
-                @rename($backup, $current);
+            if (!is_dir($backup) || !rename($backup, $current) || is_link($current) || !is_dir($current)) {
+                hub_edge_tts_demo_failure();
             }
             hub_edge_tts_demo_failure();
         }

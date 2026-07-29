@@ -210,13 +210,14 @@ hub_test('Edge TTS firewall setup is executed against command mocks', function (
 
 hub_test('Edge TTS ready route still requires the administrator enable gate', function (): void {
     $db = hub_test_reset_db();
-    hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    $installed = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
 
-    hub_test_assert((hub_pack_job_async_routes()['edge_tts'] ?? null) === [
+    hub_test_assert(($installed['edge_tts_demos'] ?? null) === ['succeeded' => 0, 'failed' => 0]
+        && (hub_pack_job_async_routes()['edge_tts'] ?? null) === [
         'pack_id' => 'edge-tts',
         'job' => 'synthesize',
         'accelerator' => 'cpu',
-    ], 'Edge TTS must be registered as the fixed CPU async route');
+    ], 'offline Edge TTS tests must return only zero demo counters and keep the fixed CPU async route');
     hub_test_assert(in_array('edge_tts', hub_playground_supported_modes(), true), 'Edge TTS must be selectable in the customer playground');
 
     $job = hub_pack_async_job_contract(hub_get_pack('edge-tts')['manifest'], 'synthesize');
@@ -544,6 +545,32 @@ hub_test('Edge TTS demo initialization failure and non-Edge installs do not invo
         },
     ]);
     hub_test_assert(!$called, 'non-Edge installs must not invoke the Edge TTS generator seam');
+});
+
+hub_test('Edge TTS failed idempotent reinstall preserves its existing row version and demos', function (): void {
+    $db = hub_test_reset_db();
+    $initial = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    $db->exec("UPDATE services SET pack_version = 'prior-edge-version' WHERE id = " . (int)$initial['service']['id']);
+    $before = hub_get_service_by_key($db, 'edge-tts-main');
+    $current = HUB_DATA_DIR . '/results/edge-tts-demos/edge-tts-main/current';
+    mkdir($current, 0755, true);
+    file_put_contents($current . '/prior.mp3', 'prior demos');
+    $unused = [];
+
+    try {
+        hub_install_pack($db, 'edge-tts', [
+            'idempotent' => true,
+            'edge_tts_demo_runner' => hub_test_edge_tts_demo_runner($unused, static function (string $dir): void {}, 1),
+        ]);
+        throw new RuntimeException('failed idempotent Edge TTS reinstall must abort');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'edge_tts_demo_initialization_failed', 'failed idempotent Edge TTS reinstall must expose only the stable error');
+    }
+
+    hub_test_assert($before === hub_get_service_by_key($db, 'edge-tts-main')
+        && (int)$db->query("SELECT COUNT(*) FROM services WHERE service_key = 'edge-tts-main'")->fetchColumn() === 1
+        && file_get_contents($current . '/prior.mp3') === 'prior demos',
+        'failed idempotent Edge TTS reinstall must leave its service row, prior version, and published demos unchanged');
 });
 
 hub_test('Edge TTS artifact contract is exact', function (): void {
