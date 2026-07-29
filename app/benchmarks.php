@@ -72,6 +72,9 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
 
     $serviceId = (int)$service['id'];
     $mode = (string)($case['mode'] ?? $service['mode']);
+    if (($case['type'] ?? null) === 'external_acceptance') {
+        throw new RuntimeException('external_acceptance_requires_script');
+    }
     hub_set_service_enabled($db, $mode, true);
 
     if (($pack['id'] ?? '') === 'llm-gemma4-12b' && $mode === 'photo') {

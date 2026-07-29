@@ -8,6 +8,35 @@ hub_test('benchmark skeleton records pack catalog scan', function (): void {
     hub_test_assert((int)$db->query('SELECT COUNT(*) FROM benchmark_runs')->fetchColumn() === 1, 'benchmark run was not recorded');
 });
 
+hub_test('Edge TTS L5 external acceptance stays pending and the offline runner refuses it', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    $contract = hub_pack_l5_contract(hub_get_pack('edge-tts')['manifest']);
+    $case = hub_l5_benchmark_case($contract, 'edge_tts_async_complete');
+
+    hub_test_assert(is_array($case)
+        && ($case['type'] ?? null) === 'external_acceptance'
+        && ($case['real_inference'] ?? null) === true,
+        'Edge TTS must declare its real public-API external acceptance case');
+
+    $initial = hub_pack_l5_readiness($db, 'edge-tts');
+    $beforeEnabled = (int)($installed['service']['enabled'] ?? 0);
+    $offline = hub_run_benchmark_case($db, 'edge_tts_async_complete', 'edge-tts');
+    hub_test_assert($initial['checks']['has_l5_contract'] === true
+        && $initial['checks']['has_benchmark_cases'] === true
+        && $initial['checks']['real_inference_benchmark_passed'] === false
+        && $offline['status'] === 'fail'
+        && $offline['error_message'] === 'external_acceptance_requires_script'
+        && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0
+        && (int)(hub_get_service_by_key($db, 'edge-tts-main')['enabled'] ?? -1) === $beforeEnabled,
+        'offline Edge TTS benchmark must record only its bounded refusal without enabling a service or creating a task');
+
+    hub_save_benchmark_run($db, 'edge_tts_async_complete', (int)$installed['service']['id'], 'edge_tts', 'pass', 1, ['ok' => true], null);
+    $ready = hub_pack_l5_readiness($db, 'edge-tts');
+    hub_test_assert($ready['checks']['real_inference_benchmark_passed'] === true,
+        'the named Edge TTS external acceptance pass must promote L5 readiness');
+});
+
 hub_test('Hello L5 reference contract readiness and benchmark pass', function (): void {
     $db = hub_test_reset_db();
     $contract = hub_pack_l5_contract(hub_get_pack('hello')['manifest']);

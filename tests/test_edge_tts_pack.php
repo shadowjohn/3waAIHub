@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once HUB_ROOT . '/scripts/edge_tts_acceptance.php';
+
 function hub_test_edge_tts_payload(array $response): array
 {
     $payload = json_decode((string)($response['body'] ?? ''), true);
@@ -41,6 +43,312 @@ function hub_test_edge_tts_isolate(callable $fn): void
     }
 }
 
+function hub_test_edge_tts_acceptance_env(): array
+{
+    return [
+        'AIHUB_EDGE_TTS_ACCEPTANCE_BASE_URL' => 'https://hub.example/3waAIHub/api.php',
+        'AIHUB_EDGE_TTS_ACCEPTANCE_TOKEN' => 'edge-tts-unit-token-secret',
+    ];
+}
+
+function hub_test_edge_tts_acceptance_artifacts(): array
+{
+    return [
+        'generated_audio' => ['id' => 901, 'mime_type' => 'audio/mpeg', 'body' => "ID3\x04\x00\x00acceptance"],
+        'synthesis_metadata' => ['id' => 902, 'mime_type' => 'application/json', 'body' => json_encode([
+            'provider' => 'bounded', 'client_version' => '1', 'voice' => 'zh-TW-HsiaoChenNeural',
+            'rate' => '+0%', 'volume' => '+0%', 'pitch' => '+0Hz', 'format' => 'mp3',
+            'audio_bytes' => 16, 'elapsed_seconds' => 1, 'warnings' => [],
+        ], JSON_THROW_ON_ERROR)],
+        'subtitle_vtt' => ['id' => 903, 'mime_type' => 'text/vtt', 'body' => "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nAcceptance\n"],
+        'subtitle_srt' => ['id' => 904, 'mime_type' => 'application/x-subrip', 'body' => "1\n00:00:00,000 --> 00:00:01,000\nAcceptance\n"],
+        'speech_timeline' => ['id' => 905, 'mime_type' => 'application/json', 'body' => json_encode([
+            'version' => 1, 'unit' => 'ms', 'duration_ms' => 1000,
+            'sentences' => [['start_ms' => 0, 'end_ms' => 1000]],
+            'words' => [['start_ms' => 0, 'end_ms' => 1000]],
+        ], JSON_THROW_ON_ERROR)],
+    ];
+}
+
+function hub_test_edge_tts_acceptance_token(PDO $db): int
+{
+    $memberId = hub_create_api_member($db, 'Edge TTS Acceptance Test');
+    $now = hub_now();
+    $db->prepare(
+        'INSERT INTO api_tokens (member_id, token_name, token_prefix, token_hash, enabled, created_at, updated_at)
+         VALUES (:member_id, :token_name, :token_prefix, :token_hash, 1, :now, :now)'
+    )->execute([
+        ':member_id' => $memberId,
+        ':token_name' => 'Edge TTS acceptance test',
+        ':token_prefix' => 'edge-tts-unit-t',
+        ':token_hash' => hub_hash_api_token('edge-tts-unit-token-secret'),
+        ':now' => $now,
+    ]);
+    return (int)$db->lastInsertId();
+}
+
+function hub_test_edge_tts_acceptance_insert_local_runtime(PDO $db, int $ownerTokenId, int $taskId = 4242, array $identity = []): void
+{
+    $identity += [
+        'requested_mode' => 'edge_tts',
+        'pack_id' => 'edge-tts',
+        'pack_version' => '0.3.0',
+        'job' => 'synthesize',
+    ];
+    $now = hub_now();
+    $db->prepare(
+        'INSERT INTO tasks (id, task_type, queue_name, priority, input_json, status, progress, created_at, updated_at, owner_token_id, requested_mode, pack_id, pack_version, job, accelerator)
+         VALUES (:id, :task_type, :queue_name, 0, :input_json, :status, 100, :now, :now, :owner_token_id, :mode, :pack_id, :pack_version, :job, :accelerator)'
+    )->execute([
+        ':id' => $taskId,
+        ':task_type' => 'pack_job',
+        ':queue_name' => 'cpu',
+        ':input_json' => '{}',
+        ':status' => 'success',
+        ':now' => $now,
+        ':owner_token_id' => $ownerTokenId,
+        ':mode' => $identity['requested_mode'],
+        ':pack_id' => $identity['pack_id'],
+        ':pack_version' => $identity['pack_version'],
+        ':job' => $identity['job'],
+        ':accelerator' => 'cpu',
+    ]);
+    $db->prepare(
+        'INSERT INTO runtime_runs (run_id, task_id, pack_id, task, pack_version, state, started_at, finished_at, created_at, gpu_indexes, owned_gpu_pids_json)
+         VALUES (:run_id, :task_id, :pack_id, :task, :pack_version, :state, :now, :now, :now, NULL, :owned)'
+    )->execute([
+        ':run_id' => 'edge-tts-acceptance-runtime',
+        ':task_id' => $taskId,
+        ':pack_id' => $identity['pack_id'],
+        ':task' => $identity['job'],
+        ':pack_version' => $identity['pack_version'],
+        ':state' => 'succeeded',
+        ':now' => $now,
+        ':owned' => '[]',
+    ]);
+}
+
+function hub_test_edge_tts_acceptance_http(array &$requests, string $failure = ''): callable
+{
+    $artifacts = hub_test_edge_tts_acceptance_artifacts();
+    $step = 0;
+    return static function (array $request) use (&$requests, &$step, $failure, $artifacts): array {
+        $requests[] = $request;
+        $headers = $request['headers'] ?? [];
+        hub_test_assert(($request['follow_redirects'] ?? true) === false
+            && ($headers['Authorization'] ?? null) === 'Bearer edge-tts-unit-token-secret',
+            'Edge TTS acceptance requests must use a bearer header and refuse redirects');
+
+        $current = $step++;
+        if ($current === 0) {
+            return $failure === 'list_demo'
+                ? ['status' => 500, 'headers' => [], 'body' => '{}']
+                : ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode(['ok' => true, 'voices' => [[
+                    'id' => 'zh-TW-HsiaoChenNeural',
+                    'demo_url' => '?mode=edge_tts&voice=zh-TW-HsiaoChenNeural',
+                ]]], JSON_THROW_ON_ERROR)];
+        }
+        if ($current === 1) {
+            if ($failure === 'oversize_demo' && (int)($request['max_body_bytes'] ?? 0) > 0) {
+                return ['status' => 200, 'headers' => ['Content-Type' => 'audio/mpeg'], 'body' => str_repeat('d', (int)$request['max_body_bytes'] + 1)];
+            }
+            return $failure === 'list_demo'
+                ? ['status' => 200, 'headers' => ['Content-Type' => 'text/plain'], 'body' => 'not audio']
+                : ['status' => 200, 'headers' => ['Content-Type' => 'audio/mpeg'], 'body' => "ID3\x04\x00\x00demo"];
+        }
+        if ($current === 2) {
+            return $failure === 'submission'
+                ? ['status' => 400, 'headers' => ['Content-Type' => 'application/json'], 'body' => '{}']
+                : ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode(['ok' => true, 'task_id' => 4242, 'status' => 'queued'], JSON_THROW_ON_ERROR)];
+        }
+        if ($current === 3) {
+            return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode([
+                'ok' => true, 'task_id' => 4242, 'status' => $failure === 'task' ? 'failed' : 'queued',
+            ], JSON_THROW_ON_ERROR)];
+        }
+        if ($current === 4) {
+            return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode([
+                'ok' => true, 'task_id' => 4242, 'status' => 'success',
+            ], JSON_THROW_ON_ERROR)];
+        }
+        if ($current === 5) {
+            $result = [];
+            foreach ($artifacts as $type => $artifact) {
+                $result[] = [
+                    'id' => $artifact['id'],
+                    'type' => $type,
+                    'mime_type' => $artifact['mime_type'],
+                    'size_bytes' => strlen((string)$artifact['body']),
+                    'sha256' => hash('sha256', (string)$artifact['body']),
+                ];
+            }
+            if ($failure === 'artifact') {
+                $result[0]['mime_type'] = 'application/octet-stream';
+            }
+            return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => json_encode([
+                'ok' => true, 'task_id' => 4242, 'result' => ['artifacts' => $result],
+            ], JSON_THROW_ON_ERROR)];
+        }
+        $artifactOffset = $current - 6;
+        $artifactValues = array_values($artifacts);
+        if ($artifactOffset >= 0 && $artifactOffset < count($artifactValues)) {
+            $artifact = $artifactValues[$artifactOffset];
+            if ($failure === 'oversize_artifact' && (int)($request['max_body_bytes'] ?? 0) > 0) {
+                return ['status' => 200, 'headers' => ['Content-Type' => $artifact['mime_type']], 'body' => str_repeat('a', (int)$request['max_body_bytes'] + 1)];
+            }
+            return ['status' => 200, 'headers' => ['Content-Type' => $artifact['mime_type']], 'body' => $artifact['body']];
+        }
+        return ['status' => 200, 'headers' => ['Content-Type' => 'application/json'], 'body' => '{"ok":true}'];
+    };
+}
+
+function hub_test_edge_tts_acceptance_command(array &$commands): callable
+{
+    return static function (array $command, int $timeout) use (&$commands): array {
+        $commands[] = $command;
+        hub_test_assert(($command[0] ?? null) === 'ffprobe' && $timeout > 0,
+            'Edge TTS acceptance must verify downloaded audio with ffprobe');
+        return ['exit_code' => 0, 'stdout' => '{"format":{"duration":"1.0"}}', 'stderr' => ''];
+    };
+}
+
+function hub_test_edge_tts_acceptance_main_output(PDO $db, callable $http, callable $command, array $env): array
+{
+    ob_start();
+    $exit = hub_edge_tts_acceptance_main(['edge_tts_acceptance.php'], $db, $http, $command, $env);
+    $output = (string)ob_get_clean();
+    $decoded = json_decode($output, true);
+    hub_test_assert(is_array($decoded), 'Edge TTS acceptance CLI output must be JSON');
+    return ['exit' => $exit, 'output' => $decoded, 'raw' => $output];
+}
+
+hub_test('Edge TTS acceptance verifier is require-able and rejects unsafe configuration without leaks', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    $httpCalls = 0;
+    $http = static function () use (&$httpCalls): array {
+        $httpCalls++;
+        return [];
+    };
+    $command = static fn (): array => ['exit_code' => 1, 'stdout' => '', 'stderr' => ''];
+    $missing = hub_test_edge_tts_acceptance_main_output($db, $http, $command, []);
+    $invalid = hub_test_edge_tts_acceptance_main_output($db, $http, $command, [
+        'AIHUB_EDGE_TTS_ACCEPTANCE_BASE_URL' => 'https://token@hub.example/api.php?bad=1',
+        'AIHUB_EDGE_TTS_ACCEPTANCE_TOKEN' => 'edge-tts-unit-token-secret',
+    ]);
+    $saved = (string)$db->query("SELECT result_json || ' ' || error_message FROM benchmark_runs ORDER BY id DESC LIMIT 1")->fetchColumn();
+    hub_test_assert($missing['exit'] === 1 && $invalid['exit'] === 1
+        && ($missing['output']['error'] ?? null) === 'edge_tts_acceptance_config_invalid'
+        && ($invalid['output']['error'] ?? null) === 'edge_tts_acceptance_config_invalid'
+        && $httpCalls === 0
+        && !str_contains($missing['raw'] . $invalid['raw'] . $saved, 'edge-tts-unit-token-secret')
+        && !str_contains($missing['raw'] . $invalid['raw'] . $saved, 'hub.example'),
+        'Edge TTS acceptance config failures must be bounded, redacted, recorded, and offline');
+});
+
+hub_test('Edge TTS acceptance completes only through ordered public routes and saves a redacted CPU result', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    hub_test_edge_tts_acceptance_insert_local_runtime($db, hub_test_edge_tts_acceptance_token($db));
+    $beforeTemp = glob(sys_get_temp_dir() . '/edge_tts_acceptance_*') ?: [];
+    $requests = [];
+    $commands = [];
+    $run = hub_test_edge_tts_acceptance_main_output(
+        $db,
+        hub_test_edge_tts_acceptance_http($requests),
+        hub_test_edge_tts_acceptance_command($commands),
+        hub_test_edge_tts_acceptance_env(),
+    );
+    $afterTemp = glob(sys_get_temp_dir() . '/edge_tts_acceptance_*') ?: [];
+    $stored = (string)$db->query("SELECT result_json FROM benchmark_runs WHERE benchmark_key = 'edge_tts_async_complete' ORDER BY id DESC LIMIT 1")->fetchColumn();
+    $urls = array_column($requests, 'url');
+    $body = implode('', array_map(static fn (array $request): string => (string)($request['body'] ?? ''), $requests));
+    $forbidden = [
+        'edge-tts-unit-token-secret', 'https://hub.example/3waAIHub/api.php', '4242', '901',
+        hash('sha256', (string)hub_test_edge_tts_acceptance_artifacts()['generated_audio']['body']),
+        'This is a short Edge TTS acceptance check.',
+    ];
+    $redacted = $run['raw'] . $stored;
+    hub_test_assert($run['exit'] === 0 && ($run['output']['ok'] ?? false) === true
+        && count($requests) === 16 && count($commands) === 2 && $beforeTemp === $afterTemp
+        && $urls[0] === 'https://hub.example/3waAIHub/api.php?mode=edge_tts'
+        && $urls[1] === 'https://hub.example/3waAIHub/api.php?mode=edge_tts&voice=zh-TW-HsiaoChenNeural'
+        && str_contains($body, 'include_subtitles=1')
+        && (($run['output']['result']['cpu_queue'] ?? false) === true)
+        && (($run['output']['result']['gpu_lease_absent'] ?? false) === true)
+        && (($run['output']['result']['owned_runtime_pids_absent'] ?? false) === true)
+        && array_filter($forbidden, static fn (string $value): bool => str_contains($redacted, $value)) === [],
+        'Edge TTS acceptance must use only the ordered public API, validate CPU-only runtime facts, clean temporary files, and store redacted evidence');
+});
+
+hub_test('Edge TTS acceptance maps every workflow failure to its bounded public code', function (): void {
+    $expected = [
+        'list_demo' => 'edge_tts_acceptance_list_demo_failed',
+        'submission' => 'edge_tts_acceptance_submission_failed',
+        'task' => 'edge_tts_acceptance_task_failed',
+        'artifact' => 'edge_tts_acceptance_artifact_invalid',
+    ];
+    foreach ($expected as $failure => $code) {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+        hub_test_edge_tts_acceptance_insert_local_runtime($db, hub_test_edge_tts_acceptance_token($db));
+        $requests = [];
+        $commands = [];
+        $run = hub_test_edge_tts_acceptance_main_output(
+            $db,
+            hub_test_edge_tts_acceptance_http($requests, $failure),
+            hub_test_edge_tts_acceptance_command($commands),
+            hub_test_edge_tts_acceptance_env(),
+        );
+        hub_test_assert($run['exit'] === 1 && ($run['output']['error'] ?? null) === $code,
+            'Edge TTS acceptance must map ' . $failure . ' to its bounded failure class');
+    }
+});
+
+hub_test('Edge TTS acceptance rejects a colliding local CPU task from another Pack', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+    hub_test_edge_tts_acceptance_insert_local_runtime($db, hub_test_edge_tts_acceptance_token($db), 4242, [
+        'requested_mode' => 'other_cpu_mode',
+        'pack_id' => 'other-pack',
+        'pack_version' => '1.0.0',
+        'job' => 'other_job',
+    ]);
+    $requests = [];
+    $commands = [];
+    $run = hub_test_edge_tts_acceptance_main_output(
+        $db,
+        hub_test_edge_tts_acceptance_http($requests),
+        hub_test_edge_tts_acceptance_command($commands),
+        hub_test_edge_tts_acceptance_env(),
+    );
+    hub_test_assert($run['exit'] === 1 && ($run['output']['error'] ?? null) === 'edge_tts_acceptance_task_failed',
+        'a Cluster task ID collision with a local non-Edge CPU task must never attest success');
+});
+
+hub_test('Edge TTS acceptance bounds demo and artifact response bodies through its HTTP seam', function (): void {
+    $expected = [
+        'oversize_demo' => 'edge_tts_acceptance_list_demo_failed',
+        'oversize_artifact' => 'edge_tts_acceptance_artifact_invalid',
+    ];
+    foreach ($expected as $failure => $code) {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+        hub_test_edge_tts_acceptance_insert_local_runtime($db, hub_test_edge_tts_acceptance_token($db));
+        $requests = [];
+        $commands = [];
+        $run = hub_test_edge_tts_acceptance_main_output(
+            $db,
+            hub_test_edge_tts_acceptance_http($requests, $failure),
+            hub_test_edge_tts_acceptance_command($commands),
+            hub_test_edge_tts_acceptance_env(),
+        );
+        hub_test_assert($run['exit'] === 1 && ($run['output']['error'] ?? null) === $code
+            && array_filter($requests, static fn (array $request): bool => (int)($request['max_body_bytes'] ?? 0) > 0) !== [],
+            'Edge TTS acceptance must cap ' . $failure . ' bodies before accepting the response');
+    }
+});
+
 hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', function (): void {
     $db = hub_test_reset_db();
     $pack = hub_get_pack('edge-tts');
@@ -69,6 +377,22 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
             'dockerfile' => 'Dockerfile',
             'image' => '3waaihub/edge-tts:0.3.0',
         ], 'Edge TTS must publish its controlled Task 2 runner build metadata');
+    $acceptanceScript = HUB_ROOT . '/scripts/edge_tts_acceptance.php';
+    $contract = hub_pack_l5_contract($manifest);
+    $acceptanceCase = hub_l5_benchmark_case($contract, 'edge_tts_async_complete');
+    hub_test_assert(is_file($acceptanceScript) && (fileperms($acceptanceScript) & 0777) === 0755
+        && array_keys($contract) === ['endpoint', 'method', 'content_type', 'task_type', 'input', 'output', 'errors', 'limits', 'benchmark']
+        && ($contract['endpoint'] ?? null) === 'api.php?mode=edge_tts'
+        && ($contract['method'] ?? null) === 'POST'
+        && ($contract['content_type'] ?? null) === 'application/x-www-form-urlencoded'
+        && ($acceptanceCase ?? null) === [
+            'id' => 'edge_tts_async_complete',
+            'name' => 'Edge TTS real async public-API acceptance',
+            'type' => 'external_acceptance',
+            'mode' => 'edge_tts',
+            'method' => 'POST',
+            'real_inference' => true,
+        ], 'Edge TTS must publish one strict L5 public-API acceptance contract and executable verifier');
     foreach (['Dockerfile', 'edge-tts-entrypoint.sh', 'synthesize.py', 'generate_demos.py', 'voice_catalog.json', 'test_egress_firewall.sh', 'test_synthesize.py', 'test_generate_demos.py'] as $file) {
         $path = HUB_ROOT . '/packs/edge-tts/service/' . $file;
         hub_test_assert(is_file($path), 'Edge TTS runner asset must be present: ' . $file);

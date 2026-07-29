@@ -27,6 +27,54 @@
     "max_upload_mb": 1,
     "require_service_enabled": true
   },
+  "l5_contract": {
+    "endpoint": "api.php?mode=edge_tts",
+    "method": "POST",
+    "content_type": "application/x-www-form-urlencoded",
+    "task_type": "pack_job",
+    "input": {
+      "fields": [
+        {"name": "text", "type": "string", "required": true, "max_length": 4096},
+        {"name": "voice", "type": "string", "required": false, "default": "zh-TW-HsiaoChenNeural", "enum": ["zh-TW-HsiaoChenNeural", "zh-TW-HsiaoYuNeural", "zh-TW-YunJheNeural", "zh-CN-XiaoxiaoNeural", "zh-CN-XiaoyiNeural", "zh-CN-YunjianNeural", "zh-CN-YunxiNeural", "zh-CN-YunxiaNeural", "zh-CN-YunyangNeural", "zh-CN-liaoning-XiaobeiNeural", "zh-CN-shaanxi-XiaoniNeural", "zh-HK-HiuGaaiNeural", "zh-HK-HiuMaanNeural", "zh-HK-WanLungNeural"]},
+        {"name": "rate", "type": "string", "required": false, "default": "+0%", "enum": ["-50%", "-25%", "+0%", "+25%", "+50%"]},
+        {"name": "volume", "type": "string", "required": false, "default": "+0%", "enum": ["-50%", "-25%", "+0%", "+25%", "+50%"]},
+        {"name": "pitch", "type": "string", "required": false, "default": "+0Hz", "enum": ["-50Hz", "-25Hz", "+0Hz", "+25Hz", "+50Hz"]},
+        {"name": "include_subtitles", "type": "boolean", "required": false, "default": false}
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "task_id", "status", "status_url", "result_url", "log_url", "cancel_url", "artifact_url_template"],
+      "task_result": {
+        "required_keys": ["ok", "task_id", "result"],
+        "artifact_types": ["generated_audio", "synthesis_metadata", "subtitle_vtt", "subtitle_srt", "speech_timeline"]
+      },
+      "artifacts": [
+        {"type": "generated_audio", "mime_type": "audio/mpeg", "required": true},
+        {"type": "synthesis_metadata", "mime_type": "application/json", "required": true, "required_keys": ["provider", "client_version", "voice", "rate", "volume", "pitch", "format", "audio_bytes", "elapsed_seconds", "warnings"]},
+        {"type": "subtitle_vtt", "mime_types": ["text/plain", "text/vtt"], "required": true},
+        {"type": "subtitle_srt", "mime_types": ["text/plain", "application/x-subrip", "text/x-subrip", "text/srt"], "required": true},
+        {"type": "speech_timeline", "mime_type": "application/json", "required": true, "required_keys": ["version", "unit", "duration_ms", "sentences", "words"]}
+      ]
+    },
+    "errors": ["invalid_request", "pack_service_disabled", "runtime_not_ready", "upstream_unavailable", "edge_tts_timeout", "edge_tts_failed", "artifact_write_failed", "output_contract_invalid"],
+    "limits": {
+      "max_text_chars": 4096,
+      "max_request_mb": 1,
+      "gateway_timeout_seconds": 180,
+      "task_timeout_seconds": 150,
+      "queue": "cpu",
+      "max_concurrency": 1,
+      "gpu_required": false,
+      "gpu_supported": false,
+      "artifact_requirements": "generated_audio, synthesis_metadata, subtitle_vtt, subtitle_srt, speech_timeline when include_subtitles is true"
+    },
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {"id": "edge_tts_async_complete", "name": "Edge TTS real async public-API acceptance", "type": "external_acceptance", "mode": "edge_tts", "method": "POST", "real_inference": true}
+      ]
+    }
+  },
   "async_jobs": [
     {
       "job": "synthesize",
