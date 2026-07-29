@@ -1,15 +1,24 @@
 <?php
 declare(strict_types=1);
 
-hub_test('PhaseUI-5 log explorer tabs and services job links contract', function (): void {
-    $logPage = (string)file_get_contents(HUB_ROOT . '/admin/log_explorer.php');
-    $servicesPage = (string)file_get_contents(HUB_ROOT . '/admin/services.php');
+require_once HUB_ROOT . '/app/admin_records.php';
 
-    foreach (['tab=api', 'tab=jobs', "'service' => '服務記錄'", "'system' => '系統記錄'", 'API 記錄', '背景工作', '服務記錄', '系統記錄'] as $needle) {
+hub_test('PhaseUI-5 Record Center tabs and service job links contract', function (): void {
+    $logPage = (string)file_get_contents(HUB_ROOT . '/admin/log_explorer.php');
+    $recordHelper = (string)file_get_contents(HUB_ROOT . '/app/admin_records.php');
+    $servicesPage = (string)file_get_contents(HUB_ROOT . '/admin/marketplace.php');
+
+    foreach (['tab=api', 'tab=jobs', 'API 記錄', '背景工作', '服務記錄', '系統記錄'] as $needle) {
         hub_test_assert(str_contains($logPage, $needle), 'log explorer tabs missing ' . $needle);
+    }
+    foreach (["'runs' => '執行歷程'", "'service' => '服務記錄'", "'system' => '系統記錄'"] as $needle) {
+        hub_test_assert(str_contains($recordHelper, $needle), 'Record Center tab helper missing ' . $needle);
     }
     foreach (['name="status"', 'name="action"', 'name="service_id"', 'name="keyword"', 'name="time_from"', 'name="time_to"'] as $needle) {
         hub_test_assert(str_contains($logPage, $needle), 'jobs filter missing ' . $needle);
+    }
+    foreach (['hub_admin_record_job_filters', 'hub_admin_record_command_jobs', 'hub_admin_record_tail_file'] as $needle) {
+        hub_test_assert(str_contains($recordHelper, $needle), 'Record Center jobs helper missing ' . $needle);
     }
     foreach (['hub_command_status_label', 'hub_command_action_label', 'stdout_tail', 'stderr_tail'] as $needle) {
         hub_test_assert(str_contains($logPage, $needle), 'jobs helper/rendering missing ' . $needle);
@@ -17,8 +26,8 @@ hub_test('PhaseUI-5 log explorer tabs and services job links contract', function
 
     hub_test_assert(!str_contains($servicesPage, '<h2>近期背景工作</h2>'), 'services page should not render full recent jobs history');
     hub_test_assert(str_contains($servicesPage, 'log_explorer.php?tab=jobs'), 'services page must link to background jobs tab');
-    hub_test_assert(str_contains($servicesPage, '查看背景工作'), 'services page must show background jobs link');
-    hub_test_assert(str_contains($servicesPage, '查看此服務工作'), 'service card must link to service-specific jobs');
+    hub_test_assert(str_contains($servicesPage, "__('背景工作')"), 'service card must show the background jobs link');
+    hub_test_assert(str_contains($servicesPage, '&amp;service_id='), 'service card must link to service-specific jobs');
     foreach (['service_key', 'pack_id', 'mode', 'runtime_level'] as $technical) {
         hub_test_assert(str_contains($servicesPage, $technical), 'technical value should stay English ' . $technical);
     }
@@ -50,5 +59,5 @@ hub_test('PhaseUI-5 background jobs tab renders command_jobs with filters', func
     }
     hub_test_assert(str_contains($html, 'tab=api'), 'jobs tab should keep API tab link');
     hub_test_assert(str_contains($html, 'tab=jobs'), 'jobs tab should keep jobs tab link');
-    hub_test_assert(hub_log_explorer_tab('unknown') === 'api', 'unknown tab should fallback to api');
+    hub_test_assert(hub_admin_record_tab('unknown') === 'runs', 'unknown tab should fallback to the first Record Center tab');
 });

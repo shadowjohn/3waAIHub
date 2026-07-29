@@ -2588,5 +2588,1585 @@
         "title": "pack.web-screenshot.description",
         "lang": "zh_TW",
         "trans": "在受控網路規則下擷取網頁畫面，供分析與自動化流程使用。"
+    },
+    {
+        "title": "Cluster 管理",
+        "lang": "en",
+        "trans": "Cluster management"
+    },
+    {
+        "title": "GPU Lease",
+        "lang": "en",
+        "trans": "GPU lease"
+    },
+    {
+        "title": "Legacy debug 頁面",
+        "lang": "en",
+        "trans": "Legacy debug page"
+    },
+    {
+        "title": "Pack 相容性",
+        "lang": "en",
+        "trans": "Pack compatibility"
+    },
+    {
+        "title": "Release 相容性",
+        "lang": "en",
+        "trans": "Release compatibility"
+    },
+    {
+        "title": "上傳 Logo",
+        "lang": "en",
+        "trans": "Upload logo"
+    },
+    {
+        "title": "上傳並套用",
+        "lang": "en",
+        "trans": "Upload and apply"
+    },
+    {
+        "title": "主機監測快照尚未建立。",
+        "lang": "en",
+        "trans": "The host metrics snapshot has not been created."
+    },
+    {
+        "title": "主選單",
+        "lang": "en",
+        "trans": "Main navigation"
+    },
+    {
+        "title": "作用中",
+        "lang": "en",
+        "trans": "Active"
+    },
+    {
+        "title": "作用中 Router 路由",
+        "lang": "en",
+        "trans": "Active Router routes"
+    },
+    {
+        "title": "個人資料",
+        "lang": "en",
+        "trans": "Profile"
+    },
+    {
+        "title": "個子節點",
+        "lang": "en",
+        "trans": "child nodes"
+    },
+    {
+        "title": "個服務",
+        "lang": "en",
+        "trans": "services"
+    },
+    {
+        "title": "全部",
+        "lang": "en",
+        "trans": "All"
+    },
+    {
+        "title": "前往 API 記錄",
+        "lang": "en",
+        "trans": "Open API records"
+    },
+    {
+        "title": "前往 Cluster 管理",
+        "lang": "en",
+        "trans": "Open Cluster management"
+    },
+    {
+        "title": "前往執行歷程",
+        "lang": "en",
+        "trans": "Open run history"
+    },
+    {
+        "title": "前往安裝套件",
+        "lang": "en",
+        "trans": "Open Packs"
+    },
+    {
+        "title": "前往已安裝服務",
+        "lang": "en",
+        "trans": "Open installed services"
+    },
+    {
+        "title": "參考樣板",
+        "lang": "en",
+        "trans": "Reference templates"
+    },
+    {
+        "title": "啟動中",
+        "lang": "en",
+        "trans": "Starting"
+    },
+    {
+        "title": "單機站台",
+        "lang": "en",
+        "trans": "Standalone site"
+    },
+    {
+        "title": "執行中工作",
+        "lang": "en",
+        "trans": "Running jobs"
+    },
+    {
+        "title": "多國語系",
+        "lang": "en",
+        "trans": "Languages"
+    },
+    {
+        "title": "套件市集",
+        "lang": "en",
+        "trans": "Pack catalog"
+    },
+    {
+        "title": "子入口節點",
+        "lang": "en",
+        "trans": "Child gateway node"
+    },
+    {
+        "title": "安裝套件工作區",
+        "lang": "en",
+        "trans": "Pack workspace"
+    },
+    {
+        "title": "客戶",
+        "lang": "en",
+        "trans": "Customer"
+    },
+    {
+        "title": "實驗中",
+        "lang": "en",
+        "trans": "Experimental"
+    },
+    {
+        "title": "尚無已配對站台",
+        "lang": "en",
+        "trans": "No paired sites"
+    },
+    {
+        "title": "尚無監測資料",
+        "lang": "en",
+        "trans": "No monitoring data"
+    },
+    {
+        "title": "尚無資料",
+        "lang": "en",
+        "trans": "No data"
+    },
+    {
+        "title": "工作樹狀態",
+        "lang": "en",
+        "trans": "Working tree status"
+    },
+    {
+        "title": "工具",
+        "lang": "en",
+        "trans": "Tools"
+    },
+    {
+        "title": "已安裝服務",
+        "lang": "en",
+        "trans": "Installed services"
+    },
+    {
+        "title": "已發佈 Mode",
+        "lang": "en",
+        "trans": "Published modes"
+    },
+    {
+        "title": "快照",
+        "lang": "en",
+        "trans": "Snapshot"
+    },
+    {
+        "title": "恢復預設",
+        "lang": "en",
+        "trans": "Restore default"
+    },
+    {
+        "title": "排隊中",
+        "lang": "en",
+        "trans": "Queued"
+    },
+    {
+        "title": "接受 PNG、WebP、JPEG；最大 2 MB、2048 × 2048。",
+        "lang": "en",
+        "trans": "Accepts PNG, WebP, and JPEG; up to 2 MB and 2048 × 2048."
+    },
+    {
+        "title": "更新狀態",
+        "lang": "en",
+        "trans": "Update status"
+    },
+    {
+        "title": "最後更新",
+        "lang": "en",
+        "trans": "Last updated"
+    },
+    {
+        "title": "服務狀態分布長條圖",
+        "lang": "en",
+        "trans": "Service status distribution chart"
+    },
+    {
+        "title": "服務記錄",
+        "lang": "en",
+        "trans": "Service logs"
+    },
+    {
+        "title": "未知",
+        "lang": "en",
+        "trans": "Unknown"
+    },
+    {
+        "title": "本地環境",
+        "lang": "en",
+        "trans": "Local environment"
+    },
+    {
+        "title": "標誌",
+        "lang": "en",
+        "trans": "logo"
+    },
+    {
+        "title": "正體中文翻譯標題必須是合法的命名空間 key。",
+        "lang": "en",
+        "trans": "Traditional Chinese translation titles must be valid namespaced keys."
+    },
+    {
+        "title": "此頁只顯示版本與相容性，不會執行更新或部署。",
+        "lang": "en",
+        "trans": "This page only displays versions and compatibility; it does not update or deploy."
+    },
+    {
+        "title": "此頁已退出主選單，正式操作請使用「安裝套件」。",
+        "lang": "en",
+        "trans": "This page has left the main menu. Use Packs for normal operations."
+    },
+    {
+        "title": "此頁已退出主選單，正式操作請使用「記錄中心」。",
+        "lang": "en",
+        "trans": "This page has left the main menu. Use Record Center for normal operations."
+    },
+    {
+        "title": "測試中心",
+        "lang": "en",
+        "trans": "Test center"
+    },
+    {
+        "title": "版本、Pack 與健康狀態",
+        "lang": "en",
+        "trans": "Version, Pack, and health status"
+    },
+    {
+        "title": "版本與節點相容性",
+        "lang": "en",
+        "trans": "Version and node compatibility"
+    },
+    {
+        "title": "版本資料來源",
+        "lang": "en",
+        "trans": "Version data source"
+    },
+    {
+        "title": "狀態未知",
+        "lang": "en",
+        "trans": "Status unknown"
+    },
+    {
+        "title": "狀態正常",
+        "lang": "en",
+        "trans": "Healthy"
+    },
+    {
+        "title": "異常",
+        "lang": "en",
+        "trans": "Error"
+    },
+    {
+        "title": "監測快照已超過 90 秒。",
+        "lang": "en",
+        "trans": "The monitoring snapshot is more than 90 seconds old."
+    },
+    {
+        "title": "目前 Tag",
+        "lang": "en",
+        "trans": "Current tag"
+    },
+    {
+        "title": "目前沒有可用的 GPU 監測資料。",
+        "lang": "en",
+        "trans": "No GPU monitoring data is currently available."
+    },
+    {
+        "title": "目前沒有已安裝或已供應的服務。",
+        "lang": "en",
+        "trans": "There are no installed or published services."
+    },
+    {
+        "title": "目前版本",
+        "lang": "en",
+        "trans": "Current version"
+    },
+    {
+        "title": "目前站台 Logo",
+        "lang": "en",
+        "trans": "Current site logo"
+    },
+    {
+        "title": "確定恢復預設 Logo？",
+        "lang": "en",
+        "trans": "Restore the default logo?"
+    },
+    {
+        "title": "站台",
+        "lang": "en",
+        "trans": "Site"
+    },
+    {
+        "title": "站台識別",
+        "lang": "en",
+        "trans": "Site identity"
+    },
+    {
+        "title": "站台錯誤",
+        "lang": "en",
+        "trans": "Site error"
+    },
+    {
+        "title": "站台離線",
+        "lang": "en",
+        "trans": "Site offline"
+    },
+    {
+        "title": "系統管理員",
+        "lang": "en",
+        "trans": "System administrator"
+    },
+    {
+        "title": "系統記錄",
+        "lang": "en",
+        "trans": "System logs"
+    },
+    {
+        "title": "系統資源、服務與工作佇列總覽",
+        "lang": "en",
+        "trans": "System resources, services, and job queue overview"
+    },
+    {
+        "title": "結束碼",
+        "lang": "en",
+        "trans": "Exit code"
+    },
+    {
+        "title": "統一入口",
+        "lang": "en",
+        "trans": "Unified gateway"
+    },
+    {
+        "title": "聚合子節點",
+        "lang": "en",
+        "trans": "Aggregate child nodes"
+    },
+    {
+        "title": "聚合站台",
+        "lang": "en",
+        "trans": "Aggregate site"
+    },
+    {
+        "title": "背景工作",
+        "lang": "en",
+        "trans": "Background jobs"
+    },
+    {
+        "title": "視覺影像",
+        "lang": "en",
+        "trans": "Vision"
+    },
+    {
+        "title": "語言文字",
+        "lang": "en",
+        "trans": "Language and text"
+    },
+    {
+        "title": "資料已過期",
+        "lang": "en",
+        "trans": "Data stale"
+    },
+    {
+        "title": "跳至主要內容",
+        "lang": "en",
+        "trans": "Skip to main content"
+    },
+    {
+        "title": "遠端最新版本",
+        "lang": "en",
+        "trans": "Latest remote version"
+    },
+    {
+        "title": "選取的站台目前已停用。",
+        "lang": "en",
+        "trans": "The selected site is disabled."
+    },
+    {
+        "title": "重新整理",
+        "lang": "en",
+        "trans": "Refresh"
+    },
+    {
+        "title": "開啟主選單",
+        "lang": "en",
+        "trans": "Open main navigation"
+    },
+    {
+        "title": "關閉",
+        "lang": "en",
+        "trans": "Close"
+    },
+    {
+        "title": "關閉主選單",
+        "lang": "en",
+        "trans": "Close main navigation"
+    },
+    {
+        "title": "需要更新",
+        "lang": "en",
+        "trans": "Update required"
+    },
+    {
+        "title": "音訊語音",
+        "lang": "en",
+        "trans": "Audio and speech"
+    },
+    {
+        "title": "顯示於上方導覽列、登入頁、控制台與 HTML title。",
+        "lang": "en",
+        "trans": "Shown in the top navigation, login page, dashboard, and HTML title."
+    },
+    {
+        "title": "首頁",
+        "lang": "en",
+        "trans": "Home"
+    },
+    {
+        "title": "3wa 整合主機",
+        "lang": "en",
+        "trans": "3wa integration host"
+    },
+    {
+        "title": "3wa 是平常唯一的 push 來源；先完成驗證，再以 fast-forward 對齊主線。",
+        "lang": "en",
+        "trans": "3wa is the normal sole push source. Complete validation before fast-forwarding to main."
+    },
+    {
+        "title": "5090 / 1080 執行節點",
+        "lang": "en",
+        "trans": "5090 / 1080 execution nodes"
+    },
+    {
+        "title": "API endpoint",
+        "lang": "en",
+        "trans": "API endpoint"
+    },
+    {
+        "title": "API URL 已複製。",
+        "lang": "en",
+        "trans": "API URL copied."
+    },
+    {
+        "title": "API 入口",
+        "lang": "en",
+        "trans": "API entry point"
+    },
+    {
+        "title": "API 會員",
+        "lang": "en",
+        "trans": "API members"
+    },
+    {
+        "title": "API 模式",
+        "lang": "en",
+        "trans": "API mode"
+    },
+    {
+        "title": "Build ID",
+        "lang": "en",
+        "trans": "Build ID"
+    },
+    {
+        "title": "Cluster 節點版本",
+        "lang": "en",
+        "trans": "Cluster node versions"
+    },
+    {
+        "title": "Commit",
+        "lang": "en",
+        "trans": "Commit"
+    },
+    {
+        "title": "CPU",
+        "lang": "en",
+        "trans": "CPU"
+    },
+    {
+        "title": "CPU / GPU",
+        "lang": "en",
+        "trans": "CPU / GPU"
+    },
+    {
+        "title": "Git commit",
+        "lang": "en",
+        "trans": "Git commit"
+    },
+    {
+        "title": "GPU",
+        "lang": "en",
+        "trans": "GPU"
+    },
+    {
+        "title": "GPU 需求",
+        "lang": "en",
+        "trans": "GPU requirements"
+    },
+    {
+        "title": "HubPack 分類",
+        "lang": "en",
+        "trans": "HubPack categories"
+    },
+    {
+        "title": "HubPack 清單",
+        "lang": "en",
+        "trans": "HubPack list"
+    },
+    {
+        "title": "Job",
+        "lang": "en",
+        "trans": "Job"
+    },
+    {
+        "title": "Local Job / aihub-run 的執行歷程。這裡只讀歷史，不提供重跑、刪除或取消。",
+        "lang": "en",
+        "trans": "Local Job / aihub-run history. This view is read-only and does not support rerunning, deleting, or canceling."
+    },
+    {
+        "title": "Logo 上傳失敗，請重新選擇圖片。",
+        "lang": "en",
+        "trans": "Logo upload failed. Select the image again."
+    },
+    {
+        "title": "Logo 圖片無法辨識。",
+        "lang": "en",
+        "trans": "The Logo image could not be identified."
+    },
+    {
+        "title": "Logo 尺寸不可超過 2048 × 2048，總像素不可超過 4,194,304。",
+        "lang": "en",
+        "trans": "The Logo cannot exceed 2048 × 2048 or 4,194,304 total pixels."
+    },
+    {
+        "title": "Logo 已上傳並套用。",
+        "lang": "en",
+        "trans": "Logo uploaded and applied."
+    },
+    {
+        "title": "Logo 檔案不可超過 2 MB。",
+        "lang": "en",
+        "trans": "The Logo file cannot exceed 2 MB."
+    },
+    {
+        "title": "Logo 無法儲存，請檢查資料目錄權限。",
+        "lang": "en",
+        "trans": "The Logo could not be saved. Check data directory permissions."
+    },
+    {
+        "title": "Pack",
+        "lang": "en",
+        "trans": "Pack"
+    },
+    {
+        "title": "Pack / Runner Digest",
+        "lang": "en",
+        "trans": "Pack / Runner Digest"
+    },
+    {
+        "title": "pack 驗證失敗",
+        "lang": "en",
+        "trans": "Pack validation failed"
+    },
+    {
+        "title": "RAM 使用分布",
+        "lang": "en",
+        "trans": "RAM usage distribution"
+    },
+    {
+        "title": "RAM 使用分布環圈圖",
+        "lang": "en",
+        "trans": "RAM usage distribution doughnut chart"
+    },
+    {
+        "title": "RAM 峰值",
+        "lang": "en",
+        "trans": "Peak RAM"
+    },
+    {
+        "title": "Router 已啟用，但目前沒有可顯示的站台。請先到 Cluster 管理完成配對或登錄本機節點。",
+        "lang": "en",
+        "trans": "The Router is enabled, but there are no sites to display. Pair a child or register the local node in Cluster Management."
+    },
+    {
+        "title": "Runtime 執行歷程",
+        "lang": "en",
+        "trans": "Runtime history"
+    },
+    {
+        "title": "Tag",
+        "lang": "en",
+        "trans": "Tag"
+    },
+    {
+        "title": "VRAM 使用分布圖",
+        "lang": "en",
+        "trans": "VRAM usage distribution chart"
+    },
+    {
+        "title": "VRAM 峰值",
+        "lang": "en",
+        "trans": "Peak VRAM"
+    },
+    {
+        "title": "WSL 只作為 authoring / validation 環境，不是 deployment authority。",
+        "lang": "en",
+        "trans": "WSL is only an authoring / validation environment, not the deployment authority."
+    },
+    {
+        "title": "上一頁",
+        "lang": "en",
+        "trans": "Previous"
+    },
+    {
+        "title": "下一頁",
+        "lang": "en",
+        "trans": "Next"
+    },
+    {
+        "title": "主機監測快照尚未建立；Dashboard 不會在瀏覽請求中執行主機探測。",
+        "lang": "en",
+        "trans": "No host metrics snapshot exists yet. The Dashboard does not probe the host during web requests."
+    },
+    {
+        "title": "使用者",
+        "lang": "en",
+        "trans": "User"
+    },
+    {
+        "title": "個 Pack",
+        "lang": "en",
+        "trans": "Packs"
+    },
+    {
+        "title": "個已發佈 Mode",
+        "lang": "en",
+        "trans": "published modes"
+    },
+    {
+        "title": "停止",
+        "lang": "en",
+        "trans": "Stop"
+    },
+    {
+        "title": "停止服務",
+        "lang": "en",
+        "trans": "Stop service"
+    },
+    {
+        "title": "健康",
+        "lang": "en",
+        "trans": "Health"
+    },
+    {
+        "title": "健康服務",
+        "lang": "en",
+        "trans": "Healthy services"
+    },
+    {
+        "title": "健康未檢查",
+        "lang": "en",
+        "trans": "Health not checked"
+    },
+    {
+        "title": "健康檢查",
+        "lang": "en",
+        "trans": "Health check"
+    },
+    {
+        "title": "健康檢查中",
+        "lang": "en",
+        "trans": "Checking health"
+    },
+    {
+        "title": "健康異常",
+        "lang": "en",
+        "trans": "Unhealthy"
+    },
+    {
+        "title": "內容",
+        "lang": "en",
+        "trans": "Content"
+    },
+    {
+        "title": "全部服務",
+        "lang": "en",
+        "trans": "All services"
+    },
+    {
+        "title": "共",
+        "lang": "en",
+        "trans": "Total"
+    },
+    {
+        "title": "刷新",
+        "lang": "en",
+        "trans": "Refresh"
+    },
+    {
+        "title": "刷新中",
+        "lang": "en",
+        "trans": "Refreshing"
+    },
+    {
+        "title": "動作",
+        "lang": "en",
+        "trans": "Action"
+    },
+    {
+        "title": "原因",
+        "lang": "en",
+        "trans": "Reason"
+    },
+    {
+        "title": "只接受 PNG、WebP 或 JPEG 圖片。",
+        "lang": "en",
+        "trans": "Only PNG, WebP, or JPEG images are accepted."
+    },
+    {
+        "title": "可安裝",
+        "lang": "en",
+        "trans": "Installable"
+    },
+    {
+        "title": "可用空間",
+        "lang": "en",
+        "trans": "Available space"
+    },
+    {
+        "title": "唯讀更新指引",
+        "lang": "en",
+        "trans": "Read-only update guidance"
+    },
+    {
+        "title": "啟動",
+        "lang": "en",
+        "trans": "Start"
+    },
+    {
+        "title": "啟動服務",
+        "lang": "en",
+        "trans": "Start service"
+    },
+    {
+        "title": "執行層級",
+        "lang": "en",
+        "trans": "Runtime level"
+    },
+    {
+        "title": "執行節點只 fetch、fast-forward 或切到不可變 Tag，永不 push。請將 RELEASE_ID 換成已驗證的 11 位版本 ID。",
+        "lang": "en",
+        "trans": "Execution nodes only fetch, fast-forward, or switch to an immutable Tag; they never push. Replace RELEASE_ID with a verified 11-digit version ID."
+    },
+    {
+        "title": "失敗最多 IP",
+        "lang": "en",
+        "trans": "Top failing IPs"
+    },
+    {
+        "title": "套件 ID",
+        "lang": "en",
+        "trans": "Pack ID"
+    },
+    {
+        "title": "套件摘要",
+        "lang": "en",
+        "trans": "Pack summary"
+    },
+    {
+        "title": "安全驗證失敗，請重新整理後再試。",
+        "lang": "en",
+        "trans": "Security validation failed. Refresh and try again."
+    },
+    {
+        "title": "安裝服務",
+        "lang": "en",
+        "trans": "Install service"
+    },
+    {
+        "title": "安裝狀態",
+        "lang": "en",
+        "trans": "Installation status"
+    },
+    {
+        "title": "安裝選項與技術詳細資料",
+        "lang": "en",
+        "trans": "Installation options and technical details"
+    },
+    {
+        "title": "完整準備狀態",
+        "lang": "en",
+        "trans": "Full readiness status"
+    },
+    {
+        "title": "客戶端 IP",
+        "lang": "en",
+        "trans": "Client IP"
+    },
+    {
+        "title": "容量",
+        "lang": "en",
+        "trans": "Capacity"
+    },
+    {
+        "title": "尚未收集 metrics",
+        "lang": "en",
+        "trans": "Metrics not collected"
+    },
+    {
+        "title": "尚無站台",
+        "lang": "en",
+        "trans": "No sites"
+    },
+    {
+        "title": "尚無背景工作",
+        "lang": "en",
+        "trans": "No background jobs"
+    },
+    {
+        "title": "工作 ID",
+        "lang": "en",
+        "trans": "Job ID"
+    },
+    {
+        "title": "工作樹",
+        "lang": "en",
+        "trans": "Working tree"
+    },
+    {
+        "title": "工作輸出",
+        "lang": "en",
+        "trans": "Job output"
+    },
+    {
+        "title": "已供應",
+        "lang": "en",
+        "trans": "Published"
+    },
+    {
+        "title": "已取消",
+        "lang": "en",
+        "trans": "Canceled"
+    },
+    {
+        "title": "已安裝",
+        "lang": "en",
+        "trans": "Installed"
+    },
+    {
+        "title": "已安裝服務數",
+        "lang": "en",
+        "trans": "Installed services"
+    },
+    {
+        "title": "已排入背景工作 #",
+        "lang": "en",
+        "trans": "Queued background job #"
+    },
+    {
+        "title": "已排入背景工作。",
+        "lang": "en",
+        "trans": "Queued as a background job."
+    },
+    {
+        "title": "常見錯誤碼",
+        "lang": "en",
+        "trans": "Common error codes"
+    },
+    {
+        "title": "建置",
+        "lang": "en",
+        "trans": "Build"
+    },
+    {
+        "title": "建置服務",
+        "lang": "en",
+        "trans": "Build service"
+    },
+    {
+        "title": "後台不會執行 Git 更新、部署或版本切換；請由具備對應權限的人員在主機 CLI 操作。",
+        "lang": "en",
+        "trans": "The admin UI never performs Git updates, deployment, or version switching. Use the host CLI with an authorized account."
+    },
+    {
+        "title": "找不到 HubPack。",
+        "lang": "en",
+        "trans": "HubPack not found."
+    },
+    {
+        "title": "技術詳細資料",
+        "lang": "en",
+        "trans": "Technical details"
+    },
+    {
+        "title": "操作失敗，請重新整理後再試。",
+        "lang": "en",
+        "trans": "The operation failed. Refresh and try again."
+    },
+    {
+        "title": "方法",
+        "lang": "en",
+        "trans": "Method"
+    },
+    {
+        "title": "時間",
+        "lang": "en",
+        "trans": "Time"
+    },
+    {
+        "title": "更新時間",
+        "lang": "en",
+        "trans": "Updated"
+    },
+    {
+        "title": "最後檢查時間",
+        "lang": "en",
+        "trans": "Last checked"
+    },
+    {
+        "title": "最近 24 小時",
+        "lang": "en",
+        "trans": "Last 24 hours"
+    },
+    {
+        "title": "會員",
+        "lang": "en",
+        "trans": "Member"
+    },
+    {
+        "title": "服務 key",
+        "lang": "en",
+        "trans": "Service key"
+    },
+    {
+        "title": "服務列表",
+        "lang": "en",
+        "trans": "Service list"
+    },
+    {
+        "title": "服務摘要",
+        "lang": "en",
+        "trans": "Service summary"
+    },
+    {
+        "title": "服務操作只會排入背景工作，由 command worker 實際執行。",
+        "lang": "en",
+        "trans": "Service operations only enqueue background jobs; the command worker performs the actual work."
+    },
+    {
+        "title": "服務記錄列表",
+        "lang": "en",
+        "trans": "Service log list"
+    },
+    {
+        "title": "未知 Mode",
+        "lang": "en",
+        "trans": "Unknown Mode"
+    },
+    {
+        "title": "本機 port",
+        "lang": "en",
+        "trans": "Local port"
+    },
+    {
+        "title": "本機 port 模式",
+        "lang": "en",
+        "trans": "Local port mode"
+    },
+    {
+        "title": "查 API 介接紀錄、來源 IP、mode、錯誤原因。",
+        "lang": "en",
+        "trans": "Inspect API access records, source IPs, modes, and error reasons."
+    },
+    {
+        "title": "查 command_jobs 排程與執行結果。stdout_tail / stderr_tail 只顯示最後 6000 bytes。",
+        "lang": "en",
+        "trans": "Inspect command_jobs scheduling and results. stdout_tail / stderr_tail show only the final 6000 bytes."
+    },
+    {
+        "title": "查看背景工作",
+        "lang": "en",
+        "trans": "View background job"
+    },
+    {
+        "title": "查看詳情",
+        "lang": "en",
+        "trans": "View details"
+    },
+    {
+        "title": "查詢",
+        "lang": "en",
+        "trans": "Search"
+    },
+    {
+        "title": "模型需求",
+        "lang": "en",
+        "trans": "Model requirements"
+    },
+    {
+        "title": "檢視 Pack 規格與 Preflight 檢查結果，設定後安裝為本機服務。",
+        "lang": "en",
+        "trans": "Review Pack specifications and Preflight results, configure options, then install it as a local service."
+    },
+    {
+        "title": "此分類目前沒有 HubPack。",
+        "lang": "en",
+        "trans": "There are no HubPacks in this category."
+    },
+    {
+        "title": "清除",
+        "lang": "en",
+        "trans": "Clear"
+    },
+    {
+        "title": "無",
+        "lang": "en",
+        "trans": "None"
+    },
+    {
+        "title": "無效的套件 ID。",
+        "lang": "en",
+        "trans": "Invalid Pack ID."
+    },
+    {
+        "title": "無效的服務操作。",
+        "lang": "en",
+        "trans": "Invalid service action."
+    },
+    {
+        "title": "無檢查項目",
+        "lang": "en",
+        "trans": "No checks"
+    },
+    {
+        "title": "無法安裝",
+        "lang": "en",
+        "trans": "Cannot install"
+    },
+    {
+        "title": "無法自動複製，請手動複製。",
+        "lang": "en",
+        "trans": "Automatic copy failed. Copy it manually."
+    },
+    {
+        "title": "無法讀取背景工作狀態。",
+        "lang": "en",
+        "trans": "Could not read background job status."
+    },
+    {
+        "title": "版本",
+        "lang": "en",
+        "trans": "Version"
+    },
+    {
+        "title": "狀態碼",
+        "lang": "en",
+        "trans": "Status code"
+    },
+    {
+        "title": "狀態請以系統環境頁為準",
+        "lang": "en",
+        "trans": "Use System Environment as the authoritative status"
+    },
+    {
+        "title": "環境",
+        "lang": "en",
+        "trans": "Environment"
+    },
+    {
+        "title": "目前有背景工作排隊中。可先在主機執行：",
+        "lang": "en",
+        "trans": "Background jobs are currently queued. You can first run this on the host:"
+    },
+    {
+        "title": "目前沒有 Runtime 執行紀錄。",
+        "lang": "en",
+        "trans": "There is no Runtime history."
+    },
+    {
+        "title": "目前沒有已安裝服務。",
+        "lang": "en",
+        "trans": "There are no installed services."
+    },
+    {
+        "title": "目前沒有已配對的子節點。",
+        "lang": "en",
+        "trans": "There are no paired child nodes."
+    },
+    {
+        "title": "目標層級",
+        "lang": "en",
+        "trans": "Target level"
+    },
+    {
+        "title": "相容",
+        "lang": "en",
+        "trans": "Compatible"
+    },
+    {
+        "title": "相容工具",
+        "lang": "en",
+        "trans": "Compatible tools"
+    },
+    {
+        "title": "磁碟使用率長條圖",
+        "lang": "en",
+        "trans": "Disk usage bar chart"
+    },
+    {
+        "title": "筆",
+        "lang": "en",
+        "trans": "records"
+    },
+    {
+        "title": "筆。",
+        "lang": "en",
+        "trans": "records."
+    },
+    {
+        "title": "筆，第",
+        "lang": "en",
+        "trans": "records, page"
+    },
+    {
+        "title": "結束時間",
+        "lang": "en",
+        "trans": "Finished"
+    },
+    {
+        "title": "結果",
+        "lang": "en",
+        "trans": "Result"
+    },
+    {
+        "title": "耗時",
+        "lang": "en",
+        "trans": "Duration"
+    },
+    {
+        "title": "背景工作列表",
+        "lang": "en",
+        "trans": "Background job list"
+    },
+    {
+        "title": "背景工作失敗，已保留工作輸出。",
+        "lang": "en",
+        "trans": "The background job failed. Its output was preserved."
+    },
+    {
+        "title": "背景工作已取消，已保留工作輸出。",
+        "lang": "en",
+        "trans": "The background job was canceled. Its output was preserved."
+    },
+    {
+        "title": "背景工作逾時，已保留工作輸出。",
+        "lang": "en",
+        "trans": "The background job timed out. Its output was preserved."
+    },
+    {
+        "title": "舊版 IP 白名單",
+        "lang": "en",
+        "trans": "Legacy IP whitelist"
+    },
+    {
+        "title": "被拒絕 IP",
+        "lang": "en",
+        "trans": "Rejected IPs"
+    },
+    {
+        "title": "複製 API URL",
+        "lang": "en",
+        "trans": "Copy API URL"
+    },
+    {
+        "title": "記錄中心頁籤",
+        "lang": "en",
+        "trans": "Record Center tabs"
+    },
+    {
+        "title": "記錄列表",
+        "lang": "en",
+        "trans": "Record list"
+    },
+    {
+        "title": "設定",
+        "lang": "en",
+        "trans": "Configure"
+    },
+    {
+        "title": "設定已套用",
+        "lang": "en",
+        "trans": "Configuration applied"
+    },
+    {
+        "title": "設定服務",
+        "lang": "en",
+        "trans": "Configure service"
+    },
+    {
+        "title": "請填寫標題、有效語系與翻譯內容。",
+        "lang": "en",
+        "trans": "Enter a title, valid language, and translation."
+    },
+    {
+        "title": "請完成標示的必填欄位。",
+        "lang": "en",
+        "trans": "Complete the marked required fields."
+    },
+    {
+        "title": "請求人",
+        "lang": "en",
+        "trans": "Requester"
+    },
+    {
+        "title": "請求來源",
+        "lang": "en",
+        "trans": "Request source"
+    },
+    {
+        "title": "讀取失敗",
+        "lang": "en",
+        "trans": "Load failed"
+    },
+    {
+        "title": "讀取服務摘要失敗，請稍後重試。",
+        "lang": "en",
+        "trans": "Failed to load the service summary. Try again later."
+    },
+    {
+        "title": "讀取背景工作狀態失敗，請稍後重試或重新整理。",
+        "lang": "en",
+        "trans": "Failed to load the background job status. Try again later or refresh."
+    },
+    {
+        "title": "進度",
+        "lang": "en",
+        "trans": "Progress"
+    },
+    {
+        "title": "逾時",
+        "lang": "en",
+        "trans": "Timed out"
+    },
+    {
+        "title": "運作中",
+        "lang": "en",
+        "trans": "Running"
+    },
+    {
+        "title": "重啟",
+        "lang": "en",
+        "trans": "Restart"
+    },
+    {
+        "title": "重啟服務",
+        "lang": "en",
+        "trans": "Restart service"
+    },
+    {
+        "title": "重新建置",
+        "lang": "en",
+        "trans": "Rebuild"
+    },
+    {
+        "title": "錯誤碼",
+        "lang": "en",
+        "trans": "Error code"
+    },
+    {
+        "title": "錯誤訊息",
+        "lang": "en",
+        "trans": "Error message"
+    },
+    {
+        "title": "開始時間",
+        "lang": "en",
+        "trans": "Started"
+    },
+    {
+        "title": "關鍵字",
+        "lang": "en",
+        "trans": "Keyword"
+    },
+    {
+        "title": "階段",
+        "lang": "en",
+        "trans": "Stage"
+    },
+    {
+        "title": "集中查執行歷程、API 記錄、背景工作、服務記錄與系統記錄。IP 篩選的 GET link 一律使用 base64url。",
+        "lang": "en",
+        "trans": "Search runtime history, API records, background jobs, service logs, and system logs in one place. IP filters in GET links always use base64url."
+    },
+    {
+        "title": "需重啟",
+        "lang": "en",
+        "trans": "Restart required"
+    },
+    {
+        "title": "頁，每頁",
+        "lang": "en",
+        "trans": "page, per page"
+    },
+    {
+        "title": "預設 Logo 已恢復。",
+        "lang": "en",
+        "trans": "Default Logo restored."
+    },
+    {
+        "title": "預設 mode",
+        "lang": "en",
+        "trans": "Default mode"
+    },
+    {
+        "title": "驗證錯誤",
+        "lang": "en",
+        "trans": "Validation error"
+    },
+    {
+        "title": "，請等待 command worker 執行。",
+        "lang": "en",
+        "trans": ". Wait for the command worker to run it."
+    },
+    {
+        "title": "；已排入背景工作 #",
+        "lang": "en",
+        "trans": "; queued background job #"
+    },
+    {
+        "title": "GPU 不可用",
+        "lang": "en",
+        "trans": "GPU unavailable"
+    },
+    {
+        "title": "不使用 GPU",
+        "lang": "en",
+        "trans": "No GPU"
+    },
+    {
+        "title": "個。",
+        "lang": "en",
+        "trans": "items."
+    },
+    {
+        "title": "個，失敗",
+        "lang": "en",
+        "trans": "items, failed"
+    },
+    {
+        "title": "可用 GPU",
+        "lang": "en",
+        "trans": "GPU available"
+    },
+    {
+        "title": "套件名稱",
+        "lang": "en",
+        "trans": "Pack name"
+    },
+    {
+        "title": "安裝為服務",
+        "lang": "en",
+        "trans": "Install as service"
+    },
+    {
+        "title": "已建立 Service Instance：",
+        "lang": "en",
+        "trans": "Service Instance created:"
+    },
+    {
+        "title": "本機 HubPack 安裝目錄",
+        "lang": "en",
+        "trans": "Local HubPack installation directory"
+    },
+    {
+        "title": "查看 API 文件",
+        "lang": "en",
+        "trans": "View API documentation"
+    },
+    {
+        "title": "模型可選",
+        "lang": "en",
+        "trans": "Model optional"
+    },
+    {
+        "title": "模型已就緒",
+        "lang": "en",
+        "trans": "Model ready"
+    },
+    {
+        "title": "準備狀態",
+        "lang": "en",
+        "trans": "Readiness"
+    },
+    {
+        "title": "無模型需求",
+        "lang": "en",
+        "trans": "No model required"
+    },
+    {
+        "title": "缺少模型",
+        "lang": "en",
+        "trans": "Model missing"
+    },
+    {
+        "title": "語音示範成功",
+        "lang": "en",
+        "trans": "Voice demo succeeded"
+    },
+    {
+        "title": "輸出",
+        "lang": "en",
+        "trans": "Output"
+    },
+    {
+        "title": "需要 GPU",
+        "lang": "en",
+        "trans": "GPU required"
+    },
+    {
+        "title": "預設密碼仍在使用中，請到「設定」修改密碼。",
+        "lang": "en",
+        "trans": "The default password is still in use. Change it in Settings."
+    },
+    {
+        "title": "顯示名稱",
+        "lang": "en",
+        "trans": "Display name"
+    },
+    {
+        "title": "L5 可驗收",
+        "lang": "en",
+        "trans": "L5 acceptance ready"
+    },
+    {
+        "title": "L4b 真實推論",
+        "lang": "en",
+        "trans": "L4b real inference"
+    },
+    {
+        "title": "L4a 模型檢查",
+        "lang": "en",
+        "trans": "L4a model check"
+    },
+    {
+        "title": "L3 儲存掛載",
+        "lang": "en",
+        "trans": "L3 storage mount"
+    },
+    {
+        "title": "L2 依賴檢查",
+        "lang": "en",
+        "trans": "L2 dependency check"
+    },
+    {
+        "title": "Runtime 未分級",
+        "lang": "en",
+        "trans": "Runtime not classified"
+    },
+    {
+        "title": "尚未宣告 L5 contract",
+        "lang": "en",
+        "trans": "L5 contract not declared"
+    },
+    {
+        "title": "正常",
+        "lang": "en",
+        "trans": "OK"
+    },
+    {
+        "title": "通過",
+        "lang": "en",
+        "trans": "Passed"
+    },
+    {
+        "title": "Ollama 模型拉取",
+        "lang": "en",
+        "trans": "Pull Ollama model"
+    },
+    {
+        "title": "收集服務記錄",
+        "lang": "en",
+        "trans": "Collect service logs"
+    },
+    {
+        "title": "環境檢測",
+        "lang": "en",
+        "trans": "Environment probe"
+    },
+    {
+        "title": "權限修正",
+        "lang": "en",
+        "trans": "Repair permissions"
+    },
+    {
+        "title": "Docker 清理檢查",
+        "lang": "en",
+        "trans": "Docker cleanup check"
+    },
+    {
+        "title": "Docker builder 清理",
+        "lang": "en",
+        "trans": "Docker builder cleanup"
+    },
+    {
+        "title": "基本設定",
+        "lang": "en",
+        "trans": "Basic settings"
+    },
+    {
+        "title": "介面顯示",
+        "lang": "en",
+        "trans": "Appearance"
+    },
+    {
+        "title": "儲存與模型",
+        "lang": "en",
+        "trans": "Storage and models"
+    },
+    {
+        "title": "API 與安全",
+        "lang": "en",
+        "trans": "API and security"
+    },
+    {
+        "title": "Docker 與背景工作",
+        "lang": "en",
+        "trans": "Docker and background jobs"
+    },
+    {
+        "title": "維護與保留",
+        "lang": "en",
+        "trans": "Maintenance and retention"
+    },
+    {
+        "title": "帳號密碼",
+        "lang": "en",
+        "trans": "Account password"
     }
 ]

@@ -1,7 +1,6 @@
 # 3waAIHub
 
-Current: `20260729001` (`2026.07.29.001`) /
-8/7 Admin Market + Cluster Dashboard Preview.
+Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard Preview.
 
 3waAIHub Local 是一套輕量級容器服務與 AI 能力管理平台。它以 HubPack 統一管理長期運行的 Service 與單次執行的 Local Job，提供安裝、啟停、API Gateway、Token、執行歷程與資源使用量追蹤。
 
@@ -33,18 +32,27 @@ Current: `20260729001` (`2026.07.29.001`) /
 - Storage settings / model directory
 - 後台 shell 中文化、站台標題設定、設定頁分頁
 - i18n foundation：SQLite 翻譯表、`USER_LANG` cookie 語系選擇、`__()` helper 與後台多國語系維護頁
-- Marketplace 與模型倉庫卡片式後台 UI
-- 服務管理卡片式 UI、狀態摘要與舊版白名單退場提示
+- 單一 Market 工作區：套件探索、模型需求、安裝狀態與已安裝服務管理
+- 已安裝服務可啟停、重啟、健康檢查，技術細節預設收合
 - 服務狀態拆分：啟用 / 容器 / 健康 / 設定 / 最後工作
-- Dashboard 總覽中控台、服務健康摘要、API 24h 統計、L5 Pack 數、Pack readiness、模型/Docker 空間、Public API Docs / Agent Manifest 狀態與 quick links
+- 依 Cluster 角色顯示的 Dashboard：本機節點摘要或按站台標題切換的 Router 節點資訊
 - Runtime Runs 執行歷程、Resource Sampling、Local Job workspace contract
 - YOLO Model Registry 1B：allowlisted host `.pt` 匯入、`model_ref` idempotent registry、CPU serving predict route、固定 `yolo-gpu0` 雙槽 warm pool
-- Log Explorer 記錄中心：API 記錄、背景工作、服務記錄、系統記錄分頁
+- 記錄中心：執行歷程、API 記錄、背景工作、服務記錄、系統記錄五頁籤
 - 環境診斷與修正建議
 - 唯讀版本識別與更新狀態：顯示 commit、dirty/tag、Pack inventory、Runner digest 與 Cluster 節點相容性
 - Service IP whitelist 與 API access logs
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
 - Marketplace Pack preflight，依最新 host metrics 判斷 Docker / GPU / VRAM / compute capability / storage
+
+## 8/7 管理後台預覽
+
+- `admin/marketplace.php` 是唯一正式 Market 入口；`view=market` 集中套件探索與安裝，`view=services` 管理已安裝服務。`packs.php`、`models.php`、`services.php` 已從主選單隱藏，只保留帶有 Legacy debug 提示的直接入口供除錯。
+- `admin/log_explorer.php` 集中執行歷程、API 記錄、背景工作、服務記錄與系統記錄；舊記錄頁不再出現在主選單。
+- Dashboard 依 standalone、child、router、aggregate 角色顯示。本機角色只顯示本機；Router／Aggregate 以 `station` query string 和「站台標題」切換節點，不使用 GPU 1、GPU 2 之類的代號。
+- 系統設定可上傳站台 Logo；只接受經實際 MIME 與圖片尺寸檢查的 PNG、WebP、JPEG，最大 2 MB、2048 × 2048、4,194,304 pixels，可隨時恢復預設 Logo。
+- 後台 CSS、JavaScript、字型與 Chart.js 均由 repo 內的本機資產供應，不依賴外部 CDN。
+- Aggregate 目前只預留資料模型與 Dashboard／Cluster 管理顯示；Cluster 作為另一個 Router 的子節點及跨層轉送尚未實作。
 
 ## 3wa 節點定位
 
@@ -78,9 +86,11 @@ Current: `20260729001` (`2026.07.29.001`) /
 
 ## 版本與更新
 
-版本採 `YYYYMMDDNNN` 的 11 位 date build ID。後台「系統環境」只讀顯示
-本機與節點狀態；「系統設定」只提供依主機角色區分的 CLI 指引，不會由
-HTTP 執行 Git 或部署操作。
+版本採 `YYYYMMDDNNN` 的 11 位 date build ID。後台「系統環境」提供唯讀
+update view，顯示本機 build、commit、dirty/tag、遠端更新檢查快照，以及
+Cluster 節點的 Pack／Runner／版本相容性；「系統設定」只提供依主機角色
+區分的 CLI 指引。任何瀏覽器請求都不得執行 Git fetch、pull、checkout、
+merge、reset、tag、push 或部署操作。
 
 遠端版本檢查只允許 CLI 執行，且只接受 `refs/tags/<11 digits>`：
 
@@ -90,6 +100,9 @@ php scripts/check_release_update.php
 
 檢查結果會以 `0664` 原子寫入
 `data/cache/release_remote.json`，只保存檢查時間、最新 release ID 與短錯誤碼。
+正常發布由 3wa 主機作為 push authority；5090、1080 等執行節點只 fetch
+並 fast-forward，正式 freeze 後則 checkout 已驗證的 immutable tag，執行
+節點不得 push。WSL 只作開發與驗證環境，不是部署權威。
 8/7 freeze、三台主機一致性與發布權限流程見
 [`docs/operations/release-freeze.md`](docs/operations/release-freeze.md)。
 
@@ -384,7 +397,7 @@ cd /DATA/3waAIHub
 sudo ./scripts/install_command_worker_cron.sh
 ```
 
-系統 cron 會每分鐘呼叫專案內的 `crontab/1min.sh`。這支 script 自己使用 `flock` 防重入，先檢查 runtime 權限、必要時執行 `scripts/fix_permissions.sh`，再收集一次 host metrics snapshot，最後於同一分鐘內用短 delay loop 執行 `scripts/command_worker.php --limit=5` 與 `scripts/task_worker.php --limit=5`。
+系統 cron 會每分鐘呼叫專案內的 `crontab/1min.sh`。這支 script 自己使用 `flock` 防重入，先執行排程的 Router inventory refresh `scripts/cluster_refresh.php`，再檢查 runtime 權限、必要時執行 `scripts/fix_permissions.sh`、收集 host metrics snapshot，最後於同一分鐘內用短 delay loop 執行 `scripts/command_worker.php --limit=5` 與 `scripts/task_worker.php --limit=5`。Router 的 manifest、文件與 API 請求路徑仍可能在資料到期時觸發 due-only refresh；只有 manifest 與 status 都於 90 秒內更新的節點才視為 fresh，過期節點會暫時退出可路由 inventory。
 
 預設 cron 使用 `root` 執行，最穩定。若要改用可信任本機帳號，例如 `john`：
 
@@ -426,7 +439,7 @@ php /DATA/3waAIHub/scripts/collect_host_metrics.php --force
 * * * * * php /DATA/3waAIHub/scripts/collect_host_metrics.php >/dev/null 2>&1
 ```
 
-Dashboard 圖表使用 ECharts CDN；離線環境可能只能看到文字卡片，圖表不會載入。
+Dashboard 圖表使用 repo 內的 `assets/js/vendor/chart.umd.js`，離線環境不需連線外部 CDN。
 
 ## API Access Control
 
@@ -706,12 +719,14 @@ packs/catalog.json
 packs/*/pack.json
 ```
 
-後台入口：
+正式後台入口：
 
 ```text
 http://localhost/3waAIHub/admin/marketplace.php
-http://localhost/3waAIHub/admin/packs.php
 ```
+
+`packs.php`、`models.php`、`services.php` 僅保留為退出主選單的 Legacy debug
+頁；正式操作一律回到 Market 的套件或已安裝服務 view。
 
 第一批 catalog：
 

@@ -375,6 +375,16 @@
   overflow-wrap: anywhere;
 }
 
+.service-required-error summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.service-required-error p {
+  margin: var(--sp-2) 0 0;
+  line-height: 1.6;
+}
+
 .service-job {
   margin-top: var(--sp-3);
 }

@@ -11,6 +11,8 @@ return [
     __DIR__ . '/../test_admin_records.php',
     __DIR__ . '/../test_admin_dashboard.php',
     __DIR__ . '/../test_log_explorer.php',
+    __DIR__ . '/../test_phase_dx31.php',
+    __DIR__ . '/../test_phase_ui5_log_explorer_tabs.php',
     __DIR__ . '/../test_runtime_visibility.php',
     __DIR__ . '/../test_cluster_admin.php',
     __DIR__ . '/../test_environment_probe.php',

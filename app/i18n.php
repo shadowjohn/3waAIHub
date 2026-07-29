@@ -135,9 +135,24 @@ function hub_i18n_seeded(string $key, string $fallback, ?string $lang = null, ?P
     return $fallback;
 }
 
-function hub_i18n_translate_google(string $text, string $targetLang, string $sourceLang = 'auto'): string
+function hub_i18n_google_circuit_state(?bool $open = null): bool
 {
-    if (!function_exists('curl_init')) {
+    static $circuitOpen = false;
+    if ($open !== null) {
+        $circuitOpen = $open;
+    }
+
+    return $circuitOpen;
+}
+
+function hub_i18n_translate_google(
+    string $text,
+    string $targetLang,
+    string $sourceLang = 'auto',
+    ?callable $fetcher = null
+): string
+{
+    if (hub_i18n_google_circuit_state() || ($fetcher === null && !function_exists('curl_init'))) {
         return '';
     }
 
@@ -156,28 +171,43 @@ function hub_i18n_translate_google(string $text, string $targetLang, string $sou
         'dt' => 't',
         'q' => $text,
     ], '', '&', PHP_QUERY_RFC3986);
-    $ch = curl_init('https://translate.googleapis.com/translate_a/single?' . $query);
-    if ($ch === false) {
-        return '';
-    }
+    $url = 'https://translate.googleapis.com/translate_a/single?' . $query;
+    if ($fetcher !== null) {
+        try {
+            $response = $fetcher($url);
+        } catch (Throwable) {
+            hub_i18n_google_circuit_state(true);
+            return '';
+        }
+        $raw = is_array($response) ? ($response['body'] ?? null) : null;
+        $code = is_array($response) ? (int)($response['status'] ?? 0) : 0;
+    } else {
+        $ch = curl_init($url);
+        if ($ch === false) {
+            hub_i18n_google_circuit_state(true);
+            return '';
+        }
 
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_CONNECTTIMEOUT => 3,
-        CURLOPT_TIMEOUT => 8,
-        CURLOPT_SSL_VERIFYPEER => true,
-        CURLOPT_SSL_VERIFYHOST => 2,
-        CURLOPT_USERAGENT => 'Mozilla/5.0 3waAIHub',
-    ]);
-    $raw = curl_exec($ch);
-    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    if (!is_string($raw) || $code >= 400) {
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 1,
+            CURLOPT_TIMEOUT => 3,
+            CURLOPT_SSL_VERIFYPEER => true,
+            CURLOPT_SSL_VERIFYHOST => 2,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 3waAIHub',
+        ]);
+        $raw = curl_exec($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+    }
+    if (!is_string($raw) || $code < 200 || $code >= 400) {
+        hub_i18n_google_circuit_state(true);
         return '';
     }
 
     $json = json_decode($raw, true);
     if (!is_array($json[0] ?? null)) {
+        hub_i18n_google_circuit_state(true);
         return '';
     }
 
@@ -186,7 +216,12 @@ function hub_i18n_translate_google(string $text, string $targetLang, string $sou
         $out .= (string)($row[0] ?? '');
     }
 
-    return trim(str_replace('null', '', $out));
+    $out = trim(str_replace('null', '', $out));
+    if ($out === '') {
+        hub_i18n_google_circuit_state(true);
+    }
+
+    return $out;
 }
 
 function hub_i18n_seed_path(): string

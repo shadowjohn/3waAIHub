@@ -590,10 +590,10 @@ hub_admin_header(__('HubPack 套件'), $user);
                         </div>
 
                         <?php if ($lastError !== ''): ?>
-                            <div class="service-required-error" role="alert">
-                                <strong><?= hub_h(__('失敗')) ?></strong>
-                                <?= hub_h($lastError) ?>
-                            </div>
+                            <details class="service-required-error">
+                                <summary><?= hub_h(__('最近失敗工作')) ?></summary>
+                                <p><?= hub_h($lastError) ?></p>
+                            </details>
                         <?php endif; ?>
 
                         <form class="service-action-form" method="post" data-service-refresh-form="<?= $serviceId ?>">

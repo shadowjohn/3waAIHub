@@ -61,6 +61,44 @@ hub_test('missing keyed translations return fallback without natural translation
     hub_test_assert($after === $before, 'missing keyed translation must not add a natural fallback row');
 });
 
+hub_test('Google translation failure opens a request-local circuit breaker', function (): void {
+    hub_i18n_google_circuit_state(false);
+    $calls = 0;
+    $failed = hub_i18n_translate_google(
+        '控制台',
+        'en',
+        'zh_TW',
+        static function (string $url) use (&$calls): array {
+            $calls++;
+            return ['status' => 503, 'body' => ''];
+        }
+    );
+    hub_test_assert($failed === '', 'failed translation must return an empty result');
+    hub_test_assert(hub_i18n_google_circuit_state(), 'failed translation must open the request-local circuit');
+
+    $blocked = hub_i18n_translate_google(
+        '安裝套件',
+        'en',
+        'zh_TW',
+        static function (string $url) use (&$calls): array {
+            $calls++;
+            return ['status' => 200, 'body' => '[[["Install Packs"]]]'];
+        }
+    );
+    hub_test_assert($blocked === '', 'open translation circuit must return immediately');
+    hub_test_assert($calls === 1, 'open translation circuit must not call the transport again');
+
+    hub_i18n_google_circuit_state(false);
+    $translated = hub_i18n_translate_google(
+        '控制台',
+        'en',
+        'zh_TW',
+        static fn (string $url): array => ['status' => 200, 'body' => '[[["Dashboard"]]]']
+    );
+    hub_test_assert($translated === 'Dashboard', 'translation must work again after the request-local circuit is reset');
+    hub_i18n_google_circuit_state(false);
+});
+
 hub_test('i18n seed imports without overwriting local translations', function (): void {
     $db = hub_test_reset_db();
     $seed = sys_get_temp_dir() . '/3waaihub_i18n_seed_' . getmypid() . '.json';
@@ -178,6 +216,159 @@ hub_test('admin dashboard primary labels use i18n helper', function (): void {
         "__('服務管理')",
     ] as $needle) {
         hub_test_assert(str_contains($dashboard, $needle), 'dashboard label must call __(): ' . $needle);
+    }
+});
+
+hub_test('8/7 admin redesign routes visible labels through i18n without changing technical contracts', function (): void {
+    $layout = (string)file_get_contents(HUB_ROOT . '/admin/_layout.php');
+    foreach (['控制台', '安裝套件', '客戶管理', 'API 金鑰', 'Cluster 管理', '測試中心', '記錄中心', '系統環境', '系統設定'] as $label) {
+        hub_test_assert(
+            str_contains($layout, "__('{$label}')"),
+            'admin navigation label must call __(): ' . $label
+        );
+    }
+
+    $marketModel = (string)file_get_contents(HUB_ROOT . '/app/admin_market.php');
+    $marketSource = (string)file_get_contents(HUB_ROOT . '/admin/marketplace.php');
+    foreach (['全部', '參考樣板', '視覺影像', '語言文字', '音訊語音', '工具', '實驗中'] as $label) {
+        hub_test_assert(str_contains($marketModel, "'{$label}'"), 'Market category missing: ' . $label);
+    }
+    hub_test_assert(
+        str_contains($marketSource, 'hub_h(__((string)$categoryLabel))'),
+        'Market category labels must pass through __()'
+    );
+    foreach (['套件市集', '已安裝服務', '安裝套件工作區'] as $label) {
+        hub_test_assert(str_contains($marketSource, "__('{$label}')"), 'Market workspace label must call __(): ' . $label);
+    }
+
+    $recordModel = (string)file_get_contents(HUB_ROOT . '/app/admin_records.php');
+    $recordSource = (string)file_get_contents(HUB_ROOT . '/admin/log_explorer.php');
+    foreach (['執行歷程', 'API 記錄', '背景工作', '服務記錄', '系統記錄'] as $label) {
+        hub_test_assert(str_contains($recordModel, "'{$label}'"), 'Record Center tab missing: ' . $label);
+    }
+    hub_test_assert(
+        str_contains($recordSource, 'hub_h(__($label))'),
+        'Record Center tab labels must pass through __()'
+    );
+
+    $dashboard = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
+    foreach ([
+        '單機站台',
+        '子入口節點',
+        '統一入口',
+        '聚合站台',
+        '資料已過期',
+        '站台離線',
+        '狀態未知',
+    ] as $label) {
+        hub_test_assert(str_contains($dashboard, "__('{$label}')"), 'Dashboard state label must call __(): ' . $label);
+    }
+
+    $environment = (string)file_get_contents(HUB_ROOT . '/admin/environment.php');
+    foreach (['目前版本', '工作樹狀態', '版本資料來源', '遠端最新版本', '更新狀態'] as $label) {
+        hub_test_assert(str_contains($environment, "__('{$label}')"), 'release label must call __(): ' . $label);
+    }
+
+    $settings = (string)file_get_contents(HUB_ROOT . '/admin/settings.php');
+    foreach (['上傳 Logo', '上傳並套用', '恢復預設'] as $label) {
+        hub_test_assert(str_contains($settings, "__('{$label}')"), 'branding action must call __(): ' . $label);
+    }
+
+    foreach (['排隊中', '啟動中', '執行中', '異常'] as $label) {
+        hub_test_assert(str_contains($marketSource, "__('{$label}')"), 'service state must call __(): ' . $label);
+    }
+
+    foreach ([
+        'admin/packs.php',
+        'admin/models.php',
+        'admin/services.php',
+        'admin/api_usage.php',
+        'admin/runtime_runs.php',
+    ] as $legacyPage) {
+        $source = (string)file_get_contents(HUB_ROOT . '/' . $legacyPage);
+        hub_test_assert(str_contains($source, "__('Legacy debug 頁面')"), $legacyPage . ' notice must call __()');
+        hub_test_assert(
+            str_contains($source, "__('此頁已退出主選單，正式操作請使用"),
+            $legacyPage . ' retirement notice must call __()'
+        );
+    }
+
+    foreach (['pack_id', 'mode', 'runtime_level', 'target_level', 'endpoint', 'execution_type', 'service_key'] as $technical) {
+        hub_test_assert(str_contains($marketSource, $technical), 'technical contract label changed: ' . $technical);
+    }
+
+    $seedRows = json_decode((string)file_get_contents(HUB_ROOT . '/i18n/seed.json'), true, 512, JSON_THROW_ON_ERROR);
+    $englishTitles = [];
+    foreach ($seedRows as $row) {
+        if (is_array($row) && ($row['lang'] ?? '') === 'en') {
+            $englishTitles[(string)($row['title'] ?? '')] = true;
+        }
+    }
+    foreach ([
+        'Cluster 管理',
+        '測試中心',
+        '套件市集',
+        '已安裝服務',
+        '參考樣板',
+        '服務記錄',
+        '系統記錄',
+        '單機站台',
+        '子入口節點',
+        '統一入口',
+        '聚合站台',
+        '資料已過期',
+        '上傳 Logo',
+        '目前版本',
+        'Legacy debug 頁面',
+    ] as $title) {
+        hub_test_assert(isset($englishTitles[$title]), 'English redesign seed missing: ' . $title);
+    }
+
+    foreach ([
+        'L5 可驗收',
+        'L4b 真實推論',
+        'L4a 模型檢查',
+        'L3 儲存掛載',
+        'L2 依賴檢查',
+        'Runtime 未分級',
+        '尚未宣告 L5 contract',
+        '正常',
+        '通過',
+        'Ollama 模型拉取',
+        '收集服務記錄',
+        '環境檢測',
+        '權限修正',
+        'Docker 清理檢查',
+        'Docker builder 清理',
+        '基本設定',
+        '介面顯示',
+        '多國語系',
+        '儲存與模型',
+        'API 與安全',
+        'Docker 與背景工作',
+        '維護與保留',
+        '帳號密碼',
+    ] as $dynamicTitle) {
+        hub_test_assert(isset($englishTitles[$dynamicTitle]), 'English dynamic seed missing: ' . $dynamicTitle);
+    }
+
+    foreach ([
+        'admin/_layout.php',
+        'admin/index.php',
+        'admin/marketplace.php',
+        'admin/log_explorer.php',
+        'app/admin_market.php',
+        'app/admin_records.php',
+    ] as $relativePath) {
+        $source = (string)file_get_contents(HUB_ROOT . '/' . $relativePath);
+        preg_match_all('/__\(\s*([\'"])((?:\\\\.|(?!\1).)*)\1\s*\)/us', $source, $matches);
+        foreach ($matches[2] as $literal) {
+            $title = trim(stripcslashes((string)$literal));
+            hub_test_assert(
+                $title === '' || isset($englishTitles[$title]),
+                $relativePath . ' English seed missing: ' . $title
+            );
+        }
     }
 });
 

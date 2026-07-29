@@ -2559,6 +2559,9 @@ hub_test('cluster router guide documents the unified customer entry', function (
     foreach (['Cluster Router Mode', '登錄 / 更新本機服務', 'cluster_api.php'] as $needle) {
         hub_test_assert(str_contains($guide, $needle), 'cluster guide must document ' . $needle);
     }
+    foreach (['live read-only Git probes', 'cached CLI snapshot', 'complete valid set'] as $needle) {
+        hub_test_assert(str_contains($guide, $needle), 'cluster guide status fallback must document ' . $needle);
+    }
     hub_test_assert(str_contains($clusterPage, 'cluster_public_api_docs.php'), 'Cluster admin page must link to the Router API documentation');
     hub_test_assert(str_contains($layout, 'cluster_public_api_docs.php'), 'customer navigation must link to the Router API documentation');
     hub_test_assert(str_contains($manifestEndpoint, 'hub_cluster_refresh_due_stations($db)') && str_contains($docsEndpoint, 'hub_cluster_refresh_due_stations($db)'), 'public Router discovery must refresh due station inventory');

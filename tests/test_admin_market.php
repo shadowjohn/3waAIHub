@@ -391,6 +391,43 @@ hub_test('canonical service health requires a successful job and a running runti
     );
 });
 
+hub_test('canonical installed services keeps the latest failure detail collapsed', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $jobId = hub_enqueue_command_job(
+        $db,
+        'service_rebuild',
+        (int)$service['id'],
+        ['reason' => 'collapsed-failure-test'],
+        null,
+        '127.0.0.1'
+    );
+    $db->prepare(
+        "UPDATE command_jobs
+         SET status = 'failed', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
+         WHERE id = :id"
+    )->execute([
+        ':error_message' => 'sensitive docker failure detail',
+        ':finished_at' => hub_now(),
+        ':updated_at' => hub_now(),
+        ':id' => $jobId,
+    ]);
+
+    $result = hub_test_admin_market_request(['view' => 'services']);
+    hub_test_assert($result['exit_code'] === 0, 'canonical services failure render failed: ' . $result['output']);
+    hub_test_assert(
+        str_contains($result['stdout'], '<details class="service-required-error"')
+            && str_contains($result['stdout'], '<summary>最近失敗工作</summary>')
+            && str_contains($result['stdout'], 'sensitive docker failure detail'),
+        'latest failure must remain available inside a collapsed detail'
+    );
+    hub_test_assert(
+        preg_match('/<details class="service-required-error"[^>]*\bopen\b/i', $result['stdout']) !== 1,
+        'latest failure detail must be collapsed by default'
+    );
+});
+
 hub_test('legacy service health requires a successful job and a running runtime', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
