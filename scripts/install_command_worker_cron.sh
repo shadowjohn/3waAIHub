@@ -17,6 +17,7 @@ CRON_FILE="${CRON_FILE:-/etc/cron.d/3waaihub-command-worker}"
 HUB_ROOT="$(pwd)"
 LOOP_SCRIPT="$HUB_ROOT/crontab/1min.sh"
 LOG_PATH="$HUB_ROOT/data/logs/command_worker_1min.log"
+CLUSTER_REFRESH_LOG_PATH="$HUB_ROOT/data/logs/cluster_refresh_1min.log"
 
 id "$WORKER_USER" >/dev/null 2>&1 || {
   echo "ERROR: worker user not found: $WORKER_USER"
@@ -27,6 +28,8 @@ mkdir -p data/jobs data/logs
 chmod +x "$LOOP_SCRIPT"
 touch "$LOG_PATH"
 chmod 664 "$LOG_PATH"
+touch "$CLUSTER_REFRESH_LOG_PATH"
+chmod 664 "$CLUSTER_REFRESH_LOG_PATH"
 
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF
@@ -42,4 +45,6 @@ rm -f "$tmp"
 echo "[3waAIHub] Installed command worker cron: $CRON_FILE"
 echo "[3waAIHub] Worker user: $WORKER_USER"
 echo "[3waAIHub] Loop script: $LOOP_SCRIPT"
+echo "[3waAIHub] Cluster station refresh: once per minute through the shared loop."
+echo "[3waAIHub] Cluster refresh log: $CLUSTER_REFRESH_LOG_PATH"
 echo "[3waAIHub] Log: $LOG_PATH"

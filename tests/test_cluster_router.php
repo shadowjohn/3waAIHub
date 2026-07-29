@@ -999,14 +999,184 @@ hub_test('cluster child status stays lightweight and filters unavailable selecte
         ]);
 
         $payload = hub_cluster_status_payload($db);
-        hub_test_assert(array_keys($payload) === ['ok', 'snapshot_at', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes'], 'status payload must keep its exact lightweight shape');
+        hub_test_assert(array_keys($payload) === [
+            'ok', 'snapshot_at', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes',
+            'release', 'packs', 'runners', 'health', 'cluster',
+        ], 'status payload must keep its exact compact health shape');
+        foreach (['release', 'packs', 'runners', 'health', 'cluster'] as $key) {
+            hub_test_assert(array_key_exists($key, $payload), 'cluster status report missing ' . $key);
+        }
+        hub_test_assert(array_keys($payload['cluster']) === ['aggregate', 'children_count', 'published_mode_count'], 'aggregate report shape mismatch');
         hub_test_assert(($payload['gpu']['name'] ?? '') === 'Snapshot GPU' && ($payload['gpu']['memory_free_mb'] ?? 0) === 4096, 'status payload must use the latest stored host GPU metric without running a host command');
         hub_test_assert($payload['modes'] === ['ocr'], 'status payload must include selected running modes only');
         hub_test_assert($payload['active_gpu_leases'] === 1 && $payload['queued_jobs'] === 1 && $payload['running_jobs'] === 1, 'status payload counters must reflect current work');
 
+        $unknownRelease = $payload;
+        $unknownRelease['release']['commit'] = '';
+        $unknownRelease['release']['dirty'] = null;
+        $fallback = hub_cluster_status_payload($db, [
+            'git' => $unknownRelease['release'],
+            'packs' => $payload['packs'],
+            'runners' => $payload['runners'],
+            'health' => $payload['health'],
+        ]);
+        hub_test_assert(array_keys($fallback) === [
+            'ok', 'snapshot_at', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes',
+        ], 'unknown Git evidence must fall back to the legacy health payload');
+
         hub_test_cluster_publish_mode($db, 'ocr', false);
         hub_test_assert(hub_cluster_status_payload($db)['modes'] === [], 'status payload must omit stopped selected modes');
     });
+});
+
+hub_test('cluster station freshness tolerates one-minute cron jitter', function (): void {
+    $now = strtotime('2026-07-29 12:00:00');
+    $station = [
+        'manifest_fetched_at' => '2026-07-29 11:58:40',
+        'status_fetched_at' => '2026-07-29 11:58:40',
+    ];
+    hub_test_assert(hub_cluster_station_is_fresh($station, $now), '80-second station snapshot must survive cron jitter');
+    $station['status_fetched_at'] = '2026-07-29 11:58:29';
+    hub_test_assert(!hub_cluster_station_is_fresh($station, $now), '91-second station snapshot must be stale');
+});
+
+hub_test('cluster status snapshots retain only bounded release and aggregate health fields', function (): void {
+    $now = time();
+    $status = [
+        'ok' => true,
+        'snapshot_at' => date('Y-m-d H:i:s', $now),
+        'gpu' => [
+            'available' => true,
+            'name' => 'Snapshot GPU',
+            'reason' => 'https://private.example/gpu-error',
+            'driver_version' => '/private/driver',
+            'cuda_version' => 'https://private.example/cuda',
+        ],
+        'active_gpu_leases' => 1,
+        'queued_jobs' => 2,
+        'running_jobs' => 3,
+        'modes' => ['ocr'],
+        'release' => [
+            'build_id' => '20260729001',
+            'commit' => 'abcdef123456',
+            'dirty' => false,
+            'tag' => '',
+            'token' => 'release-secret',
+            'url' => 'https://station.example/repository',
+        ],
+        'packs' => ['hello' => '0.1.0'],
+        'runners' => [
+            'hello' => [
+                'pack_version' => '0.1.0',
+                'runner_version' => '1.0.0',
+                'image' => 'registry.example/private/hello',
+                'digest' => 'sha256:' . str_repeat('a', 64),
+                'observed_at' => '2026-07-29 12:00:00',
+                'output' => 'private command output',
+            ],
+        ],
+        'health' => [
+            'status' => 'ok',
+            'installed_services' => 1,
+            'running_services' => 1,
+            'failed_services' => 0,
+            'queued_jobs' => 2,
+            'running_jobs' => 3,
+            'path' => '/private/runtime',
+        ],
+        'cluster' => [
+            'aggregate' => true,
+            'children_count' => 2,
+            'published_mode_count' => 1,
+            'token' => 'cluster-secret',
+        ],
+    ];
+
+    $snapshot = hub_cluster_compact_status_snapshot($status, $now);
+    hub_test_assert($snapshot !== null, 'valid compact release status must be accepted');
+    hub_test_assert(($snapshot['release'] ?? null) === [
+        'build_id' => '20260729001',
+        'commit' => 'abcdef123456',
+        'dirty' => false,
+        'tag' => '',
+    ], 'release snapshot shape mismatch');
+    hub_test_assert(($snapshot['packs'] ?? null) === ['hello' => '0.1.0'], 'Pack snapshot shape mismatch');
+    hub_test_assert(($snapshot['runners'] ?? null) === [
+        'hello' => ['digest' => 'sha256:' . str_repeat('a', 64)],
+    ], 'runner snapshot must retain only its bounded digest');
+    hub_test_assert(($snapshot['health'] ?? null) === [
+        'status' => 'ok',
+        'installed_services' => 1,
+        'running_services' => 1,
+        'failed_services' => 0,
+        'queued_jobs' => 2,
+        'running_jobs' => 3,
+    ], 'health snapshot shape mismatch');
+    hub_test_assert(($snapshot['cluster'] ?? null) === [
+        'aggregate' => true,
+        'children_count' => 2,
+        'published_mode_count' => 1,
+    ], 'cluster snapshot shape mismatch');
+    hub_test_assert(($snapshot['gpu'] ?? null) === [
+        'available' => true,
+        'name' => 'Snapshot GPU',
+    ], 'GPU snapshot must discard unsafe string fields');
+    $encoded = json_encode($snapshot, JSON_THROW_ON_ERROR);
+    foreach (['release-secret', 'station.example', 'registry.example', 'private command output', '/private/runtime', 'cluster-secret', 'private.example/gpu', '/private/driver'] as $forbidden) {
+        hub_test_assert(!str_contains($encoded, $forbidden), 'compact status leaked forbidden nested data: ' . $forbidden);
+    }
+
+    $legacy = array_diff_key($status, array_flip(['release', 'packs', 'runners', 'health', 'cluster']));
+    hub_test_assert(hub_cluster_compact_status_snapshot($legacy, $now) !== null, 'legacy station status must remain readable during rolling updates');
+
+    $invalidStatuses = [];
+    $invalid = $status;
+    $invalid['release']['build_id'] = '2026072900';
+    $invalidStatuses['short build ID'] = $invalid;
+    $invalid = $status;
+    $invalid['release']['commit'] = 'ABCDEF1';
+    $invalidStatuses['uppercase commit'] = $invalid;
+    $invalid = $status;
+    $invalid['release']['dirty'] = 0;
+    $invalidStatuses['non-boolean dirty state'] = $invalid;
+    $invalid = $status;
+    $invalid['packs']['hello'] = str_repeat('v', 65);
+    $invalidStatuses['oversized Pack version'] = $invalid;
+    $invalid = $status;
+    $invalid['packs']['hello'] = 'https://private.example/version';
+    $invalidStatuses['URL Pack version'] = $invalid;
+    $invalid = $status;
+    $invalid['packs']['hello'] = '/private/version';
+    $invalidStatuses['path Pack version'] = $invalid;
+    $invalid = $status;
+    $invalid['runners']['hello']['digest'] = str_repeat('d', 257);
+    $invalidStatuses['oversized runner digest'] = $invalid;
+    $invalid = $status;
+    $invalid['runners']['hello']['digest'] = 'https://private.example/digest';
+    $invalidStatuses['URL runner digest'] = $invalid;
+    $invalid = $status;
+    $invalid['runners']['hello']['digest'] = '/private/digest';
+    $invalidStatuses['path runner digest'] = $invalid;
+    $invalid = $status;
+    $invalid['cluster']['aggregate'] = 1;
+    $invalidStatuses['non-boolean aggregate state'] = $invalid;
+    $invalid = $status;
+    $invalid['cluster']['children_count'] = -1;
+    $invalidStatuses['negative child count'] = $invalid;
+    foreach ($invalidStatuses as $case => $invalidStatus) {
+        hub_test_assert(hub_cluster_compact_status_snapshot($invalidStatus, $now) === null, 'compact status accepted ' . $case);
+    }
+
+    $numericPack = $status;
+    $numericPack['packs'] = ['123' => '1.0.0'];
+    $numericPack['runners'] = ['123' => ['digest' => 'sha256:' . str_repeat('c', 64)]];
+    $numericSnapshot = hub_cluster_compact_status_snapshot($numericPack, $now);
+    hub_test_assert(
+        $numericSnapshot !== null
+        && ($numericSnapshot['packs'][123] ?? '') === '1.0.0'
+        && ($numericSnapshot['runners'][123]['digest'] ?? '') === 'sha256:' . str_repeat('c', 64),
+        'numeric-only Pack IDs must preserve compact report data'
+    );
 });
 
 hub_test('cluster inventory refresh fetches manifest then authenticated status without leaking station secrets', function (): void {
@@ -1049,7 +1219,7 @@ hub_test('cluster inventory refresh fetches manifest then authenticated status w
             return ['status' => 500, 'body' => ''];
         });
         hub_test_assert($skippedRequests === 0, 'station refresh must not repeat within ten seconds');
-        $stored['manifest_fetched_at'] = date('Y-m-d H:i:s', time() - 31);
+        $stored['manifest_fetched_at'] = date('Y-m-d H:i:s', time() - 91);
         hub_test_assert(!hub_cluster_station_is_fresh($stored), 'stale manifest must make a station unavailable');
     });
 });
@@ -2469,9 +2639,9 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
         ]);
         $store->execute([
             ':manifest_json' => json_encode(['modes' => ['tts'], 'services' => [array_replace($contract, ['mode' => 'tts'])]], JSON_THROW_ON_ERROR),
-            ':manifest_fetched_at' => date('Y-m-d H:i:s', time() - 31),
+            ':manifest_fetched_at' => date('Y-m-d H:i:s', time() - 91),
             ':status_json' => json_encode(['modes' => ['tts'], 'gpu' => ['memory_free_mb' => 4096], 'active_gpu_leases' => 0, 'queued_jobs' => 0, 'running_jobs' => 0], JSON_THROW_ON_ERROR),
-            ':status_fetched_at' => date('Y-m-d H:i:s', time() - 31),
+            ':status_fetched_at' => date('Y-m-d H:i:s', time() - 91),
             ':id' => (int)$stale['id'],
         ]);
 
@@ -2615,7 +2785,13 @@ hub_test('cluster admin usage helpers count submit events and keep station prese
                  status_json = :status_json, status_fetched_at = :status_fetched_at
              WHERE id = :id'
         )->execute([
-            ':manifest_json' => json_encode(['modes' => ['vision', 'tts']], JSON_THROW_ON_ERROR),
+            ':manifest_json' => json_encode([
+                'modes' => ['vision', 'tts'],
+                'services' => [
+                    ['mode' => 'vision', 'name' => 'Vision'],
+                    ['mode' => 'tts', 'name' => 'Speech'],
+                ],
+            ], JSON_THROW_ON_ERROR),
             ':manifest_fetched_at' => $now,
             ':status_json' => json_encode([
                 'modes' => ['vision'],
@@ -2623,6 +2799,35 @@ hub_test('cluster admin usage helpers count submit events and keep station prese
                 'active_gpu_leases' => 2,
                 'queued_jobs' => 3,
                 'running_jobs' => 4,
+                'release' => [
+                    'build_id' => '20260807001',
+                    'commit' => 'abcdef1',
+                    'dirty' => false,
+                    'tag' => '',
+                    'token' => 'dashboard-release-secret',
+                ],
+                'packs' => hub_release_pack_inventory(),
+                'runners' => [
+                    'vision_pack' => [
+                        'digest' => 'sha256:' . str_repeat('b', 64),
+                        'path' => '/private/image',
+                    ],
+                ],
+                'health' => [
+                    'status' => 'ok',
+                    'installed_services' => 2,
+                    'running_services' => 1,
+                    'failed_services' => 0,
+                    'queued_jobs' => 3,
+                    'running_jobs' => 4,
+                    'output' => 'private health output',
+                ],
+                'cluster' => [
+                    'aggregate' => true,
+                    'children_count' => 2,
+                    'published_mode_count' => 1,
+                    'url' => 'https://private.example',
+                ],
             ], JSON_THROW_ON_ERROR),
             ':status_fetched_at' => $now,
             ':id' => (int)$station['id'],
@@ -2708,6 +2913,25 @@ hub_test('cluster admin usage helpers count submit events and keep station prese
             ['mode' => 'tts', 'ready' => false],
             ['mode' => 'vision', 'ready' => true],
         ], 'station dashboard must show manifest and status readiness per mode');
+        hub_test_assert(($dashboard[0]['release'] ?? null) === [
+            'build_id' => '20260807001',
+            'commit' => 'abcdef1',
+            'dirty' => false,
+            'tag' => '',
+        ], 'station dashboard release shape mismatch');
+        hub_test_assert(($dashboard[0]['packs'] ?? null) === hub_release_pack_inventory(), 'station dashboard Pack inventory mismatch');
+        hub_test_assert(($dashboard[0]['runners']['vision_pack']['digest'] ?? '') === 'sha256:' . str_repeat('b', 64), 'station dashboard runner digest missing');
+        hub_test_assert(($dashboard[0]['health']['status'] ?? '') === 'ok', 'station dashboard health missing');
+        hub_test_assert(($dashboard[0]['cluster'] ?? null) === [
+            'aggregate' => true,
+            'children_count' => 2,
+            'published_mode_count' => 1,
+        ], 'station dashboard aggregate shape mismatch');
+        hub_test_assert(($dashboard[0]['service_count'] ?? 0) === 2 && array_column($dashboard[0]['services'] ?? [], 'mode') === ['vision', 'tts'], 'station dashboard supplied services mismatch');
+        hub_test_assert(($dashboard[0]['release_compatible'] ?? null) === false && ($dashboard[0]['pack_compatible'] ?? null) === true, 'station dashboard local compatibility mismatch');
+        foreach (['dashboard-release-secret', '/private/image', 'private health output', 'private.example'] as $forbidden) {
+            hub_test_assert(!str_contains(json_encode($dashboard[0], JSON_THROW_ON_ERROR), $forbidden), 'station dashboard leaked forbidden nested data: ' . $forbidden);
+        }
         hub_test_assert(!str_contains(json_encode($dashboard, JSON_THROW_ON_ERROR), '3wa_live_station_secret'), 'station dashboard must never expose a decrypted station token');
         hub_test_assert(hub_test_throws(static fn (): array => hub_cluster_usage_summary($db, ['station_id' => '1 OR 1=1'])), 'cluster usage filters must reject untrusted station values');
     });

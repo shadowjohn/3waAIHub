@@ -8,6 +8,13 @@ fail() {
   exit 1
 }
 
+refresh_count="$(grep -c 'php scripts/cluster_refresh.php' crontab/1min.sh || true)"
+[ "$refresh_count" = "1" ] || fail "cluster refresh cadence must invoke the refresh CLI exactly once"
+refresh_line="$(grep -n 'php scripts/cluster_refresh.php' crontab/1min.sh | cut -d: -f1)"
+command_lock_line="$(grep -n 'exec 9>' crontab/1min.sh | cut -d: -f1)"
+[ "$refresh_line" -lt "$command_lock_line" ] || fail "cluster refresh cadence must run before the command worker lock"
+grep -q 'CLUSTER_REFRESH_LOCK_FILE' crontab/1min.sh || fail "cluster refresh cadence lock missing"
+
 before=""
 if [ -f data/3waaihub.sqlite ]; then
   before="$(stat -c %Y data/3waaihub.sqlite)"

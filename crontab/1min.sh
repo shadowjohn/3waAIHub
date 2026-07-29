@@ -7,6 +7,8 @@ cd "$HUB_ROOT"
 
 COMMAND_LOCK_FILE="${COMMAND_WORKER_LOCK_FILE:-data/jobs/command_worker_1min_command.lock}"
 TASK_LOCK_FILE="${TASK_WORKER_LOCK_FILE:-data/jobs/command_worker_1min.lock}"
+CLUSTER_REFRESH_LOCK_FILE="${CLUSTER_REFRESH_LOCK_FILE:-data/jobs/cluster_refresh_1min.lock}"
+CLUSTER_REFRESH_LOG_PATH="${CLUSTER_REFRESH_LOG_PATH:-data/logs/cluster_refresh_1min.log}"
 WORKER_LIMIT="${WORKER_LIMIT:-5}"
 TASK_WORKER_LIMIT="${TASK_WORKER_LIMIT:-5}"
 CALLBACK_WORKER_LIMIT="${CALLBACK_WORKER_LIMIT:-5}"
@@ -56,6 +58,16 @@ needs_permission_fix() {
 if ! command -v flock >/dev/null 2>&1; then
   echo "[3waAIHub] ERROR: flock not found. Install util-linux first."
   exit 1
+fi
+
+exec 7>"$CLUSTER_REFRESH_LOCK_FILE"
+if flock -n 7; then
+  if ! php scripts/cluster_refresh.php 2>&1 | tee -a "$CLUSTER_REFRESH_LOG_PATH"; then
+    echo "[3waAIHub] cluster station refresh failed."
+  fi
+  flock -u 7
+else
+  echo "[3waAIHub] cluster station refresh already running; skip."
 fi
 
 tick=1

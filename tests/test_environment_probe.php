@@ -41,14 +41,77 @@ hub_test('Windows Linux-only environment probes return exact neutral N/A before 
     hub_test_assert(hub_current_user_in_group('docker', 'windows') === $notApplicable, 'Windows POSIX group probe must be N/A');
 
     $worker = hub_collect_command_worker_status('windows');
-    foreach (['cron_installed', 'cron_file', 'cron_user', 'cron_line', 'loop_script_exists', 'loop_script_executable', 'flock_available', 'install_command'] as $key) {
+    foreach (['cron_installed', 'cron_file', 'cron_user', 'cron_line', 'loop_script_exists', 'loop_script_executable', 'flock_available', 'cluster_refresh_configured', 'install_command'] as $key) {
         hub_test_assert(($worker[$key] ?? null) === $notApplicable, 'Windows Linux worker field must be N/A: ' . $key);
     }
+    hub_test_assert(str_ends_with((string)($worker['cluster_refresh_log_path'] ?? ''), 'cluster_refresh_1min.log'), 'Windows cluster refresh log path mismatch');
     $workerScript = HUB_ROOT . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'command_worker.php';
     hub_test_assert(($worker['manual_command'] ?? '') === 'php ' . hub_powershell_single_quoted_literal($workerScript) . ' --limit=5', 'Windows manual command worker command must use a safe PowerShell literal');
 
     $probeSource = (string)file_get_contents(HUB_ROOT . '/app/environment_probe.php');
     hub_test_assert(str_contains($probeSource, "'docker_group_warning' => \$isWindows ? hub_not_applicable_status()"), 'Windows Docker group warning must use the exact N/A shape');
+});
+
+hub_test('cluster refresh cron has one independently locked attempt per minute', function (): void {
+    $loopPath = HUB_ROOT . '/crontab/1min.sh';
+    $loop = (string)file_get_contents($loopPath);
+    $refreshCall = 'php scripts/cluster_refresh.php';
+    hub_test_assert(substr_count($loop, $refreshCall) === 1, 'one-minute cron must invoke cluster refresh exactly once');
+    $refreshPosition = strpos($loop, $refreshCall);
+    $commandLockPosition = strpos($loop, 'exec 9>');
+    hub_test_assert($refreshPosition !== false && $commandLockPosition !== false && $refreshPosition < $commandLockPosition, 'cluster refresh must attempt before the long command-worker lock');
+    hub_test_assert(str_contains($loop, 'CLUSTER_REFRESH_LOCK_FILE') && str_contains($loop, 'flock -n 7') && str_contains($loop, 'flock -u 7'), 'cluster refresh must use and release a dedicated nonblocking lock');
+    hub_test_assert(str_contains($loop, 'CLUSTER_REFRESH_LOG_PATH') && str_contains($loop, 'tee -a "$CLUSTER_REFRESH_LOG_PATH"'), 'cluster refresh must write its dedicated log while preserving shared cron output');
+
+    $periodicScripts = array_merge(
+        glob(HUB_ROOT . '/crontab/*') ?: [],
+        glob(HUB_ROOT . '/scripts/*cron*.sh') ?: []
+    );
+    foreach ($periodicScripts as $path) {
+        if (realpath($path) !== realpath($loopPath)) {
+            hub_test_assert(!str_contains((string)file_get_contents($path), $refreshCall), 'another periodic script invokes cluster refresh: ' . basename($path));
+        }
+    }
+
+    $refresh = (string)file_get_contents(HUB_ROOT . '/scripts/cluster_refresh.php');
+    $snapshotPosition = strpos($refresh, 'hub_release_snapshot_local_git();');
+    $routerGuardPosition = strpos($refresh, 'if (!hub_cluster_router_enabled($db))');
+    hub_test_assert($snapshotPosition !== false && $routerGuardPosition !== false && $snapshotPosition < $routerGuardPosition, 'local release snapshot must refresh before the router-disabled exit');
+    $stationLoopPosition = strpos($refresh, 'foreach (hub_cluster_refresh_due_stations');
+    hub_test_assert(
+        str_contains($refresh, 'release_snapshot_failed')
+        && str_contains($refresh, 'catch (Throwable)')
+        && $stationLoopPosition !== false
+        && $snapshotPosition < $stationLoopPosition,
+        'release snapshot failure must stay compact and continue to station refresh'
+    );
+
+    $worker = hub_collect_command_worker_status('linux');
+    foreach (['cluster_refresh_configured', 'cluster_refresh_log_path', 'last_cluster_refresh_log_at'] as $key) {
+        hub_test_assert(array_key_exists($key, $worker), 'worker status missing ' . $key);
+    }
+    hub_test_assert(is_bool($worker['cluster_refresh_configured']), 'Linux cluster refresh configuration must be boolean');
+    hub_test_assert(str_ends_with($worker['cluster_refresh_log_path'], '/cluster_refresh_1min.log'), 'cluster refresh log path mismatch');
+    hub_test_assert($worker['cluster_refresh_log_path'] !== $worker['log_path'], 'cluster refresh needs a truthful dedicated timestamp source');
+    $currentCron = [
+        'installed' => true,
+        'line' => '* * * * * root ' . HUB_ROOT . '/crontab/1min.sh',
+    ];
+    hub_test_assert(hub_command_worker_cluster_refresh_configured($currentCron, $loopPath, $loop), 'current checkout cron must be recognized');
+    $legacyCron = ['installed' => true, 'line' => '* * * * * root ' . HUB_ROOT . '/scripts/command_worker_loop.sh'];
+    hub_test_assert(!hub_command_worker_cluster_refresh_configured($legacyCron, $loopPath, $loop), 'legacy worker cron must not claim Cluster refresh');
+    $otherCron = ['installed' => true, 'line' => '* * * * * root /other/3waAIHub/crontab/1min.sh'];
+    hub_test_assert(!hub_command_worker_cluster_refresh_configured($otherCron, $loopPath, $loop), 'another checkout cron must not claim Cluster refresh');
+    $dailyCron = ['installed' => true, 'line' => '0 0 * * * root ' . HUB_ROOT . '/crontab/1min.sh'];
+    hub_test_assert(!hub_command_worker_cluster_refresh_configured($dailyCron, $loopPath, $loop), 'daily cron must not claim per-minute Cluster refresh');
+    $backupCron = ['installed' => true, 'line' => '* * * * * root ' . HUB_ROOT . '/crontab/1min.sh.bak'];
+    hub_test_assert(!hub_command_worker_cluster_refresh_configured($backupCron, $loopPath, $loop), 'backup loop path must not claim Cluster refresh');
+
+    $installer = (string)file_get_contents(HUB_ROOT . '/scripts/install_command_worker_cron.sh');
+    hub_test_assert(str_contains($installer, 'Cluster station refresh'), 'cron installer must report the shared Cluster refresh schedule');
+    hub_test_assert(str_contains($installer, 'CLUSTER_REFRESH_LOG_PATH'), 'cron installer must prepare the Cluster refresh log');
+    $selfCheck = (string)file_get_contents(HUB_ROOT . '/scripts/bootstrap_self_check.sh');
+    hub_test_assert(str_contains($selfCheck, 'cluster refresh cadence'), 'bootstrap self-check must verify Cluster refresh cadence');
 });
 
 hub_test('web protection probe reports local server state without network access', function (): void {

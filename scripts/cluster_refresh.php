@@ -13,6 +13,16 @@ if ($arguments !== [] && $arguments !== ['--force']) {
 $db = hub_db();
 hub_migrate($db);
 hub_ensure_default_storage_settings($db);
+try {
+    hub_release_snapshot_local_git();
+} catch (Throwable) {
+    fwrite(STDERR, "release_snapshot_failed\n");
+}
+
+if (!hub_cluster_router_enabled($db)) {
+    echo 'router_disabled ' . __('統一入口未啟用') . PHP_EOL;
+    exit(0);
+}
 
 foreach (hub_cluster_refresh_due_stations($db, $arguments === ['--force']) as $station) {
     echo (string)$station['station_key'] . ' ' . (!empty($station['fresh']) ? '1' : '0') . ' '

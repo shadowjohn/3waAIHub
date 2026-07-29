@@ -323,6 +323,9 @@ function hub_collect_command_worker_status(?string $platform = null): array
     if (hub_platform_id($platform) === 'windows') {
         $workerScript = HUB_ROOT . DIRECTORY_SEPARATOR . 'scripts' . DIRECTORY_SEPARATOR . 'command_worker.php';
         $notApplicable = hub_not_applicable_status();
+        $logPath = HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log';
+        $clusterRefreshLogPath = HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'cluster_refresh_1min.log';
+        $lastLogAt = is_file($logPath) ? date('Y-m-d H:i:s', (int)filemtime($logPath)) : '';
 
         return [
             'cron_installed' => $notApplicable,
@@ -332,9 +335,14 @@ function hub_collect_command_worker_status(?string $platform = null): array
             'loop_script_exists' => $notApplicable,
             'loop_script_executable' => $notApplicable,
             'flock_available' => $notApplicable,
-            'log_path' => HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log',
-            'log_exists' => is_file(HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log'),
-            'last_log_at' => is_file(HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log') ? date('Y-m-d H:i:s', (int)filemtime(HUB_LOG_DIR . DIRECTORY_SEPARATOR . 'command_worker_1min.log')) : '',
+            'log_path' => $logPath,
+            'log_exists' => is_file($logPath),
+            'last_log_at' => $lastLogAt,
+            'cluster_refresh_configured' => $notApplicable,
+            'cluster_refresh_log_path' => $clusterRefreshLogPath,
+            'last_cluster_refresh_log_at' => is_file($clusterRefreshLogPath)
+                ? date('Y-m-d H:i:s', (int)filemtime($clusterRefreshLogPath))
+                : '',
             'install_command' => $notApplicable,
             'manual_command' => 'php ' . hub_powershell_single_quoted_literal($workerScript) . ' --limit=5',
         ];
@@ -344,7 +352,10 @@ function hub_collect_command_worker_status(?string $platform = null): array
     $cronContents = is_readable($cronFile) ? (string)file_get_contents($cronFile) : '';
     $cron = hub_parse_command_worker_cron($cronContents);
     $loopScript = HUB_ROOT . '/crontab/1min.sh';
+    $loopContents = is_readable($loopScript) ? (string)file_get_contents($loopScript) : '';
     $logPath = HUB_LOG_DIR . '/command_worker_1min.log';
+    $clusterRefreshLogPath = HUB_LOG_DIR . '/cluster_refresh_1min.log';
+    $lastLogAt = is_file($logPath) ? date('Y-m-d H:i:s', (int)filemtime($logPath)) : '';
 
     return [
         'cron_installed' => $cron['installed'],
@@ -356,9 +367,35 @@ function hub_collect_command_worker_status(?string $platform = null): array
         'flock_available' => is_executable('/usr/bin/flock') || is_executable('/bin/flock'),
         'log_path' => $logPath,
         'log_exists' => is_file($logPath),
-        'last_log_at' => is_file($logPath) ? date('Y-m-d H:i:s', (int)filemtime($logPath)) : '',
+        'last_log_at' => $lastLogAt,
+        'cluster_refresh_configured' => hub_command_worker_cluster_refresh_configured(
+            $cron,
+            $loopScript,
+            $loopContents
+        ),
+        'cluster_refresh_log_path' => $clusterRefreshLogPath,
+        'last_cluster_refresh_log_at' => is_file($clusterRefreshLogPath)
+            ? date('Y-m-d H:i:s', (int)filemtime($clusterRefreshLogPath))
+            : '',
         'install_command' => 'sudo ' . HUB_ROOT . '/scripts/install_command_worker_cron.sh',
     ];
+}
+
+function hub_command_worker_cluster_refresh_configured(
+    array $cron,
+    string $loopScript,
+    string $loopContents
+): bool {
+    if (empty($cron['installed']) || substr_count($loopContents, 'php scripts/cluster_refresh.php') !== 1) {
+        return false;
+    }
+    $parts = preg_split('/\s+/', trim((string)($cron['line'] ?? '')), 7) ?: [];
+    if (count($parts) !== 7 || array_slice($parts, 0, 5) !== ['*', '*', '*', '*', '*']) {
+        return false;
+    }
+    $commandPattern = '/(?:^|[\s;&|])' . preg_quote($loopScript, '/') . '(?=$|[\s;&|>])/';
+
+    return preg_match($commandPattern, $parts[6]) === 1;
 }
 
 function hub_parse_command_worker_cron(string $cronContents): array

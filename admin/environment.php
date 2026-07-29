@@ -149,6 +149,9 @@ function hub_env_key_label(string $key): string
         'log_path' => 'worker log',
         'log_exists' => 'worker log 已產生',
         'last_log_at' => '最後 log 時間',
+        'cluster_refresh_configured' => 'Cluster 節點重新整理已排程',
+        'cluster_refresh_log_path' => 'Cluster 節點重新整理 log',
+        'last_cluster_refresh_log_at' => '最後 Cluster 節點重新整理 log 時間',
         'install_command' => '掛載指令',
         'manual_command' => 'Windows 手動執行指令',
         'apache_active' => 'Apache 執行中',
@@ -212,6 +215,7 @@ function hub_env_false_reason(string $key, array $values): string
         'loop_script_executable' => 'crontab/1min.sh 尚未設為可執行。',
         'flock_available' => '找不到 flock，請安裝 util-linux。',
         'log_exists' => 'worker 尚未執行或尚未寫入 log。',
+        'cluster_refresh_configured' => 'Cluster 節點重新整理未由既有的一分鐘 cron 排程。',
     ];
     if (isset($knownReasons[$key])) {
         return $knownReasons[$key];

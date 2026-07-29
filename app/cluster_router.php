@@ -469,10 +469,15 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
          WHERE completed_at IS NULL
          GROUP BY station_id'
     )->fetchAll(PDO::FETCH_KEY_PAIR);
+    $localRelease = hub_release_node_report($db);
     $rows = [];
     foreach (hub_cluster_list_stations($db) as $station) {
         $inventory = hub_cluster_station_inventory($station);
         $manifest = json_decode((string)($station['manifest_json'] ?? ''), true);
+        $manifestSnapshot = is_array($manifest) && is_array($manifest['services'] ?? null)
+            ? hub_cluster_compact_manifest_snapshot($manifest)
+            : null;
+        $services = is_array($manifestSnapshot['services'] ?? null) ? $manifestSnapshot['services'] : [];
         $manifestModes = is_array($manifest['modes'] ?? null) ? $manifest['modes'] : [];
         $statusModes = array_fill_keys($inventory['modes'], true);
         $modeNames = [];
@@ -488,6 +493,8 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
         }
         $status = json_decode((string)($station['status_json'] ?? ''), true);
         $status = is_array($status) ? $status : [];
+        $report = hub_cluster_compact_status_report_fields($status) ?? [];
+        $compatibility = hub_release_station_report($station, $localRelease);
         $rows[] = [
             'id' => (int)$station['id'],
             'station_key' => (string)$station['station_key'],
@@ -509,6 +516,15 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
             'queued_jobs' => (int)$inventory['queued_jobs'],
             'running_jobs' => (int)$inventory['running_jobs'],
             'active_route_count' => (int)($activeRoutes[(int)$station['id']] ?? 0),
+            'release' => $report['release'] ?? [],
+            'packs' => $report['packs'] ?? [],
+            'runners' => $report['runners'] ?? [],
+            'health' => $report['health'] ?? [],
+            'cluster' => $report['cluster'] ?? [],
+            'services' => $services,
+            'service_count' => count($services),
+            'release_compatible' => $compatibility['update_needed'] === null ? null : !$compatibility['update_needed'],
+            'pack_compatible' => $compatibility['pack_compatible'],
         ];
     }
 
@@ -2961,7 +2977,7 @@ function hub_cluster_node_has_verified_router_peer(PDO $db, int $tokenId, ?strin
         && ($clientIp === null || hash_equals($peerIp, $clientIp));
 }
 
-function hub_cluster_status_payload(PDO $db): array
+function hub_cluster_status_payload(PDO $db, ?array $release = null): array
 {
     $now = hub_now();
     $latestMetrics = hub_latest_host_metric_snapshot($db);
@@ -2975,16 +2991,32 @@ function hub_cluster_status_payload(PDO $db): array
     $lease->execute([':now' => $now]);
     $queued = $db->query("SELECT COUNT(*) FROM tasks WHERE status = 'queued'")->fetchColumn();
     $running = $db->query("SELECT COUNT(*) FROM tasks WHERE status = 'running'")->fetchColumn();
+    $release ??= hub_release_node_report($db);
+    $childrenCount = (int)$db->query('SELECT COUNT(*) FROM cluster_stations')->fetchColumn();
+    $publishedModes = hub_cluster_node_selected_published_modes($db);
 
-    return [
+    $payload = [
         'ok' => true,
         'snapshot_at' => $now,
         'gpu' => $gpu,
         'active_gpu_leases' => (int)$lease->fetchColumn(),
         'queued_jobs' => (int)$queued,
         'running_jobs' => (int)$running,
-        'modes' => hub_cluster_node_selected_published_modes($db),
+        'modes' => $publishedModes,
     ];
+    $report = hub_cluster_compact_status_report_fields([
+        'release' => is_array($release['git'] ?? null) ? $release['git'] : [],
+        'packs' => is_array($release['packs'] ?? null) ? $release['packs'] : [],
+        'runners' => is_array($release['runners'] ?? null) ? $release['runners'] : [],
+        'health' => is_array($release['health'] ?? null) ? $release['health'] : [],
+        'cluster' => [
+            'aggregate' => hub_cluster_router_enabled($db) && hub_cluster_node_enabled($db),
+            'children_count' => $childrenCount,
+            'published_mode_count' => count($publishedModes),
+        ],
+    ]);
+
+    return $report === null ? $payload : array_merge($payload, $report);
 }
 
 function hub_cluster_station_is_fresh(array $station, ?int $now = null): bool
@@ -2992,7 +3024,7 @@ function hub_cluster_station_is_fresh(array $station, ?int $now = null): bool
     $now ??= time();
     foreach (['manifest_fetched_at', 'status_fetched_at'] as $field) {
         $fetchedAt = strtotime((string)($station[$field] ?? ''));
-        if ($fetchedAt === false || $fetchedAt > $now || ($now - $fetchedAt) > 30) {
+        if ($fetchedAt === false || $fetchedAt > $now || ($now - $fetchedAt) > 90) {
             return false;
         }
     }
@@ -3390,6 +3422,151 @@ function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
     return ['modes' => array_keys($modes), 'services' => array_values($services)];
 }
 
+function hub_cluster_compact_status_report_fields(array $status): ?array
+{
+    $fieldNames = ['release', 'packs', 'runners', 'health', 'cluster'];
+    $present = array_filter($fieldNames, static fn (string $field): bool => array_key_exists($field, $status));
+    if ($present === []) {
+        return [];
+    }
+    foreach ($fieldNames as $field) {
+        if (!is_array($status[$field] ?? null)) {
+            return null;
+        }
+    }
+
+    $release = $status['release'];
+    $buildId = $release['build_id'] ?? null;
+    $commit = $release['commit'] ?? null;
+    $tag = $release['tag'] ?? null;
+    if (
+        !is_string($buildId)
+        || preg_match('/\A\d{11}\z/', $buildId) !== 1
+        || !is_string($commit)
+        || ($commit !== '' && preg_match('/\A[0-9a-f]{7,40}\z/', $commit) !== 1)
+        || !is_bool($release['dirty'] ?? null)
+        || !is_string($tag)
+        || ($tag !== '' && preg_match('/\A\d{11}\z/', $tag) !== 1)
+    ) {
+        return null;
+    }
+
+    $packs = [];
+    foreach ($status['packs'] as $packId => $version) {
+        if (!is_string($packId) && !is_int($packId)) {
+            return null;
+        }
+        $packId = (string)$packId;
+        if (
+            preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $packId) !== 1
+            || !is_string($version)
+            || strlen($version) > 64
+            || ($version !== '' && preg_match('/\A[a-zA-Z0-9][a-zA-Z0-9._+-]{0,63}\z/', $version) !== 1)
+        ) {
+            return null;
+        }
+        $packs[$packId] = $version;
+    }
+    ksort($packs, SORT_STRING);
+
+    $runners = [];
+    foreach ($status['runners'] as $packId => $runner) {
+        if (!is_string($packId) && !is_int($packId)) {
+            return null;
+        }
+        $packId = (string)$packId;
+        $digest = is_array($runner) ? ($runner['digest'] ?? null) : null;
+        if (
+            preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $packId) !== 1
+            || !is_string($digest)
+            || strlen($digest) > 256
+            || ($digest !== '' && preg_match('/\A[a-z0-9][a-z0-9._-]{0,31}:[a-zA-Z0-9][a-zA-Z0-9._+-]{0,223}\z/', $digest) !== 1)
+        ) {
+            return null;
+        }
+        $runners[$packId] = ['digest' => $digest];
+    }
+    ksort($runners, SORT_STRING);
+
+    $health = $status['health'];
+    if (
+        !is_string($health['status'] ?? null)
+        || preg_match('/\A[a-z][a-z0-9_-]{0,31}\z/', $health['status']) !== 1
+    ) {
+        return null;
+    }
+    $compactHealth = ['status' => $health['status']];
+    foreach (['installed_services', 'running_services', 'failed_services', 'queued_jobs', 'running_jobs'] as $field) {
+        if (!is_int($health[$field] ?? null) || $health[$field] < 0) {
+            return null;
+        }
+        $compactHealth[$field] = $health[$field];
+    }
+
+    $cluster = $status['cluster'];
+    if (
+        !is_bool($cluster['aggregate'] ?? null)
+        || !is_int($cluster['children_count'] ?? null)
+        || $cluster['children_count'] < 0
+        || !is_int($cluster['published_mode_count'] ?? null)
+        || $cluster['published_mode_count'] < 0
+    ) {
+        return null;
+    }
+
+    return [
+        'release' => [
+            'build_id' => $buildId,
+            'commit' => $commit,
+            'dirty' => $release['dirty'],
+            'tag' => $tag,
+        ],
+        'packs' => $packs,
+        'runners' => $runners,
+        'health' => $compactHealth,
+        'cluster' => [
+            'aggregate' => $cluster['aggregate'],
+            'children_count' => $cluster['children_count'],
+            'published_mode_count' => $cluster['published_mode_count'],
+        ],
+    ];
+}
+
+function hub_cluster_compact_gpu_snapshot(array $gpu): array
+{
+    $compact = [];
+    if (is_bool($gpu['available'] ?? null)) {
+        $compact['available'] = $gpu['available'];
+    }
+    $stringPatterns = [
+        'reason' => '/\A[a-z][a-z0-9_-]{0,63}\z/',
+        'name' => '/\A[a-zA-Z0-9][a-zA-Z0-9 ._()+-]{0,95}\z/',
+        'driver_version' => '/\A[0-9][0-9a-zA-Z._+-]{0,31}\z/',
+        'cuda_version' => '/\A[0-9][0-9a-zA-Z._+-]{0,31}\z/',
+    ];
+    foreach ($stringPatterns as $field => $pattern) {
+        $value = $gpu[$field] ?? null;
+        if (is_string($value) && $value !== '' && preg_match($pattern, $value) === 1) {
+            $compact[$field] = $value;
+        }
+    }
+    $integerRanges = [
+        'util_percent' => [0, 100],
+        'memory_total_mb' => [0, 1_000_000_000],
+        'memory_used_mb' => [0, 1_000_000_000],
+        'memory_free_mb' => [0, 1_000_000_000],
+        'temperature_c' => [-100, 1000],
+    ];
+    foreach ($integerRanges as $field => [$minimum, $maximum]) {
+        $value = $gpu[$field] ?? null;
+        if (is_int($value) && $value >= $minimum && $value <= $maximum) {
+            $compact[$field] = $value;
+        }
+    }
+
+    return $compact;
+}
+
 function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = null): ?array
 {
     if (
@@ -3414,23 +3591,20 @@ function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = n
     } catch (Throwable) {
         return null;
     }
-    $gpu = [];
-    foreach (['available', 'reason', 'name', 'driver_version', 'cuda_version', 'util_percent', 'memory_total_mb', 'memory_used_mb', 'memory_free_mb', 'temperature_c'] as $field) {
-        if (is_bool($status['gpu'][$field] ?? null) || is_int($status['gpu'][$field] ?? null)) {
-            $gpu[$field] = $status['gpu'][$field];
-        } elseif (is_string($status['gpu'][$field] ?? null)) {
-            $gpu[$field] = substr($status['gpu'][$field], 0, 128);
-        }
+    $report = hub_cluster_compact_status_report_fields($status);
+    if ($report === null) {
+        return null;
     }
+    $gpu = hub_cluster_compact_gpu_snapshot($status['gpu']);
 
-    return [
+    return array_merge([
         'snapshot_at' => $snapshotAt,
         'gpu' => $gpu,
         'active_gpu_leases' => $status['active_gpu_leases'],
         'queued_jobs' => $status['queued_jobs'],
         'running_jobs' => $status['running_jobs'],
         'modes' => $modes,
-    ];
+    ], $report);
 }
 
 function hub_cluster_store_station_manifest(PDO $db, int $stationId, array $snapshot): void
