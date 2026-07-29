@@ -8,19 +8,6 @@
       <stop offset="1"   stop-color="#E1F0F7"/>
     </linearGradient>
 
-    <radialGradient id="glowBlue" cx=".5" cy=".5" r=".5">
-      <stop offset="0" stop-color="#60A5FA" stop-opacity=".34"/>
-      <stop offset="1" stop-color="#60A5FA" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="glowCyan" cx=".5" cy=".5" r=".5">
-      <stop offset="0" stop-color="#22D3EE" stop-opacity=".30"/>
-      <stop offset="1" stop-color="#22D3EE" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="glowIndigo" cx=".5" cy=".5" r=".5">
-      <stop offset="0" stop-color="#818CF8" stop-opacity=".24"/>
-      <stop offset="1" stop-color="#818CF8" stop-opacity="0"/>
-    </radialGradient>
-
     <!-- 格點：間距 48（較原本 32 放大 50%） -->
     <pattern id="dots" width="48" height="48" patternUnits="userSpaceOnUse">
       <circle cx="3" cy="3" r="1.4" fill="#3B82F6" fill-opacity=".22"/>
@@ -37,11 +24,6 @@
   <!-- base -->
   <rect width="1600" height="1000" fill="url(#sky)"/>
   <rect width="1600" height="1000" fill="url(#dots)" mask="url(#fadeMask)"/>
-
-  <!-- ambient glows -->
-  <ellipse cx="1400" cy="230" rx="520" ry="440" fill="url(#glowBlue)"/>
-  <ellipse cx="240"  cy="880" rx="480" ry="380" fill="url(#glowCyan)"/>
-  <ellipse cx="820"  cy="120" rx="420" ry="300" fill="url(#glowIndigo)"/>
 
   <!-- particles -->
   <g fill="#2563EB" fill-opacity=".30">

@@ -101,14 +101,17 @@ function hub_admin_header(string $title, array $user): void
     <link rel="stylesheet" href="../assets/css/admin-shell.css">
 </head>
 <body class="app">
-<a class="skip-link" href="#main-content"><?= hub_h(__('跳至主要內容')) ?></a>
+<a class="skip-link" href="#main-content" data-drawer-inert><?= hub_h(__('跳至主要內容')) ?></a>
 <header class="appbar">
     <div class="appbar__row">
-        <a class="appbrand" href="<?= $isAdmin ? 'index.php' : 'my_services.php' ?>">
+        <a class="appbrand" href="<?= $isAdmin ? 'index.php' : 'my_services.php' ?>" data-drawer-inert>
             <img class="appbrand__logo" src="../assets/images/logo.svg" width="40" height="40" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
             <span class="appbrand__name"><?= hub_h($siteTitle) ?><small class="appbrand__sub"><?= hub_h($siteSubtitle) ?></small></span>
         </a>
         <nav class="mainnav" id="mainnav" aria-label="<?= hub_h(__('主選單')) ?>">
+            <button type="button" class="iconbtn navclose" id="nav-close" aria-label="<?= hub_h(__('關閉主選單')) ?>">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+            </button>
             <ul class="mainnav__list">
         <?php if ($isAdmin): ?>
             <?php foreach (hub_admin_top_navigation() as $item):
@@ -154,7 +157,7 @@ function hub_admin_header(string $title, array $user): void
         <?php endif; ?>
             </ul>
         </nav>
-        <div class="appbar__actions">
+        <div class="appbar__actions" data-drawer-inert>
             <span class="envtag">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
                 <span><?= hub_h(__('本地環境')) ?></span>
@@ -182,7 +185,7 @@ function hub_admin_header(string $title, array $user): void
         </div>
     </div>
 </header>
-<main class="shell" id="main-content">
+<main class="shell" id="main-content" data-drawer-inert>
 <?php if ((int)$user['must_change_password'] === 1): ?>
     <div class="notice"><?= hub_h(__('預設密碼仍在使用中，請到「設定」修改密碼。')) ?></div>
 <?php endif; ?>
@@ -193,7 +196,7 @@ function hub_admin_footer(): void
 {
     ?>
 </main>
-<footer class="appfoot">
+<footer class="appfoot" data-drawer-inert>
     <span><?= hub_h(hub_site_subtitle()) ?></span>
     <span class="dot" aria-hidden="true">·</span>
     <span><?= hub_h(HUB_VERSION . ' / ' . HUB_RELEASE_LABEL) ?></span>

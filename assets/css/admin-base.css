@@ -297,7 +297,7 @@ button { cursor: pointer; }
   background: linear-gradient(120deg, var(--primary) 0%, var(--primary-600) 45%, #0EA5E9 100%);
   color: var(--on-primary);
   font-family: var(--font-display);
-  font-size: var(--fs-md); font-weight: 600; letter-spacing: .02em;
+  font-size: var(--fs-md); font-weight: 600; letter-spacing: 0;
   box-shadow: var(--shadow-btn);
   transition: filter var(--dur) var(--ease), transform var(--dur) var(--ease),
               box-shadow var(--dur) var(--ease), opacity var(--dur) var(--ease),
@@ -399,8 +399,7 @@ body.app td {
   vertical-align: top;
 }
 body.app th { color: var(--fg-muted); font-size: var(--fs-sm); font-weight: 600; }
-body.app button,
-body.app .button {
+:where(body.app) :where(button, .button) {
   display: inline-block;
   padding: 7px 11px;
   border: 1px solid var(--border);
@@ -410,19 +409,17 @@ body.app .button {
   font: inherit;
   text-decoration: none;
 }
-body.app button.primary { border-color: var(--primary-600); background: var(--primary-600); color: var(--on-primary); }
-body.app button.danger { border-color: var(--danger-border); color: var(--danger-text); }
-body.app input,
-body.app select,
-body.app textarea {
+:where(body.app) :where(button.primary) { border-color: var(--primary-600); background: var(--primary-600); color: var(--on-primary); }
+:where(body.app) :where(button.danger) { border-color: var(--danger-border); color: var(--danger-text); }
+:where(body.app) :where(input, select, textarea) {
   width: 100%;
   padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
 }
-body.app input[type="checkbox"] { width: auto; }
-body.app label { display: block; margin: 12px 0 6px; font-weight: 600; }
+:where(body.app) :where(input[type="checkbox"]) { width: auto; }
+:where(body.app) :where(label) { display: block; margin: 12px 0 6px; font-weight: 600; }
 body.app pre {
   overflow: auto;
   padding: 12px;

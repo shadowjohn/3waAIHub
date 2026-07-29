@@ -9,30 +9,6 @@
   width: 100%; height: 100%;
   object-fit: cover; object-position: center;
 }
-/* 光暈只做氛圍點綴，不可蓋掉底層插圖 */
-.bg__orb {
-  position: absolute; border-radius: 50%;
-  filter: blur(80px); opacity: .38;
-  animation: drift 22s var(--ease) infinite alternate;
-}
-.bg__orb--a {
-  width: 40vmax; height: 40vmax; top: -16vmax; right: -14vmax;
-  background: radial-gradient(circle at 40% 40%, rgba(96,165,250,.5), rgba(96,165,250,0) 70%);
-}
-.bg__orb--b {
-  width: 36vmax; height: 36vmax; bottom: -18vmax; left: -14vmax;
-  background: radial-gradient(circle at 50% 50%, rgba(34,211,238,.42), rgba(34,211,238,0) 70%);
-  animation-duration: 28s; animation-delay: -6s;
-}
-.bg__orb--c {
-  width: 26vmax; height: 26vmax; top: 4%; left: 30%;
-  background: radial-gradient(circle at 50% 50%, rgba(129,140,248,.3), rgba(129,140,248,0) 72%);
-  animation-duration: 34s; animation-delay: -12s;
-}
-@keyframes drift {
-  from { transform: translate3d(0, 0, 0) scale(1); }
-  to   { transform: translate3d(3.5vmax, 2.5vmax, 0) scale(1.08); }
-}
 /* 掃描光帶：資料流意象 */
 .bg__scan {
   position: absolute; inset: -20%;
@@ -99,11 +75,11 @@
   margin: 0;
   font-family: var(--font-display);
   font-size: var(--fs-xl); font-weight: 700; line-height: 1.28;
-  letter-spacing: -.01em; color: var(--fg);
+  letter-spacing: 0; color: var(--fg);
 }
 .brand__sub {
   margin: var(--sp-2) 0 0;
-  font-size: var(--fs-xs); font-weight: 500; letter-spacing: .02em;
+  font-size: var(--fs-xs); font-weight: 500; letter-spacing: 0;
   color: var(--accent-text); text-transform: uppercase; text-wrap: balance;
 }
 
@@ -142,7 +118,7 @@
 .panel__title {
   margin: 0;
   font-family: var(--font-display);
-  font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -.02em;
+  font-size: var(--fs-2xl); font-weight: 700; letter-spacing: 0;
 }
 .panel__desc { margin: var(--sp-1) 0 0; font-size: var(--fs-md); color: var(--fg-muted); }
 
@@ -160,11 +136,11 @@
 .panel__brandName {
   margin: 0;
   font-family: var(--font-display);
-  font-size: var(--fs-lg); font-weight: 700; line-height: 1.3; letter-spacing: -.01em;
+  font-size: var(--fs-lg); font-weight: 700; line-height: 1.3; letter-spacing: 0;
 }
 .panel__brandSub {
   margin: 2px 0 0;
-  font-size: var(--fs-xs); font-weight: 500; letter-spacing: .04em;
+  font-size: var(--fs-xs); font-weight: 500; letter-spacing: 0;
   color: var(--accent-text); text-transform: uppercase;
 }
 
@@ -216,8 +192,8 @@
   align-items: center;
 }
 .captcha__control { min-width: 0; }
-.captcha__control .control__input { letter-spacing: .16em; text-transform: uppercase; }
-.captcha__control .control__input::placeholder { letter-spacing: normal; text-transform: none; }
+.captcha__control .control__input { letter-spacing: 0; text-transform: uppercase; }
+.captcha__control .control__input::placeholder { letter-spacing: 0; text-transform: none; }
 .captcha__img {
   width: 130px; height: 48px;
   display: grid; place-items: center;
@@ -228,7 +204,7 @@
   font-family: var(--font-mono);
   font-size: var(--fs-lg);
   font-weight: 700;
-  letter-spacing: .18em;
+  letter-spacing: 0;
   user-select: none;
 }
 .captcha__refresh {

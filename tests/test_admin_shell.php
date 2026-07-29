@@ -43,3 +43,77 @@ hub_test('admin runtime pages have no CDN dependency', function (): void {
         hub_test_assert(is_file(HUB_ROOT . '/' . $path), 'vendored visual asset missing: ' . $path);
     }
 });
+
+hub_test('admin compatibility controls yield to rendered shell components', function (): void {
+    $base = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-base.css');
+    foreach ([
+        ':where(body.app) :where(button, .button)',
+        ':where(body.app) :where(input, select, textarea)',
+        ':where(body.app) :where(label)',
+    ] as $selector) {
+        hub_test_assert(str_contains($base, $selector), 'low-specificity compatibility selector missing: ' . $selector);
+    }
+
+    $db = hub_test_reset_db();
+    $admin = $db->query("SELECT * FROM users WHERE username = 'admin'")->fetch();
+    $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/index.php';
+    ob_start();
+    hub_admin_header('控制台', $admin);
+    hub_admin_footer();
+    $html = (string)ob_get_clean();
+    hub_test_assert(str_contains($html, '<button type="button" class="mainnav__link'), 'rendered shell submenu control missing');
+});
+
+hub_test('admin drawer uses one 1400px keyboard-safe DOM contract', function (): void {
+    $db = hub_test_reset_db();
+    $admin = $db->query("SELECT * FROM users WHERE username = 'admin'")->fetch();
+    $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/index.php';
+    ob_start();
+    hub_admin_header('控制台', $admin);
+    hub_admin_footer();
+    $html = (string)ob_get_clean();
+
+    $navStart = strpos($html, '<nav class="mainnav"');
+    $navClose = strpos($html, 'id="nav-close"');
+    $navEnd = strpos($html, '</nav>', (int)$navStart);
+    hub_test_assert($navStart !== false && $navClose !== false && $navEnd !== false && $navStart < $navClose && $navClose < $navEnd, 'drawer close button must render inside mainnav');
+    hub_test_assert(substr_count($html, 'data-drawer-inert') === 5, 'non-drawer inert areas mismatch');
+
+    $css = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-shell.css');
+    foreach (['@media (min-width: 1400px)', '@media (max-width: 1399px)', '.navclose'] as $needle) {
+        hub_test_assert(str_contains($css, $needle), 'drawer CSS contract missing: ' . $needle);
+    }
+
+    $js = (string)file_get_contents(HUB_ROOT . '/assets/js/admin-shell.js');
+    foreach ([
+        "window.matchMedia('(min-width: 1400px)')",
+        "document.querySelectorAll('[data-drawer-inert]')",
+        '.inert = inert',
+        "event.key !== 'Tab'",
+        "navClose.addEventListener('click'",
+    ] as $needle) {
+        hub_test_assert(str_contains($js, $needle), 'drawer keyboard contract missing: ' . $needle);
+    }
+});
+
+hub_test('admin visual assets use zero tracking and no login glow decoration', function (): void {
+    foreach (['admin-base.css', 'admin-shell.css', 'admin-login.css'] as $file) {
+        $css = (string)file_get_contents(HUB_ROOT . '/assets/css/' . $file);
+        preg_match_all('/letter-spacing\s*:\s*([^;}]+)/', $css, $matches);
+        foreach ($matches[1] as $value) {
+            hub_test_assert(trim($value) === '0', $file . ' contains nonzero letter-spacing: ' . trim($value));
+        }
+    }
+
+    $login = (string)file_get_contents(HUB_ROOT . '/login.php');
+    $loginCss = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-login.css');
+    $background = (string)file_get_contents(HUB_ROOT . '/assets/images/login-bg.svg');
+    hub_test_assert(!str_contains($login, 'bg__orb'), 'login orb markup remains');
+    hub_test_assert(!str_contains($loginCss, '.bg__orb') && !str_contains($loginCss, 'radial-gradient'), 'login orb CSS remains');
+    foreach (['radialGradient', '<ellipse', 'glowBlue', 'glowCyan', 'glowIndigo'] as $needle) {
+        hub_test_assert(!str_contains($background, $needle), 'login background glow remains: ' . $needle);
+    }
+
+    $sources = (string)file_get_contents(HUB_ROOT . '/assets/fonts/SOURCES.md');
+    hub_test_assert(str_contains($sources, '564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72'), 'Space Grotesk OFL hash mismatch');
+});

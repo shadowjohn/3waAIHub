@@ -45,7 +45,7 @@ body.app {
   margin: 0;
   font-family: var(--font-display);
   font-size: var(--fs-md); font-weight: 700; line-height: 1.25;
-  letter-spacing: -.01em; color: var(--fg);
+  letter-spacing: 0; color: var(--fg);
   white-space: nowrap;
 }
 .appbrand__sub {
@@ -143,9 +143,9 @@ body.app {
   box-shadow: inset 0 0 0 1px #BFDBFE;
 }
 
-/* 螢幕寬度 1400px 以下隱藏主選單圖示，只留文字，讓九個項目排得下一列
+/* 較窄桌面隱藏主選單圖示，只留文字，讓九個項目排得下一列
    （下拉的小箭頭 .mainnav__caret 保留） */
-@media (max-width: 1400px) {
+@media (min-width: 1400px) and (max-width: 1550px) {
   .mainnav__link > svg:not(.mainnav__caret) { display: none; }
   .mainnav__link { padding: 0 10px; gap: 4px; }
 }
@@ -196,13 +196,14 @@ body.app {
 .dropdown__link--danger svg { color: var(--danger); }
 .dropdown__link--danger:hover { color: var(--danger-text); background: var(--danger-soft); }
 
-/* 漢堡鈕（≥1180px 隱藏） */
+/* 漢堡鈕與抽屜關閉鈕 */
 .navtoggle { display: grid; }
-@media (min-width: 1200px) { .navtoggle { display: none; } }
+.navclose { display: none; }
+@media (min-width: 1400px) { .navtoggle { display: none; } }
 
 /* ---------- 窄螢幕：主選單改為抽屜 ---------- */
-@media (max-width: 1199px) {
-  /* 抽屜是直向排列、空間充足，把上面 1400px 以下隱藏的圖示顯示回來 */
+@media (max-width: 1399px) {
+  /* 抽屜是直向排列、空間充足，把桌面隱藏的圖示顯示回來 */
   .mainnav__link > svg:not(.mainnav__caret) { display: block; }
 
   .mainnav {
@@ -224,6 +225,10 @@ body.app {
   .mainnav.is-open {
     transform: none; visibility: visible;
     transition: transform 260ms var(--ease), visibility 0s;
+  }
+  .navclose {
+    display: grid;
+    margin: 0 0 var(--sp-3) auto;
   }
 
   .mainnav__list { flex-direction: column; align-items: stretch; gap: var(--sp-1); }
@@ -274,7 +279,7 @@ body.app {
 .pagehead__title {
   margin: 0;
   font-family: var(--font-display);
-  font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -.02em;
+  font-size: var(--fs-2xl); font-weight: 700; letter-spacing: 0;
 }
 .pagehead__desc { margin: var(--sp-1) 0 0; font-size: var(--fs-md); color: var(--fg-muted); }
 .pagehead__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
@@ -309,7 +314,7 @@ body.app {
   display: flex; align-items: center; gap: var(--sp-2);
   margin: 0;
   font-family: var(--font-display);
-  font-size: var(--fs-base); font-weight: 700; letter-spacing: -.01em;
+  font-size: var(--fs-base); font-weight: 700; letter-spacing: 0;
 }
 .card__title svg { width: 18px; height: 18px; color: var(--primary-600); flex: none; }
 .card__desc { margin: 0; font-size: var(--fs-sm); color: var(--fg-subtle); }

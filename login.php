@@ -47,9 +47,6 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 <body>
 <div class="bg" aria-hidden="true">
     <img class="bg__art" src="assets/images/login-bg.svg" alt="">
-    <span class="bg__orb bg__orb--a"></span>
-    <span class="bg__orb bg__orb--b"></span>
-    <span class="bg__orb bg__orb--c"></span>
     <span class="bg__scan"></span>
 </div>
 
