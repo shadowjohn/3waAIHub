@@ -104,7 +104,7 @@ hub_test('PhaseAuth-1A.1 login hardening and role nav behave as expected', funct
         hub_test_assert(str_contains($customerNav, $label), 'customer nav missing ' . $label);
     }
     hub_test_assert(str_contains($customerNav, 'href="../public_api_docs.php"') && str_contains($customerNav, 'href="../cluster_public_api_docs.php"'), 'customer navigation must keep local and Cluster API documentation separate');
-    foreach (['服務管理', 'HubPack 套件', '安裝套件', '模型倉庫', '系統設定', '系統環境', '記錄中心', '客戶管理'] as $label) {
+    foreach (['控制台', '安裝套件', '客戶管理', 'API 金鑰', 'Cluster 管理', '測試中心', '記錄中心', '系統環境', '系統設定'] as $label) {
         hub_test_assert(!str_contains($customerNav, $label), 'customer nav must not show ' . $label);
     }
 
@@ -112,7 +112,7 @@ hub_test('PhaseAuth-1A.1 login hardening and role nav behave as expected', funct
     ob_start();
     hub_admin_header('測試', $admin);
     $adminNav = (string)ob_get_clean();
-    foreach (['服務管理', 'HubPack 套件', '安裝套件', '模型倉庫', '系統設定', '系統環境', '記錄中心', '客戶管理'] as $label) {
+    foreach (['控制台', '安裝套件', '客戶管理', 'API 金鑰', 'Cluster 管理', '測試中心', '記錄中心', '系統環境', '系統設定'] as $label) {
         hub_test_assert(str_contains($adminNav, $label), 'system_admin nav missing ' . $label);
     }
 });

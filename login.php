@@ -38,38 +38,137 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 <html lang="zh-Hant">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title><?= hub_h(__('登入')) ?> - <?= hub_h($siteTitle) ?></title>
-    <style>
-        body { align-items: center; background: #f6f7f9; display: flex; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; justify-content: center; min-height: 100vh; margin: 0; }
-        form { background: #fff; border: 1px solid #d9dee7; border-radius: 8px; padding: 24px; width: min(360px, calc(100vw - 32px)); }
-        input, button { box-sizing: border-box; font: inherit; width: 100%; }
-        input { border: 1px solid #d9dee7; border-radius: 6px; margin: 6px 0 14px; padding: 9px 10px; }
-        button { background: #1769e0; border: 0; border-radius: 6px; color: #fff; cursor: pointer; padding: 10px; }
-        .captcha-box { align-items: center; background: #0b1220; border: 1px solid #243b53; border-radius: 6px; color: #54e68b; display: flex; font-family: "SFMono-Regular", Consolas, monospace; justify-content: center; margin: 6px 0 10px; padding: 10px 12px; }
-        .captcha-code { font-size: 20px; font-weight: 700; letter-spacing: 4px; user-select: none; }
-        .error { color: #b42318; margin-bottom: 12px; }
-        .i18n-selector { display: block; margin: 0 0 14px; }
-        .i18n-selector select { border: 1px solid #d9dee7; border-radius: 6px; box-sizing: border-box; font: inherit; padding: 8px 10px; width: 100%; }
-        .muted { color: #667085; }
-    </style>
+    <link rel="icon" href="assets/images/logo.svg">
+    <link rel="stylesheet" href="assets/css/admin-base.css">
+    <link rel="stylesheet" href="assets/css/admin-login.css">
 </head>
 <body>
-<form method="post">
-    <h1><?= hub_h($siteTitle) ?></h1>
-    <p class="muted"><?= hub_h($siteSubtitle) ?></p>
-    <?= hub_i18n_language_selector() ?>
-    <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
-    <label><?= hub_h(__('帳號')) ?></label>
-    <input name="username" autocomplete="username" required>
-    <label><?= hub_h(__('密碼')) ?></label>
-    <input name="password" type="password" autocomplete="current-password" required>
-    <label><?= hub_h(__('驗證碼')) ?></label>
-    <div class="captcha-box" aria-label="<?= hub_h(__('登入驗證碼')) ?>">
-        <span class="captcha-code"><?= hub_h($captchaCode) ?></span>
-    </div>
-    <input name="captcha" autocomplete="off" autocapitalize="characters" required>
-    <button type="submit"><?= hub_h(__('登入')) ?></button>
-</form>
+<div class="bg" aria-hidden="true">
+    <img class="bg__art" src="assets/images/login-bg.svg" alt="">
+    <span class="bg__orb bg__orb--a"></span>
+    <span class="bg__orb bg__orb--b"></span>
+    <span class="bg__orb bg__orb--c"></span>
+    <span class="bg__scan"></span>
+</div>
+
+<a class="skip-link" href="#loginForm"><?= hub_h(__('跳至登入表單')) ?></a>
+
+<div class="page">
+    <main class="auth" id="main">
+        <section class="brand">
+            <div class="brand__top">
+                <img class="brand__logo" src="assets/images/logo.svg" width="56" height="56" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
+                <div>
+                    <h1 class="brand__title"><?= hub_h($siteTitle) ?></h1>
+                    <p class="brand__sub"><?= hub_h($siteSubtitle) ?></p>
+                </div>
+            </div>
+
+            <ul class="brand__list">
+                <li class="brand__item">
+                    <span class="brand__ico" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11Z"/><circle cx="12" cy="10" r="2.6"/></svg>
+                    </span>
+                    <span><b><?= hub_h(__('本地 AI 服務整合')) ?></b><em><?= hub_h(__('集中管理模型、服務與執行環境')) ?></em></span>
+                </li>
+                <li class="brand__item">
+                    <span class="brand__ico" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="8" height="8" rx="2"/><path d="M10 2v3M14 2v3M10 19v3M14 19v3M2 10h3M2 14h3M19 10h3M19 14h3"/></svg>
+                    </span>
+                    <span><b><?= hub_h(__('AI 模型服務調度')) ?></b><em><?= hub_h(__('統一安裝、測試與監控服務')) ?></em></span>
+                </li>
+                <li class="brand__item">
+                    <span class="brand__ico" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6v6c0 4.4 3.1 8.3 7.5 9.4 4.4-1.1 7.5-5 7.5-9.4V6L12 3Z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
+                    </span>
+                    <span><b><?= hub_h(__('帳號與權限控管')) ?></b><em><?= hub_h(__('保留登入與操作稽核記錄')) ?></em></span>
+                </li>
+            </ul>
+
+            <p class="brand__note"><?= hub_h(__('本系統僅供授權人員使用，所有操作將留存記錄。')) ?></p>
+        </section>
+
+        <section class="panel">
+            <div class="panel__brand">
+                <img class="panel__brandLogo" src="assets/images/logo.svg" width="44" height="44" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
+                <div>
+                    <p class="panel__brandName"><?= hub_h($siteTitle) ?></p>
+                    <p class="panel__brandSub"><?= hub_h($siteSubtitle) ?></p>
+                </div>
+            </div>
+
+            <header class="panel__head">
+                <div>
+                    <h2 class="panel__title"><?= hub_h(__('系統登入')) ?></h2>
+                    <p class="panel__desc"><?= hub_h(__('請輸入帳號密碼以進入平台')) ?></p>
+                </div>
+                <div class="lang">
+                    <span class="lang__label"><?= hub_h(__('語言')) ?></span>
+                    <?= hub_i18n_language_selector('lang__field') ?>
+                </div>
+            </header>
+
+            <?php if ($error !== ''): ?>
+                <div class="alert" role="alert" aria-live="assertive">
+                    <span class="alert__ico" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16h.01"/></svg>
+                    </span>
+                    <span><?= hub_h($error) ?></span>
+                </div>
+            <?php endif; ?>
+
+            <form id="loginForm" class="form" method="post" autocomplete="on">
+                <div class="field">
+                    <label class="field__label" for="username"><?= hub_h(__('帳號')) ?></label>
+                    <div class="control">
+                        <span class="control__ico" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21a8 8 0 1 0-16 0"/><circle cx="12" cy="8" r="4"/></svg>
+                        </span>
+                        <input id="username" name="username" type="text" class="control__input" autocomplete="username" required aria-required="true" placeholder="<?= hub_h(__('請輸入帳號')) ?>">
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label class="field__label" for="password"><?= hub_h(__('密碼')) ?></label>
+                    <div class="control">
+                        <span class="control__ico" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="10.5" width="16" height="10.5" rx="2.5"/><path d="M8 10.5V7a4 4 0 1 1 8 0v3.5"/><path d="M12 15v2"/></svg>
+                        </span>
+                        <input id="password" name="password" type="password" class="control__input" autocomplete="current-password" required aria-required="true" placeholder="<?= hub_h(__('請輸入密碼')) ?>">
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label class="field__label" for="captcha"><?= hub_h(__('驗證碼')) ?></label>
+                    <div class="captcha">
+                        <div class="control captcha__control">
+                            <span class="control__ico" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 4.5 6v6c0 4.4 3.1 8.3 7.5 9.4 4.4-1.1 7.5-5 7.5-9.4V6L12 3Z"/><path d="m9 12 2.2 2.2L15.5 10"/></svg>
+                            </span>
+                            <input id="captcha" name="captcha" type="text" class="control__input" inputmode="latin" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="5" required aria-required="true" aria-describedby="captchaHint" placeholder="<?= hub_h(__('請輸入驗證碼')) ?>">
+                        </div>
+                        <div class="captcha__img" role="img" aria-label="<?= hub_h(__('登入驗證碼') . ' ' . $captchaCode) ?>">
+                            <span aria-hidden="true"><?= hub_h($captchaCode) ?></span>
+                        </div>
+                    </div>
+                    <p class="hint" id="captchaHint"><?= hub_h(__('驗證碼不分大小寫。')) ?></p>
+                </div>
+
+                <button type="submit" class="btn btn--block">
+                    <span><?= hub_h(__('登入')) ?></span>
+                    <svg class="btn__arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+                </button>
+            </form>
+
+            <footer class="panel__foot">
+                <span><?= hub_h($siteSubtitle) ?></span>
+                <span class="dot" aria-hidden="true">·</span>
+                <span><?= hub_h(HUB_VERSION) ?></span>
+            </footer>
+        </section>
+    </main>
+</div>
 </body>
 </html>

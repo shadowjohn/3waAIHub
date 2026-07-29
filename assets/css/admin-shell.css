@@ -1,0 +1,380 @@
+/* =========================================================
+   GIS中心 AI服務整合平台 — 內頁框架（上方主選單 + 頁面容器 + 卡片）
+   需先載入 css/base.css
+   ========================================================= */
+
+/* ---------- 極淡背景：純色底 + 極淡格點，無動畫 ---------- */
+body.app {
+  background-color: #F4F8FC;
+  background-image: radial-gradient(circle, rgba(37, 99, 235, .10) 1.1px, transparent 1.1px);
+  background-size: 48px 48px;
+  background-attachment: fixed;
+}
+
+/* =========================================================
+   上方主選單（兩列：品牌／使用者，主選單）
+   ========================================================= */
+/* 不可加 backdrop-filter / filter / transform：
+   那會讓 .appbar 成為 position:fixed 子元素的包含塊，
+   窄螢幕的主選單抽屜高度就會被限制在 appbar 之內（只剩一條）。 */
+.appbar {
+  position: sticky; top: 0; z-index: var(--z-appbar);
+  background: rgba(255, 255, 255, .96);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 2px rgba(15, 37, 71, .04);
+  padding-top: env(safe-area-inset-top);
+}
+
+/* 單列、滿版 */
+.appbar__row {
+  width: 100%;
+  padding-inline: clamp(16px, 2vw, 24px);
+  min-height: 64px;
+  display: flex; align-items: center; gap: var(--sp-4);
+}
+
+/* ---------- 左上角品牌 ---------- */
+.appbrand {
+  display: flex; align-items: center; gap: var(--sp-3);
+  text-decoration: none; color: inherit;
+  padding: var(--sp-1) 0; flex: none;
+  border-radius: var(--r-md);
+}
+.appbrand__logo { width: 40px; height: 40px; flex: none; }
+.appbrand__name {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-md); font-weight: 700; line-height: 1.25;
+  letter-spacing: -.01em; color: var(--fg);
+  white-space: nowrap;
+}
+.appbrand__sub {
+  display: block;
+  margin-top: 2px;
+  color: var(--fg-subtle);
+  font-family: var(--font-body);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+/* ---------- 右上角動作區 ---------- */
+.appbar__actions {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex: none; margin-left: auto;   /* 抽屜模式下主選單不佔列寬，靠這行維持靠右 */
+}
+.appbar__actions .i18n-selector select {
+  width: auto;
+  min-height: 40px;
+  padding: 0 30px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: var(--fs-sm);
+}
+
+.envtag {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 30px; padding: 0 10px;
+  border: 1px solid #BFDBFE; border-radius: var(--r-full);
+  background: var(--primary-050);
+  font-size: var(--fs-xs); font-weight: 600; color: var(--primary-700);
+  white-space: nowrap;
+}
+.envtag svg { width: 13px; height: 13px; }
+
+/* 使用者選單 */
+.usermenu { position: relative; }
+.usermenu__btn {
+  display: flex; align-items: center; gap: var(--sp-2);
+  min-height: 44px; padding: 0 var(--sp-2) 0 var(--sp-1);
+  border: 1px solid transparent; border-radius: var(--r-md);
+  background: transparent; color: var(--fg);
+  transition: background-color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.usermenu__btn:hover { background: var(--surface-soft); border-color: var(--border); }
+.usermenu__btn[aria-expanded="true"] { background: var(--surface-soft); border-color: var(--border-strong); }
+.usermenu__avatar {
+  width: 32px; height: 32px; flex: none;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary-600), #0EA5E9);
+  color: #fff; font-size: var(--fs-sm); font-weight: 700;
+  font-family: var(--font-display);
+}
+.usermenu__meta { text-align: left; line-height: 1.25; }
+.usermenu__name { display: block; font-size: var(--fs-md); font-weight: 600; white-space: nowrap; }
+.usermenu__role { display: block; font-size: var(--fs-xs); color: var(--fg-subtle); white-space: nowrap; }
+.usermenu__caret { width: 16px; height: 16px; color: var(--fg-faint); transition: transform var(--dur) var(--ease); }
+.usermenu__btn[aria-expanded="true"] .usermenu__caret { transform: rotate(180deg); }
+
+/* =========================================================
+   主選單
+   ========================================================= */
+/* 主選單與品牌同列 */
+.mainnav { flex: 1 1 auto; min-width: 0; }
+.mainnav__list {
+  margin: 0; padding: 0;
+  list-style: none;
+  display: flex; align-items: center; gap: 2px;
+}
+.mainnav__item { position: relative; display: flex; }
+
+.mainnav__link {
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 44px; padding: 0 9px;
+  border: 0; background: transparent;
+  border-radius: var(--r-sm);
+  color: var(--fg-muted);
+  font-size: var(--fs-md); font-weight: 500; line-height: 1;
+  white-space: nowrap; text-decoration: none;
+  transition: color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.mainnav__link:hover { color: var(--primary-700); background: rgba(37, 99, 235, .07); }
+.mainnav__link svg { width: 16px; height: 16px; flex: none; }
+.mainnav__caret { width: 14px !important; height: 14px !important; color: var(--fg-faint); transition: transform var(--dur) var(--ease); }
+.mainnav__link[aria-expanded="true"] .mainnav__caret { transform: rotate(180deg); }
+.mainnav__link[aria-expanded="true"] { color: var(--primary-700); background: rgba(37, 99, 235, .07); }
+
+/* 目前所在頁面 */
+.mainnav__link.is-active {
+  color: var(--primary-700); font-weight: 700;
+  background: var(--primary-050);
+  box-shadow: inset 0 0 0 1px #BFDBFE;
+}
+
+/* 螢幕寬度 1400px 以下隱藏主選單圖示，只留文字，讓九個項目排得下一列
+   （下拉的小箭頭 .mainnav__caret 保留） */
+@media (max-width: 1400px) {
+  .mainnav__link > svg:not(.mainnav__caret) { display: none; }
+  .mainnav__link { padding: 0 10px; gap: 4px; }
+}
+
+/* 下拉子選單 */
+.submenu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: var(--z-pop);
+  min-width: 200px; margin: 0; padding: var(--sp-1);
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  box-shadow: var(--shadow-pop);
+  animation: rise 150ms var(--ease) both;
+}
+.submenu__link {
+  display: flex; align-items: center; gap: var(--sp-2);
+  min-height: 40px; padding: 0 var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--fg-muted); font-size: var(--fs-md); text-decoration: none;
+  transition: color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.submenu__link:hover { color: var(--primary-700); background: var(--primary-050); }
+.submenu__link svg { width: 16px; height: 16px; flex: none; color: var(--fg-faint); }
+.submenu__link:hover svg { color: var(--primary-600); }
+
+/* 使用者下拉 */
+.dropdown {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: var(--z-pop);
+  min-width: 208px; margin: 0; padding: var(--sp-1);
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  box-shadow: var(--shadow-pop);
+  animation: rise 150ms var(--ease) both;
+}
+.dropdown__link {
+  display: flex; align-items: center; gap: var(--sp-2);
+  min-height: 42px; padding: 0 var(--sp-3);
+  border-radius: var(--r-sm);
+  color: var(--fg-muted); font-size: var(--fs-md); text-decoration: none;
+  transition: color var(--dur) var(--ease), background-color var(--dur) var(--ease);
+}
+.dropdown__link:hover { color: var(--primary-700); background: var(--primary-050); }
+.dropdown__link svg { width: 16px; height: 16px; flex: none; color: var(--fg-faint); }
+.dropdown__sep { height: 1px; margin: var(--sp-1) var(--sp-2); background: var(--border); }
+/* 登出屬於破壞性/離開型動作，與一般項目視覺分離 */
+.dropdown__link--danger { color: var(--danger-text); }
+.dropdown__link--danger svg { color: var(--danger); }
+.dropdown__link--danger:hover { color: var(--danger-text); background: var(--danger-soft); }
+
+/* 漢堡鈕（≥1180px 隱藏） */
+.navtoggle { display: grid; }
+@media (min-width: 1200px) { .navtoggle { display: none; } }
+
+/* ---------- 窄螢幕：主選單改為抽屜 ---------- */
+@media (max-width: 1199px) {
+  /* 抽屜是直向排列、空間充足，把上面 1400px 以下隱藏的圖示顯示回來 */
+  .mainnav__link > svg:not(.mainnav__caret) { display: block; }
+
+  .mainnav {
+    position: fixed; inset: 0 0 0 auto; z-index: var(--z-drawer);
+    flex: none;
+    width: min(320px, 86vw);
+    padding: var(--sp-4);
+    padding-top: max(var(--sp-4), env(safe-area-inset-top));
+    background: var(--surface);
+    border-top: 0;
+    border-left: 1px solid var(--border);
+    box-shadow: -12px 0 40px -16px rgba(15, 37, 71, .3);
+    overflow-y: auto;
+    transform: translate3d(100%, 0, 0);
+    /* 關閉時 visibility:hidden，避免離開畫面的連結仍可被 Tab 聚焦 */
+    visibility: hidden;
+    transition: transform 260ms var(--ease), visibility 0s linear 260ms;
+  }
+  .mainnav.is-open {
+    transform: none; visibility: visible;
+    transition: transform 260ms var(--ease), visibility 0s;
+  }
+
+  .mainnav__list { flex-direction: column; align-items: stretch; gap: var(--sp-1); }
+  .mainnav__item { display: block; }
+  .mainnav__link { width: 100%; min-height: 48px; padding: 0 var(--sp-3); font-size: var(--fs-base); }
+  .mainnav__link.is-active::after { display: none; }
+  .mainnav__link.is-active { background: var(--primary-050); }
+  .mainnav__caret { margin-left: auto; }
+
+  .submenu {
+    position: static; min-width: 0;
+    margin: var(--sp-1) 0 var(--sp-2) var(--sp-6);
+    border: 0; border-left: 2px solid var(--border-strong);
+    border-radius: 0; box-shadow: none; padding: 0 0 0 var(--sp-2);
+    background: transparent; animation: none;
+  }
+
+  .navscrim {
+    position: fixed; inset: 0; z-index: calc(var(--z-drawer) - 1);
+    background: rgba(15, 37, 71, .48);
+    animation: fadein 200ms var(--ease) both;
+  }
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+  body.nav-open { overflow: hidden; }
+}
+
+@media (max-width: 640px) {
+  .appbrand__name { font-size: var(--fs-md); }
+  .appbrand__sub, .envtag, .usermenu__meta { display: none; }
+  .appbar__actions .i18n-selector select { max-width: 92px; }
+}
+
+/* =========================================================
+   頁面容器
+   ========================================================= */
+.shell {
+  width: 100%;
+  padding: clamp(16px, 2vw, 24px) clamp(16px, 2vw, 24px) clamp(32px, 5vw, 56px);
+  padding-bottom: max(clamp(32px, 5vw, 56px), env(safe-area-inset-bottom));
+}
+
+.pagehead {
+  display: flex; flex-wrap: wrap; gap: var(--sp-3);
+  align-items: flex-end; justify-content: space-between;
+  margin-bottom: var(--sp-5);
+}
+.pagehead__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl); font-weight: 700; letter-spacing: -.02em;
+}
+.pagehead__desc { margin: var(--sp-1) 0 0; font-size: var(--fs-md); color: var(--fg-muted); }
+.pagehead__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.pagehead__stamp { font-size: var(--fs-sm); color: var(--fg-subtle); white-space: nowrap; }
+
+/* 麵包屑 */
+.crumbs {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  margin: 0 0 var(--sp-2); padding: 0; list-style: none;
+  font-size: var(--fs-sm); color: var(--fg-subtle);
+}
+.crumbs a { color: var(--fg-subtle); text-decoration: none; }
+.crumbs a:hover { color: var(--primary-600); text-decoration: underline; }
+.crumbs svg { width: 13px; height: 13px; opacity: .7; }
+
+/* =========================================================
+   卡片
+   ========================================================= */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-panel);
+  padding: var(--sp-5);
+}
+.card__head {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2);
+  align-items: center; justify-content: space-between;
+  margin-bottom: var(--sp-4);
+}
+.card__title {
+  display: flex; align-items: center; gap: var(--sp-2);
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-base); font-weight: 700; letter-spacing: -.01em;
+}
+.card__title svg { width: 18px; height: 18px; color: var(--primary-600); flex: none; }
+.card__desc { margin: 0; font-size: var(--fs-sm); color: var(--fg-subtle); }
+
+/* 版面網格 */
+.grid { display: grid; gap: var(--sp-4); }
+/* 各區塊的垂直間距，與 grid 內部 gap 一致。
+   .stack 供頁籤面板等中間容器使用（區塊不是 .shell 的直接子元素時） */
+.shell > .card, .shell > .grid,
+.stack > .card, .stack > .grid { margin-bottom: var(--sp-4); }
+.shell > :last-child, .stack > :last-child { margin-bottom: 0; }
+.grid--3 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); }
+.grid--4 { grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); }
+.grid--2 { grid-template-columns: 1fr; }
+@media (min-width: 1024px) { .grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* 頁尾 */
+.appfoot {
+  width: 100%;
+  padding: var(--sp-5) clamp(16px, 2vw, 24px) var(--sp-8);
+  display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center;
+  font-size: var(--fs-xs); color: var(--fg-subtle);
+  border-top: 1px solid var(--border);
+}
+
+@media print {
+  .appbar, .pagehead__actions, .appfoot { display: none !important; }
+  body.app { background: #fff; }
+  .card { box-shadow: none; break-inside: avoid; }
+}
+
+
+/* =========================================================
+   頁籤（Tabs）
+   ========================================================= */
+.tabs {
+  display: flex; gap: 4px;
+  margin: 0 0 var(--sp-4); padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+  width: fit-content; max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.tab {
+  flex: none;
+  display: inline-flex; align-items: center; gap: 6px;
+  min-height: 44px; padding: 0 var(--sp-4);
+  border: 0; border-radius: var(--r-sm);
+  background: transparent; color: var(--fg-muted);
+  font-size: var(--fs-md); font-weight: 600; white-space: nowrap;
+  transition: color var(--dur) var(--ease), background-color var(--dur) var(--ease),
+              box-shadow var(--dur) var(--ease);
+}
+.tab:hover { color: var(--primary-700); background: rgba(37, 99, 235, .07); }
+.tab[aria-selected="true"] {
+  background: var(--primary-600); color: var(--on-primary);
+  box-shadow: 0 2px 8px -4px rgba(37, 99, 235, .75);
+}
+/* 狀態點：不只用顏色，另有 title 與螢幕閱讀器文字 */
+.tab__dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--success); }
+.tab__dot--danger { background: var(--danger); }
+.tab__dot--warn { background: var(--warning); }
+.tab[aria-selected="true"] .tab__dot { box-shadow: 0 0 0 2px rgba(255, 255, 255, .55); }
+
+[role="tabpanel"]:focus-visible { outline: 2px solid var(--primary-600); outline-offset: 4px; }
