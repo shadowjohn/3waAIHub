@@ -113,15 +113,41 @@ to existing Hub task retention. The Pack README and root README state that it
 must not be used for confidential text. There is no automatic alternate
 provider, custom retry policy, streaming, or voice cloning in V1.
 
-## Deliberate V1 Boundary and Subtitle Path
+## Phase B: Captions and Speech Timeline
 
-V1 produces MP3 only. The upstream client already receives sentence and word
-boundary events, but it does not publish a subtitle artifact yet.
+Phase B adds one optional request field:
 
-V2 can add an optional `include_subtitles` boolean and an additive
-`subtitle_vtt` artifact. The existing request and MP3 artifact names remain
-unchanged, so clients that only consume audio need no migration. V2 will add
-its own output validation and tests when a consumer needs timed captions.
+```json
+{"include_subtitles": true}
+```
+
+It defaults to `false`. When false, the V1 response and artifacts are
+unchanged. When true, the runner consumes the one upstream boundary stream
+used for synthesis and publishes these additional owned artifacts:
+
+| Type | Path | MIME type | Maximum size |
+| --- | --- | --- | --- |
+| `subtitle_vtt` | `subtitle.vtt` | `text/vtt` | 512 KiB |
+| `subtitle_srt` | `subtitle.srt` | `application/x-subrip` | 512 KiB |
+| `speech_timeline` | `speech_timeline.json` | `application/json` | 512 KiB |
+
+The timeline uses milliseconds and records ordered sentence and word entries
+as `{text, start_ms, end_ms}`. Its timestamps must be non-negative,
+monotonic, and bounded by the synthesized audio duration. VTT and SRT are
+derived from the same events; the Pack never makes a second provider request
+to generate captions.
+
+Caption artifacts contain the submitted text. They therefore use the normal
+owned-artifact retention and acknowledgement path, are never copied into
+metadata or task logs, and require the caller's explicit opt-in. Clients
+cannot select individual subtitle formats, names, paths, providers, or an
+arbitrary event payload. One boolean always publishes all three formats.
+
+Phase B adds offline runner tests for exact derived output, opt-out absence,
+and invalid timing rejection, plus manifest, Gateway, Cluster, and artifact
+contract coverage. It does not add a streaming endpoint, SSML, batch jobs,
+voice cloning, a player UI, or a second synthesis API. L5 promotion remains a
+separate station-only real acceptance step.
 
 ## Acceptance
 
