@@ -1391,6 +1391,11 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
                     return hub_gateway_json(200, ['ok' => true, 'voices' => [['id' => $voice, 'demo_url' => $demoUrl]]]);
                 },
             ];
+            $duplicateUri = '/cluster_api.php?mode=edge_tts&voice=' . rawurlencode($voice) . '&voice=' . rawurlencode($voice);
+            $selfDuplicate = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $duplicateUri,
+            ]), $selfSeams);
+            $directAfterDuplicate = $direct;
             $selfList = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
                 'method' => 'GET', 'raw_body' => '', 'query' => [], 'headers' => [],
             ]), $selfSeams);
@@ -1399,7 +1404,9 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
             ]), $selfSeams);
             $selfListPayload = json_decode((string)$selfList['body'], true);
 
-            hub_test_assert(($selfList['status'] ?? 0) === 200 && ($selfListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
+            hub_test_assert(($selfDuplicate['status'] ?? 0) === 400 && str_contains((string)$selfDuplicate['body'], 'invalid_request')
+                && $directAfterDuplicate === []
+                && ($selfList['status'] ?? 0) === 200 && ($selfListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
                 && ($selfDemo['body'] ?? '') === "\x49\x44\x33demo"
                 && in_array('Cache-Control: private, no-store', $selfDemo['headers'] ?? [], true)
                 && array_column($direct, 'method') === ['GET', 'GET']
@@ -1425,6 +1432,10 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
                     };
                 },
             ];
+            $remoteDuplicate = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
+                'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [], 'request_uri' => $duplicateUri,
+            ]), $remoteSeams);
+            $proxiedAfterDuplicate = $proxied;
             $remoteList = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
                 'method' => 'GET', 'raw_body' => '', 'query' => [], 'headers' => [],
             ]), $remoteSeams);
@@ -1436,7 +1447,9 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
             ]), $remoteSeams);
             $remoteListPayload = json_decode((string)$remoteList['body'], true);
 
-            hub_test_assert(($remoteList['status'] ?? 0) === 200 && ($remoteListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
+            hub_test_assert(($remoteDuplicate['status'] ?? 0) === 400 && str_contains((string)$remoteDuplicate['body'], 'invalid_request')
+                && $proxiedAfterDuplicate === []
+                && ($remoteList['status'] ?? 0) === 200 && ($remoteListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
                 && ($remoteDemo['body'] ?? '') === "\x49\x44\x33remote"
                 && in_array('Cache-Control: private, no-store', $remoteDemo['headers'] ?? [], true)
                 && !str_contains(implode("\n", $remoteDemo['headers'] ?? []), 'Content-Disposition')

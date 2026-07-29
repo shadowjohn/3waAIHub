@@ -1127,6 +1127,10 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
     }
     $headers = hub_cluster_router_safe_request_headers($request);
     $contentLength = array_key_exists('content_length', $request) ? $request['content_length'] : ($_SERVER['CONTENT_LENGTH'] ?? '');
+    $requestUri = (string)($request['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? '');
+    if ($mode === 'edge_tts' && $method === 'GET' && hub_edge_tts_demo_request_has_duplicate_voice($requestUri)) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'invalid request')];
+    }
     $inputQuery = array_key_exists('query', $request) ? $request['query'] : ($_GET ?? []);
     if (!is_array($inputQuery)) {
         return ['response' => hub_gateway_error(400, 'router_request_unsupported', 'request query is not supported')];
@@ -1146,8 +1150,6 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
         $query[$key] = $value;
     }
     $query['mode'] = $mode;
-    $requestUri = (string)($request['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? '');
-
     if (preg_match('/^multipart\/form-data(?:;|$)/i', (string)($headers['Content-Type'] ?? '')) === 1) {
         if (hub_cluster_router_content_length_exceeds($contentLength, hub_cluster_proxy_request_limit_bytes())) {
             return ['response' => hub_gateway_error(413, 'router_request_too_large', 'request body is too large for the cluster router')];

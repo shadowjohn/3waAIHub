@@ -49,6 +49,9 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
                     || (string)($service['runtime_status'] ?? '') !== 'running') {
                     return hub_gateway_finish($db, $service, $mode, hub_gateway_error(503, 'runtime_not_ready', 'service runtime is not ready'), $started, $requestId, $authContext, $requestContext);
                 }
+                if (hub_edge_tts_demo_request_has_duplicate_voice((string)($internalRequest['request_uri'] ?? $_SERVER['REQUEST_URI'] ?? ''))) {
+                    return hub_gateway_finish($db, $service, $mode, hub_gateway_error(400, 'invalid_request', 'invalid request'), $started, $requestId, $authContext, $requestContext);
+                }
                 $query = array_key_exists('query', $internalRequest) ? $internalRequest['query'] : $_GET;
                 if (!is_array($query)) {
                     return hub_gateway_finish($db, $service, $mode, hub_gateway_error(400, 'invalid_request', 'invalid request'), $started, $requestId, $authContext, $requestContext);

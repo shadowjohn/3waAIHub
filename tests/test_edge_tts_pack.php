@@ -9,11 +9,11 @@ function hub_test_edge_tts_payload(array $response): array
     return $payload;
 }
 
-function hub_test_edge_tts_request(PDO $db, string $token, array $post = [], string $method = 'POST', array $query = []): array
+function hub_test_edge_tts_request(PDO $db, string $token, array $post = [], string $method = 'POST', array $query = [], ?string $requestUri = null): array
 {
     $_SERVER['REMOTE_ADDR'] = '203.0.113.71';
     $_SERVER['REQUEST_METHOD'] = $method;
-    $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=edge_tts' . ($query === [] ? '' : '&' . http_build_query($query, '', '&', PHP_QUERY_RFC3986));
+    $_SERVER['REQUEST_URI'] = $requestUri ?? '/3waAIHub/api.php?mode=edge_tts' . ($query === [] ? '' : '&' . http_build_query($query, '', '&', PHP_QUERY_RFC3986));
     $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $token;
     $_SERVER['HTTP_HOST'] = 'hub.test';
     $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
@@ -523,6 +523,7 @@ hub_test('Edge TTS GET enforces auth, readiness, strict queries, and demo integr
         ];
         $unknown = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => 'zh-TW-UnknownNeural']);
         $missing = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => (string)hub_test_edge_tts_demo_catalogue()[2]['id']]);
+        $duplicate = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => (string)$voices[0]['id']], '/3waAIHub/api.php?mode=edge_tts&voice=zh-TW-HsiaoChenNeural&voice=zh-TW-HsiaoChenNeural');
         $method = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'DELETE');
         $path = hub_edge_tts_demo_root('edge-tts-main') . '/' . $voices[0]['demo_file'];
         file_put_contents($path, 'tampered');
@@ -533,6 +534,7 @@ hub_test('Edge TTS GET enforces auth, readiness, strict queries, and demo integr
             && $stopped['status'] === 503 && (hub_test_edge_tts_payload($stopped)['error'] ?? null) === 'runtime_not_ready'
             && $method['status'] === 405 && (hub_test_edge_tts_payload($method)['error'] ?? null) === 'method_not_allowed'
             && array_filter($invalid, static fn (array $response): bool => $response['status'] !== 400 || (hub_test_edge_tts_payload($response)['error'] ?? null) !== 'invalid_request') === []
+            && $duplicate['status'] === 400 && (hub_test_edge_tts_payload($duplicate)['error'] ?? null) === 'invalid_request'
             && $unknown['status'] === 404 && $missing['status'] === 404 && $tampered['status'] === 404
             && (hub_test_edge_tts_payload($unknown)['error'] ?? null) === 'demo_not_available'
             && (hub_test_edge_tts_payload($missing)['error'] ?? null) === 'demo_not_available'

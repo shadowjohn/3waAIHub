@@ -58,6 +58,28 @@ function hub_edge_tts_demo_root(string $serviceKey): string
     return HUB_DATA_DIR . '/results/edge-tts-demos/' . $serviceKey . '/current';
 }
 
+function hub_edge_tts_demo_request_has_duplicate_voice(string $requestUri): bool
+{
+    $queryAt = strpos($requestUri, '?');
+    if ($queryAt === false) {
+        return false;
+    }
+    $query = substr($requestUri, $queryAt + 1);
+    $fragmentAt = strpos($query, '#');
+    if ($fragmentAt !== false) {
+        $query = substr($query, 0, $fragmentAt);
+    }
+    $voices = 0;
+    foreach (explode('&', $query) as $item) {
+        $key = explode('=', $item, 2)[0];
+        if (urldecode($key) === 'voice' && ++$voices > 1) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 function hub_edge_tts_demo_directory_entries(string $dir, array $catalogue): array
 {
     if (is_link($dir) || !is_dir($dir)) {
