@@ -277,7 +277,7 @@ function hub_public_api_pack_job_async_contract(array $route): array
         );
     }
 
-    return [
+    $contract = [
         'method' => 'POST',
         'content_type' => 'multipart/form-data',
         'execution_type' => 'async_task',
@@ -300,6 +300,15 @@ function hub_public_api_pack_job_async_contract(array $route): array
             'task_upload_workspace_conflict', 'missing_token', 'token_mode_not_allowed',
         ],
     ];
+    if (($route['requested_mode'] ?? null) === 'edge_tts') {
+        $contract['operations'] = [
+            ['method' => 'GET', 'query' => [], 'response' => 'verified voice catalogue JSON'],
+            ['method' => 'GET', 'query' => ['voice' => '<voice-id>'], 'response' => 'audio/mpeg; Cache-Control: private, no-store'],
+            ['method' => 'POST', 'response' => 'asynchronous synthesis task'],
+        ];
+    }
+
+    return $contract;
 }
 
 function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
@@ -373,6 +382,9 @@ function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
             'error_codes' => $errors,
             'task_api' => hub_public_api_task_api_refs($taskApi),
         ];
+        if (isset($contract['operations'])) {
+            $service['operations'] = $contract['operations'];
+        }
         $service['examples'] = hub_public_api_examples($service);
         $services[$mode] = $service;
         $serviceKey = (string)($row['service_key'] ?? '');
@@ -913,6 +925,10 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                 <pre><?= hub_h(json_encode($service['input_fields'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <h3><?= $t('Response keys') ?></h3>
                 <pre><?= hub_h(json_encode($service['output_keys'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php if (($service['operations'] ?? []) !== []): ?>
+                    <h3>Additional operations</h3>
+                    <pre><?= hub_h(json_encode($service['operations'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php endif; ?>
                 <?php if (($service['response_headers'] ?? []) !== []): ?>
                     <h3><?= $t('Response headers') ?></h3>
                     <pre><?= hub_h(json_encode($service['response_headers'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>

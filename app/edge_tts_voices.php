@@ -151,7 +151,7 @@ function hub_edge_tts_initialize_voice_demos(array $pack, string $serviceKey, ?c
         $catalogue = hub_edge_tts_voice_catalog();
         $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
         $image = $manifest['runner_build']['image'] ?? null;
-        if (($manifest['id'] ?? null) !== 'edge-tts' || $image !== '3waaihub/edge-tts:0.2.0') {
+        if (($manifest['id'] ?? null) !== 'edge-tts' || $image !== '3waaihub/edge-tts:0.3.0') {
             hub_edge_tts_demo_failure();
         }
         $current = hub_edge_tts_demo_root($serviceKey);
@@ -222,4 +222,73 @@ function hub_edge_tts_verified_voices(string $serviceKey): array
     } catch (Throwable) {
         return [];
     }
+}
+
+function hub_edge_tts_demo_dispatch(string $serviceKey, array $query): array
+{
+    unset($query['mode']);
+    if ($query !== [] && array_keys($query) !== ['voice']) {
+        return hub_gateway_error(400, 'invalid_request', 'invalid request');
+    }
+    $hasVoice = array_key_exists('voice', $query);
+    $voiceId = $query['voice'] ?? null;
+    if ($hasVoice && (!is_string($voiceId) || $voiceId === '' || strlen($voiceId) > 128 || preg_match('/[\x00-\x1F\x7F]/', $voiceId) === 1)) {
+        return hub_gateway_error(400, 'invalid_request', 'invalid request');
+    }
+
+    try {
+        $catalogue = hub_edge_tts_voice_catalog();
+    } catch (Throwable) {
+        return !$hasVoice
+            ? hub_gateway_json(200, ['ok' => true, 'voices' => []])
+            : hub_gateway_error(404, 'demo_not_available', 'demo is not available');
+    }
+    $catalogueById = [];
+    foreach ($catalogue as $voice) {
+        $catalogueById[$voice['id']] = $voice;
+    }
+    $verified = [];
+    foreach (hub_edge_tts_verified_voices($serviceKey) as $entry) {
+        $verified[$entry['id']] = true;
+    }
+
+    if (!$hasVoice) {
+        $voices = [];
+        foreach ($catalogue as $voice) {
+            if (!isset($verified[$voice['id']])) {
+                continue;
+            }
+            $voices[] = [
+                'id' => $voice['id'],
+                'display_name' => $voice['display_name'],
+                'locale' => $voice['locale'],
+                'gender' => $voice['gender'],
+                'memo' => $voice['memo'],
+                'demo_text' => $voice['demo_text'],
+                'demo_url' => '?mode=edge_tts&voice=' . rawurlencode($voice['id']),
+            ];
+        }
+
+        return hub_gateway_json(200, ['ok' => true, 'voices' => $voices]);
+    }
+    if (!isset($catalogueById[$voiceId], $verified[$voiceId])) {
+        return hub_gateway_error(404, 'demo_not_available', 'demo is not available');
+    }
+    $response = hub_gateway_stream_file_response(
+        hub_edge_tts_demo_root($serviceKey) . '/' . $catalogueById[$voiceId]['demo_file'],
+        'audio/mpeg',
+        'edge-tts-demo.mp3'
+    );
+    if ($response === null) {
+        return hub_gateway_error(404, 'demo_not_available', 'demo is not available');
+    }
+    $response['headers'] = [
+        'Content-Type: audio/mpeg',
+        'Content-Length: ' . (int)$response['stream_size'],
+        'Content-Disposition: inline; filename="edge-tts-demo.mp3"',
+        'Cache-Control: private, no-store',
+        'X-Content-Type-Options: nosniff',
+    ];
+
+    return $response;
 }

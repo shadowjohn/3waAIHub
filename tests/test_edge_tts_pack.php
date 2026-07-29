@@ -9,17 +9,17 @@ function hub_test_edge_tts_payload(array $response): array
     return $payload;
 }
 
-function hub_test_edge_tts_request(PDO $db, string $token, array $post = [], string $method = 'POST'): array
+function hub_test_edge_tts_request(PDO $db, string $token, array $post = [], string $method = 'POST', array $query = []): array
 {
     $_SERVER['REMOTE_ADDR'] = '203.0.113.71';
     $_SERVER['REQUEST_METHOD'] = $method;
-    $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=edge_tts';
+    $_SERVER['REQUEST_URI'] = '/3waAIHub/api.php?mode=edge_tts' . ($query === [] ? '' : '&' . http_build_query($query, '', '&', PHP_QUERY_RFC3986));
     $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer ' . $token;
     $_SERVER['HTTP_HOST'] = 'hub.test';
     $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
     $_SERVER['CONTENT_LENGTH'] = (string)strlen(http_build_query($post));
     $_POST = $post;
-    $_GET = [];
+    $_GET = ['mode' => 'edge_tts'] + $query;
     $_FILES = [];
 
     return hub_gateway_dispatch($db, 'edge_tts');
@@ -49,16 +49,17 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
     $job = hub_pack_async_job_contract($manifest, 'synthesize');
 
     hub_test_assert(($manifest['id'] ?? null) === 'edge-tts'
-        && ($manifest['version'] ?? null) === '0.2.0'
+        && ($manifest['version'] ?? null) === '0.3.0'
         && ($manifest['category'] ?? null) === 'audio'
-        && ($manifest['runtime_level'] ?? null) === 'L2-container-runner'
+        && ($manifest['runtime_level'] ?? null) === 'L5-benchmark-ready'
+        && ($manifest['target_level'] ?? null) === 'L5-benchmark-ready'
         && ($manifest['runtime_ready'] ?? null) === true
         && ($manifest['default_mode'] ?? null) === 'edge_tts'
         && ($manifest['experimental'] ?? null) === true
         && ($manifest['runtime'] ?? null) === ['kind' => 'internal_task']
         && ($manifest['gateway'] ?? null) === [
             'invoke_path' => 'task_submit:pack_job',
-            'methods' => ['POST'],
+            'methods' => ['GET', 'POST'],
             'timeout_sec' => 180,
             'max_upload_mb' => 1,
             'require_service_enabled' => true,
@@ -66,7 +67,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         && ($manifest['runner_build'] ?? null) === [
             'context' => 'service',
             'dockerfile' => 'Dockerfile',
-            'image' => '3waaihub/edge-tts:0.2.0',
+            'image' => '3waaihub/edge-tts:0.3.0',
         ], 'Edge TTS must publish its controlled Task 2 runner build metadata');
     foreach (['Dockerfile', 'edge-tts-entrypoint.sh', 'synthesize.py', 'generate_demos.py', 'voice_catalog.json', 'test_egress_firewall.sh', 'test_synthesize.py', 'test_generate_demos.py'] as $file) {
         $path = HUB_ROOT . '/packs/edge-tts/service/' . $file;
@@ -77,7 +78,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         hub_test_assert((fileperms($path) & 0777) === 0755, 'Edge TTS runnable asset must use mode 0755: ' . $file);
     }
     hub_test_assert(hub_pack_container_runner_build_contract($manifest, HUB_ROOT . '/packs/edge-tts') === [
-        'image' => '3waaihub/edge-tts:0.2.0',
+        'image' => '3waaihub/edge-tts:0.3.0',
         'context' => HUB_ROOT . '/packs/edge-tts/service',
         'dockerfile' => HUB_ROOT . '/packs/edge-tts/service/Dockerfile',
     ], 'Edge TTS runner build must use the fixed service-directory context');
@@ -109,6 +110,8 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         && !array_filter(array_column($catalogue, 'id'), static fn (string $id): bool => str_starts_with($id, 'en-'))
         && !array_diff(array_column($catalogue, 'gender'), ['male', 'female']),
         'Edge TTS static catalogue must contain unique Chinese-only IDs and lowercase genders');
+    hub_test_assert(($job['request_schema']['voice']['enum'] ?? null) === array_column($catalogue, 'id'),
+        'Edge TTS synthesis voices must exactly match the static demo catalogue');
     hub_test_assert(($manifest['hardware'] ?? null) === [
         'gpu_required' => false,
         'gpu_supported' => false,
@@ -133,7 +136,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
             'voice' => [
                 'type' => 'string',
                 'required' => false,
-                'enum' => ['zh-TW-HsiaoChenNeural', 'zh-TW-HsiaoYuNeural', 'zh-TW-YunJheNeural', 'en-US-EmmaMultilingualNeural', 'en-US-AndrewMultilingualNeural'],
+                'enum' => ['zh-TW-HsiaoChenNeural', 'zh-TW-HsiaoYuNeural', 'zh-TW-YunJheNeural', 'zh-CN-XiaoxiaoNeural', 'zh-CN-XiaoyiNeural', 'zh-CN-YunjianNeural', 'zh-CN-YunxiNeural', 'zh-CN-YunxiaNeural', 'zh-CN-YunyangNeural', 'zh-CN-liaoning-XiaobeiNeural', 'zh-CN-shaanxi-XiaoniNeural', 'zh-HK-HiuGaaiNeural', 'zh-HK-HiuMaanNeural', 'zh-HK-WanLungNeural'],
                 'max_length' => 1024,
                 'default' => 'zh-TW-HsiaoChenNeural',
             ],
@@ -165,7 +168,7 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
             ],
         ]
         && ($job['runner'] ?? null) === [
-            'image' => '3waaihub/edge-tts:0.2.0',
+            'image' => '3waaihub/edge-tts:0.3.0',
             'entrypoint' => ['/app/edge-tts-entrypoint.sh', '/app/synthesize.py'],
             'args' => [],
             'output_dir' => 'output',
@@ -344,13 +347,22 @@ hub_test('Edge TTS public API appears after its ready service is enabled', funct
             break;
         }
     }
+    $operations = [
+        ['method' => 'GET', 'query' => [], 'response' => 'verified voice catalogue JSON'],
+        ['method' => 'GET', 'query' => ['voice' => '<voice-id>'], 'response' => 'audio/mpeg; Cache-Control: private, no-store'],
+        ['method' => 'POST', 'response' => 'asynchronous synthesis task'],
+    ];
+    $html = hub_public_api_docs_html($db, null, static fn (): bool => true);
     hub_test_assert(is_array($edgeTts) && ($edgeTts['mode'] ?? null) === 'edge_tts'
         && $subtitleField === [
             'name' => 'include_subtitles',
             'type' => 'boolean',
             'required' => false,
             'default' => false,
-        ], 'ready enabled Edge TTS must publish its boolean subtitle input in the public API');
+        ] && ($edgeTts['operations'] ?? null) === $operations
+        && str_contains($html, 'Additional operations')
+        && str_contains($html, 'verified voice catalogue JSON'),
+        'ready enabled Edge TTS must publish and display its verified-demo operations alongside synthesis');
 });
 
 hub_test('Edge TTS install builds and verifies its controlled runner image', function (): void {
@@ -372,9 +384,9 @@ hub_test('Edge TTS install builds and verifies its controlled runner image', fun
         },
     ]);
     hub_test_assert($commands === [
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.2.0'],
-        ['docker', 'build', '--tag', '3waaihub/edge-tts:0.2.0', '--file', HUB_ROOT . '/packs/edge-tts/service/Dockerfile', HUB_ROOT . '/packs/edge-tts/service'],
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.2.0'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.3.0'],
+        ['docker', 'build', '--tag', '3waaihub/edge-tts:0.3.0', '--file', HUB_ROOT . '/packs/edge-tts/service/Dockerfile', HUB_ROOT . '/packs/edge-tts/service'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/edge-tts:0.3.0'],
     ] && ($installed['service']['install_status'] ?? '') === 'installed', 'Edge TTS runner must build from its Pack-controlled context and be verified before installation');
 });
 
@@ -432,6 +444,130 @@ function hub_test_edge_tts_write_demo_output(string $dir, array $voices, string 
     file_put_contents($dir . '/available.json', json_encode(['version' => 1, 'voices' => $available], JSON_THROW_ON_ERROR));
 }
 
+function hub_test_edge_tts_publish_demo_fixture(array $voices): void
+{
+    $current = hub_edge_tts_demo_root('edge-tts-main');
+    if (!is_dir($current) && !mkdir($current, 0755, true) && !is_dir($current)) {
+        throw new RuntimeException('unable to create Edge TTS demo fixture');
+    }
+    hub_test_edge_tts_write_demo_output($current, $voices);
+}
+
+function hub_test_edge_tts_demo_token(PDO $db): array
+{
+    $memberId = hub_create_api_member($db, 'Edge TTS Demo Reader');
+    $token = hub_create_api_token($db, $memberId, 'edge tts demo token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'edge_tts', null);
+
+    return $token;
+}
+
+hub_test('Edge TTS GET lists and streams only static verified demos', function (): void {
+    hub_test_edge_tts_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $installed = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+        $voices = array_slice(hub_test_edge_tts_demo_catalogue(), 0, 2);
+        hub_test_edge_tts_publish_demo_fixture($voices);
+        hub_set_service_enabled($db, 'edge_tts', true);
+        hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+        $token = hub_test_edge_tts_demo_token($db);
+
+        $listed = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET');
+        $listPayload = hub_test_edge_tts_payload($listed);
+        $expected = array_map(static fn (array $voice): array => [
+            'id' => $voice['id'],
+            'display_name' => $voice['display_name'],
+            'locale' => $voice['locale'],
+            'gender' => $voice['gender'],
+            'memo' => $voice['memo'],
+            'demo_text' => $voice['demo_text'],
+            'demo_url' => '?mode=edge_tts&voice=' . rawurlencode((string)$voice['id']),
+        ], $voices);
+        $stream = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => (string)$voices[0]['id']]);
+
+        hub_test_assert($listed['status'] === 200 && $listPayload === ['ok' => true, 'voices' => $expected]
+            && !str_contains((string)$listed['body'], HUB_DATA_DIR)
+            && $stream['status'] === 200 && ($stream['stream_path'] ?? '') === hub_edge_tts_demo_root('edge-tts-main') . '/' . $voices[0]['demo_file']
+            && array_slice($stream['headers'] ?? [], 0, 5) === [
+                'Content-Type: audio/mpeg',
+                'Content-Length: ' . strlen('demo:' . $voices[0]['id']),
+                'Content-Disposition: inline; filename="edge-tts-demo.mp3"',
+                'Cache-Control: private, no-store',
+                'X-Content-Type-Options: nosniff',
+            ] && str_starts_with((string)(($stream['headers'] ?? [])[5] ?? ''), 'X-3waAIHub-Request-Id: ')
+            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0,
+            'Edge TTS GET must expose only verified static metadata and a safe inline MP3 stream without queuing work');
+    });
+});
+
+hub_test('Edge TTS GET enforces auth, readiness, strict queries, and demo integrity', function (): void {
+    hub_test_edge_tts_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $installed = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+        $voices = array_slice(hub_test_edge_tts_demo_catalogue(), 0, 2);
+        hub_test_edge_tts_publish_demo_fixture($voices);
+        $memberId = hub_create_api_member($db, 'Edge TTS Demo Controls');
+        $token = hub_create_api_token($db, $memberId, 'edge tts demo controls', null, null);
+
+        $denied = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET');
+        hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'edge_tts', null);
+        $disabled = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET');
+        hub_set_service_enabled($db, 'edge_tts', true);
+        $stopped = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET');
+        hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+        $invalid = [
+            hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['other' => 'x']),
+            hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => ['duplicate']]),
+            hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => "bad\x00voice"]),
+            hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => str_repeat('v', 1025)]),
+        ];
+        $unknown = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => 'zh-TW-UnknownNeural']);
+        $missing = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => (string)hub_test_edge_tts_demo_catalogue()[2]['id']]);
+        $method = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'DELETE');
+        $path = hub_edge_tts_demo_root('edge-tts-main') . '/' . $voices[0]['demo_file'];
+        file_put_contents($path, 'tampered');
+        $tampered = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => (string)$voices[0]['id']]);
+
+        hub_test_assert($denied['status'] === 403 && (hub_test_edge_tts_payload($denied)['error'] ?? null) === 'token_mode_not_allowed'
+            && $disabled['status'] === 503 && (hub_test_edge_tts_payload($disabled)['error'] ?? null) === 'pack_service_disabled'
+            && $stopped['status'] === 503 && (hub_test_edge_tts_payload($stopped)['error'] ?? null) === 'runtime_not_ready'
+            && $method['status'] === 405 && (hub_test_edge_tts_payload($method)['error'] ?? null) === 'method_not_allowed'
+            && array_filter($invalid, static fn (array $response): bool => $response['status'] !== 400 || (hub_test_edge_tts_payload($response)['error'] ?? null) !== 'invalid_request') === []
+            && $unknown['status'] === 404 && $missing['status'] === 404 && $tampered['status'] === 404
+            && (hub_test_edge_tts_payload($unknown)['error'] ?? null) === 'demo_not_available'
+            && (hub_test_edge_tts_payload($missing)['error'] ?? null) === 'demo_not_available'
+            && (hub_test_edge_tts_payload($tampered)['error'] ?? null) === 'demo_not_available'
+            && !str_contains((string)$tampered['body'], HUB_DATA_DIR)
+            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 0,
+            'Edge TTS GET must fail closed for unauthorized, unavailable, malformed, and tampered demo requests without paths or tasks');
+    });
+});
+
+hub_test('Edge TTS GET rejects symlinked demos while POST remains asynchronous synthesis', function (): void {
+    hub_test_edge_tts_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $installed = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+        $voice = hub_test_edge_tts_demo_catalogue()[0];
+        hub_test_edge_tts_publish_demo_fixture([$voice]);
+        hub_set_service_enabled($db, 'edge_tts', true);
+        hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+        $token = hub_test_edge_tts_demo_token($db);
+        $path = hub_edge_tts_demo_root('edge-tts-main') . '/' . $voice['demo_file'];
+        $target = hub_edge_tts_demo_root('edge-tts-main') . '/fixture-target.mp3';
+        rename($path, $target);
+        symlink($target, $path);
+        $symlink = hub_test_edge_tts_request($db, (string)$token['plain_token'], [], 'GET', ['voice' => (string)$voice['id']]);
+
+        unlink($path);
+        rename($target, $path);
+        $post = hub_test_edge_tts_request($db, (string)$token['plain_token'], ['text' => 'Queue after demo verification']);
+        hub_test_assert($symlink['status'] === 404 && (hub_test_edge_tts_payload($symlink)['error'] ?? null) === 'demo_not_available'
+            && $post['status'] === 200 && (hub_test_edge_tts_payload($post)['status'] ?? null) === 'queued'
+            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE requested_mode = 'edge_tts'")->fetchColumn() === 1,
+            'symlinked demos must never stream, while Edge TTS POST keeps its existing task submission path');
+    });
+});
+
 function hub_test_edge_tts_demo_runner(array &$commands, callable $writer, int $exitCode = 0, bool $incompleteCleanup = false): callable
 {
     return static function (array $command, int $timeoutSeconds) use (&$commands, $writer, $exitCode, $incompleteCleanup): array {
@@ -479,7 +615,7 @@ hub_test('Edge TTS installation atomically publishes verified demo output with a
         && $run === [
             'docker', 'run', '--pull=never', '--network', 'bridge', '--cap-add', 'NET_ADMIN',
             '--mount', $mount, '--name', $run[10] ?? '', '--entrypoint', '/app/edge-tts-entrypoint.sh',
-            '3waaihub/edge-tts:0.2.0', '/app/generate_demos.py',
+            '3waaihub/edge-tts:0.3.0', '/app/generate_demos.py',
         ]
         && preg_match('#^type=bind,src=' . preg_quote(HUB_DATA_DIR . '/results/edge-tts-demos/edge-tts-main/', '#') . '[A-Za-z0-9_.-]+,dst=/workspace/output$#', $mount) === 1
         && !in_array('--env', $run, true) && !in_array('--gpus', $run, true) && !str_contains($mount, 'input')
@@ -701,7 +837,6 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
         'task_result',
         'generated_audio',
         'task_artifacts_ack',
-        '3waaihub/edge-tts:0.2.0',
         'include_subtitles',
         'subtitle.vtt',
         'subtitle.srt',

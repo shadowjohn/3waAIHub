@@ -1362,6 +1362,93 @@ hub_test('cluster router remote dispatch uses station auth safe headers and no r
     });
 });
 
+hub_test('cluster router preserves Edge TTS GET list and demo requests for self and remote stations', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $voice = 'zh-TW-HsiaoChenNeural';
+            $demoUrl = '?mode=edge_tts&voice=' . rawurlencode($voice);
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'edge_tts');
+            hub_cluster_node_configure($db, true, ['edge_tts']);
+            $self = hub_cluster_register_self_station($db);
+            $customer = hub_test_cluster_router_customer_token($db, ['edge_tts']);
+            $direct = [];
+            $selfSeams = [
+                'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture([
+                    'id' => (int)$self['id'], 'station_key' => (string)$self['station_key'], 'modes' => ['edge_tts'],
+                ])],
+                'direct_dispatcher' => static function (PDO $db, string $mode, array $request) use (&$direct, $voice, $demoUrl): array {
+                    $direct[] = $request;
+                    if (($request['query']['voice'] ?? null) === $voice) {
+                        return [
+                            'status' => 200,
+                            'headers' => ['Content-Type: audio/mpeg', 'Cache-Control: private, no-store'],
+                            'body' => "\x49\x44\x33demo",
+                        ];
+                    }
+
+                    return hub_gateway_json(200, ['ok' => true, 'voices' => [['id' => $voice, 'demo_url' => $demoUrl]]]);
+                },
+            ];
+            $selfList = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'method' => 'GET', 'raw_body' => '', 'query' => [], 'headers' => [],
+            ]), $selfSeams);
+            $selfDemo = hub_cluster_dispatch($db, 'edge_tts', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => ['Accept' => 'audio/mpeg'],
+            ]), $selfSeams);
+            $selfListPayload = json_decode((string)$selfList['body'], true);
+
+            hub_test_assert(($selfList['status'] ?? 0) === 200 && ($selfListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
+                && ($selfDemo['body'] ?? '') === "\x49\x44\x33demo"
+                && in_array('Cache-Control: private, no-store', $selfDemo['headers'] ?? [], true)
+                && array_column($direct, 'method') === ['GET', 'GET']
+                && ($direct[0]['query'] ?? []) === ['mode' => 'edge_tts']
+                && ($direct[1]['query'] ?? []) === ['voice' => $voice, 'mode' => 'edge_tts'],
+                'self routing must retain Edge TTS GET method, normalized query, relative demo URL, and binary response');
+
+            $remoteDb = hub_test_reset_db();
+            hub_set_storage_setting($remoteDb, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            $remoteCustomer = hub_test_cluster_router_customer_token($remoteDb, ['edge_tts']);
+            $remote = hub_test_cluster_router_station($remoteDb, ['station_key' => 'edge_tts_remote', 'station_token' => 'edge_tts_station_token', 'modes' => ['edge_tts']]);
+            $proxied = [];
+            $remoteSeams = [
+                'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture([
+                    'id' => (int)$remote['id'], 'station_key' => 'edge_tts_remote', 'modes' => ['edge_tts'],
+                ])],
+                'transport' => static function (array $request) use (&$proxied, $voice, $demoUrl): array {
+                    $proxied[] = $request;
+                    return match (count($proxied)) {
+                        1 => ['status' => 200, 'headers' => ['Content-Type: application/json', 'Cache-Control: private, no-store'], 'body' => json_encode(['ok' => true, 'voices' => [['id' => $voice, 'demo_url' => $demoUrl]]], JSON_THROW_ON_ERROR)],
+                        2 => ['status' => 200, 'headers' => ['Content-Type: audio/mpeg', 'Cache-Control: private, no-store', 'Content-Disposition: inline; filename="ignored.mp3"'], 'body' => "\x49\x44\x33remote"],
+                        default => ['status' => 200, 'headers' => ['Content-Type: audio/mpeg', 'Cache-Control: public, max-age=31536000'], 'body' => "\x49\x44\x33unsafe"],
+                    };
+                },
+            ];
+            $remoteList = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
+                'method' => 'GET', 'raw_body' => '', 'query' => [], 'headers' => [],
+            ]), $remoteSeams);
+            $remoteDemo = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
+                'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => ['Accept' => 'audio/mpeg'],
+            ]), $remoteSeams);
+            $unsafeCache = hub_cluster_dispatch($remoteDb, 'edge_tts', hub_test_cluster_router_request((string)$remoteCustomer['plain_token'], [
+                'method' => 'GET', 'raw_body' => '', 'query' => ['voice' => $voice], 'headers' => [],
+            ]), $remoteSeams);
+            $remoteListPayload = json_decode((string)$remoteList['body'], true);
+
+            hub_test_assert(($remoteList['status'] ?? 0) === 200 && ($remoteListPayload['voices'][0]['demo_url'] ?? null) === $demoUrl
+                && ($remoteDemo['body'] ?? '') === "\x49\x44\x33remote"
+                && in_array('Cache-Control: private, no-store', $remoteDemo['headers'] ?? [], true)
+                && !str_contains(implode("\n", $remoteDemo['headers'] ?? []), 'Content-Disposition')
+                && !str_contains(implode("\n", $unsafeCache['headers'] ?? []), 'Cache-Control:')
+                && array_column($proxied, 'method') === ['GET', 'GET', 'GET']
+                && ($proxied[0]['query'] ?? []) === ['mode' => 'edge_tts']
+                && ($proxied[1]['query'] ?? []) === ['voice' => $voice, 'mode' => 'edge_tts'],
+                'remote routing must retain Edge TTS GET data and only relay the exact private no-store cache policy');
+        });
+    });
+});
+
 hub_test('cluster router relays validated multipart uploads and rejects malformed forms', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
@@ -2228,6 +2315,11 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
                 'cancel' => 'POST https://configured.station.example/aihub/api.php?mode=task_cancel&task_id=remote_task_42',
                 'artifact' => 'GET https://configured.station.example/aihub/api.php?mode=artifact&artifact_id={artifact_id}',
             ],
+            'operations' => [
+                ['method' => 'GET', 'query' => [], 'response' => 'verified voice catalogue JSON'],
+                ['method' => 'GET', 'query' => ['voice' => '<voice-id>'], 'response' => 'audio/mpeg; Cache-Control: private, no-store'],
+                ['method' => 'POST', 'response' => 'asynchronous synthesis task'],
+            ],
             'examples' => [
                 'curl' => "curl 'https://configured.station.example/aihub/api.php?mode=ocr'",
                 'php' => "curl_init('https://configured.station.example/aihub/api.php?mode=ocr');",
@@ -2292,7 +2384,10 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             'cancel' => 'POST cluster_api.php?mode=cluster_task_cancel&task_id={task_id}',
             'artifact' => 'GET cluster_api.php?mode=cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
         ], 'public async contracts must expose opaque Router followups');
-        hub_test_assert(str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, 'cluster_api.php?mode=image_upload') && str_contains($docs, '-F') && str_contains($docs, 'new CURLFile') && str_contains($docs, 'FormData') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, 'name&quot;: &quot;<script>'), 'public docs must render escaped JSON and form-aware Router contracts');
+        hub_test_assert(($service['operations'] ?? null) === $contract['operations']
+            && str_contains($docs, 'Additional operations')
+            && str_contains($docs, 'verified voice catalogue JSON')
+            && str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, 'cluster_api.php?mode=image_upload') && str_contains($docs, '-F') && str_contains($docs, 'new CURLFile') && str_contains($docs, 'FormData') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, 'name&quot;: &quot;<script>'), 'public docs must render escaped JSON and form-aware Router contracts');
         hub_test_assert(
             str_contains($docs, 'https://router.example/3waAIHub/cluster_api.php')
             && str_contains($docs, 'Live catalog')

@@ -950,6 +950,9 @@ function hub_cluster_public_api_docs_html(PDO $db): string
                     </div>
                     <div class="contract-block"><h3>Request fields</h3><pre><?= hub_h($json($service['input_fields'] ?? [])) ?></pre></div>
                     <div class="contract-block"><h3>Response keys</h3><pre><?= hub_h($json($service['output_keys'] ?? [])) ?></pre></div>
+                    <?php if (($service['operations'] ?? []) !== []): ?>
+                        <div class="contract-block"><h3>Additional operations</h3><pre><?= hub_h($json($service['operations'])) ?></pre></div>
+                    <?php endif; ?>
                     <div class="contract-block"><h3>Error codes</h3><pre><?= hub_h($json($service['error_codes'] ?? [])) ?></pre></div>
                     <div class="contract-block"><div class="code-heading"><h3>curl</h3><button class="copy-button" type="button" data-copy="<?= hub_h($curl) ?>" aria-label="Copy curl example" title="Copy curl example">Copy</button></div><pre><?= hub_h($curl) ?></pre></div>
                     <div class="contract-block"><div class="code-heading"><h3>PHP</h3><button class="copy-button" type="button" data-copy="<?= hub_h($php) ?>" aria-label="Copy PHP example" title="Copy PHP example">Copy</button></div><pre><?= hub_h($php) ?></pre></div>
@@ -3350,7 +3353,7 @@ function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
         $services[$mode] = array_intersect_key($service, array_flip([
             'mode', 'pack_id', 'name', 'description', 'method', 'content_type', 'endpoint', 'url',
             'execution_type', 'runtime_level', 'task_type', 'input_fields', 'output_keys',
-            'response_content_type', 'response_headers', 'error_codes', 'task_api', 'examples',
+            'response_content_type', 'response_headers', 'error_codes', 'task_api', 'operations', 'examples',
         ]));
     }
 

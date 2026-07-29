@@ -2,11 +2,12 @@
   "schema_version": "0.1",
   "id": "edge-tts",
   "name": "Edge TTS External Service",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "category": "audio",
   "type": "internal_task",
   "execution_type": "async_task",
-  "runtime_level": "L2-container-runner",
+  "runtime_level": "L5-benchmark-ready",
+  "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "edge_tts",
   "experimental": true,
@@ -17,11 +18,11 @@
   "runner_build": {
     "context": "service",
     "dockerfile": "Dockerfile",
-    "image": "3waaihub/edge-tts:0.2.0"
+    "image": "3waaihub/edge-tts:0.3.0"
   },
   "gateway": {
     "invoke_path": "task_submit:pack_job",
-    "methods": ["POST"],
+    "methods": ["GET", "POST"],
     "timeout_sec": 180,
     "max_upload_mb": 1,
     "require_service_enabled": true
@@ -35,7 +36,7 @@
         "source_required": false,
         "request_schema": {
           "text": {"type": "string", "required": true, "max_length": 4096},
-          "voice": {"type": "string", "required": false, "enum": ["zh-TW-HsiaoChenNeural", "zh-TW-HsiaoYuNeural", "zh-TW-YunJheNeural", "en-US-EmmaMultilingualNeural", "en-US-AndrewMultilingualNeural"], "default": "zh-TW-HsiaoChenNeural"},
+          "voice": {"type": "string", "required": false, "enum": ["zh-TW-HsiaoChenNeural", "zh-TW-HsiaoYuNeural", "zh-TW-YunJheNeural", "zh-CN-XiaoxiaoNeural", "zh-CN-XiaoyiNeural", "zh-CN-YunjianNeural", "zh-CN-YunxiNeural", "zh-CN-YunxiaNeural", "zh-CN-YunyangNeural", "zh-CN-liaoning-XiaobeiNeural", "zh-CN-shaanxi-XiaoniNeural", "zh-HK-HiuGaaiNeural", "zh-HK-HiuMaanNeural", "zh-HK-WanLungNeural"], "default": "zh-TW-HsiaoChenNeural"},
           "rate": {"type": "string", "required": false, "enum": ["-50%", "-25%", "+0%", "+25%", "+50%"], "default": "+0%"},
           "volume": {"type": "string", "required": false, "enum": ["-50%", "-25%", "+0%", "+25%", "+50%"], "default": "+0%"},
           "pitch": {"type": "string", "required": false, "enum": ["-50Hz", "-25Hz", "+0Hz", "+25Hz", "+50Hz"], "default": "+0Hz"},
@@ -43,7 +44,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/edge-tts:0.2.0",
+        "image": "3waaihub/edge-tts:0.3.0",
         "entrypoint": ["/app/edge-tts-entrypoint.sh", "/app/synthesize.py"],
         "args": [],
         "output_dir": "output",

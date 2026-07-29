@@ -35,6 +35,28 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
             $code = in_array($e->getMessage(), ['pack_not_installed', 'pack_runtime_not_ready', 'pack_service_disabled', 'pack_version_unavailable'], true) ? $e->getMessage() : 'pack_not_installed';
             return hub_gateway_finish($db, null, $mode, hub_gateway_error(503, $code, $code), $started, $requestId, $authContext, $requestContext);
         }
+        if ($mode === 'edge_tts') {
+            if (!in_array($requestMethod, ['GET', 'POST'], true)) {
+                return hub_gateway_finish($db, $service, $mode, hub_gateway_error(405, 'method_not_allowed', 'HTTP method is not allowed for this mode'), $started, $requestId, $authContext, $requestContext);
+            }
+            if ($requestMethod === 'GET') {
+                if (!is_array($service)
+                    || (string)($service['mode'] ?? '') !== 'edge_tts'
+                    || (string)($service['pack_id'] ?? '') !== (string)$route['pack_id']
+                    || (string)($service['pack_version'] ?? '') !== (string)$route['pack_version']
+                    || (string)($service['install_status'] ?? '') !== 'installed'
+                    || (int)($service['enabled'] ?? 0) !== 1
+                    || (string)($service['runtime_status'] ?? '') !== 'running') {
+                    return hub_gateway_finish($db, $service, $mode, hub_gateway_error(503, 'runtime_not_ready', 'service runtime is not ready'), $started, $requestId, $authContext, $requestContext);
+                }
+                $query = array_key_exists('query', $internalRequest) ? $internalRequest['query'] : $_GET;
+                if (!is_array($query)) {
+                    return hub_gateway_finish($db, $service, $mode, hub_gateway_error(400, 'invalid_request', 'invalid request'), $started, $requestId, $authContext, $requestContext);
+                }
+
+                return hub_gateway_finish($db, $service, $mode, hub_edge_tts_demo_dispatch((string)$service['service_key'], $query), $started, $requestId, $authContext, $requestContext);
+            }
+        }
 
         return hub_gateway_finish($db, null, $mode, hub_api_pack_job_task_submit($db, $route, $authContext), $started, $requestId, $authContext, $requestContext);
     }
@@ -2236,6 +2258,7 @@ function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentT
         'x-3waaihub-elapsed-ms' => 'X-3waAIHub-Elapsed-Ms',
         'x-3waaihub-width' => 'X-3waAIHub-Width',
         'x-3waaihub-height' => 'X-3waAIHub-Height',
+        'cache-control' => 'Cache-Control',
     ];
     $accepted = [];
     foreach (preg_split('/\n/', $final) ?: [] as $line) {
@@ -2248,7 +2271,9 @@ function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentT
             continue;
         }
         $value = trim($rawValue, " \t");
-        if ($name === 'x-3waaihub-model') {
+        if ($name === 'cache-control') {
+            $valid = $value === 'private, no-store';
+        } elseif ($name === 'x-3waaihub-model') {
             $valid = $value !== '' && strlen($value) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1;
         } elseif ($name === 'x-3waaihub-device') {
             $valid = in_array($value, ['cuda', 'cpu'], true);
