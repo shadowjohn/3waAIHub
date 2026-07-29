@@ -2,7 +2,8 @@
 
 Date: 2026-07-29
 
-Status: approved; L2--L4b complete; L5 design approved, implementation pending
+Status: approved; L2--L4b complete; L5 design, verified voice catalogue, and
+install-time demos approved; implementation pending
 
 ## Scope
 
@@ -24,11 +25,17 @@ added. A customer Token still needs its existing mode permission for
 `edge_tts`. A child node publishes the mode through the existing Cluster
 manifest only while the Pack is installed, enabled, and fresh.
 
+The Pack also supplies a static, self-contained catalogue of Chinese Edge TTS
+voices and their short demo text. It does not read from or depend on the
+separate `admin/avatars` application at runtime.
+
 ## Contract
 
 `POST api.php?mode=edge_tts` accepts JSON or form input and returns the
-standard async task response. The Cluster exposes the same contract through
-`cluster_api.php?mode=edge_tts`.
+standard async task response. `GET api.php?mode=edge_tts` returns the
+installed, verified voice list; `GET api.php?mode=edge_tts&voice=<id>` streams
+only that verified voice's demo MP3. The Cluster exposes the same forms
+through `cluster_api.php?mode=edge_tts`.
 
 | Field | Rule | Default |
 | --- | --- | --- |
@@ -39,11 +46,91 @@ standard async task response. The Cluster exposes the same contract through
 | `pitch` | signed Hz value | `+0Hz` |
 | `include_subtitles` | optional boolean; when `true`, publish all three caption artifacts below | `false` |
 
-V1 publishes a small fixed allowlist: `zh-TW-HsiaoChenNeural`,
-`zh-TW-HsiaoYuNeural`, `zh-TW-YunJheNeural`,
-`en-US-EmmaMultilingualNeural`, and `en-US-AndrewMultilingualNeural`.
-Clients cannot supply SSML, an endpoint, a proxy, an upload, a host path, a
-command, or an arbitrary voice identifier.
+The initial candidate catalogue is the existing 14 Chinese demo profiles:
+three Taiwan Mandarin, eight mainland/dialect Mandarin, and three Hong Kong
+Cantonese profiles. Its exact IDs are
+`zh-TW-HsiaoChenNeural`, `zh-TW-HsiaoYuNeural`,
+`zh-TW-YunJheNeural`, `zh-CN-XiaoxiaoNeural`,
+`zh-CN-XiaoyiNeural`, `zh-CN-YunjianNeural`,
+`zh-CN-YunxiNeural`, `zh-CN-YunxiaNeural`,
+`zh-CN-YunyangNeural`, `zh-CN-liaoning-XiaobeiNeural`,
+`zh-CN-shaanxi-XiaoniNeural`, `zh-HK-HiuGaaiNeural`,
+`zh-HK-HiuMaanNeural`, and `zh-HK-WanLungNeural`.
+
+This replaces the provisional five-voice allowlist; its two English entries
+are not advertised or accepted after the Pack upgrade. New voices require a
+new Pack version and a catalogue entry. Clients cannot supply SSML, an
+endpoint, a proxy, an upload, a host path, a command, or an arbitrary voice
+identifier.
+
+## Verified Voice Catalogue and Demos
+
+`service/voice_catalog.json` is the Pack's one human-maintained source for
+the 14 candidate profiles. Each entry has these immutable fields:
+
+```json
+{
+  "id": "zh-CN-YunjianNeural",
+  "display_name": "雲健",
+  "locale": "zh-CN",
+  "gender": "male",
+  "memo": "厚實，適合劇情男聲。",
+  "demo_text": "大家好，我是云健。我的声音比较厚实，适合剧情角色、历史题材，或是需要力量感的段落。",
+  "demo_file": "06_cn_yunjian.mp3"
+}
+```
+
+`memo` is a curated listening/use-case note copied from the existing demo
+profiles, not a provider guarantee and not an input to synthesis. `demo_text`
+is the exact short text used to create the demo. There is deliberately no
+`style` request field: the catalogue describes a voice, but does not claim an
+unsupported provider style control.
+
+During Pack install or upgrade, after the trusted image build and before the
+service record is promoted, a trusted Pack-specific initializer runs one
+container under the existing Edge TTS entrypoint and fail-closed egress policy.
+It synthesizes every candidate's `demo_text` sequentially into a new staging
+directory. The initializer has a bounded five-minute total timeout, uses no
+GPU, accepts no user input, and keeps only regular MP3 files named by the
+catalogue's fixed `demo_file` values.
+
+If at least one candidate succeeds, the initializer atomically publishes the
+successful demo set and its generated availability record under the service
+runtime directory. Failed candidates are omitted. If all candidates fail, the
+installer returns `edge_tts_demo_initialization_failed`, does not promote the
+new service record/version, and leaves any previously published demo set
+untouched. Partial success is an installed Pack with a smaller voice list;
+the administrator receives only the success and failure counts in the install
+result. No demo output is committed to the repository.
+
+The `GET` list requires the same `edge_tts` Token permission and normal
+installed/enabled/runtime-ready checks as `POST`. It creates no task and
+returns only currently verified entries:
+
+```json
+{
+  "ok": true,
+  "voices": [
+    {
+      "id": "zh-CN-YunjianNeural",
+      "display_name": "雲健",
+      "locale": "zh-CN",
+      "gender": "male",
+      "memo": "厚實，適合劇情男聲。",
+      "demo_text": "大家好，我是云健。我的声音比较厚实，适合剧情角色、历史题材，或是需要力量感的段落。",
+      "demo_url": "api.php?mode=edge_tts&voice=zh-CN-YunjianNeural"
+    }
+  ]
+}
+```
+
+The demo URL also requires the Bearer Token; the Token is never embedded in a
+URL. API clients fetch it with the Authorization header before attaching it to
+an audio player. The streaming path maps the supplied ID through the static
+catalogue and availability record, opens only the expected regular file below
+the service runtime directory, and returns `audio/mpeg` with
+`Cache-Control: private, no-store`. An unknown or unavailable ID returns the
+bounded `demo_not_available` error and never reveals a filesystem path.
 
 Each successful task retains these base artifacts:
 
@@ -133,6 +220,15 @@ On success, it requires exactly these registered artifact types:
 - `subtitle_srt`
 - `speech_timeline`
 
+Before it submits the task, the command also requires a non-empty authenticated
+`GET edge_tts` response with complete metadata. It chooses the first verified
+voice in the catalogue order, downloads its demo through the returned URL
+using the same Bearer Token, and submits that same voice. It requires
+`audio/mpeg`, a regular non-empty MP3 accepted by `ffprobe`, and no secret in
+its saved result. This validates both GET forms without turning install-time
+demos into task artifacts; a list or demo failure maps to
+`acceptance_artifact_invalid`.
+
 The command downloads each artifact through the ordinary artifact API into a
 private temporary directory, verifies its declared size and SHA-256, validates
 MP3 with `ffprobe`, validates VTT/SRT syntax, validates the required JSON
@@ -165,9 +261,10 @@ evidence only. Cluster callers still require their own allowed `edge_tts` and
 task/artifact Token modes.
 
 The implementation adds focused offline coverage for the L5 manifest contract,
-redacted benchmark-result shape, and acceptance validation using fake HTTP and
-runtime-record inputs. No real provider call runs in CI or the ordinary full
-test suite.
+redacted benchmark-result shape, list/demo authorization and safe file
+resolution, exact catalogue/manifest voice parity, partial and all-failed demo
+initialization, and acceptance validation using fake HTTP and runtime-record
+inputs. No real provider call runs in CI or the ordinary full test suite.
 
 ## Errors and Privacy
 
@@ -176,10 +273,13 @@ to fixed public errors: `upstream_unavailable`, `edge_tts_timeout`,
 `edge_tts_failed`, and `artifact_write_failed`. It does not return upstream
 response bodies, headers, or submitted text.
 
-The submitted text is sent to Microsoft's online service and remains subject
-to existing Hub task retention. The Pack README and root README state that it
-must not be used for confidential text. There is no automatic alternate
-provider, custom retry policy, streaming, or voice cloning in V1.
+The submitted task text and the fixed non-confidential demo text are sent to
+Microsoft's online service. Task text remains subject to existing Hub task
+retention; generated demo files remain private to authorized `edge_tts`
+callers. The Pack README and root README state that it must not be used for
+confidential text. There is no automatic alternate provider, custom retry
+policy, streaming, voice cloning, dynamic provider catalogue, or public demo
+URL in V1.
 
 ## Captions and Speech Timeline
 
@@ -223,7 +323,8 @@ remains a separate station-only real acceptance step.
 ## Acceptance
 
 1. Manifest, catalog, and route tests prove the immutable
-   `edge_tts/edge-tts/synthesize/job/cpu` route and zero GPU requirement.
+   `edge_tts/edge-tts/synthesize/job/cpu` route, the 14-entry catalogue's
+   parity with the POST allowlist, and zero GPU requirement.
 2. Gateway and Cluster tests require `edge_tts` Token permission, reject
    unknown fields and invalid text, voice, rate, volume, or pitch values, and
    preserve standard task ownership.
@@ -232,10 +333,14 @@ remains a separate station-only real acceptance step.
    firewall policy.
 4. Container self-checks prove that unrelated outbound traffic and a forced
    firewall setup failure cannot synthesize audio.
-5. A manual real smoke submits short Chinese text, completes one task,
-   downloads a valid MP3 artifact, confirms no GPU lease, and records the
-   external-service limitation. This smoke is never part of the ordinary
-   offline test suite.
+5. Install tests prove that every candidate is attempted, partial success
+   publishes only verified files, all-failed initialization does not promote a
+   new install, and the stream path rejects traversal, symlinks, and
+   unavailable IDs.
+6. A manual real smoke calls the voice list and one authenticated demo URL,
+   submits short Chinese text, completes one task, downloads a valid MP3
+   artifact, confirms no GPU lease, and records the external-service
+   limitation. This smoke is never part of the ordinary offline test suite.
 
 New public PHP files use mode `0755`; Pack Python, shell, JSON, CSS, and
 documentation follow the repository's existing file modes.
