@@ -40,30 +40,34 @@ class FailingCommunicate:
 class StreamingCommunicate:
     calls = []
 
-    def __init__(self, text, voice, rate, volume, pitch):
-        self.calls.append((text, voice, rate, volume, pitch))
+    def __init__(self, text, voice, rate, volume, pitch, boundary=None):
+        self.calls.append((text, voice, rate, volume, pitch, boundary))
 
-    def stream_sync(self):
+    async def stream(self):
         yield {"type": "audio", "data": b"ID3fake-edge-tts"}
-        yield {"type": "SentenceBoundary", "offset": 0, "duration": 15000000, "text": "Hello world."}
         yield {"type": "WordBoundary", "offset": 0, "duration": 5000000, "text": "Hello"}
         yield {"type": "WordBoundary", "offset": 5000000, "duration": 10000000, "text": "world."}
 
 
 class InvalidStreamingCommunicate(StreamingCommunicate):
-    def stream_sync(self):
+    async def stream(self):
         yield {"type": "audio", "data": b"ID3fake-edge-tts"}
-        yield {"type": "SentenceBoundary", "offset": 0, "duration": -1, "text": "Hello world."}
-        yield {"type": "WordBoundary", "offset": 0, "duration": 5000000, "text": "Hello"}
+        yield {"type": "WordBoundary", "offset": 0, "duration": -1, "text": "Hello"}
 
 
 class SubMillisecondStreamingCommunicate(StreamingCommunicate):
-    def stream_sync(self):
+    async def stream(self):
         yield {"type": "audio", "data": b"ID3fake-edge-tts"}
-        yield {"type": "SentenceBoundary", "offset": 0, "duration": 1, "text": "A"}
-        yield {"type": "SentenceBoundary", "offset": 1, "duration": 1, "text": "B"}
         yield {"type": "WordBoundary", "offset": 0, "duration": 1, "text": "A"}
         yield {"type": "WordBoundary", "offset": 1, "duration": 1, "text": "B"}
+
+
+class FailingStreamingCommunicate(StreamingCommunicate):
+    error = RuntimeError()
+
+    async def stream(self):
+        raise self.error
+        yield {}
 
 
 class SynthesizeTest(unittest.TestCase):
@@ -122,7 +126,7 @@ class SynthesizeTest(unittest.TestCase):
         with patch.object(synthesize.edge_tts, "Communicate", StreamingCommunicate):
             synthesize.run_job(self.write_request(request), self.output_dir)
 
-        self.assertEqual(StreamingCommunicate.calls, [("Taiwan Edge TTS", "zh-TW-HsiaoChenNeural", "+0%", "+0%", "+0Hz")])
+        self.assertEqual(StreamingCommunicate.calls, [("Taiwan Edge TTS", "zh-TW-HsiaoChenNeural", "+0%", "+0%", "+0Hz", "WordBoundary")])
         self.assertEqual(
             (self.output_dir / "subtitle.vtt").read_text(encoding="utf-8"),
             "WEBVTT\n\n00:00:00.000 --> 00:00:01.500\nHello world.\n",
@@ -154,6 +158,43 @@ class SynthesizeTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, "edge_tts_failed")
         self.assertEqual(list(self.output_dir.iterdir()), [])
 
+    def test_caption_stream_provider_failure_is_unavailable_and_cleans_up(self):
+        request = {**self.request(), "include_subtitles": True}
+        FailingStreamingCommunicate.error = synthesize.aiohttp.ClientError("offline")
+        with patch.object(synthesize.edge_tts, "Communicate", FailingStreamingCommunicate):
+            with self.assertRaises(synthesize.RunnerError) as raised:
+                synthesize.run_job(self.write_request(request), self.output_dir)
+
+        self.assertEqual(raised.exception.code, "upstream_unavailable")
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_caption_stream_timeout_is_bounded_and_cleans_up(self):
+        request = {**self.request(), "include_subtitles": True}
+        FailingStreamingCommunicate.error = TimeoutError("timed out")
+        with patch.object(synthesize.edge_tts, "Communicate", FailingStreamingCommunicate):
+            with self.assertRaises(synthesize.RunnerError) as raised:
+                synthesize.run_job(self.write_request(request), self.output_dir)
+
+        self.assertEqual(raised.exception.code, "edge_tts_timeout")
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
+    def test_caption_temporary_audio_write_failure_is_an_artifact_error(self):
+        request_path = self.write_request({**self.request(), "include_subtitles": True})
+        temporary_audio = self.output_dir / ".generated_audio.mp3.tmp"
+        path_open = Path.open
+
+        def fail_temporary_audio(path, *args, **kwargs):
+            if path == temporary_audio:
+                raise OSError("disk full")
+            return path_open(path, *args, **kwargs)
+
+        with patch.object(synthesize.Path, "open", new=fail_temporary_audio), patch.object(synthesize.edge_tts, "Communicate", StreamingCommunicate):
+            with self.assertRaises(synthesize.RunnerError) as raised:
+                synthesize.run_job(request_path, self.output_dir)
+
+        self.assertEqual(raised.exception.code, "artifact_write_failed")
+        self.assertEqual(list(self.output_dir.iterdir()), [])
+
     def test_contiguous_sub_millisecond_boundaries_are_accepted(self):
         request = {**self.request(), "include_subtitles": True}
         with patch.object(synthesize.edge_tts, "Communicate", SubMillisecondStreamingCommunicate):
@@ -161,8 +202,7 @@ class SynthesizeTest(unittest.TestCase):
 
         timeline = json.loads((self.output_dir / "speech_timeline.json").read_text(encoding="utf-8"))
         self.assertEqual(timeline["sentences"], [
-            {"text": "A", "start_ms": 0, "end_ms": 1},
-            {"text": "B", "start_ms": 0, "end_ms": 1},
+            {"text": "A B", "start_ms": 0, "end_ms": 1},
         ])
         self.assertEqual(timeline["words"], [
             {"text": "A", "start_ms": 0, "end_ms": 1},
@@ -173,10 +213,12 @@ class SynthesizeTest(unittest.TestCase):
         (self.output_dir / "subtitle.vtt").write_text("old", encoding="utf-8")
         invalid_request = {**self.request(), "include_subtitles": "true"}
 
-        with self.assertRaises(synthesize.RunnerError) as raised:
-            synthesize.run_job(self.write_request(invalid_request), self.output_dir)
+        with patch.object(synthesize.edge_tts, "Communicate", FakeCommunicate):
+            with self.assertRaises(synthesize.RunnerError) as raised:
+                synthesize.run_job(self.write_request(invalid_request), self.output_dir)
 
         self.assertEqual(raised.exception.code, "edge_tts_failed")
+        self.assertEqual(FakeCommunicate.calls, [])
         self.assertEqual(list(self.output_dir.iterdir()), [])
 
     def test_invalid_request_is_rejected_without_a_client_call(self):
@@ -193,6 +235,15 @@ class SynthesizeTest(unittest.TestCase):
                         synthesize.run_job(self.write_request(value), self.output_dir)
                     self.assertEqual(raised.exception.code, "edge_tts_failed")
         self.assertEqual(FakeCommunicate.calls, [])
+
+    def test_legacy_request_defaults_to_audio_only(self):
+        request = self.request()
+        request.pop("include_subtitles")
+        with patch.object(synthesize.edge_tts, "Communicate", FakeCommunicate):
+            synthesize.run_job(self.write_request(request), self.output_dir)
+
+        self.assertEqual(FakeCommunicate.calls, [("Taiwan Edge TTS", "zh-TW-HsiaoChenNeural", "+0%", "+0%", "+0Hz")])
+        self.assertFalse((self.output_dir / "subtitle.vtt").exists())
 
     def test_main_maps_client_failures_to_one_bounded_sentinel_without_artifacts(self):
         request_path = self.write_request(self.request())

@@ -18,6 +18,8 @@ MAX_AUDIO_BYTES = 16 * 1024 * 1024
 MAX_CAPTION_BYTES = 512 * 1024
 TICKS_PER_MILLISECOND = 10000
 ALLOWED_REQUEST = {"text", "voice", "rate", "volume", "pitch", "include_subtitles"}
+LEGACY_REQUEST = ALLOWED_REQUEST - {"include_subtitles"}
+SENTENCE_TERMINATORS = ".!?。！？"
 VOICES = {
     "zh-TW-HsiaoChenNeural",
     "zh-TW-HsiaoYuNeural",
@@ -51,14 +53,17 @@ def read_request(path: Path) -> dict[str, Any]:
 
 
 def validate_request(value: dict[str, Any]) -> dict[str, Any]:
-    if set(value) != ALLOWED_REQUEST:
+    if set(value) == LEGACY_REQUEST:
+        include_subtitles = False
+    elif set(value) == ALLOWED_REQUEST:
+        include_subtitles = value.get("include_subtitles")
+    else:
         fail("edge_tts_failed")
     text = value.get("text")
     voice = value.get("voice")
     rate = value.get("rate")
     volume = value.get("volume")
     pitch = value.get("pitch")
-    include_subtitles = value.get("include_subtitles")
     try:
         text_bytes = len(text.encode("utf-8")) if isinstance(text, str) else 0
     except UnicodeEncodeError:
@@ -164,6 +169,27 @@ def append_boundary(entries: list[dict[str, Any]], value: dict[str, Any], previo
     return end_ticks
 
 
+def sentences_from_words(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sentences: list[dict[str, Any]] = []
+    sentence_words: list[dict[str, Any]] = []
+    for word in words:
+        sentence_words.append(word)
+        if any(character in SENTENCE_TERMINATORS for character in word["text"]):
+            sentences.append({
+                "text": " ".join(item["text"] for item in sentence_words),
+                "start_ms": sentence_words[0]["start_ms"],
+                "end_ms": word["end_ms"],
+            })
+            sentence_words = []
+    if sentence_words:
+        sentences.append({
+            "text": " ".join(item["text"] for item in sentence_words),
+            "start_ms": sentence_words[0]["start_ms"],
+            "end_ms": sentence_words[-1]["end_ms"],
+        })
+    return sentences
+
+
 def timestamp(milliseconds: int, separator: str) -> str:
     hours, remaining = divmod(milliseconds, 3_600_000)
     minutes, remaining = divmod(remaining, 60_000)
@@ -185,21 +211,20 @@ def render_srt(sentences: list[dict[str, Any]]) -> str:
     ) + "\n"
 
 
-def stream_captioned_audio(request: dict[str, Any], temporary_audio: Path) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
-    sentences: list[dict[str, Any]] = []
+async def stream_captioned_audio_async(request: dict[str, Any], temporary_audio: Path) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
     words: list[dict[str, Any]] = []
-    sentence_end_ticks: int | None = None
     word_end_ticks: int | None = None
     audio_bytes = 0
     try:
         with temporary_audio.open("wb") as audio_file:
-            for event in edge_tts.Communicate(
+            async for event in edge_tts.Communicate(
                 request["text"],
                 request["voice"],
                 rate=request["rate"],
                 volume=request["volume"],
                 pitch=request["pitch"],
-            ).stream_sync():
+                boundary="WordBoundary",
+            ).stream():
                 if not isinstance(event, dict):
                     fail("edge_tts_failed")
                 event_type = event.get("type")
@@ -211,21 +236,25 @@ def stream_captioned_audio(request: dict[str, Any], temporary_audio: Path) -> tu
                     if audio_bytes > MAX_AUDIO_BYTES:
                         fail("artifact_write_failed")
                     audio_file.write(data)
-                elif event_type == "SentenceBoundary":
-                    sentence_end_ticks = append_boundary(sentences, event, sentence_end_ticks)
                 elif event_type == "WordBoundary":
                     word_end_ticks = append_boundary(words, event, word_end_ticks)
     except (asyncio.TimeoutError, TimeoutError):
         fail("edge_tts_timeout")
-    except (aiohttp.ClientError, ConnectionError, OSError, ssl.SSLError, edge_exceptions.NoAudioReceived, edge_exceptions.WebSocketError):
+    except (aiohttp.ClientError, ConnectionError, ssl.SSLError, edge_exceptions.NoAudioReceived, edge_exceptions.WebSocketError):
         fail("upstream_unavailable")
     except RunnerError:
         raise
+    except OSError:
+        fail("artifact_write_failed")
     except Exception:
         fail("edge_tts_failed")
-    if not sentences or not words:
+    if not words:
         fail("edge_tts_failed")
-    return audio_bytes, sentences, words
+    return audio_bytes, sentences_from_words(words), words
+
+
+def stream_captioned_audio(request: dict[str, Any], temporary_audio: Path) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    return asyncio.run(stream_captioned_audio_async(request, temporary_audio))
 
 
 def remove_job_artifacts(paths: tuple[Path, ...]) -> None:
@@ -298,7 +327,7 @@ def run_job(request_path: Path, output_dir: Path) -> None:
             "warnings": [],
         })
         if request["include_subtitles"]:
-            duration_ms = max(entry["end_ms"] for entry in sentences + words)
+            duration_ms = max(entry["end_ms"] for entry in words)
             write_text_artifact(vtt_path, render_vtt(sentences))
             write_text_artifact(srt_path, render_srt(sentences))
             write_text_artifact(timeline_path, json.dumps({
