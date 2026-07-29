@@ -1861,6 +1861,7 @@ function hub_api_task_status(PDO $db, array $authContext = []): array
         'status' => $task['status'],
         'progress' => (int)$task['progress'],
         'cancel_requested' => (string)($task['input']['cancel_requested'] ?? '') === '1',
+        'error_code' => $task['error_code'],
         'error_message' => $task['error_message'],
         'created_at' => $task['created_at'],
         'started_at' => $task['started_at'],

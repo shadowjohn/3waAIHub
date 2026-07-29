@@ -607,6 +607,29 @@ hub_test('external legacy task submit stores member ownership for status access'
     });
 });
 
+hub_test('owned terminal Pack jobs expose their stored error code through task status', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'edge-tts', ['idempotent' => true]);
+        hub_set_service_enabled($db, 'edge_tts', true);
+        $memberId = hub_create_api_member($db, 'Edge TTS Status Owner');
+        $token = hub_create_api_token($db, $memberId, 'edge tts status token', null, null);
+        hub_test_audio_allow($db, [$token], ['task_status']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $taskId = hub_enqueue_owned_pack_job($db, hub_resolve_pack_job_async_route($db, 'edge_tts'), ['text' => 'status fixture'], $memberId, (int)$token['token_id'], '203.0.113.51');
+        $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        hub_test_assert((int)($claimed['id'] ?? 0) === $taskId, 'terminal Pack job fixture must be claimed before its stored failure is recorded');
+        hub_pack_job_mark_task_terminal($db, $taskId, 'failed', 'upstream_unavailable', 'provider unavailable');
+
+        $response = hub_test_audio_request($db, 'task_status', (string)$token['plain_token'], [], ['task_id' => (string)$taskId], [], 'GET');
+        $payload = hub_test_audio_payload($response);
+        hub_test_assert($response['status'] === 200 && ($payload['status'] ?? '') === 'failed' && ($payload['error_code'] ?? '') === 'upstream_unavailable',
+            'authorized task_status must expose the owned terminal Pack job error_code');
+    });
+});
+
 hub_test('staged audio upload cannot be claimed before its managed source is published', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();

@@ -15,21 +15,16 @@ enable its `edge_tts` service. Grant the smoke token only these modes:
 do not paste it into this document, a command history, or a captured terminal
 transcript.
 
-Build installation runs through the existing command worker. Confirm its image
-and offline runner check before submitting the real request:
+An active configured scheduler for both command and task queues is a
+prerequisite. Never manually run the global `scripts/command_worker.php` or
+`scripts/task_worker.php` claimers: they can claim unrelated queued work. Wait
+for the scheduler-managed installation to complete, then confirm its image and
+offline runner check before submitting the real request:
 
 ```bash
-php scripts/command_worker.php --limit=5
 docker image inspect --format '{{.Id}}' 3waaihub/edge-tts:0.2.0
 bash packs/edge-tts/service/test_egress_firewall.sh
 AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full
-```
-
-The task worker must also be available. This procedure uses one foreground run
-after submission; a configured scheduler can perform the same work instead.
-
-```bash
-php scripts/task_worker.php --limit=1
 ```
 
 ## Submit And Poll
@@ -60,41 +55,51 @@ TASK_ID="$(php -r '
   echo $id;
 ' "$WORKDIR/submit.json")"
 
-php scripts/task_worker.php --limit=1
-
 STATUS=""
+ERROR_CODE=""
 for attempt in $(seq 1 60); do
   curl --fail --silent --show-error \
     -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
     --output "$WORKDIR/status.json" \
     "$AIHUB_EDGE_TTS_BASE_URL?mode=task_status&task_id=$TASK_ID"
-  STATUS="$(php -r '
+  read -r STATUS ERROR_CODE <<EOF
+$(php -r '
     $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
     $status = $value["status"] ?? null;
     if (!is_string($status)) { throw new RuntimeException("task status missing"); }
-    echo $status;
-  ' "$WORKDIR/status.json")"
+    $errorCode = $value["error_code"] ?? null;
+    if ($errorCode !== null && !is_string($errorCode)) { throw new RuntimeException("task error_code invalid"); }
+    echo $status, " ", $errorCode ?? "";
+  ' "$WORKDIR/status.json")
+EOF
   case "$STATUS" in
     success) break ;;
-    failed|cancelled|timed_out) exit 1 ;;
+    failed) [ "$ERROR_CODE" = 'upstream_unavailable' ] || exit 1; break ;;
+    cancelled|timed_out) exit 1 ;;
   esac
   sleep 2
 done
-test "$STATUS" = success
+case "$STATUS" in
+  success) ;;
+  failed) [ "$ERROR_CODE" = 'upstream_unavailable' ] || exit 1 ;;
+  *) exit 1 ;;
+esac
 ```
 
-If the task fails with `upstream_unavailable`, treat that as a valid failed-path
+An exact `failed` / `upstream_unavailable` status is a valid bounded failed-path
 check when the outbound firewall blocks the provider. Do not allow general
-Internet access or choose a substitute provider. Before a controlled retry,
-the only approved provider egress is `speech.platform.bing.com:443`.
+Internet access or choose a substitute provider. Before a controlled retry, the
+only approved provider egress is `speech.platform.bing.com:443`.
 
 ## Download, Validate, And Acknowledge
 
-Read the result only after `success`, then select the owned `generated_audio`,
+Only `success` reads the result and then selects the owned `generated_audio`,
 `subtitle_vtt`, `subtitle_srt`, and `speech_timeline` artifacts. Do not print
-the result or the caption contents.
+the result or the caption contents. The valid bounded failed-path skips this
+entire artifact validation and acknowledgement block.
 
 ```bash
+if [ "$STATUS" = success ]; then
 curl --fail --silent --show-error \
   -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
   --output "$WORKDIR/result.json" \
@@ -175,6 +180,7 @@ for ARTIFACT_ID in "$AUDIO_ID" "$VTT_ID" "$SRT_ID" "$TIMELINE_ID"; do
     }
   ' "$WORKDIR/ack.json"
 done
+fi
 ```
 
 ## CPU Postcondition
@@ -201,7 +207,9 @@ if ((int) $stmt->fetchColumn() !== 0) {
 PHP
 ```
 
-Record only task and artifact IDs, terminal status, the audio SHA-256 match,
-MP3 validation boolean, VTT/SRT/timeline validation booleans, acknowledgement
-booleans, and no-GPU-lease result. Redact the token, submitted text, URL query
-parameters, generated audio, and caption contents from all captured logs.
+For success, record only task and artifact IDs, terminal status, the audio
+SHA-256 match, MP3 validation boolean, VTT/SRT/timeline validation booleans,
+acknowledgement booleans, and no-GPU-lease result. For the bounded failed path,
+record only the task ID, terminal status, `error_code`, and no-GPU-lease result.
+Redact the token, submitted text, URL query parameters, generated audio, and
+caption contents from all captured logs.

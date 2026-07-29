@@ -437,8 +437,8 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
         'Edge TTS design must identify captions as shipped rather than a future phase');
     foreach ([
         'admin/packs.php',
-        'php scripts/command_worker.php --limit=5',
-        'php scripts/task_worker.php --limit=1',
+        'active configured scheduler',
+        'Never manually run',
         'api.php?mode=edge_tts',
         'task_status',
         'task_result',
@@ -457,6 +457,11 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
     ] as $needle) {
         hub_test_assert(str_contains($smoke, $needle), 'Edge TTS real smoke must cover: ' . $needle);
     }
+    foreach (['php scripts/command_worker.php --limit=5', 'php scripts/task_worker.php --limit=1'] as $workerCommand) {
+        hub_test_assert(!str_contains($smoke, $workerCommand), 'Edge TTS real smoke must never manually invoke a global worker: ' . $workerCommand);
+    }
+    hub_test_assert(str_contains($smoke, '[ "$ERROR_CODE" = \'upstream_unavailable\' ]'),
+        'Edge TTS real smoke must assert the stored error_code for its bounded upstream failure path');
     foreach (['upstream_unavailable', 'edge_tts_timeout', 'edge_tts_failed', 'artifact_write_failed'] as $code) {
         hub_test_assert(str_contains($pack, $code), 'Edge TTS Pack documentation must describe bounded error code: ' . $code);
     }
