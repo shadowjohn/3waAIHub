@@ -52,3 +52,63 @@ hub_test('admin pack catalog tabs render expected contract', function (): void {
     hub_test_assert(hub_admin_market_category_for_manifest(hub_get_pack('sam3')['manifest']) === 'vision', 'sam3 must be vision tab');
     hub_test_assert(hub_admin_market_category_for_manifest(hub_get_pack('translate-gemma12b')['manifest']) === 'language', 'translate must be language tab');
 });
+
+hub_test('canonical Market JS uses one page dictionary and canonical readiness endpoint', function (): void {
+    $marketplace = (string)file_get_contents(HUB_ROOT . '/admin/marketplace.php');
+    $servicesJs = (string)file_get_contents(HUB_ROOT . '/assets/js/services.js');
+    $packsJs = (string)file_get_contents(HUB_ROOT . '/assets/js/packs.js');
+
+    hub_test_assert(str_contains($marketplace, 'id="market-i18n"'), 'canonical Market dictionary node missing');
+    hub_test_assert(str_contains($marketplace, 'hub_json_encode(')
+        && str_contains($marketplace, 'JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES'), 'Market dictionary must use HTML-safe JSON encoding');
+    foreach ([$servicesJs, $packsJs] as $script) {
+        hub_test_assert(substr_count($script, 'JSON.parse(') === 1, 'Market script must parse its page dictionary once');
+        hub_test_assert(str_contains($script, "getElementById('market-i18n')"), 'Market script dictionary node lookup missing');
+        hub_test_assert(str_contains($script, 'function t(') || str_contains($script, 'const t ='), 'Market script translation helper missing');
+        hub_test_assert(!str_contains($script, 'localStorage'), 'Market script must not persist translations');
+        hub_test_assert(!str_contains($script, 'translation.php'), 'Market script must not call a translation endpoint');
+    }
+    hub_test_assert(str_contains($packsJs, "url: 'marketplace.php'"), 'Pack readiness must use canonical marketplace endpoint');
+    foreach (['refreshing', 'refresh', 'readiness_failed'] as $key) {
+        hub_test_assert(str_contains($packsJs, "t('" . $key . "'"), 'Pack readiness feedback must use dictionary key ' . $key);
+    }
+    foreach (['running', 'stopped', 'unknown', 'health_ok', 'health_checking', 'health_failed', 'poll_failed', 'action_failed', 'queued'] as $key) {
+        hub_test_assert(str_contains($servicesJs, "t('" . $key . "'"), 'service feedback must use dictionary key ' . $key);
+    }
+});
+
+hub_test('legacy Market pages stay directly available with deprecation notices', function (): void {
+    foreach (['packs.php', 'models.php', 'services.php'] as $file) {
+        $source = (string)file_get_contents(HUB_ROOT . '/admin/' . $file);
+        hub_test_assert(str_contains($source, '/** @deprecated Canonical UI: admin/marketplace.php */'), $file . ' deprecation marker missing');
+        hub_test_assert(str_contains($source, 'class="notice legacy-debug"'), $file . ' legacy debug notice missing');
+        hub_test_assert(str_contains($source, 'href="marketplace.php'), $file . ' canonical operation link missing');
+        hub_test_assert(!str_contains($source, "header('Location: marketplace.php"), $file . ' must not redirect');
+    }
+
+    $canonical = (string)file_get_contents(HUB_ROOT . '/admin/marketplace.php');
+    foreach (['packs.php', 'models.php', 'services.php'] as $legacy) {
+        hub_test_assert(!str_contains($canonical, "require HUB_ROOT . '/admin/" . $legacy), 'canonical page must not include ' . $legacy);
+        hub_test_assert(!str_contains($canonical, "require_once HUB_ROOT . '/admin/" . $legacy), 'canonical page must not include ' . $legacy);
+    }
+});
+
+hub_test('canonical Market stylesheet stays dense local and zero tracking', function (): void {
+    $css = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-market.css');
+
+    foreach (['.workspace-tabs', '.market-categories', '.pack-grid', '.pack-card', '.service-grid', '.service-card', '.market-spec'] as $selector) {
+        hub_test_assert(str_contains($css, $selector), 'Market stylesheet missing ' . $selector);
+    }
+    preg_match_all('/letter-spacing\s*:\s*([^;}]+)/', $css, $tracking);
+    foreach ($tracking[1] as $value) {
+        hub_test_assert(trim($value) === '0', 'Market stylesheet contains nonzero letter-spacing');
+    }
+    foreach (['linear-gradient', 'radial-gradient', 'https://', 'http://', 'orb', 'glow'] as $forbidden) {
+        hub_test_assert(!str_contains($css, $forbidden), 'Market stylesheet contains forbidden decoration or asset ' . $forbidden);
+    }
+    foreach (['.pack-card', '.service-card'] as $selector) {
+        $start = strpos($css, $selector);
+        $block = $start === false ? '' : substr($css, $start, 400);
+        hub_test_assert(preg_match('/border-radius:\s*(?:[0-8](?:\\.\\d+)?px|var\\(--r-sm\\))/', $block) === 1, $selector . ' radius exceeds 8px');
+    }
+});

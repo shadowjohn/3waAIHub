@@ -3,6 +3,30 @@ declare(strict_types=1);
 
 require_once HUB_ROOT . '/app/admin_market.php';
 
+function hub_test_admin_market_request(array $get = [], array $post = [], bool $ajax = false): array
+{
+    $server = [
+        'REQUEST_METHOD' => $post === [] ? 'GET' : 'POST',
+        'REMOTE_ADDR' => '203.0.113.80',
+        'SCRIPT_NAME' => '/3waAIHub/admin/marketplace.php',
+        'REQUEST_URI' => '/3waAIHub/admin/marketplace.php',
+    ];
+    if ($ajax) {
+        $server['HTTP_X_REQUESTED_WITH'] = 'XMLHttpRequest';
+    }
+    $script = "define('HUB_TESTING', true);"
+        . 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];"
+        . '$_SERVER = ' . var_export($server, true) . ';'
+        . '$_GET = ' . var_export($get, true) . ';'
+        . '$_POST = ' . var_export($post, true) . ';'
+        . 'require ' . var_export(HUB_ROOT . '/admin/marketplace.php', true) . ';';
+
+    return hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+    ]);
+}
+
 hub_test('Market categories are exclusive and sum to all Packs', function (): void {
     $db = hub_test_reset_db();
     hub_i18n_import_seed($db);
@@ -57,4 +81,162 @@ hub_test('Pack purpose uses a keyed Chinese seed and manifest fallback', functio
 
     $malformed = ['id' => 'malformed-pack', 'manifest' => 'invalid', 'description' => 'Top-level fallback'];
     hub_test_assert(hub_admin_market_pack_description($db, $malformed) === 'Top-level fallback', 'top-level description fallback mismatch');
+});
+
+hub_test('canonical Market renders filtered category counts and collapsed technical details', function (): void {
+    $db = hub_test_reset_db();
+    hub_i18n_import_seed($db);
+    $catalog = hub_admin_market_catalog($db, 'vision');
+    $result = hub_test_admin_market_request(['view' => 'market', 'category' => 'vision']);
+
+    hub_test_assert($result['exit_code'] === 0, 'canonical Market render failed: ' . $result['output']);
+    $html = $result['stdout'];
+    foreach ([
+        'data-market-view="market"',
+        'marketplace.php?view=market&amp;category=vision',
+        'data-market-category="vision"',
+        'data-market-count="' . $catalog['counts']['vision'] . '"',
+        'ocr-ppocrv5',
+        '圖片文字辨識',
+        '<details',
+        'runtime_level',
+        'target_level',
+        'execution_type',
+        'pack_id',
+        'pack-readiness-refresh',
+    ] as $needle) {
+        hub_test_assert(str_contains($html, $needle), 'canonical Market render missing ' . $needle);
+    }
+    foreach (array_keys(hub_admin_market_categories()) as $category) {
+        hub_test_assert(str_contains($html, 'data-market-category="' . $category . '"'), 'category link missing ' . $category);
+    }
+    hub_test_assert(!str_contains($html, 'href="packs.php'), 'canonical Market must not link to legacy packs page');
+
+    $fallback = hub_test_admin_market_request(['view' => 'unknown']);
+    hub_test_assert(
+        $fallback['exit_code'] === 0 && str_contains($fallback['stdout'], 'data-market-view="market"'),
+        'unknown canonical view must render Market'
+    );
+});
+
+hub_test('canonical installed services keeps operations links polling and collapsed details', function (): void {
+    hub_test_reset_db();
+    $result = hub_test_admin_market_request(['view' => 'services']);
+
+    hub_test_assert($result['exit_code'] === 0, 'canonical services render failed: ' . $result['output']);
+    $html = $result['stdout'];
+    foreach ([
+        'data-market-view="services"',
+        'service-action-form',
+        'value="start"',
+        'value="stop"',
+        'value="restart"',
+        'value="build"',
+        'value="rebuild"',
+        'value="refresh"',
+        '<details',
+        'service_key',
+        'service_settings.php?service_id=',
+        'service_logs.php?id=',
+        'benchmarks.php',
+        'playground.php?mode=',
+        'data-copy-target=',
+        'service-job',
+        '../assets/js/services.js',
+    ] as $needle) {
+        hub_test_assert(str_contains($html, $needle), 'canonical services render missing ' . $needle);
+    }
+});
+
+hub_test('canonical service POST only queues the mapped command job', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $status = (string)$service['status'];
+
+    foreach ([
+        'build' => 'service_build',
+        'start' => 'service_start',
+        'stop' => 'service_stop',
+        'restart' => 'service_restart',
+        'rebuild' => 'service_rebuild',
+        'refresh' => 'service_health_check',
+    ] as $action => $queueAction) {
+        $result = hub_test_admin_market_request(['view' => 'services'], [
+            'csrf_token' => 'test',
+            'service_id' => (string)$service['id'],
+            'action' => $action,
+        ], true);
+        $payload = json_decode($result['stdout'], true);
+        $job = is_array($payload) ? hub_get_command_job($db, (int)($payload['job']['id'] ?? 0)) : null;
+        $serviceAfter = hub_get_service($db, (int)$service['id']);
+
+        hub_test_assert($result['exit_code'] === 0 && is_array($payload), 'service AJAX response must be JSON: ' . $result['output']);
+        hub_test_assert(($payload['ok'] ?? false) === true, 'service AJAX response must report success for ' . $action);
+        hub_test_assert(is_array($job)
+            && ($job['action'] ?? '') === $queueAction
+            && ($job['status'] ?? '') === 'queued'
+            && (int)($job['service_id'] ?? 0) === (int)$service['id'], 'service POST queue mapping mismatch for ' . $action);
+        hub_test_assert(($serviceAfter['status'] ?? null) === $status, 'web request must not execute ' . $action);
+        foreach (['id', 'action', 'action_label', 'service_id', 'service_name', 'status', 'status_label', 'status_class', 'progress'] as $key) {
+            hub_test_assert(array_key_exists($key, $payload['job'] ?? []), 'service AJAX job shape missing ' . $key);
+        }
+    }
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn() === 6, 'service POST must create one job per action');
+});
+
+hub_test('canonical service POST rejects unknown actions non-integer services and bad CSRF', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+
+    foreach ([
+        ['csrf_token' => 'test', 'service_id' => (string)$service['id'], 'action' => 'destroy'],
+        ['csrf_token' => 'test', 'service_id' => $service['id'] . 'oops', 'action' => 'start'],
+        ['csrf_token' => 'wrong', 'service_id' => (string)$service['id'], 'action' => 'start'],
+    ] as $post) {
+        $before = (int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn();
+        $result = hub_test_admin_market_request(['view' => 'services'], $post, true);
+        $payload = json_decode($result['stdout'], true);
+        $after = (int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn();
+        hub_test_assert($result['exit_code'] === 0 && is_array($payload), 'invalid service action must return JSON');
+        hub_test_assert(($payload['ok'] ?? true) === false, 'invalid service action must report failure');
+        hub_test_assert($after === $before, 'invalid service action must not create a command job');
+    }
+});
+
+hub_test('canonical readiness endpoint returns JSON from marketplace', function (): void {
+    hub_test_reset_db();
+    $result = hub_test_admin_market_request(['ajax' => 'readiness', 'pack_id' => 'hello'], [], true);
+    $payload = json_decode($result['stdout'], true);
+
+    hub_test_assert($result['exit_code'] === 0 && is_array($payload), 'readiness endpoint must return JSON');
+    hub_test_assert(($payload['ok'] ?? false) === true && ($payload['pack_id'] ?? '') === 'hello', 'canonical readiness payload mismatch');
+    hub_test_assert((string)($payload['readiness'] ?? '') !== '', 'canonical readiness label missing');
+});
+
+hub_test('model labels cover both Pack surfaces required optional and malformed selectors', function (): void {
+    $db = hub_test_reset_db();
+    $required = ['settings_schema' => [[
+        'required' => true,
+        'default' => 'missing-model',
+        'model_selector' => ['type' => 'unknown'],
+    ]]];
+    $optional = ['settings_schema' => [[
+        'required' => false,
+        'model_selector' => ['type' => 'unknown'],
+    ]]];
+    $malformed = ['settings_schema' => [
+        'invalid',
+        ['required' => true, 'model_selector' => 'not-an-array'],
+    ]];
+
+    foreach (['packs', 'marketplace'] as $surface) {
+        $requiredLabel = hub_admin_market_model_label($db, $required, $surface);
+        $optionalLabel = hub_admin_market_model_label($db, $optional, $surface);
+        $malformedLabel = hub_admin_market_model_label($db, $malformed, $surface);
+        hub_test_assert($requiredLabel['label'] === '缺少模型', $surface . ' required model label mismatch');
+        hub_test_assert($optionalLabel['label'] === '模型可選', $surface . ' optional model label mismatch');
+        hub_test_assert(is_string($malformedLabel['label']) && $malformedLabel['label'] !== '', $surface . ' malformed selector must not throw');
+    }
 });

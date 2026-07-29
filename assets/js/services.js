@@ -1,6 +1,18 @@
 (function ($) {
     'use strict';
 
+    var dictionaryNode = document.getElementById('market-i18n');
+    var dictionary = {};
+    try {
+        dictionary = dictionaryNode ? JSON.parse(dictionaryNode.textContent || '{}') : {};
+    } catch (error) {
+        dictionary = {};
+    }
+
+    function t(key, fallback) {
+        return dictionary[key] || fallback;
+    }
+
     function showMessage(message, isError) {
         $('#service-message')
             .removeClass('notice error')
@@ -28,17 +40,38 @@
     }
 
     function updateServiceRow(job) {
-        if (!job || !job.service || !job.service.id) {
+        if (!job || (!(job.service && job.service.id) && !job.service_id)) {
             return;
         }
-        var $row = $('[data-service-row-id="' + job.service.id + '"]');
+        var serviceId = job.service && job.service.id ? job.service.id : job.service_id;
+        var serviceStatus = job.service && job.service.status ? job.service.status : '';
+        if (job.status === 'queued') {
+            serviceStatus = 'queued';
+        } else if (job.status === 'running') {
+            serviceStatus = job.action === 'service_start' ? 'starting' : 'running';
+        }
+        var $row = $('[data-service-row-id="' + serviceId + '"]');
         var $status = $row.find('[data-service-status]');
-        var containerOk = job.service.status === 'running';
+        var containerOk = serviceStatus === 'running';
+        var statusClass = containerOk
+            ? 'ok hub-badge-ok'
+            : (serviceStatus === 'queued' || serviceStatus === 'starting'
+                ? 'hub-badge-warn'
+                : (serviceStatus === 'stopped' ? 'bad hub-badge-muted' : 'bad hub-badge-bad'));
+        var labels = {
+            queued: t('queued_status', '排隊中'),
+            starting: t('starting', '啟動中'),
+            running: t('running', '執行中'),
+            stopped: t('stopped', '已停止'),
+            unhealthy: t('unhealthy', '異常'),
+            error: t('unhealthy', '異常'),
+            failed: t('failed', '失敗')
+        };
         $status
-            .removeClass('ok bad')
-            .addClass(containerOk ? 'ok' : 'bad')
+            .removeClass('ok bad hub-badge-ok hub-badge-warn hub-badge-bad hub-badge-muted')
+            .addClass(statusClass)
             .find('[data-service-status-label]')
-            .text(containerOk ? '執行中' : (job.service.status === 'stopped' ? '已停止' : '未知'));
+            .text(labels[serviceStatus] || t('unknown', '未知'));
     }
 
     function updateHealthBadge(job) {
@@ -46,13 +79,13 @@
             return;
         }
         var $badge = $('[data-service-row-id="' + job.service_id + '"]').find('[data-service-health]');
-        var label = '健康異常';
+        var label = t('health_failed', '健康異常');
         var cls = 'hub-badge-bad';
         if (job.status === 'success') {
-            label = '健康正常';
+            label = t('health_ok', '健康正常');
             cls = 'hub-badge-ok';
         } else if (job.status === 'queued' || job.status === 'running') {
-            label = '健康檢查中';
+            label = t('health_checking', '健康檢查中');
             cls = 'hub-badge-warn';
         }
         $badge
@@ -154,7 +187,7 @@
             }).fail(function () {
                 if (!$box.data('poll-error-shown')) {
                     $box.data('poll-error-shown', true);
-                    showMessage('讀取背景工作狀態失敗，請稍後重試或重新整理。', true);
+                    showMessage(t('poll_failed', '讀取背景工作狀態失敗，請稍後重試或重新整理。'), true);
                 }
             });
         });
@@ -181,11 +214,11 @@
             dataType: 'json'
         }).done(function (response) {
             if (!response || !response.ok) {
-                showMessage((response && response.error) || '操作失敗。', true);
+                showMessage((response && response.error) || t('action_failed', '操作失敗，請重新整理後再試。'), true);
                 return;
             }
             if (!silent) {
-                showMessage(response.message || '已排入背景工作。', false);
+                showMessage(response.message || t('queued', '已排入背景工作。'), false);
             }
             prependJob(response.job);
             if (response.job && response.job.service_id) {
@@ -195,7 +228,7 @@
             }
         }).fail(function (xhr) {
             var response = xhr.responseJSON || {};
-            showMessage(response.error || '操作失敗，請重新整理後再試。', true);
+            showMessage(response.error || t('action_failed', '操作失敗，請重新整理後再試。'), true);
         }).always(function () {
             $form.removeClass('ajax-loading');
             $form.find('button').prop('disabled', false);
@@ -208,6 +241,19 @@
         var $form = $(this);
         var action = $form.data('action') || $form.find('button[name="action"]').first().val();
         submitServiceAction($form, action, false);
+    });
+
+    $(document).on('click', '[data-copy-target]', function () {
+        var target = document.getElementById(this.getAttribute('data-copy-target') || '');
+        if (!target || !navigator.clipboard) {
+            showMessage(t('copy_failed', '無法自動複製，請手動複製。'), true);
+            return;
+        }
+        navigator.clipboard.writeText(target.textContent || '').then(function () {
+            showMessage(t('copied', 'API URL 已複製。'), false);
+        }).catch(function () {
+            showMessage(t('copy_failed', '無法自動複製，請手動複製。'), true);
+        });
     });
 
     window.setInterval(pollJobs, 2000);

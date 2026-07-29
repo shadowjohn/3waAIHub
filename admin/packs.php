@@ -61,6 +61,7 @@ function hub_packs_json(int $status, array $payload): never
     exit;
 }
 
+/** @deprecated Canonical UI: admin/marketplace.php */
 $db = hub_db();
 $user = hub_require_system_admin($db);
 $message = '';
@@ -100,6 +101,11 @@ $tabCounts = $catalog['counts'];
 
 hub_admin_header('HubPack 套件', $user);
 ?>
+<section class="notice legacy-debug" role="note">
+    <strong><?= hub_h(__('Legacy debug 頁面')) ?></strong>
+    <?= hub_h(__('此頁已退出主選單，正式操作請使用「安裝套件」。')) ?>
+    <a href="marketplace.php"><?= hub_h(__('前往安裝套件')) ?></a>
+</section>
 <style>
     .pack-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
     .pack-tab { border: 1px solid var(--line); border-radius: 8px; color: var(--text); padding: 8px 11px; text-decoration: none; }
@@ -268,5 +274,10 @@ hub_admin_header('HubPack 套件', $user);
     <?php endif; ?>
 </section>
 <script src="../assets/js/jquery.min.js"></script>
+<script id="market-i18n" type="application/json"><?= hub_json_encode([
+    'refreshing' => __('刷新中'),
+    'refresh' => __('刷新'),
+    'readiness_failed' => __('讀取失敗'),
+], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?></script>
 <script src="../assets/js/packs.js"></script>
 <?php hub_admin_footer(); ?>

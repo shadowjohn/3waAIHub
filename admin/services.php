@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../app/bootstrap.php';
 require_once __DIR__ . '/_layout.php';
 
+/** @deprecated Canonical UI: admin/marketplace.php */
 $db = hub_db();
 hub_migrate($db);
 hub_ensure_default_storage_settings($db);
@@ -169,6 +170,11 @@ foreach ($jobs as $job) {
 
 hub_admin_header('服務管理', $user);
 ?>
+<section class="notice legacy-debug" role="note">
+    <strong><?= hub_h(__('Legacy debug 頁面')) ?></strong>
+    <?= hub_h(__('此頁已退出主選單，正式操作請使用「安裝套件」。')) ?>
+    <a href="marketplace.php?view=services"><?= hub_h(__('前往已安裝服務')) ?></a>
+</section>
 <div id="service-message" class="notice"<?= $message === '' ? ' style="display:none"' : '' ?>><?= hub_h($message) ?></div>
 <section class="panel">
     <h1>服務管理</h1>
@@ -305,16 +311,22 @@ hub_admin_header('服務管理', $user);
     </div>
 </section>
 <script src="../assets/js/jquery.min.js"></script>
-<script>
-document.querySelectorAll('[data-copy-target]').forEach((button) => {
-    button.addEventListener('click', async () => {
-        const target = document.getElementById(button.dataset.copyTarget || '');
-        if (!target || !navigator.clipboard) {
-            return;
-        }
-        await navigator.clipboard.writeText(target.textContent || '');
-    });
-});
-</script>
+<script id="market-i18n" type="application/json"><?= hub_json_encode([
+    'running' => __('執行中'),
+    'stopped' => __('已停止'),
+    'unknown' => __('未知'),
+    'queued_status' => __('排隊中'),
+    'starting' => __('啟動中'),
+    'unhealthy' => __('異常'),
+    'failed' => __('失敗'),
+    'health_ok' => __('健康正常'),
+    'health_checking' => __('健康檢查中'),
+    'health_failed' => __('健康異常'),
+    'poll_failed' => __('讀取背景工作狀態失敗，請稍後重試或重新整理。'),
+    'action_failed' => __('操作失敗，請重新整理後再試。'),
+    'queued' => __('已排入背景工作。'),
+    'copied' => __('API URL 已複製。'),
+    'copy_failed' => __('無法自動複製，請手動複製。'),
+], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?></script>
 <script src="../assets/js/services.js"></script>
 <?php hub_admin_footer(); ?>
