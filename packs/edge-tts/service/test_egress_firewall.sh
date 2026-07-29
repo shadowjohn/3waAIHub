@@ -127,6 +127,23 @@ tcp_443_accepts=$(grep -F 'iptables -A AIHUB_EDGE_TTS_OUTPUT ' "$log" | grep -F 
 }
 grep -Fqx '8.8.8.8 speech.platform.bing.com' "$hosts_file" || { printf 'provider IP was not pinned\n' >&2; exit 1; }
 
+: > "$log"
+PATH="$mockbin:$PATH" LOG="$log" EDGE_TTS_RESOLV_CONF="$resolv_conf" EDGE_TTS_HOSTS_FILE="$hosts_file" "$entrypoint" /app/generate_demos.py
+assert_contains 'setfacl -m u:edge:rwx /workspace/output' "$log"
+assert_contains 'getfacl -cp /workspace/output' "$log"
+assert_contains 'setpriv --reuid=edge --regid=edge --clear-groups --bounding-set=-all --ambient-caps=-all -- /app/generate_demos.py' "$log"
+assert_not_contains '/workspace/input' "$log"
+assert_not_contains '/workspace/input/request.json' "$log"
+
+: > "$log"
+untrusted_stderr="$tmpdir/untrusted.stderr"
+if PATH="$mockbin:$PATH" LOG="$log" EDGE_TTS_RESOLV_CONF="$resolv_conf" EDGE_TTS_HOSTS_FILE="$hosts_file" "$entrypoint" /app/untrusted.py > /dev/null 2> "$untrusted_stderr"; then
+  printf 'untrusted entrypoint command unexpectedly succeeded\n' >&2
+  exit 1
+fi
+grep -Fqx 'AIHUB_ERROR_CODE=upstream_unavailable' "$untrusted_stderr" || { cat "$untrusted_stderr" >&2; exit 1; }
+assert_not_contains 'setpriv' "$log"
+
 empty_resolv="$tmpdir/empty-resolv.conf"
 : > "$empty_resolv"
 expect_upstream_failure empty_dns "EDGE_TTS_RESOLV_CONF=$empty_resolv"

@@ -1,0 +1,16 @@
+[
+  {"id":"zh-TW-HsiaoChenNeural","display_name":"小晴","locale":"zh-TW","gender":"female","memo":"清亮，適合主持與旁白。","demo_text":"大家好，我是小晴。我的聲音比較清亮，適合當主持人、旁白，或是帶一點神祕感的開場。","demo_file":"01_tw_xiaoqing_hsiaochen.mp3"},
+  {"id":"zh-TW-HsiaoYuNeural","display_name":"阿岑","locale":"zh-TW","gender":"female","memo":"柔和，適合聊天與故事角色。","demo_text":"嗨，我是阿岑。我的聲線比較柔一點，適合聊天、故事角色，也適合做睡前或懸疑類型的對話。","demo_file":"02_tw_acen_hsiaoyu.mp3"},
+  {"id":"zh-TW-YunJheNeural","display_name":"阿哲","locale":"zh-TW","gender":"male","memo":"穩定，適合解說與來賓。","demo_text":"你好，我是阿哲。我的聲音比較穩，適合解說、訪談來賓，或是在雙人對話裡補充觀點。","demo_file":"03_tw_azhe_yunjhe.mp3"},
+  {"id":"zh-CN-XiaoxiaoNeural","display_name":"曉曉","locale":"zh-CN","gender":"female","memo":"明亮，適合正式女聲旁白。","demo_text":"大家好，我是晓晓。我的声音比较明亮，适合课程旁白、新闻开场，或是清楚稳定的说明内容。","demo_file":"04_cn_xiaoxiao.mp3"},
+  {"id":"zh-CN-XiaoyiNeural","display_name":"小藝","locale":"zh-CN","gender":"female","memo":"輕柔，適合故事與生活感對談。","demo_text":"你好，我是小艺。我的声音比较轻柔，适合故事叙述、生活对谈，也适合比较温暖的角色。","demo_file":"05_cn_xiaoyi.mp3"},
+  {"id":"zh-CN-YunjianNeural","display_name":"雲健","locale":"zh-CN","gender":"male","memo":"厚實，適合劇情男聲。","demo_text":"大家好，我是云健。我的声音比较厚实，适合剧情角色、历史题材，或是需要力量感的段落。","demo_file":"06_cn_yunjian.mp3"},
+  {"id":"zh-CN-YunxiNeural","display_name":"雲希","locale":"zh-CN","gender":"male","memo":"年輕，適合輕鬆聊天。","demo_text":"嗨，我是云希。我的声音比较年轻，适合轻松聊天、节目助理，或是活泼一点的男声角色。","demo_file":"07_cn_yunxi.mp3"},
+  {"id":"zh-CN-YunxiaNeural","display_name":"雲夏","locale":"zh-CN","gender":"male","memo":"少年感，適合年輕角色。","demo_text":"你好，我是云夏。我的声音带一点少年感，适合年轻角色、轻小说旁白，或比较有好奇心的对话。","demo_file":"08_cn_yunxia.mp3"},
+  {"id":"zh-CN-YunyangNeural","display_name":"雲揚","locale":"zh-CN","gender":"male","memo":"播報感，適合公告與資訊整理。","demo_text":"大家好，我是云扬。我的声音比较像播报员，适合新闻摘要、公告说明，或结构清楚的资讯整理。","demo_file":"09_cn_yunyang.mp3"},
+  {"id":"zh-CN-liaoning-XiaobeiNeural","display_name":"小北","locale":"zh-CN-liaoning","gender":"female","memo":"東北口音，適合特色角色。","demo_text":"大家好，我是小北。我的声音带一点东北普通话味道，适合有地域特色、比较鲜明的角色。","demo_file":"10_cn_liaoning_xiaobei.mp3"},
+  {"id":"zh-CN-shaanxi-XiaoniNeural","display_name":"小妮","locale":"zh-CN-shaanxi","gender":"female","memo":"陝西口音，適合地方感角色。","demo_text":"你好，我是小妮。我的声音带一点陕西普通话特色，适合地方故事、人物访谈，或有口音记忆点的角色。","demo_file":"11_cn_shaanxi_xiaoni.mp3"},
+  {"id":"zh-HK-HiuGaaiNeural","display_name":"嘉嘉","locale":"zh-HK","gender":"female","memo":"粵語女聲，爽朗清楚。","demo_text":"大家好，我係嘉嘉。呢把聲比較爽朗，適合廣東話開場、生活節目，同埋輕鬆嘅對談。","demo_file":"12_hk_hiugaai.mp3"},
+  {"id":"zh-HK-HiuMaanNeural","display_name":"漫漫","locale":"zh-HK","gender":"female","memo":"粵語女聲，柔和自然。","demo_text":"你好，我係漫漫。呢把聲比較柔和，適合講故事、訪問嘉賓，或者做一啲比較細膩嘅旁白。","demo_file":"13_hk_hiumaan.mp3"},
+  {"id":"zh-HK-WanLungNeural","display_name":"阿龍","locale":"zh-HK","gender":"male","memo":"粵語男聲，穩重有厚度。","demo_text":"大家好，我係阿龍。呢把聲比較穩重，適合新聞解說、故事男聲，或者節目入面嘅專家角色。","demo_file":"14_hk_wanlung.mp3"}
+]

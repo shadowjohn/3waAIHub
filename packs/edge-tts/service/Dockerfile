@@ -14,9 +14,11 @@ RUN apt-get update \
 
 RUN python3 -m pip install edge-tts==7.2.6
 
-COPY edge-tts-entrypoint.sh synthesize.py test_egress_firewall.sh test_synthesize.py ./
-RUN chmod 0755 edge-tts-entrypoint.sh synthesize.py test_egress_firewall.sh test_synthesize.py \
-    && python3 -m unittest -v test_synthesize.py
+COPY edge-tts-entrypoint.sh synthesize.py generate_demos.py voice_catalog.json \
+    test_egress_firewall.sh test_synthesize.py test_generate_demos.py ./
+RUN chmod 0755 edge-tts-entrypoint.sh synthesize.py generate_demos.py test_egress_firewall.sh \
+        test_synthesize.py test_generate_demos.py \
+    && python3 -m unittest -v test_synthesize.py test_generate_demos.py
 
 ENTRYPOINT ["/app/edge-tts-entrypoint.sh"]
 CMD ["/app/synthesize.py"]

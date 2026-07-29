@@ -49,6 +49,11 @@ grant_workspace_access() {
   getfacl -cp /workspace/output 2>/dev/null | grep -Fqx 'user:edge:rwx' || fail_upstream
 }
 
+grant_demo_workspace_access() {
+  run_rule setfacl -m u:edge:rwx /workspace/output
+  getfacl -cp /workspace/output 2>/dev/null | grep -Fqx 'user:edge:rwx' || fail_upstream
+}
+
 is_ipv4() {
   python3 - "$1" <<'PY'
 import ipaddress
@@ -76,7 +81,11 @@ PY
 }
 
 [[ "${EDGE_TTS_EGRESS_FORCE_FAIL:-}" != 1 ]] || fail_upstream
-[[ "$(id -u)" == 0 && -r "$RESOLV_CONF" && $# -gt 0 ]] || fail_upstream
+[[ "$(id -u)" == 0 && -r "$RESOLV_CONF" && $# -eq 1 ]] || fail_upstream
+case "$1" in
+  /app/synthesize.py|/app/generate_demos.py) ;;
+  *) fail_upstream ;;
+esac
 
 declare -a resolvers=()
 declare -A resolver_seen=()
@@ -130,7 +139,10 @@ for address in "${provider_ips[@]}"; do
 done
 append_rule iptables "$CHAIN" -j DROP
 
-grant_workspace_access
+case "$1" in
+  /app/synthesize.py) grant_workspace_access ;;
+  /app/generate_demos.py) grant_demo_workspace_access ;;
+esac
 
 exec setpriv --reuid=edge --regid=edge --clear-groups \
   --bounding-set=-all --ambient-caps=-all -- "$@"

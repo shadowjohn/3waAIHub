@@ -271,6 +271,54 @@ class SynthesizeTest(unittest.TestCase):
                     self.assertEqual(raised.exception.code, "edge_tts_failed")
         self.assertEqual(FakeCommunicate.calls, [])
 
+    def test_catalogue_is_the_only_voice_admission_source(self):
+        profiles = synthesize.load_voice_catalog()
+        expected_ids = {
+            "zh-TW-HsiaoChenNeural",
+            "zh-TW-HsiaoYuNeural",
+            "zh-TW-YunJheNeural",
+            "zh-CN-XiaoxiaoNeural",
+            "zh-CN-XiaoyiNeural",
+            "zh-CN-YunjianNeural",
+            "zh-CN-YunxiNeural",
+            "zh-CN-YunxiaNeural",
+            "zh-CN-YunyangNeural",
+            "zh-CN-liaoning-XiaobeiNeural",
+            "zh-CN-shaanxi-XiaoniNeural",
+            "zh-HK-HiuGaaiNeural",
+            "zh-HK-HiuMaanNeural",
+            "zh-HK-WanLungNeural",
+        }
+        self.assertEqual({profile["id"] for profile in profiles}, expected_ids)
+        for voice in expected_ids:
+            self.assertEqual(synthesize.validate_request({**self.request(), "voice": voice})["voice"], voice)
+        with self.assertRaises(synthesize.RunnerError) as raised:
+            synthesize.validate_request({**self.request(), "voice": "en-US-EmmaMultilingualNeural"})
+        self.assertEqual(raised.exception.code, "edge_tts_failed")
+
+    def test_missing_catalogue_is_a_bounded_failure(self):
+        with patch.object(synthesize, "VOICE_CATALOG_PATH", self.workspace / "missing.json"):
+            with self.assertRaises(synthesize.RunnerError) as raised:
+                synthesize.validate_request(self.request())
+        self.assertEqual(raised.exception.code, "edge_tts_failed")
+
+    def test_malformed_catalogue_is_a_bounded_failure(self):
+        profile = synthesize.load_voice_catalog()[0]
+        catalogue_path = self.workspace / "voice_catalog.json"
+        cases = [
+            {"not": "a list"},
+            [{**profile, "gender": "Female"}],
+            [{**profile, "demo_file": "../demo.mp3"}],
+            [profile, profile],
+        ]
+        for value in cases:
+            with self.subTest(value=value):
+                catalogue_path.write_text(json.dumps(value), encoding="utf-8")
+                with patch.object(synthesize, "VOICE_CATALOG_PATH", catalogue_path):
+                    with self.assertRaises(synthesize.RunnerError) as raised:
+                        synthesize.validate_request(self.request())
+                self.assertEqual(raised.exception.code, "edge_tts_failed")
+
     def test_legacy_request_defaults_to_audio_only(self):
         request = self.request()
         request.pop("include_subtitles")

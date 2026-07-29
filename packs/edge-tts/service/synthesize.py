@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import ssl
 import time
 from importlib.metadata import PackageNotFoundError, version
@@ -20,13 +21,12 @@ TICKS_PER_MILLISECOND = 10000
 ALLOWED_REQUEST = {"text", "voice", "rate", "volume", "pitch", "include_subtitles"}
 LEGACY_REQUEST = ALLOWED_REQUEST - {"include_subtitles"}
 SENTENCE_TERMINATORS = (".", "!", "?", "。", "！", "？")
-VOICES = {
-    "zh-TW-HsiaoChenNeural",
-    "zh-TW-HsiaoYuNeural",
-    "zh-TW-YunJheNeural",
-    "en-US-EmmaMultilingualNeural",
-    "en-US-AndrewMultilingualNeural",
-}
+VOICE_CATALOG_PATH = Path(__file__).with_name("voice_catalog.json")
+VOICE_CATALOG_KEYS = {"id", "display_name", "locale", "gender", "memo", "demo_text", "demo_file"}
+VOICE_ID_RE = re.compile(r"^zh-(?:TW|CN|HK)(?:-[a-z]+)?-[A-Za-z]+Neural$")
+LOCALE_RE = re.compile(r"^zh-(?:TW|CN|HK)(?:-[a-z]+)?$")
+DEMO_FILE_RE = re.compile(r"^[0-9]{2}_[a-z0-9_]+\.mp3$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 RATES = {"-50%", "-25%", "+0%", "+25%", "+50%"}
 VOLUMES = RATES
 PITCHES = {"-50Hz", "-25Hz", "+0Hz", "+25Hz", "+50Hz"}
@@ -40,6 +40,46 @@ class RunnerError(RuntimeError):
 
 def fail(code: str) -> None:
     raise RunnerError(code)
+
+
+def load_voice_catalog() -> list[dict[str, str]]:
+    try:
+        value = json.loads(VOICE_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        fail("edge_tts_failed")
+    if not isinstance(value, list) or not value:
+        fail("edge_tts_failed")
+    ids: set[str] = set()
+    files: set[str] = set()
+    for profile in value:
+        if not isinstance(profile, dict) or set(profile) != VOICE_CATALOG_KEYS or any(
+            not isinstance(profile.get(key), str) or not profile[key] or CONTROL_RE.search(profile[key])
+            for key in VOICE_CATALOG_KEYS
+        ):
+            fail("edge_tts_failed")
+        voice_id = profile["id"]
+        locale = profile["locale"]
+        demo_file = profile["demo_file"]
+        if (
+            not VOICE_ID_RE.fullmatch(voice_id)
+            or not LOCALE_RE.fullmatch(locale)
+            or not voice_id.startswith(locale + "-")
+            or not DEMO_FILE_RE.fullmatch(demo_file)
+            or "/" in demo_file
+            or "\\" in demo_file
+            or ".." in demo_file
+            or profile["gender"] not in {"male", "female"}
+            or voice_id in ids
+            or demo_file in files
+        ):
+            fail("edge_tts_failed")
+        ids.add(voice_id)
+        files.add(demo_file)
+    return value
+
+
+def voice_ids() -> set[str]:
+    return {profile["id"] for profile in load_voice_catalog()}
 
 
 def read_request(path: Path) -> dict[str, Any]:
@@ -68,13 +108,18 @@ def validate_request(value: dict[str, Any]) -> dict[str, Any]:
         text_bytes = len(text.encode("utf-8")) if isinstance(text, str) else 0
     except UnicodeEncodeError:
         text_bytes = 0
+    catalogue_voice_ids = voice_ids()
     if (
         not isinstance(text, str)
         or not text
         or text_bytes > 4096
-        or voice not in VOICES
+        or not isinstance(voice, str)
+        or voice not in catalogue_voice_ids
+        or not isinstance(rate, str)
         or rate not in RATES
+        or not isinstance(volume, str)
         or volume not in VOLUMES
+        or not isinstance(pitch, str)
         or pitch not in PITCHES
         or not isinstance(include_subtitles, bool)
     ):
