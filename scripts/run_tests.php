@@ -215,6 +215,12 @@ function hub_test_reset_db(): PDO
 {
     // Windows 需先釋放上一個測試結束後的 PDO 循環參考，否則 SQLite 檔可能仍被鎖住。
     gc_collect_cycles();
+    $_GET = [];
+    $_POST = [];
+    $_FILES = [];
+    foreach (['CONTENT_LENGTH', 'CONTENT_TYPE', 'HTTP_AUTHORIZATION', 'REDIRECT_HTTP_AUTHORIZATION', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR', 'REQUEST_METHOD', 'REQUEST_URI'] as $key) {
+        unset($_SERVER[$key]);
+    }
     $testVoiceProfileDir = hub_test_voice_profile_cleanup_dir();
     foreach (glob($testVoiceProfileDir . '/*.wav') ?: [] as $path) {
         if (is_link($path)) {

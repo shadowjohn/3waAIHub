@@ -44,6 +44,26 @@ function hub_test_gateway_remove_audio_runtime_bin(string $bin): void
     rmdir($bin);
 }
 
+hub_test('test database reset clears stale request input', function (): void {
+    $_GET = ['stale' => '1'];
+    $_POST = ['real_inference' => '1'];
+    $_FILES = ['audio' => ['error' => UPLOAD_ERR_OK]];
+    $_SERVER['CONTENT_LENGTH'] = '999';
+    $_SERVER['CONTENT_TYPE'] = 'application/json';
+    $_SERVER['HTTP_AUTHORIZATION'] = 'Bearer stale';
+    $_SERVER['HTTP_X_FORWARDED_FOR'] = '203.0.113.10';
+    $_SERVER['REMOTE_ADDR'] = '203.0.113.11';
+    $_SERVER['REQUEST_METHOD'] = 'POST';
+    $_SERVER['REQUEST_URI'] = '/api.php?mode=tts';
+
+    hub_test_reset_db();
+
+    hub_test_assert($_GET === [] && $_POST === [] && $_FILES === [], 'test database reset must clear stale request input arrays');
+    foreach (['CONTENT_LENGTH', 'CONTENT_TYPE', 'HTTP_AUTHORIZATION', 'HTTP_X_FORWARDED_FOR', 'REMOTE_ADDR', 'REQUEST_METHOD', 'REQUEST_URI'] as $key) {
+        hub_test_assert(!array_key_exists($key, $_SERVER), 'test database reset must clear stale request server context');
+    }
+});
+
 hub_test('hello gateway and unknown mode keep expected contract', function (): void {
     $db = hub_test_reset_db();
     hub_set_service_enabled($db, 'hello', true);
