@@ -50,6 +50,20 @@ function hub_test_admin_services_request(): array
     ]);
 }
 
+function hub_test_admin_job_status_request(array $get): array
+{
+    $script = "define('HUB_TESTING', true);"
+        . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];"
+        . "\$_SERVER = ['REQUEST_METHOD' => 'GET', 'REMOTE_ADDR' => '203.0.113.80'];"
+        . '$_GET = ' . var_export($get, true) . ';'
+        . 'require ' . var_export(HUB_ROOT . '/admin/job_status.php', true) . ';';
+
+    return hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+        'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
+    ]);
+}
+
 hub_test('Market categories are exclusive and sum to all Packs', function (): void {
     $db = hub_test_reset_db();
     hub_i18n_import_seed($db);
@@ -271,7 +285,7 @@ hub_test('canonical readiness rejects non-scalar malformed and oversized Pack ID
     }
 });
 
-hub_test('command job payload carries the actual service flags needed by polling', function (): void {
+hub_test('command job payload carries service flags without a global summary snapshot', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
     hub_test_assert($service !== null, 'hello service missing');
@@ -287,35 +301,57 @@ hub_test('command job payload carries the actual service flags needed by polling
     hub_test_assert(($payload['service']['runtime_status'] ?? null) === 'stopped', 'job payload runtime state mismatch');
     hub_test_assert(($payload['service']['enabled'] ?? null) === 0, 'job payload enabled flag missing');
     hub_test_assert(($payload['service']['restart_required'] ?? null) === 1, 'job payload restart flag missing');
-    foreach (['total', 'running', 'stopped', 'disabled', 'active_jobs', 'failed_jobs'] as $key) {
-        hub_test_assert(array_key_exists($key, $payload['summary'] ?? []), 'job payload summary missing ' . $key);
-    }
-    hub_test_assert(($payload['summary']['total'] ?? null) === 1, 'service total summary mismatch');
-    hub_test_assert(($payload['summary']['running'] ?? null) === 0, 'stopped service must not count as running');
-    hub_test_assert(($payload['summary']['stopped'] ?? null) === 1, 'stopped service summary mismatch');
-    hub_test_assert(($payload['summary']['disabled'] ?? null) === 1, 'disabled service summary mismatch');
-    hub_test_assert(($payload['summary']['active_jobs'] ?? null) === 1, 'queued job must increment the active summary');
-    hub_test_assert(($payload['summary']['failed_jobs'] ?? null) === 0, 'queued job must not increment the failed summary');
+    hub_test_assert(!array_key_exists('summary', $payload), 'per-job payload must not carry a stale global summary snapshot');
+});
+
+hub_test('authoritative service summary helper and endpoint track current DB state', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $serviceId = (int)$service['id'];
+    $db->prepare(
+        "UPDATE services
+         SET enabled = 0, status = 'stopped', runtime_status = 'stopped'
+         WHERE id = :id"
+    )->execute([':id' => $serviceId]);
+    $jobId = hub_enqueue_command_job($db, 'service_start', $serviceId, ['reason' => 'summary-refresh-test'], null, '127.0.0.1');
+
+    $queued = hub_command_service_summary($db);
+    hub_test_assert($queued === [
+        'total' => 1,
+        'running' => 0,
+        'stopped' => 1,
+        'disabled' => 1,
+        'active_jobs' => 1,
+        'failed_jobs' => 0,
+    ], 'queued authoritative summary mismatch');
 
     $db->prepare("UPDATE command_jobs SET status = 'running' WHERE id = :id")->execute([':id' => $jobId]);
-    $runningJobPayload = hub_command_job_status_payload($db, $jobId);
-    hub_test_assert(($runningJobPayload['summary']['active_jobs'] ?? null) === 1, 'running job must remain in the active summary');
-    hub_test_assert(($runningJobPayload['summary']['failed_jobs'] ?? null) === 0, 'running job must not increment the failed summary');
+    $running = hub_command_service_summary($db);
+    hub_test_assert($running['active_jobs'] === 1 && $running['failed_jobs'] === 0, 'running authoritative summary mismatch');
 
     $db->prepare(
         "UPDATE services SET enabled = 1, status = 'running', runtime_status = 'running' WHERE id = :id"
-    )->execute([':id' => (int)$service['id']]);
+    )->execute([':id' => $serviceId]);
     $db->prepare("UPDATE command_jobs SET status = 'success' WHERE id = :id")->execute([':id' => $jobId]);
-    $successPayload = hub_command_job_status_payload($db, $jobId);
-    hub_test_assert(($successPayload['summary']['running'] ?? null) === 1, 'running service summary mismatch');
-    hub_test_assert(($successPayload['summary']['stopped'] ?? null) === 0, 'running service must leave the stopped summary');
-    hub_test_assert(($successPayload['summary']['disabled'] ?? null) === 0, 'enabled service must leave the disabled summary');
-    hub_test_assert(($successPayload['summary']['active_jobs'] ?? null) === 0, 'successful job must leave the active summary');
+    $success = hub_command_service_summary($db);
+    hub_test_assert(
+        $success['running'] === 1
+            && $success['stopped'] === 0
+            && $success['disabled'] === 0
+            && $success['active_jobs'] === 0,
+        'successful authoritative summary mismatch'
+    );
 
     $db->prepare("UPDATE command_jobs SET status = 'failed' WHERE id = :id")->execute([':id' => $jobId]);
-    $failedPayload = hub_command_job_status_payload($db, $jobId);
-    hub_test_assert(($failedPayload['summary']['active_jobs'] ?? null) === 0, 'failed job must leave the active summary');
-    hub_test_assert(($failedPayload['summary']['failed_jobs'] ?? null) === 1, 'failed job must increment the failed summary');
+    $failed = hub_command_service_summary($db);
+    hub_test_assert($failed['active_jobs'] === 0 && $failed['failed_jobs'] === 1, 'failed authoritative summary mismatch');
+
+    $result = hub_test_admin_job_status_request(['summary' => '1']);
+    $response = json_decode($result['stdout'], true);
+    hub_test_assert($result['exit_code'] === 0 && is_array($response), 'service summary endpoint must return JSON');
+    hub_test_assert(($response['ok'] ?? false) === true, 'service summary endpoint must report success');
+    hub_test_assert(($response['summary'] ?? null) === $failed, 'service summary endpoint must return current DB state');
 });
 
 hub_test('canonical service health requires a successful job and a running runtime', function (): void {

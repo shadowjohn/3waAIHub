@@ -3,6 +3,11 @@
 
     var dictionaryNode = document.getElementById('market-i18n');
     var dictionary = {};
+    var requestTimeout = 10000;
+    var summaryRefreshInFlight = false;
+    var summaryRefreshQueued = false;
+    var summaryErrorShown = false;
+    var terminalFailureVisible = false;
     try {
         dictionary = dictionaryNode ? JSON.parse(dictionaryNode.textContent || '{}') : {};
     } catch (error) {
@@ -69,6 +74,17 @@
             .show();
     }
 
+    function showBackgroundError(message) {
+        if (terminalFailureVisible) {
+            var $message = $('#service-message');
+            if ($message.text().indexOf(message) === -1) {
+                $message.append(document.createTextNode(' ' + message));
+            }
+            return;
+        }
+        showMessage(message, true);
+    }
+
     function prependJob(job) {
         if (!job || !$('#command-job-rows').length) {
             return;
@@ -115,29 +131,56 @@
 
     function updateServiceSummary(summary) {
         var summaryKeys = ['total', 'running', 'stopped', 'disabled', 'active_jobs', 'failed_jobs'];
-        if (summary) {
-            $.each(summaryKeys, function (_, key) {
-                if (Object.prototype.hasOwnProperty.call(summary, key)) {
-                    $('[data-service-summary="' + key + '"] [data-service-summary-value]').text(Number(summary[key]) || 0);
-                }
-            });
+        if (!summary) {
             return;
         }
 
-        var counts = {running: 0, stopped: 0, disabled: 0};
-        $('[data-service-row-id][data-service-actual-status]').each(function () {
-            var $row = $(this);
-            if ($row.attr('data-service-actual-status') === 'running') {
-                counts.running += 1;
-            } else {
-                counts.stopped += 1;
-            }
-            if ($row.attr('data-service-enabled') !== '1') {
-                counts.disabled += 1;
+        $.each(summaryKeys, function (_, key) {
+            if (Object.prototype.hasOwnProperty.call(summary, key)) {
+                $('[data-service-summary="' + key + '"] [data-service-summary-value]').text(Number(summary[key]) || 0);
             }
         });
-        $.each(counts, function (key, count) {
-            $('[data-service-summary="' + key + '"] [data-service-summary-value]').text(count);
+    }
+
+    function requestServiceSummary() {
+        if (!$('[data-service-summary]').length) {
+            return;
+        }
+        if (summaryRefreshInFlight) {
+            summaryRefreshQueued = true;
+            return;
+        }
+
+        summaryRefreshInFlight = true;
+        summaryRefreshQueued = false;
+        $.ajax({
+            method: 'GET',
+            url: 'job_status.php',
+            data: {summary: '1'},
+            dataType: 'json',
+            cache: false,
+            timeout: requestTimeout
+        }).done(function (response) {
+            if (!response || !response.ok || !response.summary) {
+                if (!summaryErrorShown) {
+                    summaryErrorShown = true;
+                    showBackgroundError(t('summary_failed', '讀取服務摘要失敗，請稍後重試。'));
+                }
+                return;
+            }
+            summaryErrorShown = false;
+            updateServiceSummary(response.summary);
+        }).fail(function () {
+            if (!summaryErrorShown) {
+                summaryErrorShown = true;
+                showBackgroundError(t('summary_failed', '讀取服務摘要失敗，請稍後重試。'));
+            }
+        }).always(function () {
+            summaryRefreshInFlight = false;
+            if (summaryRefreshQueued) {
+                summaryRefreshQueued = false;
+                requestServiceSummary();
+            }
         });
     }
 
@@ -188,7 +231,6 @@
                     .text(serviceStatusLabel(displayedStatus));
             });
         }
-        updateServiceSummary(job.summary);
     }
 
     function updateServiceRow(job) {
@@ -281,6 +323,7 @@
         if (['success', 'failed', 'cancelled', 'timeout'].indexOf(job.status) !== -1) {
             $box.attr('data-job-id', '');
             if (['failed', 'cancelled', 'timeout'].indexOf(job.status) !== -1) {
+                terminalFailureVisible = true;
                 showMessage(jobFailureMessage(job.status), true);
                 return;
             }
@@ -323,14 +366,18 @@
                 method: 'GET',
                 url: 'job_status.php',
                 data: {job_id: jobId},
-                dataType: 'json'
+                dataType: 'json',
+                cache: false,
+                timeout: requestTimeout
             }).done(function (response) {
                 if (!response || !response.ok || !response.job) {
                     return;
                 }
+                requestServiceSummary();
                 if (String(response.job.id) !== String($box.attr('data-job-id'))) {
                     return;
                 }
+                $box.removeData('poll-error-shown');
                 updateServiceJobBox($box, response.job);
                 updateJobRow(response.job);
             }).fail(function () {
@@ -339,7 +386,7 @@
                 }
                 if (!$box.data('poll-error-shown')) {
                     $box.data('poll-error-shown', true);
-                    showMessage(t('poll_failed', '讀取背景工作狀態失敗，請稍後重試或重新整理。'), true);
+                    showBackgroundError(t('poll_failed', '讀取背景工作狀態失敗，請稍後重試或重新整理。'));
                 }
             }).always(function () {
                 if ($box.data('poll-in-flight') === jobId) {
@@ -359,6 +406,9 @@
         }
         var data = $form.serializeArray();
         data.push({name: 'action', value: action});
+        if (!silent) {
+            terminalFailureVisible = false;
+        }
 
         $form.addClass('ajax-loading');
         $form.find('button').prop('disabled', true);
@@ -377,6 +427,7 @@
                 showMessage(response.message || t('queued', '已排入背景工作。'), false);
             }
             prependJob(response.job);
+            requestServiceSummary();
             if (response.job && response.job.service_id) {
                 var $box = $('.service-job[data-service-id="' + response.job.service_id + '"]');
                 $box.attr('data-job-id', response.job.id);

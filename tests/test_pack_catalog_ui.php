@@ -131,6 +131,20 @@ hub_test('Market scripts expose validation polling state and i18n consistency co
         'function jobStatusLabel',
         'function syncServiceState',
         'function updateServiceSummary',
+        'function requestServiceSummary',
+        'var summaryRefreshInFlight = false',
+        'var summaryRefreshQueued = false',
+        'if (summaryRefreshInFlight)',
+        'summaryRefreshQueued = true',
+        "data: {summary: '1'}",
+        'summaryRefreshInFlight = false',
+        'if (summaryRefreshQueued)',
+        'requestServiceSummary()',
+        'timeout: requestTimeout',
+        'var terminalFailureVisible = false',
+        'showBackgroundError',
+        'if (terminalFailureVisible)',
+        "document.createTextNode(' ' + message)",
         'var inFlightJobId = $box.data(\'poll-in-flight\')',
         '$box.data(\'poll-in-flight\', jobId)',
         'String(response.job.id) !== String($box.attr(\'data-job-id\'))',
@@ -147,6 +161,15 @@ hub_test('Market scripts expose validation polling state and i18n consistency co
     ] as $needle) {
         hub_test_assert(str_contains($servicesJs, $needle), 'Service polling contract missing ' . $needle);
     }
+    hub_test_assert(substr_count($servicesJs, 'timeout: requestTimeout') >= 2, 'job-status and summary requests must both have a timeout');
+    hub_test_assert(substr_count($servicesJs, 'summaryRefreshInFlight = true') === 1, 'summary refresh must have one global in-flight owner');
+    $pollSummary = strpos($servicesJs, 'requestServiceSummary();', strpos($servicesJs, 'function pollJobs'));
+    $staleGuard = strpos($servicesJs, 'String(response.job.id) !== String($box.attr(\'data-job-id\'))', strpos($servicesJs, 'function pollJobs'));
+    hub_test_assert(
+        $pollSummary !== false && $staleGuard !== false && $pollSummary < $staleGuard,
+        'stale per-box responses must still queue an authoritative global summary refresh'
+    );
+    hub_test_assert(!str_contains($servicesJs, 'updateServiceSummary(job.summary)'), 'per-job responses must not overwrite the global summary');
     hub_test_assert(!str_contains($servicesJs, 'job.action_label ||'), 'JS must map action codes through the page dictionary');
     hub_test_assert(!str_contains($servicesJs, 'job.status_label ||'), 'JS must map job status codes through the page dictionary');
 
@@ -163,6 +186,7 @@ hub_test('Market scripts expose validation polling state and i18n consistency co
         "'job_status_failed' => __('失敗')",
         "'job_status_cancelled' => __('已取消')",
         "'job_status_timeout' => __('逾時')",
+        "'summary_failed' => __('讀取服務摘要失敗，請稍後重試。')",
         "'required_fields' => __('請完成標示的必填欄位。')",
     ] as $needle) {
         hub_test_assert(str_contains($marketplace, $needle), 'canonical Market dictionary missing ' . $needle);

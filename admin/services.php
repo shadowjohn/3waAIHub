@@ -330,6 +330,7 @@ hub_admin_header('服務管理', $user);
     'restart_required' => __('需重啟'),
     'restart_applied' => __('設定已套用'),
     'poll_failed' => __('讀取背景工作狀態失敗，請稍後重試或重新整理。'),
+    'summary_failed' => __('讀取服務摘要失敗，請稍後重試。'),
     'action_failed' => __('操作失敗，請重新整理後再試。'),
     'queued' => __('已排入背景工作。'),
     'job_failed_feedback' => __('背景工作失敗，已保留工作輸出。'),
