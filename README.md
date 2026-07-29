@@ -1534,6 +1534,18 @@ curl -X POST 'http://localhost/3waAIHub/api.php?mode=task_cancel&task_id=1'
 
 Production audio uses the async Pack modes `audio_cleanup`, `speech_transcribe`, and `voice_generate`. Hub owns queue admission, immutable Pack routing, workspace/artifact lifecycle, `gpu:0` fencing, callback delivery, and retention; MyAI or another client owns product workflow and consumes completed artifacts. Cleanup and transcription take one multipart source or owned `source_artifact_id`; voice generation takes text plus allowlisted design controls or a managed voice profile, never an external audio source. See [API examples](docs/api_examples.md#async-audio-pack-tasks) for polling, download, ACK, and callback handling.
 
+### Edge TTS External Service
+
+`edge_tts` is an experimental third-party Pack.
+It uses Microsoft Edge's online speech service. An administrator must install
+and enable it, and a token needs
+the `edge_tts` mode. It is CPU-only: GPU is not used, there is no voice clone
+capability or provider secret. Do not submit confidential text.
+Its only provider egress is `speech.platform.bing.com:443`; failures return
+bounded task errors rather than substitute audio. V1 returns MP3 and metadata;
+`subtitle_vtt` is deferred to additive V2. See the [Pack guide](packs/edge-tts/README.md)
+and [real smoke runbook](docs/operations/edge-tts-real-smoke.md).
+
 Legacy `asr` and `tts` remain diagnostic only. `sync_max_duration_seconds=30`, the Pack upload limit, `sync_concurrency=1`, no callbacks, and no source artifact chaining are enforced. Use the named async mode from an `async_required` response; `sync_busy` means another actual GPU inference owns the shared lease. Sync requests never turn themselves into tasks.
 
 Deploy in this order:

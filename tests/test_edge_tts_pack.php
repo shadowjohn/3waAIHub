@@ -334,3 +334,38 @@ hub_test('Edge TTS artifact contract is exact', function (): void {
         ],
     ], 'Edge TTS must require the fixed MP3 and synthesis metadata artifacts');
 });
+
+hub_test('Edge TTS documentation preserves the external CPU-only operator contract', function (): void {
+    $root = (string)file_get_contents(HUB_ROOT . '/README.md');
+    $packPath = HUB_ROOT . '/packs/edge-tts/README.md';
+    $smokePath = HUB_ROOT . '/docs/operations/edge-tts-real-smoke.md';
+    hub_test_assert(is_file($packPath) && is_file($smokePath), 'Edge TTS Pack and real-smoke documentation must exist');
+    $pack = (string)file_get_contents($packPath);
+    $smoke = (string)file_get_contents($smokePath);
+
+    foreach (['edge_tts', 'speech.platform.bing.com', "Microsoft Edge's online speech service", 'Do not submit confidential text', 'GPU is not used', 'subtitle_vtt'] as $needle) {
+        hub_test_assert(str_contains($root, $needle) && str_contains($pack, $needle), 'Edge TTS root and Pack documentation must state: ' . $needle);
+    }
+    hub_test_assert(preg_match('/## Deferred V2[\s\S]*subtitle_vtt/', $pack) === 1, 'Edge TTS subtitle_vtt must be explicitly deferred to additive V2');
+    foreach ([
+        'admin/packs.php',
+        'php scripts/command_worker.php --limit=5',
+        'php scripts/task_worker.php --limit=1',
+        'api.php?mode=edge_tts',
+        'task_status',
+        'task_result',
+        'generated_audio',
+        'task_artifacts_ack',
+        'ffprobe',
+        'sha256',
+        'runtime_resource_leases',
+        'gpu:0',
+        'AIHUB_EDGE_TTS_TOKEN',
+    ] as $needle) {
+        hub_test_assert(str_contains($smoke, $needle), 'Edge TTS real smoke must cover: ' . $needle);
+    }
+    foreach (['upstream_unavailable', 'edge_tts_timeout', 'edge_tts_failed', 'artifact_write_failed'] as $code) {
+        hub_test_assert(str_contains($pack, $code), 'Edge TTS Pack documentation must describe bounded error code: ' . $code);
+    }
+    hub_test_assert(!str_contains($smoke, 'Bearer <TOKEN>'), 'Edge TTS real smoke must keep its token in the environment');
+});
