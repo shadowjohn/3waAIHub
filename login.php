@@ -40,7 +40,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title><?= hub_h(__('登入')) ?> - <?= hub_h($siteTitle) ?></title>
-    <link rel="icon" href="assets/images/logo.svg">
+    <link rel="icon" href="branding_asset.php">
     <link rel="stylesheet" href="assets/css/admin-base.css">
     <link rel="stylesheet" href="assets/css/admin-login.css">
 </head>
@@ -56,7 +56,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     <main class="auth" id="main">
         <section class="brand">
             <div class="brand__top">
-                <img class="brand__logo" src="assets/images/logo.svg" width="56" height="56" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
+                <img class="brand__logo" src="branding_asset.php" width="56" height="56" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
                 <div>
                     <h1 class="brand__title"><?= hub_h($siteTitle) ?></h1>
                     <p class="brand__sub"><?= hub_h($siteSubtitle) ?></p>
@@ -89,7 +89,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 
         <section class="panel">
             <div class="panel__brand">
-                <img class="panel__brandLogo" src="assets/images/logo.svg" width="44" height="44" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
+                <img class="panel__brandLogo" src="branding_asset.php" width="44" height="44" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
                 <div>
                     <p class="panel__brandName"><?= hub_h($siteTitle) ?></p>
                     <p class="panel__brandSub"><?= hub_h($siteSubtitle) ?></p>

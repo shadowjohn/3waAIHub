@@ -91,6 +91,18 @@ function hub_settings_validate_unsigned_ints(array $input, array $keys): array
     return $errors;
 }
 
+function hub_settings_branding_error(string $code): string
+{
+    return match ($code) {
+        'branding_payload_too_large' => __('Logo 檔案不可超過 2 MB。'),
+        'branding_unsupported_media_type' => __('只接受 PNG、WebP 或 JPEG 圖片。'),
+        'branding_invalid_image' => __('Logo 圖片無法辨識。'),
+        'branding_dimensions_too_large' => __('Logo 尺寸不可超過 2048 × 2048，總像素不可超過 4,194,304。'),
+        'branding_upload_failed', 'branding_upload_invalid' => __('Logo 上傳失敗，請重新選擇圖片。'),
+        default => __('Logo 無法儲存，請檢查資料目錄權限。'),
+    };
+}
+
 $db = hub_db();
 hub_migrate($db);
 hub_ensure_default_storage_settings($db);
@@ -106,12 +118,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($formType === 'appearance') {
         $title = trim((string)($_POST['AIHUB_SITE_TITLE'] ?? ''));
         $subtitle = trim((string)($_POST['AIHUB_SITE_SUBTITLE'] ?? ''));
+        $brandingAction = (string)($_POST['branding_action'] ?? '');
         if ($title === '') {
             $error = __('AIHUB_SITE_TITLE 不可空白。');
         } else {
-            hub_set_storage_setting($db, 'AIHUB_SITE_TITLE', substr($title, 0, 80));
-            hub_set_storage_setting($db, 'AIHUB_SITE_SUBTITLE', substr($subtitle, 0, 120));
-            $message = __('介面顯示設定已更新。');
+            try {
+                if ($brandingAction === 'upload') {
+                    $upload = $_FILES['branding_logo'] ?? null;
+                    if (!is_array($upload)) {
+                        throw new RuntimeException('branding_upload_failed');
+                    }
+                    hub_branding_store_logo($db, $upload);
+                } elseif ($brandingAction === 'restore') {
+                    hub_branding_restore_default($db);
+                } elseif ($brandingAction !== '') {
+                    throw new RuntimeException('branding_upload_failed');
+                }
+                hub_set_storage_setting($db, 'AIHUB_SITE_TITLE', substr($title, 0, 80));
+                hub_set_storage_setting($db, 'AIHUB_SITE_SUBTITLE', substr($subtitle, 0, 120));
+                $message = match ($brandingAction) {
+                    'upload' => __('Logo 已上傳並套用。'),
+                    'restore' => __('預設 Logo 已恢復。'),
+                    default => __('介面顯示設定已更新。'),
+                };
+            } catch (Throwable $brandingError) {
+                $error = hub_settings_branding_error($brandingError->getMessage());
+            }
         }
     } elseif ($formType === 'i18n') {
         $activeTab = 'i18n';
@@ -272,6 +304,7 @@ hub_admin_header('系統設定', $user);
     .settings-tab.is-active { background: var(--blue); border-color: var(--blue); color: #fff; }
     .setting-card { border: 1px solid var(--line); border-radius: 8px; margin-top: 14px; padding: 14px; }
     .form-help { color: var(--muted); font-size: 13px; margin: 5px 0 12px; }
+    .branding-preview { display: block; width: 96px; height: 96px; object-fit: contain; border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin: 8px 0 14px; }
 </style>
 <?php if ($message !== ''): ?><div class="notice"><?= hub_h($message) ?></div><?php endif; ?>
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
@@ -304,7 +337,7 @@ hub_admin_header('系統設定', $user);
 <?php elseif ($activeTab === 'appearance'): ?>
 <section class="panel">
     <h2><?= hub_h(__('介面顯示')) ?></h2>
-    <form method="post">
+    <form method="post" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="form_type" value="appearance">
         <input type="hidden" name="tab" value="appearance">
@@ -313,6 +346,15 @@ hub_admin_header('系統設定', $user);
         <p class="form-help"><?= hub_settings_t('顯示於上方導覽列、登入頁、控制台與 HTML title。') ?></p>
         <label>AIHUB_SITE_SUBTITLE</label>
         <input name="AIHUB_SITE_SUBTITLE" value="<?= hub_h($settings['AIHUB_SITE_SUBTITLE']) ?>">
+        <section class="setting-card branding-settings">
+            <h3><?= hub_h(__('站台識別')) ?></h3>
+            <img class="branding-preview" src="../branding_asset.php?v=<?= hub_h(urlencode(hub_branding_version($db))) ?>" width="96" height="96" alt="<?= hub_h(__('目前站台 Logo')) ?>">
+            <label for="branding-logo"><?= hub_h(__('上傳 Logo')) ?></label>
+            <input id="branding-logo" name="branding_logo" type="file" accept="image/png,image/webp,image/jpeg">
+            <p class="form-help"><?= hub_h(__('接受 PNG、WebP、JPEG；最大 2 MB、2048 × 2048。')) ?></p>
+            <button class="primary" name="branding_action" value="upload" type="submit"><?= hub_h(__('上傳並套用')) ?></button>
+            <button class="button" name="branding_action" value="restore" type="submit" onclick="return confirm(<?= hub_h((string)hub_json_encode(__('確定恢復預設 Logo？'))) ?>);"><?= hub_h(__('恢復預設')) ?></button>
+        </section>
         <p><button class="primary" type="submit"><?= hub_settings_t('儲存介面顯示') ?></button></p>
     </form>
 </section>

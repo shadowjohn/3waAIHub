@@ -50,4 +50,11 @@ hub_test('PhaseUI-2 settings tabs and brand fields render expected contract', fu
     $dashboardPage = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
     hub_test_assert(str_contains($loginPage, 'hub_site_title'), 'login page must use configurable site title');
     hub_test_assert(str_contains($dashboardPage, 'hub_site_title'), 'dashboard must use configurable site title');
+    foreach (['enctype="multipart/form-data"', 'branding_logo', 'image/png,image/webp,image/jpeg', 'branding-preview'] as $needle) {
+        hub_test_assert(str_contains($settingsPage, $needle), 'settings page missing branding upload contract ' . $needle);
+    }
+    hub_test_assert(substr_count($loginPage, 'branding_asset.php') >= 3, 'login favicon and logos must use branding endpoint');
+
+    $layout = (string)file_get_contents(HUB_ROOT . '/admin/_layout.php');
+    hub_test_assert(substr_count($layout, '../branding_asset.php') >= 2, 'admin favicon and logo must use branding endpoint');
 });

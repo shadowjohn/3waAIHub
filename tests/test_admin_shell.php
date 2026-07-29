@@ -19,7 +19,7 @@ hub_test('admin shell exposes exactly nine agreed destinations and no legacy nav
     foreach (['packs.php', 'models.php', 'services.php', 'api_usage.php', 'runtime_runs.php'] as $legacy) {
         hub_test_assert(!str_contains($html, 'href="' . $legacy), 'legacy URL leaked into navigation: ' . $legacy);
     }
-    foreach (['admin-base.css', 'admin-shell.css', 'admin-shell.js', 'assets/images/logo.svg'] as $asset) {
+    foreach (['admin-base.css', 'admin-shell.css', 'admin-shell.js', 'branding_asset.php'] as $asset) {
         hub_test_assert(str_contains($html, $asset), 'shell asset missing: ' . $asset);
     }
 });

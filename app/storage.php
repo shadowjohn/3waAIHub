@@ -6,6 +6,7 @@ function hub_default_storage_settings(): array
     return [
         'AIHUB_SITE_TITLE' => '3waAIHub Local',
         'AIHUB_SITE_SUBTITLE' => 'Local AI Service Hub',
+        'AIHUB_BRANDING_LOGO_FILE' => '',
         'AIHUB_DATA_DIR' => HUB_DATA_DIR,
         'AIHUB_MODELS_DIR' => '/DATA/models',
         'AIHUB_MODEL_IMPORT_ROOTS' => "/DATA/NaturelID\n/DATA/NatureWeb",

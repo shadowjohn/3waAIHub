@@ -96,7 +96,7 @@ function hub_admin_header(string $title, array $user): void
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title><?= hub_h(__($title)) ?> - <?= hub_h($siteTitle) ?></title>
-    <link rel="icon" href="../assets/images/logo.svg" type="image/svg+xml">
+    <link rel="icon" href="../branding_asset.php">
     <link rel="stylesheet" href="../assets/css/admin-base.css">
     <link rel="stylesheet" href="../assets/css/admin-shell.css">
 </head>
@@ -105,7 +105,7 @@ function hub_admin_header(string $title, array $user): void
 <header class="appbar">
     <div class="appbar__row">
         <a class="appbrand" href="<?= $isAdmin ? 'index.php' : 'my_services.php' ?>" data-drawer-inert>
-            <img class="appbrand__logo" src="../assets/images/logo.svg" width="40" height="40" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
+            <img class="appbrand__logo" src="../branding_asset.php" width="40" height="40" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
             <span class="appbrand__name"><?= hub_h($siteTitle) ?><small class="appbrand__sub"><?= hub_h($siteSubtitle) ?></small></span>
         </a>
         <nav class="mainnav" id="mainnav" aria-label="<?= hub_h(__('主選單')) ?>">

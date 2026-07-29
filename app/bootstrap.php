@@ -43,6 +43,7 @@ require_once __DIR__ . '/runtime_worker.php';
 require_once __DIR__ . '/auth.php';
 require_once __DIR__ . '/i18n.php';
 require_once __DIR__ . '/storage.php';
+require_once __DIR__ . '/branding.php';
 require_once __DIR__ . '/model_registry.php';
 require_once __DIR__ . '/service_repo.php';
 require_once __DIR__ . '/port_policy.php';
