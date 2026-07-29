@@ -607,6 +607,69 @@ curl -X POST "<BASE_URL>?mode=task_submit" \
 
 Use block IDs from `quality_report.missing_translation_blocks` or `missing_translation_block_ids_by_type`. Repair only retranslates selected DocIR blocks, rewrites the original task artifacts, and skips blocks that already have valid translations.
 
+## Edge TTS 聲線清單與非同步合成
+
+狀態：`edge-tts` 是 CPU-only 的實驗性 L5 Pack。管理員須先安裝、啟用並使
+服務為 `running`，再把 `edge_tts` mode 授權給 token。Hub 的公開路徑是
+`GET /api.php?mode=edge_tts` 與 `POST /api.php?mode=edge_tts`；Cluster 使用相同
+介面合約的 `cluster_api.php`。以下 `<BASE_URL>` 是完整端點，例如
+`https://hub.example/3waAIHub/api.php`；token 一律使用範例值。
+
+取得認證後可用的聲線清單與試聽 URL：
+
+```bash
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer <TOKEN>" \
+  "<BASE_URL>?mode=edge_tts"
+```
+
+回應的每個聲線項目都有 `id`、`display_name`、`locale`、`gender`、`memo`、
+`demo_text`、`demo_url`。`demo_url` 是相對於 `<BASE_URL>` 的受認證 MP3 串流 URL；
+只能在該聲線完成重新生成與驗證後出現。完整 14 個台灣、中國與香港聲線，
+以及每個 `memo`，見
+[`packs/edge-tts/service/voice_catalog.json`](../packs/edge-tts/service/voice_catalog.json)
+與 [Pack 說明](../packs/edge-tts/README.md#聲線清單與試聽)。
+
+只可把 list 回傳的相對 `demo_url` 接到同一個 `<BASE_URL>`，不能替換為任意 URL；
+試聽仍使用同一個 token：
+
+```bash
+# 範例為 list 回傳的相對 demo_url：?mode=edge_tts&voice=zh-TW-HsiaoChenNeural
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer <TOKEN>" \
+  "<BASE_URL>?mode=edge_tts&voice=zh-TW-HsiaoChenNeural"
+```
+
+demo 回應為 `audio/mpeg`，並帶 `Cache-Control: private, no-store`。`memo` 是靜態
+catalogue 的描述性中繼資料，不是 Edge 上游的聲線風格或韻律控制。
+
+提交非同步合成時以 `application/x-www-form-urlencoded`，不要送伺服器路徑或上游 URL：
+
+```bash
+curl --fail --silent --show-error --request POST \
+  -H "Authorization: Bearer <TOKEN>" \
+  --data-urlencode 'text=這是非機密的短句。' \
+  --data-urlencode 'voice=zh-TW-HsiaoChenNeural' \
+  --data 'include_subtitles=true' \
+  "<BASE_URL>?mode=edge_tts"
+```
+
+這是非同步工作：以 `task_status` 輪詢，成功後讀 `task_result`，依回傳的
+`artifact_url_template` 取得產物，完成後以 `task_artifacts_ack` ACK。當
+`include_subtitles=true`，task result 的五個產物是 `generated_audio`
+（`audio/mpeg`）、`synthesis_metadata`（`application/json`）、`subtitle_vtt`
+（標準 `text/vtt`；相容 `text/plain`）、`subtitle_srt`（標準
+`application/x-subrip`；相容 `text/plain`、`text/x-subrip`、`text/srt`）、
+`speech_timeline`（`application/json`）；字幕與 timeline 會包含提交文字。
+
+L5 營運準備條件除 service `installed/enabled/running` 外，還要求
+`edge_tts_async_complete` 真實外部驗收紀錄為 PASS。
+`admin/pack_readiness.php` 只檢查 `L5 contract` 與已保存的 `benchmark`；它不會證明
+service 已 `installed/enabled/running`，須另在 `admin/packs.php` 確認。一般
+benchmark 對 `external_acceptance` 會以 `external_acceptance_requires_script` 在
+任何網路請求或 task 建立前拒絕；管理員必須刻意依
+[真實驗收操作說明](operations/edge-tts-real-smoke.md) 使用 CLI。
+
 ## Async Audio Pack Tasks
 
 All audio jobs use `POST multipart/form-data` and a Bearer token with the requested mode. `audio_cleanup` and `speech_transcribe` require exactly one source: one upload or one owned `source_artifact_id`. `voice_generate` is text-only and rejects both source forms. The server resolves Pack/job/version; clients never send Pack paths, Docker controls, or callback URLs. A submission returns `task_id`, `status_url`, `result_url`, `log_url`, `cancel_url`, and `artifact_url_template`.

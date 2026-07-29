@@ -1536,17 +1536,51 @@ Production audio uses the async Pack modes `audio_cleanup`, `speech_transcribe`,
 
 ### Edge TTS External Service
 
-`edge_tts` is an experimental third-party Pack.
-It uses Microsoft Edge's online speech service. An administrator must install
-and enable it, and a token needs
-the `edge_tts` mode. It is CPU-only: GPU is not used, there is no voice clone
-capability or provider secret. Do not submit confidential text.
-Its only provider egress is `speech.platform.bing.com:443`; failures return
-bounded task errors rather than substitute audio. The additive
-`include_subtitles=true` flag returns `subtitle.vtt`, `subtitle.srt`, and
-`speech_timeline.json`; these artifacts contain the submitted text, follow
-normal retention, and must be acknowledged. See the [Pack guide](packs/edge-tts/README.md)
-and [real smoke runbook](docs/operations/edge-tts-real-smoke.md).
+`edge_tts` 是實驗性的第三方 Microsoft Edge 線上語音 Pack。管理員安裝、啟用
+服務後，授權 token `edge_tts` mode 才能使用；它是 CPU-only，GPU 不會使用，
+也沒有 voice clone 或供應商 secret。請勿送出機密文字。容器對外只允許
+`speech.platform.bing.com:443`，供應商失敗會以受限 task error 結束，不會改用
+其他語音來源。
+
+L5 對外 contract 是認證後的 `GET /api.php?mode=edge_tts` 聲線清單與
+`POST /api.php?mode=edge_tts` 非同步合成（Cluster 則換成 `cluster_api.php`）。
+GET list 的每筆聲線有 `id`、`display_name`、`locale`、`gender`、`memo`、
+`demo_text` 與受認證的 `demo_url`；用 `GET ?mode=edge_tts&voice=<id>` 串流
+試聽。POST 加上 `include_subtitles=true` 後，task result 會有
+`generated_audio`、`synthesis_metadata`、`subtitle_vtt`（`subtitle.vtt`）、
+`subtitle_srt`（`subtitle.srt`）與 `speech_timeline`（`speech_timeline.json`）。
+client 依序使用 `task_status`、`task_result`、`artifact` 下載，並以
+`task_artifacts_ack` 完成 artifact ACK；字幕與 timeline 含提交文字，須視為
+敏感 artifact。
+
+`<API_ENDPOINT>` 是完整的同一個 `api.php` 或 `cluster_api.php` endpoint。先用 token
+讀 list，再只把回傳的相對 `demo_url` 接到同一 API endpoint；不要把它當成可連線至
+任意 URL 的入口。兩個請求都使用同一個 `Authorization: Bearer <TOKEN>`：
+
+```bash
+curl --fail --silent --show-error \
+  -H 'Authorization: Bearer <TOKEN>' \
+  '<API_ENDPOINT>?mode=edge_tts'
+
+# 範例為 list 回傳的相對 demo_url：?mode=edge_tts&voice=zh-TW-HsiaoChenNeural
+curl --fail --silent --show-error \
+  -H 'Authorization: Bearer <TOKEN>' \
+  '<API_ENDPOINT>?mode=edge_tts&voice=zh-TW-HsiaoChenNeural'
+```
+
+demo 回應是 `audio/mpeg`，並帶 `Cache-Control: private, no-store`。`memo` 是靜態
+catalogue 的描述性中繼資料，不是 Edge 上游的聲線風格或韻律控制。
+
+安裝時會重新生成並驗證 demo；只公布 demo 成功的聲線，沒有任何聲線成功時安裝
+失敗。demo 不是 Git 內的 static Pack asset，而是驗證完後 atomically publish 到
+`HUB_DATA_DIR/results/edge-tts-demos/<service-key>/current`。L5 readiness 還需要
+service 已 installed/enabled/running，以及 `edge_tts_async_complete` 真實外部
+驗收 PASS；一般 `scripts/benchmark.php` 對 `external_acceptance` 會在建立 task 或
+網路請求前拒絕（`external_acceptance_requires_script`）。詳見 [Pack guide](packs/edge-tts/README.md)
+與 [real smoke runbook](docs/operations/edge-tts-real-smoke.md)。
+
+`admin/pack_readiness.php` 只檢查 L5 contract 與已保存的 benchmark，不能單獨證明
+service 已 installed/enabled/running；實際 service 狀態請另在 `admin/packs.php` 確認。
 
 Legacy `asr` and `tts` remain diagnostic only. `sync_max_duration_seconds=30`, the Pack upload limit, `sync_concurrency=1`, no callbacks, and no source artifact chaining are enforced. Use the named async mode from an `async_required` response; `sync_busy` means another actual GPU inference owns the shared lease. Sync requests never turn themselves into tasks.
 

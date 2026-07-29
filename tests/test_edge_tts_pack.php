@@ -1143,55 +1143,83 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
     $smoke = (string)file_get_contents($smokePath);
     $design = (string)file_get_contents($designPath);
 
-    foreach ([
-        'edge_tts',
-        'speech.platform.bing.com',
-        "Microsoft Edge's online speech service",
-        'Do not submit confidential text',
-        'GPU is not used',
-        'include_subtitles',
-        'subtitle.vtt',
-        'subtitle.srt',
-        'speech_timeline.json',
-        'contain the submitted text',
-    ] as $needle) {
-        hub_test_assert(str_contains($root, $needle) && str_contains($pack, $needle), 'Edge TTS root and Pack documentation must state: ' . $needle);
+    foreach (['edge_tts', 'speech.platform.bing.com:443', 'CPU', 'GPU', 'include_subtitles', 'subtitle.vtt', 'subtitle.srt', 'speech_timeline.json'] as $needle) {
+        hub_test_assert(str_contains($root, $needle) && str_contains($pack, $needle), 'Edge TTS root and Pack documentation must state its bounded runtime contract: ' . $needle);
     }
-    hub_test_assert(str_contains($pack, '## Captions And Speech Timeline') && !str_contains($pack, '## Deferred V2'),
-        'Edge TTS Pack documentation must describe active captions rather than deferred V2');
     foreach (['include_subtitles', 'subtitle_vtt', 'subtitle.vtt', 'subtitle_srt', 'subtitle.srt', 'speech_timeline', 'speech_timeline.json', 'text/plain', 'text/vtt', 'application/x-subrip', 'text/x-subrip', 'text/srt'] as $needle) {
         hub_test_assert(str_contains($design, $needle), 'Edge TTS design must describe the active captions contract: ' . $needle);
     }
     hub_test_assert(str_contains($design, 'The shipped captions contract') && !str_contains($design, '## Phase B:'),
         'Edge TTS design must identify captions as shipped rather than a future phase');
-    foreach ([
-        'admin/packs.php',
-        'active configured scheduler',
-        'Never manually run',
-        'api.php?mode=edge_tts',
-        'task_status',
-        'task_result',
-        'generated_audio',
-        'task_artifacts_ack',
-        'include_subtitles',
-        'subtitle.vtt',
-        'subtitle.srt',
-        'speech_timeline.json',
-        'ffprobe',
-        'sha256',
-        'runtime_resource_leases',
-        'gpu:0',
-        'AIHUB_EDGE_TTS_TOKEN',
-    ] as $needle) {
-        hub_test_assert(str_contains($smoke, $needle), 'Edge TTS real smoke must cover: ' . $needle);
+    foreach (['admin/packs.php', 'task_status', 'task_result', 'generated_audio', 'task_artifacts_ack', 'ffprobe', 'SHA-256', 'gpu:0', 'AIHUB_EDGE_TTS_ACCEPTANCE_TOKEN'] as $needle) {
+        hub_test_assert(str_contains($smoke, $needle), 'Edge TTS real acceptance documentation must cover: ' . $needle);
     }
-    foreach (['php scripts/command_worker.php --limit=5', 'php scripts/task_worker.php --limit=1'] as $workerCommand) {
-        hub_test_assert(!str_contains($smoke, $workerCommand), 'Edge TTS real smoke must never manually invoke a global worker: ' . $workerCommand);
-    }
-    hub_test_assert(str_contains($smoke, '[ "$ERROR_CODE" = \'upstream_unavailable\' ]'),
-        'Edge TTS real smoke must assert the stored error_code for its bounded upstream failure path');
     foreach (['upstream_unavailable', 'edge_tts_timeout', 'edge_tts_failed', 'artifact_write_failed'] as $code) {
         hub_test_assert(str_contains($pack, $code), 'Edge TTS Pack documentation must describe bounded error code: ' . $code);
     }
-    hub_test_assert(!str_contains($smoke, 'Bearer <TOKEN>'), 'Edge TTS real smoke must keep its token in the environment');
+    hub_test_assert(!str_contains($smoke, 'AIHUB_EDGE_TTS_TOKEN') && !str_contains($smoke, 'Bearer <TOKEN>'),
+        'Edge TTS real acceptance documentation must use only the dedicated environment-held acceptance token');
+});
+
+hub_test('Edge TTS L5 documentation publishes its voice catalogue and intentional acceptance procedure', function (): void {
+    $root = (string)file_get_contents(HUB_ROOT . '/README.md');
+    $pack = (string)file_get_contents(HUB_ROOT . '/packs/edge-tts/README.md');
+    $examples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
+    $smoke = (string)file_get_contents(HUB_ROOT . '/docs/operations/edge-tts-real-smoke.md');
+    $catalogue = json_decode((string)file_get_contents(HUB_ROOT . '/packs/edge-tts/service/voice_catalog.json'), true);
+
+    foreach ([$root, $pack, $examples] as $document) {
+        foreach (['api.php?mode=edge_tts', 'include_subtitles', 'generated_audio', 'synthesis_metadata', 'subtitle_vtt', 'subtitle_srt', 'speech_timeline', 'task_status', 'task_result', 'task_artifacts_ack'] as $needle) {
+            hub_test_assert(str_contains($document, $needle), 'Edge TTS public documentation must cover its async L5 artifact lifecycle: ' . $needle);
+        }
+        hub_test_assert(substr_count($document, 'Authorization: Bearer <TOKEN>') >= 2
+            && str_contains($document, '?mode=edge_tts&voice=zh-TW-HsiaoChenNeural')
+            && str_contains($document, 'Cache-Control: private, no-store')
+            && str_contains($document, '相對') && str_contains($document, '任意 URL')
+            && str_contains($document, '不是 Edge 上游的聲線風格或韻律控制'),
+            'Edge TTS documentation must retrieve a relative demo URL with the same token and state its privacy and metadata limits');
+    }
+    hub_test_assert(str_contains($examples, '## Edge TTS 聲線清單與非同步合成'),
+        'Edge TTS API examples must retain a Traditional Chinese L5 section title');
+    foreach (['GET', 'demo_url', 'display_name', 'locale', 'gender', 'memo', 'demo_text', 'voice_catalog.json', 'edge_tts_async_complete', 'external_acceptance_requires_script'] as $needle) {
+        hub_test_assert(str_contains($pack, $needle) || str_contains($examples, $needle) || str_contains($root, $needle), 'Edge TTS documentation must state the verified voice-list and L5 readiness contract: ' . $needle);
+    }
+    hub_test_assert(is_array($catalogue) && count($catalogue) === 14, 'Edge TTS documentation test must use the canonical fourteen-profile catalogue');
+    foreach ($catalogue as $voice) {
+        hub_test_assert(is_array($voice) && str_contains($pack, (string)$voice['id'])
+            && str_contains($pack, (string)$voice['display_name']) && str_contains($pack, (string)$voice['memo']),
+            'Edge TTS Pack documentation must make every canonical profile, label, and memo discoverable');
+    }
+    foreach (['AIHUB_EDGE_TTS_ACCEPTANCE_BASE_URL', 'AIHUB_EDGE_TTS_ACCEPTANCE_TOKEN', 'php scripts/edge_tts_acceptance.php', 'cluster_api.php', 'non-redirect', 'CPU', 'GPU', '一般 `scripts/run_tests.php` 不會執行外部測試'] as $needle) {
+        hub_test_assert(str_contains($smoke, $needle), 'Edge TTS real acceptance procedure must state: ' . $needle);
+    }
+    foreach ([
+        'generated_audio' => ['audio/mpeg'],
+        'synthesis_metadata' => ['application/json'],
+        'subtitle_vtt' => ['text/vtt', 'text/plain'],
+        'subtitle_srt' => ['application/x-subrip', 'text/plain', 'text/x-subrip', 'text/srt'],
+        'speech_timeline' => ['application/json'],
+    ] as $artifactType => $mimeTypes) {
+        hub_test_assert(str_contains($smoke, $artifactType), 'Edge TTS real acceptance procedure must name artifact type: ' . $artifactType);
+        foreach ($mimeTypes as $mimeType) {
+            hub_test_assert(str_contains($smoke, $mimeType), 'Edge TTS real acceptance procedure must document supported MIME type: ' . $mimeType);
+        }
+    }
+    foreach (['HUB_DATA_DIR/results/edge-tts-demos/<service-key>/current', 'atomically publish', '所有生成皆失敗', 'install 會失敗'] as $needle) {
+        hub_test_assert(str_contains($pack, $needle), 'Edge TTS Pack documentation must explain verified atomic demo publication: ' . $needle);
+    }
+    foreach (['admin/pack_readiness.php', 'admin/packs.php', 'L5 contract', 'benchmark', 'installed/enabled/running'] as $needle) {
+        hub_test_assert(str_contains($smoke, $needle), 'Edge TTS readiness documentation must separate stored checks from service state: ' . $needle);
+    }
+    foreach (['edge_tts_acceptance_config_invalid', 'edge_tts_acceptance_list_demo_failed', 'edge_tts_acceptance_submission_failed', 'edge_tts_acceptance_task_failed', 'edge_tts_acceptance_artifact_invalid'] as $code) {
+        hub_test_assert(str_contains($smoke, $code), 'Edge TTS real acceptance procedure must list bounded failure code: ' . $code);
+    }
+    foreach (['scheduler-managed', 'command queue', 'task queue', 'scripts/command_worker.php', 'scripts/task_worker.php', '不要手動執行', '無關工作'] as $needle) {
+        hub_test_assert(str_contains($smoke, $needle), 'Edge TTS real acceptance procedure must preserve scheduler-only queue safety: ' . $needle);
+    }
+    foreach ([$pack, $smoke] as $document) {
+        foreach (['container-local', 'fail-closed', 'NET_ADMIN', 'entrypoint', 'non-root', 'host firewall', 'Docker daemon', 'Docker network'] as $needle) {
+            hub_test_assert(str_contains($document, $needle), 'Edge TTS security documentation must describe its container-local bootstrap-only egress boundary: ' . $needle);
+        }
+    }
 });

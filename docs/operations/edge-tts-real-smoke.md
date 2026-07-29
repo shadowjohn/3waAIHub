@@ -1,215 +1,87 @@
-# Edge TTS Real Smoke
+# Edge TTS 真實 L5 外部驗收
 
-Run this procedure from the 3waAIHub checkout. It intentionally uses the
-public API and the normal workers; do not call the Pack runner or Docker
-container directly. This is an experimental third-party online service. Submit
-only the short non-confidential Chinese sentence below, and do not capture its
-text, token, task URLs, query parameters, or generated audio in shared logs.
+這是管理者主動執行的公開 API 驗收，不是一般單元測試。它只送出程式內固定的短句，
+仍不可視為允許傳送機密內容。驗收不直接呼叫容器或 Pack 執行器，也不需要 GPU：
+Edge TTS 必須使用 CPU 佇列，且本機 Hub 會確認目標 task 沒有 `gpu:0` lease 或受管
+執行期 PID。
 
-## Install And Worker Checks
+## 前置條件
 
-As a system administrator, open `admin/packs.php`, install `edge-tts`, and
-enable its `edge_tts` service. Grant the smoke token only these modes:
-`edge_tts`, `task_status`, `task_result`, `artifact`, and
-`task_artifacts_ack`. The API token must already be held by the environment;
-do not paste it into this document, a command history, or a captured terminal
-transcript.
+1. 在 `admin/packs.php` 確認 `edge-tts` service 已 `installed`、`enabled`、`running`，
+   且安裝已產生至少一個驗證通過的示範音檔。
+2. 準備只用於此驗收的 Bearer token，至少有 `edge_tts`、`task_status`、
+   `task_result`、`artifact`、`task_artifacts_ack` 權限。
+3. 準備可由執行 CLI 的主機連到的公開端點，路徑必須剛好以 `api.php` 或
+   `cluster_api.php` 結尾，不能包含查詢字串、片段或使用者資訊；並確認本機有
+   `ffprobe`。
 
-An active configured scheduler for both command and task queues is a
-prerequisite. Never manually run the global `scripts/command_worker.php` or
-`scripts/task_worker.php` claimers: they can claim unrelated queued work. Wait
-for the scheduler-managed installation to complete, then confirm its image and
-offline runner check before submitting the real request:
+非同步驗收前，scheduler-managed 的 command queue 與 task queue 必須已由既有排程
+啟用；否則工作只會停在佇列而造成驗收逾時。不要手動執行全域
+`scripts/command_worker.php` 或 `scripts/task_worker.php` claimer 來排除阻塞，因為它們
+可能取得無關工作。應修復既有排程，再重新執行本驗收。
 
-```bash
-docker image inspect --format '{{.Id}}' 3waaihub/edge-tts:0.2.0
-bash packs/edge-tts/service/test_egress_firewall.sh
-AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full
-```
+一般 `scripts/run_tests.php` 不會執行外部測試。一般 `scripts/benchmark.php` 也會對
+`external_acceptance` 採取失敗封鎖：不發出網路請求、不建立 task；它不是這支驗收
+的替代品。
 
-## Submit And Poll
+部署時採用 container-local、fail-closed 的 egress firewall。只有受信任的
+`entrypoint` 初始化期間使用 `NET_ADMIN`；規則驗證後會移除 capability，並以
+non-root 使用者執行合成與 demo generator。它不修改 host firewall、Docker daemon
+或 Docker network。
 
-Use an `api.php` base URL and an environment-held token. This posts
-`api.php?mode=edge_tts`. Do not enable shell tracing. The JSON Unicode escapes
-are a short non-confidential Chinese sentence and keep this runbook ASCII.
+## 以環境變數執行
 
-```bash
-set -euo pipefail
-set +x
-: "${AIHUB_EDGE_TTS_BASE_URL:?Set this to the HTTPS api.php URL}"
-: "${AIHUB_EDGE_TTS_TOKEN:?Export the approved smoke token}"
-WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
-
-curl --fail --silent --show-error --request POST \
-  -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
-  -H 'Content-Type: application/json' \
-  --data '{"text":"\u9019\u662f\u4e00\u6bb5\u975e\u6a5f\u5bc6\u7684\u4e2d\u6587\u5408\u6210\u3002","voice":"zh-TW-HsiaoChenNeural","include_subtitles":true}' \
-  --output "$WORKDIR/submit.json" \
-  "$AIHUB_EDGE_TTS_BASE_URL?mode=edge_tts"
-
-TASK_ID="$(php -r '
-  $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
-  $id = $value["task_id"] ?? null;
-  if (!is_int($id) || $id < 1) { throw new RuntimeException("task_id missing"); }
-  echo $id;
-' "$WORKDIR/submit.json")"
-
-STATUS=""
-ERROR_CODE=""
-for attempt in $(seq 1 60); do
-  curl --fail --silent --show-error \
-    -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
-    --output "$WORKDIR/status.json" \
-    "$AIHUB_EDGE_TTS_BASE_URL?mode=task_status&task_id=$TASK_ID"
-  read -r STATUS ERROR_CODE <<EOF
-$(php -r '
-    $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
-    $status = $value["status"] ?? null;
-    if (!is_string($status)) { throw new RuntimeException("task status missing"); }
-    $errorCode = $value["error_code"] ?? null;
-    if ($errorCode !== null && !is_string($errorCode)) { throw new RuntimeException("task error_code invalid"); }
-    echo $status, " ", $errorCode ?? "";
-  ' "$WORKDIR/status.json")
-EOF
-  case "$STATUS" in
-    success) break ;;
-    failed) [ "$ERROR_CODE" = 'upstream_unavailable' ] || exit 1; break ;;
-    cancelled|timed_out) exit 1 ;;
-  esac
-  sleep 2
-done
-case "$STATUS" in
-  success) ;;
-  failed) [ "$ERROR_CODE" = 'upstream_unavailable' ] || exit 1 ;;
-  *) exit 1 ;;
-esac
-```
-
-An exact `failed` / `upstream_unavailable` status is a valid bounded failed-path
-check when the outbound firewall blocks the provider. Do not allow general
-Internet access or choose a substitute provider. Before a controlled retry, the
-only approved provider egress is `speech.platform.bing.com:443`.
-
-## Download, Validate, And Acknowledge
-
-Only `success` reads the result and then selects the owned `generated_audio`,
-`subtitle_vtt`, `subtitle_srt`, and `speech_timeline` artifacts. Do not print
-the result or the caption contents. The valid bounded failed-path skips this
-entire artifact validation and acknowledgement block.
+token 只能透過環境變數提供：不要當作 CLI 參數、不要提交到版本庫、不要貼入工單或
+共用終端機記錄；可行時先以秘密管理工具或受保護的命令列環境載入，以避免命令歷程。
+不要啟用 `set -x`。
 
 ```bash
-if [ "$STATUS" = success ]; then
-curl --fail --silent --show-error \
-  -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
-  --output "$WORKDIR/result.json" \
-  "$AIHUB_EDGE_TTS_BASE_URL?mode=task_result&task_id=$TASK_ID"
-
-read -r AUDIO_ID AUDIO_SHA256 VTT_ID SRT_ID TIMELINE_ID <<EOF
-$(php -r '
-  $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
-  $found = [];
-  foreach (($value["result"]["artifacts"] ?? []) as $artifact) {
-    $type = $artifact["type"] ?? null;
-    $id = $artifact["id"] ?? null;
-    if (!in_array($type, ["generated_audio", "subtitle_vtt", "subtitle_srt", "speech_timeline"], true)) {
-      continue;
-    }
-    if (!is_int($id) || $id < 1 || array_key_exists($type, $found)) {
-      throw new RuntimeException("required artifact is invalid");
-    }
-    $found[$type] = $id;
-    if ($type === "generated_audio") {
-      $sha256 = $artifact["sha256"] ?? null;
-      if (preg_match("/^[a-f0-9]{64}$/", (string) $sha256) !== 1) {
-        throw new RuntimeException("generated_audio hash missing");
-      }
-      $found["generated_audio_sha256"] = $sha256;
-    }
-  }
-  foreach (["generated_audio", "subtitle_vtt", "subtitle_srt", "speech_timeline", "generated_audio_sha256"] as $required) {
-    if (!array_key_exists($required, $found)) {
-      throw new RuntimeException("required artifact missing");
-    }
-  }
-  echo $found["generated_audio"], " ", $found["generated_audio_sha256"], " ", $found["subtitle_vtt"], " ", $found["subtitle_srt"], " ", $found["speech_timeline"];
-' "$WORKDIR/result.json")
-EOF
-
-MP3="$WORKDIR/generated_audio.mp3"
-VTT="$WORKDIR/subtitle.vtt"
-SRT="$WORKDIR/subtitle.srt"
-TIMELINE="$WORKDIR/speech_timeline.json"
-for ARTIFACT_ID_PATH in "$AUDIO_ID:$MP3" "$VTT_ID:$VTT" "$SRT_ID:$SRT" "$TIMELINE_ID:$TIMELINE"; do
-  ARTIFACT_ID="${ARTIFACT_ID_PATH%%:*}"
-  ARTIFACT_PATH="${ARTIFACT_ID_PATH#*:}"
-  curl --fail --silent --show-error \
-    -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
-    --output "$ARTIFACT_PATH" \
-    "$AIHUB_EDGE_TTS_BASE_URL?mode=artifact&artifact_id=$ARTIFACT_ID"
-done
-test "$(sha256sum "$MP3" | awk '{print $1}')" = "$AUDIO_SHA256"
-test "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=nokey=1:noprint_wrappers=1 "$MP3")" = mp3
-DURATION="$(ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$MP3")"
-php -r 'exit(is_numeric($argv[1]) && (float) $argv[1] > 0.0 ? 0 : 1);' "$DURATION"
-grep -Fqx 'WEBVTT' "$VTT"
-grep -Eq '^1$' "$SRT"
-php -r '
-  $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
-  if (!is_array($value)) {
-    throw new RuntimeException("timeline must be a JSON object");
-  }
-  foreach (["version", "unit", "duration_ms", "sentences", "words"] as $key) {
-    if (!array_key_exists($key, $value)) {
-      throw new RuntimeException("timeline key missing");
-    }
-  }
-' "$TIMELINE"
-
-for ARTIFACT_ID in "$AUDIO_ID" "$VTT_ID" "$SRT_ID" "$TIMELINE_ID"; do
-  curl --fail --silent --show-error --request POST \
-    -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
-    -F "task_id=$TASK_ID" \
-    -F "artifact_id=$ARTIFACT_ID" \
-    --output "$WORKDIR/ack.json" \
-    "$AIHUB_EDGE_TTS_BASE_URL?mode=task_artifacts_ack"
-  php -r '
-    $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
-    if (($value["ok"] ?? false) !== true || empty($value["acknowledged_at"])) {
-      throw new RuntimeException("artifact acknowledgement failed");
-    }
-  ' "$WORKDIR/ack.json"
-done
-fi
+AIHUB_EDGE_TTS_ACCEPTANCE_BASE_URL='https://hub.example/3waAIHub/api.php' \
+AIHUB_EDGE_TTS_ACCEPTANCE_TOKEN='…' \
+php scripts/edge_tts_acceptance.php
 ```
 
-## CPU Postcondition
+Cluster 改用同一服務對外的 `cluster_api.php`，例如
+`https://cluster.example/3waAIHub/cluster_api.php`；其餘命令不變。兩個環境變數以外
+沒有設定或 token CLI 選項。CLI 會驗證 URL 形狀，並以 Bearer 標頭發出不跟隨
+redirect（`non-redirect`）的請求。
 
-Edge TTS is CPU-only. There is no GPU lease expectation. After completion,
-require that this smoke task owns no leased `gpu:0` resource:
+## 驗收閉環與輸出
 
-```bash
-TASK_ID="$TASK_ID" php <<'PHP'
-<?php
-require 'app/bootstrap.php';
-$taskId = (int) getenv('TASK_ID');
-$stmt = hub_db()->prepare(
-    'SELECT COUNT(*) FROM runtime_resource_leases AS leases
-     INNER JOIN runtime_runs AS runs ON runs.run_id = leases.runtime_run_id
-     WHERE runs.task_id = :task_id
-       AND leases.resource_key = :resource_key
-       AND leases.state = :state'
-);
-$stmt->execute([':task_id' => $taskId, ':resource_key' => 'gpu:0', ':state' => 'leased']);
-if ((int) $stmt->fetchColumn() !== 0) {
-    throw new RuntimeException('Edge TTS smoke must not own a GPU lease');
-}
-PHP
-```
+成功路徑固定為：認證 GET 聲線清單 → 讀第一個聲線的 `demo_url` MP3 →
+POST `edge_tts` 非同步合成（`include_subtitles=true`）→ `task_status` →
+`task_result` → 下載並驗證五個 artifact → 每個 artifact `task_artifacts_ack`。
 
-For success, record only task and artifact IDs, terminal status, the audio
-SHA-256 match, MP3 validation boolean, VTT/SRT/timeline validation booleans,
-acknowledgement booleans, and no-GPU-lease result. For the bounded failed path,
-record only the task ID, terminal status, `error_code`, and no-GPU-lease result.
-Redact the token, submitted text, URL query parameters, generated audio, and
-caption contents from all captured logs.
+五個 artifact 必須全數存在且型別正確；列出的標準 MIME 之外，字幕只接受下列相容
+MIME：
+
+- `generated_audio` / `audio/mpeg`，以 `ffprobe` 驗證。
+- `synthesis_metadata` / `application/json`。
+- `subtitle_vtt` / `text/vtt`；也接受 `text/plain`。
+- `subtitle_srt` / `application/x-subrip`；也接受 `text/plain`、`text/x-subrip`、
+  `text/srt`。
+- `speech_timeline` / `application/json`。
+
+若 result 宣告大小或 SHA-256，CLI 會比對；也會解析中繼資料、VTT、SRT 與時間軸。
+成功才寫入 `edge_tts_async_complete` PASS benchmark 紀錄。終端輸出與保存的結果都經
+安全去識別：不包含 token、URL、提交文字、task ID、artifact ID、hash 或回應本文。
+
+失敗只會以其中一個受限錯誤碼結束：
+
+- `edge_tts_acceptance_config_invalid`
+- `edge_tts_acceptance_list_demo_failed`
+- `edge_tts_acceptance_submission_failed`
+- `edge_tts_acceptance_task_failed`
+- `edge_tts_acceptance_artifact_invalid`
+
+## 查看準備狀態與安全排查
+
+在後台開啟 `admin/pack_readiness.php?pack_id=edge-tts`，確認
+`real_inference_benchmark_passed` 與其他 L5 檢查項；最近的驗收紀錄可在
+`admin/benchmarks.php` 查看。此頁只會檢查 `L5 contract` 與已保存的 `benchmark`，不能
+證明 service 已 `installed/enabled/running`；必須另在 `admin/packs.php` 確認服務狀態。
+不要用 UI 顯示以外的 task、token 或 URL 資料補寫 benchmark。
+
+若失敗，先確認 service 仍 running、token mode/權限正確、公開基底 URL 指向正確
+`api.php` 或 `cluster_api.php`，以及安裝時已有生成的示範音檔。修復後重新執行同一指令；
+不要貼出 HTTP 回應本文、token、完整 URL、task/artifact ID 或生成音檔來排查。
