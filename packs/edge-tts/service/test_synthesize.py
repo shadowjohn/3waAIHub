@@ -156,6 +156,24 @@ class SynthesizeTest(unittest.TestCase):
             },
         )
 
+    def test_text_artifact_replace_failure_preserves_existing_target(self):
+        artifact = self.output_dir / "subtitle.vtt"
+        artifact.write_text("old caption\n", encoding="utf-8")
+        temporary = artifact.with_name("." + artifact.name + ".tmp")
+        path_replace = Path.replace
+
+        def fail_temporary_replace(path, target):
+            if path == temporary:
+                raise OSError("disk failure")
+            return path_replace(path, target)
+
+        with patch.object(synthesize.Path, "replace", new=fail_temporary_replace):
+            with self.assertRaises(synthesize.RunnerError) as raised:
+                synthesize.write_text_artifact(artifact, "new caption\n")
+
+        self.assertEqual(raised.exception.code, "artifact_write_failed")
+        self.assertEqual(artifact.read_text(encoding="utf-8"), "old caption\n")
+
     def test_invalid_caption_stream_leaves_no_artifacts(self):
         request = {**self.request(), "include_subtitles": True}
         with patch.object(synthesize.edge_tts, "Communicate", InvalidStreamingCommunicate):

@@ -124,7 +124,8 @@ def write_metadata(path: Path, value: dict[str, Any]) -> None:
 def write_text_artifact(path: Path, value: str) -> None:
     temporary = path.with_name("." + path.name + ".tmp")
     try:
-        remove_if_regular(path)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            fail("artifact_write_failed")
         remove_if_regular(temporary)
         encoded = value.encode("utf-8")
         if len(encoded) > MAX_CAPTION_BYTES:
