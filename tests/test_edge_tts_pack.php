@@ -76,8 +76,13 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         $path = HUB_ROOT . '/packs/edge-tts/service/' . $file;
         hub_test_assert((fileperms($path) & 0777) === 0755, 'Edge TTS runnable asset must use mode 0755: ' . $file);
     }
+    hub_test_assert(hub_pack_container_runner_build_contract($manifest, HUB_ROOT . '/packs/edge-tts') === [
+        'image' => '3waaihub/edge-tts:0.1.0',
+        'context' => HUB_ROOT . '/packs/edge-tts/service',
+        'dockerfile' => HUB_ROOT . '/packs/edge-tts/service/Dockerfile',
+    ], 'Edge TTS runner build must use the fixed service-directory context');
     $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/edge-tts/service/Dockerfile');
-    foreach (['FROM python:3.13-slim-bookworm', 'edge-tts==7.2.6', 'COPY service/edge-tts-entrypoint.sh service/synthesize.py service/test_egress_firewall.sh service/test_synthesize.py ./', 'python3 -m unittest -v test_synthesize.py'] as $needle) {
+    foreach (['FROM python:3.13-slim-bookworm', 'edge-tts==7.2.6', 'COPY edge-tts-entrypoint.sh synthesize.py test_egress_firewall.sh test_synthesize.py ./', 'python3 -m unittest -v test_synthesize.py'] as $needle) {
         hub_test_assert(str_contains($dockerfile, $needle), 'Edge TTS Dockerfile must pin and offline-test its runner: ' . $needle);
     }
     hub_test_assert(!str_contains($dockerfile, 'mawk'), 'Edge TTS Dockerfile must not install unused mawk');
