@@ -117,3 +117,11 @@ hub_test('admin visual assets use zero tracking and no login glow decoration', f
     $sources = (string)file_get_contents(HUB_ROOT . '/assets/fonts/SOURCES.md');
     hub_test_assert(str_contains($sources, '564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72'), 'Space Grotesk OFL hash mismatch');
 });
+
+hub_test('admin shell keeps the mobile brand from pushing controls off screen', function (): void {
+    $css = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-shell.css');
+    hub_test_assert(
+        preg_match('/@media\s*\(max-width:\s*480px\)[^{]*\{[^}]*\.appbrand__name\s*\{\s*display:\s*none\s*;/s', $css) === 1,
+        'shared shell must hide the long brand name on narrow screens'
+    );
+});

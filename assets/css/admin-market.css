@@ -456,12 +456,6 @@
   }
 }
 
-@media (max-width: 480px) {
-  .appbrand__name {
-    display: none;
-  }
-}
-
 @media print {
   .workspace-tabs,
   .pack-actions,

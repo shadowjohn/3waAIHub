@@ -131,4 +131,5 @@ hub_test('Record Center source keeps canonical links and responsive tables', fun
     }
     hub_test_assert(substr_count($page, 'class="record-table-wrap"') >= 5, 'all five dense record tables need responsive overflow wrappers');
     hub_test_assert(!str_contains($page, 'http://') && !str_contains($page, 'https://'), 'Record Center must not load external assets');
+    hub_test_assert((fileperms(HUB_ROOT . '/admin/log_explorer.php') & 0777) === 0755, 'Record Center entrypoint must remain executable by the web runtime');
 });

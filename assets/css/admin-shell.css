@@ -262,6 +262,10 @@ body.app {
   .appbar__actions .i18n-selector select { max-width: 92px; }
 }
 
+@media (max-width: 480px) {
+  .appbrand__name { display: none; }
+}
+
 /* =========================================================
    頁面容器
    ========================================================= */
