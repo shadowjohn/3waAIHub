@@ -430,9 +430,11 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
     }
     hub_test_assert(str_contains($pack, '## Captions And Speech Timeline') && !str_contains($pack, '## Deferred V2'),
         'Edge TTS Pack documentation must describe active captions rather than deferred V2');
-    foreach (['include_subtitles', 'subtitle_vtt', 'subtitle.vtt', 'subtitle_srt', 'subtitle.srt', 'speech_timeline', 'speech_timeline.json', 'text/plain'] as $needle) {
+    foreach (['include_subtitles', 'subtitle_vtt', 'subtitle.vtt', 'subtitle_srt', 'subtitle.srt', 'speech_timeline', 'speech_timeline.json', 'text/plain', 'text/vtt', 'application/x-subrip', 'text/x-subrip', 'text/srt'] as $needle) {
         hub_test_assert(str_contains($design, $needle), 'Edge TTS design must describe the active captions contract: ' . $needle);
     }
+    hub_test_assert(str_contains($design, 'The shipped captions contract') && !str_contains($design, '## Phase B:'),
+        'Edge TTS design must identify captions as shipped rather than a future phase');
     foreach ([
         'admin/packs.php',
         'php scripts/command_worker.php --limit=5',
