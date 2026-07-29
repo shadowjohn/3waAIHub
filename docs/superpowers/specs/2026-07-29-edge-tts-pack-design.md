@@ -131,11 +131,14 @@ used for synthesis and publishes these additional owned artifacts:
 | `subtitle_srt` | `subtitle.srt` | `application/x-subrip` | 512 KiB |
 | `speech_timeline` | `speech_timeline.json` | `application/json` | 512 KiB |
 
-The timeline uses milliseconds and records ordered sentence and word entries
-as `{text, start_ms, end_ms}`. Its timestamps must be non-negative,
-monotonic, and bounded by the synthesized audio duration. VTT and SRT are
-derived from the same events; the Pack never makes a second provider request
-to generate captions.
+The provider `WordBoundary` stream is the authoritative timeline. The runner
+uses milliseconds and derives ordered sentence and word entries locally as
+`{text, start_ms, end_ms}`. Its timestamps must be non-negative and monotonic;
+entries are bounded by the timeline's own maximum end, which supplies
+`duration_ms` from provider timing coverage. The runner does not independently
+parse MP3 duration or compare timestamps against it. VTT and SRT are derived
+from the same events; the Pack never makes a second provider request to
+generate captions.
 
 Caption artifacts contain the submitted text. They therefore use the normal
 owned-artifact retention and acknowledgement path, are never copied into

@@ -1542,8 +1542,10 @@ and enable it, and a token needs
 the `edge_tts` mode. It is CPU-only: GPU is not used, there is no voice clone
 capability or provider secret. Do not submit confidential text.
 Its only provider egress is `speech.platform.bing.com:443`; failures return
-bounded task errors rather than substitute audio. V1 returns MP3 and metadata;
-`subtitle_vtt` is deferred to additive V2. See the [Pack guide](packs/edge-tts/README.md)
+bounded task errors rather than substitute audio. The additive
+`include_subtitles=true` flag returns `subtitle.vtt`, `subtitle.srt`, and
+`speech_timeline.json`; these artifacts contain the submitted text, follow
+normal retention, and must be acknowledged. See the [Pack guide](packs/edge-tts/README.md)
 and [real smoke runbook](docs/operations/edge-tts-real-smoke.md).
 
 Legacy `asr` and `tts` remain diagnostic only. `sync_max_duration_seconds=30`, the Pack upload limit, `sync_concurrency=1`, no callbacks, and no source artifact chaining are enforced. Use the named async mode from an `async_required` response; `sync_busy` means another actual GPU inference owns the shared lease. Sync requests never turn themselves into tasks.

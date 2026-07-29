@@ -20,7 +20,7 @@ and offline runner check before submitting the real request:
 
 ```bash
 php scripts/command_worker.php --limit=5
-docker image inspect --format '{{.Id}}' 3waaihub/edge-tts:0.1.0
+docker image inspect --format '{{.Id}}' 3waaihub/edge-tts:0.2.0
 bash packs/edge-tts/service/test_egress_firewall.sh
 AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=full
 ```
@@ -49,7 +49,7 @@ trap 'rm -rf "$WORKDIR"' EXIT
 curl --fail --silent --show-error --request POST \
   -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
   -H 'Content-Type: application/json' \
-  --data '{"text":"\u9019\u662f\u4e00\u6bb5\u975e\u6a5f\u5bc6\u7684\u4e2d\u6587\u5408\u6210\u3002","voice":"zh-TW-HsiaoChenNeural"}' \
+  --data '{"text":"\u9019\u662f\u4e00\u6bb5\u975e\u6a5f\u5bc6\u7684\u4e2d\u6587\u5408\u6210\u3002","voice":"zh-TW-HsiaoChenNeural","include_subtitles":true}' \
   --output "$WORKDIR/submit.json" \
   "$AIHUB_EDGE_TTS_BASE_URL?mode=edge_tts"
 
@@ -90,9 +90,9 @@ the only approved provider egress is `speech.platform.bing.com:443`.
 
 ## Download, Validate, And Acknowledge
 
-Read the result only after `success`, select the owned `generated_audio`
-artifact, and compare its downloaded SHA-256 with the task result. The result
-also contains the synthesis metadata artifact; it is not a subtitle artifact.
+Read the result only after `success`, then select the owned `generated_audio`,
+`subtitle_vtt`, `subtitle_srt`, and `speech_timeline` artifacts. Do not print
+the result or the caption contents.
 
 ```bash
 curl --fail --silent --show-error \
@@ -100,45 +100,81 @@ curl --fail --silent --show-error \
   --output "$WORKDIR/result.json" \
   "$AIHUB_EDGE_TTS_BASE_URL?mode=task_result&task_id=$TASK_ID"
 
-read -r AUDIO_ID AUDIO_SHA256 <<EOF
+read -r AUDIO_ID AUDIO_SHA256 VTT_ID SRT_ID TIMELINE_ID <<EOF
 $(php -r '
   $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
+  $found = [];
   foreach (($value["result"]["artifacts"] ?? []) as $artifact) {
-    if (($artifact["type"] ?? null) === "generated_audio") {
-      $id = $artifact["id"] ?? null;
+    $type = $artifact["type"] ?? null;
+    $id = $artifact["id"] ?? null;
+    if (!in_array($type, ["generated_audio", "subtitle_vtt", "subtitle_srt", "speech_timeline"], true)) {
+      continue;
+    }
+    if (!is_int($id) || $id < 1 || array_key_exists($type, $found)) {
+      throw new RuntimeException("required artifact is invalid");
+    }
+    $found[$type] = $id;
+    if ($type === "generated_audio") {
       $sha256 = $artifact["sha256"] ?? null;
-      if (is_int($id) && preg_match("/^[a-f0-9]{64}$/", (string) $sha256) === 1) {
-        echo $id, " ", $sha256;
-        exit(0);
+      if (preg_match("/^[a-f0-9]{64}$/", (string) $sha256) !== 1) {
+        throw new RuntimeException("generated_audio hash missing");
       }
+      $found["generated_audio_sha256"] = $sha256;
     }
   }
-  throw new RuntimeException("generated_audio artifact missing");
+  foreach (["generated_audio", "subtitle_vtt", "subtitle_srt", "speech_timeline", "generated_audio_sha256"] as $required) {
+    if (!array_key_exists($required, $found)) {
+      throw new RuntimeException("required artifact missing");
+    }
+  }
+  echo $found["generated_audio"], " ", $found["generated_audio_sha256"], " ", $found["subtitle_vtt"], " ", $found["subtitle_srt"], " ", $found["speech_timeline"];
 ' "$WORKDIR/result.json")
 EOF
 
 MP3="$WORKDIR/generated_audio.mp3"
-curl --fail --silent --show-error \
-  -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
-  --output "$MP3" \
-  "$AIHUB_EDGE_TTS_BASE_URL?mode=artifact&artifact_id=$AUDIO_ID"
+VTT="$WORKDIR/subtitle.vtt"
+SRT="$WORKDIR/subtitle.srt"
+TIMELINE="$WORKDIR/speech_timeline.json"
+for ARTIFACT_ID_PATH in "$AUDIO_ID:$MP3" "$VTT_ID:$VTT" "$SRT_ID:$SRT" "$TIMELINE_ID:$TIMELINE"; do
+  ARTIFACT_ID="${ARTIFACT_ID_PATH%%:*}"
+  ARTIFACT_PATH="${ARTIFACT_ID_PATH#*:}"
+  curl --fail --silent --show-error \
+    -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
+    --output "$ARTIFACT_PATH" \
+    "$AIHUB_EDGE_TTS_BASE_URL?mode=artifact&artifact_id=$ARTIFACT_ID"
+done
 test "$(sha256sum "$MP3" | awk '{print $1}')" = "$AUDIO_SHA256"
 test "$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of default=nokey=1:noprint_wrappers=1 "$MP3")" = mp3
 DURATION="$(ffprobe -v error -show_entries format=duration -of default=nokey=1:noprint_wrappers=1 "$MP3")"
 php -r 'exit(is_numeric($argv[1]) && (float) $argv[1] > 0.0 ? 0 : 1);' "$DURATION"
-
-curl --fail --silent --show-error --request POST \
-  -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
-  -F "task_id=$TASK_ID" \
-  -F "artifact_id=$AUDIO_ID" \
-  --output "$WORKDIR/ack.json" \
-  "$AIHUB_EDGE_TTS_BASE_URL?mode=task_artifacts_ack"
+grep -Fqx 'WEBVTT' "$VTT"
+grep -Eq '^1$' "$SRT"
 php -r '
   $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
-  if (($value["ok"] ?? false) !== true || empty($value["acknowledged_at"])) {
-    throw new RuntimeException("artifact acknowledgement failed");
+  if (!is_array($value)) {
+    throw new RuntimeException("timeline must be a JSON object");
   }
-' "$WORKDIR/ack.json"
+  foreach (["version", "unit", "duration_ms", "sentences", "words"] as $key) {
+    if (!array_key_exists($key, $value)) {
+      throw new RuntimeException("timeline key missing");
+    }
+  }
+' "$TIMELINE"
+
+for ARTIFACT_ID in "$AUDIO_ID" "$VTT_ID" "$SRT_ID" "$TIMELINE_ID"; do
+  curl --fail --silent --show-error --request POST \
+    -H "Authorization: Bearer $AIHUB_EDGE_TTS_TOKEN" \
+    -F "task_id=$TASK_ID" \
+    -F "artifact_id=$ARTIFACT_ID" \
+    --output "$WORKDIR/ack.json" \
+    "$AIHUB_EDGE_TTS_BASE_URL?mode=task_artifacts_ack"
+  php -r '
+    $value = json_decode(file_get_contents($argv[1]), true, 512, JSON_THROW_ON_ERROR);
+    if (($value["ok"] ?? false) !== true || empty($value["acknowledged_at"])) {
+      throw new RuntimeException("artifact acknowledgement failed");
+    }
+  ' "$WORKDIR/ack.json"
+done
 ```
 
 ## CPU Postcondition
@@ -165,7 +201,7 @@ if ((int) $stmt->fetchColumn() !== 0) {
 PHP
 ```
 
-Record only the task ID, terminal status, artifact ID, SHA-256 match, MP3
-codec/duration result, acknowledgement result, and no-GPU-lease result. Redact
-the token, submitted text, URL query parameters, and generated audio from all
-captured logs.
+Record only task and artifact IDs, terminal status, the audio SHA-256 match,
+MP3 validation boolean, VTT/SRT/timeline validation booleans, acknowledgement
+booleans, and no-GPU-lease result. Redact the token, submitted text, URL query
+parameters, generated audio, and caption contents from all captured logs.

@@ -412,10 +412,22 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
     $pack = (string)file_get_contents($packPath);
     $smoke = (string)file_get_contents($smokePath);
 
-    foreach (['edge_tts', 'speech.platform.bing.com', "Microsoft Edge's online speech service", 'Do not submit confidential text', 'GPU is not used', 'subtitle_vtt'] as $needle) {
+    foreach ([
+        'edge_tts',
+        'speech.platform.bing.com',
+        "Microsoft Edge's online speech service",
+        'Do not submit confidential text',
+        'GPU is not used',
+        'include_subtitles',
+        'subtitle.vtt',
+        'subtitle.srt',
+        'speech_timeline.json',
+        'contain the submitted text',
+    ] as $needle) {
         hub_test_assert(str_contains($root, $needle) && str_contains($pack, $needle), 'Edge TTS root and Pack documentation must state: ' . $needle);
     }
-    hub_test_assert(preg_match('/## Deferred V2[\s\S]*subtitle_vtt/', $pack) === 1, 'Edge TTS subtitle_vtt must be explicitly deferred to additive V2');
+    hub_test_assert(str_contains($pack, '## Captions And Speech Timeline') && !str_contains($pack, '## Deferred V2'),
+        'Edge TTS Pack documentation must describe active captions rather than deferred V2');
     foreach ([
         'admin/packs.php',
         'php scripts/command_worker.php --limit=5',
@@ -425,6 +437,11 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
         'task_result',
         'generated_audio',
         'task_artifacts_ack',
+        '3waaihub/edge-tts:0.2.0',
+        'include_subtitles',
+        'subtitle.vtt',
+        'subtitle.srt',
+        'speech_timeline.json',
         'ffprobe',
         'sha256',
         'runtime_resource_leases',
