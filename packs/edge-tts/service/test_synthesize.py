@@ -62,6 +62,13 @@ class SubMillisecondStreamingCommunicate(StreamingCommunicate):
         yield {"type": "WordBoundary", "offset": 1, "duration": 1, "text": "B"}
 
 
+class InteriorPunctuationStreamingCommunicate(StreamingCommunicate):
+    async def stream(self):
+        yield {"type": "audio", "data": b"ID3fake-edge-tts"}
+        yield {"type": "WordBoundary", "offset": 0, "duration": 5000000, "text": "example.com"}
+        yield {"type": "WordBoundary", "offset": 5000000, "duration": 5000000, "text": "continues."}
+
+
 class FailingStreamingCommunicate(StreamingCommunicate):
     error = RuntimeError()
 
@@ -207,6 +214,16 @@ class SynthesizeTest(unittest.TestCase):
         self.assertEqual(timeline["words"], [
             {"text": "A", "start_ms": 0, "end_ms": 1},
             {"text": "B", "start_ms": 0, "end_ms": 1},
+        ])
+
+    def test_interior_punctuation_does_not_end_a_derived_sentence(self):
+        request = {**self.request(), "include_subtitles": True}
+        with patch.object(synthesize.edge_tts, "Communicate", InteriorPunctuationStreamingCommunicate):
+            synthesize.run_job(self.write_request(request), self.output_dir)
+
+        timeline = json.loads((self.output_dir / "speech_timeline.json").read_text(encoding="utf-8"))
+        self.assertEqual(timeline["sentences"], [
+            {"text": "example.com continues.", "start_ms": 0, "end_ms": 1000},
         ])
 
     def test_invalid_request_cleans_existing_known_artifacts(self):

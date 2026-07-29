@@ -19,7 +19,7 @@ MAX_CAPTION_BYTES = 512 * 1024
 TICKS_PER_MILLISECOND = 10000
 ALLOWED_REQUEST = {"text", "voice", "rate", "volume", "pitch", "include_subtitles"}
 LEGACY_REQUEST = ALLOWED_REQUEST - {"include_subtitles"}
-SENTENCE_TERMINATORS = ".!?。！？"
+SENTENCE_TERMINATORS = (".", "!", "?", "。", "！", "？")
 VOICES = {
     "zh-TW-HsiaoChenNeural",
     "zh-TW-HsiaoYuNeural",
@@ -174,7 +174,7 @@ def sentences_from_words(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
     sentence_words: list[dict[str, Any]] = []
     for word in words:
         sentence_words.append(word)
-        if any(character in SENTENCE_TERMINATORS for character in word["text"]):
+        if word["text"].rstrip().endswith(SENTENCE_TERMINATORS):
             sentences.append({
                 "text": " ".join(item["text"] for item in sentence_words),
                 "start_ms": sentence_words[0]["start_ms"],
