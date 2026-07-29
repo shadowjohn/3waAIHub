@@ -95,12 +95,13 @@ GPU, accepts no user input, and keeps only regular MP3 files named by the
 catalogue's fixed `demo_file` values.
 
 If at least one candidate succeeds, the initializer atomically publishes the
-successful demo set and its generated availability record under the service
-runtime directory. Failed candidates are omitted. If all candidates fail, the
-installer returns `edge_tts_demo_initialization_failed`, does not promote the
-new service record/version, and leaves any previously published demo set
-untouched. Partial success is an installed Pack with a smaller voice list;
-the administrator receives only the success and failure counts in the install
+successful demo set and its generated availability record under the managed
+results root at `data/results/edge-tts-demos/<service-key>`. Failed candidates
+are omitted. If all candidates fail, the installer returns
+`edge_tts_demo_initialization_failed`, does not promote the new service
+record/version, and leaves any previously published demo set untouched.
+Partial success is an installed Pack with a smaller voice list; the
+administrator receives only the success and failure counts in the install
 result. No demo output is committed to the repository.
 
 The `GET` list requires the same `edge_tts` Token permission and normal
@@ -118,17 +119,18 @@ returns only currently verified entries:
       "gender": "male",
       "memo": "厚實，適合劇情男聲。",
       "demo_text": "大家好，我是云健。我的声音比较厚实，适合剧情角色、历史题材，或是需要力量感的段落。",
-      "demo_url": "api.php?mode=edge_tts&voice=zh-CN-YunjianNeural"
+      "demo_url": "?mode=edge_tts&voice=zh-CN-YunjianNeural"
     }
   ]
 }
 ```
 
-The demo URL also requires the Bearer Token; the Token is never embedded in a
-URL. API clients fetch it with the Authorization header before attaching it to
-an audio player. The streaming path maps the supplied ID through the static
-catalogue and availability record, opens only the expected regular file below
-the service runtime directory, and returns `audio/mpeg` with
+The demo URL is a same-endpoint relative query so it remains on either
+`api.php` or `cluster_api.php`. It also requires the Bearer Token; the Token
+is never embedded in a URL. API clients fetch it with the Authorization header
+before attaching it to an audio player. The streaming path maps the supplied
+ID through the static catalogue and availability record, opens only the
+expected regular file below the managed results root, and returns `audio/mpeg` with
 `Cache-Control: private, no-store`. An unknown or unavailable ID returns the
 bounded `demo_not_available` error and never reveals a filesystem path.
 
