@@ -32,8 +32,8 @@ define('HUB_LOG_DIR', HUB_DATA_DIR . '/logs');
 define('HUB_JOB_LOG_DIR', HUB_LOG_DIR . '/jobs');
 define('HUB_TASK_LOG_DIR', HUB_LOG_DIR . '/tasks');
 define('HUB_SERVICE_DIR', HUB_DATA_DIR . '/services');
-define('HUB_VERSION', 'v0.2.x');
-define('HUB_RELEASE_LABEL', 'Local Catalog + Token Auth MVP');
+define('HUB_VERSION', '20260729001');
+define('HUB_RELEASE_LABEL', '8/7 Admin Market + Cluster Dashboard Preview');
 
 date_default_timezone_set('Asia/Taipei');
 
@@ -67,6 +67,7 @@ require_once __DIR__ . '/environment_probe.php';
 require_once __DIR__ . '/host_metrics.php';
 require_once __DIR__ . '/benchmarks.php';
 require_once __DIR__ . '/docker_runner.php';
+require_once __DIR__ . '/release.php';
 require_once __DIR__ . '/gateway.php';
 require_once __DIR__ . '/cluster_router.php';
 

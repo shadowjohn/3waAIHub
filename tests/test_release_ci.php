@@ -2,12 +2,12 @@
 declare(strict_types=1);
 
 hub_test('release banner docs ci and OCR L5 benchmark ready files exist', function (): void {
-    hub_test_assert(defined('HUB_VERSION') && str_starts_with(HUB_VERSION, 'v0.2.'), 'HUB_VERSION missing');
-    hub_test_assert(defined('HUB_RELEASE_LABEL') && str_contains(HUB_RELEASE_LABEL, 'Local Catalog'), 'HUB_RELEASE_LABEL missing');
+    hub_test_assert(defined('HUB_VERSION') && HUB_VERSION === '20260729001', 'HUB_VERSION missing');
+    hub_test_assert(defined('HUB_RELEASE_LABEL') && HUB_RELEASE_LABEL === '8/7 Admin Market + Cluster Dashboard Preview', 'HUB_RELEASE_LABEL missing');
 
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
-    hub_test_assert(str_contains($readme, 'v0.2.x'), 'README version banner missing');
-    hub_test_assert(str_contains($readme, 'Local Catalog'), 'README release scope missing');
+    hub_test_assert(str_contains($readme, '2026.07.29.001'), 'README version banner missing');
+    hub_test_assert(str_contains($readme, '8/7 Admin Market + Cluster Dashboard Preview'), 'README release scope missing');
     foreach ([
         'Windows 是 Control Plane preview；Linux Docker/GPU Pack 只能由 Linux runtime 或未來 Remote Agent 執行。',
         'Docker 是否存在，只是環境資訊，不代表 Pack target 可執行。',

@@ -1,6 +1,7 @@
 # 3waAIHub
 
-Current: `v0.2.x` / Local Catalog + Token Auth MVP.
+Current: `20260729001` (`2026.07.29.001`) /
+8/7 Admin Market + Cluster Dashboard Preview.
 
 3waAIHub Local 是一套輕量級容器服務與 AI 能力管理平台。它以 HubPack 統一管理長期運行的 Service 與單次執行的 Local Job，提供安裝、啟停、API Gateway、Token、執行歷程與資源使用量追蹤。
 
@@ -40,6 +41,7 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 - YOLO Model Registry 1B：allowlisted host `.pt` 匯入、`model_ref` idempotent registry、CPU serving predict route、固定 `yolo-gpu0` 雙槽 warm pool
 - Log Explorer 記錄中心：API 記錄、背景工作、服務記錄、系統記錄分頁
 - 環境診斷與修正建議
+- 唯讀版本識別與更新狀態：顯示 commit、dirty/tag、Pack inventory、Runner digest 與 Cluster 節點相容性
 - Service IP whitelist 與 API access logs
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
 - Marketplace Pack preflight，依最新 host metrics 判斷 Docker / GPU / VRAM / compute capability / storage
@@ -73,6 +75,23 @@ Current: `v0.2.x` / Local Catalog + Token Auth MVP.
 | Generic Service Publishing | 規劃中 |
 
 完整定位請見 `docs/service_platform_vision_v0.1.md`。Runtime portability 護欄請見 `docs/runtime_portability_guardrails.md`。
+
+## 版本與更新
+
+版本採 `YYYYMMDDNNN` 的 11 位 date build ID。後台「系統環境」只讀顯示
+本機與節點狀態；「系統設定」只提供依主機角色區分的 CLI 指引，不會由
+HTTP 執行 Git 或部署操作。
+
+遠端版本檢查只允許 CLI 執行，且只接受 `refs/tags/<11 digits>`：
+
+```bash
+php scripts/check_release_update.php
+```
+
+檢查結果會以 `0664` 原子寫入
+`data/cache/release_remote.json`，只保存檢查時間、最新 release ID 與短錯誤碼。
+8/7 freeze、三台主機一致性與發布權限流程見
+[`docs/operations/release-freeze.md`](docs/operations/release-freeze.md)。
 
 ## 近期 TODO
 

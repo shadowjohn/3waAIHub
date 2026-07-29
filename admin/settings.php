@@ -295,6 +295,7 @@ if ($activeTab === 'i18n') {
 }
 
 $storageWarnings = hub_storage_settings_warnings($settings);
+$releaseCommands = hub_release_update_commands(hub_platform_id());
 
 hub_admin_header('系統設定', $user);
 ?>
@@ -329,10 +330,25 @@ hub_admin_header('系統設定', $user);
     <table>
         <tr><th><?= hub_settings_t('站台標題') ?></th><td><?= hub_h(hub_site_title($db)) ?></td></tr>
         <tr><th><?= hub_settings_t('站台副標') ?></th><td><?= hub_h(hub_site_subtitle($db)) ?></td></tr>
-        <tr><th><?= hub_settings_t('版本') ?></th><td><code><?= hub_h(HUB_VERSION) ?></code> / <?= hub_h(HUB_RELEASE_LABEL) ?></td></tr>
+        <tr><th><?= hub_settings_t('版本') ?></th><td><code><?= hub_h(hub_release_display_version(HUB_VERSION)) ?></code> / <?= hub_h(HUB_RELEASE_LABEL) ?></td></tr>
         <tr><th><?= hub_settings_t('時區') ?></th><td><code><?= hub_h(date_default_timezone_get()) ?></code></td></tr>
     </table>
     <p><a class="button" href="settings.php?tab=appearance"><?= hub_settings_t('調整介面顯示') ?></a></p>
+</section>
+<section class="panel">
+    <h2><?= hub_h(__('唯讀更新指引')) ?></h2>
+    <p class="muted"><?= hub_h(__('後台不會執行 Git 更新、部署或版本切換；請由具備對應權限的人員在主機 CLI 操作。')) ?></p>
+    <div class="setting-card">
+        <h3><?= hub_h(__('3wa 整合主機')) ?></h3>
+        <p><?= hub_h(__('3wa 是平常唯一的 push 來源；先完成驗證，再以 fast-forward 對齊主線。')) ?></p>
+        <pre class="inline-pre"><?= hub_h((string)$releaseCommands['integration_host']['commands']) ?></pre>
+    </div>
+    <div class="setting-card">
+        <h3><?= hub_h(__('5090 / 1080 執行節點')) ?></h3>
+        <p><?= hub_h(__('執行節點只 fetch、fast-forward 或切到不可變 Tag，永不 push。請將 RELEASE_ID 換成已驗證的 11 位版本 ID。')) ?></p>
+        <pre class="inline-pre"><?= hub_h((string)$releaseCommands['execution_node']['commands']) ?></pre>
+    </div>
+    <p class="form-help"><?= hub_h(__('WSL 只作為 authoring / validation 環境，不是 deployment authority。')) ?></p>
 </section>
 <?php elseif ($activeTab === 'appearance'): ?>
 <section class="panel">

@@ -228,3 +228,15 @@ hub_test('Windows environment UI renders N/A neutrally with unambiguous role lab
     hub_test_assert(str_contains($dashboard, 'metric.diskBars.length > 0 && diskChart'), 'dashboard JS must not initialize an empty disk chart');
     hub_test_assert(!str_contains($dashboard, "'ramPercent' => hub_dash_percent(\$host['ram_used_percent'] ?? 0)"), 'dashboard must not coerce N/A RAM to zero');
 });
+
+hub_test('release status stays read-only in Environment and Settings', function (): void {
+    $environment = (string)file_get_contents(HUB_ROOT . '/admin/environment.php');
+    $settings = (string)file_get_contents(HUB_ROOT . '/admin/settings.php');
+
+    foreach ([$environment, $settings] as $source) {
+        hub_test_assert(str_contains($source, 'hub_release_'), 'admin release view must use the shared helper');
+        hub_test_assert(!str_contains($source, 'check_release_update.php'), 'web UI must not invoke the CLI update checker');
+    }
+    hub_test_assert(str_contains($environment, "__('版本與節點相容性')"), 'Environment release heading must use i18n');
+    hub_test_assert(str_contains($settings, "__('唯讀更新指引')"), 'Settings update heading must use i18n');
+});

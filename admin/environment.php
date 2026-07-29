@@ -28,6 +28,22 @@ $liveWorkerStatus = hub_collect_command_worker_status();
 if ($snapshot) {
     $snapshot['data']['command_worker'] = $liveWorkerStatus;
 }
+$releaseReport = hub_release_node_report($db);
+$remoteRelease = hub_release_read_remote_cache();
+$stationReleaseReports = [];
+if (hub_table_exists($db, 'cluster_stations')) {
+    foreach (hub_cluster_list_stations($db) as $station) {
+        $stationReleaseReports[] = hub_release_station_report($station, $releaseReport);
+    }
+}
+$knownRunnerDigests = count(array_filter(
+    $releaseReport['runners'],
+    static fn (array $runner): bool => (string)($runner['digest'] ?? '') !== ''
+));
+$latestRelease = (string)$remoteRelease['latest_release'];
+$localUpdateNeeded = preg_match('/\A\d{11}\z/', $latestRelease) === 1
+    ? strcmp($latestRelease, HUB_VERSION) > 0
+    : null;
 
 function hub_env_section_label(string $section): string
 {
@@ -448,6 +464,92 @@ hub_admin_header('系統環境', $user);
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <button class="primary" type="submit">執行環境檢測</button>
     </form>
+</section>
+<section class="panel">
+    <h2><?= hub_h(__('版本與節點相容性')) ?></h2>
+    <p class="muted"><?= hub_h(__('此頁只顯示版本與相容性，不會執行更新或部署。')) ?></p>
+    <div class="table-wrap">
+        <table>
+            <tr>
+                <th><?= hub_h(__('目前版本')) ?></th>
+                <td><code><?= hub_h((string)$releaseReport['git']['display_version']) ?></code> / <?= hub_h(HUB_RELEASE_LABEL) ?></td>
+            </tr>
+            <tr>
+                <th><?= hub_h(__('Git commit')) ?></th>
+                <td><code><?= hub_h((string)($releaseReport['git']['commit'] ?: 'unknown')) ?></code></td>
+            </tr>
+            <tr>
+                <th><?= hub_h(__('工作樹狀態')) ?></th>
+                <td class="<?= $releaseReport['git']['dirty'] === null ? 'muted' : ($releaseReport['git']['dirty'] ? 'bad' : 'ok') ?>">
+                    <?= hub_h(__($releaseReport['git']['dirty'] === null ? '未知' : ($releaseReport['git']['dirty'] ? '有未提交變更' : '乾淨'))) ?>
+                </td>
+            </tr>
+            <tr>
+                <th><?= hub_h(__('目前 Tag')) ?></th>
+                <td><code><?= hub_h((string)($releaseReport['git']['tag'] ?: 'none')) ?></code></td>
+            </tr>
+            <tr>
+                <th><?= hub_h(__('遠端最新版本')) ?></th>
+                <td>
+                    <code><?= hub_h($latestRelease !== '' ? hub_release_display_version($latestRelease) : 'unknown') ?></code>
+                    <?php if ($localUpdateNeeded !== null): ?>
+                        <span class="<?= $localUpdateNeeded ? 'bad' : 'ok' ?>"><?= hub_h(__($localUpdateNeeded ? '可更新' : '已是最新')) ?></span>
+                    <?php endif; ?>
+                </td>
+            </tr>
+            <tr>
+                <th><?= hub_h(__('最後檢查時間')) ?></th>
+                <td><?= hub_h((string)($remoteRelease['checked_at'] ?: 'unknown')) ?><?php if ($remoteRelease['error'] !== ''): ?> / <code><?= hub_h((string)$remoteRelease['error']) ?></code><?php endif; ?></td>
+            </tr>
+            <tr>
+                <th><?= hub_h(__('Pack / Runner Digest')) ?></th>
+                <td><?= number_format(count($releaseReport['packs'])) ?> / <?= number_format($knownRunnerDigests) ?></td>
+            </tr>
+        </table>
+    </div>
+    <h3><?= hub_h(__('Cluster 節點版本')) ?></h3>
+    <?php if ($stationReleaseReports === []): ?>
+        <p class="muted"><?= hub_h(__('目前沒有已配對的子節點。')) ?></p>
+    <?php else: ?>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th><?= hub_h(__('站台')) ?></th>
+                    <th><?= hub_h(__('版本')) ?></th>
+                    <th><?= hub_h(__('Commit')) ?></th>
+                    <th><?= hub_h(__('健康')) ?></th>
+                    <th><?= hub_h(__('Pack 相容性')) ?></th>
+                    <th><?= hub_h(__('更新狀態')) ?></th>
+                </tr>
+                </thead>
+                <tbody>
+                <?php foreach ($stationReleaseReports as $stationRelease): ?>
+                    <tr>
+                        <td><?= hub_h((string)$stationRelease['display_name']) ?></td>
+                        <td><code><?= hub_h((string)($stationRelease['display_version'] ?: 'unknown')) ?></code></td>
+                        <td><code><?= hub_h((string)($stationRelease['commit'] ?: 'unknown')) ?></code></td>
+                        <td><code><?= hub_h((string)$stationRelease['health']) ?></code></td>
+                        <td>
+                            <?php if ($stationRelease['pack_compatible'] === null): ?>
+                                <span class="muted"><?= hub_h(__('未知')) ?></span>
+                            <?php else: ?>
+                                <span class="<?= $stationRelease['pack_compatible'] ? 'ok' : 'bad' ?>"><?= hub_h(__($stationRelease['pack_compatible'] ? '相容' : '不相容')) ?></span>
+                            <?php endif; ?>
+                        </td>
+                        <td>
+                            <?php if ($stationRelease['update_needed'] === null): ?>
+                                <span class="muted"><?= hub_h(__('未知')) ?></span>
+                            <?php else: ?>
+                                <span class="<?= $stationRelease['update_needed'] ? 'bad' : 'ok' ?>"><?= hub_h(__($stationRelease['update_needed'] ? '需要更新' : '已對齊')) ?></span>
+                            <?php endif; ?>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    <?php endif; ?>
 </section>
 <section class="panel" id="webProtectionLive">
     <h2>即時 Web 檔案防護</h2>
