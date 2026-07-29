@@ -272,6 +272,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     try {
         $result = hub_install_pack($db, (string)($_POST['pack_id'] ?? ''));
         $message = '已安裝 HubPack：' . $result['service']['name'] . ' / ' . $result['service']['service_key'];
+        $demos = $result['edge_tts_demos'] ?? null;
+        if (is_array($demos) && isset($demos['succeeded'], $demos['failed'])) {
+            $message .= '；語音示範成功 ' . (int)$demos['succeeded'] . ' 個，失敗 ' . (int)$demos['failed'] . ' 個。';
+        }
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }

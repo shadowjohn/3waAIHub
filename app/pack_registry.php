@@ -1342,6 +1342,13 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
 
     $storage = hub_get_storage_paths($db);
     hub_ensure_pack_storage_dirs($manifest, $serviceKey, $storage, $runtimeDir);
+    $edgeTtsDemos = null;
+    if (($manifest['id'] ?? '') === 'edge-tts') {
+        $edgeTtsDemoRunner = isset($options['edge_tts_demo_runner']) && is_callable($options['edge_tts_demo_runner'])
+            ? $options['edge_tts_demo_runner']
+            : null;
+        $edgeTtsDemos = hub_edge_tts_initialize_voice_demos($pack, $serviceKey, $edgeTtsDemoRunner);
+    }
     $composeFile = hub_pack_compose_file($db, $serviceKey);
     $envFile = $runtimeDir . '/.env';
     $portEnv = hub_pack_port_env($manifest);
@@ -1410,7 +1417,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     return [
         'pack' => $pack,
         'service' => $service,
-    ];
+    ] + ($edgeTtsDemos === null ? [] : ['edge_tts_demos' => $edgeTtsDemos]);
 }
 
 function hub_validate_service_instance_input(string $serviceKey, string $mode, string $name, string $portMode, string $environment): void

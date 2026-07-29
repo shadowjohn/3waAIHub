@@ -53,6 +53,7 @@ require_once __DIR__ . '/task_queue.php';
 require_once __DIR__ . '/task_callbacks.php';
 require_once __DIR__ . '/web_capture.php';
 require_once __DIR__ . '/pack_job_runner.php';
+require_once __DIR__ . '/edge_tts_voices.php';
 require_once __DIR__ . '/docparser.php';
 require_once __DIR__ . '/api_access.php';
 require_once __DIR__ . '/api_tokens.php';

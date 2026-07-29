@@ -117,6 +117,10 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $_SERVER['REMOTE_ADDR'] ?? null
         );
         $message = __('已建立 Service Instance：') . $result['service']['service_key'] . '；已排入背景工作 #' . $jobId . '。';
+        $demos = $result['edge_tts_demos'] ?? null;
+        if (is_array($demos) && isset($demos['succeeded'], $demos['failed'])) {
+            $message .= __('語音示範成功 ') . (int)$demos['succeeded'] . __(' 個，失敗 ') . (int)$demos['failed'] . __(' 個。');
+        }
     } catch (Throwable $e) {
         $error = $e->getMessage();
     }

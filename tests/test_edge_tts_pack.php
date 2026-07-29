@@ -377,6 +377,175 @@ hub_test('Edge TTS install builds and verifies its controlled runner image', fun
     ] && ($installed['service']['install_status'] ?? '') === 'installed', 'Edge TTS runner must build from its Pack-controlled context and be verified before installation');
 });
 
+function hub_test_edge_tts_build_runner(array &$commands): callable
+{
+    $built = false;
+
+    return static function (array $command, int $timeoutSeconds) use (&$commands, &$built): array {
+        $commands[] = $command;
+        if (($command[1] ?? '') === 'image' && ($command[2] ?? '') === 'inspect') {
+            return $built ? ['exit_code' => 0, 'stdout' => 'sha256:edge-tts', 'stderr' => ''] : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'missing'];
+        }
+        if (($command[1] ?? '') === 'build') {
+            $built = true;
+            return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+        }
+
+        throw new RuntimeException('unexpected Edge TTS runner image command');
+    };
+}
+
+function hub_test_edge_tts_demo_catalogue(): array
+{
+    $catalogue = json_decode((string)file_get_contents(HUB_ROOT . '/packs/edge-tts/service/voice_catalog.json'), true);
+    hub_test_assert(is_array($catalogue), 'Edge TTS test catalogue must decode');
+
+    return $catalogue;
+}
+
+function hub_test_edge_tts_write_demo_output(string $dir, array $voices, string $kind = 'valid'): void
+{
+    $available = [];
+    foreach ($voices as $voice) {
+        $file = (string)$voice['demo_file'];
+        $path = $dir . '/' . $file;
+        $contents = 'demo:' . (string)$voice['id'];
+        if ($kind === 'symlink') {
+            $target = $dir . '/symlink-target.mp3';
+            file_put_contents($target, $contents);
+            symlink($target, $path);
+        } else {
+            file_put_contents($path, $contents);
+        }
+        $available[] = [
+            'id' => (string)$voice['id'],
+            'file' => $file,
+            'bytes' => strlen($contents),
+            'sha256' => $kind === 'hash_mismatch' ? str_repeat('0', 64) : hash('sha256', $contents),
+        ];
+    }
+    if ($kind === 'malformed') {
+        file_put_contents($dir . '/available.json', '{"version":1,"voices":[]}');
+        return;
+    }
+    file_put_contents($dir . '/available.json', json_encode(['version' => 1, 'voices' => $available], JSON_THROW_ON_ERROR));
+}
+
+function hub_test_edge_tts_demo_runner(array &$commands, callable $writer, int $exitCode = 0): callable
+{
+    return static function (array $command, int $timeoutSeconds) use (&$commands, $writer, $exitCode): array {
+        $commands[] = $command;
+        if (($command[0] ?? '') === 'docker' && ($command[1] ?? '') === 'run') {
+            $mount = (string)($command[array_search('--mount', $command, true) + 1] ?? '');
+            preg_match('/^type=bind,src=(.+),dst=\/workspace\/output$/', $mount, $matches);
+            hub_test_assert(isset($matches[1]) && is_dir($matches[1]), 'Edge TTS demo runner must receive its staging output bind mount');
+            $writer($matches[1]);
+            return ['exit_code' => $exitCode, 'stdout' => '', 'stderr' => ''];
+        }
+        if (($command[0] ?? '') === 'docker' && ($command[1] ?? '') === 'container' && ($command[2] ?? '') === 'inspect') {
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such container'];
+        }
+
+        throw new RuntimeException('unexpected Edge TTS demo command');
+    };
+}
+
+hub_test('Edge TTS installation atomically publishes verified demo output with a fixed Docker command', function (): void {
+    $db = hub_test_reset_db();
+    $buildCommands = [];
+    $demoCommands = [];
+    $voices = hub_test_edge_tts_demo_catalogue();
+    $installed = hub_install_pack($db, 'edge-tts', [
+        'idempotent' => true,
+        'runner_build_runner' => hub_test_edge_tts_build_runner($buildCommands),
+        'edge_tts_demo_runner' => hub_test_edge_tts_demo_runner($demoCommands, static function (string $dir) use ($voices): void {
+            hub_test_edge_tts_write_demo_output($dir, $voices);
+        }),
+    ]);
+    $run = array_values(array_filter($demoCommands, static fn (array $command): bool => ($command[1] ?? '') === 'run'))[0] ?? [];
+    $mount = (string)($run[array_search('--mount', $run, true) + 1] ?? '');
+    hub_test_assert($installed['edge_tts_demos'] === ['succeeded' => 14, 'failed' => 0]
+        && $buildCommands !== []
+        && $run === [
+            'docker', 'run', '--pull=never', '--network', 'bridge', '--cap-add', 'NET_ADMIN',
+            '--mount', $mount, '--name', $run[10] ?? '', '--entrypoint', '/app/edge-tts-entrypoint.sh',
+            '3waaihub/edge-tts:0.2.0', '/app/generate_demos.py',
+        ]
+        && preg_match('#^type=bind,src=' . preg_quote(HUB_DATA_DIR . '/results/edge-tts-demos/edge-tts-main/', '#') . '[A-Za-z0-9_.-]+,dst=/workspace/output$#', $mount) === 1
+        && !in_array('--env', $run, true) && !in_array('--gpus', $run, true) && !str_contains($mount, 'input')
+        && is_file(HUB_DATA_DIR . '/results/edge-tts-demos/edge-tts-main/current/01_tw_xiaoqing_hsiaochen.mp3')
+        && hub_artifact_safe_path(HUB_DATA_DIR . '/results/edge-tts-demos/edge-tts-main/current/01_tw_xiaoqing_hsiaochen.mp3') !== null,
+        'Edge TTS install must run only its fixed bridge/NET_ADMIN output-only generator and atomically publish all verified demos');
+});
+
+hub_test('Edge TTS installation accepts partial verified demos and rejects invalid staged output without service promotion', function (): void {
+    foreach (['hash_mismatch', 'malformed', 'symlink'] as $kind) {
+        $db = hub_test_reset_db();
+        $current = HUB_DATA_DIR . '/results/edge-tts-demos/edge-tts-main/current';
+        mkdir($current, 0775, true);
+        file_put_contents($current . '/prior.mp3', 'prior');
+        $voices = hub_test_edge_tts_demo_catalogue();
+        $unused = [];
+        try {
+            hub_install_pack($db, 'edge-tts', [
+                'idempotent' => true,
+                'edge_tts_demo_runner' => hub_test_edge_tts_demo_runner($unused, static function (string $dir) use ($voices, $kind): void {
+                    hub_test_edge_tts_write_demo_output($dir, [$voices[0]], $kind);
+                }),
+            ]);
+            throw new RuntimeException('invalid Edge TTS demo output must abort install');
+        } catch (RuntimeException $e) {
+            hub_test_assert($e->getMessage() === 'edge_tts_demo_initialization_failed', 'invalid Edge TTS demo output must expose only the stable error');
+        }
+        hub_test_assert(is_file($current . '/prior.mp3')
+            && (int)$db->query("SELECT COUNT(*) FROM services WHERE service_key = 'edge-tts-main'")->fetchColumn() === 0,
+            'failed Edge TTS demo initialization must preserve current and not create a service row');
+    }
+
+    $db = hub_test_reset_db();
+    $voices = hub_test_edge_tts_demo_catalogue();
+    $unused = [];
+    $installed = hub_install_pack($db, 'edge-tts', [
+        'idempotent' => true,
+        'edge_tts_demo_runner' => hub_test_edge_tts_demo_runner($unused, static function (string $dir) use ($voices): void {
+            hub_test_edge_tts_write_demo_output($dir, array_slice($voices, 0, 2));
+        }),
+    ]);
+    hub_test_assert($installed['edge_tts_demos'] === ['succeeded' => 2, 'failed' => 12]
+        && count(hub_edge_tts_verified_voices('edge-tts-main')) === 2,
+        'partial Edge TTS demo output must publish only its verified catalogue voices');
+});
+
+hub_test('Edge TTS demo initialization failure and non-Edge installs do not invoke the generator', function (): void {
+    $db = hub_test_reset_db();
+    $current = HUB_DATA_DIR . '/results/edge-tts-demos/edge-tts-main/current';
+    mkdir($current, 0775, true);
+    file_put_contents($current . '/prior.mp3', 'prior');
+    $unused = [];
+    try {
+        hub_install_pack($db, 'edge-tts', [
+            'idempotent' => true,
+            'edge_tts_demo_runner' => hub_test_edge_tts_demo_runner($unused, static function (string $dir): void {}, 1),
+        ]);
+        throw new RuntimeException('failed Edge TTS generator must abort install');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'edge_tts_demo_initialization_failed', 'failed Edge TTS generator must expose only the stable error');
+    }
+    hub_test_assert(is_file($current . '/prior.mp3')
+        && (int)$db->query("SELECT COUNT(*) FROM services WHERE service_key = 'edge-tts-main'")->fetchColumn() === 0,
+        'all failed Edge TTS generation must preserve current and not promote a service');
+
+    $called = false;
+    hub_install_pack($db, 'audio-cleanup', [
+        'idempotent' => true,
+        'edge_tts_demo_runner' => static function () use (&$called): never {
+            $called = true;
+            throw new RuntimeException('non-Edge pack must not invoke Edge TTS generator');
+        },
+    ]);
+    hub_test_assert(!$called, 'non-Edge installs must not invoke the Edge TTS generator seam');
+});
+
 hub_test('Edge TTS artifact contract is exact', function (): void {
     $job = hub_pack_async_job_contract(hub_get_pack('edge-tts')['manifest'], 'synthesize');
     hub_test_assert(is_array($job) && ($job['artifact_contract'] ?? null) === [
