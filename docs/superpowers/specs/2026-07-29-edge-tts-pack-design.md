@@ -37,6 +37,7 @@ standard async task response. The Cluster exposes the same contract through
 | `rate` | signed percentage | `+0%` |
 | `volume` | signed percentage | `+0%` |
 | `pitch` | signed Hz value | `+0Hz` |
+| `include_subtitles` | optional boolean; when `true`, publish all three caption artifacts below | `false` |
 
 V1 publishes a small fixed allowlist: `zh-TW-HsiaoChenNeural`,
 `zh-TW-HsiaoYuNeural`, `zh-TW-YunJheNeural`,
@@ -44,12 +45,19 @@ V1 publishes a small fixed allowlist: `zh-TW-HsiaoChenNeural`,
 Clients cannot supply SSML, an endpoint, a proxy, an upload, a host path, a
 command, or an arbitrary voice identifier.
 
-Each successful task publishes:
+Each successful task retains these base artifacts:
 
 - `generated_audio`: required `generated_audio.mp3`, `audio/mpeg`.
 - `synthesis_metadata`: required JSON recording the Pack/client version,
   selected voice, rate, volume, pitch, final format, byte count, elapsed
   time, and bounded non-secret warnings.
+
+When `include_subtitles` is `true`, the task also publishes all three
+conditional caption artifacts:
+
+- `subtitle_vtt`: `subtitle.vtt`.
+- `subtitle_srt`: `subtitle.srt`.
+- `speech_timeline`: `speech_timeline.json`.
 
 The task stays within the existing artifact, ownership, callback, retention,
 cancellation, and task-result contract. It acquires no GPU lease.
@@ -113,22 +121,22 @@ to existing Hub task retention. The Pack README and root README state that it
 must not be used for confidential text. There is no automatic alternate
 provider, custom retry policy, streaming, or voice cloning in V1.
 
-## Phase B: Captions and Speech Timeline
+## Captions and Speech Timeline
 
-Phase B adds one optional request field:
+The shipped captions contract has one optional request field:
 
 ```json
 {"include_subtitles": true}
 ```
 
-It defaults to `false`. When false, the V1 response and artifacts are
+It defaults to `false`. When false, the base response and artifacts are
 unchanged. When true, the runner consumes the one upstream boundary stream
-used for synthesis and publishes these additional owned artifacts:
+used for synthesis and publishes the additional owned artifacts listed above:
 
 | Type | Path | MIME type | Maximum size |
 | --- | --- | --- | --- |
-| `subtitle_vtt` | `subtitle.vtt` | `text/vtt` | 512 KiB |
-| `subtitle_srt` | `subtitle.srt` | `application/x-subrip` | 512 KiB |
+| `subtitle_vtt` | `subtitle.vtt` | `text/plain` on this station; allowed portable values include `text/vtt` | 512 KiB |
+| `subtitle_srt` | `subtitle.srt` | `text/plain` on this station; allowed portable values include `application/x-subrip`, `text/x-subrip`, and `text/srt` | 512 KiB |
 | `speech_timeline` | `speech_timeline.json` | `application/json` | 512 KiB |
 
 The provider `WordBoundary` stream is the authoritative timeline. The runner
@@ -146,11 +154,11 @@ metadata or task logs, and require the caller's explicit opt-in. Clients
 cannot select individual subtitle formats, names, paths, providers, or an
 arbitrary event payload. One boolean always publishes all three formats.
 
-Phase B adds offline runner tests for exact derived output, opt-out absence,
-and invalid timing rejection, plus manifest, Gateway, Cluster, and artifact
-contract coverage. It does not add a streaming endpoint, SSML, batch jobs,
-voice cloning, a player UI, or a second synthesis API. L5 promotion remains a
-separate station-only real acceptance step.
+Offline runner tests cover exact derived output, opt-out absence, and invalid
+timing rejection, alongside manifest, Gateway, Cluster, and artifact-contract
+coverage. The implementation does not add a streaming endpoint, SSML, batch
+jobs, voice cloning, a player UI, or a second synthesis API. L5 promotion
+remains a separate station-only real acceptance step.
 
 ## Acceptance
 

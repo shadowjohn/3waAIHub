@@ -408,9 +408,11 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
     $root = (string)file_get_contents(HUB_ROOT . '/README.md');
     $packPath = HUB_ROOT . '/packs/edge-tts/README.md';
     $smokePath = HUB_ROOT . '/docs/operations/edge-tts-real-smoke.md';
-    hub_test_assert(is_file($packPath) && is_file($smokePath), 'Edge TTS Pack and real-smoke documentation must exist');
+    $designPath = HUB_ROOT . '/docs/superpowers/specs/2026-07-29-edge-tts-pack-design.md';
+    hub_test_assert(is_file($packPath) && is_file($smokePath) && is_file($designPath), 'Edge TTS Pack, real-smoke, and design documentation must exist');
     $pack = (string)file_get_contents($packPath);
     $smoke = (string)file_get_contents($smokePath);
+    $design = (string)file_get_contents($designPath);
 
     foreach ([
         'edge_tts',
@@ -428,6 +430,9 @@ hub_test('Edge TTS documentation preserves the external CPU-only operator contra
     }
     hub_test_assert(str_contains($pack, '## Captions And Speech Timeline') && !str_contains($pack, '## Deferred V2'),
         'Edge TTS Pack documentation must describe active captions rather than deferred V2');
+    foreach (['include_subtitles', 'subtitle_vtt', 'subtitle.vtt', 'subtitle_srt', 'subtitle.srt', 'speech_timeline', 'speech_timeline.json', 'text/plain'] as $needle) {
+        hub_test_assert(str_contains($design, $needle), 'Edge TTS design must describe the active captions contract: ' . $needle);
+    }
     foreach ([
         'admin/packs.php',
         'php scripts/command_worker.php --limit=5',
