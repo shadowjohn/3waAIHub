@@ -1230,7 +1230,7 @@ curl -X POST "https://nature.focusit.tw/3waAIHub/api.php?mode=audio" \
 `docparser` is PhaseDoc-1C `L5-benchmark-ready`.
 
 It accepts technical manual PDFs through `mode=docparser` multipart upload, backed by `task_type=docparser_parse`.
-It calls `structure-main` for document structure and `translate-main` for block translation, then writes DocIR, HTML, Markdown, TOC, RAG chunks, quality report, manifest and figure assets under `data/results/task_{task_id}/docparser/`.
+It calls `structure-main` for document structure, then applies the DocParser translation policy before calling `translate-main` for needed block translation. The default `translation_policy=auto` keeps blocks that already look like target-language Chinese and only sends non-Chinese blocks to TranslateGemma. Use `translation_policy=always` to force machine translation for every translatable block, or `translation_policy=never` to disable translation. Outputs include DocIR, HTML, Markdown, TOC, RAG chunks, quality report, manifest and figure assets under `data/results/task_{task_id}/docparser/`.
 
 Submit response includes task follow-up links:
 
@@ -1246,7 +1246,7 @@ DocParser submit has a lightweight artifact cache. When the uploaded PDF SHA-256
 - default TTL: `AIHUB_DOCPARSER_CACHE_TTL_DAYS=7`
 - cache version: `AIHUB_DOCPARSER_CACHE_VERSION=docparser-v0.1`
 - cache hit response includes `cached=true`, `cache_hit_task_id`, and the usual `status_url` / `result_url` / `log_url`
-- cache key includes PDF hash, profile, target language, translation flag, structure mode, translate mode and cache version
+- cache key includes PDF hash, profile, target language, translation flag, translation policy, structure mode, translate mode and cache version
 
 DocParser supports cooperative cancel. Queued tasks are cancelled immediately; running `docparser_parse` tasks set `cancel_requested=1` and stop at the next worker checkpoint, such as after structure parsing or before the next translation block. The worker does not hard-kill PHP, Docker containers or backend HTTP requests.
 
@@ -1299,7 +1299,8 @@ curl -X POST "http://localhost/3waAIHub/api.php?mode=task_submit" \
   -F task_type=docparser_parse \
   -F file=@manual.pdf \
   -F target_language=zh-TW \
-  -F translation_required=1
+  -F translation_required=1 \
+  -F translation_policy=auto
 
 php scripts/task_worker.php --limit=1
 php scripts/docparser_acceptance.php --task-id=<TASK_ID>

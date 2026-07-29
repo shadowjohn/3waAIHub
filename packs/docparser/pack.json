@@ -50,6 +50,14 @@
           "default": "1"
         },
         {
+          "name": "translation_policy",
+          "type": "string",
+          "required": false,
+          "default": "auto",
+          "enum": ["auto", "always", "never"],
+          "description": "auto skips target-language Chinese blocks, always machine-translates every translatable block, never disables translation."
+        },
+        {
           "name": "structure_mode",
           "type": "string",
           "required": false,
@@ -103,6 +111,7 @@
           "form": {
             "target_language": "zh-TW",
             "translation_required": "1",
+            "translation_policy": "auto",
             "structure_mode": "structure",
             "translate_mode": "translate"
           },
@@ -119,6 +128,7 @@
           "form": {
             "target_language": "zh-TW",
             "translation_required": "1",
+            "translation_policy": "auto",
             "structure_mode": "structure",
             "translate_mode": "translate"
           },
@@ -147,6 +157,7 @@
     {"key": "DOCPARSER_TRANSLATE_MODE", "label": "Translate mode", "type": "text", "default": "translate", "required": false, "restart_required": false},
     {"key": "DOCPARSER_TARGET_LANGUAGE", "label": "Target language", "type": "select", "default": "zh-TW", "options": ["zh-TW", "source"], "required": true, "restart_required": false},
     {"key": "DOCPARSER_TRANSLATION_REQUIRED", "label": "Translation required", "type": "boolean", "default": "1", "required": true, "restart_required": false},
+    {"key": "DOCPARSER_TRANSLATION_POLICY", "label": "Translation policy", "type": "select", "default": "auto", "options": ["auto", "always", "never"], "required": true, "restart_required": false},
     {"key": "DOCPARSER_PROFILE", "label": "Profile", "type": "select", "default": "technical_manual", "options": ["technical_manual"], "required": true, "restart_required": false}
   ],
   "env": [],

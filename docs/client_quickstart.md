@@ -227,6 +227,7 @@ curl -X POST "<BASE_URL>?mode=audio" \
 
 - status: L5 benchmark ready
 - request contract: `POST multipart/form-data`, field `file`, PDF only
+- translation contract: `translation_policy=auto` by default; Chinese target-language blocks are kept as-is, non-Chinese blocks are translated. Use `always` to force translation or `never` to disable it.
 - response contract: JSON with `ok`, `task_id`, `status`, `status_url`, `result_url`, `log_url`, `cancel_url`, `artifact_url_template`
 - result contract: `task_result` returns artifact summary for `reader_html`, `bilingual_html`, `markdown`, `docir`, `toc`, `rag_chunks`, `quality_report`, `manifest`
 - figure contract: `artifact_summary.figure_assets.items[]` returns `figure_id`, `block_id`, `page`, `bbox`, `caption`, `asset_path`, `artifact_id`, `bytes`
