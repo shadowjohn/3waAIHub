@@ -1,6 +1,11 @@
 <?php
 declare(strict_types=1);
 
+$hubVoxCpm2ClusterAcceptance = HUB_ROOT . '/scripts/voxcpm2_cluster_acceptance.php';
+if (is_file($hubVoxCpm2ClusterAcceptance)) {
+    require_once $hubVoxCpm2ClusterAcceptance;
+}
+
 function hub_test_with_cluster_secret(callable $fn): void
 {
     $previous = getenv('AIHUB_CLUSTER_SECRET_KEY');
@@ -214,6 +219,113 @@ function hub_test_cluster_voice_profile_status_payload(array $overrides = []): a
         'created_at' => '2026-07-31 11:00:00',
         'updated_at' => '2026-07-31 12:00:00',
     ], $overrides);
+}
+
+function hub_test_cluster_voxcpm2_canonical_json(mixed $value): string
+{
+    $normalize = static function (mixed $item) use (&$normalize): mixed {
+        if (!is_array($item)) {
+            return $item;
+        }
+        if (array_is_list($item)) {
+            return array_map($normalize, $item);
+        }
+        ksort($item, SORT_STRING);
+        foreach ($item as $key => $nested) {
+            $item[$key] = $normalize($nested);
+        }
+
+        return $item;
+    };
+
+    return json_encode(
+        $normalize($value),
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_LINE_TERMINATORS | JSON_THROW_ON_ERROR
+    );
+}
+
+function hub_test_cluster_voxcpm2_runner_metadata(
+    string $referenceSha256,
+    string $promptSha256,
+    string $targetText,
+): array {
+    $normalized = preg_replace('/(*UCP)\s+/u', ' ', trim($targetText));
+    if (!is_string($normalized) || $normalized === '') {
+        throw new RuntimeException('Invalid Router-backed VoxCPM2 target fixture.');
+    }
+    $chunkId = 'chunk-0001';
+    $seedSha256 = hash('sha256', '42' . $chunkId);
+    $seed = (int)(hexdec(substr($seedSha256, 8, 8)) % 2147483648);
+    $planCore = [
+        'normalization' => 'semantic-v1',
+        'normalized_input' => $normalized,
+        'max_chunk_chars' => 240,
+        'task_seed' => 42,
+        'seed_policy' => 'derived_per_chunk',
+        'chunks' => [[
+            'id' => $chunkId,
+            'text' => $normalized,
+            'text_sha256' => hash('sha256', $normalized),
+            'seed' => $seed,
+            'seed_sha256' => $seedSha256,
+        ]],
+    ];
+    $voiceCore = [
+        'mode' => 'ultimate_clone',
+        'control' => '',
+        'reference_audio_sha256' => $referenceSha256,
+        'prompt_text_sha256' => $promptSha256,
+        'container_path' => '/data/voice_profiles/reference.wav',
+    ];
+
+    return [
+        'normalized_input' => $normalized,
+        'plan' => $planCore + [
+            'plan_sha256' => hash('sha256', hub_test_cluster_voxcpm2_canonical_json($planCore)),
+        ],
+        'model' => [
+            'model' => '/models/voxcpm2/model',
+            'label' => 'VoxCPM2',
+            'version' => '2.0.3',
+            'sample_rate' => 48000,
+        ],
+        'voice_context' => $voiceCore + [
+            'sha256' => hash('sha256', hub_test_cluster_voxcpm2_canonical_json($voiceCore)),
+        ],
+        'controls' => [
+            'mode' => 'ultimate_clone',
+            'seed_policy' => 'derived_per_chunk',
+            'task_seed' => 42,
+        ],
+        'chunks' => [[
+            'id' => $chunkId,
+            'seed' => $seed,
+            'seed_sha256' => $seedSha256,
+            'attempts' => 1,
+            'duration_frames' => 12000,
+            'duration_seconds' => 0.25,
+            'peak_gain' => 1.0,
+            'reused_checkpoint' => false,
+            'action' => 'direct_concat',
+            'trim_frames' => 0,
+            'pause_frames' => 0,
+            'crossfade_frames' => 0,
+        ]],
+        'final_format' => [
+            'mime_type' => 'audio/wav',
+            'sample_rate' => 48000,
+            'channels' => 1,
+            'frames' => 12000,
+        ],
+        'loudness' => ['passes' => 1, 'target_lufs' => -16.0, 'gain' => 1.0],
+        'timeline' => [[
+            'chunk_id' => $chunkId,
+            'start_frame' => 0,
+            'end_frame' => 12000,
+            'sample_rate' => 48000,
+        ]],
+        'device' => ['type' => 'cuda', 'real_inference' => true],
+    ];
 }
 
 function hub_test_cluster_voice_profile_synthesis_without_operation(string $profileMode): void
@@ -1096,6 +1208,61 @@ hub_test('cluster child result builds a bounded authoritative artifact index fro
             hub_test_assert(($payload['cluster_artifact_index'][0]['id'] ?? null) === 1 && ($payload['cluster_artifact_index'][127]['id'] ?? null) === 128 && !str_contains($response['body'], '999') && !str_contains($response['body'], '998'), 'child result must ignore arbitrary stored result artifact fields');
         });
     });
+});
+
+hub_test('cluster child projects only the exact safe voice profile prepare result', function (): void {
+    $result = [
+        'prompt_text_sha256' => str_repeat('a', 64),
+        'text_chars' => 123,
+        'transcript_confirmed' => true,
+        'transcription_status' => 'ready',
+        'kind' => 'voice_profile_prepare',
+    ];
+    $task = ['task_type' => 'voice_profile_prepare', 'result' => $result];
+
+    hub_test_assert(
+        hub_gateway_cluster_child_result_summary($task, []) === $result,
+        'native child task_result must retain the exact Task4 profile result regardless of key order'
+    );
+    foreach ([
+        $result + ['task_id' => 42],
+        $result + ['reference_audio_path' => '/private/reference.wav'],
+        $result + ['prompt_text' => 'private transcript'],
+        array_replace($result, ['kind' => 'pack_job']),
+        array_replace($result, ['transcription_status' => 'private_state']),
+        array_replace($result, ['transcript_confirmed' => 1]),
+        array_replace($result, ['text_chars' => -1]),
+        array_replace($result, ['text_chars' => 20001]),
+        array_replace($result, ['prompt_text_sha256' => str_repeat('A', 64)]),
+    ] as $invalidResult) {
+        hub_test_assert(
+            hub_gateway_cluster_child_result_summary(
+                ['task_type' => 'voice_profile_prepare', 'result' => $invalidResult],
+                []
+            ) === [],
+            'native child task_result must fail closed for extras, private fields, or invalid Task4 bounds'
+        );
+    }
+    foreach ([
+        ['transcription_status' => 'pending', 'transcript_confirmed' => false, 'text_chars' => 0],
+        ['transcription_status' => 'failed', 'transcript_confirmed' => false, 'text_chars' => 20000],
+    ] as $boundary) {
+        $bounded = array_replace($result, $boundary);
+        hub_test_assert(
+            hub_gateway_cluster_child_result_summary(
+                ['task_type' => 'voice_profile_prepare', 'result' => $bounded],
+                []
+            ) === $bounded,
+            'native child task_result must preserve each Task4 state at its inclusive bounds'
+        );
+    }
+    hub_test_assert(
+        hub_gateway_cluster_child_result_summary(
+            ['task_type' => 'pack_job', 'result' => $result],
+            []
+        ) === [],
+        'profile result projection must apply only to native voice_profile_prepare tasks'
+    );
 });
 
 hub_test('cluster child status stays lightweight and filters unavailable selected modes', function (): void {
@@ -3297,6 +3464,328 @@ hub_test('cluster router retains validated artifact metadata and proxies opaque 
             && ($ackPayload['task_id'] ?? null) === $fixture['route_id']
             && $unknown['status'] === 404 && $requests === 1,
             'the router must hide remote ACK details and reject unmapped artifacts before dispatch');
+    });
+});
+
+hub_test('VoxCPM2 child and Router artifact contract drives the acceptance CLI offline', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        if (!class_exists('CURLFile')) {
+            hub_test_skip('offline VoxCPM2 Cluster acceptance fixture requires the PHP cURL extension');
+        }
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'voxcpm2_acceptance_station',
+            'station_token' => 'voxcpm2_acceptance_station_token',
+        ], '42');
+        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '203.0.113.44', [
+            'owner_member_id' => (int)$fixture['member_id'],
+            'owner_token_id' => (int)$fixture['customer']['token_id'],
+            'requested_mode' => 'voice_generate',
+            'pack_id' => 'tts-voxcpm2',
+            'pack_version' => '0.1.5',
+            'job' => 'synthesize',
+        ]);
+        $resultDir = hub_task_result_dir($taskId) . '/published';
+        if (!is_dir($resultDir) && !mkdir($resultDir, 0700, true) && !is_dir($resultDir)) {
+            throw new RuntimeException('Cannot create offline Cluster artifact fixture.');
+        }
+        $audio = "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 48000, 96000, 2, 16) . "data" . pack('V', 0);
+        $promptText = 'Confirmed private prompt text.';
+        $targetText = 'Generate this private target text.';
+        $referenceSha256 = hash('sha256', $audio);
+        $promptSha256 = hash('sha256', $promptText);
+        $profileNativeTaskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, [], null, '203.0.113.44', [
+            'owner_member_id' => (int)$fixture['member_id'],
+            'owner_token_id' => (int)$fixture['customer']['token_id'],
+            'requested_mode' => 'voice_generate',
+        ]);
+        hub_finish_task_success($db, hub_get_task($db, $profileNativeTaskId) ?? [], [
+            'kind' => 'voice_profile_prepare',
+            'transcription_status' => 'ready',
+            'transcript_confirmed' => true,
+            'text_chars' => 30,
+            'prompt_text_sha256' => $promptSha256,
+        ]);
+        $profileRouteId = hub_cluster_router_admit_route($db, $fixture['station'], [
+            'member_id' => (int)$fixture['member_id'],
+            'token_id' => (int)$fixture['customer']['token_id'],
+        ], 'voice_generate', true, true);
+        if (!is_string($profileRouteId)) {
+            throw new RuntimeException('Cannot create offline Cluster profile route fixture.');
+        }
+        hub_cluster_rewrite_async_response($db, [
+            'route_id' => $profileRouteId,
+            'station_id' => (int)$fixture['station']['id'],
+        ], ['ok' => true, 'task_id' => $profileNativeTaskId], 'cluster_api.php');
+        $metadata = json_encode(
+            hub_test_cluster_voxcpm2_runner_metadata($referenceSha256, $promptSha256, $targetText),
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+        );
+        $audioPath = $resultDir . '/private_child_audio.wav';
+        $metadataPath = $resultDir . '/private_child_metadata.json';
+        file_put_contents($audioPath, $audio, LOCK_EX);
+        file_put_contents($metadataPath, $metadata, LOCK_EX);
+        $audioId = hub_register_validated_pack_job_artifact($db, $taskId, [
+            'name' => 'private_child_audio.wav',
+            'artifact_type' => 'generated_audio',
+            'path' => $audioPath,
+            'mime_type' => 'audio/wav',
+            'size_bytes' => strlen($audio),
+            'sha256' => hash('sha256', $audio),
+        ]);
+        $metadataId = hub_register_validated_pack_job_artifact($db, $taskId, [
+            'name' => 'private_child_metadata.json',
+            'artifact_type' => 'synthesis_metadata',
+            'path' => $metadataPath,
+            'mime_type' => 'application/json',
+            'size_bytes' => strlen($metadata),
+            'sha256' => hash('sha256', $metadata),
+        ]);
+        hub_finish_task_success($db, hub_get_task($db, $taskId) ?? [], []);
+        $db->prepare('UPDATE cluster_routes SET remote_task_id = :task_id WHERE route_id = :route_id')
+            ->execute([':task_id' => (string)$taskId, ':route_id' => $fixture['route_id']]);
+        $task = hub_get_task($db, $taskId);
+        if ($task === null) {
+            throw new RuntimeException('Offline VoxCPM2 child task fixture is unavailable.');
+        }
+
+        $reference = tempnam(sys_get_temp_dir(), 'voxcpm2-router-acceptance-');
+        if ($reference === false) {
+            throw new RuntimeException('Cannot create offline Cluster reference fixture.');
+        }
+        file_put_contents($reference, $audio, LOCK_EX);
+        $childCalls = [];
+        $profileResultChildCalls = 0;
+        $requester = static function (array $request) use (
+            $db,
+            $taskId,
+            $profileNativeTaskId,
+            $fixture,
+            &$childCalls,
+            &$profileResultChildCalls,
+        ): array {
+            $query = (array)($request['query'] ?? []);
+            $mode = (string)($query['mode'] ?? '');
+            $artifactId = isset($query['artifact_id']) && ctype_digit((string)$query['artifact_id'])
+                ? (int)$query['artifact_id']
+                : null;
+            $requestedTaskId = ctype_digit((string)($query['task_id'] ?? ''))
+                ? (int)$query['task_id']
+                : 0;
+            hub_test_assert(
+                in_array($requestedTaskId, [$taskId, $profileNativeTaskId], true),
+                'Router must follow only the mapped native synthesis or profile task'
+            );
+            $childCalls[] = $mode;
+            if ($mode === 'task_result' && $requestedTaskId === $profileNativeTaskId) {
+                $profileResultChildCalls++;
+            }
+            hub_test_assert(
+                ($request['headers']['Authorization'] ?? null) === 'Bearer voxcpm2_acceptance_station_token',
+                'Router must use only its paired station credential for child follow-ups'
+            );
+            $response = hub_gateway_cluster_child_followup(
+                $db,
+                $mode,
+                $requestedTaskId,
+                (int)$fixture['member_id'],
+                (int)$fixture['customer']['token_id'],
+                $artifactId
+            );
+            if ($mode === 'artifact' && is_string($response['stream_path'] ?? null)) {
+                $body = file_get_contents($response['stream_path']);
+                if (!is_string($body)) {
+                    throw new RuntimeException('Cannot read offline Cluster artifact.');
+                }
+                $response['body'] = $body;
+                if (!empty($response['stream_artifact_id']) && is_string($response['stream_download_token'] ?? null)) {
+                    hub_release_task_artifact_download(
+                        $db,
+                        (int)$response['stream_artifact_id'],
+                        $response['stream_download_token']
+                    );
+                }
+                unset(
+                    $response['stream_path'],
+                    $response['stream_size'],
+                    $response['stream_artifact_id'],
+                    $response['stream_download_token']
+                );
+            }
+
+            return $response;
+        };
+
+        try {
+            $childResult = hub_gateway_cluster_child_task_result($db, $task);
+            $childPayload = json_decode($childResult['body'], true, 64, JSON_THROW_ON_ERROR);
+            hub_test_assert(
+                ($childPayload['cluster_artifact_index'] ?? null) === [
+                    [
+                        'id' => $audioId,
+                        'size_bytes' => strlen($audio),
+                        'type' => 'generated_audio',
+                        'mime_type' => 'audio/wav',
+                        'sha256' => hash('sha256', $audio),
+                    ],
+                    [
+                        'id' => $metadataId,
+                        'size_bytes' => strlen($metadata),
+                        'type' => 'synthesis_metadata',
+                        'mime_type' => 'application/json',
+                        'sha256' => hash('sha256', $metadata),
+                    ],
+                ],
+                'canonical VoxCPM2 child results must expose only bounded authoritative artifact metadata'
+            );
+
+            $routerResult = hub_cluster_dispatch_followup($db, 'cluster_task_result', [
+                'bearer_token' => (string)$fixture['customer']['plain_token'],
+                'client_ip' => '203.0.113.10',
+                'method' => 'GET',
+                'query' => ['task_id' => $fixture['route_id']],
+            ], $requester);
+            $routerPayload = json_decode($routerResult['body'], true, 64, JSON_THROW_ON_ERROR);
+            $expectedLinks = hub_cluster_router_task_links(
+                (string)$fixture['route_id'],
+                'cluster_api.php',
+                'voice_generate'
+            );
+            hub_test_assert(
+                $routerResult['status'] === 200
+                && ($routerPayload['result']['artifacts'] ?? null) === $childPayload['cluster_artifact_index']
+                && ($routerPayload['ack_url_template'] ?? null) === ($expectedLinks['ack_url_template'] ?? null)
+                && ($routerPayload['task_id'] ?? null) === $fixture['route_id']
+                && !isset($routerPayload['cluster_artifact_index'])
+                && !str_contains($routerResult['body'], $resultDir)
+                && !str_contains($routerResult['body'], 'private_child_'),
+                'Router must rewrite canonical VoxCPM2 artifacts and ACKs to the opaque route without child paths or metadata'
+            );
+
+            $profileDeletes = 0;
+            $publicAcks = [];
+            $json = static fn (array $payload, int $status = 200): array => [
+                'status' => $status,
+                'headers' => ['Content-Type: application/json; charset=utf-8'],
+                'body' => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR),
+            ];
+            $transport = static function (array $request) use (
+                $db,
+                $fixture,
+                $profileRouteId,
+                $requester,
+                $json,
+                $referenceSha256,
+                $promptSha256,
+                &$profileDeletes,
+                &$publicAcks,
+            ): array {
+                $parts = parse_url((string)($request['url'] ?? ''));
+                parse_str((string)($parts['query'] ?? ''), $query);
+                $mode = (string)($query['mode'] ?? '');
+                if ($mode === 'voice_generate') {
+                    if (is_array($request['body'] ?? null)) {
+                        return $json([
+                            'ok' => true,
+                            'task_id' => $profileRouteId,
+                        ] + hub_cluster_router_task_links($profileRouteId, 'cluster_api.php', 'voice_generate'));
+                    }
+                    $body = json_decode((string)($request['body'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
+                    if (($body['operation'] ?? null) === 'profile_status') {
+                        hub_test_assert(
+                            ($body['voice_profile_task_id'] ?? null) === $profileRouteId,
+                            'profile_status must retain the opaque Router profile task handle'
+                        );
+                        return $json([
+                            'ok' => true,
+                            'task_status' => 'success',
+                            'profile_status' => 'active',
+                            'transcription_status' => 'ready',
+                            'transcript_confirmed' => true,
+                            'prompt_text_confirmed_at' => '2026-07-31 12:00:00',
+                            'profile_name' => 'VoxCPM2 Cluster Acceptance',
+                            'language' => null,
+                            'consent_type' => 'self_recorded',
+                            'reference_audio_sha256' => $referenceSha256,
+                            'created_at' => '2026-07-31 11:00:00',
+                            'updated_at' => '2026-07-31 12:00:00',
+                        ]);
+                    }
+                    if (($body['operation'] ?? null) === 'profile_delete') {
+                        hub_test_assert(
+                            ($body['voice_profile_task_id'] ?? null) === $profileRouteId,
+                            'profile_delete must retain the opaque Router profile task handle'
+                        );
+                        $profileDeletes++;
+                        return $json(['ok' => true, 'profile_status' => 'deleted']);
+                    }
+                    hub_test_assert(
+                        !array_key_exists('operation', $body)
+                        && ($body['mode'] ?? null) === 'ultimate_clone'
+                        && ($body['voice_profile_task_id'] ?? null) === $profileRouteId,
+                        'acceptance CLI must submit the omitted-operation ultimate clone contract'
+                    );
+                    return $json([
+                        'ok' => true,
+                        'task_id' => $fixture['route_id'],
+                    ] + hub_cluster_router_task_links(
+                        (string)$fixture['route_id'],
+                        'cluster_api.php',
+                        'voice_generate'
+                    ));
+                }
+                $response = hub_cluster_dispatch_followup($db, $mode, [
+                    'bearer_token' => (string)$fixture['customer']['plain_token'],
+                    'client_ip' => '203.0.113.10',
+                    'method' => (string)($request['method'] ?? 'GET'),
+                    'query' => $query,
+                ], $requester);
+                if ($mode === 'cluster_task_artifacts_ack') {
+                    $publicAcks[] = json_decode($response['body'], true, 64, JSON_THROW_ON_ERROR);
+                }
+
+                return $response;
+            };
+            $config = hub_voxcpm2_cluster_acceptance_config([
+                'AIHUB_VOXCPM2_CLUSTER_BASE_URL' => 'https://router.example/3waAIHub',
+                'AIHUB_VOXCPM2_CLUSTER_TOKEN' => (string)$fixture['customer']['plain_token'],
+                'AIHUB_VOXCPM2_CLUSTER_REFERENCE_WAV' => $reference,
+                'AIHUB_VOXCPM2_CLUSTER_PROMPT_TEXT' => $promptText,
+                'AIHUB_VOXCPM2_CLUSTER_TARGET_TEXT' => $targetText,
+            ]);
+            $accepted = hub_voxcpm2_cluster_acceptance_execute(
+                $config,
+                $transport,
+                static fn (string $path): bool => is_file($path)
+                    && substr((string)file_get_contents($path, false, null, 0, 12), 0, 4) === 'RIFF',
+                static function (): void {
+                    throw new RuntimeException('Terminal offline fixtures must not sleep.');
+                }
+            );
+            $acknowledged = $db->query(
+                'SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $taskId . ' AND acknowledged_at IS NOT NULL'
+            )->fetchColumn();
+            hub_test_assert(
+                $accepted['artifacts_acknowledged'] === true
+                && $profileDeletes === 1
+                && $acknowledged === 2
+                && count($publicAcks) === 2
+                && $profileResultChildCalls === 1
+                && array_filter($publicAcks, static fn (array $ack): bool =>
+                    ($ack['task_id'] ?? null) !== $fixture['route_id']
+                    || isset($ack['artifact_id'])
+                    || isset($ack['acknowledged_at'])
+                ) === []
+                && count(array_filter($childCalls, static fn (string $mode): bool => $mode === 'artifact')) === 2
+                && count(array_filter($childCalls, static fn (string $mode): bool => $mode === 'task_artifacts_ack')) === 2,
+                'actual Router shapes must complete CLI validation and hide every child ACK detail'
+            );
+        } finally {
+            @unlink($reference);
+            if (is_dir(hub_task_result_dir($taskId))) {
+                hub_retention_remove_managed_path(hub_task_result_dir($taskId), HUB_DATA_DIR . '/results');
+            }
+        }
     });
 });
 

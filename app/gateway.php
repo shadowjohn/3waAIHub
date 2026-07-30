@@ -2194,9 +2194,7 @@ function hub_gateway_cluster_child_task_artifacts_ack(PDO $db, array $task, int 
 {
     $taskId = (int)($task['id'] ?? 0);
     if ($artifactId === null || $artifactId < 1
-        || ($task['requested_mode'] ?? '') !== 'edge_tts'
-        || ($task['pack_id'] ?? '') !== 'edge-tts'
-        || ($task['job'] ?? '') !== 'synthesize') {
+        || !hub_gateway_cluster_child_rich_artifact_contract($task)) {
         return hub_gateway_error(400, 'bad_request', 'artifact_id is required');
     }
     try {
@@ -2215,6 +2213,16 @@ function hub_gateway_cluster_child_task_artifacts_ack(PDO $db, array $task, int 
         'acknowledged_at' => $artifact['acknowledged_at'] ?? null,
         'expires_at' => $artifact['expires_at'] ?? null,
     ]);
+}
+
+function hub_gateway_cluster_child_rich_artifact_contract(array $task): bool
+{
+    return (($task['requested_mode'] ?? '') === 'edge_tts'
+            && ($task['pack_id'] ?? '') === 'edge-tts'
+            && ($task['job'] ?? '') === 'synthesize')
+        || (($task['requested_mode'] ?? '') === 'voice_generate'
+            && ($task['pack_id'] ?? '') === 'tts-voxcpm2'
+            && ($task['job'] ?? '') === 'synthesize');
 }
 
 function hub_gateway_cluster_child_task_result(PDO $db, array $task): array
@@ -2236,9 +2244,7 @@ function hub_gateway_cluster_child_task_result(PDO $db, array $task): array
 function hub_gateway_cluster_child_artifact_index(PDO $db, array $task): array
 {
     $taskId = (int)($task['id'] ?? 0);
-    $includeMetadata = ($task['requested_mode'] ?? '') === 'edge_tts'
-        && ($task['pack_id'] ?? '') === 'edge-tts'
-        && ($task['job'] ?? '') === 'synthesize';
+    $includeMetadata = hub_gateway_cluster_child_rich_artifact_contract($task);
     $stmt = $db->prepare(
         "SELECT id, artifact_type, mime_type, size_bytes, sha256 FROM task_artifacts
          WHERE task_id = :task_id AND state = 'available' AND purged_at IS NULL
@@ -2271,6 +2277,26 @@ function hub_gateway_cluster_child_artifact_index(PDO $db, array $task): array
 function hub_gateway_cluster_child_result_summary(array $task, array $artifacts): array
 {
     $result = $task['result'] ?? null;
+    if (($task['task_type'] ?? '') === 'voice_profile_prepare') {
+        $keys = ['kind', 'transcription_status', 'transcript_confirmed', 'text_chars', 'prompt_text_sha256'];
+        if (!is_array($result)
+            || count($result) !== count($keys)
+            || array_diff(array_keys($result), $keys) !== []
+            || ($result['kind'] ?? null) !== 'voice_profile_prepare'
+            || !is_string($result['transcription_status'] ?? null)
+            || !in_array($result['transcription_status'], ['pending', 'ready', 'failed'], true)
+            || !is_bool($result['transcript_confirmed'] ?? null)
+            || !is_int($result['text_chars'] ?? null)
+            || $result['text_chars'] < 0
+            || $result['text_chars'] > 20000
+            || !is_string($result['prompt_text_sha256'] ?? null)
+            || preg_match('/\A[a-f0-9]{64}\z/', $result['prompt_text_sha256']) !== 1
+        ) {
+            return [];
+        }
+
+        return $result;
+    }
     $artifactId = is_array($result) && (($result['stored_as_artifact'] ?? false) === true)
         ? (int)($result['artifact_id'] ?? 0)
         : 0;

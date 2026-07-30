@@ -2030,6 +2030,11 @@ function hub_cluster_router_api_base_url(): string
     return 'cluster_api.php';
 }
 
+function hub_cluster_router_rich_artifact_mode(?string $mode): bool
+{
+    return in_array($mode, ['edge_tts', 'voice_generate'], true);
+}
+
 function hub_cluster_router_task_links(string $routeId, string $routerBase, ?string $routeMode = null): array
 {
     $prefix = rtrim($routerBase, '?') . (str_contains($routerBase, '?') ? '&' : '?');
@@ -2042,7 +2047,7 @@ function hub_cluster_router_task_links(string $routeId, string $routerBase, ?str
         'cancel_url' => $prefix . 'mode=cluster_task_cancel&task_id=' . $taskId,
         'artifact_url_template' => $prefix . 'mode=cluster_artifact&task_id=' . $taskId . '&artifact_id={artifact_id}',
     ];
-    if ($routeMode === 'edge_tts') {
+    if (hub_cluster_router_rich_artifact_mode($routeMode)) {
         $links['ack_url_template'] = $prefix . 'mode=cluster_task_artifacts_ack&task_id=' . $taskId . '&artifact_id={artifact_id}';
     }
 
@@ -2148,7 +2153,10 @@ function hub_cluster_router_rewrite_task_payload(PDO $db, array $route, array $p
     $status = hub_cluster_router_public_task_status($payload['status'] ?? null);
     $response = ['ok' => ($payload['ok'] ?? false) === true, 'task_id' => $routeId];
     if ($kind === 'result') {
-        $response['result'] = hub_cluster_router_public_task_result($payload, ($route['mode'] ?? '') === 'edge_tts');
+        $response['result'] = hub_cluster_router_public_task_result(
+            $payload,
+            hub_cluster_router_rich_artifact_mode((string)($route['mode'] ?? ''))
+        );
     } elseif ($kind === 'log') {
         $logs = hub_cluster_router_public_task_logs($db, $route, $payload, $remoteTaskId);
         if ($logs === null) {
@@ -2876,7 +2884,9 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
     if ($route === null) {
         return $finish(hub_gateway_error(404, 'route_not_found', 'cluster route was not found'));
     }
-    if ($routerMode === 'cluster_task_artifacts_ack' && ($route['mode'] ?? '') !== 'edge_tts') {
+    if ($routerMode === 'cluster_task_artifacts_ack'
+        && !hub_cluster_router_rich_artifact_mode((string)($route['mode'] ?? ''))
+    ) {
         return $finish(hub_gateway_error(404, 'route_not_found', 'cluster route was not found'));
     }
     $complete = static function (array $response, ?string $terminalState = null, bool $direct = false) use ($db, $route, $auth, $routerMode, $requestId, $started, $finish): array {
