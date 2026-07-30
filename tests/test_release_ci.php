@@ -174,3 +174,11 @@ hub_test('test runner uses an explicit static control-plane suite manifest', fun
     $ci = (string)file_get_contents(HUB_ROOT . '/.github/workflows/ci.yml');
     hub_test_assert(str_contains($ci, 'php scripts/run_tests.php --suite=control-plane'), 'Windows CI must select the control-plane suite explicitly');
 });
+
+hub_test('test runner isolates its default SQLite path for each invocation', function (): void {
+    $runner = (string)file_get_contents(HUB_ROOT . '/scripts/run_tests.php');
+
+    hub_test_assert(str_contains($runner, '$testRunId = bin2hex(random_bytes(16));'), 'test runner must create one identifier per invocation');
+    hub_test_assert(str_contains($runner, "'/3waaihub_test_' . \$testRunId . '.sqlite'"), 'default SQLite path must include the invocation identifier');
+    hub_test_assert(!str_contains($runner, "'/3waaihub_test.sqlite'"), 'test runner must not use one shared default SQLite path');
+});

@@ -2,8 +2,9 @@
 declare(strict_types=1);
 
 define('HUB_TESTING', true);
-putenv('AIHUB_TEST_DB=' . (getenv('AIHUB_TEST_DB') ?: sys_get_temp_dir() . '/3waaihub_test.sqlite'));
-putenv('AIHUB_TEST_DATA_DIR=' . (getenv('AIHUB_TEST_DATA_DIR') ?: sys_get_temp_dir() . '/3waaihub_test_data_' . bin2hex(random_bytes(16))));
+$testRunId = bin2hex(random_bytes(16));
+putenv('AIHUB_TEST_DB=' . (getenv('AIHUB_TEST_DB') ?: sys_get_temp_dir() . '/3waaihub_test_' . $testRunId . '.sqlite'));
+putenv('AIHUB_TEST_DATA_DIR=' . (getenv('AIHUB_TEST_DATA_DIR') ?: sys_get_temp_dir() . '/3waaihub_test_data_' . $testRunId));
 
 $suite = 'full';
 foreach (array_slice($argv, 1) as $argument) {
