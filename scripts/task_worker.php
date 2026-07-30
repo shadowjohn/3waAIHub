@@ -29,12 +29,14 @@ while ($processed < $limit) {
 
     try {
         hub_run_task($db, $task);
+    } catch (HubVoiceProfileTaskRetry $e) {
+        hub_add_task_log($db, (int)$task['id'], 'warning', $e->getMessage());
     } catch (HubTaskCancelled $e) {
         hub_add_task_log($db, (int)$task['id'], 'warning', $e->getMessage());
-        hub_finish_task_cancelled($db, $task, $e->getMessage());
+        hub_finish_worker_task_error($db, $task, 'cancelled', $e->getMessage());
     } catch (Throwable $e) {
         hub_add_task_log($db, (int)$task['id'], 'error', $e->getMessage());
-        hub_finish_task_failed($db, $task, $e->getMessage());
+        hub_finish_worker_task_error($db, $task, 'failed', $e->getMessage());
     }
 
     $latest = hub_get_task($db, (int)$task['id']);
@@ -42,8 +44,30 @@ while ($processed < $limit) {
     $processed++;
 }
 
+function hub_finish_worker_task_error(PDO $db, array $task, string $status, string $message): void
+{
+    if ((string)($task['task_type'] ?? '') === 'voice_profile_prepare') {
+        try {
+            hub_finish_voice_profile_prepare_task($db, $task, $status, [], $message);
+        } catch (HubVoiceProfileTaskRetry $e) {
+            hub_add_task_log($db, (int)$task['id'], 'warning', $e->getMessage());
+        }
+        return;
+    }
+    if ($status === 'cancelled') {
+        hub_finish_task_cancelled($db, $task, $message);
+        return;
+    }
+    hub_finish_task_failed($db, $task, $message);
+}
+
 function hub_run_task(PDO $db, array $task): void
 {
+    if ($task['task_type'] === 'voice_profile_prepare') {
+        hub_run_voice_profile_prepare_task($db, $task);
+        return;
+    }
+
     if ($task['task_type'] === 'pack_job') {
         $outcome = hub_run_pack_job_task($db, $task);
         if (($outcome['status'] ?? '') === 'fence_lost') {

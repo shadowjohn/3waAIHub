@@ -135,6 +135,1199 @@ hub_test('VoxCPM2 defaults to no torch compile warmup on shared 16 GB GPUs', fun
     hub_test_assert(($settings['VOXCPM2_TORCH_COMPILE']['restart_required'] ?? null) === true, 'VoxCPM2 torch compile setting must require restart');
 });
 
+hub_test('VoxCPM2 native profile_prepare queues only a managed profile handle', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Native Profile Prepare Owner');
+        $token = hub_create_api_token($db, $memberId, 'native profile prepare token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        hub_register_callback_target($db, $memberId, 'profile-events', 'https://8.8.8.8/voice-profile');
+        $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-api-');
+        if ($tmpName === false) {
+            throw new RuntimeException('Cannot create profile_prepare WAV fixture.');
+        }
+        file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        $upload = [
+            'name' => 'reference.wav',
+            'type' => 'audio/wav',
+            'tmp_name' => $tmpName,
+            'error' => UPLOAD_ERR_OK,
+            'size' => filesize($tmpName),
+        ];
+
+        try {
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-test';
+            $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Task 2 profile',
+                'consent_type' => 'self_recorded',
+                'prompt_text' => 'RC Valve draft',
+                'transcript_confirmed' => 'true',
+                'language' => 'en',
+                'callback_target' => 'profile-events',
+            ], [], ['reference_wav' => $upload]);
+            $payload = hub_test_audio_payload($response);
+            hub_test_assert($response['status'] === 200 && (int)($payload['task_id'] ?? 0) > 0, 'profile_prepare must return a standard async task handle');
+            $task = hub_get_task($db, (int)$payload['task_id']);
+            hub_test_assert(($task['task_type'] ?? '') === 'voice_profile_prepare' && ($task['queue_name'] ?? '') === 'default', 'profile_prepare must use the dedicated default-queue task');
+            hub_test_assert(array_keys((array)($task['input'] ?? [])) === ['voice_profile_id'] && (int)$task['input']['voice_profile_id'] > 0, 'profile_prepare task input must contain only the managed profile ID');
+            $profile = hub_get_voice_profile($db, (int)$task['input']['voice_profile_id']);
+            hub_test_assert($profile !== null && (int)($profile['source_task_id'] ?? 0) === (int)$task['id'], 'profile_prepare must atomically link the managed profile to its task');
+            hub_test_assert((string)($profile['prompt_text_confirmed_at'] ?? '') !== '', 'confirmed supplied text must be confirmed before the task handle is exposed');
+
+            $claimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_test_assert($claimed !== null && (int)$claimed['id'] === (int)$task['id'], 'profile_prepare worker must claim the queued task');
+            hub_run_voice_profile_prepare_task($db, $claimed);
+            $finished = hub_get_task($db, (int)$task['id']);
+            $expectedResult = [
+                'kind' => 'voice_profile_prepare',
+                'transcription_status' => 'ready',
+                'transcript_confirmed' => true,
+                'text_chars' => strlen('RC Valve draft'),
+                'prompt_text_sha256' => hash('sha256', 'RC Valve draft'),
+            ];
+            hub_test_assert(($finished['status'] ?? '') === 'success' && ($finished['result'] ?? null) === $expectedResult, 'profile_prepare worker result must have the exact safe shape');
+
+            $logs = $db->query('SELECT message FROM task_logs WHERE task_id = ' . (int)$task['id'])->fetchAll(PDO::FETCH_COLUMN);
+            $audits = $db->query('SELECT details_json FROM voice_profile_audit_logs WHERE voice_profile_id = ' . (int)$profile['id'])->fetchAll(PDO::FETCH_COLUMN);
+            $callbacks = $db->query('SELECT payload_json FROM task_callback_deliveries WHERE task_id = ' . (int)$task['id'])->fetchAll(PDO::FETCH_COLUMN);
+            $stored = json_encode([$task['input'], $finished['result'], $logs, $audits, $callbacks], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            hub_test_assert(is_string($stored) && !str_contains($stored, 'RC Valve draft') && !str_contains($stored, (string)$profile['reference_audio_path']), 'task input/result/log/audit/callback must contain neither transcript nor host path');
+        } finally {
+            if (is_file($tmpName)) {
+                unlink($tmpName);
+            }
+        }
+    });
+});
+
+hub_test('VoxCPM2 profile_prepare rolls back profile audio task and writer lock together', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile Transaction Owner');
+        $token = hub_create_api_token($db, $memberId, 'profile transaction token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-transaction-');
+        if ($tmpName === false) {
+            throw new RuntimeException('Cannot create profile transaction WAV fixture.');
+        }
+        file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        $finalPattern = hub_voice_profile_storage_dir() . '/voice_profile_' . $memberId . '_*.wav';
+        $db->exec("CREATE TRIGGER voice_profile_task_publish_failure
+            BEFORE UPDATE OF status ON tasks
+            WHEN OLD.task_type = 'voice_profile_prepare'
+              AND OLD.status = 'staging' AND NEW.status = 'queued'
+            BEGIN
+                SELECT RAISE(ABORT, 'voice_profile_task_publish_failed');
+            END");
+
+        $response = null;
+        $profileCount = -1;
+        $taskCount = -1;
+        $finalFiles = [];
+        $secondWriterSucceeded = false;
+        try {
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-transaction';
+            $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Atomic profile',
+                'consent_type' => 'self_recorded',
+                'prompt_text' => 'atomic confirmed prompt',
+                'transcript_confirmed' => '1',
+                'language' => 'en',
+            ], [], ['reference_wav' => [
+                'name' => 'atomic.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $tmpName,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($tmpName),
+            ]]);
+            $profileCount = (int)$db->query('SELECT COUNT(*) FROM voice_profiles WHERE owner_member_id = ' . $memberId)->fetchColumn();
+            $taskCount = (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'voice_profile_prepare'")->fetchColumn();
+            $finalFiles = glob($finalPattern) ?: [];
+
+            $otherDb = new PDO('sqlite:' . HUB_DB_PATH);
+            $otherDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $otherDb->exec('PRAGMA busy_timeout = 50');
+            $otherDb->exec('BEGIN IMMEDIATE');
+            $otherDb->exec('ROLLBACK');
+            $secondWriterSucceeded = true;
+        } catch (Throwable) {
+            $secondWriterSucceeded = false;
+        } finally {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+            $db->exec('DROP TRIGGER IF EXISTS voice_profile_task_publish_failure');
+            @unlink($tmpName);
+            foreach (glob($finalPattern) ?: [] as $path) {
+                @unlink($path);
+            }
+        }
+
+        hub_test_assert(is_array($response) && $response['status'] === 500, 'injected task publish failure must return bounded profile_prepare failure');
+        hub_test_assert($profileCount === 0 && $taskCount === 0, 'failed native prepare must leave neither profile nor task rows');
+        hub_test_assert($finalFiles === [], 'failed native prepare must remove its finalized managed WAV');
+        hub_test_assert($secondWriterSucceeded, 'failed native prepare must release the SQLite writer lock');
+    });
+});
+
+hub_test('VoxCPM2 late cache hit reuses the upload transaction without a nested BEGIN', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Late Cache Owner');
+    $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-late-cache-');
+    if ($tmpName === false) {
+        throw new RuntimeException('Cannot create late cache WAV fixture.');
+    }
+    file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+    $racePath = hub_voice_profile_storage_dir() . '/late_cache_profile.wav';
+    $profileId = 0;
+    $error = null;
+    $result = null;
+
+    try {
+        $result = hub_create_uploaded_voice_profile(
+            $db,
+            $memberId,
+            ['tmp_name' => $tmpName, 'size' => filesize($tmpName), 'type' => 'audio/wav', 'error' => UPLOAD_ERR_OK],
+            [
+                'name' => 'Late cache request',
+                'consent_type' => 'self_recorded',
+                'prompt_text' => 'current late draft',
+                'language' => 'zh-TW',
+            ],
+            static function (string $from, string $to) use ($db, $memberId, $racePath, &$profileId): bool {
+                if (!copy($from, $to) || !copy($from, $racePath)) {
+                    return false;
+                }
+                $profileId = hub_create_voice_profile($db, $memberId, [
+                    'name' => 'Late cache winner',
+                    'reference_audio_path' => $racePath,
+                    'consent_type' => 'self_recorded',
+                    'prompt_text' => 'old late draft',
+                    'language' => 'en',
+                    'transcription_status' => 'ready',
+                ]);
+                return true;
+            },
+            null,
+            ['defer_transcription' => true, 'allow_cache' => true]
+        );
+    } catch (Throwable $e) {
+        $error = $e;
+    } finally {
+        @unlink($tmpName);
+    }
+
+    $profile = $profileId > 0 ? hub_get_voice_profile($db, $profileId) : null;
+    try {
+        hub_test_assert($error === null, 'late cache hit must not attempt a nested BEGIN IMMEDIATE');
+        hub_test_assert(
+            is_array($result)
+            && array_keys($result) === ['profile', 'cache_hit']
+            && !empty($result['cache_hit'])
+            && (int)($result['profile']['id'] ?? 0) === $profileId
+            && ($profile['prompt_text'] ?? '') === 'current late draft'
+            && ($profile['language'] ?? '') === 'zh-TW',
+            'late cache hit must atomically apply the current deferred draft'
+        );
+    } finally {
+        if ($profileId > 0 && hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+        if (is_file($racePath)) {
+            unlink($racePath);
+        }
+    }
+});
+
+hub_test('VoxCPM2 profile_status returns only the owned task-scoped safe profile view', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile Status Owner');
+        $token = hub_create_api_token($db, $memberId, 'profile status token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $path = hub_voice_profile_storage_dir() . '/profile_status_task.wav';
+        file_put_contents($path, 'RIFFstatus');
+        $profileId = hub_create_voice_profile($db, $memberId, [
+            'name' => 'Status profile',
+            'reference_audio_path' => $path,
+            'prompt_text' => 'owner draft',
+            'language' => 'en',
+            'consent_type' => 'self_recorded',
+        ]);
+        $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '203.0.113.51', [
+            'owner_member_id' => $memberId,
+            'owner_token_id' => (int)$token['token_id'],
+            'requested_mode' => 'voice_generate',
+        ]);
+        $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')->execute([':task_id' => $taskId, ':id' => $profileId]);
+
+        $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+        $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+            'operation' => 'profile_status',
+            'voice_profile_task_id' => (string)$taskId,
+        ]);
+        $payload = hub_test_audio_payload($response);
+        hub_test_assert($response['status'] === 200 && ($payload['task_status'] ?? '') === 'queued' && ($payload['prompt_text'] ?? '') === 'owner draft', 'owned queued preparation task must expose its unconfirmed draft');
+        hub_test_assert(
+            array_keys($payload) === [
+                'ok',
+                'task_status',
+                'profile_status',
+                'transcription_status',
+                'transcript_confirmed',
+                'prompt_text_confirmed_at',
+                'profile_name',
+                'language',
+                'consent_type',
+                'reference_audio_sha256',
+                'created_at',
+                'updated_at',
+                'prompt_text',
+            ],
+            'profile_status must return the exact approved safe payload'
+        );
+        foreach (['task_id', 'voice_profile_id', 'id', 'reference_audio_path', 'transcription_lease_token', 'owner_member_id', 'owner_token_id'] as $privateKey) {
+            hub_test_assert(!array_key_exists($privateKey, $payload), 'profile_status must not expose ' . $privateKey);
+        }
+    });
+});
+
+hub_test('VoxCPM2 voice profile public helpers keep their approved signatures', function (): void {
+    $upload = new ReflectionFunction('hub_create_uploaded_voice_profile');
+    $uploadParameters = $upload->getParameters();
+    hub_test_assert(
+        array_map(static fn (ReflectionParameter $parameter): string => $parameter->getName(), $uploadParameters)
+            === ['db', 'ownerMemberId', 'upload', 'input', 'moveFile', 'transcribe', 'options']
+        && $uploadParameters[6]->isDefaultValueAvailable()
+        && $uploadParameters[6]->getDefaultValue() === [],
+        'uploaded voice profile helper must end with the approved options parameter'
+    );
+
+    $cachedDraft = new ReflectionFunction('hub_apply_cached_voice_profile_draft');
+    hub_test_assert(
+        array_map(static fn (ReflectionParameter $parameter): string => $parameter->getName(), $cachedDraft->getParameters())
+            === ['db', 'profile', 'ownerMemberId', 'promptText', 'language', 'transcriptConfirmed'],
+        'cached voice profile draft helper must not expose a transaction bypass'
+    );
+
+    $confirm = new ReflectionFunction('hub_confirm_voice_profile_prompt');
+    hub_test_assert(
+        array_map(static fn (ReflectionParameter $parameter): string => $parameter->getName(), $confirm->getParameters())
+            === ['db', 'profileId', 'ownerMemberId', 'promptText'],
+        'voice profile confirmation helper must not expose a transaction bypass'
+    );
+});
+
+hub_test('VoxCPM2 task-scoped profile confirm and delete stay owner-only and idempotent', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile Mutation Owner');
+        $foreignMemberId = hub_create_api_member($db, 'Profile Mutation Foreign');
+        $token = hub_create_api_token($db, $memberId, 'profile mutation token', null, null);
+        $foreignToken = hub_create_api_token($db, $foreignMemberId, 'foreign profile mutation token', null, null);
+        hub_test_audio_allow($db, [$token, $foreignToken], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-mutation-');
+        if ($tmpName === false) {
+            throw new RuntimeException('Cannot create profile mutation WAV fixture.');
+        }
+        file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        $upload = [
+            'name' => 'mutation.wav',
+            'type' => 'audio/wav',
+            'tmp_name' => $tmpName,
+            'error' => UPLOAD_ERR_OK,
+            'size' => filesize($tmpName),
+        ];
+
+        try {
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-mutation';
+            $prepared = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Mutation profile',
+                'consent_type' => 'explicit_permission',
+                'prompt_text' => 'unconfirmed draft',
+                'language' => 'en',
+            ], [], ['reference_wav' => $upload]);
+            $taskId = (int)(hub_test_audio_payload($prepared)['task_id'] ?? 0);
+            $task = hub_get_task($db, $taskId);
+            $profile = hub_get_voice_profile($db, (int)($task['input']['voice_profile_id'] ?? 0));
+            $path = (string)($profile['reference_audio_path'] ?? '');
+            $claimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_run_voice_profile_prepare_task($db, $claimed ?? []);
+
+            $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+            $foreignStatus = hub_test_audio_request($db, 'voice_generate', (string)$foreignToken['plain_token'], [
+                'operation' => 'profile_status',
+                'voice_profile_task_id' => (string)$taskId,
+            ]);
+            hub_test_assert($foreignStatus['status'] === 403 && (hub_test_audio_payload($foreignStatus)['error'] ?? '') === 'voice_profile_forbidden', 'foreign member must not poll an owned profile task');
+
+            $confirmed = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => (string)$taskId,
+                'prompt_text' => 'edited confirmed transcript',
+            ]);
+            $confirmedPayload = hub_test_audio_payload($confirmed);
+            hub_test_assert($confirmed['status'] === 200 && !empty($confirmedPayload['transcript_confirmed']) && !array_key_exists('prompt_text', $confirmedPayload), 'profile_confirm must return confirmed safe status without transcript text');
+
+            $status = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_status',
+                'voice_profile_task_id' => (string)$taskId,
+            ]);
+            hub_test_assert($status['status'] === 200 && !array_key_exists('prompt_text', hub_test_audio_payload($status)), 'confirmed transcript must disappear from profile_status');
+
+            $deleted = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_delete',
+                'voice_profile_task_id' => (string)$taskId,
+            ]);
+            $deletedPayload = hub_test_audio_payload($deleted);
+            hub_test_assert($deleted['status'] === 200 && ($deletedPayload['profile_status'] ?? '') === 'deleted' && !is_file($path), 'profile_delete must soft-delete the profile and remove its managed WAV');
+            hub_test_assert(hub_get_voice_profile($db, (int)$profile['id']) === null, 'deleted profile must stay hidden from the general profile lookup');
+
+            $deletedStatus = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_status',
+                'voice_profile_task_id' => (string)$taskId,
+            ]);
+            $repeatedDelete = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_delete',
+                'voice_profile_task_id' => (string)$taskId,
+            ]);
+            hub_test_assert(
+                $deletedStatus['status'] === 200
+                && (hub_test_audio_payload($deletedStatus)['profile_status'] ?? '') === 'deleted'
+                && $repeatedDelete['status'] === 200
+                && (hub_test_audio_payload($repeatedDelete)['profile_status'] ?? '') === 'deleted',
+                'same owner must be able to query and repeat task-scoped deletion safely'
+            );
+
+            $foreignDelete = hub_test_audio_request($db, 'voice_generate', (string)$foreignToken['plain_token'], [
+                'operation' => 'profile_delete',
+                'voice_profile_task_id' => (string)$taskId,
+            ]);
+            hub_test_assert($foreignDelete['status'] === 403 && (hub_test_audio_payload($foreignDelete)['error'] ?? '') === 'voice_profile_forbidden', 'foreign member must not delete an owned profile task');
+        } finally {
+            if (is_file($tmpName)) {
+                unlink($tmpName);
+            }
+        }
+    });
+});
+
+hub_test('VoxCPM2 profile_prepare worker transcribes missing text into an owner-only draft', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        if (!function_exists('curl_init') || !function_exists('proc_open')) {
+            hub_test_skip('profile_prepare ASR worker test requires cURL and proc_open');
+        }
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $asr = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile ASR Owner');
+        $token = hub_create_api_token($db, $memberId, 'profile ASR token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $router = tempnam(sys_get_temp_dir(), 'voice-profile-asr-router-');
+        $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-asr-');
+        $failedTmpName = tempnam(sys_get_temp_dir(), 'voice-profile-failed-asr-');
+        if ($router === false || $tmpName === false || $failedTmpName === false) {
+            throw new RuntimeException('Cannot create profile ASR fixtures.');
+        }
+        file_put_contents($router, "<?php\nheader('Content-Type: application/json');\necho json_encode(['ok' => true, 'text' => 'worker ASR draft', 'language' => 'en', 'device' => ['effective' => 'cpu']]);\n");
+        file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        file_put_contents($failedTmpName, "RIFF" . pack('V', 37) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 1) . "\0");
+        $server = null;
+
+        try {
+            $server = hub_test_public_api_start_server($router);
+            $db->prepare("UPDATE services SET internal_url = :internal_url, install_status = 'installed', enabled = 1, runtime_status = 'running' WHERE id = :id")->execute([
+                ':internal_url' => 'http://127.0.0.1:' . (int)$server['port'] . '/v1/transcribe',
+                ':id' => (int)$asr['service']['id'],
+            ]);
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-asr';
+            $prepared = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'ASR profile',
+                'consent_type' => 'self_recorded',
+            ], [], ['reference_wav' => [
+                'name' => 'asr.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $tmpName,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($tmpName),
+            ]]);
+            $taskId = (int)(hub_test_audio_payload($prepared)['task_id'] ?? 0);
+            $task = hub_get_task($db, $taskId);
+            $profileId = (int)($task['input']['voice_profile_id'] ?? 0);
+            hub_test_assert((hub_get_voice_profile($db, $profileId)['transcription_status'] ?? '') === 'pending', 'missing supplied text must defer ASR with the existing pending lease');
+
+            $claimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_run_voice_profile_prepare_task($db, $claimed ?? []);
+            $profile = hub_get_voice_profile($db, $profileId);
+            hub_test_assert($profile !== null && $profile['transcription_status'] === 'ready' && $profile['prompt_text'] === 'worker ASR draft' && $profile['prompt_text_confirmed_at'] === null, 'worker must run existing ASR and save an unconfirmed draft');
+
+            $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+            $status = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_status',
+                'voice_profile_task_id' => (string)$taskId,
+            ]);
+            hub_test_assert($status['status'] === 200 && (hub_test_audio_payload($status)['prompt_text'] ?? '') === 'worker ASR draft', 'owner status must expose the unconfirmed ASR draft');
+            $confirmed = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => (string)$taskId,
+                'prompt_text' => 'worker ASR draft',
+            ]);
+            hub_test_assert($confirmed['status'] === 200 && !array_key_exists('prompt_text', hub_test_audio_payload($confirmed)), 'confirming the ASR draft must remove it from safe responses');
+
+            $failedPath = hub_voice_profile_storage_dir() . '/cached_failed_profile.wav';
+            copy($failedTmpName, $failedPath);
+            $failedProfileId = hub_create_voice_profile($db, $memberId, [
+                'name' => 'Cached failed profile',
+                'reference_audio_path' => $failedPath,
+                'consent_type' => 'self_recorded',
+                'transcription_status' => 'failed',
+                'transcription_error' => 'asr_failed',
+            ]);
+            $failedTaskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $failedProfileId], null, '127.0.0.1', [
+                'owner_member_id' => $memberId,
+                'owner_token_id' => (int)$token['token_id'],
+                'requested_mode' => 'voice_generate',
+            ]);
+            $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')->execute([':task_id' => $failedTaskId, ':id' => $failedProfileId]);
+            hub_finish_task_failed($db, hub_get_task($db, $failedTaskId) ?? [], 'asr failed');
+
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-failed-asr';
+            $retried = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Cached failed profile',
+                'consent_type' => 'self_recorded',
+            ], [], ['reference_wav' => [
+                'name' => 'failed-asr.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $failedTmpName,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($failedTmpName),
+            ]]);
+            $retryTaskId = (int)(hub_test_audio_payload($retried)['task_id'] ?? 0);
+            hub_test_assert($retryTaskId > 0 && $retryTaskId !== $failedTaskId, 'cached failed profile must receive a fresh preparation task');
+            $retryClaimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_run_voice_profile_prepare_task($db, $retryClaimed ?? []);
+            $retriedProfile = hub_get_voice_profile($db, $failedProfileId);
+            $retryResult = hub_get_task($db, $retryTaskId)['result'] ?? [];
+            hub_test_assert(
+                $retriedProfile !== null
+                && $retriedProfile['transcription_status'] === 'ready'
+                && $retriedProfile['prompt_text'] === 'worker ASR draft'
+                && ($retryResult['text_chars'] ?? 0) > 0,
+                'failed cached profile with empty prompt must rerun ASR instead of reporting empty success'
+            );
+        } finally {
+            if (is_array($server)) {
+                hub_test_public_api_stop_servers([$server]);
+            }
+            foreach ([$router, $tmpName, $failedTmpName] as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+        }
+    });
+});
+
+hub_test('VoxCPM2 profile_prepare terminal states atomically enqueue callbacks and retry publication failures', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Profile Terminal Owner');
+        $callbackTargetId = hub_register_callback_target($db, $memberId, 'profile-terminal-events', 'https://8.8.8.8/voice-profile-terminal');
+        $paths = [];
+        $createClaimed = static function (string $name) use ($db, $memberId, $callbackTargetId, &$paths): array {
+            $path = hub_voice_profile_storage_dir() . '/profile_terminal_' . strtolower(str_replace(' ', '_', $name)) . '.wav';
+            file_put_contents($path, 'RIFF' . $name);
+            $paths[] = $path;
+            $profileId = hub_create_voice_profile($db, $memberId, [
+                'name' => $name,
+                'reference_audio_path' => $path,
+                'consent_type' => 'self_recorded',
+                'prompt_text' => 'terminal draft',
+                'language' => 'en',
+                'transcription_status' => 'ready',
+            ]);
+            $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '127.0.0.1', [
+                'owner_member_id' => $memberId,
+                'requested_mode' => 'voice_generate',
+                'callback_target_id' => $callbackTargetId,
+            ]);
+            $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')->execute([
+                ':task_id' => $taskId,
+                ':id' => $profileId,
+            ]);
+            $claimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_test_assert((int)($claimed['id'] ?? 0) === $taskId, 'terminal callback fixture must claim its task');
+            return $claimed;
+        };
+
+        try {
+            $successTask = $createClaimed('Callback Retry');
+            $successTaskId = (int)$successTask['id'];
+            $db->exec("CREATE TRIGGER voice_profile_callback_insert_failure
+                BEFORE INSERT ON task_callback_deliveries
+                WHEN NEW.task_id = " . $successTaskId . "
+                BEGIN
+                    SELECT RAISE(ABORT, 'callback_insert_failed');
+                END");
+            try {
+                hub_run_voice_profile_prepare_task($db, $successTask);
+            } catch (Throwable) {
+            } finally {
+                $db->exec('DROP TRIGGER IF EXISTS voice_profile_callback_insert_failure');
+            }
+            $afterCallbackFailure = hub_get_task($db, $successTaskId);
+            hub_test_assert(
+                ($afterCallbackFailure['status'] ?? '') === 'queued'
+                && ($afterCallbackFailure['result'] ?? null) === null
+                && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $successTaskId)->fetchColumn() === 0,
+                'callback enqueue failure must roll back success and leave the task retriable'
+            );
+
+            $successRetry = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_run_voice_profile_prepare_task($db, $successRetry ?? []);
+            hub_test_assert(
+                (hub_get_task($db, $successTaskId)['status'] ?? '') === 'success'
+                && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $successTaskId)->fetchColumn() === 1,
+                'retried success must atomically persist one idempotent callback delivery'
+            );
+
+            $failedTask = $createClaimed('Callback Failed');
+            hub_finish_voice_profile_prepare_task($db, $failedTask, 'failed', [], 'worker failed');
+            hub_test_assert(
+                (hub_get_task($db, (int)$failedTask['id'])['status'] ?? '') === 'failed'
+                && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . (int)$failedTask['id'])->fetchColumn() === 1,
+                'voice profile worker failure must atomically enqueue its callback'
+            );
+
+            $cancelledTask = $createClaimed('Callback Cancelled');
+            hub_finish_voice_profile_prepare_task($db, $cancelledTask, 'cancelled', [], 'cancelled');
+            hub_test_assert(
+                (hub_get_task($db, (int)$cancelledTask['id'])['status'] ?? '') === 'cancelled'
+                && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . (int)$cancelledTask['id'])->fetchColumn() === 1,
+                'voice profile worker cancellation must atomically enqueue its callback'
+            );
+        } finally {
+            $db->exec('DROP TRIGGER IF EXISTS voice_profile_callback_insert_failure');
+            foreach ($paths as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+        }
+    });
+});
+
+hub_test('VoxCPM2 generic cancellation atomically cancels queued and staging profile tasks with callbacks', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Profile Cancel Owner');
+        $callbackTargetId = hub_register_callback_target($db, $memberId, 'profile-cancel-events', 'https://8.8.8.8/voice-profile-cancel');
+        $paths = [];
+        $createCancelable = static function (string $name, string $status) use ($db, $memberId, $callbackTargetId, &$paths): int {
+            $path = hub_voice_profile_storage_dir() . '/profile_cancel_' . strtolower(str_replace(' ', '_', $name)) . '.wav';
+            file_put_contents($path, 'RIFF' . $name);
+            $paths[] = $path;
+            $profileId = hub_create_voice_profile($db, $memberId, [
+                'name' => $name,
+                'reference_audio_path' => $path,
+                'consent_type' => 'self_recorded',
+                'transcription_status' => 'pending',
+            ]);
+            $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '127.0.0.1', [
+                'owner_member_id' => $memberId,
+                'requested_mode' => 'voice_generate',
+                'callback_target_id' => $callbackTargetId,
+                'status' => $status,
+            ]);
+            $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')->execute([
+                ':task_id' => $taskId,
+                ':id' => $profileId,
+            ]);
+            return $taskId;
+        };
+
+        try {
+            $queuedTaskId = $createCancelable('Queued Cancel', 'queued');
+            $stagingTaskId = $createCancelable('Staging Cancel', 'staging');
+            $rollbackTaskId = $createCancelable('Rollback Cancel', 'queued');
+            $queuedCancelled = hub_cancel_task($db, $queuedTaskId);
+            $stagingCancelled = hub_cancel_task($db, $stagingTaskId);
+
+            $db->exec("CREATE TRIGGER voice_profile_cancel_callback_failure
+                BEFORE INSERT ON task_callback_deliveries
+                WHEN NEW.task_id = " . $rollbackTaskId . "
+                BEGIN
+                    SELECT RAISE(ABORT, 'callback_insert_failed');
+                END");
+            $callbackFailed = false;
+            try {
+                hub_cancel_task($db, $rollbackTaskId);
+            } catch (Throwable) {
+                $callbackFailed = true;
+            } finally {
+                $db->exec('DROP TRIGGER IF EXISTS voice_profile_cancel_callback_failure');
+            }
+
+            hub_test_assert(
+                $queuedCancelled
+                && $stagingCancelled
+                && (hub_get_task($db, $queuedTaskId)['status'] ?? '') === 'cancelled'
+                && (hub_get_task($db, $stagingTaskId)['status'] ?? '') === 'cancelled'
+                && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $queuedTaskId)->fetchColumn() === 1
+                && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $stagingTaskId)->fetchColumn() === 1,
+                'generic cancellation must atomically cancel queued and staging voice-profile tasks with callbacks'
+            );
+            hub_test_assert(
+                $callbackFailed
+                && (hub_get_task($db, $rollbackTaskId)['status'] ?? '') === 'queued'
+                && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries WHERE task_id = ' . $rollbackTaskId)->fetchColumn() === 0,
+                'voice-profile callback failure must roll back generic cancellation'
+            );
+        } finally {
+            $db->exec('DROP TRIGGER IF EXISTS voice_profile_cancel_callback_failure');
+            foreach ($paths as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+        }
+    });
+});
+
+hub_test('VoxCPM2 profile_prepare reuses native handles but not the current Cluster token', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile Cache Owner');
+        $nativeToken = hub_create_api_token($db, $memberId, 'native profile cache token', null, null);
+        $nodeToken = hub_create_api_token($db, $memberId, 'node profile cache token', null, null);
+        hub_test_audio_allow($db, [$nativeToken, $nodeToken], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $cacheCallbackTargetId = hub_register_callback_target($db, $memberId, 'profile-cache-events', 'https://8.8.8.8/voice-profile-cache');
+        hub_register_callback_target($db, $memberId, 'profile-cache-other', 'https://8.8.4.4/voice-profile-cache');
+        $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-cache-api-');
+        if ($tmpName === false) {
+            throw new RuntimeException('Cannot create profile cache WAV fixture.');
+        }
+        file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        $request = static function (
+            array $token,
+            bool $authenticatedDispatcher = false,
+            string $promptText = 'cache draft',
+            ?string $language = null,
+            ?string $transcriptConfirmed = null,
+            int $expectedStatus = 200,
+            ?string $callbackTarget = 'profile-cache-events'
+        ) use ($db, $memberId, $tmpName): int|array {
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-cache';
+            $post = [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Cached profile',
+                'consent_type' => 'self_recorded',
+                'prompt_text' => $promptText,
+            ];
+            if ($callbackTarget !== null) {
+                $post['callback_target'] = $callbackTarget;
+            }
+            if ($language !== null) {
+                $post['language'] = $language;
+            }
+            if ($transcriptConfirmed !== null) {
+                $post['transcript_confirmed'] = $transcriptConfirmed;
+            }
+            $files = ['reference_wav' => [
+                'name' => 'cache.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $tmpName,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($tmpName),
+            ]];
+            if ($authenticatedDispatcher) {
+                $_SERVER['REMOTE_ADDR'] = '203.0.113.51';
+                $_SERVER['REQUEST_METHOD'] = 'POST';
+                $_POST = $post;
+                $_FILES = $files;
+                $response = hub_voice_profile_api_dispatch($db, hub_resolve_audio_async_route($db, 'voice_generate'), [
+                    'member_id' => $memberId,
+                    'token_id' => (int)$token['token_id'],
+                ]);
+            } else {
+                $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], $post, [], $files);
+            }
+            hub_test_assert(is_array($response), 'profile cache dispatcher must handle profile_prepare');
+            hub_test_assert($response['status'] === $expectedStatus, 'profile cache request must return the expected status');
+            if ($expectedStatus !== 200) {
+                return $response;
+            }
+            return (int)(hub_test_audio_payload($response)['task_id'] ?? 0);
+        };
+
+        try {
+            $nativeFirst = $request($nativeToken);
+            $nativeAgain = $request($nativeToken);
+            hub_test_assert($nativeAgain === $nativeFirst, 'native owner+SHA cache reuse must preserve the usable source task handle');
+            $nativeFirstTask = hub_get_task($db, $nativeFirst);
+            hub_finish_task_cancelled($db, $nativeFirstTask ?? []);
+            $nativeAfterCancelled = $request($nativeToken);
+            $replacementTask = hub_get_task($db, $nativeAfterCancelled);
+            hub_test_assert(
+                $nativeAfterCancelled > 0
+                && $nativeAfterCancelled !== $nativeFirst
+                && (int)($replacementTask['input']['voice_profile_id'] ?? 0) === (int)($nativeFirstTask['input']['voice_profile_id'] ?? 0),
+                'native cache reuse must replace a cancelled source task while retaining the managed profile'
+            );
+
+            $profileId = (int)($replacementTask['input']['voice_profile_id'] ?? 0);
+            $db->prepare(
+                "UPDATE voice_profiles
+                 SET prompt_text = 'old failed draft', language = 'fr', prompt_text_confirmed_at = :confirmed_at,
+                     transcription_status = 'failed', transcription_error = 'asr_failed',
+                     transcription_started_at = :started_at, transcription_lease_token = :lease_token
+                 WHERE id = :id"
+            )->execute([
+                ':confirmed_at' => hub_now(),
+                ':started_at' => hub_now(),
+                ':lease_token' => str_repeat('a', 64),
+                ':id' => $profileId,
+            ]);
+            $changedDraft = 'replacement unconfirmed draft';
+            $changedTaskId = $request($nativeToken, false, $changedDraft, 'zh-TW');
+            $changedTask = hub_get_task($db, $changedTaskId);
+            $changedProfile = hub_get_voice_profile($db, $profileId);
+            hub_test_assert(
+                $changedTaskId > 0
+                && $changedTaskId !== $nativeAfterCancelled
+                && (int)($changedTask['input']['voice_profile_id'] ?? 0) === $profileId
+                && $changedProfile !== null
+                && $changedProfile['prompt_text'] === $changedDraft
+                && $changedProfile['language'] === 'zh-TW'
+                && $changedProfile['transcription_status'] === 'ready'
+                && $changedProfile['prompt_text_confirmed_at'] === null
+                && $changedProfile['transcription_error'] === null
+                && $changedProfile['transcription_started_at'] === null
+                && $changedProfile['transcription_lease_token'] === null,
+                'changed cached draft must replace failed content and receive a fresh task'
+            );
+            $auditJson = (string)$db->query(
+                'SELECT details_json FROM voice_profile_audit_logs
+                 WHERE voice_profile_id = ' . $profileId . "
+                   AND action = 'cache_hit'
+                 ORDER BY id DESC
+                 LIMIT 1"
+            )->fetchColumn();
+            $auditDetails = json_decode($auditJson, true);
+            hub_test_assert(
+                is_array($auditDetails)
+                && ($auditDetails['status'] ?? '') === 'ready'
+                && ($auditDetails['text_chars'] ?? null) === strlen($changedDraft)
+                && ($auditDetails['prompt_text_sha256'] ?? '') === hash('sha256', $changedDraft)
+                && !str_contains($auditJson, $changedDraft)
+                && !str_contains($auditJson, 'old failed draft'),
+                'changed cached draft audit must contain only safe status, count, and hash'
+            );
+
+            $supersededTask = hub_get_task($db, $nativeAfterCancelled);
+            $supersededCallback = $db->query(
+                'SELECT event_type FROM task_callback_deliveries WHERE task_id = ' . $nativeAfterCancelled
+            )->fetchColumn();
+            hub_test_assert(
+                ($supersededTask['status'] ?? '') === 'cancelled'
+                && $supersededCallback === 'task.failed',
+                'changed cached draft must atomically cancel its queued predecessor and enqueue its callback'
+            );
+            $changedClaimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_test_assert((int)($changedClaimed['id'] ?? 0) === $changedTaskId, 'changed cached draft must publish only its fresh task for preparation');
+            hub_run_voice_profile_prepare_task($db, $changedClaimed ?? []);
+            $changedResult = hub_get_task($db, $changedTaskId)['result'] ?? [];
+            hub_test_assert(
+                ($changedResult['transcription_status'] ?? '') === 'ready'
+                && ($changedResult['transcript_confirmed'] ?? true) === false
+                && ($changedResult['prompt_text_sha256'] ?? '') === hash('sha256', $changedDraft),
+                'changed cached draft worker must skip ASR and finish with the current safe hash'
+            );
+            $unchangedTaskId = $request($nativeToken, false, $changedDraft, 'zh-TW');
+            hub_test_assert($unchangedTaskId === $changedTaskId, 'unchanged cached draft must continue reusing its usable source task');
+            $confirmedTaskId = $request($nativeToken, false, $changedDraft, 'zh-TW', '1');
+            hub_test_assert(
+                $confirmedTaskId > 0 && $confirmedTaskId !== $changedTaskId,
+                'confirming an unchanged cached draft must create a fresh task with current confirmation state'
+            );
+            $confirmedClaimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_test_assert((int)($confirmedClaimed['id'] ?? 0) === $confirmedTaskId, 'confirmed cached draft must publish its fresh preparation task');
+            hub_run_voice_profile_prepare_task($db, $confirmedClaimed ?? []);
+            $confirmedResult = hub_get_task($db, $confirmedTaskId)['result'] ?? [];
+            hub_test_assert(
+                ($confirmedResult['transcript_confirmed'] ?? false) === true
+                && ($confirmedResult['prompt_text_sha256'] ?? '') === hash('sha256', $changedDraft),
+                'confirmed cached draft worker result must reflect the current confirmation state'
+            );
+            $confirmedAgainTaskId = $request($nativeToken, false, $changedDraft, 'zh-TW', '1');
+            hub_test_assert(
+                $confirmedAgainTaskId === $confirmedTaskId,
+                'identical confirmed cached draft must preserve confirmation and reuse its usable source task'
+            );
+            $beforeCallbackConflict = hub_get_voice_profile($db, $profileId);
+            $beforeCallbackConflictAudits = (int)$db->query(
+                'SELECT COUNT(*) FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $profileId
+            )->fetchColumn();
+            $callbackConflict = $request($nativeToken, false, $changedDraft, 'zh-TW', '1', 409, 'profile-cache-other');
+            $afterCallbackConflict = hub_get_voice_profile($db, $profileId);
+            hub_test_assert(
+                (hub_test_audio_payload($callbackConflict)['error'] ?? '') === 'voice_profile_callback_conflict'
+                && $beforeCallbackConflict !== null
+                && $afterCallbackConflict !== null
+                && (int)$afterCallbackConflict['source_task_id'] === $confirmedTaskId
+                && $afterCallbackConflict['prompt_text_confirmed_at'] === $beforeCallbackConflict['prompt_text_confirmed_at']
+                && (int)(hub_get_task($db, $confirmedTaskId)['callback_target_id'] ?? 0) === $cacheCallbackTargetId
+                && (int)$db->query('SELECT COUNT(*) FROM voice_profile_audit_logs WHERE voice_profile_id = ' . $profileId)->fetchColumn() === $beforeCallbackConflictAudits,
+                'cached handle callback mismatch must return conflict without mutating profile task or audit state'
+            );
+            $draftAgainTaskId = $request($nativeToken, false, $changedDraft, 'zh-TW');
+            $draftAgainProfile = hub_get_voice_profile($db, $profileId);
+            hub_test_assert(
+                $draftAgainTaskId > 0
+                && $draftAgainTaskId !== $confirmedTaskId
+                && $draftAgainProfile !== null
+                && $draftAgainProfile['prompt_text_confirmed_at'] === null,
+                'changing an identical confirmed cached profile back to draft must clear confirmation and create a fresh task'
+            );
+            $runningPredecessor = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_test_assert((int)($runningPredecessor['id'] ?? 0) === $draftAgainTaskId, 'running predecessor fixture must claim the current source task');
+            $beforeRunningConflict = hub_get_voice_profile($db, $profileId);
+            $runningConflict = $request($nativeToken, false, 'must not replace running draft', 'en', null, 409);
+            $afterRunningConflict = hub_get_voice_profile($db, $profileId);
+            hub_test_assert(
+                (hub_test_audio_payload($runningConflict)['error'] ?? '') === 'voice_profile_prepare_conflict'
+                && $beforeRunningConflict !== null
+                && $afterRunningConflict !== null
+                && $afterRunningConflict['prompt_text'] === $beforeRunningConflict['prompt_text']
+                && $afterRunningConflict['language'] === $beforeRunningConflict['language']
+                && $afterRunningConflict['prompt_text_confirmed_at'] === $beforeRunningConflict['prompt_text_confirmed_at']
+                && $afterRunningConflict['source_task_id'] === $beforeRunningConflict['source_task_id'],
+                'running predecessor must return conflict without mutating the cached profile'
+            );
+
+            $db->prepare('UPDATE tasks SET lock_token = :lock_token WHERE id = :id')->execute([
+                ':lock_token' => str_repeat('b', 32),
+                ':id' => $draftAgainTaskId,
+            ]);
+            hub_test_assert(
+                hub_test_throws(static fn (): mixed => hub_run_voice_profile_prepare_task($db, $runningPredecessor ?? []))
+                && (hub_get_task($db, $draftAgainTaskId)['status'] ?? '') === 'running'
+                && (hub_get_task($db, $draftAgainTaskId)['result'] ?? null) === null,
+                'stale voice profile worker must not finish after losing its task lock token'
+            );
+
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ENABLED', '1');
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_TOKEN_ID', (string)$nodeToken['token_id']);
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_MODE_JSON', json_encode(['voice_generate'], JSON_THROW_ON_ERROR));
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME', 'Primary Router');
+            $nodeFirst = $request($nodeToken, true);
+            $nodeAgain = $request($nodeToken, true);
+            $nodeFirstTask = hub_get_task($db, $nodeFirst);
+            $nodeAgainTask = hub_get_task($db, $nodeAgain);
+            hub_test_assert(
+                $nodeFirst > 0
+                && $nodeAgain > 0
+                && $nodeFirst !== $nodeAgain
+                && (int)($nodeFirstTask['input']['voice_profile_id'] ?? 0) !== (int)($nodeAgainTask['input']['voice_profile_id'] ?? 0),
+                'current paired Cluster token must create a distinct profile and task for identical owner+SHA requests'
+            );
+        } finally {
+            if (is_file($tmpName)) {
+                unlink($tmpName);
+            }
+        }
+    });
+});
+
+hub_test('VoxCPM2 profile_prepare boolean forms and validation errors stay exact', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile Boolean Owner');
+        $token = hub_create_api_token($db, $memberId, 'profile boolean token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $tmpPaths = [];
+        $request = static function (mixed $value, int $index, bool $includePrompt = true) use ($db, $token, &$tmpPaths): array {
+            $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-boolean-');
+            if ($tmpName === false) {
+                throw new RuntimeException('Cannot create profile boolean WAV fixture.');
+            }
+            $tmpPaths[] = $tmpName;
+            file_put_contents($tmpName, "RIFF" . pack('V', 37) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 1) . chr($index));
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-boolean';
+            $post = [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Boolean profile ' . $index,
+                'consent_type' => 'self_recorded',
+                'transcript_confirmed' => $value,
+            ];
+            if ($includePrompt) {
+                $post['prompt_text'] = 'Boolean draft ' . $index;
+            }
+            return hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], $post, [], ['reference_wav' => [
+                'name' => 'boolean.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $tmpName,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($tmpName),
+            ]]);
+        };
+
+        try {
+            foreach ([[true, true], [false, false], ['true', true], ['false', false], ['1', true], ['0', false]] as $index => [$value, $expectedConfirmed]) {
+                $response = $request($value, $index + 1);
+                $task = hub_get_task($db, (int)(hub_test_audio_payload($response)['task_id'] ?? 0));
+                $profile = hub_get_voice_profile($db, (int)($task['input']['voice_profile_id'] ?? 0));
+                hub_test_assert(
+                    $response['status'] === 200
+                    && $profile !== null
+                    && (!empty($profile['prompt_text_confirmed_at'])) === $expectedConfirmed,
+                    'profile_prepare must accept only the approved exact boolean representations'
+                );
+            }
+            foreach (['yes', ['true']] as $index => $value) {
+                $response = $request($value, $index + 20);
+                hub_test_assert(
+                    $response['status'] === 400
+                    && (hub_test_audio_payload($response)['error'] ?? '') === 'invalid_request',
+                    'profile_prepare must reject malformed transcript_confirmed values'
+                );
+            }
+
+            $confirmedWithoutText = $request('1', 30, false);
+            hub_test_assert(
+                $confirmedWithoutText['status'] === 400
+                && (hub_test_audio_payload($confirmedWithoutText)['error'] ?? '') === 'voice_profile_transcript_invalid',
+                'confirmed profile_prepare without prompt text must use the stable transcript error'
+            );
+
+            $invalidWav = tempnam(sys_get_temp_dir(), 'voice-profile-invalid-wav-');
+            if ($invalidWav === false) {
+                throw new RuntimeException('Cannot create invalid WAV fixture.');
+            }
+            $tmpPaths[] = $invalidWav;
+            file_put_contents($invalidWav, 'not a wav');
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-errors';
+            $invalidWavResponse = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Invalid WAV',
+                'consent_type' => 'self_recorded',
+            ], [], ['reference_wav' => [
+                'name' => 'invalid.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $invalidWav,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($invalidWav),
+            ]]);
+            hub_test_assert(
+                $invalidWavResponse['status'] === 400
+                && (hub_test_audio_payload($invalidWavResponse)['error'] ?? '') === 'voice_profile_wav_invalid',
+                'invalid WAV validation must use the stable redacted WAV error'
+            );
+
+            $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+            $invalidConfirm = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => '1',
+                'prompt_text' => '',
+            ]);
+            hub_test_assert(
+                $invalidConfirm['status'] === 400
+                && (hub_test_audio_payload($invalidConfirm)['error'] ?? '') === 'voice_profile_transcript_invalid',
+                'invalid profile_confirm transcript must use the stable transcript error'
+            );
+        } finally {
+            foreach ($tmpPaths as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+        }
+    });
+});
+
+hub_test('VoxCPM2 JSON profile operations and synthesize share voice_generate safely', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        if (!function_exists('curl_init') || !function_exists('proc_open')) {
+            hub_test_skip('voice profile JSON API test requires cURL and proc_open');
+        }
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile JSON Owner');
+        $token = hub_create_api_token($db, $memberId, 'profile JSON token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $path = hub_voice_profile_storage_dir() . '/profile_json.wav';
+        file_put_contents($path, 'RIFFjson');
+        $profileId = hub_create_voice_profile($db, $memberId, [
+            'name' => 'JSON profile',
+            'reference_audio_path' => $path,
+            'prompt_text' => 'JSON owner draft',
+            'language' => 'en',
+            'consent_type' => 'self_recorded',
+        ]);
+        $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '127.0.0.1', [
+            'owner_member_id' => $memberId,
+            'owner_token_id' => (int)$token['token_id'],
+            'requested_mode' => 'voice_generate',
+        ]);
+        $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')->execute([':task_id' => $taskId, ':id' => $profileId]);
+        $task = hub_get_task($db, $taskId);
+        hub_finish_task_success($db, $task ?? [], [
+            'kind' => 'voice_profile_prepare',
+            'transcription_status' => 'ready',
+            'transcript_confirmed' => false,
+            'text_chars' => strlen('JSON owner draft'),
+            'prompt_text_sha256' => hash('sha256', 'JSON owner draft'),
+        ]);
+        $server = hub_test_public_api_start_server(HUB_ROOT . '/api.php');
+        $request = static function (array $payload) use ($server, $token): array {
+            $ch = curl_init('http://127.0.0.1:' . (int)$server['port'] . '/api.php?mode=voice_generate');
+            if ($ch === false) {
+                throw new RuntimeException('Cannot initialize profile JSON request.');
+            }
+            curl_setopt_array($ch, [
+                CURLOPT_POST => true,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => [
+                    'Authorization: Bearer ' . (string)$token['plain_token'],
+                    'Content-Type: application/json',
+                ],
+                CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            ]);
+            $body = curl_exec($ch);
+            $status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+            curl_close($ch);
+            $decoded = json_decode((string)$body, true);
+            hub_test_assert(is_array($decoded), 'profile JSON response must be JSON');
+            return ['status' => $status, 'payload' => $decoded];
+        };
+
+        try {
+            $status = $request(['operation' => 'profile_status', 'voice_profile_task_id' => $taskId]);
+            hub_test_assert($status['status'] === 200 && ($status['payload']['prompt_text'] ?? '') === 'JSON owner draft', 'profile_status must accept a bounded top-level JSON object');
+            $confirmed = $request([
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => $taskId,
+                'prompt_text' => 'JSON confirmed text',
+            ]);
+            hub_test_assert($confirmed['status'] === 200 && !array_key_exists('prompt_text', $confirmed['payload']), 'profile_confirm JSON response must hide confirmed text');
+
+            $synthesized = $request([
+                'operation' => 'synthesize',
+                'text' => 'RC Valve JSON synthesis',
+                'voice_prompt' => 'clear technician voice',
+            ]);
+            $synthesisTask = hub_get_task($db, (int)($synthesized['payload']['task_id'] ?? 0));
+            hub_test_assert(
+                $synthesized['status'] === 200
+                && ($synthesisTask['task_type'] ?? '') === 'pack_job'
+                && !array_key_exists('operation', (array)($synthesisTask['input'] ?? [])),
+                'JSON synthesize must remove only operation before Pack normalization'
+            );
+        } finally {
+            hub_test_public_api_stop_servers([$server]);
+        }
+    });
+});
+
+hub_test('VoxCPM2 profile_prepare worker hashes empty prompt text in its fixed result', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Profile Empty Hash Owner');
+    $path = hub_voice_profile_storage_dir() . '/profile_empty_hash.wav';
+    file_put_contents($path, 'RIFFempty-hash');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Empty hash profile',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'transcription_status' => 'failed',
+        'transcription_error' => 'asr_unavailable',
+    ]);
+    $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, null, [
+        'owner_member_id' => $memberId,
+        'requested_mode' => 'voice_generate',
+    ]);
+    $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')->execute([':task_id' => $taskId, ':id' => $profileId]);
+    $claimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+    hub_run_voice_profile_prepare_task($db, $claimed ?? []);
+    $result = hub_get_task($db, $taskId)['result'] ?? [];
+    hub_test_assert(($result['prompt_text_sha256'] ?? null) === hash('sha256', ''), 'empty prompt text must use the 64-character SHA-256 of the empty string');
+});
+
+hub_test('VoxCPM2 profile operation validation separates methods from malformed fields', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile Validation Owner');
+        $token = hub_create_api_token($db, $memberId, 'profile validation token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-validation-');
+        if ($tmpName === false) {
+            throw new RuntimeException('Cannot create profile validation WAV fixture.');
+        }
+        file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        $validUpload = [
+            'reference_wav' => [
+                'name' => 'validation.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $tmpName,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($tmpName),
+            ],
+        ];
+        $cases = [
+            ['POST', 'text/plain', ['operation' => 'profile_prepare'], [], 400],
+            ['POST', 'multipart/form-datax', ['operation' => 'profile_prepare', 'profile_name' => 'x', 'consent_type' => 'self_recorded'], $validUpload, 400],
+            ['GET', 'multipart/form-data; boundary=x', ['operation' => 'profile_prepare'], [], 405],
+            ['POST', 'application/x-www-form-urlencoded', ['operation' => 'profile_confirm', 'voice_profile_task_id' => '1', 'prompt_text' => 'x', 'extra' => 'x'], [], 400],
+            ['POST', 'application/x-www-form-urlencoded', ['operation' => 'profile_status', 'voice_profile_task_id' => ['1']], [], 400],
+            ['POST', 'multipart/form-data; boundary=x', ['operation' => 'profile_prepare', 'profile_name' => 'x', 'consent_type' => 'self_recorded', 'transcript_confirmed' => '1'], ['reference_wav' => []], 400],
+            ['PUT', 'application/x-www-form-urlencoded', ['operation' => 'profile_delete', 'voice_profile_task_id' => '1'], [], 405],
+        ];
+        try {
+            foreach ($cases as [$method, $contentType, $post, $files, $expectedStatus]) {
+                $_SERVER['CONTENT_TYPE'] = $contentType;
+                $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], $post, [], $files, $method);
+                $payload = hub_test_audio_payload($response);
+                hub_test_assert($response['status'] === $expectedStatus, 'profile validation status mismatch for ' . $method . ' ' . ($post['operation'] ?? ''));
+                hub_test_assert(in_array((string)($payload['error'] ?? ''), ['invalid_request', 'method_not_allowed', 'voice_profile_wav_invalid', 'voice_profile_transcript_invalid'], true), 'profile validation errors must stay stable and bounded');
+            }
+        } finally {
+            if (is_file($tmpName)) {
+                unlink($tmpName);
+            }
+        }
+    });
+});
+
 hub_test('VoxCPM2 voice profile drafts confirm per owner and accept explicit tokens', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Voice Owner');

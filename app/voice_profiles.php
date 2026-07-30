@@ -393,15 +393,130 @@ function hub_retry_voice_profile_transcription(PDO $db, int $profileId, int $own
     return hub_run_voice_profile_transcription($db, $profile, $ownerMemberId, $transcribe);
 }
 
-function hub_create_uploaded_voice_profile(PDO $db, int $ownerMemberId, array $upload, array $input, ?callable $moveFile = null, ?callable $transcribe = null): array
+function hub_apply_cached_voice_profile_draft(PDO $db, array $profile, int $ownerMemberId, string $promptText, ?string $language, bool $transcriptConfirmed): array
 {
+    $cachedDraftTransactionStarted = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $cachedDraftTransactionStarted = true;
+        $result = hub_apply_cached_voice_profile_draft_in_transaction(
+            $db,
+            $profile,
+            $ownerMemberId,
+            $promptText,
+            $language,
+            $transcriptConfirmed
+        );
+        $db->exec('COMMIT');
+        $cachedDraftTransactionStarted = false;
+        return $result;
+    } catch (Throwable $e) {
+        if ($cachedDraftTransactionStarted) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        throw $e;
+    }
+}
+
+function hub_apply_cached_voice_profile_draft_in_transaction(PDO $db, array $profile, int $ownerMemberId, string $promptText, ?string $language, bool $transcriptConfirmed): array
+{
+    $profileId = (int)($profile['id'] ?? 0);
+    $promptText = trim($promptText);
+    $language = trim((string)$language) ?: null;
+    if ($profileId < 1 || $ownerMemberId < 1 || strlen($promptText) > 20000 || ($language !== null && strlen($language) > 64)) {
+        throw new InvalidArgumentException('voice_profile_draft_invalid');
+    }
+
+    $stmt = $db->prepare('SELECT * FROM voice_profiles WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL');
+    $stmt->execute([':id' => $profileId, ':owner_member_id' => $ownerMemberId]);
+    $profile = $stmt->fetch() ?: throw new RuntimeException('voice_profile_missing');
+    $previousSourceTaskId = (int)($profile['source_task_id'] ?? 0);
+    $existingConfirmed = trim((string)($profile['prompt_text_confirmed_at'] ?? '')) !== '';
+    $changed = $promptText !== '' && (
+        (string)($profile['prompt_text'] ?? '') !== $promptText
+        || (trim((string)($profile['language'] ?? '')) ?: null) !== $language
+        || (string)($profile['transcription_status'] ?? '') !== 'ready'
+        || trim((string)($profile['transcription_error'] ?? '')) !== ''
+        || trim((string)($profile['transcription_started_at'] ?? '')) !== ''
+        || trim((string)($profile['transcription_lease_token'] ?? '')) !== ''
+        || $existingConfirmed !== $transcriptConfirmed
+    );
+    $auditDetails = ['status' => 'reused'];
+    if ($changed) {
+        $now = hub_now();
+        $update = $db->prepare(
+            "UPDATE voice_profiles
+             SET prompt_text = :prompt_text, language = :language, prompt_text_confirmed_at = NULL,
+                 transcription_status = 'ready', transcription_error = NULL,
+                 transcription_started_at = NULL, transcription_lease_token = NULL,
+                 source_task_id = NULL, updated_at = :updated_at
+             WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL"
+        );
+        $update->execute([
+            ':prompt_text' => $promptText,
+            ':language' => $language,
+            ':updated_at' => $now,
+            ':id' => $profileId,
+            ':owner_member_id' => $ownerMemberId,
+        ]);
+        if ($update->rowCount() !== 1) {
+            throw new RuntimeException('voice_profile_missing');
+        }
+        $profile = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
+        $auditDetails = [
+            'status' => 'ready',
+            'text_chars' => function_exists('mb_strlen') ? mb_strlen($promptText, 'UTF-8') : strlen($promptText),
+            'prompt_text_sha256' => hash('sha256', $promptText),
+        ];
+    }
+    hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'cache_hit', null, $auditDetails);
+
+    return [
+        'profile' => $profile,
+        'cache_hit' => true,
+        'draft_changed' => $changed,
+        'previous_source_task_id' => $changed ? $previousSourceTaskId : 0,
+    ];
+}
+
+function hub_create_uploaded_voice_profile(PDO $db, int $ownerMemberId, array $upload, array $input, ?callable $moveFile = null, ?callable $transcribe = null, array $options = []): array
+{
+    return hub_create_uploaded_voice_profile_internal($db, $ownerMemberId, $upload, $input, $moveFile, $transcribe, $options, null);
+}
+
+function hub_create_uploaded_voice_profile_internal(PDO $db, int $ownerMemberId, array $upload, array $input, ?callable $moveFile, ?callable $transcribe, array $options, ?callable $transactionCallback): array
+{
+    if (array_diff(array_keys($options), ['defer_transcription', 'allow_cache']) !== []) {
+        throw new InvalidArgumentException('voice_profile_options_invalid');
+    }
+    foreach ($options as $value) {
+        if (!is_bool($value)) {
+            throw new InvalidArgumentException('voice_profile_options_invalid');
+        }
+    }
+    $deferTranscription = $options['defer_transcription'] ?? false;
+    $allowCache = $options['allow_cache'] ?? true;
     if (!hub_get_api_member($db, $ownerMemberId)) {
         throw new InvalidArgumentException('Member not found.');
     }
     $wav = hub_validate_voice_profile_wav($upload);
     $profileInput = hub_validate_voice_profile_input($input);
-    $profile = hub_find_active_voice_profile_by_owner_sha($db, $ownerMemberId, $wav['sha256']);
-    if ($profile !== null) {
+    $profile = $allowCache ? hub_find_active_voice_profile_by_owner_sha($db, $ownerMemberId, $wav['sha256']) : null;
+    if ($profile !== null && $transactionCallback === null) {
+        if ($deferTranscription) {
+            $cachedDraft = hub_apply_cached_voice_profile_draft(
+                $db,
+                $profile,
+                $ownerMemberId,
+                (string)($input['prompt_text'] ?? ''),
+                isset($input['language']) ? (string)$input['language'] : null,
+                (bool)($input['transcript_confirmed'] ?? false)
+            );
+            return ['profile' => $cachedDraft['profile'], 'cache_hit' => true];
+        }
         $status = (string)($profile['transcription_status'] ?? 'pending');
         if ($status === 'ready') {
             hub_record_voice_profile_audit($db, (int)$profile['id'], $ownerMemberId, null, 'cache_hit', null, ['status' => 'reused']);
@@ -430,26 +545,42 @@ function hub_create_uploaded_voice_profile(PDO $db, int $ownerMemberId, array $u
     $profile = null;
     $outcome = null;
     $finalized = false;
+    $deferredCache = null;
+    $profileWasCached = false;
     $voiceProfileUploadTransactionStarted = false;
     try {
         $db->exec('BEGIN IMMEDIATE');
         $voiceProfileUploadTransactionStarted = true;
-        $profile = hub_find_active_voice_profile_by_owner_sha($db, $ownerMemberId, $wav['sha256']);
+        $profile = $allowCache ? hub_find_active_voice_profile_by_owner_sha($db, $ownerMemberId, $wav['sha256']) : null;
         if ($profile !== null) {
+            $profileWasCached = true;
             if (!unlink($stagingPath)) {
                 throw new RuntimeException('voice_profile_upload_failed');
             }
-            $status = (string)($profile['transcription_status'] ?? 'pending');
-            if ($status === 'ready') {
-                $outcome = 'cache_hit';
-            } elseif ($status === 'failed') {
-                $profile = hub_claim_voice_profile_transcription($db, (int)$profile['id']);
-                $outcome = 'transcribe';
-            } elseif (hub_voice_profile_transcription_is_stale($db, $profile)) {
-                $profile = hub_claim_voice_profile_transcription($db, (int)$profile['id']);
-                $outcome = 'transcribe';
+            if ($deferTranscription) {
+                $deferredCache = hub_apply_cached_voice_profile_draft_in_transaction(
+                    $db,
+                    $profile,
+                    $ownerMemberId,
+                    (string)($input['prompt_text'] ?? ''),
+                    isset($input['language']) ? (string)$input['language'] : null,
+                    (bool)($input['transcript_confirmed'] ?? false)
+                );
+                $profile = $deferredCache['profile'];
+                $outcome = 'deferred_cache';
             } else {
-                $outcome = 'pending';
+                $status = (string)($profile['transcription_status'] ?? 'pending');
+                if ($status === 'ready') {
+                    $outcome = 'cache_hit';
+                } elseif ($status === 'failed') {
+                    $profile = hub_claim_voice_profile_transcription($db, (int)$profile['id']);
+                    $outcome = 'transcribe';
+                } elseif (hub_voice_profile_transcription_is_stale($db, $profile)) {
+                    $profile = hub_claim_voice_profile_transcription($db, (int)$profile['id']);
+                    $outcome = 'transcribe';
+                } else {
+                    $outcome = 'pending';
+                }
             }
         } else {
             hub_cleanup_stale_voice_profile_finals($db);
@@ -468,27 +599,40 @@ function hub_create_uploaded_voice_profile(PDO $db, int $ownerMemberId, array $u
                 'usage_scope' => 'private',
                 'visibility' => 'private',
                 'retain_original_audio' => $input['retain_original_audio'] ?? 1,
-                'transcription_status' => 'pending',
+                'prompt_text' => $deferTranscription ? ($input['prompt_text'] ?? null) : null,
+                'language' => $deferTranscription ? ($input['language'] ?? null) : null,
+                'transcription_status' => $deferTranscription && trim((string)($input['prompt_text'] ?? '')) !== '' ? 'ready' : 'pending',
             ]);
             $profile = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
-            $outcome = 'transcribe';
+            $outcome = $deferTranscription ? 'deferred' : 'transcribe';
+        }
+        if ($transactionCallback !== null) {
+            $transactionCallback($deferredCache ?? [
+                'profile' => $profile,
+                'cache_hit' => $profileWasCached,
+                'draft_changed' => false,
+                'previous_source_task_id' => 0,
+            ]);
+            $profile = hub_get_voice_profile($db, (int)$profile['id']) ?? throw new RuntimeException('voice_profile_missing');
+            if ($deferredCache !== null) {
+                $deferredCache['profile'] = $profile;
+            }
         }
         $db->exec('COMMIT');
         $voiceProfileUploadTransactionStarted = false;
     } catch (Throwable $e) {
         $cleanupFailed = false;
         if ($voiceProfileUploadTransactionStarted) {
-            if ($finalized && $path !== null && is_file($path) && !unlink($path)) {
-                $cleanupFailed = true;
-            }
-            if (is_file($stagingPath) && !unlink($stagingPath)) {
-                $cleanupFailed = true;
-            }
             try {
                 $db->exec('ROLLBACK');
             } catch (Throwable) {
             }
-        } elseif (is_file($stagingPath) && !unlink($stagingPath)) {
+            $voiceProfileUploadTransactionStarted = false;
+        }
+        if ($finalized && $path !== null && is_file($path) && !unlink($path)) {
+            $cleanupFailed = true;
+        }
+        if (is_file($stagingPath) && !unlink($stagingPath)) {
             $cleanupFailed = true;
         }
         if ($cleanupFailed) {
@@ -500,9 +644,18 @@ function hub_create_uploaded_voice_profile(PDO $db, int $ownerMemberId, array $u
         hub_record_voice_profile_audit($db, (int)$profile['id'], $ownerMemberId, null, 'cache_hit', null, ['status' => 'reused']);
         return ['profile' => $profile, 'cache_hit' => true];
     }
+    if ($outcome === 'deferred_cache') {
+        if ($deferredCache === null) {
+            throw new RuntimeException('voice_profile_missing');
+        }
+        return ['profile' => $deferredCache['profile'], 'cache_hit' => true];
+    }
     if ($outcome === 'pending') {
         hub_record_voice_profile_audit($db, (int)$profile['id'], $ownerMemberId, null, 'transcription_pending', null, ['status' => 'pending']);
         return hub_voice_profile_pending_response($profile);
+    }
+    if ($outcome === 'deferred') {
+        return ['profile' => $profile, 'cache_hit' => false];
     }
 
     return hub_run_voice_profile_transcription($db, $profile, $ownerMemberId, $transcribe);
@@ -679,35 +832,14 @@ function hub_get_voice_profile_for_member(PDO $db, int $profileId, int $memberId
 
 function hub_confirm_voice_profile_prompt(PDO $db, int $profileId, int $ownerMemberId, string $promptText): array
 {
-    $promptText = trim($promptText);
-    if ($promptText === '') {
-        throw new InvalidArgumentException('voice_profile_transcript_invalid');
-    }
-
     $confirmationTransactionStarted = false;
     try {
         $db->exec('BEGIN IMMEDIATE');
         $confirmationTransactionStarted = true;
-        $profile = hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId);
-        if (!$profile || (int)$profile['owner_member_id'] !== $ownerMemberId) {
-            throw new InvalidArgumentException('voice_profile_transcript_invalid');
-        }
-        $now = hub_now();
-        $stmt = $db->prepare('UPDATE voice_profiles SET prompt_text = :prompt_text, prompt_text_confirmed_at = :confirmed_at, transcription_status = :transcription_status, transcription_error = NULL, transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL');
-        $stmt->execute([
-            ':prompt_text' => $promptText,
-            ':confirmed_at' => $now,
-            ':transcription_status' => 'ready',
-            ':updated_at' => $now,
-            ':id' => $profileId,
-            ':owner_member_id' => $ownerMemberId,
-        ]);
-        if ($stmt->rowCount() !== 1) {
-            throw new InvalidArgumentException('voice_profile_transcript_invalid');
-        }
-        hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'confirm_transcript', null, ['text_chars' => function_exists('mb_strlen') ? mb_strlen($promptText, 'UTF-8') : strlen($promptText)]);
+        $profile = hub_confirm_voice_profile_prompt_in_transaction($db, $profileId, $ownerMemberId, $promptText);
         $db->exec('COMMIT');
         $confirmationTransactionStarted = false;
+        return $profile;
     } catch (Throwable $e) {
         if ($confirmationTransactionStarted) {
             try {
@@ -717,6 +849,33 @@ function hub_confirm_voice_profile_prompt(PDO $db, int $profileId, int $ownerMem
         }
         throw $e;
     }
+}
+
+function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId, int $ownerMemberId, string $promptText): array
+{
+    $promptText = trim($promptText);
+    if ($promptText === '') {
+        throw new InvalidArgumentException('voice_profile_transcript_invalid');
+    }
+
+    $profile = hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId);
+    if (!$profile || (int)$profile['owner_member_id'] !== $ownerMemberId) {
+        throw new InvalidArgumentException('voice_profile_transcript_invalid');
+    }
+    $now = hub_now();
+    $stmt = $db->prepare('UPDATE voice_profiles SET prompt_text = :prompt_text, prompt_text_confirmed_at = :confirmed_at, transcription_status = :transcription_status, transcription_error = NULL, transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL');
+    $stmt->execute([
+        ':prompt_text' => $promptText,
+        ':confirmed_at' => $now,
+        ':transcription_status' => 'ready',
+        ':updated_at' => $now,
+        ':id' => $profileId,
+        ':owner_member_id' => $ownerMemberId,
+    ]);
+    if ($stmt->rowCount() !== 1) {
+        throw new InvalidArgumentException('voice_profile_transcript_invalid');
+    }
+    hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'confirm_transcript', null, ['text_chars' => function_exists('mb_strlen') ? mb_strlen($promptText, 'UTF-8') : strlen($promptText)]);
 
     return hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
 }

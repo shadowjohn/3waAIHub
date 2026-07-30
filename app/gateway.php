@@ -60,6 +60,12 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
                 return hub_gateway_finish($db, $service, $mode, hub_edge_tts_demo_dispatch((string)$service['service_key'], $query), $started, $requestId, $authContext, $requestContext);
             }
         }
+        if ($mode === 'voice_generate') {
+            $profileResponse = hub_voice_profile_api_dispatch($db, $route, $authContext);
+            if ($profileResponse !== null) {
+                return hub_gateway_finish($db, null, $mode, $profileResponse, $started, $requestId, $authContext, $requestContext);
+            }
+        }
 
         return hub_gateway_finish($db, null, $mode, hub_api_pack_job_task_submit($db, $route, $authContext), $started, $requestId, $authContext, $requestContext);
     }

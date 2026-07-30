@@ -877,6 +877,42 @@ function hub_finish_task_timed_out(PDO $db, array $task, string $message = 'time
 function hub_cancel_task(PDO $db, int $taskId): bool
 {
     $task = hub_get_task($db, $taskId);
+    if ($task && ($task['task_type'] ?? '') === 'voice_profile_prepare' && in_array((string)($task['status'] ?? ''), ['staging', 'queued'], true)) {
+        $voiceProfileCancelTransactionStarted = false;
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            $voiceProfileCancelTransactionStarted = true;
+            $now = hub_now();
+            $stmt = $db->prepare(
+                "UPDATE tasks
+                 SET status = 'cancelled', progress = 100, error_code = 'cancelled', error_message = 'cancelled',
+                     finished_at = :finished_at, updated_at = :updated_at
+                 WHERE id = :id AND task_type = 'voice_profile_prepare'
+                   AND status IN ('staging', 'queued') AND lock_token IS NULL"
+            );
+            $stmt->execute([':finished_at' => $now, ':updated_at' => $now, ':id' => $taskId]);
+            if ($stmt->rowCount() !== 1) {
+                $db->exec('COMMIT');
+                $voiceProfileCancelTransactionStarted = false;
+                return false;
+            }
+            hub_apply_task_terminal_retention($db, $taskId, 'cancelled', $now);
+            hub_release_task_artifact_holds($db, $taskId);
+            hub_enqueue_task_callback_delivery($db, $taskId);
+            $db->exec('COMMIT');
+            $voiceProfileCancelTransactionStarted = false;
+            return true;
+        } catch (Throwable $e) {
+            if ($voiceProfileCancelTransactionStarted) {
+                try {
+                    $db->exec('ROLLBACK');
+                } catch (Throwable) {
+                }
+            }
+            throw $e;
+        }
+    }
+
     if ($task && ($task['task_type'] ?? '') === 'pack_job' && ($task['status'] ?? '') === 'queued') {
         // A queued Pack job never started a runner, container, or GPU PID.
         $noWorkCleanup = ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true];
