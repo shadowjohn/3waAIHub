@@ -5,14 +5,18 @@ import hashlib
 import json
 import math
 import os
+import re
+import sys
 from pathlib import Path
 from typing import Any
 
 from long_form import BOUNDARY_ACTIONS, assemble, canonical_json, fake_synthesize, global_loudness_pass, make_plan, peak_guard, read_pcm, sha256_text, write_pcm
 
-ALLOWED_REQUEST = {"text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "waveform_preview", "voice_context"}
+ALLOWED_REQUEST = {"text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "prompt_text", "waveform_preview", "voice_context"}
 DEFAULTS = {"mode": "design", "seed": 42, "seed_policy": "derived_per_chunk", "model": "voxcpm2", "waveform_preview": False}
 DEFAULT_DESIGN_PROMPT = "沉穩的台灣男性技師，語速稍慢，清楚自然"
+NON_RETRYABLE_SYNTHESIS_ERRORS = {"gpu_unavailable", "model_load_failed", "runtime_dependency_missing", "sample_rate_mismatch"}
+STABLE_ERROR_CODE = re.compile(r"^[a-z0-9_]{1,120}$")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -57,7 +61,7 @@ def validate_request(value: dict[str, Any]) -> dict[str, Any]:
     policy = value.get("seed_policy")
     model = value.get("model")
     preview = value.get("waveform_preview")
-    if not isinstance(text, str) or not text.strip() or len(text) > 50000 or mode not in {"design", "clone"}:
+    if not isinstance(text, str) or not text.strip() or len(text) > 50000 or mode not in {"design", "clone", "ultimate_clone"}:
         raise RuntimeError("request_invalid")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0 or seed > 2_147_483_647 or policy not in {"fixed", "derived_per_chunk"} or model != "voxcpm2" or not isinstance(preview, bool):
         raise RuntimeError("request_invalid")
@@ -66,7 +70,7 @@ def validate_request(value: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("request_invalid")
     profile = value.get("voice_profile_id")
     if mode == "design":
-        if profile is not None:
+        if profile is not None or "prompt_text" in value:
             raise RuntimeError("voice_profile_forbidden")
         if not isinstance(value.get("voice_prompt"), str):
             raise RuntimeError("voice_prompt_required")
@@ -74,6 +78,12 @@ def validate_request(value: dict[str, Any]) -> dict[str, Any]:
         if isinstance(profile, bool) or not isinstance(profile, int) or profile < 1:
             raise RuntimeError("voice_profile_required")
         if "voice_prompt" in value:
+            raise RuntimeError("voice_profile_forbidden")
+        prompt_text = value.get("prompt_text")
+        if mode == "ultimate_clone":
+            if not isinstance(prompt_text, str) or not prompt_text.strip() or len(prompt_text) > 20000:
+                raise RuntimeError("ultimate_clone_prompt_text_required")
+        elif prompt_text is not None:
             raise RuntimeError("voice_profile_forbidden")
     return value
 
@@ -95,8 +105,8 @@ def voice_context(request: dict[str, Any]) -> dict[str, Any]:
         expected = {"mode": "design", "container_path": "/data/voice_profiles/reference.wav"}
         if trusted is not None and trusted != expected:
             raise RuntimeError("voice_context_invalid")
-        context = {"mode": "design", "voice_prompt": request["voice_prompt"], "control": request.get("control", "")}
-    else:
+        context = {"mode": "design", "control": request.get("control", "")}
+    elif request["mode"] == "clone":
         expected = {
             "mode": "clone",
             "voice_profile_id": request["voice_profile_id"],
@@ -108,7 +118,38 @@ def voice_context(request: dict[str, Any]) -> dict[str, Any]:
         reference = Path(trusted["container_path"])
         if not regular(reference) or hashlib.sha256(reference.read_bytes()).hexdigest() != trusted["reference_audio_sha256"]:
             raise RuntimeError("voice_profile_unavailable")
-        context = {"mode": "clone", "voice_profile_id": request["voice_profile_id"], "control": request.get("control", ""), "reference_audio_sha256": trusted["reference_audio_sha256"], "container_path": trusted["container_path"]}
+        context = {"mode": "clone", "control": request.get("control", ""), "reference_audio_sha256": trusted["reference_audio_sha256"], "container_path": trusted["container_path"]}
+    else:
+        expected = {
+            "mode": "ultimate_clone",
+            "voice_profile_id": request["voice_profile_id"],
+            "reference_audio_sha256": "",
+            "prompt_text_sha256": "",
+            "prompt_text_confirmed_at": "",
+            "container_path": "/data/voice_profiles/reference.wav",
+        }
+        if (not isinstance(trusted, dict) or set(trusted) != set(expected)
+            or trusted.get("mode") != expected["mode"]
+            or trusted.get("voice_profile_id") != expected["voice_profile_id"]
+            or trusted.get("container_path") != expected["container_path"]
+            or not isinstance(trusted.get("reference_audio_sha256"), str)
+            or not isinstance(trusted.get("prompt_text_sha256"), str)
+            or not isinstance(trusted.get("prompt_text_confirmed_at"), str)
+            or not trusted["prompt_text_confirmed_at"]
+            or len(trusted["reference_audio_sha256"]) != 64
+            or len(trusted["prompt_text_sha256"]) != 64
+            or hashlib.sha256(request["prompt_text"].encode("utf-8")).hexdigest() != trusted["prompt_text_sha256"]):
+            raise RuntimeError("voice_context_invalid")
+        reference = Path(trusted["container_path"])
+        if not regular(reference) or hashlib.sha256(reference.read_bytes()).hexdigest() != trusted["reference_audio_sha256"]:
+            raise RuntimeError("voice_profile_unavailable")
+        context = {
+            "mode": "ultimate_clone",
+            "control": request.get("control", ""),
+            "reference_audio_sha256": trusted["reference_audio_sha256"],
+            "prompt_text_sha256": trusted["prompt_text_sha256"],
+            "container_path": trusted["container_path"],
+        }
     return context | {"sha256": sha256_text(canonical_json(context))}
 
 
@@ -116,27 +157,59 @@ def fake_enabled() -> bool:
     return os.getenv("VOXCPM2_JOB_FAKE_SYNTHESIS", "").lower() in {"1", "true", "yes", "on"}
 
 
-def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path, model: dict[str, Any], checkpoints: Path) -> list[int]:
+def ensure_cuda_model(tts_app: Any, model_path: str, torch_module: Any) -> Any:
+    if not torch_module.cuda.is_available():
+        raise RuntimeError("gpu_unavailable")
+    loaded = getattr(tts_app, "_MODEL", None)
+    if loaded is None:
+        try:
+            from voxcpm import VoxCPM
+        except ImportError as error:
+            raise RuntimeError("runtime_dependency_missing") from error
+        try:
+            loaded = VoxCPM.from_pretrained(
+                model_path,
+                load_denoiser=False,
+                optimize=os.getenv("VOXCPM2_TORCH_COMPILE", "").lower() in {"1", "true", "yes", "on"},
+                device="cuda",
+            )
+        except Exception as error:
+            if not torch_module.cuda.is_available():
+                raise RuntimeError("gpu_unavailable") from error
+            raise RuntimeError("model_load_failed") from error
+        if not str(getattr(getattr(loaded, "tts_model", None), "device", "")).lower().startswith("cuda"):
+            raise RuntimeError("gpu_unavailable")
+        tts_app._MODEL = loaded
+    if not torch_module.cuda.is_available() or not str(getattr(getattr(loaded, "tts_model", None), "device", "")).lower().startswith("cuda"):
+        raise RuntimeError("gpu_unavailable")
+    return loaded
+
+
+def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path, model: dict[str, Any], checkpoints: Path, prompt_text: str | None = None, voice_prompt: str | None = None) -> list[int]:
     if fake_enabled():
-        return fake_synthesize(chunk["text"], chunk["seed"], voice["sha256"], model["sample_rate"])
+        private_voice = voice["sha256"] if voice_prompt is None else sha256_text(canonical_json({"voice_context_sha256": voice["sha256"], "voice_prompt": voice_prompt}))
+        return fake_synthesize(chunk["text"], chunk["seed"], private_voice, model["sample_rate"])
     try:
         import torch
-        from app import TtsRequest, write_real_wav
+        import app as tts_app
     except ImportError as error:
         raise RuntimeError("runtime_dependency_missing") from error
-    if not torch.cuda.is_available():
-        raise RuntimeError("gpu_unavailable")
     os.environ.update({"VOXCPM2_MODEL_ID": model["model"], "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1"})
-    request = TtsRequest(
+    ensure_cuda_model(tts_app, model["model"], torch)
+    values = dict(
         text=chunk["text"],
         mode=voice["mode"],
-        voice_prompt=voice.get("voice_prompt"),
+        voice_prompt=voice_prompt,
         control=voice.get("control"),
-        reference_wav_path=str(source) if voice["mode"] == "clone" else None,
+        reference_wav_path=str(source) if voice["mode"] in {"clone", "ultimate_clone"} else None,
     )
+    if voice["mode"] == "ultimate_clone":
+        values |= {"prompt_wav_path": str(source), "prompt_text": prompt_text}
+    request = tts_app.TtsRequest(**values)
     temporary = checkpoints / (chunk["id"] + ".model.wav")
     try:
-        write_real_wav(temporary, request, chunk["seed"])
+        tts_app.write_real_wav(temporary, request, chunk["seed"])
+        ensure_cuda_model(tts_app, model["model"], torch)
         sample_rate, samples = read_pcm(temporary)
     finally:
         temporary.unlink(missing_ok=True)
@@ -145,13 +218,17 @@ def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path,
     return samples
 
 
-def checkpoint_context(plan: dict[str, Any], model: dict[str, Any], voice: dict[str, Any]) -> dict[str, str]:
-    return {
+def checkpoint_context(plan: dict[str, Any], model: dict[str, Any], voice: dict[str, Any], voice_prompt: str | None = None) -> dict[str, str]:
+    context = {
         "plan_sha256": str(plan["plan_sha256"]),
         "text_sha256": sha256_text(str(plan["normalized_input"])),
         "voice_sha256": str(voice["sha256"]),
         "model_sha256": sha256_text(canonical_json(model)),
+        "device": "fake" if fake_enabled() else "cuda",
     }
+    if voice_prompt is not None:
+        context["voice_prompt_sha256"] = sha256_text(voice_prompt)
+    return context
 
 
 def cached_chunk(path: Path, metadata_path: Path, expected: dict[str, Any], sample_rate: int) -> tuple[list[int], dict[str, Any]] | None:
@@ -170,7 +247,7 @@ def cached_chunk(path: Path, metadata_path: Path, expected: dict[str, Any], samp
     return samples, metadata
 
 
-def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, str], voice: dict[str, Any], source: Path, model: dict[str, Any]) -> dict[str, Any]:
+def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, str], voice: dict[str, Any], source: Path, model: dict[str, Any], prompt_text: str | None = None, voice_prompt: str | None = None) -> dict[str, Any]:
     sample_rate = model["sample_rate"]
     wav_path = checkpoints / (chunk["id"] + ".wav")
     metadata_path = checkpoints / (chunk["id"] + ".json")
@@ -191,15 +268,20 @@ def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, st
     if wav_path.exists() or metadata_path.exists():
         wav_path.unlink(missing_ok=True)
         metadata_path.unlink(missing_ok=True)
+    checkpoints.mkdir(parents=True, exist_ok=True)
     error: Exception | None = None
     for attempt in range(1, 4):
         try:
-            samples, gain = peak_guard(synthesize_chunk(chunk, voice, source, model, checkpoints))
+            samples, gain = peak_guard(synthesize_chunk(chunk, voice, source, model, checkpoints, prompt_text=prompt_text, voice_prompt=voice_prompt))
             expected |= {"duration_frames": len(samples), "attempts": attempt, "peak_gain": gain}
             checkpoints.mkdir(parents=True, exist_ok=True)
             write_pcm(wav_path, sample_rate, samples)
             write_json(metadata_path, expected)
             return chunk | {"samples": samples, "attempts": attempt, "peak_gain": gain, "reused": False}
+        except RuntimeError as caught:
+            if str(caught) in NON_RETRYABLE_SYNTHESIS_ERRORS:
+                raise
+            error = caught
         except Exception as caught:
             error = caught
     raise RuntimeError("chunk_synthesis_failed") from error
@@ -231,12 +313,12 @@ def run_job(workspace: Path, input_dir: Path, output: Path, runner_config_path: 
     model = model_snapshot(read_json(runner_config_path))
     source = input_dir / "source"
     voice = voice_context(request)
-    source = Path(voice["container_path"]) if request["mode"] == "clone" else input_dir / "source"
+    source = Path(voice["container_path"]) if request["mode"] in {"clone", "ultimate_clone"} else input_dir / "source"
     plan = make_plan(request["text"], request["seed"], request["seed_policy"], 240)
     plan_path = workspace / "checkpoints" / "plan" / "chunks.json"
     write_immutable_json(plan_path, plan, "checkpoint_plan_mismatch")
-    context = checkpoint_context(plan, model, voice)
-    chunks = [create_chunk(chunk, workspace / "checkpoints" / "chunks", context, voice, source, model) for chunk in plan["chunks"]]
+    context = checkpoint_context(plan, model, voice, request.get("voice_prompt"))
+    chunks = [create_chunk(chunk, workspace / "checkpoints" / "chunks", context, voice, source, model, prompt_text=request.get("prompt_text"), voice_prompt=request.get("voice_prompt")) for chunk in plan["chunks"]]
     final, timeline = assemble(chunks, model["sample_rate"])
     final, loudness = global_loudness_pass(final)
     clean_output(output, request["waveform_preview"])
@@ -250,7 +332,7 @@ def run_job(workspace: Path, input_dir: Path, output: Path, runner_config_path: 
             "id": chunk["id"], "seed": chunk["seed"], "seed_sha256": chunk["seed_sha256"], "attempts": chunk["attempts"], "duration_frames": len(chunk["samples"]), "duration_seconds": len(chunk["samples"]) / model["sample_rate"], "peak_gain": chunk["peak_gain"], "reused_checkpoint": chunk["reused"], "action": boundary["action"], "trim_frames": boundary["trim_frames"], "pause_frames": boundary["pause_frames"], "crossfade_frames": boundary["crossfade_frames"],
         })
     metadata = {
-        "normalized_input": plan["normalized_input"], "plan": plan, "model": model, "voice_context": voice, "controls": {"mode": request["mode"], "seed_policy": request["seed_policy"], "task_seed": request["seed"]}, "chunks": chunk_metadata, "final_format": {"mime_type": "audio/wav", "sample_rate": model["sample_rate"], "channels": 1, "frames": len(final)}, "loudness": loudness, "timeline": timeline,
+        "normalized_input": plan["normalized_input"], "plan": plan, "model": model, "voice_context": voice, "controls": {"mode": request["mode"], "seed_policy": request["seed_policy"], "task_seed": request["seed"]}, "chunks": chunk_metadata, "final_format": {"mime_type": "audio/wav", "sample_rate": model["sample_rate"], "channels": 1, "frames": len(final)}, "loudness": loudness, "timeline": timeline, "device": {"type": "fake", "real_inference": False} if fake_enabled() else {"type": "cuda", "real_inference": True},
     }
     write_json(output / "synthesis_metadata.json", metadata)
     if request["waveform_preview"]:
@@ -268,9 +350,22 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
+def cli() -> int:
     try:
-        raise SystemExit(main())
-    except RuntimeError as error:
-        print(f"voice_generate_failed:{error}", file=os.sys.stderr)
-        raise SystemExit(1)
+        result = main()
+        if result == 0:
+            return 0
+        error_code = "runtime_execution_failed"
+    except SystemExit as error:
+        if error.code in (None, 0):
+            return 0
+        error_code = "request_invalid"
+    except Exception as error:
+        value = str(error)
+        error_code = value if isinstance(error, RuntimeError) and STABLE_ERROR_CODE.fullmatch(value) else "runtime_execution_failed"
+    print(f"AIHUB_ERROR_CODE={error_code}", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli())

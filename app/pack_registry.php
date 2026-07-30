@@ -764,22 +764,32 @@ function hub_pack_async_job_voice_context_contract(mixed $definition, array $fie
     if ($definition === null) {
         return [];
     }
+    $ultimateKeys = ['mode_input', 'design_value', 'clone_value', 'ultimate_value', 'profile_input', 'profile_task_input', 'design_prompt_input', 'container_path'];
     $modernKeys = ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path'];
     $legacyKeys = ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path'];
-    $legacy = is_array($definition) && array_keys($definition) === $legacyKeys;
-    if (!is_array($definition) || (!$legacy && array_keys($definition) !== $modernKeys) || ($legacy && !$allowLegacy)) {
+    $keys = is_array($definition) ? array_keys($definition) : [];
+    $legacy = $keys === $legacyKeys;
+    $modern = $keys === $modernKeys;
+    $ultimate = $keys === $ultimateKeys;
+    if (!is_array($definition) || (!$legacy && !$modern && !$ultimate) || ($legacy && !$allowLegacy)) {
         return null;
     }
     $modeInput = $definition['mode_input'] ?? null;
     $designValue = $definition['design_value'] ?? null;
     $cloneValue = $definition['clone_value'] ?? null;
+    $ultimateValue = $ultimate ? ($definition['ultimate_value'] ?? null) : null;
     $profileInput = $definition['profile_input'] ?? null;
+    $profileTaskInput = $ultimate ? ($definition['profile_task_input'] ?? null) : null;
     $designPromptInput = $legacy ? null : ($definition['design_prompt_input'] ?? null);
     $containerPath = $definition['container_path'] ?? null;
     $designPromptValid = $legacy || (is_string($designPromptInput) && in_array($designPromptInput, $fields, true)
         && ($requestSchema[$designPromptInput]['type'] ?? null) === 'string');
+    $ultimateValid = !$ultimate || (is_string($ultimateValue) && $ultimateValue !== '' && $ultimateValue !== $designValue && $ultimateValue !== $cloneValue
+        && in_array($ultimateValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true)
+        && is_string($profileTaskInput) && in_array($profileTaskInput, $fields, true)
+        && ($requestSchema[$profileTaskInput]['type'] ?? null) === 'string');
     if (!is_string($modeInput) || !is_string($designValue) || !is_string($cloneValue) || !is_string($profileInput) || !is_string($containerPath)
-        || !$designPromptValid || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || $designValue === '' || $cloneValue === '' || $designValue === $cloneValue
+        || !$designPromptValid || !$ultimateValid || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || $designValue === '' || $cloneValue === '' || $designValue === $cloneValue
         || ($requestSchema[$modeInput]['type'] ?? null) !== 'string' || !in_array($designValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true)
         || !in_array($cloneValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true) || ($requestSchema[$profileInput]['type'] ?? null) !== 'integer'
         || $containerPath !== '/data/voice_profiles/reference.wav') {
@@ -790,8 +800,13 @@ function hub_pack_async_job_voice_context_contract(mixed $definition, array $fie
         'mode_input' => $modeInput,
         'design_value' => $designValue,
         'clone_value' => $cloneValue,
+    ] + ($ultimate ? [
+        'ultimate_value' => $ultimateValue,
+    ] : []) + [
         'profile_input' => $profileInput,
-    ] + ($legacy ? [] : ['design_prompt_input' => $designPromptInput]) + ['container_path' => $containerPath];
+    ] + ($ultimate ? [
+        'profile_task_input' => $profileTaskInput,
+    ] : []) + ($legacy ? [] : ['design_prompt_input' => $designPromptInput]) + ['container_path' => $containerPath];
 }
 
 function hub_pack_async_job_capabilities(mixed $capabilities): ?array
@@ -924,6 +939,31 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
             }
         }
     }
+    $voiceContext = $contract['voice_context'] ?? [];
+    if (is_array($voiceContext) && $voiceContext !== []) {
+        $modeInput = $voiceContext['mode_input'] ?? '';
+        $mode = $input[$modeInput] ?? null;
+        $profileInputs = array_filter([
+            $voiceContext['profile_input'] ?? null,
+            $voiceContext['profile_task_input'] ?? null,
+        ], 'is_string');
+        if ($mode === ($voiceContext['design_value'] ?? null)) {
+            foreach ($profileInputs as $profileInput) {
+                if (array_key_exists($profileInput, $input)) {
+                    throw new InvalidArgumentException('invalid_request');
+                }
+            }
+        } elseif ($mode === ($voiceContext['clone_value'] ?? null) || $mode === ($voiceContext['ultimate_value'] ?? null)) {
+            $designPromptInput = $voiceContext['design_prompt_input'] ?? 'voice_prompt';
+            if (is_string($designPromptInput) && array_key_exists($designPromptInput, $input)) {
+                throw new InvalidArgumentException('invalid_request');
+            }
+        }
+        if (is_string($modeInput) && $modeInput !== '' && !isset($provided[$modeInput])
+            && $mode === ($voiceContext['design_value'] ?? null)) {
+            unset($input[$modeInput]);
+        }
+    }
 
     return $input;
 }
@@ -1030,7 +1070,19 @@ function hub_resolve_stored_pack_job(PDO $db, array $task): array
         throw new RuntimeException('job_unavailable');
     }
     $pack = hub_get_pack((string)$task['pack_id']);
-    if (!$pack || (string)($pack['manifest']['version'] ?? '') !== (string)$task['pack_version']) {
+    if (!$pack) {
+        throw new RuntimeException('pack_version_unavailable');
+    }
+    $currentVersion = (string)($pack['manifest']['version'] ?? '');
+    $taskInput = is_array($task['input'] ?? null) ? $task['input'] : [];
+    $legacyVoxCpm2 = (string)$task['pack_id'] === 'tts-voxcpm2'
+        && (string)$task['pack_version'] === '0.1.4'
+        && $currentVersion === '0.1.5'
+        && (string)$task['job'] === 'synthesize'
+        && (string)($task['requested_mode'] ?? '') === 'voice_generate'
+        && (string)$task['accelerator'] === 'gpu'
+        && (!array_key_exists('mode', $taskInput) || in_array($taskInput['mode'], ['design', 'clone'], true));
+    if ($currentVersion !== (string)$task['pack_version'] && !$legacyVoxCpm2) {
         throw new RuntimeException('pack_version_unavailable');
     }
     $installed = $db->prepare(
@@ -1038,7 +1090,10 @@ function hub_resolve_stored_pack_job(PDO $db, array $task): array
          WHERE pack_id = :pack_id AND pack_version = :pack_version AND install_status = 'installed'
          LIMIT 1"
     );
-    $installed->execute([':pack_id' => $task['pack_id'], ':pack_version' => $task['pack_version']]);
+    $installed->execute([
+        ':pack_id' => $task['pack_id'],
+        ':pack_version' => $legacyVoxCpm2 ? $currentVersion : $task['pack_version'],
+    ]);
     if ($installed->fetchColumn() === false) {
         throw new RuntimeException('pack_version_unavailable');
     }

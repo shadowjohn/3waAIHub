@@ -163,7 +163,7 @@ function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $
     return ['status' => (string)($task['status'] ?? 'failed'), 'error_code' => (string)($task['error_code'] ?? $code)];
 }
 
-function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract): string
+function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract, ?array $voiceProfileMount = null): string
 {
     $input = is_array($task['input'] ?? null) ? $task['input'] : [];
     $request = [];
@@ -174,6 +174,15 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract): 
     }
     if (isset($input['voice_context'])) {
         $request['voice_context'] = $input['voice_context'];
+    }
+    $hasPrivatePrompt = false;
+    if (isset($voiceProfileMount['prompt_text'])) {
+        if (($request['voice_context']['mode'] ?? null) !== 'ultimate_clone'
+            || !is_string($voiceProfileMount['prompt_text']) || $voiceProfileMount['prompt_text'] === '') {
+            throw new RuntimeException('voice_profile_unavailable');
+        }
+        $request['prompt_text'] = $voiceProfileMount['prompt_text'];
+        $hasPrivatePrompt = true;
     }
     if (($task['requested_mode'] ?? '') === 'web_capture') {
         $request = hub_web_capture_prepare_runner_request($db, $request);
@@ -213,7 +222,9 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract): 
         throw new RuntimeException('source_copy_failed');
     }
     $json = json_encode($request, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-    if ($json === false || file_put_contents($workspace . '/input/request.json', $json . PHP_EOL, LOCK_EX) === false) {
+    $requestPath = $workspace . '/input/request.json';
+    if ($json === false || file_put_contents($requestPath, $json . PHP_EOL, LOCK_EX) === false
+        || ($hasPrivatePrompt && !chmod($requestPath, 0600))) {
         throw new RuntimeException('workspace_unavailable');
     }
     $runnerConfig = hub_pack_job_runner_config_for_task($contract, $input);
@@ -454,9 +465,29 @@ function hub_pack_job_resolve_voice_profile_mount(PDO $db, array $task, array $c
         throw new RuntimeException('voice_profile_unavailable');
     }
     $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
-    $sha256 = $path === null ? false : hash_file('sha256', $path);
-    if ($path === null || !is_string($sha256)
-        || !hash_equals((string)($snapshot['reference_audio_sha256'] ?? ''), $sha256)
+    if ($path === null) {
+        throw new RuntimeException('voice_profile_unavailable');
+    }
+    $sha256 = hash_file('sha256', $path);
+    if (!is_string($sha256)) {
+        throw new RuntimeException('voice_profile_unavailable');
+    }
+    if (($snapshot['mode'] ?? null) === ($definition['ultimate_value'] ?? null)) {
+        $promptText = (string)($profile['prompt_text'] ?? '');
+        $confirmedAt = trim((string)($profile['prompt_text_confirmed_at'] ?? ''));
+        if ($promptText === '' || $confirmedAt === '') {
+            throw new RuntimeException('voice_profile_changed');
+        }
+        if (!hash_equals((string)($snapshot['reference_audio_sha256'] ?? ''), $sha256)
+            || !hash_equals((string)($profile['reference_audio_sha256'] ?? ''), $sha256)
+            || !hash_equals((string)($snapshot['prompt_text_sha256'] ?? ''), hash('sha256', $promptText))
+            || !hash_equals((string)($snapshot['prompt_text_confirmed_at'] ?? ''), $confirmedAt)) {
+            throw new RuntimeException('voice_profile_changed');
+        }
+
+        return ['source' => $path, 'container_path' => (string)$definition['container_path'], 'prompt_text' => $promptText];
+    }
+    if (!hash_equals((string)($snapshot['reference_audio_sha256'] ?? ''), $sha256)
         || !hash_equals((string)($profile['reference_audio_sha256'] ?? ''), $sha256)) {
         throw new RuntimeException('voice_profile_unavailable');
     }
@@ -1059,11 +1090,6 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         } catch (Throwable) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
         }
-        try {
-            $voiceProfileMount = hub_pack_job_resolve_voice_profile_mount($db, $task, $contract);
-        } catch (Throwable) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'voice_profile_unavailable', 'Managed voice profile is unavailable', hub_pack_job_no_work_cleanup(), null);
-        }
         if (isset($options['executor']) && is_callable($options['executor'])) {
             $executor = $options['executor'];
         } elseif (($runner['executor'] ?? '') === 'container') {
@@ -1094,7 +1120,16 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, $gpuLease);
             }
         }
-        $workspace = hub_pack_job_prepare_workspace($db, $task, $contract);
+        try {
+            $voiceProfileMount = hub_pack_job_resolve_voice_profile_mount($db, $task, $contract);
+        } catch (Throwable $e) {
+            $code = $e->getMessage() === 'voice_profile_changed' ? 'voice_profile_changed' : 'voice_profile_unavailable';
+            return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Managed voice profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease);
+        }
+        $workspace = hub_pack_job_prepare_workspace($db, $task, $contract, $voiceProfileMount);
+        if ($voiceProfileMount !== null) {
+            unset($voiceProfileMount['prompt_text']);
+        }
         hub_pack_job_copy_source_artifact($db, $task, $workspace);
         $audioProbe = isset($options['audio_probe']) && is_callable($options['audio_probe']) ? $options['audio_probe'] : null;
         $sourceAudioAttestation = isset($contract['artifact_contract']['report_attestation']) && is_file($workspace . '/input/source')

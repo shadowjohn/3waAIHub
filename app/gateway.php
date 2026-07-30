@@ -1344,10 +1344,13 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
             return hub_gateway_error(400, 'invalid_request', 'Pack job request does not match the Pack contract');
         }
         if ($e->getMessage() === 'voice_profile_required') {
-            return hub_gateway_error(400, 'voice_profile_required', 'clone mode requires one owned managed voice profile');
+            return hub_gateway_error(400, 'voice_profile_required', 'voice cloning requires exactly one owned managed voice profile');
         }
         if ($e->getMessage() === 'voice_profile_forbidden') {
             return hub_gateway_error(403, 'voice_profile_forbidden', 'voice profile is not available for this member');
+        }
+        if ($e->getMessage() === 'voice_profile_transcript_unconfirmed') {
+            return hub_gateway_error(409, 'voice_profile_transcript_unconfirmed', 'Ultimate Clone requires a confirmed voice profile transcript');
         }
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
@@ -1541,6 +1544,7 @@ function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $r
     }
     $modeInput = (string)($definition['mode_input'] ?? '');
     $profileInput = (string)($definition['profile_input'] ?? '');
+    $profileTaskInput = (string)($definition['profile_task_input'] ?? '');
     $designPromptInput = (string)($definition['design_prompt_input'] ?? '');
     $mode = $input[$modeInput] ?? null;
     if ($mode === null) {
@@ -1549,17 +1553,34 @@ function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $r
     if (!is_string($mode) || $mode === '') {
         throw new InvalidArgumentException('invalid_request');
     }
+    $hasProfile = array_key_exists($profileInput, $input);
+    $hasProfileTask = $profileTaskInput !== '' && array_key_exists($profileTaskInput, $input);
     if ($mode === ($definition['design_value'] ?? null)) {
-        if (array_key_exists($profileInput, $input)) {
+        if ($hasProfile || $hasProfileTask) {
             throw new InvalidArgumentException('voice_profile_forbidden');
         }
         return $input;
     }
-    if ($mode !== ($definition['clone_value'] ?? null)) {
+    if ($mode !== ($definition['clone_value'] ?? null) && $mode !== ($definition['ultimate_value'] ?? null)) {
         throw new InvalidArgumentException('invalid_request');
     }
     if (array_key_exists($designPromptInput, $input)) {
         throw new InvalidArgumentException('invalid_request');
+    }
+    if ($hasProfile === $hasProfileTask) {
+        throw new InvalidArgumentException('voice_profile_required');
+    }
+    if ($hasProfileTask) {
+        $rawTaskId = $input[$profileTaskInput];
+        if (!is_string($rawTaskId) || preg_match('/^[1-9][0-9]{0,17}$/', $rawTaskId) !== 1) {
+            throw new InvalidArgumentException('voice_profile_forbidden');
+        }
+        $profileTask = hub_voice_profile_task_for_member($db, (int)$rawTaskId, $ownerMemberId);
+        if ($profileTask === null || (string)($profileTask['status'] ?? '') !== 'success') {
+            throw new InvalidArgumentException('voice_profile_forbidden');
+        }
+        $input[$profileInput] = (int)($profileTask['voice_profile']['id'] ?? 0);
+        unset($input[$profileTaskInput]);
     }
     $profileId = $input[$profileInput] ?? null;
     if (!is_int($profileId) || $profileId < 1) {
@@ -1575,13 +1596,26 @@ function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $r
     if ($path === null || !is_string($sha256) || !hash_equals((string)($profile['reference_audio_sha256'] ?? ''), $sha256)) {
         throw new InvalidArgumentException('voice_profile_forbidden');
     }
-    $input['voice_context'] = [
+    $snapshot = [
         'mode' => $mode,
         'voice_profile_id' => $profileId,
         'reference_audio_sha256' => $sha256,
+    ];
+    if ($mode === ($definition['ultimate_value'] ?? null)) {
+        $promptText = (string)($profile['prompt_text'] ?? '');
+        $confirmedAt = trim((string)($profile['prompt_text_confirmed_at'] ?? ''));
+        if ($promptText === '' || $confirmedAt === '') {
+            throw new InvalidArgumentException('voice_profile_transcript_unconfirmed');
+        }
+        $snapshot += [
+            'prompt_text_sha256' => hash('sha256', $promptText),
+            'prompt_text_confirmed_at' => $confirmedAt,
+        ];
+    }
+    $input['voice_context'] = $snapshot + [
         'container_path' => (string)$definition['container_path'],
     ];
-    hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, $tokenId > 0 ? $tokenId : null, 'use', 'clone', [
+    hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, $tokenId > 0 ? $tokenId : null, 'use', $mode, [
         'requested_mode' => (string)($route['requested_mode'] ?? ''),
         'text_chars' => function_exists('mb_strlen') ? mb_strlen((string)($input['text'] ?? ''), 'UTF-8') : strlen((string)($input['text'] ?? '')),
     ]);

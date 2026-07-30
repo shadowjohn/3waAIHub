@@ -169,8 +169,11 @@ function hub_stage_owned_pack_job(PDO $db, array $route, array $input, int $owne
 
 function hub_pack_job_voice_context_snapshot(array $definition, array $input, mixed $snapshot): array
 {
-    $legacy = array_keys($definition) === ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path'];
-    if (!$legacy && array_keys($definition) !== ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path']) {
+    $keys = array_keys($definition);
+    $legacy = $keys === ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path'];
+    $modern = $keys === ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path'];
+    $ultimate = $keys === ['mode_input', 'design_value', 'clone_value', 'ultimate_value', 'profile_input', 'profile_task_input', 'design_prompt_input', 'container_path'];
+    if (!$legacy && !$modern && !$ultimate) {
         throw new InvalidArgumentException('invalid_request');
     }
     $mode = $input[$definition['mode_input']] ?? null;
@@ -182,7 +185,8 @@ function hub_pack_job_voice_context_snapshot(array $definition, array $input, mi
         return [];
     }
     if ($mode === $definition['design_value']) {
-        if ($snapshot !== null) {
+        if ($snapshot !== null || array_key_exists($definition['profile_input'], $input)
+            || ($ultimate && array_key_exists($definition['profile_task_input'], $input))) {
             throw new InvalidArgumentException('invalid_request');
         }
 
@@ -192,11 +196,32 @@ function hub_pack_job_voice_context_snapshot(array $definition, array $input, mi
         throw new InvalidArgumentException('invalid_request');
     }
     $designPromptInput = $legacy ? 'voice_prompt' : $definition['design_prompt_input'];
-    if (array_key_exists($designPromptInput, $input)) {
+    if (array_key_exists($designPromptInput, $input)
+        || ($ultimate && array_key_exists($definition['profile_task_input'], $input))) {
         throw new InvalidArgumentException('invalid_request');
     }
     $profileId = $input[$definition['profile_input']] ?? null;
     $sha256 = $snapshot['reference_audio_sha256'] ?? null;
+    if ($ultimate && $mode === $definition['ultimate_value']) {
+        $promptSha256 = $snapshot['prompt_text_sha256'] ?? null;
+        $confirmedAt = $snapshot['prompt_text_confirmed_at'] ?? null;
+        $expected = [
+            'mode' => $definition['ultimate_value'],
+            'voice_profile_id' => $profileId,
+            'reference_audio_sha256' => $sha256,
+            'prompt_text_sha256' => $promptSha256,
+            'prompt_text_confirmed_at' => $confirmedAt,
+            'container_path' => $definition['container_path'],
+        ];
+        if (!is_int($profileId) || $profileId < 1
+            || !is_string($sha256) || preg_match('/^[a-f0-9]{64}$/', $sha256) !== 1
+            || !is_string($promptSha256) || preg_match('/^[a-f0-9]{64}$/', $promptSha256) !== 1
+            || !is_string($confirmedAt) || $confirmedAt === '' || $snapshot !== $expected) {
+            throw new InvalidArgumentException('invalid_request');
+        }
+
+        return $expected;
+    }
     $expected = [
         'mode' => $definition['clone_value'],
         'voice_profile_id' => $profileId,

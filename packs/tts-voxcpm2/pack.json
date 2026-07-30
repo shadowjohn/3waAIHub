@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "tts-voxcpm2",
   "name": "VoxCPM2 Experimental TTS Service",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "category": "audio",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -23,7 +23,7 @@
   "runner_build": {
     "context": ".",
     "dockerfile": "service/Dockerfile",
-    "image": "3waaihub/tts-voxcpm2:0.1.0"
+    "image": "3waaihub/tts-voxcpm2:0.1.5"
   },
   "gateway": {
     "health_path": "/health",
@@ -48,31 +48,34 @@
     {
       "job": "synthesize",
       "input": {
-        "fields": ["text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "waveform_preview"],
+        "fields": ["text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "voice_profile_task_id", "waveform_preview"],
         "source_artifact_types": [],
         "source_required": false,
         "request_schema": {
           "text": {"type": "string", "required": true, "max_length": 4096},
-          "mode": {"type": "string", "required": false, "enum": ["design", "clone"], "max_length": 16},
+          "mode": {"type": "string", "required": false, "enum": ["design", "clone", "ultimate_clone"], "default": "design", "max_length": 16},
           "voice_prompt": {"type": "string", "required": false, "max_length": 1024},
           "control": {"type": "string", "required": false, "max_length": 1024},
           "seed": {"type": "integer", "required": false, "min": 0, "max": 2147483647},
           "seed_policy": {"type": "string", "required": false, "enum": ["fixed", "derived_per_chunk"], "max_length": 32},
           "model": {"type": "string", "required": false, "enum": ["voxcpm2"], "max_length": 32},
-          "voice_profile_id": {"type": "integer", "required": false, "min": 1, "max": 2147483647, "requires": {"mode": "clone"}},
+          "voice_profile_id": {"type": "integer", "required": false, "min": 1, "max": 2147483647},
+          "voice_profile_task_id": {"type": "string", "required": false, "max_length": 64},
           "waveform_preview": {"type": "boolean", "required": false}
         },
         "voice_context": {
           "mode_input": "mode",
           "design_value": "design",
           "clone_value": "clone",
+          "ultimate_value": "ultimate_clone",
           "profile_input": "voice_profile_id",
+          "profile_task_input": "voice_profile_task_id",
           "design_prompt_input": "voice_prompt",
           "container_path": "/data/voice_profiles/reference.wav"
         }
       },
       "runner": {
-        "image": "3waaihub/tts-voxcpm2:0.1.0",
+        "image": "3waaihub/tts-voxcpm2:0.1.5",
         "entrypoint": ["/app/voice-generate"],
         "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
         "output_dir": "output",
@@ -109,7 +112,7 @@
             "path": "synthesis_metadata.json",
             "mime_types": ["application/json"],
             "max_bytes": 4194304,
-            "json": {"required_keys": ["normalized_input", "plan", "model", "voice_context", "controls", "chunks", "final_format", "loudness", "timeline"]}
+            "json": {"required_keys": ["normalized_input", "plan", "model", "voice_context", "controls", "chunks", "final_format", "loudness", "timeline", "device"]}
           },
           {
             "type": "waveform_preview",
