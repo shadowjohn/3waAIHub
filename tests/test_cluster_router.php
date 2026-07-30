@@ -176,6 +176,101 @@ function hub_test_cluster_router_async_route(PDO $db, array $stationOverrides = 
     return ['station' => $station, 'customer' => $customer, 'member_id' => $memberId, 'route_id' => $routeId];
 }
 
+function hub_test_cluster_voice_profile_route(PDO $db, array $stationOverrides = [], string $remoteTaskId = '42'): array
+{
+    $station = hub_test_cluster_router_station($db, array_replace([
+        'modes' => ['voice_generate'],
+    ], $stationOverrides));
+    $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+    $memberId = (int)$db->query('SELECT member_id FROM api_tokens WHERE id = ' . (int)$customer['token_id'])->fetchColumn();
+    $routeId = hub_cluster_router_admit_route($db, $station, [
+        'member_id' => $memberId,
+        'token_id' => (int)$customer['token_id'],
+    ], 'voice_generate', true, true);
+    if (!is_string($routeId)) {
+        throw new RuntimeException('cluster voice profile route admission failed');
+    }
+    hub_cluster_rewrite_async_response($db, [
+        'route_id' => $routeId,
+        'station_id' => (int)$station['id'],
+    ], ['ok' => true, 'task_id' => $remoteTaskId], 'cluster_api.php');
+
+    return ['station' => $station, 'customer' => $customer, 'member_id' => $memberId, 'route_id' => $routeId];
+}
+
+function hub_test_cluster_voice_profile_status_payload(array $overrides = []): array
+{
+    return array_replace([
+        'ok' => true,
+        'task_status' => 'success',
+        'profile_status' => 'active',
+        'transcription_status' => 'ready',
+        'transcript_confirmed' => true,
+        'prompt_text_confirmed_at' => '2026-07-31 12:00:00',
+        'profile_name' => 'Cluster profile',
+        'language' => 'en',
+        'consent_type' => 'self_recorded',
+        'reference_audio_sha256' => str_repeat('a', 64),
+        'created_at' => '2026-07-31 11:00:00',
+        'updated_at' => '2026-07-31 12:00:00',
+    ], $overrides);
+}
+
+function hub_test_cluster_voice_profile_synthesis_without_operation(string $profileMode): void
+{
+    hub_test_with_cluster_secret(function () use ($profileMode): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_' . $profileMode,
+            'station_token' => 'profile_mode_token',
+        ], '97531');
+        $request = $profileMode === 'clone'
+            ? hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                'headers' => ['Content-Type' => 'multipart/form-data; boundary=profile-mode'],
+                'raw_body' => '',
+                'post' => ['mode' => 'clone', 'voice_profile_task_id' => $fixture['route_id'], 'text' => 'clone me'],
+                'files' => [],
+            ])
+            : hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                'headers' => ['Content-Type' => 'application/json'],
+                'raw_body' => '{"mode":"ultimate_clone","voice_profile_task_id":"' . $fixture['route_id'] . '","text":"ultimate me"}',
+            ]);
+        $childTaskId = $profileMode === 'clone' ? '86420' : '86421';
+        $calls = 0;
+
+        $response = hub_cluster_dispatch($db, 'voice_generate', $request, [
+            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture([
+                'id' => (int)$fixture['station']['id'],
+                'station_key' => 'profile_' . $profileMode,
+                'modes' => ['voice_generate'],
+            ])],
+            'transport' => static function (array $request) use (&$calls, $profileMode, $childTaskId): array {
+                $calls++;
+                hub_test_assert(($request['headers']['Authorization'] ?? '') === 'Bearer profile_mode_token', 'omitted-operation synthesis must use the pinned profile station');
+                if ($profileMode === 'clone') {
+                    hub_test_assert(($request['form']['post'] ?? null) === [
+                        'mode' => 'clone',
+                        'voice_profile_task_id' => '97531',
+                        'text' => 'clone me',
+                    ], 'omitted-operation clone must relay only the numeric child profile task ID');
+                } else {
+                    hub_test_assert($request['body'] === '{"mode":"ultimate_clone","voice_profile_task_id":"97531","text":"ultimate me"}', 'omitted-operation ultimate clone must replace only the profile reference');
+                }
+
+                return hub_gateway_json(200, ['ok' => true, 'task_id' => $childTaskId]);
+            },
+        ]);
+        $payload = json_decode($response['body'], true, 64, JSON_THROW_ON_ERROR);
+
+        hub_test_assert($response['status'] === 200
+            && $calls === 1
+            && hub_cluster_router_profile_sensitive_route_id((string)($payload['task_id'] ?? '')), 'valid omitted-operation ' . $profileMode . ' synthesis must return a profile-sensitive opaque async route');
+        hub_test_assert(!str_contains($response['body'], $childTaskId)
+            && !str_contains($response['body'], '97531'), 'omitted-operation synthesis response must not leak child task IDs');
+    });
+}
+
 function hub_test_with_cluster_router_env(string $key, string $value, callable $fn): void
 {
     $previous = getenv($key);
@@ -2037,6 +2132,882 @@ hub_test('cluster router rewrites fake remote async dispatch responses', functio
     });
 });
 
+hub_test('cluster router preserves allowlisted headers on non-profile rewritten JSON', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $customer = hub_test_cluster_router_customer_token($db, ['vision']);
+        $station = hub_test_cluster_router_station($db, [
+            'station_key' => 'non_profile_headers',
+            'station_token' => 'non_profile_headers_token',
+        ]);
+        $childHeaders = [
+            'Content-Type: application/json',
+            'X-3waAIHub-Model: vision-model',
+            'X-3waAIHub-Device: cuda',
+            'Cache-Control: private, no-store',
+        ];
+        $initial = hub_cluster_dispatch($db, 'vision', hub_test_cluster_router_request((string)$customer['plain_token']), [
+            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture([
+                'id' => (int)$station['id'],
+                'station_key' => 'non_profile_headers',
+            ])],
+            'transport' => static fn (): array => [
+                'status' => 200,
+                'headers' => $childHeaders,
+                'body' => json_encode(['ok' => true, 'task_id' => 'remote_task_42', 'status' => 'queued'], JSON_THROW_ON_ERROR),
+            ],
+        ]);
+        $routeId = (string)(json_decode($initial['body'], true, 64, JSON_THROW_ON_ERROR)['task_id'] ?? '');
+        $followup = hub_cluster_dispatch_followup($db, 'cluster_task_status', [
+            'bearer_token' => (string)$customer['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $routeId],
+        ], static fn (): array => [
+            'status' => 200,
+            'headers' => $childHeaders,
+            'body' => json_encode(['ok' => true, 'task_id' => 'remote_task_42', 'status' => 'running'], JSON_THROW_ON_ERROR),
+        ]);
+
+        foreach ([$initial, $followup] as $response) {
+            $headers = $response['headers'] ?? [];
+            hub_test_assert($response['status'] === 200
+                && in_array('X-3waAIHub-Model: vision-model', $headers, true)
+                && in_array('X-3waAIHub-Device: cuda', $headers, true)
+                && in_array('Cache-Control: private, no-store', $headers, true), 'non-profile async and followup rewrites must preserve sanitized allowlisted child headers');
+        }
+    });
+});
+
+hub_test('cluster router preserves ordinary voice design headers and logs', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        $station = hub_test_cluster_router_station($db, [
+            'station_key' => 'voice_design_headers',
+            'station_token' => 'voice_design_headers_token',
+            'modes' => ['voice_generate'],
+        ]);
+        $childHeaders = [
+            'Content-Type: application/json',
+            'X-3waAIHub-Model: voice-design-model',
+            'X-3waAIHub-Device: cuda',
+            'X-3waAIHub-Elapsed-Ms: 17',
+            'Cache-Control: private, no-store',
+        ];
+        $submitted = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+            'headers' => ['Content-Type' => 'application/json'],
+            'raw_body' => '{"mode":"design","text":"ordinary design"}',
+        ]), [
+            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture([
+                'id' => (int)$station['id'],
+                'station_key' => 'voice_design_headers',
+                'modes' => ['voice_generate'],
+            ])],
+            'transport' => static fn (): array => [
+                'status' => 200,
+                'headers' => $childHeaders,
+                'body' => json_encode(['ok' => true, 'task_id' => '64201', 'status' => 'queued'], JSON_THROW_ON_ERROR),
+            ],
+        ]);
+        $routeId = (string)(json_decode($submitted['body'], true, 64, JSON_THROW_ON_ERROR)['task_id'] ?? '');
+        hub_test_assert(hub_cluster_router_valid_route_id($routeId)
+            && !hub_cluster_router_profile_sensitive_route_id($routeId), 'ordinary voice design must keep the legacy non-sensitive opaque route form');
+        $clone = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+            'headers' => ['Content-Type' => 'application/json'],
+            'raw_body' => '{"operation":"synthesize","mode":"clone","text":"profile-free clone"}',
+        ]), [
+            'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture([
+                'id' => (int)$station['id'],
+                'station_key' => 'voice_design_headers',
+                'modes' => ['voice_generate'],
+            ])],
+            'transport' => static fn (): array => [
+                'status' => 200,
+                'headers' => $childHeaders,
+                'body' => json_encode(['ok' => true, 'task_id' => '64202', 'status' => 'queued'], JSON_THROW_ON_ERROR),
+            ],
+        ]);
+        $cloneRouteId = (string)(json_decode($clone['body'], true, 64, JSON_THROW_ON_ERROR)['task_id'] ?? '');
+        hub_test_assert(hub_cluster_router_valid_route_id($cloneRouteId)
+            && !hub_cluster_router_profile_sensitive_route_id($cloneRouteId), 'profile-free clone must remain a non-sensitive opaque route');
+        $logs = hub_cluster_dispatch_followup($db, 'cluster_task_log', [
+            'bearer_token' => (string)$customer['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $routeId],
+        ], static fn (): array => [
+            'status' => 200,
+            'headers' => $childHeaders,
+            'body' => json_encode([
+                'ok' => true,
+                'task_id' => '64201',
+                'logs' => [[
+                    'level' => 'info',
+                    'message' => 'ordinary design synthesis queued',
+                    'created_at' => '2026-07-31 12:00:00',
+                ]],
+            ], JSON_THROW_ON_ERROR),
+        ]);
+        $logPayload = json_decode($logs['body'], true, 64, JSON_THROW_ON_ERROR);
+
+        foreach ([$submitted, $clone, $logs] as $response) {
+            $headers = $response['headers'] ?? [];
+            hub_test_assert(in_array('X-3waAIHub-Model: voice-design-model', $headers, true)
+                && in_array('X-3waAIHub-Device: cuda', $headers, true)
+                && in_array('X-3waAIHub-Elapsed-Ms: 17', $headers, true)
+                && in_array('Cache-Control: private, no-store', $headers, true), 'ordinary voice design rewrites must preserve sanitized allowlisted headers');
+        }
+        hub_test_assert(($logPayload['logs'][0]['message'] ?? null) === 'ordinary design synthesis queued', 'ordinary voice design routes must retain the non-profile safe log projection');
+    });
+});
+
+hub_test('cluster router extracts and replaces one exact voice profile route without changing unrelated input', function (): void {
+    $routeId = 'route_' . str_repeat('a', 32);
+    $wav = ['name' => 'reference.wav', 'type' => 'audio/wav', 'tmp_name' => '/tmp/reference.wav', 'error' => UPLOAD_ERR_OK, 'size' => 44];
+    $multipart = [
+        'headers' => [],
+        'raw_body' => '',
+        'form' => [
+            'post' => ['operation' => 'synthesize', 'voice_profile_task_id' => $routeId, 'text' => 'A + B'],
+            'files' => ['reference_wav' => $wav],
+        ],
+    ];
+    $urlencoded = [
+        'headers' => ['Content-Type' => 'application/x-www-form-urlencoded; charset=UTF-8'],
+        'raw_body' => 'operation=profile_confirm&voice_profile_task_id=' . $routeId . '&prompt_text=A+%2B+B&callback=x%2Fy',
+    ];
+    $json = [
+        'headers' => ['Content-Type' => 'application/json'],
+        'raw_body' => '{"operation":"profile_status","voice_profile_task_id":"' . $routeId . '","note":"a\\/b","count":1}',
+    ];
+    $query = [
+        'method' => 'GET',
+        'headers' => [],
+        'raw_body' => '',
+        'query' => ['operation' => 'profile_status', 'voice_profile_task_id' => $routeId, 'mode' => 'voice_generate'],
+        'request_uri' => '/cluster_api.php?mode=voice_generate&operation=profile_status&voice_profile_task_id=' . $routeId,
+    ];
+
+    hub_test_assert(hub_cluster_voice_profile_reference($multipart) === $routeId, 'multipart reference must be read from its normalized scalar form field');
+    hub_test_assert(hub_cluster_voice_profile_reference($urlencoded) === $routeId, 'urlencoded reference must be decoded exactly once');
+    hub_test_assert(hub_cluster_voice_profile_reference($json) === $routeId, 'JSON reference must be read only from the top-level object');
+    hub_test_assert(hub_cluster_voice_profile_reference($query) === $routeId, 'query reference must be read from one exact scalar field');
+    hub_test_assert(hub_cluster_voice_profile_reference([
+        'headers' => ['Content-Type' => 'application/json'],
+        'raw_body' => '{"nested":{"voice_profile_task_id":"' . $routeId . '"}}',
+    ]) === null, 'nested JSON references must not pin a route');
+
+    $multipartDownstream = hub_cluster_replace_voice_profile_reference($multipart, '73');
+    $urlencodedDownstream = hub_cluster_replace_voice_profile_reference($urlencoded, '73');
+    $jsonDownstream = hub_cluster_replace_voice_profile_reference($json, '73');
+    $queryDownstream = hub_cluster_replace_voice_profile_reference($query, '73');
+    hub_test_assert($multipart['form']['post']['voice_profile_task_id'] === $routeId, 'replacement must not mutate the public multipart request');
+    hub_test_assert($multipartDownstream['form']['post'] === ['operation' => 'synthesize', 'voice_profile_task_id' => '73', 'text' => 'A + B'], 'multipart replacement must change only the trusted reference field');
+    hub_test_assert($multipartDownstream['form']['files']['reference_wav'] === $wav, 'multipart replacement must preserve the normalized WAV upload');
+    hub_test_assert($urlencodedDownstream['raw_body'] === 'operation=profile_confirm&voice_profile_task_id=73&prompt_text=A+%2B+B&callback=x%2Fy', 'urlencoded replacement must preserve every unrelated byte');
+    hub_test_assert($jsonDownstream['raw_body'] === '{"operation":"profile_status","voice_profile_task_id":"73","note":"a\\/b","count":1}', 'JSON replacement must preserve every unrelated byte');
+    hub_test_assert($queryDownstream['query'] === ['operation' => 'profile_status', 'voice_profile_task_id' => '73', 'mode' => 'voice_generate'], 'query replacement must change only the trusted normalized reference');
+    hub_test_assert(hub_cluster_voice_profile_reference($multipartDownstream) === '73'
+        && hub_cluster_voice_profile_reference($urlencodedDownstream) === '73'
+        && hub_cluster_voice_profile_reference($jsonDownstream) === '73'
+        && hub_cluster_voice_profile_reference($queryDownstream) === '73', 'each downstream copy must contain exactly one numeric child reference');
+
+    foreach ([
+        ['form' => ['post' => ['voice_profile_task_id' => [$routeId]], 'files' => []]],
+        ['form' => ['post' => ['voice_profile_task_id[]' => $routeId], 'files' => []]],
+        ['form' => ['post' => ['voice_profile_task_id' => $routeId, 'voice_profile_task_id[]' => $routeId], 'files' => []]],
+        ['form' => ['post' => ['voice_profile_task_id' => $routeId, 'voice.profile.task.id' => '999'], 'files' => []]],
+        ['headers' => ['Content-Type' => 'application/x-www-form-urlencoded'], 'raw_body' => 'voice_profile_task_id=' . $routeId . '&voice_profile_task_id=' . $routeId],
+        ['headers' => ['Content-Type' => 'application/x-www-form-urlencoded'], 'raw_body' => 'voice_profile_task_id%5B%5D=' . $routeId],
+        ['headers' => ['Content-Type' => 'application/x-www-form-urlencoded'], 'raw_body' => 'voice_profile_task_id=' . $routeId . '&voice.profile.task.id=999'],
+        ['headers' => ['Content-Type' => 'application/x-www-form-urlencoded'], 'raw_body' => 'voice_profile_task_id=' . $routeId . '&voice+profile+task+id=999'],
+        ['headers' => ['Content-Type' => 'application/x-www-form-urlencoded'], 'raw_body' => 'voice_profile_task_id=' . $routeId . '%0A'],
+        ['headers' => ['Content-Type' => 'application/x-www-form-urlencoded'], 'raw_body' => 'note=%GG&voice_profile_task_id=' . $routeId],
+        ['headers' => ['Content-Type' => 'application/json'], 'raw_body' => '{"voice_profile_task_id":"' . $routeId . '","voice_profile_task_id":"' . $routeId . '"}'],
+        ['headers' => ['Content-Type' => 'application/json'], 'raw_body' => '{"voice_profile_task_id":"' . $routeId . '","voice.profile.task.id":"999"}'],
+        ['headers' => ['Content-Type' => 'application/json'], 'raw_body' => '{"voice_profile_task_id":["' . $routeId . '"]}'],
+        ['headers' => ['Content-Type' => 'application/json'], 'raw_body' => '{"voice_profile_task_id":"' . $routeId . '"'],
+        [
+            'method' => 'GET',
+            'headers' => [],
+            'raw_body' => '',
+            'query' => ['voice_profile_task_id' => '999'],
+            'request_uri' => '/cluster_api.php?voice.profile.task.id=999',
+        ],
+        [
+            'method' => 'GET',
+            'headers' => [],
+            'raw_body' => '',
+            'query' => ['voice_profile_task_id' => $routeId],
+            'request_uri' => '/cluster_api.php?voice_profile_task_id=' . $routeId . '&voice_profile_task_id=999',
+        ],
+        [
+            'method' => 'POST',
+            'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+            'raw_body' => 'voice_profile_task_id=' . $routeId,
+            'query' => ['voice_profile_task_id' => $routeId],
+            'request_uri' => '/cluster_api.php?voice_profile_task_id=' . $routeId,
+        ],
+    ] as $ambiguous) {
+        hub_test_assert(hub_test_throws(static fn (): ?string => hub_cluster_voice_profile_reference($ambiguous)), 'ambiguous or malformed profile references must be rejected');
+    }
+});
+
+hub_test('cluster router rejects profile key aliases and unresolved numeric query references before transport', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_ambiguity',
+            'station_token' => 'profile_ambiguity_token',
+        ], '246813579');
+        $refreshes = 0;
+        $calls = 0;
+        $seams = [
+            'refresh_due' => static function () use (&$refreshes, $fixture): array {
+                $refreshes++;
+                return [hub_test_cluster_station_fixture([
+                    'id' => (int)$fixture['station']['id'],
+                    'station_key' => 'profile_ambiguity',
+                    'modes' => ['voice_generate'],
+                ])];
+            },
+            'transport' => static function () use (&$calls): array {
+                $calls++;
+                return hub_gateway_json(200, hub_test_cluster_voice_profile_status_payload());
+            },
+        ];
+        $requests = [
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                    'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'] . '&voice.profile.task.id=999',
+                ]),
+                400,
+                'invalid_request',
+            ],
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'method' => 'GET',
+                    'headers' => [],
+                    'raw_body' => '',
+                    'query' => ['operation' => 'profile_status', 'voice_profile_task_id' => '999'],
+                    'request_uri' => '/cluster_api.php?mode=voice_generate&operation=profile_status&voice_profile_task_id=999',
+                ]),
+                404,
+                'profile_task_not_found',
+            ],
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'method' => 'GET',
+                    'headers' => [],
+                    'raw_body' => '',
+                    'query' => ['operation' => 'profile_status', 'voice_profile_task_id' => '999'],
+                    'request_uri' => '/cluster_api.php?mode=voice_generate&operation=profile_status&voice.profile.task.id=999',
+                ]),
+                400,
+                'invalid_request',
+            ],
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'method' => 'GET',
+                    'headers' => [],
+                    'raw_body' => '',
+                    'query' => ['operation' => 'profile_status', 'voice_profile_task_id' => '999'],
+                    'request_uri' => '/cluster_api.php?mode=voice_generate&operation=profile_status&voice_profile_task_id=' . $fixture['route_id'] . '&voice_profile_task_id=999',
+                ]),
+                400,
+                'invalid_request',
+            ],
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'query' => ['voice_profile_task_id' => $fixture['route_id']],
+                    'request_uri' => '/cluster_api.php?mode=voice_generate&voice_profile_task_id=' . $fixture['route_id'],
+                    'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                    'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'],
+                ]),
+                400,
+                'invalid_request',
+            ],
+        ];
+
+        foreach ($requests as [$request, $status, $code]) {
+            $response = hub_cluster_dispatch($db, 'voice_generate', $request, $seams);
+            hub_test_assert($response['status'] === $status && str_contains($response['body'], $code), 'ambiguous or unresolved profile reference must fail with the exact pre-transport error');
+        }
+        hub_test_assert($refreshes === 0 && $calls === 0, 'ambiguous aliases and unresolved numeric query references must fail before inventory and transport');
+    });
+});
+
+hub_test('cluster router rewrites clone synthesis without an operation field', function (): void {
+    hub_test_cluster_voice_profile_synthesis_without_operation('clone');
+});
+
+hub_test('cluster router rewrites ultimate clone synthesis without an operation field', function (): void {
+    hub_test_cluster_voice_profile_synthesis_without_operation('ultimate_clone');
+});
+
+hub_test('cluster router rebuilds rewritten profile JSON headers without child metadata', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        $station = hub_test_cluster_router_station($db, [
+            'station_key' => 'profile_headers',
+            'station_token' => 'profile_headers_token',
+            'modes' => ['voice_generate'],
+        ]);
+        $inventory = [hub_test_cluster_station_fixture([
+            'id' => (int)$station['id'],
+            'station_key' => 'profile_headers',
+            'modes' => ['voice_generate'],
+        ])];
+        $maliciousHeaders = [
+            'Content-Type: text/html',
+            'X-3waAIHub-Model: voice_profile_id=991337',
+            'X-3waAIHub-Device: /srv/private/profiles/reference.wav',
+            'X-3waAIHub-Elapsed-Ms: owner transcript',
+            'Cache-Control: private, no-store',
+        ];
+        $childTaskId = '75319';
+
+        $prepared = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+            'headers' => ['Content-Type' => 'multipart/form-data; boundary=profile-headers'],
+            'raw_body' => '',
+            'post' => ['operation' => 'profile_prepare', 'profile_name' => 'Header profile'],
+            'files' => [],
+        ]), [
+            'refresh_due' => static fn (): array => $inventory,
+            'transport' => static fn (): array => [
+                'status' => 200,
+                'headers' => $maliciousHeaders,
+                'body' => json_encode(['ok' => true, 'task_id' => $childTaskId], JSON_THROW_ON_ERROR),
+            ],
+        ]);
+        $profileRoute = (string)(json_decode($prepared['body'], true, 64, JSON_THROW_ON_ERROR)['task_id'] ?? '');
+        hub_test_assert(hub_cluster_router_profile_sensitive_route_id($profileRoute), 'profile_prepare must persist its sensitivity in the opaque route');
+        $status = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+            'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+            'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $profileRoute,
+        ]), [
+            'refresh_due' => static fn (): array => $inventory,
+            'transport' => static fn (): array => [
+                'status' => 200,
+                'headers' => $maliciousHeaders,
+                'body' => json_encode(hub_test_cluster_voice_profile_status_payload(), JSON_THROW_ON_ERROR),
+            ],
+        ]);
+
+        foreach ([$prepared, $status] as $response) {
+            $headers = $response['headers'] ?? [];
+            hub_test_assert($response['status'] === 200
+                && ($headers[0] ?? '') === 'Content-Type: application/json; charset=utf-8'
+                && ($headers[1] ?? '') === 'X-Content-Type-Options: nosniff'
+                && count($headers) === 3
+                && preg_match('/\AX-3waAIHub-Request-Id: [A-Za-z0-9_-]{1,128}\z/', (string)($headers[2] ?? '')) === 1, 'rewritten profile JSON must use only the fixed safe header set and Router request ID');
+            hub_test_assert(!str_contains(implode("\n", $headers), 'voice_profile_id')
+                && !str_contains(implode("\n", $headers), '/srv/private')
+                && !str_contains(implode("\n", $headers), 'owner transcript')
+                && !str_contains(implode("\n", $headers), 'text/html'), 'rewritten profile JSON headers must not inherit child-controlled metadata');
+        }
+    });
+});
+
+hub_test('cluster router keeps remote profile operations and synthesis on the prepare station', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        $preparedStation = hub_test_cluster_router_station($db, [
+            'station_key' => 'profile_origin',
+            'station_token' => 'profile_origin_token',
+            'internal_base_url' => 'https://profile-origin.internal/aihub',
+            'priority' => 20,
+            'modes' => ['voice_generate'],
+        ]);
+        $loadedStation = hub_test_cluster_router_station($db, [
+            'station_key' => 'profile_loaded',
+            'station_token' => 'profile_loaded_token',
+            'internal_base_url' => 'https://profile-loaded.internal/aihub',
+            'priority' => 1,
+            'modes' => ['voice_generate'],
+        ]);
+        $originInventory = hub_test_cluster_station_fixture([
+            'id' => (int)$preparedStation['id'],
+            'station_key' => 'profile_origin',
+            'priority' => 20,
+            'modes' => ['voice_generate'],
+            'gpu_free_vram_mb' => 1024,
+        ]);
+        $loadedInventory = hub_test_cluster_station_fixture([
+            'id' => (int)$loadedStation['id'],
+            'station_key' => 'profile_loaded',
+            'priority' => 99,
+            'modes' => ['voice_generate'],
+            'gpu_free_vram_mb' => 65536,
+        ]);
+        $wavPath = tempnam(sys_get_temp_dir(), 'cluster-profile-');
+        if ($wavPath === false) {
+            throw new RuntimeException('Cannot create cluster profile WAV fixture.');
+        }
+        file_put_contents($wavPath, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        $remotePrepareTaskId = '987654321012345678';
+        $requests = [];
+
+        try {
+            $prepared = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'headers' => ['Content-Type' => 'multipart/form-data; boundary=cluster-profile'],
+                'raw_body' => '',
+                'post' => [
+                    'operation' => 'profile_prepare',
+                    'profile_name' => 'Cluster profile',
+                    'consent_type' => 'self_recorded',
+                ],
+                'files' => ['reference_wav' => [
+                    'name' => 'reference.wav',
+                    'type' => 'audio/wav',
+                    'tmp_name' => $wavPath,
+                    'error' => UPLOAD_ERR_OK,
+                    'size' => filesize($wavPath),
+                ]],
+            ]), [
+                'refresh_due' => static fn (): array => [$originInventory, array_replace($loadedInventory, ['priority' => 1])],
+                'transport' => static function (array $request) use (&$requests, $wavPath, $remotePrepareTaskId): array {
+                    $requests[] = $request;
+                    hub_test_assert(($request['headers']['Authorization'] ?? '') === 'Bearer profile_origin_token', 'profile_prepare must use normal station selection');
+                    hub_test_assert(($request['form']['post']['operation'] ?? '') === 'profile_prepare'
+                        && ($request['form']['post']['profile_name'] ?? '') === 'Cluster profile'
+                        && ($request['form']['files']['reference_wav']['tmp_name'] ?? '') === $wavPath, 'profile_prepare multipart fields and WAV must survive relay');
+                    return hub_gateway_json(200, [
+                        'ok' => true,
+                        'task_id' => $remotePrepareTaskId,
+                        'status_url' => 'https://profile-origin.internal/aihub/api.php?mode=task_status&task_id=' . $remotePrepareTaskId,
+                    ]);
+                },
+            ]);
+            $preparedPayload = json_decode($prepared['body'], true, 64, JSON_THROW_ON_ERROR);
+            $profileRoute = (string)($preparedPayload['task_id'] ?? '');
+            hub_test_assert($prepared['status'] === 200 && hub_cluster_router_valid_route_id($profileRoute), 'profile_prepare must return one opaque Router task handle');
+            hub_test_assert(!str_contains($prepared['body'], $remotePrepareTaskId) && !str_contains($prepared['body'], 'profile-origin.internal'), 'profile_prepare response must hide child task and station details');
+
+            $cases = [
+                [
+                    hub_test_cluster_router_request((string)$customer['plain_token'], [
+                        'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                        'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $profileRoute,
+                    ]),
+                    static function (array $request) use ($remotePrepareTaskId): void {
+                        hub_test_assert($request['body'] === 'operation=profile_status&voice_profile_task_id=' . $remotePrepareTaskId, 'profile_status must receive only the numeric child task ID');
+                    },
+                    hub_test_cluster_voice_profile_status_payload([
+                        'transcript_confirmed' => false,
+                        'prompt_text_confirmed_at' => null,
+                        'prompt_text' => 'owner draft',
+                    ]),
+                ],
+                [
+                    hub_test_cluster_router_request((string)$customer['plain_token'], [
+                        'headers' => ['Content-Type' => 'application/json'],
+                        'raw_body' => '{"operation":"profile_confirm","voice_profile_task_id":"' . $profileRoute . '","prompt_text":"owner draft"}',
+                    ]),
+                    static function (array $request) use ($remotePrepareTaskId): void {
+                        hub_test_assert($request['body'] === '{"operation":"profile_confirm","voice_profile_task_id":"' . $remotePrepareTaskId . '","prompt_text":"owner draft"}', 'profile_confirm JSON must replace only the opaque route');
+                    },
+                    hub_test_cluster_voice_profile_status_payload(),
+                ],
+                [
+                    hub_test_cluster_router_request((string)$customer['plain_token'], [
+                        'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                        'raw_body' => 'operation=profile_delete&voice_profile_task_id=' . $profileRoute,
+                    ]),
+                    static function (array $request) use ($remotePrepareTaskId): void {
+                        hub_test_assert($request['body'] === 'operation=profile_delete&voice_profile_task_id=' . $remotePrepareTaskId, 'profile_delete must receive only the numeric child task ID');
+                    },
+                    hub_test_cluster_voice_profile_status_payload(['profile_status' => 'deleted']),
+                ],
+                [
+                    hub_test_cluster_router_request((string)$customer['plain_token'], [
+                        'method' => 'GET',
+                        'headers' => [],
+                        'raw_body' => '',
+                        'query' => ['operation' => 'profile_status', 'voice_profile_task_id' => $profileRoute],
+                        'request_uri' => '/cluster_api.php?mode=voice_generate&operation=profile_status&voice_profile_task_id=' . $profileRoute,
+                    ]),
+                    static function (array $request) use ($remotePrepareTaskId): void {
+                        hub_test_assert($request['method'] === 'GET'
+                            && $request['query'] === [
+                                'operation' => 'profile_status',
+                                'voice_profile_task_id' => $remotePrepareTaskId,
+                                'mode' => 'voice_generate',
+                            ], 'GET profile_status must resolve and replace its opaque query route');
+                    },
+                    hub_test_cluster_voice_profile_status_payload([
+                        'transcript_confirmed' => false,
+                        'prompt_text_confirmed_at' => null,
+                        'prompt_text' => 'owner query draft',
+                    ]),
+                ],
+                [
+                    hub_test_cluster_router_request((string)$customer['plain_token'], [
+                        'headers' => ['Content-Type' => 'multipart/form-data; boundary=cluster-clone'],
+                        'raw_body' => '',
+                        'post' => ['operation' => 'synthesize', 'mode' => 'clone', 'voice_profile_task_id' => $profileRoute, 'text' => 'clone me'],
+                        'files' => [],
+                    ]),
+                    static function (array $request) use ($remotePrepareTaskId): void {
+                        hub_test_assert(($request['form']['post'] ?? []) === [
+                            'operation' => 'synthesize',
+                            'mode' => 'clone',
+                            'voice_profile_task_id' => $remotePrepareTaskId,
+                            'text' => 'clone me',
+                        ], 'clone multipart fields must keep their shape with only the child task substituted');
+                    },
+                    ['ok' => true, 'task_id' => '987654321012345677'],
+                ],
+                [
+                    hub_test_cluster_router_request((string)$customer['plain_token'], [
+                        'headers' => ['Content-Type' => 'application/json'],
+                        'raw_body' => '{"operation":"synthesize","mode":"ultimate_clone","voice_profile_task_id":"' . $profileRoute . '","text":"ultimate me"}',
+                    ]),
+                    static function (array $request) use ($remotePrepareTaskId): void {
+                        hub_test_assert($request['body'] === '{"operation":"synthesize","mode":"ultimate_clone","voice_profile_task_id":"' . $remotePrepareTaskId . '","text":"ultimate me"}', 'ultimate clone JSON must replace only the opaque route');
+                    },
+                    ['ok' => true, 'task_id' => '987654321012345676'],
+                ],
+            ];
+            $responses = [];
+            foreach ($cases as [$profileRequest, $assertRequest, $childPayload]) {
+                $responses[] = hub_cluster_dispatch($db, 'voice_generate', $profileRequest, [
+                    'refresh_due' => static fn (): array => [$loadedInventory, array_replace($originInventory, ['priority' => 1, 'gpu_free_vram_mb' => 128])],
+                    'transport' => static function (array $request) use (&$requests, $assertRequest, $childPayload): array {
+                        $requests[] = $request;
+                        hub_test_assert(($request['headers']['Authorization'] ?? '') === 'Bearer profile_origin_token'
+                            && $request['url'] === 'https://profile-origin.internal/aihub/api.php', 'task-addressed profile requests must ignore a better-loaded station');
+                        $assertRequest($request);
+                        return hub_gateway_json(200, $childPayload);
+                    },
+                ]);
+            }
+
+            hub_test_assert(count($requests) === 7, 'prepare plus six pinned profile requests must dispatch exactly once each');
+            hub_test_assert(str_contains($responses[0]['body'], 'owner draft'), 'profile_status may return the owner unconfirmed transcript draft');
+            hub_test_assert(str_contains($responses[3]['body'], 'owner query draft'), 'GET profile_status may return the owner unconfirmed transcript draft');
+            foreach ($responses as $response) {
+                hub_test_assert($response['status'] === 200, 'all pinned profile operations must preserve successful child responses');
+                foreach ([$remotePrepareTaskId, '987654321012345677', '987654321012345676', 'profile-origin.internal', 'profile_loaded_token', '/private/profile.wav', '"voice_profile_id"', '"voice_profile_task_id"'] as $private) {
+                    hub_test_assert(!str_contains($response['body'], $private), 'Router profile response leaked child detail: ' . $private);
+                }
+            }
+            $routes = $db->query("SELECT route_id, station_id, remote_task_id FROM cluster_routes WHERE mode = 'voice_generate' AND is_async = 1 ORDER BY created_at, route_id")->fetchAll();
+            hub_test_assert(count($routes) === 3
+                && array_unique(array_map(static fn (array $route): int => (int)$route['station_id'], $routes)) === [(int)$preparedStation['id']]
+                && array_filter($routes, static fn (array $route): bool => !hub_cluster_router_profile_sensitive_route_id((string)$route['route_id'])) === [], 'prepare and profile-backed synthesized tasks must remain pinned and persist profile sensitivity');
+            $accounting = $db->query("SELECT request_id, error_code FROM cluster_route_accesses WHERE mode = 'voice_generate'")->fetchAll();
+            hub_test_assert(!str_contains(json_encode($accounting, JSON_THROW_ON_ERROR), $remotePrepareTaskId), 'cluster access accounting must not record child task IDs');
+        } finally {
+            @unlink($wavPath);
+        }
+    });
+});
+
+hub_test('cluster router fails closed on malformed successful voice profile responses', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_malformed',
+            'station_token' => 'profile_malformed_token',
+        ], '135792468');
+        $inventory = [hub_test_cluster_station_fixture([
+            'id' => (int)$fixture['station']['id'],
+            'station_key' => 'profile_malformed',
+            'modes' => ['voice_generate'],
+        ])];
+        $privateValues = ['remote_task_42', '135792468', '24682468', '/private/profile.wav', 'private transcript'];
+        $cases = [
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'headers' => ['Content-Type' => 'multipart/form-data; boundary=malformed-prepare'],
+                    'raw_body' => '',
+                    'post' => ['operation' => 'profile_prepare', 'profile_name' => 'Malformed child'],
+                    'files' => [],
+                ]),
+                [
+                    'ok' => true,
+                    'task_id' => 'remote_task_42',
+                    'voice_profile_id' => 91,
+                    'reference_audio_path' => '/private/profile.wav',
+                ],
+            ],
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'headers' => ['Content-Type' => 'application/json'],
+                    'raw_body' => '{"operation":"synthesize","mode":"clone","voice_profile_task_id":"' . $fixture['route_id'] . '","text":"hello"}',
+                ]),
+                [
+                    'ok' => true,
+                    'voice_profile_task_id' => '135792468',
+                    'voice_profile_id' => 91,
+                    'reference_audio_path' => '/private/profile.wav',
+                    'prompt_text' => 'private transcript',
+                ],
+            ],
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                    'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'],
+                ]),
+                hub_test_cluster_voice_profile_status_payload([
+                    'prompt_text' => 'private transcript',
+                    'voice_profile_id' => 91,
+                    'reference_audio_path' => '/private/profile.wav',
+                ]),
+            ],
+            [
+                hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                    'headers' => ['Content-Type' => 'application/json'],
+                    'raw_body' => '{"operation":"synthesize","mode":"ultimate_clone","voice_profile_task_id":"' . $fixture['route_id'] . '","text":"hello"}',
+                ]),
+                [
+                    'ok' => true,
+                    'task_id' => '24682468',
+                    'status' => 'queued',
+                    'voice_profile_id' => 91,
+                    'reference_audio_path' => '/private/profile.wav',
+                    'prompt_text' => 'private transcript',
+                ],
+            ],
+        ];
+        $calls = 0;
+
+        foreach ($cases as [$request, $childPayload]) {
+            $response = hub_cluster_dispatch($db, 'voice_generate', $request, [
+                'refresh_due' => static fn (): array => $inventory,
+                'transport' => static function () use (&$calls, $childPayload): array {
+                    $calls++;
+                    return hub_gateway_json(200, $childPayload);
+                },
+            ]);
+            hub_test_assert($response['status'] === 502 && str_contains($response['body'], 'router_response_invalid'), 'malformed successful profile responses must fail closed');
+            foreach ($privateValues as $private) {
+                hub_test_assert(!str_contains($response['body'], $private), 'malformed profile response leaked private child value: ' . $private);
+            }
+        }
+        hub_test_assert($calls === 4, 'each malformed response case must dispatch only to its selected or pinned station');
+        $accounting = $db->query("SELECT request_id, error_code FROM cluster_route_accesses WHERE mode = 'voice_generate'")->fetchAll();
+        $accountingJson = json_encode($accounting, JSON_THROW_ON_ERROR);
+        foreach ($privateValues as $private) {
+            hub_test_assert(!str_contains($accountingJson, $private), 'cluster access accounting must not record malformed child response detail: ' . $private);
+        }
+    });
+});
+
+hub_test('cluster router keeps self-station profile routes local and substitutes the child ID in scoped globals', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'voice_generate');
+            hub_cluster_node_configure($db, true, ['voice_generate']);
+            $self = hub_cluster_register_self_station($db);
+            $other = hub_test_cluster_router_station($db, [
+                'station_key' => 'profile_remote_better',
+                'station_token' => 'profile_remote_better_token',
+                'modes' => ['voice_generate'],
+            ]);
+            $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+            $selfInventory = hub_test_cluster_station_fixture(['id' => (int)$self['id'], 'station_key' => (string)$self['station_key'], 'modes' => ['voice_generate']]);
+            $otherInventory = hub_test_cluster_station_fixture(['id' => (int)$other['id'], 'station_key' => (string)$other['station_key'], 'priority' => 99, 'gpu_free_vram_mb' => 65536, 'modes' => ['voice_generate']]);
+            $direct = 0;
+            $http = 0;
+            $oldGet = $_GET;
+
+            $prepared = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'headers' => ['Content-Type' => 'multipart/form-data; boundary=self-profile'],
+                'raw_body' => '',
+                'post' => ['operation' => 'profile_prepare', 'profile_name' => 'Self profile', 'consent_type' => 'self_recorded'],
+                'files' => [],
+            ]), [
+                'refresh_due' => static fn (): array => [$selfInventory],
+                'direct_dispatcher' => static function () use (&$direct): array {
+                    $direct++;
+                    return hub_gateway_json(200, ['ok' => true, 'task_id' => '314159265358979323']);
+                },
+            ]);
+            $profileRoute = (string)(json_decode($prepared['body'], true, 64, JSON_THROW_ON_ERROR)['task_id'] ?? '');
+            hub_test_assert(hub_cluster_router_valid_route_id($profileRoute), 'self profile_prepare must return an opaque route');
+
+            $status = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'headers' => ['Content-Type' => 'application/json'],
+                'raw_body' => '{"operation":"profile_status","voice_profile_task_id":"' . $profileRoute . '"}',
+            ]), [
+                'refresh_due' => static fn (): array => [$otherInventory, array_replace($selfInventory, ['priority' => 1, 'gpu_free_vram_mb' => 1])],
+                'direct_dispatcher' => static function (PDO $db, string $mode, array $request) use (&$direct): array {
+                    $direct++;
+                    hub_test_assert($_POST === ['operation' => 'profile_status', 'voice_profile_task_id' => '314159265358979323'], 'self JSON profile request must expose only the numeric child task ID to the local gateway');
+                    hub_test_assert($_FILES === [] && !array_key_exists('raw_body', $request), 'self profile substitution must stay request-scoped');
+                    return hub_gateway_json(200, hub_test_cluster_voice_profile_status_payload());
+                },
+                'transport' => static function () use (&$http): array {
+                    $http++;
+                    return hub_gateway_error(500, 'unexpected_http', 'unexpected HTTP');
+                },
+            ]);
+
+            $queryStatus = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'method' => 'GET',
+                'headers' => [],
+                'raw_body' => '',
+                'query' => ['operation' => 'profile_status', 'voice_profile_task_id' => $profileRoute],
+                'request_uri' => '/cluster_api.php?mode=voice_generate&operation=profile_status&voice_profile_task_id=' . $profileRoute,
+            ]), [
+                'refresh_due' => static fn (): array => [$otherInventory, array_replace($selfInventory, ['priority' => 1, 'gpu_free_vram_mb' => 1])],
+                'direct_dispatcher' => static function () use (&$direct): array {
+                    $direct++;
+                    hub_test_assert($_GET === [
+                        'operation' => 'profile_status',
+                        'voice_profile_task_id' => '314159265358979323',
+                        'mode' => 'voice_generate',
+                    ], 'self GET profile request must expose only the numeric child task ID to the local gateway');
+                    return hub_gateway_json(200, hub_test_cluster_voice_profile_status_payload());
+                },
+                'transport' => static function () use (&$http): array {
+                    $http++;
+                    return hub_gateway_error(500, 'unexpected_http', 'unexpected HTTP');
+                },
+            ]);
+
+            hub_test_assert($status['status'] === 200 && $queryStatus['status'] === 200 && $direct === 3 && $http === 0, 'pinned self profile requests must stay in-process even when another station is preferred');
+            hub_test_assert($_GET === $oldGet && $_POST === [] && $_FILES === [], 'self profile dispatch must restore request globals');
+        });
+    });
+});
+
+hub_test('cluster router rejects foreign or unavailable profile routes before pinned transport and never retries', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_pinned',
+            'station_token' => 'profile_pinned_token',
+            'internal_base_url' => 'https://profile-pinned.internal/aihub',
+        ], '246813579');
+        $otherStation = hub_test_cluster_router_station($db, [
+            'station_key' => 'profile_other',
+            'station_token' => 'profile_other_token',
+            'modes' => ['voice_generate'],
+        ]);
+        $foreign = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        $request = static fn (string $token): array => hub_test_cluster_router_request($token, [
+            'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+            'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'],
+        ]);
+        $refreshes = 0;
+        $calls = 0;
+        $foreignResponse = hub_cluster_dispatch($db, 'voice_generate', $request((string)$foreign['plain_token']), [
+            'refresh_due' => static function () use (&$refreshes): array {
+                $refreshes++;
+                return [];
+            },
+            'transport' => static function () use (&$calls): array {
+                $calls++;
+                return hub_gateway_json(200, ['ok' => true]);
+            },
+        ]);
+        hub_test_assert($foreignResponse['status'] === 404
+            && str_contains($foreignResponse['body'], 'profile_task_not_found')
+            && $refreshes === 0
+            && $calls === 0, 'foreign customer routes must fail with the profile-specific 404 before inventory or transport');
+
+        $pinnedInventory = hub_test_cluster_station_fixture([
+            'id' => (int)$fixture['station']['id'],
+            'station_key' => 'profile_pinned',
+            'modes' => ['voice_generate'],
+        ]);
+        foreach ([
+            [],
+            [array_replace($pinnedInventory, ['fresh' => false])],
+            [array_replace($pinnedInventory, ['enabled' => false])],
+        ] as $inventory) {
+            $unavailable = hub_cluster_dispatch($db, 'voice_generate', $request((string)$fixture['customer']['plain_token']), [
+                'refresh_due' => static fn (): array => $inventory,
+                'transport' => static function () use (&$calls): array {
+                    $calls++;
+                    return hub_gateway_json(200, ['ok' => true]);
+                },
+            ]);
+            hub_test_assert($unavailable['status'] === 503 && str_contains($unavailable['body'], 'station_unavailable'), 'missing, stale, or disabled pinned inventory must return station_unavailable');
+        }
+        hub_test_assert($calls === 0, 'unavailable pinned stations must fail before transport');
+
+        $calls = 0;
+        $failed = hub_cluster_dispatch($db, 'voice_generate', $request((string)$fixture['customer']['plain_token']), [
+            'refresh_due' => static fn (): array => [
+                hub_test_cluster_station_fixture([
+                    'id' => (int)$otherStation['id'],
+                    'station_key' => 'profile_other',
+                    'priority' => 99,
+                    'gpu_free_vram_mb' => 65536,
+                    'modes' => ['voice_generate'],
+                ]),
+                $pinnedInventory,
+            ],
+            'transport' => static function (array $request) use (&$calls): array {
+                $calls++;
+                hub_test_assert(($request['headers']['Authorization'] ?? '') === 'Bearer profile_pinned_token', 'pinned dispatch must address only the profile origin');
+                throw new RuntimeException('pinned station failed');
+            },
+        ]);
+        hub_test_assert($failed['status'] === 502 && $calls === 1, 'pinned dispatch failure must never retry the better-loaded station');
+
+        $db->prepare("UPDATE cluster_routes SET mode = 'vision' WHERE route_id = :route_id")->execute([':route_id' => $fixture['route_id']]);
+        $wrongMode = hub_cluster_dispatch($db, 'voice_generate', $request((string)$fixture['customer']['plain_token']), [
+            'refresh_due' => static function () use (&$refreshes): array {
+                $refreshes++;
+                return [];
+            },
+        ]);
+        hub_test_assert($wrongMode['status'] === 404 && str_contains($wrongMode['body'], 'profile_task_not_found'), 'only voice_generate task routes may address a profile');
+
+        $db->prepare("UPDATE cluster_routes SET mode = 'voice_generate' WHERE route_id = :route_id")->execute([':route_id' => $fixture['route_id']]);
+        hub_add_api_token_mode_permission($db, (int)$fixture['customer']['token_id'], 'vision');
+        $crossMode = hub_cluster_dispatch($db, 'vision', $request((string)$fixture['customer']['plain_token']), [
+            'refresh_due' => static function () use (&$refreshes): array {
+                $refreshes++;
+                return [];
+            },
+        ]);
+        hub_test_assert($crossMode['status'] === 404 && str_contains($crossMode['body'], 'profile_task_not_found'), 'voice profile task handles must not influence another Router mode');
+    });
+});
+
+hub_test('cluster router exposes only the exact voice profile prepare task result', function (): void {
+    $result = [
+        'prompt_text_sha256' => str_repeat('a', 64),
+        'text_chars' => 123,
+        'transcript_confirmed' => false,
+        'transcription_status' => 'ready',
+        'kind' => 'voice_profile_prepare',
+    ];
+    $payload = ['cluster_artifact_index' => [], 'result' => $result];
+
+    hub_test_assert(hub_cluster_router_public_task_result($payload) === $result, 'voice profile prepare result must expose only its bounded metadata regardless of key order');
+    foreach ([
+        $result + ['task_id' => 42],
+        array_replace($result, ['kind' => 'pack_job']),
+        array_replace($result, ['transcription_status' => 'private_state']),
+        array_replace($result, ['transcript_confirmed' => 'false']),
+        array_replace($result, ['text_chars' => 20001]),
+        array_replace($result, ['prompt_text_sha256' => str_repeat('A', 64)]),
+    ] as $invalidResult) {
+        hub_test_assert(hub_test_throws(static fn (): array => hub_cluster_router_public_task_result([
+            'cluster_artifact_index' => [],
+            'result' => $invalidResult,
+        ])), 'arbitrary or unbounded child profile results must be rejected');
+    }
+});
+
 hub_test('cluster router followups require the exact customer token before pinned dispatch', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
@@ -2108,7 +3079,11 @@ hub_test('cluster router result maps artifacts and proxies only mapped artifacts
         ], static function (array $request) use (&$requests): array {
             $requests++;
             hub_test_assert($request['query'] === ['mode' => 'artifact', 'task_id' => 'remote_task_42', 'artifact_id' => '10'], 'artifact proxy must use the mapped remote task and artifact IDs only');
-            return ['status' => 200, 'raw_headers' => "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n", 'body' => 'png-data'];
+            return [
+                'status' => 200,
+                'raw_headers' => "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nX-3waAIHub-Device: cuda\r\nCache-Control: private, no-store\r\n",
+                'body' => 'png-data',
+            ];
         });
 
         $unknown = hub_cluster_dispatch_followup($db, 'cluster_artifact', [
@@ -2120,8 +3095,108 @@ hub_test('cluster router result maps artifacts and proxies only mapped artifacts
             return hub_gateway_json(200, ['ok' => true]);
         });
 
-        hub_test_assert($artifact['status'] === 200 && $artifact['body'] === 'png-data' && ($artifact['headers'][0] ?? '') === 'Content-Type: image/png', 'known artifacts must preserve permitted proxy content types');
+        hub_test_assert($artifact['status'] === 200
+            && $artifact['body'] === 'png-data'
+            && ($artifact['headers'][0] ?? '') === 'Content-Type: image/png'
+            && in_array('X-3waAIHub-Device: cuda', $artifact['headers'] ?? [], true)
+            && in_array('Cache-Control: private, no-store', $artifact['headers'] ?? [], true),
+            'ordinary known artifacts must preserve permitted proxy content types and allowlisted metadata');
         hub_test_assert($unknown['status'] === 404 && str_contains($unknown['body'], 'artifact_not_found') && $requests === 2, 'unknown or nested artifact IDs must reject before dispatch');
+    });
+});
+
+hub_test('cluster router rebuilds profile-sensitive artifact headers without child metadata', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_artifact_station',
+            'station_token' => 'profile_artifact_station_token',
+        ], '75319');
+        $result = hub_cluster_dispatch_followup($db, 'cluster_task_result', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => hub_gateway_json(200, [
+            'ok' => true,
+            'task_id' => '75319',
+            'result' => [
+                'kind' => 'voice_profile_prepare',
+                'transcription_status' => 'ready',
+                'transcript_confirmed' => false,
+                'text_chars' => 24,
+                'prompt_text_sha256' => str_repeat('a', 64),
+            ],
+            'cluster_artifact_index' => [
+                ['id' => 17, 'size_bytes' => 7],
+                ['id' => 18, 'size_bytes' => 7],
+            ],
+        ]));
+        hub_test_assert($result['status'] === 200, 'profile result must authorize its child artifact through the opaque route');
+
+        $artifact = hub_cluster_dispatch_followup($db, 'cluster_artifact', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id'], 'artifact_id' => '17'],
+        ], static function (array $request): array {
+            hub_test_assert($request['query'] === [
+                'mode' => 'artifact',
+                'task_id' => '75319',
+                'artifact_id' => '17',
+            ], 'profile artifact proxy must use only the pinned numeric child task and mapped artifact IDs');
+            return [
+                'status' => 200,
+                'raw_headers' => "HTTP/1.1 200 OK\r\n"
+                    . "Content-Type: audio/wav\r\n"
+                    . "Content-Length: 999\r\n"
+                    . "Content-Disposition: attachment; filename=\"voice_profile_id_991337-private.wav\"\r\n"
+                    . "X-3waAIHub-Model: voice_profile_id=991337 /srv/private/profiles/reference.wav\r\n"
+                    . "X-3waAIHub-Device: cuda\r\n"
+                    . "X-3waAIHub-Elapsed-Ms: 991337\r\n"
+                    . "Cache-Control: private, no-store\r\n",
+                'body' => 'wavdata',
+            ];
+        });
+        $headers = $artifact['headers'] ?? [];
+        $headerText = implode("\n", $headers);
+        $maliciousMimeArtifact = hub_cluster_dispatch_followup($db, 'cluster_artifact', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id'], 'artifact_id' => '18'],
+        ], static fn (): array => [
+            'status' => 200,
+            'raw_headers' => "HTTP/1.1 200 OK\r\n"
+                . "Content-Type: application/voice_profile_id_991337\r\n"
+                . "Content-Disposition: inline\r\n",
+            'body' => 'private',
+        ]);
+        $maliciousMimeHeaders = implode("\n", $maliciousMimeArtifact['headers'] ?? []);
+
+        hub_test_assert($artifact['status'] === 200
+            && $artifact['body'] === 'wavdata'
+            && in_array('Content-Type: audio/wav', $headers, true)
+            && in_array('Content-Length: 7', $headers, true)
+            && in_array('Content-Disposition: attachment', $headers, true)
+            && in_array('X-Content-Type-Options: nosniff', $headers, true),
+            'profile-sensitive artifacts must preserve safe media, actual length, and disposition semantics');
+        foreach ([
+            'voice_profile_id',
+            '/srv/private',
+            'X-3waAIHub-Model',
+            'X-3waAIHub-Device',
+            'X-3waAIHub-Elapsed-Ms',
+            'Cache-Control',
+            'filename=',
+        ] as $privateHeaderValue) {
+            hub_test_assert(!str_contains($headerText, $privateHeaderValue),
+                'profile-sensitive artifact leaked child-controlled header metadata: ' . $privateHeaderValue);
+        }
+        hub_test_assert($maliciousMimeArtifact['status'] === 200
+            && $maliciousMimeArtifact['body'] === 'private'
+            && str_contains($maliciousMimeHeaders, 'Content-Type: application/octet-stream')
+            && str_contains($maliciousMimeHeaders, 'Content-Length: 7')
+            && str_contains($maliciousMimeHeaders, 'Content-Disposition: inline')
+            && !str_contains($maliciousMimeHeaders, 'voice_profile_id_991337'),
+            'profile-sensitive artifacts must never reflect arbitrary syntactically valid child MIME types');
     });
 });
 
@@ -2311,6 +3386,52 @@ hub_test('cluster router projects bounded sanitized native task logs', function 
             'query' => ['task_id' => $fixture['route_id']],
         ], static fn (): array => hub_gateway_json(200, ['ok' => true, 'task_id' => 'remote_task_42', 'logs' => 'not-a-native-log-list']));
         hub_test_assert($invalid['status'] === 502 && str_contains($invalid['body'], 'router_response_invalid'), 'invalid native log shapes must not masquerade as empty logs');
+    });
+});
+
+hub_test('cluster router projects routed voice profile task logs to an empty safe view', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_log_station',
+            'station_token' => 'profile_log_station_token',
+        ], '75319');
+        $privateValues = [
+            'voice_profile_id=991337',
+            '/srv/private/profiles/member-12/reference.wav',
+            'Never reveal this owner transcript',
+        ];
+        $response = hub_cluster_dispatch_followup($db, 'cluster_task_log', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static fn (): array => [
+            'status' => 200,
+            'headers' => [
+                'Content-Type: text/html',
+                'X-3waAIHub-Model: voice_profile_id=991337',
+                'X-3waAIHub-Device: /srv/private/profiles/member-12/reference.wav',
+            ],
+            'body' => json_encode([
+                'ok' => true,
+                'task_id' => '75319',
+                'logs' => [[
+                    'level' => 'info',
+                    'message' => implode(' ', $privateValues),
+                    'created_at' => '2026-07-31 12:00:00',
+                ]],
+            ], JSON_THROW_ON_ERROR),
+        ]);
+        $payload = json_decode($response['body'], true, 64, JSON_THROW_ON_ERROR);
+        $headers = implode("\n", $response['headers'] ?? []);
+
+        hub_test_assert($response['status'] === 200 && ($payload['logs'] ?? null) === [], 'routed voice profile task logs must consistently project to an empty list');
+        hub_test_assert(str_contains($headers, 'Content-Type: application/json; charset=utf-8')
+            && !str_contains($headers, 'text/html'), 'routed voice profile task logs must use fresh JSON headers');
+        foreach ($privateValues as $private) {
+            hub_test_assert(!str_contains($response['body'], $private)
+                && !str_contains($headers, $private), 'routed voice profile logs leaked private child data: ' . $private);
+        }
     });
 });
 

@@ -1026,6 +1026,52 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     $normalized['client_ip'] = $clientIp;
     $normalized['bearer_token'] = $providedToken;
 
+    $profileRoute = null;
+    $profilePayload = null;
+    try {
+        $profileReference = hub_cluster_voice_profile_reference($normalized);
+    } catch (Throwable) {
+        return $finish(hub_gateway_error(400, 'invalid_request', 'invalid request'));
+    }
+    if ($profileReference !== null) {
+        $profileRoute = hub_cluster_get_route_for_customer($db, $profileReference, (array)$auth['context']);
+        $remoteTaskId = $profileRoute['remote_task_id'] ?? null;
+        if ($profileRoute === null
+            || $mode !== 'voice_generate'
+            || (string)($profileRoute['mode'] ?? '') !== 'voice_generate'
+            || (int)($profileRoute['station_id'] ?? 0) < 1
+            || (!is_int($remoteTaskId) && !is_string($remoteTaskId))
+            || preg_match('/\A[1-9][0-9]{0,17}\z/', (string)$remoteTaskId) !== 1
+        ) {
+            return $finish(hub_gateway_error(404, 'profile_task_not_found', 'voice profile task was not found'));
+        }
+        try {
+            $normalized = hub_cluster_replace_voice_profile_reference($normalized, (string)$remoteTaskId);
+        } catch (Throwable) {
+            return $finish(hub_gateway_error(400, 'invalid_request', 'invalid request'));
+        }
+    }
+    if ($mode === 'voice_generate') {
+        try {
+            $profilePayload = hub_cluster_router_voice_profile_payload($normalized);
+        } catch (Throwable) {
+            return $finish(hub_gateway_error(400, 'invalid_request', 'invalid request'));
+        }
+    }
+    $profileOperation = is_array($profilePayload) && is_string($profilePayload['operation'] ?? null)
+        ? $profilePayload['operation']
+        : null;
+    $isImplicitProfileSynthesis = is_array($profilePayload)
+        && !array_key_exists('operation', $profilePayload)
+        && $profileRoute !== null
+        && is_string($profilePayload['mode'] ?? null)
+        && in_array($profilePayload['mode'], ['clone', 'ultimate_clone'], true);
+    $profileResponseOperation = $isImplicitProfileSynthesis ? 'synthesize' : $profileOperation;
+    $isProfileRequest = $mode === 'voice_generate'
+        && ($profileRoute !== null || in_array($profileOperation, ['profile_prepare', 'profile_status', 'profile_confirm', 'profile_delete', 'synthesize'], true));
+    $profileSensitive = $mode === 'voice_generate'
+        && ($profileRoute !== null || $profileOperation === 'profile_prepare');
+
     $refreshDue = is_callable($seams['refresh_due'] ?? null)
         ? $seams['refresh_due']
         : static fn (): array => hub_cluster_refresh_due_stations($db);
@@ -1037,14 +1083,34 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     if (!is_array($inventory)) {
         return $finish(hub_gateway_error(503, 'router_unavailable', 'cluster inventory is unavailable'));
     }
-    $selectedInventory = hub_cluster_select_station($mode, $inventory);
+    if ($profileRoute !== null) {
+        $selectedInventory = null;
+        foreach ($inventory as $candidate) {
+            if (is_array($candidate) && (int)($candidate['id'] ?? 0) === (int)$profileRoute['station_id']) {
+                $selectedInventory = $candidate;
+                break;
+            }
+        }
+        if ($selectedInventory === null
+            || empty($selectedInventory['enabled'])
+            || empty($selectedInventory['fresh'])
+            || !is_array($selectedInventory['modes'] ?? null)
+            || !in_array($mode, $selectedInventory['modes'], true)
+        ) {
+            return $finish(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
+        }
+    } else {
+        $selectedInventory = hub_cluster_select_station($mode, $inventory);
+    }
     if ($selectedInventory === null) {
         return $finish(hub_gateway_error(503, 'router_unavailable', 'no eligible cluster station is available'));
     }
     $stationId = (int)($selectedInventory['id'] ?? 0);
     $station = $stationId > 0 ? hub_cluster_get_station($db, $stationId) : null;
     if ($station === null || empty($station['enabled'])) {
-        return $finish(hub_gateway_error(503, 'router_unavailable', 'no eligible cluster station is available'));
+        return $finish($profileRoute === null
+            ? hub_gateway_error(503, 'router_unavailable', 'no eligible cluster station is available')
+            : hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
     }
 
     $selfStation = hub_cluster_router_station_is_self($db, $station);
@@ -1056,14 +1122,14 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $stationUrl = hub_cluster_station_request_base_url($station) . 'api.php';
         }
     } catch (Throwable) {
-        return $finish(hub_gateway_error(503, 'router_unavailable', 'selected cluster station is unavailable'));
+        return $finish(hub_gateway_error(503, $profileRoute === null ? 'router_unavailable' : 'station_unavailable', 'selected cluster station is unavailable'));
     }
     $selfPeerIp = $selfStation ? hub_cluster_router_self_station_peer_ip($db, $station, $stationToken) : null;
     if ($selfStation && $selfPeerIp === null) {
-        return $finish(hub_gateway_error(503, 'router_unavailable', 'selected cluster station is unavailable'));
+        return $finish(hub_gateway_error(503, $profileRoute === null ? 'router_unavailable' : 'station_unavailable', 'selected cluster station is unavailable'));
     }
 
-    $routeId = hub_cluster_router_admit_route($db, $station, (array)$auth['context'], $mode, !$selfStation);
+    $routeId = hub_cluster_router_admit_route($db, $station, (array)$auth['context'], $mode, !$selfStation, $profileSensitive);
     if ($routeId === null) {
         return $finish(hub_gateway_error(429, 'router_busy', 'cluster router is busy'));
     }
@@ -1075,6 +1141,10 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
                 ? $seams['direct_dispatcher']
                 : static fn (PDO $db, string $mode, array $internalRequest): array => hub_gateway_dispatch($db, $mode, null, $internalRequest);
             $directRequest = $normalized;
+            if ($profileRoute !== null && !is_array($directRequest['form'] ?? null)) {
+                $directRequest['form'] = ['post' => $profilePayload, 'files' => []];
+                $directRequest['headers']['Content-Type'] = 'application/x-www-form-urlencoded';
+            }
             $directRequest['bearer_token'] = $stationToken;
             $directRequest['client_ip'] = $selfPeerIp;
             $result = hub_cluster_router_dispatch_self($db, $mode, $directRequest, $dispatcher);
@@ -1100,20 +1170,42 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         $payload = hub_cluster_router_json_payload($response);
         if ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
-        } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300 && is_array($payload)) {
-            if ($mode === 'tts') {
+        } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300) {
+            if ($isProfileRequest && !is_array($payload)) {
+                $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+            } elseif ($isProfileRequest && in_array($profileResponseOperation, ['profile_status', 'profile_confirm', 'profile_delete'], true)) {
+                try {
+                    $payload = hub_cluster_router_public_voice_profile_response($payload, $profileResponseOperation === 'profile_status');
+                    $response = hub_cluster_router_with_json_payload($response, $payload, $profileSensitive);
+                } catch (Throwable) {
+                    $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+                }
+            } elseif ($isProfileRequest && in_array($profileResponseOperation, ['profile_prepare', 'synthesize'], true)) {
+                try {
+                    hub_cluster_router_voice_profile_async_task_id($payload);
+                    $payload = hub_cluster_rewrite_async_response($db, [
+                        'route_id' => $routeId,
+                        'station_id' => (int)$station['id'],
+                    ], $payload, hub_cluster_router_api_base_url());
+                    $response = hub_cluster_router_with_json_payload($response, $payload, $profileSensitive);
+                } catch (Throwable) {
+                    $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+                }
+            } elseif ($isProfileRequest) {
+                $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+            } elseif ($mode === 'tts' && is_array($payload)) {
                 try {
                     $payload = hub_cluster_rewrite_tts_response($db, ['route_id' => $routeId], $payload, hub_cluster_router_api_base_url());
                     $response = hub_cluster_router_with_json_payload($response, $payload);
                 } catch (Throwable) {
                     $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
                 }
-            } elseif (is_scalar($payload['task_id'] ?? null)) {
+            } elseif (is_array($payload) && is_scalar($payload['task_id'] ?? null)) {
                 $payload = hub_cluster_rewrite_async_response($db, [
                     'route_id' => $routeId,
                     'station_id' => (int)$station['id'],
                 ], $payload, hub_cluster_router_api_base_url());
-                $response = hub_cluster_router_with_json_payload($response, $payload);
+                $response = hub_cluster_router_with_json_payload($response, $payload, $profileSensitive);
             }
         }
     } catch (Throwable) {
@@ -1210,6 +1302,355 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
     ];
 }
 
+function hub_cluster_router_normalized_content_type(array $normalized): string
+{
+    $value = (string)($normalized['headers']['Content-Type'] ?? '');
+
+    return strtolower(trim(explode(';', $value, 2)[0]));
+}
+
+function hub_cluster_router_voice_profile_payload(array $normalized): array
+{
+    if (($normalized['method'] ?? null) === 'GET') {
+        $payload = $normalized['query'] ?? null;
+        if (!is_array($payload)) {
+            throw new UnexpectedValueException('invalid voice profile query');
+        }
+
+        return $payload;
+    }
+    if (is_array($normalized['form'] ?? null) && is_array($normalized['form']['post'] ?? null)) {
+        return $normalized['form']['post'];
+    }
+    $contentType = hub_cluster_router_normalized_content_type($normalized);
+    if ($contentType === 'application/json') {
+        $payload = json_decode((string)($normalized['raw_body'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
+    } elseif ($contentType === 'application/x-www-form-urlencoded') {
+        parse_str((string)($normalized['raw_body'] ?? ''), $payload);
+    } else {
+        return [];
+    }
+    if (!is_array($payload)) {
+        throw new UnexpectedValueException('invalid voice profile payload');
+    }
+
+    return $payload;
+}
+
+function hub_cluster_router_key_maps_to_voice_profile_reference(string $key): bool
+{
+    $parsed = [];
+    parse_str(rawurlencode($key) . '=1', $parsed);
+
+    return array_key_exists('voice_profile_task_id', $parsed);
+}
+
+function hub_cluster_router_urlencoded_profile_reference(string $body): ?array
+{
+    if (preg_match('/%(?![A-Fa-f0-9]{2})/', $body) === 1) {
+        throw new UnexpectedValueException('invalid urlencoded body');
+    }
+    $matches = [];
+    $offset = 0;
+    foreach (explode('&', $body) as $segment) {
+        $equals = strpos($segment, '=');
+        $rawKey = $equals === false ? $segment : substr($segment, 0, $equals);
+        $key = urldecode($rawKey);
+        if (preg_match('/[\x00-\x1F\x7F]/', $key) === 1) {
+            throw new UnexpectedValueException('invalid urlencoded field');
+        }
+        if ($key !== 'voice_profile_task_id' && hub_cluster_router_key_maps_to_voice_profile_reference($key)) {
+            throw new UnexpectedValueException('ambiguous voice profile reference');
+        }
+        if ($key === 'voice_profile_task_id') {
+            $rawValue = $equals === false ? '' : substr($segment, $equals + 1);
+            $value = urldecode($rawValue);
+            if (preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+                throw new UnexpectedValueException('invalid voice profile reference');
+            }
+            $matches[] = [
+                'value' => $value,
+                'offset' => $offset + ($equals === false ? strlen($segment) : $equals + 1),
+                'length' => strlen($rawValue),
+                'needs_equals' => $equals === false,
+            ];
+        }
+        $offset += strlen($segment) + 1;
+    }
+    if (count($matches) > 1) {
+        throw new UnexpectedValueException('duplicate voice profile reference');
+    }
+
+    return $matches[0] ?? null;
+}
+
+function hub_cluster_router_json_profile_reference(string $body): ?array
+{
+    try {
+        json_decode($body, true, 32, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
+    } catch (Throwable $e) {
+        throw new UnexpectedValueException('invalid JSON body', 0, $e);
+    }
+
+    $length = strlen($body);
+    $whitespace = " \t\r\n";
+    $skipWhitespace = static function (int $offset) use ($body, $length, $whitespace): int {
+        while ($offset < $length && str_contains($whitespace, $body[$offset])) {
+            $offset++;
+        }
+        return $offset;
+    };
+    $scanString = static function (int $offset) use ($body, $length): int {
+        for ($offset++; $offset < $length; $offset++) {
+            if ($body[$offset] === '\\') {
+                $offset++;
+                continue;
+            }
+            if ($body[$offset] === '"') {
+                return $offset + 1;
+            }
+        }
+        throw new UnexpectedValueException('invalid JSON string');
+    };
+
+    $offset = $skipWhitespace(0);
+    if ($offset >= $length || $body[$offset] !== '{') {
+        throw new UnexpectedValueException('JSON body must be an object');
+    }
+    $offset++;
+    $matches = [];
+    while (true) {
+        $offset = $skipWhitespace($offset);
+        if ($offset < $length && $body[$offset] === '}') {
+            $offset++;
+            break;
+        }
+        if ($offset >= $length || $body[$offset] !== '"') {
+            throw new UnexpectedValueException('invalid JSON object');
+        }
+        $keyStart = $offset;
+        $offset = $scanString($offset);
+        $key = json_decode(substr($body, $keyStart, $offset - $keyStart), true, 2, JSON_THROW_ON_ERROR);
+        if (!is_string($key) || preg_match('/[\x00-\x1F\x7F]/', $key) === 1) {
+            throw new UnexpectedValueException('invalid JSON field');
+        }
+        if ($key !== 'voice_profile_task_id' && hub_cluster_router_key_maps_to_voice_profile_reference($key)) {
+            throw new UnexpectedValueException('ambiguous voice profile reference');
+        }
+        $offset = $skipWhitespace($offset);
+        if ($offset >= $length || $body[$offset] !== ':') {
+            throw new UnexpectedValueException('invalid JSON object');
+        }
+        $valueStart = $skipWhitespace($offset + 1);
+        $offset = $valueStart;
+        $depth = 0;
+        while ($offset < $length) {
+            $character = $body[$offset];
+            if ($character === '"') {
+                $offset = $scanString($offset);
+                continue;
+            }
+            if ($character === '{' || $character === '[') {
+                $depth++;
+            } elseif ($character === '}' || $character === ']') {
+                if ($depth === 0) {
+                    break;
+                }
+                $depth--;
+            } elseif ($character === ',' && $depth === 0) {
+                break;
+            }
+            $offset++;
+        }
+        $valueEnd = $offset;
+        while ($valueEnd > $valueStart && str_contains($whitespace, $body[$valueEnd - 1])) {
+            $valueEnd--;
+        }
+        if ($key === 'voice_profile_task_id') {
+            $value = json_decode(substr($body, $valueStart, $valueEnd - $valueStart), true, 32, JSON_THROW_ON_ERROR | JSON_BIGINT_AS_STRING);
+            if (!is_scalar($value) || preg_match('/[\x00-\x1F\x7F]/', (string)$value) === 1) {
+                throw new UnexpectedValueException('invalid voice profile reference');
+            }
+            $matches[] = [
+                'value' => (string)$value,
+                'offset' => $valueStart,
+                'length' => $valueEnd - $valueStart,
+            ];
+        }
+        if ($offset < $length && $body[$offset] === ',') {
+            $offset++;
+            continue;
+        }
+        if ($offset < $length && $body[$offset] === '}') {
+            $offset++;
+            break;
+        }
+        throw new UnexpectedValueException('invalid JSON object');
+    }
+    if ($skipWhitespace($offset) !== $length) {
+        throw new UnexpectedValueException('invalid JSON body');
+    }
+    if (count($matches) > 1) {
+        throw new UnexpectedValueException('duplicate voice profile reference');
+    }
+
+    return $matches[0] ?? null;
+}
+
+function hub_cluster_router_query_profile_reference(array $normalized): ?array
+{
+    $query = $normalized['query'] ?? [];
+    if (!is_array($query)) {
+        throw new UnexpectedValueException('invalid request query');
+    }
+    $value = null;
+    foreach ($query as $key => $candidate) {
+        if (!is_string($key) || preg_match('/[\x00-\x1F\x7F]/', $key) === 1) {
+            throw new UnexpectedValueException('invalid query field');
+        }
+        if ($key !== 'voice_profile_task_id' && hub_cluster_router_key_maps_to_voice_profile_reference($key)) {
+            throw new UnexpectedValueException('ambiguous voice profile reference');
+        }
+        if ($key === 'voice_profile_task_id') {
+            if (!is_scalar($candidate)) {
+                throw new UnexpectedValueException('invalid voice profile reference');
+            }
+            $candidate = (string)$candidate;
+            if (preg_match('/[\x00-\x1F\x7F]/', $candidate) === 1) {
+                throw new UnexpectedValueException('invalid voice profile reference');
+            }
+            $value = $candidate;
+        }
+    }
+
+    $requestUri = $normalized['request_uri'] ?? '';
+    if (!is_string($requestUri)) {
+        throw new UnexpectedValueException('invalid request URI');
+    }
+    $question = strpos($requestUri, '?');
+    if ($question === false) {
+        return $value === null ? null : ['value' => $value];
+    }
+    $queryStart = $question + 1;
+    $fragment = strpos($requestUri, '#', $queryStart);
+    $queryLength = ($fragment === false ? strlen($requestUri) : $fragment) - $queryStart;
+    $rawReference = hub_cluster_router_urlencoded_profile_reference(substr($requestUri, $queryStart, $queryLength));
+    if ($rawReference !== null && ($value === null || !hash_equals($value, (string)$rawReference['value']))) {
+        throw new UnexpectedValueException('ambiguous voice profile reference');
+    }
+    if ($value === null) {
+        return null;
+    }
+
+    return [
+        'value' => $value,
+        'uri_offset' => $rawReference === null ? null : $queryStart + (int)$rawReference['offset'],
+        'uri_length' => $rawReference === null ? null : (int)$rawReference['length'],
+        'uri_needs_equals' => (bool)($rawReference['needs_equals'] ?? false),
+    ];
+}
+
+function hub_cluster_voice_profile_reference(array $normalized): ?string
+{
+    $references = [];
+    $queryReference = hub_cluster_router_query_profile_reference($normalized);
+    if ($queryReference !== null) {
+        $references[] = $queryReference['value'];
+    }
+
+    if (array_key_exists('form', $normalized)) {
+        $form = $normalized['form'];
+        if (!is_array($form) || !is_array($form['post'] ?? null)) {
+            throw new UnexpectedValueException('invalid multipart form');
+        }
+        $reference = null;
+        foreach ($form['post'] as $key => $value) {
+            if (!is_string($key)) {
+                throw new UnexpectedValueException('invalid multipart field');
+            }
+            if ($key !== 'voice_profile_task_id' && hub_cluster_router_key_maps_to_voice_profile_reference($key)) {
+                throw new UnexpectedValueException('ambiguous voice profile reference');
+            }
+            if ($key === 'voice_profile_task_id') {
+                if (!is_scalar($value)) {
+                    throw new UnexpectedValueException('invalid voice profile reference');
+                }
+                $value = (string)$value;
+                if (preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+                    throw new UnexpectedValueException('invalid voice profile reference');
+                }
+                $reference = $value;
+            }
+        }
+        if ($reference !== null) {
+            $references[] = $reference;
+        }
+    } else {
+        $contentType = hub_cluster_router_normalized_content_type($normalized);
+        if (in_array($contentType, ['application/x-www-form-urlencoded', 'application/json'], true)) {
+            if (!is_string($normalized['raw_body'] ?? null)) {
+                throw new UnexpectedValueException('invalid request body');
+            }
+            $reference = $contentType === 'application/json'
+                ? hub_cluster_router_json_profile_reference($normalized['raw_body'])
+                : hub_cluster_router_urlencoded_profile_reference($normalized['raw_body']);
+            if ($reference !== null) {
+                $references[] = $reference['value'];
+            }
+        }
+    }
+    if (count($references) > 1) {
+        throw new UnexpectedValueException('duplicate voice profile reference');
+    }
+
+    return $references[0] ?? null;
+}
+
+function hub_cluster_replace_voice_profile_reference(array $normalized, string $remoteTaskId): array
+{
+    if (hub_cluster_voice_profile_reference($normalized) === null) {
+        throw new UnexpectedValueException('voice profile reference is missing');
+    }
+    $queryReference = hub_cluster_router_query_profile_reference($normalized);
+    if ($queryReference !== null) {
+        $normalized['query']['voice_profile_task_id'] = $remoteTaskId;
+        if ($queryReference['uri_offset'] !== null) {
+            $replacement = ($queryReference['uri_needs_equals'] ? '=' : '') . rawurlencode($remoteTaskId);
+            $normalized['request_uri'] = substr_replace(
+                (string)$normalized['request_uri'],
+                $replacement,
+                (int)$queryReference['uri_offset'],
+                (int)$queryReference['uri_length']
+            );
+        }
+
+        return $normalized;
+    }
+    if (is_array($normalized['form'] ?? null)) {
+        $normalized['form']['post']['voice_profile_task_id'] = $remoteTaskId;
+        return $normalized;
+    }
+
+    $contentType = hub_cluster_router_normalized_content_type($normalized);
+    $reference = $contentType === 'application/json'
+        ? hub_cluster_router_json_profile_reference((string)$normalized['raw_body'])
+        : hub_cluster_router_urlencoded_profile_reference((string)$normalized['raw_body']);
+    if ($reference === null) {
+        throw new UnexpectedValueException('voice profile reference is missing');
+    }
+    $replacement = $contentType === 'application/json'
+        ? json_encode($remoteTaskId, JSON_THROW_ON_ERROR)
+        : ($reference['needs_equals'] ?? false ? '=' : '') . rawurlencode($remoteTaskId);
+    $normalized['raw_body'] = substr_replace(
+        (string)$normalized['raw_body'],
+        $replacement,
+        (int)$reference['offset'],
+        (int)$reference['length']
+    );
+
+    return $normalized;
+}
+
 function hub_cluster_router_normalize_scalar_fields(mixed $source): ?array
 {
     if (!is_array($source)) {
@@ -1293,18 +1734,25 @@ function hub_cluster_router_dispatch_self(PDO $db, string $mode, array $request,
     if ($form === null) {
         return $dispatcher($db, $mode, $request);
     }
+    $oldGet = $_GET;
     $oldPost = $_POST;
     $oldFiles = $_FILES;
     $oldServer = $_SERVER;
     try {
+        $_GET = (array)($request['query'] ?? []);
         // ponytail: request-scoped relay; stream only if a supported pack exceeds the Router ceiling.
         $_POST = (array)($form['post'] ?? []);
         $_FILES = (array)($form['files'] ?? []);
+        $_SERVER['REQUEST_METHOD'] = (string)($request['method'] ?? 'POST');
+        if (is_string($request['headers']['Content-Type'] ?? null) && $request['headers']['Content-Type'] !== '') {
+            $_SERVER['CONTENT_TYPE'] = $request['headers']['Content-Type'];
+        }
         $_SERVER['CONTENT_LENGTH'] = (string)($request['request_bytes'] ?? 0);
         unset($request['raw_body']);
 
         return $dispatcher($db, $mode, $request);
     } finally {
+        $_GET = $oldGet;
         $_POST = $oldPost;
         $_FILES = $oldFiles;
         $_SERVER = $oldServer;
@@ -1529,6 +1977,25 @@ function hub_cluster_router_public_task_result(array $payload, bool $includeMeta
         throw new UnexpectedValueException('invalid child artifact index');
     }
     $result = $payload['result'] ?? null;
+    if (is_array($result) && array_key_exists('kind', $result)) {
+        $keys = ['kind', 'transcription_status', 'transcript_confirmed', 'text_chars', 'prompt_text_sha256'];
+        if (($result['kind'] ?? null) !== 'voice_profile_prepare'
+            || count($result) !== count($keys)
+            || array_diff(array_keys($result), $keys) !== []
+            || !is_string($result['transcription_status'] ?? null)
+            || !in_array($result['transcription_status'], ['pending', 'ready', 'failed'], true)
+            || !is_bool($result['transcript_confirmed'] ?? null)
+            || !is_int($result['text_chars'] ?? null)
+            || $result['text_chars'] < 0
+            || $result['text_chars'] > 20000
+            || !is_string($result['prompt_text_sha256'] ?? null)
+            || preg_match('/\A[a-f0-9]{64}\z/', $result['prompt_text_sha256']) !== 1
+        ) {
+            throw new UnexpectedValueException('invalid voice profile prepare result');
+        }
+
+        return $result;
+    }
     if (is_array($result) && ($result['stored_as_artifact'] ?? false) === true) {
         $artifactId = hub_cluster_router_safe_artifact_id($result['artifact_id'] ?? null);
         $known = array_fill_keys(array_map(static fn (array $artifact): string => (string)$artifact['id'], $artifacts), true);
@@ -1545,11 +2012,93 @@ function hub_cluster_router_public_task_result(array $payload, bool $includeMeta
     return ['artifacts' => $artifacts];
 }
 
+function hub_cluster_router_voice_profile_async_task_id(array $payload): string
+{
+    $allowed = [
+        'ok',
+        'task_id',
+        'status',
+        'status_url',
+        'result_url',
+        'log_url',
+        'cancel_url',
+        'artifact_url_template',
+    ];
+    $taskId = $payload['task_id'] ?? null;
+    if (($payload['ok'] ?? null) !== true
+        || array_diff(array_keys($payload), $allowed) !== []
+        || (!is_int($taskId) && !is_string($taskId))
+        || preg_match('/\A[1-9][0-9]{0,17}\z/', (string)$taskId) !== 1
+        || (array_key_exists('status', $payload) && hub_cluster_router_public_task_status($payload['status']) === null)
+    ) {
+        throw new UnexpectedValueException('invalid voice profile task response');
+    }
+    foreach (['status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'] as $key) {
+        if (array_key_exists($key, $payload)
+            && (!is_string($payload[$key])
+                || $payload[$key] === ''
+                || strlen($payload[$key]) > 8192
+                || preg_match('/[\x00-\x1F\x7F]/', $payload[$key]) === 1)
+        ) {
+            throw new UnexpectedValueException('invalid voice profile task response');
+        }
+    }
+
+    return (string)$taskId;
+}
+
+function hub_cluster_router_public_voice_profile_response(array $payload, bool $includeDraft): array
+{
+    $rules = [
+        'task_status' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A[a-z_]{1,32}\z/', $value) === 1,
+        'profile_status' => static fn (mixed $value): bool => is_string($value) && in_array($value, ['active', 'deleted', 'expired'], true),
+        'transcription_status' => static fn (mixed $value): bool => is_string($value) && in_array($value, ['pending', 'ready', 'failed'], true),
+        'transcript_confirmed' => 'is_bool',
+        'prompt_text_confirmed_at' => static fn (mixed $value): bool => $value === null || (is_string($value) && preg_match('/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $value) === 1),
+        'profile_name' => static fn (mixed $value): bool => is_string($value) && strlen($value) <= 120 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1,
+        'language' => static fn (mixed $value): bool => $value === null || (is_string($value) && strlen($value) <= 64 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1),
+        'consent_type' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A[a-z_]{1,32}\z/', $value) === 1,
+        'reference_audio_sha256' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A[a-f0-9]{64}\z/', $value) === 1,
+        'created_at' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $value) === 1,
+        'updated_at' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $value) === 1,
+    ];
+    $required = ['ok', ...array_keys($rules)];
+    $allowed = $includeDraft ? [...$required, 'prompt_text'] : $required;
+    if (($payload['ok'] ?? null) !== true
+        || array_diff($required, array_keys($payload)) !== []
+        || array_diff(array_keys($payload), $allowed) !== []
+    ) {
+        throw new UnexpectedValueException('invalid voice profile response');
+    }
+    $safe = ['ok' => true];
+    foreach ($rules as $key => $valid) {
+        if (!$valid($payload[$key])) {
+            throw new UnexpectedValueException('invalid voice profile response');
+        }
+        $safe[$key] = $payload[$key];
+    }
+    if (array_key_exists('prompt_text', $payload)) {
+        if (!$includeDraft
+            || $safe['transcript_confirmed'] !== false
+            || !is_string($payload['prompt_text'])
+            || strlen($payload['prompt_text']) > 20000
+        ) {
+            throw new UnexpectedValueException('invalid voice profile response');
+        }
+        $safe['prompt_text'] = $payload['prompt_text'];
+    }
+
+    return $safe;
+}
+
 function hub_cluster_router_public_task_logs(PDO $db, array $route, array $payload, string $remoteTaskId): ?array
 {
     $logs = $payload['logs'] ?? null;
     if (!is_array($logs) || !array_is_list($logs)) {
         return null;
+    }
+    if (hub_cluster_router_profile_sensitive_route_id((string)($route['route_id'] ?? ''))) {
+        return [];
     }
     $safe = [];
     foreach (array_slice($logs, 0, 100) as $log) {
@@ -1808,7 +2357,12 @@ function hub_cluster_router_bound_log_message(string $message): string
 
 function hub_cluster_router_valid_route_id(string $routeId): bool
 {
-    return preg_match('/\Aroute_[a-f0-9]{32}\z/', $routeId) === 1;
+    return preg_match('/\Aroute_(?:[a-f0-9]{32}|[a-f0-9]{34})\z/', $routeId) === 1;
+}
+
+function hub_cluster_router_profile_sensitive_route_id(string $routeId): bool
+{
+    return preg_match('/\Aroute_[a-f0-9]{34}\z/', $routeId) === 1;
 }
 
 function hub_cluster_router_json_payload(array $response): ?array
@@ -1831,12 +2385,23 @@ function hub_cluster_router_is_local_proxy_error(array $response): bool
     return !empty($response['cluster_router_local_error']);
 }
 
-function hub_cluster_router_with_json_payload(array $response, array $payload): array
+function hub_cluster_router_with_json_payload(array $response, array $payload, bool $freshHeaders = false): array
 {
     $body = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-    $response['body'] = $body;
+    if (!$freshHeaders) {
+        $response['body'] = $body;
 
-    return $response;
+        return $response;
+    }
+
+    return [
+        'status' => (int)($response['status'] ?? 200),
+        'headers' => [
+            'Content-Type: application/json; charset=utf-8',
+            'X-Content-Type-Options: nosniff',
+        ],
+        'body' => $body,
+    ];
 }
 
 function hub_cluster_router_is_followup_mode(string $mode): bool
@@ -2100,6 +2665,8 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
         'cluster_tts_artifact' => ['file' => $ttsArtifact],
         default => ['mode' => $mode, 'task_id' => (string)$route['remote_task_id']],
     };
+    $profileSensitiveArtifact = $routerMode === 'cluster_artifact'
+        && hub_cluster_router_profile_sensitive_route_id((string)($route['route_id'] ?? ''));
     $selfStation = hub_cluster_router_station_is_self($db, $station);
     if ($selfStation) {
         $selfPeerIp = hub_cluster_router_self_station_peer_ip($db, $station, $stationToken);
@@ -2134,7 +2701,7 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
             if (!is_array($rawResponse) || array_key_exists('error', $rawResponse)) {
                 return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
             }
-            $response = hub_cluster_router_proxy_response($rawResponse, $stationToken);
+            $response = hub_cluster_router_proxy_response($rawResponse, $stationToken, $profileSensitiveArtifact);
         } catch (Throwable) {
             return $complete(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
         }
@@ -2147,6 +2714,9 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
         return $complete(hub_gateway_error(502, 'router_response_failed', 'cluster station response failed'), null, $selfStation);
     }
     if (in_array($routerMode, ['cluster_artifact', 'cluster_tts_artifact'], true)) {
+        if ($selfStation && $profileSensitiveArtifact) {
+            $response = hub_cluster_router_rebuild_profile_artifact_response($response);
+        }
         return $complete($response, null, $selfStation);
     }
     if (!is_array($payload) || !hub_cluster_router_followup_task_matches($route, $payload)) {
@@ -2177,7 +2747,11 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
     } catch (Throwable) {
         return $complete(hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid'), null, $selfStation);
     }
-    $response = hub_cluster_router_with_json_payload($response, $payload);
+    $response = hub_cluster_router_with_json_payload(
+        $response,
+        $payload,
+        hub_cluster_router_profile_sensitive_route_id((string)($route['route_id'] ?? ''))
+    );
 
     return $complete($response, $terminalState, $selfStation);
 }
@@ -2432,10 +3006,10 @@ function hub_cluster_router_self_station_peer_ip(PDO $db, array $station, string
     return $peerIp;
 }
 
-function hub_cluster_router_admit_route(PDO $db, array $station, array $authContext, string $mode, bool $proxying): ?string
+function hub_cluster_router_admit_route(PDO $db, array $station, array $authContext, string $mode, bool $proxying, bool $profileSensitive = false): ?string
 {
     $stationId = (int)($station['id'] ?? 0);
-    $routeId = hub_cluster_router_route_id();
+    $routeId = hub_cluster_router_route_id($profileSensitive);
     if ($stationId < 1 || $routeId === '') {
         return null;
     }
@@ -2482,10 +3056,10 @@ function hub_cluster_router_admit_route(PDO $db, array $station, array $authCont
     }
 }
 
-function hub_cluster_router_route_id(): string
+function hub_cluster_router_route_id(bool $profileSensitive = false): string
 {
     try {
-        return 'route_' . bin2hex(random_bytes(16));
+        return 'route_' . bin2hex(random_bytes($profileSensitive ? 17 : 16));
     } catch (Throwable) {
         return '';
     }
@@ -2597,7 +3171,7 @@ function hub_cluster_router_complete_route(
     }
 }
 
-function hub_cluster_router_proxy_response(mixed $response, string $stationToken): array
+function hub_cluster_router_proxy_response(mixed $response, string $stationToken, bool $profileSensitiveArtifact = false): array
 {
     if (!is_array($response)) {
         return hub_cluster_router_local_proxy_error(502, 'router_proxy_failed', 'cluster station request failed');
@@ -2621,12 +3195,65 @@ function hub_cluster_router_proxy_response(mixed $response, string $stationToken
         ? $response['raw_headers']
         : 'HTTP/1.1 ' . $status . "\r\n" . implode("\r\n", array_filter($headers, 'is_string'));
     $contentType = hub_cluster_router_response_content_type($rawHeaders, $headers);
-    $safeHeaders = hub_proxy_allowed_response_headers($rawHeaders, $contentType);
+    $safeHeaders = $profileSensitiveArtifact
+        ? hub_cluster_router_profile_artifact_headers($rawHeaders, $headers, strlen($body))
+        : hub_proxy_allowed_response_headers($rawHeaders, $contentType);
     if (str_contains($body, $stationToken) || array_filter($safeHeaders, static fn (string $header): bool => str_contains($header, $stationToken)) !== []) {
         return hub_cluster_router_local_proxy_error(502, 'router_proxy_failed', 'cluster station request failed');
     }
 
     return ['status' => $status, 'headers' => $safeHeaders, 'body' => $body];
+}
+
+function hub_cluster_router_rebuild_profile_artifact_response(array $response): array
+{
+    $headers = is_array($response['headers'] ?? null) ? $response['headers'] : [];
+    $status = (int)($response['status'] ?? 200);
+    $rawHeaders = 'HTTP/1.1 ' . $status . "\r\n" . implode("\r\n", array_filter($headers, 'is_string'));
+    $contentLength = is_int($response['stream_size'] ?? null) && $response['stream_size'] >= 0
+        ? $response['stream_size']
+        : strlen(is_string($response['body'] ?? null) ? $response['body'] : '');
+    $response['headers'] = hub_cluster_router_profile_artifact_headers($rawHeaders, $headers, $contentLength);
+
+    return $response;
+}
+
+function hub_cluster_router_profile_artifact_headers(string $rawHeaders, array $headers, int $contentLength): array
+{
+    $contentType = explode(';', hub_cluster_router_response_content_type($rawHeaders, $headers), 2)[0];
+    $contentType = strtolower(trim($contentType));
+    if (!in_array($contentType, [
+        'audio/wav',
+        'audio/x-wav',
+        'audio/wave',
+        'application/json',
+        'application/octet-stream',
+    ], true)) {
+        $contentType = 'application/octet-stream';
+    }
+    $safeHeaders = [
+        'Content-Type: ' . $contentType,
+        'Content-Length: ' . max(0, $contentLength),
+    ];
+    foreach ([hub_cluster_router_final_response_headers($rawHeaders), $headers] as $source) {
+        foreach ($source as $header) {
+            if (!is_string($header) || !str_contains($header, ':')) {
+                continue;
+            }
+            [$name, $value] = explode(':', $header, 2);
+            if (strtolower(trim($name)) !== 'content-disposition') {
+                continue;
+            }
+            $disposition = strtolower(trim(explode(';', $value, 2)[0]));
+            if (in_array($disposition, ['attachment', 'inline'], true)) {
+                $safeHeaders[] = 'Content-Disposition: ' . $disposition;
+            }
+            break 2;
+        }
+    }
+    $safeHeaders[] = 'X-Content-Type-Options: nosniff';
+
+    return $safeHeaders;
 }
 
 function hub_cluster_router_local_proxy_error(int $status, string $code, string $message): array
