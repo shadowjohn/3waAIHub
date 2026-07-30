@@ -508,6 +508,7 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
             'status_fetched_at' => (string)($station['status_fetched_at'] ?? ''),
             'fresh' => !empty($inventory['fresh']),
             'last_error' => (string)($inventory['last_error'] ?? ''),
+            'connection_state' => hub_cluster_station_connection_state($station),
             'modes' => $inventory['modes'],
             'mode_readiness' => $modeReadiness,
             'gpu_free_vram_mb' => (int)$inventory['gpu_free_vram_mb'],
@@ -3025,12 +3026,21 @@ function hub_cluster_station_is_fresh(array $station, ?int $now = null): bool
     $now ??= time();
     foreach (['manifest_fetched_at', 'status_fetched_at'] as $field) {
         $fetchedAt = strtotime((string)($station[$field] ?? ''));
-        if ($fetchedAt === false || $fetchedAt > $now || ($now - $fetchedAt) > 90) {
+        if ($fetchedAt === false || $fetchedAt > $now || ($now - $fetchedAt) > 150) {
             return false;
         }
     }
 
     return true;
+}
+
+function hub_cluster_station_connection_state(array $station, ?int $now = null): string
+{
+    $error = trim((string)($station['last_error'] ?? ''));
+
+    return ($error === '' || $error === 'refreshing') && hub_cluster_station_is_fresh($station, $now)
+        ? 'online'
+        : 'offline';
 }
 
 function hub_cluster_refresh_station(PDO $db, array $station, ?callable $fetcher = null): array

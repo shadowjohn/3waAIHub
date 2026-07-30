@@ -1029,15 +1029,26 @@ hub_test('cluster child status stays lightweight and filters unavailable selecte
     });
 });
 
-hub_test('cluster station freshness tolerates one-minute cron jitter', function (): void {
+hub_test('cluster station freshness tolerates one-minute cron jitter and exposes connection state', function (): void {
     $now = strtotime('2026-07-29 12:00:00');
     $station = [
-        'manifest_fetched_at' => '2026-07-29 11:58:40',
-        'status_fetched_at' => '2026-07-29 11:58:40',
+        'manifest_fetched_at' => '2026-07-29 11:57:30',
+        'status_fetched_at' => '2026-07-29 11:57:30',
+        'last_error' => '',
     ];
-    hub_test_assert(hub_cluster_station_is_fresh($station, $now), '80-second station snapshot must survive cron jitter');
-    $station['status_fetched_at'] = '2026-07-29 11:58:29';
-    hub_test_assert(!hub_cluster_station_is_fresh($station, $now), '91-second station snapshot must be stale');
+    hub_test_assert(hub_cluster_station_is_fresh($station, $now), '150-second station snapshot must survive cron jitter');
+    hub_test_assert(hub_cluster_station_connection_state($station, $now) === 'online', 'fresh error-free station must be online');
+
+    $station['status_fetched_at'] = '2026-07-29 11:57:29';
+    hub_test_assert(!hub_cluster_station_is_fresh($station, $now), '151-second station snapshot must be stale');
+    hub_test_assert(hub_cluster_station_connection_state($station, $now) === 'offline', 'stale station must be offline');
+
+    $station['status_fetched_at'] = '2026-07-29 11:59:55';
+    $station['last_error'] = 'status_fetch_failed';
+    hub_test_assert(hub_cluster_station_connection_state($station, $now) === 'offline', 'failed refresh must be offline immediately');
+
+    $station['last_error'] = 'refreshing';
+    hub_test_assert(hub_cluster_station_connection_state($station, $now) === 'online', 'a fresh station being refreshed must not flash offline');
 });
 
 hub_test('cluster status snapshots retain only bounded release and aggregate health fields', function (): void {
@@ -1226,7 +1237,7 @@ hub_test('cluster inventory refresh fetches manifest then authenticated status w
             return ['status' => 500, 'body' => ''];
         });
         hub_test_assert($skippedRequests === 0, 'station refresh must not repeat within ten seconds');
-        $stored['manifest_fetched_at'] = date('Y-m-d H:i:s', time() - 91);
+        $stored['manifest_fetched_at'] = date('Y-m-d H:i:s', time() - 151);
         hub_test_assert(!hub_cluster_station_is_fresh($stored), 'stale manifest must make a station unavailable');
     });
 });
@@ -2651,9 +2662,9 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
         ]);
         $store->execute([
             ':manifest_json' => json_encode(['modes' => ['tts'], 'services' => [array_replace($contract, ['mode' => 'tts'])]], JSON_THROW_ON_ERROR),
-            ':manifest_fetched_at' => date('Y-m-d H:i:s', time() - 91),
+            ':manifest_fetched_at' => date('Y-m-d H:i:s', time() - 151),
             ':status_json' => json_encode(['modes' => ['tts'], 'gpu' => ['memory_free_mb' => 4096], 'active_gpu_leases' => 0, 'queued_jobs' => 0, 'running_jobs' => 0], JSON_THROW_ON_ERROR),
-            ':status_fetched_at' => date('Y-m-d H:i:s', time() - 91),
+            ':status_fetched_at' => date('Y-m-d H:i:s', time() - 151),
             ':id' => (int)$stale['id'],
         ]);
 

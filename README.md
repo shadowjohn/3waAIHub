@@ -397,7 +397,7 @@ cd /DATA/3waAIHub
 sudo ./scripts/install_command_worker_cron.sh
 ```
 
-系統 cron 會每分鐘呼叫專案內的 `crontab/1min.sh`。這支 script 自己使用 `flock` 防重入，先執行排程的 Router inventory refresh `scripts/cluster_refresh.php`，再檢查 runtime 權限、必要時執行 `scripts/fix_permissions.sh`、收集 host metrics snapshot，最後於同一分鐘內用短 delay loop 執行 `scripts/command_worker.php --limit=5` 與 `scripts/task_worker.php --limit=5`。Router 的 manifest、文件與 API 請求路徑仍可能在資料到期時觸發 due-only refresh；只有 manifest 與 status 都於 90 秒內更新的節點才視為 fresh，過期節點會暫時退出可路由 inventory。
+系統 cron 會每分鐘呼叫專案內的 `crontab/1min.sh`。這支 script 自己使用 `flock` 防重入，先執行排程的 Router inventory refresh `scripts/cluster_refresh.php`，再檢查 runtime 權限、必要時執行 `scripts/fix_permissions.sh`、收集 host metrics snapshot，最後於同一分鐘內用短 delay loop 執行 `scripts/command_worker.php --limit=5` 與 `scripts/task_worker.php --limit=5`。Router 的 manifest、文件與 API 請求路徑仍可能在資料到期時觸發 due-only refresh；只有 manifest 與 status 都於 150 秒內更新的節點才視為 fresh，過期節點會暫時退出可路由 inventory。
 
 預設 cron 使用 `root` 執行，最穩定。若要改用可信任本機帳號，例如 `john`：
 
