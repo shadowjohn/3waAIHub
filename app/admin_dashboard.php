@@ -166,6 +166,7 @@ function hub_admin_dashboard_station_summary(array $station): array
         'fresh' => !empty($station['fresh']),
         'enabled' => !empty($station['enabled']),
         'error' => (string)($station['last_error'] ?? ''),
+        'connection_state' => (string)($station['connection_state'] ?? 'offline'),
         'gpu' => [
             'available' => $totalVram > 0,
             'memory_total_mb' => $totalVram,
@@ -208,6 +209,7 @@ function hub_admin_dashboard_model(PDO $db, array $query): array
         static fn (array $station): array => [
             'station_key' => (string)$station['station_key'],
             'label' => (string)$station['display_name'],
+            'connection_state' => (string)($station['connection_state'] ?? 'offline'),
         ],
         $stationRows
     );

@@ -2890,6 +2890,11 @@
         "trans": "The monitoring snapshot is more than 90 seconds old."
     },
     {
+        "title": "子節點快照已超過 150 秒。",
+        "lang": "en",
+        "trans": "The child station snapshot is more than 150 seconds old."
+    },
+    {
         "title": "目前 Tag",
         "lang": "en",
         "trans": "Current tag"
@@ -2938,6 +2943,16 @@
         "title": "站台離線",
         "lang": "en",
         "trans": "Site offline"
+    },
+    {
+        "title": "可連線",
+        "lang": "en",
+        "trans": "Reachable"
+    },
+    {
+        "title": "無法連線",
+        "lang": "en",
+        "trans": "Unreachable"
     },
     {
         "title": "系統管理員",

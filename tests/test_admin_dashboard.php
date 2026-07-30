@@ -64,6 +64,7 @@ hub_test('router dashboard tabs use station display names and query keys', funct
         hub_test_assert($model['active_station_key'] === 'station_1080', 'station query selection mismatch');
         hub_test_assert($model['station_tabs'][0]['label'] === '1080 影像站', 'station title mismatch');
         hub_test_assert($model['station_tabs'][0]['station_key'] === 'station_1080', 'station key mismatch');
+        hub_test_assert(($model['station_tabs'][0]['connection_state'] ?? '') === 'offline', 'station tabs must expose the shared connection state');
 
         $fallback = hub_admin_dashboard_model($db, ['station' => 'GPU 1']);
         hub_test_assert($fallback['active_station_key'] === 'station_1080', 'invalid station query must select first configured station');
@@ -126,6 +127,8 @@ hub_test('local dashboard expires old metrics and exposes read-only release iden
 hub_test('dashboard page uses accepted local assets and query-backed station tabs', function (): void {
     $page = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
     $script = (string)file_get_contents(HUB_ROOT . '/assets/js/admin-dashboard.js');
+    $dashboardCss = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-dashboard.css');
+    $baseCss = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-base.css');
 
     foreach ([
         '../assets/css/admin-dashboard.css',
@@ -146,4 +149,13 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
     }
     hub_test_assert(str_contains($script, 'maintainAspectRatio: false'), 'dashboard charts must preserve accepted container sizing');
     hub_test_assert(str_contains($script, 'ResizeObserver'), 'dashboard charts must respond to container resize');
+    foreach (['station-tab__status', 'connection_state', '可連線', '無法連線'] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'dashboard station connectivity markup missing ' . $needle);
+    }
+    foreach (['station-tab__status', 'station-tab__status--online'] as $needle) {
+        hub_test_assert(str_contains($dashboardCss, $needle), 'dashboard station connectivity style missing ' . $needle);
+    }
+    foreach (['station-connection', 'station-connection--online'] as $needle) {
+        hub_test_assert(str_contains($baseCss, $needle), 'shared station connectivity style missing ' . $needle);
+    }
 });

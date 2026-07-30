@@ -40,6 +40,17 @@
   box-shadow: 0 2px 8px -4px rgba(37, 99, 235, .75);
 }
 
+.station-tab__status {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.station-tab__status--online { background: var(--success); }
+
 .dashboard-platform-note {
   margin: 0 0 var(--sp-4);
   color: var(--fg-muted);

@@ -49,6 +49,7 @@ $serviceCounts = is_array($summary['service_counts'] ?? null)
     ? $summary['service_counts']
     : ['running' => 0, 'stopped' => 0, 'pending' => 0, 'error' => 0];
 $healthStatus = is_string($health['status'] ?? null) ? $health['status'] : 'unknown';
+$connectionState = (string)($summary['connection_state'] ?? 'offline');
 
 $gpuTotal = is_numeric($gpu['memory_total_mb'] ?? null) ? (float)$gpu['memory_total_mb'] : 0.0;
 $gpuUsed = is_numeric($gpu['memory_used_mb'] ?? null)
@@ -77,7 +78,13 @@ if (!$hasSummary) {
     $statusTone = 'danger';
     $statusLabel = __('站台離線');
     $statusMessage = __('選取的站台目前已停用。');
-} elseif ((string)($summary['error'] ?? '') !== '') {
+} elseif ($isStationDashboard && $connectionState === 'offline') {
+    $statusTone = 'danger';
+    $statusLabel = __('無法連線');
+    $statusMessage = (string)($summary['error'] ?? '') !== '' && (string)($summary['error'] ?? '') !== 'refreshing'
+        ? (string)$summary['error']
+        : __('子節點快照已超過 150 秒。');
+} elseif ((string)($summary['error'] ?? '') !== '' && (string)($summary['error'] ?? '') !== 'refreshing') {
     $statusTone = 'danger';
     $statusLabel = __('站台錯誤');
     $statusMessage = (string)$summary['error'];
@@ -85,7 +92,7 @@ if (!$hasSummary) {
     $statusTone = 'warn';
     $statusLabel = __('尚無監測資料');
     $statusMessage = __('主機監測快照尚未建立。');
-} elseif (empty($summary['fresh'])) {
+} elseif (!$isStationDashboard && empty($summary['fresh'])) {
     $statusTone = 'warn';
     $statusLabel = __('資料已過期');
     $statusMessage = __('監測快照已超過 90 秒。');
@@ -170,10 +177,15 @@ hub_admin_header('控制台', $user);
 
 <?php if ($isStationDashboard && $model['station_tabs'] !== []): ?>
     <nav class="station-tabs" aria-label="<?= hub_h(__('站台')) ?>">
-        <?php foreach ($model['station_tabs'] as $station): ?>
+        <?php foreach ($model['station_tabs'] as $station):
+            $stationOnline = ($station['connection_state'] ?? 'offline') === 'online';
+            $stationConnectionLabel = $stationOnline ? __('可連線') : __('無法連線');
+            ?>
             <a class="station-tab<?= $model['active_station_key'] === $station['station_key'] ? ' is-active' : '' ?>"
-               href="index.php?station=<?= rawurlencode($station['station_key']) ?>">
-                <?= hub_h($station['label']) ?>
+               href="index.php?station=<?= rawurlencode($station['station_key']) ?>"
+               aria-label="<?= hub_h((string)$station['label'] . '：' . $stationConnectionLabel) ?>">
+                <span class="station-tab__status station-tab__status--<?= $stationOnline ? 'online' : 'offline' ?>" aria-hidden="true"></span>
+                <span><?= hub_h($station['label']) ?></span>
             </a>
         <?php endforeach; ?>
     </nav>
@@ -198,6 +210,7 @@ hub_admin_header('控制台', $user);
             <div class="gpubar__body">
                 <div class="gpubar__top">
                     <h2 class="gpubar__title" id="station-status-title"><?= hub_h((string)$summary['title']) ?></h2>
+                    <?php if ($isStationDashboard): ?><span class="station-connection station-connection--<?= $connectionState === 'online' ? 'online' : 'offline' ?>"><?= hub_h($connectionState === 'online' ? __('可連線') : __('無法連線')) ?></span><?php endif; ?>
                     <span class="badge badge--<?= $statusTone === 'ok' ? 'success' : ($statusTone === 'warn' ? 'warning' : 'danger') ?>">
                         <span class="badge__dot" aria-hidden="true"></span><?= hub_h($statusLabel) ?>
                     </span>

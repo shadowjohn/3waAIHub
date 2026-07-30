@@ -17,3 +17,11 @@ hub_test('cluster admin labels aggregate role with read-only child and mode coun
         hub_test_assert(str_contains($page, $needle), 'cluster aggregate summary missing ' . $needle);
     }
 });
+
+hub_test('cluster admin reuses the station connection label', function (): void {
+    $page = (string)file_get_contents(HUB_ROOT . '/admin/cluster.php');
+
+    foreach (['connection_state', 'station-connection', '可連線', '無法連線'] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'cluster admin station connectivity markup missing ' . $needle);
+    }
+});
