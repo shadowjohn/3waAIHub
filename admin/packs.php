@@ -81,7 +81,16 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     hub_check_csrf();
     try {
         $result = hub_install_pack($db, (string)($_POST['pack_id'] ?? ''));
+        $jobId = hub_enqueue_command_job(
+            $db,
+            'service_install',
+            (int)$result['service']['id'],
+            ['reason' => 'legacy_packs_install'],
+            (int)$user['id'],
+            $_SERVER['REMOTE_ADDR'] ?? null
+        );
         $message = '已安裝 HubPack：' . $result['service']['name'] . ' / ' . $result['service']['service_key'];
+        $message .= '；已排入背景工作 #' . $jobId . '。';
         $demos = $result['edge_tts_demos'] ?? null;
         if (is_array($demos) && isset($demos['succeeded'], $demos['failed'])) {
             $message .= '；語音示範成功 ' . (int)$demos['succeeded'] . ' 個，失敗 ' . (int)$demos['failed'] . ' 個。';

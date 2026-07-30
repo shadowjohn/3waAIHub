@@ -1217,6 +1217,27 @@ hub_test('Edge TTS demo initialization failure and non-Edge installs do not invo
     hub_test_assert(!$called, 'non-Edge installs must not invoke the Edge TTS generator seam');
 });
 
+hub_test('Edge TTS install can defer command-only demo generation', function (): void {
+    $db = hub_test_reset_db();
+    $called = false;
+    $installed = hub_install_pack($db, 'edge-tts', [
+        'idempotent' => true,
+        'provision_runner' => false,
+        'initialize_edge_tts_demos' => false,
+        'edge_tts_demo_runner' => static function (array $command, int $timeout) use (&$called): array {
+            $called = true;
+            return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'must not run'];
+        },
+    ]);
+
+    hub_test_assert(hub_pack_install_commands_allowed('cli')
+        && !hub_pack_install_commands_allowed('fpm-fcgi')
+        && $called === false
+        && !isset($installed['edge_tts_demos'])
+        && ($installed['service']['service_key'] ?? null) === 'edge-tts-main',
+        'web installs must defer Edge TTS command execution to the CLI worker');
+});
+
 hub_test('Edge TTS failed idempotent reinstall preserves its existing row version and demos', function (): void {
     $db = hub_test_reset_db();
     $initial = hub_install_pack($db, 'edge-tts', ['idempotent' => true]);

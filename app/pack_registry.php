@@ -1280,6 +1280,11 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     return $errors;
 }
 
+function hub_pack_install_commands_allowed(?string $sapi = null): bool
+{
+    return ($sapi ?? PHP_SAPI) === 'cli';
+}
+
 function hub_install_pack(PDO $db, string $packId, array|string|null $options = null): array
 {
     hub_ensure_default_storage_settings($db);
@@ -1327,7 +1332,8 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
 
     $isInternalTask = hub_pack_is_internal_task($manifest);
     $runnerBuildRunner = isset($options['runner_build_runner']) && is_callable($options['runner_build_runner']) ? $options['runner_build_runner'] : null;
-    $provisionRunner = !array_key_exists('provision_runner', $options) || $options['provision_runner'] !== false;
+    $commandsAllowed = hub_pack_install_commands_allowed();
+    $provisionRunner = $commandsAllowed && (!array_key_exists('provision_runner', $options) || $options['provision_runner'] !== false);
     if ($provisionRunner && hub_pack_container_runner_build_contract($manifest, (string)$pack['dir']) !== null
         && (!defined('HUB_TESTING') || HUB_TESTING !== true || $runnerBuildRunner !== null)) {
         hub_pack_provision_container_runner_image($pack, $runnerBuildRunner);
@@ -1343,7 +1349,9 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     $storage = hub_get_storage_paths($db);
     hub_ensure_pack_storage_dirs($manifest, $serviceKey, $storage, $runtimeDir);
     $edgeTtsDemos = null;
-    if (($manifest['id'] ?? '') === 'edge-tts') {
+    if (($manifest['id'] ?? '') === 'edge-tts'
+        && $commandsAllowed
+        && (!array_key_exists('initialize_edge_tts_demos', $options) || $options['initialize_edge_tts_demos'] !== false)) {
         $edgeTtsDemoRunner = isset($options['edge_tts_demo_runner']) && is_callable($options['edge_tts_demo_runner'])
             ? $options['edge_tts_demo_runner']
             : null;

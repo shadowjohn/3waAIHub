@@ -409,7 +409,7 @@ body.app th { color: var(--fg-muted); font-size: var(--fs-sm); font-weight: 600;
   font: inherit;
   text-decoration: none;
 }
-:where(body.app) :where(button.primary) { border-color: var(--primary-600); background: var(--primary-600); color: var(--on-primary); }
+:where(body.app) :where(button.primary) { border-color: var(--primary-600); background: var(--primary-600); color: var(--on-primary) !important; }
 :where(body.app) :where(button.danger) { border-color: var(--danger-border); color: var(--danger-text); }
 :where(body.app) :where(input, select, textarea) {
   width: 100%;

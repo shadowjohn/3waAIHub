@@ -158,10 +158,6 @@ function hub_admin_header(string $title, array $user): void
             </ul>
         </nav>
         <div class="appbar__actions" data-drawer-inert>
-            <span class="envtag">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg>
-                <span><?= hub_h(__('本地環境')) ?></span>
-            </span>
             <?= hub_i18n_language_selector() ?>
             <div class="usermenu">
                 <button type="button" class="usermenu__btn" id="user-button" aria-expanded="false" aria-haspopup="true" aria-controls="user-menu">
