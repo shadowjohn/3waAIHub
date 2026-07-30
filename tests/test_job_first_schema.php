@@ -117,6 +117,7 @@ hub_test('job-first schema migration is idempotent and operational entry points 
         'task_callback_deliveries' => ['claim_token', 'claim_expires_at'],
         'task_artifacts' => ['artifact_type', 'sha256', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error'],
         'runtime_runs' => ['task_id', 'attempt_no', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],
+        'voice_profiles' => ['source_task_id'],
     ];
     foreach ($requiredColumns as $table => $columns) {
         $present = array_column($db->query('PRAGMA table_info(' . $table . ')')->fetchAll(), 'name');
@@ -124,6 +125,8 @@ hub_test('job-first schema migration is idempotent and operational entry points 
             hub_test_assert(in_array($column, $present, true), "{$table}.{$column} must exist");
         }
     }
+    $voiceProfileIndexes = array_column($db->query("PRAGMA index_list('voice_profiles')")->fetchAll(), 'name');
+    hub_test_assert(in_array('idx_voice_profiles_source_task', $voiceProfileIndexes, true), 'idx_voice_profiles_source_task must exist');
 
     hub_test_assert(hub_runtime_schema_missing($db) === [], 'migrated database must have the runtime schema');
     hub_test_assert((int)$db->query("SELECT COUNT(*) FROM runtime_resource_leases WHERE resource_key = 'gpu:0' AND state = 'available'")->fetchColumn() === 1, 'gpu:0 available lease must be seeded once');
@@ -149,6 +152,42 @@ hub_test('job-first schema migration is idempotent and operational entry points 
     foreach (['scripts/task_worker.php', 'scripts/command_worker.php', 'scripts/self_check.php', 'scripts/prune_db.php', 'bin/aihub-run'] as $path) {
         hub_test_assert(!hub_test_source_calls_migrate((string)file_get_contents(HUB_ROOT . '/' . $path)), "{$path} must not run migrations");
     }
+});
+
+hub_test('voice profile prepare tasks are accepted by the queue and pack worker', function (): void {
+    hub_test_assert(hub_is_valid_task_type('voice_profile_prepare'), 'voice_profile_prepare must be an allowed task type');
+    hub_test_assert(in_array('voice_profile_prepare', hub_pack_job_worker_task_types(), true), 'pack worker must claim voice_profile_prepare tasks');
+});
+
+hub_test('runtime and retention schema gates require voice profile source task lineage', function (): void {
+    $db = new PDO('sqlite::memory:');
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $db->exec('CREATE TABLE voice_profiles (id INTEGER PRIMARY KEY)');
+
+    hub_test_assert(in_array('voice_profiles.source_task_id', hub_runtime_schema_missing($db), true), 'runtime schema gate must require voice_profiles.source_task_id');
+    hub_test_assert(in_array('voice_profiles.source_task_id', hub_retention_schema_missing($db), true), 'retention schema gate must require voice_profiles.source_task_id');
+});
+
+hub_test('generic task submit cannot enqueue voice profile prepare tasks', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Voice prepare bypass client');
+        $token = hub_create_api_token($db, $memberId, 'voice prepare bypass token', null, null);
+        hub_test_audio_allow($db, [$token], ['task_submit']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $before = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+
+        $response = hub_test_audio_request($db, 'task_submit', (string)$token['plain_token'], [
+            'task_type' => 'voice_profile_prepare',
+        ]);
+
+        hub_test_assert($response['status'] === 400
+            && (hub_test_audio_payload($response)['error'] ?? '') === 'forbidden_task_control'
+            && (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $before,
+            'generic task_submit must reject voice_profile_prepare without enqueuing');
+    });
 });
 
 hub_test('self check snapshots into a private temporary database', function (): void {

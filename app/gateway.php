@@ -1593,7 +1593,7 @@ function hub_api_task_submit(PDO $db, array $authContext = []): array
     if (!hub_is_valid_task_type($taskType)) {
         return hub_gateway_json(400, ['ok' => false, 'error' => 'unknown task_type']);
     }
-    if ((empty($authContext['internal_task']) && $taskType === 'pack_job') || hub_pack_job_task_has_forbidden_control($_POST)) {
+    if ((empty($authContext['internal_task']) && in_array($taskType, ['pack_job', 'voice_profile_prepare'], true)) || hub_pack_job_task_has_forbidden_control($_POST)) {
         return hub_gateway_error(400, 'forbidden_task_control', 'client task controls are not accepted');
     }
 

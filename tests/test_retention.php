@@ -1,6 +1,13 @@
 <?php
 declare(strict_types=1);
 
+if (!function_exists('hub_test_audio_isolate') || !function_exists('hub_test_pack_job_create_terminal_fixture')) {
+    $registeredTests = $tests;
+    require_once __DIR__ . '/test_audio_task_gateway.php';
+    require_once __DIR__ . '/test_pack_job_artifacts.php';
+    $tests = $registeredTests;
+}
+
 hub_test('retention policy fixes formal periods and clamps failed-source retention', function (): void {
     $db = hub_test_reset_db();
     hub_set_storage_setting($db, 'AIHUB_FAILED_SOURCE_RETENTION_DAYS', '999');
@@ -433,9 +440,9 @@ hub_test('task retention resource claims serialize source and workspace finaliza
     hub_test_assert(($task['source_state'] ?? '') === 'purged' && ($task['workspace_state'] ?? '') === 'purged' && empty($task['purge_claim_token']), 'serialized resource finalization must not leave either resource purging');
 });
 
-function hub_test_retention_metadata_ready_task(PDO $db, string $finishedAt): int
+function hub_test_retention_metadata_ready_task(PDO $db, string $finishedAt, string $taskType = 'demo_task'): int
 {
-    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    $taskId = hub_enqueue_task($db, $taskType, 'default', 0, [], null, '127.0.0.1');
     hub_finish_task_success($db, hub_get_task($db, $taskId), ['ok' => true]);
     $db->prepare(
         "UPDATE tasks
@@ -471,6 +478,30 @@ hub_test('legacy timeout tasks remain eligible for final retention cleanup', fun
     $result = hub_prune_retention($db, '2026-07-20 00:00:00');
 
     hub_test_assert(hub_get_task($db, $taskId) === null && (int)($result['metadata_purged'] ?? 0) === 1, 'legacy timeout metadata must be normalized or treated as terminal by retention cleanup');
+});
+
+hub_test('active voice profile retains prepare task metadata until soft delete', function (): void {
+    $db = hub_test_reset_db();
+    $now = '2026-07-20 00:00:00';
+    $taskId = hub_test_retention_metadata_ready_task($db, '2025-01-01 00:00:00', 'voice_profile_prepare');
+    $memberId = hub_create_api_member($db, 'Voice profile metadata owner');
+    $path = hub_voice_profile_storage_dir() . '/metadata-retention.wav';
+    file_put_contents($path, 'RIFFmetadata');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Metadata retention',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'expires_at' => '2026-07-21 00:00:00',
+    ]);
+    $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')
+        ->execute([':task_id' => $taskId, ':id' => $profileId]);
+
+    $beforeDelete = hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $taskId) !== null && (int)($beforeDelete['metadata_purged'] ?? 0) === 0, 'an active non-expired voice profile must retain prepare task metadata');
+
+    hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+    $afterDelete = hub_prune_retention($db, $now);
+    hub_test_assert(hub_get_task($db, $taskId) === null && (int)($afterDelete['metadata_purged'] ?? 0) === 1, 'soft delete must release prepare task metadata for the next prune');
 });
 
 hub_test('DocParser repair lineage retains parent metadata while queued or running', function (): void {

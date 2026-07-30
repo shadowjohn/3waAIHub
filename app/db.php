@@ -360,6 +360,7 @@ CREATE TABLE IF NOT EXISTS api_access_logs (
 CREATE TABLE IF NOT EXISTS voice_profiles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner_member_id INTEGER NOT NULL,
+    source_task_id INTEGER NULL,
     name TEXT NOT NULL,
     reference_audio_path TEXT NOT NULL,
     reference_audio_sha256 TEXT NOT NULL,
@@ -743,6 +744,7 @@ SQL);
     }
     hub_add_column_if_missing($db, 'voice_profiles', 'usage_scope', "TEXT NOT NULL DEFAULT 'private'");
     hub_add_column_if_missing($db, 'voice_profiles', 'retain_original_audio', 'INTEGER NOT NULL DEFAULT 1');
+    hub_add_column_if_missing($db, 'voice_profiles', 'source_task_id', 'INTEGER NULL');
     $voiceProfileTranscriptionStateMarker = 'db_migration_voice_profiles_transcription_state_v1';
     if (hub_get_storage_setting($db, $voiceProfileTranscriptionStateMarker) !== '1') {
         $voiceProfileTranscriptionStateMigrationStarted = false;
@@ -861,6 +863,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_api_token_usage_token_date ON api_token_usage_daily(token_id, usage_date)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner ON voice_profiles(owner_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_deleted ON voice_profiles(deleted_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_source_task ON voice_profiles(source_task_id)');
     $voiceProfileIndexUnique = hub_voice_profile_active_sha_index_unique($db);
     if ($voiceProfileIndexUnique === null) {
         $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profiles_owner_sha_active ON voice_profiles(owner_member_id, reference_audio_sha256) WHERE deleted_at IS NULL');
@@ -1047,6 +1050,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'task_callback_deliveries' => ['id', 'delivery_id', 'callback_target_id', 'task_id', 'event_type', 'payload_json', 'attempt_count', 'next_attempt_at', 'claim_token', 'claim_expires_at', 'delivered_at', 'last_http_status', 'last_error', 'created_at', 'updated_at'],
         'runtime_resource_leases' => ['resource_key', 'runtime_run_id', 'worker_id', 'lease_token', 'state', 'acquired_at', 'heartbeat_at', 'lease_expires_at', 'last_error', 'updated_at'],
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
+        'voice_profiles' => ['source_task_id'],
         'task_artifacts' => ['artifact_type', 'sha256', 'metadata_json', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],
         'runtime_runs' => ['task_id', 'attempt_no', 'container_id', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],

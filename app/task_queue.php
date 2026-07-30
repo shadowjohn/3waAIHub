@@ -7,7 +7,7 @@ class HubTaskCancelled extends RuntimeException
 
 function hub_allowed_task_types(): array
 {
-    return ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation', 'pack_job'];
+    return ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation', 'pack_job', 'voice_profile_prepare'];
 }
 
 function hub_default_task_queues(): array
@@ -1508,6 +1508,9 @@ function hub_retention_task_metadata_dependencies_clear(PDO $db, int $taskId, st
         'SELECT 1 FROM tasks
          WHERE source_task_id = :task_id OR retry_of_task_id = :task_id
             OR source_artifact_id IN (SELECT id FROM task_artifacts WHERE task_id = :task_id)',
+        'SELECT 1 FROM voice_profiles
+         WHERE source_task_id = :task_id AND deleted_at IS NULL
+           AND (expires_at IS NULL OR expires_at > :now)',
         "SELECT 1 FROM runtime_runs
          WHERE task_id = :task_id AND state NOT IN ('succeeded', 'failed', 'cancelled', 'timed_out')",
         "SELECT 1 FROM runtime_resource_leases l
@@ -1778,6 +1781,7 @@ function hub_retention_schema_missing(PDO $db): array
 {
     $required = [
         'tasks' => ['source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
+        'voice_profiles' => ['source_task_id'],
         'task_artifacts' => ['expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['source_artifact_id', 'downstream_task_id', 'released_at'],
         'runtime_runs' => ['task_id', 'state'],

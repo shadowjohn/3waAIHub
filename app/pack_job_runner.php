@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 function hub_pack_job_worker_task_types(): array
 {
-    return ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation', 'pack_job'];
+    return ['demo_task', 'structure_parse', 'docparser_parse', 'docparser_repair_translation', 'pack_job', 'voice_profile_prepare'];
 }
 
 function hub_pack_job_adapter_worker_id(array $options): string
