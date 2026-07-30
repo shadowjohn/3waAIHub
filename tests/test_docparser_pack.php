@@ -442,6 +442,53 @@ hub_test('DocParser task artifacts store complete delivery outputs', function ()
     }
 });
 
+hub_test('DocParser task result exposes artifact URLs without host paths', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, [
+        'profile' => 'technical_manual',
+        'input_file' => '/tmp/input.pdf',
+    ], null, '127.0.0.1');
+    $summary = hub_store_docparser_task_artifacts($db, $taskId, [
+        'manifest' => ['status' => 'completed'],
+        'reader_html' => '<html><body>reader</body></html>',
+        'bilingual_html' => '<html><body>bilingual</body></html>',
+        'markdown' => "reader\n",
+        'docir' => ['schema' => '3wa-docir-v0.1', 'pages' => [['page' => 1]], 'blocks' => []],
+        'toc' => [],
+        'rag_chunks' => [],
+        'quality_report' => ['status' => 'completed'],
+        'figures' => [],
+    ]);
+    hub_finish_task_success($db, hub_get_task($db, $taskId), [
+        'ok' => true,
+        'task_type' => 'docparser_parse',
+        'status' => 'completed',
+        'artifact_summary' => $summary,
+    ]);
+
+    $serverBackup = $_SERVER;
+    $getBackup = $_GET;
+    try {
+        $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
+        $_SERVER['HTTPS'] = 'on';
+        $_SERVER['HTTP_HOST'] = 'nature.focusit.tw';
+        $_SERVER['SCRIPT_NAME'] = '/3waAIHub/api.php';
+        $_GET = ['task_id' => (string)$taskId];
+
+        $response = hub_api_task_result($db);
+        $payload = json_decode((string)$response['body'], true);
+        $reader = $payload['result']['artifact_summary']['reader_html'] ?? [];
+
+        hub_test_assert($response['status'] === 200, 'completed DocParser task result must return 200');
+        hub_test_assert(($reader['artifact_url'] ?? '') === 'https://nature.focusit.tw/3waAIHub/api.php?mode=artifact&artifact_id=' . (int)$summary['reader_html']['artifact_id'], 'DocParser reader artifact must expose its opaque artifact URL');
+        hub_test_assert(!array_key_exists('path', $reader), 'DocParser task result must not expose host artifact paths');
+        hub_test_assert(!str_contains((string)$response['body'], '/DATA/'), 'DocParser task result must not leak the host data path');
+    } finally {
+        $_SERVER = $serverBackup;
+        $_GET = $getBackup;
+    }
+});
+
 hub_test('DocParser figure assets expose per-crop artifact ids', function (): void {
     $db = hub_test_reset_db();
     $taskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, [

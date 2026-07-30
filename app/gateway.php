@@ -1907,7 +1907,48 @@ function hub_api_task_result(PDO $db, array $authContext = []): array
         return hub_gateway_json(409, ['ok' => false, 'task_id' => (int)$task['id'], 'status' => $task['status']]);
     }
 
-    return hub_gateway_json(200, ['ok' => true, 'task_id' => (int)$task['id'], 'result' => $task['result']]);
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'task_id' => (int)$task['id'],
+        'result' => hub_task_result_public_view($db, (int)$task['id'], is_array($task['result'] ?? null) ? $task['result'] : []),
+    ]);
+}
+
+function hub_task_result_public_view(PDO $db, int $taskId, array $result): array
+{
+    $stmt = $db->prepare('SELECT id FROM task_artifacts WHERE task_id = :task_id AND state = \'available\' AND purged_at IS NULL');
+    $stmt->execute([':task_id' => $taskId]);
+    $artifactUrls = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $artifactId) {
+        $artifactId = (int)$artifactId;
+        if ($artifactId > 0) {
+            $artifactUrls[$artifactId] = hub_gateway_api_base_url() . '?mode=artifact&artifact_id=' . $artifactId;
+        }
+    }
+
+    return hub_task_result_publicize_value($result, $artifactUrls);
+}
+
+function hub_task_result_publicize_value(mixed $value, array $artifactUrls): mixed
+{
+    if (!is_array($value)) {
+        return $value;
+    }
+
+    $public = [];
+    foreach ($value as $key => $item) {
+        if (is_string($key) && in_array($key, ['path', 'host_path', 'source_path', 'artifact_path', 'model_path', 'container_path', 'file_path'], true)) {
+            continue;
+        }
+        $public[$key] = hub_task_result_publicize_value($item, $artifactUrls);
+    }
+
+    $artifactId = (int)($public['artifact_id'] ?? 0);
+    if ($artifactId > 0 && isset($artifactUrls[$artifactId])) {
+        $public['artifact_url'] = $artifactUrls[$artifactId];
+    }
+
+    return $public;
 }
 
 function hub_api_task_log(PDO $db, array $authContext = []): array

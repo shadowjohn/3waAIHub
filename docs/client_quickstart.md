@@ -36,8 +36,10 @@ php scripts/agent_manifest_smoke.php \
 1. `POST multipart/form-data` 上傳 PDF，取得 `task_id`。
 2. 輪詢 `status_url`。
 3. 成功後讀 `result_url`。
-4. 從 result 裡的 `artifact_summary.*.artifact_id` 組 `artifact_url_template` 下載 HTML / Markdown / DocIR / RAG chunks。
-5. 圖片 crop 從 `artifact_summary.figure_assets.items[].artifact_id` 逐張下載。
+4. 優先使用 result 裡 `artifact_summary.*.artifact_url` 下載 HTML / Markdown / DocIR / RAG chunks；舊版回應才以 `artifact_id` 套入 `artifact_url_template`。
+5. 圖片 crop 優先從 `artifact_summary.figure_assets.items[].artifact_url` 逐張下載。
+
+所有 artifact URL 都需要同一個 Bearer Token。它們是受控 API 路由，不是 Web Root 下的檔案路徑；不可使用或拼接 `/DATA/...`。
 
 查詢端點：
 
@@ -229,8 +231,8 @@ curl -X POST "<BASE_URL>?mode=audio" \
 - request contract: `POST multipart/form-data`, field `file`, PDF only
 - translation contract: `translation_policy=auto` by default; Chinese target-language blocks are kept as-is, non-Chinese blocks are translated. Use `always` to force translation or `never` to disable it.
 - response contract: JSON with `ok`, `task_id`, `status`, `status_url`, `result_url`, `log_url`, `cancel_url`, `artifact_url_template`
-- result contract: `task_result` returns artifact summary for `reader_html`, `bilingual_html`, `markdown`, `docir`, `toc`, `rag_chunks`, `quality_report`, `manifest`
-- figure contract: `artifact_summary.figure_assets.items[]` returns `figure_id`, `block_id`, `page`, `bbox`, `caption`, `asset_path`, `artifact_id`, `bytes`
+- result contract: `task_result` returns artifact summary for `reader_html`, `bilingual_html`, `markdown`, `docir`, `toc`, `rag_chunks`, `quality_report`, `manifest`; every available artifact includes `artifact_id`, `artifact_url`, and `bytes`
+- figure contract: `artifact_summary.figure_assets.items[]` returns `figure_id`, `block_id`, `page`, `bbox`, `caption`, `asset_path`, `artifact_id`, `artifact_url`, `bytes`
 - error contract: `file_required`, `unsupported_file_type`, `invalid_pdf_file`, `missing_token`, `token_mode_not_allowed`
 - cancel contract: `POST task_cancel` cancels queued tasks immediately; running `docparser_parse` tasks stop cooperatively at the next worker checkpoint.
 - repair contract: `POST task_submit` with `task_type=docparser_repair_translation`, `task_id`, and comma-separated `block_ids` from `quality_report.missing_translation_blocks`.

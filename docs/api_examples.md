@@ -657,8 +657,9 @@ curl --fail --silent --show-error --request POST \
   "<BASE_URL>?mode=edge_tts"
 ```
 
-這是非同步工作：以 `task_status` 輪詢，成功後讀 `task_result`，依回傳的
-`artifact_url_template` 取得產物，完成後以 `task_artifacts_ack` ACK。當
+這是非同步工作：以 `task_status` 輪詢，成功後讀 `task_result`，優先使用每個 artifact 的
+`artifact_url` 取得產物；只有舊版回應才以 `artifact_url_template` 與 `artifact_id` 組 URL。下載仍需
+`Authorization: Bearer <TOKEN>`，不可使用回應以外的主機檔案路徑。完成後以 `task_artifacts_ack` ACK。當
 `include_subtitles=true`，task result 的五個產物是 `generated_audio`
 （`audio/mpeg`）、`synthesis_metadata`（`application/json`）、`subtitle_vtt`
 （標準 `text/vtt`；相容 `text/plain`）、`subtitle_srt`（標準

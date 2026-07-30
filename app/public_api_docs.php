@@ -283,7 +283,11 @@ function hub_public_api_pack_job_async_contract(array $route): array
         'execution_type' => 'async_task',
         'task_type' => 'pack_job',
         'input' => ['fields' => $fields],
-        'output' => ['required_keys' => ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template']],
+        'output' => [
+            'required_keys' => ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'],
+            'result_artifact_fields' => ['artifact_id', 'artifact_url', 'bytes'],
+            'artifact_delivery_note' => 'Use artifact_url when present, otherwise expand artifact_url_template with artifact_id. Artifact download requires the same Bearer Token; host filesystem paths are never returned.',
+        ],
         'task_api' => [
             'status' => 'GET api.php?mode=task_status&task_id={task_id}',
             'result' => 'GET api.php?mode=task_result&task_id={task_id}',
