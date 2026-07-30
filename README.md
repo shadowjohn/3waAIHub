@@ -1344,53 +1344,48 @@ PhaseDoc-1B does not do image OCR overlay, technical drawing understanding, VLM 
 
 ### tts-voxcpm2 Runtime Level
 
-`tts-voxcpm2` 是 experimental 且已達 L5 `benchmark-ready` 的 VoxCPM2 TTS Pack，用於驗證受管控的語音合成服務骨架與真實 VoxCPM2 推論 smoke：
+`tts-voxcpm2` 是 experimental、L5 `benchmark-ready` 的 VoxCPM2 Pack。同步
+`tts` 用於短請求與診斷；正式整合使用已安裝 Pack 的非同步
+`voice_generate`。合成支援 `design`、`clone`、`ultimate_clone`，操作共有
+`profile_prepare`、`profile_status`、`profile_confirm`、`profile_delete`、
+`synthesize`；省略 `operation` 等同 `synthesize`。
 
-- `GET /health`
-- `GET /v1/models`
-- `POST /v1/voice-design`
-- `POST /v1/tts`
-- `mode=design`：文字 + 自然語言 voice prompt 產生 WAV。
-- `mode=clone`：透過 Hub 管理的 Voice Profile 做 controllable clone。
-- API 測試場支援 `mode=tts`，customer 需同時具備 user mode permission 與自己的 token permission 才會看到。
-- L5 benchmark cases：
-  - `tts_mock_wav`
-  - `tts_real_wav`
-- 預設 `VOXCPM2_REAL_INFERENCE=0`，未要求真實推論時會產生固定 seed 的 deterministic mock WAV，方便快速 smoke test。
-- API / Playground 傳入 `real_inference=1`，或設定 `VOXCPM2_REAL_INFERENCE=1`，會 lazy import 官方 `voxcpm==2.0.3` runtime 並輸出真實 VoxCPM2 WAV。
-- Runtime image 需要 `soundfile`、`libsndfile1` 與 `gcc/g++`，後者供 Torch / Triton 第一次 warmup 編譯使用。
-- 輸出 WAV sample rate 預設 `48000`。
-- 長文會依 `VOXCPM2_CHUNK_CHARS` 自動切段。
-- 每次輸出會寫 manifest，標記 `ai_generated=true`、`model`、`seed`、`voice_profile_id`、`reference_audio_sha256`、`duration_ms` 與 chunk count。
+Native Hub 流程：
 
-VoxCPM2 clone 受 Voice Profile 管制：
+1. `profile_prepare` 上傳 WAV 與 consent，MyAI 把回傳的 `task_id` 存成
+   `voice_profile_task_id`。
+2. 依回傳的 `status_url` 查 `task_status`，成功後呼叫 `profile_status` 讀取
+   ASR draft。
+3. 使用 `profile_confirm` 明確確認 transcript。
+4. 送出 `synthesize`（或省略 operation）與 `mode=ultimate_clone`，再依回傳的
+   `result_url`、`artifact_url` 取回 WAV。
+5. 不再使用時呼叫 `profile_delete`；刪除是必要的 privacy lifecycle 步驟。
 
-- 外部 API 不接受任意伺服器檔案路徑。
-- Public API 只能送 `voice_profile_id` 或 `reference_audio_id`。
-- Gateway 會檢查 Bearer token 對應的 `api_member` 是否擁有該 Voice Profile。
-- 通過後才把參考音檔改寫成 container 內部 `/data/voice_profiles/...` 路徑。
-- Voice Profile 建立、使用、刪除都寫入 `voice_profile_audit_logs`。
-- 參考音檔只允許放在 `data/uploads/voice_profiles/`，compose 以 read-only 方式掛入 container。
+Cluster 流程相同，但所有請求走 `cluster_api.php`，工作查詢與下載分別使用
+`cluster_task_status`、`cluster_task_result`、`cluster_artifact`。MyAI 只保存
+Router 回傳的 opaque `voice_profile_task_id`，不保存 child profile identifier。
+Profile 建立後，status、confirm、clone、Ultimate Clone 與 delete 都留在同一個
+pinned station，no failover；該站不可用時回傳 `station_unavailable`，不得改送
+另一站。
 
-第一版不做：
+Privacy 規則：
 
-- Ultimate Clone
-- ASR transcript confirmation
-- LoRA 訓練
-- 多人聲 Podcast 編排
-- Streaming / WebSocket
-- vLLM-Omni
-- OpenAI-compatible API
-- 語音素材管理後台
-- 公開匿名 clone
+- `profile_status` 可向 exact task owner 回傳 unconfirmed `prompt_text` ASR draft
+  與 `reference_audio_sha256`；confirmed transcript remains hidden。
+- Native Hub task IDs remain part of the native async contract.
+- 其他公開 task/log/callback/synthesis payload 不揭露 transcript plaintext 或
+  token；Cluster child task/profile IDs and paths 一律留在 Router 後方，文件範例
+  也不得放入真值。
+- 不接受 client 提供的 host/container path。
+- Profile 僅能由同一 API member 使用；Native ownership failure 是
+  `voice_profile_forbidden`，Cluster 對未知或他人的 opaque handle 一律回
+  `profile_task_not_found`。
+- Reference WAV 與 transcript 都是敏感資料；不要寫入一般 application log，
+  不要跨 member 分享，流程結束後明確執行 `profile_delete`。
 
-測試案例放在：
-
-```text
-packs/tts-voxcpm2/acceptance/zh_tw_tts_cases.json
-```
-
-內容涵蓋繁中維修語境、數字單位、NSR / RC Valve / PGM-III、中英混合、零件編號、長文切段與固定 seed 驗收。
+完整欄位、placeholder-only curl/PHP/JS 範例與錯誤 status table 由
+`public_api_docs.php` / `api_manifest.json.php` 及 Cluster 對應文件即時產生。
+Pack 細節見 [packs/tts-voxcpm2/README.md](packs/tts-voxcpm2/README.md)。
 
 ### Pack Preflight
 

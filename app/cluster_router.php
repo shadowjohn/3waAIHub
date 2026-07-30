@@ -716,8 +716,45 @@ function hub_cluster_router_enabled(PDO $db): bool
     return hub_get_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED') === '1';
 }
 
-function hub_cluster_rewrite_contract_endpoint(array $service, string $stationApiBase, string $routerApiBase): array
+function hub_cluster_project_example_collections(array $service, bool $preserveVoiceWorkflowExamples = false): array
 {
+    $voiceWorkflowExamples = $preserveVoiceWorkflowExamples
+        ? hub_public_api_voice_generate_examples(true)
+        : null;
+    $project = static function (mixed $value) use (&$project, $voiceWorkflowExamples): mixed {
+        if (!is_array($value)) {
+            return $value;
+        }
+        foreach ($value as $key => $item) {
+            if (is_string($key) && preg_match('/(?:^|_)examples\z/i', $key) === 1) {
+                if (strcasecmp($key, 'workflow_examples') === 0
+                    && $voiceWorkflowExamples !== null
+                    && $item === $voiceWorkflowExamples) {
+                    $value[$key] = $voiceWorkflowExamples;
+                } else {
+                    unset($value[$key]);
+                }
+                continue;
+            }
+            if (is_array($item)) {
+                $value[$key] = $project($item);
+            }
+        }
+
+        return $value;
+    };
+
+    return $project($service);
+}
+
+function hub_cluster_rewrite_contract_endpoint(
+    array $service,
+    string $stationApiBase,
+    string $routerApiBase,
+    bool $preserveVoiceWorkflowExamples = false
+): array
+{
+    $service = hub_cluster_project_example_collections($service, $preserveVoiceWorkflowExamples);
     $stationApiBase = rtrim(trim($stationApiBase), '/');
     $routerApiBase = trim($routerApiBase);
     $stationParts = parse_url($stationApiBase);
@@ -735,17 +772,7 @@ function hub_cluster_rewrite_contract_endpoint(array $service, string $stationAp
         'task_cancel' => 'cluster_task_cancel&task_id={task_id}',
         'artifact' => 'cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
     ];
-    $rewrite = static function (mixed $value) use (&$rewrite, $stationApiPattern, $routerApiBase, $followups): mixed {
-        if (is_array($value)) {
-            foreach ($value as $key => $item) {
-                $value[$key] = $rewrite($item);
-            }
-
-            return $value;
-        }
-        if (!is_string($value)) {
-            return $value;
-        }
+    $rewriteUrl = static function (string $value) use ($stationApiPattern, $routerApiBase, $followups): string {
         if ($stationApiPattern !== null) {
             $value = preg_replace_callback(
                 $stationApiPattern,
@@ -765,8 +792,203 @@ function hub_cluster_rewrite_contract_endpoint(array $service, string $stationAp
 
         return $value;
     };
+    $urlFields = [
+        'endpoint' => true,
+        'url' => true,
+        'status_url' => true,
+        'result_url' => true,
+        'log_url' => true,
+        'cancel_url' => true,
+        'artifact_url' => true,
+        'artifact_url_template' => true,
+    ];
+    $rewrite = static function (mixed $value, ?string $parent = null) use (&$rewrite, $rewriteUrl, $urlFields): mixed {
+        if (!is_array($value)) {
+            return $value;
+        }
+        foreach ($value as $key => $item) {
+            if (is_string($item) && is_string($key)
+                && (isset($urlFields[$key]) || in_array($parent, ['task_api', 'links'], true))) {
+                $value[$key] = $rewriteUrl($item);
+                continue;
+            }
+            if (is_array($item)) {
+                $value[$key] = $rewrite($item, is_string($key) ? $key : $parent);
+            }
+        }
 
-    return $rewrite($service);
+        return $value;
+    };
+
+    $service = $rewrite($service);
+    $mode = trim((string)($service['mode'] ?? ''));
+    if (preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $mode) === 1) {
+        $service['endpoint'] = $routerApiBase . '?mode=' . $mode;
+        $service['url'] = $service['endpoint'];
+    }
+
+    return $service;
+}
+
+function hub_cluster_voice_generate_relay_errors(): array
+{
+    return [
+        'invalid_request' => ['public_code' => 'invalid_request', 'http_status' => 400, 'message' => 'request is invalid'],
+        'voice_profile_wav_invalid' => ['public_code' => 'voice_profile_wav_invalid', 'http_status' => 400, 'message' => 'reference audio is invalid'],
+        'voice_profile_transcript_invalid' => ['public_code' => 'voice_profile_transcript_invalid', 'http_status' => 400, 'message' => 'voice profile transcript is invalid'],
+        'voice_profile_not_found' => ['public_code' => 'profile_task_not_found', 'http_status' => 404, 'message' => 'voice profile task was not found'],
+        'voice_profile_transcript_unconfirmed' => ['public_code' => 'voice_profile_transcript_unconfirmed', 'http_status' => 409, 'message' => 'voice profile transcript is not confirmed'],
+        'voice_profile_prepare_incomplete' => ['public_code' => 'voice_profile_prepare_incomplete', 'http_status' => 409, 'message' => 'voice profile preparation is incomplete'],
+        'voice_profile_confirm_failed' => ['public_code' => 'voice_profile_confirm_failed', 'http_status' => 409, 'message' => 'voice profile confirmation failed'],
+        'voice_profile_unavailable' => ['public_code' => 'voice_profile_unavailable', 'http_status' => 409, 'message' => 'voice profile is unavailable'],
+        'artifact_purged' => ['public_code' => 'artifact_purged', 'http_status' => 410, 'message' => 'artifact is no longer available'],
+        'pack_runtime_not_ready' => ['public_code' => 'pack_runtime_not_ready', 'http_status' => 503, 'message' => 'voice generation runtime is not ready'],
+    ];
+}
+
+function hub_cluster_voice_generate_error_table(): array
+{
+    $errors = [];
+    foreach (hub_cluster_voice_generate_relay_errors() as $rule) {
+        $errors[(string)$rule['public_code']] = [
+            'code' => (string)$rule['public_code'],
+            'http_status' => (int)$rule['http_status'],
+        ];
+    }
+    $errors['voice_profile_changed'] = ['code' => 'voice_profile_changed', 'task_status' => 'failed'];
+    $errors['voice_profile_unavailable']['task_status'] = 'failed';
+    $errors['station_unavailable'] = ['code' => 'station_unavailable', 'http_status' => 503];
+
+    return array_values($errors);
+}
+
+function hub_cluster_voice_generate_relay_response(array $response, mixed $payload): ?array
+{
+    if (!is_array($payload)
+        || ($payload['ok'] ?? null) !== false
+        || !is_string($payload['error'] ?? null)
+        || !is_string($payload['message'] ?? null)
+    ) {
+        return null;
+    }
+    $allowedKeys = ['ok', 'error', 'message', 'request_id'];
+    foreach (array_keys($payload) as $key) {
+        if (!is_string($key) || !in_array($key, $allowedKeys, true)) {
+            return null;
+        }
+    }
+    if (array_key_exists('request_id', $payload)
+        && (!is_string($payload['request_id']) || strlen($payload['request_id']) > 128)) {
+        return null;
+    }
+    $rule = hub_cluster_voice_generate_relay_errors()[$payload['error']] ?? null;
+    if ($rule === null || (int)($response['status'] ?? 0) !== (int)$rule['http_status']) {
+        return null;
+    }
+
+    return hub_gateway_error(
+        (int)$rule['http_status'],
+        (string)$rule['public_code'],
+        (string)$rule['message']
+    );
+}
+
+function hub_cluster_rewrite_voice_generate_contract(array $service): array
+{
+    unset($service['examples']);
+    $forbiddenIdentifierPattern = '/(?<![A-Za-z0-9_])voice_profile_id(?![A-Za-z0-9_])/i';
+    $containsForbiddenIdentifier = static fn (mixed $value): bool => is_string($value)
+        && preg_match($forbiddenIdentifierPattern, $value) === 1;
+    $unsafeExample = static function (mixed $value) use (&$unsafeExample, $containsForbiddenIdentifier): bool {
+        if (is_string($value)) {
+            return $containsForbiddenIdentifier($value);
+        }
+        if (is_array($value)) {
+            foreach ($value as $item) {
+                if ($unsafeExample($item)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    };
+    $exampleFields = ['example', 'examples', 'code', 'curl', 'php', 'js_fetch'];
+    $project = static function (mixed $value) use (
+        &$project,
+        $containsForbiddenIdentifier,
+        $forbiddenIdentifierPattern,
+        $unsafeExample,
+        $exampleFields
+    ): array {
+        if (is_array($value)) {
+            if ($containsForbiddenIdentifier($value['name'] ?? null)) {
+                return [false, null];
+            }
+            $list = array_is_list($value);
+            $safe = [];
+            foreach ($value as $key => $item) {
+                if (!$list && $containsForbiddenIdentifier($key)) {
+                    continue;
+                }
+                if (!$list && is_string($key)
+                    && in_array(strtolower($key), $exampleFields, true)
+                    && $unsafeExample($item)) {
+                    continue;
+                }
+                [$keep, $item] = $project($item);
+                if (!$keep) {
+                    continue;
+                }
+                if ($list) {
+                    $safe[] = $item;
+                } else {
+                    $safe[$key] = $item;
+                }
+            }
+            if (isset($safe['name']) && is_string($safe['name'])
+                && strcasecmp($safe['name'], 'voice_profile_task_id') === 0) {
+                $safe['type'] = 'string';
+                $safe['max_length'] = 64;
+            }
+
+            return [true, $safe];
+        }
+        if (is_string($value)) {
+            if (strcasecmp($value, 'voice_profile_id') === 0) {
+                return [false, null];
+            }
+
+            return [
+                true,
+                preg_replace($forbiddenIdentifierPattern, 'voice_profile_task_id', $value) ?? $value,
+            ];
+        }
+
+        return [true, $value];
+    };
+    [, $service] = $project($service);
+    $service['error_table'] = hub_cluster_voice_generate_error_table();
+    $service['error_codes'] = array_column($service['error_table'], 'code');
+    $service['workflow'] = [
+        'client_state' => 'MyAI stores only voice_profile_task_id returned by profile_prepare.',
+        'profile_affinity' => 'Profile followups and clone synthesis stay on the pinned station; there is no failover.',
+        'operation_default' => 'Omitting operation means synthesize.',
+        'profile_status_visibility' => 'For the exact task owner, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
+        'steps' => [
+            'profile_prepare',
+            'cluster_task_status via returned status_url',
+            'profile_status',
+            'profile_confirm',
+            'synthesize with mode=ultimate_clone',
+            'cluster_task_result via returned result_url',
+            'cluster_artifact via returned artifact_url',
+            'profile_delete',
+        ],
+    ];
+    $service['workflow_examples'] = hub_public_api_voice_generate_examples(true);
+
+    return $service;
 }
 
 function hub_cluster_public_manifest(PDO $db): array
@@ -815,6 +1037,10 @@ function hub_cluster_public_manifest(PDO $db): array
         }
         $station = $stations[$stationId];
         $service = $contracts[$stationId][$mode];
+        if ($mode === 'voice_generate') {
+            $service = hub_cluster_rewrite_voice_generate_contract($service);
+        }
+        $service = hub_cluster_project_example_collections($service, $mode === 'voice_generate');
         foreach (['public_base_url', 'internal_base_url'] as $field) {
             $base = trim((string)($station[$field] ?? ''));
             if ($base === '') {
@@ -824,11 +1050,19 @@ function hub_cluster_public_manifest(PDO $db): array
                 $service = hub_cluster_rewrite_contract_endpoint(
                     $service,
                     hub_cluster_validate_station_base_url($base) . 'api.php',
-                    hub_cluster_router_api_base_url()
+                    hub_cluster_router_api_base_url(),
+                    $mode === 'voice_generate'
                 );
             } catch (Throwable) {
                 continue;
             }
+        }
+        if (is_string($service['url'] ?? null)
+            && is_string($service['method'] ?? null)
+            && is_string($service['content_type'] ?? null)
+            && is_array($service['input_fields'] ?? null)
+        ) {
+            $service['examples'] = hub_public_api_examples($service);
         }
         $services[] = $service;
     }
@@ -859,13 +1093,25 @@ function hub_cluster_router_available_modes(PDO $db): array
     return array_keys($modes);
 }
 
+function hub_cluster_public_docs_example(string $value, string $routerUrl): string
+{
+    $routerUrl = trim($routerUrl);
+    $value = str_replace('<ROUTER_BASE_URL>/cluster_api.php', $routerUrl, $value);
+
+    return preg_replace_callback(
+        '~(?<![A-Za-z0-9_./-])cluster_api\.php(?=\?)~',
+        static fn (): string => $routerUrl,
+        $value
+    ) ?? $value;
+}
+
 function hub_cluster_public_api_docs_html(PDO $db): string
 {
     $manifest = hub_cluster_public_manifest($db);
     $services = is_array($manifest['services'] ?? null) ? $manifest['services'] : [];
     $apiUrl = hub_public_api_base_url();
     $routerUrl = preg_replace('~api\.php\z~', 'cluster_api.php', $apiUrl) ?: 'cluster_api.php';
-    $example = static fn (string $value): string => str_replace('cluster_api.php', $routerUrl, $value);
+    $example = static fn (string $value): string => hub_cluster_public_docs_example($value, $routerUrl);
     $json = static fn (mixed $value): string => (string)json_encode($value, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     ob_start();
     ?>
@@ -970,10 +1216,22 @@ function hub_cluster_public_api_docs_html(PDO $db): string
                     <?php if (($service['operations'] ?? []) !== []): ?>
                         <div class="contract-block"><h3>Additional operations</h3><pre><?= hub_h($json($service['operations'])) ?></pre></div>
                     <?php endif; ?>
+                    <?php if (($service['workflow'] ?? []) !== []): ?>
+                        <div class="contract-block"><h3>Workflow</h3><pre><?= hub_h($json($service['workflow'])) ?></pre></div>
+                    <?php endif; ?>
                     <div class="contract-block"><h3>Error codes</h3><pre><?= hub_h($json($service['error_codes'] ?? [])) ?></pre></div>
+                    <?php if (($service['error_table'] ?? []) !== []): ?>
+                        <div class="contract-block"><h3>Error status table</h3><pre><?= hub_h($json($service['error_table'])) ?></pre></div>
+                    <?php endif; ?>
                     <div class="contract-block"><div class="code-heading"><h3>curl</h3><button class="copy-button" type="button" data-copy="<?= hub_h($curl) ?>" aria-label="Copy curl example" title="Copy curl example">Copy</button></div><pre><?= hub_h($curl) ?></pre></div>
                     <div class="contract-block"><div class="code-heading"><h3>PHP</h3><button class="copy-button" type="button" data-copy="<?= hub_h($php) ?>" aria-label="Copy PHP example" title="Copy PHP example">Copy</button></div><pre><?= hub_h($php) ?></pre></div>
                     <div class="contract-block"><div class="code-heading"><h3>JavaScript</h3><button class="copy-button" type="button" data-copy="<?= hub_h($js) ?>" aria-label="Copy JavaScript example" title="Copy JavaScript example">Copy</button></div><pre><?= hub_h($js) ?></pre></div>
+                    <?php if (($service['workflow_examples'] ?? []) !== []): ?>
+                        <?php foreach (['curl' => 'Workflow curl', 'php' => 'Workflow PHP', 'js_fetch' => 'Workflow JavaScript'] as $exampleKey => $label): ?>
+                            <?php $workflowExample = $example((string)$service['workflow_examples'][$exampleKey]); ?>
+                            <div class="contract-block"><div class="code-heading"><h3><?= hub_h($label) ?></h3><button class="copy-button" type="button" data-copy="<?= hub_h($workflowExample) ?>" aria-label="Copy <?= hub_h($label) ?> example" title="Copy <?= hub_h($label) ?> example">Copy</button></div><pre><?= hub_h($workflowExample) ?></pre></div>
+                        <?php endforeach; ?>
+                    <?php endif; ?>
                 </article>
             <?php endforeach; ?>
         </section>
@@ -1169,7 +1427,10 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         }
         $payload = hub_cluster_router_json_payload($response);
         if ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
-            $response = hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
+            $response = $mode === 'voice_generate'
+                ? hub_cluster_voice_generate_relay_response($response, $payload)
+                : null;
+            $response ??= hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
         } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300) {
             if ($isProfileRequest && !is_array($payload)) {
                 $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
@@ -2711,6 +2972,12 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
         if (hub_cluster_router_is_local_proxy_error($response)) {
             return $complete($response, null, $selfStation);
         }
+        if ($profileSensitiveArtifact) {
+            $relayed = hub_cluster_voice_generate_relay_response($response, $payload);
+            if ($relayed !== null) {
+                return $complete($relayed, null, $selfStation);
+            }
+        }
         return $complete(hub_gateway_error(502, 'router_response_failed', 'cluster station response failed'), null, $selfStation);
     }
     if (in_array($routerMode, ['cluster_artifact', 'cluster_tts_artifact'], true)) {
@@ -3720,7 +3987,7 @@ function hub_cluster_node_published_modes(PDO $db): array
          ORDER BY mode ASC"
     )->fetchAll();
 
-    $modes = [];
+    $modes = hub_available_pack_job_async_modes($db);
     foreach ($rows as $service) {
         if (!is_array($service)) {
             continue;
@@ -4053,7 +4320,8 @@ function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
         $services[$mode] = array_intersect_key($service, array_flip([
             'mode', 'pack_id', 'name', 'description', 'method', 'content_type', 'endpoint', 'url',
             'execution_type', 'runtime_level', 'task_type', 'input_fields', 'output_keys',
-            'response_content_type', 'response_headers', 'error_codes', 'task_api', 'operations', 'examples',
+            'response_content_type', 'response_headers', 'error_codes', 'task_api', 'operations',
+            'workflow', 'error_table', 'examples', 'workflow_examples',
         ]));
     }
 

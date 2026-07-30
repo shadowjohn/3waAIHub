@@ -348,6 +348,234 @@ hub_test('Public API inventory requires installed enabled running and healthy se
     hub_test_assert(!str_contains($emptyHtml, '<article class="card">'), 'empty public docs must not render service cards');
 });
 
+hub_test('Public API publishes installed stopped async Pack routes from canonical contracts', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $db = hub_test_reset_db();
+    hub_test_make_documentable_pack($db, 'hello', ['mode' => 'hello_live']);
+    $installed = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-stopped-async-docs']);
+    $db->prepare(
+        "UPDATE services
+         SET mode = 'tts', install_status = 'installed', enabled = 1,
+             status = 'stopped', runtime_status = 'stopped'
+         WHERE id = :id"
+    )->execute([':id' => (int)$installed['service']['id']]);
+
+    $available = hub_available_pack_job_async_modes($db);
+    $services = array_column(
+        hub_public_api_services($db, static fn (array $service): bool => (string)$service['mode'] === 'hello_live'),
+        null,
+        'mode'
+    );
+    $voice = $services['voice_generate'] ?? null;
+
+    hub_test_assert($available === array_values(array_unique($available)) && $available === array_values(array_filter(
+        $available,
+        static fn (string $mode): bool => in_array($mode, array_keys(hub_pack_job_async_routes()), true)
+    )), 'available async modes must be unique canonical route keys');
+    $sorted = $available;
+    sort($sorted, SORT_STRING);
+    hub_test_assert($available === $sorted && in_array('voice_generate', $available, true), 'installed stopped VoxCPM2 must publish sorted voice_generate inventory');
+    hub_test_assert(isset($services['hello_live']), 'healthy sync services must remain documented');
+    hub_test_assert(is_array($voice) && ($voice['pack_id'] ?? '') === 'tts-voxcpm2', 'stopped sync TTS row must publish the canonical async voice_generate contract');
+    hub_test_assert(array_column((array)$voice['operations'], 'operation') === [
+        'profile_prepare', 'profile_status', 'profile_confirm', 'profile_delete', 'synthesize',
+    ], 'voice_generate must document all profile and synthesis operations in stable order');
+    $operations = array_column((array)$voice['operations'], null, 'operation');
+    $synthesize = array_column((array)$voice['operations'], null, 'operation')['synthesize'] ?? [];
+    hub_test_assert(($synthesize['modes'] ?? null) === ['design', 'clone', 'ultimate_clone'], 'voice_generate synthesis must document every supported mode');
+    $nativeFields = array_column((array)$voice['input_fields'], 'name');
+    hub_test_assert(in_array('voice_profile_id', $nativeFields, true) && in_array('voice_profile_task_id', $nativeFields, true), 'native voice_generate must expose its direct profile references');
+    $profileStatus = array_column((array)$voice['operations'], null, 'operation')['profile_status'] ?? [];
+    $conditionalOutputs = array_column((array)($profileStatus['conditional_output_fields'] ?? []), null, 'name');
+    hub_test_assert(
+        !in_array('prompt_text', (array)($profileStatus['output_keys'] ?? []), true)
+        && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'exact task owner')
+        && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'transcript_confirmed=false')
+        && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'omitted after confirmation'),
+        'native profile_status must document owner-only unconfirmed ASR draft visibility'
+    );
+    $statusOutput = [
+        'ok', 'task_status', 'profile_status', 'transcription_status', 'transcript_confirmed',
+        'prompt_text_confirmed_at', 'profile_name', 'language', 'consent_type',
+        'reference_audio_sha256', 'created_at', 'updated_at',
+    ];
+    hub_test_assert(($operations['profile_confirm']['output_keys'] ?? null) === $statusOutput, 'profile_confirm must document its actual safe status response');
+    hub_test_assert(($operations['profile_delete']['output_keys'] ?? null) === $statusOutput, 'profile_delete must document its actual safe status response');
+
+    $errors = array_column((array)($voice['error_table'] ?? []), null, 'code');
+    foreach ([
+        'invalid_request' => 400,
+        'voice_profile_wav_invalid' => 400,
+        'voice_profile_transcript_invalid' => 400,
+        'voice_profile_forbidden' => 403,
+        'voice_profile_transcript_unconfirmed' => 409,
+        'voice_profile_unavailable' => 409,
+        'voice_profile_not_found' => 404,
+        'voice_profile_prepare_conflict' => 409,
+        'voice_profile_callback_conflict' => 409,
+        'voice_profile_prepare_incomplete' => 409,
+        'voice_profile_confirm_failed' => 409,
+        'voice_profile_prepare_failed' => 500,
+        'voice_profile_delete_failed' => 500,
+        'pack_runtime_not_ready' => 503,
+    ] as $code => $status) {
+        hub_test_assert(($errors[$code]['http_status'] ?? null) === $status, 'native voice_generate error status mismatch: ' . $code);
+    }
+    hub_test_assert(($errors['voice_profile_changed']['task_status'] ?? null) === 'failed', 'voice profile mutation must be documented as an asynchronous task failure');
+    hub_test_assert(!isset($errors['profile_task_not_found'], $errors['station_unavailable']), 'native voice_generate must not claim Router-only errors');
+
+    foreach ((array)$voice['workflow_examples'] as $kind => $example) {
+        $example = (string)$example;
+        foreach (['<TOKEN>', '<REFERENCE_WAV>', '<VOICE_PROFILE_TASK_ID>', '<CONFIRMED_TRANSCRIPT>', '<TASK_ID>', '<ARTIFACT_ID>'] as $placeholder) {
+            hub_test_assert(str_contains($example, $placeholder), 'native ' . $kind . ' workflow example missing placeholder ' . $placeholder);
+        }
+        foreach (['voice_profile_id=', '3wa_live_', '/home/', '/data/', 'http://', 'https://'] as $forbidden) {
+            hub_test_assert(!str_contains($example, $forbidden), 'native ' . $kind . ' workflow example leaked a concrete value: ' . $forbidden);
+        }
+        hub_test_assert(str_contains($example, 'profile_delete'), 'native ' . $kind . ' workflow example must explicitly delete the profile');
+    }
+});
+
+hub_test('Available async Pack inventory rejects missing disabled stale and runtime-unready Packs', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $published = static function (PDO $db): bool {
+        return in_array('voice_generate', hub_available_pack_job_async_modes($db), true)
+            || in_array('voice_generate', hub_cluster_node_published_modes($db), true)
+            || in_array('voice_generate', array_column(hub_public_api_services($db, static fn (array $service): bool => true), 'mode'), true);
+    };
+
+    $missing = hub_test_reset_db();
+    hub_test_assert(!$published($missing), 'missing VoxCPM2 Pack must not publish voice_generate');
+
+    $disabled = hub_test_reset_db();
+    $service = hub_install_pack($disabled, 'tts-voxcpm2', ['service_key' => 'tts-disabled-async-docs'])['service'];
+    $disabled->prepare("UPDATE services SET mode = 'tts', enabled = 0 WHERE id = :id")->execute([':id' => (int)$service['id']]);
+    hub_test_assert(!$published($disabled), 'disabled VoxCPM2 Pack must not publish voice_generate');
+
+    $stale = hub_test_reset_db();
+    $service = hub_install_pack($stale, 'tts-voxcpm2', ['service_key' => 'tts-stale-async-docs'])['service'];
+    $stale->prepare("UPDATE services SET mode = 'tts', enabled = 1, pack_version = 'stale-version' WHERE id = :id")
+        ->execute([':id' => (int)$service['id']]);
+    hub_test_assert(!$published($stale), 'invalid VoxCPM2 Pack version must not publish voice_generate');
+
+    $runtime = hub_test_reset_db();
+    $service = hub_install_pack($runtime, 'tts-voxcpm2', ['service_key' => 'tts-runtime-async-docs'])['service'];
+    $runtime->prepare("UPDATE services SET mode = 'tts', enabled = 1 WHERE id = :id")->execute([':id' => (int)$service['id']]);
+    $manifestPath = HUB_ROOT . '/packs/tts-voxcpm2/pack.json';
+    $manifestHash = hash_file('sha256', $manifestPath);
+    $packs = hub_list_packs();
+    foreach ($packs as &$pack) {
+        if (($pack['id'] ?? '') === 'tts-voxcpm2') {
+            $pack['manifest']['runtime_ready'] = false;
+        }
+    }
+    unset($pack);
+    try {
+        $available = hub_available_pack_job_async_modes_with_catalog($runtime, static fn (): array => $packs);
+        hub_test_assert(!in_array('voice_generate', $available, true), 'runtime-unready VoxCPM2 Pack must not publish voice_generate');
+        try {
+            hub_available_pack_job_async_modes_with_catalog(
+                $runtime,
+                static fn (): array => $packs,
+                static function (): array {
+                    throw new LogicException('injected_resolver_failure');
+                }
+            );
+            hub_test_assert(false, 'injected resolver failure must escape async inventory');
+        } catch (LogicException $e) {
+            hub_test_assert($e->getMessage() === 'injected_resolver_failure', 'unexpected injected resolver failure');
+        }
+    } finally {
+        clearstatcache(true, $manifestPath);
+        hub_test_assert(hash_file('sha256', $manifestPath) === $manifestHash, 'runtime-unready fixture must never edit the tracked Pack manifest');
+    }
+});
+
+hub_test('Available async Pack inventory scans once per call and propagates infrastructure failures', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-async-batch-docs'])['service'];
+    $db->prepare("UPDATE services SET mode = 'tts', enabled = 1 WHERE id = :id")->execute([':id' => (int)$service['id']]);
+    $packs = hub_list_packs();
+    $scans = 0;
+    $loader = static function () use (&$scans, &$packs): array {
+        $scans++;
+        return $packs;
+    };
+
+    $first = hub_available_pack_job_async_modes_with_catalog($db, $loader);
+    hub_test_assert($scans === 1 && in_array('voice_generate', $first, true), 'async inventory must scan the Pack catalog once per call');
+    foreach ($packs as &$pack) {
+        if (($pack['id'] ?? '') === 'tts-voxcpm2') {
+            $pack['manifest']['runtime_ready'] = false;
+        }
+    }
+    unset($pack);
+    $second = hub_available_pack_job_async_modes_with_catalog($db, $loader);
+    hub_test_assert($scans === 2 && !in_array('voice_generate', $second, true), 'per-call catalog reuse must not become a stale cross-mutation cache');
+
+    $broken = hub_test_reset_db();
+    $broken->exec('DROP TABLE services');
+    try {
+        hub_available_pack_job_async_modes($broken);
+        hub_test_assert(false, 'systemic async inventory DB failure must propagate');
+    } catch (PDOException) {
+    }
+});
+
+hub_test('Public API services consume one async route detail batch without silent second-pass failures', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-public-batch-docs'])['service'];
+    $db->prepare(
+        "UPDATE services
+         SET mode = 'tts', enabled = 1, install_status = 'installed',
+             status = 'stopped', runtime_status = 'stopped'
+         WHERE id = :id"
+    )->execute([':id' => (int)$service['id']]);
+
+    $packs = hub_list_packs();
+    $scans = 0;
+    $voiceResolutions = 0;
+    $loader = static function () use (&$scans, $packs): array {
+        $scans++;
+        return $packs;
+    };
+    $resolver = static function (PDO $db, string $mode, ?array $pack) use (&$voiceResolutions): array {
+        if ($mode === 'voice_generate' && ++$voiceResolutions > 1) {
+            throw new LogicException('injected_second_pass_failure');
+        }
+
+        return hub_resolve_pack_job_async_route_from_pack($db, $mode, $pack);
+    };
+
+    $services = array_column(
+        hub_public_api_services($db, static fn (array $service): bool => true, $loader, $resolver),
+        null,
+        'mode'
+    );
+    hub_test_assert(
+        $scans === 1 && $voiceResolutions === 1 && isset($services['voice_generate']),
+        'public services must consume one catalog scan and one resolved voice route detail'
+    );
+
+    try {
+        hub_public_api_services(
+            $db,
+            static fn (array $service): bool => true,
+            static fn (): array => $packs,
+            static function (PDO $db, string $mode, ?array $pack): array {
+                if ($mode === 'voice_generate') {
+                    throw new LogicException('injected_async_batch_failure');
+                }
+
+                return hub_resolve_pack_job_async_route_from_pack($db, $mode, $pack);
+            }
+        );
+        hub_test_assert(false, 'public services must propagate async batch infrastructure failures');
+    } catch (LogicException $e) {
+        hub_test_assert($e->getMessage() === 'injected_async_batch_failure', 'unexpected public async batch failure');
+    }
+});
+
 hub_test('Public API inventory hides unconditionally reserved DB service modes', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
     $rendered = [];
@@ -462,8 +690,18 @@ hub_test('Public API audio async contracts use normalized job routes', function 
         } else {
             hub_test_assert(!isset($fields['file']), 'source-free audio async route rendered an upload: ' . $mode);
             hub_test_assert(!isset($fields['source_artifact_id']), 'source-free audio async route rendered a source artifact alternative: ' . $mode);
-            hub_test_assert(!str_contains((string)$service['examples']['curl'], '=@'), 'source-free audio async curl rendered an upload: ' . $mode);
-            hub_test_assert(!str_contains((string)$service['examples']['php'], 'CURLFile'), 'source-free audio async PHP rendered an upload: ' . $mode);
+            if ($mode === 'voice_generate') {
+                hub_test_assert(
+                    str_contains((string)$service['workflow_examples']['curl'], 'reference_wav=@<REFERENCE_WAV>')
+                    && str_contains((string)$service['workflow_examples']['php'], "new CURLFile('<REFERENCE_WAV>')")
+                    && !str_contains((string)$service['examples']['curl'], '=@')
+                    && !str_contains((string)$service['examples']['php'], 'CURLFile'),
+                    'voice profile preparation upload example missing'
+                );
+            } else {
+                hub_test_assert(!str_contains((string)$service['examples']['curl'], '=@'), 'source-free audio async curl rendered an upload: ' . $mode);
+                hub_test_assert(!str_contains((string)$service['examples']['php'], 'CURLFile'), 'source-free audio async PHP rendered an upload: ' . $mode);
+            }
         }
 
         $exampleInput = [];
@@ -950,6 +1188,11 @@ hub_test('Agent manifest smoke validates live-contract metadata without Pack inf
         hub_test_make_documentable_pack($db, $packId);
     }
     hub_test_make_documentable_pack($db, 'whisper-asr', ['mode' => 'speech_transcribe']);
+    hub_test_make_documentable_pack($db, 'tts-voxcpm2', [
+        'mode' => 'tts',
+        'runtime_status' => 'stopped',
+        'status' => 'stopped',
+    ]);
     $manifest = hub_public_api_manifest($db, static fn (array $service): bool => true);
 
     $errors = hub_agent_manifest_smoke_validate($manifest);
@@ -1011,6 +1254,59 @@ hub_test('Client quickstart documents mock defaults and response contract keys',
     foreach (['`mock`', '`runtime_level`', '`model`'] as $key) {
         hub_test_assert(str_contains($quickstart, $key), 'client quickstart response contract missing ' . $key);
     }
+});
+
+hub_test('VoxCPM2 readmes document the safe native and Cluster profile lifecycle', function (): void {
+    $paths = [HUB_ROOT . '/README.md', HUB_ROOT . '/packs/tts-voxcpm2/README.md'];
+    foreach ($paths as $path) {
+        hub_test_assert(is_file($path), 'VoxCPM2 documentation missing: ' . $path);
+        $document = (string)file_get_contents($path);
+        foreach ([
+            'profile_prepare',
+            'profile_status',
+            'profile_confirm',
+            'profile_delete',
+            'synthesize',
+            'design',
+            'clone',
+            'ultimate_clone',
+            'voice_profile_task_id',
+            'cluster_task_status',
+            'cluster_artifact',
+            'pinned station',
+            'no failover',
+            'MyAI',
+            'reference_audio_sha256',
+            'unconfirmed',
+            'confirmed transcript remains hidden',
+            'task/log/callback/synthesis',
+            'Native Hub task IDs remain part of the native async contract.',
+            'Cluster child task/profile IDs and paths',
+        ] as $needle) {
+            hub_test_assert(str_contains($document, $needle), basename($path) . ' missing safe voice workflow detail: ' . $needle);
+        }
+        foreach (['Bearer 3wa_live_', 'voice_profile_id=', '/data/voice_profiles/'] as $forbidden) {
+            hub_test_assert(!str_contains($document, $forbidden), basename($path) . ' contains obsolete or private voice guidance: ' . $forbidden);
+        }
+    }
+    $root = (string)file_get_contents(HUB_ROOT . '/README.md');
+    $pack = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/README.md');
+    hub_test_assert(!str_contains($root, "第一版不做：\n\n- Ultimate Clone"), 'root README still says Ultimate Clone is unavailable');
+    hub_test_assert(!str_contains($root, 'Public API 只能送 `voice_profile_id` 或 `reference_audio_id`'), 'root README still recommends obsolete public profile identifiers');
+    hub_test_assert(
+        !str_contains($root, 'child/local task/profile ID')
+        && !str_contains($pack, 'child/local task or profile IDs'),
+        'README privacy wording must not prohibit native Hub task IDs'
+    );
+    hub_test_assert(
+        str_contains(
+            $pack,
+            '`profile_prepare` -> `cluster_task_status` -> `profile_status` ->' . PHP_EOL
+            . '`profile_confirm` -> `ultimate_clone` -> `cluster_task_result` ->' . PHP_EOL
+            . '`cluster_artifact` -> `profile_delete`'
+        ),
+        'Pack README Cluster flow must include cluster_task_result between synthesis and artifact retrieval'
+    );
 });
 
 hub_test('PhaseDX-3.1 old public docs defaults migrate once only', function (): void {

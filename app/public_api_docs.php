@@ -232,6 +232,288 @@ function hub_public_api_service_mode_uses_pack(array $service): bool
     return (string)($service['pack_id'] ?? '') === (string)(hub_pack_job_async_routes()[$mode]['pack_id'] ?? '');
 }
 
+function hub_public_api_voice_generate_examples(bool $cluster = false): array
+{
+    $api = $cluster ? '<ROUTER_BASE_URL>/cluster_api.php' : '<HUB_BASE_URL>/api.php';
+    $statusMode = $cluster ? 'cluster_task_status' : 'task_status';
+    $resultMode = $cluster ? 'cluster_task_result' : 'task_result';
+    $artifactQuery = $cluster
+        ? 'mode=cluster_artifact&task_id=<TASK_ID>&artifact_id=<ARTIFACT_ID>'
+        : 'mode=artifact&artifact_id=<ARTIFACT_ID>';
+    $curlAffinity = $cluster ? '# Profile followups use the pinned station with no failover.' : '';
+    $codeAffinity = $cluster ? '// Profile followups use the pinned station with no failover.' : '';
+    $curl = strtr(<<<'CURL'
+TOKEN='<TOKEN>'
+API='{{API}}'
+{{AFFINITY}}
+
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  -F 'operation=profile_prepare' -F 'profile_name=<PROFILE_NAME>' \
+  -F 'consent_type=self_recorded' -F 'reference_wav=@<REFERENCE_WAV>' \
+  "${API}?mode=voice_generate"
+# MyAI stores returned task_id as <VOICE_PROFILE_TASK_ID> and follows returned status_url.
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  "${API}?mode={{STATUS_MODE}}&task_id=<VOICE_PROFILE_TASK_ID>"
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  "${API}?mode=voice_generate&operation=profile_status&voice_profile_task_id=<VOICE_PROFILE_TASK_ID>"
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  --data-urlencode 'operation=profile_confirm' \
+  --data-urlencode 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
+  --data-urlencode 'prompt_text=<CONFIRMED_TRANSCRIPT>' \
+  "${API}?mode=voice_generate"
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  -F 'text=<TEXT>' -F 'mode=design' -F 'voice_prompt=<VOICE_PROMPT>' \
+  "${API}?mode=voice_generate"
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  -F 'operation=synthesize' -F 'text=<TEXT>' -F 'mode=ultimate_clone' \
+  -F 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
+  "${API}?mode=voice_generate"
+# Follow returned result_url for <TASK_ID>, then its artifact_url.
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  "${API}?mode={{RESULT_MODE}}&task_id=<TASK_ID>"
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  "${API}?{{ARTIFACT_QUERY}}"
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  -d 'operation=profile_delete' \
+  -d 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
+  "${API}?mode=voice_generate"
+CURL, [
+        '{{API}}' => $api,
+        '{{STATUS_MODE}}' => $statusMode,
+        '{{RESULT_MODE}}' => $resultMode,
+        '{{ARTIFACT_QUERY}}' => $artifactQuery,
+        '{{AFFINITY}}' => $curlAffinity,
+    ]);
+    $php = strtr(<<<'PHP'
+$token = '<TOKEN>';
+$api = '{{API}}';
+{{AFFINITY}}
+$request = static function (string $url, mixed $body = null, array $headers = []) use ($token): string {
+    $ch = curl_init($url);
+    $options = [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HTTPHEADER => array_merge(['Authorization: Bearer ' . $token], $headers),
+    ];
+    if ($body !== null) {
+        $options[CURLOPT_POST] = true;
+        $options[CURLOPT_POSTFIELDS] = $body;
+    }
+    curl_setopt_array($ch, $options);
+    $response = curl_exec($ch);
+    if (!is_string($response)) {
+        throw new RuntimeException(curl_error($ch));
+    }
+    return $response;
+};
+$decode = static fn (string $json): array => json_decode($json, true, 32, JSON_THROW_ON_ERROR);
+
+$prepared = $decode($request($api . '?mode=voice_generate', [
+    'operation' => 'profile_prepare',
+    'profile_name' => '<PROFILE_NAME>',
+    'consent_type' => 'self_recorded',
+    'reference_wav' => new CURLFile('<REFERENCE_WAV>'),
+]));
+$voiceProfileTaskId = $prepared['task_id']; // MyAI stores this as <VOICE_PROFILE_TASK_ID>.
+$decode($request($prepared['status_url'])); // {{STATUS_MODE}}
+$decode($request($api . '?mode=voice_generate&operation=profile_status&voice_profile_task_id=' . rawurlencode((string)$voiceProfileTaskId)));
+$decode($request($api . '?mode=voice_generate', json_encode([
+    'operation' => 'profile_confirm',
+    'voice_profile_task_id' => $voiceProfileTaskId,
+    'prompt_text' => '<CONFIRMED_TRANSCRIPT>',
+], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
+$decode($request($api . '?mode=voice_generate', json_encode([
+    'text' => '<TEXT>',
+    'mode' => 'design',
+    'voice_prompt' => '<VOICE_PROMPT>',
+], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
+$synthesis = $decode($request($api . '?mode=voice_generate', json_encode([
+    'operation' => 'synthesize',
+    'text' => '<TEXT>',
+    'mode' => 'ultimate_clone',
+    'voice_profile_task_id' => $voiceProfileTaskId,
+], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
+$taskId = $synthesis['task_id']; // <TASK_ID>
+$result = $decode($request($synthesis['result_url'])); // {{RESULT_MODE}}
+$artifactUrl = str_replace('{artifact_id}', '<ARTIFACT_ID>', $synthesis['artifact_url_template']);
+$audio = $request($artifactUrl); // {{ARTIFACT_MODE}}
+$decode($request($api . '?mode=voice_generate', json_encode([
+    'operation' => 'profile_delete',
+    'voice_profile_task_id' => $voiceProfileTaskId,
+], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
+PHP, [
+        '{{API}}' => $api,
+        '{{STATUS_MODE}}' => $statusMode,
+        '{{RESULT_MODE}}' => $resultMode,
+        '{{ARTIFACT_MODE}}' => $cluster ? 'cluster_artifact' : 'artifact',
+        '{{AFFINITY}}' => $codeAffinity,
+    ]);
+    $js = strtr(<<<'JS'
+const token = '<TOKEN>';
+const api = '{{API}}';
+{{AFFINITY}}
+const call = async (url, options = {}) => {
+  const response = await fetch(url, {
+    ...options,
+    headers: {Authorization: `Bearer ${token}`, ...(options.headers || {})},
+  });
+  return response.json();
+};
+
+const profile = new FormData();
+profile.append('operation', 'profile_prepare');
+profile.append('profile_name', '<PROFILE_NAME>');
+profile.append('consent_type', 'self_recorded');
+profile.append('reference_wav', new File([], '<REFERENCE_WAV>', {type: 'audio/wav'}));
+const prepared = await call(`${api}?mode=voice_generate`, {method: 'POST', body: profile});
+const voiceProfileTaskId = prepared.task_id; // MyAI stores this as <VOICE_PROFILE_TASK_ID>.
+await call(prepared.status_url); // {{STATUS_MODE}}
+await call(`${api}?mode=voice_generate&operation=profile_status&voice_profile_task_id=${voiceProfileTaskId}`);
+await call(`${api}?mode=voice_generate`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({operation: 'profile_confirm', voice_profile_task_id: voiceProfileTaskId, prompt_text: '<CONFIRMED_TRANSCRIPT>'}),
+});
+await call(`${api}?mode=voice_generate`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({text: '<TEXT>', mode: 'design', voice_prompt: '<VOICE_PROMPT>'}),
+});
+const synthesis = await call(`${api}?mode=voice_generate`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({operation: 'synthesize', text: '<TEXT>', mode: 'ultimate_clone', voice_profile_task_id: voiceProfileTaskId}),
+});
+const taskId = synthesis.task_id; // <TASK_ID>
+const result = await call(synthesis.result_url); // {{RESULT_MODE}}
+const artifactUrl = synthesis.artifact_url_template.replace('{artifact_id}', '<ARTIFACT_ID>');
+const artifactResponse = await fetch(artifactUrl, {headers: {Authorization: `Bearer ${token}`}});
+const audio = await artifactResponse.blob(); // {{ARTIFACT_MODE}}
+await call(`${api}?mode=voice_generate`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({operation: 'profile_delete', voice_profile_task_id: voiceProfileTaskId}),
+});
+JS, [
+        '{{API}}' => $api,
+        '{{STATUS_MODE}}' => $statusMode,
+        '{{RESULT_MODE}}' => $resultMode,
+        '{{ARTIFACT_MODE}}' => $cluster ? 'cluster_artifact' : 'artifact',
+        '{{AFFINITY}}' => $codeAffinity,
+    ]);
+
+    return ['curl' => $curl, 'php' => $php, 'js_fetch' => $js];
+}
+
+function hub_public_api_voice_generate_contract(array $contract): array
+{
+    foreach ($contract['input']['fields'] as &$field) {
+        if (($field['name'] ?? '') === 'text') {
+            $field['example'] = '<TEXT>';
+        } elseif (($field['name'] ?? '') === 'voice_prompt') {
+            $field['example'] = '<VOICE_PROMPT>';
+        }
+    }
+    unset($field);
+    $taskOutput = ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'];
+    $profileTaskField = ['name' => 'voice_profile_task_id', 'type' => 'string', 'required' => true, 'max_length' => 18];
+    $profileStatusOutput = [
+        'ok', 'task_status', 'profile_status', 'transcription_status', 'transcript_confirmed',
+        'prompt_text_confirmed_at', 'profile_name', 'language', 'consent_type',
+        'reference_audio_sha256', 'created_at', 'updated_at',
+    ];
+    $contract['operations'] = [
+        [
+            'operation' => 'profile_prepare',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data',
+            'input_fields' => [
+                ['name' => 'reference_wav', 'type' => 'file', 'required' => true, 'max_mb' => 100],
+                ['name' => 'profile_name', 'type' => 'string', 'required' => true, 'max_length' => 120],
+                ['name' => 'consent_type', 'type' => 'string', 'required' => true, 'enum' => ['self_recorded', 'explicit_permission', 'licensed_voice']],
+                ['name' => 'prompt_text', 'type' => 'string', 'required' => false, 'max_length' => 20000],
+                ['name' => 'transcript_confirmed', 'type' => 'boolean', 'required' => false],
+                ['name' => 'language', 'type' => 'string', 'required' => false, 'max_length' => 64],
+                ['name' => 'callback_target', 'type' => 'string', 'required' => false],
+            ],
+            'output_keys' => $taskOutput,
+        ],
+        [
+            'operation' => 'profile_status',
+            'method' => 'GET or POST',
+            'input_fields' => [$profileTaskField],
+            'output_keys' => $profileStatusOutput,
+            'conditional_output_fields' => [[
+                'name' => 'prompt_text',
+                'type' => 'string',
+                'condition' => 'Returned only to the exact task owner when transcript_confirmed=false; omitted after confirmation.',
+                'max_length' => 20000,
+            ]],
+        ],
+        [
+            'operation' => 'profile_confirm',
+            'method' => 'POST',
+            'content_type' => 'application/json or application/x-www-form-urlencoded',
+            'input_fields' => [
+                $profileTaskField,
+                ['name' => 'prompt_text', 'type' => 'string', 'required' => true, 'max_length' => 20000],
+            ],
+            'output_keys' => $profileStatusOutput,
+        ],
+        [
+            'operation' => 'profile_delete',
+            'method' => 'POST',
+            'content_type' => 'application/json or application/x-www-form-urlencoded',
+            'input_fields' => [$profileTaskField],
+            'output_keys' => $profileStatusOutput,
+        ],
+        [
+            'operation' => 'synthesize',
+            'method' => 'POST',
+            'content_type' => 'multipart/form-data or application/json',
+            'default_when_omitted' => true,
+            'modes' => ['design', 'clone', 'ultimate_clone'],
+            'input_fields' => $contract['input']['fields'],
+            'output_keys' => $taskOutput,
+        ],
+    ];
+    $contract['workflow'] = [
+        'client_state' => 'MyAI stores voice_profile_task_id returned by profile_prepare.',
+        'operation_default' => 'Omitting operation means synthesize.',
+        'profile_status_visibility' => 'For the exact task owner, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
+        'steps' => [
+            'profile_prepare',
+            'task_status via returned status_url',
+            'profile_status',
+            'profile_confirm',
+            'synthesize with mode=ultimate_clone',
+            'task_result via returned result_url',
+            'artifact via returned artifact_url',
+            'profile_delete',
+        ],
+    ];
+    $contract['error_table'] = [
+        ['code' => 'invalid_request', 'http_status' => 400],
+        ['code' => 'voice_profile_wav_invalid', 'http_status' => 400],
+        ['code' => 'voice_profile_transcript_invalid', 'http_status' => 400],
+        ['code' => 'voice_profile_forbidden', 'http_status' => 403],
+        ['code' => 'voice_profile_not_found', 'http_status' => 404],
+        ['code' => 'voice_profile_prepare_conflict', 'http_status' => 409],
+        ['code' => 'voice_profile_callback_conflict', 'http_status' => 409],
+        ['code' => 'voice_profile_transcript_unconfirmed', 'http_status' => 409],
+        ['code' => 'voice_profile_prepare_incomplete', 'http_status' => 409],
+        ['code' => 'voice_profile_confirm_failed', 'http_status' => 409],
+        ['code' => 'voice_profile_prepare_failed', 'http_status' => 500],
+        ['code' => 'voice_profile_delete_failed', 'http_status' => 500],
+        ['code' => 'voice_profile_changed', 'task_status' => 'failed'],
+        ['code' => 'voice_profile_unavailable', 'http_status' => 409, 'task_status' => 'failed'],
+        ['code' => 'pack_runtime_not_ready', 'http_status' => 503],
+    ];
+    $contract['errors'] = array_values(array_unique(array_merge($contract['errors'], array_column($contract['error_table'], 'code'))));
+    $contract['workflow_examples'] = hub_public_api_voice_generate_examples();
+
+    return $contract;
+}
+
 function hub_public_api_pack_job_async_contract(array $route): array
 {
     $fields = [];
@@ -310,14 +592,59 @@ function hub_public_api_pack_job_async_contract(array $route): array
             ['method' => 'GET', 'query' => ['voice' => '<voice-id>'], 'response' => 'audio/mpeg; Cache-Control: private, no-store'],
             ['method' => 'POST', 'response' => 'asynchronous synthesis task'],
         ];
+    } elseif (($route['requested_mode'] ?? null) === 'voice_generate') {
+        $contract = hub_public_api_voice_generate_contract($contract);
     }
 
     return $contract;
 }
 
-function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
+function hub_public_api_service_from_contract(string $mode, array $pack, array $manifest, array $contract): array
+{
+    $method = hub_public_api_method($manifest, $contract);
+    $output = is_array($contract['output'] ?? null) ? $contract['output'] : [];
+    $service = [
+        'mode' => $mode,
+        'pack_id' => (string)($manifest['id'] ?? $pack['id'] ?? ''),
+        'name' => (string)($manifest['name'] ?? $pack['id'] ?? ''),
+        'description' => (string)($manifest['description'] ?? ''),
+        'method' => $method,
+        'content_type' => hub_public_api_content_type($method, $contract),
+        'endpoint' => 'api.php?mode=' . $mode,
+        'url' => hub_public_api_mode_url($mode),
+        'execution_type' => (string)($contract['execution_type'] ?? $manifest['execution_type'] ?? ''),
+        'runtime_level' => (string)($manifest['runtime_level'] ?? ''),
+        'task_type' => (string)($contract['task_type'] ?? ''),
+        'input_fields' => is_array($contract['input']['fields'] ?? null) ? $contract['input']['fields'] : [],
+        'output_keys' => array_values(array_map('strval', is_array($output['required_keys'] ?? null) ? $output['required_keys'] : [])),
+        'response_content_type' => trim((string)($output['content_type'] ?? 'application/json')),
+        'response_headers' => array_values(array_map('strval', is_array($output['required_headers'] ?? null) ? $output['required_headers'] : [])),
+        'error_codes' => array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : [])),
+        'task_api' => hub_public_api_task_api_refs(is_array($contract['task_api'] ?? null) ? $contract['task_api'] : []),
+    ];
+    foreach (['operations', 'workflow', 'error_table', 'workflow_examples'] as $key) {
+        if (isset($contract[$key])) {
+            $service[$key] = $contract[$key];
+        }
+    }
+    $service['examples'] = hub_public_api_examples($service);
+
+    return $service;
+}
+
+function hub_public_api_services(
+    PDO $db,
+    ?callable $healthProbe = null,
+    ?callable $asyncCatalogLoader = null,
+    ?callable $asyncResolver = null
+): array
 {
     $rows = hub_list_services($db);
+    $asyncRoutes = hub_available_pack_job_async_routes_with_catalog(
+        $db,
+        $asyncCatalogLoader,
+        $asyncResolver
+    );
     $registeredModes = [];
     foreach ($rows as $row) {
         $mode = trim((string)($row['mode'] ?? ''));
@@ -340,56 +667,29 @@ function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
         if (!isset($healthyIds[(int)$row['id']])) {
             continue;
         }
-        $pack = hub_get_pack((string)($row['pack_id'] ?? ''));
-        if ($pack === null || ($pack['status'] ?? '') !== 'ok') {
-            continue;
-        }
-        $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
         $mode = trim((string)($row['mode'] ?? ''));
         if ($mode === '') {
             continue;
         }
         if (hub_is_pack_job_async_mode($mode)) {
-            try {
-                $contract = hub_public_api_pack_job_async_contract(hub_resolve_pack_job_async_route($db, $mode));
-            } catch (RuntimeException) {
+            $asyncRoute = $asyncRoutes[$mode] ?? null;
+            if (!is_array($asyncRoute)
+                || !is_array($asyncRoute['route'] ?? null)
+                || !is_array($asyncRoute['pack'] ?? null)) {
                 continue;
             }
+            $pack = $asyncRoute['pack'];
+            $contract = hub_public_api_pack_job_async_contract($asyncRoute['route']);
         } else {
+            $pack = hub_get_pack((string)($row['pack_id'] ?? ''));
+            if ($pack === null || ($pack['status'] ?? '') !== 'ok') {
+                continue;
+            }
+            $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
             $contract = hub_public_api_contract_for_manifest($manifest);
         }
-        $method = hub_public_api_method($manifest, $contract);
-        $contentType = hub_public_api_content_type($method, $contract);
-        $fields = is_array($contract['input']['fields'] ?? null) ? $contract['input']['fields'] : [];
-        $output = is_array($contract['output'] ?? null) ? $contract['output'] : [];
-        $outputKeys = array_values(array_map('strval', is_array($output['required_keys'] ?? null) ? $output['required_keys'] : []));
-        $responseContentType = trim((string)($output['content_type'] ?? 'application/json'));
-        $responseHeaders = array_values(array_map('strval', is_array($output['required_headers'] ?? null) ? $output['required_headers'] : []));
-        $errors = array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : []));
-        $taskApi = is_array($contract['task_api'] ?? null) ? $contract['task_api'] : [];
-        $service = [
-            'mode' => $mode,
-            'pack_id' => (string)($manifest['id'] ?? $pack['id'] ?? ''),
-            'name' => (string)($manifest['name'] ?? $pack['id'] ?? ''),
-            'description' => (string)($manifest['description'] ?? ''),
-            'method' => $method,
-            'content_type' => $contentType,
-            'endpoint' => 'api.php?mode=' . $mode,
-            'url' => hub_public_api_mode_url($mode),
-            'execution_type' => (string)($contract['execution_type'] ?? $manifest['execution_type'] ?? ''),
-            'runtime_level' => (string)($manifest['runtime_level'] ?? ''),
-            'task_type' => (string)($contract['task_type'] ?? ''),
-            'input_fields' => $fields,
-            'output_keys' => $outputKeys,
-            'response_content_type' => $responseContentType,
-            'response_headers' => $responseHeaders,
-            'error_codes' => $errors,
-            'task_api' => hub_public_api_task_api_refs($taskApi),
-        ];
-        if (isset($contract['operations'])) {
-            $service['operations'] = $contract['operations'];
-        }
-        $service['examples'] = hub_public_api_examples($service);
+        $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
+        $service = hub_public_api_service_from_contract($mode, $pack, $manifest, $contract);
         $services[$mode] = $service;
         $serviceKey = (string)($row['service_key'] ?? '');
         if ($serviceKey === 'gemma4-main' && $service['pack_id'] === 'llm-gemma4-12b') {
@@ -398,6 +698,23 @@ function hub_public_api_services(PDO $db, ?callable $healthProbe = null): array
         if ($serviceKey === 'yolo-cpu' && $service['pack_id'] === 'yolo-serving') {
             $derivedParents[$serviceKey] = true;
         }
+    }
+    foreach ($asyncRoutes as $mode => $asyncRoute) {
+        if (isset($services[$mode])) {
+            continue;
+        }
+        if (!is_array($asyncRoute['route'] ?? null) || !is_array($asyncRoute['pack'] ?? null)) {
+            continue;
+        }
+        $route = $asyncRoute['route'];
+        $pack = $asyncRoute['pack'];
+        $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
+        $services[$mode] = hub_public_api_service_from_contract(
+            $mode,
+            $pack,
+            $manifest,
+            hub_public_api_pack_job_async_contract($route)
+        );
     }
     if (isset($derivedParents['gemma4-main'])) {
         foreach (hub_public_api_gemma4_services() as $service) {
@@ -934,6 +1251,10 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                     <h3>Additional operations</h3>
                     <pre><?= hub_h(json_encode($service['operations'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <?php endif; ?>
+                <?php if (($service['workflow'] ?? []) !== []): ?>
+                    <h3><?= $t('Workflow') ?></h3>
+                    <pre><?= hub_h(json_encode($service['workflow'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php endif; ?>
                 <?php if (($service['response_headers'] ?? []) !== []): ?>
                     <h3><?= $t('Response headers') ?></h3>
                     <pre><?= hub_h(json_encode($service['response_headers'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
@@ -944,12 +1265,24 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                 <?php endif; ?>
                 <h3><?= $t('錯誤碼') ?></h3>
                 <pre><?= hub_h(implode(', ', $service['error_codes'])) ?></pre>
+                <?php if (($service['error_table'] ?? []) !== []): ?>
+                    <h3><?= $t('Error status table') ?></h3>
+                    <pre><?= hub_h(json_encode($service['error_table'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php endif; ?>
                 <h3><?= $t('curl 範例') ?></h3>
                 <pre><?= hub_h((string)$service['examples']['curl']) ?></pre>
                 <h3><?= $t('PHP 範例') ?></h3>
                 <pre><?= hub_h((string)$service['examples']['php']) ?></pre>
                 <h3><?= $t('JS fetch 範例') ?></h3>
                 <pre><?= hub_h((string)$service['examples']['js_fetch']) ?></pre>
+                <?php if (($service['workflow_examples'] ?? []) !== []): ?>
+                    <h3><?= $t('Workflow curl example') ?></h3>
+                    <pre><?= hub_h((string)$service['workflow_examples']['curl']) ?></pre>
+                    <h3><?= $t('Workflow PHP example') ?></h3>
+                    <pre><?= hub_h((string)$service['workflow_examples']['php']) ?></pre>
+                    <h3><?= $t('Workflow JS example') ?></h3>
+                    <pre><?= hub_h((string)$service['workflow_examples']['js_fetch']) ?></pre>
+                <?php endif; ?>
             </article>
         <?php endforeach; ?>
     </section>

@@ -128,14 +128,13 @@ function hub_pack_job_async_route_service_enabled(PDO $db, string $packId, strin
     return $enabled->fetchColumn() !== false;
 }
 
-function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
+function hub_resolve_pack_job_async_route_from_pack(PDO $db, string $requestedMode, ?array $pack): array
 {
     $route = hub_pack_job_async_routes()[$requestedMode] ?? null;
     if ($route === null) {
         throw new InvalidArgumentException('unknown_pack_job_async_mode');
     }
 
-    $pack = hub_get_pack((string)$route['pack_id']);
     if (!$pack || ($pack['status'] ?? '') !== 'ok') {
         throw new RuntimeException('pack_not_installed');
     }
@@ -183,6 +182,119 @@ function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
     ] + $jobContract;
+}
+
+function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
+{
+    $route = hub_pack_job_async_routes()[$requestedMode] ?? null;
+    if ($route === null) {
+        throw new InvalidArgumentException('unknown_pack_job_async_mode');
+    }
+
+    return hub_resolve_pack_job_async_route_from_pack(
+        $db,
+        $requestedMode,
+        hub_get_pack((string)$route['pack_id'])
+    );
+}
+
+function hub_pack_job_async_route_is_unavailable(Throwable $error): bool
+{
+    if ($error instanceof InvalidArgumentException) {
+        return $error->getMessage() === 'unknown_pack_job_async_mode';
+    }
+
+    return $error instanceof RuntimeException
+        && !$error instanceof PDOException
+        && in_array($error->getMessage(), [
+            'pack_not_installed',
+            'pack_runtime_not_ready',
+            'pack_version_unavailable',
+            'pack_service_disabled',
+        ], true);
+}
+
+function hub_available_pack_job_async_routes_with_catalog(
+    PDO $db,
+    ?callable $catalogLoader = null,
+    ?callable $resolver = null
+): array {
+    $packs = ($catalogLoader ?? 'hub_list_packs')();
+    if (!is_array($packs)) {
+        throw new UnexpectedValueException('pack_catalog_invalid');
+    }
+    $packsById = [];
+    foreach ($packs as $pack) {
+        if (!is_array($pack)) {
+            throw new UnexpectedValueException('pack_catalog_invalid');
+        }
+        $packId = trim((string)($pack['id'] ?? ''));
+        if ($packId !== '' && !isset($packsById[$packId])) {
+            $packsById[$packId] = $pack;
+        }
+    }
+
+    $resolve = $resolver ?? static function (PDO $db, string $mode, ?array $pack): array {
+        return hub_resolve_pack_job_async_route_from_pack($db, $mode, $pack);
+    };
+    $routes = [];
+    foreach (hub_pack_job_async_routes() as $mode => $definition) {
+        $pack = $packsById[(string)$definition['pack_id']] ?? null;
+        try {
+            $route = $resolve($db, $mode, $pack);
+            $enabled = $db->prepare(
+                "SELECT 1 FROM services
+                 WHERE pack_id = :pack_id AND pack_version = :pack_version
+                   AND install_status = 'installed' AND enabled = 1
+                 LIMIT 1"
+            );
+            $enabled->execute([
+                ':pack_id' => $route['pack_id'],
+                ':pack_version' => $route['pack_version'],
+            ]);
+            if ($enabled->fetchColumn() !== false) {
+                $routes[$mode] = [
+                    'route' => $route,
+                    'pack' => $pack,
+                ];
+            }
+        } catch (Throwable $error) {
+            if (!hub_pack_job_async_route_is_unavailable($error)) {
+                throw $error;
+            }
+        }
+    }
+    ksort($routes, SORT_STRING);
+
+    return $routes;
+}
+
+function hub_available_pack_job_async_modes_with_catalog(
+    PDO $db,
+    ?callable $catalogLoader = null,
+    ?callable $resolver = null
+): array {
+    $modes = array_keys(hub_available_pack_job_async_routes_with_catalog(
+        $db,
+        $catalogLoader,
+        $resolver
+    ));
+    sort($modes, SORT_STRING);
+
+    return $modes;
+}
+
+function hub_available_pack_job_async_routes(PDO $db): array
+{
+    return hub_available_pack_job_async_routes_with_catalog($db);
+}
+
+function hub_available_pack_job_async_modes(PDO $db): array
+{
+    $modes = array_keys(hub_available_pack_job_async_routes($db));
+    sort($modes, SORT_STRING);
+
+    return $modes;
 }
 
 function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array

@@ -370,6 +370,31 @@ hub_test('cluster router keeps a cleanly unloaded on-demand TTS pack in its publ
     hub_test_assert(!in_array('tts', hub_cluster_node_published_modes($db), true), 'failed on-demand TTS must not remain published');
 });
 
+hub_test('cluster child can select and grant an installed stopped async Pack mode', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $installed = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-stopped-async-child']);
+        $db->prepare(
+            "UPDATE services
+             SET mode = 'tts', install_status = 'installed', enabled = 1,
+                 status = 'stopped', runtime_status = 'stopped'
+             WHERE id = :id"
+        )->execute([':id' => (int)$installed['service']['id']]);
+
+        hub_test_assert(in_array('voice_generate', hub_cluster_node_published_modes($db), true), 'installed stopped async Pack mode must be available to child selection');
+        $configured = hub_cluster_node_configure($db, true, ['voice_generate']);
+        $permissions = array_column(hub_list_api_token_permissions($db, hub_cluster_node_token_id($db)), 'mode');
+        sort($permissions, SORT_STRING);
+
+        hub_test_assert(($configured['modes'] ?? null) === ['voice_generate'], 'selected async Pack mode must be published by the child');
+        hub_test_assert($permissions === ['cluster_status', 'voice_generate'], 'node Token must receive only status and the selected async Pack mode');
+
+        hub_cluster_node_configure($db, true, []);
+        $permissions = array_column(hub_list_api_token_permissions($db, hub_cluster_node_token_id($db)), 'mode');
+        hub_test_assert(($configured['modes'] ?? null) !== [] && $permissions === ['cluster_status'], 'installed async Pack mode must not be silently published when unselected');
+    });
+});
+
 hub_test('cluster router pins sync TTS artifacts to the submitting token and rewrites both artifact links', function (): void {
     $db = hub_test_reset_db();
     $station = hub_test_cluster_router_station($db);
@@ -3751,6 +3776,11 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
                 ['method' => 'GET', 'query' => ['voice' => '<voice-id>'], 'response' => 'audio/mpeg; Cache-Control: private, no-store'],
                 ['method' => 'POST', 'response' => 'asynchronous synthesis task'],
             ],
+            'workflow_examples' => [
+                'curl' => "curl 'https://configured.station.example/aihub/api.php?mode=task_result&task_id=remote_task_42'",
+                'php' => "\$taskId = 'remote_task_42';",
+                'js_fetch' => "fetch('https://configured.station.example/aihub/api.php?mode=artifact&artifact_id=77');",
+            ],
             'examples' => [
                 'curl' => "curl 'https://configured.station.example/aihub/api.php?mode=ocr'",
                 'php' => "curl_init('https://configured.station.example/aihub/api.php?mode=ocr');",
@@ -3761,6 +3791,9 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             'mode' => 'image_upload',
             'content_type' => 'multipart/form-data',
             'input_fields' => [['name' => 'image', 'type' => 'file', 'required' => true]],
+            'workflow_examples' => [
+                'curl' => "curl '<ROUTER_BASE_URL>/cluster_api.php?mode=cluster_task_status&task_id={task_id}'",
+            ],
             'examples' => [
                 'curl' => "curl -F 'image=@sample.png' 'https://configured.station.example/aihub/api.php?mode=image_upload'",
                 'php' => "new CURLFile('/path/to/sample.png');",
@@ -3798,6 +3831,7 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             }
         }
         $service = $servicesByMode['ocr'] ?? [];
+        $imageService = $servicesByMode['image_upload'] ?? [];
         $docs = '';
         hub_test_with_cluster_pair_url(function () use ($db, &$docs): void {
             $_SERVER['HTTP_HOST'] = 'router.example';
@@ -3808,6 +3842,10 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
         hub_test_assert(array_column($manifest['services'], 'mode') === ['image_upload', 'ocr'], 'all fresh Router-compatible services, including multipart modes, may be public');
         hub_test_assert(($manifest['base_endpoint'] ?? '') === 'cluster_api.php' && str_contains((string)($manifest['inventory_note'] ?? ''), 'temporarily remove unavailable modes'), 'manifest must publish the Router base and inventory caveat');
         hub_test_assert(($service['endpoint'] ?? '') === 'cluster_api.php?mode=ocr' && str_contains((string)($service['examples']['curl'] ?? ''), 'cluster_api.php?mode=ocr'), 'all public service endpoints must use the Router');
+        hub_test_assert(
+            !isset($service['workflow_examples'], $imageService['workflow_examples']),
+            'non-voice and partial upstream workflow examples must not enter the Router contract'
+        );
         hub_test_assert(($service['task_api'] ?? []) === [
             'status' => 'GET cluster_api.php?mode=cluster_task_status&task_id={task_id}',
             'result' => 'GET cluster_api.php?mode=cluster_task_result&task_id={task_id}',
@@ -3815,10 +3853,20 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             'cancel' => 'POST cluster_api.php?mode=cluster_task_cancel&task_id={task_id}',
             'artifact' => 'GET cluster_api.php?mode=cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
         ], 'public async contracts must expose opaque Router followups');
-        hub_test_assert(($service['operations'] ?? null) === $contract['operations']
-            && str_contains($docs, 'Additional operations')
-            && str_contains($docs, 'verified voice catalogue JSON')
-            && str_contains($docs, 'cluster_api.php?mode=ocr') && str_contains($docs, 'cluster_api.php?mode=image_upload') && str_contains($docs, '-F') && str_contains($docs, 'new CURLFile') && str_contains($docs, 'FormData') && str_contains($docs, '&lt;script&gt;') && !str_contains($docs, 'name&quot;: &quot;<script>'), 'public docs must render escaped JSON and form-aware Router contracts');
+        hub_test_assert(($service['operations'] ?? null) === $contract['operations'], 'public docs must preserve additional operations');
+        foreach ([
+            'Additional operations',
+            'verified voice catalogue JSON',
+            'cluster_api.php?mode=ocr',
+            'cluster_api.php?mode=image_upload',
+            '-F',
+            'new CURLFile',
+            'FormData',
+            '&lt;script&gt;',
+        ] as $fragment) {
+            hub_test_assert(str_contains($docs, $fragment), 'public docs missing escaped or form-aware fragment: ' . $fragment);
+        }
+        hub_test_assert(!str_contains($docs, 'name&quot;: &quot;<script>'), 'public docs must escape contract field names');
         hub_test_assert(
             str_contains($docs, 'https://router.example/3waAIHub/cluster_api.php')
             && str_contains($docs, 'Live catalog')
@@ -3833,6 +3881,304 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             hub_test_assert(!str_contains($docs, $secret), 'public docs leaked station detail: ' . $secret);
         }
     });
+});
+
+hub_test('cluster voice docs expose only opaque profile task workflow fields', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $installed = hub_install_pack($db, 'tts-voxcpm2', ['service_key' => 'tts-cluster-docs']);
+        $db->prepare(
+            "UPDATE services
+             SET mode = 'tts', install_status = 'installed', enabled = 1,
+                 status = 'stopped', runtime_status = 'stopped'
+             WHERE id = :id"
+        )->execute([':id' => (int)$installed['service']['id']]);
+        $native = array_column(hub_public_api_services($db, static fn (array $service): bool => true), null, 'mode')['voice_generate'] ?? null;
+        hub_test_assert(is_array($native), 'native stopped async voice contract fixture missing');
+
+        $clusterSource = $native;
+        $clusterSource['description'] = 'Use VOICE_PROFILE_ID while preserving voice_profile_identifier.';
+        $clusterSource['output_keys'][] = 'VOICE_PROFILE_ID';
+        $clusterSource['output_keys'][] = 'voice_profile_identifier';
+        $clusterSource['examples']['curl'] .= " -F 'VoIcE_PrOfIlE_Id=<CHILD_PROFILE_ID>'";
+        $clusterSource['operations'][1]['response_schema'] = [
+            'VOICE_PROFILE_ID' => ['type' => 'integer'],
+            'voice_profile_identifier' => ['type' => 'string'],
+            'properties' => [
+                ['name' => 'VoIcE_PrOfIlE_Id', 'type' => 'integer'],
+                ['name' => 'voice_profile_identifier', 'type' => 'string'],
+                ['name' => 'voice_profile_task_id', 'type' => 'string'],
+            ],
+        ];
+        $clusterSource['nested_contract'] = [
+            'output_keys' => ['VOICE_PROFILE_ID', 'voice_profile_identifier', 'voice_profile_task_id'],
+            'VOICE_PROFILE_ID' => ['type' => 'integer'],
+            'VOICE_PROFILE_ID?' => ['type' => 'integer'],
+            'prefix-voice_profile_id-suffix' => ['type' => 'integer'],
+            'voice_profile_identifier' => ['type' => 'string'],
+            'example' => '{"VOICE_PROFILE_ID":123}',
+            'code' => 'const child = voice_PROFILE_id;',
+            'safe_code' => 'const voice_profile_identifier = "preserved";',
+            'note' => 'Submit voice_Profile_ID only after preparation; voice_profile_identifier remains valid.',
+        ];
+
+        $station = hub_test_cluster_router_station($db, [
+            'station_key' => 'voice_docs_station',
+            'public_base_url' => 'https://voice-docs.invalid/aihub',
+            'internal_base_url' => '',
+            'modes' => ['voice_generate'],
+        ]);
+        $now = hub_now();
+        $db->prepare(
+            'UPDATE cluster_stations
+             SET manifest_json = :manifest_json, manifest_fetched_at = :manifest_fetched_at,
+                 status_json = :status_json, status_fetched_at = :status_fetched_at
+             WHERE id = :id'
+        )->execute([
+            ':manifest_json' => json_encode(['modes' => ['voice_generate'], 'services' => [$clusterSource]], JSON_THROW_ON_ERROR),
+            ':manifest_fetched_at' => $now,
+            ':status_json' => json_encode([
+                'modes' => ['voice_generate'],
+                'gpu' => ['memory_free_mb' => 16384],
+                'active_gpu_leases' => 0,
+                'queued_jobs' => 0,
+                'running_jobs' => 0,
+            ], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => $now,
+            ':id' => (int)$station['id'],
+        ]);
+
+        $voice = array_column(hub_cluster_public_manifest($db)['services'], null, 'mode')['voice_generate'] ?? null;
+        hub_test_assert(is_array($voice), 'Cluster voice_generate contract missing');
+        $json = json_encode($voice, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        $fields = array_column((array)$voice['input_fields'], 'name');
+        hub_test_assert(in_array('voice_profile_task_id', $fields, true) && !in_array('voice_profile_id', $fields, true), 'Cluster voice_generate must expose only the opaque profile task handle');
+        hub_test_assert(preg_match('/(?<![A-Za-z0-9_])voice_profile_id(?![A-Za-z0-9_])/i', $json) !== 1, 'Cluster voice contract must remove exact child voice_profile_id field names case-insensitively');
+        hub_test_assert(str_contains($json, 'voice_profile_identifier'), 'Cluster projection must preserve legitimate field-name substrings');
+        hub_test_assert(!str_contains($json, 'CHILD_PROFILE_ID') && !str_contains($json, '123'), 'Cluster projection must omit untrusted child examples instead of rewriting their code');
+        hub_test_assert(
+            ($voice['description'] ?? '') === 'Use voice_profile_task_id while preserving voice_profile_identifier.'
+            && ($voice['nested_contract']['note'] ?? '') === 'Submit voice_profile_task_id only after preparation; voice_profile_identifier remains valid.',
+            'Cluster projection must replace only standalone child identifier tokens in prose'
+        );
+        hub_test_assert(
+            !isset($voice['nested_contract']['code'])
+            && !isset($voice['nested_contract']['VOICE_PROFILE_ID?'])
+            && !isset($voice['nested_contract']['prefix-voice_profile_id-suffix'])
+            && ($voice['nested_contract']['safe_code'] ?? '') === 'const voice_profile_identifier = "preserved";',
+            'Cluster projection must omit unsafe code and decorated forbidden keys while preserving legitimate identifier substrings'
+        );
+        hub_test_assert(str_contains($json, 'voice_profile_task_id'), 'recursive Cluster projection must preserve the opaque voice_profile_task_id');
+        hub_test_assert(array_column((array)$voice['operations'], 'operation') === [
+            'profile_prepare', 'profile_status', 'profile_confirm', 'profile_delete', 'synthesize',
+        ], 'Cluster voice contract must retain all operations');
+        $synthesize = array_column((array)$voice['operations'], null, 'operation')['synthesize'] ?? [];
+        hub_test_assert(($synthesize['modes'] ?? null) === ['design', 'clone', 'ultimate_clone'], 'Cluster voice contract must retain all synthesis modes');
+        $profileStatus = array_column((array)$voice['operations'], null, 'operation')['profile_status'] ?? [];
+        $conditionalOutputs = array_column((array)($profileStatus['conditional_output_fields'] ?? []), null, 'name');
+        hub_test_assert(
+            str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'exact task owner')
+            && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'transcript_confirmed=false')
+            && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'omitted after confirmation'),
+            'Cluster profile_status must retain the safe conditional draft visibility contract'
+        );
+
+        $errors = array_column((array)($voice['error_table'] ?? []), null, 'code');
+        foreach ([
+            'invalid_request' => 400,
+            'voice_profile_wav_invalid' => 400,
+            'voice_profile_transcript_invalid' => 400,
+            'profile_task_not_found' => 404,
+            'voice_profile_transcript_unconfirmed' => 409,
+            'voice_profile_prepare_incomplete' => 409,
+            'voice_profile_confirm_failed' => 409,
+            'voice_profile_unavailable' => 409,
+            'artifact_purged' => 410,
+            'pack_runtime_not_ready' => 503,
+            'station_unavailable' => 503,
+        ] as $code => $status) {
+            hub_test_assert(($errors[$code]['http_status'] ?? null) === $status, 'Cluster voice error status mismatch: ' . $code);
+        }
+        hub_test_assert(($errors['voice_profile_changed']['task_status'] ?? null) === 'failed', 'Cluster docs must retain the asynchronous changed-profile failure');
+        hub_test_assert(!isset(
+            $errors['voice_profile_forbidden'],
+            $errors['voice_profile_not_found'],
+            $errors['voice_profile_prepare_conflict'],
+            $errors['voice_profile_callback_conflict'],
+            $errors['voice_profile_prepare_failed'],
+            $errors['voice_profile_delete_failed']
+        ), 'Cluster docs must keep native-only ownership, conflict, and internal failure errors separate');
+        hub_test_assert(str_contains((string)($voice['workflow']['client_state'] ?? ''), 'voice_profile_task_id'), 'Cluster workflow must tell MyAI what opaque state to retain');
+        hub_test_assert(str_contains((string)($voice['workflow']['profile_affinity'] ?? ''), 'pinned station')
+            && str_contains((string)($voice['workflow']['profile_affinity'] ?? ''), 'no failover'), 'Cluster workflow must document station pinning without failover');
+
+        foreach ((array)$voice['workflow_examples'] as $kind => $example) {
+            $example = (string)$example;
+            foreach (['profile_prepare', 'cluster_task_status', 'profile_status', 'profile_confirm', 'ultimate_clone', 'cluster_artifact', 'profile_delete'] as $step) {
+                hub_test_assert(str_contains($example, $step), 'Cluster ' . $kind . ' workflow example missing ' . $step);
+            }
+            foreach (['<TOKEN>', '<REFERENCE_WAV>', '<VOICE_PROFILE_TASK_ID>', '<CONFIRMED_TRANSCRIPT>', '<TASK_ID>', '<ARTIFACT_ID>'] as $placeholder) {
+                hub_test_assert(str_contains($example, $placeholder), 'Cluster ' . $kind . ' workflow example missing placeholder ' . $placeholder);
+            }
+            hub_test_assert(str_contains($example, 'pinned station') && str_contains($example, 'no failover'), 'Cluster ' . $kind . ' workflow example must state profile affinity');
+            foreach (['voice_profile_id', '3wa_live_', '/home/', '/data/', 'http://', 'https://', 'voice-docs.invalid'] as $forbidden) {
+                hub_test_assert(!str_contains($example, $forbidden), 'Cluster ' . $kind . ' workflow example leaked a concrete or child-only value: ' . $forbidden);
+            }
+        }
+
+        $server = $_SERVER;
+        $_SERVER['HTTPS'] = 'on';
+        $_SERVER['HTTP_HOST'] = 'router-docs.invalid';
+        $_SERVER['SCRIPT_NAME'] = '/aihub/cluster_public_api_docs.php';
+        try {
+            $docs = hub_cluster_public_api_docs_html($db);
+        } finally {
+            $_SERVER = $server;
+        }
+        foreach (['profile_prepare', 'cluster_task_status', 'profile_status', 'profile_confirm', 'ultimate_clone', 'cluster_artifact', 'profile_delete', 'pinned station', 'no failover'] as $needle) {
+            hub_test_assert(str_contains($docs, $needle), 'Cluster HTML docs missing voice workflow detail: ' . $needle);
+        }
+        hub_test_assert(
+            preg_match('/(?<![A-Za-z0-9_])voice_profile_id(?![A-Za-z0-9_])/i', $docs) !== 1,
+            'Cluster HTML docs must not expose an exact child voice_profile_id'
+        );
+        hub_test_assert(str_contains($docs, 'https://router-docs.invalid/aihub/cluster_api.php'), 'rendered Cluster examples must contain the exact Router base');
+        hub_test_assert(str_contains($docs, 'mode=voice_generate'), 'rendered Cluster examples must contain the voice_generate link');
+        hub_test_assert(str_contains($docs, 'mode=cluster_task_status'), 'rendered Cluster examples must contain the cluster_task_status link');
+        hub_test_assert(str_contains($docs, 'mode=cluster_artifact'), 'rendered Cluster examples must contain the cluster_artifact link');
+        hub_test_assert(!str_contains($docs, '&lt;ROUTER_BASE_URL&gt;'), 'rendered Cluster examples must remove the Router placeholder');
+        hub_test_assert(!str_contains($docs, '/https://'), 'rendered Cluster examples must not duplicate the Router base');
+    });
+});
+
+hub_test('cluster voice dispatch safely relays only documented child error pairs', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_cluster_router_station($db, [
+            'station_key' => 'voice_error_station',
+            'station_token' => 'voice_error_station_token',
+            'internal_base_url' => 'https://voice-error.internal/aihub',
+            'modes' => ['voice_generate'],
+        ]);
+        $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        $inventory = hub_test_cluster_station_fixture([
+            'id' => (int)$station['id'],
+            'station_key' => 'voice_error_station',
+            'modes' => ['voice_generate'],
+        ]);
+        $request = hub_test_cluster_router_request((string)$customer['plain_token'], [
+            'headers' => ['Content-Type' => 'multipart/form-data; boundary=voice-errors'],
+            'raw_body' => '',
+            'post' => ['operation' => 'profile_prepare', 'profile_name' => 'Error fixture', 'consent_type' => 'self_recorded'],
+            'files' => [],
+        ]);
+        $documented = array_column(hub_cluster_voice_generate_error_table(), null, 'code');
+
+        foreach (hub_cluster_voice_generate_relay_errors() as $childCode => $rule) {
+            $response = hub_cluster_dispatch($db, 'voice_generate', $request, [
+                'refresh_due' => static fn (): array => [$inventory],
+                'transport' => static fn (): array => [
+                    'status' => $rule['http_status'],
+                    'headers' => ['Content-Type: application/json', 'X-Child-Secret: child-secret'],
+                    'body' => json_encode([
+                        'ok' => false,
+                        'error' => $childCode,
+                        'message' => 'child-private-message',
+                        'request_id' => 'child-request-id',
+                    ], JSON_THROW_ON_ERROR),
+                ],
+            ]);
+            $payload = json_decode($response['body'], true, 16, JSON_THROW_ON_ERROR);
+            $publicCode = $rule['public_code'];
+            hub_test_assert(($documented[$publicCode]['http_status'] ?? null) === $rule['http_status'], 'relayed child error must have the same documented Cluster status: ' . $publicCode);
+            hub_test_assert($response['status'] === $rule['http_status'] && ($payload['error'] ?? '') === $publicCode, 'documented child error pair must survive Cluster dispatch: ' . $childCode);
+            hub_test_assert(($payload['message'] ?? '') === $rule['message'] && !str_contains($response['body'], 'child-private'), 'relayed child errors must use Router-owned safe JSON');
+            hub_test_assert(!str_contains(implode("\n", $response['headers'] ?? []), 'X-Child-Secret'), 'relayed child errors must rebuild safe response headers');
+        }
+
+        $designRequest = hub_test_cluster_router_request((string)$customer['plain_token'], [
+            'headers' => ['Content-Type' => 'application/json'],
+            'raw_body' => json_encode(['mode' => 'design', 'text' => 'Design a calm voice.'], JSON_THROW_ON_ERROR),
+            'post' => [],
+            'files' => [],
+        ]);
+        $designResponse = hub_cluster_dispatch($db, 'voice_generate', $designRequest, [
+            'refresh_due' => static fn (): array => [$inventory],
+            'transport' => static fn (): array => [
+                'status' => 400,
+                'headers' => ['Content-Type: application/json', 'X-Child-Secret: child-secret'],
+                'body' => json_encode([
+                    'ok' => false,
+                    'error' => 'invalid_request',
+                    'message' => 'child-private-message',
+                ], JSON_THROW_ON_ERROR),
+            ],
+        ]);
+        $designPayload = json_decode($designResponse['body'], true, 16, JSON_THROW_ON_ERROR);
+        hub_test_assert(
+            $designResponse['status'] === 400
+            && ($designPayload['error'] ?? '') === 'invalid_request'
+            && ($designPayload['message'] ?? '') === hub_cluster_voice_generate_relay_errors()['invalid_request']['message']
+            && !str_contains(implode("\n", $designResponse['headers'] ?? []), 'X-Child-Secret'),
+            'omitted-operation profile-free design synthesis must use the documented safe voice_generate relay'
+        );
+
+        foreach ([
+            [409, ['ok' => false, 'error' => 'unknown_child_error', 'message' => 'private']],
+            [400, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'wrong status']],
+            [409, ['ok' => true, 'error' => 'voice_profile_unavailable', 'message' => 'wrong ok']],
+            [409, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'private', 'extra' => 'leak']],
+            [409, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'private', 'request_id' => null]],
+        ] as [$status, $childPayload]) {
+            $response = hub_cluster_dispatch($db, 'voice_generate', $request, [
+                'refresh_due' => static fn (): array => [$inventory],
+                'transport' => static fn (): array => [
+                    'status' => $status,
+                    'headers' => ['Content-Type: application/json'],
+                    'body' => json_encode($childPayload, JSON_THROW_ON_ERROR),
+                ],
+            ]);
+            hub_test_assert($response['status'] === 502 && str_contains($response['body'], 'router_response_failed'), 'unknown or malformed child errors must remain generic 502 responses');
+        }
+
+        $unknownDesignResponse = hub_cluster_dispatch($db, 'voice_generate', $designRequest, [
+            'refresh_due' => static fn (): array => [$inventory],
+            'transport' => static fn (): array => [
+                'status' => 400,
+                'headers' => ['Content-Type: application/json'],
+                'body' => json_encode([
+                    'ok' => false,
+                    'error' => 'unknown_child_error',
+                    'message' => 'private',
+                ], JSON_THROW_ON_ERROR),
+            ],
+        ]);
+        hub_test_assert(
+            $unknownDesignResponse['status'] === 502
+            && str_contains($unknownDesignResponse['body'], 'router_response_failed'),
+            'unknown profile-free voice_generate child errors must remain generic 502 responses'
+        );
+    });
+});
+
+hub_test('cluster docs example URL normalization is exact and idempotent', function (): void {
+    $router = 'https://router.example/aihub/cluster_api.php';
+    $cases = [
+        "curl '<ROUTER_BASE_URL>/cluster_api.php?mode=voice_generate'"
+            => "curl '" . $router . "?mode=voice_generate'",
+        "curl 'cluster_api.php?mode=voice_generate'"
+            => "curl '" . $router . "?mode=voice_generate'",
+        "curl '" . $router . "?mode=voice_generate'"
+            => "curl '" . $router . "?mode=voice_generate'",
+        '{"value":"cluster_api.php"}'
+            => '{"value":"cluster_api.php"}',
+    ];
+    foreach ($cases as $source => $expected) {
+        $normalized = hub_cluster_public_docs_example($source, $router);
+        hub_test_assert($normalized === $expected, 'Cluster docs URL normalization mismatch');
+        hub_test_assert(hub_cluster_public_docs_example($normalized, $router) === $expected, 'Cluster docs URL normalization must be idempotent');
+    }
 });
 
 hub_test('cluster public contract rewrite removes a selected station base from endpoints and examples', function (): void {
@@ -3854,6 +4200,10 @@ hub_test('cluster public contract rewrite removes a selected station base from e
             'artifact_url_template' => 'https://station.example/aihub/api.php?mode=artifact&artifact_id={artifact_id}',
         ],
         'examples' => ['curl' => "curl 'https://station.example/aihub/api.php?mode=task_status&task_id=remote_task_42'"],
+        'payload' => [
+            'json' => '{"text":"cluster_api.php","link":"api.php?mode=task_status"}',
+            'voice_profile_identifier' => 'api.php?mode=task_result',
+        ],
     ], 'https://station.example/aihub/api.php', 'cluster_api.php');
     $json = json_encode($service, JSON_THROW_ON_ERROR);
 
@@ -3866,6 +4216,11 @@ hub_test('cluster public contract rewrite removes a selected station base from e
     ] as $endpoint) {
         hub_test_assert(str_contains($json, $endpoint), 'async contract must use the Router followup template: ' . $endpoint);
     }
+    hub_test_assert(!isset($service['examples']), 'untrusted child examples must be omitted before Router-owned examples are regenerated');
+    hub_test_assert(($service['payload']['json'] ?? '') === '{"text":"cluster_api.php","link":"api.php?mode=task_status"}'
+        && ($service['payload']['voice_profile_identifier'] ?? '') === 'api.php?mode=task_result', 'contract URL rewriting must not mutate arbitrary payload strings');
+    unset($service['payload']);
+    $json = json_encode($service, JSON_THROW_ON_ERROR);
     hub_test_assert(!str_contains($json, 'station.example') && !str_contains($json, 'remote_task_42') && !str_contains($json, 'mode=task_') && str_contains($json, 'cluster_api.php?mode=vision'), 'rewritten contracts must expose Router URLs only');
 });
 
