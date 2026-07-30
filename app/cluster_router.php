@@ -2998,6 +2998,7 @@ function hub_cluster_status_payload(PDO $db, ?array $release = null): array
     $payload = [
         'ok' => true,
         'snapshot_at' => $now,
+        'display_name' => hub_site_title($db),
         'gpu' => $gpu,
         'active_gpu_leases' => (int)$lease->fetchColumn(),
         'queued_jobs' => (int)$queued,
@@ -3581,6 +3582,17 @@ function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = n
     if ($snapshotAt === null) {
         return null;
     }
+    $displayName = null;
+    if (array_key_exists('display_name', $status)) {
+        if (!is_string($status['display_name'])) {
+            return null;
+        }
+        $displayName = trim($status['display_name']);
+        $length = function_exists('mb_strlen') ? mb_strlen($displayName, 'UTF-8') : strlen($displayName);
+        if ($displayName === '' || $length > 120) {
+            return null;
+        }
+    }
     foreach (['active_gpu_leases', 'queued_jobs', 'running_jobs'] as $field) {
         if (!is_int($status[$field] ?? null) || $status[$field] < 0) {
             return null;
@@ -3597,7 +3609,7 @@ function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = n
     }
     $gpu = hub_cluster_compact_gpu_snapshot($status['gpu']);
 
-    return array_merge([
+    $snapshot = array_merge([
         'snapshot_at' => $snapshotAt,
         'gpu' => $gpu,
         'active_gpu_leases' => $status['active_gpu_leases'],
@@ -3605,6 +3617,11 @@ function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = n
         'running_jobs' => $status['running_jobs'],
         'modes' => $modes,
     ], $report);
+    if ($displayName !== null) {
+        $snapshot['display_name'] = $displayName;
+    }
+
+    return $snapshot;
 }
 
 function hub_cluster_store_station_manifest(PDO $db, int $stationId, array $snapshot): void
@@ -3622,11 +3639,14 @@ function hub_cluster_store_station_manifest(PDO $db, int $stationId, array $snap
 
 function hub_cluster_store_station_status(PDO $db, int $stationId, array $snapshot): void
 {
+    $displayName = (string)($snapshot['display_name'] ?? '');
     $db->prepare(
         'UPDATE cluster_stations
-         SET status_json = :status_json, status_fetched_at = :fetched_at, last_error = :last_error, updated_at = :updated_at
+         SET display_name = CASE WHEN :display_name <> \'\' THEN :display_name ELSE display_name END,
+             status_json = :status_json, status_fetched_at = :fetched_at, last_error = :last_error, updated_at = :updated_at
          WHERE id = :id'
     )->execute([
+        ':display_name' => $displayName,
         ':status_json' => json_encode($snapshot, JSON_THROW_ON_ERROR),
         ':fetched_at' => $snapshot['snapshot_at'],
         ':last_error' => '',

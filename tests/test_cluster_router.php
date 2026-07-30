@@ -1000,7 +1000,7 @@ hub_test('cluster child status stays lightweight and filters unavailable selecte
 
         $payload = hub_cluster_status_payload($db);
         hub_test_assert(array_keys($payload) === [
-            'ok', 'snapshot_at', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes',
+            'ok', 'snapshot_at', 'display_name', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes',
             'release', 'packs', 'runners', 'health', 'cluster',
         ], 'status payload must keep its exact compact health shape');
         foreach (['release', 'packs', 'runners', 'health', 'cluster'] as $key) {
@@ -1021,7 +1021,7 @@ hub_test('cluster child status stays lightweight and filters unavailable selecte
             'health' => $payload['health'],
         ]);
         hub_test_assert(array_keys($fallback) === [
-            'ok', 'snapshot_at', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes',
+            'ok', 'snapshot_at', 'display_name', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes',
         ], 'unknown Git evidence must fall back to the legacy health payload');
 
         hub_test_cluster_publish_mode($db, 'ocr', false);
@@ -1045,6 +1045,7 @@ hub_test('cluster status snapshots retain only bounded release and aggregate hea
     $status = [
         'ok' => true,
         'snapshot_at' => date('Y-m-d H:i:s', $now),
+        'display_name' => '臺北 GPU 站',
         'gpu' => [
             'available' => true,
             'name' => 'Snapshot GPU',
@@ -1094,6 +1095,7 @@ hub_test('cluster status snapshots retain only bounded release and aggregate hea
 
     $snapshot = hub_cluster_compact_status_snapshot($status, $now);
     hub_test_assert($snapshot !== null, 'valid compact release status must be accepted');
+    hub_test_assert(($snapshot['display_name'] ?? '') === '臺北 GPU 站', 'compact status must retain a verified station display name');
     hub_test_assert(($snapshot['release'] ?? null) === [
         'build_id' => '20260729001',
         'commit' => 'abcdef123456',
@@ -1126,7 +1128,7 @@ hub_test('cluster status snapshots retain only bounded release and aggregate hea
         hub_test_assert(!str_contains($encoded, $forbidden), 'compact status leaked forbidden nested data: ' . $forbidden);
     }
 
-    $legacy = array_diff_key($status, array_flip(['release', 'packs', 'runners', 'health', 'cluster']));
+    $legacy = array_diff_key($status, array_flip(['release', 'packs', 'runners', 'health', 'cluster', 'display_name']));
     hub_test_assert(hub_cluster_compact_status_snapshot($legacy, $now) !== null, 'legacy station status must remain readable during rolling updates');
 
     $invalidStatuses = [];
@@ -1163,6 +1165,9 @@ hub_test('cluster status snapshots retain only bounded release and aggregate hea
     $invalid = $status;
     $invalid['cluster']['children_count'] = -1;
     $invalidStatuses['negative child count'] = $invalid;
+    $invalid = $status;
+    $invalid['display_name'] = '   ';
+    $invalidStatuses['blank station display name'] = $invalid;
     foreach ($invalidStatuses as $case => $invalidStatus) {
         hub_test_assert(hub_cluster_compact_status_snapshot($invalidStatus, $now) === null, 'compact status accepted ' . $case);
     }
@@ -1196,6 +1201,7 @@ hub_test('cluster inventory refresh fetches manifest then authenticated status w
             return ['status' => 200, 'body' => json_encode([
                 'ok' => true,
                 'snapshot_at' => $snapshotAt,
+                'display_name' => '更名後子節點',
                 'gpu' => ['available' => true],
                 'active_gpu_leases' => 0,
                 'queued_jobs' => 0,
@@ -1213,6 +1219,7 @@ hub_test('cluster inventory refresh fetches manifest then authenticated status w
         $stored = hub_cluster_get_station($db, $stationId);
         hub_test_assert($stored !== null && hub_cluster_station_is_fresh($stored), 'freshness requires both stored snapshots');
         hub_test_assert($stored['status_fetched_at'] === $snapshotAt, 'status freshness must use the verified child snapshot time');
+        hub_test_assert($stored['display_name'] === '更名後子節點', 'verified child status must synchronize the station display name');
         $skippedRequests = 0;
         hub_cluster_refresh_station($db, $stored, static function () use (&$skippedRequests): array {
             $skippedRequests++;
@@ -1253,6 +1260,8 @@ hub_test('cluster inventory refresh preserves a compact status HTTP failure with
         });
 
         hub_test_assert((string)($refreshed['last_error'] ?? '') === 'status_http_403', 'status HTTP failure must retain only its status code');
+        $stored = hub_cluster_get_station($db, $stationId);
+        hub_test_assert($stored !== null && $stored['display_name'] === 'Taipei GPU 1', 'failed station refresh must retain the last verified display name');
         hub_test_assert(!str_contains(json_encode($refreshed, JSON_THROW_ON_ERROR), '3wa_live_station_secret'), 'status HTTP failure must not leak raw response or token');
     });
 });
