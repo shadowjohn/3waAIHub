@@ -16,6 +16,7 @@ function hub_playground_profiles(): array
         'sam3' => ['label' => 'SAM3', 'method' => 'POST', 'kind' => 'sam3'],
         'bioclip' => ['label' => 'BioCLIP', 'method' => 'POST', 'kind' => 'bioclip'],
         'tts' => ['label' => 'TTS', 'method' => 'POST', 'kind' => 'json'],
+        'edge_tts' => ['label' => 'Edge TTS', 'method' => 'POST', 'kind' => 'form'],
         'structure' => ['label' => 'Structure', 'method' => 'POST', 'kind' => 'document'],
         'chat' => ['label' => 'Chat', 'method' => 'POST', 'kind' => 'json'],
         'photo' => ['label' => '圖片問答', 'method' => 'POST', 'kind' => 'photo'],
@@ -71,8 +72,36 @@ function hub_playground_local_api_url(string $mode): string
     return 'http://127.0.0.1' . hub_playground_base_path() . '/api.php?mode=' . rawurlencode($mode);
 }
 
+function hub_playground_edge_tts_presets(): array
+{
+    return [
+        'taiwan_narration' => [
+            'label' => '台灣女聲旁白',
+            'payload' => ['text' => '這是一段使用台灣女聲的 API 測試旁白。', 'voice' => 'zh-TW-HsiaoChenNeural', 'rate' => '+0%', 'volume' => '+0%', 'pitch' => '+0Hz', 'include_subtitles' => false],
+        ],
+        'slow_technical' => [
+            'label' => '慢速技術解說',
+            'payload' => ['text' => 'RC 閥是用來控制二行程引擎排氣時機的重要機構。', 'voice' => 'zh-TW-YunJheNeural', 'rate' => '-25%', 'volume' => '+0%', 'pitch' => '+0Hz', 'include_subtitles' => true],
+        ],
+        'fast_cantonese' => [
+            'label' => '快速粵語公告',
+            'payload' => ['text' => '呢個係一段粵語 API 測試公告。', 'voice' => 'zh-HK-WanLungNeural', 'rate' => '+25%', 'volume' => '+0%', 'pitch' => '+0Hz', 'include_subtitles' => false],
+        ],
+    ];
+}
+
 function hub_playground_request_payload(string $mode): array
 {
+    if ($mode === 'edge_tts') {
+        return [
+            'text' => trim((string)($_POST['text'] ?? '這是一段使用台灣女聲的 API 測試旁白。')),
+            'voice' => trim((string)($_POST['voice'] ?? 'zh-TW-HsiaoChenNeural')),
+            'rate' => trim((string)($_POST['rate'] ?? '+0%')),
+            'volume' => trim((string)($_POST['volume'] ?? '+0%')),
+            'pitch' => trim((string)($_POST['pitch'] ?? '+0Hz')),
+            'include_subtitles' => !empty($_POST['include_subtitles']),
+        ];
+    }
     if ($mode === 'translate') {
         return [
             'source_lang' => trim((string)($_POST['source_lang'] ?? 'en')),
@@ -420,7 +449,11 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
     if ($profile['method'] === 'POST') {
         $options[CURLOPT_POST] = true;
         $payload = $requestPayload ?? hub_playground_request_payload($mode);
-        if ($profile['kind'] === 'json') {
+        if ($profile['kind'] === 'form') {
+            $headers[] = 'Content-Type: application/x-www-form-urlencoded';
+            $options[CURLOPT_HTTPHEADER] = $headers;
+            $options[CURLOPT_POSTFIELDS] = http_build_query($payload, '', '&', PHP_QUERY_RFC3986);
+        } elseif ($profile['kind'] === 'json') {
             $headers[] = 'Content-Type: application/json';
             $options[CURLOPT_HTTPHEADER] = $headers;
             $options[CURLOPT_POSTFIELDS] = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -659,6 +692,40 @@ const res = await fetch($jsUrl, {
     seed: 42,
     format: 'wav'
   })
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
+    if ($mode === 'edge_tts') {
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/x-www-form-urlencoded\" $curlContinuation\n  --data-urlencode 'text=RC 閥是用來控制二行程引擎排氣時機的重要機構。' $curlContinuation\n  --data-urlencode 'voice=zh-TW-YunJheNeural' $curlContinuation\n  --data-urlencode 'rate=-25%' $curlContinuation\n  --data-urlencode 'volume=+0%' $curlContinuation\n  --data-urlencode 'pitch=+0Hz' $curlContinuation\n  --data-urlencode 'include_subtitles=true'";
+        $php = <<<PHP
+\$payload = [
+    'text' => 'RC 閥是用來控制二行程引擎排氣時機的重要機構。',
+    'voice' => 'zh-TW-YunJheNeural',
+    'rate' => '-25%',
+    'volume' => '+0%',
+    'pitch' => '+0Hz',
+    'include_subtitles' => 'true',
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>', 'Content-Type: application/x-www-form-urlencoded'],
+    CURLOPT_POSTFIELDS => http_build_query(\$payload, '', '&', PHP_QUERY_RFC3986),
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const payload = {
+  text: 'RC 閥是用來控制二行程引擎排氣時機的重要機構。',
+  voice: 'zh-TW-YunJheNeural', rate: '-25%', volume: '+0%', pitch: '+0Hz', include_subtitles: 'true'
+};
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer <TOKEN>', 'Content-Type': 'application/x-www-form-urlencoded' },
+  body: new URLSearchParams(payload)
 });
 console.log(await res.json());
 JS;
@@ -949,6 +1016,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (!empty($_POST['load_voi
     }
 }
 $examples = hub_playground_examples($selectedMode);
+$edgeTtsPresets = hub_playground_edge_tts_presets();
+$edgeTtsPresetKey = is_string($_GET['edge_tts_preset'] ?? null) ? (string)$_GET['edge_tts_preset'] : 'taiwan_narration';
+$edgeTtsPreset = $edgeTtsPresets[$edgeTtsPresetKey] ?? $edgeTtsPresets['taiwan_narration'];
+$edgeTtsValues = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
+    ? hub_playground_request_payload('edge_tts')
+    : $edgeTtsPreset['payload'];
 $ttsProfiles = [];
 $ttsManagementProfiles = [];
 $profileToken = trim((string)($_POST['bearer_token'] ?? ''));
@@ -1108,6 +1181,32 @@ hub_admin_header(__('API 測試場'), $user);
                 <label><?= hub_h(__('最多結果數')) ?> limit</label>
                 <input name="limit" type="number" min="1" max="100" value="<?= hub_h((string)($_POST['limit'] ?? '10')) ?>">
                 <p class="muted"><?= hub_h(__('Adapter 只會轉送固定 operation 與欄位；不接受 caller 指定 upstream URL。')) ?></p>
+            <?php elseif ($selectedMode === 'edge_tts'): ?>
+                <p class="muted"><?= hub_h(__('選擇範例後仍可調整所有參數。')) ?></p>
+                <div class="hub-actions">
+                    <?php foreach ($edgeTtsPresets as $presetKey => $preset): ?>
+                        <a class="button" href="playground.php?mode=edge_tts&edge_tts_preset=<?= urlencode((string)$presetKey) ?>"><?= hub_h((string)$preset['label']) ?></a>
+                    <?php endforeach; ?>
+                </div>
+                <label><?= hub_h(__('文字')) ?> text</label>
+                <textarea name="text" rows="5" maxlength="4096" required><?= hub_h((string)$edgeTtsValues['text']) ?></textarea>
+                <label><?= hub_h(__('聲線')) ?> voice</label>
+                <select name="voice">
+                    <?php foreach (hub_edge_tts_voice_catalog() as $voice): ?>
+                        <?php $voiceId = (string)$voice['id']; ?>
+                        <option value="<?= hub_h($voiceId) ?>" <?= $edgeTtsValues['voice'] === $voiceId ? 'selected' : '' ?>><?= hub_h((string)$voice['display_name']) ?> / <?= hub_h($voiceId) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <?php foreach (['rate' => ['-50%', '-25%', '+0%', '+25%', '+50%'], 'volume' => ['-50%', '-25%', '+0%', '+25%', '+50%'], 'pitch' => ['-50Hz', '-25Hz', '+0Hz', '+25Hz', '+50Hz']] as $field => $choices): ?>
+                    <label><?= hub_h($field) ?></label>
+                    <select name="<?= hub_h($field) ?>">
+                        <?php foreach ($choices as $choice): ?>
+                            <option value="<?= hub_h($choice) ?>" <?= $edgeTtsValues[$field] === $choice ? 'selected' : '' ?>><?= hub_h($choice) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                <?php endforeach; ?>
+                <label><input name="include_subtitles" type="checkbox" value="1" <?= $edgeTtsValues['include_subtitles'] ? 'checked' : '' ?>> include_subtitles</label>
+                <p class="muted"><?= hub_h(__('開啟字幕會產生 VTT、SRT 與 speech timeline artifacts。')) ?></p>
             <?php elseif ($selectedMode === 'tts'): ?>
                 <label>TTS <?= hub_h(__('模式')) ?></label>
                 <select name="tts_mode">

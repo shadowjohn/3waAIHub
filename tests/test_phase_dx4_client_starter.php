@@ -125,6 +125,63 @@ hub_test('PhaseDX-4 public docs and playground examples use current host URLs', 
     hub_test_assert(str_contains($translateExamples['curl'], ' ' . $continuation . "\n"), 'playground must use the current platform continuation');
 });
 
+hub_test('Edge TTS Playground exposes form controls and URL-encoded examples', function (): void {
+    $page = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    foreach ([
+        "'edge_tts' => ['label' => 'Edge TTS', 'method' => 'POST', 'kind' => 'form']",
+        "'include_subtitles' => !empty(\$_POST['include_subtitles'])",
+        '台灣女聲旁白',
+        '慢速技術解說',
+        '快速粵語公告',
+        'name="voice"',
+        'select name="<?= hub_h($field) ?>"',
+        "'rate' => ['-50%', '-25%', '+0%', '+25%', '+50%']",
+        "'volume' => ['-50%', '-25%', '+0%', '+25%', '+50%']",
+        "'pitch' => ['-50Hz', '-25Hz', '+0Hz', '+25Hz', '+50Hz']",
+        'name="include_subtitles"',
+        'application/x-www-form-urlencoded',
+    ] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'Edge TTS Playground missing ' . $needle);
+    }
+
+    $previousPost = $_POST;
+    try {
+        $_POST = [
+            'text' => 'Edge TTS Playground request',
+            'voice' => 'zh-HK-WanLungNeural',
+            'rate' => '+25%',
+            'volume' => '-25%',
+            'pitch' => '+25Hz',
+            'include_subtitles' => '1',
+        ];
+        hub_test_assert(hub_playground_request_payload('edge_tts') === [
+            'text' => 'Edge TTS Playground request',
+            'voice' => 'zh-HK-WanLungNeural',
+            'rate' => '+25%',
+            'volume' => '-25%',
+            'pitch' => '+25Hz',
+            'include_subtitles' => true,
+        ], 'Edge TTS Playground must preserve all form fields with a boolean subtitle flag');
+
+        $_SERVER['HTTPS'] = 'on';
+        $_SERVER['HTTP_HOST'] = 'nature.focusit.tw';
+        $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/playground.php';
+        $examples = hub_playground_examples('edge_tts');
+        foreach (['curl', 'php', 'js'] as $kind) {
+            hub_test_assert(
+                str_contains($examples[$kind], 'https://nature.focusit.tw/3waAIHub/api.php?mode=edge_tts'),
+                'Edge TTS Playground ' . $kind . ' example must use the current host'
+            );
+            hub_test_assert(str_contains($examples[$kind], 'include_subtitles'), 'Edge TTS Playground ' . $kind . ' example must include subtitle control');
+        }
+        hub_test_assert(str_contains($examples['curl'], '--data-urlencode'), 'Edge TTS curl example must use form encoding');
+        hub_test_assert(str_contains($examples['php'], 'http_build_query'), 'Edge TTS PHP example must use form encoding');
+        hub_test_assert(str_contains($examples['js'], 'URLSearchParams'), 'Edge TTS JS example must use form encoding');
+    } finally {
+        $_POST = $previousPost;
+    }
+});
+
 hub_test('cluster Router public entry documents and endpoints remain disclosure-safe', function (): void {
     $guidePath = HUB_ROOT . '/docs/cluster-router.md';
     $manifestPath = HUB_ROOT . '/cluster_manifest.json.php';
