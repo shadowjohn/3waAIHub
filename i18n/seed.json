@@ -90,6 +90,26 @@
         "trans": "GPU temperature"
     },
     {
+        "title": "GPU 溫度（24 小時）",
+        "lang": "en",
+        "trans": "GPU temperature (24 hours)"
+    },
+    {
+        "title": "GPU 溫度 24 小時趨勢圖",
+        "lang": "en",
+        "trans": "GPU temperature 24-hour trend chart"
+    },
+    {
+        "title": "GPU VRAM 使用量（24 小時）",
+        "lang": "en",
+        "trans": "GPU VRAM usage (24 hours)"
+    },
+    {
+        "title": "GPU VRAM 使用量 24 小時趨勢圖",
+        "lang": "en",
+        "trans": "GPU VRAM usage 24-hour trend chart"
+    },
+    {
         "title": "GPU 記憶體",
         "lang": "en",
         "trans": "GPU memory"
@@ -2753,6 +2773,11 @@
         "title": "尚無資料",
         "lang": "en",
         "trans": "No data"
+    },
+    {
+        "title": "尚無 GPU 歷史資料。",
+        "lang": "en",
+        "trans": "No GPU history data."
     },
     {
         "title": "工作樹狀態",

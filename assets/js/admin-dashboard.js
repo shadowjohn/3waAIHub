@@ -47,6 +47,7 @@
   function create(id, type, source, colors, options) {
     var canvas = document.getElementById(id);
     if (!canvas || source.length === 0) return;
+    var line = type === 'line';
 
     charts.push(new Chart(canvas, {
       type: type,
@@ -54,11 +55,15 @@
         labels: source.map(function (item) { return item.label; }),
         datasets: [{
           data: source.map(function (item) { return Number(item.value) || 0; }),
-          backgroundColor: colors,
+          backgroundColor: line ? 'transparent' : colors,
           borderColor: type === 'doughnut' ? '#FFFFFF' : colors,
-          borderWidth: type === 'doughnut' ? 2 : 0,
+          borderWidth: type === 'doughnut' ? 2 : (line ? 2 : 0),
           borderRadius: type === 'bar' ? 6 : 0,
-          maxBarThickness: 56
+          maxBarThickness: 56,
+          fill: false,
+          pointRadius: line ? 2 : 0,
+          pointHoverRadius: line ? 3 : 0,
+          tension: line ? 0.2 : 0
         }]
       },
       options: Object.assign({
@@ -91,6 +96,25 @@
     };
   }
 
+  function lineOptions(suffix) {
+    return {
+      plugins: { legend: { display: false } },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: { callback: function (value) { return value + suffix; } },
+          grid: { color: palette.grid, drawTicks: false },
+          border: { display: false }
+        },
+        x: {
+          ticks: { autoSkip: true, maxRotation: 0, maxTicksLimit: 6 },
+          grid: { display: false },
+          border: { color: palette.grid }
+        }
+      }
+    };
+  }
+
   create('vramChart', 'doughnut', rows('vram'), [palette.blue, palette.slate], { cutout: '62%' });
   var ramChart = document.getElementById('ramChart');
   if (metric.ramApplicable && ramChart) {
@@ -109,6 +133,8 @@
     }));
   }
   create('serviceChart', 'bar', rows('services'), [palette.green, palette.slate, palette.amber, palette.red], barOptions());
+  create('gpuTemperatureChart', 'line', rows('gpuTemperatureHistory'), palette.amber, lineOptions('°C'));
+  create('gpuVramHistoryChart', 'line', rows('gpuVramHistory'), palette.blue, lineOptions(' MB'));
 
   if ('ResizeObserver' in window) {
     var observer = new ResizeObserver(function () {

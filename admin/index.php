@@ -51,14 +51,20 @@ $serviceCounts = is_array($summary['service_counts'] ?? null)
 $healthStatus = is_string($health['status'] ?? null) ? $health['status'] : 'unknown';
 $connectionState = (string)($summary['connection_state'] ?? 'offline');
 
-$gpuTotal = is_numeric($gpu['memory_total_mb'] ?? null) ? (float)$gpu['memory_total_mb'] : 0.0;
+$gpuTotal = is_numeric($gpu['memory_total_mb'] ?? null) ? (float)$gpu['memory_total_mb'] : null;
 $gpuUsed = is_numeric($gpu['memory_used_mb'] ?? null)
     ? (float)$gpu['memory_used_mb']
-    : max(0, $gpuTotal - (float)($gpu['memory_free_mb'] ?? 0));
+    : ($gpuTotal !== null && is_numeric($gpu['memory_free_mb'] ?? null)
+        ? max(0, $gpuTotal - (float)$gpu['memory_free_mb'])
+        : null);
 $vramPercent = hub_admin_dash_percent($gpuUsed, $gpuTotal);
-$gpuAvailable = !empty($gpu['available']) && $gpuTotal > 0;
-$gpuUtil = is_numeric($gpu['util_percent'] ?? null) ? (float)$gpu['util_percent'] : null;
-$gpuTemperature = is_numeric($gpu['temperature_c'] ?? null) ? (float)$gpu['temperature_c'] : null;
+$gpuExplicitlyUnavailable = ($gpu['available'] ?? null) === false;
+$gpuAvailable = !$gpuExplicitlyUnavailable && $gpuTotal !== null && $gpuUsed !== null && $gpuTotal > 0;
+$gpuUtil = !$gpuExplicitlyUnavailable && is_numeric($gpu['util_percent'] ?? null) ? (float)$gpu['util_percent'] : null;
+$gpuTemperature = !$gpuExplicitlyUnavailable && is_numeric($gpu['temperature_c'] ?? null) ? (float)$gpu['temperature_c'] : null;
+$gpuHistory = is_array($summary['gpu_history'] ?? null) ? $summary['gpu_history'] : [];
+$gpuTemperatureHistory = is_array($gpuHistory['temperature'] ?? null) ? $gpuHistory['temperature'] : [];
+$gpuVramHistory = is_array($gpuHistory['vram_used'] ?? null) ? $gpuHistory['vram_used'] : [];
 $snapshotAvailable = (string)($summary['snapshot_at'] ?? '') !== '';
 $memoryPressure = (string)($host['memory_pressure'] ?? 'not_applicable');
 $memoryApplicable = (($host['memory_status']['status'] ?? '') !== 'not_applicable')
@@ -135,6 +141,8 @@ $chartData = [
         ['label' => __('已用'), 'value' => $gpuUsed],
         ['label' => __('可用'), 'value' => max(0, $gpuTotal - $gpuUsed)],
     ] : [],
+    'gpuTemperatureHistory' => $gpuTemperatureHistory,
+    'gpuVramHistory' => $gpuVramHistory,
     'ram' => $ramParts,
     'disk' => $diskBars,
     'services' => [
@@ -236,7 +244,7 @@ hub_admin_header('控制台', $user);
                     <div><h2 class="metric__label"><?= hub_h(__('VRAM 使用量')) ?></h2><p class="metric__sub"><?= hub_h(__('GPU 記憶體')) ?></p></div>
                     <span class="metric__value<?= $gpuAvailable ? '' : ' metric__value--na' ?>"><?= $gpuAvailable ? hub_h((string)$vramPercent . '%') : 'N/A' ?></span>
                 </div>
-                <p class="metric__note"><?= hub_h(hub_admin_dash_value($gpuUsed, ' MB')) ?> / <?= hub_h(hub_admin_dash_value($gpuTotal, ' MB')) ?></p>
+                <p class="metric__note"><?= $gpuAvailable ? hub_h(hub_admin_dash_value($gpuUsed, ' MB')) . ' / ' . hub_h(hub_admin_dash_value($gpuTotal, ' MB')) : 'N/A' ?></p>
                 <div class="meter<?= $gpuAvailable ? '' : ' meter--empty' ?>"><div class="meter__fill" style="width: <?= hub_h((string)$vramPercent) ?>%"></div></div>
                 <?php if ($gpuAvailable): ?><div class="chart chart--compact"><canvas id="vramChart" aria-label="<?= hub_h(__('VRAM 使用分布圖')) ?>" role="img"></canvas></div><?php endif; ?>
             </section>
@@ -255,6 +263,25 @@ hub_admin_header('控制台', $user);
                 </div>
                 <p class="metric__note"><?= hub_h(__('溫度上限以 100°C 顯示')) ?></p>
                 <div class="meter<?= $gpuTemperature === null ? ' meter--empty' : '' ?>"><div class="meter__fill" style="width: <?= hub_h((string)max(0, min(100, $gpuTemperature ?? 0))) ?>%"></div></div>
+            </section>
+        </div>
+
+        <div class="grid grid--2">
+            <section class="card card--fill">
+                <div class="card__head"><h2 class="card__title"><?= hub_h(__('GPU 溫度（24 小時）')) ?></h2></div>
+                <?php if ($gpuTemperatureHistory !== []): ?>
+                    <div class="chart"><canvas id="gpuTemperatureChart" aria-label="<?= hub_h(__('GPU 溫度 24 小時趨勢圖')) ?>" role="img"></canvas></div>
+                <?php else: ?>
+                    <p class="metric__note"><?= hub_h(__('尚無 GPU 歷史資料。')) ?></p>
+                <?php endif; ?>
+            </section>
+            <section class="card card--fill">
+                <div class="card__head"><h2 class="card__title"><?= hub_h(__('GPU VRAM 使用量（24 小時）')) ?></h2></div>
+                <?php if ($gpuVramHistory !== []): ?>
+                    <div class="chart"><canvas id="gpuVramHistoryChart" aria-label="<?= hub_h(__('GPU VRAM 使用量 24 小時趨勢圖')) ?>" role="img"></canvas></div>
+                <?php else: ?>
+                    <p class="metric__note"><?= hub_h(__('尚無 GPU 歷史資料。')) ?></p>
+                <?php endif; ?>
             </section>
         </div>
 

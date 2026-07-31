@@ -404,6 +404,7 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
     $script = (string)file_get_contents(HUB_ROOT . '/assets/js/admin-dashboard.js');
     $dashboardCss = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-dashboard.css');
     $baseCss = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-base.css');
+    $seed = (string)file_get_contents(HUB_ROOT . '/i18n/seed.json');
 
     foreach ([
         '../assets/css/admin-dashboard.css',
@@ -424,6 +425,30 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
     }
     hub_test_assert(str_contains($script, 'maintainAspectRatio: false'), 'dashboard charts must preserve accepted container sizing');
     hub_test_assert(str_contains($script, 'ResizeObserver'), 'dashboard charts must respond to container resize');
+    foreach (['gpuTemperatureHistory', 'gpuVramHistory', 'gpuTemperatureChart', 'gpuVramHistoryChart'] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'dashboard page missing GPU history contract: ' . $needle);
+    }
+    foreach ([
+        "create('gpuTemperatureChart', 'line', rows('gpuTemperatureHistory'), palette.amber, lineOptions('°C'))",
+        "create('gpuVramHistoryChart', 'line', rows('gpuVramHistory'), palette.blue, lineOptions(' MB'))",
+        'function lineOptions(suffix)',
+    ] as $needle) {
+        hub_test_assert(str_contains($script, $needle), 'dashboard script missing GPU history chart contract: ' . $needle);
+    }
+    hub_test_assert(!str_contains($page, "(float)(\$gpu['memory_free_mb'] ?? 0)"), 'dashboard must not treat missing GPU free VRAM as zero');
+    hub_test_assert(str_contains($page, "\$gpuAvailable ? hub_h(hub_admin_dash_value(\$gpuUsed, ' MB'))"), 'dashboard must render unavailable VRAM as N/A');
+    foreach ([
+        'GPU 溫度（24 小時）',
+        'GPU VRAM 使用量（24 小時）',
+        'GPU 溫度 24 小時趨勢圖',
+        'GPU VRAM 使用量 24 小時趨勢圖',
+        '尚無 GPU 歷史資料。',
+        'GPU temperature (24 hours)',
+        'GPU VRAM usage (24 hours)',
+        'No GPU history data.',
+    ] as $needle) {
+        hub_test_assert(str_contains($seed, $needle), 'GPU history i18n seed missing: ' . $needle);
+    }
     foreach (['station-tab__status', 'connection_state', '可連線', '無法連線'] as $needle) {
         hub_test_assert(str_contains($page, $needle), 'dashboard station connectivity markup missing ' . $needle);
     }
