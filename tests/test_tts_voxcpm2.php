@@ -3959,6 +3959,8 @@ assert all('word_alignment' not in chunk for chunk in first['chunks'])
 unit_chunks = module.split_semantic_v1('A' * 41 + 'N·m。tail', 42)
 assert all(not (left.endswith('N') and right.startswith('·m')) for left, right in zip(unit_chunks, unit_chunks[1:]))
 assert 'N·m' in ''.join(unit_chunks)
+protected = module.make_plan('A' * 250, 42, 'derived_per_chunk', 240)
+assert [len(chunk['text']) for chunk in protected['chunks']] == [250]
 PY;
         $plan = hub_run_command(['python3', '-c', $planScript, $service . '/long_form.py'], 10);
         hub_test_assert(($plan['exit_code'] ?? 1) === 0, 'semantic-v1 plan must be byte-deterministic: ' . ($plan['stderr'] ?? ''));
@@ -4449,6 +4451,85 @@ function hub_test_voxcpm2_cluster_runner_input(
     return $input;
 }
 
+function hub_test_voxcpm2_cluster_runner_rechunk(
+    array $metadata,
+    array $texts,
+    array $boundaries,
+): array {
+    if ($texts === [] || count($texts) !== count($boundaries)) {
+        throw new RuntimeException('Invalid production metadata rechunk fixture.');
+    }
+    $taskSeed = $metadata['plan']['task_seed'];
+    $seedPolicy = $metadata['plan']['seed_policy'];
+    $planChunks = [];
+    $chunks = [];
+    $timeline = [];
+    $previousEnd = 0;
+    foreach ($texts as $index => $text) {
+        $chunkId = sprintf('chunk-%04d', $index + 1);
+        $seedSha256 = hash(
+            'sha256',
+            $seedPolicy === 'fixed' ? (string)$taskSeed : $taskSeed . $chunkId
+        );
+        $seed = $seedPolicy === 'fixed'
+            ? $taskSeed
+            : (int)(hexdec(substr($seedSha256, 8, 8)) % 2147483648);
+        $boundary = $boundaries[$index];
+        $durationFrames = 12000;
+        $startFrame = $previousEnd;
+        $renderedFrames = $durationFrames;
+        if ($boundary['action'] === 'silence_insert') {
+            $startFrame += $boundary['pause_frames'];
+        } elseif ($boundary['action'] === 'trim_then_pause') {
+            $startFrame += $boundary['pause_frames'] - min($boundary['trim_frames'], $previousEnd);
+        } elseif ($boundary['action'] === 'crossfade') {
+            $renderedFrames -= min($boundary['crossfade_frames'], $previousEnd, $durationFrames);
+        }
+        $endFrame = $startFrame + $renderedFrames;
+        $planChunks[] = [
+            'id' => $chunkId,
+            'text' => $text,
+            'text_sha256' => hash('sha256', $text),
+            'seed' => $seed,
+            'seed_sha256' => $seedSha256,
+        ];
+        $chunks[] = [
+            'id' => $chunkId,
+            'seed' => $seed,
+            'seed_sha256' => $seedSha256,
+            'attempts' => 1,
+            'duration_frames' => $durationFrames,
+            'duration_seconds' => $durationFrames / 48000,
+            'peak_gain' => 1.0,
+            'reused_checkpoint' => false,
+        ] + $boundary;
+        $timeline[] = [
+            'chunk_id' => $chunkId,
+            'start_frame' => $startFrame,
+            'end_frame' => $endFrame,
+            'sample_rate' => 48000,
+        ];
+        $previousEnd = $endFrame;
+    }
+    $planCore = [
+        'normalization' => 'semantic-v1',
+        'normalized_input' => implode('', $texts),
+        'max_chunk_chars' => 240,
+        'task_seed' => $taskSeed,
+        'seed_policy' => $seedPolicy,
+        'chunks' => $planChunks,
+    ];
+    $metadata['normalized_input'] = $planCore['normalized_input'];
+    $metadata['plan'] = $planCore + [
+        'plan_sha256' => hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($planCore)),
+    ];
+    $metadata['chunks'] = $chunks;
+    $metadata['timeline'] = $timeline;
+    $metadata['final_format']['frames'] = $previousEnd;
+
+    return $metadata;
+}
+
 hub_test('VoxCPM2 public metadata enforces the current schema and only normalizes legacy Pack versions', function (): void {
     $db = hub_test_reset_db();
     $pathFreeMetadata = hub_test_voxcpm2_cluster_runner_metadata(
@@ -4487,6 +4568,12 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
             'sha256' => hash('sha256', $json),
         ]];
     };
+    $audioProbe = [
+        'duration_seconds' => 0.25,
+        'sample_rate' => 48000,
+        'channels' => 1,
+        'frames' => 12000,
+    ];
 
     $canonicalCases = [
         'design' => ["Canonical \n design metadata.", 'steady', 7, 'fixed', ['type' => 'fake', 'real_inference' => false]],
@@ -4523,7 +4610,12 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
             )
         );
         hub_test_assert(
-            hub_voxcpm2_public_metadata_artifact($db, $currentTaskId, $currentArtifact) === $currentArtifact,
+            hub_voxcpm2_public_metadata_artifact(
+                $db,
+                $currentTaskId,
+                $currentArtifact,
+                $audioProbe
+            ) === $currentArtifact,
             '0.1.6 must accept canonical ' . $mode . ' metadata without rewriting it'
         );
     }
@@ -4779,7 +4871,12 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
         );
         $rejected = null;
         try {
-            hub_voxcpm2_public_metadata_artifact($db, $currentTaskId, $currentArtifact);
+            hub_voxcpm2_public_metadata_artifact(
+                $db,
+                $currentTaskId,
+                $currentArtifact,
+                $audioProbe
+            );
         } catch (Throwable $error) {
             $rejected = $error->getMessage();
         }
@@ -4789,7 +4886,7 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
         );
     }
 
-    $overlongText = str_repeat('x', 241);
+    $overlongText = str_repeat('word ', 48) . 'x';
     hub_test_assert(
         !hub_voxcpm2_public_metadata_schema_valid(
             hub_test_voxcpm2_cluster_runner_metadata(
@@ -4803,9 +4900,224 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
                 str_repeat('b', 64),
                 $overlongText,
                 'design'
-            )
+            ),
+            $audioProbe
         ),
         '0.1.6 must reject an internally consistent unsplit chunk above max_chunk_chars'
+    );
+
+    $protectedText = str_repeat('A', 250);
+    $protectedInput = hub_test_voxcpm2_cluster_runner_input(
+        str_repeat('a', 64),
+        str_repeat('b', 64),
+        $protectedText,
+        'design'
+    );
+    $protectedMetadata = hub_test_voxcpm2_cluster_runner_metadata(
+        str_repeat('a', 64),
+        str_repeat('b', 64),
+        $protectedText,
+        'design'
+    );
+    hub_test_assert(
+        hub_voxcpm2_public_metadata_schema_valid(
+            $protectedMetadata,
+            $protectedInput,
+            $audioProbe
+        ),
+        '0.1.6 must accept the planner protected-string extension above max_chunk_chars'
+    );
+    $protectedAlternative = hub_test_voxcpm2_cluster_runner_rechunk(
+        $protectedMetadata,
+        [substr($protectedText, 0, 240), substr($protectedText, 240)],
+        [[
+            'action' => 'direct_concat',
+            'trim_frames' => 0,
+            'pause_frames' => 0,
+            'crossfade_frames' => 0,
+        ], [
+            'action' => 'crossfade',
+            'trim_frames' => 0,
+            'pause_frames' => 0,
+            'crossfade_frames' => 1920,
+        ]]
+    );
+    $protectedAlternativeProbe = [
+        'duration_seconds' => $protectedAlternative['final_format']['frames'] / 48000,
+        'sample_rate' => 48000,
+        'channels' => 1,
+        'frames' => $protectedAlternative['final_format']['frames'],
+    ];
+    hub_test_assert(
+        !hub_voxcpm2_public_metadata_schema_valid(
+            $protectedAlternative,
+            $protectedInput,
+            $protectedAlternativeProbe
+        ),
+        '0.1.6 must reject resegmentation of a canonical protected-string extension'
+    );
+
+    $probeMismatchMetadata = hub_test_voxcpm2_cluster_runner_metadata(
+        str_repeat('a', 64),
+        str_repeat('b', 64),
+        'Probe-bound target.',
+        'design'
+    );
+    $probeMismatchJson = json_encode(
+        $probeMismatchMetadata,
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+    );
+    [$probeMismatchTaskId, $probeMismatchArtifact] = $makeArtifact(
+        '0.1.6',
+        'probe-mismatch-metadata.json',
+        $probeMismatchJson,
+        hub_test_voxcpm2_cluster_runner_input(
+            str_repeat('a', 64),
+            str_repeat('b', 64),
+            'Probe-bound target.',
+            'design'
+        )
+    );
+    $probeWav = tempnam(sys_get_temp_dir(), 'voxcpm2-metadata-probe-');
+    if ($probeWav === false) {
+        throw new RuntimeException('Cannot create VoxCPM2 metadata probe fixture.');
+    }
+    $probeFrames = 24000;
+    $probePcm = str_repeat("\0\0", $probeFrames);
+    if (file_put_contents(
+        $probeWav,
+        'RIFF'
+            . pack('V', 36 + strlen($probePcm))
+            . 'WAVEfmt '
+            . pack('VvvVVvv', 16, 1, 1, 48000, 96000, 2, 16)
+            . 'data'
+            . pack('V', strlen($probePcm))
+            . $probePcm,
+        LOCK_EX
+    ) === false) {
+        unlink($probeWav);
+        throw new RuntimeException('Cannot write VoxCPM2 metadata probe fixture.');
+    }
+    $actualWavProbe = [];
+    $siblingWavProbe = null;
+    $probeMismatchRejected = null;
+    try {
+        $actualWavProbe = hub_pack_job_validate_audio_output($probeWav, ['audio' => []], null);
+        $siblingWavProbe = hub_voxcpm2_generated_audio_probe([[
+            'artifact_type' => 'generated_audio',
+            'metadata' => $actualWavProbe,
+        ]]);
+        hub_voxcpm2_public_metadata_artifact(
+            $db,
+            $probeMismatchTaskId,
+            $probeMismatchArtifact,
+            $siblingWavProbe
+        );
+    } catch (Throwable $error) {
+        $probeMismatchRejected = $error->getMessage();
+    } finally {
+        unlink($probeWav);
+    }
+    hub_test_assert(
+        ($actualWavProbe['sample_rate'] ?? null) === 48000
+        && ($actualWavProbe['channels'] ?? null) === 1
+        && ($actualWavProbe['frames'] ?? null) === $probeFrames
+        && $siblingWavProbe === $actualWavProbe
+        && $probeMismatchRejected === 'validated_artifact_invalid',
+        '0.1.6 metadata final frames must match the completed generated WAV probe'
+    );
+
+    $firstCanonicalText = str_repeat('A', 200) . '。';
+    $secondCanonicalText = str_repeat('B', 50) . '。';
+    $longText = $firstCanonicalText . $secondCanonicalText;
+    $longInput = hub_test_voxcpm2_cluster_runner_input(
+        str_repeat('a', 64),
+        str_repeat('b', 64),
+        $longText,
+        'design'
+    );
+    $direct = [
+        'action' => 'direct_concat',
+        'trim_frames' => 0,
+        'pause_frames' => 0,
+        'crossfade_frames' => 0,
+    ];
+    $canonicalBoundary = [
+        'action' => 'silence_insert',
+        'trim_frames' => 0,
+        'pause_frames' => 11040,
+        'crossfade_frames' => 0,
+    ];
+    $longMetadata = hub_test_voxcpm2_cluster_runner_rechunk(
+        hub_test_voxcpm2_cluster_runner_metadata(
+            str_repeat('a', 64),
+            str_repeat('b', 64),
+            $longText,
+            'design'
+        ),
+        [$firstCanonicalText, $secondCanonicalText],
+        [$direct, $canonicalBoundary]
+    );
+    $longProbe = [
+        'duration_seconds' => $longMetadata['final_format']['frames'] / 48000,
+        'sample_rate' => 48000,
+        'channels' => 1,
+        'frames' => $longMetadata['final_format']['frames'],
+    ];
+    hub_test_assert(
+        hub_voxcpm2_public_metadata_schema_valid($longMetadata, $longInput, $longProbe),
+        '0.1.6 must accept the unique semantic-v1 split and boundary plan'
+    );
+
+    $alternativeFirst = str_repeat('A', 180);
+    $alternativeChunks = hub_test_voxcpm2_cluster_runner_rechunk(
+        $longMetadata,
+        [$alternativeFirst, substr($longText, strlen($alternativeFirst))],
+        [$direct, [
+            'action' => 'crossfade',
+            'trim_frames' => 0,
+            'pause_frames' => 0,
+            'crossfade_frames' => 1920,
+        ]]
+    );
+    $alternativeChunksProbe = [
+        'duration_seconds' => $alternativeChunks['final_format']['frames'] / 48000,
+        'sample_rate' => 48000,
+        'channels' => 1,
+        'frames' => $alternativeChunks['final_format']['frames'],
+    ];
+    hub_test_assert(
+        !hub_voxcpm2_public_metadata_schema_valid(
+            $alternativeChunks,
+            $longInput,
+            $alternativeChunksProbe
+        ),
+        '0.1.6 must reject an internally consistent alternative semantic-v1 chunk split'
+    );
+
+    $alternativeBoundary = hub_test_voxcpm2_cluster_runner_rechunk(
+        $longMetadata,
+        [$firstCanonicalText, $secondCanonicalText],
+        [$direct, [
+            'action' => 'crossfade',
+            'trim_frames' => 0,
+            'pause_frames' => 0,
+            'crossfade_frames' => 1920,
+        ]]
+    );
+    $alternativeBoundaryProbe = [
+        'duration_seconds' => $alternativeBoundary['final_format']['frames'] / 48000,
+        'sample_rate' => 48000,
+        'channels' => 1,
+        'frames' => $alternativeBoundary['final_format']['frames'],
+    ];
+    hub_test_assert(
+        !hub_voxcpm2_public_metadata_schema_valid(
+            $alternativeBoundary,
+            $longInput,
+            $alternativeBoundaryProbe
+        ),
+        '0.1.6 must reject an internally consistent substituted boundary action and timeline'
     );
 });
 

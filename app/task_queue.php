@@ -2650,7 +2650,7 @@ function hub_pack_job_ffprobe(string $path): ?array
     }
     $output = [];
     $exitCode = 1;
-    exec('ffprobe -v error -show_entries format=duration:stream=codec_type,sample_rate,channels -of json ' . escapeshellarg($path) . ' 2>&1', $output, $exitCode);
+    exec('ffprobe -v error -show_entries format=duration:stream=codec_type,sample_rate,channels,duration_ts,time_base -of json ' . escapeshellarg($path) . ' 2>&1', $output, $exitCode);
     if ($exitCode !== 0) {
         return null;
     }
@@ -2670,11 +2670,20 @@ function hub_pack_job_ffprobe(string $path): ?array
         return null;
     }
 
-    return [
+    $metadata = [
         'duration_seconds' => $result['format']['duration'] ?? null,
         'sample_rate' => $stream['sample_rate'] ?? null,
         'channels' => $stream['channels'] ?? null,
     ];
+    $sampleRate = $stream['sample_rate'] ?? null;
+    $durationTs = $stream['duration_ts'] ?? null;
+    if (is_numeric($sampleRate)
+        && is_numeric($durationTs)
+        && ($stream['time_base'] ?? null) === '1/' . (int)$sampleRate) {
+        $metadata['frames'] = $durationTs;
+    }
+
+    return $metadata;
 }
 
 function hub_pack_job_validate_audio_output(string $path, array $definition, ?callable $audioProbe): array
@@ -2695,11 +2704,22 @@ function hub_pack_job_validate_audio_output(string $path, array $definition, ?ca
         hub_pack_job_output_contract_invalid('artifact_audio_invalid');
     }
 
-    return [
+    $metadata = [
         'duration_seconds' => (float)$duration,
         'sample_rate' => (int)$sampleRate,
         'channels' => (int)$channels,
     ];
+    if (is_array($result) && array_key_exists('frames', $result)) {
+        $frames = $result['frames'];
+        if (!is_numeric($frames)
+            || (float)$frames !== (float)(int)$frames
+            || (int)$frames < 1) {
+            hub_pack_job_output_contract_invalid('artifact_audio_invalid');
+        }
+        $metadata['frames'] = (int)$frames;
+    }
+
+    return $metadata;
 }
 
 function hub_pack_job_staged_source_audio_path(string $workspace): string
@@ -3570,6 +3590,174 @@ function hub_voxcpm2_metadata_normalized_input(mixed $value): ?string
     return $normalized !== '' ? $normalized : null;
 }
 
+function hub_voxcpm2_metadata_utf8_chars(string $value): ?array
+{
+    if (preg_match('//u', $value) !== 1) {
+        return null;
+    }
+    $chars = preg_split('//u', $value, -1, PREG_SPLIT_NO_EMPTY);
+
+    return is_array($chars) ? $chars : null;
+}
+
+function hub_voxcpm2_metadata_protected_break(array $chars, int $index): bool
+{
+    $left = implode('', array_slice($chars, 0, $index));
+    $right = implode('', array_slice($chars, $index));
+    if (preg_match('/(*UCP)(?:\d[\d,]*|\d+\.\d+)\z/u', $left) === 1
+        && preg_match('/(*UCP)\A(?:\d|\s*(?:rpm|mm|cm|ms|Hz|N·m)\b)/iu', $right) === 1) {
+        return true;
+    }
+    if (preg_match('/[A-Za-z0-9.·-]+\z/u', $left) === 1
+        && preg_match('/\A[A-Za-z0-9.·-]/u', $right) === 1) {
+        return true;
+    }
+
+    return preg_match(
+        '/(*UCP)(?:\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|vs|etc|e\.g|i\.e)|(?:[A-Za-z]\.){1,})\.\z/iu',
+        $left
+    ) === 1;
+}
+
+function hub_voxcpm2_metadata_hard_cut(array $chars, int $start, int $limit): ?int
+{
+    $length = count($chars);
+    $end = min($length, $start + $limit);
+    if (hub_voxcpm2_metadata_protected_break($chars, $end)) {
+        for ($offset = $end + 1; $offset <= min($length, $end + 32); $offset++) {
+            if (!hub_voxcpm2_metadata_protected_break($chars, $offset)) {
+                return $offset;
+            }
+        }
+    }
+    for ($offset = $end; $offset > $start; $offset--) {
+        if (preg_match('/(*UCP)\A\s\z/u', $chars[$offset - 1]) === 1
+            && !hub_voxcpm2_metadata_protected_break($chars, $offset)) {
+            return $offset;
+        }
+    }
+    for ($offset = $end; $offset > $start; $offset--) {
+        if (!hub_voxcpm2_metadata_protected_break($chars, $offset)) {
+            return $offset;
+        }
+    }
+
+    return null;
+}
+
+function hub_voxcpm2_metadata_split_semantic_v1(string $normalized, int $maxChars): ?array
+{
+    if ($maxChars < 42 || $maxChars > 4096) {
+        return null;
+    }
+    $chars = hub_voxcpm2_metadata_utf8_chars($normalized);
+    if ($chars === null || $chars === []) {
+        return null;
+    }
+    $open = '([{（［｛「『“‘';
+    $close = ')]}）］｝」』”’';
+    $breaks = '。！？!?；;，,:：';
+    $depth = 0;
+    $positions = [];
+    foreach ($chars as $offset => $char) {
+        if (str_contains($open, $char)) {
+            $depth++;
+            continue;
+        }
+        if (str_contains($close, $char)) {
+            $depth = max(0, $depth - 1);
+            continue;
+        }
+        if ($depth === 0
+            && str_contains($breaks, $char)
+            && !hub_voxcpm2_metadata_protected_break($chars, $offset + 1)) {
+            $positions[] = $offset + 1;
+        }
+    }
+
+    $chunks = [];
+    $length = count($chars);
+    $start = 0;
+    while ($start < $length) {
+        $end = min($length, $start + $maxChars);
+        if ($end === $length) {
+            $chunks[] = implode('', array_slice($chars, $start, $end - $start));
+            break;
+        }
+        $cut = null;
+        foreach ($positions as $position) {
+            if ($position > $start && $position <= $end) {
+                $cut = $position;
+            }
+        }
+        $cut ??= hub_voxcpm2_metadata_hard_cut($chars, $start, $maxChars);
+        if ($cut === null || $cut <= $start) {
+            return null;
+        }
+        $chunks[] = implode('', array_slice($chars, $start, $cut - $start));
+        $start = $cut;
+    }
+
+    return $chunks !== [] && implode('', $chunks) === $normalized ? $chunks : null;
+}
+
+function hub_voxcpm2_metadata_codepoint(string $char): ?int
+{
+    $bytes = array_values(unpack('C*', $char) ?: []);
+    return match (count($bytes)) {
+        1 => $bytes[0],
+        2 => (($bytes[0] & 0x1f) << 6) | ($bytes[1] & 0x3f),
+        3 => (($bytes[0] & 0x0f) << 12) | (($bytes[1] & 0x3f) << 6) | ($bytes[2] & 0x3f),
+        4 => (($bytes[0] & 0x07) << 18) | (($bytes[1] & 0x3f) << 12)
+            | (($bytes[2] & 0x3f) << 6) | ($bytes[3] & 0x3f),
+        default => null,
+    };
+}
+
+function hub_voxcpm2_metadata_boundary_plan(string $left, int $sampleRate): ?array
+{
+    $trimmed = preg_replace('/(*UCP)\s+\z/u', '', $left);
+    $chars = is_string($trimmed) ? hub_voxcpm2_metadata_utf8_chars($trimmed) : null;
+    $terminal = is_array($chars) && $chars !== [] ? $chars[array_key_last($chars)] : 'a';
+    $codepoint = hub_voxcpm2_metadata_codepoint($terminal);
+    if ($codepoint === null) {
+        return null;
+    }
+    if (str_contains('。！？!?；;', $terminal)) {
+        $pauseMs = min(420, max(90, 90 + ($codepoint % 4) * 70));
+        return [
+            'action' => 'silence_insert',
+            'pause_frames' => intdiv($sampleRate * $pauseMs, 1000),
+            'trim_frames' => 0,
+            'crossfade_frames' => 0,
+        ];
+    }
+    if (str_contains('，,:：', $terminal)) {
+        return [
+            'action' => 'trim_then_pause',
+            'pause_frames' => intdiv($sampleRate * 80, 1000),
+            'trim_frames' => min(intdiv($sampleRate, 200), intdiv($sampleRate, 100)),
+            'crossfade_frames' => 0,
+        ];
+    }
+    if (str_contains(')]}）］｝」』”’', $terminal)) {
+        return [
+            'action' => 'direct_concat',
+            'pause_frames' => 0,
+            'trim_frames' => 0,
+            'crossfade_frames' => 0,
+        ];
+    }
+    $crossfadeMs = 20 + ($codepoint % 3) * 10;
+
+    return [
+        'action' => 'crossfade',
+        'pause_frames' => 0,
+        'trim_frames' => 0,
+        'crossfade_frames' => intdiv($sampleRate * $crossfadeMs, 1000),
+    ];
+}
+
 function hub_voxcpm2_metadata_digest_valid(array $value, string $field): bool
 {
     $digest = $value[$field] ?? null;
@@ -3692,6 +3880,10 @@ function hub_voxcpm2_metadata_plan_chunks(mixed $plan, array $expected): ?array
         return null;
     }
 
+    $expectedTexts = hub_voxcpm2_metadata_split_semantic_v1($expected['normalized_input'], 240);
+    if ($expectedTexts === null || count($expectedTexts) !== count($plan['chunks'])) {
+        return null;
+    }
     $joined = '';
     foreach ($plan['chunks'] as $index => $chunk) {
         $chunkId = sprintf('chunk-%04d', $index + 1);
@@ -3703,9 +3895,10 @@ function hub_voxcpm2_metadata_plan_chunks(mixed $plan, array $expected): ?array
             ['id', 'text', 'text_sha256', 'seed', 'seed_sha256']
         )
             || ($chunk['id'] ?? null) !== $chunkId
+            || ($chunk['text'] ?? null) !== $expectedTexts[$index]
             || $textLength === null
             || $textLength < 1
-            || $textLength > 240
+            || $textLength > 272
             || !hub_voxcpm2_metadata_sha256($chunk['text_sha256'] ?? null)
             || !hash_equals(hash('sha256', $text), $chunk['text_sha256'])
             || $seed === null
@@ -3798,6 +3991,37 @@ function hub_voxcpm2_metadata_render_valid(array $metadata, array $planChunks): 
         $pause = $chunk['pause_frames'];
         $crossfade = $chunk['crossfade_frames'];
         $duration = $chunk['duration_frames'];
+        $expectedBoundary = $index === 0
+            ? [
+                'action' => 'direct_concat',
+                'pause_frames' => 0,
+                'trim_frames' => 0,
+                'crossfade_frames' => 0,
+            ]
+            : hub_voxcpm2_metadata_boundary_plan($planChunks[$index - 1]['text'], 48000);
+        if ($expectedBoundary === null) {
+            return false;
+        }
+        $crossfadeCount = $expectedBoundary['action'] === 'crossfade'
+            ? min($expectedBoundary['crossfade_frames'], $previousEnd, $duration)
+            : 0;
+        if ($expectedBoundary['action'] === 'crossfade' && $crossfadeCount < 480) {
+            $expectedBoundary = [
+                'action' => 'direct_concat',
+                'pause_frames' => 0,
+                'trim_frames' => 0,
+                'crossfade_frames' => 0,
+            ];
+            $crossfadeCount = 0;
+        }
+        if (!hub_voxcpm2_metadata_exact_value([
+            'action' => $chunk['action'],
+            'pause_frames' => $pause,
+            'trim_frames' => $trim,
+            'crossfade_frames' => $crossfade,
+        ], $expectedBoundary)) {
+            return false;
+        }
         $expectedStart = $previousEnd;
         $renderedDuration = $duration;
         if ($index === 0) {
@@ -3810,15 +4034,15 @@ function hub_voxcpm2_metadata_render_valid(array $metadata, array $planChunks): 
             }
             $expectedStart += $pause;
         } elseif ($chunk['action'] === 'crossfade') {
-            if ($trim !== 0 || $pause !== 0 || $crossfade < 1 || $crossfade >= $duration) {
+            if ($trim !== 0 || $pause !== 0 || $crossfade < 1) {
                 return false;
             }
-            $renderedDuration -= $crossfade;
+            $renderedDuration -= $crossfadeCount;
         } elseif ($chunk['action'] === 'trim_then_pause') {
-            if ($trim < 1 || $trim > $previousEnd || $pause < 1 || $crossfade !== 0) {
+            if ($trim < 1 || $pause < 1 || $crossfade !== 0) {
                 return false;
             }
-            $expectedStart += $pause - $trim;
+            $expectedStart += $pause - min($trim, $previousEnd);
         } elseif ($trim !== 0 || $pause !== 0 || $crossfade !== 0) {
             return false;
         }
@@ -3850,7 +4074,41 @@ function hub_voxcpm2_metadata_render_valid(array $metadata, array $planChunks): 
         && (float)$metadata['loudness']['gain'] <= 2;
 }
 
-function hub_voxcpm2_public_metadata_schema_valid(array $metadata, array $taskInput): bool
+function hub_voxcpm2_metadata_audio_probe_valid(array $metadata, ?array $audioProbe): bool
+{
+    if ($audioProbe === null || array_is_list($audioProbe)) {
+        return false;
+    }
+    $duration = $audioProbe['duration_seconds'] ?? null;
+    $sampleRate = $audioProbe['sample_rate'] ?? null;
+    $channels = $audioProbe['channels'] ?? null;
+    if ((!is_int($duration) && !is_float($duration))
+        || (float)$duration <= 0
+        || !is_int($sampleRate)
+        || $sampleRate <= 0
+        || !is_int($channels)
+        || $channels <= 0) {
+        return false;
+    }
+    $frames = $audioProbe['frames'] ?? (int)round((float)$duration * $sampleRate);
+    if (!is_int($frames)
+        || $frames < 1
+        || abs((float)$duration - ($frames / $sampleRate)) > (1 / $sampleRate) + 1.0e-9) {
+        return false;
+    }
+    $format = $metadata['final_format'] ?? null;
+
+    return is_array($format)
+        && ($format['sample_rate'] ?? null) === $sampleRate
+        && ($format['channels'] ?? null) === $channels
+        && ($format['frames'] ?? null) === $frames;
+}
+
+function hub_voxcpm2_public_metadata_schema_valid(
+    array $metadata,
+    array $taskInput,
+    ?array $audioProbe = null,
+): bool
 {
     if (!hub_voxcpm2_metadata_exact_keys($metadata, [
         'normalized_input',
@@ -3894,7 +4152,8 @@ function hub_voxcpm2_public_metadata_schema_valid(array $metadata, array $taskIn
         ) && !hub_voxcpm2_metadata_exact_value(
             $metadata['device'] ?? null,
             ['type' => 'cuda', 'real_inference' => true]
-        ))) {
+        ))
+        || !hub_voxcpm2_metadata_audio_probe_valid($metadata, $audioProbe)) {
         return false;
     }
     $planChunks = hub_voxcpm2_metadata_plan_chunks($metadata['plan'] ?? null, $expected);
@@ -3902,7 +4161,12 @@ function hub_voxcpm2_public_metadata_schema_valid(array $metadata, array $taskIn
     return $planChunks !== null && hub_voxcpm2_metadata_render_valid($metadata, $planChunks);
 }
 
-function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artifact): array
+function hub_voxcpm2_public_metadata_artifact(
+    PDO $db,
+    int $taskId,
+    array $artifact,
+    ?array $audioProbe = null,
+): array
 {
     if (($artifact['artifact_type'] ?? null) !== 'synthesis_metadata') {
         return $artifact;
@@ -3954,7 +4218,7 @@ function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artif
         }
         if (!is_array($taskInput)
             || array_is_list($taskInput)
-            || !hub_voxcpm2_public_metadata_schema_valid($metadata, $taskInput)) {
+            || !hub_voxcpm2_public_metadata_schema_valid($metadata, $taskInput, $audioProbe)) {
             throw new InvalidArgumentException('validated_artifact_invalid');
         }
 
@@ -4027,9 +4291,30 @@ function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artif
     return $artifact;
 }
 
-function hub_register_validated_pack_job_artifact(PDO $db, int $taskId, array $artifact): int
+function hub_voxcpm2_generated_audio_probe(array $artifacts): ?array
 {
-    $artifact = hub_voxcpm2_public_metadata_artifact($db, $taskId, $artifact);
+    $probe = null;
+    foreach ($artifacts as $artifact) {
+        if (($artifact['artifact_type'] ?? null) !== 'generated_audio') {
+            continue;
+        }
+        if ($probe !== null || !is_array($artifact['metadata'] ?? null)) {
+            return null;
+        }
+        $probe = $artifact['metadata'];
+    }
+
+    return $probe;
+}
+
+function hub_register_validated_pack_job_artifact(
+    PDO $db,
+    int $taskId,
+    array $artifact,
+    ?array $audioProbe = null,
+): int
+{
+    $artifact = hub_voxcpm2_public_metadata_artifact($db, $taskId, $artifact, $audioProbe);
     $metadata = json_encode($artifact['metadata'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     if (!is_string($artifact['name'] ?? null) || !is_string($artifact['artifact_type'] ?? null) || !is_string($artifact['path'] ?? null)
         || !is_string($artifact['mime_type'] ?? null) || !is_string($artifact['sha256'] ?? null) || $metadata === false
@@ -4097,8 +4382,14 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
 
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
     }
+    $audioProbe = hub_voxcpm2_generated_audio_probe($publishedArtifacts);
     foreach ($publishedArtifacts as $index => $artifact) {
-        $publishedArtifacts[$index] = hub_voxcpm2_public_metadata_artifact($db, $taskId, $artifact);
+        $publishedArtifacts[$index] = hub_voxcpm2_public_metadata_artifact(
+            $db,
+            $taskId,
+            $artifact,
+            $audioProbe
+        );
     }
     try {
         hub_revalidate_published_pack_job_artifacts($taskId, $publishedArtifacts);
@@ -4117,7 +4408,12 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
         $resultArtifacts = [];
         foreach ($publishedArtifacts as $artifact) {
             $resultArtifacts[] = [
-                'id' => hub_register_validated_pack_job_artifact($db, $taskId, $artifact),
+                'id' => hub_register_validated_pack_job_artifact(
+                    $db,
+                    $taskId,
+                    $artifact,
+                    $audioProbe
+                ),
                 'type' => $artifact['artifact_type'] ?? null,
                 'mime_type' => $artifact['mime_type'] ?? null,
                 'size_bytes' => $artifact['size_bytes'] ?? null,
