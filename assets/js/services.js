@@ -25,6 +25,7 @@
             service_restart: t('action_service_restart', '重啟服務'),
             service_build: t('action_service_build', '建置服務'),
             service_rebuild: t('action_service_rebuild', '重新建置'),
+            service_remove: t('action_service_remove', '移除服務'),
             service_health_check: t('action_service_health_check', '健康檢查'),
             service_install: t('action_service_install', '安裝服務')
         };
@@ -327,6 +328,10 @@
                 showMessage(jobFailureMessage(job.status), true);
                 return;
             }
+            if (job.action === 'service_remove') {
+                scheduleReload($box);
+                return;
+            }
             if (!triggerServiceRefresh(job)) {
                 scheduleReload($box);
             }
@@ -449,6 +454,9 @@
 
         var $form = $(this);
         var action = $form.data('action') || $form.find('button[name="action"]').first().val();
+        if (action === 'remove' && !window.confirm(t('remove_confirm', '確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。'))) {
+            return;
+        }
         submitServiceAction($form, action, false);
     });
 

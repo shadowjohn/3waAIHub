@@ -294,11 +294,6 @@ hub_admin_header('服務管理', $user);
                     <a class="button" href="playground.php?mode=<?= urlencode((string)$service['mode']) ?>">到 API 測試場</a>
                     <button type="button" data-copy-target="service-api-url-<?= $serviceId ?>">複製 API URL</button>
                 </div>
-                <details>
-                    <summary>進階操作</summary>
-                    <p class="muted">舊版 IP 白名單已由 API 會員與 Token 權限取代，僅保留相容用途。</p>
-                    <a class="button" href="service_whitelist.php?service_id=<?= $serviceId ?>">舊版 IP 白名單</a>
-                </details>
                 <div class="service-job" data-service-id="<?= $serviceId ?>" data-job-id="<?= $activeJob ? (int)$activeJob['id'] : '' ?>"<?= $activeJob ? '' : ' style="display:none"' ?>>
                     <div class="job-progress"><span style="width: <?= $activeJob ? (int)$activeJob['progress'] : 0 ?>%"></span></div>
                     <div class="muted job-meta">

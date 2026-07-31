@@ -109,6 +109,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'stop' => 'service_stop',
             'restart' => 'service_restart',
             'rebuild' => 'service_rebuild',
+            'remove' => 'service_remove',
             'refresh' => 'service_health_check',
         ];
         $serviceIdValue = (string)($_POST['service_id'] ?? '');
@@ -122,27 +123,59 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
         } else {
             $queueAction = $actionMap[$action];
-            $jobId = hub_enqueue_command_job(
-                $db,
-                $queueAction,
-                (int)$service['id'],
-                ['reason' => 'admin_click'],
-                (int)$user['id'],
-                $_SERVER['REMOTE_ADDR'] ?? null
-            );
-            $message = __('已排入背景工作 #') . $jobId . __('，請等待 command worker 執行。');
-            if ($isAjax) {
-                $job = hub_command_job_status_payload($db, $jobId);
-                if ($job === null) {
-                    hub_marketplace_json(500, ['ok' => false, 'error' => __('無法讀取背景工作狀態。')]);
+            $removalError = __('服務尚未停止或仍有背景工作，暫時無法移除。');
+            try {
+                $removalBlocked = $action === 'remove' && hub_service_removal_block_reason($db, $service) !== null;
+                if ($removalBlocked) {
+                    $error = $removalError;
+                    if ($isAjax) {
+                        hub_marketplace_json(409, ['ok' => false, 'error' => $error]);
+                    }
+                } else {
+                    $jobId = hub_enqueue_command_job(
+                        $db,
+                        $queueAction,
+                        (int)$service['id'],
+                        ['reason' => 'admin_click'],
+                        (int)$user['id'],
+                        $_SERVER['REMOTE_ADDR'] ?? null
+                    );
+                    $message = __('已排入背景工作 #') . $jobId . __('，請等待 command worker 執行。');
+                    if ($isAjax) {
+                        $job = hub_command_job_status_payload($db, $jobId);
+                        if ($job === null) {
+                            hub_marketplace_json(500, ['ok' => false, 'error' => __('無法讀取背景工作狀態。')]);
+                        }
+                        $job['action_label'] = __(hub_command_action_label((string)$job['action']));
+                        $job['status_label'] = __(hub_command_status_label((string)$job['status']));
+                        hub_marketplace_json(200, [
+                            'ok' => true,
+                            'message' => $message,
+                            'job' => $job,
+                        ]);
+                    }
                 }
-                $job['action_label'] = __(hub_command_action_label((string)$job['action']));
-                $job['status_label'] = __(hub_command_status_label((string)$job['status']));
-                hub_marketplace_json(200, [
-                    'ok' => true,
-                    'message' => $message,
-                    'job' => $job,
-                ]);
+            } catch (PDOException) {
+                $error = __('服務操作暫時無法處理，請稍後再試。');
+                if ($isAjax) {
+                    hub_marketplace_json(503, ['ok' => false, 'error' => $error]);
+                }
+            } catch (RuntimeException $e) {
+                $queueAdmissionConflict = in_array($e->getMessage(), [
+                    'Cannot enqueue service removal while another service command is active.',
+                    'Cannot enqueue a service command while removal is active.',
+                ], true);
+                $error = $queueAdmissionConflict
+                    ? ($action === 'remove' ? $removalError : __('服務操作與背景工作衝突，請稍後再試。'))
+                    : __('無法排入背景工作，請重新整理後再試。');
+                if ($isAjax) {
+                    hub_marketplace_json($queueAdmissionConflict ? 409 : 500, ['ok' => false, 'error' => $error]);
+                }
+            } catch (Throwable) {
+                $error = __('無法排入背景工作，請重新整理後再試。');
+                if ($isAjax) {
+                    hub_marketplace_json(500, ['ok' => false, 'error' => $error]);
+                }
             }
         }
     } else {
@@ -206,8 +239,10 @@ $dictionary = [
     'action_service_restart' => __('重啟服務'),
     'action_service_build' => __('建置服務'),
     'action_service_rebuild' => __('重新建置'),
+    'action_service_remove' => __('移除服務'),
     'action_service_health_check' => __('健康檢查'),
     'action_service_install' => __('安裝服務'),
+    'remove_confirm' => __('確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。'),
     'job_status_queued' => __('排隊中'),
     'job_status_running' => __('執行中'),
     'job_status_success' => __('成功'),
@@ -529,6 +564,7 @@ hub_admin_header(__('HubPack 套件'), $user);
                     <?php
                     $serviceId = (int)$service['id'];
                     $activeJob = $activeJobsByService[$serviceId] ?? null;
+                    $serviceHasActiveJob = $activeJob !== null || hub_service_has_active_command_job($db, $serviceId);
                     $lastJob = $lastJobsByService[$serviceId] ?? null;
                     $healthJob = $lastHealthJobsByService[$serviceId] ?? null;
                     $actualState = (string)($service['runtime_status'] ?? $service['status'] ?? 'stopped');
@@ -600,12 +636,19 @@ hub_admin_header(__('HubPack 套件'), $user);
                             <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
                             <input type="hidden" name="service_id" value="<?= $serviceId ?>">
                             <div class="service-operations">
-                                <button class="primary" name="action" value="start" type="submit"><?= hub_h(__('啟動')) ?></button>
-                                <button class="danger" name="action" value="stop" type="submit"><?= hub_h(__('停止')) ?></button>
+                                <?php if ($actualState !== 'running'): ?>
+                                    <button class="primary" name="action" value="start" type="submit"><?= hub_h(__('啟動')) ?></button>
+                                <?php endif; ?>
+                                <?php if ($actualState !== 'stopped'): ?>
+                                    <button class="danger" name="action" value="stop" type="submit"><?= hub_h(__('停止')) ?></button>
+                                <?php endif; ?>
                                 <button name="action" value="restart" type="submit"><?= hub_h(__('重啟')) ?></button>
                                 <button name="action" value="build" type="submit"><?= hub_h(__('建置')) ?></button>
                                 <button name="action" value="rebuild" type="submit"><?= hub_h(__('重新建置')) ?></button>
                                 <button name="action" value="refresh" type="submit"><?= hub_h(__('健康檢查')) ?></button>
+                                <?php if ($actualState === 'stopped' && !$serviceHasActiveJob): ?>
+                                    <button class="danger" name="action" value="remove" type="submit"><?= hub_h(__('移除')) ?></button>
+                                <?php endif; ?>
                             </div>
                         </form>
 
@@ -669,10 +712,6 @@ hub_admin_header(__('HubPack 套件'), $user);
                                     <?php else: ?>
                                         <?= hub_h(__('尚無背景工作')) ?>
                                     <?php endif; ?>
-                                </dd>
-                                <dt><?= hub_h(__('相容工具')) ?></dt>
-                                <dd>
-                                    <a class="button" href="service_whitelist.php?service_id=<?= $serviceId ?>"><?= hub_h(__('舊版 IP 白名單')) ?></a>
                                 </dd>
                             </dl>
                         </details>

@@ -165,8 +165,6 @@ hub_test('canonical installed services keeps operations links polling and collap
     foreach ([
         'data-market-view="services"',
         'service-action-form',
-        'value="start"',
-        'value="stop"',
         'value="restart"',
         'value="build"',
         'value="rebuild"',
@@ -195,20 +193,73 @@ hub_test('canonical installed services keeps operations links polling and collap
     }
 });
 
-hub_test('canonical service POST only queues the mapped command job', function (): void {
+hub_test('canonical installed services only show state-safe start stop and remove actions', function (): void {
+    $serviceCard = static function (string $html, int $serviceId): string {
+        $matched = preg_match(
+            '~<article\\b(?=[^>]*\\bdata-service-row-id="' . $serviceId . '"[^>]*).*?</article>~s',
+            $html,
+            $match
+        );
+        hub_test_assert($matched === 1, 'service card must render for service ' . $serviceId);
+
+        return $match[0];
+    };
+
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
     hub_test_assert($service !== null, 'hello service missing');
-    $status = (string)$service['status'];
+    $serviceId = (int)$service['id'];
 
+    hub_update_service_status($db, $serviceId, 'stopped');
+    $stopped = hub_test_admin_market_request(['view' => 'services']);
+    hub_test_assert($stopped['exit_code'] === 0, 'stopped services render failed: ' . $stopped['output']);
+    $stoppedCard = $serviceCard($stopped['stdout'], $serviceId);
+    hub_test_assert(str_contains($stoppedCard, 'value="start"'), 'stopped service must show start');
+    hub_test_assert(!str_contains($stoppedCard, 'value="stop"'), 'stopped service must hide stop');
+    hub_test_assert(
+        str_contains($stoppedCard, 'class="danger" name="action" value="remove"'),
+        'stopped idle service must show the danger removal action'
+    );
+
+    hub_update_service_status($db, $serviceId, 'running');
+    $running = hub_test_admin_market_request(['view' => 'services']);
+    hub_test_assert($running['exit_code'] === 0, 'running services render failed: ' . $running['output']);
+    $runningCard = $serviceCard($running['stdout'], $serviceId);
+    hub_test_assert(!str_contains($runningCard, 'value="start"'), 'running service must hide start');
+    hub_test_assert(str_contains($runningCard, 'value="stop"'), 'running service must show stop');
+    hub_test_assert(!str_contains($runningCard, 'value="remove"'), 'running service must hide removal');
+
+    hub_update_service_status($db, $serviceId, 'stopped');
+    hub_enqueue_command_job($db, 'service_start', $serviceId, [], null, '127.0.0.1');
+    for ($i = 0; $i < 50; $i++) {
+        $jobId = hub_enqueue_command_job($db, 'env_probe', null, [], null, '127.0.0.1');
+        $db->prepare("UPDATE command_jobs SET status = 'success' WHERE id = :id")->execute([':id' => $jobId]);
+    }
+    $busy = hub_test_admin_market_request(['view' => 'services']);
+    hub_test_assert($busy['exit_code'] === 0, 'busy services render failed: ' . $busy['output']);
+    hub_test_assert(
+        !str_contains($serviceCard($busy['stdout'], $serviceId), 'value="remove"'),
+        'service with an active background command must hide removal'
+    );
+});
+
+hub_test('canonical service POST only queues the mapped command job', function (): void {
     foreach ([
         'build' => 'service_build',
         'start' => 'service_start',
         'stop' => 'service_stop',
         'restart' => 'service_restart',
         'rebuild' => 'service_rebuild',
+        'remove' => 'service_remove',
         'refresh' => 'service_health_check',
     ] as $action => $queueAction) {
+        $db = hub_test_reset_db();
+        $service = hub_get_service_by_mode($db, 'hello');
+        hub_test_assert($service !== null, 'hello service missing');
+        $status = (string)$service['status'];
+        if ($action === 'remove') {
+            hub_update_service_status($db, (int)$service['id'], 'stopped');
+        }
         $result = hub_test_admin_market_request(['view' => 'services'], [
             'csrf_token' => 'test',
             'service_id' => (string)$service['id'],
@@ -231,8 +282,91 @@ hub_test('canonical service POST only queues the mapped command job', function (
         foreach (['id', 'status', 'runtime_status', 'enabled', 'restart_required'] as $key) {
             hub_test_assert(array_key_exists($key, $payload['job']['service'] ?? []), 'service AJAX nested state missing ' . $key);
         }
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn() === 1, 'service POST must create one mapped job');
     }
-    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn() === 6, 'service POST must create one job per action');
+});
+
+hub_test('canonical service removal returns a localized busy conflict without queueing', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $serviceId = (int)$service['id'];
+    hub_update_service_status($db, $serviceId, 'stopped');
+    hub_enqueue_command_job($db, 'service_start', $serviceId, [], null, '127.0.0.1');
+
+    $result = hub_test_admin_market_request(['view' => 'services'], [
+        'csrf_token' => 'test',
+        'service_id' => (string)$serviceId,
+        'action' => 'remove',
+    ], true, true);
+    $payload = json_decode($result['stdout'], true);
+
+    hub_test_assert($result['exit_code'] === 0 && is_array($payload), 'busy removal must return JSON');
+    hub_test_assert($result['http_status'] === 409, 'busy removal must return HTTP 409');
+    hub_test_assert(
+        ($payload['ok'] ?? true) === false
+            && ($payload['error'] ?? '') === '服務尚未停止或仍有背景工作，暫時無法移除。',
+        'busy removal must return the safe localized error'
+    );
+    hub_test_assert(!str_contains($result['stdout'], 'Cannot enqueue'), 'busy removal must not expose queue exception text');
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn() === 1, 'busy removal must not add a command job');
+});
+
+hub_test('canonical service removal rejects a running service before queue admission', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $serviceId = (int)$service['id'];
+    hub_update_service_status($db, $serviceId, 'running');
+
+    $result = hub_test_admin_market_request(['view' => 'services'], [
+        'csrf_token' => 'test',
+        'service_id' => (string)$serviceId,
+        'action' => 'remove',
+    ], true, true);
+    $payload = json_decode($result['stdout'], true);
+
+    hub_test_assert($result['exit_code'] === 0 && is_array($payload), 'running removal must return JSON');
+    hub_test_assert($result['http_status'] === 409, 'running removal must return HTTP 409');
+    hub_test_assert(
+        ($payload['ok'] ?? true) === false
+            && ($payload['error'] ?? '') === '服務尚未停止或仍有背景工作，暫時無法移除。',
+        'running removal must return the safe localized error'
+    );
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn() === 0, 'running removal must not add a command job');
+});
+
+hub_test('canonical service removal client and legacy whitelist contracts are explicit', function (): void {
+    $marketplace = (string)file_get_contents(HUB_ROOT . '/admin/marketplace.php');
+    $services = (string)file_get_contents(HUB_ROOT . '/admin/services.php');
+    $servicesJs = (string)file_get_contents(HUB_ROOT . '/assets/js/services.js');
+
+    foreach ([
+        "'remove' => 'service_remove'",
+        "'action_service_remove' => __('移除服務')",
+        "'remove_confirm' => __('確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。')",
+        'hub_service_removal_block_reason($db, $service)',
+    ] as $needle) {
+        hub_test_assert(str_contains($marketplace, $needle), 'canonical removal contract missing ' . $needle);
+    }
+    foreach ([
+        "service_remove: t('action_service_remove', '移除服務')",
+        "action === 'remove' && !window.confirm(t('remove_confirm'",
+        "job.action === 'service_remove'",
+        'scheduleReload($box);',
+    ] as $needle) {
+        hub_test_assert(str_contains($servicesJs, $needle), 'service removal client contract missing ' . $needle);
+    }
+    $pdoExceptionCatch = strpos($marketplace, 'catch (PDOException)');
+    $runtimeExceptionCatch = strpos($marketplace, 'catch (RuntimeException $e)');
+    hub_test_assert(
+        $pdoExceptionCatch !== false && $runtimeExceptionCatch !== false && $pdoExceptionCatch < $runtimeExceptionCatch,
+        'PDOException must be handled before RuntimeException so database failures never become conflicts'
+    );
+    foreach ([$marketplace, $services] as $page) {
+        hub_test_assert(!str_contains($page, 'service_whitelist.php?service_id='), 'retired whitelist link must stay off service pages');
+        hub_test_assert(!str_contains($page, '舊版 IP 白名單'), 'retired whitelist label must stay off service pages');
+    }
 });
 
 hub_test('canonical service POST rejects unknown actions non-integer services and bad CSRF', function (): void {

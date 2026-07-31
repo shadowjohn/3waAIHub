@@ -32,9 +32,8 @@ hub_test('PhaseUI-4 services management card UI contract is present', function (
         hub_test_assert(str_contains($page, $label), 'truthful status label missing ' . $label);
     }
     hub_test_assert(str_contains($page, '容器：'), 'top status must say it is container state');
-    hub_test_assert(str_contains($page, '舊版 IP 白名單'), 'legacy whitelist link missing');
-    hub_test_assert(str_contains($page, '僅保留相容用途'), 'legacy whitelist warning missing');
-    hub_test_assert(!str_contains($page, '>Whitelist<'), 'Whitelist must not be a primary action label');
+    hub_test_assert(!str_contains($page, 'service_whitelist.php?service_id='), 'retired whitelist link must stay off the legacy debug page');
+    hub_test_assert(!str_contains($page, '舊版 IP 白名單'), 'retired whitelist label must stay off the legacy debug page');
     hub_test_assert(str_contains($page, 'playground.php?mode='), 'playground mode link missing');
     hub_test_assert(str_contains($page, 'api.php?mode='), 'API mode URL missing');
     foreach (['service_key', 'pack_id', 'mode', 'runtime_level', 'endpoint', 'execution_type'] as $technical) {
@@ -57,7 +56,7 @@ hub_test('PhaseUI-4 services management card UI contract is present', function (
     ob_start();
     require HUB_ROOT . '/admin/services.php';
     $html = (string)ob_get_clean();
-    foreach (['全部服務', 'service-card', 'hello-main', 'playground.php?mode=hello', '舊版 IP 白名單', '健康異常', '容器執行中', '最後工作', '失敗'] as $needle) {
+    foreach (['全部服務', 'service-card', 'hello-main', 'playground.php?mode=hello', '健康異常', '容器執行中', '最後工作', '失敗'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered services page missing ' . $needle);
     }
 });
