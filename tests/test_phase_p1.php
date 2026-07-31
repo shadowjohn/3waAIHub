@@ -129,3 +129,14 @@ hub_test('Windows direct service status stop restart and logs reject before Dock
         hub_test_assert($result['error_code'] === 'platform_target_unsupported', 'unsupported direct service action error code mismatch');
     }
 });
+
+hub_test('PhaseP-1 service removal action and active-job guard are explicit', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    hub_test_assert(hub_is_valid_job_action('service_remove'), 'service_remove must be allowlisted');
+    hub_test_assert(hub_service_has_active_command_job($db, (int)$service['id']) === false, 'fresh service must be idle');
+    $jobId = hub_enqueue_command_job($db, 'service_start', (int)$service['id'], [], null, '127.0.0.1');
+    hub_test_assert(hub_service_has_active_command_job($db, (int)$service['id']) === true, 'queued command must make service busy');
+    hub_test_assert(hub_service_has_active_command_job($db, (int)$service['id'], $jobId) === false, 'current removal job must be excludable from its own busy check');
+});

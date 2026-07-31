@@ -10,6 +10,7 @@ function hub_allowed_job_actions(): array
         'service_build',
         'service_install',
         'service_rebuild',
+        'service_remove',
         'service_logs_collect',
         'service_health_check',
         'benchmark_run',
@@ -56,6 +57,7 @@ function hub_command_action_label(string $action): string
         'service_restart' => '重啟服務',
         'service_build' => '建置服務',
         'service_rebuild' => '重新建置',
+        'service_remove' => '移除服務',
         'service_health_check' => '健康檢查',
         'benchmark_run' => 'Benchmark 測試',
         'ollama_model_pull' => 'Ollama 模型拉取',
@@ -108,6 +110,22 @@ function hub_get_command_job(PDO $db, int $id): ?array
     $job = $stmt->fetch();
 
     return $job ?: null;
+}
+
+function hub_service_has_active_command_job(PDO $db, int $serviceId, ?int $excludingJobId = null): bool
+{
+    $sql = "SELECT 1 FROM command_jobs
+            WHERE service_id = :service_id
+              AND status IN ('queued', 'running')";
+    $params = [':service_id' => $serviceId];
+    if ($excludingJobId !== null) {
+        $sql .= ' AND id != :excluding_job_id';
+        $params[':excluding_job_id'] = $excludingJobId;
+    }
+    $sql .= ' LIMIT 1';
+    $stmt = $db->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchColumn() !== false;
 }
 
 function hub_list_command_jobs(PDO $db, int $limit = 20): array
