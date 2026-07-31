@@ -3527,6 +3527,87 @@ hub_test('VoxCPM2 Ultimate Clone canonicalizes successful native profile tasks i
     });
 });
 
+hub_test('VoxCPM2 async clone admission distinguishes unavailable profiles from foreign or unknown references', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $owner = hub_create_api_member($db, 'Unavailable Clone Owner');
+        $other = hub_create_api_member($db, 'Unavailable Clone Other');
+        $ownerToken = hub_create_api_token($db, $owner, 'unavailable clone owner', null, null);
+        $otherToken = hub_create_api_token($db, $other, 'unavailable clone other', null, null);
+        hub_test_audio_allow($db, [$ownerToken, $otherToken], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $makeProfile = static function (string $name) use ($db, $owner, $ownerToken): array {
+            $path = hub_voice_profile_storage_dir() . '/' . $name . '.wav';
+            file_put_contents($path, 'RIFF' . $name, LOCK_EX);
+            $prompt = 'Confirmed ' . $name . ' transcript';
+            $profileId = hub_create_voice_profile($db, $owner, [
+                'name' => $name,
+                'reference_audio_path' => $path,
+                'prompt_text' => $prompt,
+                'consent_type' => 'self_recorded',
+                'usage_scope' => 'private',
+            ]);
+            hub_confirm_voice_profile_prompt($db, $profileId, $owner, $prompt);
+            $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '203.0.113.51', [
+                'owner_member_id' => $owner,
+                'owner_token_id' => (int)$ownerToken['token_id'],
+                'requested_mode' => 'voice_generate',
+            ]);
+            $db->prepare("UPDATE tasks SET status = 'success', finished_at = :now, updated_at = :now WHERE id = :id")
+                ->execute([':now' => hub_now(), ':id' => $taskId]);
+            $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')
+                ->execute([':task_id' => $taskId, ':id' => $profileId]);
+
+            return ['profile_id' => $profileId, 'task_id' => $taskId];
+        };
+
+        $deleted = $makeProfile('deleted_async_clone');
+        hub_soft_delete_voice_profile($db, $deleted['profile_id'], $owner);
+        $expired = $makeProfile('expired_async_clone');
+        $db->prepare("UPDATE voice_profiles SET expires_at = '2000-01-01 00:00:00' WHERE id = :id")
+            ->execute([':id' => $expired['profile_id']]);
+
+        foreach ([
+            ['clone', 'voice_profile_task_id', $deleted['task_id']],
+            ['ultimate_clone', 'voice_profile_id', $deleted['profile_id']],
+            ['ultimate_clone', 'voice_profile_task_id', $expired['task_id']],
+            ['clone', 'voice_profile_id', $expired['profile_id']],
+        ] as [$mode, $field, $value]) {
+            $response = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], [
+                'text' => 'Unavailable profile admission',
+                'mode' => $mode,
+                $field => (string)$value,
+            ]);
+            hub_test_assert(
+                $response['status'] === 410
+                && (hub_test_audio_payload($response)['error'] ?? '') === 'voice_profile_unavailable',
+                'owned deleted or expired ' . $field . ' must return voice_profile_unavailable for ' . $mode
+            );
+        }
+
+        foreach ([
+            [(string)$otherToken['plain_token'], 'voice_profile_task_id', $deleted['task_id']],
+            [(string)$otherToken['plain_token'], 'voice_profile_id', $deleted['profile_id']],
+            [(string)$ownerToken['plain_token'], 'voice_profile_task_id', '999999999999999999'],
+            [(string)$ownerToken['plain_token'], 'voice_profile_id', '2147483647'],
+        ] as [$token, $field, $value]) {
+            $response = hub_test_audio_request($db, 'voice_generate', $token, [
+                'text' => 'Non-enumerating profile admission',
+                'mode' => 'clone',
+                $field => (string)$value,
+            ]);
+            hub_test_assert(
+                $response['status'] === 403
+                && (hub_test_audio_payload($response)['error'] ?? '') === 'voice_profile_forbidden',
+                'foreign and unknown ' . $field . ' references must remain non-enumerating'
+            );
+        }
+    });
+});
+
 hub_test('VoxCPM2 executes immutable 0.1.4 and 0.1.5 queued tasks after the 0.1.6 Pack bump', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();

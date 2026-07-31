@@ -2376,7 +2376,7 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
         'profile_name' => static fn (mixed $value): bool => is_string($value) && strlen($value) <= 120 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1,
         'language' => static fn (mixed $value): bool => $value === null || (is_string($value) && strlen($value) <= 64 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1),
         'consent_type' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A[a-z_]{1,32}\z/', $value) === 1,
-        'reference_audio_sha256' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A[a-f0-9]{64}\z/', $value) === 1,
+        'reference_audio_sha256' => static fn (mixed $value): bool => is_string($value) && ($value === '' || preg_match('/\A[a-f0-9]{64}\z/', $value) === 1),
         'created_at' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $value) === 1,
         'updated_at' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $value) === 1,
     ];
@@ -2396,7 +2396,8 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
         $safe[$key] = $payload[$key];
     }
     if ($safe['profile_status'] === 'active'
-        && (($safe['transcription_status'] === 'failed') !== is_string($safe['transcription_error']))
+        && ($safe['reference_audio_sha256'] === ''
+            || (($safe['transcription_status'] === 'failed') !== is_string($safe['transcription_error'])))
     ) {
         throw new UnexpectedValueException('invalid voice profile response');
     }

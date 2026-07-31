@@ -1349,6 +1349,9 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         if ($e->getMessage() === 'voice_profile_forbidden') {
             return hub_gateway_error(403, 'voice_profile_forbidden', 'voice profile is not available for this member');
         }
+        if ($e->getMessage() === 'voice_profile_unavailable') {
+            return hub_gateway_error(410, 'voice_profile_unavailable', 'voice profile is unavailable');
+        }
         if ($e->getMessage() === 'voice_profile_transcript_unconfirmed') {
             return hub_gateway_error(409, 'voice_profile_transcript_unconfirmed', 'Ultimate Clone requires a confirmed voice profile transcript');
         }
@@ -1576,10 +1579,19 @@ function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $r
             throw new InvalidArgumentException('voice_profile_forbidden');
         }
         $profileTask = hub_voice_profile_task_for_member($db, (int)$rawTaskId, $ownerMemberId);
-        if ($profileTask === null || (string)($profileTask['status'] ?? '') !== 'success') {
+        if ($profileTask === null) {
             throw new InvalidArgumentException('voice_profile_forbidden');
         }
-        $input[$profileInput] = (int)($profileTask['voice_profile']['id'] ?? 0);
+        $taskProfile = (array)($profileTask['voice_profile'] ?? []);
+        if (!empty($taskProfile['deleted_at'])
+            || (!empty($taskProfile['expires_at']) && (string)$taskProfile['expires_at'] <= hub_now())
+        ) {
+            throw new InvalidArgumentException('voice_profile_unavailable');
+        }
+        if ((string)($profileTask['status'] ?? '') !== 'success') {
+            throw new InvalidArgumentException('voice_profile_forbidden');
+        }
+        $input[$profileInput] = (int)($taskProfile['id'] ?? 0);
         unset($input[$profileTaskInput]);
     }
     $profileId = $input[$profileInput] ?? null;
@@ -1587,9 +1599,18 @@ function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $r
         throw new InvalidArgumentException('voice_profile_required');
     }
     $profile = hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId);
-    if (!$profile || (int)($profile['owner_member_id'] ?? 0) !== $ownerMemberId
-        || (!empty($profile['expires_at']) && (string)$profile['expires_at'] <= hub_now())) {
+    if (!$profile || (int)($profile['owner_member_id'] ?? 0) !== $ownerMemberId) {
+        if (!$hasProfileTask) {
+            $stmt = $db->prepare('SELECT deleted_at FROM voice_profiles WHERE id = :id AND owner_member_id = :owner_member_id');
+            $stmt->execute([':id' => $profileId, ':owner_member_id' => $ownerMemberId]);
+            if (!empty($stmt->fetchColumn())) {
+                throw new InvalidArgumentException('voice_profile_unavailable');
+            }
+        }
         throw new InvalidArgumentException('voice_profile_forbidden');
+    }
+    if (!empty($profile['expires_at']) && (string)$profile['expires_at'] <= hub_now()) {
+        throw new InvalidArgumentException('voice_profile_unavailable');
     }
     $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
     $sha256 = $path === null ? false : hash_file('sha256', $path);

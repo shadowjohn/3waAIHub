@@ -2951,6 +2951,7 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
                         'profile_status' => 'deleted',
                         'transcription_status' => 'failed',
                         'transcription_error' => null,
+                        'reference_audio_sha256' => '',
                     ]),
                 ],
                 [
@@ -2987,6 +2988,7 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
                         'profile_status' => 'expired',
                         'transcription_status' => 'failed',
                         'transcription_error' => null,
+                        'reference_audio_sha256' => '',
                     ]),
                 ],
                 [
@@ -3040,14 +3042,16 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
                 ($deletedPayload['profile_status'] ?? null) === 'deleted'
                 && ($deletedPayload['transcription_status'] ?? null) === 'failed'
                 && array_key_exists('transcription_error', $deletedPayload)
-                && $deletedPayload['transcription_error'] === null,
+                && $deletedPayload['transcription_error'] === null
+                && ($deletedPayload['reference_audio_sha256'] ?? null) === '',
                 'deleted Profile tombstones must remain relayable with a null transcription error'
             );
             hub_test_assert(
                 ($expiredPayload['profile_status'] ?? null) === 'expired'
                 && ($expiredPayload['transcription_status'] ?? null) === 'failed'
                 && array_key_exists('transcription_error', $expiredPayload)
-                && $expiredPayload['transcription_error'] === null,
+                && $expiredPayload['transcription_error'] === null
+                && ($expiredPayload['reference_audio_sha256'] ?? null) === '',
                 'expired Profile tombstones must remain relayable with a null transcription error'
             );
             foreach ($responses as $response) {
@@ -3085,6 +3089,7 @@ hub_test('cluster router relays only the bounded native profile transcription er
             'profile_status' => $profileStatus,
             'transcription_status' => $transcriptionStatus,
             'transcription_error' => $error,
+            'reference_audio_sha256' => $profileStatus === 'active' ? str_repeat('a', 64) : '',
         ]);
         $safe = hub_cluster_router_public_voice_profile_response($payload, true);
         hub_test_assert(
@@ -3103,6 +3108,7 @@ hub_test('cluster router relays only the bounded native profile transcription er
             'transcription_status' => 'failed',
             'transcription_error' => null,
         ]),
+        hub_test_cluster_voice_profile_status_payload(['reference_audio_sha256' => '']),
     ] as $invalid) {
         hub_test_assert(
             hub_test_throws(static fn (): array => hub_cluster_router_public_voice_profile_response($invalid, true)),
@@ -3248,7 +3254,12 @@ hub_test('cluster voice profile handles survive same-member token rotation', fun
             ],
             [
                 'operation=profile_delete&voice_profile_task_id=' . $fixture['route_id'],
-                hub_test_cluster_voice_profile_status_payload(['profile_status' => 'deleted']),
+                hub_test_cluster_voice_profile_status_payload([
+                    'profile_status' => 'deleted',
+                    'transcription_status' => 'failed',
+                    'transcription_error' => null,
+                    'reference_audio_sha256' => '',
+                ]),
             ],
         ];
 
