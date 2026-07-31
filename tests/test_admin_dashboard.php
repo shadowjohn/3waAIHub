@@ -253,6 +253,26 @@ hub_test('selected child dashboard retains current GPU metrics and history', fun
     });
 });
 
+hub_test('child dashboard does not infer missing compact GPU memory metrics', function (): void {
+    hub_test_admin_dashboard_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_admin_dashboard_station($db);
+        $db->prepare(
+            'UPDATE cluster_stations SET status_json = :status_json, status_fetched_at = :status_fetched_at WHERE id = :id'
+        )->execute([
+            ':status_json' => json_encode(['gpu' => ['available' => true, 'memory_total_mb' => 16310]], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => date('Y-m-d H:i:s', time() - 30),
+            ':id' => (int)$station['id'],
+        ]);
+
+        $gpu = hub_admin_dashboard_model($db, ['station' => 'station_1080'])['summary']['gpu'];
+
+        hub_test_assert(!array_key_exists('memory_free_mb', $gpu), 'missing compact child GPU free VRAM must remain unknown');
+        hub_test_assert(!array_key_exists('memory_used_mb', $gpu), 'missing compact child GPU used VRAM must remain unknown');
+    });
+});
+
 hub_test('child dashboard honors legacy and explicit GPU availability states', function (): void {
     hub_test_admin_dashboard_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

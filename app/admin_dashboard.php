@@ -224,15 +224,14 @@ function hub_admin_dashboard_gpu_history_rows(iterable $samples): array
 
 function hub_admin_dashboard_station_summary(array $station): array
 {
-    $gpu = is_array($station['gpu'] ?? null) ? $station['gpu'] : [];
-    $totalVram = max(0, (int)(is_numeric($gpu['memory_total_mb'] ?? null)
-        ? $gpu['memory_total_mb']
-        : ($station['gpu_total_vram_mb'] ?? 0)));
-    $freeVram = is_numeric($gpu['memory_free_mb'] ?? null)
-        ? min($totalVram, max(0, (int)$gpu['memory_free_mb']))
-        : (is_numeric($station['gpu_free_vram_mb'] ?? null)
-            ? min($totalVram, max(0, (int)$station['gpu_free_vram_mb']))
-            : null);
+    $hasRawGpu = is_array($station['gpu'] ?? null);
+    $gpu = $hasRawGpu ? $station['gpu'] : [];
+    $totalValue = $hasRawGpu ? ($gpu['memory_total_mb'] ?? null) : ($station['gpu_total_vram_mb'] ?? null);
+    $totalVram = max(0, (int)(is_numeric($totalValue) ? $totalValue : 0));
+    $freeValue = $hasRawGpu ? ($gpu['memory_free_mb'] ?? null) : ($station['gpu_free_vram_mb'] ?? null);
+    $freeVram = is_numeric($freeValue)
+        ? min($totalVram, max(0, (int)$freeValue))
+        : null;
     $usedVram = is_numeric($gpu['memory_used_mb'] ?? null)
         ? min($totalVram, max(0, (int)$gpu['memory_used_mb']))
         : ($freeVram === null ? null : max(0, $totalVram - $freeVram));
