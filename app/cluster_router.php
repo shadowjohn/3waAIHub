@@ -317,20 +317,31 @@ function hub_cluster_register_self_station(PDO $db): array
     if ($tokenId < 1) {
         throw new RuntimeException('local cluster node is unavailable');
     }
-    if (
-        hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME') !== ''
-        && !hub_cluster_node_has_verified_router_peer($db, $tokenId, '127.0.0.1')
-    ) {
-        throw new RuntimeException('local cluster node is paired to another router');
-    }
 
     $routerName = trim(hub_site_title($db));
     $routerName = function_exists('mb_substr') ? mb_substr($routerName, 0, 120, 'UTF-8') : substr($routerName, 0, 120);
-    $pairing = hub_cluster_node_pairing_descriptor($db);
-    $pairing['station_token'] = hub_cluster_node_reveal_token($db);
 
     $db->beginTransaction();
     try {
+        $pairing = hub_cluster_node_pairing_descriptor($db);
+        $pairing['station_token'] = hub_cluster_node_reveal_token($db);
+        if (
+            hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME') !== ''
+            && !hub_cluster_node_has_verified_router_peer($db, $tokenId, '127.0.0.1')
+        ) {
+            $stmt = $db->prepare('SELECT * FROM cluster_stations WHERE station_key = :station_key');
+            $stmt->execute([':station_key' => (string)$pairing['station_key']]);
+            $legacyStation = $stmt->fetch();
+            try {
+                $legacyToken = $legacyStation === false ? null : hub_cluster_decrypt_station_token($legacyStation);
+            } catch (Throwable) {
+                $legacyToken = null;
+            }
+            if (!is_string($legacyToken) || !hash_equals((string)$pairing['station_token'], $legacyToken)) {
+                throw new RuntimeException('local cluster node is paired to another router');
+            }
+        }
+
         $db->prepare('DELETE FROM api_token_ip_whitelists WHERE token_id = :token_id')->execute([':token_id' => $tokenId]);
         hub_add_api_token_ip_rule($db, $tokenId, '127.0.0.1', 'cluster router');
         hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME', $routerName);
