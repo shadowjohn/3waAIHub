@@ -241,8 +241,9 @@ function hub_public_api_voice_generate_examples(bool $cluster = false): array
     $curlAffinity = $cluster ? '# Profile followups use the pinned station with no failover.' : '';
     $codeAffinity = $cluster ? '// Profile followups use the pinned station with no failover.' : '';
     $curlAck = $cluster ? <<<'CURL'
-ACK_URL_TEMPLATE="$(printf '%s' "${SYNTHESIS}" | json_value ack_url_template)"
-if [ -n "${ACK_URL_TEMPLATE}" ]; then
+ACK_URL_TEMPLATE_LINK="$(printf '%s' "${SYNTHESIS}" | json_value ack_url_template)"
+if [ -n "${ACK_URL_TEMPLATE_LINK}" ]; then
+  ACK_URL_TEMPLATE="$(resolve_url "${API}" "${ACK_URL_TEMPLATE_LINK}")"
   ACK_URL="${ACK_URL_TEMPLATE//\{artifact_id\}/${ARTIFACT_ID}}"
   curl -sS -X POST -H "Authorization: Bearer ${TOKEN}" "${ACK_URL}"
 fi
@@ -253,6 +254,9 @@ API='{{API}}'
 {{AFFINITY}}
 json_value() {
   php -r '$value=json_decode(stream_get_contents(STDIN),true,32,JSON_THROW_ON_ERROR); foreach(explode(".",$argv[1]) as $key){if(!is_array($value)||!array_key_exists($key,$value)){exit;} $value=$value[$key];} if(is_scalar($value)){echo $value;}' "$1"
+}
+resolve_url() {
+  php -r '$base=$argv[1];$link=$argv[2];if(preg_match("~\Ahttps?://~i",$link)===1){echo $link;exit;} $parts=parse_url($base);if($link===""||!is_array($parts)||!isset($parts["scheme"],$parts["host"])){exit(2);} $host=(string)$parts["host"];if(str_contains($host,":")&&!str_starts_with($host,"[")){$host="[".$host."]";} $origin=$parts["scheme"]."://".$host.(isset($parts["port"])?":".(int)$parts["port"]:"");if(str_starts_with($link,"//")){echo $parts["scheme"].":".$link;exit;} if(str_starts_with($link,"/")){echo $origin.$link;exit;} $path=(string)($parts["path"]??"/");if(str_starts_with($link,"?")){echo $origin.$path.$link;exit;} $directory=str_ends_with($path,"/")?$path:rtrim(str_replace("\\","/",dirname($path)),"/")."/";echo $origin.$directory.ltrim($link,"/");' "$1" "$2"
 }
 
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
@@ -277,8 +281,10 @@ SYNTHESIS="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
   "${API}?mode=voice_generate")"
 TASK_ID="$(printf '%s' "${SYNTHESIS}" | json_value task_id)" # <TASK_ID>
-RESULT_URL="$(printf '%s' "${SYNTHESIS}" | json_value result_url)"
-ARTIFACT_URL_TEMPLATE="$(printf '%s' "${SYNTHESIS}" | json_value artifact_url_template)"
+RESULT_URL_LINK="$(printf '%s' "${SYNTHESIS}" | json_value result_url)"
+RESULT_URL="$(resolve_url "${API}" "${RESULT_URL_LINK}")"
+ARTIFACT_URL_TEMPLATE_LINK="$(printf '%s' "${SYNTHESIS}" | json_value artifact_url_template)"
+ARTIFACT_URL_TEMPLATE="$(resolve_url "${API}" "${ARTIFACT_URL_TEMPLATE_LINK}")"
 RESULT="$(curl -sS -H "Authorization: Bearer ${TOKEN}" "${RESULT_URL}")" # {{RESULT_MODE}}
 ARTIFACT_ID="$(printf '%s' "${RESULT}" | json_value result.artifacts.0.id)" # <ARTIFACT_ID>
 # The returned template targets mode={{ARTIFACT_MODE}}; expand that returned value.
@@ -299,13 +305,41 @@ CURL, [
     ]);
     $phpAck = $cluster ? <<<'PHP'
 if (isset($synthesis['ack_url_template'])) {
-    $decode($request(str_replace('{artifact_id}', (string)$artifactId, $synthesis['ack_url_template']), ''));
+    $ackUrlTemplate = $resolveUrl($api, (string)$synthesis['ack_url_template']);
+    $decode($request(str_replace('{artifact_id}', (string)$artifactId, $ackUrlTemplate), ''));
 }
 PHP : '';
     $php = strtr(<<<'PHP'
 $token = '<TOKEN>';
 $api = '{{API}}';
 {{AFFINITY}}
+$resolveUrl = static function (string $base, string $link): string {
+    if (preg_match('~\Ahttps?://~i', $link) === 1) {
+        return $link;
+    }
+    $parts = parse_url($base);
+    if ($link === '' || !is_array($parts) || !isset($parts['scheme'], $parts['host'])) {
+        throw new InvalidArgumentException('Invalid API link.');
+    }
+    $host = (string)$parts['host'];
+    if (str_contains($host, ':') && !str_starts_with($host, '[')) {
+        $host = '[' . $host . ']';
+    }
+    $origin = $parts['scheme'] . '://' . $host . (isset($parts['port']) ? ':' . (int)$parts['port'] : '');
+    if (str_starts_with($link, '//')) {
+        return $parts['scheme'] . ':' . $link;
+    }
+    if (str_starts_with($link, '/')) {
+        return $origin . $link;
+    }
+    $path = (string)($parts['path'] ?? '/');
+    if (str_starts_with($link, '?')) {
+        return $origin . $path . $link;
+    }
+    $directory = str_ends_with($path, '/') ? $path : rtrim(str_replace('\\', '/', dirname($path)), '/') . '/';
+
+    return $origin . $directory . ltrim($link, '/');
+};
 $request = static function (string $url, mixed $body = null, array $headers = []) use ($token): string {
     $ch = curl_init($url);
     $options = [
@@ -332,7 +366,8 @@ $prepared = $decode($request($api . '?mode=voice_generate', [
     'reference_wav' => new CURLFile('<REFERENCE_WAV>'),
 ]));
 $voiceProfileTaskId = $prepared['task_id']; // MyAI stores this as <VOICE_PROFILE_TASK_ID>.
-$decode($request($prepared['status_url'])); // {{STATUS_MODE}}
+$statusUrl = $resolveUrl($api, (string)$prepared['status_url']);
+$decode($request($statusUrl)); // {{STATUS_MODE}}
 $decode($request($api . '?mode=voice_generate&operation=profile_status&voice_profile_task_id=' . rawurlencode((string)$voiceProfileTaskId)));
 $decode($request($api . '?mode=voice_generate', json_encode([
     'operation' => 'profile_confirm',
@@ -351,9 +386,11 @@ $synthesis = $decode($request($api . '?mode=voice_generate', json_encode([
     'voice_profile_task_id' => $voiceProfileTaskId,
 ], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
 $taskId = $synthesis['task_id']; // <TASK_ID>
-$result = $decode($request($synthesis['result_url'])); // {{RESULT_MODE}}
+$resultUrl = $resolveUrl($api, (string)$synthesis['result_url']);
+$result = $decode($request($resultUrl)); // {{RESULT_MODE}}
 $artifactId = $result['result']['artifacts'][0]['id']; // <ARTIFACT_ID>
-$artifactUrl = str_replace('{artifact_id}', (string)$artifactId, $synthesis['artifact_url_template']);
+$artifactUrlTemplate = $resolveUrl($api, (string)$synthesis['artifact_url_template']);
+$artifactUrl = str_replace('{artifact_id}', (string)$artifactId, $artifactUrlTemplate);
 $audio = $request($artifactUrl); // {{ARTIFACT_MODE}}
 {{ACK}}
 $decode($request($api . '?mode=voice_generate', json_encode([
@@ -370,13 +407,15 @@ PHP, [
     ]);
     $jsAck = $cluster ? <<<'JS'
 if (synthesis.ack_url_template) {
-  await call(synthesis.ack_url_template.replace('{artifact_id}', artifactId), {method: 'POST'});
+  const ackUrlTemplate = resolveUrl(synthesis.ack_url_template);
+  await call(ackUrlTemplate.replace('{artifact_id}', artifactId), {method: 'POST'});
 }
 JS : '';
     $js = strtr(<<<'JS'
 const token = '<TOKEN>';
 const api = '{{API}}';
 {{AFFINITY}}
+const resolveUrl = (link) => new URL(link, api).toString();
 const call = async (url, options = {}) => {
   const response = await fetch(url, {
     ...options,
@@ -392,7 +431,8 @@ profile.append('consent_type', 'self_recorded');
 profile.append('reference_wav', new File([], '<REFERENCE_WAV>', {type: 'audio/wav'}));
 const prepared = await call(`${api}?mode=voice_generate`, {method: 'POST', body: profile});
 const voiceProfileTaskId = prepared.task_id; // MyAI stores this as <VOICE_PROFILE_TASK_ID>.
-await call(prepared.status_url); // {{STATUS_MODE}}
+const statusUrl = resolveUrl(prepared.status_url);
+await call(statusUrl); // {{STATUS_MODE}}
 await call(`${api}?mode=voice_generate&operation=profile_status&voice_profile_task_id=${voiceProfileTaskId}`);
 await call(`${api}?mode=voice_generate`, {
   method: 'POST',
@@ -410,9 +450,11 @@ const synthesis = await call(`${api}?mode=voice_generate`, {
   body: JSON.stringify({operation: 'synthesize', text: '<TEXT>', mode: 'ultimate_clone', voice_profile_task_id: voiceProfileTaskId}),
 });
 const taskId = synthesis.task_id; // <TASK_ID>
-const result = await call(synthesis.result_url); // {{RESULT_MODE}}
+const resultUrl = resolveUrl(synthesis.result_url);
+const result = await call(resultUrl); // {{RESULT_MODE}}
 const artifactId = result.result.artifacts[0].id; // <ARTIFACT_ID>
-const artifactUrl = synthesis.artifact_url_template.replace('{artifact_id}', artifactId);
+const artifactUrlTemplate = resolveUrl(synthesis.artifact_url_template);
+const artifactUrl = artifactUrlTemplate.replace('{artifact_id}', artifactId);
 const artifactResponse = await fetch(artifactUrl, {headers: {Authorization: `Bearer ${token}`}});
 const audio = await artifactResponse.blob(); // {{ARTIFACT_MODE}}
 {{ACK}}

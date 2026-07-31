@@ -829,6 +829,71 @@ hub_test('voice workflow examples use submit links and execute optional Router A
     );
 });
 
+hub_test('voice workflow examples resolve returned links against the configured API', function (): void {
+    $native = hub_public_api_voice_generate_examples();
+    $cluster = hub_public_api_voice_generate_examples(true);
+
+    foreach ([$native, $cluster] as $examples) {
+        $curl = (string)$examples['curl'];
+        $php = (string)$examples['php'];
+        $js = (string)$examples['js_fetch'];
+
+        foreach (['RESULT_URL_LINK', 'ARTIFACT_URL_TEMPLATE_LINK'] as $linkVariable) {
+            hub_test_assert(
+                str_contains($curl, $linkVariable)
+                && str_contains($curl, 'resolve_url "${API}" "${' . $linkVariable . '}"'),
+                'shell workflow must resolve returned ' . strtolower($linkVariable) . ' against API'
+            );
+        }
+        hub_test_assert(
+            str_contains($curl, 'if(preg_match("~\\Ahttps?://~i",$link)===1){echo $link;exit;}'),
+            'shell URL resolver must preserve native absolute HTTP links'
+        );
+
+        foreach ([
+            "\$statusUrl = \$resolveUrl(\$api, (string)\$prepared['status_url']);",
+            "\$resultUrl = \$resolveUrl(\$api, (string)\$synthesis['result_url']);",
+            "\$artifactUrlTemplate = \$resolveUrl(\$api, (string)\$synthesis['artifact_url_template']);",
+        ] as $resolution) {
+            hub_test_assert(str_contains($php, $resolution), 'PHP workflow missing returned-link resolution: ' . $resolution);
+        }
+        hub_test_assert(
+            str_contains($php, "preg_match('~\\Ahttps?://~i', \$link) === 1")
+            && str_contains($php, 'return $link;')
+            && !str_contains($php, "\$request(\$synthesis['result_url'])"),
+            'PHP URL resolver must preserve native absolute links and avoid direct relative requests'
+        );
+
+        foreach ([
+            'const statusUrl = resolveUrl(prepared.status_url);',
+            'const resultUrl = resolveUrl(synthesis.result_url);',
+            'const artifactUrlTemplate = resolveUrl(synthesis.artifact_url_template);',
+        ] as $resolution) {
+            hub_test_assert(str_contains($js, $resolution), 'JavaScript workflow missing returned-link resolution: ' . $resolution);
+        }
+        hub_test_assert(
+            str_contains($js, 'const resolveUrl = (link) => new URL(link, api).toString();')
+            && !str_contains($js, 'await call(synthesis.result_url)'),
+            'JavaScript workflow must resolve relative links while retaining standard absolute URL behavior'
+        );
+    }
+
+    foreach ([
+        'resolve_url "${API}" "${ACK_URL_TEMPLATE_LINK}"',
+        "\$ackUrlTemplate = \$resolveUrl(\$api, (string)\$synthesis['ack_url_template']);",
+        'const ackUrlTemplate = resolveUrl(synthesis.ack_url_template);',
+    ] as $resolution) {
+        hub_test_assert(
+            str_contains(implode("\n", $cluster), $resolution),
+            'Cluster workflow must resolve returned ACK template: ' . $resolution
+        );
+        hub_test_assert(
+            !str_contains(implode("\n", $native), $resolution),
+            'native workflow must remain valid without Router ACK resolution: ' . $resolution
+        );
+    }
+});
+
 hub_test('Public API audio async contracts expose optional callback controls', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
 
