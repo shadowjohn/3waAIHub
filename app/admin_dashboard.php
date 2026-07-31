@@ -204,9 +204,14 @@ function hub_admin_dashboard_gpu_history_rows(iterable $samples): array
         ) {
             continue;
         }
-        $latestSamples[$timestamp->format('Y-m-d H:i:s')] = $gpu;
+        $latestSamples[$timestamp->format('Y-m-d H:i:s')] = [
+            'gpu' => $gpu,
+            'timestamp' => $timestamp,
+        ];
     }
-    foreach ($latestSamples as $sampledAt => $gpu) {
+    foreach ($latestSamples as $sampledAt => $sample) {
+        $gpu = $sample['gpu'];
+        $timestamp = $sample['timestamp'];
         if (array_key_exists('available', $gpu) && $gpu['available'] !== true) {
             continue;
         }
@@ -215,7 +220,11 @@ function hub_admin_dashboard_gpu_history_rows(iterable $samples): array
             if (!is_numeric($value) || !is_finite((float)$value)) {
                 continue;
             }
-            $history[$series][] = ['label' => $sampledAt, 'value' => (float)$value];
+            $history[$series][] = [
+                'label' => $sampledAt,
+                'timestamp' => $timestamp->getTimestamp() * 1000,
+                'value' => (float)$value,
+            ];
         }
     }
 

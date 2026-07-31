@@ -36,6 +36,16 @@ function hub_test_admin_dashboard_station(PDO $db, array $overrides = []): array
     return $station;
 }
 
+function hub_test_admin_dashboard_gpu_history_point(string $sampledAt, float $value): array
+{
+    $timestamp = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $sampledAt, new DateTimeZone('Asia/Taipei'));
+    if ($timestamp === false) {
+        throw new RuntimeException('invalid GPU history fixture timestamp');
+    }
+
+    return ['label' => $sampledAt, 'timestamp' => $timestamp->getTimestamp() * 1000, 'value' => $value];
+}
+
 hub_test('dashboard model separates child and router station behavior', function (): void {
     $db = hub_test_reset_db();
     hub_cluster_node_configure($db, true, []);
@@ -191,8 +201,9 @@ hub_test('dashboard GPU history readers keep only recent local and child samples
             ]);
         }
         $local = hub_admin_dashboard_local_gpu_history($db, $since);
-        hub_test_assert($local['temperature'] === [['label' => $recentAt, 'value' => 55.0]], 'local GPU history must exclude expired temperature samples');
-        hub_test_assert($local['vram_used'] === [['label' => $recentAt, 'value' => 200.0]], 'local GPU history must exclude expired VRAM samples');
+        hub_test_assert($local['temperature'] === [hub_test_admin_dashboard_gpu_history_point($recentAt, 55.0)], 'local GPU history must exclude expired temperature samples');
+        hub_test_assert($local['vram_used'] === [hub_test_admin_dashboard_gpu_history_point($recentAt, 200.0)], 'local GPU history must exclude expired VRAM samples');
+        hub_test_assert(is_int($local['temperature'][0]['timestamp']), 'GPU history rows must expose numeric epoch-millisecond timestamps');
         hub_test_assert(hub_admin_dashboard_model($db, [])['summary']['gpu_history'] === $local, 'local Dashboard must expose its GPU history');
 
         $station = hub_test_admin_dashboard_station($db);
@@ -210,8 +221,8 @@ hub_test('dashboard GPU history readers keep only recent local and child samples
             ]);
         }
         $child = hub_admin_dashboard_station_gpu_history($db, (int)$station['id'], $since);
-        hub_test_assert($child['temperature'] === [['label' => $recentAt, 'value' => 66.0]], 'child GPU history must exclude expired temperature samples');
-        hub_test_assert($child['vram_used'] === [['label' => $recentAt, 'value' => 400.0]], 'child GPU history must exclude expired VRAM samples');
+        hub_test_assert($child['temperature'] === [hub_test_admin_dashboard_gpu_history_point($recentAt, 66.0)], 'child GPU history must exclude expired temperature samples');
+        hub_test_assert($child['vram_used'] === [hub_test_admin_dashboard_gpu_history_point($recentAt, 400.0)], 'child GPU history must exclude expired VRAM samples');
     });
 });
 
@@ -248,8 +259,8 @@ hub_test('selected child dashboard retains current GPU metrics and history', fun
 
         hub_test_assert(($model['summary']['gpu']['util_percent'] ?? null) === 73, 'child Dashboard must retain current compact GPU utilization');
         hub_test_assert(($model['summary']['gpu']['temperature_c'] ?? null) === 66, 'child Dashboard must retain current compact GPU temperature');
-        hub_test_assert($model['summary']['gpu_history']['temperature'] === [['label' => $snapshotAt, 'value' => 66.0]], 'child Dashboard must expose selected station temperature history');
-        hub_test_assert($model['summary']['gpu_history']['vram_used'] === [['label' => $snapshotAt, 'value' => 12288.0]], 'child Dashboard must expose selected station VRAM history');
+        hub_test_assert($model['summary']['gpu_history']['temperature'] === [hub_test_admin_dashboard_gpu_history_point($snapshotAt, 66.0)], 'child Dashboard must expose selected station temperature history');
+        hub_test_assert($model['summary']['gpu_history']['vram_used'] === [hub_test_admin_dashboard_gpu_history_point($snapshotAt, 12288.0)], 'child Dashboard must expose selected station VRAM history');
     });
 });
 
@@ -346,8 +357,8 @@ hub_test('child GPU history honors legacy and explicit availability states', fun
         $history = hub_admin_dashboard_station_gpu_history($db, (int)$station['id'], date('Y-m-d H:i:s', time() - 86400));
         hub_test_assert(
             $history === [
-                'temperature' => [['label' => $legacyAt, 'value' => 66.0]],
-                'vram_used' => [['label' => $legacyAt, 'value' => 400.0]],
+                'temperature' => [hub_test_admin_dashboard_gpu_history_point($legacyAt, 66.0)],
+                'vram_used' => [hub_test_admin_dashboard_gpu_history_point($legacyAt, 400.0)],
             ],
             'legacy child history must render while explicit false remains hidden'
         );
@@ -376,8 +387,8 @@ hub_test('dashboard GPU history rejects malformed future and expired timestamps'
 
     hub_test_assert(
         $history === [
-            'temperature' => [['label' => $recentAt, 'value' => 66.0]],
-            'vram_used' => [['label' => $recentAt, 'value' => 400.0]],
+            'temperature' => [hub_test_admin_dashboard_gpu_history_point($recentAt, 66.0)],
+            'vram_used' => [hub_test_admin_dashboard_gpu_history_point($recentAt, 400.0)],
         ],
         'GPU history must accept only canonical timestamps inside the 24-hour window'
     );
@@ -392,8 +403,8 @@ hub_test('dashboard GPU history keeps the latest same-second sample aligned', fu
 
     hub_test_assert(
         $history === [
-            'temperature' => [['label' => $sampledAt, 'value' => 66.0]],
-            'vram_used' => [['label' => $sampledAt, 'value' => 200.0]],
+            'temperature' => [hub_test_admin_dashboard_gpu_history_point($sampledAt, 66.0)],
+            'vram_used' => [hub_test_admin_dashboard_gpu_history_point($sampledAt, 200.0)],
         ],
         'same-second GPU history must retain the latest aligned sample only'
     );
@@ -420,7 +431,7 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
     foreach (['cdn.jsdelivr', 'echarts', 'GPU1', 'GPU2', 'GPU3'] as $forbidden) {
         hub_test_assert(!str_contains($page, $forbidden), 'dashboard page contains forbidden source or station label: ' . $forbidden);
     }
-    foreach (['fetch(', 'localStorage', 'sessionStorage'] as $forbidden) {
+    foreach (['fetch(', 'localStorage', 'sessionStorage', 'cdn.', 'adapter'] as $forbidden) {
         hub_test_assert(!str_contains($script, $forbidden), 'dashboard script must use server JSON without persistent state: ' . $forbidden);
     }
     hub_test_assert(str_contains($script, 'maintainAspectRatio: false'), 'dashboard charts must preserve accepted container sizing');
@@ -432,8 +443,22 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
         "create('gpuTemperatureChart', 'line', rows('gpuTemperatureHistory'), palette.amber, lineOptions('°C'))",
         "create('gpuVramHistoryChart', 'line', rows('gpuVramHistory'), palette.blue, lineOptions(' MB'))",
         'function lineOptions(suffix)',
+        'x: Number(item.timestamp), y: Number(item.value)',
+        'spanGaps: line ? 120000 : false',
+        "type: 'linear'",
+        'toLocaleTimeString',
     ] as $needle) {
         hub_test_assert(str_contains($script, $needle), 'dashboard script missing GPU history chart contract: ' . $needle);
+    }
+    foreach ([
+        'aria-describedby="gpu-temperature-history-summary"',
+        'id="gpu-temperature-history-summary"',
+        'aria-describedby="gpu-vram-history-summary"',
+        'id="gpu-vram-history-summary"',
+        '$gpuTemperatureHistorySummary',
+        '$gpuVramHistorySummary',
+    ] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'dashboard page missing GPU history summary contract: ' . $needle);
     }
     hub_test_assert(!str_contains($page, "(float)(\$gpu['memory_free_mb'] ?? 0)"), 'dashboard must not treat missing GPU free VRAM as zero');
     hub_test_assert(str_contains($page, "\$gpuAvailable ? hub_h(hub_admin_dash_value(\$gpuUsed, ' MB'))"), 'dashboard must render unavailable VRAM as N/A');
@@ -443,9 +468,11 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
         'GPU 溫度 24 小時趨勢圖',
         'GPU VRAM 使用量 24 小時趨勢圖',
         '尚無 GPU 歷史資料。',
+        '共 %1$d 筆資料；最新 %2$s：%3$s',
         'GPU temperature (24 hours)',
         'GPU VRAM usage (24 hours)',
         'No GPU history data.',
+        '%1$d samples; latest %2$s: %3$s',
     ] as $needle) {
         hub_test_assert(str_contains($seed, $needle), 'GPU history i18n seed missing: ' . $needle);
     }

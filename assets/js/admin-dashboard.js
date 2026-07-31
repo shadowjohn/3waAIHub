@@ -52,9 +52,11 @@
     charts.push(new Chart(canvas, {
       type: type,
       data: {
-        labels: source.map(function (item) { return item.label; }),
+        labels: line ? [] : source.map(function (item) { return item.label; }),
         datasets: [{
-          data: source.map(function (item) { return Number(item.value) || 0; }),
+          data: line
+            ? source.map(function (item) { return { x: Number(item.timestamp), y: Number(item.value) }; })
+            : source.map(function (item) { return Number(item.value) || 0; }),
           backgroundColor: line ? 'transparent' : colors,
           borderColor: type === 'doughnut' ? '#FFFFFF' : colors,
           borderWidth: type === 'doughnut' ? 2 : (line ? 2 : 0),
@@ -63,6 +65,7 @@
           fill: false,
           pointRadius: line ? 2 : 0,
           pointHoverRadius: line ? 3 : 0,
+          spanGaps: line ? 120000 : false,
           tension: line ? 0.2 : 0
         }]
       },
@@ -107,7 +110,15 @@
           border: { display: false }
         },
         x: {
-          ticks: { autoSkip: true, maxRotation: 0, maxTicksLimit: 6 },
+          type: 'linear',
+          ticks: {
+            autoSkip: true,
+            maxRotation: 0,
+            maxTicksLimit: 6,
+            callback: function (value) {
+              return new Date(Number(value)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+          },
           grid: { display: false },
           border: { color: palette.grid }
         }

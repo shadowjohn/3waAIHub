@@ -100,6 +100,11 @@
         "trans": "GPU temperature 24-hour trend chart"
     },
     {
+        "title": "共 %1$d 筆資料；最新 %2$s：%3$s",
+        "lang": "en",
+        "trans": "%1$d samples; latest %2$s: %3$s"
+    },
+    {
         "title": "GPU VRAM 使用量（24 小時）",
         "lang": "en",
         "trans": "GPU VRAM usage (24 hours)"
