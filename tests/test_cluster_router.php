@@ -5821,6 +5821,17 @@ hub_test('cluster GPU metric history migration replaces its redundant station ti
     hub_test_assert(!in_array('idx_cluster_gpu_metric_snapshots_station_time', $indexes, true) && in_array('idx_cluster_gpu_metric_snapshots_sampled_at', $indexes, true), 'GPU metric history migration must remove the redundant station time index and add a global sampled time index');
 });
 
+hub_test('retention schema gate requires the child GPU sample timestamp', function (): void {
+    $db = hub_test_reset_db();
+    $db->exec('DROP TABLE cluster_gpu_metric_snapshots');
+    $db->exec('CREATE TABLE cluster_gpu_metric_snapshots (id INTEGER PRIMARY KEY, station_id INTEGER NOT NULL, gpu_json TEXT NOT NULL)');
+
+    hub_test_assert(
+        hub_retention_schema_missing($db) === ['cluster_gpu_metric_snapshots.sampled_at'],
+        'retention schema gate must reject a child GPU history table without the timestamp used by pruning'
+    );
+});
+
 hub_test('scheduled retention pruning expires offline child GPU metric history', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

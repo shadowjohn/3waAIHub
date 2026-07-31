@@ -1861,7 +1861,7 @@ function hub_retention_schema_missing(PDO $db): array
         'task_artifact_holds' => ['source_artifact_id', 'downstream_task_id', 'released_at'],
         'runtime_runs' => ['task_id', 'state'],
         'runtime_resource_leases' => ['runtime_run_id', 'state'],
-        'cluster_gpu_metric_snapshots' => [],
+        'cluster_gpu_metric_snapshots' => ['sampled_at'],
     ];
     $tables = array_fill_keys($db->query("SELECT name FROM sqlite_master WHERE type = 'table'")->fetchAll(PDO::FETCH_COLUMN), true);
     $missing = [];
