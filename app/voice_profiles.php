@@ -1333,6 +1333,8 @@ function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMember
 
 function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100): array
 {
+    hub_cleanup_stale_voice_profile_snapshots(strtotime($now) ?: time());
+
     $stmt = $db->prepare(
         "SELECT id, owner_member_id, reference_audio_path, reference_audio_sha256, deleted_at
          FROM voice_profiles

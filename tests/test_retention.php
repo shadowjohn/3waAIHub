@@ -899,6 +899,51 @@ hub_test('voice profile snapshots are managed with bounded stale and capacity cl
     }
 });
 
+hub_test('retention prune clears stale voice profile snapshots without an ASR upload', function (): void {
+    $db = hub_test_reset_db();
+    $outside = tempnam(sys_get_temp_dir(), 'voice-profile-prune-snapshot-outside-');
+    if ($outside === false) {
+        throw new RuntimeException('Cannot create outside retention snapshot fixture.');
+    }
+    file_put_contents($outside, 'outside-protected', LOCK_EX);
+    $snapshotDir = null;
+
+    try {
+        $snapshotDir = hub_voice_profile_snapshot_dir();
+        $stale = $snapshotDir . '/voice_profile_snapshot_' . str_repeat('d', 32) . '.wav';
+        $staleLink = $snapshotDir . '/voice_profile_snapshot_' . str_repeat('e', 32) . '.wav';
+        file_put_contents($stale, 'stale-private-snapshot', LOCK_EX);
+        if (!symlink($outside, $staleLink)) {
+            throw new RuntimeException('Cannot create retention snapshot symlink fixture.');
+        }
+
+        $result = hub_prune_expired_voice_profiles($db, date('Y-m-d H:i:s', time() + 7200), 1);
+        $outsideUntouched = is_file($outside) && file_get_contents($outside) === 'outside-protected';
+
+        hub_test_assert(
+            (int)($result['profiles_deleted'] ?? 0) === 0
+            && !file_exists($stale)
+            && !is_link($staleLink)
+            && $outsideUntouched,
+            'retention prune must clean stale private snapshots without following snapshot symlinks'
+        );
+    } finally {
+        if (is_string($snapshotDir) && is_dir($snapshotDir)) {
+            foreach (scandir($snapshotDir) ?: [] as $name) {
+                if ($name === '.' || $name === '..') {
+                    continue;
+                }
+                $snapshot = $snapshotDir . '/' . $name;
+                if (is_link($snapshot) || is_file($snapshot)) {
+                    unlink($snapshot);
+                }
+            }
+            rmdir($snapshotDir);
+        }
+        unlink($outside);
+    }
+});
+
 hub_test('legacy soft-deleted voice profile WAV cleanup recovers safely and idempotently', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Legacy cleanup owner');
