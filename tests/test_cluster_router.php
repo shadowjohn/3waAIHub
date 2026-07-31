@@ -5752,7 +5752,7 @@ hub_test('cluster admin child controls retain only published modes and force one
     });
 });
 
-hub_test('cluster router refresh retains one compact GPU metric snapshot and prunes old history', function (): void {
+hub_test('cluster router refresh retains one compact GPU metric snapshot', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
         $station = hub_test_cluster_router_station($db);
@@ -5767,7 +5767,15 @@ hub_test('cluster router refresh retains one compact GPU metric snapshot and pru
                 'snapshot_at' => $snapshotAt,
                 'gpu' => [
                     'available' => true,
-                    'memory_free_mb' => 8192,
+                    'util_percent' => 42,
+                    'memory_used_mb' => 2048,
+                    'memory_total_mb' => 8192,
+                    'temperature_c' => 71,
+                    'memory_free_mb' => 6144,
+                    'name' => 'Not History Telemetry',
+                    'driver_version' => '555.85.10',
+                    'cuda_version' => '12.4',
+                    'reason' => 'not_used',
                     'injected' => 'must_not_be_stored',
                 ],
                 'active_gpu_leases' => 0,
@@ -5779,20 +5787,16 @@ hub_test('cluster router refresh retains one compact GPU metric snapshot and pru
 
         hub_cluster_refresh_station_now($db, $station, true, $fetcher);
         hub_test_assert((int)$db->query('SELECT COUNT(*) FROM cluster_gpu_metric_snapshots')->fetchColumn() === 1, 'valid refreshed child must create a GPU metric sample');
-        $db->prepare(
-            'INSERT INTO cluster_gpu_metric_snapshots (station_id, sampled_at, gpu_json) VALUES (:station_id, :sampled_at, :gpu_json)'
-        )->execute([
-            ':station_id' => (int)$station['id'],
-            ':sampled_at' => date('Y-m-d H:i:s', time() - 86401),
-            ':gpu_json' => '{}',
-        ]);
         hub_cluster_refresh_station_now($db, $station, true, $fetcher);
 
         $samples = $db->query('SELECT sampled_at, gpu_json FROM cluster_gpu_metric_snapshots ORDER BY sampled_at DESC')->fetchAll();
-        hub_test_assert(count($samples) === 1 && (string)$samples[0]['sampled_at'] === $snapshotAt, 'same refreshed status timestamp must retain exactly one current GPU metric sample and prune old history');
+        hub_test_assert(count($samples) === 1 && (string)$samples[0]['sampled_at'] === $snapshotAt, 'same refreshed status timestamp must retain exactly one current GPU metric sample');
         hub_test_assert(json_decode((string)$samples[0]['gpu_json'], true, 512, JSON_THROW_ON_ERROR) === [
             'available' => true,
-            'memory_free_mb' => 8192,
+            'util_percent' => 42,
+            'memory_used_mb' => 2048,
+            'memory_total_mb' => 8192,
+            'temperature_c' => 71,
         ], 'GPU metric history must persist only compact GPU fields');
 
         hub_cluster_refresh_station_now($db, $station, true, static function (array $request): array {
@@ -5803,6 +5807,48 @@ hub_test('cluster router refresh retains one compact GPU metric snapshot and pru
             return ['status' => 500, 'body' => ''];
         });
         hub_test_assert((int)$db->query('SELECT COUNT(*) FROM cluster_gpu_metric_snapshots')->fetchColumn() === 1, 'failed status refresh must not create a GPU metric sample');
+    });
+});
+
+hub_test('cluster GPU metric history migration replaces its redundant station time index', function (): void {
+    $db = hub_test_reset_db();
+    $db->exec('DROP INDEX IF EXISTS idx_cluster_gpu_metric_snapshots_station_time');
+    $db->exec('CREATE INDEX idx_cluster_gpu_metric_snapshots_station_time ON cluster_gpu_metric_snapshots(station_id, sampled_at DESC)');
+
+    hub_migrate($db);
+    $indexes = array_column($db->query('PRAGMA index_list(cluster_gpu_metric_snapshots)')->fetchAll(), 'name');
+
+    hub_test_assert(!in_array('idx_cluster_gpu_metric_snapshots_station_time', $indexes, true) && in_array('idx_cluster_gpu_metric_snapshots_sampled_at', $indexes, true), 'GPU metric history migration must remove the redundant station time index and add a global sampled time index');
+});
+
+hub_test('scheduled database pruning expires offline child GPU metric history', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $station = hub_test_cluster_router_station($db);
+        $db->prepare('UPDATE cluster_stations SET enabled = 0, last_error = :last_error WHERE id = :id')
+            ->execute([':last_error' => 'status_fetch_failed', ':id' => (int)$station['id']]);
+        $insert = $db->prepare(
+            'INSERT INTO cluster_gpu_metric_snapshots (station_id, sampled_at, gpu_json) VALUES (:station_id, :sampled_at, :gpu_json)'
+        );
+        $insert->execute([
+            ':station_id' => (int)$station['id'],
+            ':sampled_at' => date('Y-m-d H:i:s', time() - 86401),
+            ':gpu_json' => '{"available":true}',
+        ]);
+        $insert->execute([
+            ':station_id' => (int)$station['id'],
+            ':sampled_at' => date('Y-m-d H:i:s', time() - 60),
+            ':gpu_json' => '{"available":true}',
+        ]);
+
+        $result = hub_run_command([PHP_BINARY, HUB_ROOT . '/scripts/prune_db.php', '--apply'], 30, [
+            'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+            'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
+        ]);
+        $report = json_decode((string)$result['stdout'], true);
+
+        hub_test_assert($result['exit_code'] === 0 && is_array($report) && ($report['deleted']['cluster_gpu_metric_snapshots'] ?? null) === 1, 'scheduled database pruning must report the expired offline child GPU sample');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM cluster_gpu_metric_snapshots')->fetchColumn() === 1, 'scheduled database pruning must retain only the current offline child GPU sample without a refresh');
     });
 });
 

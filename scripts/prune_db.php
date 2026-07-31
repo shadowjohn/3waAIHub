@@ -20,6 +20,7 @@ if ($missing !== []) {
 hub_ensure_default_storage_settings($db);
 
 $metricCutoff = hub_prune_cutoff((int)hub_get_storage_setting($db, 'AIHUB_METRIC_RETENTION_DAYS'));
+$clusterGpuMetricCutoff = hub_prune_cutoff(1);
 $logCutoff = hub_prune_cutoff((int)hub_get_storage_setting($db, 'AIHUB_LOG_RETENTION_DAYS'));
 $taskCutoff = hub_prune_cutoff((int)hub_get_storage_setting($db, 'AIHUB_TASK_RETENTION_DAYS'));
 $apiAccessCutoff = hub_prune_cutoff((int)hub_get_storage_setting($db, 'AIHUB_API_ACCESS_LOG_RETENTION_DAYS'));
@@ -37,6 +38,12 @@ $plans = [
         'sql' => 'DELETE FROM benchmark_runs WHERE created_at < :cutoff',
         'count_sql' => 'SELECT COUNT(*) FROM benchmark_runs WHERE created_at < :cutoff',
         'params' => [':cutoff' => $metricCutoff],
+    ],
+    [
+        'key' => 'cluster_gpu_metric_snapshots',
+        'sql' => 'DELETE FROM cluster_gpu_metric_snapshots WHERE sampled_at < :cutoff',
+        'count_sql' => 'SELECT COUNT(*) FROM cluster_gpu_metric_snapshots WHERE sampled_at < :cutoff',
+        'params' => [':cutoff' => $clusterGpuMetricCutoff],
     ],
     [
         'key' => 'command_jobs',
@@ -63,6 +70,7 @@ $report = [
     'mode' => $dryRun ? 'dry-run' : 'apply',
     'cutoffs' => [
         'metric' => $metricCutoff,
+        'cluster_gpu_metric' => $clusterGpuMetricCutoff,
         'log' => $logCutoff,
         'task' => $taskCutoff,
         'api_access' => $apiAccessCutoff,

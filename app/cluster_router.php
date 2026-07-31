@@ -4727,7 +4727,7 @@ function hub_cluster_store_station_status(PDO $db, int $stationId, array $snapsh
 function hub_cluster_store_station_gpu_metric_snapshot(PDO $db, int $stationId, array $statusSnapshot): void
 {
     $sampledAt = trim((string)($statusSnapshot['snapshot_at'] ?? ''));
-    $gpu = is_array($statusSnapshot['gpu'] ?? null) ? hub_cluster_compact_gpu_snapshot($statusSnapshot['gpu']) : [];
+    $gpu = is_array($statusSnapshot['gpu'] ?? null) ? hub_cluster_compact_gpu_metric_history_snapshot($statusSnapshot['gpu']) : [];
     if ($sampledAt === '' || $gpu === []) {
         return;
     }
@@ -4744,8 +4744,27 @@ function hub_cluster_store_station_gpu_metric_snapshot(PDO $db, int $stationId, 
         ':sampled_at' => $sampledAt,
         ':gpu_json' => json_encode($gpu, JSON_THROW_ON_ERROR),
     ]);
-    $db->prepare('DELETE FROM cluster_gpu_metric_snapshots WHERE sampled_at < :cutoff')
-        ->execute([':cutoff' => date('Y-m-d H:i:s', time() - 86400)]);
+}
+
+function hub_cluster_compact_gpu_metric_history_snapshot(array $gpu): array
+{
+    $compact = [];
+    if (is_bool($gpu['available'] ?? null)) {
+        $compact['available'] = $gpu['available'];
+    }
+    foreach ([
+        'util_percent' => [0, 100],
+        'memory_used_mb' => [0, 1_000_000_000],
+        'memory_total_mb' => [0, 1_000_000_000],
+        'temperature_c' => [-100, 1000],
+    ] as $field => [$minimum, $maximum]) {
+        $value = $gpu[$field] ?? null;
+        if (is_int($value) && $value >= $minimum && $value <= $maximum) {
+            $compact[$field] = $value;
+        }
+    }
+
+    return $compact;
 }
 
 function hub_cluster_verified_status_snapshot_at(string $value, ?int $now = null): ?string
