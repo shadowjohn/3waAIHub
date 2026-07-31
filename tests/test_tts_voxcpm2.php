@@ -4310,14 +4310,24 @@ function hub_test_voxcpm2_cluster_runner_metadata(
     string $promptSha256,
     string $targetText,
     string $mode = 'ultimate_clone',
+    string $control = '',
+    int $taskSeed = 42,
+    string $seedPolicy = 'derived_per_chunk',
+    array $device = ['type' => 'cuda', 'real_inference' => true],
 ): array {
-    $normalized = preg_replace('/(*UCP)\s+/u', ' ', trim($targetText));
+    $normalized = preg_replace('/(*UCP)\s+/u', ' ', $targetText);
+    $normalized = is_string($normalized) ? trim($normalized, ' ') : null;
     if (!is_string($normalized) || $normalized === '') {
         throw new RuntimeException('Invalid production metadata fixture target.');
     }
     $chunkId = 'chunk-0001';
-    $seedSha256 = hash('sha256', '42' . $chunkId);
-    $seed = (int)(hexdec(substr($seedSha256, 8, 8)) % 2147483648);
+    if (!in_array($seedPolicy, ['fixed', 'derived_per_chunk'], true)) {
+        throw new RuntimeException('Invalid production metadata fixture seed policy.');
+    }
+    $seedSha256 = hash('sha256', $seedPolicy === 'fixed' ? (string)$taskSeed : $taskSeed . $chunkId);
+    $seed = $seedPolicy === 'fixed'
+        ? $taskSeed
+        : (int)(hexdec(substr($seedSha256, 8, 8)) % 2147483648);
     $chunks = [[
         'id' => $chunkId,
         'text' => $normalized,
@@ -4329,8 +4339,8 @@ function hub_test_voxcpm2_cluster_runner_metadata(
         'normalization' => 'semantic-v1',
         'normalized_input' => $normalized,
         'max_chunk_chars' => 240,
-        'task_seed' => 42,
-        'seed_policy' => 'derived_per_chunk',
+        'task_seed' => $taskSeed,
+        'seed_policy' => $seedPolicy,
         'chunks' => $chunks,
     ];
     if (!in_array($mode, ['design', 'clone', 'ultimate_clone'], true)) {
@@ -4338,7 +4348,7 @@ function hub_test_voxcpm2_cluster_runner_metadata(
     }
     $voiceCore = [
         'mode' => $mode,
-        'control' => '',
+        'control' => $control,
     ];
     if ($mode !== 'design') {
         $voiceCore['reference_audio_sha256'] = $referenceSha256;
@@ -4362,8 +4372,8 @@ function hub_test_voxcpm2_cluster_runner_metadata(
         ],
         'controls' => [
             'mode' => $mode,
-            'seed_policy' => 'derived_per_chunk',
-            'task_seed' => 42,
+            'seed_policy' => $seedPolicy,
+            'task_seed' => $taskSeed,
         ],
         'chunks' => [[
             'id' => $chunkId,
@@ -4396,8 +4406,47 @@ function hub_test_voxcpm2_cluster_runner_metadata(
             'end_frame' => 12000,
             'sample_rate' => 48000,
         ]],
-        'device' => ['type' => 'cuda', 'real_inference' => true],
+        'device' => $device,
     ];
+}
+
+function hub_test_voxcpm2_cluster_runner_input(
+    string $referenceSha256,
+    string $promptSha256,
+    string $targetText,
+    string $mode,
+    string $control = '',
+    int $taskSeed = 42,
+    string $seedPolicy = 'derived_per_chunk',
+): array {
+    $input = [
+        'text' => $targetText,
+        'mode' => $mode,
+        'seed' => $taskSeed,
+        'seed_policy' => $seedPolicy,
+        'model' => 'voxcpm2',
+    ];
+    if ($control !== '') {
+        $input['control'] = $control;
+    }
+    if ($mode === 'design') {
+        return $input;
+    }
+    $input['voice_profile_id'] = 17;
+    $input['voice_context'] = [
+        'mode' => $mode,
+        'voice_profile_id' => 17,
+        'reference_audio_sha256' => $referenceSha256,
+    ];
+    if ($mode === 'ultimate_clone') {
+        $input['voice_context'] += [
+            'prompt_text_sha256' => $promptSha256,
+            'prompt_text_confirmed_at' => '2026-07-31 12:00:00',
+        ];
+    }
+    $input['voice_context']['container_path'] = '/data/voice_profiles/reference.wav';
+
+    return $input;
 }
 
 hub_test('VoxCPM2 public metadata enforces the current schema and only normalizes legacy Pack versions', function (): void {
@@ -4416,8 +4465,8 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
         'sha256' => hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($legacyVoice)),
     ];
     $legacyJson = json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
-    $makeArtifact = static function (string $version, string $name, string $json) use ($db): array {
-        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '203.0.113.44', [
+    $makeArtifact = static function (string $version, string $name, string $json, array $input = []) use ($db): array {
+        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, $input, null, '203.0.113.44', [
             'requested_mode' => 'voice_generate',
             'pack_id' => 'tts-voxcpm2',
             'pack_version' => $version,
@@ -4439,12 +4488,21 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
         ]];
     };
 
-    foreach (['design', 'clone', 'ultimate_clone'] as $mode) {
+    $canonicalCases = [
+        'design' => ["Canonical \n design metadata.", 'steady', 7, 'fixed', ['type' => 'fake', 'real_inference' => false]],
+        'clone' => ['Canonical clone metadata.', 'calm', 41, 'derived_per_chunk', ['type' => 'cuda', 'real_inference' => true]],
+        'ultimate_clone' => ['Canonical ultimate_clone metadata.', '', 42, 'derived_per_chunk', ['type' => 'cuda', 'real_inference' => true]],
+    ];
+    foreach ($canonicalCases as $mode => [$targetText, $control, $taskSeed, $seedPolicy, $device]) {
         $currentMetadata = hub_test_voxcpm2_cluster_runner_metadata(
             str_repeat('a', 64),
             str_repeat('b', 64),
-            'Canonical ' . $mode . ' metadata.',
-            $mode
+            $targetText,
+            $mode,
+            $control,
+            $taskSeed,
+            $seedPolicy,
+            $device
         );
         $currentJson = json_encode(
             $currentMetadata,
@@ -4453,7 +4511,16 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
         [$currentTaskId, $currentArtifact] = $makeArtifact(
             '0.1.6',
             'current-' . $mode . '-metadata.json',
-            $currentJson
+            $currentJson,
+            hub_test_voxcpm2_cluster_runner_input(
+                str_repeat('a', 64),
+                str_repeat('b', 64),
+                $targetText,
+                $mode,
+                $control,
+                $taskSeed,
+                $seedPolicy
+            )
         );
         hub_test_assert(
             hub_voxcpm2_public_metadata_artifact($db, $currentTaskId, $currentArtifact) === $currentArtifact,
@@ -4491,6 +4558,142 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
     }
 
     $invalidCases = [
+        'substituted normalized plaintext with matching digests' => static function (array $value): array {
+            $substituted = 'Private prompt plaintext must not replace the target.';
+            $value['normalized_input'] = $substituted;
+            $value['plan']['normalized_input'] = $substituted;
+            $value['plan']['chunks'][0]['text'] = $substituted;
+            $value['plan']['chunks'][0]['text_sha256'] = hash('sha256', $substituted);
+            $planCore = $value['plan'];
+            unset($planCore['plan_sha256']);
+            $value['plan']['plan_sha256'] = hash(
+                'sha256',
+                hub_test_voxcpm2_cluster_runner_canonical_json($planCore)
+            );
+            return $value;
+        },
+        'substituted control token with matching voice digest' => static function (array $value): array {
+            $value['voice_context']['control'] = 'cluster-token-secret';
+            $voiceCore = $value['voice_context'];
+            unset($voiceCore['sha256']);
+            $value['voice_context']['sha256'] = hash(
+                'sha256',
+                hub_test_voxcpm2_cluster_runner_canonical_json($voiceCore)
+            );
+            return $value;
+        },
+        'substituted mode with matching voice digest' => static function (array $value): array {
+            $value['controls']['mode'] = 'clone';
+            $value['voice_context']['mode'] = 'clone';
+            unset($value['voice_context']['prompt_text_sha256']);
+            $voiceCore = $value['voice_context'];
+            unset($voiceCore['sha256']);
+            $value['voice_context']['sha256'] = hash(
+                'sha256',
+                hub_test_voxcpm2_cluster_runner_canonical_json($voiceCore)
+            );
+            return $value;
+        },
+        'substituted seed with matching plan digests' => static function (array $value): array {
+            $taskSeed = 99;
+            $chunkId = $value['plan']['chunks'][0]['id'];
+            $seedSha256 = hash('sha256', $taskSeed . $chunkId);
+            $seed = (int)(hexdec(substr($seedSha256, 8, 8)) % 2147483648);
+            $value['controls']['task_seed'] = $taskSeed;
+            $value['plan']['task_seed'] = $taskSeed;
+            $value['plan']['chunks'][0]['seed'] = $seed;
+            $value['plan']['chunks'][0]['seed_sha256'] = $seedSha256;
+            $value['chunks'][0]['seed'] = $seed;
+            $value['chunks'][0]['seed_sha256'] = $seedSha256;
+            $planCore = $value['plan'];
+            unset($planCore['plan_sha256']);
+            $value['plan']['plan_sha256'] = hash(
+                'sha256',
+                hub_test_voxcpm2_cluster_runner_canonical_json($planCore)
+            );
+            return $value;
+        },
+        'substituted Profile reference hash with matching voice digest' => static function (array $value): array {
+            $value['voice_context']['reference_audio_sha256'] = str_repeat('c', 64);
+            $voiceCore = $value['voice_context'];
+            unset($voiceCore['sha256']);
+            $value['voice_context']['sha256'] = hash(
+                'sha256',
+                hub_test_voxcpm2_cluster_runner_canonical_json($voiceCore)
+            );
+            return $value;
+        },
+        'substituted Profile prompt hash with matching voice digest' => static function (array $value): array {
+            $value['voice_context']['prompt_text_sha256'] = str_repeat('d', 64);
+            $voiceCore = $value['voice_context'];
+            unset($voiceCore['sha256']);
+            $value['voice_context']['sha256'] = hash(
+                'sha256',
+                hub_test_voxcpm2_cluster_runner_canonical_json($voiceCore)
+            );
+            return $value;
+        },
+        'voice digest mismatch' => static function (array $value): array {
+            $value['voice_context']['sha256'] = str_repeat('f', 64);
+            return $value;
+        },
+        'plan digest path substitution' => static function (array $value): array {
+            $value['plan']['plan_sha256'] = '/srv/private/chunks.json';
+            return $value;
+        },
+        'chunk digest token substitution' => static function (array $value): array {
+            $value['plan']['chunks'][0]['text_sha256'] = 'cluster-token-secret';
+            return $value;
+        },
+        'seed digest mismatch' => static function (array $value): array {
+            $value['plan']['chunks'][0]['seed_sha256'] = str_repeat('e', 64);
+            $value['chunks'][0]['seed_sha256'] = str_repeat('e', 64);
+            return $value;
+        },
+        'Profile hash path substitution' => static function (array $value): array {
+            $value['voice_context']['reference_audio_sha256'] = '/data/voice_profiles/reference.wav';
+            return $value;
+        },
+        'Profile prompt plaintext substitution' => static function (array $value): array {
+            $value['voice_context']['prompt_text_sha256'] = 'confirmed prompt plaintext';
+            return $value;
+        },
+        'model constant substitution' => static function (array $value): array {
+            $value['model']['version'] = 'private/model/path';
+            return $value;
+        },
+        'chunk action path substitution' => static function (array $value): array {
+            $value['chunks'][0]['action'] = '/srv/private/output.wav';
+            return $value;
+        },
+        'chunk duration inconsistency' => static function (array $value): array {
+            $value['chunks'][0]['duration_seconds'] = 4.25;
+            return $value;
+        },
+        'chunk retry range substitution' => static function (array $value): array {
+            $value['chunks'][0]['attempts'] = 4;
+            return $value;
+        },
+        'timeline final frame inconsistency' => static function (array $value): array {
+            $value['timeline'][0]['end_frame'] = 11999;
+            return $value;
+        },
+        'final format frame inconsistency' => static function (array $value): array {
+            $value['final_format']['frames'] = 11999;
+            return $value;
+        },
+        'loudness constant substitution' => static function (array $value): array {
+            $value['loudness']['target_lufs'] = -14.0;
+            return $value;
+        },
+        'loudness gain range substitution' => static function (array $value): array {
+            $value['loudness']['gain'] = 0.2;
+            return $value;
+        },
+        'device attestation mismatch' => static function (array $value): array {
+            $value['device'] = ['type' => 'fake', 'real_inference' => true];
+            return $value;
+        },
         'top-level host_path' => static function (array $value): array {
             $value['host_path'] = '/srv/private/model';
             return $value;
@@ -4556,6 +4759,12 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
             return $value;
         },
     ];
+    $currentInput = hub_test_voxcpm2_cluster_runner_input(
+        str_repeat('a', 64),
+        str_repeat('b', 64),
+        'Version-bound public metadata.',
+        'ultimate_clone'
+    );
     foreach ($invalidCases as $case => $mutate) {
         $currentMetadata = $mutate($pathFreeMetadata);
         $currentJson = json_encode(
@@ -4565,7 +4774,8 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
         [$currentTaskId, $currentArtifact] = $makeArtifact(
             '0.1.6',
             'current-' . $case . '-metadata.json',
-            $currentJson
+            $currentJson,
+            $currentInput
         );
         $rejected = null;
         try {
@@ -4578,6 +4788,25 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
             '0.1.6 must reject metadata with ' . $case
         );
     }
+
+    $overlongText = str_repeat('x', 241);
+    hub_test_assert(
+        !hub_voxcpm2_public_metadata_schema_valid(
+            hub_test_voxcpm2_cluster_runner_metadata(
+                str_repeat('a', 64),
+                str_repeat('b', 64),
+                $overlongText,
+                'design'
+            ),
+            hub_test_voxcpm2_cluster_runner_input(
+                str_repeat('a', 64),
+                str_repeat('b', 64),
+                $overlongText,
+                'design'
+            )
+        ),
+        '0.1.6 must reject an internally consistent unsplit chunk above max_chunk_chars'
+    );
 });
 
 hub_test('VoxCPM2 private request write failure leaves no prompt bytes when rename and unlink fail', function (): void {

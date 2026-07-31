@@ -3516,38 +3516,161 @@ function hub_voxcpm2_metadata_canonical_json(mixed $value): string
     );
 }
 
-function hub_voxcpm2_public_metadata_schema_valid(array $metadata): bool
+function hub_voxcpm2_metadata_exact_keys(mixed $value, array $expected): bool
 {
-    $exactKeys = static function (mixed $value, array $keys): bool {
-        return is_array($value)
-            && !array_is_list($value)
-            && count($value) === count($keys)
-            && array_diff($keys, array_keys($value)) === [];
-    };
-    $number = static fn (mixed $value): bool => is_int($value) || is_float($value);
-    $boundedList = static fn (mixed $value): bool => is_array($value)
-        && array_is_list($value)
-        && $value !== []
-        && count($value) <= 128;
-
-    if (!$exactKeys($metadata, [
-        'normalized_input',
-        'plan',
-        'model',
-        'voice_context',
-        'controls',
-        'chunks',
-        'final_format',
-        'loudness',
-        'timeline',
-        'device',
-    ]) || !is_string($metadata['normalized_input'])) {
+    if (!is_array($value) || array_is_list($value)) {
         return false;
     }
+    $actual = array_keys($value);
+    sort($actual, SORT_STRING);
+    sort($expected, SORT_STRING);
 
-    $plan = $metadata['plan'];
-    $planChunks = is_array($plan) ? ($plan['chunks'] ?? null) : null;
-    if (!$exactKeys($plan, [
+    return $actual === $expected;
+}
+
+function hub_voxcpm2_metadata_exact_value(mixed $actual, mixed $expected): bool
+{
+    try {
+        return hash_equals(
+            hub_voxcpm2_metadata_canonical_json($expected),
+            hub_voxcpm2_metadata_canonical_json($actual)
+        );
+    } catch (JsonException) {
+        return false;
+    }
+}
+
+function hub_voxcpm2_metadata_sha256(mixed $value): bool
+{
+    return is_string($value) && preg_match('/\A[a-f0-9]{64}\z/', $value) === 1;
+}
+
+function hub_voxcpm2_metadata_utf8_length(mixed $value): ?int
+{
+    if (!is_string($value) || preg_match('//u', $value) !== 1) {
+        return null;
+    }
+    $length = preg_match_all('/./us', $value, $matches);
+
+    return $length === false ? null : $length;
+}
+
+function hub_voxcpm2_metadata_normalized_input(mixed $value): ?string
+{
+    $length = hub_voxcpm2_metadata_utf8_length($value);
+    if ($length === null || $length < 1 || $length > 50000) {
+        return null;
+    }
+    $normalized = preg_replace('/(*UCP)\s+/u', ' ', $value);
+    if (!is_string($normalized)) {
+        return null;
+    }
+    $normalized = trim($normalized, ' ');
+
+    return $normalized !== '' ? $normalized : null;
+}
+
+function hub_voxcpm2_metadata_digest_valid(array $value, string $field): bool
+{
+    $digest = $value[$field] ?? null;
+    if (!hub_voxcpm2_metadata_sha256($digest)) {
+        return false;
+    }
+    unset($value[$field]);
+
+    return hash_equals($digest, hash('sha256', hub_voxcpm2_metadata_canonical_json($value)));
+}
+
+function hub_voxcpm2_metadata_chunk_seed(int $taskSeed, string $policy, string $chunkId): ?array
+{
+    if ($policy === 'fixed') {
+        return ['seed' => $taskSeed, 'sha256' => hash('sha256', (string)$taskSeed)];
+    }
+    if ($policy !== 'derived_per_chunk') {
+        return null;
+    }
+    $sha256 = hash('sha256', $taskSeed . $chunkId);
+
+    return [
+        'seed' => (int)(hexdec(substr($sha256, 8, 8)) % 2147483648),
+        'sha256' => $sha256,
+    ];
+}
+
+function hub_voxcpm2_metadata_task_contract(array $input): ?array
+{
+    $normalizedInput = hub_voxcpm2_metadata_normalized_input($input['text'] ?? null);
+    $mode = $input['mode'] ?? 'design';
+    $control = $input['control'] ?? '';
+    $taskSeed = $input['seed'] ?? 42;
+    $seedPolicy = $input['seed_policy'] ?? 'derived_per_chunk';
+    $controlLength = hub_voxcpm2_metadata_utf8_length($control);
+    if ($normalizedInput === null
+        || !in_array($mode, ['design', 'clone', 'ultimate_clone'], true)
+        || !is_string($control)
+        || $controlLength === null
+        || $controlLength > 1024
+        || (array_key_exists('control', $input) && trim($control) === '')
+        || !is_int($taskSeed)
+        || $taskSeed < 0
+        || $taskSeed > 2147483647
+        || !in_array($seedPolicy, ['fixed', 'derived_per_chunk'], true)
+        || ($input['model'] ?? 'voxcpm2') !== 'voxcpm2') {
+        return null;
+    }
+
+    $voice = ['mode' => $mode, 'control' => $control];
+    if ($mode === 'design') {
+        if (array_key_exists('voice_context', $input)
+            || array_key_exists('voice_profile_id', $input)) {
+            return null;
+        }
+    } else {
+        $context = $input['voice_context'] ?? null;
+        $profileId = $input['voice_profile_id'] ?? null;
+        $contextKeys = $mode === 'clone'
+            ? ['mode', 'voice_profile_id', 'reference_audio_sha256', 'container_path']
+            : [
+                'mode',
+                'voice_profile_id',
+                'reference_audio_sha256',
+                'prompt_text_sha256',
+                'prompt_text_confirmed_at',
+                'container_path',
+            ];
+        if (!hub_voxcpm2_metadata_exact_keys($context, $contextKeys)
+            || !is_int($profileId)
+            || $profileId < 1
+            || ($context['mode'] ?? null) !== $mode
+            || ($context['voice_profile_id'] ?? null) !== $profileId
+            || ($context['container_path'] ?? null) !== '/data/voice_profiles/reference.wav'
+            || !hub_voxcpm2_metadata_sha256($context['reference_audio_sha256'] ?? null)) {
+            return null;
+        }
+        $voice['reference_audio_sha256'] = $context['reference_audio_sha256'];
+        if ($mode === 'ultimate_clone') {
+            if (!hub_voxcpm2_metadata_sha256($context['prompt_text_sha256'] ?? null)
+                || !is_string($context['prompt_text_confirmed_at'] ?? null)
+                || trim($context['prompt_text_confirmed_at']) === '') {
+                return null;
+            }
+            $voice['prompt_text_sha256'] = $context['prompt_text_sha256'];
+        }
+    }
+
+    return [
+        'normalized_input' => $normalizedInput,
+        'mode' => $mode,
+        'control' => $control,
+        'task_seed' => $taskSeed,
+        'seed_policy' => $seedPolicy,
+        'voice' => $voice,
+    ];
+}
+
+function hub_voxcpm2_metadata_plan_chunks(mixed $plan, array $expected): ?array
+{
+    if (!hub_voxcpm2_metadata_exact_keys($plan, [
         'normalization',
         'normalized_input',
         'max_chunk_chars',
@@ -3556,61 +3679,67 @@ function hub_voxcpm2_public_metadata_schema_valid(array $metadata): bool
         'chunks',
         'plan_sha256',
     ])
-        || !is_string($plan['normalization'])
-        || !is_string($plan['normalized_input'])
-        || !is_int($plan['max_chunk_chars'])
-        || !is_int($plan['task_seed'])
-        || !is_string($plan['seed_policy'])
-        || !$boundedList($planChunks)
-        || !is_string($plan['plan_sha256'])) {
-        return false;
+        || ($plan['normalization'] ?? null) !== 'semantic-v1'
+        || ($plan['normalized_input'] ?? null) !== $expected['normalized_input']
+        || ($plan['max_chunk_chars'] ?? null) !== 240
+        || ($plan['task_seed'] ?? null) !== $expected['task_seed']
+        || ($plan['seed_policy'] ?? null) !== $expected['seed_policy']
+        || !is_array($plan['chunks'] ?? null)
+        || !array_is_list($plan['chunks'])
+        || $plan['chunks'] === []
+        || count($plan['chunks']) > 128
+        || !hub_voxcpm2_metadata_digest_valid($plan, 'plan_sha256')) {
+        return null;
     }
-    foreach ($planChunks as $chunk) {
-        if (!$exactKeys($chunk, ['id', 'text', 'text_sha256', 'seed', 'seed_sha256'])
-            || !is_string($chunk['id'])
-            || !is_string($chunk['text'])
-            || !is_string($chunk['text_sha256'])
-            || !is_int($chunk['seed'])
-            || !is_string($chunk['seed_sha256'])) {
-            return false;
+
+    $joined = '';
+    foreach ($plan['chunks'] as $index => $chunk) {
+        $chunkId = sprintf('chunk-%04d', $index + 1);
+        $text = is_array($chunk) ? ($chunk['text'] ?? null) : null;
+        $textLength = hub_voxcpm2_metadata_utf8_length($text);
+        $seed = hub_voxcpm2_metadata_chunk_seed($expected['task_seed'], $expected['seed_policy'], $chunkId);
+        if (!hub_voxcpm2_metadata_exact_keys(
+            $chunk,
+            ['id', 'text', 'text_sha256', 'seed', 'seed_sha256']
+        )
+            || ($chunk['id'] ?? null) !== $chunkId
+            || $textLength === null
+            || $textLength < 1
+            || $textLength > 240
+            || !hub_voxcpm2_metadata_sha256($chunk['text_sha256'] ?? null)
+            || !hash_equals(hash('sha256', $text), $chunk['text_sha256'])
+            || $seed === null
+            || ($chunk['seed'] ?? null) !== $seed['seed']
+            || !hub_voxcpm2_metadata_sha256($chunk['seed_sha256'] ?? null)
+            || !hash_equals($seed['sha256'], $chunk['seed_sha256'])) {
+            return null;
         }
+        $joined .= $text;
     }
 
-    $model = $metadata['model'];
-    if (!$exactKeys($model, ['label', 'version', 'sample_rate'])
-        || !is_string($model['label'])
-        || !is_string($model['version'])
-        || !is_int($model['sample_rate'])) {
+    return hash_equals($expected['normalized_input'], $joined) ? $plan['chunks'] : null;
+}
+
+function hub_voxcpm2_metadata_render_valid(array $metadata, array $planChunks): bool
+{
+    $chunks = $metadata['chunks'] ?? null;
+    $timeline = $metadata['timeline'] ?? null;
+    if (!is_array($chunks)
+        || !array_is_list($chunks)
+        || count($chunks) !== count($planChunks)
+        || !is_array($timeline)
+        || !array_is_list($timeline)
+        || count($timeline) !== count($chunks)) {
         return false;
     }
 
-    $voice = $metadata['voice_context'];
-    $voiceKeys = match (is_array($voice) ? ($voice['mode'] ?? null) : null) {
-        'design' => ['mode', 'control', 'sha256'],
-        'clone' => ['mode', 'control', 'reference_audio_sha256', 'sha256'],
-        'ultimate_clone' => ['mode', 'control', 'reference_audio_sha256', 'prompt_text_sha256', 'sha256'],
-        default => [],
-    };
-    if ($voiceKeys === []
-        || !$exactKeys($voice, $voiceKeys)
-        || array_filter($voice, static fn (mixed $value): bool => !is_string($value)) !== []) {
-        return false;
-    }
-
-    $controls = $metadata['controls'];
-    if (!$exactKeys($controls, ['mode', 'seed_policy', 'task_seed'])
-        || !is_string($controls['mode'])
-        || !is_string($controls['seed_policy'])
-        || !is_int($controls['task_seed'])) {
-        return false;
-    }
-
-    $chunks = $metadata['chunks'];
-    if (!$boundedList($chunks) || count($chunks) !== count($planChunks)) {
-        return false;
-    }
-    foreach ($chunks as $chunk) {
-        if (!$exactKeys($chunk, [
+    $number = static fn (mixed $value): bool => is_int($value) || is_float($value);
+    $maxFrames = 33554432;
+    $previousEnd = 0;
+    foreach ($chunks as $index => $chunk) {
+        $planned = $planChunks[$index];
+        $event = $timeline[$index] ?? null;
+        if (!hub_voxcpm2_metadata_exact_keys($chunk, [
             'id',
             'seed',
             'seed_sha256',
@@ -3624,52 +3753,153 @@ function hub_voxcpm2_public_metadata_schema_valid(array $metadata): bool
             'pause_frames',
             'crossfade_frames',
         ])
-            || !is_string($chunk['id'])
-            || !is_int($chunk['seed'])
-            || !is_string($chunk['seed_sha256'])
-            || !is_int($chunk['attempts'])
-            || !is_int($chunk['duration_frames'])
-            || !$number($chunk['duration_seconds'])
-            || !$number($chunk['peak_gain'])
-            || !is_bool($chunk['reused_checkpoint'])
-            || !is_string($chunk['action'])
-            || !is_int($chunk['trim_frames'])
-            || !is_int($chunk['pause_frames'])
-            || !is_int($chunk['crossfade_frames'])) {
+            || ($chunk['id'] ?? null) !== $planned['id']
+            || ($chunk['seed'] ?? null) !== $planned['seed']
+            || !hub_voxcpm2_metadata_sha256($chunk['seed_sha256'] ?? null)
+            || !hash_equals($planned['seed_sha256'], $chunk['seed_sha256'])
+            || !is_int($chunk['attempts'] ?? null)
+            || $chunk['attempts'] < 1
+            || $chunk['attempts'] > 3
+            || !is_int($chunk['duration_frames'] ?? null)
+            || $chunk['duration_frames'] < 1
+            || $chunk['duration_frames'] > $maxFrames
+            || !$number($chunk['duration_seconds'] ?? null)
+            || abs((float)$chunk['duration_seconds'] - ($chunk['duration_frames'] / 48000)) > 1.0e-9
+            || !$number($chunk['peak_gain'] ?? null)
+            || (float)$chunk['peak_gain'] <= 0
+            || (float)$chunk['peak_gain'] > 1
+            || !is_bool($chunk['reused_checkpoint'] ?? null)
+            || !in_array($chunk['action'] ?? null, [
+                'direct_concat',
+                'silence_insert',
+                'crossfade',
+                'trim_then_pause',
+                'regenerate_chunk',
+            ], true)
+            || !is_int($chunk['trim_frames'] ?? null)
+            || $chunk['trim_frames'] < 0
+            || $chunk['trim_frames'] > $maxFrames
+            || !is_int($chunk['pause_frames'] ?? null)
+            || $chunk['pause_frames'] < 0
+            || $chunk['pause_frames'] > $maxFrames
+            || !is_int($chunk['crossfade_frames'] ?? null)
+            || $chunk['crossfade_frames'] < 0
+            || $chunk['crossfade_frames'] > $maxFrames
+            || !hub_voxcpm2_metadata_exact_keys(
+                $event,
+                ['chunk_id', 'start_frame', 'end_frame', 'sample_rate']
+            )
+            || ($event['chunk_id'] ?? null) !== $planned['id']
+            || ($event['sample_rate'] ?? null) !== 48000) {
             return false;
         }
+
+        $trim = $chunk['trim_frames'];
+        $pause = $chunk['pause_frames'];
+        $crossfade = $chunk['crossfade_frames'];
+        $duration = $chunk['duration_frames'];
+        $expectedStart = $previousEnd;
+        $renderedDuration = $duration;
+        if ($index === 0) {
+            if ($chunk['action'] !== 'direct_concat' || $trim !== 0 || $pause !== 0 || $crossfade !== 0) {
+                return false;
+            }
+        } elseif ($chunk['action'] === 'silence_insert') {
+            if ($trim !== 0 || $pause < 1 || $crossfade !== 0) {
+                return false;
+            }
+            $expectedStart += $pause;
+        } elseif ($chunk['action'] === 'crossfade') {
+            if ($trim !== 0 || $pause !== 0 || $crossfade < 1 || $crossfade >= $duration) {
+                return false;
+            }
+            $renderedDuration -= $crossfade;
+        } elseif ($chunk['action'] === 'trim_then_pause') {
+            if ($trim < 1 || $trim > $previousEnd || $pause < 1 || $crossfade !== 0) {
+                return false;
+            }
+            $expectedStart += $pause - $trim;
+        } elseif ($trim !== 0 || $pause !== 0 || $crossfade !== 0) {
+            return false;
+        }
+        $expectedEnd = $expectedStart + $renderedDuration;
+        if (($event['start_frame'] ?? null) !== $expectedStart
+            || ($event['end_frame'] ?? null) !== $expectedEnd
+            || $expectedStart < 0
+            || $expectedEnd > $maxFrames) {
+            return false;
+        }
+        $previousEnd = $expectedEnd;
     }
 
-    $timeline = $metadata['timeline'];
-    if (!$boundedList($timeline) || count($timeline) !== count($chunks)) {
+    return hub_voxcpm2_metadata_exact_value($metadata['final_format'] ?? null, [
+        'mime_type' => 'audio/wav',
+        'sample_rate' => 48000,
+        'channels' => 1,
+        'frames' => $previousEnd,
+    ])
+        && hub_voxcpm2_metadata_exact_keys(
+            $metadata['loudness'] ?? null,
+            ['passes', 'target_lufs', 'gain']
+        )
+        && ($metadata['loudness']['passes'] ?? null) === 1
+        && $number($metadata['loudness']['target_lufs'] ?? null)
+        && (float)$metadata['loudness']['target_lufs'] === -16.0
+        && $number($metadata['loudness']['gain'] ?? null)
+        && (float)$metadata['loudness']['gain'] >= 0.25
+        && (float)$metadata['loudness']['gain'] <= 2;
+}
+
+function hub_voxcpm2_public_metadata_schema_valid(array $metadata, array $taskInput): bool
+{
+    if (!hub_voxcpm2_metadata_exact_keys($metadata, [
+        'normalized_input',
+        'plan',
+        'model',
+        'voice_context',
+        'controls',
+        'chunks',
+        'final_format',
+        'loudness',
+        'timeline',
+        'device',
+    ])) {
         return false;
     }
-    foreach ($timeline as $event) {
-        if (!$exactKeys($event, ['chunk_id', 'start_frame', 'end_frame', 'sample_rate'])
-            || !is_string($event['chunk_id'])
-            || !is_int($event['start_frame'])
-            || !is_int($event['end_frame'])
-            || !is_int($event['sample_rate'])) {
-            return false;
-        }
+    $expected = hub_voxcpm2_metadata_task_contract($taskInput);
+    if ($expected === null
+        || ($metadata['normalized_input'] ?? null) !== $expected['normalized_input']
+        || !hub_voxcpm2_metadata_exact_value($metadata['model'] ?? null, [
+            'label' => 'VoxCPM2',
+            'version' => '2.0.3',
+            'sample_rate' => 48000,
+        ])
+        || !hub_voxcpm2_metadata_exact_keys($metadata['voice_context'] ?? null, array_merge(
+            array_keys($expected['voice']),
+            ['sha256']
+        ))
+        || !hub_voxcpm2_metadata_digest_valid($metadata['voice_context'], 'sha256')
+        || !hub_voxcpm2_metadata_exact_value(
+            array_diff_key($metadata['voice_context'], ['sha256' => true]),
+            $expected['voice']
+        )
+        || !hub_voxcpm2_metadata_exact_value($metadata['controls'] ?? null, [
+            'mode' => $expected['mode'],
+            'seed_policy' => $expected['seed_policy'],
+            'task_seed' => $expected['task_seed'],
+        ])
+        || (!hub_voxcpm2_metadata_exact_value(
+            $metadata['device'] ?? null,
+            ['type' => 'fake', 'real_inference' => false]
+        ) && !hub_voxcpm2_metadata_exact_value(
+            $metadata['device'] ?? null,
+            ['type' => 'cuda', 'real_inference' => true]
+        ))) {
+        return false;
     }
+    $planChunks = hub_voxcpm2_metadata_plan_chunks($metadata['plan'] ?? null, $expected);
 
-    $format = $metadata['final_format'];
-    $loudness = $metadata['loudness'];
-    $device = $metadata['device'];
-
-    return $exactKeys($format, ['mime_type', 'sample_rate', 'channels', 'frames'])
-        && is_string($format['mime_type'])
-        && is_int($format['sample_rate'])
-        && is_int($format['channels'])
-        && is_int($format['frames'])
-        && $exactKeys($loudness, ['passes', 'target_lufs', 'gain'])
-        && is_int($loudness['passes'])
-        && $number($loudness['target_lufs'])
-        && $number($loudness['gain'])
-        && $exactKeys($device, ['type', 'real_inference'])
-        && is_string($device['type'])
-        && is_bool($device['real_inference']);
+    return $planChunks !== null && hub_voxcpm2_metadata_render_valid($metadata, $planChunks);
 }
 
 function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artifact): array
@@ -3677,7 +3907,7 @@ function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artif
     if (($artifact['artifact_type'] ?? null) !== 'synthesis_metadata') {
         return $artifact;
     }
-    $stmt = $db->prepare('SELECT pack_id, pack_version, job FROM tasks WHERE id = :id');
+    $stmt = $db->prepare('SELECT pack_id, pack_version, job, input_json FROM tasks WHERE id = :id');
     $stmt->execute([':id' => $taskId]);
     $task = $stmt->fetch();
     if (!$task
@@ -3717,7 +3947,14 @@ function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artif
     $model = $metadata['model'] ?? null;
     $voice = $metadata['voice_context'] ?? null;
     if (($task['pack_version'] ?? null) === '0.1.6') {
-        if (!hub_voxcpm2_public_metadata_schema_valid($metadata)) {
+        try {
+            $taskInput = json_decode((string)($task['input_json'] ?? ''), true, 64, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            throw new InvalidArgumentException('validated_artifact_invalid');
+        }
+        if (!is_array($taskInput)
+            || array_is_list($taskInput)
+            || !hub_voxcpm2_public_metadata_schema_valid($metadata, $taskInput)) {
             throw new InvalidArgumentException('validated_artifact_invalid');
         }
 
