@@ -2099,6 +2099,49 @@ hub_test('cluster router preserves Edge TTS GET list and demo requests for self 
     });
 });
 
+hub_test('cluster router applies bounded native limits to voice multipart fields', function (): void {
+    $normalize = static fn (array $post): array => hub_cluster_router_normalize_request('voice_generate', [
+        'method' => 'POST',
+        'headers' => ['Content-Type' => 'multipart/form-data; boundary=voice-limits'],
+        'content_length' => '',
+        'post' => $post,
+        'files' => [],
+        'query' => [],
+    ]);
+    $validPrompt = str_repeat('p', 1025);
+    $profile = $normalize([
+        'operation' => 'profile_prepare',
+        'profile_name' => 'Bounded profile',
+        'consent_type' => 'self_recorded',
+        'prompt_text' => $validPrompt,
+    ]);
+    $text = $normalize(['text' => str_repeat('t', 4096), 'voice_prompt' => str_repeat('v', 1024)]);
+    $invalid = [
+        $normalize([
+            'operation' => 'profile_prepare',
+            'profile_name' => 'Oversized profile',
+            'consent_type' => 'self_recorded',
+            'prompt_text' => str_repeat('p', 20001),
+        ]),
+        $normalize(['text' => 'synthesize', 'voice_prompt' => str_repeat('v', 1025)]),
+        $normalize(['text' => str_repeat('t', 4097)]),
+        $normalize(['text' => 'synthesize', 'unexpected' => 'field']),
+        $normalize(['text' => ['nested']]),
+        $normalize(['text' => "control\ncharacter"]),
+    ];
+
+    hub_test_assert(
+        !isset($profile['response'])
+        && ($profile['form']['post']['prompt_text'] ?? null) === $validPrompt
+        && !isset($text['response']),
+        'profile_prepare prompts over 1 KiB and synthesis text through 4096 bytes must reach the native contract'
+    );
+    hub_test_assert(
+        array_filter($invalid, static fn (array $result): bool => ($result['response']['status'] ?? 0) !== 400) === [],
+        'voice multipart admission must reject contract overflow, ordinary field overflow, unexpected fields, arrays, and control characters'
+    );
+});
+
 hub_test('cluster router relays validated multipart uploads and rejects malformed forms', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
@@ -3583,6 +3626,77 @@ hub_test('cluster router keeps self-station profile routes local and substitutes
 
             hub_test_assert($status['status'] === 200 && $queryStatus['status'] === 200 && $direct === 3 && $http === 0, 'pinned self profile requests must stay in-process even when another station is preferred');
             hub_test_assert($_GET === $oldGet && $_POST === [] && $_FILES === [], 'self profile dispatch must restore request globals');
+        });
+    });
+});
+
+hub_test('cluster router maps pinned self-station dispatcher exceptions to station unavailable without failover', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'voice_generate');
+            hub_cluster_node_configure($db, true, ['voice_generate']);
+            $self = hub_cluster_register_self_station($db);
+            $other = hub_test_cluster_router_station($db, [
+                'station_key' => 'profile_self_fallback',
+                'station_token' => 'profile_self_fallback_token',
+                'modes' => ['voice_generate'],
+            ]);
+            $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+            $memberId = (int)$db->query('SELECT member_id FROM api_tokens WHERE id = ' . (int)$customer['token_id'])->fetchColumn();
+            $routeId = hub_cluster_router_admit_route($db, $self, [
+                'member_id' => $memberId,
+                'token_id' => (int)$customer['token_id'],
+            ], 'voice_generate', false, true, 'profile_prepare');
+            if (!is_string($routeId)) {
+                throw new RuntimeException('self profile route admission failed');
+            }
+            hub_cluster_rewrite_async_response($db, [
+                'route_id' => $routeId,
+                'station_id' => (int)$self['id'],
+            ], ['ok' => true, 'task_id' => '42'], 'cluster_api.php');
+            $direct = 0;
+            $remote = 0;
+
+            $response = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request(
+                (string)$customer['plain_token'],
+                [
+                    'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                    'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $routeId,
+                ]
+            ), [
+                'refresh_due' => static fn (): array => [
+                    hub_test_cluster_station_fixture([
+                        'id' => (int)$other['id'],
+                        'station_key' => 'profile_self_fallback',
+                        'priority' => 99,
+                        'modes' => ['voice_generate'],
+                    ]),
+                    hub_test_cluster_station_fixture([
+                        'id' => (int)$self['id'],
+                        'station_key' => (string)$self['station_key'],
+                        'modes' => ['voice_generate'],
+                    ]),
+                ],
+                'direct_dispatcher' => static function () use (&$direct): array {
+                    $direct++;
+                    throw new RuntimeException('self station failed');
+                },
+                'transport' => static function () use (&$remote): array {
+                    $remote++;
+                    return hub_gateway_json(200, ['ok' => true]);
+                },
+            ]);
+
+            hub_test_assert(
+                $response['status'] === 503
+                && str_contains($response['body'], 'station_unavailable')
+                && !str_contains($response['body'], 'router_proxy_failed')
+                && $direct === 1
+                && $remote === 0,
+                'pinned self-station exceptions must return station_unavailable without trying another station'
+            );
         });
     });
 });

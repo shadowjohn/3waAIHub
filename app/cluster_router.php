@@ -1518,7 +1518,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             }
         }
     } catch (Throwable) {
-        $response = $profileRoute !== null && !$selfStation
+        $response = $profileRoute !== null
             ? hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable')
             : hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
     } finally {
@@ -1574,7 +1574,10 @@ function hub_cluster_router_normalize_request(string $mode, array $request): arr
         if (hub_cluster_router_content_length_exceeds($contentLength, hub_cluster_proxy_request_limit_bytes())) {
             return ['response' => hub_gateway_error(413, 'router_request_too_large', 'request body is too large for the cluster router')];
         }
-        $post = hub_cluster_router_normalize_scalar_fields(array_key_exists('post', $request) ? $request['post'] : ($_POST ?? []));
+        $post = hub_cluster_router_normalize_scalar_fields(
+            array_key_exists('post', $request) ? $request['post'] : ($_POST ?? []),
+            $mode
+        );
         $files = hub_cluster_router_normalize_uploaded_files(array_key_exists('files', $request) ? $request['files'] : ($_FILES ?? []));
         if ($post === null || $files === null) {
             return ['response' => hub_gateway_error(400, 'router_request_unsupported', 'multipart form is not supported')];
@@ -1962,18 +1965,63 @@ function hub_cluster_replace_voice_profile_reference(array $normalized, string $
     return $normalized;
 }
 
-function hub_cluster_router_normalize_scalar_fields(mixed $source): ?array
+function hub_cluster_router_multipart_scalar_limits(string $mode, array $source): ?array
+{
+    if ($mode !== 'voice_generate') {
+        return null;
+    }
+    $operation = $source['operation'] ?? null;
+    if ($operation !== null && !is_scalar($operation)) {
+        return [];
+    }
+    $operation = $operation === null ? null : (string)$operation;
+    if ($operation === 'profile_prepare') {
+        return [
+            'operation' => 15,
+            'profile_name' => 120,
+            'consent_type' => 19,
+            'prompt_text' => 20000,
+            'transcript_confirmed' => 5,
+            'language' => 64,
+            'callback_target' => 32,
+            'expires_in_seconds' => 5,
+        ];
+    }
+    if ($operation !== null && $operation !== 'synthesize') {
+        return [];
+    }
+
+    return [
+        'operation' => 10,
+        'text' => 4096,
+        'mode' => 16,
+        'voice_prompt' => 1024,
+        'control' => 1024,
+        'seed' => 10,
+        'seed_policy' => 32,
+        'model' => 32,
+        'voice_profile_id' => 10,
+        'voice_profile_task_id' => 64,
+        'waveform_preview' => 5,
+        'callback' => 5,
+        'callback_target' => 32,
+    ];
+}
+
+function hub_cluster_router_normalize_scalar_fields(mixed $source, string $mode = ''): ?array
 {
     if (!is_array($source)) {
         return null;
     }
+    $limits = hub_cluster_router_multipart_scalar_limits($mode, $source);
     $fields = [];
     foreach ($source as $key => $value) {
         if (!is_string($key) || preg_match('/^[A-Za-z][A-Za-z0-9_-]{0,63}$/', $key) !== 1 || !is_scalar($value)) {
             return null;
         }
         $value = (string)$value;
-        if (strlen($value) > 1024 || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+        $limit = $limits === null ? 1024 : ($limits[$key] ?? 0);
+        if ($limit === 0 || strlen($value) > $limit || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
             return null;
         }
         $fields[$key] = $value;
