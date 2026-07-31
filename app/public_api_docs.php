@@ -491,9 +491,9 @@ function hub_public_api_voice_generate_contract(array $contract): array
     $taskOutput = ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'];
     $profileTaskField = ['name' => 'voice_profile_task_id', 'type' => 'string', 'required' => true, 'max_length' => 18];
     $profileStatusOutput = [
-        'ok', 'task_status', 'profile_status', 'transcription_status', 'transcript_confirmed',
-        'prompt_text_confirmed_at', 'profile_name', 'language', 'consent_type',
-        'reference_audio_sha256', 'created_at', 'updated_at',
+        'ok', 'task_status', 'profile_status', 'transcription_status', 'transcription_error',
+        'transcript_confirmed', 'prompt_text_confirmed_at', 'profile_name', 'language',
+        'consent_type', 'reference_audio_sha256', 'created_at', 'updated_at',
     ];
     $contract['operations'] = [
         [
@@ -580,7 +580,7 @@ function hub_public_api_voice_generate_contract(array $contract): array
         ['code' => 'voice_profile_prepare_failed', 'http_status' => 500],
         ['code' => 'voice_profile_delete_failed', 'http_status' => 500],
         ['code' => 'voice_profile_changed', 'task_status' => 'failed'],
-        ['code' => 'voice_profile_unavailable', 'http_status' => 409, 'task_status' => 'failed'],
+        ['code' => 'voice_profile_unavailable', 'http_status' => 410, 'task_status' => 'failed'],
         ['code' => 'pack_runtime_not_ready', 'http_status' => 503],
     ];
     $contract['errors'] = array_values(array_unique(array_merge($contract['errors'], array_column($contract['error_table'], 'code'))));

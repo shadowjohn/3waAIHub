@@ -395,10 +395,11 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
         'native profile_status must document owner-only unconfirmed ASR draft visibility'
     );
     $statusOutput = [
-        'ok', 'task_status', 'profile_status', 'transcription_status', 'transcript_confirmed',
-        'prompt_text_confirmed_at', 'profile_name', 'language', 'consent_type',
-        'reference_audio_sha256', 'created_at', 'updated_at',
+        'ok', 'task_status', 'profile_status', 'transcription_status', 'transcription_error',
+        'transcript_confirmed', 'prompt_text_confirmed_at', 'profile_name', 'language',
+        'consent_type', 'reference_audio_sha256', 'created_at', 'updated_at',
     ];
+    hub_test_assert(($profileStatus['output_keys'] ?? null) === $statusOutput, 'profile_status must document its exact bounded transcription error field');
     hub_test_assert(($operations['profile_confirm']['output_keys'] ?? null) === $statusOutput, 'profile_confirm must document its actual safe status response');
     hub_test_assert(($operations['profile_delete']['output_keys'] ?? null) === $statusOutput, 'profile_delete must document its actual safe status response');
 
@@ -409,7 +410,7 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
         'voice_profile_transcript_invalid' => 400,
         'voice_profile_forbidden' => 403,
         'voice_profile_transcript_unconfirmed' => 409,
-        'voice_profile_unavailable' => 409,
+        'voice_profile_unavailable' => 410,
         'voice_profile_not_found' => 404,
         'voice_profile_prepare_conflict' => 409,
         'voice_profile_callback_conflict' => 409,
@@ -1472,8 +1473,17 @@ hub_test('VoxCPM2 readmes document the safe native and Cluster profile lifecycle
     }
     $root = (string)file_get_contents(HUB_ROOT . '/README.md');
     $pack = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/README.md');
+    $design = (string)file_get_contents(HUB_ROOT . '/docs/superpowers/specs/2026-07-30-cluster-ultimate-clone-api-design.md');
     hub_test_assert(!str_contains($root, "第一版不做：\n\n- Ultimate Clone"), 'root README still says Ultimate Clone is unavailable');
     hub_test_assert(!str_contains($root, 'Public API 只能送 `voice_profile_id` 或 `reference_audio_id`'), 'root README still recommends obsolete public profile identifiers');
+    hub_test_assert(
+        str_contains($design, 'currently valid Token')
+        && str_contains($design, '`voice_generate` permission')
+        && str_contains($design, 'submitting Token')
+        && !str_contains($design, 'requires the exact customer member and Token ownership')
+        && !str_contains($design, 'exact customer-token ownership'),
+        'Cluster design must separate member-owned successful Profiles from exact-Token followups'
+    );
     hub_test_assert(
         !str_contains($root, 'child/local task/profile ID')
         && !str_contains($pack, 'child/local task or profile IDs'),

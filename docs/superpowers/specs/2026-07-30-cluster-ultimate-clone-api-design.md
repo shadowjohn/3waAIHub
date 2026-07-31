@@ -42,8 +42,9 @@ The implementation reuses these existing facilities:
   confirmation, consent audit, and soft deletion;
 - Pack-job task admission, ownership, callbacks, cancellation, artifact
   retention, GPU leases, and one-shot containers;
-- Cluster route IDs, exact customer-token ownership, child station tokens,
-  pinned task follow-ups, multipart relay, and artifact relay;
+- Cluster route IDs, member-owned successful Profile handles, exact-token
+  ordinary follow-ups, child station tokens, multipart relay, and artifact
+  relay;
 - the current synchronous VoxCPM2 `ultimate_clone` service contract.
 
 No separate Cluster Voice Profile mapping table is added. The Profile
@@ -164,8 +165,8 @@ For `profile_confirm`, `profile_status`, `profile_delete`, `clone`, or
 `ultimate_clone`, the Router:
 
 1. resolves `voice_profile_task_id` as an existing Cluster route;
-2. requires the exact customer member and Token ownership already used by
-   Cluster task follow-ups;
+2. requires the same customer member and a currently valid Token with
+   `voice_generate` permission;
 3. requires the route to represent a successful Profile preparation task;
 4. pins the request to that route's enabled and fresh station;
 5. replaces the opaque route ID with the child task ID only in the internal
@@ -183,7 +184,8 @@ station Token reaches this path.
 
 The generated task receives a new Cluster route. Status, result, log,
 cancellation, artifact download, and artifact acknowledgement use the
-existing `cluster_task_*` and `cluster_artifact` return path unchanged.
+existing `cluster_task_*` and `cluster_artifact` return path unchanged and
+remain bound to the submitting Token.
 
 If the pinned station is unavailable, the Router returns
 `station_unavailable`. It does not retry another station after dispatch and

@@ -865,7 +865,7 @@ function hub_cluster_voice_generate_relay_errors(): array
         'voice_profile_transcript_unconfirmed' => ['public_code' => 'voice_profile_transcript_unconfirmed', 'http_status' => 409, 'message' => 'voice profile transcript is not confirmed'],
         'voice_profile_prepare_incomplete' => ['public_code' => 'voice_profile_prepare_incomplete', 'http_status' => 409, 'message' => 'voice profile preparation is incomplete'],
         'voice_profile_confirm_failed' => ['public_code' => 'voice_profile_confirm_failed', 'http_status' => 409, 'message' => 'voice profile confirmation failed'],
-        'voice_profile_unavailable' => ['public_code' => 'voice_profile_unavailable', 'http_status' => 409, 'message' => 'voice profile is unavailable'],
+        'voice_profile_unavailable' => ['public_code' => 'voice_profile_unavailable', 'http_status' => 410, 'message' => 'voice profile is unavailable'],
         'artifact_purged' => ['public_code' => 'artifact_purged', 'http_status' => 410, 'message' => 'artifact is no longer available'],
         'pack_runtime_not_ready' => ['public_code' => 'pack_runtime_not_ready', 'http_status' => 503, 'message' => 'voice generation runtime is not ready'],
     ];
@@ -1516,7 +1516,9 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             }
         }
     } catch (Throwable) {
-        $response = hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
+        $response = $profileRoute !== null && !$selfStation
+            ? hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable')
+            : hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
     } finally {
         hub_cluster_router_complete_route(
             $db,
@@ -2368,6 +2370,7 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
         'task_status' => static fn (mixed $value): bool => is_string($value) && preg_match('/\A[a-z_]{1,32}\z/', $value) === 1,
         'profile_status' => static fn (mixed $value): bool => is_string($value) && in_array($value, ['active', 'deleted', 'expired'], true),
         'transcription_status' => static fn (mixed $value): bool => is_string($value) && in_array($value, ['pending', 'ready', 'failed'], true),
+        'transcription_error' => static fn (mixed $value): bool => $value === null || in_array($value, ['asr_failed', 'asr_unavailable'], true),
         'transcript_confirmed' => 'is_bool',
         'prompt_text_confirmed_at' => static fn (mixed $value): bool => $value === null || (is_string($value) && preg_match('/\A\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\z/', $value) === 1),
         'profile_name' => static fn (mixed $value): bool => is_string($value) && strlen($value) <= 120 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1,
@@ -2391,6 +2394,9 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
             throw new UnexpectedValueException('invalid voice profile response');
         }
         $safe[$key] = $payload[$key];
+    }
+    if (($safe['transcription_status'] === 'failed') !== is_string($safe['transcription_error'])) {
+        throw new UnexpectedValueException('invalid voice profile response');
     }
     if (array_key_exists('prompt_text', $payload)) {
         if (!$includeDraft

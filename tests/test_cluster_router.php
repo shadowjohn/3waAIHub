@@ -210,6 +210,7 @@ function hub_test_cluster_voice_profile_status_payload(array $overrides = []): a
         'task_status' => 'success',
         'profile_status' => 'active',
         'transcription_status' => 'ready',
+        'transcription_error' => null,
         'transcript_confirmed' => true,
         'prompt_text_confirmed_at' => '2026-07-31 12:00:00',
         'profile_name' => 'Cluster profile',
@@ -3033,6 +3034,42 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
     });
 });
 
+hub_test('cluster router relays only the bounded native profile transcription error', function (): void {
+    $expectedKeys = [
+        'ok', 'task_status', 'profile_status', 'transcription_status', 'transcription_error',
+        'transcript_confirmed', 'prompt_text_confirmed_at', 'profile_name', 'language',
+        'consent_type', 'reference_audio_sha256', 'created_at', 'updated_at',
+    ];
+    foreach ([null, 'asr_failed', 'asr_unavailable'] as $error) {
+        $payload = hub_test_cluster_voice_profile_status_payload([
+            'transcription_status' => $error === null ? 'ready' : 'failed',
+            'transcription_error' => $error,
+        ]);
+        $safe = hub_cluster_router_public_voice_profile_response($payload, true);
+        hub_test_assert(
+            array_keys($safe) === $expectedKeys && $safe['transcription_error'] === $error,
+            'profile status must preserve the exact bounded transcription error contract'
+        );
+    }
+
+    $missing = hub_test_cluster_voice_profile_status_payload();
+    unset($missing['transcription_error']);
+    foreach ([
+        $missing,
+        hub_test_cluster_voice_profile_status_payload(['transcription_error' => 'ASR failed at /private/profile.wav']),
+        hub_test_cluster_voice_profile_status_payload(['transcription_error' => 'asr_failed']),
+        hub_test_cluster_voice_profile_status_payload([
+            'transcription_status' => 'failed',
+            'transcription_error' => null,
+        ]),
+    ] as $invalid) {
+        hub_test_assert(
+            hub_test_throws(static fn (): array => hub_cluster_router_public_voice_profile_response($invalid, true)),
+            'profile status must reject missing, raw, or state-inconsistent transcription errors'
+        );
+    }
+});
+
 hub_test('cluster router fails closed on malformed successful voice profile responses', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
@@ -3452,7 +3489,13 @@ hub_test('cluster router rejects foreign or unavailable profile routes before pi
                 throw new RuntimeException('pinned station failed');
             },
         ]);
-        hub_test_assert($failed['status'] === 502 && $calls === 1, 'pinned dispatch failure must never retry the better-loaded station');
+        hub_test_assert(
+            $failed['status'] === 503
+            && str_contains($failed['body'], 'station_unavailable')
+            && !str_contains($failed['body'], 'router_proxy_failed')
+            && $calls === 1,
+            'pinned profile transport failure must return station_unavailable without retry'
+        );
 
         $db->prepare("UPDATE cluster_routes SET mode = 'vision' WHERE route_id = :route_id")->execute([':route_id' => $fixture['route_id']]);
         $wrongMode = hub_cluster_dispatch($db, 'voice_generate', $request((string)$fixture['customer']['plain_token']), [
@@ -3520,20 +3563,30 @@ hub_test('cluster router followups require the exact customer token before pinne
 
         hub_test_assert($denied['status'] === 404 && str_contains($denied['body'], 'route_not_found') && $requests === [], 'other customer tokens must fail before transport');
 
-        $rotatedDenied = hub_cluster_dispatch_followup($db, 'cluster_task_status', [
-            'bearer_token' => (string)$sameMember['plain_token'],
-            'client_ip' => '203.0.113.10',
-            'query' => ['task_id' => $fixture['route_id']],
-        ], static function (array $request) use (&$requests): array {
-            $requests[] = $request;
-            return hub_gateway_json(200, ['ok' => true]);
-        });
-        hub_test_assert(
-            $rotatedDenied['status'] === 404
-            && str_contains($rotatedDenied['body'], 'route_not_found')
-            && $requests === [],
-            'ordinary task followups must remain bound to the submitting Token after same-member rotation'
-        );
+        foreach ([
+            'cluster_task_status' => 'GET',
+            'cluster_task_result' => 'GET',
+            'cluster_task_log' => 'GET',
+            'cluster_task_cancel' => 'POST',
+            'cluster_artifact' => 'GET',
+            'cluster_task_artifacts_ack' => 'POST',
+        ] as $followupMode => $method) {
+            $rotatedDenied = hub_cluster_dispatch_followup($db, $followupMode, [
+                'method' => $method,
+                'bearer_token' => (string)$sameMember['plain_token'],
+                'client_ip' => '203.0.113.10',
+                'query' => ['task_id' => $fixture['route_id'], 'artifact_id' => '1'],
+            ], static function (array $request) use (&$requests): array {
+                $requests[] = $request;
+                return hub_gateway_json(200, ['ok' => true]);
+            });
+            hub_test_assert(
+                $rotatedDenied['status'] === 404
+                && str_contains($rotatedDenied['body'], 'route_not_found')
+                && $requests === [],
+                'ordinary task/result/log/cancel/artifact/ACK must remain bound to the submitting Token: ' . $followupMode
+            );
+        }
 
         $response = hub_cluster_dispatch_followup($db, 'cluster_task_status', [
             'bearer_token' => (string)$fixture['customer']['plain_token'],
@@ -4821,11 +4874,23 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         hub_test_assert(($synthesize['modes'] ?? null) === ['design', 'clone', 'ultimate_clone'], 'Cluster voice contract must retain all synthesis modes');
         $profileStatus = array_column((array)$voice['operations'], null, 'operation')['profile_status'] ?? [];
         $conditionalOutputs = array_column((array)($profileStatus['conditional_output_fields'] ?? []), null, 'name');
+        $statusOutput = [
+            'ok', 'task_status', 'profile_status', 'transcription_status', 'transcription_error',
+            'transcript_confirmed', 'prompt_text_confirmed_at', 'profile_name', 'language',
+            'consent_type', 'reference_audio_sha256', 'created_at', 'updated_at',
+        ];
         hub_test_assert(
-            str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'authenticated Profile member')
+            ($profileStatus['output_keys'] ?? null) === $statusOutput
+            && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'authenticated Profile member')
             && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'transcript_confirmed=false')
             && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'omitted after confirmation'),
             'Cluster profile_status must retain the safe conditional draft visibility contract'
+        );
+        $operations = array_column((array)$voice['operations'], null, 'operation');
+        hub_test_assert(
+            ($operations['profile_confirm']['output_keys'] ?? null) === $statusOutput
+            && ($operations['profile_delete']['output_keys'] ?? null) === $statusOutput,
+            'Cluster profile status responses must document the exact bounded transcription error field'
         );
         hub_test_assert(
             ($voice['result_artifact_fields'] ?? null) === ['id', 'type', 'mime_type', 'size_bytes', 'sha256']
@@ -4844,7 +4909,7 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
             'voice_profile_transcript_unconfirmed' => 409,
             'voice_profile_prepare_incomplete' => 409,
             'voice_profile_confirm_failed' => 409,
-            'voice_profile_unavailable' => 409,
+            'voice_profile_unavailable' => 410,
             'artifact_purged' => 410,
             'pack_runtime_not_ready' => 503,
             'station_unavailable' => 503,
@@ -4985,9 +5050,10 @@ hub_test('cluster voice dispatch safely relays only documented child error pairs
         foreach ([
             [409, ['ok' => false, 'error' => 'unknown_child_error', 'message' => 'private']],
             [400, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'wrong status']],
-            [409, ['ok' => true, 'error' => 'voice_profile_unavailable', 'message' => 'wrong ok']],
-            [409, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'private', 'extra' => 'leak']],
-            [409, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'private', 'request_id' => null]],
+            [409, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'old status']],
+            [410, ['ok' => true, 'error' => 'voice_profile_unavailable', 'message' => 'wrong ok']],
+            [410, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'private', 'extra' => 'leak']],
+            [410, ['ok' => false, 'error' => 'voice_profile_unavailable', 'message' => 'private', 'request_id' => null]],
         ] as [$status, $childPayload]) {
             $response = hub_cluster_dispatch($db, 'voice_generate', $request, [
                 'refresh_due' => static fn (): array => [$inventory],
