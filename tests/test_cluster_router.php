@@ -2947,7 +2947,11 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
                     static function (array $request) use ($remotePrepareTaskId): void {
                         hub_test_assert($request['body'] === 'operation=profile_delete&voice_profile_task_id=' . $remotePrepareTaskId, 'profile_delete must receive only the numeric child task ID');
                     },
-                    hub_test_cluster_voice_profile_status_payload(['profile_status' => 'deleted']),
+                    hub_test_cluster_voice_profile_status_payload([
+                        'profile_status' => 'deleted',
+                        'transcription_status' => 'failed',
+                        'transcription_error' => null,
+                    ]),
                 ],
                 [
                     hub_test_cluster_router_request((string)$customer['plain_token'], [
@@ -2969,6 +2973,20 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
                         'transcript_confirmed' => false,
                         'prompt_text_confirmed_at' => null,
                         'prompt_text' => 'owner query draft',
+                    ]),
+                ],
+                [
+                    hub_test_cluster_router_request((string)$customer['plain_token'], [
+                        'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                        'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $profileRoute,
+                    ]),
+                    static function (array $request) use ($remotePrepareTaskId): void {
+                        hub_test_assert($request['body'] === 'operation=profile_status&voice_profile_task_id=' . $remotePrepareTaskId, 'expired profile_status must receive only the numeric child task ID');
+                    },
+                    hub_test_cluster_voice_profile_status_payload([
+                        'profile_status' => 'expired',
+                        'transcription_status' => 'failed',
+                        'transcription_error' => null,
                     ]),
                 ],
                 [
@@ -3013,9 +3031,25 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
                 ]);
             }
 
-            hub_test_assert(count($requests) === 7, 'prepare plus six pinned profile requests must dispatch exactly once each');
+            hub_test_assert(count($requests) === 8, 'prepare plus seven pinned profile requests must dispatch exactly once each');
             hub_test_assert(str_contains($responses[0]['body'], 'owner draft'), 'profile_status may return the owner unconfirmed transcript draft');
             hub_test_assert(str_contains($responses[3]['body'], 'owner query draft'), 'GET profile_status may return the owner unconfirmed transcript draft');
+            $deletedPayload = json_decode($responses[2]['body'], true, 64, JSON_THROW_ON_ERROR);
+            $expiredPayload = json_decode($responses[4]['body'], true, 64, JSON_THROW_ON_ERROR);
+            hub_test_assert(
+                ($deletedPayload['profile_status'] ?? null) === 'deleted'
+                && ($deletedPayload['transcription_status'] ?? null) === 'failed'
+                && array_key_exists('transcription_error', $deletedPayload)
+                && $deletedPayload['transcription_error'] === null,
+                'deleted Profile tombstones must remain relayable with a null transcription error'
+            );
+            hub_test_assert(
+                ($expiredPayload['profile_status'] ?? null) === 'expired'
+                && ($expiredPayload['transcription_status'] ?? null) === 'failed'
+                && array_key_exists('transcription_error', $expiredPayload)
+                && $expiredPayload['transcription_error'] === null,
+                'expired Profile tombstones must remain relayable with a null transcription error'
+            );
             foreach ($responses as $response) {
                 hub_test_assert($response['status'] === 200, 'all pinned profile operations must preserve successful child responses');
                 foreach ([$remotePrepareTaskId, '987654321012345677', '987654321012345676', 'profile-origin.internal', 'profile_loaded_token', '/private/profile.wav', '"voice_profile_id"', '"voice_profile_task_id"'] as $private) {
@@ -3040,9 +3074,16 @@ hub_test('cluster router relays only the bounded native profile transcription er
         'transcript_confirmed', 'prompt_text_confirmed_at', 'profile_name', 'language',
         'consent_type', 'reference_audio_sha256', 'created_at', 'updated_at',
     ];
-    foreach ([null, 'asr_failed', 'asr_unavailable'] as $error) {
+    foreach ([
+        ['active', 'ready', null],
+        ['active', 'failed', 'asr_failed'],
+        ['active', 'failed', 'asr_unavailable'],
+        ['deleted', 'failed', null],
+        ['expired', 'failed', null],
+    ] as [$profileStatus, $transcriptionStatus, $error]) {
         $payload = hub_test_cluster_voice_profile_status_payload([
-            'transcription_status' => $error === null ? 'ready' : 'failed',
+            'profile_status' => $profileStatus,
+            'transcription_status' => $transcriptionStatus,
             'transcription_error' => $error,
         ]);
         $safe = hub_cluster_router_public_voice_profile_response($payload, true);

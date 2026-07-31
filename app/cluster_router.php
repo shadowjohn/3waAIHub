@@ -2395,7 +2395,9 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
         }
         $safe[$key] = $payload[$key];
     }
-    if (($safe['transcription_status'] === 'failed') !== is_string($safe['transcription_error'])) {
+    if ($safe['profile_status'] === 'active'
+        && (($safe['transcription_status'] === 'failed') !== is_string($safe['transcription_error']))
+    ) {
         throw new UnexpectedValueException('invalid voice profile response');
     }
     if (array_key_exists('prompt_text', $payload)) {
