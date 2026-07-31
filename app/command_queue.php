@@ -77,7 +77,7 @@ function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array
     }
 
     $now = hub_now();
-    $insert = static function () use ($db, $action, $serviceId, $args, $requestedBy, $requestedIp, $now): int {
+    $insert = static function () use ($db, $action, $serviceId, &$args, $requestedBy, $requestedIp, $now): int {
         $stmt = $db->prepare(
             'INSERT INTO command_jobs
                 (action, service_id, args_json, status, progress, stage, current_message, requested_by, requested_ip, created_at, updated_at)
@@ -108,10 +108,12 @@ function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array
     try {
         $db->exec('BEGIN IMMEDIATE');
         $started = true;
-        if (!hub_get_service($db, $serviceId)) {
+        $service = hub_get_service($db, $serviceId);
+        if (!$service) {
             throw new InvalidArgumentException('Service not found.');
         }
         if ($action === 'service_remove') {
+            $args['service_updated_at'] = (string)($service['updated_at'] ?? '');
             if (hub_service_has_active_command_job($db, $serviceId)) {
                 throw new RuntimeException('Cannot enqueue service removal while another service command is active.');
             }

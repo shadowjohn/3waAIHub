@@ -1527,11 +1527,6 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     $composeFile = hub_pack_compose_file($db, $serviceKey);
     $envFile = $runtimeDir . '/.env';
     $portEnv = hub_pack_port_env($manifest);
-    file_put_contents($envFile, hub_generate_service_env($manifest, $envValues, $portEnv, (int)($localPort ?? 0), $runtimeDir, $storage));
-    file_put_contents(hub_path($composeFile), $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort, $envValues));
-    chmod($envFile, 0664);
-    chmod(hub_path($composeFile), 0664);
-
     $now = hub_now();
     $composeProject = hub_compose_project_for_instance($manifest, $serviceKey);
     $values = [
@@ -1558,21 +1553,57 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         ':updated_at' => $now,
     ];
 
-    if ($existing) {
-        $values[':id'] = (int)$existing['id'];
-        $stmt = $db->prepare(
-            'UPDATE services SET
-                name = :name, mode = :mode, type = :type, internal_url = :internal_url, health_url = :health_url,
-                compose_project = :compose_project, compose_file = :compose_file, local_port = :local_port,
-                port_mode = :port_mode, hot_reload = :hot_reload, environment = :environment,
-                execution_type = :execution_type, environment_json = :environment_json, pack_id = :pack_id,
-                pack_version = :pack_version, service_key = :service_key, install_status = :install_status,
-                runtime_status = :runtime_status, updated_at = :updated_at
-             WHERE id = :id'
-        );
-        unset($values[':status'], $values[':created_at']);
-        $stmt->execute($values);
-    } else {
+    hub_with_pack_runtime_lock($runtimeDir, static function () use (
+        $envFile,
+        $manifest,
+        $envValues,
+        $portEnv,
+        $localPort,
+        $runtimeDir,
+        $storage,
+        $composeFile,
+        $isInternalTask,
+        $pack,
+        $serviceKey,
+        $db,
+        $idempotent,
+        $mode,
+        $values
+    ): void {
+        $currentByKey = hub_get_service_by_key($db, $serviceKey);
+        $currentByMode = hub_get_service_by_mode($db, $mode);
+        if ($currentByKey && !$idempotent) {
+            throw new RuntimeException('service_key already exists.');
+        }
+        if ($currentByMode && (!$idempotent || ($currentByKey && (int)$currentByMode['id'] !== (int)$currentByKey['id']))) {
+            throw new RuntimeException('mode already exists.');
+        }
+        $current = $idempotent ? ($currentByKey ?: $currentByMode) : null;
+        $values[':runtime_status'] = (string)($current['runtime_status'] ?? $current['status'] ?? 'stopped');
+        $values[':status'] = (string)($current['status'] ?? 'stopped');
+
+        file_put_contents($envFile, hub_generate_service_env($manifest, $envValues, $portEnv, (int)($localPort ?? 0), $runtimeDir, $storage));
+        file_put_contents(hub_path($composeFile), $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort, $envValues));
+        chmod($envFile, 0664);
+        chmod(hub_path($composeFile), 0664);
+
+        if ($current) {
+            $values[':id'] = (int)$current['id'];
+            $stmt = $db->prepare(
+                'UPDATE services SET
+                    name = :name, mode = :mode, type = :type, internal_url = :internal_url, health_url = :health_url,
+                    compose_project = :compose_project, compose_file = :compose_file, local_port = :local_port,
+                    port_mode = :port_mode, hot_reload = :hot_reload, environment = :environment,
+                    execution_type = :execution_type, environment_json = :environment_json, pack_id = :pack_id,
+                    pack_version = :pack_version, service_key = :service_key, install_status = :install_status,
+                    runtime_status = :runtime_status, updated_at = :updated_at
+                 WHERE id = :id'
+            );
+            unset($values[':status'], $values[':created_at']);
+            $stmt->execute($values);
+            return;
+        }
+
         $stmt = $db->prepare(
             'INSERT INTO services
                 (name, mode, type, internal_url, health_url, compose_project, compose_file, local_port, port_mode, hot_reload, environment, execution_type, environment_json, pack_id, pack_version, service_key, install_status, runtime_status, enabled, status, created_at, updated_at)
@@ -1580,13 +1611,21 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
                 (:name, :mode, :type, :internal_url, :health_url, :compose_project, :compose_file, :local_port, :port_mode, :hot_reload, :environment, :execution_type, :environment_json, :pack_id, :pack_version, :service_key, :install_status, :runtime_status, 0, :status, :created_at, :updated_at)'
         );
         $stmt->execute($values);
-    }
+    });
 
     $service = hub_get_service_by_key($db, $serviceKey);
     if ($service) {
-        hub_ensure_service_settings($db, $service);
-        hub_write_service_env($db, $service);
-        hub_write_service_compose($db, $service);
+        $service = hub_with_pack_runtime_lock($runtimeDir, static function () use ($db, $serviceKey): ?array {
+            $current = hub_get_service_by_key($db, $serviceKey);
+            if ($current === null) {
+                return null;
+            }
+            hub_ensure_service_settings($db, $current);
+            hub_write_service_env($db, $current);
+            hub_write_service_compose($db, $current);
+
+            return hub_get_service_by_key($db, $serviceKey);
+        });
     }
 
     return [
@@ -1852,6 +1891,27 @@ function hub_pack_runtime_base_dir(PDO $db): string
 function hub_pack_runtime_dir(PDO $db, string $serviceKey): string
 {
     return hub_pack_runtime_base_dir($db) . '/' . $serviceKey;
+}
+
+function hub_with_pack_runtime_lock(string $runtimeDir, callable $callback): mixed
+{
+    if (!is_dir($runtimeDir) || is_link($runtimeDir)) {
+        throw new RuntimeException('Service runtime directory is unavailable.');
+    }
+    $lock = @fopen($runtimeDir . '/.3waaihub-runtime.lock', 'c');
+    if ($lock === false || !flock($lock, LOCK_EX)) {
+        if (is_resource($lock)) {
+            fclose($lock);
+        }
+        throw new RuntimeException('Cannot lock service runtime directory.');
+    }
+
+    try {
+        return $callback();
+    } finally {
+        flock($lock, LOCK_UN);
+        fclose($lock);
+    }
 }
 
 function hub_pack_compose_file(PDO $db, string $serviceKey): string

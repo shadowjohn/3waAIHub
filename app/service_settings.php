@@ -242,52 +242,63 @@ function hub_update_service_settings(PDO $db, int $serviceId, array $values): ar
     if (!$service) {
         throw new InvalidArgumentException('Service not found.');
     }
-    $schema = hub_get_pack_settings_schema((string)$service['pack_id']);
-    $settings = hub_ensure_service_settings($db, $service);
-    $changed = false;
-    $needsRestart = false;
-    $now = hub_now();
-    $stmt = $db->prepare('UPDATE service_settings SET value = :value, updated_at = :updated_at WHERE service_id = :service_id AND key = :key');
+    $runtimeDir = dirname(hub_path((string)$service['compose_file']));
+    if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)) {
+        throw new RuntimeException('Cannot create service runtime directory.');
+    }
 
-    foreach ($values as $key => $rawValue) {
-        $key = (string)$key;
-        if (!isset($schema[$key])) {
-            throw new InvalidArgumentException('Setting key is not declared: ' . $key);
+    return hub_with_pack_runtime_lock($runtimeDir, static function () use ($db, $serviceId, $values): array {
+        $service = hub_get_service($db, $serviceId);
+        if (!$service) {
+            throw new InvalidArgumentException('Service not found.');
         }
-        $item = $schema[$key];
-        if (!empty($item['secret']) && (string)$rawValue === '') {
-            continue;
+        $schema = hub_get_pack_settings_schema((string)$service['pack_id']);
+        $settings = hub_ensure_service_settings($db, $service);
+        $changed = false;
+        $needsRestart = false;
+        $now = hub_now();
+        $stmt = $db->prepare('UPDATE service_settings SET value = :value, updated_at = :updated_at WHERE service_id = :service_id AND key = :key');
+
+        foreach ($values as $key => $rawValue) {
+            $key = (string)$key;
+            if (!isset($schema[$key])) {
+                throw new InvalidArgumentException('Setting key is not declared: ' . $key);
+            }
+            $item = $schema[$key];
+            if (!empty($item['secret']) && (string)$rawValue === '') {
+                continue;
+            }
+            $value = hub_validate_service_setting_value($item, (string)$rawValue);
+            if (!isset($settings[$key]) || (string)$settings[$key]['value'] !== $value) {
+                $stmt->execute([
+                    ':value' => $value,
+                    ':updated_at' => $now,
+                    ':service_id' => $serviceId,
+                    ':key' => $key,
+                ]);
+                $changed = true;
+                $needsRestart = $needsRestart || !empty($item['restart_required']);
+            }
         }
-        $value = hub_validate_service_setting_value($item, (string)$rawValue);
-        if (!isset($settings[$key]) || (string)$settings[$key]['value'] !== $value) {
-            $stmt->execute([
-                ':value' => $value,
+
+        if ($changed) {
+            hub_write_service_env($db, $service);
+            hub_write_service_compose($db, $service);
+            $restartSql = $needsRestart ? 'restart_required = 1' : 'restart_required = restart_required';
+            $db->prepare(
+                'UPDATE services
+                 SET config_dirty = 0,
+                     ' . $restartSql . ',
+                     updated_at = :updated_at
+                 WHERE id = :id'
+            )->execute([
                 ':updated_at' => $now,
-                ':service_id' => $serviceId,
-                ':key' => $key,
+                ':id' => $serviceId,
             ]);
-            $changed = true;
-            $needsRestart = $needsRestart || !empty($item['restart_required']);
         }
-    }
 
-    if ($changed) {
-        hub_write_service_env($db, $service);
-        hub_write_service_compose($db, $service);
-        $restartSql = $needsRestart ? 'restart_required = 1' : 'restart_required = restart_required';
-        $db->prepare(
-            'UPDATE services
-             SET config_dirty = 0,
-                 ' . $restartSql . ',
-                 updated_at = :updated_at
-             WHERE id = :id'
-        )->execute([
-            ':updated_at' => $now,
-            ':id' => $serviceId,
-        ]);
-    }
-
-    return ['changed' => $changed, 'restart_required' => $needsRestart];
+        return ['changed' => $changed, 'restart_required' => $needsRestart];
+    });
 }
 
 function hub_service_settings_values(PDO $db, array $service): array

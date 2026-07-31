@@ -18,6 +18,8 @@ if ($missing !== []) {
     exit(1);
 }
 
+hub_retry_pending_service_runtime_cleanup($db);
+
 $processed = 0;
 while ($processed < $limit) {
     $job = hub_claim_next_command_job($db);

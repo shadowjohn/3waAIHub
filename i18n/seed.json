@@ -3695,6 +3695,41 @@
         "trans": "Could not read background job status."
     },
     {
+        "title": "服務尚未停止或仍有背景工作，暫時無法移除。",
+        "lang": "en",
+        "trans": "The service is not stopped or still has a background job, so it cannot be removed yet."
+    },
+    {
+        "title": "服務操作暫時無法處理，請稍後再試。",
+        "lang": "en",
+        "trans": "The service action is temporarily unavailable. Please try again later."
+    },
+    {
+        "title": "服務操作與背景工作衝突，請稍後再試。",
+        "lang": "en",
+        "trans": "The service action conflicts with a background job. Please try again later."
+    },
+    {
+        "title": "無法排入背景工作，請重新整理後再試。",
+        "lang": "en",
+        "trans": "Could not queue the background job. Reload the page and try again."
+    },
+    {
+        "title": "移除服務",
+        "lang": "en",
+        "trans": "Remove service"
+    },
+    {
+        "title": "確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。",
+        "lang": "en",
+        "trans": "Remove this service? Its settings will be deleted; models and existing outputs will be kept."
+    },
+    {
+        "title": "移除",
+        "lang": "en",
+        "trans": "Remove"
+    },
+    {
         "title": "版本",
         "lang": "en",
         "trans": "Version"

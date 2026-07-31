@@ -65,6 +65,7 @@ function hub_marketplace_service_status_class(string $status): string
 
 $db = hub_db();
 $user = hub_require_system_admin($db);
+hub_migrate($db);
 $requestedView = (string)($_GET['view'] ?? 'market');
 $view = in_array($requestedView, ['market', 'services'], true) ? $requestedView : 'market';
 $category = hub_admin_market_category((string)($_GET['category'] ?? 'all'));

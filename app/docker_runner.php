@@ -672,6 +672,166 @@ function hub_service_generated_runtime_files(PDO $db, array $service): ?array
     return [$composePath, $envPath];
 }
 
+function hub_service_generated_runtime_cleanup_files(PDO $db, string $serviceKey): ?array
+{
+    if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/D', $serviceKey) !== 1) {
+        return null;
+    }
+
+    $runtimeDir = hub_pack_runtime_dir($db, $serviceKey);
+    $runtimeBase = hub_pack_runtime_base_dir($db);
+    $realRuntimeBase = realpath($runtimeBase);
+    $realRuntimeDir = realpath($runtimeDir);
+    if (
+        $realRuntimeBase === false
+        || $realRuntimeDir === false
+        || !is_dir($realRuntimeBase)
+        || !is_dir($realRuntimeDir)
+        || is_link($runtimeDir)
+        || hub_storage_paths_equal($realRuntimeDir, $realRuntimeBase)
+        || !hub_storage_path_is_within($realRuntimeDir, $realRuntimeBase)
+    ) {
+        return null;
+    }
+
+    $composePath = hub_path(hub_pack_compose_file($db, $serviceKey));
+    if (dirname($composePath) !== $runtimeDir) {
+        return null;
+    }
+    $files = [$composePath, $runtimeDir . '/.env'];
+    foreach ($files as $path) {
+        clearstatcache(true, $path);
+        if (!file_exists($path)) {
+            continue;
+        }
+        $realPath = realpath($path);
+        if (
+            is_link($path)
+            || !is_file($path)
+            || $realPath === false
+            || !hub_storage_paths_equal(dirname($realPath), $realRuntimeDir)
+        ) {
+            return null;
+        }
+    }
+
+    return $files;
+}
+
+function hub_service_removal_snapshot_matches(array $job, array $service): bool
+{
+    $args = json_decode((string)($job['args_json'] ?? '{}'), true);
+    $expectedUpdatedAt = is_array($args) ? (string)($args['service_updated_at'] ?? '') : '';
+
+    return $expectedUpdatedAt !== '' && hash_equals($expectedUpdatedAt, (string)($service['updated_at'] ?? ''));
+}
+
+function hub_command_job_mark_runtime_cleanup_pending(PDO $db, array $job, string $serviceKey): bool
+{
+    $args = json_decode((string)($job['args_json'] ?? '{}'), true);
+    if (!is_array($args)) {
+        $args = [];
+    }
+    $args['runtime_cleanup_pending'] = ['service_key' => $serviceKey];
+    $update = $db->prepare('UPDATE command_jobs SET args_json = :args_json, updated_at = :updated_at WHERE id = :id');
+    $update->execute([
+        ':args_json' => hub_json_encode($args, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ':updated_at' => hub_now(),
+        ':id' => (int)$job['id'],
+    ]);
+
+    return $update->rowCount() === 1;
+}
+
+function hub_command_job_clear_runtime_cleanup_pending(PDO $db, array $job): void
+{
+    $args = json_decode((string)($job['args_json'] ?? '{}'), true);
+    if (!is_array($args) || !isset($args['runtime_cleanup_pending'])) {
+        return;
+    }
+    unset($args['runtime_cleanup_pending']);
+    $update = $db->prepare('UPDATE command_jobs SET args_json = :args_json, updated_at = :updated_at WHERE id = :id');
+    $update->execute([
+        ':args_json' => hub_json_encode($args, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+        ':updated_at' => hub_now(),
+        ':id' => (int)$job['id'],
+    ]);
+}
+
+function hub_command_job_defer_runtime_cleanup(PDO $db, array $job): void
+{
+    $update = $db->prepare('UPDATE command_jobs SET updated_at = :updated_at WHERE id = :id');
+    $update->execute([
+        ':updated_at' => hub_now(),
+        ':id' => (int)$job['id'],
+    ]);
+}
+
+function hub_cleanup_removed_service_runtime_files(PDO $db, string $serviceKey): bool
+{
+    $runtimeDir = hub_pack_runtime_dir($db, $serviceKey);
+    try {
+        return hub_with_pack_runtime_lock($runtimeDir, static function () use ($db, $serviceKey): bool {
+            if (hub_get_service_by_key($db, $serviceKey) !== null) {
+                return false;
+            }
+            $files = hub_service_generated_runtime_cleanup_files($db, $serviceKey);
+            if ($files === null) {
+                return false;
+            }
+
+            $complete = true;
+            foreach ($files as $path) {
+                clearstatcache(true, $path);
+                if (is_file($path) && !@unlink($path)) {
+                    $complete = false;
+                }
+                clearstatcache(true, $path);
+                if (file_exists($path) || is_link($path)) {
+                    $complete = false;
+                }
+            }
+
+            return $complete;
+        });
+    } catch (Throwable) {
+        return false;
+    }
+}
+
+function hub_retry_pending_service_runtime_cleanup(PDO $db, int $limit = 20): void
+{
+    $jobs = $db->prepare(
+        "SELECT * FROM command_jobs
+         WHERE action = 'service_remove' AND status = 'success'
+           AND args_json LIKE '%\"runtime_cleanup_pending\"%'
+         ORDER BY updated_at ASC, id ASC
+         LIMIT :limit"
+    );
+    $jobs->bindValue(':limit', max(1, min(100, $limit)), PDO::PARAM_INT);
+    $jobs->execute();
+
+    foreach ($jobs->fetchAll() as $job) {
+        try {
+            $args = json_decode((string)($job['args_json'] ?? '{}'), true);
+            $pending = is_array($args) ? ($args['runtime_cleanup_pending'] ?? null) : null;
+            $serviceKey = is_array($pending) ? (string)($pending['service_key'] ?? '') : '';
+            if ($serviceKey !== '' && hub_get_service_by_key($db, $serviceKey) !== null) {
+                hub_command_job_clear_runtime_cleanup_pending($db, $job);
+                continue;
+            }
+            if (hub_cleanup_removed_service_runtime_files($db, $serviceKey)) {
+                hub_command_job_clear_runtime_cleanup_pending($db, $job);
+            } elseif ($serviceKey !== '' && hub_get_service_by_key($db, $serviceKey) !== null) {
+                hub_command_job_clear_runtime_cleanup_pending($db, $job);
+            } else {
+                hub_command_job_defer_runtime_cleanup($db, $job);
+            }
+        } catch (Throwable) {
+        }
+    }
+}
+
 function hub_remove_service(PDO $db, array $service, array $job): array
 {
     $jobId = isset($job['id']) ? (int)$job['id'] : null;
@@ -680,9 +840,17 @@ function hub_remove_service(PDO $db, array $service, array $job): array
         hub_job_progress($db, $job, 'validate_removal', 5, 'Service removal blocked: ' . $blockReason);
         return ['exit_code' => 2, 'stdout' => '', 'stderr' => $blockReason, 'output' => $blockReason, 'error_code' => $blockReason];
     }
-
-    $runtimeFiles = hub_service_generated_runtime_files($db, $service);
-    if ($runtimeFiles === null) {
+    $serviceKey = (string)$service['service_key'];
+    if (!hub_service_removal_snapshot_matches($job, $service)) {
+        return [
+            'exit_code' => 2,
+            'stdout' => '',
+            'stderr' => 'Service changed since removal was requested.',
+            'output' => 'Service changed since removal was requested.',
+            'error_code' => 'service_changed',
+        ];
+    }
+    if (hub_service_generated_runtime_files($db, $service) === null) {
         return [
             'exit_code' => 2,
             'stdout' => '',
@@ -692,38 +860,91 @@ function hub_remove_service(PDO $db, array $service, array $job): array
         ];
     }
 
-    hub_job_progress($db, $job, 'validate_removal', 5, 'Validating generated runtime files.');
-    $result = hub_stop_service($db, $service, $job);
-    if ((int)$result['exit_code'] !== 0) {
-        return $result;
-    }
-
-    $runtimeFiles = hub_service_generated_runtime_files($db, $service);
-    if ($runtimeFiles === null) {
+    $runtimeDir = hub_pack_runtime_dir($db, $serviceKey);
+    clearstatcache(true, $runtimeDir);
+    if (!is_dir($runtimeDir) || is_link($runtimeDir) || !is_writable($runtimeDir)) {
         return [
             'exit_code' => 2,
             'stdout' => '',
-            'stderr' => 'Service runtime files are not managed.',
-            'output' => 'Service runtime files are not managed.',
-            'error_code' => 'service_runtime_unmanaged',
+            'stderr' => 'Service runtime cleanup is unavailable.',
+            'output' => 'Service runtime cleanup is unavailable.',
+            'error_code' => 'service_runtime_cleanup_unavailable',
+        ];
+    }
+    try {
+        $removal = hub_with_pack_runtime_lock($runtimeDir, static function () use ($db, $service, $job, $serviceKey): array {
+            $current = hub_get_service($db, (int)$service['id']);
+            if ($current === null) {
+                return ['result' => ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service not found.', 'output' => 'Service not found.']];
+            }
+            if (!hub_service_removal_snapshot_matches($job, $current)) {
+                return ['result' => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Service changed since removal was requested.', 'output' => 'Service changed since removal was requested.', 'error_code' => 'service_changed']];
+            }
+            $runtimeFiles = hub_service_generated_runtime_files($db, $current);
+            if ($runtimeFiles === null) {
+                return ['result' => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Service runtime files are not managed.', 'output' => 'Service runtime files are not managed.', 'error_code' => 'service_runtime_unmanaged']];
+            }
+            $runtimeDir = dirname($runtimeFiles[0]);
+            clearstatcache(true, $runtimeDir);
+            if (!is_writable($runtimeDir)) {
+                return ['result' => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Service runtime cleanup is unavailable.', 'output' => 'Service runtime cleanup is unavailable.', 'error_code' => 'service_runtime_cleanup_unavailable']];
+            }
+
+            hub_job_progress($db, $job, 'validate_removal', 5, 'Validating generated runtime files.');
+            $stop = hub_stop_service($db, $current, $job);
+            if ((int)$stop['exit_code'] !== 0) {
+                return ['result' => $stop];
+            }
+            if (hub_service_generated_runtime_files($db, $current) === null) {
+                return ['result' => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Service runtime files are not managed.', 'output' => 'Service runtime files are not managed.', 'error_code' => 'service_runtime_unmanaged']];
+            }
+            if (!hub_command_job_mark_runtime_cleanup_pending($db, $job, $serviceKey)) {
+                return ['result' => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Cannot prepare generated runtime cleanup.', 'output' => 'Cannot prepare generated runtime cleanup.', 'error_code' => 'service_runtime_cleanup_prepare_failed']];
+            }
+
+            hub_job_progress($db, $job, 'remove_service', 85, 'Removing service registration.');
+            $delete = $db->prepare('DELETE FROM services WHERE id = :id');
+            $delete->execute([':id' => (int)$current['id']]);
+            if ($delete->rowCount() !== 1) {
+                throw new RuntimeException('Service registration was not removed.');
+            }
+
+            return ['removed' => true];
+        });
+    } catch (Throwable) {
+        return [
+            'exit_code' => 2,
+            'stdout' => '',
+            'stderr' => 'Cannot remove service registration.',
+            'output' => 'Cannot remove service registration.',
+            'error_code' => 'service_remove_failed',
+        ];
+    }
+    if (($removal['removed'] ?? false) !== true) {
+        return $removal['result'] ?? [
+            'exit_code' => 2,
+            'stdout' => '',
+            'stderr' => 'Cannot remove service registration.',
+            'output' => 'Cannot remove service registration.',
+            'error_code' => 'service_remove_failed',
         ];
     }
 
-    hub_job_progress($db, $job, 'remove_runtime_files', 85, 'Removing generated runtime files.');
-    foreach ($runtimeFiles as $path) {
-        if (is_file($path) && !unlink($path)) {
-            return [
-                'exit_code' => 2,
-                'stdout' => '',
-                'stderr' => 'Cannot remove generated runtime file.',
-                'output' => 'Cannot remove generated runtime file.',
-                'error_code' => 'service_runtime_cleanup_failed',
-            ];
+    hub_job_progress($db, $job, 'remove_runtime_files', 95, 'Removing generated runtime files.');
+    $cleanupJob = hub_get_command_job($db, (int)$job['id']);
+    if ($cleanupJob === null || !hub_cleanup_removed_service_runtime_files($db, $serviceKey)) {
+        try {
+            hub_audit($db, 'command_worker', 'service_remove_runtime_cleanup_pending', 'job_id=' . (int)$job['id'] . ' service_key=' . $serviceKey);
+        } catch (Throwable) {
         }
+        return [
+            'exit_code' => 0,
+            'stdout' => 'Service removed.',
+            'stderr' => 'Service removed; generated runtime cleanup will retry automatically.',
+            'output' => 'Service removed. Warning: generated runtime cleanup will retry automatically.',
+        ];
     }
-
-    hub_job_progress($db, $job, 'remove_service', 95, 'Removing service registration.');
-    $db->prepare('DELETE FROM services WHERE id = :id')->execute([':id' => (int)$service['id']]);
+    hub_command_job_clear_runtime_cleanup_pending($db, $cleanupJob);
 
     return ['exit_code' => 0, 'stdout' => 'Service removed.', 'stderr' => '', 'output' => 'Service removed.'];
 }

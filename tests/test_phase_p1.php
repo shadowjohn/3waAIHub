@@ -141,6 +141,88 @@ hub_test('PhaseP-1 service removal action and active-job guard are explicit', fu
     hub_test_assert(hub_service_has_active_command_job($db, (int)$service['id'], $jobId) === false, 'current removal job must be excludable from its own busy check');
 });
 
+hub_test('PhaseP-1 Marketplace request upgrades service retention schemas before queueing removal', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $ownerMemberId = hub_create_api_member($db, 'Marketplace Migration Owner');
+    $db->exec('DROP TABLE playground_tts_artifacts');
+    $db->exec(<<<'SQL'
+CREATE TABLE playground_tts_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    service_id INTEGER NOT NULL,
+    owner_member_id INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(service_id, filename),
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE
+)
+SQL);
+    $db->prepare(
+        'INSERT INTO playground_tts_artifacts (filename, service_id, owner_member_id, request_id, created_at, updated_at)
+         VALUES (:filename, :service_id, :owner_member_id, :request_id, :created_at, :updated_at)'
+    )->execute([
+        ':filename' => 'marketplace_legacy.wav',
+        ':service_id' => (int)$service['id'],
+        ':owner_member_id' => $ownerMemberId,
+        ':request_id' => 'req_marketplace_legacy',
+        ':created_at' => hub_now(),
+        ':updated_at' => hub_now(),
+    ]);
+    $artifactId = (int)$db->lastInsertId();
+    $db->exec('DROP TABLE service_logs');
+    $db->exec(<<<'SQL'
+CREATE TABLE service_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    output TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE
+)
+SQL);
+    $db->prepare(
+        'INSERT INTO service_logs (service_id, action, output, exit_code, created_at)
+         VALUES (:service_id, :action, :output, :exit_code, :created_at)'
+    )->execute([
+        ':service_id' => (int)$service['id'],
+        ':action' => 'marketplace_legacy',
+        ':output' => 'preserve',
+        ':exit_code' => 0,
+        ':created_at' => hub_now(),
+    ]);
+    $serviceLogId = (int)$db->lastInsertId();
+
+    $script = "define('HUB_TESTING', true);"
+        . 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];"
+        . "\$_SERVER = ['REQUEST_METHOD' => 'POST', 'REMOTE_ADDR' => '203.0.113.80', 'HTTP_X_REQUESTED_WITH' => 'XMLHttpRequest'];"
+        . "\$_GET = ['view' => 'services'];"
+        . "\$_POST = ['csrf_token' => 'test', 'service_id' => '" . (int)$service['id'] . "', 'action' => 'remove'];"
+        . 'require ' . var_export(HUB_ROOT . '/admin/marketplace.php', true) . ';';
+    $result = hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+        'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
+    ]);
+    $payload = json_decode($result['stdout'], true);
+
+    hub_test_assert($result['exit_code'] === 0 && is_array($payload) && ($payload['ok'] ?? false) === true, 'Marketplace must queue removal after upgrading legacy schemas');
+    $artifactForeignKeys = $db->query('PRAGMA foreign_key_list(playground_tts_artifacts)')->fetchAll();
+    $artifactServiceKey = array_values(array_filter($artifactForeignKeys, static fn (array $key): bool => $key['from'] === 'service_id'))[0] ?? null;
+    $serviceLogForeignKeys = $db->query('PRAGMA foreign_key_list(service_logs)')->fetchAll();
+    $serviceLogKey = array_values(array_filter($serviceLogForeignKeys, static fn (array $key): bool => $key['from'] === 'service_id'))[0] ?? null;
+    hub_test_assert(($artifactServiceKey['on_delete'] ?? '') === 'SET NULL' && ($serviceLogKey['on_delete'] ?? '') === 'SET NULL', 'Marketplace must migrate retention references before removal queueing');
+
+    $db->prepare('DELETE FROM services WHERE id = :id')->execute([':id' => (int)$service['id']]);
+    $artifact = $db->query('SELECT service_id FROM playground_tts_artifacts WHERE id = ' . $artifactId)->fetch();
+    $serviceLog = $db->query('SELECT service_id FROM service_logs WHERE id = ' . $serviceLogId)->fetch();
+    hub_test_assert($artifact !== false && $artifact['service_id'] === null && $serviceLog !== false && $serviceLog['service_id'] === null, 'Marketplace-upgraded retention rows must survive service deletion');
+});
+
 hub_test('PhaseP-1 service removal queue admission is exclusive', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
@@ -165,6 +247,46 @@ hub_test('PhaseP-1 service removal queue admission is exclusive', function (): v
     hub_test_assert($startThenRemoveRejected, 'service removal must not queue behind another service command');
 
     hub_test_assert(hub_enqueue_command_job($db, 'env_probe', null, [], null, '127.0.0.1') > 0, 'service-less commands must remain queueable');
+});
+
+hub_test('PhaseP-1 stale service removal cannot delete a service updated after queueing', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+    $job = hub_get_command_job($db, $jobId);
+    $args = json_decode((string)($job['args_json'] ?? '{}'), true);
+    hub_test_assert(
+        is_array($args) && ($args['service_updated_at'] ?? '') === (string)$service['updated_at'],
+        'service removal queueing must capture the current service version'
+    );
+
+    $db->prepare('UPDATE services SET updated_at = :updated_at WHERE id = :id')->execute([
+        ':updated_at' => '2099-01-01 00:00:00',
+        ':id' => (int)$service['id'],
+    ]);
+    $updated = hub_get_service($db, (int)$service['id']);
+    $result = hub_remove_service($db, $updated, $job);
+    $composePath = hub_path((string)$updated['compose_file']);
+
+    hub_test_assert(($result['error_code'] ?? '') === 'service_changed', 'stale removal must stop before Docker or registration deletion');
+    hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'service updated after queueing must remain registered');
+    hub_test_assert(file_exists($composePath) && file_exists(dirname($composePath) . '/.env'), 'service updated after queueing must keep its regenerated runtime files');
+});
+
+hub_test('PhaseP-1 legacy removal jobs without a service snapshot fail safe', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+    $db->prepare('UPDATE command_jobs SET args_json = :args_json WHERE id = :id')->execute([
+        ':args_json' => '{}',
+        ':id' => $jobId,
+    ]);
+
+    $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+    hub_test_assert(($result['error_code'] ?? '') === 'service_changed', 'legacy removal without a version snapshot must require an explicit requeue');
+    hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'legacy removal without a snapshot must preserve the service registration');
 });
 
 hub_test('PhaseP-1 service removal stops only an idle stopped service and preserves unrelated files', function (): void {
@@ -324,6 +446,135 @@ SH
         @rmdir($bin);
         @rmdir($dir);
     }
+});
+
+hub_test('PhaseP-1 service removal keeps generated files when registration deletion fails', function (): void {
+    $dir = sys_get_temp_dir() . '/3waaihub_remove_delete_failure_' . bin2hex(random_bytes(4));
+    $bin = $dir . '/bin';
+    mkdir($bin, 0775, true);
+    file_put_contents($bin . '/docker', "#!/bin/sh\nexit 0\n");
+    chmod($bin . '/docker', 0755);
+    $path = getenv('PATH');
+
+    try {
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        $db = hub_test_reset_db();
+        $service = hub_get_service_by_mode($db, 'hello');
+        $composePath = hub_path((string)$service['compose_file']);
+        $envPath = dirname($composePath) . '/.env';
+        $db->exec(
+            "CREATE TRIGGER fail_service_removal_delete
+             BEFORE DELETE ON services
+             WHEN OLD.id = " . (int)$service['id'] . "
+             BEGIN
+                 SELECT RAISE(ABORT, 'forced service deletion failure');
+             END"
+        );
+        $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+
+        try {
+            $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+        } catch (Throwable) {
+            $result = ['exit_code' => 1];
+        } finally {
+            $db->exec('DROP TRIGGER IF EXISTS fail_service_removal_delete');
+        }
+
+        hub_test_assert(($result['error_code'] ?? '') === 'service_remove_failed', 'service registration deletion failure must return the safe failure contract');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'service registration deletion failure must preserve registration');
+        hub_test_assert(file_exists($composePath) && file_exists($envPath), 'service registration deletion failure must preserve generated files');
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        @unlink($bin . '/docker');
+        @rmdir($bin);
+        @rmdir($dir);
+    }
+});
+
+hub_test('PhaseP-1 service removal preflights generated runtime cleanup before deletion', function (): void {
+    $dir = sys_get_temp_dir() . '/3waaihub_remove_preflight_' . bin2hex(random_bytes(4));
+    $bin = $dir . '/bin';
+    mkdir($bin, 0775, true);
+    file_put_contents($bin . '/docker', "#!/bin/sh\nexit 0\n");
+    chmod($bin . '/docker', 0755);
+    $path = getenv('PATH');
+
+    try {
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        $db = hub_test_reset_db();
+        $service = hub_get_service_by_mode($db, 'hello');
+        $composePath = hub_path((string)$service['compose_file']);
+        $envPath = dirname($composePath) . '/.env';
+        $runtimeDir = dirname($composePath);
+        $permissions = fileperms($runtimeDir) & 0777;
+        if (!chmod($runtimeDir, 0555)) {
+            hub_test_skip('Cannot make the generated runtime directory unwritable.');
+        }
+        clearstatcache(true, $runtimeDir);
+        if (is_writable($runtimeDir)) {
+            chmod($runtimeDir, $permissions);
+            hub_test_skip('Runtime user can still write the generated runtime directory.');
+        }
+
+        try {
+            $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+            $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+        } finally {
+            chmod($runtimeDir, $permissions);
+        }
+
+        hub_test_assert(($result['error_code'] ?? '') === 'service_runtime_cleanup_unavailable', 'unwritable runtime cleanup must be rejected before registration deletion');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'unwritable runtime cleanup must preserve registration');
+        hub_test_assert(file_exists($composePath) && file_exists($envPath), 'unwritable runtime cleanup must preserve generated files');
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        @unlink($bin . '/docker');
+        @rmdir($bin);
+        @rmdir($dir);
+    }
+});
+
+hub_test('PhaseP-1 removed service runtime cleanup retries only after registration is gone', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $composePath = hub_path((string)$service['compose_file']);
+    $envPath = dirname($composePath) . '/.env';
+    $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+    $job = hub_get_command_job($db, $jobId);
+    hub_test_assert($job !== null, 'service removal job missing');
+    hub_test_assert(
+        hub_command_job_mark_runtime_cleanup_pending($db, $job, (string)$service['service_key']),
+        'service removal cleanup marker must persist before registration deletion'
+    );
+
+    hub_retry_pending_service_runtime_cleanup($db);
+    hub_test_assert(file_exists($composePath) && file_exists($envPath), 'queued removal must not clean a registered service runtime');
+
+    $db->prepare("UPDATE command_jobs SET status = 'success' WHERE id = :id")->execute([':id' => $jobId]);
+    hub_retry_pending_service_runtime_cleanup($db);
+    $registeredJob = hub_get_command_job($db, $jobId);
+    $registeredArgs = json_decode((string)($registeredJob['args_json'] ?? '{}'), true);
+    hub_test_assert(file_exists($composePath) && file_exists($envPath), 'a reinstalled matching service runtime must never be removed by an old cleanup job');
+    hub_test_assert(
+        is_array($registeredArgs) && !isset($registeredArgs['runtime_cleanup_pending']),
+        'a matching registered service must retire an old cleanup marker'
+    );
+
+    hub_test_assert(
+        hub_command_job_mark_runtime_cleanup_pending($db, $registeredJob, (string)$service['service_key']),
+        'removed service cleanup marker must be restorable for retry'
+    );
+    $db->prepare('DELETE FROM services WHERE id = :id')->execute([':id' => (int)$service['id']]);
+    hub_retry_pending_service_runtime_cleanup($db);
+
+    $completedJob = hub_get_command_job($db, $jobId);
+    $completedArgs = json_decode((string)($completedJob['args_json'] ?? '{}'), true);
+    hub_test_assert(!file_exists($composePath) && !file_exists($envPath), 'successful removed-service job must retry generated runtime cleanup');
+    hub_test_assert(
+        is_array($completedArgs) && !isset($completedArgs['runtime_cleanup_pending']),
+        'completed runtime cleanup must clear its retry marker'
+    );
 });
 
 hub_test('PhaseP-1 playground TTS artifact migration preserves rows and owner references', function (): void {
