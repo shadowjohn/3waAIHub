@@ -72,16 +72,131 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     return str_starts_with($real, $root . DIRECTORY_SEPARATOR) ? $real : null;
 }
 
-function hub_voice_profile_file_stats_match(mixed $openedStat, mixed $pathStat): bool
+function hub_voice_profile_file_stats_match(mixed $openedStat, mixed $pathStat, bool $requireSingleLink = true): bool
 {
     return is_array($openedStat)
         && is_array($pathStat)
         && (((int)($openedStat['mode'] ?? 0) & 0170000) === 0100000)
         && (((int)($pathStat['mode'] ?? 0) & 0170000) === 0100000)
-        && (int)($openedStat['nlink'] ?? 0) === 1
-        && (int)($pathStat['nlink'] ?? 0) === 1
+        && (int)($openedStat['nlink'] ?? 0) >= 1
+        && (int)($pathStat['nlink'] ?? 0) >= 1
+        && (!$requireSingleLink
+            || ((int)$openedStat['nlink'] === 1 && (int)$pathStat['nlink'] === 1))
         && (int)($openedStat['dev'] ?? -1) === (int)($pathStat['dev'] ?? -2)
         && (int)($openedStat['ino'] ?? -1) === (int)($pathStat['ino'] ?? -2);
+}
+
+function hub_voice_profile_scrub_and_unlink(mixed $stream, string $path, ?callable $beforeDispose = null): bool
+{
+    if (!is_resource($stream) || !hub_voice_profile_file_stats_match(fstat($stream), @lstat($path))) {
+        return false;
+    }
+    if ($beforeDispose !== null) {
+        $beforeDispose($path);
+    }
+    clearstatcache(true, $path);
+    if (!hub_voice_profile_file_stats_match(fstat($stream), @lstat($path), false)) {
+        return false;
+    }
+    if (
+        !@ftruncate($stream, 0)
+        || !@fflush($stream)
+        || !function_exists('fsync')
+        || !@fsync($stream)
+    ) {
+        return false;
+    }
+    clearstatcache(true, $path);
+    if (!hub_voice_profile_file_stats_match(fstat($stream), @lstat($path), false)) {
+        return false;
+    }
+    $unlinked = @unlink($path);
+    $after = fstat($stream);
+
+    return $unlinked && is_array($after) && (int)($after['size'] ?? -1) === 0;
+}
+
+function hub_voice_profile_snapshot_dir(): string
+{
+    $root = realpath(hub_voice_profile_storage_dir());
+    if ($root === false) {
+        throw new RuntimeException('voice_profile_snapshot_storage_failed');
+    }
+    $dir = $root . '/.snapshots';
+    clearstatcache(true, $dir);
+    if (is_link($dir) || (!is_dir($dir) && !mkdir($dir, 0700))) {
+        throw new RuntimeException('voice_profile_snapshot_storage_failed');
+    }
+    @chmod($dir, 0700);
+    $stat = @lstat($dir);
+    $real = realpath($dir);
+    if (
+        $real !== $dir
+        || !is_array($stat)
+        || (((int)($stat['mode'] ?? 0) & 0170000) !== 0040000)
+        || (((int)$stat['mode'] & 0777) !== 0700)
+    ) {
+        throw new RuntimeException('voice_profile_snapshot_storage_failed');
+    }
+
+    return $dir;
+}
+
+function hub_cleanup_stale_voice_profile_snapshots(?int $now = null): array
+{
+    $dir = hub_voice_profile_snapshot_dir();
+    $now ??= time();
+    $purged = 0;
+    $count = 0;
+    $bytes = 0;
+    $scanned = 0;
+    $overflow = false;
+    foreach (new FilesystemIterator($dir, FilesystemIterator::SKIP_DOTS) as $entry) {
+        if (++$scanned > 64) {
+            $overflow = true;
+            break;
+        }
+        $name = $entry->getFilename();
+        if (preg_match('/^voice_profile_snapshot_[a-f0-9]{32}\.wav$/', $name) !== 1) {
+            continue;
+        }
+        $path = $dir . '/' . $name;
+        $stat = @lstat($path);
+        if (!is_array($stat)) {
+            continue;
+        }
+        $mode = (int)($stat['mode'] ?? 0) & 0170000;
+        $stale = (int)($stat['mtime'] ?? $now) <= $now - 3600;
+        if ($stale && $purged < 32) {
+            if ($mode === 0120000 && @unlink($path)) {
+                $purged++;
+                continue;
+            }
+            if ($mode === 0100000 && (int)($stat['nlink'] ?? 0) === 1) {
+                $stream = @fopen($path, 'r+b');
+                $disposed = is_resource($stream)
+                    && hub_voice_profile_scrub_and_unlink($stream, $path);
+                if (is_resource($stream)) {
+                    fclose($stream);
+                }
+                if ($disposed) {
+                    $purged++;
+                    continue;
+                }
+            }
+        }
+        $count++;
+        if ($mode === 0100000) {
+            $bytes += max(0, (int)($stat['size'] ?? 0));
+        }
+    }
+
+    return [
+        'purged' => $purged,
+        'count' => $count,
+        'bytes' => $bytes,
+        'overflow' => $overflow,
+    ];
 }
 
 function hub_voice_profile_verified_upload(string $rawPath, string $expectedSha256): ?array
@@ -91,33 +206,65 @@ function hub_voice_profile_verified_upload(string $rawPath, string $expectedSha2
         return null;
     }
     $source = @fopen($path, 'rb');
-    if ($source === false || !hub_voice_profile_file_stats_match(fstat($source), @lstat($path))) {
+    $sourceStat = is_resource($source) ? fstat($source) : false;
+    $sourceSize = is_array($sourceStat) ? (int)($sourceStat['size'] ?? 0) : 0;
+    if (
+        $source === false
+        || !hub_voice_profile_file_stats_match($sourceStat, @lstat($path))
+        || $sourceSize < 1
+        || $sourceSize > 100 * 1024 * 1024
+    ) {
         if (is_resource($source)) {
             fclose($source);
         }
         return null;
     }
-    $snapshotPath = tempnam(sys_get_temp_dir(), '3waaihub_voice_profile_');
-    if ($snapshotPath === false) {
+    try {
+        $snapshotState = hub_cleanup_stale_voice_profile_snapshots();
+        $snapshotDir = hub_voice_profile_snapshot_dir();
+    } catch (Throwable) {
         fclose($source);
         return null;
     }
-    @chmod($snapshotPath, 0600);
-    $snapshot = @fopen($snapshotPath, 'wb');
+    if (
+        !empty($snapshotState['overflow'])
+        || (int)$snapshotState['count'] >= 32
+        || (int)$snapshotState['bytes'] > 256 * 1024 * 1024 - $sourceSize
+    ) {
+        fclose($source);
+        return null;
+    }
+    $snapshotPath = $snapshotDir . '/voice_profile_snapshot_' . bin2hex(random_bytes(16)) . '.wav';
+    $snapshot = @fopen($snapshotPath, 'x+b');
     $verified = false;
     try {
-        if ($snapshot === false || stream_copy_to_stream($source, $snapshot) === false || !fflush($snapshot)) {
+        if (
+            $snapshot === false
+            || !@chmod($snapshotPath, 0600)
+            || stream_copy_to_stream($source, $snapshot) !== $sourceSize
+            || !fflush($snapshot)
+            || (function_exists('fsync') && !fsync($snapshot))
+        ) {
             return null;
         }
         clearstatcache(true, $path);
         if (!hub_voice_profile_file_stats_match(fstat($source), @lstat($path))) {
             return null;
         }
-        $size = ftell($snapshot);
-        fclose($snapshot);
-        $snapshot = false;
-        $sha256 = @hash_file('sha256', $snapshotPath);
-        if (!is_int($size) || !is_string($sha256) || !hash_equals($expectedSha256, $sha256)) {
+        if (!rewind($snapshot)) {
+            return null;
+        }
+        $hash = hash_init('sha256');
+        hash_update_stream($hash, $snapshot);
+        $sha256 = hash_final($hash);
+        clearstatcache(true, $snapshotPath);
+        $snapshotStat = @lstat($snapshotPath);
+        if (
+            !hub_voice_profile_file_stats_match(fstat($snapshot), $snapshotStat)
+            || !is_array($snapshotStat)
+            || (((int)$snapshotStat['mode'] & 0777) !== 0600)
+            || !hash_equals($expectedSha256, $sha256)
+        ) {
             return null;
         }
         $verified = true;
@@ -125,7 +272,7 @@ function hub_voice_profile_verified_upload(string $rawPath, string $expectedSha2
         return [
             'tmp_name' => $snapshotPath,
             'type' => 'audio/wav',
-            'size' => $size,
+            'size' => $sourceSize,
             'error' => UPLOAD_ERR_OK,
         ];
     } finally {
@@ -135,6 +282,7 @@ function hub_voice_profile_verified_upload(string $rawPath, string $expectedSha2
         }
         if (!$verified) {
             @unlink($snapshotPath);
+            @rmdir($snapshotDir);
         }
     }
 }
@@ -381,6 +529,7 @@ function hub_run_voice_profile_transcription(PDO $db, array $profile, int $owner
             $transcription = ['ok' => false, 'error' => 'asr_failed'];
         } finally {
             @unlink((string)$verifiedUpload['tmp_name']);
+            @rmdir(dirname((string)$verifiedUpload['tmp_name']));
         }
     }
     if (!is_array($transcription) || empty($transcription['ok'])) {
@@ -986,74 +1135,128 @@ function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId
     return hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
 }
 
-function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $rawPath, string $expectedSha256): bool
+function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $rawPath, string $expectedSha256, ?callable $beforeDispose = null): bool
 {
     if ($rawPath === '') {
         return true;
     }
-    $path = hub_voice_profile_safe_host_path($rawPath);
-    if ($path === null) {
-        if (@lstat($rawPath) !== false) {
-            return false;
+    $transactionStarted = false;
+    $quarantineDir = null;
+    $quarantinePath = null;
+    $quarantine = null;
+    try {
+        if (!$db->inTransaction()) {
+            $db->exec('BEGIN IMMEDIATE');
+            $transactionStarted = true;
         }
-    } elseif (preg_match('/^[a-f0-9]{64}$/', $expectedSha256) !== 1) {
-        return false;
-    } else {
-        $before = @lstat($path);
-        $quarantineDir = dirname($path) . '/.voice_profile_purge_' . bin2hex(random_bytes(16));
-        $quarantinePath = $quarantineDir . '/audio.wav';
-        if (
-            !is_array($before)
-            || !@mkdir($quarantineDir, 0700)
-            || !@rename($path, $quarantinePath)
-        ) {
-            @rmdir($quarantineDir);
-            return false;
-        }
-        clearstatcache(true, $quarantinePath);
-        $quarantine = @fopen($quarantinePath, 'rb');
-        $opened = is_resource($quarantine) ? fstat($quarantine) : false;
-        $after = @lstat($quarantinePath);
-        $sha256 = false;
-        if (
-            is_resource($quarantine)
-            && hub_voice_profile_file_stats_match($before, $opened)
-            && hub_voice_profile_file_stats_match($opened, $after)
-        ) {
+        $path = hub_voice_profile_safe_host_path($rawPath);
+        if ($path === null) {
+            if (@lstat($rawPath) !== false) {
+                throw new RuntimeException('voice_profile_audio_path_rejected');
+            }
+        } else {
+            $active = $db->prepare(
+                'SELECT 1 FROM voice_profiles
+                 WHERE id <> :id AND deleted_at IS NULL AND reference_audio_path = :reference_audio_path
+                 LIMIT 1'
+            );
+            $active->execute([':id' => $profileId, ':reference_audio_path' => $rawPath]);
+            if ($active->fetchColumn() !== false) {
+                throw new RuntimeException('voice_profile_audio_still_referenced');
+            }
+            $expectedShaIsValid = preg_match('/^[a-f0-9]{64}$/', $expectedSha256) === 1;
+            if (!$expectedShaIsValid) {
+                $legacy = $db->prepare(
+                    "SELECT 1 FROM voice_profiles
+                     WHERE id = :id AND deleted_at IS NOT NULL
+                       AND reference_audio_path = :reference_audio_path
+                       AND reference_audio_sha256 = ''
+                     LIMIT 1"
+                );
+                $legacy->execute([':id' => $profileId, ':reference_audio_path' => $rawPath]);
+                if ($legacy->fetchColumn() === false) {
+                    throw new RuntimeException('voice_profile_audio_identity_missing');
+                }
+            }
+
+            $before = @lstat($path);
+            $quarantineDir = dirname($path) . '/.voice_profile_purge_' . bin2hex(random_bytes(16));
+            $quarantinePath = $quarantineDir . '/audio.wav';
+            if (
+                !is_array($before)
+                || !@mkdir($quarantineDir, 0700)
+                || !@rename($path, $quarantinePath)
+            ) {
+                throw new RuntimeException('voice_profile_audio_quarantine_failed');
+            }
+            clearstatcache(true, $quarantinePath);
+            $quarantine = @fopen($quarantinePath, 'r+b');
+            $opened = is_resource($quarantine) ? fstat($quarantine) : false;
+            if (
+                !is_resource($quarantine)
+                || !hub_voice_profile_file_stats_match($before, $opened)
+                || !hub_voice_profile_file_stats_match($opened, @lstat($quarantinePath))
+            ) {
+                throw new RuntimeException('voice_profile_audio_identity_changed');
+            }
             $hash = hash_init('sha256');
             hash_update_stream($hash, $quarantine);
             $digest = hash_final($hash);
             clearstatcache(true, $quarantinePath);
-            if (hub_voice_profile_file_stats_match(fstat($quarantine), @lstat($quarantinePath))) {
-                $sha256 = $digest;
+            if (
+                !hub_voice_profile_file_stats_match(fstat($quarantine), @lstat($quarantinePath))
+                || ($expectedShaIsValid && !hash_equals($expectedSha256, $digest))
+            ) {
+                throw new RuntimeException('voice_profile_audio_identity_changed');
             }
+            if (!hub_voice_profile_scrub_and_unlink($quarantine, $quarantinePath, $beforeDispose)) {
+                throw new RuntimeException('voice_profile_audio_cleanup_failed');
+            }
+            fclose($quarantine);
+            $quarantine = null;
+            @rmdir($quarantineDir);
+            $quarantineDir = null;
+            $quarantinePath = null;
         }
-        $unlinked = is_string($sha256)
-            && hash_equals($expectedSha256, $sha256)
-            && @unlink($quarantinePath);
-        $unlinkedStat = is_resource($quarantine) ? fstat($quarantine) : false;
-        $linkCount = is_array($unlinkedStat) ? (int)($unlinkedStat['nlink'] ?? -1) : -1;
+
+        $stmt = $db->prepare(
+            "UPDATE voice_profiles
+             SET reference_audio_path = '', updated_at = :updated_at
+             WHERE id = :id AND deleted_at IS NOT NULL"
+        );
+        $stmt->execute([':updated_at' => hub_now(), ':id' => $profileId]);
+        if ($stmt->rowCount() !== 1) {
+            throw new RuntimeException('voice_profile_cleanup_conflict');
+        }
+        if ($transactionStarted) {
+            $db->exec('COMMIT');
+            $transactionStarted = false;
+        }
+
+        return true;
+    } catch (Throwable) {
         if (is_resource($quarantine)) {
             fclose($quarantine);
         }
-        if (!$unlinked || $linkCount !== 0) {
-            if (@lstat($rawPath) === false) {
-                @rename($quarantinePath, $rawPath);
-            }
-            @rmdir($quarantineDir);
-            return false;
+        if (
+            is_string($quarantinePath)
+            && @lstat($quarantinePath) !== false
+            && @lstat($rawPath) === false
+        ) {
+            @rename($quarantinePath, $rawPath);
         }
-        @rmdir($quarantineDir);
+        if (is_string($quarantineDir)) {
+            @rmdir($quarantineDir);
+        }
+        if ($transactionStarted) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+
+        return false;
     }
-
-    $stmt = $db->prepare(
-        "UPDATE voice_profiles
-         SET reference_audio_path = '', updated_at = :updated_at
-         WHERE id = :id AND deleted_at IS NOT NULL"
-    );
-    $stmt->execute([':updated_at' => hub_now(), ':id' => $profileId]);
-
-    return $stmt->rowCount() === 1;
 }
 
 function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMemberId, bool $deleteAudio = false): array

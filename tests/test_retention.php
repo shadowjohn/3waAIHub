@@ -757,6 +757,209 @@ hub_test('voice profile ASR snapshots and delete identity checks resist pathname
     );
 });
 
+hub_test('voice profile disposal scrubs a hardlink raced onto the quarantined inode', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Disposal race owner');
+    $path = hub_voice_profile_storage_dir() . '/disposal-race.wav';
+    $alias = hub_voice_profile_storage_dir() . '/disposal-race-alias.wav';
+    file_put_contents($path, 'RIFFprivate-disposal-race', LOCK_EX);
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Disposal race profile',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+    ]);
+    $profile = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing disposal race Profile.');
+    hub_soft_delete_voice_profile($db, $profileId, $memberId, false);
+
+    try {
+        $purged = hub_purge_deleted_voice_profile_audio(
+            $db,
+            $profileId,
+            $path,
+            (string)$profile['reference_audio_sha256'],
+            static function (string $quarantinePath) use ($alias): void {
+                if (!link($quarantinePath, $alias)) {
+                    throw new RuntimeException('Cannot inject disposal hardlink race.');
+                }
+            }
+        );
+        $storedPath = $db->query('SELECT reference_audio_path FROM voice_profiles WHERE id = ' . $profileId)->fetchColumn();
+        $deleteAudits = (int)$db->query(
+            "SELECT COUNT(*) FROM voice_profile_audit_logs
+             WHERE voice_profile_id = " . $profileId . " AND action = 'delete'"
+        )->fetchColumn();
+
+        hub_test_assert(
+            $purged
+            && !file_exists($path)
+            && is_file($alias)
+            && filesize($alias) === 0
+            && file_get_contents($alias) === ''
+            && $storedPath === ''
+            && $deleteAudits === 1,
+            'disposal must durably scrub the exact inode before unlink so a raced alias retains no private bytes or pending Profile path'
+        );
+    } finally {
+        if (is_file($alias)) {
+            unlink($alias);
+        }
+        if (is_file($path)) {
+            unlink($path);
+        }
+    }
+});
+
+hub_test('voice profile snapshots are managed with bounded stale and capacity cleanup', function (): void {
+    $outside = tempnam(sys_get_temp_dir(), 'voice-profile-snapshot-outside-');
+    if ($outside === false) {
+        throw new RuntimeException('Cannot create outside snapshot cleanup fixture.');
+    }
+    file_put_contents($outside, 'outside-protected', LOCK_EX);
+    $snapshotDir = null;
+    $sourcePath = null;
+
+    try {
+        $snapshotDir = hub_voice_profile_snapshot_dir();
+        $stale = $snapshotDir . '/voice_profile_snapshot_' . str_repeat('a', 32) . '.wav';
+        $staleLink = $snapshotDir . '/voice_profile_snapshot_' . str_repeat('b', 32) . '.wav';
+        file_put_contents($stale, 'stale-private-snapshot', LOCK_EX);
+        if (!symlink($outside, $staleLink)) {
+            throw new RuntimeException('Cannot create stale snapshot symlink fixture.');
+        }
+        $cleanup = hub_cleanup_stale_voice_profile_snapshots(time() + 7200);
+        $outsideUntouched = is_file($outside) && file_get_contents($outside) === 'outside-protected';
+
+        $sourcePath = hub_voice_profile_storage_dir() . '/snapshot-capacity-source.wav';
+        file_put_contents($sourcePath, 'RIFFsnapshot-capacity-source', LOCK_EX);
+        $managedSnapshot = hub_voice_profile_verified_upload($sourcePath, hash_file('sha256', $sourcePath));
+        $managedStat = is_array($managedSnapshot) ? lstat((string)$managedSnapshot['tmp_name']) : false;
+        $managedPrivate = is_array($managedSnapshot)
+            && dirname((string)$managedSnapshot['tmp_name']) === $snapshotDir
+            && is_array($managedStat)
+            && (((int)$managedStat['mode'] & 0777) === 0600);
+        if (is_array($managedSnapshot)) {
+            unlink((string)$managedSnapshot['tmp_name']);
+        }
+
+        for ($index = 0; $index < 32; $index++) {
+            file_put_contents(
+                $snapshotDir . '/voice_profile_snapshot_' . sprintf('%032x', $index) . '.wav',
+                'x',
+                LOCK_EX
+            );
+        }
+        $countBlocked = hub_voice_profile_verified_upload($sourcePath, hash_file('sha256', $sourcePath));
+        if (is_array($countBlocked)) {
+            unlink((string)$countBlocked['tmp_name']);
+        }
+        foreach (glob($snapshotDir . '/voice_profile_snapshot_*.wav') ?: [] as $snapshot) {
+            if (is_file($snapshot) && !is_link($snapshot)) {
+                unlink($snapshot);
+            }
+        }
+
+        $large = $snapshotDir . '/voice_profile_snapshot_' . str_repeat('c', 32) . '.wav';
+        $largeHandle = fopen($large, 'w+b');
+        if ($largeHandle === false || !ftruncate($largeHandle, 256 * 1024 * 1024)) {
+            throw new RuntimeException('Cannot create sparse snapshot capacity fixture.');
+        }
+        fclose($largeHandle);
+        $bytesBlocked = hub_voice_profile_verified_upload($sourcePath, hash_file('sha256', $sourcePath));
+        if (is_array($bytesBlocked)) {
+            unlink((string)$bytesBlocked['tmp_name']);
+        }
+
+        hub_test_assert(
+            (int)($cleanup['purged'] ?? 0) === 2
+            && !file_exists($stale)
+            && !is_link($staleLink)
+            && $outsideUntouched
+            && $managedPrivate
+            && $countBlocked === null
+            && $bytesBlocked === null,
+            'snapshot cleanup must stay inside its private area and enforce stale, file-count, and byte-capacity boundaries'
+        );
+    } finally {
+        if (is_string($snapshotDir) && is_dir($snapshotDir)) {
+            foreach (scandir($snapshotDir) ?: [] as $name) {
+                if ($name === '.' || $name === '..') {
+                    continue;
+                }
+                $snapshot = $snapshotDir . '/' . $name;
+                if (is_link($snapshot) || is_file($snapshot)) {
+                    unlink($snapshot);
+                }
+            }
+            rmdir($snapshotDir);
+        }
+        if (is_string($sourcePath) && is_file($sourcePath)) {
+            unlink($sourcePath);
+        }
+        unlink($outside);
+    }
+});
+
+hub_test('legacy soft-deleted voice profile WAV cleanup recovers safely and idempotently', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Legacy cleanup owner');
+    $path = hub_voice_profile_storage_dir() . '/legacy-empty-sha.wav';
+    file_put_contents($path, 'RIFFlegacy-empty-sha', LOCK_EX);
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Legacy empty SHA profile',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+    ]);
+    hub_soft_delete_voice_profile($db, $profileId, $memberId, false);
+    $db->prepare(
+        "UPDATE voice_profile_audit_logs
+         SET details_json = '{\"delete_audio\":false}'
+         WHERE voice_profile_id = :voice_profile_id AND action = 'delete'"
+    )->execute([':voice_profile_id' => $profileId]);
+
+    $first = hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+    $second = hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+    $legacy = $db->query(
+        'SELECT reference_audio_path, reference_audio_sha256 FROM voice_profiles WHERE id = ' . $profileId
+    )->fetch();
+
+    $sharedPath = hub_voice_profile_storage_dir() . '/legacy-active-reference.wav';
+    file_put_contents($sharedPath, 'RIFFlegacy-active-reference', LOCK_EX);
+    $legacySharedId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Legacy shared tombstone',
+        'reference_audio_path' => $sharedPath,
+        'consent_type' => 'self_recorded',
+    ]);
+    hub_soft_delete_voice_profile($db, $legacySharedId, $memberId, false);
+    $db->prepare(
+        "UPDATE voice_profile_audit_logs
+         SET details_json = '{\"delete_audio\":false}'
+         WHERE voice_profile_id = :voice_profile_id AND action = 'delete'"
+    )->execute([':voice_profile_id' => $legacySharedId]);
+    $activeId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Active shared path profile',
+        'reference_audio_path' => $sharedPath,
+        'consent_type' => 'self_recorded',
+    ]);
+    $blocked = hub_soft_delete_voice_profile($db, $legacySharedId, $memberId, true);
+    $blockedPath = $db->query(
+        'SELECT reference_audio_path FROM voice_profiles WHERE id = ' . $legacySharedId
+    )->fetchColumn();
+
+    hub_test_assert(
+        empty($first['audio_cleanup_failed'])
+        && empty($second['audio_cleanup_failed'])
+        && !file_exists($path)
+        && $legacy !== false
+        && ($legacy['reference_audio_path'] ?? null) === ''
+        && ($legacy['reference_audio_sha256'] ?? null) === ''
+        && !empty($blocked['audio_cleanup_failed'])
+        && is_file($sharedPath)
+        && $blockedPath === $sharedPath
+        && hub_get_voice_profile($db, $activeId) !== null,
+        'legacy recovery must clean an unreferenced exact inode idempotently and refuse a path still owned by an active Profile'
+    );
+});
+
 hub_test('retention expires a handle-lost voice profile and removes its managed WAV', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Expired voice profile owner');
