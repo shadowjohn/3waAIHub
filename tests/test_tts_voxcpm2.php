@@ -4146,6 +4146,7 @@ function hub_test_voxcpm2_cluster_runner_metadata(
     string $referenceSha256,
     string $promptSha256,
     string $targetText,
+    string $mode = 'ultimate_clone',
 ): array {
     $normalized = preg_replace('/(*UCP)\s+/u', ' ', trim($targetText));
     if (!is_string($normalized) || $normalized === '') {
@@ -4169,12 +4170,19 @@ function hub_test_voxcpm2_cluster_runner_metadata(
         'seed_policy' => 'derived_per_chunk',
         'chunks' => $chunks,
     ];
+    if (!in_array($mode, ['design', 'clone', 'ultimate_clone'], true)) {
+        throw new RuntimeException('Invalid production metadata fixture mode.');
+    }
     $voiceCore = [
-        'mode' => 'ultimate_clone',
+        'mode' => $mode,
         'control' => '',
-        'reference_audio_sha256' => $referenceSha256,
-        'prompt_text_sha256' => $promptSha256,
     ];
+    if ($mode !== 'design') {
+        $voiceCore['reference_audio_sha256'] = $referenceSha256;
+    }
+    if ($mode === 'ultimate_clone') {
+        $voiceCore['prompt_text_sha256'] = $promptSha256;
+    }
 
     return [
         'normalized_input' => $normalized,
@@ -4190,7 +4198,7 @@ function hub_test_voxcpm2_cluster_runner_metadata(
             'sha256' => hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($voiceCore)),
         ],
         'controls' => [
-            'mode' => 'ultimate_clone',
+            'mode' => $mode,
             'seed_policy' => 'derived_per_chunk',
             'task_seed' => 42,
         ],
@@ -4229,7 +4237,7 @@ function hub_test_voxcpm2_cluster_runner_metadata(
     ];
 }
 
-hub_test('VoxCPM2 public metadata normalizes only legacy queued Pack versions', function (): void {
+hub_test('VoxCPM2 public metadata enforces the current schema and only normalizes legacy Pack versions', function (): void {
     $db = hub_test_reset_db();
     $pathFreeMetadata = hub_test_voxcpm2_cluster_runner_metadata(
         str_repeat('a', 64),
@@ -4268,6 +4276,28 @@ hub_test('VoxCPM2 public metadata normalizes only legacy queued Pack versions', 
         ]];
     };
 
+    foreach (['design', 'clone', 'ultimate_clone'] as $mode) {
+        $currentMetadata = hub_test_voxcpm2_cluster_runner_metadata(
+            str_repeat('a', 64),
+            str_repeat('b', 64),
+            'Canonical ' . $mode . ' metadata.',
+            $mode
+        );
+        $currentJson = json_encode(
+            $currentMetadata,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+        );
+        [$currentTaskId, $currentArtifact] = $makeArtifact(
+            '0.1.6',
+            'current-' . $mode . '-metadata.json',
+            $currentJson
+        );
+        hub_test_assert(
+            hub_voxcpm2_public_metadata_artifact($db, $currentTaskId, $currentArtifact) === $currentArtifact,
+            '0.1.6 must accept canonical ' . $mode . ' metadata without rewriting it'
+        );
+    }
+
     foreach (['0.1.4', '0.1.5'] as $legacyVersion) {
         [$legacyTaskId, $legacyArtifact] = $makeArtifact(
             $legacyVersion,
@@ -4297,16 +4327,74 @@ hub_test('VoxCPM2 public metadata normalizes only legacy queued Pack versions', 
         );
     }
 
-    $modelPathMetadata = $pathFreeMetadata;
-    $modelPathMetadata['model'] = ['model' => '/models/voxcpm2/model'] + $modelPathMetadata['model'];
-    $voicePathMetadata = $pathFreeMetadata;
-    $voicePathMetadata['voice_context'] = $legacyVoice + [
-        'sha256' => hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($legacyVoice)),
+    $invalidCases = [
+        'top-level host_path' => static function (array $value): array {
+            $value['host_path'] = '/srv/private/model';
+            return $value;
+        },
+        'model.model' => static function (array $value): array {
+            $value['model']['model'] = '/models/voxcpm2/model';
+            return $value;
+        },
+        'model.weights_path' => static function (array $value): array {
+            $value['model']['weights_path'] = '/models/voxcpm2/weights';
+            return $value;
+        },
+        'voice_context.container_path' => static function (array $value): array {
+            $value['voice_context']['container_path'] = '/data/voice_profiles/reference.wav';
+            return $value;
+        },
+        'voice_context.host_path' => static function (array $value): array {
+            $value['voice_context']['host_path'] = '/srv/private/reference.wav';
+            return $value;
+        },
+        'plan extra key' => static function (array $value): array {
+            $value['plan']['host_path'] = '/srv/private/plan';
+            return $value;
+        },
+        'plan chunk extra key' => static function (array $value): array {
+            $value['plan']['chunks'][0]['host_path'] = '/srv/private/chunk';
+            return $value;
+        },
+        'chunk extra key' => static function (array $value): array {
+            $value['chunks'][0]['host_path'] = '/srv/private/audio';
+            return $value;
+        },
+        'timeline extra key' => static function (array $value): array {
+            $value['timeline'][0]['host_path'] = '/srv/private/timeline';
+            return $value;
+        },
+        'final_format extra key' => static function (array $value): array {
+            $value['final_format']['host_path'] = '/srv/private/output.wav';
+            return $value;
+        },
+        'loudness extra key' => static function (array $value): array {
+            $value['loudness']['host_path'] = '/srv/private/loudness';
+            return $value;
+        },
+        'device extra key' => static function (array $value): array {
+            $value['device']['host_path'] = '/dev/private';
+            return $value;
+        },
+        'object-shaped plan chunks' => static function (array $value): array {
+            $value['plan']['chunks'] = ['chunk' => $value['plan']['chunks'][0]];
+            return $value;
+        },
+        'object-shaped chunks' => static function (array $value): array {
+            $value['chunks'] = ['chunk' => $value['chunks'][0]];
+            return $value;
+        },
+        'object-shaped timeline' => static function (array $value): array {
+            $value['timeline'] = ['event' => $value['timeline'][0]];
+            return $value;
+        },
+        'list-shaped model' => static function (array $value): array {
+            $value['model'] = array_values($value['model']);
+            return $value;
+        },
     ];
-    foreach ([
-        'model-path' => $modelPathMetadata,
-        'voice-path' => $voicePathMetadata,
-    ] as $case => $currentMetadata) {
+    foreach ($invalidCases as $case => $mutate) {
+        $currentMetadata = $mutate($pathFreeMetadata);
         $currentJson = json_encode(
             $currentMetadata,
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
@@ -4324,7 +4412,7 @@ hub_test('VoxCPM2 public metadata normalizes only legacy queued Pack versions', 
         }
         hub_test_assert(
             $rejected === 'validated_artifact_invalid',
-            '0.1.6 must reject ' . $case . ' metadata from a stale or mislabeled image'
+            '0.1.6 must reject metadata with ' . $case
         );
     }
 });
