@@ -170,27 +170,26 @@ function hub_pack_job_secure_remove_private_file(string $path, ?callable $unlink
         return;
     }
     $unlinker ??= static fn (string $candidate): bool => @unlink($candidate);
-    try {
-        $removed = (bool)$unlinker($path);
-    } catch (Throwable) {
-        $removed = false;
-    }
-    clearstatcache(true, $path);
-    if ($removed && !file_exists($path) && !is_link($path)) {
+    $stat = lstat($path);
+    if (!is_array($stat)) {
         return;
     }
-    if (!file_exists($path) && !is_link($path)) {
-        return;
-    }
-    if (is_link($path)) {
+    if (((int)$stat['mode'] & 0170000) === 0120000) {
+        try {
+            $removed = (bool)$unlinker($path);
+        } catch (Throwable) {
+            $removed = false;
+        }
+        clearstatcache(true, $path);
+        if (($removed || !file_exists($path)) && !is_link($path)) {
+            return;
+        }
         throw new RuntimeException('workspace_privacy_cleanup_failed');
     }
-    $stat = lstat($path);
-    if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
+    if (((int)$stat['mode'] & 0170000) !== 0100000) {
         throw new RuntimeException('workspace_privacy_cleanup_failed');
     }
 
-    @chmod($path, 0600);
     $handle = @fopen($path, 'r+b');
     if ($handle === false) {
         throw new RuntimeException('workspace_privacy_cleanup_failed');
@@ -201,11 +200,16 @@ function hub_pack_job_secure_remove_private_file(string $path, ?callable $unlink
             throw new RuntimeException('workspace_privacy_cleanup_failed');
         }
         $openStat = fstat($handle);
+        clearstatcache(true, $path);
+        $pathStat = lstat($path);
         if (!is_array($openStat)
+            || !is_array($pathStat)
             || (((int)$openStat['mode'] & 0170000) !== 0100000)
-            || (int)($openStat['nlink'] ?? 0) !== 1
+            || (((int)$pathStat['mode'] & 0170000) !== 0100000)
             || (int)$openStat['dev'] !== (int)$stat['dev']
             || (int)$openStat['ino'] !== (int)$stat['ino']
+            || (int)$pathStat['dev'] !== (int)$stat['dev']
+            || (int)$pathStat['ino'] !== (int)$stat['ino']
             || !ftruncate($handle, 0)
             || !fflush($handle)
             || (function_exists('fsync') && !fsync($handle))) {
@@ -217,15 +221,30 @@ function hub_pack_job_secure_remove_private_file(string $path, ?callable $unlink
         fclose($handle);
     }
     clearstatcache(true, $path);
-    $after = lstat($path);
-    if (!$truncated
-        || !is_array($after)
-        || is_link($path)
-        || (((int)$after['mode'] & 0170000) !== 0100000)
-        || (int)($after['nlink'] ?? 0) !== 1
+    $after = @lstat($path);
+    if (!$truncated) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+    if (!is_array($after)) {
+        return;
+    }
+    if ((((int)$after['mode'] & 0170000) !== 0100000)
         || (int)$after['dev'] !== (int)$stat['dev']
         || (int)$after['ino'] !== (int)$stat['ino']
         || (int)$after['size'] !== 0) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+    try {
+        $unlinker($path);
+    } catch (Throwable) {
+    }
+    clearstatcache(true, $path);
+    $afterUnlink = @lstat($path);
+    if (is_array($afterUnlink)
+        && ((((int)$afterUnlink['mode'] & 0170000) !== 0100000)
+            || (int)$afterUnlink['dev'] !== (int)$stat['dev']
+            || (int)$afterUnlink['ino'] !== (int)$stat['ino']
+            || (int)$afterUnlink['size'] !== 0)) {
         throw new RuntimeException('workspace_privacy_cleanup_failed');
     }
 }
@@ -248,12 +267,32 @@ function hub_pack_job_cleanup_private_files(array $paths, ?callable $unlinker = 
     }
 }
 
+function hub_pack_job_cleanup_stale_private_requests(string $input, ?callable $unlinker = null): void
+{
+    $directory = @opendir($input);
+    if ($directory === false) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+    $paths = [];
+    try {
+        while (($name = readdir($directory)) !== false) {
+            if (preg_match('/\Arequest\.private\.[a-f0-9]{16}\z/D', $name) === 1) {
+                $paths[] = $input . DIRECTORY_SEPARATOR . $name;
+            }
+        }
+    } finally {
+        closedir($directory);
+    }
+    hub_pack_job_cleanup_private_files($paths, $unlinker);
+}
+
 function hub_pack_job_write_private_request(
     string $requestPath,
     string $json,
     ?callable $renamer = null,
     ?callable $unlinker = null,
     ?callable $chmodder = null,
+    ?callable $writer = null,
 ): void {
     $requestParent = dirname($requestPath);
     $input = realpath($requestParent);
@@ -265,6 +304,8 @@ function hub_pack_job_write_private_request(
         throw new RuntimeException('workspace_privacy_cleanup_failed');
     }
     $requestPath = $input . DIRECTORY_SEPARATOR . basename($requestPath);
+    hub_pack_job_cleanup_stale_private_requests($input, $unlinker);
+    hub_pack_job_secure_remove_private_file($requestPath, $unlinker);
     try {
         $temporaryPath = $input . '/request.private.' . bin2hex(random_bytes(8));
     } catch (Throwable $error) {
@@ -273,11 +314,65 @@ function hub_pack_job_write_private_request(
     $payload = $json . PHP_EOL;
     $renamer ??= static fn (string $from, string $to): bool => @rename($from, $to);
     $chmodder ??= static fn (string $path, int $mode): bool => chmod($path, $mode);
+    $writer ??= static function ($handle, string $path, string $contents): int {
+        $total = 0;
+        $length = strlen($contents);
+        while ($total < $length) {
+            $written = fwrite($handle, substr($contents, $total));
+            if (!is_int($written) || $written <= 0) {
+                return $total;
+            }
+            $total += $written;
+        }
+
+        return $total;
+    };
+    $handle = false;
     try {
-        $written = file_put_contents($temporaryPath, $payload, LOCK_EX);
-        $moved = is_int($written)
-            && $written === strlen($payload)
-            && (bool)$chmodder($temporaryPath, 0600)
+        $oldUmask = umask(0077);
+        try {
+            $handle = @fopen($temporaryPath, 'x+b');
+        } finally {
+            umask($oldUmask);
+        }
+        if ($handle === false || !flock($handle, LOCK_EX) || !(bool)$chmodder($temporaryPath, 0600)) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        $openStat = fstat($handle);
+        clearstatcache(true, $temporaryPath);
+        $pathStat = lstat($temporaryPath);
+        $restrictive = hub_platform_id() === 'windows'
+            || (is_array($openStat) && (((int)$openStat['mode'] & 0777) === 0600));
+        if (!is_array($openStat)
+            || !is_array($pathStat)
+            || (((int)$openStat['mode'] & 0170000) !== 0100000)
+            || (((int)$pathStat['mode'] & 0170000) !== 0100000)
+            || (int)($openStat['nlink'] ?? 0) !== 1
+            || (int)$openStat['dev'] !== (int)$pathStat['dev']
+            || (int)$openStat['ino'] !== (int)$pathStat['ino']
+            || (int)$openStat['size'] !== 0
+            || !$restrictive) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        $written = $writer($handle, $temporaryPath, $payload);
+        if (!is_int($written)
+            || $written !== strlen($payload)
+            || !fflush($handle)
+            || (function_exists('fsync') && !fsync($handle))) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        flock($handle, LOCK_UN);
+        fclose($handle);
+        $handle = false;
+
+        clearstatcache(true, $temporaryPath);
+        $temporaryStat = lstat($temporaryPath);
+        $moved = is_array($temporaryStat)
+            && (((int)$temporaryStat['mode'] & 0170000) === 0100000)
+            && (int)($temporaryStat['nlink'] ?? 0) === 1
+            && (hub_platform_id() === 'windows' || (((int)$temporaryStat['mode'] & 0777) === 0600))
+            && (int)$temporaryStat['size'] === strlen($payload)
+            && hash_equals(hash('sha256', $payload), (string)hash_file('sha256', $temporaryPath))
             && (bool)$renamer($temporaryPath, $requestPath);
         clearstatcache(true, $temporaryPath);
         clearstatcache(true, $requestPath);
@@ -288,10 +383,16 @@ function hub_pack_job_write_private_request(
             && is_array($stat)
             && (((int)$stat['mode'] & 0170000) === 0100000)
             && (int)($stat['nlink'] ?? 0) === 1
+            && (hub_platform_id() === 'windows' || (((int)$stat['mode'] & 0777) === 0600))
             && hash_equals(hash('sha256', $payload), (string)hash_file('sha256', $requestPath))) {
             return;
         }
     } catch (Throwable) {
+    } finally {
+        if (is_resource($handle)) {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     hub_pack_job_cleanup_private_files([$temporaryPath, $requestPath], $unlinker);
@@ -397,9 +498,7 @@ function hub_pack_job_scrub_private_prompt(string $workspace): void
         throw new RuntimeException('workspace_privacy_cleanup_failed');
     }
     if (is_link($requestPath)) {
-        if (!unlink($requestPath)) {
-            throw new RuntimeException('workspace_privacy_cleanup_failed');
-        }
+        hub_pack_job_secure_remove_private_file($requestPath);
         return;
     }
     if (!file_exists($requestPath)) {
@@ -426,11 +525,16 @@ function hub_pack_job_scrub_private_prompt(string $workspace): void
         hub_pack_job_secure_remove_private_file($requestPath);
         return;
     }
-    if ($json !== false
-        && file_put_contents($temporaryPath, $json . PHP_EOL, LOCK_EX) !== false
-        && chmod($temporaryPath, 0600)
-        && rename($temporaryPath, $requestPath)) {
-        return;
+    try {
+        if ($json !== false
+            && file_put_contents($temporaryPath, $json . PHP_EOL, LOCK_EX) !== false
+            && chmod($temporaryPath, 0600)) {
+            hub_pack_job_secure_remove_private_file($requestPath);
+            if (rename($temporaryPath, $requestPath)) {
+                return;
+            }
+        }
+    } catch (Throwable) {
     }
     hub_pack_job_cleanup_private_files([$temporaryPath, $requestPath]);
 }

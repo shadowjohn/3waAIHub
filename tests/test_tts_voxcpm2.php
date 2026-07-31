@@ -4263,7 +4263,7 @@ hub_test('VoxCPM2 private request write failure leaves no prompt bytes when rena
     }
 });
 
-hub_test('VoxCPM2 private request chmod failure securely clears written prompt bytes', function (): void {
+hub_test('VoxCPM2 private request chmod failure occurs before prompt bytes are written', function (): void {
     $root = sys_get_temp_dir() . '/3waaihub_private_chmod_' . bin2hex(random_bytes(12));
     if (!mkdir($root, 0700)) {
         throw new RuntimeException('Cannot create private chmod cleanup fixture.');
@@ -4288,7 +4288,8 @@ hub_test('VoxCPM2 private request chmod failure securely clears written prompt b
             static fn (string $path): bool => false,
             static function (string $temporaryPath, int $mode) use ($prompt, &$chmodObserved): bool {
                 $chmodObserved = $mode === 0600
-                    && str_contains((string)file_get_contents($temporaryPath), $prompt);
+                    && filesize($temporaryPath) === 0
+                    && !str_contains((string)file_get_contents($temporaryPath), $prompt);
                 return false;
             }
         );
@@ -4313,7 +4314,7 @@ hub_test('VoxCPM2 private request chmod failure securely clears written prompt b
             && $retainedBytes === 0
             && !str_contains($retained, $prompt)
             && !file_exists($requestPath),
-            'chmod failure after private bytes are written must verify every prompt-bearing file is absent or zero-length'
+            'chmod failure must occur while the exclusive private request is still empty and leave no prompt bytes'
         );
     } finally {
         foreach (glob($root . '/*') ?: [] as $path) {
@@ -4322,6 +4323,122 @@ hub_test('VoxCPM2 private request chmod failure securely clears written prompt b
                 unlink($path);
             }
         }
+        rmdir($root);
+    }
+});
+
+hub_test('VoxCPM2 private request is restrictive before writing and clears stale hard links', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_private_mode_' . bin2hex(random_bytes(12));
+    if (!mkdir($root, 0700)) {
+        throw new RuntimeException('Cannot create restrictive private request fixture.');
+    }
+    $requestPath = $root . '/request.json';
+    $stalePath = $root . '/request.private.0123456789abcdef';
+    $staleLink = $root . '/stale-private-hardlink';
+    $stalePrompt = 'Stale private prompt must be cleared through every hard link.';
+    file_put_contents($stalePath, $stalePrompt, LOCK_EX);
+    chmod($stalePath, 0644);
+    if (!link($stalePath, $staleLink)) {
+        throw new RuntimeException('Cannot create stale private request hard-link fixture.');
+    }
+    $prompt = 'New private prompt is written only after restrictive creation.';
+    $json = json_encode(
+        ['text' => 'safe restrictive target', 'prompt_text' => $prompt],
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+    );
+    $modeAtWrite = null;
+    $emptyAtWrite = false;
+    $oldUmask = umask(0002);
+    try {
+        hub_pack_job_write_private_request(
+            $requestPath,
+            $json,
+            null,
+            null,
+            null,
+            static function ($handle, string $temporaryPath, string $payload) use (&$modeAtWrite, &$emptyAtWrite): int {
+                $stat = fstat($handle);
+                $modeAtWrite = is_array($stat) ? ((int)$stat['mode'] & 0777) : null;
+                $emptyAtWrite = is_file($temporaryPath)
+                    && filesize($temporaryPath) === 0
+                    && ftell($handle) === 0;
+                $written = fwrite($handle, $payload);
+                return is_int($written) ? $written : 0;
+            }
+        );
+    } finally {
+        umask($oldUmask);
+    }
+
+    try {
+        $published = (string)file_get_contents($requestPath);
+        $publishedStat = lstat($requestPath);
+        hub_test_assert(
+            $modeAtWrite === 0600
+            && $emptyAtWrite
+            && is_array($publishedStat)
+            && (((int)$publishedStat['mode'] & 0777) === 0600)
+            && str_contains($published, $prompt)
+            && !file_exists($stalePath)
+            && is_file($staleLink)
+            && filesize($staleLink) === 0
+            && !str_contains((string)file_get_contents($staleLink), $stalePrompt),
+            'private request bytes must begin in a 0600 exclusive file after stale hard-linked material is cleared'
+        );
+    } finally {
+        foreach (glob($root . '/*') ?: [] as $path) {
+            if (is_link($path) || is_file($path)) {
+                chmod($path, 0600);
+                unlink($path);
+            }
+        }
+        rmdir($root);
+    }
+});
+
+hub_test('VoxCPM2 normal private prompt scrub clears every hard link to the old request inode', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_private_hardlink_' . bin2hex(random_bytes(12));
+    $input = $root . '/input';
+    if (!mkdir($input, 0700, true)) {
+        throw new RuntimeException('Cannot create hard-linked scrub fixture.');
+    }
+    $requestPath = $input . '/request.json';
+    $hardLinkPath = $root . '/retained-request-hardlink';
+    $prompt = 'Hard-linked private prompt must not survive normal scrub.';
+    file_put_contents(
+        $requestPath,
+        json_encode(
+            ['text' => 'safe retained field', 'prompt_text' => $prompt],
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+        ) . PHP_EOL,
+        LOCK_EX
+    );
+    chmod($requestPath, 0600);
+    if (!link($requestPath, $hardLinkPath)) {
+        throw new RuntimeException('Cannot create private request hard-link fixture.');
+    }
+
+    try {
+        hub_pack_job_scrub_private_prompt($root);
+        $scrubbedJson = (string)file_get_contents($requestPath);
+        $scrubbed = json_decode($scrubbedJson, true, 32, JSON_THROW_ON_ERROR);
+        hub_test_assert(
+            ($scrubbed['text'] ?? null) === 'safe retained field'
+            && !array_key_exists('prompt_text', $scrubbed)
+            && !str_contains($scrubbedJson, $prompt)
+            && is_file($hardLinkPath)
+            && filesize($hardLinkPath) === 0
+            && !str_contains((string)file_get_contents($hardLinkPath), $prompt),
+            'normal scrub must truncate and flush the old prompt inode before replacing its request path'
+        );
+    } finally {
+        foreach ([$requestPath, $hardLinkPath] as $path) {
+            if (is_link($path) || is_file($path)) {
+                chmod($path, 0600);
+                unlink($path);
+            }
+        }
+        rmdir($input);
         rmdir($root);
     }
 });
