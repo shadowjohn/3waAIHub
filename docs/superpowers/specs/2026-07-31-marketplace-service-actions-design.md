@@ -10,6 +10,7 @@ Make the installed-service cards in `admin/marketplace.php?view=services` show v
 - A stopped or failed service does not show `停止`.
 - A service with an active command job disables its service actions.
 - The initial PHP render and the existing job-polling JavaScript use the same visibility rules.
+- Remove the legacy service IP-whitelist link from the service card details and the old service-management page. The direct legacy page remains available for existing rules and troubleshooting.
 
 ## Removal
 
