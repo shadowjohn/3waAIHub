@@ -1613,9 +1613,9 @@ function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $r
         throw new InvalidArgumentException('voice_profile_unavailable');
     }
     $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
-    $sha256 = $path === null ? false : hash_file('sha256', $path);
+    $sha256 = $path === null || !is_readable($path) ? false : @hash_file('sha256', $path);
     if ($path === null || !is_string($sha256) || !hash_equals((string)($profile['reference_audio_sha256'] ?? ''), $sha256)) {
-        throw new InvalidArgumentException('voice_profile_forbidden');
+        throw new InvalidArgumentException('voice_profile_unavailable');
     }
     $snapshot = [
         'mode' => $mode,

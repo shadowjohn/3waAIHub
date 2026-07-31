@@ -60,11 +60,83 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     }
     $stat = lstat($candidate);
     $real = realpath($candidate);
-    if ($real === false || !is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000)) {
+    if (
+        $real === false
+        || !is_array($stat)
+        || (((int)$stat['mode'] & 0170000) !== 0100000)
+        || (int)($stat['nlink'] ?? 0) !== 1
+    ) {
         return null;
     }
 
     return str_starts_with($real, $root . DIRECTORY_SEPARATOR) ? $real : null;
+}
+
+function hub_voice_profile_file_stats_match(mixed $openedStat, mixed $pathStat): bool
+{
+    return is_array($openedStat)
+        && is_array($pathStat)
+        && (((int)($openedStat['mode'] ?? 0) & 0170000) === 0100000)
+        && (((int)($pathStat['mode'] ?? 0) & 0170000) === 0100000)
+        && (int)($openedStat['nlink'] ?? 0) === 1
+        && (int)($pathStat['nlink'] ?? 0) === 1
+        && (int)($openedStat['dev'] ?? -1) === (int)($pathStat['dev'] ?? -2)
+        && (int)($openedStat['ino'] ?? -1) === (int)($pathStat['ino'] ?? -2);
+}
+
+function hub_voice_profile_verified_upload(string $rawPath, string $expectedSha256): ?array
+{
+    $path = hub_voice_profile_safe_host_path($rawPath);
+    if ($path === null || preg_match('/^[a-f0-9]{64}$/', $expectedSha256) !== 1) {
+        return null;
+    }
+    $source = @fopen($path, 'rb');
+    if ($source === false || !hub_voice_profile_file_stats_match(fstat($source), @lstat($path))) {
+        if (is_resource($source)) {
+            fclose($source);
+        }
+        return null;
+    }
+    $snapshotPath = tempnam(sys_get_temp_dir(), '3waaihub_voice_profile_');
+    if ($snapshotPath === false) {
+        fclose($source);
+        return null;
+    }
+    @chmod($snapshotPath, 0600);
+    $snapshot = @fopen($snapshotPath, 'wb');
+    $verified = false;
+    try {
+        if ($snapshot === false || stream_copy_to_stream($source, $snapshot) === false || !fflush($snapshot)) {
+            return null;
+        }
+        clearstatcache(true, $path);
+        if (!hub_voice_profile_file_stats_match(fstat($source), @lstat($path))) {
+            return null;
+        }
+        $size = ftell($snapshot);
+        fclose($snapshot);
+        $snapshot = false;
+        $sha256 = @hash_file('sha256', $snapshotPath);
+        if (!is_int($size) || !is_string($sha256) || !hash_equals($expectedSha256, $sha256)) {
+            return null;
+        }
+        $verified = true;
+
+        return [
+            'tmp_name' => $snapshotPath,
+            'type' => 'audio/wav',
+            'size' => $size,
+            'error' => UPLOAD_ERR_OK,
+        ];
+    } finally {
+        fclose($source);
+        if (is_resource($snapshot)) {
+            fclose($snapshot);
+        }
+        if (!$verified) {
+            @unlink($snapshotPath);
+        }
+    }
 }
 
 function hub_voice_profile_container_path(array $profile): string
@@ -91,9 +163,14 @@ function hub_find_active_voice_profile_by_owner_sha(PDO $db, int $ownerMemberId,
          WHERE owner_member_id = :owner_member_id
            AND reference_audio_sha256 = :reference_audio_sha256
            AND deleted_at IS NULL
+           AND (expires_at IS NULL OR expires_at > :now)
          LIMIT 1'
     );
-    $stmt->execute([':owner_member_id' => $ownerMemberId, ':reference_audio_sha256' => $sha256]);
+    $stmt->execute([
+        ':owner_member_id' => $ownerMemberId,
+        ':reference_audio_sha256' => $sha256,
+        ':now' => hub_now(),
+    ]);
     $profile = $stmt->fetch();
 
     return $profile ?: null;
@@ -289,21 +366,21 @@ function hub_run_voice_profile_transcription(PDO $db, array $profile, int $owner
     if ($profileId < 1 || $leaseToken === '') {
         return hub_voice_profile_lost_lease_response($db, $profileId, $profile);
     }
-    $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
-    if ($path === null) {
+    $verifiedUpload = hub_voice_profile_verified_upload(
+        (string)($profile['reference_audio_path'] ?? ''),
+        (string)($profile['reference_audio_sha256'] ?? '')
+    );
+    if ($verifiedUpload === null) {
         $transcription = ['ok' => false, 'error' => 'asr_failed'];
     } else {
         try {
             $transcription = $transcribe === null
-                ? hub_transcribe_voice_profile($db, [
-                    'tmp_name' => $path,
-                    'type' => 'audio/wav',
-                    'size' => (int)(filesize($path) ?: 0),
-                    'error' => UPLOAD_ERR_OK,
-                ])
-                : $transcribe();
+                ? hub_transcribe_voice_profile($db, $verifiedUpload)
+                : $transcribe($verifiedUpload);
         } catch (Throwable) {
             $transcription = ['ok' => false, 'error' => 'asr_failed'];
+        } finally {
+            @unlink((string)$verifiedUpload['tmp_name']);
         }
     }
     if (!is_array($transcription) || empty($transcription['ok'])) {
@@ -909,7 +986,7 @@ function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId
     return hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
 }
 
-function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $rawPath): bool
+function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $rawPath, string $expectedSha256): bool
 {
     if ($rawPath === '') {
         return true;
@@ -919,8 +996,54 @@ function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $
         if (@lstat($rawPath) !== false) {
             return false;
         }
-    } elseif (!@unlink($path)) {
+    } elseif (preg_match('/^[a-f0-9]{64}$/', $expectedSha256) !== 1) {
         return false;
+    } else {
+        $before = @lstat($path);
+        $quarantineDir = dirname($path) . '/.voice_profile_purge_' . bin2hex(random_bytes(16));
+        $quarantinePath = $quarantineDir . '/audio.wav';
+        if (
+            !is_array($before)
+            || !@mkdir($quarantineDir, 0700)
+            || !@rename($path, $quarantinePath)
+        ) {
+            @rmdir($quarantineDir);
+            return false;
+        }
+        clearstatcache(true, $quarantinePath);
+        $quarantine = @fopen($quarantinePath, 'rb');
+        $opened = is_resource($quarantine) ? fstat($quarantine) : false;
+        $after = @lstat($quarantinePath);
+        $sha256 = false;
+        if (
+            is_resource($quarantine)
+            && hub_voice_profile_file_stats_match($before, $opened)
+            && hub_voice_profile_file_stats_match($opened, $after)
+        ) {
+            $hash = hash_init('sha256');
+            hash_update_stream($hash, $quarantine);
+            $digest = hash_final($hash);
+            clearstatcache(true, $quarantinePath);
+            if (hub_voice_profile_file_stats_match(fstat($quarantine), @lstat($quarantinePath))) {
+                $sha256 = $digest;
+            }
+        }
+        $unlinked = is_string($sha256)
+            && hash_equals($expectedSha256, $sha256)
+            && @unlink($quarantinePath);
+        $unlinkedStat = is_resource($quarantine) ? fstat($quarantine) : false;
+        $linkCount = is_array($unlinkedStat) ? (int)($unlinkedStat['nlink'] ?? -1) : -1;
+        if (is_resource($quarantine)) {
+            fclose($quarantine);
+        }
+        if (!$unlinked || $linkCount !== 0) {
+            if (@lstat($rawPath) === false) {
+                @rename($quarantinePath, $rawPath);
+            }
+            @rmdir($quarantineDir);
+            return false;
+        }
+        @rmdir($quarantineDir);
     }
 
     $stmt = $db->prepare(
@@ -936,6 +1059,7 @@ function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $
 function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMemberId, bool $deleteAudio = false): array
 {
     $rawPath = '';
+    $referenceAudioSha256 = '';
     $deleteTransactionStarted = false;
     try {
         $db->exec('BEGIN IMMEDIATE');
@@ -947,6 +1071,7 @@ function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMember
             throw new InvalidArgumentException('voice_profile_forbidden');
         }
         $rawPath = (string)($profile['reference_audio_path'] ?? '');
+        $referenceAudioSha256 = (string)($profile['reference_audio_sha256'] ?? '');
         $alreadyDeleted = !empty($profile['deleted_at']);
         $now = hub_now();
         $stmt = $db->prepare(
@@ -980,7 +1105,10 @@ function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMember
             throw new InvalidArgumentException('voice_profile_forbidden');
         }
         if (!$alreadyDeleted) {
-            hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'delete', null, ['delete_audio' => $deleteAudio]);
+            hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'delete', null, [
+                'delete_audio' => $deleteAudio,
+                'reference_audio_sha256' => $referenceAudioSha256,
+            ]);
         }
         $db->exec('COMMIT');
         $deleteTransactionStarted = false;
@@ -996,14 +1124,14 @@ function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMember
 
     return [
         'audio_cleanup_failed' => $deleteAudio
-            && !hub_purge_deleted_voice_profile_audio($db, $profileId, $rawPath),
+            && !hub_purge_deleted_voice_profile_audio($db, $profileId, $rawPath, $referenceAudioSha256),
     ];
 }
 
 function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100): array
 {
     $stmt = $db->prepare(
-        "SELECT id, owner_member_id, reference_audio_path, deleted_at
+        "SELECT id, owner_member_id, reference_audio_path, reference_audio_sha256, deleted_at
          FROM voice_profiles
          WHERE expires_at IS NOT NULL AND expires_at <= :now
            AND (
@@ -1028,6 +1156,19 @@ function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100
     foreach ($stmt->fetchAll() as $profile) {
         $profileId = (int)$profile['id'];
         $rawPath = (string)$profile['reference_audio_path'];
+        $referenceAudioSha256 = (string)$profile['reference_audio_sha256'];
+        if ($rawPath !== '' && preg_match('/^[a-f0-9]{64}$/', $referenceAudioSha256) !== 1) {
+            $audit = $db->prepare(
+                "SELECT details_json FROM voice_profile_audit_logs
+                 WHERE voice_profile_id = :voice_profile_id AND action = 'delete'
+                 ORDER BY id DESC LIMIT 1"
+            );
+            $audit->execute([':voice_profile_id' => $profileId]);
+            $details = json_decode((string)$audit->fetchColumn(), true);
+            $referenceAudioSha256 = is_array($details)
+                ? (string)($details['reference_audio_sha256'] ?? '')
+                : '';
+        }
         $safePath = $rawPath === '' ? null : hub_voice_profile_safe_host_path($rawPath);
         $managedAudio = $safePath !== null && is_file($safePath) && !is_link($safePath) ? $safePath : null;
         $unsafeAudio = $rawPath !== '' && $managedAudio === null && (file_exists($rawPath) || is_link($rawPath));
@@ -1057,20 +1198,13 @@ function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100
             if ($unsafeAudio) {
                 throw new RuntimeException('voice_profile_audio_path_rejected');
             }
-            if ($managedAudio !== null) {
-                if (!unlink($managedAudio)) {
+            if ($rawPath !== '') {
+                if (!hub_purge_deleted_voice_profile_audio($db, $profileId, $rawPath, $referenceAudioSha256)) {
                     throw new RuntimeException('voice_profile_audio_cleanup_failed');
                 }
-                $audioPurged++;
-            }
-            $clear = $db->prepare(
-                "UPDATE voice_profiles
-                 SET reference_audio_path = '', updated_at = :updated_at
-                 WHERE id = :id AND deleted_at IS NOT NULL"
-            );
-            $clear->execute([':updated_at' => $now, ':id' => $profileId]);
-            if ($clear->rowCount() !== 1) {
-                throw new RuntimeException('voice_profile_cleanup_conflict');
+                if ($managedAudio !== null) {
+                    $audioPurged++;
+                }
             }
         } catch (Throwable) {
             $touch = $db->prepare(

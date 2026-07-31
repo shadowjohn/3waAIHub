@@ -504,6 +504,259 @@ hub_test('active voice profile retains prepare task metadata until soft delete',
     hub_test_assert(hub_get_task($db, $taskId) === null && (int)($afterDelete['metadata_purged'] ?? 0) === 1, 'soft delete must release prepare task metadata for the next prune');
 });
 
+hub_test('profile prepare does not reuse an unpruned expired voice profile', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Expired profile cache owner');
+        $token = hub_create_api_token($db, $memberId, 'expired profile cache token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $wav = "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0);
+        $expiredPath = hub_voice_profile_storage_dir() . '/expired-cache.wav';
+        file_put_contents($expiredPath, $wav, LOCK_EX);
+        $expiredId = hub_create_voice_profile($db, $memberId, [
+            'name' => 'Expired cache profile',
+            'reference_audio_path' => $expiredPath,
+            'consent_type' => 'self_recorded',
+            'expires_at' => '2000-01-01 00:00:00',
+        ]);
+        $tmpName = tempnam(sys_get_temp_dir(), 'expired-profile-cache-');
+        if ($tmpName === false) {
+            throw new RuntimeException('Cannot create expired profile cache WAV fixture.');
+        }
+        file_put_contents($tmpName, $wav, LOCK_EX);
+
+        try {
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=expired-profile-cache';
+            $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Replacement profile',
+                'consent_type' => 'self_recorded',
+            ], [], ['reference_wav' => [
+                'name' => 'replacement.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $tmpName,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($tmpName),
+            ]]);
+            $task = hub_get_task($db, (int)(hub_test_audio_payload($response)['task_id'] ?? 0));
+            $replacement = hub_get_voice_profile($db, (int)($task['input']['voice_profile_id'] ?? 0));
+
+            hub_test_assert(
+                $response['status'] === 200
+                && $replacement !== null
+                && (int)$replacement['id'] !== $expiredId
+                && (empty($replacement['expires_at']) || (string)$replacement['expires_at'] > hub_now()),
+                'same-WAV profile_prepare must create a usable profile instead of returning an expired cache hit'
+            );
+        } finally {
+            unlink($tmpName);
+        }
+    });
+});
+
+hub_test('owned voice profiles with unavailable managed WAVs return 410 without weakening lookup boundaries', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $ownerId = hub_create_api_member($db, 'Unavailable WAV owner');
+        $foreignId = hub_create_api_member($db, 'Unavailable WAV foreign member');
+        $ownerToken = hub_create_api_token($db, $ownerId, 'unavailable WAV owner token', null, null);
+        $foreignToken = hub_create_api_token($db, $foreignId, 'unavailable WAV foreign token', null, null);
+        hub_test_audio_allow($db, [$ownerToken, $foreignToken], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+
+        $paths = [];
+        $profileIds = [];
+        foreach (['missing', 'unsafe', 'unreadable'] as $state) {
+            $path = hub_voice_profile_storage_dir() . '/unavailable-' . $state . '.wav';
+            file_put_contents($path, 'RIFFunavailable-' . $state, LOCK_EX);
+            $paths[$state] = $path;
+            $profileIds[$state] = hub_create_voice_profile($db, $ownerId, [
+                'name' => ucfirst($state) . ' managed WAV',
+                'reference_audio_path' => $path,
+                'consent_type' => 'self_recorded',
+            ]);
+        }
+        unlink($paths['missing']);
+        $unsafeTarget = hub_voice_profile_storage_dir() . '/unsafe-target.wav';
+        file_put_contents($unsafeTarget, 'RIFFunsafe-target', LOCK_EX);
+        unlink($paths['unsafe']);
+        if (!symlink($unsafeTarget, $paths['unsafe'])) {
+            throw new RuntimeException('Cannot create unavailable voice profile symlink fixture.');
+        }
+        chmod($paths['unreadable'], 0000);
+
+        try {
+            foreach ($profileIds as $state => $profileId) {
+                $response = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], [
+                    'text' => 'Unavailable managed WAV',
+                    'mode' => 'clone',
+                    'voice_profile_id' => (string)$profileId,
+                ]);
+                hub_test_assert(
+                    $response['status'] === 410
+                    && (hub_test_audio_payload($response)['error'] ?? '') === 'voice_profile_unavailable',
+                    'owned profile with ' . $state . ' managed WAV must return voice_profile_unavailable'
+                );
+            }
+
+            foreach ([
+                [(string)$foreignToken['plain_token'], (string)$profileIds['missing']],
+                [(string)$ownerToken['plain_token'], '2147483647'],
+            ] as [$tokenValue, $profileId]) {
+                $response = hub_test_audio_request($db, 'voice_generate', $tokenValue, [
+                    'text' => 'Non-enumerating unavailable profile',
+                    'mode' => 'clone',
+                    'voice_profile_id' => $profileId,
+                ]);
+                hub_test_assert(
+                    $response['status'] === 403
+                    && (hub_test_audio_payload($response)['error'] ?? '') === 'voice_profile_forbidden',
+                    'foreign and unknown profiles must remain non-enumerating'
+                );
+            }
+        } finally {
+            chmod($paths['unreadable'], 0600);
+            unlink($paths['unsafe']);
+        }
+    });
+});
+
+hub_test('voice profile hardlinks fail closed at creation ASR and deletion boundaries', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Hardlink voice profile owner');
+    $root = hub_voice_profile_storage_dir();
+    $createPath = $root . '/hardlink-create.wav';
+    $createAlias = $root . '/hardlink-create-alias.wav';
+    $asrPath = $root . '/hardlink-asr.wav';
+    $asrAlias = $root . '/hardlink-asr-alias.wav';
+    $deletePath = $root . '/hardlink-delete.wav';
+    $deleteAlias = $root . '/hardlink-delete-alias.wav';
+    foreach ([$createPath, $asrPath, $deletePath] as $path) {
+        file_put_contents($path, 'RIFF' . basename($path), LOCK_EX);
+    }
+    if (!link($createPath, $createAlias) || !link($asrPath, $asrAlias) || !link($deletePath, $deleteAlias)) {
+        throw new RuntimeException('Cannot create voice profile hardlink fixtures.');
+    }
+
+    $asrId = 0;
+    $deleteId = 0;
+    try {
+        hub_test_assert(
+            hub_test_throws(static fn (): int => hub_create_voice_profile($db, $memberId, [
+                'name' => 'Rejected hardlink profile',
+                'reference_audio_path' => $createPath,
+                'consent_type' => 'self_recorded',
+            ])),
+            'a multiply linked WAV must never enter managed Profile state'
+        );
+
+        unlink($asrAlias);
+        $asrId = hub_create_voice_profile($db, $memberId, [
+            'name' => 'ASR hardlink profile',
+            'reference_audio_path' => $asrPath,
+            'consent_type' => 'self_recorded',
+        ]);
+        link($asrPath, $asrAlias);
+        $asrCalled = false;
+        $asrResult = hub_run_voice_profile_transcription(
+            $db,
+            hub_get_voice_profile($db, $asrId) ?? [],
+            $memberId,
+            static function () use (&$asrCalled): array {
+                $asrCalled = true;
+                return ['ok' => true, 'text' => 'must not transcribe', 'language' => 'en'];
+            }
+        );
+
+        unlink($deleteAlias);
+        $deleteId = hub_create_voice_profile($db, $memberId, [
+            'name' => 'Delete hardlink profile',
+            'reference_audio_path' => $deletePath,
+            'consent_type' => 'self_recorded',
+        ]);
+        link($deletePath, $deleteAlias);
+        $deleted = hub_soft_delete_voice_profile($db, $deleteId, $memberId, true);
+        $deleteRow = $db->query('SELECT reference_audio_path FROM voice_profiles WHERE id = ' . $deleteId)->fetch();
+
+        hub_test_assert(
+            !$asrCalled
+            && ($asrResult['transcription']['error'] ?? '') === 'asr_failed'
+            && !empty($deleted['audio_cleanup_failed'])
+            && is_file($deletePath)
+            && is_file($deleteAlias)
+            && ($deleteRow['reference_audio_path'] ?? '') === $deletePath,
+            'ASR and delete must reject multiply linked Profile WAVs without consuming or losing cleanup state'
+        );
+    } finally {
+        foreach ([$createAlias, $asrAlias, $deleteAlias] as $alias) {
+            if (is_file($alias)) {
+                unlink($alias);
+            }
+        }
+    }
+});
+
+hub_test('voice profile ASR snapshots and delete identity checks resist pathname replacement', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Voice profile replacement owner');
+    $root = hub_voice_profile_storage_dir();
+    $asrPath = $root . '/replacement-asr.wav';
+    $asrReplacement = $root . '/replacement-asr-other.wav';
+    $originalAudio = 'RIFForiginal-private-voice';
+    file_put_contents($asrPath, $originalAudio, LOCK_EX);
+    file_put_contents($asrReplacement, 'RIFFother-profile-voice', LOCK_EX);
+    $asrId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'ASR replacement profile',
+        'reference_audio_path' => $asrPath,
+        'consent_type' => 'self_recorded',
+    ]);
+
+    $asrResult = hub_run_voice_profile_transcription(
+        $db,
+        hub_get_voice_profile($db, $asrId) ?? [],
+        $memberId,
+        static function (array $verifiedUpload) use ($asrPath, $asrReplacement, $originalAudio): array {
+            rename($asrReplacement, $asrPath);
+            return [
+                'ok' => true,
+                'text' => file_get_contents((string)$verifiedUpload['tmp_name']) === $originalAudio ? 'original voice' : 'wrong voice',
+                'language' => 'en',
+            ];
+        }
+    );
+
+    $deletePath = $root . '/replacement-delete.wav';
+    $protectedPath = $root . '/replacement-protected.wav';
+    file_put_contents($deletePath, 'RIFFdelete-profile', LOCK_EX);
+    file_put_contents($protectedPath, 'RIFFprotected-profile', LOCK_EX);
+    $deleteId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Delete replacement profile',
+        'reference_audio_path' => $deletePath,
+        'consent_type' => 'self_recorded',
+    ]);
+    hub_create_voice_profile($db, $memberId, [
+        'name' => 'Protected replacement profile',
+        'reference_audio_path' => $protectedPath,
+        'consent_type' => 'self_recorded',
+    ]);
+    rename($protectedPath, $deletePath);
+    $deleted = hub_soft_delete_voice_profile($db, $deleteId, $memberId, true);
+
+    hub_test_assert(
+        ($asrResult['transcription']['text'] ?? '') === 'original voice'
+        && !empty($deleted['audio_cleanup_failed'])
+        && file_get_contents($deletePath) === 'RIFFprotected-profile',
+        'ASR must consume a verified snapshot and delete must preserve a different Profile inode moved into the pathname'
+    );
+});
+
 hub_test('retention expires a handle-lost voice profile and removes its managed WAV', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Expired voice profile owner');
