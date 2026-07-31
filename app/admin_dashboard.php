@@ -181,13 +181,30 @@ function hub_admin_dashboard_station_gpu_history(PDO $db, int $stationId, string
 function hub_admin_dashboard_gpu_history_rows(iterable $samples): array
 {
     $history = ['temperature' => [], 'vram_used' => []];
+    $timezone = new DateTimeZone('Asia/Taipei');
+    $now = time();
+    $latestSamples = [];
     foreach ($samples as $sample) {
         if (!is_array($sample)) {
             continue;
         }
         $sampledAt = (string)($sample['sampled_at'] ?? '');
         $gpu = is_array($sample['gpu'] ?? null) ? $sample['gpu'] : [];
-        if ($sampledAt === '' || ($gpu['available'] ?? null) !== true) {
+        $timestamp = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $sampledAt, $timezone);
+        $errors = DateTimeImmutable::getLastErrors();
+        if (
+            $timestamp === false
+            || ($errors !== false && ($errors['warning_count'] > 0 || $errors['error_count'] > 0))
+            || $timestamp->format('Y-m-d H:i:s') !== $sampledAt
+            || $timestamp->getTimestamp() < $now - 86400
+            || $timestamp->getTimestamp() > $now
+        ) {
+            continue;
+        }
+        $latestSamples[$timestamp->format('Y-m-d H:i:s')] = $gpu;
+    }
+    foreach ($latestSamples as $sampledAt => $gpu) {
+        if (($gpu['available'] ?? null) !== true) {
             continue;
         }
         foreach (['temperature_c' => 'temperature', 'memory_used_mb' => 'vram_used'] as $field => $series) {
@@ -239,7 +256,7 @@ function hub_admin_dashboard_station_summary(array $station): array
         'error' => (string)($station['last_error'] ?? ''),
         'connection_state' => (string)($station['connection_state'] ?? 'offline'),
         'gpu' => array_replace($gpu, [
-            'available' => !empty($gpu['available']) && $totalVram > 0,
+            'available' => $totalVram > 0 && (!array_key_exists('available', $gpu) || $gpu['available'] === true),
             'memory_total_mb' => $totalVram,
             'memory_free_mb' => $freeVram,
             'memory_used_mb' => max(0, $totalVram - $freeVram),

@@ -109,6 +109,20 @@ hub_test('dashboard preserves unknown legacy health instead of reporting stopped
     hub_test_assert($summary['service_counts']['stopped'] === 0, 'unknown legacy services must not be reported stopped');
 });
 
+hub_test('dashboard treats legacy child GPU totals as available unless explicitly unavailable', function (): void {
+    $legacy = hub_admin_dashboard_station_summary([
+        'display_name' => 'Legacy GPU Node',
+        'gpu' => ['memory_total_mb' => 8192, 'memory_free_mb' => 4096],
+    ]);
+    $unavailable = hub_admin_dashboard_station_summary([
+        'display_name' => 'Unavailable GPU Node',
+        'gpu' => ['available' => false, 'memory_total_mb' => 8192, 'memory_free_mb' => 4096],
+    ]);
+
+    hub_test_assert($legacy['gpu']['available'] === true, 'legacy GPU totals without an availability flag must remain available');
+    hub_test_assert($unavailable['gpu']['available'] === false, 'an explicit unavailable GPU flag must remain unavailable');
+});
+
 hub_test('local dashboard expires old metrics and exposes read-only release identity', function (): void {
     $db = hub_test_reset_db();
     hub_save_host_metric_snapshot($db, ['gpu' => ['available' => false]]);
@@ -206,21 +220,47 @@ hub_test('selected child dashboard retains current GPU metrics and history', fun
 });
 
 hub_test('dashboard GPU history omits unavailable and missing metric values', function (): void {
+    $recentAt = date('Y-m-d H:i:s', time() - 60);
     $history = hub_admin_dashboard_gpu_history_rows([
-        ['sampled_at' => '2026-07-31 23:59:00', 'gpu' => ['available' => false, 'temperature_c' => 0, 'memory_used_mb' => 0]],
-        ['sampled_at' => '2026-08-01 00:01:00', 'gpu' => ['available' => true]],
-        ['sampled_at' => '2026-08-01 00:02:00', 'gpu' => ['available' => true, 'temperature_c' => 'unknown', 'memory_used_mb' => null]],
+        ['sampled_at' => $recentAt, 'gpu' => ['available' => false, 'temperature_c' => 0, 'memory_used_mb' => 0]],
+        ['sampled_at' => $recentAt, 'gpu' => ['available' => true]],
+        ['sampled_at' => $recentAt, 'gpu' => ['available' => true, 'temperature_c' => 'unknown', 'memory_used_mb' => null]],
     ]);
 
     hub_test_assert($history === ['temperature' => [], 'vram_used' => []], 'unavailable or missing GPU metrics must not create zero-valued history points');
+});
 
-    $midnight = hub_admin_dashboard_gpu_history_rows([
-        ['sampled_at' => '2026-07-31 23:59:00', 'gpu' => ['available' => true, 'temperature_c' => 65]],
-        ['sampled_at' => '2026-08-01 00:01:00', 'gpu' => ['available' => true, 'temperature_c' => 66]],
+hub_test('dashboard GPU history rejects malformed future and expired timestamps', function (): void {
+    $recentAt = date('Y-m-d H:i:s', time() - 60);
+    $history = hub_admin_dashboard_gpu_history_rows([
+        ['sampled_at' => 'not-a-timestamp', 'gpu' => ['available' => true, 'temperature_c' => 40, 'memory_used_mb' => 100]],
+        ['sampled_at' => date('Y-m-d H:i:s', time() + 60), 'gpu' => ['available' => true, 'temperature_c' => 41, 'memory_used_mb' => 101]],
+        ['sampled_at' => date('Y-m-d H:i:s', time() - 86401), 'gpu' => ['available' => true, 'temperature_c' => 42, 'memory_used_mb' => 102]],
+        ['sampled_at' => $recentAt, 'gpu' => ['available' => true, 'temperature_c' => 66, 'memory_used_mb' => 400]],
     ]);
+
     hub_test_assert(
-        $midnight['temperature'][0]['label'] !== $midnight['temperature'][1]['label'],
-        'GPU history labels must remain distinct across midnight'
+        $history === [
+            'temperature' => [['label' => $recentAt, 'value' => 66.0]],
+            'vram_used' => [['label' => $recentAt, 'value' => 400.0]],
+        ],
+        'GPU history must accept only canonical timestamps inside the 24-hour window'
+    );
+});
+
+hub_test('dashboard GPU history keeps the latest same-second sample aligned', function (): void {
+    $sampledAt = date('Y-m-d H:i:s', time() - 60);
+    $history = hub_admin_dashboard_gpu_history_rows([
+        ['sampled_at' => $sampledAt, 'gpu' => ['available' => true, 'temperature_c' => 55, 'memory_used_mb' => 100]],
+        ['sampled_at' => $sampledAt, 'gpu' => ['available' => true, 'temperature_c' => 66, 'memory_used_mb' => 200]],
+    ]);
+
+    hub_test_assert(
+        $history === [
+            'temperature' => [['label' => $sampledAt, 'value' => 66.0]],
+            'vram_used' => [['label' => $sampledAt, 'value' => 200.0]],
+        ],
+        'same-second GPU history must retain the latest aligned sample only'
     );
 });
 
