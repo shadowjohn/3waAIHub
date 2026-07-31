@@ -4107,6 +4107,162 @@ function hub_test_voxcpm2_cluster_runner_metadata(
     ];
 }
 
+hub_test('VoxCPM2 public metadata normalizes only legacy queued Pack versions', function (): void {
+    $db = hub_test_reset_db();
+    $pathFreeMetadata = hub_test_voxcpm2_cluster_runner_metadata(
+        str_repeat('a', 64),
+        str_repeat('b', 64),
+        'Version-bound public metadata.'
+    );
+    $metadata = $pathFreeMetadata;
+    $metadata['model'] = ['model' => '/models/voxcpm2/model'] + $metadata['model'];
+    $legacyVoice = $metadata['voice_context'];
+    unset($legacyVoice['sha256']);
+    $legacyVoice['container_path'] = '/data/voice_profiles/reference.wav';
+    $metadata['voice_context'] = $legacyVoice + [
+        'sha256' => hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($legacyVoice)),
+    ];
+    $legacyJson = json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    $makeArtifact = static function (string $version, string $name, string $json) use ($db): array {
+        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '203.0.113.44', [
+            'requested_mode' => 'voice_generate',
+            'pack_id' => 'tts-voxcpm2',
+            'pack_version' => $version,
+            'job' => 'synthesize',
+        ]);
+        $path = hub_task_result_dir($taskId) . '/' . $name;
+        if (!is_dir(dirname($path)) && !mkdir(dirname($path), 0700, true) && !is_dir(dirname($path))) {
+            throw new RuntimeException('Cannot create version-bound metadata fixture.');
+        }
+        file_put_contents($path, $json, LOCK_EX);
+
+        return [$taskId, [
+            'name' => $name,
+            'artifact_type' => 'synthesis_metadata',
+            'path' => $path,
+            'mime_type' => 'application/json',
+            'size_bytes' => strlen($json),
+            'sha256' => hash('sha256', $json),
+        ]];
+    };
+
+    foreach (['0.1.4', '0.1.5'] as $legacyVersion) {
+        [$legacyTaskId, $legacyArtifact] = $makeArtifact(
+            $legacyVersion,
+            'legacy-' . str_replace('.', '-', $legacyVersion) . '-metadata.json',
+            $legacyJson
+        );
+        $normalized = hub_voxcpm2_public_metadata_artifact($db, $legacyTaskId, $legacyArtifact);
+        $publicJson = (string)file_get_contents($normalized['path']);
+        $public = json_decode($publicJson, true, 64, JSON_THROW_ON_ERROR);
+        $publicVoice = $public['voice_context'] ?? [];
+        $publicVoiceSha256 = is_array($publicVoice) ? (string)($publicVoice['sha256'] ?? '') : '';
+        if (is_array($publicVoice)) {
+            unset($publicVoice['sha256']);
+        }
+        hub_test_assert(
+            !str_contains($publicJson, '/models/')
+            && !str_contains($publicJson, '/data/voice_profiles/')
+            && !str_contains($publicJson, 'container_path')
+            && is_array($publicVoice)
+            && hash_equals(
+                hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($publicVoice)),
+                $publicVoiceSha256
+            )
+            && (int)$normalized['size_bytes'] === strlen($publicJson)
+            && hash_equals((string)$normalized['sha256'], hash('sha256', $publicJson)),
+            'stored ' . $legacyVersion . ' tasks must normalize fixed legacy paths and bind the rewritten public artifact'
+        );
+    }
+
+    $modelPathMetadata = $pathFreeMetadata;
+    $modelPathMetadata['model'] = ['model' => '/models/voxcpm2/model'] + $modelPathMetadata['model'];
+    $voicePathMetadata = $pathFreeMetadata;
+    $voicePathMetadata['voice_context'] = $legacyVoice + [
+        'sha256' => hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($legacyVoice)),
+    ];
+    foreach ([
+        'model-path' => $modelPathMetadata,
+        'voice-path' => $voicePathMetadata,
+    ] as $case => $currentMetadata) {
+        $currentJson = json_encode(
+            $currentMetadata,
+            JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+        );
+        [$currentTaskId, $currentArtifact] = $makeArtifact(
+            '0.1.6',
+            'current-' . $case . '-metadata.json',
+            $currentJson
+        );
+        $rejected = null;
+        try {
+            hub_voxcpm2_public_metadata_artifact($db, $currentTaskId, $currentArtifact);
+        } catch (Throwable $error) {
+            $rejected = $error->getMessage();
+        }
+        hub_test_assert(
+            $rejected === 'validated_artifact_invalid',
+            '0.1.6 must reject ' . $case . ' metadata from a stale or mislabeled image'
+        );
+    }
+});
+
+hub_test('VoxCPM2 private request write failure leaves no prompt bytes when rename and unlink fail', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_private_request_' . bin2hex(random_bytes(12));
+    if (!mkdir($root, 0700)) {
+        throw new RuntimeException('Cannot create private request cleanup fixture.');
+    }
+    $requestPath = $root . '/request.json';
+    $prompt = 'Private rename failure prompt must not remain.';
+    $json = json_encode(
+        ['text' => 'safe target', 'prompt_text' => $prompt],
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+    );
+    $renameObserved = false;
+    $errorCode = null;
+    try {
+        hub_pack_job_write_private_request(
+            $requestPath,
+            $json,
+            static function (string $temporaryPath) use ($prompt, &$renameObserved): bool {
+                $renameObserved = str_contains((string)file_get_contents($temporaryPath), $prompt);
+                return false;
+            },
+            static fn (string $path): bool => false
+        );
+    } catch (Throwable $error) {
+        $errorCode = $error->getMessage();
+    }
+
+    try {
+        $retained = '';
+        $retainedBytes = 0;
+        foreach (glob($root . '/*') ?: [] as $path) {
+            if (is_file($path) && !is_link($path)) {
+                $contents = (string)file_get_contents($path);
+                $retained .= $contents;
+                $retainedBytes += strlen($contents);
+            }
+        }
+        hub_test_assert(
+            $renameObserved
+            && $errorCode === 'workspace_privacy_cleanup_failed'
+            && $retainedBytes === 0
+            && !str_contains($retained, $prompt)
+            && !file_exists($requestPath),
+            'failed private request publication must verify prompt-bearing files are absent or securely truncated'
+        );
+    } finally {
+        foreach (glob($root . '/*') ?: [] as $path) {
+            if (is_link($path) || is_file($path)) {
+                chmod($path, 0600);
+                unlink($path);
+            }
+        }
+        rmdir($root);
+    }
+});
+
 function hub_test_voxcpm2_cluster_acceptance_profile(
     string $referenceSha256,
     string $status = 'active',

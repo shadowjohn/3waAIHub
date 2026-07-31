@@ -3559,6 +3559,15 @@ function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artif
 
     $changed = false;
     $model = $metadata['model'] ?? null;
+    $voice = $metadata['voice_context'] ?? null;
+    if (($task['pack_version'] ?? null) === '0.1.6') {
+        if ((is_array($model) && array_key_exists('model', $model))
+            || (is_array($voice) && array_key_exists('container_path', $voice))) {
+            throw new InvalidArgumentException('validated_artifact_invalid');
+        }
+
+        return $artifact;
+    }
     if (is_array($model) && array_key_exists('model', $model)) {
         if ($model['model'] !== '/models/voxcpm2/model') {
             throw new InvalidArgumentException('validated_artifact_invalid');
@@ -3567,7 +3576,6 @@ function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artif
         $metadata['model'] = $model;
         $changed = true;
     }
-    $voice = $metadata['voice_context'] ?? null;
     if (is_array($voice) && array_key_exists('container_path', $voice)) {
         if ($voice['container_path'] !== '/data/voice_profiles/reference.wav'
             || !is_string($voice['sha256'] ?? null)

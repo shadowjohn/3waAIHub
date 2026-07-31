@@ -163,6 +163,139 @@ function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $
     return ['status' => (string)($task['status'] ?? 'failed'), 'error_code' => (string)($task['error_code'] ?? $code)];
 }
 
+function hub_pack_job_secure_remove_private_file(string $path, ?callable $unlinker = null): void
+{
+    clearstatcache(true, $path);
+    if (!file_exists($path) && !is_link($path)) {
+        return;
+    }
+    $unlinker ??= static fn (string $candidate): bool => @unlink($candidate);
+    try {
+        $removed = (bool)$unlinker($path);
+    } catch (Throwable) {
+        $removed = false;
+    }
+    clearstatcache(true, $path);
+    if ($removed && !file_exists($path) && !is_link($path)) {
+        return;
+    }
+    if (!file_exists($path) && !is_link($path)) {
+        return;
+    }
+    if (is_link($path)) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+    $stat = lstat($path);
+    if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+
+    @chmod($path, 0600);
+    $handle = @fopen($path, 'r+b');
+    if ($handle === false) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+    $truncated = false;
+    try {
+        if (!flock($handle, LOCK_EX)) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        $openStat = fstat($handle);
+        if (!is_array($openStat)
+            || (((int)$openStat['mode'] & 0170000) !== 0100000)
+            || (int)($openStat['nlink'] ?? 0) !== 1
+            || (int)$openStat['dev'] !== (int)$stat['dev']
+            || (int)$openStat['ino'] !== (int)$stat['ino']
+            || !ftruncate($handle, 0)
+            || !fflush($handle)
+            || (function_exists('fsync') && !fsync($handle))) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        $truncated = true;
+    } finally {
+        flock($handle, LOCK_UN);
+        fclose($handle);
+    }
+    clearstatcache(true, $path);
+    $after = lstat($path);
+    if (!$truncated
+        || !is_array($after)
+        || is_link($path)
+        || (((int)$after['mode'] & 0170000) !== 0100000)
+        || (int)($after['nlink'] ?? 0) !== 1
+        || (int)$after['dev'] !== (int)$stat['dev']
+        || (int)$after['ino'] !== (int)$stat['ino']
+        || (int)$after['size'] !== 0) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+}
+
+function hub_pack_job_cleanup_private_files(array $paths, ?callable $unlinker = null): void
+{
+    $failure = null;
+    foreach (array_unique($paths) as $path) {
+        if (!is_string($path) || $path === '') {
+            continue;
+        }
+        try {
+            hub_pack_job_secure_remove_private_file($path, $unlinker);
+        } catch (Throwable $error) {
+            $failure ??= $error;
+        }
+    }
+    if ($failure !== null) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed', 0, $failure);
+    }
+}
+
+function hub_pack_job_write_private_request(
+    string $requestPath,
+    string $json,
+    ?callable $renamer = null,
+    ?callable $unlinker = null,
+): void {
+    $requestParent = dirname($requestPath);
+    $input = realpath($requestParent);
+    $normalize = static function (string $path): string {
+        $path = str_replace('\\', '/', rtrim($path, '/\\'));
+        return hub_platform_id() === 'windows' ? strtolower($path) : $path;
+    };
+    if ($input === false || $normalize($requestParent) !== $normalize($input)) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+    $requestPath = $input . DIRECTORY_SEPARATOR . basename($requestPath);
+    try {
+        $temporaryPath = $input . '/request.private.' . bin2hex(random_bytes(8));
+    } catch (Throwable $error) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed', 0, $error);
+    }
+    $payload = $json . PHP_EOL;
+    $renamer ??= static fn (string $from, string $to): bool => @rename($from, $to);
+    try {
+        $written = file_put_contents($temporaryPath, $payload, LOCK_EX);
+        $moved = is_int($written)
+            && $written === strlen($payload)
+            && chmod($temporaryPath, 0600)
+            && (bool)$renamer($temporaryPath, $requestPath);
+        clearstatcache(true, $temporaryPath);
+        clearstatcache(true, $requestPath);
+        $stat = $moved && !is_link($requestPath) && is_file($requestPath) ? lstat($requestPath) : false;
+        if ($moved
+            && !file_exists($temporaryPath)
+            && !is_link($temporaryPath)
+            && is_array($stat)
+            && (((int)$stat['mode'] & 0170000) === 0100000)
+            && (int)($stat['nlink'] ?? 0) === 1
+            && hash_equals(hash('sha256', $payload), (string)hash_file('sha256', $requestPath))) {
+            return;
+        }
+    } catch (Throwable) {
+    }
+
+    hub_pack_job_cleanup_private_files([$temporaryPath, $requestPath], $unlinker);
+    throw new RuntimeException('workspace_privacy_cleanup_failed');
+}
+
 function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract, ?array $voiceProfileMount = null): string
 {
     $input = is_array($task['input'] ?? null) ? $task['input'] : [];
@@ -223,9 +356,7 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract, ?
     }
     $requestPath = $workspace . '/input/request.json';
     if ($hasPrivatePrompt && (is_link($requestPath) || is_file($requestPath))) {
-        if (!unlink($requestPath)) {
-            throw new RuntimeException('workspace_unavailable');
-        }
+        hub_pack_job_secure_remove_private_file($requestPath);
     } elseif ($hasPrivatePrompt && file_exists($requestPath)) {
         throw new RuntimeException('workspace_unavailable');
     }
@@ -248,24 +379,12 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract, ?
 
         return $workspace;
     }
-    try {
-        $temporaryPath = $workspace . '/input/request.private.' . bin2hex(random_bytes(8));
-    } catch (Throwable) {
-        throw new RuntimeException('workspace_unavailable');
+    if ($json === false) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
     }
-    if ($json !== false
-        && file_put_contents($temporaryPath, $json . PHP_EOL, LOCK_EX) !== false
-        && chmod($temporaryPath, 0600)
-        && rename($temporaryPath, $requestPath)) {
-        return $workspace;
-    }
-    if (is_file($temporaryPath)) {
-        unlink($temporaryPath);
-    }
-    if (is_link($requestPath) || is_file($requestPath)) {
-        unlink($requestPath);
-    }
-    throw new RuntimeException('workspace_unavailable');
+    hub_pack_job_write_private_request($requestPath, $json);
+
+    return $workspace;
 }
 
 function hub_pack_job_scrub_private_prompt(string $workspace): void
@@ -290,15 +409,11 @@ function hub_pack_job_scrub_private_prompt(string $workspace): void
     try {
         $request = json_decode((string)file_get_contents($requestPath), true, 32, JSON_THROW_ON_ERROR);
     } catch (Throwable) {
-        if (!unlink($requestPath)) {
-            throw new RuntimeException('workspace_privacy_cleanup_failed');
-        }
+        hub_pack_job_secure_remove_private_file($requestPath);
         return;
     }
     if (!is_array($request) || array_is_list($request)) {
-        if (!unlink($requestPath)) {
-            throw new RuntimeException('workspace_privacy_cleanup_failed');
-        }
+        hub_pack_job_secure_remove_private_file($requestPath);
         return;
     }
     unset($request['prompt_text']);
@@ -306,9 +421,7 @@ function hub_pack_job_scrub_private_prompt(string $workspace): void
     try {
         $temporaryPath = $input . '/request.scrubbed.' . bin2hex(random_bytes(8));
     } catch (Throwable) {
-        if (!unlink($requestPath)) {
-            throw new RuntimeException('workspace_privacy_cleanup_failed');
-        }
+        hub_pack_job_secure_remove_private_file($requestPath);
         return;
     }
     if ($json !== false
@@ -317,13 +430,7 @@ function hub_pack_job_scrub_private_prompt(string $workspace): void
         && rename($temporaryPath, $requestPath)) {
         return;
     }
-    if (is_file($temporaryPath)) {
-        unlink($temporaryPath);
-    }
-    if (!is_file($requestPath) || unlink($requestPath)) {
-        return;
-    }
-    throw new RuntimeException('workspace_privacy_cleanup_failed');
+    hub_pack_job_cleanup_private_files([$temporaryPath, $requestPath]);
 }
 
 function hub_pack_job_copy_source_artifact(PDO $db, array $task, string $workspace): void
