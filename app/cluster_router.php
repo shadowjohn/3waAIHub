@@ -507,6 +507,7 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
         }
         $status = json_decode((string)($station['status_json'] ?? ''), true);
         $status = is_array($status) ? $status : [];
+        $gpu = is_array($status['gpu'] ?? null) ? $status['gpu'] : [];
         $report = hub_cluster_compact_status_report_fields($status) ?? [];
         $compatibility = hub_release_station_report($station, $localRelease);
         $rows[] = [
@@ -525,8 +526,9 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
             'connection_state' => hub_cluster_station_connection_state($station),
             'modes' => $inventory['modes'],
             'mode_readiness' => $modeReadiness,
-            'gpu_free_vram_mb' => (int)$inventory['gpu_free_vram_mb'],
-            'gpu_total_vram_mb' => (int)($status['gpu']['memory_total_mb'] ?? 0),
+            'gpu_free_vram_mb' => (int)($gpu['memory_free_mb'] ?? 0),
+            'gpu_total_vram_mb' => (int)($gpu['memory_total_mb'] ?? 0),
+            'gpu' => $gpu,
             'active_gpu_leases' => (int)$inventory['active_gpu_leases'],
             'queued_jobs' => (int)$inventory['queued_jobs'],
             'running_jobs' => (int)$inventory['running_jobs'],

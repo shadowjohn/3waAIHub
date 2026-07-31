@@ -124,6 +124,106 @@ hub_test('local dashboard expires old metrics and exposes read-only release iden
     hub_test_assert($model['summary']['pack_compatible'] === true, 'local Pack inventory is compatible with itself');
 });
 
+hub_test('dashboard GPU history readers keep only recent local and child samples', function (): void {
+    hub_test_admin_dashboard_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $since = date('Y-m-d H:i:s', time() - 86400);
+        $recentAt = date('Y-m-d H:i:s', time() - 60);
+        $expiredAt = date('Y-m-d H:i:s', time() - 86401);
+        $hostInsert = $db->prepare(
+            'INSERT INTO host_metric_snapshots (snapshot_json, created_at) VALUES (:snapshot_json, :created_at)'
+        );
+        foreach ([
+            [$expiredAt, ['available' => true, 'temperature_c' => 40, 'memory_used_mb' => 100]],
+            [$recentAt, ['available' => true, 'temperature_c' => 55, 'memory_used_mb' => 200]],
+        ] as [$createdAt, $gpu]) {
+            $hostInsert->execute([
+                ':snapshot_json' => json_encode(['gpu' => $gpu], JSON_THROW_ON_ERROR),
+                ':created_at' => $createdAt,
+            ]);
+        }
+        $local = hub_admin_dashboard_local_gpu_history($db, $since);
+        hub_test_assert($local['temperature'] === [['label' => $recentAt, 'value' => 55.0]], 'local GPU history must exclude expired temperature samples');
+        hub_test_assert($local['vram_used'] === [['label' => $recentAt, 'value' => 200.0]], 'local GPU history must exclude expired VRAM samples');
+        hub_test_assert(hub_admin_dashboard_model($db, [])['summary']['gpu_history'] === $local, 'local Dashboard must expose its GPU history');
+
+        $station = hub_test_admin_dashboard_station($db);
+        $childInsert = $db->prepare(
+            'INSERT INTO cluster_gpu_metric_snapshots (station_id, sampled_at, gpu_json) VALUES (:station_id, :sampled_at, :gpu_json)'
+        );
+        foreach ([
+            [$expiredAt, ['available' => true, 'temperature_c' => 41, 'memory_used_mb' => 300]],
+            [$recentAt, ['available' => true, 'temperature_c' => 66, 'memory_used_mb' => 400]],
+        ] as [$sampledAt, $gpu]) {
+            $childInsert->execute([
+                ':station_id' => (int)$station['id'],
+                ':sampled_at' => $sampledAt,
+                ':gpu_json' => json_encode($gpu, JSON_THROW_ON_ERROR),
+            ]);
+        }
+        $child = hub_admin_dashboard_station_gpu_history($db, (int)$station['id'], $since);
+        hub_test_assert($child['temperature'] === [['label' => $recentAt, 'value' => 66.0]], 'child GPU history must exclude expired temperature samples');
+        hub_test_assert($child['vram_used'] === [['label' => $recentAt, 'value' => 400.0]], 'child GPU history must exclude expired VRAM samples');
+    });
+});
+
+hub_test('selected child dashboard retains current GPU metrics and history', function (): void {
+    hub_test_admin_dashboard_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_admin_dashboard_station($db);
+        $snapshotAt = date('Y-m-d H:i:s', time() - 30);
+        $gpu = [
+            'available' => true,
+            'memory_total_mb' => 16384,
+            'memory_free_mb' => 4096,
+            'memory_used_mb' => 12288,
+            'util_percent' => 73,
+            'temperature_c' => 66,
+        ];
+        $db->prepare(
+            'UPDATE cluster_stations SET status_json = :status_json, status_fetched_at = :status_fetched_at WHERE id = :id'
+        )->execute([
+            ':status_json' => json_encode(['gpu' => $gpu], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => $snapshotAt,
+            ':id' => (int)$station['id'],
+        ]);
+        $db->prepare(
+            'INSERT INTO cluster_gpu_metric_snapshots (station_id, sampled_at, gpu_json) VALUES (:station_id, :sampled_at, :gpu_json)'
+        )->execute([
+            ':station_id' => (int)$station['id'],
+            ':sampled_at' => $snapshotAt,
+            ':gpu_json' => json_encode($gpu, JSON_THROW_ON_ERROR),
+        ]);
+
+        $model = hub_admin_dashboard_model($db, ['station' => 'station_1080']);
+
+        hub_test_assert(($model['summary']['gpu']['util_percent'] ?? null) === 73, 'child Dashboard must retain current compact GPU utilization');
+        hub_test_assert(($model['summary']['gpu']['temperature_c'] ?? null) === 66, 'child Dashboard must retain current compact GPU temperature');
+        hub_test_assert($model['summary']['gpu_history']['temperature'] === [['label' => $snapshotAt, 'value' => 66.0]], 'child Dashboard must expose selected station temperature history');
+        hub_test_assert($model['summary']['gpu_history']['vram_used'] === [['label' => $snapshotAt, 'value' => 12288.0]], 'child Dashboard must expose selected station VRAM history');
+    });
+});
+
+hub_test('dashboard GPU history omits unavailable and missing metric values', function (): void {
+    $history = hub_admin_dashboard_gpu_history_rows([
+        ['sampled_at' => '2026-07-31 23:59:00', 'gpu' => ['available' => false, 'temperature_c' => 0, 'memory_used_mb' => 0]],
+        ['sampled_at' => '2026-08-01 00:01:00', 'gpu' => ['available' => true]],
+        ['sampled_at' => '2026-08-01 00:02:00', 'gpu' => ['available' => true, 'temperature_c' => 'unknown', 'memory_used_mb' => null]],
+    ]);
+
+    hub_test_assert($history === ['temperature' => [], 'vram_used' => []], 'unavailable or missing GPU metrics must not create zero-valued history points');
+
+    $midnight = hub_admin_dashboard_gpu_history_rows([
+        ['sampled_at' => '2026-07-31 23:59:00', 'gpu' => ['available' => true, 'temperature_c' => 65]],
+        ['sampled_at' => '2026-08-01 00:01:00', 'gpu' => ['available' => true, 'temperature_c' => 66]],
+    ]);
+    hub_test_assert(
+        $midnight['temperature'][0]['label'] !== $midnight['temperature'][1]['label'],
+        'GPU history labels must remain distinct across midnight'
+    );
+});
+
 hub_test('dashboard page uses accepted local assets and query-backed station tabs', function (): void {
     $page = (string)file_get_contents(HUB_ROOT . '/admin/index.php');
     $script = (string)file_get_contents(HUB_ROOT . '/assets/js/admin-dashboard.js');

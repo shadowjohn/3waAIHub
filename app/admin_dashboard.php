@@ -136,10 +136,81 @@ function hub_admin_dashboard_local_summary(array $local): array
     ];
 }
 
+function hub_admin_dashboard_local_gpu_history(PDO $db, string $since): array
+{
+    $stmt = $db->prepare(
+        'SELECT snapshot_json, created_at
+         FROM host_metric_snapshots
+         WHERE created_at >= :since
+         ORDER BY created_at ASC, id ASC'
+    );
+    $stmt->execute([':since' => $since]);
+    $samples = [];
+    foreach ($stmt->fetchAll() as $snapshot) {
+        $data = json_decode((string)$snapshot['snapshot_json'], true);
+        $samples[] = [
+            'sampled_at' => (string)$snapshot['created_at'],
+            'gpu' => is_array($data) && is_array($data['gpu'] ?? null) ? $data['gpu'] : [],
+        ];
+    }
+
+    return hub_admin_dashboard_gpu_history_rows($samples);
+}
+
+function hub_admin_dashboard_station_gpu_history(PDO $db, int $stationId, string $since): array
+{
+    $stmt = $db->prepare(
+        'SELECT gpu_json, sampled_at
+         FROM cluster_gpu_metric_snapshots
+         WHERE station_id = :station_id AND sampled_at >= :since
+         ORDER BY sampled_at ASC, id ASC'
+    );
+    $stmt->execute([':station_id' => $stationId, ':since' => $since]);
+    $samples = [];
+    foreach ($stmt->fetchAll() as $snapshot) {
+        $gpu = json_decode((string)$snapshot['gpu_json'], true);
+        $samples[] = [
+            'sampled_at' => (string)$snapshot['sampled_at'],
+            'gpu' => is_array($gpu) ? $gpu : [],
+        ];
+    }
+
+    return hub_admin_dashboard_gpu_history_rows($samples);
+}
+
+function hub_admin_dashboard_gpu_history_rows(iterable $samples): array
+{
+    $history = ['temperature' => [], 'vram_used' => []];
+    foreach ($samples as $sample) {
+        if (!is_array($sample)) {
+            continue;
+        }
+        $sampledAt = (string)($sample['sampled_at'] ?? '');
+        $gpu = is_array($sample['gpu'] ?? null) ? $sample['gpu'] : [];
+        if ($sampledAt === '' || ($gpu['available'] ?? null) !== true) {
+            continue;
+        }
+        foreach (['temperature_c' => 'temperature', 'memory_used_mb' => 'vram_used'] as $field => $series) {
+            $value = $gpu[$field] ?? null;
+            if (!is_numeric($value) || !is_finite((float)$value)) {
+                continue;
+            }
+            $history[$series][] = ['label' => $sampledAt, 'value' => (float)$value];
+        }
+    }
+
+    return $history;
+}
+
 function hub_admin_dashboard_station_summary(array $station): array
 {
-    $totalVram = (int)($station['gpu_total_vram_mb'] ?? 0);
-    $freeVram = (int)($station['gpu_free_vram_mb'] ?? 0);
+    $gpu = is_array($station['gpu'] ?? null) ? $station['gpu'] : [];
+    $totalVram = max(0, (int)(is_numeric($gpu['memory_total_mb'] ?? null)
+        ? $gpu['memory_total_mb']
+        : ($station['gpu_total_vram_mb'] ?? 0)));
+    $freeVram = min($totalVram, max(0, (int)(is_numeric($gpu['memory_free_mb'] ?? null)
+        ? $gpu['memory_free_mb']
+        : ($station['gpu_free_vram_mb'] ?? 0))));
     $health = is_array($station['health'] ?? null) ? $station['health'] : [];
     $services = is_array($station['services'] ?? null) ? $station['services'] : [];
     $healthKnown = is_string($health['status'] ?? null)
@@ -167,12 +238,12 @@ function hub_admin_dashboard_station_summary(array $station): array
         'enabled' => !empty($station['enabled']),
         'error' => (string)($station['last_error'] ?? ''),
         'connection_state' => (string)($station['connection_state'] ?? 'offline'),
-        'gpu' => [
-            'available' => $totalVram > 0,
+        'gpu' => array_replace($gpu, [
+            'available' => !empty($gpu['available']) && $totalVram > 0,
             'memory_total_mb' => $totalVram,
             'memory_free_mb' => $freeVram,
             'memory_used_mb' => max(0, $totalVram - $freeVram),
-        ],
+        ]),
         'host' => [],
         'docker' => [],
         'storage' => [],
@@ -229,6 +300,10 @@ function hub_admin_dashboard_model(PDO $db, array $query): array
     $summary = $activeStation === null
         ? hub_admin_dashboard_local_summary($local)
         : hub_admin_dashboard_station_summary($activeStation);
+    $historySince = date('Y-m-d H:i:s', time() - 86400);
+    $summary['gpu_history'] = $activeStation === null
+        ? hub_admin_dashboard_local_gpu_history($db, $historySince)
+        : hub_admin_dashboard_station_gpu_history($db, (int)$activeStation['id'], $historySince);
     if ($activeStation === null) {
         $summary['published_mode_count'] = hub_cluster_node_enabled($db)
             ? count(hub_cluster_node_selected_published_modes($db))
