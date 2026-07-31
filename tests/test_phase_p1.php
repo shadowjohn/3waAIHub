@@ -65,6 +65,57 @@ hub_test('PhaseP-1 default setting auto-builds missing images', function (): voi
     hub_test_assert(hub_is_valid_job_action('service_build'), 'service_build must be allowlisted');
 });
 
+hub_test('PhaseP-1 restart-required service builds a missing local image before recreate', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $db->prepare('UPDATE services SET restart_required = 1 WHERE id = :id')->execute([':id' => (int)$service['id']]);
+    $service = hub_get_service($db, (int)$service['id']);
+
+    $dir = sys_get_temp_dir() . '/3waaihub_restart_' . bin2hex(random_bytes(4));
+    $bin = $dir . '/bin';
+    $log = $dir . '/docker.log';
+    $state = $dir . '/image-built';
+    mkdir($bin, 0775, true);
+    file_put_contents($bin . '/docker', <<<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  [ -f "$MOCK_DOCKER_STATE" ] && exit 0
+  exit 1
+fi
+case " $* " in
+  *" build "*) touch "$MOCK_DOCKER_STATE"; exit 0 ;;
+  *" up "*) [ -f "$MOCK_DOCKER_STATE" ] && exit 0; echo "pull access denied" >&2; exit 1 ;;
+  *" ps "*) echo "running"; exit 0 ;;
+esac
+exit 0
+SH
+    );
+    chmod($bin . '/docker', 0755);
+    $path = getenv('PATH');
+    try {
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        putenv('MOCK_DOCKER_LOG=' . $log);
+        putenv('MOCK_DOCKER_STATE=' . $state);
+
+        $result = hub_restart_service($db, $service);
+        $commands = file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+
+        hub_test_assert($result['exit_code'] === 0, 'restart-required service must build its missing local image before recreate');
+        hub_test_assert(count($commands) >= 3 && str_contains($commands[1], ' build ') && str_contains($commands[2], ' up '), 'restart must run build before compose up');
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        putenv('MOCK_DOCKER_LOG');
+        putenv('MOCK_DOCKER_STATE');
+        @unlink($bin . '/docker');
+        @unlink($log);
+        @unlink($state);
+        @rmdir($bin);
+        @rmdir($dir);
+    }
+});
+
 hub_test('PhaseP-1 hello compose keeps legacy service name to avoid orphan conflict', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_key($db, 'hello-main');

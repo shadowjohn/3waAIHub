@@ -949,7 +949,7 @@ function hub_remove_service(PDO $db, array $service, array $job): array
     return ['exit_code' => 0, 'stdout' => 'Service removed.', 'stderr' => '', 'output' => 'Service removed.'];
 }
 
-function hub_restart_service(PDO $db, array $service): array
+function hub_restart_service(PDO $db, array $service, ?array $job = null): array
 {
     if (hub_service_is_internal_task($service)) {
         $result = hub_internal_task_result('internal_task restart no-op');
@@ -963,9 +963,25 @@ function hub_restart_service(PDO $db, array $service): array
     }
 
     $requiresRecreate = (int)($service['restart_required'] ?? 0) === 1;
+    if ($requiresRecreate && !hub_service_image_exists($service)) {
+        if (hub_get_storage_setting($db, 'AIHUB_AUTO_BUILD_MISSING_IMAGE') !== '1') {
+            return [
+                'exit_code' => 4,
+                'stdout' => '',
+                'stderr' => 'Docker image missing. Please build first: ' . hub_service_image_tag($service),
+                'output' => 'Docker image missing. Please build first: ' . hub_service_image_tag($service),
+            ];
+        }
+        $build = hub_build_service($db, $service, $job);
+        if ((int)$build['exit_code'] !== 0) {
+            return $build;
+        }
+        $service = hub_get_service($db, (int)$service['id']) ?: $service;
+    }
+
     $args = $requiresRecreate ? ['up', '-d', '--force-recreate'] : ['restart', '--timeout', '5'];
     $stage = $requiresRecreate ? 'docker_recreate' : 'docker_restart';
-    $result = hub_run_service_compose_command($db, null, $service, $args, 20, $stage, 0, 0);
+    $result = hub_run_service_compose_command($db, $job, $service, $args, 20, $stage, 0, 0);
     hub_add_service_log($db, (int)$service['id'], 'restart', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         if ($requiresRecreate) {
