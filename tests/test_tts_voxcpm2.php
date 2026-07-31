@@ -379,6 +379,8 @@ hub_test('VoxCPM2 profile_status returns only the owned task-scoped safe profile
             'requested_mode' => 'voice_generate',
         ]);
         $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')->execute([':task_id' => $taskId, ':id' => $profileId]);
+        $db->prepare("UPDATE voice_profiles SET transcription_status = 'failed', transcription_error = :error WHERE id = :id")
+            ->execute([':error' => 'ASR backend exposed a private draft failure', ':id' => $profileId]);
 
         $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
         $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
@@ -386,13 +388,21 @@ hub_test('VoxCPM2 profile_status returns only the owned task-scoped safe profile
             'voice_profile_task_id' => (string)$taskId,
         ]);
         $payload = hub_test_audio_payload($response);
-        hub_test_assert($response['status'] === 200 && ($payload['task_status'] ?? '') === 'queued' && ($payload['prompt_text'] ?? '') === 'owner draft', 'owned queued preparation task must expose its unconfirmed draft');
+        hub_test_assert(
+            $response['status'] === 200
+            && ($payload['task_status'] ?? '') === 'queued'
+            && ($payload['prompt_text'] ?? '') === 'owner draft'
+            && ($payload['transcription_error'] ?? null) === 'asr_failed'
+            && !str_contains(json_encode($payload, JSON_THROW_ON_ERROR), 'private draft failure'),
+            'owned queued preparation task must expose its draft with only a bounded transcription error code'
+        );
         hub_test_assert(
             array_keys($payload) === [
                 'ok',
                 'task_status',
                 'profile_status',
                 'transcription_status',
+                'transcription_error',
                 'transcript_confirmed',
                 'prompt_text_confirmed_at',
                 'profile_name',
@@ -498,6 +508,21 @@ hub_test('VoxCPM2 task-scoped profile confirm and delete stay owner-only and ide
             ]);
             hub_test_assert($status['status'] === 200 && !array_key_exists('prompt_text', hub_test_audio_payload($status)), 'confirmed transcript must disappear from profile_status');
 
+            $db->prepare("UPDATE voice_profiles SET expires_at = '2000-01-01 00:00:00' WHERE id = :id")
+                ->execute([':id' => (int)$profile['id']]);
+            $expiredConfirm = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => (string)$taskId,
+                'prompt_text' => 'must not revive expired profile',
+            ]);
+            hub_test_assert(
+                $expiredConfirm['status'] === 410
+                && (hub_test_audio_payload($expiredConfirm)['error'] ?? '') === 'voice_profile_unavailable',
+                'profile_confirm must report an expired profile as permanently unavailable'
+            );
+            $db->prepare('UPDATE voice_profiles SET expires_at = NULL WHERE id = :id')
+                ->execute([':id' => (int)$profile['id']]);
+
             $deleted = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
                 'operation' => 'profile_delete',
                 'voice_profile_task_id' => (string)$taskId,
@@ -505,6 +530,21 @@ hub_test('VoxCPM2 task-scoped profile confirm and delete stay owner-only and ide
             $deletedPayload = hub_test_audio_payload($deleted);
             hub_test_assert($deleted['status'] === 200 && ($deletedPayload['profile_status'] ?? '') === 'deleted' && !is_file($path), 'profile_delete must soft-delete the profile and remove its managed WAV');
             hub_test_assert(hub_get_voice_profile($db, (int)$profile['id']) === null, 'deleted profile must stay hidden from the general profile lookup');
+            $tombstone = $db->query('SELECT * FROM voice_profiles WHERE id = ' . (int)$profile['id'])->fetch();
+            hub_test_assert(
+                $tombstone !== false
+                && ($tombstone['name'] ?? null) === 'Deleted voice profile'
+                && ($tombstone['reference_audio_path'] ?? null) === ''
+                && ($tombstone['reference_audio_sha256'] ?? null) === ''
+                && ($tombstone['prompt_text'] ?? null) === null
+                && ($tombstone['prompt_text_confirmed_at'] ?? null) === null
+                && ($tombstone['language'] ?? null) === null
+                && ($tombstone['transcription_error'] ?? null) === null
+                && ($tombstone['transcription_started_at'] ?? null) === null
+                && ($tombstone['transcription_lease_token'] ?? null) === null
+                && (string)($tombstone['expires_at'] ?? '') !== '',
+                'profile_delete must leave only a bounded tombstone after removing the WAV'
+            );
 
             $deletedStatus = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
                 'operation' => 'profile_status',
@@ -520,6 +560,21 @@ hub_test('VoxCPM2 task-scoped profile confirm and delete stay owner-only and ide
                 && $repeatedDelete['status'] === 200
                 && (hub_test_audio_payload($repeatedDelete)['profile_status'] ?? '') === 'deleted',
                 'same owner must be able to query and repeat task-scoped deletion safely'
+            );
+            $deletedConfirm = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => (string)$taskId,
+                'prompt_text' => 'must not revive deleted profile',
+            ]);
+            $deleteAuditCount = (int)$db->query(
+                "SELECT COUNT(*) FROM voice_profile_audit_logs
+                 WHERE voice_profile_id = " . (int)$profile['id'] . " AND action = 'delete'"
+            )->fetchColumn();
+            hub_test_assert(
+                $deletedConfirm['status'] === 410
+                && (hub_test_audio_payload($deletedConfirm)['error'] ?? '') === 'voice_profile_unavailable'
+                && $deleteAuditCount === 1,
+                'deleted confirmation and repeated deletion must remain unavailable and idempotent'
             );
 
             $foreignDelete = hub_test_audio_request($db, 'voice_generate', (string)$foreignToken['plain_token'], [
@@ -2270,6 +2325,73 @@ hub_test('VoxCPM2 soft delete keeps audio when the database mutation fails', fun
         } else {
             @unlink($path);
         }
+    }
+});
+
+hub_test('VoxCPM2 failed profile WAV deletion stays scrubbed and retention-retryable', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Delete Retry Voice Owner');
+    $dir = hub_voice_profile_storage_dir() . '/delete-retry';
+    if (!mkdir($dir, 0700)) {
+        throw new RuntimeException('Cannot create delete retry directory.');
+    }
+    $path = $dir . '/blocked.wav';
+    file_put_contents($path, 'RIFFprivate-delete-retry', LOCK_EX);
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Identifying delete retry name',
+        'reference_audio_path' => $path,
+        'prompt_text' => 'Private delete retry transcript',
+        'language' => 'zh-TW',
+        'consent_type' => 'self_recorded',
+    ]);
+    hub_confirm_voice_profile_prompt($db, $profileId, $memberId, 'Private delete retry transcript');
+    $db->prepare(
+        "UPDATE voice_profiles
+         SET transcription_error = 'raw private error',
+             transcription_started_at = '2026-07-01 00:00:00',
+             transcription_lease_token = 'private-lease-token'
+         WHERE id = :id"
+    )->execute([':id' => $profileId]);
+    chmod($dir, 0500);
+
+    try {
+        if (is_writable($dir)) {
+            hub_test_skip('filesystem permissions cannot simulate unlink failure');
+        }
+        $deleted = hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        $pending = $db->query('SELECT * FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+        hub_test_assert(
+            !empty($deleted['audio_cleanup_failed'])
+            && is_file($path)
+            && $pending !== false
+            && !empty($pending['deleted_at'])
+            && ($pending['reference_audio_path'] ?? null) === $path
+            && ($pending['name'] ?? null) === 'Deleted voice profile'
+            && ($pending['reference_audio_sha256'] ?? null) === ''
+            && ($pending['prompt_text'] ?? null) === null
+            && ($pending['prompt_text_confirmed_at'] ?? null) === null
+            && ($pending['language'] ?? null) === null
+            && ($pending['transcription_error'] ?? null) === null
+            && ($pending['transcription_started_at'] ?? null) === null
+            && ($pending['transcription_lease_token'] ?? null) === null
+            && (string)($pending['expires_at'] ?? '') !== '',
+            'failed unlink must retain only the managed path needed for an expiring retry'
+        );
+
+        chmod($dir, 0700);
+        $retried = hub_prune_expired_voice_profiles($db, '2099-01-01 00:00:00', 10);
+        $finished = $db->query('SELECT reference_audio_path FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+        hub_test_assert(
+            !file_exists($path)
+            && ($finished['reference_audio_path'] ?? null) === ''
+            && (int)($retried['audio_purged'] ?? 0) === 1
+            && (int)($retried['errors'] ?? 0) === 0,
+            'retention must retry the preserved managed path and clear it only after unlink succeeds'
+        );
+    } finally {
+        chmod($dir, 0700);
+        @unlink($path);
+        @rmdir($dir);
     }
 });
 

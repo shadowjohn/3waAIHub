@@ -882,9 +882,14 @@ function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId
         throw new InvalidArgumentException('voice_profile_transcript_invalid');
     }
 
-    $profile = hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId);
-    if (!$profile || (int)$profile['owner_member_id'] !== $ownerMemberId) {
+    $stmt = $db->prepare('SELECT * FROM voice_profiles WHERE id = :id AND owner_member_id = :owner_member_id');
+    $stmt->execute([':id' => $profileId, ':owner_member_id' => $ownerMemberId]);
+    $profile = $stmt->fetch();
+    if (!$profile) {
         throw new InvalidArgumentException('voice_profile_transcript_invalid');
+    }
+    if (!empty($profile['deleted_at'])) {
+        throw new InvalidArgumentException('voice_profile_unavailable');
     }
     $now = hub_now();
     $stmt = $db->prepare('UPDATE voice_profiles SET prompt_text = :prompt_text, prompt_text_confirmed_at = :confirmed_at, transcription_status = :transcription_status, transcription_error = NULL, transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL');
@@ -904,28 +909,79 @@ function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId
     return hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
 }
 
+function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $rawPath): bool
+{
+    if ($rawPath === '') {
+        return true;
+    }
+    $path = hub_voice_profile_safe_host_path($rawPath);
+    if ($path === null) {
+        if (@lstat($rawPath) !== false) {
+            return false;
+        }
+    } elseif (!@unlink($path)) {
+        return false;
+    }
+
+    $stmt = $db->prepare(
+        "UPDATE voice_profiles
+         SET reference_audio_path = '', updated_at = :updated_at
+         WHERE id = :id AND deleted_at IS NOT NULL"
+    );
+    $stmt->execute([':updated_at' => hub_now(), ':id' => $profileId]);
+
+    return $stmt->rowCount() === 1;
+}
+
 function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMemberId, bool $deleteAudio = false): array
 {
-    $profile = hub_get_voice_profile_for_member($db, $profileId, $ownerMemberId);
-    if (!$profile || (int)$profile['owner_member_id'] !== $ownerMemberId) {
-        throw new InvalidArgumentException('voice_profile_forbidden');
-    }
-    $path = $deleteAudio ? hub_voice_profile_safe_host_path((string)$profile['reference_audio_path']) : null;
+    $rawPath = '';
     $deleteTransactionStarted = false;
     try {
         $db->exec('BEGIN IMMEDIATE');
         $deleteTransactionStarted = true;
-        $stmt = $db->prepare("UPDATE voice_profiles SET deleted_at = :deleted_at, transcription_status = 'failed', transcription_error = 'asr_failed', transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL");
+        $stmt = $db->prepare('SELECT * FROM voice_profiles WHERE id = :id AND owner_member_id = :owner_member_id');
+        $stmt->execute([':id' => $profileId, ':owner_member_id' => $ownerMemberId]);
+        $profile = $stmt->fetch();
+        if (!$profile) {
+            throw new InvalidArgumentException('voice_profile_forbidden');
+        }
+        $rawPath = (string)($profile['reference_audio_path'] ?? '');
+        $alreadyDeleted = !empty($profile['deleted_at']);
+        $now = hub_now();
+        $stmt = $db->prepare(
+            "UPDATE voice_profiles
+             SET deleted_at = COALESCE(deleted_at, :deleted_at),
+                 name = 'Deleted voice profile',
+                 reference_audio_sha256 = '',
+                 prompt_text = NULL,
+                 prompt_text_confirmed_at = NULL,
+                 language = NULL,
+                 transcription_status = 'failed',
+                 transcription_error = NULL,
+                 transcription_started_at = NULL,
+                 transcription_lease_token = NULL,
+                 retain_original_audio = 0,
+                 expires_at = CASE
+                     WHEN expires_at IS NULL OR expires_at > :expires_at THEN :expires_at
+                     ELSE expires_at
+                 END,
+                 updated_at = :updated_at
+             WHERE id = :id AND owner_member_id = :owner_member_id"
+        );
         $stmt->execute([
-            ':deleted_at' => hub_now(),
-            ':updated_at' => hub_now(),
+            ':deleted_at' => $now,
+            ':expires_at' => $now,
+            ':updated_at' => $now,
             ':id' => $profileId,
             ':owner_member_id' => $ownerMemberId,
         ]);
         if ($stmt->rowCount() !== 1) {
             throw new InvalidArgumentException('voice_profile_forbidden');
         }
-        hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'delete', null, ['delete_audio' => $deleteAudio]);
+        if (!$alreadyDeleted) {
+            hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'delete', null, ['delete_audio' => $deleteAudio]);
+        }
         $db->exec('COMMIT');
         $deleteTransactionStarted = false;
     } catch (Throwable $e) {
@@ -937,12 +993,11 @@ function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMember
         }
         throw $e;
     }
-    $audioCleanupFailed = false;
-    if ($path !== null && is_file($path) && !unlink($path)) {
-        $audioCleanupFailed = true;
-    }
 
-    return ['audio_cleanup_failed' => $audioCleanupFailed];
+    return [
+        'audio_cleanup_failed' => $deleteAudio
+            && !hub_purge_deleted_voice_profile_audio($db, $profileId, $rawPath),
+    ];
 }
 
 function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100): array
@@ -988,6 +1043,10 @@ function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100
                      prompt_text = NULL,
                      prompt_text_confirmed_at = NULL,
                      language = NULL,
+                     transcription_error = NULL,
+                     transcription_started_at = NULL,
+                     transcription_lease_token = NULL,
+                     retain_original_audio = 0,
                      updated_at = :updated_at
                  WHERE id = :id AND deleted_at IS NOT NULL"
             );

@@ -85,11 +85,15 @@ function hub_voice_profile_task_status_payload(PDO $db, array $task, array $prof
         ? 'deleted'
         : ($expiresAt !== '' && (strtotime($expiresAt) ?: PHP_INT_MAX) <= time() ? 'expired' : 'active');
     $confirmed = trim((string)($profile['prompt_text_confirmed_at'] ?? '')) !== '';
+    $transcriptionError = trim((string)($profile['transcription_error'] ?? ''));
     $payload = [
         'ok' => true,
         'task_status' => (string)($task['status'] ?? ''),
         'profile_status' => $profileStatus,
         'transcription_status' => (string)($profile['transcription_status'] ?? 'pending'),
+        'transcription_error' => $transcriptionError === ''
+            ? null
+            : hub_voice_profile_transcription_error_code($transcriptionError),
         'transcript_confirmed' => $confirmed,
         'prompt_text_confirmed_at' => $confirmed ? (string)$profile['prompt_text_confirmed_at'] : null,
         'profile_name' => substr((string)($profile['name'] ?? ''), 0, 120),
@@ -516,16 +520,19 @@ function hub_voice_profile_api_confirm(PDO $db, array $authContext, array $paylo
     }
     $profile = (array)$task['voice_profile'];
     $status = hub_voice_profile_task_status_payload($db, $task, $profile, false);
+    if (($status['profile_status'] ?? '') !== 'active') {
+        return hub_gateway_error(410, 'voice_profile_unavailable', 'voice profile is unavailable');
+    }
     if ((string)($task['status'] ?? '') !== 'success') {
         return hub_gateway_error(409, 'voice_profile_prepare_incomplete', 'voice profile preparation is incomplete');
-    }
-    if (($status['profile_status'] ?? '') !== 'active') {
-        return hub_gateway_error(409, 'voice_profile_unavailable', 'voice profile is unavailable');
     }
 
     try {
         $profile = hub_confirm_voice_profile_prompt($db, (int)$profile['id'], $memberId, $promptText);
     } catch (InvalidArgumentException $e) {
+        if ($e->getMessage() === 'voice_profile_unavailable') {
+            return hub_gateway_error(410, 'voice_profile_unavailable', 'voice profile is unavailable');
+        }
         if ($e->getMessage() === 'voice_profile_transcript_invalid') {
             return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'voice profile transcript is invalid');
         }
@@ -564,20 +571,13 @@ function hub_voice_profile_api_delete(PDO $db, array $authContext, array $payloa
     }
 
     $profile = (array)$task['voice_profile'];
-    if (empty($profile['deleted_at'])) {
-        try {
-            $deleted = hub_soft_delete_voice_profile($db, (int)$profile['id'], $memberId, true);
-        } catch (Throwable) {
-            return hub_gateway_error(500, 'voice_profile_delete_failed', 'voice profile deletion failed');
-        }
-        if (!empty($deleted['audio_cleanup_failed'])) {
-            return hub_gateway_error(500, 'voice_profile_delete_failed', 'voice profile deletion failed');
-        }
-    } else {
-        $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
-        if ($path !== null && !unlink($path)) {
-            return hub_gateway_error(500, 'voice_profile_delete_failed', 'voice profile deletion failed');
-        }
+    try {
+        $deleted = hub_soft_delete_voice_profile($db, (int)$profile['id'], $memberId, true);
+    } catch (Throwable) {
+        return hub_gateway_error(500, 'voice_profile_delete_failed', 'voice profile deletion failed');
+    }
+    if (!empty($deleted['audio_cleanup_failed'])) {
+        return hub_gateway_error(500, 'voice_profile_delete_failed', 'voice profile deletion failed');
     }
 
     $task = hub_voice_profile_task_for_member($db, $taskId, $memberId) ?? throw new RuntimeException('voice_profile_missing');
