@@ -123,6 +123,22 @@ hub_test('dashboard treats legacy child GPU totals as available unless explicitl
     hub_test_assert($unavailable['gpu']['available'] === false, 'an explicit unavailable GPU flag must remain unavailable');
 });
 
+hub_test('dashboard preserves partial child GPU memory metrics', function (): void {
+    $partial = hub_admin_dashboard_station_summary([
+        'display_name' => 'Partial GPU Node',
+        'gpu' => ['available' => true, 'memory_total_mb' => 16310, 'memory_used_mb' => 1234],
+    ]);
+    $missing = hub_admin_dashboard_station_summary([
+        'display_name' => 'Missing GPU Memory Node',
+        'gpu' => ['available' => true, 'memory_total_mb' => 16310],
+    ]);
+
+    hub_test_assert($partial['gpu']['memory_used_mb'] === 1234, 'supplied child GPU VRAM usage must not be derived from missing free VRAM');
+    hub_test_assert(!array_key_exists('memory_free_mb', $partial['gpu']), 'missing child GPU free VRAM must not be fabricated');
+    hub_test_assert(!array_key_exists('memory_used_mb', $missing['gpu']), 'missing child GPU usage must not be fabricated');
+    hub_test_assert(!array_key_exists('memory_free_mb', $missing['gpu']), 'missing child GPU free VRAM must not be fabricated');
+});
+
 hub_test('local dashboard expires old metrics and exposes read-only release identity', function (): void {
     $db = hub_test_reset_db();
     hub_save_host_metric_snapshot($db, ['gpu' => ['available' => false]]);

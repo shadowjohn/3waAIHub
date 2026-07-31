@@ -228,9 +228,14 @@ function hub_admin_dashboard_station_summary(array $station): array
     $totalVram = max(0, (int)(is_numeric($gpu['memory_total_mb'] ?? null)
         ? $gpu['memory_total_mb']
         : ($station['gpu_total_vram_mb'] ?? 0)));
-    $freeVram = min($totalVram, max(0, (int)(is_numeric($gpu['memory_free_mb'] ?? null)
-        ? $gpu['memory_free_mb']
-        : ($station['gpu_free_vram_mb'] ?? 0))));
+    $freeVram = is_numeric($gpu['memory_free_mb'] ?? null)
+        ? min($totalVram, max(0, (int)$gpu['memory_free_mb']))
+        : (is_numeric($station['gpu_free_vram_mb'] ?? null)
+            ? min($totalVram, max(0, (int)$station['gpu_free_vram_mb']))
+            : null);
+    $usedVram = is_numeric($gpu['memory_used_mb'] ?? null)
+        ? min($totalVram, max(0, (int)$gpu['memory_used_mb']))
+        : ($freeVram === null ? null : max(0, $totalVram - $freeVram));
     $health = is_array($station['health'] ?? null) ? $station['health'] : [];
     $services = is_array($station['services'] ?? null) ? $station['services'] : [];
     $healthKnown = is_string($health['status'] ?? null)
@@ -253,9 +258,14 @@ function hub_admin_dashboard_station_summary(array $station): array
     $summaryGpu = array_replace($gpu, [
         'available' => $totalVram > 0 && (!array_key_exists('available', $gpu) || $gpu['available'] === true),
         'memory_total_mb' => $totalVram,
-        'memory_free_mb' => $freeVram,
-        'memory_used_mb' => max(0, $totalVram - $freeVram),
     ]);
+    foreach (['memory_free_mb' => $freeVram, 'memory_used_mb' => $usedVram] as $field => $value) {
+        if ($value === null) {
+            unset($summaryGpu[$field]);
+        } else {
+            $summaryGpu[$field] = $value;
+        }
+    }
     if (($gpu['available'] ?? null) === false) {
         unset($summaryGpu['util_percent'], $summaryGpu['temperature_c'], $summaryGpu['memory_total_mb'], $summaryGpu['memory_used_mb'], $summaryGpu['memory_free_mb']);
     }
