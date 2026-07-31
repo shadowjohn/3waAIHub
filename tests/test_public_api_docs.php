@@ -640,9 +640,10 @@ hub_test('Public API audio async contracts use normalized job routes', function 
             'audio async result.artifacts[] contract mismatch: ' . $mode
         );
         $deliveryNote = (string)($service['artifact_delivery_note'] ?? '');
-        foreach (['result.artifacts[]', 'artifact_url_template', 'id', 'ack_url_template'] as $needle) {
+        foreach (['result.artifacts[]', 'artifact_url_template', 'id'] as $needle) {
             hub_test_assert(str_contains($deliveryNote, $needle), 'audio async artifact delivery guidance missing ' . $needle . ': ' . $mode);
         }
+        hub_test_assert(!str_contains($deliveryNote, 'ack_url_template'), 'native async artifact guidance must not advertise Router-only ACK: ' . $mode);
         foreach (['artifact_id', 'per-artifact artifact_url', ' bytes field'] as $obsolete) {
             hub_test_assert(!str_contains($deliveryNote, $obsolete), 'audio async artifact delivery guidance retains obsolete field ' . $obsolete . ': ' . $mode);
         }
@@ -658,7 +659,7 @@ hub_test('Public API audio async contracts use normalized job routes', function 
         hub_test_assert(
             str_contains($html, 'result.artifacts[]')
             && str_contains($html, 'artifact_url_template')
-            && str_contains($html, 'ack_url_template'),
+            && !str_contains($html, 'ack_url_template'),
             'rendered async docs must publish canonical artifact delivery guidance: ' . $mode
         );
 
@@ -765,6 +766,67 @@ hub_test('Public API audio async contracts use normalized job routes', function 
             hub_test_assert(!str_contains((string)$json, $internal), 'audio async docs leaked internal route data: ' . $internal);
         }
     }
+});
+
+hub_test('voice workflow examples use submit links and execute optional Router ACK', function (): void {
+    $native = hub_public_api_voice_generate_examples();
+    $cluster = hub_public_api_voice_generate_examples(true);
+
+    foreach ([$native, $cluster] as $examples) {
+        $php = (string)$examples['php'];
+        $js = (string)$examples['js_fetch'];
+        hub_test_assert(
+            str_contains($php, "\$synthesis['artifact_url_template']")
+            && !str_contains($php, "\$result['artifact_url_template']"),
+            'PHP workflow must take artifact_url_template from synthesis submit response'
+        );
+        hub_test_assert(
+            str_contains($js, 'synthesis.artifact_url_template')
+            && !str_contains($js, 'result.artifact_url_template'),
+            'JavaScript workflow must take artifact_url_template from synthesis submit response'
+        );
+    }
+
+    hub_test_assert(
+        !str_contains((string)$native['php'], "\$result['ack_url_template']")
+        && !str_contains((string)$native['js_fetch'], 'result.ack_url_template'),
+        'native examples must not look for submit links in task_result'
+    );
+    $clusterCurl = (string)$cluster['curl'];
+    hub_test_assert(
+        str_contains($clusterCurl, 'ACK_URL_TEMPLATE')
+        && str_contains($clusterCurl, '-X POST')
+        && str_contains($clusterCurl, 'ack_url_template'),
+        'Cluster curl workflow must POST the returned ACK template when present'
+    );
+
+    $links = hub_task_response_links(42);
+    hub_test_assert(
+        isset($links['artifact_url_template'])
+        && !isset($links['ack_url_template']),
+        'native submit helper must return artifact_url_template without Router ACK'
+    );
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Native task result contract member');
+    $token = hub_create_api_token($db, $memberId, 'Native task result contract token', null, null);
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1', [
+        'owner_member_id' => $memberId,
+        'owner_token_id' => (int)$token['token_id'],
+    ]);
+    $db->prepare("UPDATE tasks SET status = 'success', result_json = :result WHERE id = :id")
+        ->execute([':result' => '{"artifacts":[{"id":7}]}', ':id' => $taskId]);
+    $query = $_GET;
+    $_GET = ['task_id' => $taskId];
+    try {
+        $response = hub_api_task_result($db, ['member_id' => $memberId, 'token_id' => (int)$token['token_id']]);
+    } finally {
+        $_GET = $query;
+    }
+    $payload = json_decode((string)$response['body'], true, 32, JSON_THROW_ON_ERROR);
+    hub_test_assert(
+        array_keys($payload) === ['ok', 'task_id', 'result'],
+        'native task_result behavior must remain limited to ok, task_id, and result'
+    );
 });
 
 hub_test('Public API audio async contracts expose optional callback controls', function (): void {

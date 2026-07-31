@@ -237,15 +237,23 @@ function hub_public_api_voice_generate_examples(bool $cluster = false): array
     $api = $cluster ? '<ROUTER_BASE_URL>/cluster_api.php' : '<HUB_BASE_URL>/api.php';
     $statusMode = $cluster ? 'cluster_task_status' : 'task_status';
     $resultMode = $cluster ? 'cluster_task_result' : 'task_result';
-    $artifactQuery = $cluster
-        ? 'mode=cluster_artifact&task_id=<TASK_ID>&artifact_id=<ARTIFACT_ID>'
-        : 'mode=artifact&artifact_id=<ARTIFACT_ID>';
+    $artifactMode = $cluster ? 'cluster_artifact' : 'artifact';
     $curlAffinity = $cluster ? '# Profile followups use the pinned station with no failover.' : '';
     $codeAffinity = $cluster ? '// Profile followups use the pinned station with no failover.' : '';
+    $curlAck = $cluster ? <<<'CURL'
+ACK_URL_TEMPLATE="$(printf '%s' "${SYNTHESIS}" | json_value ack_url_template)"
+if [ -n "${ACK_URL_TEMPLATE}" ]; then
+  ACK_URL="${ACK_URL_TEMPLATE//\{artifact_id\}/${ARTIFACT_ID}}"
+  curl -sS -X POST -H "Authorization: Bearer ${TOKEN}" "${ACK_URL}"
+fi
+CURL : '';
     $curl = strtr(<<<'CURL'
 TOKEN='<TOKEN>'
 API='{{API}}'
 {{AFFINITY}}
+json_value() {
+  php -r '$value=json_decode(stream_get_contents(STDIN),true,32,JSON_THROW_ON_ERROR); foreach(explode(".",$argv[1]) as $key){if(!is_array($value)||!array_key_exists($key,$value)){exit;} $value=$value[$key];} if(is_scalar($value)){echo $value;}' "$1"
+}
 
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'operation=profile_prepare' -F 'profile_name=<PROFILE_NAME>' \
@@ -264,16 +272,19 @@ curl -sS -H "Authorization: Bearer ${TOKEN}" \
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'text=<TEXT>' -F 'mode=design' -F 'voice_prompt=<VOICE_PROMPT>' \
   "${API}?mode=voice_generate"
-curl -sS -H "Authorization: Bearer ${TOKEN}" \
+SYNTHESIS="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'operation=synthesize' -F 'text=<TEXT>' -F 'mode=ultimate_clone' \
   -F 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
-  "${API}?mode=voice_generate"
-# Follow returned result_url, choose result.artifacts[].id, and expand artifact_url_template.
-# POST the same id through ack_url_template when that template is returned.
-curl -sS -H "Authorization: Bearer ${TOKEN}" \
-  "${API}?mode={{RESULT_MODE}}&task_id=<TASK_ID>"
-curl -sS -H "Authorization: Bearer ${TOKEN}" \
-  "${API}?{{ARTIFACT_QUERY}}"
+  "${API}?mode=voice_generate")"
+TASK_ID="$(printf '%s' "${SYNTHESIS}" | json_value task_id)" # <TASK_ID>
+RESULT_URL="$(printf '%s' "${SYNTHESIS}" | json_value result_url)"
+ARTIFACT_URL_TEMPLATE="$(printf '%s' "${SYNTHESIS}" | json_value artifact_url_template)"
+RESULT="$(curl -sS -H "Authorization: Bearer ${TOKEN}" "${RESULT_URL}")" # {{RESULT_MODE}}
+ARTIFACT_ID="$(printf '%s' "${RESULT}" | json_value result.artifacts.0.id)" # <ARTIFACT_ID>
+# The returned template targets mode={{ARTIFACT_MODE}}; expand that returned value.
+ARTIFACT_URL="${ARTIFACT_URL_TEMPLATE//\{artifact_id\}/${ARTIFACT_ID}}"
+curl -sS -H "Authorization: Bearer ${TOKEN}" "${ARTIFACT_URL}" # {{ARTIFACT_MODE}}
+{{ACK}}
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -d 'operation=profile_delete' \
   -d 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
@@ -282,9 +293,15 @@ CURL, [
         '{{API}}' => $api,
         '{{STATUS_MODE}}' => $statusMode,
         '{{RESULT_MODE}}' => $resultMode,
-        '{{ARTIFACT_QUERY}}' => $artifactQuery,
+        '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $curlAffinity,
+        '{{ACK}}' => $curlAck,
     ]);
+    $phpAck = $cluster ? <<<'PHP'
+if (isset($synthesis['ack_url_template'])) {
+    $decode($request(str_replace('{artifact_id}', (string)$artifactId, $synthesis['ack_url_template']), ''));
+}
+PHP : '';
     $php = strtr(<<<'PHP'
 $token = '<TOKEN>';
 $api = '{{API}}';
@@ -336,11 +353,9 @@ $synthesis = $decode($request($api . '?mode=voice_generate', json_encode([
 $taskId = $synthesis['task_id']; // <TASK_ID>
 $result = $decode($request($synthesis['result_url'])); // {{RESULT_MODE}}
 $artifactId = $result['result']['artifacts'][0]['id']; // <ARTIFACT_ID>
-$artifactUrl = str_replace('{artifact_id}', (string)$artifactId, $result['artifact_url_template']);
+$artifactUrl = str_replace('{artifact_id}', (string)$artifactId, $synthesis['artifact_url_template']);
 $audio = $request($artifactUrl); // {{ARTIFACT_MODE}}
-if (isset($result['ack_url_template'])) {
-    $decode($request(str_replace('{artifact_id}', (string)$artifactId, $result['ack_url_template']), ''));
-}
+{{ACK}}
 $decode($request($api . '?mode=voice_generate', json_encode([
     'operation' => 'profile_delete',
     'voice_profile_task_id' => $voiceProfileTaskId,
@@ -349,9 +364,15 @@ PHP, [
         '{{API}}' => $api,
         '{{STATUS_MODE}}' => $statusMode,
         '{{RESULT_MODE}}' => $resultMode,
-        '{{ARTIFACT_MODE}}' => $cluster ? 'cluster_artifact' : 'artifact',
+        '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $codeAffinity,
+        '{{ACK}}' => $phpAck,
     ]);
+    $jsAck = $cluster ? <<<'JS'
+if (synthesis.ack_url_template) {
+  await call(synthesis.ack_url_template.replace('{artifact_id}', artifactId), {method: 'POST'});
+}
+JS : '';
     $js = strtr(<<<'JS'
 const token = '<TOKEN>';
 const api = '{{API}}';
@@ -391,12 +412,10 @@ const synthesis = await call(`${api}?mode=voice_generate`, {
 const taskId = synthesis.task_id; // <TASK_ID>
 const result = await call(synthesis.result_url); // {{RESULT_MODE}}
 const artifactId = result.result.artifacts[0].id; // <ARTIFACT_ID>
-const artifactUrl = result.artifact_url_template.replace('{artifact_id}', artifactId);
+const artifactUrl = synthesis.artifact_url_template.replace('{artifact_id}', artifactId);
 const artifactResponse = await fetch(artifactUrl, {headers: {Authorization: `Bearer ${token}`}});
 const audio = await artifactResponse.blob(); // {{ARTIFACT_MODE}}
-if (result.ack_url_template) {
-  await call(result.ack_url_template.replace('{artifact_id}', artifactId), {method: 'POST'});
-}
+{{ACK}}
 await call(`${api}?mode=voice_generate`, {
   method: 'POST',
   headers: {'Content-Type': 'application/json'},
@@ -406,8 +425,9 @@ JS, [
         '{{API}}' => $api,
         '{{STATUS_MODE}}' => $statusMode,
         '{{RESULT_MODE}}' => $resultMode,
-        '{{ARTIFACT_MODE}}' => $cluster ? 'cluster_artifact' : 'artifact',
+        '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $codeAffinity,
+        '{{ACK}}' => $jsAck,
     ]);
 
     return ['curl' => $curl, 'php' => $php, 'js_fetch' => $js];
@@ -487,7 +507,7 @@ function hub_public_api_voice_generate_contract(array $contract): array
     ];
     $contract['workflow'] = [
         'client_state' => 'MyAI stores voice_profile_task_id returned by profile_prepare.',
-        'profile_ownership' => 'The Profile handle belongs to the API member and may be used by any currently valid Token for that member with voice_generate permission. Task and artifact followups remain bound to the submitting Token.',
+        'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with voice_generate permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
         'steps' => [
@@ -497,7 +517,7 @@ function hub_public_api_voice_generate_contract(array $contract): array
             'profile_confirm',
             'synthesize with mode=ultimate_clone',
             'task_result via returned result_url',
-            'expand returned artifact_url_template with result.artifacts[].id, then ACK via ack_url_template when present',
+            'expand returned artifact_url_template with result.artifacts[].id',
             'profile_delete',
         ],
     ];
@@ -578,7 +598,7 @@ function hub_public_api_pack_job_async_contract(array $route): array
         'output' => [
             'required_keys' => ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'],
             'result_artifact_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
-            'artifact_delivery_note' => 'Choose id from result.artifacts[], expand the returned artifact_url_template, and POST the same id through ack_url_template when that template is present. Task and artifact access requires the submitting Bearer Token.',
+            'artifact_delivery_note' => 'Choose id from result.artifacts[] and expand the artifact_url_template returned by the submit response. Task and artifact access requires the submitting Bearer Token.',
         ],
         'task_api' => [
             'status' => 'GET api.php?mode=task_status&task_id={task_id}',

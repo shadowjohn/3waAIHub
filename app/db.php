@@ -643,6 +643,7 @@ CREATE TABLE IF NOT EXISTS cluster_routes (
     member_id INTEGER NULL,
     token_id INTEGER NULL,
     mode TEXT NOT NULL,
+    route_role TEXT NOT NULL DEFAULT 'task',
     remote_task_id TEXT NULL,
     is_async INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL,
@@ -689,6 +690,7 @@ CREATE TABLE IF NOT EXISTS cluster_route_artifacts (
 SQL);
 
     hub_migrate_cluster_routes_route_id_not_null($db);
+    hub_add_column_if_missing($db, 'cluster_routes', 'route_role', "TEXT NOT NULL DEFAULT 'task'");
     hub_add_column_if_missing($db, 'users', 'role', "TEXT NOT NULL DEFAULT 'system_admin'");
     hub_add_column_if_missing($db, 'users', 'api_member_id', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'users', 'display_name', 'TEXT NULL');
@@ -998,6 +1000,7 @@ CREATE TABLE cluster_routes_rebuild (
     member_id INTEGER NULL,
     token_id INTEGER NULL,
     mode TEXT NOT NULL,
+    route_role TEXT NOT NULL DEFAULT 'task',
     remote_task_id TEXT NULL,
     is_async INTEGER NOT NULL DEFAULT 0,
     state TEXT NOT NULL,

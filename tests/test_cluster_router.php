@@ -191,7 +191,7 @@ function hub_test_cluster_voice_profile_route(PDO $db, array $stationOverrides =
     $routeId = hub_cluster_router_admit_route($db, $station, [
         'member_id' => $memberId,
         'token_id' => (int)$customer['token_id'],
-    ], 'voice_generate', true, true);
+    ], 'voice_generate', true, true, 'profile_prepare');
     if (!is_string($routeId)) {
         throw new RuntimeException('cluster voice profile route admission failed');
     }
@@ -604,6 +604,8 @@ hub_test('cluster router migration creates all persistence tables', function ():
     foreach (['cluster_stations', 'cluster_routes', 'cluster_route_accesses', 'cluster_route_artifacts'] as $table) {
         hub_test_assert(isset($tables[$table]), 'cluster router table missing: ' . $table);
     }
+    $routeColumns = array_column($db->query('PRAGMA table_info(cluster_routes)')->fetchAll(), 'name');
+    hub_test_assert(in_array('route_role', $routeColumns, true), 'cluster_routes.route_role must exist');
     $accessIndexes = array_column($db->query('PRAGMA index_list(cluster_route_accesses)')->fetchAll(), 'name');
     foreach (['idx_cluster_route_accesses_station_usage', 'idx_cluster_route_accesses_mode_usage'] as $index) {
         hub_test_assert(in_array($index, $accessIndexes, true), 'cluster usage index missing: ' . $index);
@@ -678,6 +680,7 @@ SQL);
         $columns = array_column($db->query('PRAGMA table_info(cluster_routes)')->fetchAll(), null, 'name');
         hub_test_assert((int)$columns['route_id']['notnull'] === 1, 'legacy cluster route ID must become NOT NULL');
         hub_test_assert((string)$db->query("SELECT remote_task_id FROM cluster_routes WHERE route_id = 'route_legacy_1'")->fetchColumn() === 'remote_legacy_1', 'legacy valid route must survive rebuild');
+        hub_test_assert((string)$db->query("SELECT route_role FROM cluster_routes WHERE route_id = 'route_legacy_1'")->fetchColumn() === 'task', 'legacy routes must migrate to the non-profile task role');
         $indexes = array_column($db->query('PRAGMA index_list(cluster_routes)')->fetchAll(), 'name');
         hub_test_assert(in_array('idx_cluster_routes_legacy_remote_task', $indexes, true), 'legacy route index must survive rebuild');
         hub_test_assert(hub_test_throws(static function () use ($db, $stationId): void {
@@ -3135,6 +3138,12 @@ hub_test('cluster voice profile handles survive same-member token rotation', fun
         hub_add_api_token_mode_permission($db, (int)$replacement['token_id'], 'voice_generate');
         $unpermitted = hub_create_api_token($db, (int)$fixture['member_id'], 'unpermitted profile token', null, null);
         $foreign = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        $db->prepare("UPDATE cluster_routes SET state = 'succeeded' WHERE route_id = :route_id")
+            ->execute([':route_id' => $fixture['route_id']]);
+        hub_test_assert(
+            (string)$db->query("SELECT route_role FROM cluster_routes WHERE route_id = " . $db->quote((string)$fixture['route_id']))->fetchColumn() === 'profile_prepare',
+            'profile_prepare admission must persist its narrow route role'
+        );
         hub_revoke_api_token($db, (int)$fixture['customer']['token_id']);
         $inventory = hub_test_cluster_station_fixture([
             'id' => (int)$fixture['station']['id'],
@@ -3221,6 +3230,68 @@ hub_test('cluster voice profile handles survive same-member token rotation', fun
             && str_contains($foreignDenied['body'], 'profile_task_not_found')
             && $foreignCalls === 0,
             'foreign members must receive the same not-found response before dispatch'
+        );
+    });
+});
+
+hub_test('cluster member fallback accepts only succeeded profile prepare routes', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_role_gate',
+            'station_token' => 'profile_role_gate_token',
+        ], '51');
+        $replacement = hub_create_api_token($db, (int)$fixture['member_id'], 'replacement profile role token', null, null);
+        hub_add_api_token_mode_permission($db, (int)$replacement['token_id'], 'voice_generate');
+        $replacementAuth = [
+            'member_id' => (int)$fixture['member_id'],
+            'token_id' => (int)$replacement['token_id'],
+        ];
+        $originalAuth = [
+            'member_id' => (int)$fixture['member_id'],
+            'token_id' => (int)$fixture['customer']['token_id'],
+        ];
+        $makeRoute = static function (string $role, string $state, string $remoteTaskId) use ($db, $fixture, $originalAuth): string {
+            $routeId = hub_cluster_router_admit_route(
+                $db,
+                $fixture['station'],
+                $originalAuth,
+                'voice_generate',
+                true,
+                true,
+                $role
+            );
+            hub_test_assert(is_string($routeId), 'profile role fixture admission failed');
+            hub_cluster_rewrite_async_response($db, [
+                'route_id' => $routeId,
+                'station_id' => (int)$fixture['station']['id'],
+            ], ['ok' => true, 'task_id' => $remoteTaskId], 'cluster_api.php');
+            $db->prepare('UPDATE cluster_routes SET state = :state WHERE route_id = :route_id')
+                ->execute([':state' => $state, ':route_id' => $routeId]);
+
+            return $routeId;
+        };
+
+        $db->prepare("UPDATE cluster_routes SET state = 'succeeded' WHERE route_id = :route_id")
+            ->execute([':route_id' => $fixture['route_id']]);
+        $pending = $makeRoute('profile_prepare', 'active', '52');
+        $failed = $makeRoute('profile_prepare', 'failed', '53');
+        $cancelled = $makeRoute('profile_prepare', 'cancelled', '54');
+        $derived = $makeRoute('task', 'succeeded', '55');
+
+        hub_test_assert(
+            hub_cluster_get_voice_profile_route_for_member($db, (string)$fixture['route_id'], $replacementAuth) !== null,
+            'rotated Token must resolve a succeeded profile_prepare route'
+        );
+        foreach ([$pending, $failed, $cancelled, $derived] as $routeId) {
+            hub_test_assert(
+                hub_cluster_get_voice_profile_route_for_member($db, $routeId, $replacementAuth) === null,
+                'rotated Token must not resolve pending, terminal-failed, or derived synthesis routes'
+            );
+        }
+        hub_test_assert(
+            hub_cluster_get_route_for_customer($db, $pending, $originalAuth) !== null,
+            'the submitting Token may still resolve its pending profile_prepare route exactly'
         );
     });
 });
@@ -3787,6 +3858,7 @@ hub_test('VoxCPM2 child and Router artifact contract drives the acceptance CLI o
             'size_bytes' => strlen($metadata),
             'sha256' => hash('sha256', $metadata),
         ]);
+        $publicMetadataArtifact = hub_get_task_artifact($db, $metadataId);
         hub_finish_task_success($db, hub_get_task($db, $taskId) ?? [], []);
         $db->prepare('UPDATE cluster_routes SET remote_task_id = :task_id WHERE route_id = :route_id')
             ->execute([':task_id' => (string)$taskId, ':route_id' => $fixture['route_id']]);
@@ -3876,10 +3948,10 @@ hub_test('VoxCPM2 child and Router artifact contract drives the acceptance CLI o
                     ],
                     [
                         'id' => $metadataId,
-                        'size_bytes' => strlen($metadata),
+                        'size_bytes' => (int)($publicMetadataArtifact['size_bytes'] ?? -1),
                         'type' => 'synthesis_metadata',
                         'mime_type' => 'application/json',
-                        'sha256' => hash('sha256', $metadata),
+                        'sha256' => (string)($publicMetadataArtifact['sha256'] ?? ''),
                     ],
                 ],
                 'canonical VoxCPM2 child results must expose only bounded authoritative artifact metadata'
@@ -4499,6 +4571,8 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             'input_fields' => [['name' => '<script>', 'type' => 'string', 'required' => true]],
             'output_keys' => ['ok', 'text'],
             'error_codes' => ['bad_request'],
+            'result_artifact_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+            'artifact_delivery_note' => 'Choose id from result.artifacts[], expand artifact_url_template, and ACK via ack_url_template.',
             'task_api' => [
                 'status' => 'GET https://configured.station.example/aihub/api.php?mode=task_status&task_id=remote_task_42',
                 'result' => 'GET https://configured.station.example/aihub/api.php?mode=task_result&task_id=remote_task_42',
@@ -4589,6 +4663,11 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             'artifact' => 'GET cluster_api.php?mode=cluster_artifact&task_id={task_id}&artifact_id={artifact_id}',
         ], 'public async contracts must expose opaque Router followups');
         hub_test_assert(($service['operations'] ?? null) === $contract['operations'], 'public docs must preserve additional operations');
+        hub_test_assert(
+            ($service['result_artifact_fields'] ?? null) === ['id', 'size_bytes']
+            && !str_contains((string)($service['artifact_delivery_note'] ?? ''), 'ack_url_template'),
+            'general async Cluster modes must advertise the projected id/size artifact contract without ACK'
+        );
         foreach ([
             'Additional operations',
             'verified voice catalogue JSON',
@@ -4616,6 +4695,37 @@ hub_test('cluster public manifest selects only fresh contracts and rewrites rout
             hub_test_assert(!str_contains($docs, $secret), 'public docs leaked station detail: ' . $secret);
         }
     });
+});
+
+hub_test('cluster artifact docs reserve rich metadata and ACK for rich Router modes', function (): void {
+    $contract = [
+        'mode' => 'ocr',
+        'result_artifact_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+        'artifact_delivery_note' => 'Choose id and ACK via ack_url_template.',
+    ];
+    foreach (['edge_tts', 'voice_generate'] as $mode) {
+        $rich = hub_cluster_rewrite_contract_endpoint(
+            array_replace($contract, ['mode' => $mode]),
+            'https://station.invalid/aihub/api.php',
+            'cluster_api.php',
+            $mode === 'voice_generate'
+        );
+        hub_test_assert(
+            ($rich['result_artifact_fields'] ?? null) === ['id', 'type', 'mime_type', 'size_bytes', 'sha256']
+            && str_contains((string)($rich['artifact_delivery_note'] ?? ''), 'ack_url_template'),
+            'rich Router mode must retain artifact metadata and ACK: ' . $mode
+        );
+    }
+    $general = hub_cluster_rewrite_contract_endpoint(
+        $contract,
+        'https://station.invalid/aihub/api.php',
+        'cluster_api.php'
+    );
+    hub_test_assert(
+        ($general['result_artifact_fields'] ?? null) === ['id', 'size_bytes']
+        && !str_contains((string)($general['artifact_delivery_note'] ?? ''), 'ack_url_template'),
+        'general Router modes must expose only projected artifact id/size with no ACK'
+    );
 });
 
 hub_test('cluster voice docs expose only opaque profile task workflow fields', function (): void {

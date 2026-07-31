@@ -839,6 +839,17 @@ function hub_cluster_rewrite_contract_endpoint(
     if (preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $mode) === 1) {
         $service['endpoint'] = $routerApiBase . '?mode=' . $mode;
         $service['url'] = $service['endpoint'];
+        if (is_array($service['result_artifact_fields'] ?? null)
+            && $service['result_artifact_fields'] !== []
+        ) {
+            if (hub_cluster_router_rich_artifact_mode($mode)) {
+                $service['result_artifact_fields'] = ['id', 'type', 'mime_type', 'size_bytes', 'sha256'];
+                $service['artifact_delivery_note'] = 'Choose id from result.artifacts[], expand the artifact_url_template returned by the submit response, and POST the same id through ack_url_template. Task and artifact access requires the submitting Bearer Token.';
+            } else {
+                $service['result_artifact_fields'] = ['id', 'size_bytes'];
+                $service['artifact_delivery_note'] = 'Choose id from result.artifacts[] and expand the artifact_url_template returned by the submit response. Router results for this mode project only id and size_bytes. Task and artifact access requires the submitting Bearer Token.';
+            }
+        }
     }
 
     return $service;
@@ -987,7 +998,7 @@ function hub_cluster_rewrite_voice_generate_contract(array $service): array
     $service['workflow'] = [
         'client_state' => 'MyAI stores only voice_profile_task_id returned by profile_prepare.',
         'profile_affinity' => 'Profile followups and clone synthesis stay on the pinned station; there is no failover.',
-        'profile_ownership' => 'The Profile handle belongs to the API member and may be used by any currently valid Token for that member with voice_generate permission. Task and artifact followups remain bound to the submitting Token.',
+        'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with voice_generate permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
         'steps' => [
@@ -1411,7 +1422,18 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         return $finish(hub_gateway_error(503, $profileRoute === null ? 'router_unavailable' : 'station_unavailable', 'selected cluster station is unavailable'));
     }
 
-    $routeId = hub_cluster_router_admit_route($db, $station, (array)$auth['context'], $mode, !$selfStation, $profileSensitive);
+    $routeRole = $mode === 'voice_generate' && $profileResponseOperation === 'profile_prepare'
+        ? 'profile_prepare'
+        : 'task';
+    $routeId = hub_cluster_router_admit_route(
+        $db,
+        $station,
+        (array)$auth['context'],
+        $mode,
+        !$selfStation,
+        $profileSensitive,
+        $routeRole
+    );
     if ($routeId === null) {
         return $finish(hub_gateway_error(429, 'router_busy', 'cluster router is busy'));
     }
@@ -2866,7 +2888,8 @@ function hub_cluster_get_voice_profile_route_for_member(PDO $db, string $routeId
     $stmt = $db->prepare(
         "SELECT * FROM cluster_routes
          WHERE route_id = :route_id AND member_id = :member_id
-           AND mode = 'voice_generate' AND is_async = 1
+           AND mode = 'voice_generate' AND route_role = 'profile_prepare'
+           AND is_async = 1 AND state = 'succeeded'
          LIMIT 1"
     );
     $stmt->execute([':route_id' => $routeId, ':member_id' => $memberId]);
@@ -3325,11 +3348,19 @@ function hub_cluster_router_self_station_peer_ip(PDO $db, array $station, string
     return $peerIp;
 }
 
-function hub_cluster_router_admit_route(PDO $db, array $station, array $authContext, string $mode, bool $proxying, bool $profileSensitive = false): ?string
+function hub_cluster_router_admit_route(
+    PDO $db,
+    array $station,
+    array $authContext,
+    string $mode,
+    bool $proxying,
+    bool $profileSensitive = false,
+    string $routeRole = 'task'
+): ?string
 {
     $stationId = (int)($station['id'] ?? 0);
     $routeId = hub_cluster_router_route_id($profileSensitive);
-    if ($stationId < 1 || $routeId === '') {
+    if ($stationId < 1 || $routeId === '' || !in_array($routeRole, ['task', 'profile_prepare'], true)) {
         return null;
     }
     $started = false;
@@ -3347,15 +3378,16 @@ function hub_cluster_router_admit_route(PDO $db, array $station, array $authCont
         $now = hub_now();
         $db->prepare(
             'INSERT INTO cluster_routes
-                (route_id, station_id, member_id, token_id, mode, is_async, state, created_at, updated_at)
+                (route_id, station_id, member_id, token_id, mode, route_role, is_async, state, created_at, updated_at)
              VALUES
-                (:route_id, :station_id, :member_id, :token_id, :mode, 0, :state, :created_at, :updated_at)'
+                (:route_id, :station_id, :member_id, :token_id, :mode, :route_role, 0, :state, :created_at, :updated_at)'
         )->execute([
             ':route_id' => $routeId,
             ':station_id' => $stationId,
             ':member_id' => !empty($authContext['member_id']) ? (int)$authContext['member_id'] : null,
             ':token_id' => !empty($authContext['token_id']) ? (int)$authContext['token_id'] : null,
             ':mode' => $mode,
+            ':route_role' => $routeRole,
             ':state' => $proxying ? 'proxying' : 'dispatching',
             ':created_at' => $now,
             ':updated_at' => $now,

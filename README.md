@@ -1359,17 +1359,20 @@ Native Hub 流程：
 3. 使用 `profile_confirm` 明確確認 transcript。
 4. 送出 `synthesize`（或省略 operation）與 `mode=ultimate_clone`，再依回傳的
    `result_url` 取得 `result.artifacts[]`，將其中的 `id` 代入
-   `artifact_url_template` 取回 WAV；有 `ack_url_template` 時以同一 `id` ACK。
+   submit response 的 `artifact_url_template` 取回 WAV。
 5. 不再使用時呼叫 `profile_delete`；刪除是必要的 privacy lifecycle 步驟。
 
 Cluster 流程相同，但所有請求走 `cluster_api.php`，工作查詢與下載分別使用
 `cluster_task_status`、`cluster_task_result`、`cluster_artifact`。MyAI 只保存
 Router 回傳的 opaque `voice_profile_task_id`，不保存 child profile identifier。
+Router 的 rich voice response 另回 `ack_url_template`，下載後以同一 artifact
+`id` POST ACK。
 Profile 建立後，status、confirm、clone、Ultimate Clone 與 delete 都留在同一個
 pinned station，no failover；該站不可用時回傳 `station_unavailable`，不得改送
 另一站。
-Profile handle 屬於 API member；原 Token 撤銷或輪替後，同 member 的任何
-currently valid Token 只要仍有 `voice_generate permission` 就可繼續操作。
+`profile_prepare` 成功後，Profile handle 屬於 API member；原 Token 撤銷或輪替
+後，同 member 的任何 currently valid Token 只要仍有
+`voice_generate permission` 就可繼續操作。
 一般 task/artifact followup 則維持 submitting Token 綁定，不會隨 Profile
 ownership 一起放寬。
 
@@ -1381,8 +1384,9 @@ Privacy 規則：
 - 其他公開 task/log/callback/synthesis payload 不揭露 transcript plaintext 或
   token；Cluster child task/profile IDs and paths 一律留在 Router 後方，文件範例
   也不得放入真值。
-- 不接受 client 提供的 host/container path；Pack 內部固定 mount path 是
-  implementation detail，not public contract，也不應由 client 依賴。
+- 不接受 client 提供的 host/container path；Pack 內部固定 mount path 不會出現
+  在 synthesis metadata，是 implementation detail，not public contract，也不應
+  由 client 依賴。
 - Profile 僅能由同一 API member 使用；Native ownership failure 是
   `voice_profile_forbidden`，Cluster 對未知或他人的 opaque handle 一律回
   `profile_task_not_found`。

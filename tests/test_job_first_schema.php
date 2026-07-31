@@ -118,6 +118,7 @@ hub_test('job-first schema migration is idempotent and operational entry points 
         'task_artifacts' => ['artifact_type', 'sha256', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error'],
         'runtime_runs' => ['task_id', 'attempt_no', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],
         'voice_profiles' => ['source_task_id'],
+        'cluster_routes' => ['route_role'],
     ];
     foreach ($requiredColumns as $table => $columns) {
         $present = array_column($db->query('PRAGMA table_info(' . $table . ')')->fetchAll(), 'name');
