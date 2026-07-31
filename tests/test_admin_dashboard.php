@@ -182,6 +182,40 @@ hub_test('local dashboard masks only explicitly unavailable GPU metrics', functi
     hub_test_assert($legacy['util_percent'] === 73 && $legacy['temperature_c'] === 66 && $legacy['memory_used_mb'] === 12288, 'legacy local GPU metrics without availability must remain visible');
 });
 
+hub_test('successful GPU probe omits unavailable values instead of charting zeroes', function (): void {
+    $calls = 0;
+    $gpu = hub_collect_gpu_metric(static function () use (&$calls): array {
+        return hub_collect_gpu_status(static function (array $command) use (&$calls): array {
+            $calls++;
+            $stdout = $command === ['nvidia-smi']
+                ? 'NVIDIA-SMI 555.42 CUDA Version: 12.8'
+                : 'NVIDIA Test GPU, 555.42, N/A, , missing, N/A, N/A';
+            return ['exit_code' => 0, 'stdout' => $stdout, 'stderr' => '', 'output' => $stdout];
+        });
+    });
+
+    hub_test_assert($calls === 2 && $gpu['available'] === true, 'successful nvidia-smi probe must still identify the GPU');
+    hub_test_assert(($gpu['name'] ?? '') === 'NVIDIA Test GPU' && ($gpu['cuda_version'] ?? '') === '12.8', 'GPU identity fields must remain available');
+    foreach (['util_percent', 'memory_total_mb', 'memory_used_mb', 'memory_free_mb', 'temperature_c'] as $field) {
+        hub_test_assert(!array_key_exists($field, $gpu), 'unavailable GPU field must not become zero: ' . $field);
+    }
+
+    $db = hub_test_reset_db();
+    hub_save_host_metric_snapshot($db, ['gpu' => $gpu]);
+    $history = hub_admin_dashboard_model($db, [])['summary']['gpu_history'];
+    hub_test_assert($history['temperature'] === [] && $history['vram_used'] === [], 'unavailable GPU fields must not create zero-valued Dashboard history');
+
+    $valid = hub_collect_gpu_metric(static fn (): array => [
+        'nvidia_smi_available' => true,
+        'utilization_percent' => '42',
+        'vram_total_mb' => '16384',
+        'vram_used_mb' => '4096',
+        'vram_free_mb' => '12288',
+        'temperature_c' => '67',
+    ]);
+    hub_test_assert($valid['util_percent'] === 42 && $valid['memory_used_mb'] === 4096 && $valid['temperature_c'] === 67, 'valid GPU values must remain numeric');
+});
+
 hub_test('dashboard GPU history readers keep only recent local and child samples', function (): void {
     hub_test_admin_dashboard_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

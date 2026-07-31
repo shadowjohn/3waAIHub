@@ -57,9 +57,9 @@ function hub_collect_host_metrics(PDO $db): array
     ];
 }
 
-function hub_collect_gpu_metric(): array
+function hub_collect_gpu_metric(?callable $collector = null): array
 {
-    $raw = hub_collect_gpu_status();
+    $raw = ($collector ?? 'hub_collect_gpu_status')();
     if (empty($raw['nvidia_smi_available'])) {
         return [
             'available' => false,
@@ -67,17 +67,31 @@ function hub_collect_gpu_metric(): array
         ];
     }
 
-    return [
+    $gpu = [
         'available' => true,
         'name' => (string)($raw['name'] ?? ''),
         'driver_version' => (string)($raw['driver_version'] ?? ''),
         'cuda_version' => (string)($raw['cuda_version'] ?? ''),
-        'util_percent' => (int)($raw['utilization_percent'] ?? 0),
-        'memory_total_mb' => (int)($raw['vram_total_mb'] ?? 0),
-        'memory_used_mb' => (int)($raw['vram_used_mb'] ?? 0),
-        'memory_free_mb' => (int)($raw['vram_free_mb'] ?? 0),
-        'temperature_c' => (int)($raw['temperature_c'] ?? 0),
     ];
+    foreach ([
+        'util_percent' => ['utilization_percent', 0, 100],
+        'memory_total_mb' => ['vram_total_mb', 0, null],
+        'memory_used_mb' => ['vram_used_mb', 0, null],
+        'memory_free_mb' => ['vram_free_mb', 0, null],
+        'temperature_c' => ['temperature_c', 0, 150],
+    ] as $metric => [$field, $minimum, $maximum]) {
+        $value = $raw[$field] ?? null;
+        if (!is_numeric($value) || !is_finite((float)$value)) {
+            continue;
+        }
+        $value = (float)$value;
+        if ($value < $minimum || ($maximum !== null && $value > $maximum)) {
+            continue;
+        }
+        $gpu[$metric] = (int)$value;
+    }
+
+    return $gpu;
 }
 
 function hub_collect_load_average(?string $platform = null, ?callable $reader = null): array
