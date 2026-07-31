@@ -75,9 +75,9 @@ function hub_collect_gpu_metric(?callable $collector = null): array
     ];
     foreach ([
         'util_percent' => ['utilization_percent', 0, 100],
-        'memory_total_mb' => ['vram_total_mb', 0, null],
-        'memory_used_mb' => ['vram_used_mb', 0, null],
-        'memory_free_mb' => ['vram_free_mb', 0, null],
+        'memory_total_mb' => ['vram_total_mb', 0, 1_000_000_000],
+        'memory_used_mb' => ['vram_used_mb', 0, 1_000_000_000],
+        'memory_free_mb' => ['vram_free_mb', 0, 1_000_000_000],
         'temperature_c' => ['temperature_c', 0, 150],
     ] as $metric => [$field, $minimum, $maximum]) {
         $value = $raw[$field] ?? null;

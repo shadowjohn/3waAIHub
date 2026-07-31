@@ -200,6 +200,16 @@ hub_test('successful GPU probe omits unavailable values instead of charting zero
         hub_test_assert(!array_key_exists($field, $gpu), 'unavailable GPU field must not become zero: ' . $field);
     }
 
+    $outOfRange = hub_collect_gpu_metric(static fn (): array => [
+        'nvidia_smi_available' => true,
+        'vram_total_mb' => '1e20',
+        'vram_used_mb' => '-1',
+        'vram_free_mb' => '1000000001',
+    ]);
+    foreach (['memory_total_mb', 'memory_used_mb', 'memory_free_mb'] as $field) {
+        hub_test_assert(!array_key_exists($field, $outOfRange), 'out-of-range GPU memory field must remain unknown: ' . $field);
+    }
+
     $db = hub_test_reset_db();
     hub_save_host_metric_snapshot($db, ['gpu' => $gpu]);
     $history = hub_admin_dashboard_model($db, [])['summary']['gpu_history'];
