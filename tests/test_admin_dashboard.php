@@ -447,6 +447,8 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
         'spanGaps: line ? 120000 : false',
         "type: 'linear'",
         'toLocaleTimeString',
+        'tooltip: {',
+        'items[0].parsed.x',
     ] as $needle) {
         hub_test_assert(str_contains($script, $needle), 'dashboard script missing GPU history chart contract: ' . $needle);
     }

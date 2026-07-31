@@ -101,7 +101,16 @@
 
   function lineOptions(suffix) {
     return {
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: function (items) {
+              return items.length === 0 ? '' : new Date(Number(items[0].parsed.x)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+          }
+        }
+      },
       scales: {
         y: {
           beginAtZero: true,
