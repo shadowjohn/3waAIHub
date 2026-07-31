@@ -259,18 +259,21 @@ resolve_url() {
   php -r '$base=$argv[1];$link=$argv[2];if(preg_match("~\Ahttps?://~i",$link)===1){echo $link;exit;} $parts=parse_url($base);if($link===""||!is_array($parts)||!isset($parts["scheme"],$parts["host"])){exit(2);} $host=(string)$parts["host"];if(str_contains($host,":")&&!str_starts_with($host,"[")){$host="[".$host."]";} $origin=$parts["scheme"]."://".$host.(isset($parts["port"])?":".(int)$parts["port"]:"");if(str_starts_with($link,"//")){echo $parts["scheme"].":".$link;exit;} if(str_starts_with($link,"/")){echo $origin.$link;exit;} $path=(string)($parts["path"]??"/");if(str_starts_with($link,"?")){echo $origin.$path.$link;exit;} $directory=str_ends_with($path,"/")?$path:rtrim(str_replace("\\","/",dirname($path)),"/")."/";echo $origin.$directory.ltrim($link,"/");' "$1" "$2"
 }
 
-curl -sS -H "Authorization: Bearer ${TOKEN}" \
+PREPARED="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'operation=profile_prepare' -F 'profile_name=<PROFILE_NAME>' \
   -F 'consent_type=self_recorded' -F 'reference_wav=@<REFERENCE_WAV>' \
-  "${API}?mode=voice_generate"
-# MyAI stores returned task_id as <VOICE_PROFILE_TASK_ID> and follows returned status_url.
+  "${API}?mode=voice_generate")"
+VOICE_PROFILE_TASK_ID="$(printf '%s' "${PREPARED}" | json_value task_id)" # <VOICE_PROFILE_TASK_ID>
+STATUS_URL_LINK="$(printf '%s' "${PREPARED}" | json_value status_url)"
+STATUS_URL="$(resolve_url "${API}" "${STATUS_URL_LINK}")"
+# MyAI stores VOICE_PROFILE_TASK_ID and follows the returned status_url.
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
-  "${API}?mode={{STATUS_MODE}}&task_id=<VOICE_PROFILE_TASK_ID>"
+  "${STATUS_URL}" # returned mode={{STATUS_MODE}}
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
-  "${API}?mode=voice_generate&operation=profile_status&voice_profile_task_id=<VOICE_PROFILE_TASK_ID>"
+  "${API}?mode=voice_generate&operation=profile_status&voice_profile_task_id=${VOICE_PROFILE_TASK_ID}"
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   --data-urlencode 'operation=profile_confirm' \
-  --data-urlencode 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
+  --data-urlencode "voice_profile_task_id=${VOICE_PROFILE_TASK_ID}" \
   --data-urlencode 'prompt_text=<CONFIRMED_TRANSCRIPT>' \
   "${API}?mode=voice_generate"
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
@@ -278,7 +281,7 @@ curl -sS -H "Authorization: Bearer ${TOKEN}" \
   "${API}?mode=voice_generate"
 SYNTHESIS="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'operation=synthesize' -F 'text=<TEXT>' -F 'mode=ultimate_clone' \
-  -F 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
+  -F "voice_profile_task_id=${VOICE_PROFILE_TASK_ID}" \
   "${API}?mode=voice_generate")"
 TASK_ID="$(printf '%s' "${SYNTHESIS}" | json_value task_id)" # <TASK_ID>
 RESULT_URL_LINK="$(printf '%s' "${SYNTHESIS}" | json_value result_url)"
@@ -293,7 +296,7 @@ curl -sS -H "Authorization: Bearer ${TOKEN}" "${ARTIFACT_URL}" # {{ARTIFACT_MODE
 {{ACK}}
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -d 'operation=profile_delete' \
-  -d 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
+  --data-urlencode "voice_profile_task_id=${VOICE_PROFILE_TASK_ID}" \
   "${API}?mode=voice_generate"
 CURL, [
         '{{API}}' => $api,

@@ -894,6 +894,36 @@ hub_test('voice workflow examples resolve returned links against the configured 
     }
 });
 
+hub_test('shell voice workflow follows returned profile prepare status URL', function (): void {
+    foreach ([false, true] as $cluster) {
+        $curl = (string)hub_public_api_voice_generate_examples($cluster)['curl'];
+        $statusMode = $cluster ? 'cluster_task_status' : 'task_status';
+
+        $preparedAt = strpos($curl, 'PREPARED="$(curl -sS');
+        $statusLinkAt = strpos($curl, 'STATUS_URL_LINK="$(printf');
+        $statusUrlAt = strpos($curl, 'STATUS_URL="$(resolve_url "${API}" "${STATUS_URL_LINK}")"');
+        $statusRequestAt = $statusUrlAt === false ? false : strpos($curl, '"${STATUS_URL}"', $statusUrlAt + 1);
+
+        hub_test_assert(
+            $preparedAt !== false
+            && str_contains($curl, 'VOICE_PROFILE_TASK_ID="$(printf')
+            && str_contains($curl, '"${PREPARED}" | json_value task_id)" # <VOICE_PROFILE_TASK_ID>')
+            && $statusLinkAt !== false
+            && str_contains($curl, '"${PREPARED}" | json_value status_url)"')
+            && $statusUrlAt !== false
+            && $statusRequestAt !== false
+            && $preparedAt < $statusLinkAt
+            && $statusLinkAt < $statusUrlAt
+            && $statusUrlAt < $statusRequestAt,
+            ($cluster ? 'Cluster' : 'native') . ' shell workflow must capture and resolve returned profile_prepare status_url'
+        );
+        hub_test_assert(
+            !str_contains($curl, '?mode=' . $statusMode . '&task_id='),
+            ($cluster ? 'Cluster' : 'native') . ' shell workflow must not reconstruct the profile_prepare status URL'
+        );
+    }
+});
+
 hub_test('Public API audio async contracts expose optional callback controls', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
 
