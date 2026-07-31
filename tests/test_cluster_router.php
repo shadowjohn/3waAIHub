@@ -3122,6 +3122,109 @@ hub_test('cluster router fails closed on malformed successful voice profile resp
     });
 });
 
+hub_test('cluster voice profile handles survive same-member token rotation', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_rotation',
+            'station_token' => 'profile_rotation_station_token',
+            'internal_base_url' => 'https://profile-rotation.internal/aihub',
+        ]);
+        $replacement = hub_create_api_token($db, (int)$fixture['member_id'], 'replacement profile token', null, null);
+        hub_add_api_token_mode_permission($db, (int)$replacement['token_id'], 'voice_generate');
+        $unpermitted = hub_create_api_token($db, (int)$fixture['member_id'], 'unpermitted profile token', null, null);
+        $foreign = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        hub_revoke_api_token($db, (int)$fixture['customer']['token_id']);
+        $inventory = hub_test_cluster_station_fixture([
+            'id' => (int)$fixture['station']['id'],
+            'station_key' => 'profile_rotation',
+            'modes' => ['voice_generate'],
+        ]);
+        $requests = [];
+        $cases = [
+            [
+                'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'],
+                hub_test_cluster_voice_profile_status_payload(),
+            ],
+            [
+                'operation=profile_confirm&voice_profile_task_id=' . $fixture['route_id'] . '&prompt_text=confirmed',
+                hub_test_cluster_voice_profile_status_payload(),
+            ],
+            [
+                'operation=synthesize&mode=clone&voice_profile_task_id=' . $fixture['route_id'] . '&text=clone',
+                ['ok' => true, 'task_id' => '43'],
+            ],
+            [
+                'mode=ultimate_clone&voice_profile_task_id=' . $fixture['route_id'] . '&text=ultimate',
+                ['ok' => true, 'task_id' => '44'],
+            ],
+            [
+                'operation=profile_delete&voice_profile_task_id=' . $fixture['route_id'],
+                hub_test_cluster_voice_profile_status_payload(['profile_status' => 'deleted']),
+            ],
+        ];
+
+        foreach ($cases as [$body, $childPayload]) {
+            $response = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request(
+                (string)$replacement['plain_token'],
+                [
+                    'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                    'raw_body' => $body,
+                    'request_uri' => '/cluster_api.php?mode=voice_generate',
+                ]
+            ), [
+                'refresh_due' => static fn (): array => [$inventory],
+                'transport' => static function (array $request) use (&$requests, $childPayload): array {
+                    $requests[] = $request;
+                    hub_test_assert(
+                        ($request['headers']['Authorization'] ?? '') === 'Bearer profile_rotation_station_token'
+                        && str_contains((string)$request['body'], 'voice_profile_task_id=42'),
+                        'rotated profile requests must stay pinned and use the child profile task'
+                    );
+
+                    return hub_gateway_json(200, $childPayload);
+                },
+            ]);
+            hub_test_assert($response['status'] === 200, 'a current permitted Token for the Profile member must resolve the handle');
+        }
+        hub_test_assert(count($requests) === count($cases), 'every permitted rotated-token Profile operation must dispatch once');
+
+        $denied = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request(
+            (string)$unpermitted['plain_token'],
+            [
+                'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'],
+            ]
+        ), ['refresh_due' => static fn (): array => [$inventory]]);
+        hub_test_assert(
+            $denied['status'] === 403 && str_contains($denied['body'], 'token_mode_not_allowed'),
+            'replacement Profile Tokens must retain voice_generate permission'
+        );
+
+        $foreignCalls = 0;
+        $foreignDenied = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request(
+            (string)$foreign['plain_token'],
+            [
+                'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'],
+            ]
+        ), [
+            'refresh_due' => static fn (): array => [$inventory],
+            'transport' => static function () use (&$foreignCalls): array {
+                $foreignCalls++;
+                return hub_gateway_json(200, []);
+            },
+        ]);
+        hub_test_assert(
+            $foreignDenied['status'] === 404
+            && str_contains($foreignDenied['body'], 'profile_task_not_found')
+            && $foreignCalls === 0,
+            'foreign members must receive the same not-found response before dispatch'
+        );
+    });
+});
+
 hub_test('cluster router keeps self-station profile routes local and substitutes the child ID in scoped globals', function (): void {
     hub_test_with_cluster_secret(function (): void {
         hub_test_with_cluster_pair_url(function (): void {
@@ -3332,6 +3435,7 @@ hub_test('cluster router followups require the exact customer token before pinne
         $db = hub_test_reset_db();
         $fixture = hub_test_cluster_router_async_route($db, ['station_token' => 'followup_station_token']);
         $other = hub_test_cluster_router_customer_token($db, []);
+        $sameMember = hub_create_api_token($db, (int)$fixture['member_id'], 'same member followup token', null, null);
         $requests = [];
 
         $denied = hub_cluster_dispatch_followup($db, 'cluster_task_status', [
@@ -3344,6 +3448,21 @@ hub_test('cluster router followups require the exact customer token before pinne
         });
 
         hub_test_assert($denied['status'] === 404 && str_contains($denied['body'], 'route_not_found') && $requests === [], 'other customer tokens must fail before transport');
+
+        $rotatedDenied = hub_cluster_dispatch_followup($db, 'cluster_task_status', [
+            'bearer_token' => (string)$sameMember['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'query' => ['task_id' => $fixture['route_id']],
+        ], static function (array $request) use (&$requests): array {
+            $requests[] = $request;
+            return hub_gateway_json(200, ['ok' => true]);
+        });
+        hub_test_assert(
+            $rotatedDenied['status'] === 404
+            && str_contains($rotatedDenied['body'], 'route_not_found')
+            && $requests === [],
+            'ordinary task followups must remain bound to the submitting Token after same-member rotation'
+        );
 
         $response = hub_cluster_dispatch_followup($db, 'cluster_task_status', [
             'bearer_token' => (string)$fixture['customer']['plain_token'],
@@ -4593,10 +4712,17 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         $profileStatus = array_column((array)$voice['operations'], null, 'operation')['profile_status'] ?? [];
         $conditionalOutputs = array_column((array)($profileStatus['conditional_output_fields'] ?? []), null, 'name');
         hub_test_assert(
-            str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'exact task owner')
+            str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'authenticated Profile member')
             && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'transcript_confirmed=false')
             && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'omitted after confirmation'),
             'Cluster profile_status must retain the safe conditional draft visibility contract'
+        );
+        hub_test_assert(
+            ($voice['result_artifact_fields'] ?? null) === ['id', 'type', 'mime_type', 'size_bytes', 'sha256']
+            && str_contains((string)($voice['artifact_delivery_note'] ?? ''), 'result.artifacts[]')
+            && str_contains((string)($voice['artifact_delivery_note'] ?? ''), 'artifact_url_template')
+            && str_contains((string)($voice['artifact_delivery_note'] ?? ''), 'ack_url_template'),
+            'Cluster voice docs must retain the canonical artifact contract'
         );
 
         $errors = array_column((array)($voice['error_table'] ?? []), null, 'code');
@@ -4627,6 +4753,12 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         hub_test_assert(str_contains((string)($voice['workflow']['client_state'] ?? ''), 'voice_profile_task_id'), 'Cluster workflow must tell MyAI what opaque state to retain');
         hub_test_assert(str_contains((string)($voice['workflow']['profile_affinity'] ?? ''), 'pinned station')
             && str_contains((string)($voice['workflow']['profile_affinity'] ?? ''), 'no failover'), 'Cluster workflow must document station pinning without failover');
+        hub_test_assert(
+            str_contains((string)($voice['workflow']['profile_ownership'] ?? ''), 'currently valid Token')
+            && str_contains((string)($voice['workflow']['profile_ownership'] ?? ''), 'voice_generate permission')
+            && str_contains((string)($voice['workflow']['profile_ownership'] ?? ''), 'submitting Token'),
+            'Cluster workflow must separate member-owned Profiles from Token-bound tasks'
+        );
 
         foreach ((array)$voice['workflow_examples'] as $kind => $example) {
             $example = (string)$example;

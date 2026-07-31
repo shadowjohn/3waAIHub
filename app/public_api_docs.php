@@ -268,7 +268,8 @@ curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'operation=synthesize' -F 'text=<TEXT>' -F 'mode=ultimate_clone' \
   -F 'voice_profile_task_id=<VOICE_PROFILE_TASK_ID>' \
   "${API}?mode=voice_generate"
-# Follow returned result_url for <TASK_ID>, then its artifact_url.
+# Follow returned result_url, choose result.artifacts[].id, and expand artifact_url_template.
+# POST the same id through ack_url_template when that template is returned.
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   "${API}?mode={{RESULT_MODE}}&task_id=<TASK_ID>"
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
@@ -334,8 +335,12 @@ $synthesis = $decode($request($api . '?mode=voice_generate', json_encode([
 ], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
 $taskId = $synthesis['task_id']; // <TASK_ID>
 $result = $decode($request($synthesis['result_url'])); // {{RESULT_MODE}}
-$artifactUrl = str_replace('{artifact_id}', '<ARTIFACT_ID>', $synthesis['artifact_url_template']);
+$artifactId = $result['result']['artifacts'][0]['id']; // <ARTIFACT_ID>
+$artifactUrl = str_replace('{artifact_id}', (string)$artifactId, $result['artifact_url_template']);
 $audio = $request($artifactUrl); // {{ARTIFACT_MODE}}
+if (isset($result['ack_url_template'])) {
+    $decode($request(str_replace('{artifact_id}', (string)$artifactId, $result['ack_url_template']), ''));
+}
 $decode($request($api . '?mode=voice_generate', json_encode([
     'operation' => 'profile_delete',
     'voice_profile_task_id' => $voiceProfileTaskId,
@@ -385,9 +390,13 @@ const synthesis = await call(`${api}?mode=voice_generate`, {
 });
 const taskId = synthesis.task_id; // <TASK_ID>
 const result = await call(synthesis.result_url); // {{RESULT_MODE}}
-const artifactUrl = synthesis.artifact_url_template.replace('{artifact_id}', '<ARTIFACT_ID>');
+const artifactId = result.result.artifacts[0].id; // <ARTIFACT_ID>
+const artifactUrl = result.artifact_url_template.replace('{artifact_id}', artifactId);
 const artifactResponse = await fetch(artifactUrl, {headers: {Authorization: `Bearer ${token}`}});
 const audio = await artifactResponse.blob(); // {{ARTIFACT_MODE}}
+if (result.ack_url_template) {
+  await call(result.ack_url_template.replace('{artifact_id}', artifactId), {method: 'POST'});
+}
 await call(`${api}?mode=voice_generate`, {
   method: 'POST',
   headers: {'Content-Type': 'application/json'},
@@ -445,7 +454,7 @@ function hub_public_api_voice_generate_contract(array $contract): array
             'conditional_output_fields' => [[
                 'name' => 'prompt_text',
                 'type' => 'string',
-                'condition' => 'Returned only to the exact task owner when transcript_confirmed=false; omitted after confirmation.',
+                'condition' => 'Returned only to the authenticated Profile member when transcript_confirmed=false; omitted after confirmation.',
                 'max_length' => 20000,
             ]],
         ],
@@ -478,8 +487,9 @@ function hub_public_api_voice_generate_contract(array $contract): array
     ];
     $contract['workflow'] = [
         'client_state' => 'MyAI stores voice_profile_task_id returned by profile_prepare.',
+        'profile_ownership' => 'The Profile handle belongs to the API member and may be used by any currently valid Token for that member with voice_generate permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
-        'profile_status_visibility' => 'For the exact task owner, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
+        'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
         'steps' => [
             'profile_prepare',
             'task_status via returned status_url',
@@ -487,7 +497,7 @@ function hub_public_api_voice_generate_contract(array $contract): array
             'profile_confirm',
             'synthesize with mode=ultimate_clone',
             'task_result via returned result_url',
-            'artifact via returned artifact_url',
+            'expand returned artifact_url_template with result.artifacts[].id, then ACK via ack_url_template when present',
             'profile_delete',
         ],
     ];
@@ -567,8 +577,8 @@ function hub_public_api_pack_job_async_contract(array $route): array
         'input' => ['fields' => $fields],
         'output' => [
             'required_keys' => ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'],
-            'result_artifact_fields' => ['artifact_id', 'artifact_url', 'bytes'],
-            'artifact_delivery_note' => 'Use artifact_url when present, otherwise expand artifact_url_template with artifact_id. Artifact download requires the same Bearer Token; host filesystem paths are never returned.',
+            'result_artifact_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+            'artifact_delivery_note' => 'Choose id from result.artifacts[], expand the returned artifact_url_template, and POST the same id through ack_url_template when that template is present. Task and artifact access requires the submitting Bearer Token.',
         ],
         'task_api' => [
             'status' => 'GET api.php?mode=task_status&task_id={task_id}',
@@ -619,6 +629,8 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         'output_keys' => array_values(array_map('strval', is_array($output['required_keys'] ?? null) ? $output['required_keys'] : [])),
         'response_content_type' => trim((string)($output['content_type'] ?? 'application/json')),
         'response_headers' => array_values(array_map('strval', is_array($output['required_headers'] ?? null) ? $output['required_headers'] : [])),
+        'result_artifact_fields' => array_values(array_map('strval', is_array($output['result_artifact_fields'] ?? null) ? $output['result_artifact_fields'] : [])),
+        'artifact_delivery_note' => trim((string)($output['artifact_delivery_note'] ?? '')),
         'error_codes' => array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : [])),
         'task_api' => hub_public_api_task_api_refs(is_array($contract['task_api'] ?? null) ? $contract['task_api'] : []),
     ];
@@ -1247,6 +1259,13 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                 <pre><?= hub_h(json_encode($service['input_fields'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <h3><?= $t('Response keys') ?></h3>
                 <pre><?= hub_h(json_encode($service['output_keys'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php if (($service['result_artifact_fields'] ?? []) !== []): ?>
+                    <h3>Artifact delivery</h3>
+                    <pre><?= hub_h(json_encode([
+                        'result.artifacts[]' => $service['result_artifact_fields'],
+                        'note' => $service['artifact_delivery_note'] ?? '',
+                    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php endif; ?>
                 <?php if (($service['operations'] ?? []) !== []): ?>
                     <h3>Additional operations</h3>
                     <pre><?= hub_h(json_encode($service['operations'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>

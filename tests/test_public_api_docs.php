@@ -389,7 +389,7 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
     $conditionalOutputs = array_column((array)($profileStatus['conditional_output_fields'] ?? []), null, 'name');
     hub_test_assert(
         !in_array('prompt_text', (array)($profileStatus['output_keys'] ?? []), true)
-        && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'exact task owner')
+        && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'authenticated Profile member')
         && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'transcript_confirmed=false')
         && str_contains((string)($conditionalOutputs['prompt_text']['condition'] ?? ''), 'omitted after confirmation'),
         'native profile_status must document owner-only unconfirmed ASR draft visibility'
@@ -635,6 +635,17 @@ hub_test('Public API audio async contracts use normalized job routes', function 
             'audio async transport contract mismatch: ' . $mode
         );
         hub_test_assert($service['output_keys'] === $outputKeys, 'audio async output contract mismatch: ' . $mode);
+        hub_test_assert(
+            ($service['result_artifact_fields'] ?? null) === ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+            'audio async result.artifacts[] contract mismatch: ' . $mode
+        );
+        $deliveryNote = (string)($service['artifact_delivery_note'] ?? '');
+        foreach (['result.artifacts[]', 'artifact_url_template', 'id', 'ack_url_template'] as $needle) {
+            hub_test_assert(str_contains($deliveryNote, $needle), 'audio async artifact delivery guidance missing ' . $needle . ': ' . $mode);
+        }
+        foreach (['artifact_id', 'per-artifact artifact_url', ' bytes field'] as $obsolete) {
+            hub_test_assert(!str_contains($deliveryNote, $obsolete), 'audio async artifact delivery guidance retains obsolete field ' . $obsolete . ': ' . $mode);
+        }
         hub_test_assert(array_keys($service['task_api']) === $taskRefs, 'audio async task API refs mismatch: ' . $mode);
         foreach (['status', 'result', 'log', 'cancel'] as $taskMode) {
             hub_test_assert(str_contains((string)$service['task_api'][$taskMode], 'mode=task_' . $taskMode), 'audio async task ref mismatch: ' . $mode . '/' . $taskMode);
@@ -643,6 +654,13 @@ hub_test('Public API audio async contracts use normalized job routes', function 
         foreach (['payload_too_large', 'invalid_request', 'source_ambiguous', 'missing_token'] as $error) {
             hub_test_assert(in_array($error, $service['error_codes'], true), 'audio async error contract missing ' . $error . ': ' . $mode);
         }
+        $html = hub_public_api_docs_html($db, null, static fn (array $service): bool => true);
+        hub_test_assert(
+            str_contains($html, 'result.artifacts[]')
+            && str_contains($html, 'artifact_url_template')
+            && str_contains($html, 'ack_url_template'),
+            'rendered async docs must publish canonical artifact delivery guidance: ' . $mode
+        );
 
         $fields = array_column($service['input_fields'], null, 'name');
         foreach ($route['request_schema'] as $name => $definition) {
@@ -1282,6 +1300,12 @@ hub_test('VoxCPM2 readmes document the safe native and Cluster profile lifecycle
             'task/log/callback/synthesis',
             'Native Hub task IDs remain part of the native async contract.',
             'Cluster child task/profile IDs and paths',
+            'currently valid Token',
+            'voice_generate permission',
+            'submitting Token',
+            'artifact_url_template',
+            'ack_url_template',
+            'not public contract',
         ] as $needle) {
             hub_test_assert(str_contains($document, $needle), basename($path) . ' missing safe voice workflow detail: ' . $needle);
         }

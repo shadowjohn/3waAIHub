@@ -26,7 +26,9 @@ Omitting `operation` means `synthesize`.
    `profile_status`.
 3. Confirm the reviewed draft with `profile_confirm`.
 4. Submit `synthesize` with `mode=ultimate_clone`, follow the returned
-   `result_url`, and download the returned artifact link.
+   `result_url`, choose an `id` from `result.artifacts[]`, expand
+   `artifact_url_template`, and use `ack_url_template` with the same `id` when
+   present.
 5. Call `profile_delete` when the profile is no longer needed.
 
 Native Hub task and artifact links remain direct Hub links. See the generated
@@ -46,17 +48,22 @@ synthesis remain on the pinned station with no failover. If that station is
 unavailable, retry later after `station_unavailable`; do not prepare or use the
 profile on another station.
 
+The Profile handle belongs to the API member. After Token revocation or
+rotation, any currently valid Token for that member with `voice_generate permission`
+may continue Profile operations. Ordinary task and artifact followups remain
+bound to the submitting Token.
+
 ## Privacy
 
 - Treat the reference WAV and transcript as sensitive customer data.
-- For the exact task owner, `profile_status` may return the unconfirmed
+- For the authenticated Profile member, `profile_status` may return the unconfirmed
   `prompt_text` ASR draft and `reference_audio_sha256`; the confirmed transcript remains hidden.
 - Native Hub task IDs remain part of the native async contract.
 - Other public task/log/callback/synthesis payloads do not expose transcript
   plaintext or tokens. Cluster child task/profile IDs and paths remain behind
   the Router boundary.
-- Never accept host or container paths, and never put real sensitive values in
-  public examples or logs.
+- Never accept host or container paths. A fixed internal Pack mount path is an
+  implementation detail, not public contract, and clients must not depend on it.
 - Member ownership is mandatory. Native ownership failures use
   `voice_profile_forbidden`; Cluster unknown or foreign handles use
   `profile_task_not_found`.

@@ -987,8 +987,9 @@ function hub_cluster_rewrite_voice_generate_contract(array $service): array
     $service['workflow'] = [
         'client_state' => 'MyAI stores only voice_profile_task_id returned by profile_prepare.',
         'profile_affinity' => 'Profile followups and clone synthesis stay on the pinned station; there is no failover.',
+        'profile_ownership' => 'The Profile handle belongs to the API member and may be used by any currently valid Token for that member with voice_generate permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
-        'profile_status_visibility' => 'For the exact task owner, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
+        'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
         'steps' => [
             'profile_prepare',
             'cluster_task_status via returned status_url',
@@ -996,7 +997,7 @@ function hub_cluster_rewrite_voice_generate_contract(array $service): array
             'profile_confirm',
             'synthesize with mode=ultimate_clone',
             'cluster_task_result via returned result_url',
-            'cluster_artifact via returned artifact_url',
+            'expand returned artifact_url_template with result.artifacts[].id, then ACK via ack_url_template when present',
             'profile_delete',
         ],
     ];
@@ -1227,6 +1228,12 @@ function hub_cluster_public_api_docs_html(PDO $db): string
                     </div>
                     <div class="contract-block"><h3>Request fields</h3><pre><?= hub_h($json($service['input_fields'] ?? [])) ?></pre></div>
                     <div class="contract-block"><h3>Response keys</h3><pre><?= hub_h($json($service['output_keys'] ?? [])) ?></pre></div>
+                    <?php if (($service['result_artifact_fields'] ?? []) !== []): ?>
+                        <div class="contract-block"><h3>Artifact delivery</h3><pre><?= hub_h($json([
+                            'result.artifacts[]' => $service['result_artifact_fields'],
+                            'note' => $service['artifact_delivery_note'] ?? '',
+                        ])) ?></pre></div>
+                    <?php endif; ?>
                     <?php if (($service['operations'] ?? []) !== []): ?>
                         <div class="contract-block"><h3>Additional operations</h3><pre><?= hub_h($json($service['operations'])) ?></pre></div>
                     <?php endif; ?>
@@ -1307,6 +1314,9 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     }
     if ($profileReference !== null) {
         $profileRoute = hub_cluster_get_route_for_customer($db, $profileReference, (array)$auth['context']);
+        if ($profileRoute === null && $mode === 'voice_generate') {
+            $profileRoute = hub_cluster_get_voice_profile_route_for_member($db, $profileReference, (array)$auth['context']);
+        }
         $remoteTaskId = $profileRoute['remote_task_id'] ?? null;
         if ($profileRoute === null
             || $mode !== 'voice_generate'
@@ -2847,6 +2857,24 @@ function hub_cluster_get_route_for_customer(PDO $db, string $routeId, array $aut
     return $route === false ? null : $route;
 }
 
+function hub_cluster_get_voice_profile_route_for_member(PDO $db, string $routeId, array $auth): ?array
+{
+    $memberId = (int)($auth['member_id'] ?? 0);
+    if (!hub_cluster_router_profile_sensitive_route_id($routeId) || $memberId < 1) {
+        return null;
+    }
+    $stmt = $db->prepare(
+        "SELECT * FROM cluster_routes
+         WHERE route_id = :route_id AND member_id = :member_id
+           AND mode = 'voice_generate' AND is_async = 1
+         LIMIT 1"
+    );
+    $stmt->execute([':route_id' => $routeId, ':member_id' => $memberId]);
+    $route = $stmt->fetch();
+
+    return $route === false ? null : $route;
+}
+
 function hub_cluster_get_tts_artifact_route_for_customer(PDO $db, string $routeId, array $auth): ?array
 {
     $memberId = (int)($auth['member_id'] ?? 0);
@@ -4345,7 +4373,8 @@ function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
             'mode', 'pack_id', 'name', 'description', 'method', 'content_type', 'endpoint', 'url',
             'execution_type', 'runtime_level', 'task_type', 'input_fields', 'output_keys',
             'response_content_type', 'response_headers', 'error_codes', 'task_api', 'operations',
-            'workflow', 'error_table', 'examples', 'workflow_examples',
+            'result_artifact_fields', 'artifact_delivery_note', 'workflow', 'error_table',
+            'examples', 'workflow_examples',
         ]));
     }
 
