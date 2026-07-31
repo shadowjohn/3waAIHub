@@ -165,88 +165,121 @@ function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $
 
 function hub_pack_job_secure_remove_private_file(string $path, ?callable $unlinker = null): void
 {
-    clearstatcache(true, $path);
-    if (!file_exists($path) && !is_link($path)) {
-        return;
-    }
     $unlinker ??= static fn (string $candidate): bool => @unlink($candidate);
-    $stat = lstat($path);
-    if (!is_array($stat)) {
-        return;
-    }
-    if (((int)$stat['mode'] & 0170000) === 0120000) {
-        try {
-            $removed = (bool)$unlinker($path);
-        } catch (Throwable) {
-            $removed = false;
-        }
+    $maxAttempts = 4;
+    $unstable = false;
+    for ($attempt = 0; $attempt < $maxAttempts; $attempt++) {
         clearstatcache(true, $path);
-        if (($removed || !file_exists($path)) && !is_link($path)) {
+        $stat = @lstat($path);
+        if (!is_array($stat)) {
             return;
         }
-        throw new RuntimeException('workspace_privacy_cleanup_failed');
-    }
-    if (((int)$stat['mode'] & 0170000) !== 0100000) {
-        throw new RuntimeException('workspace_privacy_cleanup_failed');
+        $type = (int)$stat['mode'] & 0170000;
+        if ($type === 0120000) {
+            if ($unstable && $attempt === $maxAttempts - 1) {
+                break;
+            }
+            try {
+                $unlinker($path);
+            } catch (Throwable) {
+            }
+            clearstatcache(true, $path);
+            if (!is_array(@lstat($path))) {
+                return;
+            }
+            $unstable = true;
+            continue;
+        }
+        if ($type !== 0100000) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+
+        $handle = @fopen($path, 'r+b');
+        if ($handle === false) {
+            clearstatcache(true, $path);
+            $current = @lstat($path);
+            if (!is_array($current)) {
+                return;
+            }
+            if (((int)$current['mode'] & 0170000) !== 0100000
+                || (int)$current['dev'] !== (int)$stat['dev']
+                || (int)$current['ino'] !== (int)$stat['ino']) {
+                $unstable = true;
+                continue;
+            }
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        $locked = false;
+        $truncated = false;
+        $retry = false;
+        try {
+            if (!flock($handle, LOCK_EX)) {
+                throw new RuntimeException('workspace_privacy_cleanup_failed');
+            }
+            $locked = true;
+            $openStat = fstat($handle);
+            if (!is_array($openStat)
+                || (((int)$openStat['mode'] & 0170000) !== 0100000)
+                || (int)$openStat['dev'] !== (int)$stat['dev']
+                || (int)$openStat['ino'] !== (int)$stat['ino']) {
+                $retry = true;
+            } elseif (!ftruncate($handle, 0)
+                || !fflush($handle)
+                || (function_exists('fsync') && !fsync($handle))) {
+                throw new RuntimeException('workspace_privacy_cleanup_failed');
+            } else {
+                $truncated = true;
+            }
+        } finally {
+            if ($locked) {
+                flock($handle, LOCK_UN);
+            }
+            fclose($handle);
+        }
+        if (!$truncated) {
+            if ($retry) {
+                $unstable = true;
+                continue;
+            }
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+
+        clearstatcache(true, $path);
+        $after = @lstat($path);
+        if (!is_array($after)) {
+            return;
+        }
+        $sameZeroInode = (((int)$after['mode'] & 0170000) === 0100000)
+            && (int)$after['dev'] === (int)$stat['dev']
+            && (int)$after['ino'] === (int)$stat['ino']
+            && (int)$after['size'] === 0;
+        if (!$sameZeroInode) {
+            $unstable = true;
+            continue;
+        }
+        if ($unstable && $attempt === $maxAttempts - 1) {
+            break;
+        }
+
+        try {
+            $unlinker($path);
+        } catch (Throwable) {
+        }
+        clearstatcache(true, $path);
+        $afterUnlink = @lstat($path);
+        if (!is_array($afterUnlink)) {
+            return;
+        }
+        if ((((int)$afterUnlink['mode'] & 0170000) === 0100000)
+            && (int)$afterUnlink['dev'] === (int)$stat['dev']
+            && (int)$afterUnlink['ino'] === (int)$stat['ino']
+            && (int)$afterUnlink['size'] === 0) {
+            return;
+        }
+        $unstable = true;
     }
 
-    $handle = @fopen($path, 'r+b');
-    if ($handle === false) {
-        throw new RuntimeException('workspace_privacy_cleanup_failed');
-    }
-    $truncated = false;
-    try {
-        if (!flock($handle, LOCK_EX)) {
-            throw new RuntimeException('workspace_privacy_cleanup_failed');
-        }
-        $openStat = fstat($handle);
-        clearstatcache(true, $path);
-        $pathStat = lstat($path);
-        if (!is_array($openStat)
-            || !is_array($pathStat)
-            || (((int)$openStat['mode'] & 0170000) !== 0100000)
-            || (((int)$pathStat['mode'] & 0170000) !== 0100000)
-            || (int)$openStat['dev'] !== (int)$stat['dev']
-            || (int)$openStat['ino'] !== (int)$stat['ino']
-            || (int)$pathStat['dev'] !== (int)$stat['dev']
-            || (int)$pathStat['ino'] !== (int)$stat['ino']
-            || !ftruncate($handle, 0)
-            || !fflush($handle)
-            || (function_exists('fsync') && !fsync($handle))) {
-            throw new RuntimeException('workspace_privacy_cleanup_failed');
-        }
-        $truncated = true;
-    } finally {
-        flock($handle, LOCK_UN);
-        fclose($handle);
-    }
-    clearstatcache(true, $path);
-    $after = @lstat($path);
-    if (!$truncated) {
-        throw new RuntimeException('workspace_privacy_cleanup_failed');
-    }
-    if (!is_array($after)) {
-        return;
-    }
-    if ((((int)$after['mode'] & 0170000) !== 0100000)
-        || (int)$after['dev'] !== (int)$stat['dev']
-        || (int)$after['ino'] !== (int)$stat['ino']
-        || (int)$after['size'] !== 0) {
-        throw new RuntimeException('workspace_privacy_cleanup_failed');
-    }
-    try {
-        $unlinker($path);
-    } catch (Throwable) {
-    }
-    clearstatcache(true, $path);
-    $afterUnlink = @lstat($path);
-    if (is_array($afterUnlink)
-        && ((((int)$afterUnlink['mode'] & 0170000) !== 0100000)
-            || (int)$afterUnlink['dev'] !== (int)$stat['dev']
-            || (int)$afterUnlink['ino'] !== (int)$stat['ino']
-            || (int)$afterUnlink['size'] !== 0)) {
-        throw new RuntimeException('workspace_privacy_cleanup_failed');
-    }
+    throw new RuntimeException('workspace_privacy_cleanup_failed');
 }
 
 function hub_pack_job_cleanup_private_files(array $paths, ?callable $unlinker = null): void

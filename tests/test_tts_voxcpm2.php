@@ -4443,6 +4443,131 @@ hub_test('VoxCPM2 normal private prompt scrub clears every hard link to the old 
     }
 });
 
+hub_test('VoxCPM2 private cleanup revalidates a regular replacement after symlink unlink', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_private_symlink_race_' . bin2hex(random_bytes(12));
+    if (!mkdir($root, 0700)) {
+        throw new RuntimeException('Cannot create symlink replacement fixture.');
+    }
+    $targetPath = $root . '/unrelated-target';
+    $requestPath = $root . '/request.private.0123456789abcdef';
+    $replacementLink = $root . '/replacement-hardlink';
+    $targetContents = 'Unrelated symlink target must remain untouched.';
+    $prompt = 'Replacement private prompt must be securely cleared.';
+    file_put_contents($targetPath, $targetContents, LOCK_EX);
+    if (!symlink($targetPath, $requestPath)) {
+        throw new RuntimeException('Cannot create private request symlink fixture.');
+    }
+    $unlinkCalls = 0;
+
+    try {
+        hub_pack_job_secure_remove_private_file(
+            $requestPath,
+            static function (string $path) use ($replacementLink, $prompt, &$unlinkCalls): bool {
+                $unlinkCalls++;
+                if ($unlinkCalls === 1) {
+                    if (!unlink($path)) {
+                        return false;
+                    }
+                    file_put_contents($path, $prompt, LOCK_EX);
+                    if (!link($path, $replacementLink)) {
+                        throw new RuntimeException('Cannot retain replacement inode fixture.');
+                    }
+                    return true;
+                }
+
+                return unlink($path);
+            }
+        );
+
+        $requestSafe = !file_exists($requestPath)
+            || (!is_link($requestPath)
+                && is_file($requestPath)
+                && filesize($requestPath) === 0
+                && !str_contains((string)file_get_contents($requestPath), $prompt));
+        hub_test_assert(
+            $unlinkCalls === 2
+            && $requestSafe
+            && is_file($replacementLink)
+            && filesize($replacementLink) === 0
+            && !str_contains((string)file_get_contents($replacementLink), $prompt)
+            && file_get_contents($targetPath) === $targetContents,
+            'cleanup must revalidate the pathname and securely clear a regular replacement inode'
+        );
+    } finally {
+        foreach ([$requestPath, $replacementLink, $targetPath] as $path) {
+            if (is_link($path) || is_file($path)) {
+                chmod($path, 0600);
+                unlink($path);
+            }
+        }
+        rmdir($root);
+    }
+});
+
+hub_test('VoxCPM2 private cleanup fails closed after bounded regular replacement churn', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_private_regular_race_' . bin2hex(random_bytes(12));
+    if (!mkdir($root, 0700)) {
+        throw new RuntimeException('Cannot create regular replacement fixture.');
+    }
+    $requestPath = $root . '/request.private.0123456789abcdef';
+    $prompt = 'Repeated replacement prompt must not survive bounded cleanup.';
+    file_put_contents($requestPath, $prompt, LOCK_EX);
+    $unlinkCalls = 0;
+    $replacementLinks = [];
+    $errorCode = null;
+
+    try {
+        hub_pack_job_secure_remove_private_file(
+            $requestPath,
+            static function (string $path) use ($root, $prompt, &$unlinkCalls, &$replacementLinks): bool {
+                $unlinkCalls++;
+                if (!unlink($path)) {
+                    return false;
+                }
+                file_put_contents($path, $prompt . ' #' . $unlinkCalls, LOCK_EX);
+                $linkPath = $root . '/replacement-hardlink-' . $unlinkCalls;
+                if (!link($path, $linkPath)) {
+                    throw new RuntimeException('Cannot retain repeated replacement inode fixture.');
+                }
+                $replacementLinks[] = $linkPath;
+                return true;
+            }
+        );
+    } catch (Throwable $error) {
+        $errorCode = $error->getMessage();
+    }
+
+    try {
+        $requestSafe = is_file($requestPath)
+            && !is_link($requestPath)
+            && filesize($requestPath) === 0
+            && !str_contains((string)file_get_contents($requestPath), $prompt);
+        $linksSafe = $replacementLinks !== [];
+        foreach ($replacementLinks as $linkPath) {
+            $linksSafe = $linksSafe
+                && is_file($linkPath)
+                && filesize($linkPath) === 0
+                && !str_contains((string)file_get_contents($linkPath), $prompt);
+        }
+        hub_test_assert(
+            $errorCode === 'workspace_privacy_cleanup_failed'
+            && $unlinkCalls >= 1
+            && $unlinkCalls <= 4
+            && $requestSafe
+            && $linksSafe,
+            'unstable private path cleanup must stop after bounded retries and leave every observed inode clear'
+        );
+    } finally {
+        foreach (array_merge([$requestPath], $replacementLinks) as $path) {
+            if (is_link($path) || is_file($path)) {
+                chmod($path, 0600);
+                unlink($path);
+            }
+        }
+        rmdir($root);
+    }
+});
+
 function hub_test_voxcpm2_cluster_acceptance_profile(
     string $referenceSha256,
     string $status = 'active',
