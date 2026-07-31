@@ -141,17 +141,19 @@ hub_test('local dashboard expires old metrics and exposes read-only release iden
 hub_test('local dashboard masks only explicitly unavailable GPU metrics', function (): void {
     $db = hub_test_reset_db();
     hub_save_host_metric_snapshot($db, [
-        'gpu' => ['available' => false, 'util_percent' => 73, 'temperature_c' => 66],
+        'gpu' => ['available' => false, 'util_percent' => 73, 'temperature_c' => 66, 'memory_total_mb' => 16384, 'memory_used_mb' => 12288, 'memory_free_mb' => 4096],
     ]);
 
     $unavailable = hub_admin_dashboard_model($db, [])['summary']['gpu'];
-    hub_test_assert(!array_key_exists('util_percent', $unavailable) && !array_key_exists('temperature_c', $unavailable), 'explicit unavailable local GPU metrics must not reach Dashboard cards');
+    foreach (['util_percent', 'temperature_c', 'memory_total_mb', 'memory_used_mb', 'memory_free_mb'] as $field) {
+        hub_test_assert(!array_key_exists($field, $unavailable), 'explicit unavailable local GPU metrics must not reach Dashboard cards: ' . $field);
+    }
 
     hub_save_host_metric_snapshot($db, [
-        'gpu' => ['util_percent' => 73, 'temperature_c' => 66],
+        'gpu' => ['util_percent' => 73, 'temperature_c' => 66, 'memory_total_mb' => 16384, 'memory_used_mb' => 12288, 'memory_free_mb' => 4096],
     ]);
     $legacy = hub_admin_dashboard_model($db, [])['summary']['gpu'];
-    hub_test_assert($legacy['util_percent'] === 73 && $legacy['temperature_c'] === 66, 'legacy local GPU metrics without availability must remain visible');
+    hub_test_assert($legacy['util_percent'] === 73 && $legacy['temperature_c'] === 66 && $legacy['memory_used_mb'] === 12288, 'legacy local GPU metrics without availability must remain visible');
 });
 
 hub_test('dashboard GPU history readers keep only recent local and child samples', function (): void {
@@ -267,7 +269,9 @@ hub_test('child dashboard honors legacy and explicit GPU availability states', f
         ]);
         $unavailable = hub_admin_dashboard_model($db, ['station' => 'station_1080'])['summary']['gpu'];
         hub_test_assert($unavailable['available'] === false, 'explicit unavailable child GPU state must remain unavailable');
-        hub_test_assert(!array_key_exists('util_percent', $unavailable) && !array_key_exists('temperature_c', $unavailable), 'unavailable child GPU metrics must not reach Dashboard cards');
+        foreach (['util_percent', 'temperature_c', 'memory_total_mb', 'memory_used_mb', 'memory_free_mb'] as $field) {
+            hub_test_assert(!array_key_exists($field, $unavailable), 'unavailable child GPU metrics must not reach Dashboard cards: ' . $field);
+        }
     });
 });
 

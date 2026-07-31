@@ -97,7 +97,7 @@ function hub_admin_dashboard_local_summary(array $local): array
     $metrics = is_array($snapshot['data'] ?? null) ? $snapshot['data'] : [];
     $gpu = is_array($metrics['gpu'] ?? null) ? $metrics['gpu'] : [];
     if (($gpu['available'] ?? null) === false) {
-        unset($gpu['util_percent'], $gpu['temperature_c']);
+        unset($gpu['util_percent'], $gpu['temperature_c'], $gpu['memory_total_mb'], $gpu['memory_used_mb'], $gpu['memory_free_mb']);
     }
     $host = is_array($metrics['host'] ?? null) ? $metrics['host'] : [];
     $docker = is_array($metrics['docker'] ?? null) ? $metrics['docker'] : [];
@@ -257,7 +257,7 @@ function hub_admin_dashboard_station_summary(array $station): array
         'memory_used_mb' => max(0, $totalVram - $freeVram),
     ]);
     if (($gpu['available'] ?? null) === false) {
-        unset($summaryGpu['util_percent'], $summaryGpu['temperature_c']);
+        unset($summaryGpu['util_percent'], $summaryGpu['temperature_c'], $summaryGpu['memory_total_mb'], $summaryGpu['memory_used_mb'], $summaryGpu['memory_free_mb']);
     }
 
     return [
