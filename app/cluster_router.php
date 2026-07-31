@@ -4392,6 +4392,7 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
         return hub_cluster_store_station_refresh_error($db, $stationId, 'status_invalid');
     }
     hub_cluster_store_station_status($db, $stationId, $statusSnapshot);
+    hub_cluster_store_station_gpu_metric_snapshot($db, $stationId, $statusSnapshot);
 
     $stored = hub_cluster_get_station($db, $stationId);
     if ($stored === null) {
@@ -4721,6 +4722,30 @@ function hub_cluster_store_station_status(PDO $db, int $stationId, array $snapsh
         ':updated_at' => hub_now(),
         ':id' => $stationId,
     ]);
+}
+
+function hub_cluster_store_station_gpu_metric_snapshot(PDO $db, int $stationId, array $statusSnapshot): void
+{
+    $sampledAt = trim((string)($statusSnapshot['snapshot_at'] ?? ''));
+    $gpu = is_array($statusSnapshot['gpu'] ?? null) ? hub_cluster_compact_gpu_snapshot($statusSnapshot['gpu']) : [];
+    if ($sampledAt === '' || $gpu === []) {
+        return;
+    }
+    $sampledAt = hub_cluster_verified_status_snapshot_at($sampledAt);
+    if ($sampledAt === null) {
+        return;
+    }
+
+    $db->prepare(
+        'INSERT OR IGNORE INTO cluster_gpu_metric_snapshots (station_id, sampled_at, gpu_json)
+         VALUES (:station_id, :sampled_at, :gpu_json)'
+    )->execute([
+        ':station_id' => $stationId,
+        ':sampled_at' => $sampledAt,
+        ':gpu_json' => json_encode($gpu, JSON_THROW_ON_ERROR),
+    ]);
+    $db->prepare('DELETE FROM cluster_gpu_metric_snapshots WHERE sampled_at < :cutoff')
+        ->execute([':cutoff' => date('Y-m-d H:i:s', time() - 86400)]);
 }
 
 function hub_cluster_verified_status_snapshot_at(string $value, ?int $now = null): ?string

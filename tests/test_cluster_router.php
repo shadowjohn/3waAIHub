@@ -5752,6 +5752,60 @@ hub_test('cluster admin child controls retain only published modes and force one
     });
 });
 
+hub_test('cluster router refresh retains one compact GPU metric snapshot and prunes old history', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $station = hub_test_cluster_router_station($db);
+        $snapshotAt = hub_now();
+        $fetcher = static function (array $request) use ($snapshotAt): array {
+            if (str_ends_with((string)$request['url'], '/api_manifest.json.php')) {
+                return ['status' => 200, 'body' => json_encode(['services' => [['mode' => 'vision']]], JSON_THROW_ON_ERROR)];
+            }
+
+            return ['status' => 200, 'body' => json_encode([
+                'ok' => true,
+                'snapshot_at' => $snapshotAt,
+                'gpu' => [
+                    'available' => true,
+                    'memory_free_mb' => 8192,
+                    'injected' => 'must_not_be_stored',
+                ],
+                'active_gpu_leases' => 0,
+                'queued_jobs' => 0,
+                'running_jobs' => 0,
+                'modes' => ['vision'],
+            ], JSON_THROW_ON_ERROR)];
+        };
+
+        hub_cluster_refresh_station_now($db, $station, true, $fetcher);
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM cluster_gpu_metric_snapshots')->fetchColumn() === 1, 'valid refreshed child must create a GPU metric sample');
+        $db->prepare(
+            'INSERT INTO cluster_gpu_metric_snapshots (station_id, sampled_at, gpu_json) VALUES (:station_id, :sampled_at, :gpu_json)'
+        )->execute([
+            ':station_id' => (int)$station['id'],
+            ':sampled_at' => date('Y-m-d H:i:s', time() - 86401),
+            ':gpu_json' => '{}',
+        ]);
+        hub_cluster_refresh_station_now($db, $station, true, $fetcher);
+
+        $samples = $db->query('SELECT sampled_at, gpu_json FROM cluster_gpu_metric_snapshots ORDER BY sampled_at DESC')->fetchAll();
+        hub_test_assert(count($samples) === 1 && (string)$samples[0]['sampled_at'] === $snapshotAt, 'same refreshed status timestamp must retain exactly one current GPU metric sample and prune old history');
+        hub_test_assert(json_decode((string)$samples[0]['gpu_json'], true, 512, JSON_THROW_ON_ERROR) === [
+            'available' => true,
+            'memory_free_mb' => 8192,
+        ], 'GPU metric history must persist only compact GPU fields');
+
+        hub_cluster_refresh_station_now($db, $station, true, static function (array $request): array {
+            if (str_ends_with((string)$request['url'], '/api_manifest.json.php')) {
+                return ['status' => 200, 'body' => json_encode(['services' => [['mode' => 'vision']]], JSON_THROW_ON_ERROR)];
+            }
+
+            return ['status' => 500, 'body' => ''];
+        });
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM cluster_gpu_metric_snapshots')->fetchColumn() === 1, 'failed status refresh must not create a GPU metric sample');
+    });
+});
+
 hub_test('cluster admin page exposes guarded controls without station encryption internals', function (): void {
     $page = (string)file_get_contents(HUB_ROOT . '/admin/cluster.php');
     $layout = (string)file_get_contents(HUB_ROOT . '/admin/_layout.php');

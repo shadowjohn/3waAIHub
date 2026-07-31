@@ -637,6 +637,15 @@ CREATE TABLE IF NOT EXISTS cluster_stations (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS cluster_gpu_metric_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    station_id INTEGER NOT NULL,
+    sampled_at TEXT NOT NULL,
+    gpu_json TEXT NOT NULL,
+    UNIQUE(station_id, sampled_at),
+    FOREIGN KEY(station_id) REFERENCES cluster_stations(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS cluster_routes (
     route_id TEXT NOT NULL PRIMARY KEY,
     station_id INTEGER NOT NULL,
@@ -950,6 +959,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_state_expires ON runtime_resource_leases(state, lease_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_run_id ON runtime_resource_leases(runtime_run_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_stations_enabled ON cluster_stations(enabled, priority DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_gpu_metric_snapshots_station_time ON cluster_gpu_metric_snapshots(station_id, sampled_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_routes_station_state ON cluster_routes(station_id, state, updated_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_routes_member_token ON cluster_routes(member_id, token_id, created_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_route ON cluster_route_accesses(route_id, created_at DESC)');
