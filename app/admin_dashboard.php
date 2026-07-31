@@ -204,7 +204,7 @@ function hub_admin_dashboard_gpu_history_rows(iterable $samples): array
         $latestSamples[$timestamp->format('Y-m-d H:i:s')] = $gpu;
     }
     foreach ($latestSamples as $sampledAt => $gpu) {
-        if (($gpu['available'] ?? null) !== true) {
+        if (array_key_exists('available', $gpu) && $gpu['available'] !== true) {
             continue;
         }
         foreach (['temperature_c' => 'temperature', 'memory_used_mb' => 'vram_used'] as $field => $series) {
@@ -247,6 +247,15 @@ function hub_admin_dashboard_station_summary(array $station): array
             count($services) - $serviceCounts['running'] - $serviceCounts['error']
         );
     }
+    $summaryGpu = array_replace($gpu, [
+        'available' => $totalVram > 0 && (!array_key_exists('available', $gpu) || $gpu['available'] === true),
+        'memory_total_mb' => $totalVram,
+        'memory_free_mb' => $freeVram,
+        'memory_used_mb' => max(0, $totalVram - $freeVram),
+    ]);
+    if (($gpu['available'] ?? null) === false) {
+        unset($summaryGpu['util_percent'], $summaryGpu['temperature_c']);
+    }
 
     return [
         'title' => (string)$station['display_name'],
@@ -255,12 +264,7 @@ function hub_admin_dashboard_station_summary(array $station): array
         'enabled' => !empty($station['enabled']),
         'error' => (string)($station['last_error'] ?? ''),
         'connection_state' => (string)($station['connection_state'] ?? 'offline'),
-        'gpu' => array_replace($gpu, [
-            'available' => $totalVram > 0 && (!array_key_exists('available', $gpu) || $gpu['available'] === true),
-            'memory_total_mb' => $totalVram,
-            'memory_free_mb' => $freeVram,
-            'memory_used_mb' => max(0, $totalVram - $freeVram),
-        ]),
+        'gpu' => $summaryGpu,
         'host' => [],
         'docker' => [],
         'storage' => [],

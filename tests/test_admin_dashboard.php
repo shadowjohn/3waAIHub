@@ -219,6 +219,73 @@ hub_test('selected child dashboard retains current GPU metrics and history', fun
     });
 });
 
+hub_test('child dashboard honors legacy and explicit GPU availability states', function (): void {
+    hub_test_admin_dashboard_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_admin_dashboard_station($db);
+        $snapshotAt = date('Y-m-d H:i:s', time() - 30);
+        $update = $db->prepare(
+            'UPDATE cluster_stations SET status_json = :status_json, status_fetched_at = :status_fetched_at WHERE id = :id'
+        );
+        $legacyGpu = [
+            'memory_total_mb' => 16384,
+            'memory_free_mb' => 4096,
+            'util_percent' => 73,
+            'temperature_c' => 66,
+        ];
+        $update->execute([
+            ':status_json' => json_encode(['gpu' => $legacyGpu], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => $snapshotAt,
+            ':id' => (int)$station['id'],
+        ]);
+        $legacy = hub_admin_dashboard_model($db, ['station' => 'station_1080'])['summary']['gpu'];
+        hub_test_assert($legacy['available'] === true, 'legacy child GPU with VRAM must remain available');
+        hub_test_assert($legacy['util_percent'] === 73 && $legacy['temperature_c'] === 66, 'legacy child GPU metrics must remain visible');
+
+        $unavailableGpu = array_replace($legacyGpu, ['available' => false]);
+        $update->execute([
+            ':status_json' => json_encode(['gpu' => $unavailableGpu], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => $snapshotAt,
+            ':id' => (int)$station['id'],
+        ]);
+        $unavailable = hub_admin_dashboard_model($db, ['station' => 'station_1080'])['summary']['gpu'];
+        hub_test_assert($unavailable['available'] === false, 'explicit unavailable child GPU state must remain unavailable');
+        hub_test_assert(!array_key_exists('util_percent', $unavailable) && !array_key_exists('temperature_c', $unavailable), 'unavailable child GPU metrics must not reach Dashboard cards');
+    });
+});
+
+hub_test('child GPU history honors legacy and explicit availability states', function (): void {
+    hub_test_admin_dashboard_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $station = hub_test_admin_dashboard_station($db);
+        $legacyAt = date('Y-m-d H:i:s', time() - 120);
+        $unavailableAt = date('Y-m-d H:i:s', time() - 60);
+        $insert = $db->prepare(
+            'INSERT INTO cluster_gpu_metric_snapshots (station_id, sampled_at, gpu_json) VALUES (:station_id, :sampled_at, :gpu_json)'
+        );
+        foreach ([
+            [$legacyAt, ['temperature_c' => 66, 'memory_used_mb' => 400]],
+            [$unavailableAt, ['available' => false, 'temperature_c' => 67, 'memory_used_mb' => 500]],
+        ] as [$sampledAt, $gpu]) {
+            $insert->execute([
+                ':station_id' => (int)$station['id'],
+                ':sampled_at' => $sampledAt,
+                ':gpu_json' => json_encode($gpu, JSON_THROW_ON_ERROR),
+            ]);
+        }
+
+        $history = hub_admin_dashboard_station_gpu_history($db, (int)$station['id'], date('Y-m-d H:i:s', time() - 86400));
+        hub_test_assert(
+            $history === [
+                'temperature' => [['label' => $legacyAt, 'value' => 66.0]],
+                'vram_used' => [['label' => $legacyAt, 'value' => 400.0]],
+            ],
+            'legacy child history must render while explicit false remains hidden'
+        );
+    });
+});
+
 hub_test('dashboard GPU history omits unavailable and missing metric values', function (): void {
     $recentAt = date('Y-m-d H:i:s', time() - 60);
     $history = hub_admin_dashboard_gpu_history_rows([
