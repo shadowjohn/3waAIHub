@@ -1799,6 +1799,7 @@ function hub_prune_retention_partials(PDO $db, string $now): int
 function hub_prune_retention(PDO $db, ?string $now = null): array
 {
     $now ??= hub_now();
+    $voiceProfiles = hub_prune_expired_voice_profiles($db, $now);
     $recovered = hub_retention_recover_stale_claims($db, $now);
     $stmt = $db->prepare(
         "SELECT id FROM task_artifacts
@@ -1835,7 +1836,15 @@ function hub_prune_retention(PDO $db, ?string $now = null): array
     }
     $metadataPurged = hub_prune_retention_metadata($db, $now);
 
-    return ['purged' => $purged, 'errors' => $errors, 'recovered' => $recovered, 'metadata_purged' => $metadataPurged];
+    return [
+        'purged' => $purged,
+        'errors' => $errors + $voiceProfiles['errors'],
+        'recovered' => $recovered,
+        'metadata_purged' => $metadataPurged,
+        'voice_profiles_deleted' => $voiceProfiles['profiles_deleted'],
+        'voice_profile_audio_purged' => $voiceProfiles['audio_purged'],
+        'voice_profile_errors' => $voiceProfiles['errors'],
+    ];
 }
 
 function hub_retention_schema_missing(PDO $db): array

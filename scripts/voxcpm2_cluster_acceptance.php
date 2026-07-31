@@ -549,6 +549,7 @@ function hub_voxcpm2_cluster_acceptance_execute(
                 'consent_type' => 'self_recorded',
                 'prompt_text' => (string)$config['prompt_text'],
                 'transcript_confirmed' => '1',
+                'expires_in_seconds' => '3600',
                 'reference_wav' => new CURLFile((string)$config['reference_wav'], 'audio/wav', 'reference.wav'),
             ],
             $deadline
@@ -939,6 +940,17 @@ function hub_voxcpm2_cluster_acceptance_metadata_valid(string $path, array $conf
     } catch (JsonException) {
         return false;
     }
+    $model = is_array($metadata) ? ($metadata['model'] ?? null) : null;
+    $modelValid = hub_voxcpm2_cluster_acceptance_exact_value($model, [
+        'label' => 'VoxCPM2',
+        'version' => '2.0.3',
+        'sample_rate' => 48000,
+    ]) || hub_voxcpm2_cluster_acceptance_exact_value($model, [
+        'model' => '/models/voxcpm2/model',
+        'label' => 'VoxCPM2',
+        'version' => '2.0.3',
+        'sample_rate' => 48000,
+    ]);
     if (!is_array($metadata)
         || !hub_voxcpm2_cluster_acceptance_exact_keys($metadata, [
             'normalized_input',
@@ -959,12 +971,7 @@ function hub_voxcpm2_cluster_acceptance_metadata_valid(string $path, array $conf
         || !is_string($metadata['normalized_input'] ?? null)
         || !hash_equals($config['normalized_input'], $metadata['normalized_input'])
         || !hash_equals($config['normalized_input_sha256'], hash('sha256', $metadata['normalized_input']))
-        || !hub_voxcpm2_cluster_acceptance_exact_value($metadata['model'] ?? null, [
-            'model' => '/models/voxcpm2/model',
-            'label' => 'VoxCPM2',
-            'version' => '2.0.3',
-            'sample_rate' => 48000,
-        ])
+        || !$modelValid
         || !hub_voxcpm2_cluster_acceptance_exact_value($metadata['controls'] ?? null, [
             'mode' => 'ultimate_clone',
             'seed_policy' => 'derived_per_chunk',
@@ -984,27 +991,19 @@ function hub_voxcpm2_cluster_acceptance_metadata_valid(string $path, array $conf
         'control' => '',
         'reference_audio_sha256' => $config['reference_audio_sha256'],
         'prompt_text_sha256' => $config['prompt_text_sha256'],
-        'container_path' => '/data/voice_profiles/reference.wav',
     ];
-    $voiceCanonical = hub_voxcpm2_cluster_acceptance_canonical_json($voiceCore);
-    if (!is_array($voice)
-        || !hub_voxcpm2_cluster_acceptance_exact_keys($voice, [
-            'mode',
-            'control',
-            'reference_audio_sha256',
-            'prompt_text_sha256',
-            'container_path',
-            'sha256',
-        ])
-        || !is_string($voice['sha256'] ?? null)
-        || $voiceCanonical === null
-        || !hash_equals(hash('sha256', $voiceCanonical), $voice['sha256'])
-    ) {
-        return false;
-    }
-    $voiceWithoutHash = $voice;
+    $legacyVoiceCore = $voiceCore + ['container_path' => '/data/voice_profiles/reference.wav'];
+    $voiceWithoutHash = is_array($voice) ? $voice : [];
+    $voiceSha256 = is_string($voiceWithoutHash['sha256'] ?? null) ? $voiceWithoutHash['sha256'] : '';
     unset($voiceWithoutHash['sha256']);
-    if (!hub_voxcpm2_cluster_acceptance_exact_value($voiceWithoutHash, $voiceCore)) {
+    $matchedVoiceCore = hub_voxcpm2_cluster_acceptance_exact_value($voiceWithoutHash, $voiceCore)
+        ? $voiceCore
+        : (hub_voxcpm2_cluster_acceptance_exact_value($voiceWithoutHash, $legacyVoiceCore) ? $legacyVoiceCore : null);
+    $voiceCanonical = $matchedVoiceCore === null
+        ? null
+        : hub_voxcpm2_cluster_acceptance_canonical_json($matchedVoiceCore);
+    if ($voiceCanonical === null || $voiceSha256 === ''
+        || !hash_equals(hash('sha256', $voiceCanonical), $voiceSha256)) {
         return false;
     }
 

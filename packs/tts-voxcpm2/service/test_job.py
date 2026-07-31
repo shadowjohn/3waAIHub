@@ -123,10 +123,14 @@ class UltimateCloneJobTests(unittest.TestCase):
         self.assertEqual("cuda", checkpoint["context"]["device"])
         self.assertEqual(self.reference_sha256, metadata["voice_context"]["reference_audio_sha256"])
         self.assertEqual(self.prompt_sha256, metadata["voice_context"]["prompt_text_sha256"])
+        self.assertNotIn("container_path", metadata["voice_context"])
+        self.assertNotIn("model", metadata["model"])
         public = json.dumps(metadata, ensure_ascii=False)
         self.assertNotIn(self.prompt_text, public)
         self.assertNotIn("voice_profile_id", public)
         self.assertNotIn("prompt_text_confirmed_at", public)
+        self.assertNotIn("/data/voice_profiles", public)
+        self.assertNotIn("/models/voxcpm2", public)
 
     def test_real_synthesis_rejects_cpu_model_without_retry_or_cuda_metadata(self):
         loads = []

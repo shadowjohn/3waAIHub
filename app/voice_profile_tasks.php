@@ -279,7 +279,7 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
         return hub_gateway_error(400, 'invalid_request', 'invalid request');
     }
     if (
-        array_diff(array_keys($payload), ['operation', 'profile_name', 'consent_type', 'prompt_text', 'transcript_confirmed', 'language', 'callback_target']) !== []
+        array_diff(array_keys($payload), ['operation', 'profile_name', 'consent_type', 'prompt_text', 'transcript_confirmed', 'language', 'callback_target', 'expires_in_seconds']) !== []
         || count($_FILES) !== 1
         || !is_array($_FILES['reference_wav'] ?? null)
     ) {
@@ -315,6 +315,18 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
     if ($confirmed && $promptText === '') {
         return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'voice profile transcript is invalid');
     }
+    $expiresAt = null;
+    if (array_key_exists('expires_in_seconds', $payload)) {
+        $expiresIn = $payload['expires_in_seconds'];
+        if (!is_string($expiresIn) || preg_match('/^[1-9][0-9]*$/', $expiresIn) !== 1) {
+            return hub_gateway_error(400, 'invalid_request', 'invalid request');
+        }
+        $expiresInSeconds = (int)$expiresIn;
+        if ($expiresInSeconds < 300 || $expiresInSeconds > 86400) {
+            return hub_gateway_error(400, 'invalid_request', 'invalid request');
+        }
+        $expiresAt = hub_retention_deadline($expiresInSeconds);
+    }
 
     try {
         $consentType = hub_valid_voice_profile_consent((string)($payload['consent_type'] ?? ''));
@@ -329,9 +341,10 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
             'prompt_text' => $promptText,
             'language' => $language,
             'transcript_confirmed' => $confirmed,
+            'expires_at' => $expiresAt,
         ], $moveFile, null, [
             'defer_transcription' => true,
-            'allow_cache' => !hub_cluster_node_token_is_current($db, $tokenId),
+            'allow_cache' => $expiresAt === null && !hub_cluster_node_token_is_current($db, $tokenId),
         ], static function (array $createdState) use (
             $db,
             $memberId,

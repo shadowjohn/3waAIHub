@@ -602,6 +602,7 @@ function hub_create_uploaded_voice_profile_internal(PDO $db, int $ownerMemberId,
                 'prompt_text' => $deferTranscription ? ($input['prompt_text'] ?? null) : null,
                 'language' => $deferTranscription ? ($input['language'] ?? null) : null,
                 'transcription_status' => $deferTranscription && trim((string)($input['prompt_text'] ?? '')) !== '' ? 'ready' : 'pending',
+                'expires_at' => $input['expires_at'] ?? null,
             ]);
             $profile = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
             $outcome = $deferTranscription ? 'deferred' : 'transcribe';
@@ -919,6 +920,69 @@ function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMember
     }
 
     return ['audio_cleanup_failed' => $audioCleanupFailed];
+}
+
+function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100): array
+{
+    $stmt = $db->prepare(
+        "SELECT id, owner_member_id, reference_audio_path, deleted_at
+         FROM voice_profiles
+         WHERE expires_at IS NOT NULL AND expires_at <= :now
+           AND (deleted_at IS NULL OR reference_audio_path <> '')
+         ORDER BY expires_at ASC, id ASC
+         LIMIT :limit"
+    );
+    $stmt->bindValue(':now', $now, PDO::PARAM_STR);
+    $stmt->bindValue(':limit', max(1, min(100, $limit)), PDO::PARAM_INT);
+    $stmt->execute();
+    $profilesDeleted = 0;
+    $audioPurged = 0;
+    $errors = 0;
+
+    foreach ($stmt->fetchAll() as $profile) {
+        $profileId = (int)$profile['id'];
+        $rawPath = (string)$profile['reference_audio_path'];
+        $safePath = $rawPath === '' ? null : hub_voice_profile_safe_host_path($rawPath);
+        $managedAudio = $safePath !== null && is_file($safePath) && !is_link($safePath) ? $safePath : null;
+        $unsafeAudio = $rawPath !== '' && $managedAudio === null && (file_exists($rawPath) || is_link($rawPath));
+        try {
+            if (empty($profile['deleted_at'])) {
+                $deleted = hub_soft_delete_voice_profile($db, $profileId, (int)$profile['owner_member_id'], $managedAudio !== null);
+                $profilesDeleted++;
+                if (!empty($deleted['audio_cleanup_failed'])) {
+                    throw new RuntimeException('voice_profile_audio_cleanup_failed');
+                }
+                if ($managedAudio !== null) {
+                    $audioPurged++;
+                }
+            } elseif ($managedAudio !== null) {
+                if (!unlink($managedAudio)) {
+                    throw new RuntimeException('voice_profile_audio_cleanup_failed');
+                }
+                $audioPurged++;
+            }
+            if ($unsafeAudio) {
+                throw new RuntimeException('voice_profile_audio_path_rejected');
+            }
+            $clear = $db->prepare(
+                "UPDATE voice_profiles
+                 SET reference_audio_path = '', updated_at = :updated_at
+                 WHERE id = :id AND deleted_at IS NOT NULL"
+            );
+            $clear->execute([':updated_at' => $now, ':id' => $profileId]);
+            if ($clear->rowCount() !== 1) {
+                throw new RuntimeException('voice_profile_cleanup_conflict');
+            }
+        } catch (Throwable) {
+            $errors++;
+        }
+    }
+
+    return [
+        'profiles_deleted' => $profilesDeleted,
+        'audio_purged' => $audioPurged,
+        'errors' => $errors,
+    ];
 }
 
 function hub_record_voice_profile_audit(PDO $db, ?int $profileId, ?int $ownerMemberId, ?int $tokenId, string $action, ?string $mode, array $details = []): void

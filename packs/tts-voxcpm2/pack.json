@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "tts-voxcpm2",
   "name": "VoxCPM2 Experimental TTS Service",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "category": "audio",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -23,7 +23,7 @@
   "runner_build": {
     "context": ".",
     "dockerfile": "service/Dockerfile",
-    "image": "3waaihub/tts-voxcpm2:0.1.5"
+    "image": "3waaihub/tts-voxcpm2:0.1.6"
   },
   "gateway": {
     "health_path": "/health",
@@ -75,7 +75,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/tts-voxcpm2:0.1.5",
+        "image": "3waaihub/tts-voxcpm2:0.1.6",
         "entrypoint": ["/app/voice-generate"],
         "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
         "output_dir": "output",

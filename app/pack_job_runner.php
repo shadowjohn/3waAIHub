@@ -238,6 +238,52 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract, ?
     return $workspace;
 }
 
+function hub_pack_job_scrub_private_prompt(string $workspace): void
+{
+    $input = realpath($workspace . '/input');
+    $requestPath = $workspace . '/input/request.json';
+    if ($input === false || $input !== $workspace . '/input' || is_link($requestPath) || !is_file($requestPath)) {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+    try {
+        $request = json_decode((string)file_get_contents($requestPath), true, 32, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        if (!unlink($requestPath)) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        return;
+    }
+    if (!is_array($request) || array_is_list($request)) {
+        if (!unlink($requestPath)) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        return;
+    }
+    unset($request['prompt_text']);
+    $json = json_encode($request, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    try {
+        $temporaryPath = $input . '/request.scrubbed.' . bin2hex(random_bytes(8));
+    } catch (Throwable) {
+        if (!unlink($requestPath)) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        return;
+    }
+    if ($json !== false
+        && file_put_contents($temporaryPath, $json . PHP_EOL, LOCK_EX) !== false
+        && chmod($temporaryPath, 0600)
+        && rename($temporaryPath, $requestPath)) {
+        return;
+    }
+    if (is_file($temporaryPath)) {
+        unlink($temporaryPath);
+    }
+    if (!is_file($requestPath) || unlink($requestPath)) {
+        return;
+    }
+    throw new RuntimeException('workspace_privacy_cleanup_failed');
+}
+
 function hub_pack_job_copy_source_artifact(PDO $db, array $task, string $workspace): void
 {
     $artifactId = (int)($task['source_artifact_id'] ?? 0);
@@ -1076,7 +1122,24 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
     $cleanup = null;
     try {
         try {
-            $contract = hub_resolve_stored_pack_job($db, $task);
+            $resolutionTask = $task;
+            $storedVersion = (string)($task['pack_version'] ?? '');
+            $storedInput = is_array($task['input'] ?? null) ? $task['input'] : [];
+            $storedMode = $storedInput['mode'] ?? 'design';
+            $compatibleModes = $storedVersion === '0.1.4'
+                ? ['design', 'clone']
+                : ['design', 'clone', 'ultimate_clone'];
+            if (
+                (string)($task['pack_id'] ?? '') === 'tts-voxcpm2'
+                && in_array($storedVersion, ['0.1.4', '0.1.5'], true)
+                && (string)($task['job'] ?? '') === 'synthesize'
+                && (string)($task['requested_mode'] ?? '') === 'voice_generate'
+                && (string)($task['accelerator'] ?? '') === 'gpu'
+                && in_array($storedMode, $compatibleModes, true)
+            ) {
+                $resolutionTask['pack_version'] = '0.1.6';
+            }
+            $contract = hub_resolve_stored_pack_job($db, $resolutionTask);
         } catch (Throwable $e) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, hub_pack_job_failure_code($e), 'Stored Pack job is unavailable', hub_pack_job_no_work_cleanup(), null);
         }
@@ -1126,6 +1189,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             $code = $e->getMessage() === 'voice_profile_changed' ? 'voice_profile_changed' : 'voice_profile_unavailable';
             return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Managed voice profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease);
         }
+        $hasPrivatePrompt = isset($voiceProfileMount['prompt_text']);
         $workspace = hub_pack_job_prepare_workspace($db, $task, $contract, $voiceProfileMount);
         if ($voiceProfileMount !== null) {
             unset($voiceProfileMount['prompt_text']);
@@ -1168,7 +1232,13 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             return hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds);
         };
         $started = true;
-        $result = $executor($context);
+        try {
+            $result = $executor($context);
+        } finally {
+            if ($hasPrivatePrompt) {
+                hub_pack_job_scrub_private_prompt($workspace);
+            }
+        }
         if (!is_array($result)) {
             throw new RuntimeException('runtime_execution_invalid');
         }

@@ -160,6 +160,7 @@ hub_test('VoxCPM2 native profile_prepare queues only a managed profile handle', 
 
         try {
             $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-test';
+            $expiresAfter = time() + 3600;
             $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
                 'operation' => 'profile_prepare',
                 'profile_name' => 'Task 2 profile',
@@ -168,6 +169,7 @@ hub_test('VoxCPM2 native profile_prepare queues only a managed profile handle', 
                 'transcript_confirmed' => 'true',
                 'language' => 'en',
                 'callback_target' => 'profile-events',
+                'expires_in_seconds' => '3600',
             ], [], ['reference_wav' => $upload]);
             $payload = hub_test_audio_payload($response);
             hub_test_assert($response['status'] === 200 && (int)($payload['task_id'] ?? 0) > 0, 'profile_prepare must return a standard async task handle');
@@ -177,6 +179,11 @@ hub_test('VoxCPM2 native profile_prepare queues only a managed profile handle', 
             $profile = hub_get_voice_profile($db, (int)$task['input']['voice_profile_id']);
             hub_test_assert($profile !== null && (int)($profile['source_task_id'] ?? 0) === (int)$task['id'], 'profile_prepare must atomically link the managed profile to its task');
             hub_test_assert((string)($profile['prompt_text_confirmed_at'] ?? '') !== '', 'confirmed supplied text must be confirmed before the task handle is exposed');
+            hub_test_assert(
+                strtotime((string)($profile['expires_at'] ?? '')) >= $expiresAfter
+                && strtotime((string)($profile['expires_at'] ?? '')) <= time() + 3600,
+                'profile_prepare must persist the exact bounded expiry deadline'
+            );
 
             $claimed = hub_claim_next_task($db, ['voice_profile_prepare']);
             hub_test_assert($claimed !== null && (int)$claimed['id'] === (int)$task['id'], 'profile_prepare worker must claim the queued task');
@@ -1167,6 +1174,57 @@ hub_test('VoxCPM2 profile_prepare boolean forms and validation errors stay exact
                     unlink($path);
                 }
             }
+        }
+    });
+});
+
+hub_test('VoxCPM2 profile_prepare accepts only canonical bounded expiry seconds', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Profile Expiry Owner');
+        $token = hub_create_api_token($db, $memberId, 'profile expiry token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-expiry-');
+        if ($tmpName === false) {
+            throw new RuntimeException('Cannot create profile expiry WAV fixture.');
+        }
+        file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        $upload = [
+            'name' => 'expiry.wav',
+            'type' => 'audio/wav',
+            'tmp_name' => $tmpName,
+            'error' => UPLOAD_ERR_OK,
+            'size' => filesize($tmpName),
+        ];
+        $request = static function (mixed $expires, string $name) use ($db, $token, $upload): array {
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-expiry';
+            return hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => $name,
+                'consent_type' => 'self_recorded',
+                'prompt_text' => 'Confirmed expiry transcript',
+                'transcript_confirmed' => '1',
+                'expires_in_seconds' => $expires,
+            ], [], ['reference_wav' => $upload]);
+        };
+
+        try {
+            foreach (['300', '86400'] as $index => $expires) {
+                hub_test_assert($request($expires, 'Valid expiry ' . $index)['status'] === 200, 'bounded canonical expiry must be accepted');
+            }
+            foreach (['299', '86401', '0300', '+300', '300.0', '', true, 300, ['3600']] as $index => $expires) {
+                $response = $request($expires, 'Invalid expiry ' . $index);
+                hub_test_assert(
+                    $response['status'] === 400
+                    && (hub_test_audio_payload($response)['error'] ?? '') === 'invalid_request',
+                    'non-canonical or out-of-range expiry must be rejected'
+                );
+            }
+        } finally {
+            @unlink($tmpName);
         }
     });
 });
@@ -3053,7 +3111,7 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
     $job = hub_pack_async_job_contract($manifest, 'synthesize');
     hub_test_assert(is_array($job), 'VoxCPM2 synthesize job contract missing');
     hub_test_assert(($job['input_fields'] ?? []) === ['text', 'mode', 'voice_prompt', 'control', 'seed', 'seed_policy', 'model', 'voice_profile_id', 'voice_profile_task_id', 'waveform_preview'], 'long-form input must be a closed Pack allowlist');
-    hub_test_assert(($manifest['version'] ?? '') === '0.1.5', 'Ultimate Clone must bump the Pack patch version');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.6', 'privacy lifecycle changes must bump the Pack patch version');
     hub_test_assert(($job['request_schema']['mode'] ?? []) === ['type' => 'string', 'required' => false, 'enum' => ['design', 'clone', 'ultimate_clone'], 'max_length' => 16, 'default' => 'design'], 'async synthesis mode must default to design and declare all three modes');
     hub_test_assert(($job['request_schema']['voice_profile_id'] ?? []) === ['type' => 'integer', 'required' => false, 'min' => 1, 'max' => 2147483647], 'managed profile IDs must retain exact integer bounds');
     hub_test_assert(($job['request_schema']['voice_profile_task_id'] ?? []) === ['type' => 'string', 'required' => false, 'max_length' => 64], 'native profile task handles must be bounded strings');
@@ -3069,7 +3127,7 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
     ], 'Voice Context must expose the exact Ultimate Clone contract');
     hub_test_assert(($job['source_required'] ?? true) === false && ($job['source_artifact_types'] ?? null) === [], 'long-form synthesis must receive text and managed voice context, never an external audio source');
     hub_test_assert(($job['runner'] ?? []) === [
-        'image' => '3waaihub/tts-voxcpm2:0.1.5',
+        'image' => '3waaihub/tts-voxcpm2:0.1.6',
         'entrypoint' => ['/app/voice-generate'],
         'args' => ['--workspace', '{workspace}', '--input', '{input_dir}', '--output', '{output_dir}', '--runner-config', '{input_dir}/runner_config.json'],
         'output_dir' => 'output',
@@ -3175,6 +3233,10 @@ hub_test('VoxCPM2 Ultimate Clone canonicalizes successful native profile tasks i
         ];
         $accepted = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], $request);
         $task = hub_get_task($db, (int)(hub_test_audio_payload($accepted)['task_id'] ?? 0));
+        $acceptedSuccessRunner = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], array_replace($request, [
+            'text' => 'RC Valve Ultimate Clone success runner',
+        ]));
+        $successRunnerTask = hub_get_task($db, (int)(hub_test_audio_payload($acceptedSuccessRunner)['task_id'] ?? 0));
         $snapshot = $task['input']['voice_context'] ?? null;
         $expectedSnapshot = [
             'mode' => 'ultimate_clone',
@@ -3232,17 +3294,47 @@ hub_test('VoxCPM2 Ultimate Clone canonicalizes successful native profile tasks i
                 return [
                     'exit_code' => 1,
                     'error_code' => 'synthetic_failure',
+                    'completed_no_process_evidence' => true,
                     'cleanup' => ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true],
                 ];
             },
         ]);
+        $retainedFailureRequest = (string)file_get_contents(hub_task_result_dir((int)$task['id']) . '/workspace/input/request.json');
         hub_test_assert(($privateRequest['prompt_text'] ?? '') === $prompt, 'confirmed prompt plaintext must be injected only into the private ephemeral runner request');
         hub_test_assert(($privateRequest['voice_context'] ?? null) === $expectedSnapshot, 'ephemeral request must retain the trusted hash snapshot');
+        hub_test_assert(
+            !str_contains($retainedFailureRequest, $prompt)
+            && !array_key_exists('prompt_text', json_decode($retainedFailureRequest, true, 32, JSON_THROW_ON_ERROR)),
+            'failed runner execution must scrub prompt plaintext from its retained request'
+        );
         hub_test_assert(!str_contains((string)json_encode(hub_get_task($db, (int)$task['id']), JSON_UNESCAPED_UNICODE), $prompt), 'persisted task data must remain prompt-free after runner preparation');
+
+        $successClaimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        hub_test_assert((int)($successClaimed['id'] ?? 0) === (int)($successRunnerTask['id'] ?? 0), 'second Ultimate Clone task must remain claimable');
+        hub_run_pack_job_task($db, $successClaimed ?? [], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+            'executor' => static function (array $context) use ($prompt): array {
+                $private = json_decode((string)file_get_contents($context['workspace'] . '/input/request.json'), true);
+                hub_test_assert(($private['prompt_text'] ?? '') === $prompt, 'successful runner path must receive the private prompt');
+                return [
+                    'exit_code' => 0,
+                    'completed_no_process_evidence' => true,
+                    'cleanup' => ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true],
+                ];
+            },
+        ]);
+        $retainedSuccessRequest = (string)file_get_contents(hub_task_result_dir((int)$successRunnerTask['id']) . '/workspace/input/request.json');
+        $retainedSuccess = json_decode($retainedSuccessRequest, true, 32, JSON_THROW_ON_ERROR);
+        hub_test_assert(
+            !str_contains($retainedSuccessRequest, $prompt)
+            && !array_key_exists('prompt_text', $retainedSuccess)
+            && ($retainedSuccess['voice_context'] ?? null) === $expectedSnapshot,
+            'successful runner execution must scrub only prompt plaintext and preserve safe retry fields'
+        );
     });
 });
 
-hub_test('VoxCPM2 executes immutable 0.1.4 queued design and clone tasks after the 0.1.5 Pack bump', function (): void {
+hub_test('VoxCPM2 executes immutable 0.1.4 and 0.1.5 queued tasks after the 0.1.6 Pack bump', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
         hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
@@ -3338,7 +3430,42 @@ hub_test('VoxCPM2 executes immutable 0.1.4 queued design and clone tasks after t
         }
         hub_test_assert($executed === ['design', 'clone'], 'both 0.1.4 modes must execute through their stored contracts');
         hub_test_assert($modeOmitted === [true, false], 'omitted-mode 0.1.4 design tasks must execute without mutating their stored request');
-        hub_test_assert((string)$db->query("SELECT pack_version FROM services WHERE pack_id = 'tts-voxcpm2'")->fetchColumn() === '0.1.5', 'compatibility must run against the upgraded installed Pack');
+        $previous = $route;
+        $previous['runner']['image'] = '3waaihub/tts-voxcpm2:0.1.5';
+        $previousSnapshot = hub_pack_job_contract_snapshot($previous, true);
+        $previousTaskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, ['text' => 'queued 0.1.5 design'], null, '203.0.113.51', [
+            'owner_member_id' => $owner,
+            'requested_mode' => 'voice_generate',
+            'pack_id' => 'tts-voxcpm2',
+            'pack_version' => '0.1.5',
+            'job' => 'synthesize',
+            'job_contract_json' => $previousSnapshot['json'],
+            'job_contract_digest' => $previousSnapshot['digest'],
+            'runtime_mode' => 'job',
+            'accelerator' => 'gpu',
+            'route_resolved_at' => '2026-07-30 00:00:00',
+        ]);
+        $previousClaimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        $previousExecuted = false;
+        $previousOutcome = hub_run_pack_job_task($db, $previousClaimed ?? [], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+            'executor' => static function () use (&$previousExecuted): array {
+                $previousExecuted = true;
+                return [
+                    'exit_code' => 1,
+                    'error_code' => 'synthetic_legacy_exit',
+                    'completed_no_process_evidence' => true,
+                    'cleanup' => ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true],
+                ];
+            },
+        ]);
+        hub_test_assert(
+            (int)($previousClaimed['id'] ?? 0) === $previousTaskId
+            && $previousExecuted
+            && ($previousOutcome['error_code'] ?? '') === 'synthetic_legacy_exit',
+            'queued 0.1.5 task must execute through its immutable stored contract'
+        );
+        hub_test_assert((string)$db->query("SELECT pack_version FROM services WHERE pack_id = 'tts-voxcpm2'")->fetchColumn() === '0.1.6', 'compatibility must run against the upgraded installed Pack');
         $unsupported = hub_get_task($db, $designTaskId) ?? [];
         $unsupported['pack_version'] = '0.1.3';
         hub_test_assert(hub_test_throws(static fn (): array => hub_resolve_stored_pack_job($db, $unsupported)), 'the stored-version exception must reject every other VoxCPM2 version');
@@ -3495,7 +3622,14 @@ PY;
             hub_test_assert(array_key_exists($key, $metadataValue), 'synthesis metadata missing ' . $key);
         }
         hub_test_assert(($metadataValue['plan']['normalization'] ?? '') === 'semantic-v1', 'metadata must preserve the immutable semantic plan');
-        hub_test_assert(($metadataValue['model']['model'] ?? '') === '/models/voxcpm2/model' && ($metadataValue['controls']['task_seed'] ?? null) === 42, 'runner defaults must be recorded in an ordinary design result');
+        hub_test_assert(
+            !array_key_exists('model', (array)($metadataValue['model'] ?? []))
+            && ($metadataValue['model']['label'] ?? null) === 'VoxCPM2'
+            && ($metadataValue['model']['version'] ?? null) === '2.0.3'
+            && ($metadataValue['model']['sample_rate'] ?? null) === 48000
+            && ($metadataValue['controls']['task_seed'] ?? null) === 42,
+            'runner defaults must be recorded without exposing the internal model path'
+        );
         hub_test_assert(!str_contains((string)file_get_contents($metadata), $workspace), 'metadata must not disclose workspace paths');
         $second = hub_run_command($command, 30);
         hub_test_assert(($second['exit_code'] ?? 1) === 0 && $audioHash === hash_file('sha256', $audio), 'resume must reuse matching chunk checkpoints deterministically');
@@ -3559,11 +3693,11 @@ hub_test('VoxCPM2 upgrade builds the versioned runner when only the old image ex
         },
     ]);
     hub_test_assert($commands === [
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.5'],
-        ['docker', 'build', '--tag', '3waaihub/tts-voxcpm2:0.1.5', '--file', HUB_ROOT . '/packs/tts-voxcpm2/service/Dockerfile', HUB_ROOT . '/packs/tts-voxcpm2'],
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.5'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.6'],
+        ['docker', 'build', '--tag', '3waaihub/tts-voxcpm2:0.1.6', '--file', HUB_ROOT . '/packs/tts-voxcpm2/service/Dockerfile', HUB_ROOT . '/packs/tts-voxcpm2'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.6'],
     ] && ($images['3waaihub/tts-voxcpm2:0.1.0'] ?? '') === 'sha256:old-voxcpm2'
-        && ($images['3waaihub/tts-voxcpm2:0.1.5'] ?? '') === 'sha256:new-voxcpm2'
+        && ($images['3waaihub/tts-voxcpm2:0.1.6'] ?? '') === 'sha256:new-voxcpm2'
         && ($installed['service']['install_status'] ?? '') === 'installed',
         'an existing old image must not suppress building and verifying the new Pack-versioned runner');
 });
@@ -3847,7 +3981,6 @@ function hub_test_voxcpm2_cluster_runner_metadata(
         'control' => '',
         'reference_audio_sha256' => $referenceSha256,
         'prompt_text_sha256' => $promptSha256,
-        'container_path' => '/data/voice_profiles/reference.wav',
     ];
 
     return [
@@ -3856,7 +3989,6 @@ function hub_test_voxcpm2_cluster_runner_metadata(
             'plan_sha256' => hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($planCore)),
         ],
         'model' => [
-            'model' => '/models/voxcpm2/model',
             'label' => 'VoxCPM2',
             'version' => '2.0.3',
             'sample_rate' => 48000,
@@ -3977,6 +4109,7 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
                     ($fields['operation'] ?? '') === 'profile_prepare'
                     && ($fields['prompt_text'] ?? '') === 'Confirmed private prompt text.'
                     && ($fields['transcript_confirmed'] ?? '') === '1'
+                    && ($fields['expires_in_seconds'] ?? '') === '3600'
                     && ($fields['profile_name'] ?? '') === 'VoxCPM2 Cluster Acceptance'
                     && ($fields['consent_type'] ?? '') === 'self_recorded'
                     && ($fields['reference_wav'] ?? null) instanceof CURLFile,

@@ -504,6 +504,39 @@ hub_test('active voice profile retains prepare task metadata until soft delete',
     hub_test_assert(hub_get_task($db, $taskId) === null && (int)($afterDelete['metadata_purged'] ?? 0) === 1, 'soft delete must release prepare task metadata for the next prune');
 });
 
+hub_test('retention expires a handle-lost voice profile and removes its managed WAV', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Expired voice profile owner');
+    $path = hub_voice_profile_storage_dir() . '/expired-handle-lost.wav';
+    file_put_contents($path, 'RIFFexpired-handle-lost', LOCK_EX);
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Expired handle-lost profile',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'expires_at' => '2026-07-19 23:59:59',
+    ]);
+
+    $result = hub_prune_retention($db, '2026-07-20 00:00:00');
+    $stmt = $db->prepare('SELECT deleted_at, reference_audio_path, source_task_id FROM voice_profiles WHERE id = :id');
+    $stmt->execute([':id' => $profileId]);
+    $expired = $stmt->fetch();
+
+    hub_test_assert(
+        $expired !== false
+        && !empty($expired['deleted_at'])
+        && ($expired['reference_audio_path'] ?? null) === ''
+        && empty($expired['source_task_id'])
+        && !file_exists($path),
+        'expired profile cleanup must not depend on receiving or retaining a task handle'
+    );
+    hub_test_assert(
+        (int)($result['voice_profiles_deleted'] ?? 0) === 1
+        && (int)($result['voice_profile_audio_purged'] ?? 0) === 1
+        && (int)($result['voice_profile_errors'] ?? -1) === 0,
+        'retention must report bounded profile and WAV cleanup without sensitive details'
+    );
+});
+
 hub_test('DocParser repair lineage retains parent metadata while queued or running', function (): void {
     $db = hub_test_reset_db();
     $now = '2026-07-20 00:00:00';

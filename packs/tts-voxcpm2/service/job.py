@@ -150,7 +150,8 @@ def voice_context(request: dict[str, Any]) -> dict[str, Any]:
             "prompt_text_sha256": trusted["prompt_text_sha256"],
             "container_path": trusted["container_path"],
         }
-    return context | {"sha256": sha256_text(canonical_json(context))}
+    public_context = {key: value for key, value in context.items() if key != "container_path"}
+    return context | {"sha256": sha256_text(canonical_json(public_context))}
 
 
 def fake_enabled() -> bool:
@@ -332,7 +333,7 @@ def run_job(workspace: Path, input_dir: Path, output: Path, runner_config_path: 
             "id": chunk["id"], "seed": chunk["seed"], "seed_sha256": chunk["seed_sha256"], "attempts": chunk["attempts"], "duration_frames": len(chunk["samples"]), "duration_seconds": len(chunk["samples"]) / model["sample_rate"], "peak_gain": chunk["peak_gain"], "reused_checkpoint": chunk["reused"], "action": boundary["action"], "trim_frames": boundary["trim_frames"], "pause_frames": boundary["pause_frames"], "crossfade_frames": boundary["crossfade_frames"],
         })
     metadata = {
-        "normalized_input": plan["normalized_input"], "plan": plan, "model": model, "voice_context": voice, "controls": {"mode": request["mode"], "seed_policy": request["seed_policy"], "task_seed": request["seed"]}, "chunks": chunk_metadata, "final_format": {"mime_type": "audio/wav", "sample_rate": model["sample_rate"], "channels": 1, "frames": len(final)}, "loudness": loudness, "timeline": timeline, "device": {"type": "fake", "real_inference": False} if fake_enabled() else {"type": "cuda", "real_inference": True},
+        "normalized_input": plan["normalized_input"], "plan": plan, "model": {key: value for key, value in model.items() if key != "model"}, "voice_context": {key: value for key, value in voice.items() if key != "container_path"}, "controls": {"mode": request["mode"], "seed_policy": request["seed_policy"], "task_seed": request["seed"]}, "chunks": chunk_metadata, "final_format": {"mime_type": "audio/wav", "sample_rate": model["sample_rate"], "channels": 1, "frames": len(final)}, "loudness": loudness, "timeline": timeline, "device": {"type": "fake", "real_inference": False} if fake_enabled() else {"type": "cuda", "real_inference": True},
     }
     write_json(output / "synthesis_metadata.json", metadata)
     if request["waveform_preview"]:
