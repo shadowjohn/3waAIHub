@@ -1835,12 +1835,17 @@ function hub_prune_retention(PDO $db, ?string $now = null): array
         $errors += $taskResult['errors'];
     }
     $metadataPurged = hub_prune_retention_metadata($db, $now);
+    $clusterGpuMetricCutoff = hub_retention_deadline(-86400, $now);
+    $clusterGpuMetricPrune = $db->prepare('DELETE FROM cluster_gpu_metric_snapshots WHERE sampled_at < :cutoff');
+    $clusterGpuMetricPrune->execute([':cutoff' => $clusterGpuMetricCutoff]);
+    $clusterGpuMetricsPurged = $clusterGpuMetricPrune->rowCount();
 
     return [
         'purged' => $purged,
         'errors' => $errors + $voiceProfiles['errors'],
         'recovered' => $recovered,
         'metadata_purged' => $metadataPurged,
+        'cluster_gpu_metrics_purged' => $clusterGpuMetricsPurged,
         'voice_profiles_deleted' => $voiceProfiles['profiles_deleted'],
         'voice_profile_audio_purged' => $voiceProfiles['audio_purged'],
         'voice_profile_errors' => $voiceProfiles['errors'],
@@ -1856,6 +1861,7 @@ function hub_retention_schema_missing(PDO $db): array
         'task_artifact_holds' => ['source_artifact_id', 'downstream_task_id', 'released_at'],
         'runtime_runs' => ['task_id', 'state'],
         'runtime_resource_leases' => ['runtime_run_id', 'state'],
+        'cluster_gpu_metric_snapshots' => [],
     ];
     $tables = array_fill_keys($db->query("SELECT name FROM sqlite_master WHERE type = 'table'")->fetchAll(PDO::FETCH_COLUMN), true);
     $missing = [];

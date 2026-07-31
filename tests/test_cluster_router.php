@@ -5821,7 +5821,7 @@ hub_test('cluster GPU metric history migration replaces its redundant station ti
     hub_test_assert(!in_array('idx_cluster_gpu_metric_snapshots_station_time', $indexes, true) && in_array('idx_cluster_gpu_metric_snapshots_sampled_at', $indexes, true), 'GPU metric history migration must remove the redundant station time index and add a global sampled time index');
 });
 
-hub_test('scheduled database pruning expires offline child GPU metric history', function (): void {
+hub_test('scheduled retention pruning expires offline child GPU metric history', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
         $station = hub_test_cluster_router_station($db);
@@ -5832,23 +5832,24 @@ hub_test('scheduled database pruning expires offline child GPU metric history', 
         );
         $insert->execute([
             ':station_id' => (int)$station['id'],
-            ':sampled_at' => date('Y-m-d H:i:s', time() - 86401),
+            ':sampled_at' => '2026-07-31 11:59:59',
             ':gpu_json' => '{"available":true}',
         ]);
         $insert->execute([
             ':station_id' => (int)$station['id'],
-            ':sampled_at' => date('Y-m-d H:i:s', time() - 60),
+            ':sampled_at' => '2026-07-31 12:00:00',
+            ':gpu_json' => '{"available":true}',
+        ]);
+        $insert->execute([
+            ':station_id' => (int)$station['id'],
+            ':sampled_at' => '2026-08-01 11:59:00',
             ':gpu_json' => '{"available":true}',
         ]);
 
-        $result = hub_run_command([PHP_BINARY, HUB_ROOT . '/scripts/prune_db.php', '--apply'], 30, [
-            'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
-            'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
-        ]);
-        $report = json_decode((string)$result['stdout'], true);
+        $report = hub_prune_retention($db, '2026-08-01 12:00:00');
 
-        hub_test_assert($result['exit_code'] === 0 && is_array($report) && ($report['deleted']['cluster_gpu_metric_snapshots'] ?? null) === 1, 'scheduled database pruning must report the expired offline child GPU sample');
-        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM cluster_gpu_metric_snapshots')->fetchColumn() === 1, 'scheduled database pruning must retain only the current offline child GPU sample without a refresh');
+        hub_test_assert(($report['cluster_gpu_metrics_purged'] ?? null) === 1, 'scheduled retention pruning must report the expired offline child GPU sample');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM cluster_gpu_metric_snapshots')->fetchColumn() === 2, 'scheduled retention pruning must preserve boundary and current offline child GPU samples without a refresh');
     });
 });
 
