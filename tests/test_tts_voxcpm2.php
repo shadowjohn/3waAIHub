@@ -3237,6 +3237,14 @@ hub_test('VoxCPM2 Ultimate Clone canonicalizes successful native profile tasks i
             'text' => 'RC Valve Ultimate Clone success runner',
         ]));
         $successRunnerTask = hub_get_task($db, (int)(hub_test_audio_payload($acceptedSuccessRunner)['task_id'] ?? 0));
+        $acceptedPrepareFailure = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], array_replace($request, [
+            'text' => 'RC Valve Ultimate Clone partial prepare',
+        ]));
+        $prepareFailureTask = hub_get_task($db, (int)(hub_test_audio_payload($acceptedPrepareFailure)['task_id'] ?? 0));
+        $acceptedFenceFailure = hub_test_audio_request($db, 'voice_generate', (string)$ownerToken['plain_token'], array_replace($request, [
+            'text' => 'RC Valve Ultimate Clone pre-executor fence',
+        ]));
+        $fenceFailureTask = hub_get_task($db, (int)(hub_test_audio_payload($acceptedFenceFailure)['task_id'] ?? 0));
         $snapshot = $task['input']['voice_context'] ?? null;
         $expectedSnapshot = [
             'mode' => 'ultimate_clone',
@@ -3330,6 +3338,69 @@ hub_test('VoxCPM2 Ultimate Clone canonicalizes successful native profile tasks i
             && !array_key_exists('prompt_text', $retainedSuccess)
             && ($retainedSuccess['voice_context'] ?? null) === $expectedSnapshot,
             'successful runner execution must scrub only prompt plaintext and preserve safe retry fields'
+        );
+
+        $prepareClaimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        hub_test_assert((int)($prepareClaimed['id'] ?? 0) === (int)($prepareFailureTask['id'] ?? 0), 'partial prepare task must remain claimable');
+        $prepareInput = hub_task_result_dir((int)$prepareFailureTask['id']) . '/workspace/input';
+        if (!mkdir($prepareInput . '/runner_config.json', 0700, true)) {
+            throw new RuntimeException('Cannot create partial workspace failure fixture.');
+        }
+        $prepareExecutorCalled = false;
+        hub_run_pack_job_task($db, $prepareClaimed ?? [], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+            'executor' => static function () use (&$prepareExecutorCalled): array {
+                $prepareExecutorCalled = true;
+                return [];
+            },
+        ]);
+        $prepareWorkspaceText = '';
+        $prepareIterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator(
+                hub_task_result_dir((int)$prepareFailureTask['id']) . '/workspace',
+                FilesystemIterator::SKIP_DOTS
+            )
+        );
+        foreach ($prepareIterator as $file) {
+            if ($file->isFile() && !$file->isLink()) {
+                $prepareWorkspaceText .= (string)file_get_contents($file->getPathname());
+            }
+        }
+        hub_test_assert(
+            !$prepareExecutorCalled && !str_contains($prepareWorkspaceText, $prompt),
+            'partial workspace preparation must never retain prompt plaintext before returning a workspace'
+        );
+
+        $fenceClaimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        hub_test_assert((int)($fenceClaimed['id'] ?? 0) === (int)($fenceFailureTask['id'] ?? 0), 'pre-executor fence task must remain claimable');
+        $fenceExecutorCalled = false;
+        $fenceInvalidated = false;
+        hub_run_pack_job_task($db, $fenceClaimed ?? [], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+            'pid_inspector' => static function (array $context) use ($db, $prompt, &$fenceInvalidated): array {
+                $private = (string)file_get_contents($context['workspace'] . '/input/request.json');
+                hub_test_assert(str_contains($private, $prompt), 'pre-executor fixture must reach the private request boundary');
+                if (!$fenceInvalidated) {
+                    $db->prepare('UPDATE runtime_runs SET lease_token = :lease_token WHERE id = :id')
+                        ->execute([':lease_token' => str_repeat('f', 64), ':id' => (int)$context['run']['id']]);
+                    $fenceInvalidated = true;
+                }
+
+                return [];
+            },
+            'executor' => static function () use (&$fenceExecutorCalled): array {
+                $fenceExecutorCalled = true;
+                return [];
+            },
+        ]);
+        $fenceRetained = (string)file_get_contents(
+            hub_task_result_dir((int)$fenceFailureTask['id']) . '/workspace/input/request.json'
+        );
+        hub_test_assert(
+            !$fenceExecutorCalled
+            && !str_contains($fenceRetained, $prompt)
+            && !array_key_exists('prompt_text', json_decode($fenceRetained, true, 32, JSON_THROW_ON_ERROR)),
+            'every pre-executor early return must scrub prompt plaintext while retaining a safe request'
         );
     });
 });
@@ -4567,6 +4638,27 @@ hub_test('VoxCPM2 Cluster acceptance binds profile and result hashes to requeste
         hub_test_assert(
             hub_voxcpm2_cluster_acceptance_metadata_valid($metadataPath, $config),
             'actual production VoxCPM2 metadata must match all requested material'
+        );
+        $legacyMetadata = hub_test_voxcpm2_cluster_runner_metadata(
+            (string)$referenceSha256,
+            $promptSha256,
+            $normalizedTarget
+        );
+        $legacyMetadata['model'] = ['model' => '/models/voxcpm2/model'] + $legacyMetadata['model'];
+        $legacyVoice = $legacyMetadata['voice_context'];
+        unset($legacyVoice['sha256']);
+        $legacyVoice['container_path'] = '/data/voice_profiles/reference.wav';
+        $legacyMetadata['voice_context'] = $legacyVoice + [
+            'sha256' => hash('sha256', hub_test_voxcpm2_cluster_runner_canonical_json($legacyVoice)),
+        ];
+        file_put_contents(
+            $metadataPath,
+            json_encode($legacyMetadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            LOCK_EX
+        );
+        hub_test_assert(
+            !hub_voxcpm2_cluster_acceptance_metadata_valid($metadataPath, $config),
+            'live acceptance must reject all legacy path-bearing metadata even when its legacy hash is valid'
         );
         file_put_contents(
             $metadataPath,

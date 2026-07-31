@@ -3493,8 +3493,143 @@ function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $
     }
 }
 
+function hub_voxcpm2_metadata_canonical_json(mixed $value): string
+{
+    $normalize = static function (mixed $item) use (&$normalize): mixed {
+        if (!is_array($item)) {
+            return $item;
+        }
+        if (array_is_list($item)) {
+            return array_map($normalize, $item);
+        }
+        ksort($item, SORT_STRING);
+        foreach ($item as $key => $nested) {
+            $item[$key] = $normalize($nested);
+        }
+
+        return $item;
+    };
+
+    return json_encode(
+        $normalize($value),
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_LINE_TERMINATORS | JSON_THROW_ON_ERROR
+    );
+}
+
+function hub_voxcpm2_public_metadata_artifact(PDO $db, int $taskId, array $artifact): array
+{
+    if (($artifact['artifact_type'] ?? null) !== 'synthesis_metadata') {
+        return $artifact;
+    }
+    $stmt = $db->prepare('SELECT pack_id, pack_version, job FROM tasks WHERE id = :id');
+    $stmt->execute([':id' => $taskId]);
+    $task = $stmt->fetch();
+    if (!$task
+        || ($task['pack_id'] ?? null) !== 'tts-voxcpm2'
+        || !in_array($task['pack_version'] ?? null, ['0.1.4', '0.1.5', '0.1.6'], true)
+        || ($task['job'] ?? null) !== 'synthesize') {
+        return $artifact;
+    }
+
+    $rawPath = is_string($artifact['path'] ?? null) ? $artifact['path'] : '';
+    $taskRoot = realpath(hub_task_result_dir($taskId));
+    clearstatcache(true, $rawPath);
+    $rawStat = $rawPath === '' || is_link($rawPath) || !is_file($rawPath) ? false : lstat($rawPath);
+    $path = $rawStat === false ? false : realpath($rawPath);
+    if ($taskRoot === false || $path === false || !str_starts_with($path, $taskRoot . DIRECTORY_SEPARATOR)
+        || !is_array($rawStat) || (((int)$rawStat['mode'] & 0170000) !== 0100000)
+        || (int)($rawStat['nlink'] ?? 0) !== 1) {
+        throw new InvalidArgumentException('validated_artifact_invalid');
+    }
+    $contents = file_get_contents($path);
+    if (!is_string($contents)
+        || strlen($contents) !== (int)($artifact['size_bytes'] ?? -1)
+        || !is_string($artifact['sha256'] ?? null)
+        || !hash_equals($artifact['sha256'], hash('sha256', $contents))) {
+        throw new InvalidArgumentException('validated_artifact_invalid');
+    }
+    try {
+        $metadata = json_decode($contents, true, 64, JSON_THROW_ON_ERROR);
+    } catch (JsonException) {
+        throw new InvalidArgumentException('validated_artifact_invalid');
+    }
+    if (!is_array($metadata) || array_is_list($metadata)) {
+        throw new InvalidArgumentException('validated_artifact_invalid');
+    }
+
+    $changed = false;
+    $model = $metadata['model'] ?? null;
+    if (is_array($model) && array_key_exists('model', $model)) {
+        if ($model['model'] !== '/models/voxcpm2/model') {
+            throw new InvalidArgumentException('validated_artifact_invalid');
+        }
+        unset($model['model']);
+        $metadata['model'] = $model;
+        $changed = true;
+    }
+    $voice = $metadata['voice_context'] ?? null;
+    if (is_array($voice) && array_key_exists('container_path', $voice)) {
+        if ($voice['container_path'] !== '/data/voice_profiles/reference.wav'
+            || !is_string($voice['sha256'] ?? null)
+            || preg_match('/^[a-f0-9]{64}$/', $voice['sha256']) !== 1) {
+            throw new InvalidArgumentException('validated_artifact_invalid');
+        }
+        $legacySha256 = $voice['sha256'];
+        unset($voice['sha256']);
+        if (!hash_equals(hash('sha256', hub_voxcpm2_metadata_canonical_json($voice)), $legacySha256)) {
+            throw new InvalidArgumentException('validated_artifact_invalid');
+        }
+        unset($voice['container_path']);
+        $voice['sha256'] = hash('sha256', hub_voxcpm2_metadata_canonical_json($voice));
+        $metadata['voice_context'] = $voice;
+        $changed = true;
+    }
+    if (!$changed) {
+        return $artifact;
+    }
+    if (!is_array($metadata['model'] ?? null)
+        || array_key_exists('model', $metadata['model'])
+        || !is_array($metadata['voice_context'] ?? null)
+        || array_key_exists('container_path', $metadata['voice_context'])) {
+        throw new InvalidArgumentException('validated_artifact_invalid');
+    }
+
+    $publicJson = hub_voxcpm2_metadata_canonical_json($metadata) . PHP_EOL;
+    $temporary = $path . '.public.' . bin2hex(random_bytes(8));
+    try {
+        if (file_put_contents($temporary, $publicJson, LOCK_EX) === false || !chmod($temporary, 0640)) {
+            throw new RuntimeException('validated_artifact_invalid');
+        }
+        if (!@rename($temporary, $path)) {
+            if (!unlink($path) || !rename($temporary, $path)) {
+                throw new RuntimeException('validated_artifact_invalid');
+            }
+        }
+    } finally {
+        if (is_file($temporary)) {
+            unlink($temporary);
+        }
+    }
+    clearstatcache(true, $path);
+    $stat = lstat($path);
+    if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
+        throw new InvalidArgumentException('validated_artifact_invalid');
+    }
+    $artifact['size_bytes'] = strlen($publicJson);
+    $artifact['sha256'] = hash('sha256', $publicJson);
+    if (array_key_exists('device', $artifact)) {
+        $artifact['device'] = (int)$stat['dev'];
+    }
+    if (array_key_exists('inode', $artifact)) {
+        $artifact['inode'] = (int)$stat['ino'];
+    }
+
+    return $artifact;
+}
+
 function hub_register_validated_pack_job_artifact(PDO $db, int $taskId, array $artifact): int
 {
+    $artifact = hub_voxcpm2_public_metadata_artifact($db, $taskId, $artifact);
     $metadata = json_encode($artifact['metadata'] ?? [], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     if (!is_string($artifact['name'] ?? null) || !is_string($artifact['artifact_type'] ?? null) || !is_string($artifact['path'] ?? null)
         || !is_string($artifact['mime_type'] ?? null) || !is_string($artifact['sha256'] ?? null) || $metadata === false
@@ -3561,6 +3696,9 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
+    }
+    foreach ($publishedArtifacts as $index => $artifact) {
+        $publishedArtifacts[$index] = hub_voxcpm2_public_metadata_artifact($db, $taskId, $artifact);
     }
     try {
         hub_revalidate_published_pack_job_artifacts($taskId, $publishedArtifacts);

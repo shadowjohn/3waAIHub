@@ -221,28 +221,70 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract, ?
     if ($source !== null && !copy($source, $workspace . '/input/source')) {
         throw new RuntimeException('source_copy_failed');
     }
-    $json = json_encode($request, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
     $requestPath = $workspace . '/input/request.json';
-    if ($json === false || file_put_contents($requestPath, $json . PHP_EOL, LOCK_EX) === false
-        || ($hasPrivatePrompt && !chmod($requestPath, 0600))) {
+    if ($hasPrivatePrompt && (is_link($requestPath) || is_file($requestPath))) {
+        if (!unlink($requestPath)) {
+            throw new RuntimeException('workspace_unavailable');
+        }
+    } elseif ($hasPrivatePrompt && file_exists($requestPath)) {
         throw new RuntimeException('workspace_unavailable');
     }
     $runnerConfig = hub_pack_job_runner_config_for_task($contract, $input);
     if ($runnerConfig !== null) {
+        $runnerConfigPath = $workspace . '/input/runner_config.json';
+        if (is_link($runnerConfigPath) || (file_exists($runnerConfigPath) && !is_file($runnerConfigPath))) {
+            throw new RuntimeException('workspace_unavailable');
+        }
         $json = json_encode($runnerConfig, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        if ($json === false || file_put_contents($workspace . '/input/runner_config.json', $json . PHP_EOL, LOCK_EX) === false) {
+        if ($json === false || file_put_contents($runnerConfigPath, $json . PHP_EOL, LOCK_EX) === false) {
             throw new RuntimeException('workspace_unavailable');
         }
     }
+    $json = json_encode($request, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    if (!$hasPrivatePrompt) {
+        if ($json === false || file_put_contents($requestPath, $json . PHP_EOL, LOCK_EX) === false) {
+            throw new RuntimeException('workspace_unavailable');
+        }
 
-    return $workspace;
+        return $workspace;
+    }
+    try {
+        $temporaryPath = $workspace . '/input/request.private.' . bin2hex(random_bytes(8));
+    } catch (Throwable) {
+        throw new RuntimeException('workspace_unavailable');
+    }
+    if ($json !== false
+        && file_put_contents($temporaryPath, $json . PHP_EOL, LOCK_EX) !== false
+        && chmod($temporaryPath, 0600)
+        && rename($temporaryPath, $requestPath)) {
+        return $workspace;
+    }
+    if (is_file($temporaryPath)) {
+        unlink($temporaryPath);
+    }
+    if (is_link($requestPath) || is_file($requestPath)) {
+        unlink($requestPath);
+    }
+    throw new RuntimeException('workspace_unavailable');
 }
 
 function hub_pack_job_scrub_private_prompt(string $workspace): void
 {
     $input = realpath($workspace . '/input');
     $requestPath = $workspace . '/input/request.json';
-    if ($input === false || $input !== $workspace . '/input' || is_link($requestPath) || !is_file($requestPath)) {
+    if ($input === false || $input !== $workspace . '/input') {
+        throw new RuntimeException('workspace_privacy_cleanup_failed');
+    }
+    if (is_link($requestPath)) {
+        if (!unlink($requestPath)) {
+            throw new RuntimeException('workspace_privacy_cleanup_failed');
+        }
+        return;
+    }
+    if (!file_exists($requestPath)) {
+        return;
+    }
+    if (!is_file($requestPath)) {
         throw new RuntimeException('workspace_privacy_cleanup_failed');
     }
     try {
@@ -1120,6 +1162,13 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
     $pidInspector = null;
     $details = [];
     $cleanup = null;
+    $privatePromptWorkspace = null;
+    $scrubPrivatePrompt = static function () use (&$privatePromptWorkspace): void {
+        if ($privatePromptWorkspace !== null) {
+            hub_pack_job_scrub_private_prompt($privatePromptWorkspace);
+            $privatePromptWorkspace = null;
+        }
+    };
     try {
         try {
             $resolutionTask = $task;
@@ -1191,6 +1240,9 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $hasPrivatePrompt = isset($voiceProfileMount['prompt_text']);
         $workspace = hub_pack_job_prepare_workspace($db, $task, $contract, $voiceProfileMount);
+        if ($hasPrivatePrompt) {
+            $privatePromptWorkspace = $workspace;
+        }
         if ($voiceProfileMount !== null) {
             unset($voiceProfileMount['prompt_text']);
         }
@@ -1212,10 +1264,12 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         // A baseline is needed for GPU recovery but is not proof that this executor owned no process.
         $details['has_process_evidence'] = false;
         if (!hub_pack_job_record_execution($db, $task, $run, $gpuLease, $details)) {
+            $scrubPrivatePrompt();
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, $details, $pidInspector, $gpuLease);
         }
         $startedRun = hub_pack_job_begin_execution($db, $task, $run, $runner, $gpuLease);
         if ($startedRun === null) {
+            $scrubPrivatePrompt();
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, $details, $pidInspector, $gpuLease);
         }
         $run = $startedRun;
@@ -1235,9 +1289,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         try {
             $result = $executor($context);
         } finally {
-            if ($hasPrivatePrompt) {
-                hub_pack_job_scrub_private_prompt($workspace);
-            }
+            $scrubPrivatePrompt();
         }
         if (!is_array($result)) {
             throw new RuntimeException('runtime_execution_invalid');
@@ -1279,6 +1331,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         return ['status' => (string)($latest['status'] ?? (($final['ok'] ?? false) ? 'success' : 'failed'))] + $final;
     } catch (Throwable $e) {
+        $scrubPrivatePrompt();
         if (hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds) === 'fence_lost') {
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, $started, $context, $details, $pidInspector, $gpuLease, $cleanup);
         }
@@ -1294,5 +1347,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             $cleanup,
             $gpuLease
         );
+    } finally {
+        $scrubPrivatePrompt();
     }
 }

@@ -36,8 +36,31 @@ function hub_normalize_voice_profile_ref(string|int $value): int
 function hub_voice_profile_safe_host_path(string $path): ?string
 {
     $root = realpath(hub_voice_profile_storage_dir());
-    $real = realpath($path);
-    if ($root === false || $real === false || !is_file($real)) {
+    if ($root === false || $path === '' || !str_starts_with($path, $root . DIRECTORY_SEPARATOR)) {
+        return null;
+    }
+
+    $candidate = $root;
+    $parts = explode(DIRECTORY_SEPARATOR, substr($path, strlen($root) + 1));
+    foreach ($parts as $index => $part) {
+        if ($part === '' || $part === '.' || $part === '..') {
+            return null;
+        }
+        $candidate .= DIRECTORY_SEPARATOR . $part;
+        clearstatcache(true, $candidate);
+        if (is_link($candidate)) {
+            return null;
+        }
+        if ($index < count($parts) - 1 && !is_dir($candidate)) {
+            return null;
+        }
+    }
+    if (!is_file($candidate)) {
+        return null;
+    }
+    $stat = lstat($candidate);
+    $real = realpath($candidate);
+    if ($real === false || !is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000)) {
         return null;
     }
 
@@ -928,8 +951,16 @@ function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100
         "SELECT id, owner_member_id, reference_audio_path, deleted_at
          FROM voice_profiles
          WHERE expires_at IS NOT NULL AND expires_at <= :now
-           AND (deleted_at IS NULL OR reference_audio_path <> '')
-         ORDER BY expires_at ASC, id ASC
+           AND (
+               deleted_at IS NULL
+               OR reference_audio_path <> ''
+               OR reference_audio_sha256 <> ''
+               OR prompt_text IS NOT NULL
+               OR prompt_text_confirmed_at IS NOT NULL
+               OR language IS NOT NULL
+               OR name <> 'Expired voice profile'
+           )
+         ORDER BY updated_at ASC, expires_at ASC, id ASC
          LIMIT :limit"
     );
     $stmt->bindValue(':now', $now, PDO::PARAM_STR);
@@ -947,22 +978,31 @@ function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100
         $unsafeAudio = $rawPath !== '' && $managedAudio === null && (file_exists($rawPath) || is_link($rawPath));
         try {
             if (empty($profile['deleted_at'])) {
-                $deleted = hub_soft_delete_voice_profile($db, $profileId, (int)$profile['owner_member_id'], $managedAudio !== null);
+                hub_soft_delete_voice_profile($db, $profileId, (int)$profile['owner_member_id'], false);
                 $profilesDeleted++;
-                if (!empty($deleted['audio_cleanup_failed'])) {
-                    throw new RuntimeException('voice_profile_audio_cleanup_failed');
-                }
-                if ($managedAudio !== null) {
-                    $audioPurged++;
-                }
-            } elseif ($managedAudio !== null) {
+            }
+            $scrub = $db->prepare(
+                "UPDATE voice_profiles
+                 SET name = 'Expired voice profile',
+                     reference_audio_sha256 = '',
+                     prompt_text = NULL,
+                     prompt_text_confirmed_at = NULL,
+                     language = NULL,
+                     updated_at = :updated_at
+                 WHERE id = :id AND deleted_at IS NOT NULL"
+            );
+            $scrub->execute([':updated_at' => $now, ':id' => $profileId]);
+            if ($scrub->rowCount() !== 1) {
+                throw new RuntimeException('voice_profile_cleanup_conflict');
+            }
+            if ($unsafeAudio) {
+                throw new RuntimeException('voice_profile_audio_path_rejected');
+            }
+            if ($managedAudio !== null) {
                 if (!unlink($managedAudio)) {
                     throw new RuntimeException('voice_profile_audio_cleanup_failed');
                 }
                 $audioPurged++;
-            }
-            if ($unsafeAudio) {
-                throw new RuntimeException('voice_profile_audio_path_rejected');
             }
             $clear = $db->prepare(
                 "UPDATE voice_profiles
@@ -974,6 +1014,11 @@ function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100
                 throw new RuntimeException('voice_profile_cleanup_conflict');
             }
         } catch (Throwable) {
+            $touch = $db->prepare(
+                'UPDATE voice_profiles SET updated_at = :updated_at
+                 WHERE id = :id AND expires_at IS NOT NULL AND expires_at <= :expires_at'
+            );
+            $touch->execute([':updated_at' => $now, ':id' => $profileId, ':expires_at' => $now]);
             $errors++;
         }
     }

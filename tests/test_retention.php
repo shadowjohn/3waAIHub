@@ -509,15 +509,23 @@ hub_test('retention expires a handle-lost voice profile and removes its managed 
     $memberId = hub_create_api_member($db, 'Expired voice profile owner');
     $path = hub_voice_profile_storage_dir() . '/expired-handle-lost.wav';
     file_put_contents($path, 'RIFFexpired-handle-lost', LOCK_EX);
+    $privatePrompt = 'Private expired voice transcript.';
     $profileId = hub_create_voice_profile($db, $memberId, [
         'name' => 'Expired handle-lost profile',
         'reference_audio_path' => $path,
+        'prompt_text' => $privatePrompt,
+        'language' => 'zh-TW',
         'consent_type' => 'self_recorded',
         'expires_at' => '2026-07-19 23:59:59',
     ]);
+    hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $privatePrompt);
 
     $result = hub_prune_retention($db, '2026-07-20 00:00:00');
-    $stmt = $db->prepare('SELECT deleted_at, reference_audio_path, source_task_id FROM voice_profiles WHERE id = :id');
+    $stmt = $db->prepare(
+        'SELECT deleted_at, reference_audio_path, reference_audio_sha256, prompt_text,
+                prompt_text_confirmed_at, language, name, source_task_id
+         FROM voice_profiles WHERE id = :id'
+    );
     $stmt->execute([':id' => $profileId]);
     $expired = $stmt->fetch();
 
@@ -525,9 +533,18 @@ hub_test('retention expires a handle-lost voice profile and removes its managed 
         $expired !== false
         && !empty($expired['deleted_at'])
         && ($expired['reference_audio_path'] ?? null) === ''
+        && ($expired['reference_audio_sha256'] ?? null) === ''
+        && ($expired['prompt_text'] ?? null) === null
+        && ($expired['prompt_text_confirmed_at'] ?? null) === null
+        && ($expired['language'] ?? null) === null
+        && ($expired['name'] ?? null) === 'Expired voice profile'
         && empty($expired['source_task_id'])
         && !file_exists($path),
         'expired profile cleanup must not depend on receiving or retaining a task handle'
+    );
+    hub_test_assert(
+        !str_contains(json_encode($expired, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $privatePrompt),
+        'expired profile cleanup must remove confirmed prompt plaintext and identifying voice metadata'
     );
     hub_test_assert(
         (int)($result['voice_profiles_deleted'] ?? 0) === 1
@@ -535,6 +552,141 @@ hub_test('retention expires a handle-lost voice profile and removes its managed 
         && (int)($result['voice_profile_errors'] ?? -1) === 0,
         'retention must report bounded profile and WAV cleanup without sensitive details'
     );
+});
+
+hub_test('expired voice profile cleanup never follows another Profile WAV symlink', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Symlink voice profile owner');
+    $root = hub_voice_profile_storage_dir();
+    $protectedPath = $root . '/protected-profile.wav';
+    $aliasSourcePath = $root . '/alias-source.wav';
+    $aliasPath = $root . '/expired-profile-link.wav';
+    file_put_contents($protectedPath, 'RIFFprotected-profile', LOCK_EX);
+    file_put_contents($aliasSourcePath, 'RIFFalias-source', LOCK_EX);
+    $protectedId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Protected profile',
+        'reference_audio_path' => $protectedPath,
+        'consent_type' => 'self_recorded',
+    ]);
+    $expiredId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Expired linked profile',
+        'reference_audio_path' => $aliasSourcePath,
+        'prompt_text' => 'Linked profile private prompt.',
+        'consent_type' => 'self_recorded',
+        'expires_at' => '2026-07-19 23:59:59',
+    ]);
+    if (!symlink($protectedPath, $aliasPath)) {
+        throw new RuntimeException('Cannot create voice profile symlink fixture.');
+    }
+    $db->prepare('UPDATE voice_profiles SET reference_audio_path = :path WHERE id = :id')
+        ->execute([':path' => $aliasPath, ':id' => $expiredId]);
+
+    try {
+        $result = hub_prune_expired_voice_profiles($db, '2026-07-20 00:00:00', 10);
+        $expired = $db->query('SELECT * FROM voice_profiles WHERE id = ' . $expiredId)->fetch();
+
+        hub_test_assert(
+            is_file($protectedPath)
+            && is_link($aliasPath)
+            && hub_get_voice_profile($db, $protectedId) !== null,
+            'cleanup must never follow an expired Profile symlink into another active Profile WAV'
+        );
+        hub_test_assert(
+            $expired !== false
+            && !empty($expired['deleted_at'])
+            && ($expired['reference_audio_path'] ?? null) === $aliasPath
+            && ($expired['prompt_text'] ?? null) === null
+            && (int)($result['errors'] ?? 0) === 1,
+            'unsafe linked audio must remain retryable while private database material is scrubbed'
+        );
+    } finally {
+        if (is_link($aliasPath)) {
+            unlink($aliasPath);
+        }
+        if (is_file($aliasSourcePath)) {
+            unlink($aliasSourcePath);
+        }
+    }
+});
+
+hub_test('expired voice profile cleanup rotates permanent failures past the batch limit', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Voice cleanup rotation owner');
+    $root = hub_voice_profile_storage_dir();
+    $protectedPath = $root . '/rotation-protected.wav';
+    $aliasPath = $root . '/rotation-blocker-link.wav';
+    file_put_contents($protectedPath, 'RIFFrotation-protected', LOCK_EX);
+    $protectedId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Rotation protected profile',
+        'reference_audio_path' => $protectedPath,
+        'consent_type' => 'self_recorded',
+    ]);
+    if (!symlink($protectedPath, $aliasPath)) {
+        throw new RuntimeException('Cannot create cleanup rotation symlink fixture.');
+    }
+
+    try {
+        for ($index = 0; $index < 101; $index++) {
+            $sourcePath = $root . '/rotation-bad-' . $index . '.wav';
+            file_put_contents($sourcePath, 'RIFFrotation-bad-' . $index, LOCK_EX);
+            $profileId = hub_create_voice_profile($db, $memberId, [
+                'name' => 'Blocked expired profile ' . $index,
+                'reference_audio_path' => $sourcePath,
+                'prompt_text' => 'Blocked private prompt ' . $index,
+                'consent_type' => 'self_recorded',
+                'expires_at' => '2026-07-19 23:59:59',
+            ]);
+            $db->prepare(
+                'UPDATE voice_profiles
+                 SET reference_audio_path = :path, updated_at = :updated_at
+                 WHERE id = :id'
+            )->execute([
+                ':path' => $aliasPath,
+                ':updated_at' => '2026-07-01 00:00:00',
+                ':id' => $profileId,
+            ]);
+            unlink($sourcePath);
+        }
+
+        $validPath = $root . '/rotation-valid.wav';
+        file_put_contents($validPath, 'RIFFrotation-valid', LOCK_EX);
+        $validId = hub_create_voice_profile($db, $memberId, [
+            'name' => 'Later valid expired profile',
+            'reference_audio_path' => $validPath,
+            'prompt_text' => 'Later valid private prompt.',
+            'consent_type' => 'self_recorded',
+            'expires_at' => '2026-07-19 23:59:59',
+        ]);
+        $db->prepare('UPDATE voice_profiles SET updated_at = :updated_at WHERE id = :id')
+            ->execute([':updated_at' => '2026-07-01 00:00:00', ':id' => $validId]);
+
+        $first = hub_prune_expired_voice_profiles($db, '2026-07-20 00:00:00', 100);
+        hub_test_assert(
+            is_file($validPath) && (int)($first['errors'] ?? 0) === 100,
+            'the first bounded cleanup pass must report only its selected permanent failures'
+        );
+
+        $second = hub_prune_expired_voice_profiles($db, '2026-07-20 00:01:00', 100);
+        $valid = $db->query('SELECT * FROM voice_profiles WHERE id = ' . $validId)->fetch();
+        hub_test_assert(
+            $valid !== false
+            && !empty($valid['deleted_at'])
+            && ($valid['reference_audio_path'] ?? null) === ''
+            && !file_exists($validPath)
+            && (int)($second['audio_purged'] ?? 0) === 1,
+            'rotating failed rows must let a later valid expired Profile complete on a bounded successive pass'
+        );
+        hub_test_assert(
+            is_file($protectedPath)
+            && is_link($aliasPath)
+            && hub_get_voice_profile($db, $protectedId) !== null,
+            'retries must remain fail-closed and never delete the shared symlink target'
+        );
+    } finally {
+        if (is_link($aliasPath)) {
+            unlink($aliasPath);
+        }
+    }
 });
 
 hub_test('DocParser repair lineage retains parent metadata while queued or running', function (): void {
