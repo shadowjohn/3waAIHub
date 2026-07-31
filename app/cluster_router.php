@@ -1472,7 +1472,9 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $response = hub_cluster_router_proxy_response($transport($proxyRequest), $stationToken);
         }
         $payload = hub_cluster_router_json_payload($response);
-        if ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
+        if ($profileRoute !== null && !$selfStation && hub_cluster_router_is_local_proxy_error($response)) {
+            $response = hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable');
+        } elseif ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
             $response = $mode === 'voice_generate'
                 ? hub_cluster_voice_generate_relay_response($response, $payload)
                 : null;
@@ -2387,6 +2389,21 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
         || array_diff(array_keys($payload), $allowed) !== []
     ) {
         throw new UnexpectedValueException('invalid voice profile response');
+    }
+    if (($payload['profile_status'] ?? null) !== 'active') {
+        if (!$rules['profile_status']($payload['profile_status'] ?? null)) {
+            throw new UnexpectedValueException('invalid voice profile response');
+        }
+        $payload = array_replace($payload, [
+            'transcription_status' => 'failed',
+            'transcription_error' => null,
+            'transcript_confirmed' => false,
+            'prompt_text_confirmed_at' => null,
+            'profile_name' => ucfirst((string)$payload['profile_status']) . ' voice profile',
+            'language' => null,
+            'reference_audio_sha256' => '',
+        ]);
+        unset($payload['prompt_text']);
     }
     $safe = ['ok' => true];
     foreach ($rules as $key => $valid) {

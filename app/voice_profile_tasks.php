@@ -84,27 +84,28 @@ function hub_voice_profile_task_status_payload(PDO $db, array $task, array $prof
     $profileStatus = !empty($profile['deleted_at'])
         ? 'deleted'
         : ($expiresAt !== '' && (strtotime($expiresAt) ?: PHP_INT_MAX) <= time() ? 'expired' : 'active');
-    $confirmed = trim((string)($profile['prompt_text_confirmed_at'] ?? '')) !== '';
-    $transcriptionError = trim((string)($profile['transcription_error'] ?? ''));
+    $tombstone = $profileStatus !== 'active';
+    $confirmed = !$tombstone && trim((string)($profile['prompt_text_confirmed_at'] ?? '')) !== '';
+    $transcriptionError = $tombstone ? '' : trim((string)($profile['transcription_error'] ?? ''));
     $payload = [
         'ok' => true,
         'task_status' => (string)($task['status'] ?? ''),
         'profile_status' => $profileStatus,
-        'transcription_status' => (string)($profile['transcription_status'] ?? 'pending'),
+        'transcription_status' => $tombstone ? 'failed' : (string)($profile['transcription_status'] ?? 'pending'),
         'transcription_error' => $transcriptionError === ''
             ? null
             : hub_voice_profile_transcription_error_code($transcriptionError),
         'transcript_confirmed' => $confirmed,
         'prompt_text_confirmed_at' => $confirmed ? (string)$profile['prompt_text_confirmed_at'] : null,
-        'profile_name' => substr((string)($profile['name'] ?? ''), 0, 120),
-        'language' => trim((string)($profile['language'] ?? '')) === '' ? null : substr((string)$profile['language'], 0, 64),
+        'profile_name' => $tombstone ? ucfirst($profileStatus) . ' voice profile' : substr((string)($profile['name'] ?? ''), 0, 120),
+        'language' => $tombstone || trim((string)($profile['language'] ?? '')) === '' ? null : substr((string)$profile['language'], 0, 64),
         'consent_type' => substr((string)($profile['consent_type'] ?? ''), 0, 32),
-        'reference_audio_sha256' => (string)($profile['reference_audio_sha256'] ?? ''),
+        'reference_audio_sha256' => $tombstone ? '' : (string)($profile['reference_audio_sha256'] ?? ''),
         'created_at' => (string)($profile['created_at'] ?? ''),
         'updated_at' => (string)($profile['updated_at'] ?? ''),
     ];
     $promptText = trim((string)($profile['prompt_text'] ?? ''));
-    if ($includeDraft && !$confirmed && $promptText !== '') {
+    if (!$tombstone && $includeDraft && !$confirmed && $promptText !== '') {
         $payload['prompt_text'] = substr($promptText, 0, 20000);
     }
 

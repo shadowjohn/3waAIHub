@@ -421,6 +421,88 @@ hub_test('VoxCPM2 profile_status returns only the owned task-scoped safe profile
     });
 });
 
+hub_test('VoxCPM2 profile_status projects an unpruned expired Profile as a safe tombstone', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Expired Profile Status Owner');
+        $token = hub_create_api_token($db, $memberId, 'expired profile status token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $path = hub_voice_profile_storage_dir() . '/expired_profile_status.wav';
+        file_put_contents($path, 'RIFFexpired-status-secret');
+        $profileId = hub_create_voice_profile($db, $memberId, [
+            'name' => 'Private expired profile name',
+            'reference_audio_path' => $path,
+            'prompt_text' => 'private expired draft',
+            'language' => 'private-language',
+            'consent_type' => 'self_recorded',
+            'expires_at' => '2000-01-01 00:00:00',
+        ]);
+        $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '203.0.113.51', [
+            'owner_member_id' => $memberId,
+            'owner_token_id' => (int)$token['token_id'],
+            'requested_mode' => 'voice_generate',
+        ]);
+        $db->prepare('UPDATE voice_profiles
+                      SET source_task_id = :task_id, transcription_status = :status, transcription_error = :error
+                      WHERE id = :id')
+            ->execute([
+                ':task_id' => $taskId,
+                ':status' => 'failed',
+                ':error' => 'private transcription backend detail',
+                ':id' => $profileId,
+            ]);
+        $referenceSha256 = hash_file('sha256', $path);
+        $request = static function () use ($db, $token, $taskId): array {
+            $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+            return hub_test_audio_payload(hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_status',
+                'voice_profile_task_id' => (string)$taskId,
+            ]));
+        };
+        $assertTombstone = static function (array $payload) use ($referenceSha256): void {
+            $json = json_encode($payload, JSON_THROW_ON_ERROR);
+            hub_test_assert(
+                ($payload['profile_status'] ?? '') === 'expired'
+                && ($payload['transcription_status'] ?? '') === 'failed'
+                && array_key_exists('transcription_error', $payload)
+                && $payload['transcription_error'] === null
+                && ($payload['transcript_confirmed'] ?? null) === false
+                && array_key_exists('prompt_text_confirmed_at', $payload)
+                && $payload['prompt_text_confirmed_at'] === null
+                && ($payload['profile_name'] ?? '') === 'Expired voice profile'
+                && array_key_exists('language', $payload)
+                && $payload['language'] === null
+                && ($payload['reference_audio_sha256'] ?? null) === ''
+                && !array_key_exists('prompt_text', $payload)
+                && !str_contains($json, 'Private expired profile name')
+                && !str_contains($json, 'private expired draft')
+                && !str_contains($json, 'private-language')
+                && !str_contains($json, $referenceSha256)
+                && !str_contains($json, 'asr_failed'),
+                'expired profile_status must return only the safe tombstone projection'
+            );
+        };
+
+        $assertTombstone($request());
+        $db->prepare('UPDATE voice_profiles SET prompt_text_confirmed_at = :confirmed_at WHERE id = :id')
+            ->execute([':confirmed_at' => '1999-12-31 23:59:59', ':id' => $profileId]);
+        $assertTombstone($request());
+
+        $stored = $db->query('SELECT * FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+        hub_test_assert(
+            is_array($stored)
+            && empty($stored['deleted_at'])
+            && ($stored['prompt_text'] ?? '') === 'private expired draft'
+            && ($stored['name'] ?? '') === 'Private expired profile name'
+            && ($stored['prompt_text_confirmed_at'] ?? '') === '1999-12-31 23:59:59',
+            'profile_status must not prune or mutate the expired Profile row'
+        );
+    });
+});
+
 hub_test('VoxCPM2 voice profile public helpers keep their approved signatures', function (): void {
     $upload = new ReflectionFunction('hub_create_uploaded_voice_profile');
     $uploadParameters = $upload->getParameters();

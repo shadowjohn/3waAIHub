@@ -3117,6 +3117,127 @@ hub_test('cluster router relays only the bounded native profile transcription er
     }
 });
 
+hub_test('cluster router projects an unpruned expired Profile response as a safe tombstone', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'expired_profile_origin',
+            'station_token' => 'expired_profile_origin_token',
+        ]);
+        $path = hub_voice_profile_storage_dir() . '/cluster_expired_profile_status.wav';
+        file_put_contents($path, 'RIFFcluster-expired-status-secret');
+        $profileId = hub_create_voice_profile($db, (int)$fixture['member_id'], [
+            'name' => 'Cluster private expired profile',
+            'reference_audio_path' => $path,
+            'prompt_text' => 'cluster private expired draft',
+            'language' => 'cluster-private-language',
+            'consent_type' => 'explicit_permission',
+            'expires_at' => '2000-01-01 00:00:00',
+        ]);
+        $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '203.0.113.10', [
+            'owner_member_id' => (int)$fixture['member_id'],
+            'owner_token_id' => (int)$fixture['customer']['token_id'],
+            'requested_mode' => 'voice_generate',
+        ]);
+        $db->prepare('UPDATE voice_profiles
+                      SET source_task_id = :task_id, transcription_status = :status, transcription_error = :error
+                      WHERE id = :id')
+            ->execute([
+                ':task_id' => $taskId,
+                ':status' => 'failed',
+                ':error' => 'cluster private transcription detail',
+                ':id' => $profileId,
+            ]);
+        $db->prepare('UPDATE cluster_routes SET remote_task_id = :task_id WHERE route_id = :route_id')
+            ->execute([':task_id' => (string)$taskId, ':route_id' => $fixture['route_id']]);
+        $inventory = hub_test_cluster_station_fixture([
+            'id' => (int)$fixture['station']['id'],
+            'station_key' => 'expired_profile_origin',
+            'modes' => ['voice_generate'],
+        ]);
+        $request = hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+            'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+            'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'],
+        ]);
+        $calls = 0;
+        $dispatch = static function () use ($db, $request, $inventory, $profileId, $taskId, &$calls): array {
+            return hub_cluster_dispatch($db, 'voice_generate', $request, [
+                'refresh_due' => static fn (): array => [$inventory],
+                'transport' => static function (array $request) use ($db, $profileId, $taskId, &$calls): array {
+                    $calls++;
+                    hub_test_assert(
+                        str_contains((string)($request['body'] ?? ''), 'voice_profile_task_id=' . $taskId),
+                        'Cluster must address the persisted child profile task'
+                    );
+                    $profile = $db->query('SELECT * FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+                    $task = hub_get_task($db, $taskId);
+                    $confirmed = trim((string)($profile['prompt_text_confirmed_at'] ?? '')) !== '';
+                    $payload = [
+                        'ok' => true,
+                        'task_status' => (string)($task['status'] ?? ''),
+                        'profile_status' => 'expired',
+                        'transcription_status' => (string)$profile['transcription_status'],
+                        'transcription_error' => hub_voice_profile_transcription_error_code($profile['transcription_error'] ?? null),
+                        'transcript_confirmed' => $confirmed,
+                        'prompt_text_confirmed_at' => $confirmed ? (string)$profile['prompt_text_confirmed_at'] : null,
+                        'profile_name' => (string)$profile['name'],
+                        'language' => (string)$profile['language'],
+                        'consent_type' => (string)$profile['consent_type'],
+                        'reference_audio_sha256' => (string)$profile['reference_audio_sha256'],
+                        'created_at' => (string)$profile['created_at'],
+                        'updated_at' => (string)$profile['updated_at'],
+                    ];
+                    if (!$confirmed) {
+                        $payload['prompt_text'] = (string)$profile['prompt_text'];
+                    }
+                    return hub_gateway_json(200, $payload);
+                },
+            ]);
+        };
+        $referenceSha256 = hash_file('sha256', $path);
+        $assertTombstone = static function (array $response) use ($referenceSha256): void {
+            $payload = json_decode((string)$response['body'], true, 64, JSON_THROW_ON_ERROR);
+            $json = json_encode($payload, JSON_THROW_ON_ERROR);
+            hub_test_assert(
+                $response['status'] === 200
+                && ($payload['profile_status'] ?? '') === 'expired'
+                && ($payload['transcription_status'] ?? '') === 'failed'
+                && array_key_exists('transcription_error', $payload)
+                && $payload['transcription_error'] === null
+                && ($payload['transcript_confirmed'] ?? null) === false
+                && array_key_exists('prompt_text_confirmed_at', $payload)
+                && $payload['prompt_text_confirmed_at'] === null
+                && ($payload['profile_name'] ?? '') === 'Expired voice profile'
+                && array_key_exists('language', $payload)
+                && $payload['language'] === null
+                && ($payload['reference_audio_sha256'] ?? null) === ''
+                && !array_key_exists('prompt_text', $payload)
+                && !str_contains($json, 'Cluster private expired profile')
+                && !str_contains($json, 'cluster private expired draft')
+                && !str_contains($json, 'cluster-private-language')
+                && !str_contains($json, $referenceSha256)
+                && !str_contains($json, 'asr_failed'),
+                'Cluster expired profile_status must return only the safe tombstone projection'
+            );
+        };
+
+        $assertTombstone($dispatch());
+        $db->prepare('UPDATE voice_profiles SET prompt_text_confirmed_at = :confirmed_at WHERE id = :id')
+            ->execute([':confirmed_at' => '1999-12-31 23:59:59', ':id' => $profileId]);
+        $assertTombstone($dispatch());
+        hub_test_assert($calls === 2, 'Cluster must query only the pinned expired Profile origin');
+
+        $stored = $db->query('SELECT * FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+        hub_test_assert(
+            is_array($stored)
+            && empty($stored['deleted_at'])
+            && ($stored['prompt_text'] ?? '') === 'cluster private expired draft',
+            'Cluster status projection must not prune or mutate the expired Profile row'
+        );
+    });
+});
+
 hub_test('cluster router fails closed on malformed successful voice profile responses', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
@@ -3567,6 +3688,62 @@ hub_test('cluster router rejects foreign or unavailable profile routes before pi
             },
         ]);
         hub_test_assert($crossMode['status'] === 404 && str_contains($crossMode['body'], 'profile_task_not_found'), 'voice profile task handles must not influence another Router mode');
+    });
+});
+
+hub_test('cluster router maps pinned profile cURL failures to station unavailable without failover', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        if (!function_exists('curl_init')) {
+            hub_test_skip('pinned profile transport test requires cURL');
+        }
+
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_curl_failure',
+            'station_token' => 'profile_curl_failure_token',
+            'internal_base_url' => 'http://127.0.0.1:1/aihub',
+        ], '86420');
+        $other = hub_test_cluster_router_station($db, [
+            'station_key' => 'profile_curl_fallback',
+            'station_token' => 'profile_curl_fallback_token',
+            'modes' => ['voice_generate'],
+        ]);
+        $calls = 0;
+
+        $response = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request(
+            (string)$fixture['customer']['plain_token'],
+            [
+                'headers' => ['Content-Type' => 'application/x-www-form-urlencoded'],
+                'raw_body' => 'operation=profile_status&voice_profile_task_id=' . $fixture['route_id'],
+            ]
+        ), [
+            'refresh_due' => static fn (): array => [
+                hub_test_cluster_station_fixture([
+                    'id' => (int)$other['id'],
+                    'station_key' => 'profile_curl_fallback',
+                    'priority' => 99,
+                    'modes' => ['voice_generate'],
+                ]),
+                hub_test_cluster_station_fixture([
+                    'id' => (int)$fixture['station']['id'],
+                    'station_key' => 'profile_curl_failure',
+                    'modes' => ['voice_generate'],
+                ]),
+            ],
+            'transport' => static function (array $request) use (&$calls): array {
+                $calls++;
+                return hub_cluster_proxy_transport($request);
+            },
+        ]);
+
+        hub_test_assert(
+            $response['status'] === 503
+            && str_contains($response['body'], 'station_unavailable')
+            && !str_contains($response['body'], 'router_proxy_failed')
+            && $calls === 1,
+            'pinned Profile cURL failures must return station_unavailable without trying another station'
+        );
     });
 });
 
