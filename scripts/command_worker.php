@@ -80,6 +80,7 @@ function hub_execute_command_job(PDO $db, array $job): array
         'service_start', 'service_install' => hub_start_service_with_job($db, $service, $job),
         'service_build' => hub_build_service($db, $service, $job),
         'service_stop' => hub_stop_service($db, $service),
+        'service_remove' => hub_remove_service($db, $service, $job),
         'service_restart' => hub_restart_service($db, $service),
         'service_rebuild' => hub_build_service($db, $service, $job),
         'service_logs_collect' => hub_tail_service_logs($db, $service),

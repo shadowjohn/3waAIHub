@@ -140,3 +140,404 @@ hub_test('PhaseP-1 service removal action and active-job guard are explicit', fu
     hub_test_assert(hub_service_has_active_command_job($db, (int)$service['id']) === true, 'queued command must make service busy');
     hub_test_assert(hub_service_has_active_command_job($db, (int)$service['id'], $jobId) === false, 'current removal job must be excludable from its own busy check');
 });
+
+hub_test('PhaseP-1 service removal queue admission is exclusive', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+    $removeThenStartRejected = false;
+    try {
+        hub_enqueue_command_job($db, 'service_start', (int)$service['id'], [], null, '127.0.0.1');
+    } catch (RuntimeException) {
+        $removeThenStartRejected = true;
+    }
+    hub_test_assert($removeThenStartRejected, 'service start must not queue behind removal');
+
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_enqueue_command_job($db, 'service_start', (int)$service['id'], [], null, '127.0.0.1');
+    $startThenRemoveRejected = false;
+    try {
+        hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+    } catch (RuntimeException) {
+        $startThenRemoveRejected = true;
+    }
+    hub_test_assert($startThenRemoveRejected, 'service removal must not queue behind another service command');
+
+    hub_test_assert(hub_enqueue_command_job($db, 'env_probe', null, [], null, '127.0.0.1') > 0, 'service-less commands must remain queueable');
+});
+
+hub_test('PhaseP-1 service removal stops only an idle stopped service and preserves unrelated files', function (): void {
+    $dir = sys_get_temp_dir() . '/3waaihub_remove_' . bin2hex(random_bytes(4));
+    $bin = $dir . '/bin';
+    $log = $dir . '/docker.log';
+    mkdir($bin, 0775, true);
+    file_put_contents($bin . '/docker', <<<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
+case " $* " in
+  *" down "*)
+    [ -f "$MOCK_COMPOSE_PATH" ] && [ -f "$MOCK_ENV_PATH" ] || exit 12
+    [ "${MOCK_DOCKER_DOWN_FAILURE:-0}" = 1 ] && exit 1
+    if [ "${MOCK_SWAP_COMPOSE_AFTER_DOWN:-0}" = 1 ]; then
+      mv "$MOCK_COMPOSE_PATH" "$MOCK_COMPOSE_PATH.after-down" || exit 13
+      ln -s "$MOCK_COMPOSE_PATH.after-down" "$MOCK_COMPOSE_PATH" || exit 14
+    fi
+    ;;
+esac
+exit 0
+SH
+    );
+    chmod($bin . '/docker', 0755);
+    $path = getenv('PATH');
+
+    try {
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        putenv('MOCK_DOCKER_LOG=' . $log);
+
+        $db = hub_test_reset_db();
+        $service = hub_get_service_by_mode($db, 'hello');
+        hub_test_assert($service !== null, 'hello service missing');
+        $composePath = hub_path((string)$service['compose_file']);
+        $envPath = dirname($composePath) . '/.env';
+        $artifactPath = dirname($composePath) . '/artifact.keep';
+        $pack = hub_get_pack((string)$service['pack_id']);
+        hub_test_assert($pack !== null, 'hello HubPack missing');
+        file_put_contents($artifactPath, 'keep');
+        $ownerMemberId = hub_create_api_member($db, 'Removal Artifact Owner');
+        $artifactMapping = $db->prepare(
+            'INSERT INTO playground_tts_artifacts (filename, service_id, owner_member_id, request_id, created_at, updated_at)
+             VALUES (:filename, :service_id, :owner_member_id, :request_id, :created_at, :updated_at)'
+        );
+        $artifactMapping->execute([
+            ':filename' => 'tts_preserved.wav',
+            ':service_id' => (int)$service['id'],
+            ':owner_member_id' => $ownerMemberId,
+            ':request_id' => 'req_service_removal',
+            ':created_at' => hub_now(),
+            ':updated_at' => hub_now(),
+        ]);
+        $artifactMappingId = (int)$db->lastInsertId();
+        $serviceLog = $db->prepare(
+            'INSERT INTO service_logs (service_id, action, output, exit_code, created_at)
+             VALUES (:service_id, :action, :output, :exit_code, :created_at)'
+        );
+        $serviceLog->execute([
+            ':service_id' => (int)$service['id'],
+            ':action' => 'history',
+            ':output' => 'preserve',
+            ':exit_code' => 0,
+            ':created_at' => hub_now(),
+        ]);
+        $serviceLogId = (int)$db->lastInsertId();
+        hub_test_assert(hub_service_generated_runtime_files($db, $service) === [$composePath, $envPath], 'generated runtime files must match the service compose and env paths');
+        $unmanaged = $service;
+        $unmanaged['service_key'] = '';
+        hub_test_assert(hub_service_generated_runtime_files($db, $unmanaged) === null, 'missing service key must not produce a generated runtime cleanup target');
+        putenv('MOCK_COMPOSE_PATH=' . $composePath);
+        putenv('MOCK_ENV_PATH=' . $envPath);
+        $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+
+        $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+        $commands = file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+
+        hub_test_assert($result['exit_code'] === 0, 'idle stopped service removal must succeed');
+        hub_test_assert(count($commands) === 1 && str_contains($commands[0], ' down '), 'service removal must run docker compose down');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) === null, 'removed service must be deleted from registration');
+        hub_test_assert(!file_exists($composePath) && !file_exists($envPath), 'generated compose and env files must be deleted');
+        hub_test_assert(file_exists($artifactPath) && is_dir((string)$pack['dir']), 'service artifact and HubPack must remain');
+        $mapping = $db->query('SELECT service_id, owner_member_id FROM playground_tts_artifacts WHERE id = ' . $artifactMappingId)->fetch();
+        hub_test_assert($mapping !== false && $mapping['service_id'] === null && (int)$mapping['owner_member_id'] === $ownerMemberId, 'playground artifact mapping must survive with its service reference cleared');
+        $serviceLog = $db->query('SELECT service_id, action, output, exit_code FROM service_logs WHERE id = ' . $serviceLogId)->fetch();
+        hub_test_assert($serviceLog !== false && $serviceLog['service_id'] === null && $serviceLog['action'] === 'history' && $serviceLog['output'] === 'preserve' && (int)$serviceLog['exit_code'] === 0, 'service history must survive with its service reference cleared');
+
+        $db = hub_test_reset_db();
+        $service = hub_get_service_by_mode($db, 'hello');
+        hub_update_service_status($db, (int)$service['id'], 'running');
+        $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+        $result = hub_remove_service($db, hub_get_service($db, (int)$service['id']), hub_get_command_job($db, $jobId));
+
+        hub_test_assert(($result['error_code'] ?? '') === 'service_not_stopped', 'running service removal must be rejected');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'running service must remain registered');
+        hub_test_assert(count(file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) === 1, 'Docker must not run for a running service');
+
+        $db = hub_test_reset_db();
+        $service = hub_get_service_by_mode($db, 'hello');
+        hub_enqueue_command_job($db, 'service_start', (int)$service['id'], [], null, '127.0.0.1');
+        $result = hub_remove_service($db, $service, ['id' => 0]);
+
+        hub_test_assert(($result['error_code'] ?? '') === 'service_job_active', 'busy service removal must be rejected');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'busy service must remain registered');
+        hub_test_assert(count(file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) === 1, 'Docker must not run for a busy service');
+
+        $db = hub_test_reset_db();
+        $service = hub_get_service_by_mode($db, 'hello');
+        $composePath = hub_path((string)$service['compose_file']);
+        $envPath = dirname($composePath) . '/.env';
+        $artifactPath = dirname($composePath) . '/artifact.keep';
+        file_put_contents($artifactPath, 'keep');
+        putenv('MOCK_COMPOSE_PATH=' . $composePath);
+        putenv('MOCK_ENV_PATH=' . $envPath);
+        putenv('MOCK_DOCKER_DOWN_FAILURE=1');
+        $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+
+        $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+
+        hub_test_assert($result['exit_code'] !== 0, 'failed docker down must fail service removal');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'failed docker down must keep the service registration');
+        hub_test_assert(file_exists($composePath) && file_exists($envPath) && file_exists($artifactPath), 'failed docker down must keep generated and artifact files');
+
+        putenv('MOCK_DOCKER_DOWN_FAILURE=0');
+        putenv('MOCK_SWAP_COMPOSE_AFTER_DOWN=1');
+        $db = hub_test_reset_db();
+        $service = hub_get_service_by_mode($db, 'hello');
+        $composePath = hub_path((string)$service['compose_file']);
+        $envPath = dirname($composePath) . '/.env';
+        putenv('MOCK_COMPOSE_PATH=' . $composePath);
+        putenv('MOCK_ENV_PATH=' . $envPath);
+        $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+
+        $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+
+        hub_test_assert(($result['error_code'] ?? '') === 'service_runtime_unmanaged', 'runtime paths changed during docker down must block cleanup');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'runtime paths changed during docker down must preserve registration');
+        hub_test_assert(is_link($composePath) && file_exists($envPath), 'runtime paths changed during docker down must remain untouched');
+        unlink($composePath);
+        rename($composePath . '.after-down', $composePath);
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        if (isset($composePath) && is_file($composePath . '.after-down')) {
+            if (is_link($composePath)) {
+                unlink($composePath);
+            }
+            if (!file_exists($composePath)) {
+                rename($composePath . '.after-down', $composePath);
+            }
+        }
+        putenv('MOCK_DOCKER_LOG');
+        putenv('MOCK_COMPOSE_PATH');
+        putenv('MOCK_ENV_PATH');
+        putenv('MOCK_DOCKER_DOWN_FAILURE');
+        putenv('MOCK_SWAP_COMPOSE_AFTER_DOWN');
+        @unlink($bin . '/docker');
+        @unlink($log);
+        @rmdir($bin);
+        @rmdir($dir);
+    }
+});
+
+hub_test('PhaseP-1 playground TTS artifact migration preserves rows and owner references', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    $ownerMemberId = hub_create_api_member($db, 'Legacy Artifact Owner');
+    $db->exec('DROP TABLE playground_tts_artifacts');
+    $db->exec(<<<'SQL'
+CREATE TABLE playground_tts_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    service_id INTEGER NOT NULL,
+    owner_member_id INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(service_id, filename),
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE
+)
+SQL);
+    $db->prepare(
+        'INSERT INTO playground_tts_artifacts (filename, service_id, owner_member_id, request_id, created_at, updated_at)
+         VALUES (:filename, :service_id, :owner_member_id, :request_id, :created_at, :updated_at)'
+    )->execute([
+        ':filename' => 'tts_legacy.wav',
+        ':service_id' => (int)$service['id'],
+        ':owner_member_id' => $ownerMemberId,
+        ':request_id' => 'req_legacy_artifact',
+        ':created_at' => hub_now(),
+        ':updated_at' => hub_now(),
+    ]);
+    $artifactId = (int)$db->lastInsertId();
+    $db->exec('DROP TABLE service_logs');
+    $db->exec(<<<'SQL'
+CREATE TABLE service_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    output TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE
+)
+SQL);
+    $db->exec('CREATE INDEX idx_legacy_service_logs_action ON service_logs(action)');
+    $db->prepare(
+        'INSERT INTO service_logs (service_id, action, output, exit_code, created_at)
+         VALUES (:service_id, :action, :output, :exit_code, :created_at)'
+    )->execute([
+        ':service_id' => (int)$service['id'],
+        ':action' => 'legacy_history',
+        ':output' => 'legacy output',
+        ':exit_code' => 7,
+        ':created_at' => hub_now(),
+    ]);
+    $serviceLogId = (int)$db->lastInsertId();
+
+    hub_migrate($db);
+    hub_migrate($db);
+
+    $foreignKeys = $db->query('PRAGMA foreign_key_list(playground_tts_artifacts)')->fetchAll();
+    $serviceKey = array_values(array_filter($foreignKeys, static fn (array $key): bool => $key['from'] === 'service_id'))[0] ?? null;
+    $ownerKey = array_values(array_filter($foreignKeys, static fn (array $key): bool => $key['from'] === 'owner_member_id'))[0] ?? null;
+    hub_test_assert(($serviceKey['on_delete'] ?? '') === 'SET NULL' && ($ownerKey['on_delete'] ?? '') === 'CASCADE', 'artifact migration must preserve owner FK and replace service cascade');
+    hub_test_assert((int)($db->query('PRAGMA table_info(playground_tts_artifacts)')->fetchAll()[2]['notnull'] ?? 1) === 0, 'artifact service reference must be nullable');
+    $serviceLogForeignKeys = $db->query('PRAGMA foreign_key_list(service_logs)')->fetchAll();
+    $serviceLogKey = array_values(array_filter($serviceLogForeignKeys, static fn (array $key): bool => $key['from'] === 'service_id'))[0] ?? null;
+    $serviceLogColumns = array_column($db->query('PRAGMA table_info(service_logs)')->fetchAll(), null, 'name');
+    hub_test_assert(($serviceLogKey['on_delete'] ?? '') === 'SET NULL' && (int)($serviceLogColumns['service_id']['notnull'] ?? 1) === 0, 'service log migration must replace service cascade with a nullable reference');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_legacy_service_logs_action'")->fetchColumn() === 1, 'service log migration must preserve explicit indexes');
+
+    $db->prepare('DELETE FROM services WHERE id = :id')->execute([':id' => (int)$service['id']]);
+    $mapping = $db->query('SELECT service_id, owner_member_id FROM playground_tts_artifacts WHERE id = ' . $artifactId)->fetch();
+    hub_test_assert($mapping !== false && $mapping['service_id'] === null && (int)$mapping['owner_member_id'] === $ownerMemberId, 'artifact migration must preserve rows when their service is removed');
+    $serviceLog = $db->query('SELECT service_id, action, output, exit_code FROM service_logs WHERE id = ' . $serviceLogId)->fetch();
+    hub_test_assert($serviceLog !== false && $serviceLog['service_id'] === null && $serviceLog['action'] === 'legacy_history' && $serviceLog['output'] === 'legacy output' && (int)$serviceLog['exit_code'] === 7, 'service log migration must preserve rows when their service is removed');
+});
+
+hub_test('PhaseP-1 service removal rejects symlinked generated files before Docker', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    $composePath = hub_path((string)$service['compose_file']);
+    $composeTarget = $composePath . '.target';
+    $dir = sys_get_temp_dir() . '/3waaihub_remove_link_' . bin2hex(random_bytes(4));
+    $bin = $dir . '/bin';
+    $log = $dir . '/docker.log';
+    mkdir($bin, 0775, true);
+    file_put_contents($bin . '/docker', "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$log\"\n");
+    chmod($bin . '/docker', 0755);
+    $path = getenv('PATH');
+    $linked = false;
+
+    try {
+        if (!rename($composePath, $composeTarget) || !@symlink($composeTarget, $composePath)) {
+            if (is_file($composeTarget) && !file_exists($composePath)) {
+                rename($composeTarget, $composePath);
+            }
+            hub_test_skip('Symlink fixture is unavailable.');
+        }
+        $linked = true;
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+
+        $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+
+        hub_test_assert(($result['error_code'] ?? '') === 'service_runtime_unmanaged', 'symlinked generated files must block removal');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'symlinked generated files must preserve registration');
+        hub_test_assert(!file_exists($log), 'symlinked generated files must block Docker execution');
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        if ($linked && is_link($composePath)) {
+            unlink($composePath);
+        }
+        if (is_file($composeTarget) && !file_exists($composePath)) {
+            rename($composeTarget, $composePath);
+        }
+        @unlink($bin . '/docker');
+        @unlink($log);
+        @rmdir($bin);
+        @rmdir($dir);
+    }
+});
+
+hub_test('PhaseP-1 service removal rejects a symlinked runtime directory before Docker', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    $runtimeDir = hub_pack_runtime_dir($db, (string)$service['service_key']);
+    $runtimeTarget = $runtimeDir . '.target';
+    $dir = sys_get_temp_dir() . '/3waaihub_remove_runtime_link_' . bin2hex(random_bytes(4));
+    $bin = $dir . '/bin';
+    $log = $dir . '/docker.log';
+    mkdir($bin, 0775, true);
+    file_put_contents($bin . '/docker', "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$log\"\n");
+    chmod($bin . '/docker', 0755);
+    $path = getenv('PATH');
+    $linked = false;
+
+    try {
+        if (!rename($runtimeDir, $runtimeTarget) || !@symlink($runtimeTarget, $runtimeDir)) {
+            if (is_dir($runtimeTarget) && !file_exists($runtimeDir)) {
+                rename($runtimeTarget, $runtimeDir);
+            }
+            hub_test_skip('Symlink fixture is unavailable.');
+        }
+        $linked = true;
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+
+        $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+
+        hub_test_assert(($result['error_code'] ?? '') === 'service_runtime_unmanaged', 'symlinked runtime directories must block removal');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'symlinked runtime directories must preserve registration');
+        hub_test_assert(!file_exists($log), 'symlinked runtime directories must block Docker execution');
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        if ($linked && is_link($runtimeDir)) {
+            unlink($runtimeDir);
+        }
+        if (is_dir($runtimeTarget) && !file_exists($runtimeDir)) {
+            rename($runtimeTarget, $runtimeDir);
+        }
+        @unlink($bin . '/docker');
+        @unlink($log);
+        @rmdir($bin);
+        @rmdir($dir);
+    }
+});
+
+hub_test('PhaseP-1 service removal accepts a symlinked runtime base with normal child files', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    $runtimeBase = hub_pack_runtime_base_dir($db);
+    $runtimeBaseTarget = $runtimeBase . '.target';
+    $composePath = hub_path((string)$service['compose_file']);
+    $envPath = dirname($composePath) . '/.env';
+    $dir = sys_get_temp_dir() . '/3waaihub_remove_base_link_' . bin2hex(random_bytes(4));
+    $bin = $dir . '/bin';
+    $log = $dir . '/docker.log';
+    mkdir($bin, 0775, true);
+    file_put_contents($bin . '/docker', "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$log\"\n");
+    chmod($bin . '/docker', 0755);
+    $path = getenv('PATH');
+    $linked = false;
+
+    try {
+        if (!rename($runtimeBase, $runtimeBaseTarget) || !@symlink($runtimeBaseTarget, $runtimeBase)) {
+            if (is_dir($runtimeBaseTarget) && !file_exists($runtimeBase)) {
+                rename($runtimeBaseTarget, $runtimeBase);
+            }
+            hub_test_skip('Symlink fixture is unavailable.');
+        }
+        $linked = true;
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        hub_test_assert(hub_service_generated_runtime_files($db, $service) === [$composePath, $envPath], 'a symlinked runtime base must allow normal generated child files');
+        $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+
+        $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+        $commands = file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+
+        hub_test_assert($result['exit_code'] === 0, 'a symlinked runtime base must allow service removal');
+        hub_test_assert(count($commands) === 1 && str_contains($commands[0], ' down '), 'a symlinked runtime base must still run docker compose down');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) === null, 'a symlinked runtime base must allow registration deletion');
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        if ($linked && is_link($runtimeBase)) {
+            unlink($runtimeBase);
+        }
+        if (is_dir($runtimeBaseTarget) && !file_exists($runtimeBase)) {
+            rename($runtimeBaseTarget, $runtimeBase);
+        }
+        @unlink($bin . '/docker');
+        @unlink($log);
+        @rmdir($bin);
+        @rmdir($dir);
+    }
+});

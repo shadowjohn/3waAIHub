@@ -75,32 +75,71 @@ function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array
     if (!hub_is_valid_job_action($action)) {
         throw new InvalidArgumentException('Invalid command action.');
     }
-    if ($serviceId !== null && !hub_get_service($db, $serviceId)) {
-        throw new InvalidArgumentException('Service not found.');
-    }
 
     $now = hub_now();
-    $stmt = $db->prepare(
-        'INSERT INTO command_jobs
-            (action, service_id, args_json, status, progress, stage, current_message, requested_by, requested_ip, created_at, updated_at)
-         VALUES
-            (:action, :service_id, :args_json, :status, :progress, :stage, :current_message, :requested_by, :requested_ip, :created_at, :updated_at)'
-    );
-    $stmt->execute([
-        ':action' => $action,
-        ':service_id' => $serviceId,
-        ':args_json' => json_encode($args, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
-        ':status' => 'queued',
-        ':progress' => 0,
-        ':stage' => 'queued',
-        ':current_message' => 'Queued.',
-        ':requested_by' => $requestedBy,
-        ':requested_ip' => $requestedIp,
-        ':created_at' => $now,
-        ':updated_at' => $now,
-    ]);
+    $insert = static function () use ($db, $action, $serviceId, $args, $requestedBy, $requestedIp, $now): int {
+        $stmt = $db->prepare(
+            'INSERT INTO command_jobs
+                (action, service_id, args_json, status, progress, stage, current_message, requested_by, requested_ip, created_at, updated_at)
+             VALUES
+                (:action, :service_id, :args_json, :status, :progress, :stage, :current_message, :requested_by, :requested_ip, :created_at, :updated_at)'
+        );
+        $stmt->execute([
+            ':action' => $action,
+            ':service_id' => $serviceId,
+            ':args_json' => json_encode($args, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ':status' => 'queued',
+            ':progress' => 0,
+            ':stage' => 'queued',
+            ':current_message' => 'Queued.',
+            ':requested_by' => $requestedBy,
+            ':requested_ip' => $requestedIp,
+            ':created_at' => $now,
+            ':updated_at' => $now,
+        ]);
 
-    return (int)$db->lastInsertId();
+        return (int)$db->lastInsertId();
+    };
+    if ($serviceId === null) {
+        return $insert();
+    }
+
+    $started = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $started = true;
+        if (!hub_get_service($db, $serviceId)) {
+            throw new InvalidArgumentException('Service not found.');
+        }
+        if ($action === 'service_remove') {
+            if (hub_service_has_active_command_job($db, $serviceId)) {
+                throw new RuntimeException('Cannot enqueue service removal while another service command is active.');
+            }
+        } else {
+            $removal = $db->prepare(
+                "SELECT 1 FROM command_jobs
+                 WHERE service_id = :service_id AND action = 'service_remove' AND status IN ('queued', 'running')
+                 LIMIT 1"
+            );
+            $removal->execute([':service_id' => $serviceId]);
+            if ($removal->fetchColumn() !== false) {
+                throw new RuntimeException('Cannot enqueue a service command while removal is active.');
+            }
+        }
+
+        $jobId = $insert();
+        $db->exec('COMMIT');
+        $started = false;
+        return $jobId;
+    } catch (Throwable $e) {
+        if ($started) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        throw $e;
+    }
 }
 
 function hub_get_command_job(PDO $db, int $id): ?array

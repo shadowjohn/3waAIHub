@@ -81,12 +81,12 @@ CREATE TABLE IF NOT EXISTS services (
 
 CREATE TABLE IF NOT EXISTS service_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    service_id INTEGER NOT NULL,
+    service_id INTEGER NULL,
     action TEXT NOT NULL,
     output TEXT NOT NULL,
     exit_code INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS settings (
@@ -399,13 +399,13 @@ CREATE TABLE IF NOT EXISTS voice_profile_audit_logs (
 CREATE TABLE IF NOT EXISTS playground_tts_artifacts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     filename TEXT NOT NULL,
-    service_id INTEGER NOT NULL,
+    service_id INTEGER NULL,
     owner_member_id INTEGER NOT NULL,
     request_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(service_id, filename),
-    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL,
     FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE
 );
 
@@ -843,6 +843,8 @@ SQL);
     hub_add_column_if_missing($db, 'task_artifacts', 'purge_claimed_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'task_artifacts', 'download_claim_token', 'TEXT NULL');
     hub_add_column_if_missing($db, 'task_artifacts', 'download_claim_expires_at', 'TEXT NULL');
+    hub_migrate_service_logs_service_reference($db);
+    hub_migrate_playground_tts_artifacts_service_reference($db);
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_service_key ON services(service_key) WHERE service_key IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_services_local_port ON services(local_port) WHERE local_port IS NOT NULL');
     $db->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_service_ip_whitelists_unique ON service_ip_whitelists(service_id, ip_rule)');
@@ -962,6 +964,169 @@ SQL);
     $db->exec("UPDATE tasks SET status = 'timed_out' WHERE status = 'timeout'");
     if (function_exists('hub_cluster_node_reconcile_token_permissions')) {
         hub_cluster_node_reconcile_token_permissions($db);
+    }
+}
+
+function hub_migrate_service_logs_service_reference(PDO $db): void
+{
+    $columns = array_column($db->query('PRAGMA table_info(service_logs)')->fetchAll(), null, 'name');
+    $expectedColumns = ['id', 'service_id', 'action', 'output', 'exit_code', 'created_at'];
+    if (count($columns) !== count($expectedColumns) || array_diff($expectedColumns, array_keys($columns)) !== []) {
+        throw new RuntimeException('Service log schema is invalid.');
+    }
+    $serviceKey = null;
+    foreach ($db->query('PRAGMA foreign_key_list(service_logs)')->fetchAll() as $foreignKey) {
+        if (($foreignKey['from'] ?? '') === 'service_id') {
+            $serviceKey = $foreignKey;
+            break;
+        }
+    }
+    if (
+        (int)$columns['service_id']['notnull'] === 0
+        && ($serviceKey['table'] ?? '') === 'services'
+        && ($serviceKey['on_delete'] ?? '') === 'SET NULL'
+    ) {
+        return;
+    }
+    if ($db->inTransaction()) {
+        throw new RuntimeException('Service log migration requires no active transaction.');
+    }
+
+    $indexes = $db->query(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'service_logs' AND sql IS NOT NULL"
+    )->fetchAll(PDO::FETCH_COLUMN);
+    $foreignKeysEnabled = (int)$db->query('PRAGMA foreign_keys')->fetchColumn() === 1;
+    if ($foreignKeysEnabled) {
+        $db->exec('PRAGMA foreign_keys = OFF');
+    }
+
+    $started = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $started = true;
+        $db->exec(<<<'SQL'
+CREATE TABLE service_logs_rebuild (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_id INTEGER NULL,
+    action TEXT NOT NULL,
+    output TEXT NOT NULL,
+    exit_code INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL
+);
+
+INSERT INTO service_logs_rebuild (id, service_id, action, output, exit_code, created_at)
+SELECT id, service_id, action, output, exit_code, created_at
+FROM service_logs;
+
+DROP TABLE service_logs;
+ALTER TABLE service_logs_rebuild RENAME TO service_logs;
+SQL);
+        foreach ($indexes as $indexSql) {
+            $db->exec((string)$indexSql);
+        }
+        $db->exec('COMMIT');
+        $started = false;
+    } catch (Throwable $e) {
+        if ($started) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        throw $e;
+    } finally {
+        if ($foreignKeysEnabled) {
+            $db->exec('PRAGMA foreign_keys = ON');
+        }
+    }
+}
+
+function hub_migrate_playground_tts_artifacts_service_reference(PDO $db): void
+{
+    $columns = array_column($db->query('PRAGMA table_info(playground_tts_artifacts)')->fetchAll(), null, 'name');
+    foreach (['id', 'filename', 'service_id', 'owner_member_id', 'request_id', 'created_at', 'updated_at'] as $column) {
+        if (!isset($columns[$column])) {
+            throw new RuntimeException('Playground TTS artifact schema is invalid.');
+        }
+    }
+    $foreignKeys = $db->query('PRAGMA foreign_key_list(playground_tts_artifacts)')->fetchAll();
+    $serviceKey = null;
+    $ownerKey = null;
+    foreach ($foreignKeys as $foreignKey) {
+        if (($foreignKey['from'] ?? '') === 'service_id') {
+            $serviceKey = $foreignKey;
+        }
+        if (($foreignKey['from'] ?? '') === 'owner_member_id') {
+            $ownerKey = $foreignKey;
+        }
+    }
+    if (
+        (int)$columns['service_id']['notnull'] === 0
+        && ($serviceKey['table'] ?? '') === 'services'
+        && ($serviceKey['on_delete'] ?? '') === 'SET NULL'
+        && ($ownerKey['table'] ?? '') === 'api_members'
+        && ($ownerKey['on_delete'] ?? '') === 'CASCADE'
+    ) {
+        return;
+    }
+    if ($db->inTransaction()) {
+        throw new RuntimeException('Playground TTS artifact migration requires no active transaction.');
+    }
+
+    $indexes = $db->query(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'playground_tts_artifacts' AND sql IS NOT NULL"
+    )->fetchAll(PDO::FETCH_COLUMN);
+    $foreignKeysEnabled = (int)$db->query('PRAGMA foreign_keys')->fetchColumn() === 1;
+    if ($foreignKeysEnabled) {
+        $db->exec('PRAGMA foreign_keys = OFF');
+    }
+
+    $started = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $started = true;
+        $db->exec(<<<'SQL'
+CREATE TABLE playground_tts_artifacts_rebuild (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT NOT NULL,
+    service_id INTEGER NULL,
+    owner_member_id INTEGER NOT NULL,
+    request_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(service_id, filename),
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE SET NULL,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE
+);
+
+INSERT INTO playground_tts_artifacts_rebuild (
+    id, filename, service_id, owner_member_id, request_id, created_at, updated_at
+)
+SELECT
+    id, filename, service_id, owner_member_id, request_id, created_at, updated_at
+FROM playground_tts_artifacts;
+
+DROP TABLE playground_tts_artifacts;
+ALTER TABLE playground_tts_artifacts_rebuild RENAME TO playground_tts_artifacts;
+SQL);
+        foreach ($indexes as $indexSql) {
+            $db->exec((string)$indexSql);
+        }
+        $db->exec('COMMIT');
+        $started = false;
+    } catch (Throwable $e) {
+        if ($started) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        throw $e;
+    } finally {
+        if ($foreignKeysEnabled) {
+            $db->exec('PRAGMA foreign_keys = ON');
+        }
     }
 }
 

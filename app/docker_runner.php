@@ -588,7 +588,7 @@ function hub_refresh_service_runtime_files(PDO $db, array $service): array
     return hub_get_service($db, (int)$service['id']) ?: $service;
 }
 
-function hub_stop_service(PDO $db, array $service): array
+function hub_stop_service(PDO $db, array $service, ?array $job = null): array
 {
     if (hub_service_is_internal_task($service)) {
         $result = hub_internal_task_result('internal_task stop no-op');
@@ -603,7 +603,8 @@ function hub_stop_service(PDO $db, array $service): array
         return $unsupported;
     }
 
-    $result = hub_run_service_compose_command($db, null, $service, ['down', '--timeout', '5'], 10, 'docker_down', 0, 0);
+    hub_job_progress($db, $job, 'docker_down', 10, 'Stopping container.');
+    $result = hub_run_service_compose_command($db, $job, $service, ['down', '--timeout', '5'], 10, 'docker_down', 10, 80);
     hub_add_service_log($db, (int)$service['id'], 'stop', $result['output'], (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
         hub_set_service_enabled($db, $service['mode'], false);
@@ -613,6 +614,118 @@ function hub_stop_service(PDO $db, array $service): array
     }
 
     return $result;
+}
+
+function hub_service_removal_block_reason(PDO $db, array $service, ?int $excludingJobId = null): ?string
+{
+    if ((string)($service['runtime_status'] ?? $service['status'] ?? '') !== 'stopped') {
+        return 'service_not_stopped';
+    }
+
+    return hub_service_has_active_command_job($db, (int)$service['id'], $excludingJobId) ? 'service_job_active' : null;
+}
+
+function hub_service_generated_runtime_files(PDO $db, array $service): ?array
+{
+    $serviceKey = (string)($service['service_key'] ?? '');
+    if ($serviceKey === '') {
+        return null;
+    }
+
+    $composeFile = (string)($service['compose_file'] ?? '');
+    if ($composeFile !== hub_pack_compose_file($db, $serviceKey)) {
+        return null;
+    }
+
+    $composePath = hub_path($composeFile);
+    $runtimeDir = hub_pack_runtime_dir($db, $serviceKey);
+    $runtimeBase = hub_pack_runtime_base_dir($db);
+    $realRuntimeBase = realpath($runtimeBase);
+    $realRuntimeDir = realpath($runtimeDir);
+    if (
+        dirname($composePath) !== $runtimeDir
+        || $realRuntimeBase === false
+        || $realRuntimeDir === false
+        || !is_dir($realRuntimeBase)
+        || !is_dir($realRuntimeDir)
+        || is_link($runtimeDir)
+        || hub_storage_paths_equal($realRuntimeDir, $realRuntimeBase)
+        || !hub_storage_path_is_within($realRuntimeDir, $realRuntimeBase)
+    ) {
+        return null;
+    }
+
+    $envPath = $runtimeDir . '/.env';
+    foreach ([$composePath, $envPath] as $path) {
+        clearstatcache(true, $path);
+        $realPath = realpath($path);
+        if (
+            is_link($path)
+            || !is_file($path)
+            || $realPath === false
+            || !hub_storage_paths_equal(dirname($realPath), $realRuntimeDir)
+        ) {
+            return null;
+        }
+    }
+
+    return [$composePath, $envPath];
+}
+
+function hub_remove_service(PDO $db, array $service, array $job): array
+{
+    $jobId = isset($job['id']) ? (int)$job['id'] : null;
+    $blockReason = hub_service_removal_block_reason($db, $service, $jobId);
+    if ($blockReason !== null) {
+        hub_job_progress($db, $job, 'validate_removal', 5, 'Service removal blocked: ' . $blockReason);
+        return ['exit_code' => 2, 'stdout' => '', 'stderr' => $blockReason, 'output' => $blockReason, 'error_code' => $blockReason];
+    }
+
+    $runtimeFiles = hub_service_generated_runtime_files($db, $service);
+    if ($runtimeFiles === null) {
+        return [
+            'exit_code' => 2,
+            'stdout' => '',
+            'stderr' => 'Service runtime files are not managed.',
+            'output' => 'Service runtime files are not managed.',
+            'error_code' => 'service_runtime_unmanaged',
+        ];
+    }
+
+    hub_job_progress($db, $job, 'validate_removal', 5, 'Validating generated runtime files.');
+    $result = hub_stop_service($db, $service, $job);
+    if ((int)$result['exit_code'] !== 0) {
+        return $result;
+    }
+
+    $runtimeFiles = hub_service_generated_runtime_files($db, $service);
+    if ($runtimeFiles === null) {
+        return [
+            'exit_code' => 2,
+            'stdout' => '',
+            'stderr' => 'Service runtime files are not managed.',
+            'output' => 'Service runtime files are not managed.',
+            'error_code' => 'service_runtime_unmanaged',
+        ];
+    }
+
+    hub_job_progress($db, $job, 'remove_runtime_files', 85, 'Removing generated runtime files.');
+    foreach ($runtimeFiles as $path) {
+        if (is_file($path) && !unlink($path)) {
+            return [
+                'exit_code' => 2,
+                'stdout' => '',
+                'stderr' => 'Cannot remove generated runtime file.',
+                'output' => 'Cannot remove generated runtime file.',
+                'error_code' => 'service_runtime_cleanup_failed',
+            ];
+        }
+    }
+
+    hub_job_progress($db, $job, 'remove_service', 95, 'Removing service registration.');
+    $db->prepare('DELETE FROM services WHERE id = :id')->execute([':id' => (int)$service['id']]);
+
+    return ['exit_code' => 0, 'stdout' => 'Service removed.', 'stderr' => '', 'output' => 'Service removed.'];
 }
 
 function hub_restart_service(PDO $db, array $service): array
