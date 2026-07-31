@@ -138,6 +138,22 @@ hub_test('local dashboard expires old metrics and exposes read-only release iden
     hub_test_assert($model['summary']['pack_compatible'] === true, 'local Pack inventory is compatible with itself');
 });
 
+hub_test('local dashboard masks only explicitly unavailable GPU metrics', function (): void {
+    $db = hub_test_reset_db();
+    hub_save_host_metric_snapshot($db, [
+        'gpu' => ['available' => false, 'util_percent' => 73, 'temperature_c' => 66],
+    ]);
+
+    $unavailable = hub_admin_dashboard_model($db, [])['summary']['gpu'];
+    hub_test_assert(!array_key_exists('util_percent', $unavailable) && !array_key_exists('temperature_c', $unavailable), 'explicit unavailable local GPU metrics must not reach Dashboard cards');
+
+    hub_save_host_metric_snapshot($db, [
+        'gpu' => ['util_percent' => 73, 'temperature_c' => 66],
+    ]);
+    $legacy = hub_admin_dashboard_model($db, [])['summary']['gpu'];
+    hub_test_assert($legacy['util_percent'] === 73 && $legacy['temperature_c'] === 66, 'legacy local GPU metrics without availability must remain visible');
+});
+
 hub_test('dashboard GPU history readers keep only recent local and child samples', function (): void {
     hub_test_admin_dashboard_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

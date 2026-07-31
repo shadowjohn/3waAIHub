@@ -96,6 +96,9 @@ function hub_admin_dashboard_local_summary(array $local): array
     $snapshot = is_array($local['metrics_snapshot'] ?? null) ? $local['metrics_snapshot'] : [];
     $metrics = is_array($snapshot['data'] ?? null) ? $snapshot['data'] : [];
     $gpu = is_array($metrics['gpu'] ?? null) ? $metrics['gpu'] : [];
+    if (($gpu['available'] ?? null) === false) {
+        unset($gpu['util_percent'], $gpu['temperature_c']);
+    }
     $host = is_array($metrics['host'] ?? null) ? $metrics['host'] : [];
     $docker = is_array($metrics['docker'] ?? null) ? $metrics['docker'] : [];
     $storage = is_array($metrics['storage'] ?? null) ? $metrics['storage'] : [];
