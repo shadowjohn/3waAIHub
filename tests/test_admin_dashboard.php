@@ -226,6 +226,44 @@ hub_test('successful GPU probe omits unavailable values instead of charting zero
     hub_test_assert($valid['util_percent'] === 42 && $valid['memory_used_mb'] === 4096 && $valid['temperature_c'] === 67, 'valid GPU values must remain numeric');
 });
 
+hub_test('dashboard rejects invalid persisted GPU metrics', function (): void {
+    $db = hub_test_reset_db();
+    hub_save_host_metric_snapshot($db, [
+        'gpu' => [
+            'available' => true,
+            'util_percent' => 101,
+            'temperature_c' => '1e20',
+            'memory_total_mb' => '1000000001',
+            'memory_used_mb' => -1,
+            'memory_free_mb' => '1e20',
+        ],
+    ]);
+    $localGpu = hub_admin_dashboard_model($db, [])['summary']['gpu'];
+    foreach (['util_percent', 'temperature_c', 'memory_total_mb', 'memory_used_mb', 'memory_free_mb'] as $field) {
+        hub_test_assert(!array_key_exists($field, $localGpu), 'invalid persisted local GPU metric must remain unknown: ' . $field);
+    }
+
+    $recentAt = date('Y-m-d H:i:s', time() - 60);
+    $history = hub_admin_dashboard_gpu_history_rows([
+        ['sampled_at' => $recentAt, 'gpu' => ['available' => true, 'temperature_c' => '1e20', 'memory_used_mb' => -1]],
+    ]);
+    hub_test_assert($history === ['temperature' => [], 'vram_used' => []], 'invalid persisted GPU history values must not chart');
+
+    $child = hub_admin_dashboard_station_summary([
+        'display_name' => 'Invalid GPU Node',
+        'gpu' => [
+            'available' => true,
+            'util_percent' => 101,
+            'temperature_c' => -1,
+            'memory_total_mb' => '1e20',
+            'memory_used_mb' => '1000000001',
+        ],
+    ])['gpu'];
+    foreach (['util_percent', 'temperature_c', 'memory_total_mb', 'memory_used_mb'] as $field) {
+        hub_test_assert(!array_key_exists($field, $child), 'invalid persisted child GPU metric must remain unknown: ' . $field);
+    }
+});
+
 hub_test('dashboard GPU history readers keep only recent local and child samples', function (): void {
     hub_test_admin_dashboard_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

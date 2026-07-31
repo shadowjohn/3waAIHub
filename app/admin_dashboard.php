@@ -95,7 +95,7 @@ function hub_admin_dashboard_local_summary(array $local): array
 {
     $snapshot = is_array($local['metrics_snapshot'] ?? null) ? $local['metrics_snapshot'] : [];
     $metrics = is_array($snapshot['data'] ?? null) ? $snapshot['data'] : [];
-    $gpu = is_array($metrics['gpu'] ?? null) ? $metrics['gpu'] : [];
+    $gpu = hub_admin_dashboard_sanitize_gpu(is_array($metrics['gpu'] ?? null) ? $metrics['gpu'] : []);
     if (($gpu['available'] ?? null) === false) {
         unset($gpu['util_percent'], $gpu['temperature_c'], $gpu['memory_total_mb'], $gpu['memory_used_mb'], $gpu['memory_free_mb']);
     }
@@ -137,6 +137,45 @@ function hub_admin_dashboard_local_summary(array $local): array
         'runtime' => $local['runtime'],
         'recent_jobs' => $local['recent_jobs'],
     ];
+}
+
+function hub_admin_dashboard_gpu_metric_value(mixed $value, string $field): ?int
+{
+    $ranges = [
+        'util_percent' => [0, 100],
+        'memory_total_mb' => [0, 1_000_000_000],
+        'memory_used_mb' => [0, 1_000_000_000],
+        'memory_free_mb' => [0, 1_000_000_000],
+        'temperature_c' => [0, 150],
+    ];
+    if (!isset($ranges[$field]) || !is_numeric($value) || !is_finite((float)$value)) {
+        return null;
+    }
+
+    [$minimum, $maximum] = $ranges[$field];
+    $numeric = (float)$value;
+    if ($numeric < $minimum || $numeric > $maximum) {
+        return null;
+    }
+
+    return (int)$numeric;
+}
+
+function hub_admin_dashboard_sanitize_gpu(array $gpu): array
+{
+    foreach (['util_percent', 'memory_total_mb', 'memory_used_mb', 'memory_free_mb', 'temperature_c'] as $field) {
+        if (!array_key_exists($field, $gpu)) {
+            continue;
+        }
+        $value = hub_admin_dashboard_gpu_metric_value($gpu[$field], $field);
+        if ($value === null) {
+            unset($gpu[$field]);
+            continue;
+        }
+        $gpu[$field] = $value;
+    }
+
+    return $gpu;
 }
 
 function hub_admin_dashboard_local_gpu_history(PDO $db, string $since): array
@@ -216,8 +255,8 @@ function hub_admin_dashboard_gpu_history_rows(iterable $samples): array
             continue;
         }
         foreach (['temperature_c' => 'temperature', 'memory_used_mb' => 'vram_used'] as $field => $series) {
-            $value = $gpu[$field] ?? null;
-            if (!is_numeric($value) || !is_finite((float)$value)) {
+            $value = hub_admin_dashboard_gpu_metric_value($gpu[$field] ?? null, $field);
+            if ($value === null) {
                 continue;
             }
             $history[$series][] = [
@@ -234,17 +273,20 @@ function hub_admin_dashboard_gpu_history_rows(iterable $samples): array
 function hub_admin_dashboard_station_summary(array $station): array
 {
     $hasRawGpu = is_array($station['gpu'] ?? null);
-    $gpu = $hasRawGpu ? $station['gpu'] : [];
+    $gpu = $hasRawGpu ? hub_admin_dashboard_sanitize_gpu($station['gpu']) : [];
     $totalValue = $hasRawGpu ? ($gpu['memory_total_mb'] ?? null) : ($station['gpu_total_vram_mb'] ?? null);
-    $totalVram = is_numeric($totalValue) && is_finite((float)$totalValue) && (float)$totalValue > 0
-        ? (int)$totalValue
-        : null;
+    $totalVram = hub_admin_dashboard_gpu_metric_value($totalValue, 'memory_total_mb');
+    if ($totalVram === 0) {
+        $totalVram = null;
+    }
     $freeValue = $hasRawGpu ? ($gpu['memory_free_mb'] ?? null) : ($station['gpu_free_vram_mb'] ?? null);
-    $freeVram = $totalVram !== null && is_numeric($freeValue)
-        ? min($totalVram, max(0, (int)$freeValue))
+    $freeVramValue = hub_admin_dashboard_gpu_metric_value($freeValue, 'memory_free_mb');
+    $freeVram = $totalVram !== null && $freeVramValue !== null
+        ? min($totalVram, $freeVramValue)
         : null;
-    $usedVram = $totalVram !== null && is_numeric($gpu['memory_used_mb'] ?? null)
-        ? min($totalVram, max(0, (int)$gpu['memory_used_mb']))
+    $usedVramValue = hub_admin_dashboard_gpu_metric_value($gpu['memory_used_mb'] ?? null, 'memory_used_mb');
+    $usedVram = $totalVram !== null && $usedVramValue !== null
+        ? min($totalVram, $usedVramValue)
         : ($freeVram === null ? null : max(0, $totalVram - $freeVram));
     $health = is_array($station['health'] ?? null) ? $station['health'] : [];
     $services = is_array($station['services'] ?? null) ? $station['services'] : [];
