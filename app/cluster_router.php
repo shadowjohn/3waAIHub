@@ -329,6 +329,9 @@ function hub_cluster_register_self_station(PDO $db): array
             hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME') !== ''
             && !hub_cluster_node_has_verified_router_peer($db, $tokenId, '127.0.0.1')
         ) {
+            if (hub_enabled_api_token_ip_rules($db, $tokenId) !== []) {
+                throw new RuntimeException('local cluster node is paired to another router');
+            }
             $stmt = $db->prepare('SELECT * FROM cluster_stations WHERE station_key = :station_key');
             $stmt->execute([':station_key' => (string)$pairing['station_key']]);
             $legacyStation = $stmt->fetch();

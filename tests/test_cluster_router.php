@@ -1833,6 +1833,78 @@ hub_test('cluster router refuses a legacy self station with a foreign token', fu
     });
 });
 
+hub_test('cluster router refuses a stale matching self station when an external Router rule exists', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'vision');
+            hub_cluster_node_configure($db, true, ['vision']);
+            $pairing = hub_cluster_node_pairing_descriptor($db);
+            hub_test_cluster_router_station($db, [
+                'station_key' => (string)$pairing['station_key'],
+                'display_name' => (string)$pairing['display_name'],
+                'public_base_url' => (string)$pairing['public_base_url'],
+                'internal_base_url' => null,
+                'station_token' => hub_cluster_node_reveal_token($db),
+                'modes' => $pairing['modes'],
+            ]);
+            $tokenId = hub_cluster_node_token_id($db);
+            hub_add_api_token_ip_rule($db, $tokenId, '198.51.100.44', 'cluster router');
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME', 'External Router');
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY', 'previous_self_station');
+
+            hub_test_assert(hub_test_throws(static fn (): array => hub_cluster_register_self_station($db)), 'legacy recovery must refuse any enabled external Router rule');
+            $rules = hub_enabled_api_token_ip_rules($db, $tokenId);
+            hub_test_assert(count($rules) === 1 && (string)$rules[0]['ip_rule'] === '198.51.100.44', 'rejected legacy recovery must preserve the external Router rule');
+            hub_test_assert(hub_get_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY') === 'previous_self_station', 'rejected legacy recovery must preserve the previous self station state');
+        });
+    });
+});
+
+hub_test('cluster router rolls back legacy self recovery after IP rule mutation fails', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'vision');
+            hub_cluster_node_configure($db, true, ['vision']);
+            $pairing = hub_cluster_node_pairing_descriptor($db);
+            hub_test_cluster_router_station($db, [
+                'station_key' => (string)$pairing['station_key'],
+                'display_name' => (string)$pairing['display_name'],
+                'public_base_url' => (string)$pairing['public_base_url'],
+                'internal_base_url' => null,
+                'station_token' => hub_cluster_node_reveal_token($db),
+                'modes' => $pairing['modes'],
+            ]);
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME', '3waAIHub Local');
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY', '');
+            $db->exec(
+                "CREATE TRIGGER fail_legacy_self_registration
+                 BEFORE UPDATE OF value ON settings
+                 WHEN OLD.key = 'AIHUB_CLUSTER_NODE_ROUTER_NAME'
+                 BEGIN
+                     SELECT RAISE(ABORT, 'forced registration failure');
+                 END"
+            );
+
+            try {
+                $failed = hub_test_throws(static fn (): array => hub_cluster_register_self_station($db));
+                $rules = hub_enabled_api_token_ip_rules($db, hub_cluster_node_token_id($db));
+                $routerName = hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ROUTER_NAME');
+                $selfKey = hub_get_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY');
+            } finally {
+                $db->exec('DROP TRIGGER IF EXISTS fail_legacy_self_registration');
+            }
+
+            hub_test_assert($failed, 'injected failure after loopback insertion must abort registration');
+            hub_test_assert($rules === [], 'failed registration must roll back the loopback IP rule');
+            hub_test_assert($routerName === '3waAIHub Local' && $selfKey === '', 'failed registration must restore Router pairing settings');
+        });
+    });
+});
+
 hub_test('cluster router local registration refuses a child paired to another router', function (): void {
     hub_test_with_cluster_secret(function (): void {
         hub_test_with_cluster_pair_url(function (): void {
