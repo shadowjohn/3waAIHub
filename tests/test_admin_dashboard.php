@@ -273,6 +273,18 @@ hub_test('child dashboard does not infer missing compact GPU memory metrics', fu
     });
 });
 
+hub_test('child dashboard masks compact GPU VRAM without capacity', function (): void {
+    $summary = hub_admin_dashboard_station_summary([
+        'display_name' => 'No Capacity GPU Node',
+        'gpu' => ['available' => true, 'memory_used_mb' => 1234, 'memory_free_mb' => 4096],
+    ]);
+
+    hub_test_assert($summary['gpu']['available'] === false, 'GPU without a capacity must not report VRAM availability');
+    foreach (['memory_total_mb', 'memory_used_mb', 'memory_free_mb'] as $field) {
+        hub_test_assert(!array_key_exists($field, $summary['gpu']), 'GPU without capacity must mask VRAM: ' . $field);
+    }
+});
+
 hub_test('child dashboard honors legacy and explicit GPU availability states', function (): void {
     hub_test_admin_dashboard_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
