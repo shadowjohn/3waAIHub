@@ -253,6 +253,7 @@ function hub_pack_job_write_private_request(
     string $json,
     ?callable $renamer = null,
     ?callable $unlinker = null,
+    ?callable $chmodder = null,
 ): void {
     $requestParent = dirname($requestPath);
     $input = realpath($requestParent);
@@ -271,11 +272,12 @@ function hub_pack_job_write_private_request(
     }
     $payload = $json . PHP_EOL;
     $renamer ??= static fn (string $from, string $to): bool => @rename($from, $to);
+    $chmodder ??= static fn (string $path, int $mode): bool => chmod($path, $mode);
     try {
         $written = file_put_contents($temporaryPath, $payload, LOCK_EX);
         $moved = is_int($written)
             && $written === strlen($payload)
-            && chmod($temporaryPath, 0600)
+            && (bool)$chmodder($temporaryPath, 0600)
             && (bool)$renamer($temporaryPath, $requestPath);
         clearstatcache(true, $temporaryPath);
         clearstatcache(true, $requestPath);

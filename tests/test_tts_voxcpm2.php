@@ -4263,6 +4263,69 @@ hub_test('VoxCPM2 private request write failure leaves no prompt bytes when rena
     }
 });
 
+hub_test('VoxCPM2 private request chmod failure securely clears written prompt bytes', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_private_chmod_' . bin2hex(random_bytes(12));
+    if (!mkdir($root, 0700)) {
+        throw new RuntimeException('Cannot create private chmod cleanup fixture.');
+    }
+    $requestPath = $root . '/request.json';
+    $prompt = 'Private chmod failure prompt must not remain.';
+    $json = json_encode(
+        ['text' => 'safe chmod target', 'prompt_text' => $prompt],
+        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
+    );
+    $chmodObserved = false;
+    $renameCalled = false;
+    $errorCode = null;
+    try {
+        hub_pack_job_write_private_request(
+            $requestPath,
+            $json,
+            static function () use (&$renameCalled): bool {
+                $renameCalled = true;
+                return false;
+            },
+            static fn (string $path): bool => false,
+            static function (string $temporaryPath, int $mode) use ($prompt, &$chmodObserved): bool {
+                $chmodObserved = $mode === 0600
+                    && str_contains((string)file_get_contents($temporaryPath), $prompt);
+                return false;
+            }
+        );
+    } catch (Throwable $error) {
+        $errorCode = $error->getMessage();
+    }
+
+    try {
+        $retained = '';
+        $retainedBytes = 0;
+        foreach (glob($root . '/*') ?: [] as $path) {
+            if (is_file($path) && !is_link($path)) {
+                $contents = (string)file_get_contents($path);
+                $retained .= $contents;
+                $retainedBytes += strlen($contents);
+            }
+        }
+        hub_test_assert(
+            $chmodObserved
+            && !$renameCalled
+            && $errorCode === 'workspace_privacy_cleanup_failed'
+            && $retainedBytes === 0
+            && !str_contains($retained, $prompt)
+            && !file_exists($requestPath),
+            'chmod failure after private bytes are written must verify every prompt-bearing file is absent or zero-length'
+        );
+    } finally {
+        foreach (glob($root . '/*') ?: [] as $path) {
+            if (is_link($path) || is_file($path)) {
+                chmod($path, 0600);
+                unlink($path);
+            }
+        }
+        rmdir($root);
+    }
+});
+
 function hub_test_voxcpm2_cluster_acceptance_profile(
     string $referenceSha256,
     string $status = 'active',
