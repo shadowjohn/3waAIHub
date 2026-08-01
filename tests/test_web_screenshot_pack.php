@@ -39,6 +39,38 @@ function hub_test_web_screenshot_wsl_payload(array $command): string
     return $payload;
 }
 
+function hub_test_web_screenshot_wsl_workspace(): string
+{
+    $workspace = sys_get_temp_dir() . '/3waaihub_web_screenshot_wsl_' . bin2hex(random_bytes(8));
+    foreach (['input', 'output', 'checkpoints'] as $name) {
+        if (!mkdir($workspace . '/' . $name, 0700, true)) {
+            throw new RuntimeException('Cannot create Web Screenshot WSL workspace fixture.');
+        }
+    }
+    if (file_put_contents($workspace . '/input/request.json', "{\"url\":\"https://3wa.tw/\"}\n", LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write Web Screenshot WSL request fixture.');
+    }
+
+    return $workspace;
+}
+
+function hub_test_web_screenshot_wsl_remove(string $path): void
+{
+    if (is_file($path) || is_link($path)) {
+        unlink($path);
+        return;
+    }
+    if (!is_dir($path)) {
+        return;
+    }
+    foreach (scandir($path) ?: [] as $name) {
+        if ($name !== '.' && $name !== '..') {
+            hub_test_web_screenshot_wsl_remove($path . '/' . $name);
+        }
+    }
+    rmdir($path);
+}
+
 function hub_test_web_capture_isolate(callable $fn): void
 {
     $server = $_SERVER;
@@ -177,6 +209,51 @@ hub_test('Web Screenshot runner image provisioning uses the declared WSL source 
         && str_contains($buildPayload, '/DATA/3waAIHub-runtime/packs/web-screenshot/service/Dockerfile')
         && !str_contains($buildPayload, str_replace('\\', '/', HUB_ROOT)), 'Web Screenshot image build must use WSL source, never the Windows checkout');
     hub_test_assert(hub_test_throws(static fn (): array => hub_web_screenshot_wsl_runner_build_command($service, ['docker', 'pull', $image], $profile)), 'Web Screenshot WSL builder must reject undeclared Docker commands');
+});
+
+hub_test('Web Screenshot WSL execution keeps the Playwright firewall and declared artifact boundary', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'web-screenshot', ['idempotent' => true])['service'];
+    $pack = hub_get_pack('web-screenshot');
+    $job = is_array($pack) ? hub_pack_async_job_contract($pack['manifest'], 'capture') : null;
+    hub_test_assert(is_array($job), 'Web Screenshot capture contract is required');
+    $workspace = hub_test_web_screenshot_wsl_workspace();
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+    ]]];
+    $context = [
+        'task' => ['pack_id' => 'web-screenshot', 'job' => 'capture'],
+        'run' => ['run_id' => 'packjob-42-abcdef0123456789'],
+        'workspace' => $workspace,
+        'runner' => $job['runner'],
+    ];
+    try {
+        $plan = hub_web_screenshot_wsl_execution_plan($service, $context, $profile);
+        $payload = hub_test_web_screenshot_wsl_payload($plan['command']);
+        hub_test_assert(($plan['container_id'] ?? '') === 'aihub-pack-packjob-42-abcdef0123456789'
+            && str_contains($payload, '/DATA/3waAIHub-runtime/jobs/web-screenshot/packjob-42-abcdef0123456789')
+            && str_contains($payload, "'--network' 'bridge'")
+            && str_contains($payload, "'--cap-add' 'NET_ADMIN'")
+            && str_contains($payload, '3waaihub/web-screenshot:0.1.2')
+            && str_contains($payload, 'screenshot.png')
+            && str_contains($payload, 'capture_report.json')
+            && !str_contains($payload, 'cp -a')
+            && !str_contains($payload, '--gpus'), 'Web Screenshot WSL job must retain its sandbox and copy only declared artifact names');
+
+        $called = false;
+        $unready = ['runtime_targets' => ['windows-wsl2-linux-docker' => ['supported' => false]]];
+        $result = hub_web_screenshot_wsl_executor($service, $context, static function () use (&$called): array {
+            $called = true;
+            return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+        }, $unready);
+        hub_test_assert(($result['exit_code'] ?? null) === HUB_EXIT_UNSUPPORTED
+            && ($result['error_code'] ?? '') === 'platform_target_unsupported'
+            && !$called, 'an unready WSL target must reject Web Screenshot before running Docker');
+    } finally {
+        hub_test_web_screenshot_wsl_remove($workspace);
+    }
 });
 
 hub_test('Web Screenshot marketplace installation queues the CLI worker', function (): void {

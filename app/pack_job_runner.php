@@ -861,21 +861,24 @@ function hub_pack_job_default_runner_command(array $context): array
     if ($workspace === false || !is_dir($workspace . '/input') || !is_dir($workspace . '/output')) {
         throw new RuntimeException('workspace_unavailable');
     }
+    $input = realpath($workspace . '/input');
     $output = realpath($workspace . '/output');
     $checkpointPath = $workspace . '/checkpoints';
     if (is_link($checkpointPath) || (!is_dir($checkpointPath) && !mkdir($checkpointPath, 0700, true))) {
         throw new RuntimeException('workspace_unavailable');
     }
     $checkpoints = realpath($checkpointPath);
-    if ($output === false || $checkpoints === false || is_link($workspace . '/output')
-        || $output !== $workspace . '/output' || $checkpoints !== $workspace . '/checkpoints') {
+    if ($input === false || $output === false || $checkpoints === false || is_link($workspace . '/output')
+        || !hub_storage_paths_equal($input, $workspace . '/input')
+        || !hub_storage_paths_equal($output, $workspace . '/output')
+        || !hub_storage_paths_equal($checkpoints, $workspace . '/checkpoints')) {
         throw new RuntimeException('workspace_unavailable');
     }
     $name = 'aihub-pack-' . substr(preg_replace('/[^a-z0-9_.-]/', '-', strtolower((string)($context['run']['run_id'] ?? 'run'))) ?: 'run', 0, 48);
     $containerWorkspace = '/workspace';
     $replace = static fn (string $value): string => strtr($value, [
-        $workspace . '/input' => $containerWorkspace . '/input',
-        $workspace . '/output' => $containerWorkspace . '/output',
+        $input => $containerWorkspace . '/input',
+        $output => $containerWorkspace . '/output',
         $workspace => $containerWorkspace,
     ]);
     $entrypoint = $runner['entrypoint'] ?? [];
@@ -904,7 +907,7 @@ function hub_pack_job_default_runner_command(array $context): array
         if ($file === 'source' && $voiceProfileMount !== null) {
             continue;
         }
-        $path = $workspace . '/input/' . $file;
+        $path = $input . '/' . $file;
         if (is_file($path) && !is_link($path)) {
             $command[] = '--mount';
             $command[] = 'type=bind,src=' . $path . ',dst=' . $containerWorkspace . '/input/' . $file
@@ -958,6 +961,12 @@ function hub_pack_job_default_process_runner(array $command, int $timeoutSeconds
     if ($unsupported !== null) {
         return $unsupported;
     }
+
+    return hub_pack_job_process_runner($command, $timeoutSeconds, $poll);
+}
+
+function hub_pack_job_process_runner(array $command, int $timeoutSeconds, callable $poll): array
+{
     hub_cli_only();
     $process = @proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, HUB_ROOT);
     if (!is_resource($process)) {
@@ -1116,6 +1125,154 @@ function hub_pack_job_default_executor(array $context, ?callable $commandRunner 
     return [
         'exit_code' => $exitCode,
         'container_id' => $execution['name'],
+        'owned_pids' => $cleanup['owned_pids'],
+        'cleanup' => $cleanup['cleanup'],
+    ] + ($errorCode === null ? [] : ['error_code' => $errorCode])
+        + (isset($result['intent']) ? ['intent' => $result['intent']] : []);
+}
+
+function hub_web_screenshot_wsl_service_for_task(PDO $db, array $task): ?array
+{
+    if ((string)($task['pack_id'] ?? '') !== 'web-screenshot' || (string)($task['job'] ?? '') !== 'capture') {
+        return null;
+    }
+    $service = hub_get_service_by_mode($db, 'web_capture');
+
+    return is_array($service) && (string)($service['pack_id'] ?? '') === 'web-screenshot' ? $service : null;
+}
+
+function hub_web_screenshot_wsl_execution_plan(array $service, array $context, ?array $profile = null): array
+{
+    $task = is_array($context['task'] ?? null) ? $context['task'] : [];
+    $runner = is_array($context['runner'] ?? null) ? $context['runner'] : [];
+    if (
+        (string)($service['pack_id'] ?? '') !== 'web-screenshot'
+        || (string)($task['pack_id'] ?? '') !== 'web-screenshot'
+        || (string)($task['job'] ?? '') !== 'capture'
+        || ($runner['image'] ?? null) !== '3waaihub/web-screenshot:0.1.2'
+        || ($runner['entrypoint'] ?? null) !== ['/app/capture-entrypoint.sh', '/app/capture']
+        || ($runner['args'] ?? null) !== []
+        || ($runner['output_dir'] ?? null) !== 'output'
+        || ($runner['accelerator'] ?? null) !== 'cpu'
+        || ($runner['required_vram_mb'] ?? null) !== 0
+        || ($runner['network_profile'] ?? null) !== 'public_egress'
+        || ($runner['executor'] ?? null) !== 'container'
+    ) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $workspace = realpath((string)($context['workspace'] ?? ''));
+    $runId = (string)($context['run']['run_id'] ?? '');
+    if ($runtime === null || $workspace === false || !is_dir($workspace . '/input') || !is_dir($workspace . '/output')
+        || !is_file($workspace . '/input/request.json') || is_link($workspace . '/input/request.json')
+        || preg_match('/^[a-z0-9][a-z0-9_.-]{0,95}$/', $runId) !== 1) {
+        throw new RuntimeException('workspace_unavailable');
+    }
+    $execution = hub_pack_job_default_runner_command($context);
+    $runtimeRoot = rtrim((string)$runtime['runtime_root'], '/');
+    $jobRoot = hub_container_path($runtimeRoot . '/jobs/web-screenshot/' . $runId);
+    if (!str_starts_with($jobRoot, $runtimeRoot . '/jobs/web-screenshot/')) {
+        throw new RuntimeException('workspace_unavailable');
+    }
+    $docker = [
+        'docker', 'run', '--pull=never', '--network', 'bridge', '--cap-add', 'NET_ADMIN',
+        '--mount', 'type=bind,src=' . $jobRoot . '/output,dst=/workspace/output',
+        '--mount', 'type=bind,src=' . $jobRoot . '/checkpoints,dst=/workspace/checkpoints',
+        '--mount', 'type=bind,src=' . $jobRoot . '/input/request.json,dst=/workspace/input/request.json',
+        '--name', (string)$execution['name'],
+        '--entrypoint', '/app/capture-entrypoint.sh', '3waaihub/web-screenshot:0.1.2', '/app/capture',
+    ];
+    $script = "set -eu\n"
+        . 'windows_workspace=' . hub_wsl_shell_literal($workspace) . "\n"
+        . 'runtime_root=' . hub_wsl_shell_literal($runtimeRoot) . "\n"
+        . 'job_root=' . hub_wsl_shell_literal($jobRoot) . "\n"
+        . 'container_name=' . hub_wsl_shell_literal((string)$execution['name']) . "\n"
+        . 'case "$job_root" in "$runtime_root"/jobs/web-screenshot/*) ;; *) echo "Invalid WSL job root." >&2; exit 2;; esac' . "\n"
+        . 'host_workspace="$(wslpath -a "$windows_workspace")"' . "\n"
+        . 'if [ ! -f "$host_workspace/input/request.json" ] || [ -L "$host_workspace/input/request.json" ]; then echo "Web Screenshot request is unavailable." >&2; exit 2; fi' . "\n"
+        . 'install -d -m 0700 "$job_root/input" "$job_root/output" "$job_root/checkpoints"' . "\n"
+        . 'cp -- "$host_workspace/input/request.json" "$job_root/input/request.json"' . "\n"
+        . 'cleanup() { docker container rm -f "$container_name" >/dev/null 2>&1 || true; rm -rf -- "$job_root"; }' . "\n"
+        . 'trap cleanup EXIT HUP INT TERM' . "\n"
+        . 'copy_required() { source=$1; destination=$2; if [ ! -f "$source" ] || [ -L "$source" ]; then echo "Web Screenshot artifact is unavailable: $source" >&2; exit 2; fi; cp -- "$source" "$destination"; }' . "\n"
+        . implode(' ', array_map('hub_wsl_shell_literal', $docker)) . "\n"
+        . 'copy_required "$job_root/output/screenshot.png" "$host_workspace/output/screenshot.png"' . "\n"
+        . 'copy_required "$job_root/output/capture_report.json" "$host_workspace/output/capture_report.json"' . "\n"
+        . 'if [ -e "$job_root/output/crop.png" ] || [ -L "$job_root/output/crop.png" ]; then copy_required "$job_root/output/crop.png" "$host_workspace/output/crop.png"; fi' . "\n";
+
+    return [
+        'command' => hub_wsl_script_command($runtime, $script),
+        'container_id' => (string)$execution['name'],
+        'runtime' => $runtime,
+        'job_root' => $jobRoot,
+    ];
+}
+
+function hub_web_screenshot_wsl_cleanup_workspace(array $runtime, string $jobRoot, int $timeoutSeconds): bool
+{
+    $runtimeRoot = rtrim((string)($runtime['runtime_root'] ?? ''), '/');
+    $prefix = $runtimeRoot . '/jobs/web-screenshot/';
+    if ($runtimeRoot === '' || !str_starts_with($jobRoot, $prefix)
+        || preg_match('/^[a-z0-9][a-z0-9_.-]{0,95}$/', substr($jobRoot, strlen($prefix))) !== 1) {
+        return false;
+    }
+    $result = hub_run_command(hub_wsl_script_command($runtime, 'rm -rf -- ' . hub_wsl_shell_literal($jobRoot)), $timeoutSeconds);
+
+    return (int)($result['exit_code'] ?? 1) === 0;
+}
+
+function hub_web_screenshot_wsl_executor(array $service, array $context, ?callable $processRunner = null, ?array $profile = null): array
+{
+    $unsupported = hub_service_runtime_unsupported_result($service, 'windows', $profile);
+    if ($unsupported !== null) {
+        return $unsupported + ['cleanup' => hub_pack_job_no_work_cleanup(), 'completed_no_process_evidence' => true];
+    }
+    try {
+        $plan = hub_web_screenshot_wsl_execution_plan($service, $context, $profile);
+    } catch (Throwable) {
+        return ['exit_code' => 1, 'cleanup' => hub_pack_job_no_work_cleanup(), 'completed_no_process_evidence' => true];
+    }
+    $context['started'](['container_id' => $plan['container_id']]);
+    $intent = null;
+    $poll = static function () use ($context, &$intent): ?string {
+        if (!isset($context['tick']) || !is_callable($context['tick'])) {
+            return null;
+        }
+        $next = $context['tick']();
+        if (in_array($next, ['fence_lost', 'cancelled', 'timed_out'], true)) {
+            $intent = $next;
+        }
+
+        return $intent;
+    };
+    $runner = static function (array $docker, int $timeoutSeconds) use ($plan): array {
+        if (($docker[0] ?? null) !== 'docker') {
+            throw new InvalidArgumentException('Unexpected WSL Docker command.');
+        }
+        $script = 'exec ' . implode(' ', array_map('hub_wsl_shell_literal', $docker));
+
+        return hub_run_command(hub_wsl_script_command($plan['runtime'], $script), $timeoutSeconds);
+    };
+    try {
+        $process = $processRunner ?? 'hub_pack_job_process_runner';
+        $result = $process($plan['command'], (int)$context['runner']['timeout_seconds'], $poll);
+    } catch (Throwable) {
+        $result = ['exit_code' => 1];
+    }
+    if (!is_array($result)) {
+        $result = ['exit_code' => 1];
+    }
+    $cleanup = hub_pack_job_default_container_cleanup($runner, (string)$plan['container_id'], (int)$context['runner']['timeout_seconds']);
+    if (!hub_web_screenshot_wsl_cleanup_workspace($plan['runtime'], (string)$plan['job_root'], (int)$context['runner']['timeout_seconds'])
+        && (int)($result['exit_code'] ?? 1) === 0) {
+        $result = ['exit_code' => 1, 'error_code' => 'workspace_cleanup_failed'];
+    }
+    $exitCode = (int)($result['exit_code'] ?? 1);
+    $errorCode = $exitCode === 0 ? null : ((string)($result['error_code'] ?? '') ?: hub_pack_job_runner_error_code($result));
+
+    return [
+        'exit_code' => $exitCode,
+        'container_id' => (string)$plan['container_id'],
         'owned_pids' => $cleanup['owned_pids'],
         'cleanup' => $cleanup['cleanup'],
     ] + ($errorCode === null ? [] : ['error_code' => $errorCode])
@@ -1448,8 +1605,21 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         } catch (Throwable) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
         }
+        $webScreenshotService = null;
+        if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'web-screenshot' && (string)($task['job'] ?? '') === 'capture') {
+            $webScreenshotService = hub_web_screenshot_wsl_service_for_task($db, $task);
+            if ($webScreenshotService === null) {
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Web Screenshot service is unavailable', hub_pack_job_no_work_cleanup(), null);
+            }
+        }
         if (isset($options['executor']) && is_callable($options['executor'])) {
             $executor = $options['executor'];
+        } elseif ($webScreenshotService !== null) {
+            $executor = static fn (array $context): array => hub_web_screenshot_wsl_executor(
+                $webScreenshotService,
+                $context,
+                isset($options['process_runner']) && is_callable($options['process_runner']) ? $options['process_runner'] : null
+            );
         } elseif (($runner['executor'] ?? '') === 'container') {
             $executor = static fn (array $context): array => hub_pack_job_default_executor(
                 $context,

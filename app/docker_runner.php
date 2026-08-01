@@ -273,11 +273,11 @@ function hub_service_uses_wsl_runtime(array $service, ?string $platform = null, 
     return $resolution['target'] === 'windows-wsl2-linux-docker' && !empty($resolution['supported']);
 }
 
-function hub_service_runtime_unsupported_result(array $service): ?array
+function hub_service_runtime_unsupported_result(array $service, ?string $platform = null, ?array $profile = null): ?array
 {
-    $resolution = hub_service_runtime_resolution($service);
+    $resolution = hub_service_runtime_resolution($service, $platform, $profile);
     if (!empty($resolution['supported'])) {
-        if ($resolution['target'] === 'windows-wsl2-linux-docker' && hub_wsl_service_runtime($service) === null) {
+        if ($resolution['target'] === 'windows-wsl2-linux-docker' && hub_wsl_service_runtime($service, $platform, $profile) === null) {
             return hub_unsupported_runtime_result('windows-wsl2-linux-docker', 'WSL Runtime profile is invalid. Run install.ps1 -Mode WslRuntime -Check.');
         }
         return null;
