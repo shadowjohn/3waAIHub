@@ -55,21 +55,31 @@ function hub_admin_dashboard_services_with_gpu(array $services, array $measureme
     $byMode = [];
     $serviceKeyCounts = [];
     $modeCounts = [];
+    $taintedTargets = [];
     $validMeasurements = [];
     foreach ($measurements as $measurement) {
+        $serviceKey = is_array($measurement) ? ($measurement['service_key'] ?? null) : null;
+        $mode = is_array($measurement) ? ($measurement['mode'] ?? null) : null;
+        $validServiceKey = is_string($serviceKey)
+            && preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/', $serviceKey) === 1;
+        $validMode = is_string($mode)
+            && preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $mode) === 1;
+        $identifier = $matchBy === 'service_key' ? $serviceKey : $mode;
+        $validIdentifier = $matchBy === 'service_key' ? $validServiceKey : $validMode;
         if (
             !is_array($measurement)
             || array_diff(array_keys($measurement), ['service_key', 'mode', 'vram_used_mb', 'measured']) !== []
             || array_diff(['service_key', 'mode', 'vram_used_mb', 'measured'], array_keys($measurement)) !== []
-            || !is_string($measurement['service_key'])
-            || preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/', $measurement['service_key']) !== 1
-            || !is_string($measurement['mode'])
-            || preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $measurement['mode']) !== 1
+            || !$validServiceKey
+            || !$validMode
             || !is_int($measurement['vram_used_mb'])
             || $measurement['vram_used_mb'] < 0
             || $measurement['vram_used_mb'] > 1_000_000_000
             || $measurement['measured'] !== true
         ) {
+            if ($validIdentifier) {
+                $taintedTargets[$identifier] = true;
+            }
             continue;
         }
         $validMeasurements[] = $measurement;
@@ -77,7 +87,11 @@ function hub_admin_dashboard_services_with_gpu(array $services, array $measureme
         $modeCounts[$measurement['mode']] = ($modeCounts[$measurement['mode']] ?? 0) + 1;
     }
     foreach ($validMeasurements as $measurement) {
-        if ($serviceKeyCounts[$measurement['service_key']] !== 1 || $modeCounts[$measurement['mode']] !== 1) {
+        if (
+            $serviceKeyCounts[$measurement['service_key']] !== 1
+            || $modeCounts[$measurement['mode']] !== 1
+            || isset($taintedTargets[$measurement[$matchBy]])
+        ) {
             continue;
         }
         $byServiceKey[$measurement['service_key']] = $measurement;

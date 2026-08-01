@@ -305,6 +305,36 @@ hub_test('dashboard service GPU merge omits absent or invalid telemetry', functi
     }
 });
 
+hub_test('dashboard service GPU merge fails closed for identifiable malformed telemetry', function (): void {
+    $local = hub_admin_dashboard_services_with_gpu([
+        ['service_key' => 'tainted-local', 'mode' => 'ocr'],
+        ['service_key' => 'healthy-local', 'mode' => 'edge_tts'],
+    ], [
+        ['service_key' => 'tainted-local', 'mode' => 'ocr', 'vram_used_mb' => 512, 'measured' => true],
+        ['service_key' => 'tainted-local', 'mode' => 'ocr', 'vram_used_mb' => 512],
+        ['service_key' => 'healthy-local', 'mode' => 'edge_tts', 'vram_used_mb' => 256, 'measured' => true],
+        ['vram_used_mb' => 'garbage'],
+    ], 'service_key');
+    $child = hub_admin_dashboard_services_with_gpu([
+        ['mode' => 'tainted_child'],
+        ['mode' => 'healthy_child'],
+    ], [
+        ['service_key' => 'tainted-child', 'mode' => 'tainted_child', 'vram_used_mb' => 512, 'measured' => true],
+        ['service_key' => 'tainted-child', 'mode' => 'tainted_child', 'vram_used_mb' => -1, 'measured' => true],
+        ['service_key' => 'healthy-child', 'mode' => 'healthy_child', 'vram_used_mb' => 256, 'measured' => true],
+        ['measured' => false],
+    ], 'mode');
+
+    foreach ([$local[0], $child[0]] as $service) {
+        hub_test_assert(!array_key_exists('gpu_vram_measured', $service), 'identifiable malformed telemetry must taint its target');
+        hub_test_assert(!array_key_exists('gpu_vram_used_mb', $service), 'tainted target must not expose VRAM');
+    }
+    foreach ([$local[1], $child[1]] as $service) {
+        hub_test_assert(($service['gpu_vram_measured'] ?? false) === true, 'unrelated service telemetry must remain usable');
+        hub_test_assert(($service['gpu_vram_used_mb'] ?? null) === 256, 'unrelated service must retain its measured VRAM');
+    }
+});
+
 hub_test('successful GPU probe omits unavailable values instead of charting zeroes', function (): void {
     $calls = 0;
     $gpu = hub_collect_gpu_metric(static function () use (&$calls): array {
