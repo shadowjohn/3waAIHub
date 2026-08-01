@@ -337,7 +337,9 @@ hub_test('service GPU metrics omit unverifiable service measurements', function 
         ['name' => 'non-integer memory', 'responses' => [json_encode($gpuCommand) => "101, 512.5\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n101\n"]],
         ['name' => 'negative memory', 'responses' => [json_encode($gpuCommand) => "101, -1\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n101\n"]],
         ['name' => 'oversized memory', 'responses' => [json_encode($gpuCommand) => "101, 1000000001\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n101\n"]],
+        ['name' => 'oversized GPU PID', 'responses' => [json_encode($gpuCommand) => "1000000001, 512\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n1000000001\n"]],
         ['name' => 'non-integer container PID', 'responses' => [json_encode($gpuCommand) => "101, 512\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\nnot-a-pid\n"]],
+        ['name' => 'oversized container PID', 'responses' => [json_encode($gpuCommand) => "1000000001, 512\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n1000000001\n"]],
         ['name' => 'no container', 'responses' => [json_encode($gpuCommand) => "101, 512\n", json_encode($dockerPs) => '']],
         ['name' => 'command failure', 'responses' => [json_encode($gpuCommand) => ['exit_code' => 1, 'stdout' => '', 'stderr' => 'failed', 'output' => 'failed']]],
     ];

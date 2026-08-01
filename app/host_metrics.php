@@ -129,7 +129,7 @@ function hub_collect_service_gpu_metrics(array $services, ?callable $runner = nu
                     $valid = false;
                     break;
                 }
-                $pid = hub_service_gpu_integer($parts[0], 1, PHP_INT_MAX);
+                $pid = hub_service_gpu_integer($parts[0], 1, 1_000_000_000);
                 $memory = hub_service_gpu_integer($parts[1], 0, 1_000_000_000);
                 if ($pid === null || $memory === null) {
                     $valid = false;
@@ -169,7 +169,7 @@ function hub_collect_service_gpu_metrics(array $services, ?callable $runner = nu
             }
             array_shift($pids);
             foreach ($pids as $pid) {
-                $pid = hub_service_gpu_integer($pid, 1, PHP_INT_MAX);
+                $pid = hub_service_gpu_integer($pid, 1, 1_000_000_000);
                 if ($pid === null) {
                     $valid = false;
                     break 2;
