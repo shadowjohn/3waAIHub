@@ -46,6 +46,73 @@ function hub_admin_dashboard_service_counts(array $services): array
     return $counts;
 }
 
+function hub_admin_dashboard_services_with_gpu(array $services, array $measurements): array
+{
+    $byServiceKey = [];
+    $byMode = [];
+    $serviceKeyCounts = [];
+    $modeCounts = [];
+    $validMeasurements = [];
+    foreach ($measurements as $measurement) {
+        if (
+            !is_array($measurement)
+            || array_diff(array_keys($measurement), ['service_key', 'mode', 'vram_used_mb', 'measured']) !== []
+            || array_diff(['service_key', 'mode', 'vram_used_mb', 'measured'], array_keys($measurement)) !== []
+            || !is_string($measurement['service_key'])
+            || preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/', $measurement['service_key']) !== 1
+            || !is_string($measurement['mode'])
+            || preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $measurement['mode']) !== 1
+            || !is_int($measurement['vram_used_mb'])
+            || $measurement['vram_used_mb'] < 0
+            || $measurement['vram_used_mb'] > 1_000_000_000
+            || $measurement['measured'] !== true
+        ) {
+            continue;
+        }
+        $validMeasurements[] = $measurement;
+        $serviceKeyCounts[$measurement['service_key']] = ($serviceKeyCounts[$measurement['service_key']] ?? 0) + 1;
+        $modeCounts[$measurement['mode']] = ($modeCounts[$measurement['mode']] ?? 0) + 1;
+    }
+    foreach ($validMeasurements as $measurement) {
+        if ($serviceKeyCounts[$measurement['service_key']] !== 1 || $modeCounts[$measurement['mode']] !== 1) {
+            continue;
+        }
+        $byServiceKey[$measurement['service_key']] = $measurement;
+        $byMode[$measurement['mode']] = $measurement;
+    }
+
+    $usedMeasurements = [];
+    foreach ($services as $index => $service) {
+        if (!is_array($service)) {
+            continue;
+        }
+        $measurement = null;
+        if (array_key_exists('service_key', $service)) {
+            $serviceKey = $service['service_key'];
+            if (is_string($serviceKey) && preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/', $serviceKey) === 1) {
+                $measurement = $byServiceKey[$serviceKey] ?? null;
+            }
+        } else {
+            $mode = $service['mode'] ?? null;
+            if (is_string($mode) && preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $mode) === 1) {
+                $measurement = $byMode[$mode] ?? null;
+            }
+        }
+        if (!is_array($measurement)) {
+            continue;
+        }
+        $measurementId = $measurement['service_key'] . "\0" . $measurement['mode'];
+        if (isset($usedMeasurements[$measurementId])) {
+            continue;
+        }
+        $services[$index]['gpu_vram_measured'] = true;
+        $services[$index]['gpu_vram_used_mb'] = $measurement['vram_used_mb'];
+        $usedMeasurements[$measurementId] = true;
+    }
+
+    return $services;
+}
+
 function hub_admin_dashboard_local(PDO $db): array
 {
     $snapshot = hub_latest_host_metric_snapshot($db);
@@ -95,6 +162,10 @@ function hub_admin_dashboard_local_summary(array $local): array
 {
     $snapshot = is_array($local['metrics_snapshot'] ?? null) ? $local['metrics_snapshot'] : [];
     $metrics = is_array($snapshot['data'] ?? null) ? $snapshot['data'] : [];
+    $services = hub_admin_dashboard_services_with_gpu(
+        is_array($local['services'] ?? null) ? $local['services'] : [],
+        is_array($metrics['service_gpu'] ?? null) ? $metrics['service_gpu'] : []
+    );
     $gpu = hub_admin_dashboard_sanitize_gpu(is_array($metrics['gpu'] ?? null) ? $metrics['gpu'] : []);
     if (($gpu['available'] ?? null) === false) {
         unset($gpu['util_percent'], $gpu['temperature_c'], $gpu['memory_total_mb'], $gpu['memory_used_mb'], $gpu['memory_free_mb']);
@@ -118,14 +189,14 @@ function hub_admin_dashboard_local_summary(array $local): array
         'docker' => $docker,
         'storage' => $storage,
         'pack_count' => (int)$local['pack_count'],
-        'service_count' => count($local['services']),
+        'service_count' => count($services),
         'service_counts' => $local['service_counts'],
         'active_gpu_leases' => (int)$local['active_gpu_leases'],
         'queued_jobs' => (int)$local['queued_jobs'],
         'running_jobs' => (int)$local['running_jobs'],
         'published_mode_count' => 0,
         'active_route_count' => 0,
-        'services' => $local['services'],
+        'services' => $services,
         'release' => is_array($local['release'] ?? null) ? $local['release'] : [],
         'release_compatible' => true,
         'packs' => is_array($local['pack_inventory'] ?? null) ? $local['pack_inventory'] : [],
@@ -289,7 +360,10 @@ function hub_admin_dashboard_station_summary(array $station): array
         ? min($totalVram, $usedVramValue)
         : ($freeVram === null ? null : max(0, $totalVram - $freeVram));
     $health = is_array($station['health'] ?? null) ? $station['health'] : [];
-    $services = is_array($station['services'] ?? null) ? $station['services'] : [];
+    $services = hub_admin_dashboard_services_with_gpu(
+        is_array($station['services'] ?? null) ? $station['services'] : [],
+        is_array($station['service_gpu'] ?? null) ? $station['service_gpu'] : []
+    );
     $healthKnown = is_string($health['status'] ?? null)
         && in_array($health['status'], ['ok', 'degraded'], true);
     if (!$healthKnown) {

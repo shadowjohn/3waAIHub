@@ -182,6 +182,94 @@ hub_test('local dashboard masks only explicitly unavailable GPU metrics', functi
     hub_test_assert($legacy['util_percent'] === 73 && $legacy['temperature_c'] === 66 && $legacy['memory_used_mb'] === 12288, 'legacy local GPU metrics without availability must remain visible');
 });
 
+hub_test('local dashboard merges measured service GPU telemetry by service key', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'hello', ['service_key' => 'hello-gpu', 'mode' => 'gpu_hello']);
+    hub_install_pack($db, 'taiwan-address', ['service_key' => 'address-gpu', 'mode' => 'gpu_address']);
+    hub_save_host_metric_snapshot($db, [
+        'service_gpu' => [
+            ['service_key' => 'hello-gpu', 'mode' => 'gpu_hello', 'vram_used_mb' => 768, 'measured' => true],
+            ['service_key' => 'address-gpu', 'mode' => 'gpu_address', 'vram_used_mb' => 0, 'measured' => true],
+        ],
+    ]);
+
+    $services = array_column(hub_admin_dashboard_model($db, [])['summary']['services'], null, 'service_key');
+    hub_test_assert(($services['hello-gpu']['gpu_vram_measured'] ?? false) === true, 'local service must retain a measured VRAM flag');
+    hub_test_assert(($services['hello-gpu']['gpu_vram_used_mb'] ?? null) === 768, 'local service must match measured VRAM by service_key');
+    hub_test_assert(($services['address-gpu']['gpu_vram_measured'] ?? false) === true, 'local zero VRAM measurement must remain measured');
+    hub_test_assert(($services['address-gpu']['gpu_vram_used_mb'] ?? null) === 0, 'local zero VRAM measurement must not disappear');
+});
+
+hub_test('child dashboard merges measured service GPU telemetry by manifest mode', function (): void {
+    hub_test_admin_dashboard_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_admin_dashboard_station($db);
+        $snapshotAt = date('Y-m-d H:i:s', time() - 30);
+        $db->prepare(
+            'UPDATE cluster_stations
+             SET manifest_json = :manifest_json, manifest_fetched_at = :manifest_fetched_at,
+                 status_json = :status_json, status_fetched_at = :status_fetched_at
+             WHERE id = :id'
+        )->execute([
+            ':manifest_json' => json_encode(['services' => [
+                ['mode' => 'ocr', 'name' => 'OCR'],
+                ['mode' => 'edge_tts', 'name' => 'Edge TTS'],
+            ]], JSON_THROW_ON_ERROR),
+            ':manifest_fetched_at' => $snapshotAt,
+            ':status_json' => json_encode(['service_gpu' => [
+                ['service_key' => 'ocr-gpu', 'mode' => 'ocr', 'vram_used_mb' => 1536, 'measured' => true],
+                ['service_key' => 'edge-tts-main', 'mode' => 'edge_tts', 'vram_used_mb' => 0, 'measured' => true],
+            ]], JSON_THROW_ON_ERROR),
+            ':status_fetched_at' => $snapshotAt,
+            ':id' => (int)$station['id'],
+        ]);
+
+        $services = array_column(hub_admin_dashboard_model($db, ['station' => 'station_1080'])['summary']['services'], null, 'mode');
+        hub_test_assert(!array_key_exists('service_key', $services['ocr']), 'child manifest rows must not need service_key matching');
+        hub_test_assert(($services['ocr']['gpu_vram_measured'] ?? false) === true, 'child manifest service must retain a measured VRAM flag');
+        hub_test_assert(($services['ocr']['gpu_vram_used_mb'] ?? null) === 1536, 'child manifest service must match measured VRAM by mode');
+        hub_test_assert(($services['edge_tts']['gpu_vram_measured'] ?? false) === true, 'child zero VRAM measurement must remain measured');
+        hub_test_assert(($services['edge_tts']['gpu_vram_used_mb'] ?? null) === 0, 'child zero VRAM measurement must not disappear');
+    });
+});
+
+hub_test('dashboard service GPU merge omits absent or invalid telemetry', function (): void {
+    $services = [
+        ['service_key' => 'absent-gpu', 'mode' => 'absent'],
+        ['service_key' => 'invalid-gpu', 'mode' => 'invalid'],
+        ['service_key' => 'false-gpu', 'mode' => 'false_value'],
+        ['service_key' => 'unknown-gpu', 'mode' => 'unknown'],
+    ];
+    $absent = hub_admin_dashboard_services_with_gpu($services, []);
+    $invalid = hub_admin_dashboard_services_with_gpu($services, [
+        ['service_key' => 'invalid-gpu', 'mode' => 'invalid', 'vram_used_mb' => -1, 'measured' => true],
+        ['service_key' => 'false-gpu', 'mode' => 'false_value', 'vram_used_mb' => 256, 'measured' => false],
+        ['service_key' => 'unknown-gpu', 'mode' => 'unknown', 'vram_used_mb' => 256, 'measured' => 'unknown'],
+    ]);
+
+    foreach ([$absent, $invalid] as $rows) {
+        foreach ($rows as $service) {
+            hub_test_assert(!array_key_exists('gpu_vram_measured', $service), 'unmeasured service must not expose a VRAM measured flag');
+            hub_test_assert(!array_key_exists('gpu_vram_used_mb', $service), 'unmeasured service must not expose a VRAM value');
+        }
+    }
+
+    $duplicates = hub_admin_dashboard_services_with_gpu([
+        ['service_key' => 'duplicate-mode-a', 'mode' => 'duplicate_mode'],
+        ['mode' => 'first_mode'],
+    ], [
+        ['service_key' => 'duplicate-mode-a', 'mode' => 'duplicate_mode', 'vram_used_mb' => 256, 'measured' => true],
+        ['service_key' => 'duplicate-mode-b', 'mode' => 'duplicate_mode', 'vram_used_mb' => 512, 'measured' => true],
+        ['service_key' => 'shared-key', 'mode' => 'first_mode', 'vram_used_mb' => 768, 'measured' => true],
+        ['service_key' => 'shared-key', 'mode' => 'second_mode', 'vram_used_mb' => 1024, 'measured' => true],
+    ]);
+    foreach ($duplicates as $service) {
+        hub_test_assert(!array_key_exists('gpu_vram_measured', $service), 'ambiguous telemetry must not allocate VRAM to a service');
+        hub_test_assert(!array_key_exists('gpu_vram_used_mb', $service), 'ambiguous telemetry must not expose a VRAM value');
+    }
+});
+
 hub_test('successful GPU probe omits unavailable values instead of charting zeroes', function (): void {
     $calls = 0;
     $gpu = hub_collect_gpu_metric(static function () use (&$calls): array {
