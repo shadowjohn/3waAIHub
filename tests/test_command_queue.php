@@ -12,6 +12,48 @@ hub_test('command runner preserves observed exit code when proc_close returns un
     hub_test_assert(hub_process_exit_code(0, 7) === 0, 'proc_close exit code must win when it is known');
 });
 
+hub_test('command queue recovers stale running jobs without touching active long jobs', function (): void {
+    $db = hub_test_reset_db();
+    $now = '2030-01-01 12:00:00';
+    $staleJobId = hub_enqueue_command_job($db, 'service_start', null, [], null, '127.0.0.1');
+    $freshJobId = hub_enqueue_command_job($db, 'service_start', null, [], null, '127.0.0.1');
+    $longJobId = hub_enqueue_command_job($db, 'ollama_model_pull', null, [], null, '127.0.0.1');
+    $update = $db->prepare(
+        'UPDATE command_jobs
+         SET status = :status, lock_token = :lock_token, started_at = :started_at, updated_at = :updated_at
+         WHERE id = :id'
+    );
+    foreach ([
+        [$staleJobId, 'stale-lock', '2030-01-01 11:00:00'],
+        [$freshJobId, 'fresh-lock', '2030-01-01 11:59:30'],
+        [$longJobId, 'long-lock', '2030-01-01 10:00:00'],
+    ] as [$jobId, $lockToken, $updatedAt]) {
+        $update->execute([
+            ':status' => 'running',
+            ':lock_token' => $lockToken,
+            ':started_at' => $updatedAt,
+            ':updated_at' => $updatedAt,
+            ':id' => $jobId,
+        ]);
+    }
+
+    hub_test_assert(hub_recover_stale_command_jobs($db, $now) === 1, 'exactly one stale job must be recovered');
+
+    $stale = hub_get_command_job($db, $staleJobId);
+    hub_test_assert($stale['status'] === 'failed', 'stale job must become failed');
+    hub_test_assert((int)$stale['exit_code'] === 1, 'stale job exit code mismatch');
+    hub_test_assert($stale['error_code'] === 'worker_lost', 'stale job error code mismatch');
+    hub_test_assert($stale['error_message'] === 'Command worker lease expired before completion.', 'stale job message mismatch');
+    hub_test_assert($stale['finished_at'] === $now, 'stale job finished time mismatch');
+    hub_test_assert($stale['lock_token'] === null, 'stale job lock must be released');
+
+    foreach ([[$freshJobId, 'fresh-lock'], [$longJobId, 'long-lock']] as [$jobId, $lockToken]) {
+        $job = hub_get_command_job($db, $jobId);
+        hub_test_assert($job['status'] === 'running', 'active job must stay running');
+        hub_test_assert($job['lock_token'] === $lockToken, 'active job lock must remain intact');
+    }
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
     $logRoot = sys_get_temp_dir() . '/3waaihub_persistence_logs_' . getmypid() . '_' . bin2hex(random_bytes(4));
     $stdoutPath = $logRoot . '/job.out.log';

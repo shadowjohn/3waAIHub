@@ -19,6 +19,10 @@ if ($missing !== []) {
 }
 
 hub_retry_pending_service_runtime_cleanup($db);
+$recovered = hub_recover_stale_command_jobs($db);
+if ($recovered > 0) {
+    echo 'recovered stale command jobs=' . $recovered . PHP_EOL;
+}
 
 $processed = 0;
 while ($processed < $limit) {

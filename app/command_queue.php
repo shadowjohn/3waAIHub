@@ -221,6 +221,65 @@ function hub_claim_next_command_job(PDO $db): ?array
     }
 }
 
+function hub_command_job_stale_after_seconds(string $action): int
+{
+    return match ($action) {
+        // 依現有 command timeout 加五分鐘緩衝，避免安靜執行的長任務被誤判。
+        'ollama_model_pull' => 14700,
+        'service_start', 'service_install', 'service_build', 'service_rebuild' => 2100,
+        'docker_builder_prune' => 1200,
+        default => 900,
+    };
+}
+
+function hub_recover_stale_command_jobs(PDO $db, ?string $now = null): int
+{
+    $now ??= hub_now();
+    $nowTimestamp = strtotime($now);
+    if ($nowTimestamp === false) {
+        throw new InvalidArgumentException('Invalid recovery timestamp.');
+    }
+
+    $jobs = $db->query(
+        "SELECT id, action, updated_at
+         FROM command_jobs
+         WHERE status = 'running'"
+    )->fetchAll();
+    $recover = $db->prepare(
+        "UPDATE command_jobs
+         SET status = 'failed',
+             finished_at = :finished_at,
+             exit_code = 1,
+             lock_token = NULL,
+             error_message = :error_message,
+             error_code = 'worker_lost',
+             current_message = :current_message,
+             updated_at = :updated_at
+         WHERE id = :id AND status = 'running' AND updated_at = :previous_updated_at"
+    );
+    $recovered = 0;
+    foreach ($jobs as $job) {
+        $updatedAt = (string)($job['updated_at'] ?? '');
+        $updatedTimestamp = strtotime($updatedAt);
+        if ($updatedTimestamp === false || $nowTimestamp - $updatedTimestamp <= hub_command_job_stale_after_seconds((string)$job['action'])) {
+            continue;
+        }
+
+        $message = 'Command worker lease expired before completion.';
+        $recover->execute([
+            ':finished_at' => $now,
+            ':error_message' => $message,
+            ':current_message' => $message,
+            ':updated_at' => $now,
+            ':id' => (int)$job['id'],
+            ':previous_updated_at' => $updatedAt,
+        ]);
+        $recovered += $recover->rowCount();
+    }
+
+    return $recovered;
+}
+
 function hub_finish_command_job(PDO $db, array $job, string $status, int $exitCode, string $stdout, string $stderr, ?string $errorMessage = null, ?string $errorCode = null): void
 {
     if (!in_array($status, ['success', 'failed', 'cancelled', 'timeout'], true)) {

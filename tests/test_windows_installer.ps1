@@ -88,6 +88,7 @@ Assert-InstallerContract ($workerTaskTemplateBytes.Length -ge 2 -and $workerTask
 Assert-InstallerContract ($workerTaskTemplateSource -match 'D:\\DATA\\3waAIHub\\scripts\\windows\\run-command-worker\.ps1') 'Windows worker task must default to the documented install root'
 Assert-InstallerContract ($workerTaskTemplateSource -match '<Interval>PT1M</Interval>') 'Windows worker task must run every minute'
 Assert-InstallerContract ($workerTaskTemplateSource -match '<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>') 'Windows worker task must prevent overlapping workers'
+Assert-InstallerContract ($workerTaskTemplateSource -match '<ExecutionTimeLimit>PT5H</ExecutionTimeLimit>') 'Windows worker task must allow the longest bounded command job to complete'
 Assert-InstallerContract ($workerTaskTemplateSource -match '<UserId>S-1-5-18</UserId>') 'Windows worker task must run as LocalSystem without storing a user password'
 Assert-InstallerContract ($workerTaskTemplateSource -notmatch '<LogonType>') 'Windows worker task must use the LocalSystem principal format accepted by Task Scheduler'
 Assert-InstallerContract (Test-Path -LiteralPath $workerTaskRunner) 'Windows command worker runner must exist'
