@@ -234,6 +234,22 @@ hub_test('child dashboard merges measured service GPU telemetry by manifest mode
     });
 });
 
+hub_test('child dashboard ignores matching service keys when telemetry mode differs', function (): void {
+    $summary = hub_admin_dashboard_station_summary([
+        'display_name' => 'Future Child Node',
+        'services' => [
+            ['service_key' => 'shared', 'mode' => 'ocr'],
+        ],
+        'service_gpu' => [
+            ['service_key' => 'shared', 'mode' => 'unrelated', 'vram_used_mb' => 512, 'measured' => true],
+        ],
+    ]);
+    $service = $summary['services'][0];
+
+    hub_test_assert(!array_key_exists('gpu_vram_measured', $service), 'child service telemetry must never match service_key');
+    hub_test_assert(!array_key_exists('gpu_vram_used_mb', $service), 'child service with a mismatched mode must remain unknown');
+});
+
 hub_test('dashboard service GPU merge omits absent or invalid telemetry', function (): void {
     $services = [
         ['service_key' => 'absent-gpu', 'mode' => 'absent'],
@@ -241,12 +257,12 @@ hub_test('dashboard service GPU merge omits absent or invalid telemetry', functi
         ['service_key' => 'false-gpu', 'mode' => 'false_value'],
         ['service_key' => 'unknown-gpu', 'mode' => 'unknown'],
     ];
-    $absent = hub_admin_dashboard_services_with_gpu($services, []);
+    $absent = hub_admin_dashboard_services_with_gpu($services, [], 'service_key');
     $invalid = hub_admin_dashboard_services_with_gpu($services, [
         ['service_key' => 'invalid-gpu', 'mode' => 'invalid', 'vram_used_mb' => -1, 'measured' => true],
         ['service_key' => 'false-gpu', 'mode' => 'false_value', 'vram_used_mb' => 256, 'measured' => false],
         ['service_key' => 'unknown-gpu', 'mode' => 'unknown', 'vram_used_mb' => 256, 'measured' => 'unknown'],
-    ]);
+    ], 'service_key');
 
     foreach ([$absent, $invalid] as $rows) {
         foreach ($rows as $service) {
@@ -263,7 +279,7 @@ hub_test('dashboard service GPU merge omits absent or invalid telemetry', functi
         ['service_key' => 'duplicate-mode-b', 'mode' => 'duplicate_mode', 'vram_used_mb' => 512, 'measured' => true],
         ['service_key' => 'shared-key', 'mode' => 'first_mode', 'vram_used_mb' => 768, 'measured' => true],
         ['service_key' => 'shared-key', 'mode' => 'second_mode', 'vram_used_mb' => 1024, 'measured' => true],
-    ]);
+    ], 'service_key');
     foreach ($duplicates as $service) {
         hub_test_assert(!array_key_exists('gpu_vram_measured', $service), 'ambiguous telemetry must not allocate VRAM to a service');
         hub_test_assert(!array_key_exists('gpu_vram_used_mb', $service), 'ambiguous telemetry must not expose a VRAM value');

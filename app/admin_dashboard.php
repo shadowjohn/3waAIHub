@@ -46,8 +46,11 @@ function hub_admin_dashboard_service_counts(array $services): array
     return $counts;
 }
 
-function hub_admin_dashboard_services_with_gpu(array $services, array $measurements): array
+function hub_admin_dashboard_services_with_gpu(array $services, array $measurements, string $matchBy): array
 {
+    if (!in_array($matchBy, ['service_key', 'mode'], true)) {
+        return $services;
+    }
     $byServiceKey = [];
     $byMode = [];
     $serviceKeyCounts = [];
@@ -86,18 +89,16 @@ function hub_admin_dashboard_services_with_gpu(array $services, array $measureme
         if (!is_array($service)) {
             continue;
         }
-        $measurement = null;
-        if (array_key_exists('service_key', $service)) {
-            $serviceKey = $service['service_key'];
-            if (is_string($serviceKey) && preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/', $serviceKey) === 1) {
-                $measurement = $byServiceKey[$serviceKey] ?? null;
-            }
-        } else {
-            $mode = $service['mode'] ?? null;
-            if (is_string($mode) && preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $mode) === 1) {
-                $measurement = $byMode[$mode] ?? null;
-            }
+        $identifier = $service[$matchBy] ?? null;
+        $pattern = $matchBy === 'service_key'
+            ? '/\A[a-z0-9][a-z0-9_-]{0,63}\z/'
+            : '/\A[A-Za-z0-9_-]{1,64}\z/';
+        if (!is_string($identifier) || preg_match($pattern, $identifier) !== 1) {
+            continue;
         }
+        $measurement = $matchBy === 'service_key'
+            ? ($byServiceKey[$identifier] ?? null)
+            : ($byMode[$identifier] ?? null);
         if (!is_array($measurement)) {
             continue;
         }
@@ -164,7 +165,8 @@ function hub_admin_dashboard_local_summary(array $local): array
     $metrics = is_array($snapshot['data'] ?? null) ? $snapshot['data'] : [];
     $services = hub_admin_dashboard_services_with_gpu(
         is_array($local['services'] ?? null) ? $local['services'] : [],
-        is_array($metrics['service_gpu'] ?? null) ? $metrics['service_gpu'] : []
+        is_array($metrics['service_gpu'] ?? null) ? $metrics['service_gpu'] : [],
+        'service_key'
     );
     $gpu = hub_admin_dashboard_sanitize_gpu(is_array($metrics['gpu'] ?? null) ? $metrics['gpu'] : []);
     if (($gpu['available'] ?? null) === false) {
@@ -362,7 +364,8 @@ function hub_admin_dashboard_station_summary(array $station): array
     $health = is_array($station['health'] ?? null) ? $station['health'] : [];
     $services = hub_admin_dashboard_services_with_gpu(
         is_array($station['services'] ?? null) ? $station['services'] : [],
-        is_array($station['service_gpu'] ?? null) ? $station['service_gpu'] : []
+        is_array($station['service_gpu'] ?? null) ? $station['service_gpu'] : [],
+        'mode'
     );
     $healthKnown = is_string($health['status'] ?? null)
         && in_array($health['status'], ['ok', 'degraded'], true);
