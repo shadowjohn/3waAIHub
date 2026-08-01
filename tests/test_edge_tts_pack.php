@@ -553,7 +553,9 @@ hub_test('Edge TTS Pack publishes the ready CPU-only async runner contract', fun
         && ($manifest['runtime_ready'] ?? null) === true
         && ($manifest['default_mode'] ?? null) === 'edge_tts'
         && ($manifest['experimental'] ?? null) === true
-        && ($manifest['runtime'] ?? null) === ['kind' => 'internal_task']
+        && ($manifest['runtime'] ?? null) === ['kind' => 'internal_task', 'windows_wsl_job' => true]
+        && !empty($manifest['platform_targets']['linux-docker']['supported'])
+        && !empty($manifest['platform_targets']['windows-wsl2-linux-docker']['supported'])
         && ($manifest['gateway'] ?? null) === [
             'invoke_path' => 'task_submit:pack_job',
             'methods' => ['GET', 'POST'],

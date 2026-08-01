@@ -142,6 +142,29 @@ hub_test('Web Screenshot explicitly selects the WSL job target only when ready',
     hub_test_assert($direct['target'] === 'linux-docker' && $direct['supported'] === false, 'an internal Pack without windows_wsl_job must remain blocked');
 });
 
+hub_test('Edge TTS explicitly selects the WSL job target only when ready', function (): void {
+    $profile = [
+        'runtime_targets' => [
+            'windows-wsl2-linux-docker' => [
+                'supported' => true,
+                'distro' => 'Ubuntu-24.04',
+                'runtime_root' => '/DATA/3waAIHub-runtime',
+            ],
+        ],
+    ];
+    $pack = hub_get_pack('edge-tts');
+    hub_test_assert(is_array($pack), 'Edge TTS Pack must be available');
+    $wsl = hub_pack_runtime_target_resolution($pack['manifest'], 'windows', $profile);
+    hub_test_assert($wsl['target'] === 'windows-wsl2-linux-docker' && $wsl['supported'] === true, 'Edge TTS must select its explicit WSL job target');
+
+    $notReady = hub_pack_runtime_target_resolution($pack['manifest'], 'windows', [
+        'runtime_targets' => [
+            'windows-wsl2-linux-docker' => ['supported' => false, 'reason' => 'WSL Runtime is not ready'],
+        ],
+    ]);
+    hub_test_assert($notReady['target'] === 'windows-wsl2-linux-docker' && $notReady['supported'] === false, 'Edge TTS must report WSL readiness instead of falling through to Linux Docker');
+});
+
 hub_test('runtime profile loader reads host-local readiness metadata', function (): void {
     $path = sys_get_temp_dir() . '/3waaihub_runtime_profile_' . getmypid() . '.json';
     try {
