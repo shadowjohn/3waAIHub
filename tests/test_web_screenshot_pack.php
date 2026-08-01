@@ -25,6 +25,20 @@ function hub_test_web_capture_request(PDO $db, string $token, array $post = [], 
     return hub_gateway_dispatch($db, 'web_capture');
 }
 
+function hub_test_web_screenshot_wsl_payload(array $command): string
+{
+    $script = (string)end($command);
+    if (preg_match('/printf %s ([A-Za-z0-9+\\/=]+) \\| base64 -d \\| bash/', $script, $matches) !== 1) {
+        throw new RuntimeException('WSL command payload is missing.');
+    }
+    $payload = base64_decode($matches[1], true);
+    if ($payload === false) {
+        throw new RuntimeException('WSL command payload is invalid.');
+    }
+
+    return $payload;
+}
+
 function hub_test_web_capture_isolate(callable $fn): void
 {
     $server = $_SERVER;
@@ -137,6 +151,32 @@ hub_test('web capture Pack and README publish the allowlist bridge contract', fu
         hub_test_assert(str_contains($section, $needle), 'Web Screenshot README section missing ' . $needle);
     }
     hub_test_assert(!str_contains($section, 'scripts/install_capture_egress_network.sh --check'), 'Web Screenshot README section must not require the obsolete egress installer');
+});
+
+hub_test('Web Screenshot runner image provisioning uses the declared WSL source only', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
+    $service = $installed['service'];
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+    ]]];
+    $image = '3waaihub/web-screenshot:0.1.2';
+    $pack = hub_get_pack('web-screenshot');
+    $contract = is_array($pack) ? hub_pack_container_runner_build_contract($pack['manifest'], $pack['dir']) : null;
+    hub_test_assert(is_array($contract), 'Web Screenshot controlled build contract is required');
+    $inspect = hub_web_screenshot_wsl_runner_build_command($service, ['docker', 'image', 'inspect', '--format', '{{.Id}}', $image], $profile);
+    $build = hub_web_screenshot_wsl_runner_build_command($service, ['docker', 'build', '--tag', $image, '--file', $contract['dockerfile'], $contract['context']], $profile);
+    $inspectPayload = hub_test_web_screenshot_wsl_payload($inspect);
+    $buildPayload = hub_test_web_screenshot_wsl_payload($build);
+
+    hub_test_assert(($inspect[0] ?? '') === 'powershell.exe'
+        && str_contains($inspectPayload, 'docker image inspect')
+        && str_contains($buildPayload, 'docker build')
+        && str_contains($buildPayload, '/DATA/3waAIHub-runtime/packs/web-screenshot/service/Dockerfile')
+        && !str_contains($buildPayload, str_replace('\\', '/', HUB_ROOT)), 'Web Screenshot image build must use WSL source, never the Windows checkout');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_web_screenshot_wsl_runner_build_command($service, ['docker', 'pull', $image], $profile)), 'Web Screenshot WSL builder must reject undeclared Docker commands');
 });
 
 hub_test('Web Screenshot marketplace installation queues the CLI worker', function (): void {

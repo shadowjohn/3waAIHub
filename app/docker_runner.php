@@ -332,6 +332,44 @@ function hub_wsl_script_command(array $runtime, string $script): array
     return ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $command];
 }
 
+function hub_web_screenshot_wsl_runtime_required(array $service): bool
+{
+    return hub_platform_id() === 'windows' && (string)($service['pack_id'] ?? '') === 'web-screenshot';
+}
+
+function hub_web_screenshot_wsl_runner_build_command(array $service, array $docker, ?array $profile = null): array
+{
+    if ((string)($service['pack_id'] ?? '') !== 'web-screenshot') {
+        throw new InvalidArgumentException('Web Screenshot service is required.');
+    }
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $pack = hub_get_pack('web-screenshot');
+    $build = is_array($pack) ? hub_pack_container_runner_build_contract((array)$pack['manifest'], (string)$pack['dir']) : null;
+    if ($runtime === null || $build === null || (string)$build['image'] !== '3waaihub/web-screenshot:0.1.2') {
+        throw new RuntimeException('WSL Runtime is not ready for Web Screenshot.');
+    }
+
+    $image = (string)$build['image'];
+    $inspect = ['docker', 'image', 'inspect', '--format', '{{.Id}}', $image];
+    $buildCommand = ['docker', 'build', '--tag', $image, '--file', (string)$build['dockerfile'], (string)$build['context']];
+    if ($docker !== $inspect && $docker !== $buildCommand) {
+        throw new InvalidArgumentException('Unexpected Web Screenshot Docker build command.');
+    }
+
+    $serviceRoot = (string)$runtime['runtime_root'] . '/packs/web-screenshot/service';
+    $script = "set -eu\n"
+        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
+        . 'if [ ! -f "$service_root/Dockerfile" ]; then echo "WSL Pack source unavailable: $service_root/Dockerfile. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n";
+    if ($docker === $inspect) {
+        $script .= 'exec docker image inspect --format ' . hub_wsl_shell_literal('{{.Id}}') . ' ' . hub_wsl_shell_literal($image) . "\n";
+    } else {
+        $script .= 'exec docker build --tag ' . hub_wsl_shell_literal($image)
+            . ' --file "$service_root/Dockerfile" "$service_root"' . "\n";
+    }
+
+    return hub_wsl_script_command($runtime, $script);
+}
+
 function hub_service_runtime_inspection_command(array $service, array $command, ?string $platform = null, ?array $profile = null): ?array
 {
     if (hub_service_uses_wsl_runtime($service, $platform, $profile)) {
@@ -486,7 +524,7 @@ function hub_start_service(PDO $db, array $service): array
 
 function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 {
-    if (!hub_service_is_internal_task($service)) {
+    if (!hub_service_is_internal_task($service) || hub_web_screenshot_wsl_runtime_required($service)) {
         $unsupported = hub_service_runtime_unsupported_result($service);
         if ($unsupported !== null) {
             return $unsupported;
@@ -556,7 +594,7 @@ function hub_service_build_timeout_sec(array $service): int
 
 function hub_build_service(PDO $db, array $service, ?array $job = null): array
 {
-    if (!hub_service_is_internal_task($service)) {
+    if (!hub_service_is_internal_task($service) || hub_web_screenshot_wsl_runtime_required($service)) {
         $unsupported = hub_service_runtime_unsupported_result($service);
         if ($unsupported !== null) {
             return $unsupported;
@@ -591,7 +629,7 @@ function hub_refresh_service_runtime_files(PDO $db, array $service): array
     }
 
     $env = json_decode((string)($service['environment_json'] ?? ''), true);
-    hub_install_pack($db, (string)$service['pack_id'], [
+    $options = [
         'service_key' => (string)$service['service_key'],
         'name' => (string)$service['name'],
         'mode' => (string)$service['mode'],
@@ -601,7 +639,13 @@ function hub_refresh_service_runtime_files(PDO $db, array $service): array
         'hot_reload' => (int)$service['hot_reload'] === 1,
         'env' => is_array($env) ? $env : [],
         'idempotent' => true,
-    ]);
+    ];
+    if (hub_web_screenshot_wsl_runtime_required($service)) {
+        $options['runner_build_runner'] = static function (array $docker, int $timeoutSeconds) use ($service): array {
+            return hub_run_command(hub_web_screenshot_wsl_runner_build_command($service, $docker), $timeoutSeconds);
+        };
+    }
+    hub_install_pack($db, (string)$service['pack_id'], $options);
 
     return hub_get_service($db, (int)$service['id']) ?: $service;
 }
