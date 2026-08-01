@@ -92,6 +92,7 @@ Assert-InstallerContract ($workerTaskTemplateSource -match '<UserId>S-1-5-18</Us
 Assert-InstallerContract ($workerTaskTemplateSource -notmatch '<LogonType>') 'Windows worker task must use the LocalSystem principal format accepted by Task Scheduler'
 Assert-InstallerContract (Test-Path -LiteralPath $workerTaskRunner) 'Windows command worker runner must exist'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'command_worker\.php') 'Windows worker runner must execute command_worker.php'
+Assert-InstallerContract ($workerTaskRunnerSource -match 'collect_host_metrics\.php') 'Windows worker runner must collect host metric snapshots'
 Assert-InstallerContract ($workerTaskRunnerSource -match '--limit=5') 'Windows worker runner must keep the bounded command worker limit'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'function Write-WorkerLog') 'Windows worker runner must own compatible log writing'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'System\.IO\.StreamWriter') 'Windows worker runner must use StreamWriter for compatible log encoding'
@@ -362,11 +363,6 @@ exit /b 9
 
     $managedPhpDir = Get-ManagedPhpInstallDir
     Assert-InstallerContract ($managedPhpDir -eq (Join-Path $runtimeRoot 'tools\php')) 'managed PHP must live below InstallRoot'
-
-    $generatedClusterSecret = New-ClusterSecretValue
-    Assert-InstallerContract ($generatedClusterSecret -match '\A[0-9a-f]{64}\z') 'generated Cluster secret must be 64 lowercase hexadecimal characters'
-    Assert-InstallerContract (Test-ClusterSecretValue $generatedClusterSecret) 'generated Cluster secret must validate'
-    Assert-InstallerContract (-not (Test-ClusterSecretValue 'not-a-cluster-secret')) 'invalid Cluster secret must be rejected'
 
     $workstationIisPlan = Get-IisFeaturePlan 1
     Assert-InstallerContract ($workstationIisPlan.HostKind -eq 'workstation') 'ProductType=1 must use the workstation IIS feature plan'

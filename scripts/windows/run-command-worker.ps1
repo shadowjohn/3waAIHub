@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $logDir = Join-Path $InstallRoot 'data\logs'
 $logPath = Join-Path $logDir 'command_worker_windows.log'
+$metrics = Join-Path $InstallRoot 'scripts\collect_host_metrics.php'
 $worker = Join-Path $InstallRoot 'scripts\command_worker.php'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
@@ -32,13 +33,20 @@ try {
     if (-not (Test-Path -LiteralPath $worker)) {
         throw 'command_worker.php is missing.'
     }
+    if (-not (Test-Path -LiteralPath $metrics)) {
+        throw 'collect_host_metrics.php is missing.'
+    }
 
     Set-Location -LiteralPath $InstallRoot
-    $output = @(& $phpExe $worker '--limit=5' 2>&1)
-    $exitCode = $LASTEXITCODE
-    $lines = @("[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] command_worker exit=$exitCode") + @($output | ForEach-Object { [string]$_ })
+    $metricsOutput = @(& $phpExe $metrics 2>&1)
+    $metricsExitCode = $LASTEXITCODE
+    $workerOutput = @(& $phpExe $worker '--limit=5' 2>&1)
+    $workerExitCode = $LASTEXITCODE
+    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $lines = @("[$timestamp] host_metrics exit=$metricsExitCode") + @($metricsOutput | ForEach-Object { [string]$_ })
+    $lines += @("[$timestamp] command_worker exit=$workerExitCode") + @($workerOutput | ForEach-Object { [string]$_ })
     Write-WorkerLog -Lines $lines
-    exit $exitCode
+    exit $(if ($metricsExitCode -ne 0) { $metricsExitCode } else { $workerExitCode })
 } catch {
     Write-WorkerLog -Lines @("[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] command_worker error=$($_.Exception.Message)")
     exit 1
