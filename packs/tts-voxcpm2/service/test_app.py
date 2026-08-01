@@ -31,6 +31,12 @@ class JSONResponse:
         self.body = json.dumps(content, ensure_ascii=False).encode("utf-8")
 
 
+class FileResponse:
+    def __init__(self, path, media_type=None):
+        self.path = Path(path)
+        self.media_type = media_type
+
+
 class BaseModel:
     def __init__(self, **values):
         for name in self.__class__.__annotations__:
@@ -47,6 +53,7 @@ fastapi_exceptions = types.ModuleType("fastapi.exceptions")
 fastapi_exceptions.RequestValidationError = RequestValidationError
 fastapi_responses = types.ModuleType("fastapi.responses")
 fastapi_responses.JSONResponse = JSONResponse
+fastapi_responses.FileResponse = FileResponse
 pydantic = types.ModuleType("pydantic")
 pydantic.BaseModel = BaseModel
 pydantic.Field = Field
@@ -141,6 +148,17 @@ class UltimateCloneTests(unittest.TestCase):
 
         self.assertEqual(500, response.status_code)
         self.assertNotIn(secret, response.body.decode("utf-8"))
+
+    def test_artifact_download_allows_only_generated_artifacts(self):
+        generated = Path(self.temp_dir.name) / "generated.wav"
+        generated.write_bytes(b"wav")
+
+        response = app.artifact(generated.name)
+
+        self.assertEqual(generated, response.path)
+        self.assertEqual("audio/wav", response.media_type)
+        self.assertEqual(404, app.artifact("missing.wav").status_code)
+        self.assertEqual(404, app.artifact("../reference.wav").status_code)
 
 
 if __name__ == "__main__":

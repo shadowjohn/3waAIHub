@@ -938,8 +938,8 @@ function hub_cancel_task(PDO $db, int $taskId): bool
         }
     }
 
-    if ($task && ($task['task_type'] ?? '') === 'pack_job' && ($task['status'] ?? '') === 'queued') {
-        // A queued Pack job never started a runner, container, or GPU PID.
+    if ($task && ($task['task_type'] ?? '') === 'pack_job' && in_array(($task['status'] ?? ''), ['queued', 'waiting_gpu'], true)) {
+        // Neither queued nor waiting-GPU Pack jobs started a runner, container, or GPU PID.
         $noWorkCleanup = ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true];
         if (!hub_pack_job_cleanup_attested($noWorkCleanup)) {
             throw new LogicException('pack_job_cleanup_incomplete');
@@ -950,11 +950,25 @@ function hub_cancel_task(PDO $db, int $taskId): bool
         $db->beginTransaction();
         try {
             $now = hub_now();
+            if (($task['status'] ?? '') === 'waiting_gpu') {
+                $run = $db->prepare(
+                    "UPDATE runtime_runs
+                     SET state = 'cancelled', error_code = 'cancelled', cancelled_at = :now, finished_at = :now,
+                         lease_expires_at = NULL
+                     WHERE task_id = :task_id AND state = 'waiting_gpu'
+                       AND container_id IS NULL AND lease_expires_at IS NULL"
+                );
+                $run->execute([':now' => $now, ':task_id' => $taskId]);
+                if ($run->rowCount() !== 1) {
+                    $db->commit();
+                    return false;
+                }
+            }
             $stmt = $db->prepare(
                 "UPDATE tasks
                  SET status = 'cancelled', progress = 100, error_code = 'cancelled', error_message = 'cancelled',
-                     finished_at = :finished_at, updated_at = :updated_at
-                 WHERE id = :id AND task_type = 'pack_job' AND status = 'queued' AND lock_token IS NULL"
+                     finished_at = :finished_at, updated_at = :updated_at, waiting_reason = NULL, next_attempt_at = NULL
+                 WHERE id = :id AND task_type = 'pack_job' AND status IN ('queued', 'waiting_gpu') AND lock_token IS NULL"
             );
             $stmt->execute([':finished_at' => $now, ':updated_at' => $now, ':id' => $taskId]);
             if ($stmt->rowCount() !== 1) {

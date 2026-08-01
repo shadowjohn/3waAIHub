@@ -1099,3 +1099,18 @@ hub_test('Queued Pack job cancellation uses one terminal outbox transaction', fu
     hub_test_assert(($task['status'] ?? '') === 'cancelled' && !empty(($hold->fetch() ?: [])['released_at']), 'queued Pack cancellation must atomically terminalize and release its source hold');
     hub_test_assert($delivery === 'task.failed' && (int)$db->query('SELECT COUNT(*) FROM task_callback_deliveries')->fetchColumn() === 1, 'queued Pack cancellation must create exactly one failed outbox callback');
 });
+
+hub_test('Waiting GPU Pack job cancellation terminalizes its idle runtime run', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_pack_job_create_terminal_fixture($db);
+    $db->prepare("UPDATE tasks SET status = 'waiting_gpu', lock_token = NULL, waiting_reason = 'insufficient_vram', next_attempt_at = :next_attempt WHERE id = :id")
+        ->execute([':next_attempt' => hub_now(), ':id' => $fixture['task_id']]);
+    $db->prepare("UPDATE runtime_runs SET state = 'waiting_gpu', container_id = NULL, lease_expires_at = NULL WHERE id = :id")
+        ->execute([':id' => $fixture['run']['id']]);
+
+    hub_test_assert(hub_cancel_task($db, $fixture['task_id']), 'waiting GPU Pack job must be cancellable before it starts a runner');
+    $task = hub_get_task($db, $fixture['task_id']);
+    $run = $db->query('SELECT state, error_code, cancelled_at FROM runtime_runs WHERE id = ' . (int)$fixture['run']['id'])->fetch();
+    hub_test_assert(($task['status'] ?? '') === 'cancelled' && ($task['waiting_reason'] ?? null) === null && ($task['next_attempt_at'] ?? null) === null, 'waiting GPU cancellation must clear retry state');
+    hub_test_assert(($run['state'] ?? '') === 'cancelled' && ($run['error_code'] ?? '') === 'cancelled' && !empty($run['cancelled_at']), 'waiting GPU cancellation must terminalize its idle runtime run');
+});

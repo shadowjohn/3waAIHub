@@ -15,7 +15,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="3waAIHub VoxCPM2 Experimental TTS")
@@ -358,6 +358,18 @@ def voice_design(request: VoiceDesignRequest) -> dict[str, Any]:
         "model": "VoxCPM2",
         "message": "Use this prompt in /v1/tts voice_prompt for voice design.",
     }
+
+
+@app.get("/artifacts/{filename}", response_model=None)
+def artifact(filename: str) -> FileResponse | JSONResponse:
+    path = Path(filename)
+    if path.name != filename or path.suffix not in {".wav", ".json"}:
+        return response_error(404, "artifact_not_found", "Artifact not found.")
+    target = artifact_dir() / filename
+    if not target.is_file():
+        return response_error(404, "artifact_not_found", "Artifact not found.")
+    media_type = "audio/wav" if path.suffix == ".wav" else "application/json"
+    return FileResponse(target, media_type=media_type)
 
 
 @app.post("/v1/tts")
