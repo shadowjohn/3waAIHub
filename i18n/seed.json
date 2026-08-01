@@ -2765,6 +2765,16 @@
         "trans": "Experimental"
     },
     {
+        "title": "實際 VRAM",
+        "lang": "en",
+        "trans": "Measured VRAM"
+    },
+    {
+        "title": "尚未取得",
+        "lang": "en",
+        "trans": "Not available"
+    },
+    {
         "title": "尚無已配對站台",
         "lang": "en",
         "trans": "No paired sites"

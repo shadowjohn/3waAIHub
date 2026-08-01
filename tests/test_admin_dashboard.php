@@ -692,4 +692,15 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
     foreach (['station-connection', 'station-connection--online'] as $needle) {
         hub_test_assert(str_contains($baseCss, $needle), 'shared station connectivity style missing ' . $needle);
     }
+
+    foreach ([
+        '<th>Mode</th><th><?= hub_h(__(\'實際 VRAM\')) ?></th><th><?= hub_h(__(\'狀態\')) ?></th>',
+        "!empty(\$service['gpu_vram_measured']) && is_int(\$service['gpu_vram_used_mb'] ?? null)",
+        "number_format(\$service['gpu_vram_used_mb']) . ' MB'",
+        "hub_h(__('尚未取得'))",
+    ] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'dashboard page missing measured service VRAM contract: ' . $needle);
+    }
+    hub_test_assert(str_contains($seed, 'Measured VRAM'), 'service VRAM i18n seed missing: Measured VRAM');
+    hub_test_assert(str_contains($seed, 'Not available'), 'service VRAM i18n seed missing: Not available');
 });

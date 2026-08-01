@@ -379,7 +379,7 @@ hub_admin_header('控制台', $user);
                 <?php else: ?>
                     <div class="table-wrap">
                         <table class="dashboard-table">
-                            <thead><tr><th><?= hub_h(__('服務')) ?></th><th>Mode</th><th><?= hub_h(__('狀態')) ?></th></tr></thead>
+                            <thead><tr><th><?= hub_h(__('服務')) ?></th><th>Mode</th><th><?= hub_h(__('實際 VRAM')) ?></th><th><?= hub_h(__('狀態')) ?></th></tr></thead>
                             <tbody>
                             <?php foreach ($services as $service): ?>
                                 <?php
@@ -391,6 +391,7 @@ hub_admin_header('控制台', $user);
                                 <tr>
                                     <td><?= hub_h((string)($service['name'] ?? $service['pack_id'] ?? $service['mode'] ?? '—')) ?></td>
                                     <td><code><?= hub_h((string)($service['mode'] ?? '—')) ?></code></td>
+                                    <td><?php if (!empty($service['gpu_vram_measured']) && is_int($service['gpu_vram_used_mb'] ?? null)): ?><?= number_format($service['gpu_vram_used_mb']) . ' MB' ?><?php else: ?><?= hub_h(__('尚未取得')) ?><?php endif; ?></td>
                                     <td><?= hub_h($serviceState) ?></td>
                                 </tr>
                             <?php endforeach; ?>
