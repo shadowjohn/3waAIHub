@@ -98,14 +98,16 @@ $syncCommand = @'
 set -eu
 runtime_root=__RUNTIME_ROOT__
 source_root=__SOURCE_ROOT__
-install -d -m 0775 "$runtime_root/app" "$runtime_root/bin" "$runtime_root/packs/hello" "$runtime_root/packs/yolo" "$runtime_root/packs/taiwan-address" "$runtime_root/scripts"
+install -d -m 0775 "$runtime_root/app" "$runtime_root/bin" "$runtime_root/packs/hello" "$runtime_root/packs/yolo" "$runtime_root/packs/taiwan-address" "$runtime_root/packs/web-screenshot" "$runtime_root/packs/edge-tts" "$runtime_root/scripts"
 cp -a "$source_root/app/." "$runtime_root/app/"
 cp -a "$source_root/bin/aihub-run" "$runtime_root/bin/aihub-run"
 cp -a "$source_root/scripts/init_db.php" "$runtime_root/scripts/init_db.php"
 cp -a "$source_root/packs/hello/." "$runtime_root/packs/hello/"
 cp -a "$source_root/packs/yolo/." "$runtime_root/packs/yolo/"
 cp -a "$source_root/packs/taiwan-address/." "$runtime_root/packs/taiwan-address/"
-for script in "$runtime_root"/packs/yolo/jobs/*.sh; do
+cp -a "$source_root/packs/web-screenshot/." "$runtime_root/packs/web-screenshot/"
+cp -a "$source_root/packs/edge-tts/." "$runtime_root/packs/edge-tts/"
+for script in "$runtime_root"/packs/yolo/jobs/*.sh "$runtime_root"/packs/edge-tts/service/*.sh "$runtime_root"/packs/edge-tts/service/*.py; do
   [ -f "$script" ] || continue
   tr -d '\015' < "$script" > "$script.3waaihub-lf"
   mv "$script.3waaihub-lf" "$script"

@@ -17,7 +17,8 @@ RUN apt-get update \
     && chmod 0600 /workspace/input/request.json
 
 COPY url_policy.js capture.js url_policy_cases.json test_url_policy.js test_capture.js capture-entrypoint.sh test_egress_firewall.sh egress_self_check.js ./
-RUN cp capture.js capture \
+RUN sed -i 's/\r$//' capture.js \
+    && cp capture.js capture \
     && chmod 0755 capture capture-entrypoint.sh test_egress_firewall.sh
 
 ENTRYPOINT ["/app/capture-entrypoint.sh"]

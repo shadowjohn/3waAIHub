@@ -181,6 +181,22 @@ hub_test('Windows direct service status stop restart and logs reject before Dock
     }
 });
 
+hub_test('Windows removes a stopped unsupported service without Docker', function (): void {
+    if (hub_platform_id() !== 'windows') {
+        hub_test_skip('Windows-only stopped unsupported service removal contract.');
+    }
+
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+    $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
+
+    $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+
+    hub_test_assert($result['exit_code'] === 0, 'stopped unsupported service removal must succeed');
+    hub_test_assert(hub_get_service($db, (int)$service['id']) === null, 'stopped unsupported service must be deleted');
+});
+
 hub_test('PhaseP-1 service removal action and active-job guard are explicit', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
@@ -415,7 +431,11 @@ SH
         $commands = file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
 
         hub_test_assert($result['exit_code'] === 0, 'idle stopped service removal must succeed');
-        hub_test_assert(count($commands) === 1 && str_contains($commands[0], ' down '), 'service removal must run docker compose down');
+        if (hub_platform_id() === 'windows') {
+            hub_test_assert($commands === [], 'Windows removal of a stopped unsupported service must not invoke Docker');
+        } else {
+            hub_test_assert(count($commands) === 1 && str_contains($commands[0], ' down '), 'service removal must run docker compose down');
+        }
         hub_test_assert(hub_get_service($db, (int)$service['id']) === null, 'removed service must be deleted from registration');
         hub_test_assert(!file_exists($composePath) && !file_exists($envPath), 'generated compose and env files must be deleted');
         hub_test_assert(file_exists($artifactPath) && is_dir((string)$pack['dir']), 'service artifact and HubPack must remain');

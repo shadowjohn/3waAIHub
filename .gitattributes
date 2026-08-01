@@ -1,2 +1,4 @@
 *.sh text eol=lf
 bin/aihub-run text eol=lf
+packs/edge-tts/service/*.py text eol=lf
+packs/edge-tts/service/voice_catalog.json text eol=lf

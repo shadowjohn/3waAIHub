@@ -378,7 +378,7 @@ def run_job(request_path: Path, output_dir: Path) -> None:
             write_text_artifact(srt_path, render_srt(sentences))
             write_text_artifact(timeline_path, json.dumps({
                 "version": 1,
-                "unit": "milliseconds",
+                "unit": "ms",
                 "duration_ms": duration_ms,
                 "sentences": sentences,
                 "words": words,

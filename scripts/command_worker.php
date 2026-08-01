@@ -27,7 +27,17 @@ while ($processed < $limit) {
         break;
     }
 
-    $result = hub_execute_command_job($db, $job);
+    try {
+        $result = hub_execute_command_job($db, $job);
+    } catch (Throwable $e) {
+        $result = [
+            'exit_code' => 1,
+            'stdout' => '',
+            'stderr' => 'Command execution failed: ' . $e->getMessage(),
+            'message' => 'Command execution failed: ' . $e->getMessage(),
+            'error_code' => 'command_execution_failed',
+        ];
+    }
     hub_finish_command_job(
         $db,
         $job,
@@ -68,6 +78,7 @@ function hub_execute_command_job(PDO $db, array $job): array
         || (
             $service !== null
             && !hub_service_is_internal_task($service)
+            && $action !== 'service_remove'
             && str_starts_with($action, 'service_')
             && hub_service_runtime_resolution($service)['target'] === 'linux-docker'
         );

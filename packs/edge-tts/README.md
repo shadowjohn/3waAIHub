@@ -50,6 +50,18 @@ atomically publish 到
 non-root `edge` 使用者執行合成或 demo generator。此設計不修改 host firewall、
 Docker daemon 或 Docker network。
 
+## Windows WSL Runtime
+
+Windows 只會透過 Pack 明確宣告的 `windows-wsl2-linux-docker` job target 執行 Edge
+TTS；它是 CPU-only 的 `internal_task`，不會將 Windows 的直接 `linux-docker` target
+自動改送 WSL。Marketplace **Build** 只建立／驗證 WSL image，**Start** 才生成已驗證
+demo voices 並開啟 Hub admission，**Stop** 只關閉 admission，不會保留常駐容器。
+
+WSL Docker 是登入使用者的 runtime。Windows 的 LocalSystem 排程可安全消化
+control-plane `command_worker.php`，但不能保證可使用該使用者的 WSL distro；Edge task
+必須由持有 WSL runtime 的帳號執行 `scripts/task_worker.php`，或改由 Remote Linux Agent
+執行。
+
 | ID | 語系 | 聲線 | 性別 | memo |
 | --- | --- | --- | --- | --- |
 | `zh-TW-HsiaoChenNeural` | zh-TW | 小晴 | 女 | 清亮，適合主持與旁白。 |

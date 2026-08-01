@@ -12,7 +12,7 @@ function hub_allowed_task_types(): array
 
 function hub_default_task_queues(): array
 {
-    return ['default', 'gpu', 'ocr', 'reconstruction', 'system'];
+    return ['default', 'cpu', 'gpu', 'ocr', 'reconstruction', 'system'];
 }
 
 function hub_is_valid_task_type(string $taskType): bool
@@ -115,6 +115,10 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
             throw new InvalidArgumentException('Invalid Pack job route.');
         }
     }
+    $queueName = (string)$route['accelerator'];
+    if (!in_array($queueName, ['cpu', 'gpu'], true)) {
+        throw new InvalidArgumentException('Invalid Pack job accelerator.');
+    }
     $voiceContext = $input['voice_context'] ?? null;
     unset($input['voice_context']);
     $input = hub_pack_job_normalize_request_input($input, $route);
@@ -137,7 +141,7 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
         $startedTransaction = true;
     }
     try {
-        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, $input, null, $requestedIp, $route + [
+        $taskId = hub_enqueue_task($db, 'pack_job', $queueName, 0, $input, null, $requestedIp, $route + [
             'owner_member_id' => $ownerMemberId,
             'owner_token_id' => $ownerTokenId,
             'source_artifact_id' => $sourceArtifactId > 0 ? $sourceArtifactId : null,
@@ -2949,7 +2953,9 @@ function hub_pack_job_trusted_output_dir(PDO $db, int $taskId, ?array $run): str
     clearstatcache(true, $workspace);
     $taskRoot = realpath($taskResultDir);
     $workspaceReal = is_link($workspace) ? false : realpath($workspace);
-    if ($taskRoot === false || $workspaceReal === false || !str_starts_with($workspaceReal, $taskRoot . DIRECTORY_SEPARATOR)) {
+    if ($taskRoot === false || $workspaceReal === false
+        || !hub_storage_path_is_within($workspaceReal, $taskRoot)
+        || hub_storage_paths_equal($workspaceReal, $taskRoot)) {
         hub_pack_job_output_contract_invalid('workspace_invalid');
     }
 
@@ -2959,11 +2965,28 @@ function hub_pack_job_trusted_output_dir(PDO $db, int $taskId, ?array $run): str
 function hub_pack_job_require_submitted_output_dir(PDO $db, int $taskId, ?array $run, string $workspace): string
 {
     $trustedOutputDir = hub_pack_job_trusted_output_dir($db, $taskId, $run);
-    if (hub_pack_job_output_dir($workspace) !== $trustedOutputDir) {
+    if (!hub_storage_paths_equal(hub_pack_job_output_dir($workspace), $trustedOutputDir)) {
         hub_pack_job_output_contract_invalid('workspace_invalid');
     }
 
     return $trustedOutputDir;
+}
+
+function hub_pack_job_artifact_paths_equal(string $left, string $right): bool
+{
+    $normalize = static fn (string $path): string => rtrim(str_replace('\\', '/', $path), '/');
+    $left = $normalize($left);
+    $right = $normalize($right);
+
+    return hub_platform_id() === 'windows' ? strcasecmp($left, $right) === 0 : $left === $right;
+}
+
+function hub_pack_job_artifact_path_is_within(string $candidate, string $root): bool
+{
+    $candidate = str_replace('\\', '/', $candidate);
+    $parent = dirname($candidate);
+
+    return $parent !== '' && hub_storage_path_is_within($parent, $root);
 }
 
 function hub_revalidate_pack_job_artifact_snapshot(PDO $db, int $taskId, ?array $run, array $validatedArtifacts): void
@@ -2984,7 +3007,9 @@ function hub_revalidate_pack_job_artifact_snapshot(PDO $db, int $taskId, ?array 
         $name = is_string($artifact['name'] ?? null) ? $artifact['name'] : '';
         clearstatcache(true, $outputDir . '/' . $name);
         $path = $name === '' ? false : realpath($outputDir . '/' . $name);
-        if ($path === false || $path !== ($artifact['path'] ?? null) || !str_starts_with($path, $outputDir . DIRECTORY_SEPARATOR) || is_link($path)) {
+        if ($path === false || !is_string($artifact['path'] ?? null)
+            || !hub_pack_job_artifact_paths_equal($path, $artifact['path'])
+            || !hub_pack_job_artifact_path_is_within($path, $outputDir) || is_link($path)) {
             hub_pack_job_output_contract_invalid('artifact_changed');
         }
         $stat = lstat($path);
@@ -3053,7 +3078,8 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $artifactRoot = realpath($artifactRoot);
-    if ($artifactRoot === false || !str_starts_with($artifactRoot, $taskResultDir . DIRECTORY_SEPARATOR)) {
+    if ($artifactRoot === false || !hub_storage_path_is_within($artifactRoot, $taskResultDir)
+        || hub_storage_paths_equal($artifactRoot, $taskResultDir)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     if ($handoffScope !== null) {
@@ -3067,7 +3093,8 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
         }
         $scopeDir = realpath($scopeDir);
-        if ($scopeDir === false || !str_starts_with($scopeDir, $artifactRoot . DIRECTORY_SEPARATOR)) {
+        if ($scopeDir === false || !hub_storage_path_is_within($scopeDir, $artifactRoot)
+            || hub_storage_paths_equal($scopeDir, $artifactRoot)) {
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
         }
         $artifactRoot = $scopeDir;
@@ -3082,7 +3109,8 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $handoffDir = realpath($handoffDir);
-    if ($handoffDir === false || !str_starts_with($handoffDir, $artifactRoot . DIRECTORY_SEPARATOR)) {
+    if ($handoffDir === false || !hub_storage_path_is_within($handoffDir, $artifactRoot)
+        || hub_storage_paths_equal($handoffDir, $artifactRoot)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
 
@@ -3133,7 +3161,8 @@ function hub_pack_job_remove_published_handoff(int $taskId, string $handoffId, ?
         return false;
     }
     $artifactRoot = realpath($taskResultDir . '/artifacts');
-    if ($artifactRoot === false || is_link($artifactRoot) || !str_starts_with($artifactRoot, $taskResultDir . DIRECTORY_SEPARATOR)) {
+    if ($artifactRoot === false || is_link($artifactRoot) || !hub_storage_path_is_within($artifactRoot, $taskResultDir)
+        || hub_storage_paths_equal($artifactRoot, $taskResultDir)) {
         return false;
     }
     $parent = $artifactRoot;
@@ -3142,7 +3171,9 @@ function hub_pack_job_remove_published_handoff(int $taskId, string $handoffId, ?
     }
     $handoffDir = $parent . '/' . $handoffId;
     $realHandoffDir = realpath($handoffDir);
-    if ($realHandoffDir === false || $realHandoffDir !== $handoffDir || !str_starts_with($realHandoffDir, $parent . DIRECTORY_SEPARATOR)) {
+    if ($realHandoffDir === false || !hub_storage_paths_equal($realHandoffDir, $handoffDir)
+        || !hub_storage_path_is_within($realHandoffDir, $parent)
+        || hub_storage_paths_equal($realHandoffDir, $parent)) {
         return false;
     }
     $removed = hub_pack_job_remove_published_handoff_dir($realHandoffDir);
@@ -3184,7 +3215,7 @@ function hub_pack_job_published_artifact_path(string $handoffDir, string $name):
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $parent = realpath($parent);
-    if ($parent === false || !str_starts_with($parent, $handoffDir . DIRECTORY_SEPARATOR) && $parent !== $handoffDir) {
+    if ($parent === false || !hub_storage_path_is_within($parent, $handoffDir)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $destination = $parent . '/' . basename($name);
@@ -3298,7 +3329,7 @@ function hub_handoff_pack_job_artifacts(PDO $db, int $taskId, ?array $run, array
             clearstatcache(true, $destination);
             $path = realpath($destination);
             $stat = $path === false ? false : lstat($path);
-            if ($path === false || !str_starts_with($path, $handoffDir . DIRECTORY_SEPARATOR) || is_link($path)
+            if ($path === false || !hub_pack_job_artifact_path_is_within($path, $handoffDir) || is_link($path)
                 || !is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
                 hub_pack_job_output_contract_invalid('artifact_handoff_failed');
             }
@@ -3351,7 +3382,8 @@ function hub_revalidate_published_pack_job_artifacts(int $taskId, array $publish
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $artifactRoot = realpath($artifactRootPath);
-    if ($artifactRoot === false || !str_starts_with($artifactRoot, $taskResultDir . DIRECTORY_SEPARATOR)) {
+    if ($artifactRoot === false || !hub_storage_path_is_within($artifactRoot, $taskResultDir)
+        || hub_storage_paths_equal($artifactRoot, $taskResultDir)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
     $names = [];
@@ -3379,7 +3411,9 @@ function hub_revalidate_published_pack_job_artifacts(int $taskId, array $publish
         $path = realpath($handoffDir . '/' . $name);
         clearstatcache(true, $handoffDir . '/' . $name);
         $stat = $path === false ? false : lstat($path);
-        if ($path === false || $path !== ($artifact['path'] ?? null) || !str_starts_with($path, $handoffDir . DIRECTORY_SEPARATOR) || is_link($path)
+        if ($path === false || !is_string($artifact['path'] ?? null)
+            || !hub_pack_job_artifact_paths_equal($path, $artifact['path'])
+            || !hub_pack_job_artifact_path_is_within($path, $handoffDir) || is_link($path)
             || !is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000) || (int)($stat['nlink'] ?? 0) !== 1) {
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
         }
@@ -4413,7 +4447,8 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
     }
     try {
         hub_revalidate_published_pack_job_artifacts($taskId, $publishedArtifacts);
-    } catch (HubPackOutputContractInvalid) {
+    } catch (HubPackOutputContractInvalid $e) {
+        hub_add_task_log($db, $taskId, 'error', 'Pack output contract rejected: ' . $e->getMessage());
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
@@ -4470,7 +4505,8 @@ function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $v
     hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
     try {
         $publishedArtifacts = hub_handoff_pack_job_artifacts($db, $taskId, $run, $validatedArtifacts, $gpuLease, $afterHandoff);
-    } catch (HubPackOutputContractInvalid) {
+    } catch (HubPackOutputContractInvalid $e) {
+        hub_add_task_log($db, $taskId, 'error', 'Pack output contract rejected: ' . $e->getMessage());
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
@@ -4536,7 +4572,8 @@ function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string
     try {
         hub_pack_job_require_submitted_output_dir($db, $taskId, $run, $workspace);
         $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe, $runnerConfig, $sourceAudioAttestation);
-    } catch (HubPackOutputContractInvalid) {
+    } catch (HubPackOutputContractInvalid $e) {
+        hub_add_task_log($db, $taskId, 'error', 'Pack output contract rejected: ' . $e->getMessage());
         hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];

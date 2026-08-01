@@ -146,7 +146,7 @@ class SynthesizeTest(unittest.TestCase):
             json.loads((self.output_dir / "speech_timeline.json").read_text(encoding="utf-8")),
             {
                 "version": 1,
-                "unit": "milliseconds",
+                "unit": "ms",
                 "duration_ms": 1500,
                 "sentences": [{"text": "Hello world.", "start_ms": 0, "end_ms": 1500}],
                 "words": [

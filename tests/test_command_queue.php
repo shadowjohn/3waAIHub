@@ -113,11 +113,13 @@ hub_test('Windows command worker rejects Linux Docker maintenance without invoki
         ]);
         $internalService = hub_get_service_by_mode($workerDb, 'internal_worker_fixture');
         $internalStateBefore = array_intersect_key($internalService, array_flip(['enabled', 'status', 'runtime_status']));
+        $removableService = hub_install_pack($workerDb, 'whisper-asr', ['service_key' => 'worker-remove-asr'])['service'];
         $maintenanceJobId = hub_enqueue_command_job($workerDb, 'docker_prune_check', null, [], null, '127.0.0.1');
         $healthJobId = hub_enqueue_command_job($workerDb, 'service_health_check', (int)$service['id'], [], null, '127.0.0.1');
         $restartJobId = hub_enqueue_command_job($workerDb, 'service_restart', (int)$internalService['id'], [], null, '127.0.0.1');
         $logsJobId = hub_enqueue_command_job($workerDb, 'service_logs_collect', (int)$internalService['id'], [], null, '127.0.0.1');
-        foreach ([$maintenanceJobId, $healthJobId, $restartJobId, $logsJobId] as $jobId) {
+        $removeJobId = hub_enqueue_command_job($workerDb, 'service_remove', (int)$removableService['id'], [], null, '127.0.0.1');
+        foreach ([$maintenanceJobId, $healthJobId, $restartJobId, $logsJobId, $removeJobId] as $jobId) {
             $stdoutPath = $workerRoot . '/job_' . $jobId . '.out.log';
             $stderrPath = $workerRoot . '/job_' . $jobId . '.err.log';
             file_put_contents($stdoutPath, '');
@@ -132,7 +134,7 @@ hub_test('Windows command worker rejects Linux Docker maintenance without invoki
         }
 
         $result = hub_run_command(
-            [PHP_BINARY, HUB_ROOT . '/scripts/command_worker.php', '--limit=4'],
+            [PHP_BINARY, HUB_ROOT . '/scripts/command_worker.php', '--limit=5'],
             30,
             ['AIHUB_TEST_DB' => $workerDbPath]
         );
@@ -154,12 +156,15 @@ hub_test('Windows command worker rejects Linux Docker maintenance without invoki
         }
         $internalStateAfter = hub_get_service($workerDb, (int)$internalService['id']);
         hub_test_assert(array_intersect_key($internalStateAfter, array_flip(['enabled', 'status', 'runtime_status'])) === $internalStateBefore, 'internal-task restart/logs must preserve service state');
+        $removeJob = hub_get_command_job($workerDb, $removeJobId);
+        hub_test_assert($removeJob['status'] === 'success' && (int)$removeJob['exit_code'] === 0, 'stopped unsupported service removal must bypass the Windows Docker gate');
+        hub_test_assert(hub_get_service($workerDb, (int)$removableService['id']) === null, 'stopped unsupported service must be removed by the command worker');
         $internalLogs = $workerDb->query('SELECT action, output FROM service_logs WHERE service_id = ' . (int)$internalService['id'] . ' ORDER BY id')->fetchAll();
         hub_test_assert($internalLogs === [
             ['action' => 'restart', 'output' => 'internal_task restart no-op'],
             ['action' => 'docker_logs', 'output' => 'internal_task logs no-op'],
         ], 'internal-task restart/logs must record explicit no-op service logs');
-        foreach ([$maintenanceJobId, $healthJobId, $restartJobId, $logsJobId] as $jobId) {
+        foreach ([$maintenanceJobId, $healthJobId, $restartJobId, $logsJobId, $removeJobId] as $jobId) {
             $job = hub_get_command_job($workerDb, $jobId);
             hub_test_assert(str_starts_with(hub_normalize_host_path((string)$job['stdout_path']), hub_normalize_host_path($workerRoot) . '/'), 'worker stdout log must stay inside the isolated test root');
             hub_test_assert(str_starts_with(hub_normalize_host_path((string)$job['stderr_path']), hub_normalize_host_path($workerRoot) . '/'), 'worker stderr log must stay inside the isolated test root');

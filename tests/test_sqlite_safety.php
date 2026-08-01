@@ -147,6 +147,19 @@ hub_test('storage canonical comparison rejects a file as an ancestor', function 
     hub_test_assert(!hub_storage_path_is_within($path, HUB_DATA_DIR), 'file ancestor path passed containment');
 });
 
+hub_test('Windows Pack artifacts compare regular file paths canonically', function (): void {
+    if (hub_platform_id() !== 'windows') {
+        hub_test_skip('regular artifact file path comparison is Windows-specific');
+    }
+    $path = realpath(HUB_ROOT . '/README.md');
+    hub_test_assert($path !== false && is_file($path), 'README file fixture is unavailable');
+    hub_test_assert(
+        hub_pack_job_artifact_paths_equal($path, str_replace('\\', '/', $path))
+        && hub_pack_job_artifact_path_is_within($path, HUB_ROOT),
+        'Pack artifact regular file path comparison rejected Windows separators'
+    );
+});
+
 hub_test('storage canonical comparison rejects surrounding whitespace', function (): void {
     foreach ([' ' . HUB_ROOT, HUB_ROOT . ' '] as $path) {
         hub_test_assert(hub_storage_canonical_comparison_path($path) === null, 'whitespace path canonicalized: ' . $path);

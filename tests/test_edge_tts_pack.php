@@ -815,6 +815,7 @@ hub_test('Edge TTS queues only for an authorized token after administrator enabl
         $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
         hub_test_assert($queued['status'] === 200 && ($payload['ok'] ?? false) === true && ($payload['status'] ?? '') === 'queued'
             && is_array($task) && ($task['requested_mode'] ?? '') === 'edge_tts'
+            && ($task['queue_name'] ?? '') === 'cpu' && ($task['accelerator'] ?? '') === 'cpu'
             && json_decode((string)($task['input_json'] ?? ''), true) === [
                 'text' => 'Taiwan Edge TTS',
                 'include_subtitles' => true,

@@ -183,6 +183,8 @@ hub_test('web capture Pack and README publish the allowlist bridge contract', fu
         hub_test_assert(str_contains($section, $needle), 'Web Screenshot README section missing ' . $needle);
     }
     hub_test_assert(!str_contains($section, 'scripts/install_capture_egress_network.sh --check'), 'Web Screenshot README section must not require the obsolete egress installer');
+    $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/web-screenshot/service/Dockerfile');
+    hub_test_assert(str_contains($dockerfile, 'sed -i \'s/\\r$//\' capture.js'), 'Web Screenshot image must normalize the executable Node entrypoint for WSL source sync');
 });
 
 hub_test('Web Screenshot runner image provisioning uses the declared WSL source only', function (): void {
@@ -227,7 +229,12 @@ hub_test('Web Screenshot WSL execution keeps the Playwright firewall and declare
         'task' => ['pack_id' => 'web-screenshot', 'job' => 'capture'],
         'run' => ['run_id' => 'packjob-42-abcdef0123456789'],
         'workspace' => $workspace,
-        'runner' => $job['runner'],
+        'runner' => hub_pack_job_runner_arguments(
+            $job['runner'],
+            ['id' => 42],
+            ['run_id' => 'packjob-42-abcdef0123456789'],
+            $workspace
+        ),
     ];
     try {
         $plan = hub_web_screenshot_wsl_execution_plan($service, $context, $profile);

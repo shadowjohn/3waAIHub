@@ -38,10 +38,17 @@ try {
     }
 
     Set-Location -LiteralPath $InstallRoot
-    $metricsOutput = @(& $phpExe $metrics 2>&1)
-    $metricsExitCode = $LASTEXITCODE
-    $workerOutput = @(& $phpExe $worker '--limit=5' 2>&1)
-    $workerExitCode = $LASTEXITCODE
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        # PHP 將預期的 job 錯誤寫到 stderr；只記錄，不能中斷後續 job finish。
+        $ErrorActionPreference = 'Continue'
+        $metricsOutput = @(& $phpExe $metrics 2>&1)
+        $metricsExitCode = $LASTEXITCODE
+        $workerOutput = @(& $phpExe $worker '--limit=5' 2>&1)
+        $workerExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $lines = @("[$timestamp] host_metrics exit=$metricsExitCode") + @($metricsOutput | ForEach-Object { [string]$_ })
     $lines += @("[$timestamp] command_worker exit=$workerExitCode") + @($workerOutput | ForEach-Object { [string]$_ })

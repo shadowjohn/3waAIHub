@@ -163,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 | Windows 11 | 建議 `3waAIHub Core（Control Plane）` + `WSL Runtime（Preview）` |
 | Windows Server | 預設 `3waAIHub Core（Control Plane）`；`WSL Runtime（Preview）` 選配；`Remote Linux Agent` 推薦；不建議或嘗試安裝 Docker Desktop |
 
-`windows-wsl2-linux-docker` 目前提供固定 distro／`/DATA/3waAIHub-runtime`／YOLO Local Job vertical slice；Windows control plane 尚不會把 UI 或 queue 的 `linux-docker` job 自動改送 WSL。Windows 直接選用 `linux-docker` 時，仍會在呼叫 Docker 前以 `exit 78`、`error_code=platform_target_unsupported` 回報不支援。
+`windows-wsl2-linux-docker` 目前提供固定 distro／`/DATA/3waAIHub-runtime` 的 YOLO Local Job、Web Screenshot CPU Pack Job，以及 Edge TTS CPU Pack Job 三條明確 vertical slice。Web Screenshot 與 Edge TTS 僅在 Pack 明確宣告 WSL job target、runtime profile ready 時，才會由 PHP task worker 經 `wsl.exe` 呼叫 WSL Docker；前者維持 container-local fail-closed egress firewall，後者只允許 Edge Speech upstream，兩者都只回收既有 artifact contract 宣告的檔案。Edge TTS 的 Marketplace Build 只驗證／建立 WSL image；Start 才生成已驗證的 demo voices 並啟用 internal task，並不建立常駐容器。其他 UI 或 queue 的 `linux-docker` job 不會自動改送 WSL。Windows 直接選用 `linux-docker` 時，仍會在呼叫 Docker 前以 `exit 78`、`error_code=platform_target_unsupported` 回報不支援。
 
 GTX 1050／1050 Ti／1080／1080 Ti（Pascal）會選取 `pascal-cu118` profile，使用 CUDA 11.8 與 PyTorch CU118；較新 NVIDIA GPU 使用 default profile。YOLO model 仍由 `/DATA/models/yolo` 管理，安裝器不下載模型。
 

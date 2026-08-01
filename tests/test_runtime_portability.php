@@ -1,6 +1,20 @@
 <?php
 declare(strict_types=1);
 
+function hub_test_wsl_script_payload(array $command): string
+{
+    $script = (string)end($command);
+    if (preg_match('/printf %s ([A-Za-z0-9+\\/=]+) \\| base64 -d \\| bash/', $script, $matches) !== 1) {
+        throw new RuntimeException('WSL command payload is missing.');
+    }
+    $value = base64_decode($matches[1], true);
+    if ($value === false) {
+        throw new RuntimeException('WSL command payload is invalid.');
+    }
+
+    return $value;
+}
+
 hub_test('PhaseRuntime-0 platform and path helpers keep host and container paths separate', function (): void {
     hub_test_assert(hub_platform_id('Linux') === 'linux', 'Linux platform id mismatch');
     hub_test_assert(hub_platform_id('Windows') === 'windows', 'Windows platform id mismatch');
@@ -163,6 +177,130 @@ hub_test('Edge TTS explicitly selects the WSL job target only when ready', funct
         ],
     ]);
     hub_test_assert($notReady['target'] === 'windows-wsl2-linux-docker' && $notReady['supported'] === false, 'Edge TTS must report WSL readiness instead of falling through to Linux Docker');
+});
+
+hub_test('Edge TTS WSL provisioning uses synced source and preserves its demo egress boundary', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'edge-tts', [
+        'idempotent' => true,
+        'provision_runner' => false,
+        'initialize_edge_tts_demos' => false,
+    ])['service'];
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+    ]]];
+    $pack = hub_get_pack('edge-tts');
+    $contract = is_array($pack) ? hub_pack_container_runner_build_contract($pack['manifest'], $pack['dir']) : null;
+    hub_test_assert(is_array($contract)
+        && hub_service_requires_wsl_job_runtime($service, 'windows')
+        && !hub_service_requires_wsl_job_runtime($service, 'linux'), 'Edge TTS must require WSL only for Windows service lifecycle actions');
+
+    $image = '3waaihub/edge-tts:0.3.0';
+    $inspect = hub_wsl_job_runner_build_command($service, ['docker', 'image', 'inspect', '--format', '{{.Id}}', $image], $profile);
+    $build = hub_wsl_job_runner_build_command($service, ['docker', 'build', '--tag', $image, '--file', $contract['dockerfile'], $contract['context']], $profile);
+    $inspectPayload = hub_test_wsl_script_payload($inspect);
+    $buildPayload = hub_test_wsl_script_payload($build);
+    hub_test_assert(str_contains($inspectPayload, 'docker image inspect')
+        && str_contains($buildPayload, 'docker build')
+        && str_contains($buildPayload, "service_root='/DATA/3waAIHub-runtime/packs/edge-tts/service'")
+        && str_contains($buildPayload, '--file "$service_root/Dockerfile" "$service_root"')
+        && !str_contains($buildPayload, str_replace('\\', '/', HUB_ROOT)), 'Edge TTS WSL image provisioning must use synced WSL Pack source only');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_wsl_job_runner_build_command($service, ['docker', 'pull', $image], $profile)), 'Edge TTS WSL builder must reject undeclared Docker commands');
+
+    $parent = dirname(hub_edge_tts_demo_root((string)$service['service_key']));
+    if (!is_dir($parent) && !mkdir($parent, 0700, true) && !is_dir($parent)) {
+        throw new RuntimeException('Cannot create Edge TTS WSL demo staging fixture.');
+    }
+    $staging = $parent . '/.staging-' . bin2hex(random_bytes(16));
+    if (!mkdir($staging, 0700)) {
+        throw new RuntimeException('Cannot create Edge TTS WSL demo staging directory.');
+    }
+    $containerName = 'edge-tts-demo-' . (string)$service['service_key'] . '-' . bin2hex(random_bytes(16));
+    try {
+        $demo = hub_edge_tts_wsl_demo_command($service, [
+            'docker', 'run', '--pull=never', '--network', 'bridge', '--cap-add', 'NET_ADMIN',
+            '--mount', 'type=bind,src=' . $staging . ',dst=/workspace/output',
+            '--name', $containerName, '--entrypoint', '/app/edge-tts-entrypoint.sh',
+            $image, '/app/generate_demos.py',
+        ], $profile);
+        $demoPayload = hub_test_wsl_script_payload($demo);
+        $cleanupPayload = hub_test_wsl_script_payload(hub_edge_tts_wsl_demo_command(
+            $service,
+            ['docker', 'container', 'inspect', '--format', '{{json .State}}', $containerName],
+            $profile
+        ));
+        hub_test_assert(str_contains($demoPayload, 'wslpath -a "$windows_staging"')
+            && str_contains($demoPayload, '--network bridge')
+            && str_contains($demoPayload, '--cap-add NET_ADMIN')
+            && str_contains($demoPayload, "demo_root='/DATA/3waAIHub-runtime/demos/edge-tts/edge-tts-main/")
+            && str_contains($demoPayload, 'type=bind,src=$demo_root/output,dst=/workspace/output')
+            && str_contains($demoPayload, 'copy_demo_file')
+            && str_contains($cleanupPayload, "'docker' 'container' 'inspect'")
+            && !str_contains($demoPayload, '--gpus'), 'Edge TTS WSL demos must use ext4 output before copying only verified demo files to Windows staging');
+    } finally {
+        @rmdir($staging);
+    }
+});
+
+hub_test('Edge TTS WSL task plan copies only declared artifacts and rejects an unready target early', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'edge-tts', [
+        'idempotent' => true,
+        'provision_runner' => false,
+        'initialize_edge_tts_demos' => false,
+    ])['service'];
+    $pack = hub_get_pack('edge-tts');
+    $job = is_array($pack) ? hub_pack_async_job_contract($pack['manifest'], 'synthesize') : null;
+    hub_test_assert(is_array($job), 'Edge TTS synthesize job contract is required');
+    $workspace = HUB_DATA_DIR . '/results/edge-tts-wsl-plan-' . bin2hex(random_bytes(8));
+    foreach (['input', 'output', 'checkpoints'] as $name) {
+        if (!mkdir($workspace . '/' . $name, 0700, true)) {
+            throw new RuntimeException('Cannot create Edge TTS WSL workspace fixture.');
+        }
+    }
+    if (file_put_contents($workspace . '/input/request.json', "{\"text\":\"WSL Edge TTS\",\"include_subtitles\":true}\n", LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write Edge TTS WSL request fixture.');
+    }
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+    ]]];
+    $context = [
+        'task' => ['id' => 42, 'pack_id' => 'edge-tts', 'job' => 'synthesize', 'input' => ['include_subtitles' => true]],
+        'run' => ['run_id' => 'packjob-42-edge0123456789'],
+        'workspace' => $workspace,
+        'runner' => hub_pack_job_runner_arguments($job['runner'], ['id' => 42], ['run_id' => 'packjob-42-edge0123456789'], $workspace),
+    ];
+    try {
+        $plan = hub_edge_tts_wsl_execution_plan($service, $context, $profile);
+        $payload = hub_test_wsl_script_payload($plan['command']);
+        hub_test_assert(($plan['container_id'] ?? '') === 'aihub-pack-packjob-42-edge0123456789'
+            && str_contains($payload, '/DATA/3waAIHub-runtime/jobs/edge-tts/packjob-42-edge0123456789')
+            && str_contains($payload, 'generated_audio.mp3')
+            && str_contains($payload, 'synthesis_metadata.json')
+            && str_contains($payload, 'subtitle.vtt')
+            && str_contains($payload, 'subtitle.srt')
+            && str_contains($payload, 'speech_timeline.json')
+            && str_contains($payload, "'--network' 'bridge'")
+            && str_contains($payload, "'--cap-add' 'NET_ADMIN'")
+            && !str_contains($payload, 'cp -a')
+            && !str_contains($payload, '--gpus'), 'Edge TTS WSL task must copy only its declared public-egress artifacts');
+
+        $called = false;
+        $unready = ['runtime_targets' => ['windows-wsl2-linux-docker' => ['supported' => false]]];
+        $result = hub_edge_tts_wsl_executor($service, $context, static function () use (&$called): array {
+            $called = true;
+            return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+        }, $unready);
+        hub_test_assert(($result['exit_code'] ?? null) === HUB_EXIT_UNSUPPORTED
+            && ($result['error_code'] ?? '') === 'platform_target_unsupported'
+            && !$called, 'an unready WSL target must reject Edge TTS before running Docker');
+    } finally {
+        hub_test_remove_data_tree($workspace);
+    }
 });
 
 hub_test('runtime profile loader reads host-local readiness metadata', function (): void {

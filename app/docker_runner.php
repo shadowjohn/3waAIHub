@@ -273,6 +273,16 @@ function hub_service_uses_wsl_runtime(array $service, ?string $platform = null, 
     return $resolution['target'] === 'windows-wsl2-linux-docker' && !empty($resolution['supported']);
 }
 
+function hub_service_requires_wsl_job_runtime(array $service, ?string $platform = null): bool
+{
+    if (hub_platform_id($platform) !== 'windows') {
+        return false;
+    }
+    $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
+
+    return is_array($pack['manifest'] ?? null) && !empty($pack['manifest']['runtime']['windows_wsl_job']);
+}
+
 function hub_service_runtime_unsupported_result(array $service, ?string $platform = null, ?array $profile = null): ?array
 {
     $resolution = hub_service_runtime_resolution($service, $platform, $profile);
@@ -332,9 +342,36 @@ function hub_wsl_script_command(array $runtime, string $script): array
     return ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $command];
 }
 
-function hub_web_screenshot_wsl_runtime_required(array $service): bool
+function hub_wsl_job_runner_build_command(array $service, array $docker, ?array $profile = null): array
 {
-    return hub_platform_id() === 'windows' && (string)($service['pack_id'] ?? '') === 'web-screenshot';
+    $packId = (string)($service['pack_id'] ?? '');
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $pack = hub_get_pack($packId);
+    $build = is_array($pack) ? hub_pack_container_runner_build_contract((array)$pack['manifest'], (string)$pack['dir']) : null;
+    if ($runtime === null || $build === null || ($pack['manifest']['id'] ?? null) !== $packId
+        || empty($pack['manifest']['runtime']['windows_wsl_job'])) {
+        throw new RuntimeException('WSL Runtime is not ready for this Pack.');
+    }
+
+    $image = (string)$build['image'];
+    $inspect = ['docker', 'image', 'inspect', '--format', '{{.Id}}', $image];
+    $buildCommand = ['docker', 'build', '--tag', $image, '--file', (string)$build['dockerfile'], (string)$build['context']];
+    if ($docker !== $inspect && $docker !== $buildCommand) {
+        throw new InvalidArgumentException('Unexpected WSL Pack Docker build command.');
+    }
+
+    $serviceRoot = (string)$runtime['runtime_root'] . '/packs/' . $packId . '/service';
+    $script = "set -eu\n"
+        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
+        . 'if [ ! -f "$service_root/Dockerfile" ]; then echo "WSL Pack source unavailable: $service_root/Dockerfile. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n";
+    if ($docker === $inspect) {
+        $script .= 'exec docker image inspect --format ' . hub_wsl_shell_literal('{{.Id}}') . ' ' . hub_wsl_shell_literal($image) . "\n";
+    } else {
+        $script .= 'exec docker build --progress=quiet --tag ' . hub_wsl_shell_literal($image)
+            . ' --file "$service_root/Dockerfile" "$service_root"' . "\n";
+    }
+
+    return hub_wsl_script_command($runtime, $script);
 }
 
 function hub_web_screenshot_wsl_runner_build_command(array $service, array $docker, ?array $profile = null): array
@@ -342,32 +379,95 @@ function hub_web_screenshot_wsl_runner_build_command(array $service, array $dock
     if ((string)($service['pack_id'] ?? '') !== 'web-screenshot') {
         throw new InvalidArgumentException('Web Screenshot service is required.');
     }
+
+    return hub_wsl_job_runner_build_command($service, $docker, $profile);
+}
+
+function hub_edge_tts_wsl_demo_command(array $service, array $docker, ?array $profile = null): array
+{
+    if ((string)($service['pack_id'] ?? '') !== 'edge-tts') {
+        throw new InvalidArgumentException('Edge TTS service is required.');
+    }
     $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
-    $pack = hub_get_pack('web-screenshot');
+    $pack = hub_get_pack('edge-tts');
     $build = is_array($pack) ? hub_pack_container_runner_build_contract((array)$pack['manifest'], (string)$pack['dir']) : null;
-    if ($runtime === null || $build === null || (string)$build['image'] !== '3waaihub/web-screenshot:0.1.2') {
-        throw new RuntimeException('WSL Runtime is not ready for Web Screenshot.');
+    $serviceKey = (string)($service['service_key'] ?? '');
+    if ($runtime === null || $build === null || ($pack['manifest']['runtime']['windows_wsl_job'] ?? false) !== true
+        || preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1) {
+        throw new RuntimeException('WSL Runtime is not ready for Edge TTS.');
     }
 
     $image = (string)$build['image'];
-    $inspect = ['docker', 'image', 'inspect', '--format', '{{.Id}}', $image];
-    $buildCommand = ['docker', 'build', '--tag', $image, '--file', (string)$build['dockerfile'], (string)$build['context']];
-    if ($docker !== $inspect && $docker !== $buildCommand) {
-        throw new InvalidArgumentException('Unexpected Web Screenshot Docker build command.');
+    $containerPrefix = 'edge-tts-demo-' . $serviceKey . '-';
+    $isRun = ($docker[0] ?? null) === 'docker' && ($docker[1] ?? null) === 'run';
+    $nameIndex = array_search('--name', $docker, true);
+    $containerName = $isRun && is_int($nameIndex)
+        ? (string)($docker[$nameIndex + 1] ?? '')
+        : (string)end($docker);
+    if (preg_match('/^' . preg_quote($containerPrefix, '/') . '[a-f0-9]{32}$/', $containerName) !== 1) {
+        throw new InvalidArgumentException('Unexpected Edge TTS demo container.');
+    }
+    if ($isRun) {
+        $mountIndex = array_search('--mount', $docker, true);
+        $mount = is_int($mountIndex) ? (string)($docker[$mountIndex + 1] ?? '') : '';
+        if (preg_match('#^type=bind,src=(.+),dst=/workspace/output$#', $mount, $matches) !== 1) {
+            throw new InvalidArgumentException('Unexpected Edge TTS demo mount.');
+        }
+        $staging = $matches[1];
+        $parent = dirname(hub_edge_tts_demo_root($serviceKey));
+        if (!is_dir($staging) || is_link($staging) || !hub_storage_path_is_within($staging, $parent)
+            || preg_match('/^\.staging-[a-f0-9]{32}$/', basename($staging)) !== 1) {
+            throw new InvalidArgumentException('Edge TTS demo staging is unavailable.');
+        }
+        $expected = [
+            'docker', 'run', '--pull=never', '--network', 'bridge', '--cap-add', 'NET_ADMIN',
+            '--mount', $mount, '--name', $containerName, '--entrypoint', '/app/edge-tts-entrypoint.sh',
+            $image, '/app/generate_demos.py',
+        ];
+        if ($docker !== $expected) {
+            throw new InvalidArgumentException('Unexpected Edge TTS demo Docker command.');
+        }
+
+        $runId = substr($containerName, strlen($containerPrefix));
+        $demoRoot = (string)$runtime['runtime_root'] . '/demos/edge-tts/' . $serviceKey . '/' . $runId;
+        $demoFiles = ['available.json'];
+        foreach (hub_edge_tts_voice_catalog() as $voice) {
+            $demoFiles[] = (string)$voice['demo_file'];
+        }
+        $copyCommands = '';
+        foreach ($demoFiles as $demoFile) {
+            $copyCommands .= 'copy_demo_file ' . hub_wsl_shell_literal($demoFile) . "\n";
+        }
+
+        $script = "set -eu\n"
+            . 'windows_staging=' . hub_wsl_shell_literal($staging) . "\n"
+            . 'host_staging="$(wslpath -a "$windows_staging")"' . "\n"
+            . 'demo_root=' . hub_wsl_shell_literal($demoRoot) . "\n"
+            . 'if [ ! -d "$host_staging" ] || [ -L "$host_staging" ]; then echo "Edge TTS demo staging is unavailable." >&2; exit 2; fi' . "\n"
+            . 'cleanup() { docker container rm -f ' . hub_wsl_shell_literal($containerName) . ' >/dev/null 2>&1 || true; rm -rf "$demo_root"; }' . "\n"
+            . 'trap cleanup EXIT' . "\n"
+            . 'install -d -m 0700 "$demo_root/output"' . "\n"
+            . 'docker run --pull=never --network bridge --cap-add NET_ADMIN --mount "type=bind,src=$demo_root/output,dst=/workspace/output"'
+            . ' --name ' . hub_wsl_shell_literal($containerName)
+            . ' --entrypoint ' . hub_wsl_shell_literal('/app/edge-tts-entrypoint.sh')
+            . ' ' . hub_wsl_shell_literal($image)
+            . ' ' . hub_wsl_shell_literal('/app/generate_demos.py') . "\n"
+            . 'copy_demo_file() { source="$demo_root/output/$1"; [ ! -e "$source" ] && return 0; [ -f "$source" ] && [ ! -L "$source" ] || exit 2; cp -- "$source" "$host_staging/$1"; }' . "\n"
+            . $copyCommands;
+
+        return hub_wsl_script_command($runtime, $script);
     }
 
-    $serviceRoot = (string)$runtime['runtime_root'] . '/packs/web-screenshot/service';
-    $script = "set -eu\n"
-        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
-        . 'if [ ! -f "$service_root/Dockerfile" ]; then echo "WSL Pack source unavailable: $service_root/Dockerfile. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n";
-    if ($docker === $inspect) {
-        $script .= 'exec docker image inspect --format ' . hub_wsl_shell_literal('{{.Id}}') . ' ' . hub_wsl_shell_literal($image) . "\n";
-    } else {
-        $script .= 'exec docker build --tag ' . hub_wsl_shell_literal($image)
-            . ' --file "$service_root/Dockerfile" "$service_root"' . "\n";
+    $allowed = [
+        ['docker', 'container', 'inspect', '--format', '{{json .State}}', $containerName],
+        ['docker', 'stop', '-t', '10', $containerName],
+        ['docker', 'container', 'rm', '-f', $containerName],
+    ];
+    if (!in_array($docker, $allowed, true)) {
+        throw new InvalidArgumentException('Unexpected Edge TTS demo Docker command.');
     }
 
-    return hub_wsl_script_command($runtime, $script);
+    return hub_wsl_script_command($runtime, 'exec ' . implode(' ', array_map('hub_wsl_shell_literal', $docker)));
 }
 
 function hub_service_runtime_inspection_command(array $service, array $command, ?string $platform = null, ?array $profile = null): ?array
@@ -524,7 +624,7 @@ function hub_start_service(PDO $db, array $service): array
 
 function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 {
-    if (!hub_service_is_internal_task($service) || hub_web_screenshot_wsl_runtime_required($service)) {
+    if (!hub_service_is_internal_task($service) || hub_service_requires_wsl_job_runtime($service)) {
         $unsupported = hub_service_runtime_unsupported_result($service);
         if ($unsupported !== null) {
             return $unsupported;
@@ -594,7 +694,7 @@ function hub_service_build_timeout_sec(array $service): int
 
 function hub_build_service(PDO $db, array $service, ?array $job = null): array
 {
-    if (!hub_service_is_internal_task($service) || hub_web_screenshot_wsl_runtime_required($service)) {
+    if (!hub_service_is_internal_task($service) || hub_service_requires_wsl_job_runtime($service)) {
         $unsupported = hub_service_runtime_unsupported_result($service);
         if ($unsupported !== null) {
             return $unsupported;
@@ -602,11 +702,12 @@ function hub_build_service(PDO $db, array $service, ?array $job = null): array
     }
 
     hub_job_progress($db, $job, 'prepare_service_dir', 5, 'Preparing service runtime.');
-    $service = hub_refresh_service_runtime_files($db, $service);
+    $service = hub_refresh_service_runtime_files($db, $service, false);
     if (hub_service_is_internal_task($service)) {
-        $result = hub_internal_task_result('internal_task build no-op');
+        $message = hub_service_requires_wsl_job_runtime($service) ? 'WSL runner image verified.' : 'internal_task build no-op';
+        $result = hub_internal_task_result($message);
         hub_add_service_log($db, (int)$service['id'], 'build', $result['output'], 0);
-        hub_job_progress($db, $job, 'docker_build', 70, 'internal_task build no-op.');
+        hub_job_progress($db, $job, 'docker_build', 70, $message);
         return $result;
     }
     hub_job_progress($db, $job, 'docker_build', 20, 'Building image: ' . hub_service_image_tag($service));
@@ -622,7 +723,7 @@ function hub_build_service(PDO $db, array $service, ?array $job = null): array
     return $result;
 }
 
-function hub_refresh_service_runtime_files(PDO $db, array $service): array
+function hub_refresh_service_runtime_files(PDO $db, array $service, bool $initializeEdgeTtsDemos = true): array
 {
     if (empty($service['pack_id']) || empty($service['service_key'])) {
         return $service;
@@ -640,10 +741,16 @@ function hub_refresh_service_runtime_files(PDO $db, array $service): array
         'env' => is_array($env) ? $env : [],
         'idempotent' => true,
     ];
-    if (hub_web_screenshot_wsl_runtime_required($service)) {
+    if (hub_service_requires_wsl_job_runtime($service)) {
         $options['runner_build_runner'] = static function (array $docker, int $timeoutSeconds) use ($service): array {
-            return hub_run_command(hub_web_screenshot_wsl_runner_build_command($service, $docker), $timeoutSeconds);
+            return hub_run_command(hub_wsl_job_runner_build_command($service, $docker), $timeoutSeconds);
         };
+    }
+    if (hub_service_requires_wsl_job_runtime($service) && (string)($service['pack_id'] ?? '') === 'edge-tts') {
+        $options['edge_tts_demo_runner'] = static function (array $docker, int $timeoutSeconds) use ($service): array {
+            return hub_run_command(hub_edge_tts_wsl_demo_command($service, $docker), $timeoutSeconds);
+        };
+        $options['initialize_edge_tts_demos'] = $initializeEdgeTtsDemos;
     }
     hub_install_pack($db, (string)$service['pack_id'], $options);
 
@@ -953,9 +1060,11 @@ function hub_remove_service(PDO $db, array $service, array $job): array
             }
 
             hub_job_progress($db, $job, 'validate_removal', 5, 'Validating generated runtime files.');
-            $stop = hub_stop_service($db, $current, $job);
-            if ((int)$stop['exit_code'] !== 0) {
-                return ['result' => $stop];
+            if (hub_service_runtime_unsupported_result($current) === null) {
+                $stop = hub_stop_service($db, $current, $job);
+                if ((int)$stop['exit_code'] !== 0) {
+                    return ['result' => $stop];
+                }
             }
             if (hub_service_generated_runtime_files($db, $current) === null) {
                 return ['result' => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Service runtime files are not managed.', 'output' => 'Service runtime files are not managed.', 'error_code' => 'service_runtime_unmanaged']];
