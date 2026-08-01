@@ -508,6 +508,9 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
         $status = json_decode((string)($station['status_json'] ?? ''), true);
         $status = is_array($status) ? $status : [];
         $gpu = is_array($status['gpu'] ?? null) ? $status['gpu'] : [];
+        $serviceGpu = is_array($status['service_gpu'] ?? null)
+            ? hub_cluster_compact_service_gpu_snapshot($status['service_gpu'])
+            : [];
         $report = hub_cluster_compact_status_report_fields($status) ?? [];
         $compatibility = hub_release_station_report($station, $localRelease);
         $rows[] = [
@@ -529,6 +532,7 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
             'gpu_free_vram_mb' => (int)($gpu['memory_free_mb'] ?? 0),
             'gpu_total_vram_mb' => (int)($gpu['memory_total_mb'] ?? 0),
             'gpu' => $gpu,
+            'service_gpu' => $serviceGpu ?? [],
             'active_gpu_leases' => (int)$inventory['active_gpu_leases'],
             'queued_jobs' => (int)$inventory['queued_jobs'],
             'running_jobs' => (int)$inventory['running_jobs'],
@@ -4043,6 +4047,9 @@ function hub_cluster_status_payload(PDO $db, ?array $release = null): array
     $gpu = is_array($latestMetrics['data']['gpu'] ?? null)
         ? $latestMetrics['data']['gpu']
         : ['available' => false, 'reason' => 'host_metrics_unavailable'];
+    $serviceGpu = is_array($latestMetrics['data']['service_gpu'] ?? null)
+        ? hub_cluster_compact_service_gpu_snapshot($latestMetrics['data']['service_gpu'])
+        : [];
     $lease = $db->prepare(
         "SELECT COUNT(*) FROM runtime_resource_leases
          WHERE state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
@@ -4063,6 +4070,7 @@ function hub_cluster_status_payload(PDO $db, ?array $release = null): array
         'queued_jobs' => (int)$queued,
         'running_jobs' => (int)$running,
         'modes' => $publishedModes,
+        'service_gpu' => $serviceGpu ?? [],
     ];
     $report = hub_cluster_compact_status_report_fields([
         'release' => is_array($release['git'] ?? null) ? $release['git'] : [],
@@ -4639,6 +4647,48 @@ function hub_cluster_compact_gpu_snapshot(array $gpu): array
     return $compact;
 }
 
+function hub_cluster_compact_service_gpu_snapshot(array $rows): ?array
+{
+    if (!array_is_list($rows) || count($rows) > 256) {
+        return null;
+    }
+
+    $fields = ['service_key', 'mode', 'vram_used_mb', 'measured'];
+    $serviceKeys = [];
+    $modes = [];
+    $compact = [];
+    foreach ($rows as $row) {
+        if (
+            !is_array($row)
+            || array_diff(array_keys($row), $fields) !== []
+            || array_diff($fields, array_keys($row)) !== []
+            || !is_string($row['service_key'] ?? null)
+            || preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/', $row['service_key']) !== 1
+            || !is_string($row['mode'] ?? null)
+            || preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $row['mode']) !== 1
+            || !is_int($row['vram_used_mb'] ?? null)
+            || $row['vram_used_mb'] < 0
+            || $row['vram_used_mb'] > 1_000_000_000
+            || ($row['measured'] ?? null) !== true
+            || isset($serviceKeys[$row['service_key']])
+            || isset($modes[$row['mode']])
+        ) {
+            return null;
+        }
+
+        $serviceKeys[$row['service_key']] = true;
+        $modes[$row['mode']] = true;
+        $compact[] = [
+            'service_key' => $row['service_key'],
+            'mode' => $row['mode'],
+            'vram_used_mb' => $row['vram_used_mb'],
+            'measured' => true,
+        ];
+    }
+
+    return $compact;
+}
+
 function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = null): ?array
 {
     if (
@@ -4679,6 +4729,16 @@ function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = n
         return null;
     }
     $gpu = hub_cluster_compact_gpu_snapshot($status['gpu']);
+    $serviceGpu = null;
+    if (array_key_exists('service_gpu', $status)) {
+        if (!is_array($status['service_gpu'])) {
+            return null;
+        }
+        $serviceGpu = hub_cluster_compact_service_gpu_snapshot($status['service_gpu']);
+        if ($serviceGpu === null) {
+            return null;
+        }
+    }
 
     $snapshot = array_merge([
         'snapshot_at' => $snapshotAt,
@@ -4690,6 +4750,9 @@ function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = n
     ], $report);
     if ($displayName !== null) {
         $snapshot['display_name'] = $displayName;
+    }
+    if ($serviceGpu !== null) {
+        $snapshot['service_gpu'] = $serviceGpu;
     }
 
     return $snapshot;
