@@ -18,7 +18,8 @@ never an estimate or a share of total GPU memory.
    distro and PID namespace.
 4. Add compact per-service measured telemetry to the host metric snapshot and
    cluster status payload. The router keeps only validated `service_key`,
-   `vram_used_mb`, and measurement state.
+   `mode`, `vram_used_mb`, and measurement state; `mode` joins the existing
+   child Dashboard service table without changing public API contracts.
 5. Add an i18n-aware `實際 VRAM` column to `admin/index.php` for local and
    selected child stations.
 
