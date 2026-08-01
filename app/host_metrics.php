@@ -47,14 +47,164 @@ function hub_collect_host_metrics(PDO $db): array
 {
     hub_cli_only();
     hub_ensure_default_storage_settings($db);
+    $services = hub_list_services($db);
 
     return [
         'gpu' => hub_collect_gpu_metric(),
+        'service_gpu' => hub_collect_service_gpu_metrics($services),
         'host' => hub_collect_host_metric($db),
         'docker' => hub_collect_docker_metric(),
         'storage' => hub_collect_storage_metric($db),
         'counts' => hub_collect_aihub_counts($db),
     ];
+}
+
+function hub_service_gpu_integer(string $value, int $minimum, int $maximum): ?int
+{
+    $value = trim($value);
+    if (preg_match('/\A\d+\z/', $value) !== 1) {
+        return null;
+    }
+
+    $significant = ltrim($value, '0');
+    $significant = $significant === '' ? '0' : $significant;
+    $maximumText = (string)$maximum;
+    if (
+        strlen($significant) > strlen($maximumText)
+        || (strlen($significant) === strlen($maximumText) && strcmp($significant, $maximumText) > 0)
+    ) {
+        return null;
+    }
+
+    $number = (int)$significant;
+    return $number >= $minimum ? $number : null;
+}
+
+function hub_collect_service_gpu_metrics(array $services, ?callable $runner = null, ?string $platform = null, ?array $profile = null): array
+{
+    $runner ??= 'hub_run_command';
+    $rows = [];
+    $gpuCommand = ['nvidia-smi', '--query-compute-apps=pid,used_memory', '--format=csv,noheader,nounits'];
+
+    foreach ($services as $service) {
+        if (!is_array($service) || (string)($service['install_status'] ?? '') !== 'installed' || (string)($service['runtime_status'] ?? '') !== 'running') {
+            continue;
+        }
+
+        $serviceKey = $service['service_key'] ?? null;
+        $mode = $service['mode'] ?? null;
+        $project = $service['compose_project'] ?? null;
+        if (
+            !is_string($serviceKey) || preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/', $serviceKey) !== 1
+            || !is_string($mode) || preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $mode) !== 1
+            || !is_string($project) || preg_match('/\A[a-z0-9][a-z0-9_-]{0,127}\z/', $project) !== 1
+        ) {
+            continue;
+        }
+
+        $run = static function (array $command) use ($service, $runner, $platform, $profile): ?array {
+            $runtimeCommand = hub_service_runtime_inspection_command($service, $command, $platform, $profile);
+            if ($runtimeCommand === null) {
+                return null;
+            }
+
+            $result = $runner($runtimeCommand, 10);
+            return is_array($result) && ($result['exit_code'] ?? 1) === 0 && is_string($result['stdout'] ?? null)
+                ? $result
+                : null;
+        };
+
+        $gpuResult = $run($gpuCommand);
+        if ($gpuResult === null) {
+            continue;
+        }
+
+        $gpuProcesses = [];
+        $gpuOutput = trim($gpuResult['stdout']);
+        $valid = true;
+        if ($gpuOutput !== '') {
+            foreach (preg_split('/\R/', $gpuOutput) ?: [] as $line) {
+                $parts = explode(',', $line);
+                if (count($parts) !== 2) {
+                    $valid = false;
+                    break;
+                }
+                $pid = hub_service_gpu_integer($parts[0], 1, PHP_INT_MAX);
+                $memory = hub_service_gpu_integer($parts[1], 0, 1_000_000_000);
+                if ($pid === null || $memory === null) {
+                    $valid = false;
+                    break;
+                }
+                $gpuProcesses[] = ['pid' => $pid, 'memory' => $memory];
+            }
+        }
+        if (!$valid) {
+            continue;
+        }
+
+        $containersResult = $run(['docker', 'ps', '-q', '--filter', 'label=com.docker.compose.project=' . $project]);
+        if ($containersResult === null) {
+            continue;
+        }
+        $containerIds = array_values(array_filter(array_map('trim', preg_split('/\R/', $containersResult['stdout']) ?: []), static fn (string $id): bool => $id !== ''));
+        if ($containerIds === []) {
+            continue;
+        }
+
+        $containerPids = [];
+        foreach ($containerIds as $containerId) {
+            if (preg_match('/\A[a-f0-9]{12,64}\z/i', $containerId) !== 1) {
+                $valid = false;
+                break;
+            }
+            $topResult = $run(['docker', 'top', $containerId, '-eo', 'pid']);
+            if ($topResult === null) {
+                $valid = false;
+                break;
+            }
+            $pids = array_values(array_filter(array_map('trim', preg_split('/\R/', $topResult['stdout']) ?: []), static fn (string $pid): bool => $pid !== ''));
+            if (($pids[0] ?? '') !== 'PID') {
+                $valid = false;
+                break;
+            }
+            array_shift($pids);
+            foreach ($pids as $pid) {
+                $pid = hub_service_gpu_integer($pid, 1, PHP_INT_MAX);
+                if ($pid === null) {
+                    $valid = false;
+                    break 2;
+                }
+                $containerPids[$pid] = true;
+            }
+        }
+        if (!$valid) {
+            continue;
+        }
+
+        $used = 0;
+        foreach ($gpuProcesses as $process) {
+            if (!isset($containerPids[$process['pid']])) {
+                continue;
+            }
+            if ($used > 1_000_000_000 - $process['memory']) {
+                $valid = false;
+                break;
+            }
+            $used += $process['memory'];
+        }
+        if (!$valid) {
+            continue;
+        }
+
+        $rows[] = [
+            'service_key' => $serviceKey,
+            'mode' => $mode,
+            'vram_used_mb' => $used,
+            'measured' => true,
+        ];
+    }
+
+    return $rows;
 }
 
 function hub_collect_gpu_metric(?callable $collector = null): array

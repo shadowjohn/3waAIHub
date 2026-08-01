@@ -286,9 +286,9 @@ function hub_service_runtime_unsupported_result(array $service): ?array
     return hub_unsupported_runtime_result((string)$resolution['target'], (string)($resolution['reason'] ?? 'Runtime target is not available.'));
 }
 
-function hub_wsl_service_runtime(array $service): ?array
+function hub_wsl_service_runtime(array $service, ?string $platform = null, ?array $profile = null): ?array
 {
-    $resolution = hub_service_runtime_resolution($service);
+    $resolution = hub_service_runtime_resolution($service, $platform, $profile);
     if ($resolution['target'] !== 'windows-wsl2-linux-docker' || empty($resolution['supported'])) {
         return null;
     }
@@ -330,6 +330,24 @@ function hub_wsl_script_command(array $runtime, string $script): array
         . ' -- bash -lc ' . hub_windows_powershell_literal($bashCommand)
         . '; exit $LASTEXITCODE';
     return ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', $command];
+}
+
+function hub_service_runtime_inspection_command(array $service, array $command, ?string $platform = null, ?array $profile = null): ?array
+{
+    if (hub_service_uses_wsl_runtime($service, $platform, $profile)) {
+        $runtime = hub_wsl_service_runtime($service, $platform, $profile);
+        if ($runtime === null) {
+            return null;
+        }
+
+        $script = 'exec ' . implode(' ', array_map('hub_wsl_shell_literal', $command));
+        return hub_wsl_script_command($runtime, $script);
+    }
+
+    $resolution = hub_service_runtime_resolution($service, $platform, $profile);
+    return !empty($resolution['supported']) && ($resolution['target'] ?? '') === 'linux-docker'
+        ? $command
+        : null;
 }
 
 function hub_wsl_service_compose_command(array $service, array $args): array

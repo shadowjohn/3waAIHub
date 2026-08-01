@@ -266,6 +266,157 @@ hub_test('Windows Docker facts do not probe Linux Docker storage or emit Linux r
     hub_test_assert($suggestions === [], 'Windows Core must not emit Linux repair commands');
 });
 
+hub_test('service GPU metrics sum only compute PIDs owned by a running Linux service', function (): void {
+    $service = [
+        'service_key' => 'ocr-gpu',
+        'mode' => 'ocr',
+        'compose_project' => '3waaihub_ocr_gpu',
+        'install_status' => 'installed',
+        'runtime_status' => 'running',
+    ];
+    $commands = [];
+    $rows = hub_collect_service_gpu_metrics([$service], static function (array $command, int $timeoutSeconds) use (&$commands): array {
+        $commands[] = $command;
+        $stdout = match ($command) {
+            ['nvidia-smi', '--query-compute-apps=pid,used_memory', '--format=csv,noheader,nounits'] => "101, 1024\n202, 512\n303, 99\n",
+            ['docker', 'ps', '-q', '--filter', 'label=com.docker.compose.project=3waaihub_ocr_gpu'] => "abcdef123456\n",
+            ['docker', 'top', 'abcdef123456', '-eo', 'pid'] => "PID\n101\n202\n",
+            default => throw new RuntimeException('unexpected command: ' . json_encode($command)),
+        };
+        return ['exit_code' => 0, 'stdout' => $stdout, 'stderr' => '', 'output' => $stdout];
+    }, 'linux');
+
+    hub_test_assert($rows === [[
+        'service_key' => 'ocr-gpu',
+        'mode' => 'ocr',
+        'vram_used_mb' => 1536,
+        'measured' => true,
+    ]], 'only GPU PIDs inside the registered service container may be summed');
+    hub_test_assert(count($commands) === 3, 'Linux service GPU collection must inspect GPU, project containers, and container PIDs');
+});
+
+hub_test('service GPU metrics record zero only after successful unmatched PID inspection', function (): void {
+    $service = [
+        'service_key' => 'ocr-gpu',
+        'mode' => 'ocr',
+        'compose_project' => '3waaihub_ocr_gpu',
+        'install_status' => 'installed',
+        'runtime_status' => 'running',
+    ];
+    $rows = hub_collect_service_gpu_metrics([$service], static function (array $command, int $timeoutSeconds): array {
+        $stdout = match ($command) {
+            ['nvidia-smi', '--query-compute-apps=pid,used_memory', '--format=csv,noheader,nounits'] => "501, 444\n",
+            ['docker', 'ps', '-q', '--filter', 'label=com.docker.compose.project=3waaihub_ocr_gpu'] => "abcdef123456\n",
+            ['docker', 'top', 'abcdef123456', '-eo', 'pid'] => "PID\n601\n",
+            default => throw new RuntimeException('unexpected command: ' . json_encode($command)),
+        };
+        return ['exit_code' => 0, 'stdout' => $stdout, 'stderr' => '', 'output' => $stdout];
+    }, 'linux');
+
+    hub_test_assert($rows === [[
+        'service_key' => 'ocr-gpu',
+        'mode' => 'ocr',
+        'vram_used_mb' => 0,
+        'measured' => true,
+    ]], 'a complete inspection with no owned GPU PID must retain measured zero');
+});
+
+hub_test('service GPU metrics omit unverifiable service measurements', function (): void {
+    $service = [
+        'service_key' => 'ocr-gpu',
+        'mode' => 'ocr',
+        'compose_project' => '3waaihub_ocr_gpu',
+        'install_status' => 'installed',
+        'runtime_status' => 'running',
+    ];
+    $gpuCommand = ['nvidia-smi', '--query-compute-apps=pid,used_memory', '--format=csv,noheader,nounits'];
+    $dockerPs = ['docker', 'ps', '-q', '--filter', 'label=com.docker.compose.project=3waaihub_ocr_gpu'];
+    $dockerTop = ['docker', 'top', 'abcdef123456', '-eo', 'pid'];
+    $cases = [
+        ['name' => 'non-integer GPU PID', 'responses' => [json_encode($gpuCommand) => "oops, 512\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n101\n"]],
+        ['name' => 'non-integer memory', 'responses' => [json_encode($gpuCommand) => "101, 512.5\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n101\n"]],
+        ['name' => 'negative memory', 'responses' => [json_encode($gpuCommand) => "101, -1\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n101\n"]],
+        ['name' => 'oversized memory', 'responses' => [json_encode($gpuCommand) => "101, 1000000001\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\n101\n"]],
+        ['name' => 'non-integer container PID', 'responses' => [json_encode($gpuCommand) => "101, 512\n", json_encode($dockerPs) => "abcdef123456\n", json_encode($dockerTop) => "PID\nnot-a-pid\n"]],
+        ['name' => 'no container', 'responses' => [json_encode($gpuCommand) => "101, 512\n", json_encode($dockerPs) => '']],
+        ['name' => 'command failure', 'responses' => [json_encode($gpuCommand) => ['exit_code' => 1, 'stdout' => '', 'stderr' => 'failed', 'output' => 'failed']]],
+    ];
+
+    foreach ($cases as $case) {
+        $name = $case['name'];
+        $responses = $case['responses'];
+        $rows = hub_collect_service_gpu_metrics([$service], static function (array $command, int $timeoutSeconds) use ($responses): array {
+            $key = json_encode($command);
+            $response = $responses[$key] ?? null;
+            if (is_array($response) && array_key_exists('exit_code', $response)) {
+                return $response;
+            }
+            if (!is_string($response)) {
+                throw new RuntimeException('unexpected command: ' . $key);
+            }
+            return ['exit_code' => 0, 'stdout' => $response, 'stderr' => '', 'output' => $response];
+        }, 'linux');
+        hub_test_assert($rows === [], 'unverifiable service GPU measurement must be omitted: ' . $name);
+    }
+});
+
+hub_test('service GPU metrics use the configured WSL runtime and never Windows host inspection', function (): void {
+    $service = [
+        'pack_id' => 'taiwan-address',
+        'service_key' => 'taiwan-address-gpu',
+        'mode' => 'taiwan_address_gpu',
+        'compose_project' => '3waaihub_taiwan_address_gpu',
+        'install_status' => 'installed',
+        'runtime_status' => 'running',
+    ];
+    $profile = ['runtime_targets' => [
+        'windows-wsl2-linux-docker' => [
+            'supported' => true,
+            'distro' => 'Ubuntu-24.04',
+            'runtime_root' => '/DATA/3waAIHub-runtime',
+        ],
+    ]];
+    $commands = [];
+    $rows = hub_collect_service_gpu_metrics([$service], static function (array $command, int $timeoutSeconds) use (&$commands): array {
+        $commands[] = $command;
+        hub_test_assert(($command[0] ?? '') === 'powershell.exe', 'WSL inspection must use PowerShell to invoke the configured distro');
+        $powershell = (string)end($command);
+        hub_test_assert(str_contains($powershell, "-d 'Ubuntu-24.04'"), 'WSL inspection must use the configured distro');
+        hub_test_assert(preg_match('/printf %s ([A-Za-z0-9+\\/=]+) \\| base64 -d \\| bash/', $powershell, $matches) === 1, 'WSL inspection must use the shared script command wrapper');
+        $script = base64_decode($matches[1], true);
+        hub_test_assert($script !== false, 'WSL inspection script must be decodable');
+        $stdout = match (true) {
+            str_contains($script, "exec 'nvidia-smi'") => "101, 1536\n",
+            str_contains($script, "exec 'docker' 'ps' '-q'") => "abcdef123456\n",
+            str_contains($script, "exec 'docker' 'top' 'abcdef123456' '-eo' 'pid'") => "PID\n101\n",
+            default => throw new RuntimeException('unexpected WSL script: ' . $script),
+        };
+        return ['exit_code' => 0, 'stdout' => $stdout, 'stderr' => '', 'output' => $stdout];
+    }, 'windows', $profile);
+
+    hub_test_assert($rows === [[
+        'service_key' => 'taiwan-address-gpu',
+        'mode' => 'taiwan_address_gpu',
+        'vram_used_mb' => 1536,
+        'measured' => true,
+    ]], 'WSL service GPU metrics must use only the configured Linux runtime view');
+    hub_test_assert(count($commands) === 3, 'WSL service must issue all inspections through the configured distro');
+
+    $nativeWindowsCalls = 0;
+    $nativeWindows = hub_collect_service_gpu_metrics([[
+        'service_key' => 'native-windows',
+        'mode' => 'native_windows',
+        'compose_project' => '3waaihub_native_windows',
+        'install_status' => 'installed',
+        'runtime_status' => 'running',
+    ]], static function () use (&$nativeWindowsCalls): array {
+        $nativeWindowsCalls++;
+        return ['exit_code' => 0, 'stdout' => '', 'stderr' => '', 'output' => ''];
+    }, 'windows', []);
+    hub_test_assert($nativeWindows === [], 'unsupported native Windows service GPU inspection must remain unknown');
+    hub_test_assert($nativeWindowsCalls === 0, 'unsupported native Windows service must not invoke host nvidia-smi or Docker');
+});
+
 hub_test('Windows environment UI renders N/A neutrally with unambiguous role labels', function (): void {
     foreach (['admin/environment.php', 'admin/index.php', 'admin/settings.php'] as $file) {
         $source = (string)file_get_contents(HUB_ROOT . '/' . $file);
