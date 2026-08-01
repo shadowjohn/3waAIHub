@@ -124,10 +124,11 @@ function hub_pack_runtime_target_resolution(array $manifest, ?string $platform =
 {
     $platform = hub_platform_id($platform);
     $targets = hub_normalize_platform_targets($manifest);
-    $usesWslCompose = !empty($manifest['runtime']['windows_wsl_compose']);
+    $usesWslTransport = !empty($manifest['runtime']['windows_wsl_compose'])
+        || !empty($manifest['runtime']['windows_wsl_job']);
     $wslDeclared = !empty($targets['windows-wsl2-linux-docker']['supported']);
 
-    if ($platform === 'windows' && $usesWslCompose && $wslDeclared) {
+    if ($platform === 'windows' && $usesWslTransport && $wslDeclared) {
         return hub_runtime_target_resolution('windows-wsl2-linux-docker', $platform, $profile);
     }
 

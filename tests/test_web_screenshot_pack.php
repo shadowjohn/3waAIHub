@@ -120,7 +120,9 @@ hub_test('web capture Pack and README publish the allowlist bridge contract', fu
     hub_test_assert(($manifest['version'] ?? '') === '0.1.2'
         && ($manifest['runner_build']['image'] ?? '') === '3waaihub/web-screenshot:0.1.2'
         && ($job['runner']['image'] ?? '') === '3waaihub/web-screenshot:0.1.2'
-        && ($job['runner']['network_profile'] ?? '') === 'public_egress', 'web capture must retain the public-egress 0.1.2 Pack image contract');
+        && ($job['runner']['network_profile'] ?? '') === 'public_egress'
+        && !empty($manifest['runtime']['windows_wsl_job'])
+        && !empty($manifest['platform_targets']['windows-wsl2-linux-docker']), 'web capture must retain the public-egress 0.1.2 Pack image and explicit WSL job contract');
     $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
     $route = hub_resolve_pack_job_async_route($db, 'web_capture');
     hub_test_assert(($installed['service']['pack_version'] ?? null) === '0.1.2'

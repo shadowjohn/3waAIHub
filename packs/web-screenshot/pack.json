@@ -11,7 +11,12 @@
   "default_mode": "web_capture",
   "description": "Capture a screenshot from one public HTTP or HTTPS URL.",
   "runtime": {
-    "kind": "internal_task"
+    "kind": "internal_task",
+    "windows_wsl_job": true
+  },
+  "platform_targets": {
+    "linux-docker": true,
+    "windows-wsl2-linux-docker": true
   },
   "runner_build": {
     "context": "service",

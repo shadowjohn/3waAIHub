@@ -120,6 +120,28 @@ hub_test('explicit Pack WSL metadata selects only the declared WSL target', func
     hub_test_assert($direct['target'] === 'linux-docker' && $direct['supported'] === false, 'ordinary Docker Packs must stay direct-target blocked on Windows');
 });
 
+hub_test('Web Screenshot explicitly selects the WSL job target only when ready', function (): void {
+    $profile = [
+        'runtime_targets' => [
+            'windows-wsl2-linux-docker' => [
+                'supported' => true,
+                'distro' => 'Ubuntu-24.04',
+                'runtime_root' => '/DATA/3waAIHub-runtime',
+            ],
+        ],
+    ];
+    $pack = hub_get_pack('web-screenshot');
+    hub_test_assert(is_array($pack), 'Web Screenshot Pack must be available');
+    $wsl = hub_pack_runtime_target_resolution($pack['manifest'], 'windows', $profile);
+    hub_test_assert($wsl['target'] === 'windows-wsl2-linux-docker' && $wsl['supported'] === true, 'Web Screenshot must select its explicit WSL job target');
+
+    $direct = hub_pack_runtime_target_resolution([
+        'runtime' => ['kind' => 'internal_task'],
+        'platform_targets' => ['linux-docker' => true, 'windows-wsl2-linux-docker' => true],
+    ], 'windows', $profile);
+    hub_test_assert($direct['target'] === 'linux-docker' && $direct['supported'] === false, 'an internal Pack without windows_wsl_job must remain blocked');
+});
+
 hub_test('runtime profile loader reads host-local readiness metadata', function (): void {
     $path = sys_get_temp_dir() . '/3waaihub_runtime_profile_' . getmypid() . '.json';
     try {
