@@ -692,6 +692,14 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
     foreach (['station-connection', 'station-connection--online'] as $needle) {
         hub_test_assert(str_contains($baseCss, $needle), 'shared station connectivity style missing ' . $needle);
     }
+    foreach ([
+        'body.app .dashboard-table thead th:nth-child(1) { width: 31%; }',
+        'body.app .dashboard-table thead th:nth-child(2) { width: 24%; }',
+        'body.app .dashboard-table thead th:nth-child(3) { width: 23%; }',
+        'body.app .dashboard-table thead th:nth-child(4) { width: 22%; }',
+    ] as $needle) {
+        hub_test_assert(str_contains($dashboardCss, $needle), 'dashboard mobile service table missing four-column width: ' . $needle);
+    }
 
     foreach ([
         '<th>Mode</th><th><?= hub_h(__(\'實際 VRAM\')) ?></th><th><?= hub_h(__(\'狀態\')) ?></th>',

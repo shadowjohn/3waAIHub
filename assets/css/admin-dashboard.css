@@ -290,7 +290,8 @@ body.app .dashboard-table code { white-space: nowrap; }
     overflow-wrap: anywhere;
   }
   body.app .dashboard-table code { white-space: normal; }
-  body.app .dashboard-table thead th:nth-child(1) { width: 42%; }
-  body.app .dashboard-table thead th:nth-child(2) { width: 36%; }
-  body.app .dashboard-table thead th:nth-child(3) { width: 22%; }
+  body.app .dashboard-table thead th:nth-child(1) { width: 31%; }
+  body.app .dashboard-table thead th:nth-child(2) { width: 24%; }
+  body.app .dashboard-table thead th:nth-child(3) { width: 23%; }
+  body.app .dashboard-table thead th:nth-child(4) { width: 22%; }
 }
