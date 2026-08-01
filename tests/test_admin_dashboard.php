@@ -250,6 +250,25 @@ hub_test('child dashboard ignores matching service keys when telemetry mode diff
     hub_test_assert(!array_key_exists('gpu_vram_used_mb', $service), 'child service with a mismatched mode must remain unknown');
 });
 
+hub_test('dashboard service GPU merge omits duplicate local and child service targets', function (): void {
+    $measurement = [
+        ['service_key' => 'shared-gpu', 'mode' => 'ocr', 'vram_used_mb' => 512, 'measured' => true],
+    ];
+    $local = hub_admin_dashboard_services_with_gpu([
+        ['service_key' => 'shared-gpu', 'mode' => 'ocr'],
+        ['service_key' => 'shared-gpu', 'mode' => 'ocr_alt'],
+    ], $measurement, 'service_key');
+    $child = hub_admin_dashboard_services_with_gpu([
+        ['mode' => 'ocr'],
+        ['mode' => 'ocr'],
+    ], $measurement, 'mode');
+
+    foreach (array_merge($local, $child) as $service) {
+        hub_test_assert(!array_key_exists('gpu_vram_measured', $service), 'ambiguous service target must not receive VRAM attribution');
+        hub_test_assert(!array_key_exists('gpu_vram_used_mb', $service), 'ambiguous service target must remain unknown');
+    }
+});
+
 hub_test('dashboard service GPU merge omits absent or invalid telemetry', function (): void {
     $services = [
         ['service_key' => 'absent-gpu', 'mode' => 'absent'],

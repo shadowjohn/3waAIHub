@@ -84,16 +84,24 @@ function hub_admin_dashboard_services_with_gpu(array $services, array $measureme
         $byMode[$measurement['mode']] = $measurement;
     }
 
+    $pattern = $matchBy === 'service_key'
+        ? '/\A[a-z0-9][a-z0-9_-]{0,63}\z/'
+        : '/\A[A-Za-z0-9_-]{1,64}\z/';
+    $targetCounts = [];
+    foreach ($services as $service) {
+        $identifier = is_array($service) ? ($service[$matchBy] ?? null) : null;
+        if (is_string($identifier) && preg_match($pattern, $identifier) === 1) {
+            $targetCounts[$identifier] = ($targetCounts[$identifier] ?? 0) + 1;
+        }
+    }
+
     $usedMeasurements = [];
     foreach ($services as $index => $service) {
         if (!is_array($service)) {
             continue;
         }
         $identifier = $service[$matchBy] ?? null;
-        $pattern = $matchBy === 'service_key'
-            ? '/\A[a-z0-9][a-z0-9_-]{0,63}\z/'
-            : '/\A[A-Za-z0-9_-]{1,64}\z/';
-        if (!is_string($identifier) || preg_match($pattern, $identifier) !== 1) {
+        if (!is_string($identifier) || preg_match($pattern, $identifier) !== 1 || ($targetCounts[$identifier] ?? 0) !== 1) {
             continue;
         }
         $measurement = $matchBy === 'service_key'
