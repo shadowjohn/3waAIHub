@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "tts-voxcpm2",
   "name": "VoxCPM2 Experimental TTS Service",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "category": "audio",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -23,7 +23,7 @@
   "runner_build": {
     "context": ".",
     "dockerfile": "service/Dockerfile",
-    "image": "3waaihub/tts-voxcpm2:0.1.6"
+    "image": "3waaihub/tts-voxcpm2:0.1.7"
   },
   "gateway": {
     "health_path": "/health",
@@ -75,7 +75,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/tts-voxcpm2:0.1.6",
+        "image": "3waaihub/tts-voxcpm2:0.1.7",
         "entrypoint": ["/app/voice-generate"],
         "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
         "output_dir": "output",
@@ -92,6 +92,12 @@
             "required_paths": ["config.json"]
           }
         ]
+      },
+      "resident": {
+        "protocol": "service_data_v1",
+        "mode_setting": "VOXCPM2_EXECUTION_MODE",
+        "mode_value": "resident",
+        "min_free_vram_setting": "VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB"
       },
       "runner_config": {
         "alias_input": "model",
@@ -298,6 +304,39 @@
   },
   "settings_schema": [
     {
+      "key": "VOXCPM2_EXECUTION_MODE",
+      "label": "執行模式",
+      "type": "select",
+      "default": "isolated",
+      "options": ["isolated", "resident"],
+      "option_labels": {
+        "isolated": "一次性容器",
+        "resident": "常駐模型"
+      },
+      "required": true,
+      "restart_required": true,
+      "install_option": true
+    },
+    {
+      "key": "VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB",
+      "label": "常駐模式最低可用 VRAM (MB)",
+      "type": "integer",
+      "default": "1024",
+      "min": 0,
+      "max": 16384,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "VOXCPM2_INTERNAL_JOB_TOKEN",
+      "label": "內部工作權杖",
+      "type": "secret",
+      "secret": true,
+      "default": "",
+      "required": true,
+      "restart_required": true
+    },
+    {
       "key": "VOXCPM2_MODEL_ID",
       "label": "VoxCPM2 model",
       "type": "text",
@@ -379,8 +418,8 @@
       "key": "VOXCPM2_IDLE_UNLOAD_SECONDS",
       "label": "Idle unload seconds",
       "type": "integer",
-      "default": "900",
-      "min": 60,
+      "default": "0",
+      "min": 0,
       "max": 86400,
       "required": true,
       "restart_required": true
@@ -403,6 +442,21 @@
     }
   ],
   "env": [
+    {
+      "name": "VOXCPM2_EXECUTION_MODE",
+      "default": "isolated",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB",
+      "default": "1024",
+      "required": true
+    },
+    {
+      "name": "VOXCPM2_INTERNAL_JOB_TOKEN",
+      "default": "",
+      "required": true
+    },
     {
       "name": "VOXCPM2_MODEL_ID",
       "default": "openbmb/VoxCPM2",
@@ -450,7 +504,7 @@
     },
     {
       "name": "VOXCPM2_IDLE_UNLOAD_SECONDS",
-      "default": "900",
+      "default": "0",
       "required": true
     },
     {

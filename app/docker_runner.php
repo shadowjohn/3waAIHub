@@ -1133,6 +1133,7 @@ function hub_restart_service(PDO $db, array $service, ?array $job = null): array
         return $unsupported;
     }
 
+    $service = hub_refresh_service_runtime_files($db, $service);
     $requiresRecreate = (int)($service['restart_required'] ?? 0) === 1;
     if ($requiresRecreate && !hub_service_image_exists($service)) {
         if (hub_get_storage_setting($db, 'AIHUB_AUTO_BUILD_MISSING_IMAGE') !== '1') {

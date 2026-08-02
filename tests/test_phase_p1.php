@@ -116,6 +116,60 @@ SH
     }
 });
 
+hub_test('PhaseP-1 restart refreshes an old VoxCPM2 runtime before checking its image', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'tts-voxcpm2', [
+        'service_key' => 'voxcpm2-refresh-restart',
+        'mode' => 'voxcpm2_refresh_restart',
+    ])['service'];
+    $db->prepare('UPDATE services SET pack_version = :version, restart_required = 1 WHERE id = :id')->execute([
+        ':version' => '0.1.6',
+        ':id' => (int)$service['id'],
+    ]);
+    $service = hub_get_service($db, (int)$service['id']);
+    hub_test_assert($service !== null, 'old VoxCPM2 service missing');
+    $oldTag = hub_service_image_tag($service);
+    file_put_contents(hub_path((string)$service['compose_file']), "services:\n  voxcpm2:\n    image: " . $oldTag . "\n");
+
+    $dir = sys_get_temp_dir() . '/3waaihub_voxcpm2_restart_' . bin2hex(random_bytes(4));
+    $bin = $dir . '/bin';
+    $log = $dir . '/docker.log';
+    mkdir($bin, 0775, true);
+    file_put_contents($bin . '/docker', <<<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$MOCK_DOCKER_LOG"
+case " $* " in
+  *" ps "*) echo "running" ;;
+esac
+exit 0
+SH
+    );
+    chmod($bin . '/docker', 0755);
+    $path = getenv('PATH');
+    try {
+        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        putenv('MOCK_DOCKER_LOG=' . $log);
+
+        $result = hub_restart_service($db, $service);
+        $refreshed = hub_get_service($db, (int)$service['id']);
+        $commands = (string)file_get_contents($log);
+        $expectedTag = $refreshed ? hub_service_image_tag($refreshed) : '';
+        $compose = (string)file_get_contents(hub_path((string)$service['compose_file']));
+
+        hub_test_assert($result['exit_code'] === 0, 'VoxCPM2 restart must succeed with a refreshed runtime');
+        hub_test_assert(($refreshed['pack_version'] ?? '') === '0.1.7' && str_ends_with($expectedTag, ':0.1.7'), 'restart must refresh the stored VoxCPM2 version before resolving its image');
+        hub_test_assert(str_contains($commands, 'image inspect ' . $expectedTag) && !str_contains($commands, $oldTag), 'restart must inspect only the refreshed VoxCPM2 image tag');
+        hub_test_assert(str_contains($compose, 'image: ' . $expectedTag), 'restart must regenerate the refreshed VoxCPM2 compose image');
+    } finally {
+        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        putenv('MOCK_DOCKER_LOG');
+        @unlink($bin . '/docker');
+        @unlink($log);
+        @rmdir($bin);
+        @rmdir($dir);
+    }
+});
+
 hub_test('PhaseP-1 hello compose keeps legacy service name to avoid orphan conflict', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_key($db, 'hello-main');

@@ -4258,5 +4258,30 @@
         "title": "帳號密碼",
         "lang": "en",
         "trans": "Account password"
+    },
+    {
+        "title": "執行模式",
+        "lang": "en",
+        "trans": "Execution mode"
+    },
+    {
+        "title": "一次性容器",
+        "lang": "en",
+        "trans": "One-shot container"
+    },
+    {
+        "title": "常駐模型",
+        "lang": "en",
+        "trans": "Resident model"
+    },
+    {
+        "title": "常駐模式最低可用 VRAM (MB)",
+        "lang": "en",
+        "trans": "Resident minimum free VRAM (MB)"
+    },
+    {
+        "title": "內部工作權杖",
+        "lang": "en",
+        "trans": "Internal job token"
     }
 ]

@@ -103,6 +103,9 @@ function hub_service_setting_default(array $service, string $key, array $item): 
     if ($environmentOverride !== null) {
         return hub_validate_service_setting_value($item, $environmentOverride);
     }
+    if ((string)($service['pack_id'] ?? '') === 'tts-voxcpm2' && $key === 'VOXCPM2_INTERNAL_JOB_TOKEN') {
+        return bin2hex(random_bytes(32));
+    }
     if ((string)($service['pack_id'] ?? '') === 'ocr-ppocrv5' && hub_service_key_requests_gpu((string)($service['service_key'] ?? ''))) {
         return match ($key) {
             'OCR_USE_GPU' => '1',

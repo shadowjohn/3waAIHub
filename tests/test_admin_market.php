@@ -156,6 +156,54 @@ hub_test('canonical Market renders filtered category counts and collapsed techni
     );
 });
 
+hub_test('Marketplace limits install settings to declared scalar install options', function (): void {
+    $db = hub_test_reset_db();
+    hub_i18n_import_seed($db);
+    $page = hub_test_admin_market_request(['view' => 'market', 'category' => 'experimental']);
+
+    hub_test_assert($page['exit_code'] === 0, 'Marketplace audio render failed: ' . $page['output']);
+    hub_test_assert(str_contains($page['stdout'], 'name="install_setting[VOXCPM2_EXECUTION_MODE]"'), 'Marketplace must render the declared VoxCPM2 install selector');
+    hub_test_assert(!str_contains($page['stdout'], 'name="install_setting[VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB]"'), 'Marketplace must not render non-install VoxCPM2 settings');
+    hub_test_assert(!str_contains($page['stdout'], 'name="install_setting[VOXCPM2_INTERNAL_JOB_TOKEN]"'), 'Marketplace must not render generated VoxCPM2 secrets');
+
+    $post = [
+        'csrf_token' => 'test',
+        'pack_id' => 'tts-voxcpm2',
+        'service_key' => 'voxcpm2-market-resident',
+        'name' => 'VoxCPM2 Marketplace Resident',
+        'mode' => 'voxcpm2_market_resident',
+        'port_mode' => 'auto',
+        'environment' => 'production',
+        'install_setting' => [
+            'VOXCPM2_EXECUTION_MODE' => 'resident',
+            'VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB' => '4096',
+            'VOXCPM2_INTERNAL_JOB_TOKEN' => str_repeat('b', 64),
+        ],
+    ];
+    $install = hub_test_admin_market_request(['view' => 'market'], $post);
+    $service = hub_get_service_by_key($db, 'voxcpm2-market-resident');
+    $overrides = $service ? json_decode((string)$service['environment_json'], true) : null;
+
+    hub_test_assert($install['exit_code'] === 0 && $service !== null, 'Marketplace must install VoxCPM2 with an install option: ' . $install['output']);
+    hub_test_assert($overrides === ['VOXCPM2_EXECUTION_MODE' => 'resident'], 'Marketplace must pass only declared install options to the environment');
+
+    $invalid = hub_test_admin_market_request(['view' => 'market'], array_replace_recursive($post, [
+        'service_key' => 'voxcpm2-market-invalid',
+        'mode' => 'voxcpm2_market_invalid',
+        'install_setting' => ['VOXCPM2_EXECUTION_MODE' => 'not-a-mode'],
+    ]));
+    hub_test_assert(str_contains($invalid['stdout'], 'VOXCPM2_EXECUTION_MODE must be one of the allowed options.'), 'Marketplace must validate declared install settings against their schema');
+
+    $nonScalar = hub_test_admin_market_request(['view' => 'market'], array_replace_recursive($post, [
+        'service_key' => 'voxcpm2-market-nonscalar',
+        'mode' => 'voxcpm2_market_nonscalar',
+        'install_setting' => ['VOXCPM2_EXECUTION_MODE' => ['resident']],
+    ]));
+    $nonScalarService = hub_get_service_by_key($db, 'voxcpm2-market-nonscalar');
+    hub_test_assert($nonScalar['exit_code'] === 0 && $nonScalarService !== null, 'Marketplace must ignore non-scalar install setting input');
+    hub_test_assert((string)$nonScalarService['environment_json'] === '[]', 'non-scalar install setting input must not become an environment override');
+});
+
 hub_test('canonical installed services keeps operations links polling and collapsed details', function (): void {
     hub_test_reset_db();
     $result = hub_test_admin_market_request(['view' => 'services']);

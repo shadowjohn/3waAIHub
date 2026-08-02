@@ -63,6 +63,23 @@ function hub_marketplace_service_status_class(string $status): string
     ][$status] ?? 'hub-badge-muted';
 }
 
+function hub_marketplace_install_env(string $packId, mixed $rawValues): array
+{
+    if (!is_array($rawValues)) {
+        return [];
+    }
+
+    $values = [];
+    foreach (hub_get_pack_settings_schema($packId) as $key => $item) {
+        if (empty($item['install_option']) || !array_key_exists($key, $rawValues) || !is_scalar($rawValues[$key])) {
+            continue;
+        }
+        $values[$key] = hub_validate_service_setting_value($item, (string)$rawValues[$key]);
+    }
+
+    return $values;
+}
+
 $db = hub_db();
 $user = hub_require_system_admin($db);
 hub_migrate($db);
@@ -181,7 +198,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
         }
     } else {
         try {
-            $result = hub_install_pack($db, (string)($_POST['pack_id'] ?? ''), [
+            $packId = (string)($_POST['pack_id'] ?? '');
+            $result = hub_install_pack($db, $packId, [
                 'service_key' => trim((string)($_POST['service_key'] ?? '')),
                 'name' => trim((string)($_POST['name'] ?? '')),
                 'mode' => trim((string)($_POST['mode'] ?? '')),
@@ -189,6 +207,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
                 'local_port' => trim((string)($_POST['local_port'] ?? '')),
                 'environment' => (string)($_POST['environment'] ?? 'production'),
                 'hot_reload' => !empty($_POST['hot_reload']),
+                'env' => hub_marketplace_install_env($packId, $_POST['install_setting'] ?? []),
                 'provision_runner' => false,
             ]);
             $installedServiceId = (int)$result['service']['id'];
@@ -337,6 +356,10 @@ hub_admin_header(__('HubPack 套件'), $user);
                     $preflight = hub_pack_preflight($db, $manifest);
                     $readiness = __(hub_admin_market_readiness_label($db, $packId, $manifest));
                     $schema = is_array($manifest['settings_schema'] ?? null) ? $manifest['settings_schema'] : [];
+                    $installOptions = array_filter(
+                        hub_get_pack_settings_schema($packId),
+                        static fn (array $item): bool => !empty($item['install_option'])
+                    );
                     $modelSelectors = array_values(array_filter(
                         $schema,
                         static fn (mixed $item): bool => is_array($item) && is_array($item['model_selector'] ?? null)
@@ -417,6 +440,26 @@ hub_admin_header(__('HubPack 套件'), $user);
                                         <label class="pack-check">
                                             <input name="hot_reload" type="checkbox" value="1"> hot_reload
                                         </label>
+                                        <?php foreach ($installOptions as $settingKey => $setting): ?>
+                                            <?php
+                                            $settingType = (string)($setting['type'] ?? 'text');
+                                            $settingRequired = !empty($setting['required']) ? ' required' : '';
+                                            $settingLabel = __((string)($setting['label'] ?? $settingKey));
+                                            ?>
+                                            <label><?= hub_h($settingLabel) ?> <code><?= hub_h($settingKey) ?></code>
+                                                <?php if ($settingType === 'select'): ?>
+                                                    <select name="install_setting[<?= hub_h($settingKey) ?>]"<?= $settingRequired ?>>
+                                                        <?php foreach ((array)($setting['options'] ?? []) as $option): ?>
+                                                            <option value="<?= hub_h((string)$option) ?>"<?= (string)($setting['default'] ?? '') === (string)$option ? ' selected' : '' ?>><?= hub_h(__((string)($setting['option_labels'][$option] ?? $option))) ?></option>
+                                                        <?php endforeach; ?>
+                                                    </select>
+                                                <?php elseif ($settingType === 'boolean'): ?>
+                                                    <input name="install_setting[<?= hub_h($settingKey) ?>]" type="checkbox" value="1"<?= (string)($setting['default'] ?? '') === '1' ? ' checked' : '' ?>>
+                                                <?php else: ?>
+                                                    <input name="install_setting[<?= hub_h($settingKey) ?>]" type="<?= $settingType === 'secret' ? 'password' : (in_array($settingType, ['integer', 'number'], true) ? 'number' : 'text') ?>" value="<?= $settingType === 'secret' ? '' : hub_h((string)($setting['default'] ?? '')) ?>"<?= isset($setting['min']) ? ' min="' . hub_h((string)$setting['min']) . '"' : '' ?><?= isset($setting['max']) ? ' max="' . hub_h((string)$setting['max']) . '"' : '' ?><?= $settingRequired ?>>
+                                                <?php endif; ?>
+                                            </label>
+                                        <?php endforeach; ?>
                                     </div>
                                 <?php endif; ?>
 

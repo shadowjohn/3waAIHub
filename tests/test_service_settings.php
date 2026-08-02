@@ -1,6 +1,21 @@
 <?php
 declare(strict_types=1);
 
+function hub_test_service_settings_request(int $serviceId, string $lang): array
+{
+    $script = "define('HUB_TESTING', true);"
+        . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];"
+        . "\$_COOKIE = ['USER_LANG' => " . var_export($lang, true) . '];'
+        . "\$_SERVER = ['REQUEST_METHOD' => 'GET', 'REMOTE_ADDR' => '203.0.113.80'];"
+        . '$_GET = ' . var_export(['service_id' => $serviceId], true) . ';'
+        . 'require ' . var_export(HUB_ROOT . '/admin/service_settings.php', true) . ';';
+
+    return hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+        'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
+    ]);
+}
+
 hub_test('service settings defaults are created from pack schema and write env', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'ocr-ppocrv5', [
@@ -28,6 +43,48 @@ hub_test('service settings defaults are created from pack schema and write env',
     hub_test_assert(str_contains($env, 'OCR_MOCK_TEXT=3waAIHub OCR mock'), 'env missing OCR_MOCK_TEXT');
     hub_test_assert(str_contains($env, 'OCR_REAL_INFERENCE=0'), 'env missing OCR_REAL_INFERENCE');
     hub_test_assert(!str_contains($env, 'UNDECLARED_ENV='), 'env must not include arbitrary keys');
+});
+
+hub_test('VoxCPM2 settings default to isolated execution and preserve generated tokens', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'tts-voxcpm2', [
+        'service_key' => 'voxcpm2-settings-default',
+        'mode' => 'voxcpm2_settings_default',
+    ]);
+    $service = $installed['service'];
+    $settings = hub_list_service_settings($db, (int)$service['id']);
+    $token = (string)($settings['VOXCPM2_INTERNAL_JOB_TOKEN']['value'] ?? '');
+
+    hub_test_assert(($settings['VOXCPM2_EXECUTION_MODE']['value'] ?? '') === 'isolated', 'VoxCPM2 must default to isolated execution');
+    hub_test_assert(($settings['VOXCPM2_IDLE_UNLOAD_SECONDS']['value'] ?? '') === '0', 'VoxCPM2 idle unload must default to zero');
+    hub_test_assert(preg_match('/^[a-f0-9]{64}$/D', $token) === 1, 'VoxCPM2 internal job token must be 64 lowercase hex characters');
+    hub_test_assert(
+        (hub_ensure_service_settings($db, $service)['VOXCPM2_INTERNAL_JOB_TOKEN']['value'] ?? '') === $token,
+        'VoxCPM2 generated token must remain stable after backfill'
+    );
+
+    $update = hub_update_service_settings($db, (int)$service['id'], [
+        'VOXCPM2_EXECUTION_MODE' => 'resident',
+        'VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB' => '2048',
+    ]);
+    $service = hub_get_service($db, (int)$service['id']);
+    hub_test_assert(!empty($update['restart_required']) && (int)($service['restart_required'] ?? 0) === 1, 'resident VoxCPM2 settings must require restart');
+
+    $override = str_repeat('a', 64);
+    $overridden = hub_install_pack($db, 'tts-voxcpm2', [
+        'service_key' => 'voxcpm2-settings-override',
+        'mode' => 'voxcpm2_settings_override',
+        'env' => ['VOXCPM2_INTERNAL_JOB_TOKEN' => $override],
+    ])['service'];
+    $overriddenSettings = hub_ensure_service_settings($db, $overridden);
+    hub_test_assert(($overriddenSettings['VOXCPM2_INTERNAL_JOB_TOKEN']['value'] ?? '') === $override, 'VoxCPM2 install environment override must win over generated token');
+
+    hub_i18n_import_seed($db);
+    $page = hub_test_service_settings_request((int)$service['id'], 'en');
+    hub_test_assert($page['exit_code'] === 0, 'VoxCPM2 service settings page must render: ' . $page['output']);
+    foreach (['Execution mode', 'One-shot container', 'Resident model'] as $label) {
+        hub_test_assert(str_contains($page['stdout'], $label), 'translated VoxCPM2 select label missing: ' . $label);
+    }
 });
 
 hub_test('service settings update validates values writes env and marks restart', function (): void {

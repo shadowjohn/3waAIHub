@@ -112,7 +112,7 @@ hub_admin_header('服務設定', $user);
 <?php
 function hub_service_setting_field(PDO $db, string $key, array $item, string $value): string
 {
-    $label = (string)($item['label'] ?? $key);
+    $label = __((string)($item['label'] ?? $key));
     $type = (string)($item['type'] ?? 'text');
     $required = !empty($item['required']) ? ' required' : '';
     $help = trim((string)($item['help'] ?? ''));
@@ -125,7 +125,7 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $va
     <?php elseif ($type === 'select'): ?>
         <select name="<?= hub_h($key) ?>"<?= $required ?>>
             <?php foreach ((array)($item['options'] ?? []) as $option): ?>
-                <option value="<?= hub_h((string)$option) ?>"<?= $value === (string)$option ? ' selected' : '' ?>><?= hub_h((string)$option) ?></option>
+                <option value="<?= hub_h((string)$option) ?>"<?= $value === (string)$option ? ' selected' : '' ?>><?= hub_h(__((string)($item['option_labels'][$option] ?? $option))) ?></option>
             <?php endforeach; ?>
         </select>
     <?php else: ?>
