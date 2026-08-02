@@ -2551,22 +2551,24 @@ hub_test('cluster router rewrites async task responses without child details', f
     });
 });
 
-hub_test('cluster router maps waiting GPU task status to queued', function (): void {
-    $payload = hub_cluster_router_rewrite_task_payload(
-        hub_test_reset_db(),
-        ['route_id' => 'router_task_123', 'mode' => 'vision'],
-        ['ok' => true, 'task_id' => 'remote_task_42', 'status' => 'waiting_gpu'],
-        'cluster_api.php',
-        'remote_task_42',
-        'status'
-    );
+hub_test('cluster router maps pre-run task statuses to queued', function (): void {
+    foreach (['staging', 'waiting_gpu'] as $status) {
+        $payload = hub_cluster_router_rewrite_task_payload(
+            hub_test_reset_db(),
+            ['route_id' => 'router_task_123', 'mode' => 'vision'],
+            ['ok' => true, 'task_id' => 'remote_task_42', 'status' => $status],
+            'cluster_api.php',
+            'remote_task_42',
+            'status'
+        );
 
-    hub_test_assert(
-        ($payload['status'] ?? null) === 'queued'
-        && array_key_exists('status', $payload)
-        && !str_contains(json_encode($payload, JSON_THROW_ON_ERROR), 'waiting_gpu'),
-        'waiting_gpu must project to queued in public cluster status payloads'
-    );
+        hub_test_assert(
+            ($payload['status'] ?? null) === 'queued'
+            && array_key_exists('status', $payload)
+            && !str_contains(json_encode($payload, JSON_THROW_ON_ERROR), $status),
+            $status . ' must project to queued in public cluster status payloads'
+        );
+    }
 });
 
 hub_test('cluster router rewrites fake remote async dispatch responses', function (): void {

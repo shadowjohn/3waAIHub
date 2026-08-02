@@ -2301,8 +2301,9 @@ function hub_cluster_router_public_task_status(mixed $status): ?string
     }
     $status = strtolower($status);
 
-    return in_array($status, ['queued', 'waiting_gpu', 'running', 'success', 'succeeded', 'completed', 'failed', 'cancelled', 'canceled', 'timed_out', 'timeout'], true)
+    return in_array($status, ['staging', 'queued', 'waiting_gpu', 'running', 'success', 'succeeded', 'completed', 'failed', 'cancelled', 'canceled', 'timed_out', 'timeout'], true)
         ? match ($status) {
+            'staging',
             'waiting_gpu' => 'queued',
             'timeout' => 'timed_out',
             default => $status,
