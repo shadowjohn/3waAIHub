@@ -728,7 +728,7 @@ function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, arr
     if ($db->inTransaction()) {
         throw new LogicException('runtime_gpu_wait_transaction_required');
     }
-    if (!in_array($reason, ['insufficient_vram', 'unmanaged_gpu_process'], true) || !hub_runtime_gpu_fence_matches_run($run, $lease)) {
+    if (!in_array($reason, ['insufficient_vram', 'unmanaged_gpu_process', 'resident_busy', 'resident_unknown'], true) || !hub_runtime_gpu_fence_matches_run($run, $lease)) {
         return ['ok' => false, 'reason' => 'lost_gpu_lease'];
     }
     $runtime = hub_runtime_gpu_runtime_identity($run);
@@ -776,6 +776,43 @@ function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, arr
         try {
             $db->exec('ROLLBACK');
         } catch (Throwable) {
+        }
+        throw $e;
+    }
+}
+
+function hub_runtime_gpu_release_resident_block(PDO $db, array $run): bool
+{
+    $runtimeId = (string)($run['run_id'] ?? '');
+    $workerId = (string)($run['worker_id'] ?? '');
+    $leaseToken = (string)($run['lease_token'] ?? '');
+    if ($runtimeId === '' || $workerId === '' || $leaseToken === '' || $db->inTransaction()) {
+        return false;
+    }
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $stmt = $db->prepare(
+            "UPDATE runtime_resource_leases
+             SET runtime_run_id = NULL, worker_id = NULL, lease_token = NULL, state = 'available', acquired_at = NULL,
+                 heartbeat_at = NULL, lease_expires_at = NULL, last_error = NULL, updated_at = :now
+             WHERE resource_key = 'gpu:0' AND state = 'blocked' AND runtime_run_id = :runtime_run_id
+               AND worker_id = :worker_id AND lease_token = :lease_token"
+        );
+        $stmt->execute([
+            ':now' => hub_now(),
+            ':runtime_run_id' => $runtimeId,
+            ':worker_id' => $workerId,
+            ':lease_token' => $leaseToken,
+        ]);
+        if ($stmt->rowCount() !== 1) {
+            $db->exec('ROLLBACK');
+            return false;
+        }
+        $db->exec('COMMIT');
+        return true;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
         }
         throw $e;
     }

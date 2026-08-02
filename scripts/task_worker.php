@@ -22,6 +22,7 @@ if ($missing !== []) {
 $processed = 0;
 while ($processed < $limit) {
     hub_reconcile_expired_pack_job_runs($db);
+    hub_reconcile_resident_job_runs($db);
     $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
     if (!$task) {
         break;

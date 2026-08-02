@@ -617,6 +617,22 @@ CREATE TABLE IF NOT EXISTS runtime_resource_leases (
     FOREIGN KEY(runtime_run_id) REFERENCES runtime_runs(run_id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS resident_job_runs (
+    runtime_run_id TEXT PRIMARY KEY,
+    task_id INTEGER NOT NULL,
+    service_id INTEGER NOT NULL,
+    resident_run_id TEXT NOT NULL UNIQUE,
+    lifecycle TEXT NOT NULL,
+    dispatched_at TEXT NOT NULL,
+    cancel_requested_at TEXT NULL,
+    unconfirmed_at TEXT NULL,
+    reconciled_at TEXT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(runtime_run_id) REFERENCES runtime_runs(run_id) ON DELETE CASCADE,
+    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS cluster_stations (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     station_key TEXT NOT NULL UNIQUE,
@@ -958,6 +974,8 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_partial_retry ON tasks(partial_purge_retry_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_state_expires ON runtime_resource_leases(state, lease_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_runtime_resource_leases_run_id ON runtime_resource_leases(runtime_run_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_resident_job_runs_lifecycle ON resident_job_runs(lifecycle, updated_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_resident_job_runs_task ON resident_job_runs(task_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_stations_enabled ON cluster_stations(enabled, priority DESC)');
     $db->exec('DROP INDEX IF EXISTS idx_cluster_gpu_metric_snapshots_station_time');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_gpu_metric_snapshots_sampled_at ON cluster_gpu_metric_snapshots(sampled_at)');
@@ -1228,6 +1246,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'task_callback_targets' => ['id', 'owner_member_id', 'target_alias', 'callback_url', 'signing_secret', 'enabled', 'created_at', 'updated_at'],
         'task_callback_deliveries' => ['id', 'delivery_id', 'callback_target_id', 'task_id', 'event_type', 'payload_json', 'attempt_count', 'next_attempt_at', 'claim_token', 'claim_expires_at', 'delivered_at', 'last_http_status', 'last_error', 'created_at', 'updated_at'],
         'runtime_resource_leases' => ['resource_key', 'runtime_run_id', 'worker_id', 'lease_token', 'state', 'acquired_at', 'heartbeat_at', 'lease_expires_at', 'last_error', 'updated_at'],
+        'resident_job_runs' => ['runtime_run_id', 'task_id', 'service_id', 'resident_run_id', 'lifecycle', 'dispatched_at', 'cancel_requested_at', 'unconfirmed_at', 'reconciled_at', 'updated_at'],
         'cluster_gpu_metric_snapshots' => ['id', 'station_id', 'sampled_at', 'gpu_json'],
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
         'voice_profiles' => ['source_task_id'],

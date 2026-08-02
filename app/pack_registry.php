@@ -387,6 +387,13 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
                 return null;
             }
         }
+        $resident = null;
+        if (array_key_exists('resident', $definition)) {
+            $resident = hub_pack_async_job_resident_contract($definition['resident'], hub_get_pack_settings_schema_from_manifest($manifest));
+            if ($resident === null || $runner === null) {
+                return null;
+            }
+        }
         if ($runner !== null
             && ($runner['network_profile'] ?? 'isolated') === 'public_egress'
             && !(((string)($manifest['id'] ?? '') === 'web-screenshot' && $job === 'capture')
@@ -414,12 +421,57 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
             'max_upload_bytes' => $maxUploadBytes,
             'artifact_contract' => $artifactContract,
         ] + ($voiceContext === [] ? [] : ['voice_context' => $voiceContext]) + ($runner === null ? [] : ['runner' => $runner])
+            + ($resident === null ? [] : ['resident' => $resident])
             + ($runnerConfig === null ? [] : ['runner_config' => $runnerConfig])
             + ($capabilities === [] ? [] : ['capabilities' => $capabilities])
             + ($capabilityRequirements === [] ? [] : ['capability_requirements' => $capabilityRequirements]);
     }
 
     return null;
+}
+
+function hub_get_pack_settings_schema_from_manifest(array $manifest): array
+{
+    $schema = [];
+    foreach ((array)($manifest['settings_schema'] ?? []) as $item) {
+        if (!is_array($item)) {
+            continue;
+        }
+        $key = (string)($item['key'] ?? '');
+        if (preg_match('/^[A-Z][A-Z0-9_]{0,63}$/', $key) === 1) {
+            $schema[$key] = true;
+        }
+    }
+
+    return $schema;
+}
+
+function hub_pack_async_job_resident_contract(mixed $resident, ?array $declaredSettings = null): ?array
+{
+    if (!is_array($resident)
+        || array_diff(array_keys($resident), ['protocol', 'mode_setting', 'mode_value', 'min_free_vram_setting']) !== []
+        || count($resident) !== 4) {
+        return null;
+    }
+    $protocol = $resident['protocol'] ?? null;
+    $modeSetting = $resident['mode_setting'] ?? null;
+    $modeValue = $resident['mode_value'] ?? null;
+    $minFreeSetting = $resident['min_free_vram_setting'] ?? null;
+    if ($protocol !== 'service_data_v1' || $modeValue !== 'resident'
+        || !is_string($modeSetting) || !is_string($minFreeSetting)
+        || preg_match('/^[A-Z][A-Z0-9_]{0,63}$/', $modeSetting) !== 1
+        || preg_match('/^[A-Z][A-Z0-9_]{0,63}$/', $minFreeSetting) !== 1
+        || $modeSetting === $minFreeSetting
+        || ($declaredSettings !== null && (!isset($declaredSettings[$modeSetting]) || !isset($declaredSettings[$minFreeSetting])))) {
+        return null;
+    }
+
+    return [
+        'protocol' => 'service_data_v1',
+        'mode_setting' => $modeSetting,
+        'mode_value' => 'resident',
+        'min_free_vram_setting' => $minFreeSetting,
+    ];
 }
 
 function hub_pack_async_job_runner_asset_marker_json(mixed $marker, array $requiredPaths): ?array
@@ -1132,6 +1184,13 @@ function hub_pack_job_contract_snapshot(array $contract, bool $allowLegacyVoiceC
             throw new InvalidArgumentException('job_contract_unavailable');
         }
         $snapshot['runner'] = $runner;
+    }
+    if (array_key_exists('resident', $contract)) {
+        $resident = hub_pack_async_job_resident_contract($contract['resident']);
+        if ($resident === null || !isset($snapshot['runner'])) {
+            throw new InvalidArgumentException('job_contract_unavailable');
+        }
+        $snapshot['resident'] = $resident;
     }
     if (array_key_exists('runner_config', $contract)) {
         $runnerConfig = hub_pack_async_job_runner_config($contract['runner_config'], $fields, $snapshot['request_schema']);

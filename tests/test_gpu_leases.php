@@ -48,6 +48,218 @@ function hub_test_gpu_lease_expire(PDO $db, array $lease): void
     ]);
 }
 
+function hub_test_resident_vox_fixture(PDO $db, bool $clone = false): array
+{
+    hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+    $service = hub_get_service_by_key($db, 'voxcpm2-main');
+    if (!is_array($service)) {
+        throw new RuntimeException('Resident service fixture is unavailable.');
+    }
+    hub_update_service_settings($db, (int)$service['id'], [
+        'VOXCPM2_EXECUTION_MODE' => 'resident',
+        'VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB' => '1024',
+    ]);
+    $service = hub_get_service($db, (int)$service['id']) ?: $service;
+    $model = hub_test_models_dir() . '/voxcpm2/model';
+    if (!is_dir($model) && !mkdir($model, 0700, true) && !is_dir($model)) {
+        throw new RuntimeException('Cannot create resident model fixture.');
+    }
+    file_put_contents($model . '/config.json', "{}\n", LOCK_EX);
+    $contract = hub_pack_async_job_contract((array)(hub_get_pack('tts-voxcpm2')['manifest'] ?? []), 'synthesize');
+    if (!is_array($contract)) {
+        throw new RuntimeException('Resident contract fixture is unavailable.');
+    }
+    $snapshot = hub_pack_job_contract_snapshot($contract);
+    $input = [
+        'text' => 'resident smoke',
+        'mode' => 'design',
+        'voice_prompt' => 'clear voice',
+        'model' => 'voxcpm2',
+    ];
+    $attributes = [
+        'requested_mode' => 'voice_generate',
+        'pack_id' => 'tts-voxcpm2',
+        'pack_version' => '0.1.7',
+        'job' => 'synthesize',
+        'job_contract_json' => $snapshot['json'],
+        'job_contract_digest' => $snapshot['digest'],
+        'runtime_mode' => 'job',
+        'accelerator' => 'gpu',
+        'route_resolved_at' => hub_now(),
+    ];
+    $referencePath = null;
+    if ($clone) {
+        $ownerMemberId = hub_create_api_member($db, 'Resident clone owner');
+        $referencePath = hub_voice_profile_storage_dir() . '/resident_clone_reference.wav';
+        file_put_contents($referencePath, 'RIFFresident-clone', LOCK_EX);
+        $profileId = hub_create_voice_profile($db, $ownerMemberId, [
+            'name' => 'Resident clone profile',
+            'reference_audio_path' => $referencePath,
+            'consent_type' => 'self_recorded',
+            'usage_scope' => 'private',
+        ]);
+        $input = [
+            'text' => 'resident clone smoke',
+            'mode' => 'clone',
+            'voice_profile_id' => $profileId,
+            'control' => 'clear voice',
+            'model' => 'voxcpm2',
+            'voice_context' => [
+                'mode' => 'clone',
+                'voice_profile_id' => $profileId,
+                'reference_audio_sha256' => hash_file('sha256', $referencePath),
+                'container_path' => '/data/voice_profiles/reference.wav',
+            ],
+        ];
+        $attributes['owner_member_id'] = $ownerMemberId;
+    }
+    $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, $input, null, '127.0.0.1', $attributes);
+    $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+    if (!is_array($task) || (int)$task['id'] !== $taskId) {
+        throw new RuntimeException('Resident task fixture was not claimed.');
+    }
+
+    return ['service' => $service, 'contract' => $contract, 'task' => $task, 'task_id' => $taskId, 'reference_path' => $referencePath];
+}
+
+function hub_test_resident_write_output(string $stage): void
+{
+    file_put_contents($stage . '/output/generated_audio.wav', hub_test_pack_job_wav(), LOCK_EX);
+    file_put_contents($stage . '/output/synthesis_metadata.json', json_encode([
+        'normalized_input' => 'resident smoke', 'plan' => [], 'model' => [], 'voice_context' => [], 'controls' => [],
+        'chunks' => [], 'final_format' => [], 'loudness' => [], 'timeline' => [], 'device' => [],
+    ], JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+}
+
+function hub_test_resident_transport(array $service, string $capacity, array &$requests, bool $terminal = true, ?string $expectedSource = null): callable
+{
+    return static function (string $method, string $url, array $headers, ?array $payload) use ($service, $capacity, &$requests, $terminal, $expectedSource): array {
+        $requests[] = compact('method', 'url', 'headers', 'payload');
+        $token = hub_service_settings_values(hub_db(), $service)['VOXCPM2_INTERNAL_JOB_TOKEN'] ?? '';
+        hub_test_assert(str_starts_with($url, 'http://127.0.0.1:' . (int)$service['local_port'] . '/internal/'), 'resident requests must use the service loopback endpoint');
+        hub_test_assert(in_array('X-AIHub-Internal-Token: ' . $token, $headers, true), 'resident requests must carry only the internal service token');
+        if ($url === 'http://127.0.0.1:' . (int)$service['local_port'] . '/internal/capacity') {
+            return ['status' => 200, 'json' => ['model_state' => $capacity, 'active_runs' => $capacity === 'running' ? 1 : 0]];
+        }
+        if ($method === 'POST' && str_ends_with($url, '/internal/jobs')) {
+            $runId = (string)($payload['run_id'] ?? '');
+            $stage = hub_pack_job_resident_stage_path($service, $runId);
+            if ($expectedSource !== null) {
+                hub_test_assert(is_file($stage . '/input/source')
+                    && hash_equals((string)hash_file('sha256', $expectedSource), (string)hash_file('sha256', $stage . '/input/source')), 'resident clone must stage the managed reference audio');
+            }
+            hub_test_resident_write_output($stage);
+            return ['status' => 200, 'json' => ['run_id' => $runId, 'state' => 'running']];
+        }
+        if ($method === 'GET' && preg_match('~/internal/jobs/([^/]+)$~', $url, $matches) === 1) {
+            return ['status' => 200, 'json' => ['run_id' => rawurldecode($matches[1]), 'state' => $terminal ? 'succeeded' : 'unknown']];
+        }
+
+        return ['status' => 500, 'json' => []];
+    };
+}
+
+hub_test('Resident Pack contract freezes only the declared service-data channel', function (): void {
+    $pack = hub_get_pack('tts-voxcpm2');
+    $manifest = (array)($pack['manifest'] ?? []);
+    $contract = hub_pack_async_job_contract($manifest, 'synthesize');
+    hub_test_assert(($contract['resident']['protocol'] ?? null) === 'service_data_v1', 'VoxCPM2 resident declaration must be admitted into the async contract');
+    $snapshot = hub_pack_job_contract_snapshot($contract ?? []);
+    $frozen = json_decode($snapshot['json'], true, 64, JSON_THROW_ON_ERROR);
+    hub_test_assert(($frozen['resident']['mode_value'] ?? null) === 'resident', 'resident declaration must be immutable in the task snapshot');
+
+    $invalid = $manifest;
+    $invalid['async_jobs'][0]['resident']['extra'] = 'nope';
+    hub_test_assert(hub_pack_async_job_contract($invalid, 'synthesize') === null, 'resident declarations must reject undeclared fields');
+    $invalid = $manifest;
+    $invalid['async_jobs'][0]['resident']['mode_setting'] = 'UNDECLARED_SETTING';
+    hub_test_assert(hub_pack_async_job_contract($invalid, 'synthesize') === null, 'resident declarations must name Pack-declared settings');
+    $frozen['resident']['protocol'] = 'anything_else';
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_contract_snapshot($frozen)), 'tampered resident snapshots must fail strict revalidation');
+});
+
+hub_test('Resident capacity uses cold full VRAM, ready floor, and never falls back while busy', function (): void {
+    $db = hub_test_reset_db();
+    $cold = hub_test_resident_vox_fixture($db);
+    $requests = [];
+    $outcome = hub_run_pack_job_task($db, $cold['task'], [
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 2048, 'processes' => []],
+        'resident_transport' => hub_test_resident_transport($cold['service'], 'cold', $requests),
+        'command_runner' => static fn (): array => throw new RuntimeException('resident path must not run docker'),
+    ]);
+    hub_test_assert(($outcome['status'] ?? '') === 'waiting_gpu' && count($requests) === 1, 'cold resident must reserve full model VRAM before dispatch');
+
+    $db = hub_test_reset_db();
+    $ready = hub_test_resident_vox_fixture($db);
+    $requests = [];
+    $outcome = hub_run_pack_job_task($db, $ready['task'], [
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 1024, 'processes' => []],
+        'resident_transport' => hub_test_resident_transport($ready['service'], 'ready', $requests),
+        'audio_probe' => 'hub_test_pack_job_audio_probe',
+        'command_runner' => static fn (): array => throw new RuntimeException('resident path must not run docker'),
+    ]);
+    hub_test_assert(($outcome['status'] ?? '') === 'success' && count($requests) >= 3, 'ready resident must use only the configured free-VRAM floor and relay artifacts');
+
+    foreach (['running', 'unknown'] as $state) {
+        $db = hub_test_reset_db();
+        $busy = hub_test_resident_vox_fixture($db);
+        $requests = [];
+        $outcome = hub_run_pack_job_task($db, $busy['task'], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+            'resident_transport' => hub_test_resident_transport($busy['service'], $state, $requests),
+            'command_runner' => static fn (): array => throw new RuntimeException('resident path must not run docker'),
+        ]);
+        hub_test_assert(($outcome['status'] ?? '') === 'waiting_gpu' && count($requests) === 1, $state . ' resident capacity must wait without dispatch or fallback');
+    }
+});
+
+hub_test('Resident Vox clone stages its managed reference and relays artifacts without Docker', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_resident_vox_fixture($db, true);
+    $requests = [];
+    try {
+        $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 1024, 'processes' => []],
+            'resident_transport' => hub_test_resident_transport($fixture['service'], 'ready', $requests, true, $fixture['reference_path']),
+            'audio_probe' => 'hub_test_pack_job_audio_probe',
+            'command_runner' => static fn (): array => throw new RuntimeException('resident clone must not run docker'),
+        ]);
+        hub_test_assert(($outcome['status'] ?? '') === 'success'
+            && array_keys((array)($requests[1]['payload'] ?? [])) === ['run_id'], 'resident clone must post only its opaque run identity and return artifacts');
+    } finally {
+        if (is_string($fixture['reference_path']) && is_file($fixture['reference_path'])) {
+            unlink($fixture['reference_path']);
+        }
+    }
+});
+
+hub_test('Resident unconfirmed cancellation retains its exact stage until authenticated reconciliation', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_resident_vox_fixture($db);
+    $requests = [];
+    $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+        'resident_transport' => hub_test_resident_transport($fixture['service'], 'cold', $requests, false),
+    ]);
+    $row = $db->query('SELECT * FROM resident_job_runs')->fetch();
+    $run = $db->query('SELECT * FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetch();
+    $stage = hub_pack_job_resident_stage_path($fixture['service'], (string)$row['resident_run_id']);
+    hub_test_assert(($outcome['error_code'] ?? '') === 'cleanup_failed' && ($row['lifecycle'] ?? '') === 'unconfirmed' && is_dir($stage), 'unconfirmed resident status must retain the stage and block its lease');
+    hub_test_assert((string)$db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'blocked', 'unconfirmed resident status must block only its GPU lease');
+
+    $plan = hub_pack_job_resident_plan_for_service($db, $fixture['service'], $fixture['contract']);
+    $cancel = hub_pack_job_resident_cancel([
+        'db' => $db, 'task' => hub_get_task($db, $fixture['task_id']), 'run' => $run, 'workspace' => hub_task_result_dir($fixture['task_id']) . '/workspace',
+        'contract' => $fixture['contract'], 'resident_plan' => $plan, 'resident_run_id' => $row['resident_run_id'], 'resident_stage' => $stage,
+    ], 'cancelled', static fn (): array => throw new RuntimeException('network unavailable'));
+    hub_test_assert(($cancel['cleanup'] ?? null) === [] && is_dir($stage), 'unconfirmed cancel must not delete the staged resident run');
+
+    $reconciled = hub_reconcile_resident_job_runs($db, hub_test_resident_transport($fixture['service'], 'cold', $requests));
+    $row = $db->query('SELECT * FROM resident_job_runs')->fetch();
+    hub_test_assert($reconciled === 1 && ($row['lifecycle'] ?? '') === 'reconciled' && !is_dir($stage), 'authenticated terminal reconciliation must clean only the staged resident run');
+    hub_test_assert((string)$db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'available', 'authenticated reconciliation must release only the matching blocked GPU lease');
+});
+
 hub_test('GPU lease acquires once for gpu:0 and uses the runtime text run id', function (): void {
     $db = hub_test_reset_db();
     $first = hub_test_gpu_lease_run($db, 'gpu_race_a', 'worker-a');
