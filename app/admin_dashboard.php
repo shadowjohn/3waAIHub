@@ -46,6 +46,75 @@ function hub_admin_dashboard_service_counts(array $services): array
     return $counts;
 }
 
+function hub_admin_dashboard_service_status_label(array $service): string
+{
+    $install = (string)($service['install_status'] ?? '');
+    $runtime = (string)($service['runtime_status'] ?? $service['status'] ?? '');
+    if ($install === 'failed' || in_array($runtime, ['failed', 'error'], true)) {
+        return __('異常');
+    }
+    if (array_key_exists('enabled', $service) && $service['enabled'] === false) {
+        return __('已停用');
+    }
+
+    return match ($runtime) {
+        'running' => __('執行中'),
+        'stopped' => __('已停止'),
+        'pending', 'not_ready' => __('啟動中'),
+        default => '',
+    };
+}
+
+function hub_admin_dashboard_services_with_runtime_status(array $services, array $statuses): array
+{
+    $fields = ['service_key', 'pack_id', 'mode', 'enabled', 'install_status', 'runtime_status'];
+    $byMode = [];
+    $byPack = [];
+    foreach ($statuses as $status) {
+        if (
+            !is_array($status)
+            || array_diff(array_keys($status), $fields) !== []
+            || array_diff($fields, array_keys($status)) !== []
+            || !is_string($status['service_key'])
+            || !is_string($status['pack_id'])
+            || !is_string($status['mode'])
+            || !is_bool($status['enabled'])
+            || !in_array($status['install_status'], ['installed', 'pending', 'failed'], true)
+            || !in_array($status['runtime_status'], ['running', 'stopped', 'pending', 'not_ready', 'failed', 'error'], true)
+        ) {
+            continue;
+        }
+        if (array_key_exists($status['mode'], $byMode)) {
+            $byMode[$status['mode']] = null;
+        } else {
+            $byMode[$status['mode']] = $status;
+        }
+        $byPack[$status['pack_id']][] = $status;
+    }
+
+    foreach ($services as $index => $service) {
+        if (!is_array($service)) {
+            continue;
+        }
+        $mode = $service['mode'] ?? null;
+        $packId = $service['pack_id'] ?? null;
+        $status = is_string($mode) ? ($byMode[$mode] ?? null) : null;
+        if ($status === null && is_string($packId) && count($byPack[$packId] ?? []) === 1) {
+            $status = $byPack[$packId][0];
+        }
+        if (!is_array($status)) {
+            continue;
+        }
+        foreach (['enabled', 'install_status', 'runtime_status'] as $field) {
+            $services[$index][$field] = $status[$field];
+        }
+        $services[$index]['runtime_status_source_service_key'] = $status['service_key'];
+        $services[$index]['runtime_status_observed'] = true;
+    }
+
+    return $services;
+}
+
 function hub_admin_dashboard_services_with_gpu(array $services, array $measurements, string $matchBy): array
 {
     if (!in_array($matchBy, ['service_key', 'mode'], true)) {
@@ -121,16 +190,26 @@ function hub_admin_dashboard_services_with_gpu(array $services, array $measureme
         $measurement = $matchBy === 'service_key'
             ? ($byServiceKey[$identifier] ?? null)
             : ($byMode[$identifier] ?? null);
+        $inheritedMeasurement = false;
+        if (!is_array($measurement) && $matchBy === 'mode') {
+            $sourceServiceKey = $service['runtime_status_source_service_key'] ?? null;
+            if (is_string($sourceServiceKey)) {
+                $measurement = $byServiceKey[$sourceServiceKey] ?? null;
+                $inheritedMeasurement = is_array($measurement);
+            }
+        }
         if (!is_array($measurement)) {
             continue;
         }
         $measurementId = $measurement['service_key'] . "\0" . $measurement['mode'];
-        if (isset($usedMeasurements[$measurementId])) {
+        if (!$inheritedMeasurement && isset($usedMeasurements[$measurementId])) {
             continue;
         }
         $services[$index]['gpu_vram_measured'] = true;
         $services[$index]['gpu_vram_used_mb'] = $measurement['vram_used_mb'];
-        $usedMeasurements[$measurementId] = true;
+        if (!$inheritedMeasurement) {
+            $usedMeasurements[$measurementId] = true;
+        }
     }
 
     return $services;
@@ -384,8 +463,12 @@ function hub_admin_dashboard_station_summary(array $station): array
         ? min($totalVram, $usedVramValue)
         : ($freeVram === null ? null : max(0, $totalVram - $freeVram));
     $health = is_array($station['health'] ?? null) ? $station['health'] : [];
-    $services = hub_admin_dashboard_services_with_gpu(
+    $services = hub_admin_dashboard_services_with_runtime_status(
         is_array($station['services'] ?? null) ? $station['services'] : [],
+        is_array($station['service_status'] ?? null) ? $station['service_status'] : []
+    );
+    $services = hub_admin_dashboard_services_with_gpu(
+        $services,
         is_array($station['service_gpu'] ?? null) ? $station['service_gpu'] : [],
         'mode'
     );
@@ -394,13 +477,21 @@ function hub_admin_dashboard_station_summary(array $station): array
     if (!$healthKnown) {
         $health = ['status' => 'unknown'];
     }
-    $serviceCounts = [
-        'running' => $healthKnown ? (int)($health['running_services'] ?? 0) : 0,
-        'error' => $healthKnown ? (int)($health['failed_services'] ?? 0) : 0,
-        'pending' => $healthKnown ? 0 : count($services),
-        'stopped' => 0,
-    ];
-    if ($healthKnown) {
+    $hasServiceStatus = count(array_filter(
+        $services,
+        static fn (mixed $service): bool => is_array($service) && !empty($service['runtime_status_observed'])
+    )) > 0;
+    if ($hasServiceStatus) {
+        $serviceCounts = hub_admin_dashboard_service_counts($services);
+    } else {
+        $serviceCounts = [
+            'running' => $healthKnown ? (int)($health['running_services'] ?? 0) : 0,
+            'error' => $healthKnown ? (int)($health['failed_services'] ?? 0) : 0,
+            'pending' => $healthKnown ? 0 : count($services),
+            'stopped' => 0,
+        ];
+    }
+    if ($healthKnown && !$hasServiceStatus) {
         $serviceCounts['stopped'] = max(
             0,
             count($services) - $serviceCounts['running'] - $serviceCounts['error']

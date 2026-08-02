@@ -234,6 +234,41 @@ hub_test('child dashboard merges measured service GPU telemetry by manifest mode
     });
 });
 
+hub_test('child dashboard maps compact runtime status to direct and Pack-derived modes', function (): void {
+    $summary = hub_admin_dashboard_station_summary([
+        'display_name' => 'Audio Child Node',
+        'services' => [
+            ['name' => 'VoxCPM2', 'pack_id' => 'tts-voxcpm2', 'mode' => 'tts'],
+            ['name' => 'VoxCPM2 Voice', 'pack_id' => 'tts-voxcpm2', 'mode' => 'voice_generate'],
+            ['name' => 'Whisper', 'pack_id' => 'whisper-asr', 'mode' => 'asr'],
+            ['name' => 'Whisper Task', 'pack_id' => 'whisper-asr', 'mode' => 'speech_transcribe'],
+            ['name' => 'Screenshot', 'pack_id' => 'web-screenshot', 'mode' => 'web_capture'],
+        ],
+        'service_gpu' => [
+            ['service_key' => 'voxcpm2-main', 'mode' => 'tts', 'vram_used_mb' => 5858, 'measured' => true],
+            ['service_key' => 'asr-main', 'mode' => 'asr', 'vram_used_mb' => 846, 'measured' => true],
+        ],
+        'service_status' => [
+            ['service_key' => 'voxcpm2-main', 'pack_id' => 'tts-voxcpm2', 'mode' => 'tts', 'enabled' => true, 'install_status' => 'installed', 'runtime_status' => 'running'],
+            ['service_key' => 'asr-main', 'pack_id' => 'whisper-asr', 'mode' => 'asr', 'enabled' => false, 'install_status' => 'installed', 'runtime_status' => 'stopped'],
+            ['service_key' => 'web-screenshot-main', 'pack_id' => 'web-screenshot', 'mode' => 'web_capture', 'enabled' => true, 'install_status' => 'installed', 'runtime_status' => 'error'],
+        ],
+    ]);
+    $services = array_column($summary['services'], null, 'mode');
+
+    foreach (['tts', 'voice_generate', 'asr', 'speech_transcribe', 'web_capture'] as $mode) {
+        hub_test_assert(!empty($services[$mode]['runtime_status_observed']), 'child runtime status must be observed for ' . $mode);
+    }
+    hub_test_assert(hub_admin_dashboard_service_status_label($services['tts']) === '執行中', 'direct child mode must show running status');
+    hub_test_assert(hub_admin_dashboard_service_status_label($services['voice_generate']) === '執行中', 'Pack-derived child mode must inherit running status');
+    hub_test_assert(hub_admin_dashboard_service_status_label($services['asr']) === '已停用', 'disabled child mode must show disabled status');
+    hub_test_assert(hub_admin_dashboard_service_status_label($services['speech_transcribe']) === '已停用', 'disabled Pack-derived mode must show disabled status');
+    hub_test_assert(hub_admin_dashboard_service_status_label($services['web_capture']) === '異常', 'failed child mode must show error status');
+    hub_test_assert(($services['voice_generate']['gpu_vram_used_mb'] ?? null) === 5858, 'Pack-derived voice mode must inherit measured VRAM');
+    hub_test_assert(($services['speech_transcribe']['gpu_vram_used_mb'] ?? null) === 846, 'Pack-derived ASR mode must inherit measured VRAM');
+    hub_test_assert($summary['service_counts'] === ['running' => 2, 'stopped' => 2, 'pending' => 0, 'error' => 1], 'observed child service counts must replace aggregate health guesses');
+});
+
 hub_test('child dashboard ignores matching service keys when telemetry mode differs', function (): void {
     $summary = hub_admin_dashboard_station_summary([
         'display_name' => 'Future Child Node',
@@ -735,6 +770,7 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
         '<th>Mode</th><th><?= hub_h(__(\'實際 VRAM\')) ?></th><th><?= hub_h(__(\'狀態\')) ?></th>',
         "!empty(\$service['gpu_vram_measured']) && is_int(\$service['gpu_vram_used_mb'] ?? null)",
         "number_format(\$service['gpu_vram_used_mb']) . ' MB'",
+        "hub_h(__('CPU'))",
         "hub_h(__('尚未取得'))",
     ] as $needle) {
         hub_test_assert(str_contains($page, $needle), 'dashboard page missing measured service VRAM contract: ' . $needle);

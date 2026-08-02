@@ -1298,7 +1298,7 @@ hub_test('cluster child status stays lightweight and filters unavailable selecte
         $payload = hub_cluster_status_payload($db);
         hub_test_assert(array_keys($payload) === [
             'ok', 'snapshot_at', 'display_name', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes',
-            'service_gpu', 'release', 'packs', 'runners', 'health', 'cluster',
+            'service_gpu', 'service_status', 'release', 'packs', 'runners', 'health', 'cluster',
         ], 'status payload must keep its exact compact health shape');
         foreach (['release', 'packs', 'runners', 'health', 'cluster'] as $key) {
             hub_test_assert(array_key_exists($key, $payload), 'cluster status report missing ' . $key);
@@ -1311,6 +1311,14 @@ hub_test('cluster child status stays lightweight and filters unavailable selecte
             'vram_used_mb' => 1536,
             'measured' => true,
         ]], 'status payload must relay only the latest compact measured service GPU snapshot');
+        hub_test_assert($payload['service_status'] === [[
+            'service_key' => 'hello-main',
+            'pack_id' => 'hello',
+            'mode' => 'ocr',
+            'enabled' => true,
+            'install_status' => 'installed',
+            'runtime_status' => 'running',
+        ]], 'status payload must relay compact local service runtime status without probing services');
         hub_test_assert($payload['modes'] === ['ocr'], 'status payload must include selected running modes only');
         hub_test_assert($payload['active_gpu_leases'] === 1 && $payload['queued_jobs'] === 1 && $payload['running_jobs'] === 1, 'status payload counters must reflect current work');
 
@@ -1325,7 +1333,7 @@ hub_test('cluster child status stays lightweight and filters unavailable selecte
         ]);
         hub_test_assert(array_keys($fallback) === [
             'ok', 'snapshot_at', 'display_name', 'gpu', 'active_gpu_leases', 'queued_jobs', 'running_jobs', 'modes',
-            'service_gpu',
+            'service_gpu', 'service_status',
         ], 'unknown Git evidence must fall back to the legacy health payload');
 
         hub_test_cluster_publish_mode($db, 'ocr', false);
@@ -1414,6 +1422,14 @@ hub_test('cluster status snapshots retain only bounded release and aggregate hea
             'vram_used_mb' => 1536,
             'measured' => true,
         ]],
+        'service_status' => [[
+            'service_key' => 'ocr-gpu',
+            'pack_id' => 'ocr-ppocrv5',
+            'mode' => 'ocr',
+            'enabled' => true,
+            'install_status' => 'installed',
+            'runtime_status' => 'running',
+        ]],
     ];
 
     $snapshot = hub_cluster_compact_status_snapshot($status, $now);
@@ -1456,14 +1472,27 @@ hub_test('cluster status snapshots retain only bounded release and aggregate hea
         array_keys($snapshot['service_gpu'][0]) === ['service_key', 'mode', 'vram_used_mb', 'measured'],
         'service GPU snapshot must not retain PID, container, or command output fields'
     );
+    hub_test_assert(($snapshot['service_status'] ?? null) === [[
+        'service_key' => 'ocr-gpu',
+        'pack_id' => 'ocr-ppocrv5',
+        'mode' => 'ocr',
+        'enabled' => true,
+        'install_status' => 'installed',
+        'runtime_status' => 'running',
+    ]], 'service status snapshot must retain only compact runtime state');
     $encoded = json_encode($snapshot, JSON_THROW_ON_ERROR);
     foreach (['release-secret', 'station.example', 'registry.example', 'private command output', '/private/runtime', 'cluster-secret', 'private.example/gpu', '/private/driver'] as $forbidden) {
         hub_test_assert(!str_contains($encoded, $forbidden), 'compact status leaked forbidden nested data: ' . $forbidden);
     }
 
-    $legacy = array_diff_key($status, array_flip(['release', 'packs', 'runners', 'health', 'cluster', 'display_name', 'service_gpu']));
+    $legacy = array_diff_key($status, array_flip(['release', 'packs', 'runners', 'health', 'cluster', 'display_name', 'service_gpu', 'service_status']));
     $legacySnapshot = hub_cluster_compact_status_snapshot($legacy, $now);
-    hub_test_assert($legacySnapshot !== null && !array_key_exists('service_gpu', $legacySnapshot), 'legacy station status without service GPU telemetry must remain readable during rolling updates');
+    hub_test_assert(
+        $legacySnapshot !== null
+        && !array_key_exists('service_gpu', $legacySnapshot)
+        && !array_key_exists('service_status', $legacySnapshot),
+        'legacy station status without service telemetry must remain readable during rolling updates'
+    );
 
     $invalidStatuses = [];
     $invalid = $status;
@@ -1553,6 +1582,28 @@ hub_test('cluster status snapshots retain only bounded release and aggregate hea
         $invalid['service_gpu'][0][$field] = $value;
         $invalidStatuses['extra service GPU field ' . $field] = $invalid;
     }
+    $invalid = $status;
+    $invalid['service_status'][0]['enabled'] = 1;
+    $invalidStatuses['non-boolean service enabled state'] = $invalid;
+    $invalid = $status;
+    $invalid['service_status'][0]['runtime_status'] = 'unknown';
+    $invalidStatuses['unknown service runtime state'] = $invalid;
+    $invalid = $status;
+    $invalid['service_status'][0]['pack_id'] = '/private-pack';
+    $invalidStatuses['unsafe service Pack ID'] = $invalid;
+    $invalid = $status;
+    $invalid['service_status'][] = [
+        'service_key' => 'ocr-gpu-copy',
+        'pack_id' => 'ocr-ppocrv5',
+        'mode' => 'ocr',
+        'enabled' => true,
+        'install_status' => 'installed',
+        'runtime_status' => 'running',
+    ];
+    $invalidStatuses['duplicate service status mode'] = $invalid;
+    $invalid = $status;
+    $invalid['service_status'][0]['output'] = 'private output';
+    $invalidStatuses['extra service status field'] = $invalid;
     foreach ($invalidStatuses as $case => $invalidStatus) {
         hub_test_assert(hub_cluster_compact_status_snapshot($invalidStatus, $now) === null, 'compact status accepted ' . $case);
     }
@@ -5671,6 +5722,14 @@ hub_test('cluster admin usage helpers count submit events and keep station prese
                     'vram_used_mb' => 2048,
                     'measured' => true,
                 ]],
+                'service_status' => [[
+                    'service_key' => 'vision-gpu',
+                    'pack_id' => 'vision-pack',
+                    'mode' => 'vision',
+                    'enabled' => true,
+                    'install_status' => 'installed',
+                    'runtime_status' => 'running',
+                ]],
                 'active_gpu_leases' => 2,
                 'queued_jobs' => 3,
                 'running_jobs' => 4,
@@ -5808,6 +5867,14 @@ hub_test('cluster admin usage helpers count submit events and keep station prese
             'vram_used_mb' => 2048,
             'measured' => true,
         ]], 'station dashboard must carry compact child service GPU telemetry');
+        hub_test_assert(($dashboard[0]['service_status'] ?? null) === [[
+            'service_key' => 'vision-gpu',
+            'pack_id' => 'vision-pack',
+            'mode' => 'vision',
+            'enabled' => true,
+            'install_status' => 'installed',
+            'runtime_status' => 'running',
+        ]], 'station dashboard must carry compact child service runtime telemetry');
         hub_test_assert(($dashboard[0]['service_count'] ?? 0) === 2 && array_column($dashboard[0]['services'] ?? [], 'mode') === ['vision', 'tts'], 'station dashboard supplied services mismatch');
         hub_test_assert(($dashboard[0]['release_compatible'] ?? null) === false && ($dashboard[0]['pack_compatible'] ?? null) === true, 'station dashboard local compatibility mismatch');
         foreach (['dashboard-release-secret', '/private/image', 'private health output', 'private.example'] as $forbidden) {

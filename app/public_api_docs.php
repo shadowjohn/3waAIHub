@@ -707,6 +707,7 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         'url' => hub_public_api_mode_url($mode),
         'execution_type' => (string)($contract['execution_type'] ?? $manifest['execution_type'] ?? ''),
         'runtime_level' => (string)($manifest['runtime_level'] ?? ''),
+        'gpu_required' => (bool)($manifest['hardware']['gpu_required'] ?? false),
         'task_type' => (string)($contract['task_type'] ?? ''),
         'input_fields' => is_array($contract['input']['fields'] ?? null) ? $contract['input']['fields'] : [],
         'output_keys' => array_values(array_map('strval', is_array($output['required_keys'] ?? null) ? $output['required_keys'] : [])),

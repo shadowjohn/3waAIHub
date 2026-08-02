@@ -511,6 +511,9 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
         $serviceGpu = is_array($status['service_gpu'] ?? null)
             ? hub_cluster_compact_service_gpu_snapshot($status['service_gpu'])
             : [];
+        $serviceStatus = is_array($status['service_status'] ?? null)
+            ? hub_cluster_compact_service_status_snapshot($status['service_status'])
+            : [];
         $report = hub_cluster_compact_status_report_fields($status) ?? [];
         $compatibility = hub_release_station_report($station, $localRelease);
         $rows[] = [
@@ -533,6 +536,7 @@ function hub_cluster_station_dashboard_rows(PDO $db): array
             'gpu_total_vram_mb' => (int)($gpu['memory_total_mb'] ?? 0),
             'gpu' => $gpu,
             'service_gpu' => $serviceGpu ?? [],
+            'service_status' => $serviceStatus ?? [],
             'active_gpu_leases' => (int)$inventory['active_gpu_leases'],
             'queued_jobs' => (int)$inventory['queued_jobs'],
             'running_jobs' => (int)$inventory['running_jobs'],
@@ -4057,6 +4061,21 @@ function hub_cluster_status_payload(PDO $db, ?array $release = null): array
     $serviceGpu = is_array($latestMetrics['data']['service_gpu'] ?? null)
         ? hub_cluster_compact_service_gpu_snapshot($latestMetrics['data']['service_gpu'])
         : [];
+    $serviceStatusRows = [];
+    foreach (hub_list_services($db) as $service) {
+        if (!is_string($service['service_key'] ?? null) || !is_string($service['pack_id'] ?? null)) {
+            continue;
+        }
+        $serviceStatusRows[] = [
+            'service_key' => $service['service_key'],
+            'pack_id' => $service['pack_id'],
+            'mode' => (string)($service['mode'] ?? ''),
+            'enabled' => (int)($service['enabled'] ?? 0) === 1,
+            'install_status' => (string)($service['install_status'] ?? ''),
+            'runtime_status' => (string)($service['runtime_status'] ?? ''),
+        ];
+    }
+    $serviceStatus = hub_cluster_compact_service_status_snapshot($serviceStatusRows) ?? [];
     $lease = $db->prepare(
         "SELECT COUNT(*) FROM runtime_resource_leases
          WHERE state = 'leased' AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
@@ -4078,6 +4097,7 @@ function hub_cluster_status_payload(PDO $db, ?array $release = null): array
         'running_jobs' => (int)$running,
         'modes' => $publishedModes,
         'service_gpu' => $serviceGpu ?? [],
+        'service_status' => $serviceStatus,
     ];
     $report = hub_cluster_compact_status_report_fields([
         'release' => is_array($release['git'] ?? null) ? $release['git'] : [],
@@ -4499,7 +4519,7 @@ function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
         $modes[$mode] = true;
         $services[$mode] = array_intersect_key($service, array_flip([
             'mode', 'pack_id', 'name', 'description', 'method', 'content_type', 'endpoint', 'url',
-            'execution_type', 'runtime_level', 'task_type', 'input_fields', 'output_keys',
+            'execution_type', 'runtime_level', 'gpu_required', 'task_type', 'input_fields', 'output_keys',
             'response_content_type', 'response_headers', 'error_codes', 'task_api', 'operations',
             'result_artifact_fields', 'artifact_delivery_note', 'workflow', 'error_table',
             'examples', 'workflow_examples',
@@ -4696,6 +4716,51 @@ function hub_cluster_compact_service_gpu_snapshot(array $rows): ?array
     return $compact;
 }
 
+function hub_cluster_compact_service_status_snapshot(array $rows): ?array
+{
+    if (!array_is_list($rows) || count($rows) > 256) {
+        return null;
+    }
+
+    $fields = ['service_key', 'pack_id', 'mode', 'enabled', 'install_status', 'runtime_status'];
+    $serviceKeys = [];
+    $modes = [];
+    $compact = [];
+    foreach ($rows as $row) {
+        if (
+            !is_array($row)
+            || array_diff(array_keys($row), $fields) !== []
+            || array_diff($fields, array_keys($row)) !== []
+            || !is_string($row['service_key'] ?? null)
+            || preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/', $row['service_key']) !== 1
+            || !is_string($row['pack_id'] ?? null)
+            || preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $row['pack_id']) !== 1
+            || !is_string($row['mode'] ?? null)
+            || preg_match('/\A[A-Za-z0-9_-]{1,64}\z/', $row['mode']) !== 1
+            || !is_bool($row['enabled'] ?? null)
+            || !in_array($row['install_status'] ?? null, ['installed', 'pending', 'failed'], true)
+            || !in_array($row['runtime_status'] ?? null, ['running', 'stopped', 'pending', 'not_ready', 'failed', 'error'], true)
+            || isset($serviceKeys[$row['service_key']])
+            || isset($modes[$row['mode']])
+        ) {
+            return null;
+        }
+
+        $serviceKeys[$row['service_key']] = true;
+        $modes[$row['mode']] = true;
+        $compact[] = [
+            'service_key' => $row['service_key'],
+            'pack_id' => $row['pack_id'],
+            'mode' => $row['mode'],
+            'enabled' => $row['enabled'],
+            'install_status' => $row['install_status'],
+            'runtime_status' => $row['runtime_status'],
+        ];
+    }
+
+    return $compact;
+}
+
 function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = null): ?array
 {
     if (
@@ -4746,6 +4811,16 @@ function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = n
             return null;
         }
     }
+    $serviceStatus = null;
+    if (array_key_exists('service_status', $status)) {
+        if (!is_array($status['service_status'])) {
+            return null;
+        }
+        $serviceStatus = hub_cluster_compact_service_status_snapshot($status['service_status']);
+        if ($serviceStatus === null) {
+            return null;
+        }
+    }
 
     $snapshot = array_merge([
         'snapshot_at' => $snapshotAt,
@@ -4760,6 +4835,9 @@ function hub_cluster_compact_status_snapshot(array $status, ?int $receivedAt = n
     }
     if ($serviceGpu !== null) {
         $snapshot['service_gpu'] = $serviceGpu;
+    }
+    if ($serviceStatus !== null) {
+        $snapshot['service_status'] = $serviceStatus;
     }
 
     return $snapshot;
