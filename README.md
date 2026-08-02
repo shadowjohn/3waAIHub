@@ -120,6 +120,7 @@ php scripts/check_release_update.php
 3. SAM3 實務輸出：保留 `points` / `guidance_mask` / `output_format=png` contract，後續再補 mask overlay viewer。
 4. Windows control plane：維持 Core preview；Linux Docker / GPU Pack 仍走 Linux runtime 或未來 Remote Agent。
 5. Resource Profile：External Database Profile、Controlled Volume Binding、Generic Service Publishing 仍列規劃中。
+6. 8/7 後 Secretless Web Root：將 SQLite、uploads、results、logs 與 service runtime 全數移出 web root；一般 runtime config 與 `is_secret` 設定分離，後者改由 Compose secret file 掛載；保留 Apache / IIS / Nginx deny 規則與 probe，採可回退遷移並於完成後輪替內部權杖。
 
 ## 安裝
 
