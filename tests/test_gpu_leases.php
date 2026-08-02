@@ -59,8 +59,11 @@ function hub_test_resident_vox_fixture(PDO $db, bool $clone = false): array
         'VOXCPM2_EXECUTION_MODE' => 'resident',
         'VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB' => '1024',
     ]);
-    $db->prepare('UPDATE services SET enabled = 1 WHERE id = :id')->execute([':id' => (int)$service['id']]);
-    hub_update_service_status($db, (int)$service['id'], 'running');
+    $db->prepare(
+        "UPDATE services
+         SET install_status = 'installed', enabled = 1, status = 'running', runtime_status = 'running', restart_required = 0
+         WHERE id = :id"
+    )->execute([':id' => (int)$service['id']]);
     $service = hub_get_service($db, (int)$service['id']) ?: $service;
     $model = hub_test_models_dir() . '/voxcpm2/model';
     if (!is_dir($model) && !mkdir($model, 0700, true) && !is_dir($model)) {
@@ -124,18 +127,73 @@ function hub_test_resident_vox_fixture(PDO $db, bool $clone = false): array
     return ['service' => $service, 'contract' => $contract, 'task' => $task, 'task_id' => $taskId, 'reference_path' => $referencePath];
 }
 
+function hub_test_resident_audio_probe(string $path): array
+{
+    hub_test_assert(is_file($path), 'resident audio probe must receive a staged output path');
+
+    return ['duration_seconds' => 0.25, 'sample_rate' => 48000, 'channels' => 1, 'frames' => 12000];
+}
+
 function hub_test_resident_write_output(string $stage): void
 {
+    $request = json_decode((string)file_get_contents($stage . '/input/request.json'), true, 64, JSON_THROW_ON_ERROR);
+    $expected = hub_voxcpm2_metadata_task_contract($request);
+    if ($expected === null) {
+        throw new RuntimeException('Resident output fixture request is invalid.');
+    }
+    $chunkId = 'chunk-0001';
+    $seed = hub_voxcpm2_metadata_chunk_seed((int)$expected['task_seed'], (string)$expected['seed_policy'], $chunkId);
+    if ($seed === null) {
+        throw new RuntimeException('Resident output fixture seed is invalid.');
+    }
+    $planChunk = [
+        'id' => $chunkId,
+        'text' => $expected['normalized_input'],
+        'text_sha256' => hash('sha256', $expected['normalized_input']),
+        'seed' => $seed['seed'],
+        'seed_sha256' => $seed['sha256'],
+    ];
+    $plan = [
+        'normalization' => 'semantic-v1',
+        'normalized_input' => $expected['normalized_input'],
+        'max_chunk_chars' => 240,
+        'task_seed' => $expected['task_seed'],
+        'seed_policy' => $expected['seed_policy'],
+        'chunks' => [$planChunk],
+    ];
+    $voice = $expected['voice'];
+    $metadata = [
+        'normalized_input' => $expected['normalized_input'],
+        'plan' => $plan + ['plan_sha256' => hash('sha256', hub_voxcpm2_metadata_canonical_json($plan))],
+        'model' => ['label' => 'VoxCPM2', 'version' => '2.0.3', 'sample_rate' => 48000],
+        'voice_context' => $voice + ['sha256' => hash('sha256', hub_voxcpm2_metadata_canonical_json($voice))],
+        'controls' => ['mode' => $expected['mode'], 'seed_policy' => $expected['seed_policy'], 'task_seed' => $expected['task_seed']],
+        'chunks' => [[
+            'id' => $chunkId,
+            'seed' => $seed['seed'],
+            'seed_sha256' => $seed['sha256'],
+            'attempts' => 1,
+            'duration_frames' => 12000,
+            'duration_seconds' => 0.25,
+            'peak_gain' => 1.0,
+            'reused_checkpoint' => false,
+            'action' => 'direct_concat',
+            'trim_frames' => 0,
+            'pause_frames' => 0,
+            'crossfade_frames' => 0,
+        ]],
+        'final_format' => ['mime_type' => 'audio/wav', 'sample_rate' => 48000, 'channels' => 1, 'frames' => 12000],
+        'loudness' => ['passes' => 1, 'target_lufs' => -16.0, 'gain' => 1.0],
+        'timeline' => [['chunk_id' => $chunkId, 'start_frame' => 0, 'end_frame' => 12000, 'sample_rate' => 48000]],
+        'device' => ['type' => 'fake', 'real_inference' => false],
+    ];
     file_put_contents($stage . '/output/generated_audio.wav', hub_test_pack_job_wav(), LOCK_EX);
-    file_put_contents($stage . '/output/synthesis_metadata.json', json_encode([
-        'normalized_input' => 'resident smoke', 'plan' => [], 'model' => [], 'voice_context' => [], 'controls' => [],
-        'chunks' => [], 'final_format' => [], 'loudness' => [], 'timeline' => [], 'device' => [],
-    ], JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX);
+    file_put_contents($stage . '/output/synthesis_metadata.json', json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n", LOCK_EX);
 }
 
 function hub_test_resident_transport(array $service, string $capacity, array &$requests, bool $terminal = true, ?string $expectedSource = null): callable
 {
-    return static function (string $method, string $url, array $headers, ?array $payload) use ($service, $capacity, &$requests, $terminal, $expectedSource): array {
+    return static function (string $method, string $url, array $headers, ?array $payload, ?callable $progress = null) use ($service, $capacity, &$requests, $terminal, $expectedSource): array {
         $requests[] = compact('method', 'url', 'headers', 'payload');
         $token = hub_service_settings_values(hub_db(), $service)['VOXCPM2_INTERNAL_JOB_TOKEN'] ?? '';
         hub_test_assert(str_starts_with($url, 'http://127.0.0.1:' . (int)$service['local_port'] . '/internal/'), 'resident requests must use the service loopback endpoint');
@@ -159,6 +217,109 @@ function hub_test_resident_transport(array $service, string $capacity, array &$r
 
         return ['status' => 500, 'json' => []];
     };
+}
+
+function hub_test_resident_loopback_server(): array
+{
+    $directory = sys_get_temp_dir() . '/3waaihub_resident_http_' . bin2hex(random_bytes(8));
+    if (!mkdir($directory, 0700, true) && !is_dir($directory)) {
+        throw new RuntimeException('Cannot create resident HTTP fixture directory.');
+    }
+    $counter = $directory . '/requests';
+    $router = $directory . '/router.php';
+    file_put_contents(
+        $router,
+        "<?php\nfile_put_contents(" . var_export($counter, true) . ", \"1\\n\", FILE_APPEND | LOCK_EX);\nusleep(1500000);\nheader('Content-Type: application/json');\necho '{\"ok\":true}';\n",
+        LOCK_EX,
+    );
+    $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);
+    if ($socket === false) {
+        unlink($router);
+        rmdir($directory);
+        throw new RuntimeException('Cannot allocate resident HTTP fixture port: ' . $error);
+    }
+    $address = (string)stream_socket_get_name($socket, false);
+    fclose($socket);
+    $separator = strrpos($address, ':');
+    if ($separator === false) {
+        unlink($router);
+        rmdir($directory);
+        throw new RuntimeException('Cannot parse resident HTTP fixture port.');
+    }
+    $port = (int)substr($address, $separator + 1);
+    $stdout = tempnam(sys_get_temp_dir(), '3waaihub_resident_http_out_');
+    $stderr = tempnam(sys_get_temp_dir(), '3waaihub_resident_http_err_');
+    if ($stdout === false || $stderr === false) {
+        foreach ([$stdout, $stderr, $router] as $path) {
+            if (is_string($path) && is_file($path)) {
+                unlink($path);
+            }
+        }
+        rmdir($directory);
+        throw new RuntimeException('Cannot allocate resident HTTP fixture logs.');
+    }
+    $process = proc_open(
+        [PHP_BINARY, '-S', '127.0.0.1:' . $port, $router],
+        [0 => ['pipe', 'r'], 1 => ['file', $stdout, 'a'], 2 => ['file', $stderr, 'a']],
+        $pipes,
+        HUB_ROOT,
+    );
+    if (!is_resource($process)) {
+        unlink($stdout);
+        unlink($stderr);
+        unlink($router);
+        rmdir($directory);
+        throw new RuntimeException('Cannot start resident HTTP fixture.');
+    }
+    fclose($pipes[0]);
+    $deadline = microtime(true) + 5.0;
+    do {
+        $ready = @stream_socket_client('tcp://127.0.0.1:' . $port, $readyErrno, $readyError, 0.1);
+        if ($ready !== false) {
+            fclose($ready);
+            return compact('directory', 'counter', 'router', 'port', 'process', 'stdout', 'stderr');
+        }
+        if (empty(proc_get_status($process)['running'])) {
+            $message = trim((string)file_get_contents($stderr));
+            proc_close($process);
+            unlink($stdout);
+            unlink($stderr);
+            unlink($router);
+            rmdir($directory);
+            throw new RuntimeException('Resident HTTP fixture exited: ' . $message);
+        }
+        usleep(50000);
+    } while (microtime(true) < $deadline);
+
+    proc_terminate($process);
+    proc_close($process);
+    unlink($stdout);
+    unlink($stderr);
+    unlink($router);
+    rmdir($directory);
+    throw new RuntimeException('Resident HTTP fixture did not become ready.');
+}
+
+function hub_test_resident_loopback_stop(array $server): void
+{
+    if (isset($server['process']) && is_resource($server['process'])) {
+        if (!empty(proc_get_status($server['process'])['running'])) {
+            proc_terminate($server['process']);
+            usleep(100000);
+            if (!empty(proc_get_status($server['process'])['running'])) {
+                proc_terminate($server['process'], 9);
+            }
+        }
+        proc_close($server['process']);
+    }
+    foreach (['counter', 'router', 'stdout', 'stderr'] as $key) {
+        if (is_file((string)($server[$key] ?? ''))) {
+            unlink((string)$server[$key]);
+        }
+    }
+    if (is_dir((string)($server['directory'] ?? ''))) {
+        rmdir((string)$server['directory']);
+    }
 }
 
 hub_test('Resident Pack contract freezes only the declared service-data channel', function (): void {
@@ -197,7 +358,7 @@ hub_test('Resident capacity uses cold full VRAM, ready floor, and never falls ba
     $outcome = hub_run_pack_job_task($db, $ready['task'], [
         'gpu_probe' => static fn (): array => ['free_vram_mb' => 1024, 'processes' => []],
         'resident_transport' => hub_test_resident_transport($ready['service'], 'ready', $requests),
-        'audio_probe' => 'hub_test_pack_job_audio_probe',
+        'audio_probe' => 'hub_test_resident_audio_probe',
         'command_runner' => static fn (): array => throw new RuntimeException('resident path must not run docker'),
     ]);
     hub_test_assert(($outcome['status'] ?? '') === 'success' && count($requests) >= 3, 'ready resident must use only the configured free-VRAM floor and relay artifacts');
@@ -236,38 +397,66 @@ hub_test('Stopped resident services wait before GPU acquisition or dispatch', fu
         && ($lease === null || ($lease['state'] ?? '') === 'available'), 'stopped resident must not acquire GPU, stage work, or fall back to container dispatch');
 });
 
-hub_test('Resident in-flight transport heartbeats the GPU fence', function (): void {
+hub_test('Resident heartbeat interval stays within the runtime lease TTL', function (): void {
+    hub_test_assert(hub_pack_job_resident_heartbeat_interval(5, 60) <= (5 / 3), 'minimum resident lease must heartbeat at least three times before expiry');
+    hub_test_assert(hub_pack_job_resident_heartbeat_interval(60, 60) <= 20.0, 'resident heartbeat must remain bounded by the configured runtime lease TTL');
+});
+
+hub_test('Resident cURL progress callback heartbeats and aborts in-flight loopback requests', function (): void {
+    if (!function_exists('curl_init') || !function_exists('proc_open') || (!defined('CURLOPT_XFERINFOFUNCTION') && !defined('CURLOPT_PROGRESSFUNCTION'))) {
+        hub_test_skip('resident cURL progress test requires cURL and proc_open');
+    }
     $db = hub_test_reset_db();
     $fixture = hub_test_resident_vox_fixture($db);
-    $heartbeats = [];
-    $transport = static function (string $method, string $url, array $headers, ?array $payload, ?callable $progress = null) use ($db, $fixture, &$heartbeats): array {
-        if (str_ends_with($url, '/internal/capacity')) {
-            return ['status' => 200, 'json' => ['model_state' => 'ready', 'active_runs' => 0]];
-        }
-        if ($method === 'POST' && str_ends_with($url, '/internal/jobs')) {
-            $db->prepare("UPDATE runtime_runs SET heartbeat_at = '2000-01-01 00:00:00' WHERE task_id = :task_id")
-                ->execute([':task_id' => $fixture['task_id']]);
-            if ($progress !== null) {
-                $progress();
-            }
-            $heartbeats[] = (string)$db->query('SELECT heartbeat_at FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn();
-            $runId = (string)($payload['run_id'] ?? '');
-            hub_test_resident_write_output(hub_pack_job_resident_stage_path($fixture['service'], $runId));
-            return ['status' => 200, 'json' => ['run_id' => $runId, 'state' => 'running']];
-        }
-        if ($method === 'GET' && preg_match('~/internal/jobs/([^/]+)$~', $url, $matches) === 1) {
-            return ['status' => 200, 'json' => ['run_id' => rawurldecode($matches[1]), 'state' => 'succeeded']];
-        }
+    $run = hub_pack_job_claim_runtime($db, $fixture['task'], 'resident-curl-test', 5);
+    $lease = is_array($run) ? hub_runtime_gpu_acquire_for_task($db, $fixture['task'], $run, 5) : null;
+    hub_test_assert(is_array($run) && is_array($lease), 'resident cURL fixture must acquire its runtime and GPU fence');
+    $db->prepare("UPDATE runtime_runs SET heartbeat_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => (int)$run['id']]);
+    $server = hub_test_resident_loopback_server();
+    $url = 'http://127.0.0.1:' . (int)$server['port'] . '/internal/jobs';
+    try {
+        $heartbeats = 0;
+        $response = hub_pack_job_resident_transport(
+            'POST',
+            $url,
+            ['Accept: application/json', 'X-AIHub-Internal-Token: local-test'],
+            ['run_id' => 'resident-curl-heartbeat'],
+            null,
+            5,
+            hub_pack_job_resident_progress(static function () use ($db, $run, $lease, &$heartbeats): ?string {
+                $heartbeats++;
+                return hub_pack_job_tick($db, $run, $lease, 5);
+            }, 0.05),
+        );
+        $heartbeatAt = (string)$db->query('SELECT heartbeat_at FROM runtime_runs WHERE id = ' . (int)$run['id'])->fetchColumn();
+        hub_test_assert(($response['status'] ?? 0) === 200 && $heartbeats >= 2 && $heartbeatAt !== '2000-01-01 00:00:00', 'actual cURL progress callback must refresh the runtime GPU fence while the resident request is in flight');
 
-        return ['status' => 500, 'json' => []];
-    };
-    $outcome = hub_run_pack_job_task($db, $fixture['task'], [
-        'gpu_probe' => static fn (): array => ['free_vram_mb' => 1024, 'processes' => []],
-        'resident_transport' => $transport,
-        'resident_heartbeat_interval_seconds' => 0,
-        'audio_probe' => 'hub_test_pack_job_audio_probe',
-    ]);
-    hub_test_assert(($outcome['status'] ?? '') === 'success' && count($heartbeats) === 1 && $heartbeats[0] !== '2000-01-01 00:00:00', 'resident in-flight transport must refresh the runtime heartbeat before its request completes');
+        foreach (['cancelled', 'timed_out'] as $intent) {
+            $startedAt = microtime(true);
+            $actual = null;
+            try {
+                hub_pack_job_resident_transport(
+                    'POST',
+                    $url,
+                    ['Accept: application/json', 'X-AIHub-Internal-Token: local-test'],
+                    ['run_id' => 'resident-curl-' . $intent],
+                    null,
+                    5,
+                    hub_pack_job_resident_progress(
+                        static fn (): ?string => microtime(true) - $startedAt >= 0.2 ? $intent : null,
+                        0.01,
+                    ),
+                );
+            } catch (RuntimeException $error) {
+                $actual = $error->getMessage();
+            }
+            hub_test_assert($actual === 'resident_transport_' . $intent && microtime(true) - $startedAt < 1.25, 'actual cURL progress callback must abort an in-flight resident request for ' . $intent);
+        }
+        $requests = is_file($server['counter']) ? substr_count((string)file_get_contents($server['counter']), "1\n") : 0;
+        hub_test_assert($requests >= 3, 'resident cURL fixture must receive the heartbeat, cancellation, and timeout requests over loopback');
+    } finally {
+        hub_test_resident_loopback_stop($server);
+    }
 });
 
 hub_test('Resident Vox clone stages its managed reference and relays artifacts without Docker', function (): void {
@@ -278,7 +467,7 @@ hub_test('Resident Vox clone stages its managed reference and relays artifacts w
         $outcome = hub_run_pack_job_task($db, $fixture['task'], [
             'gpu_probe' => static fn (): array => ['free_vram_mb' => 1024, 'processes' => []],
             'resident_transport' => hub_test_resident_transport($fixture['service'], 'ready', $requests, true, $fixture['reference_path']),
-            'audio_probe' => 'hub_test_pack_job_audio_probe',
+            'audio_probe' => 'hub_test_resident_audio_probe',
             'command_runner' => static fn (): array => throw new RuntimeException('resident clone must not run docker'),
         ]);
         hub_test_assert(($outcome['status'] ?? '') === 'success'

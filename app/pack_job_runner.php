@@ -238,6 +238,15 @@ function hub_pack_job_resident_progress(?callable $tick, float $intervalSeconds 
     };
 }
 
+function hub_pack_job_resident_heartbeat_interval(int $leaseSeconds, mixed $requestedInterval = null): float
+{
+    $leaseSeconds = max(5, $leaseSeconds);
+    $maximum = $leaseSeconds / 3;
+    $requested = is_numeric($requestedInterval) ? (float)$requestedInterval : min(10.0, $maximum);
+
+    return min($maximum, max(1.0, $requested));
+}
+
 function hub_pack_job_resident_transport_intent(Throwable $error): ?string
 {
     $message = $error->getMessage();
@@ -387,7 +396,7 @@ function hub_pack_job_resident_confirm_terminal(array $context, string $resident
         return [];
     }
     $graceSeconds = 60;
-    $pollSeconds = max(1, min(10, (int)($context['resident_status_poll_seconds'] ?? 5)));
+    $pollSeconds = max(1, min(30, (int)($context['resident_status_poll_seconds'] ?? 5)));
     $clock = isset($context['resident_clock']) && is_callable($context['resident_clock'])
         ? $context['resident_clock']
         : static fn (): float => microtime(true);
@@ -2532,7 +2541,10 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             'resident_plan' => $residentPlan,
             'resident_transport' => $residentTransport,
             'voice_profile_mount' => $voiceProfileMount,
-            'resident_heartbeat_interval_seconds' => (float)($options['resident_heartbeat_interval_seconds'] ?? 10),
+            'resident_heartbeat_interval_seconds' => hub_pack_job_resident_heartbeat_interval(
+                $leaseSeconds,
+                $options['resident_heartbeat_interval_seconds'] ?? null,
+            ),
             'resident_status_poll_seconds' => (int)($options['resident_status_poll_seconds'] ?? 5),
         ] + (isset($options['resident_clock']) && is_callable($options['resident_clock']) ? ['resident_clock' => $options['resident_clock']] : [])
           + (isset($options['resident_sleeper']) && is_callable($options['resident_sleeper']) ? ['resident_sleeper' => $options['resident_sleeper']] : []));
