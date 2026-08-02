@@ -59,6 +59,8 @@ function hub_test_resident_vox_fixture(PDO $db, bool $clone = false): array
         'VOXCPM2_EXECUTION_MODE' => 'resident',
         'VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB' => '1024',
     ]);
+    $db->prepare('UPDATE services SET enabled = 1 WHERE id = :id')->execute([':id' => (int)$service['id']]);
+    hub_update_service_status($db, (int)$service['id'], 'running');
     $service = hub_get_service($db, (int)$service['id']) ?: $service;
     $model = hub_test_models_dir() . '/voxcpm2/model';
     if (!is_dir($model) && !mkdir($model, 0700, true) && !is_dir($model)) {
@@ -213,6 +215,61 @@ hub_test('Resident capacity uses cold full VRAM, ready floor, and never falls ba
     }
 });
 
+hub_test('Stopped resident services wait before GPU acquisition or dispatch', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_resident_vox_fixture($db);
+    hub_update_service_status($db, (int)$fixture['service']['id'], 'stopped');
+    $requests = [];
+    $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+        'gpu_probe' => static fn (): array => throw new RuntimeException('stopped resident must not probe GPU'),
+        'resident_transport' => static function () use (&$requests): array {
+            $requests[] = true;
+            throw new RuntimeException('stopped resident must not dispatch');
+        },
+    ]);
+    $task = hub_get_task($db, $fixture['task_id']);
+    $lease = hub_runtime_gpu_fetch($db);
+    hub_test_assert(($outcome['status'] ?? '') === 'waiting_gpu'
+        && ($task['waiting_reason'] ?? '') === 'resident_service_unavailable'
+        && $requests === []
+        && (int)$db->query('SELECT COUNT(*) FROM resident_job_runs')->fetchColumn() === 0
+        && ($lease === null || ($lease['state'] ?? '') === 'available'), 'stopped resident must not acquire GPU, stage work, or fall back to container dispatch');
+});
+
+hub_test('Resident in-flight transport heartbeats the GPU fence', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_resident_vox_fixture($db);
+    $heartbeats = [];
+    $transport = static function (string $method, string $url, array $headers, ?array $payload, ?callable $progress = null) use ($db, $fixture, &$heartbeats): array {
+        if (str_ends_with($url, '/internal/capacity')) {
+            return ['status' => 200, 'json' => ['model_state' => 'ready', 'active_runs' => 0]];
+        }
+        if ($method === 'POST' && str_ends_with($url, '/internal/jobs')) {
+            $db->prepare("UPDATE runtime_runs SET heartbeat_at = '2000-01-01 00:00:00' WHERE task_id = :task_id")
+                ->execute([':task_id' => $fixture['task_id']]);
+            if ($progress !== null) {
+                $progress();
+            }
+            $heartbeats[] = (string)$db->query('SELECT heartbeat_at FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn();
+            $runId = (string)($payload['run_id'] ?? '');
+            hub_test_resident_write_output(hub_pack_job_resident_stage_path($fixture['service'], $runId));
+            return ['status' => 200, 'json' => ['run_id' => $runId, 'state' => 'running']];
+        }
+        if ($method === 'GET' && preg_match('~/internal/jobs/([^/]+)$~', $url, $matches) === 1) {
+            return ['status' => 200, 'json' => ['run_id' => rawurldecode($matches[1]), 'state' => 'succeeded']];
+        }
+
+        return ['status' => 500, 'json' => []];
+    };
+    $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 1024, 'processes' => []],
+        'resident_transport' => $transport,
+        'resident_heartbeat_interval_seconds' => 0,
+        'audio_probe' => 'hub_test_pack_job_audio_probe',
+    ]);
+    hub_test_assert(($outcome['status'] ?? '') === 'success' && count($heartbeats) === 1 && $heartbeats[0] !== '2000-01-01 00:00:00', 'resident in-flight transport must refresh the runtime heartbeat before its request completes');
+});
+
 hub_test('Resident Vox clone stages its managed reference and relays artifacts without Docker', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_resident_vox_fixture($db, true);
@@ -237,22 +294,54 @@ hub_test('Resident unconfirmed cancellation retains its exact stage until authen
     $db = hub_test_reset_db();
     $fixture = hub_test_resident_vox_fixture($db);
     $requests = [];
+    $now = 0.0;
     $outcome = hub_run_pack_job_task($db, $fixture['task'], [
         'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
         'resident_transport' => hub_test_resident_transport($fixture['service'], 'cold', $requests, false),
+        'resident_status_poll_seconds' => 30,
+        'resident_clock' => static function () use (&$now): float {
+            return $now;
+        },
+        'resident_sleeper' => static function (float $seconds) use (&$now): void {
+            $now += $seconds;
+        },
     ]);
     $row = $db->query('SELECT * FROM resident_job_runs')->fetch();
     $run = $db->query('SELECT * FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetch();
     $stage = hub_pack_job_resident_stage_path($fixture['service'], (string)$row['resident_run_id']);
-    hub_test_assert(($outcome['error_code'] ?? '') === 'cleanup_failed' && ($row['lifecycle'] ?? '') === 'unconfirmed' && is_dir($stage), 'unconfirmed resident status must retain the stage and block its lease');
+    $statusPolls = array_values(array_filter($requests, static fn (array $request): bool => ($request['method'] ?? '') === 'GET' && str_contains((string)($request['url'] ?? ''), '/internal/jobs/')));
+    hub_test_assert(($outcome['error_code'] ?? '') === 'cleanup_failed' && ($row['lifecycle'] ?? '') === 'unconfirmed' && is_dir($stage)
+        && count($statusPolls) === 3 && $now === 60.0, 'resident status confirmation must use the full 60-second grace before retaining its staged run');
     hub_test_assert((string)$db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'blocked', 'unconfirmed resident status must block only its GPU lease');
 
     $plan = hub_pack_job_resident_plan_for_service($db, $fixture['service'], $fixture['contract']);
+    $cancelRequests = [];
+    $cancelNow = 0.0;
     $cancel = hub_pack_job_resident_cancel([
         'db' => $db, 'task' => hub_get_task($db, $fixture['task_id']), 'run' => $run, 'workspace' => hub_task_result_dir($fixture['task_id']) . '/workspace',
         'contract' => $fixture['contract'], 'resident_plan' => $plan, 'resident_run_id' => $row['resident_run_id'], 'resident_stage' => $stage,
-    ], 'cancelled', static fn (): array => throw new RuntimeException('network unavailable'));
-    hub_test_assert(($cancel['cleanup'] ?? null) === [] && is_dir($stage), 'unconfirmed cancel must not delete the staged resident run');
+        'resident_status_poll_seconds' => 30,
+        'resident_clock' => static function () use (&$cancelNow): float {
+            return $cancelNow;
+        },
+        'resident_sleeper' => static function (float $seconds) use (&$cancelNow): void {
+            $cancelNow += $seconds;
+        },
+    ], 'cancelled', static function (string $method, string $url, array $headers, ?array $payload) use (&$cancelRequests): array {
+        $cancelRequests[] = ['method' => $method, 'url' => $url];
+        if ($method === 'POST' && str_ends_with($url, '/cancel')) {
+            return ['status' => 200, 'json' => ['ok' => true]];
+        }
+        if ($method === 'GET' && str_contains($url, '/internal/jobs/')) {
+            return ['status' => 200, 'json' => ['run_id' => rawurldecode((string)basename($url)), 'state' => 'unknown']];
+        }
+
+        return ['status' => 500, 'json' => []];
+    });
+    $cancelPosts = array_values(array_filter($cancelRequests, static fn (array $request): bool => ($request['method'] ?? '') === 'POST'));
+    $cancelStatusPolls = array_values(array_filter($cancelRequests, static fn (array $request): bool => ($request['method'] ?? '') === 'GET'));
+    hub_test_assert(($cancel['cleanup'] ?? null) === [] && is_dir($stage)
+        && count($cancelPosts) === 1 && count($cancelStatusPolls) === 3 && $cancelNow === 60.0, 'unconfirmed cancel must post once, then poll authenticated status for the 60-second grace without deleting the staged resident run');
 
     $reconciled = hub_reconcile_resident_job_runs($db, hub_test_resident_transport($fixture['service'], 'cold', $requests));
     $row = $db->query('SELECT * FROM resident_job_runs')->fetch();

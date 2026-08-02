@@ -167,7 +167,7 @@ function hub_pack_job_resident_service(PDO $db, array $task, array $contract): ?
     }
     $stmt = $db->prepare(
         "SELECT * FROM services
-         WHERE pack_id = :pack_id AND pack_version = :pack_version AND install_status = 'installed'
+         WHERE pack_id = :pack_id AND pack_version = :pack_version
          ORDER BY id ASC LIMIT 1"
     );
     $stmt->execute([
@@ -175,16 +175,24 @@ function hub_pack_job_resident_service(PDO $db, array $task, array $contract): ?
         ':pack_version' => (string)($task['pack_version'] ?? ''),
     ]);
     $service = $stmt->fetch();
-    if (!is_array($service) || (int)($service['local_port'] ?? 0) < 1) {
-        return null;
+    if (!is_array($service)) {
+        return ['eligible' => false, 'reason' => 'resident_service_unavailable'];
     }
-    return hub_pack_job_resident_plan_for_service($db, $service, $contract);
+    $plan = hub_pack_job_resident_plan_for_service($db, $service, $contract);
+
+    return $plan ?? ['eligible' => false, 'reason' => 'resident_service_unavailable'];
 }
 
 function hub_pack_job_resident_plan_for_service(PDO $db, array $service, array $contract): ?array
 {
     $resident = $contract['resident'] ?? null;
     if (!is_array($resident) || ($resident['protocol'] ?? null) !== 'service_data_v1') {
+        return null;
+    }
+    if ((string)($service['install_status'] ?? '') !== 'installed'
+        || (int)($service['enabled'] ?? 0) !== 1
+        || (string)($service['runtime_status'] ?? '') !== 'running'
+        || (int)($service['local_port'] ?? 0) < 1) {
         return null;
     }
     $settings = hub_service_settings_values($db, $service);
@@ -194,7 +202,7 @@ function hub_pack_job_resident_plan_for_service(PDO $db, array $service, array $
         return null;
     }
 
-    return ['service' => $service, 'settings' => $settings, 'resident' => $resident, 'token_setting' => $tokenSetting];
+    return ['eligible' => true, 'service' => $service, 'settings' => $settings, 'resident' => $resident, 'token_setting' => $tokenSetting];
 }
 
 function hub_pack_job_resident_base_url(array $service): string
@@ -207,12 +215,50 @@ function hub_pack_job_resident_base_url(array $service): string
     return 'http://127.0.0.1:' . $port;
 }
 
-function hub_pack_job_resident_transport(string $method, string $url, array $headers, ?array $payload = null, ?callable $transport = null, int $timeoutSeconds = 15): array
+function hub_pack_job_resident_progress(?callable $tick, float $intervalSeconds = 10.0, bool $continueAfterStop = false): ?callable
+{
+    if ($tick === null) {
+        return null;
+    }
+    $nextAt = 0.0;
+
+    return static function () use ($tick, $intervalSeconds, $continueAfterStop, &$nextAt): ?string {
+        $now = microtime(true);
+        if ($now < $nextAt) {
+            return null;
+        }
+        $nextAt = $now + max(0.0, $intervalSeconds);
+        $intent = $tick();
+
+        if ($intent === 'fence_lost') {
+            return $intent;
+        }
+
+        return !$continueAfterStop && in_array($intent, ['cancelled', 'timed_out'], true) ? $intent : null;
+    };
+}
+
+function hub_pack_job_resident_transport_intent(Throwable $error): ?string
+{
+    $message = $error->getMessage();
+
+    return preg_match('/^resident_transport_(fence_lost|cancelled|timed_out)$/', $message, $matches) === 1 ? $matches[1] : null;
+}
+
+function hub_pack_job_resident_transport(string $method, string $url, array $headers, ?array $payload = null, ?callable $transport = null, int $timeoutSeconds = 15, ?callable $progress = null): array
 {
     if ($transport !== null) {
-        $response = $transport($method, $url, $headers, $payload);
+        $intent = $progress === null ? null : $progress();
+        if ($intent !== null) {
+            throw new RuntimeException('resident_transport_' . $intent);
+        }
+        $response = $transport($method, $url, $headers, $payload, $progress);
         if (!is_array($response)) {
             throw new RuntimeException('resident_transport_invalid');
+        }
+        $intent = $progress === null ? null : $progress();
+        if ($intent !== null) {
+            throw new RuntimeException('resident_transport_' . $intent);
         }
         return $response;
     }
@@ -228,14 +274,40 @@ function hub_pack_job_resident_transport(string $method, string $url, array $hea
         throw new RuntimeException('resident_transport_unavailable');
     }
     try {
-        $configured = curl_setopt_array($handle, [
+        $intent = null;
+        $options = [
             CURLOPT_CUSTOMREQUEST => $method,
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_CONNECTTIMEOUT => 3,
             CURLOPT_TIMEOUT => max(1, $timeoutSeconds),
-        ] + ($body === null ? [] : [CURLOPT_POSTFIELDS => $body]));
+        ] + ($body === null ? [] : [CURLOPT_POSTFIELDS => $body]);
+        if ($progress !== null) {
+            $callback = static function (...$unused) use ($progress, &$intent): int {
+                try {
+                    $next = $progress();
+                } catch (Throwable) {
+                    $next = 'fence_lost';
+                }
+                if (in_array($next, ['fence_lost', 'cancelled', 'timed_out'], true)) {
+                    $intent = $next;
+                    return 1;
+                }
+
+                return 0;
+            };
+            $options[CURLOPT_NOPROGRESS] = false;
+            if (defined('CURLOPT_XFERINFOFUNCTION')) {
+                $options[constant('CURLOPT_XFERINFOFUNCTION')] = $callback;
+            } else {
+                $options[CURLOPT_PROGRESSFUNCTION] = $callback;
+            }
+        }
+        $configured = curl_setopt_array($handle, $options);
         $raw = $configured ? curl_exec($handle) : false;
+        if ($intent !== null) {
+            throw new RuntimeException('resident_transport_' . $intent);
+        }
         if ($raw === false) {
             throw new RuntimeException('resident_transport_unavailable');
         }
@@ -249,7 +321,7 @@ function hub_pack_job_resident_transport(string $method, string $url, array $hea
     }
 }
 
-function hub_pack_job_resident_request(array $residentPlan, string $method, string $path, ?array $payload = null, ?callable $transport = null, int $timeoutSeconds = 15): array
+function hub_pack_job_resident_request(array $residentPlan, string $method, string $path, ?array $payload = null, ?callable $transport = null, int $timeoutSeconds = 15, ?callable $progress = null): array
 {
     if (!preg_match('~^/internal(?:/|$)~', $path)) {
         throw new RuntimeException('resident_endpoint_invalid');
@@ -265,16 +337,17 @@ function hub_pack_job_resident_request(array $residentPlan, string $method, stri
         $payload,
         $transport,
         $timeoutSeconds,
+        $progress,
     );
 }
 
-function hub_pack_job_resident_status(array $residentPlan, string $residentRunId, ?callable $transport = null): ?string
+function hub_pack_job_resident_status(array $residentPlan, string $residentRunId, ?callable $transport = null, ?callable $progress = null): ?string
 {
     if (preg_match('/^[a-z0-9][a-z0-9_.-]{0,95}$/', $residentRunId) !== 1) {
         return null;
     }
     try {
-        $response = hub_pack_job_resident_request($residentPlan, 'GET', '/internal/jobs/' . rawurlencode($residentRunId), null, $transport);
+        $response = hub_pack_job_resident_request($residentPlan, 'GET', '/internal/jobs/' . rawurlencode($residentRunId), null, $transport, 15, $progress);
     } catch (Throwable) {
         return null;
     }
@@ -289,10 +362,10 @@ function hub_pack_job_resident_status(array $residentPlan, string $residentRunId
     return $json['state'];
 }
 
-function hub_pack_job_resident_capacity(array $residentPlan, ?callable $transport = null): ?string
+function hub_pack_job_resident_capacity(array $residentPlan, ?callable $transport = null, ?callable $progress = null): ?string
 {
     try {
-        $response = hub_pack_job_resident_request($residentPlan, 'GET', '/internal/capacity', null, $transport);
+        $response = hub_pack_job_resident_request($residentPlan, 'GET', '/internal/capacity', null, $transport, 15, $progress);
     } catch (Throwable) {
         return null;
     }
@@ -305,6 +378,44 @@ function hub_pack_job_resident_capacity(array $residentPlan, ?callable $transpor
     }
 
     return $json['model_state'];
+}
+
+function hub_pack_job_resident_confirm_terminal(array $context, string $residentRunId, ?callable $transport = null, ?callable $progress = null): array
+{
+    $residentPlan = $context['resident_plan'] ?? null;
+    if (!is_array($residentPlan)) {
+        return [];
+    }
+    $graceSeconds = 60;
+    $pollSeconds = max(1, min(10, (int)($context['resident_status_poll_seconds'] ?? 5)));
+    $clock = isset($context['resident_clock']) && is_callable($context['resident_clock'])
+        ? $context['resident_clock']
+        : static fn (): float => microtime(true);
+    $sleeper = isset($context['resident_sleeper']) && is_callable($context['resident_sleeper'])
+        ? $context['resident_sleeper']
+        : static function (float $seconds): void {
+            if ($seconds > 0) {
+                usleep((int)round($seconds * 1000000));
+            }
+        };
+    $deadline = $clock() + $graceSeconds;
+    do {
+        $intent = $progress === null ? null : $progress();
+        if ($intent !== null) {
+            return ['intent' => $intent];
+        }
+        $state = hub_pack_job_resident_status($residentPlan, $residentRunId, $transport, $progress);
+        if (in_array($state, ['succeeded', 'failed', 'cancelled'], true)) {
+            return ['state' => $state];
+        }
+        $remaining = $deadline - $clock();
+        if ($remaining <= 0) {
+            break;
+        }
+        $sleeper(min((float)$pollSeconds, $remaining));
+    } while (true);
+
+    return [];
 }
 
 function hub_pack_job_resident_run_id(): string
@@ -546,16 +657,30 @@ function hub_pack_job_resident_executor(array $context, ?callable $transport = n
     $context['resident_run_id'] = $residentRunId;
     $context['resident_stage'] = $stage;
     $context['started']([]);
+    $progress = hub_pack_job_resident_progress(
+        isset($context['tick']) && is_callable($context['tick']) ? $context['tick'] : null,
+        (float)($context['resident_heartbeat_interval_seconds'] ?? 10),
+    );
+    $intent = null;
     try {
-        $start = hub_pack_job_resident_request($residentPlan, 'POST', '/internal/jobs', ['run_id' => $residentRunId], $transport, (int)($context['runner']['timeout_seconds'] ?? 15));
+        $start = hub_pack_job_resident_request($residentPlan, 'POST', '/internal/jobs', ['run_id' => $residentRunId], $transport, (int)($context['runner']['timeout_seconds'] ?? 15), $progress);
         if ((int)($start['status'] ?? 0) !== 200 || !is_array($start['json'] ?? null) || ($start['json']['run_id'] ?? null) !== $residentRunId) {
             throw new RuntimeException('resident_dispatch_unconfirmed');
         }
-        $state = hub_pack_job_resident_status($residentPlan, $residentRunId, $transport);
-        if (in_array($state, ['succeeded', 'failed', 'cancelled'], true)) {
-            return hub_pack_job_resident_terminal_result($db, $context, $residentRunId, $stage, $state);
+    } catch (Throwable $error) {
+        $intent = hub_pack_job_resident_transport_intent($error);
+    }
+    if ($intent === null) {
+        try {
+            $confirmed = hub_pack_job_resident_confirm_terminal($context, $residentRunId, $transport, $progress);
+        } catch (Throwable $error) {
+            $confirmed = [];
+            $intent = hub_pack_job_resident_transport_intent($error);
         }
-    } catch (Throwable) {
+        if (isset($confirmed['state'])) {
+            return hub_pack_job_resident_terminal_result($db, $context, $residentRunId, $stage, (string)$confirmed['state']);
+        }
+        $intent ??= $confirmed['intent'] ?? null;
     }
     hub_pack_job_resident_record($db, (array)$context['run'], (array)$context['task'], (array)$residentPlan['service'], $residentRunId, 'unconfirmed');
 
@@ -565,7 +690,8 @@ function hub_pack_job_resident_executor(array $context, ?callable $transport = n
         'completed_no_process_evidence' => true,
         'cleanup' => [],
         'resident_run_id' => $residentRunId,
-    ];
+        'resident_stage' => $stage,
+    ] + ($intent === null ? [] : ['intent' => $intent]);
 }
 
 function hub_pack_job_resident_cancel(array $context, string $reason, ?callable $transport = null): array
@@ -581,19 +707,33 @@ function hub_pack_job_resident_cancel(array $context, string $reason, ?callable 
         return ['cleanup' => []];
     }
     hub_pack_job_resident_record($db, (array)$context['run'], (array)$context['task'], (array)$residentPlan['service'], $residentRunId, 'cancel_requested');
+    $progress = hub_pack_job_resident_progress(
+        isset($context['tick']) && is_callable($context['tick']) ? $context['tick'] : null,
+        (float)($context['resident_heartbeat_interval_seconds'] ?? 10),
+        true,
+    );
+    $intent = null;
     try {
-        $cancel = hub_pack_job_resident_request($residentPlan, 'POST', '/internal/jobs/' . rawurlencode($residentRunId) . '/cancel', null, $transport);
+        $cancel = hub_pack_job_resident_request($residentPlan, 'POST', '/internal/jobs/' . rawurlencode($residentRunId) . '/cancel', null, $transport, 15, $progress);
         if ((int)($cancel['status'] ?? 0) !== 200) {
             throw new RuntimeException('resident_cancel_unconfirmed');
         }
-        $state = hub_pack_job_resident_status($residentPlan, $residentRunId, $transport);
-        if (in_array($state, ['succeeded', 'failed', 'cancelled'], true)) {
+    } catch (Throwable $error) {
+        $intent = hub_pack_job_resident_transport_intent($error);
+    }
+    if ($intent === null) {
+        try {
+            $confirmed = hub_pack_job_resident_confirm_terminal($context, $residentRunId, $transport, $progress);
+        } catch (Throwable $error) {
+            $confirmed = [];
+            $intent = hub_pack_job_resident_transport_intent($error);
+        }
+        if (isset($confirmed['state'])) {
             hub_pack_job_resident_copy_output($stage, (string)$context['workspace'], (array)$context['contract']['artifact_contract']);
             hub_pack_job_resident_remove_stage((array)$residentPlan['service'], $residentRunId);
             hub_pack_job_resident_record($db, (array)$context['run'], (array)$context['task'], (array)$residentPlan['service'], $residentRunId, 'reconciled');
             return ['cleanup' => hub_pack_job_no_work_cleanup()];
         }
-    } catch (Throwable) {
     }
     hub_pack_job_resident_record($db, (array)$context['run'], (array)$context['task'], (array)$residentPlan['service'], $residentRunId, 'unconfirmed');
 
@@ -2266,15 +2406,21 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $runner = $contract['runner'];
         $runnerConfig = hub_pack_job_runner_config_for_task($contract, (array)($task['input'] ?? []));
+        $residentPlan = hub_pack_job_resident_service($db, $task, $contract);
+        $residentTransport = isset($options['resident_transport']) && is_callable($options['resident_transport'])
+            ? $options['resident_transport']
+            : null;
+        if ($residentPlan !== null && empty($residentPlan['eligible'])) {
+            if (hub_pack_job_wait_without_gpu($db, $taskId, $run, (string)($residentPlan['reason'] ?? 'resident_service_unavailable'), max(1, (int)($options['gpu_backoff_seconds'] ?? 30)))) {
+                return ['status' => 'waiting_gpu'];
+            }
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
+        }
         try {
             $assetMounts = hub_pack_job_resolve_asset_mounts($db, $runner, (array)($task['input'] ?? []));
         } catch (Throwable) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
         }
-        $residentPlan = hub_pack_job_resident_service($db, $task, $contract);
-        $residentTransport = isset($options['resident_transport']) && is_callable($options['resident_transport'])
-            ? $options['resident_transport']
-            : null;
         $webScreenshotService = null;
         $edgeTtsService = null;
         if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'web-screenshot' && (string)($task['job'] ?? '') === 'capture') {
@@ -2386,7 +2532,10 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             'resident_plan' => $residentPlan,
             'resident_transport' => $residentTransport,
             'voice_profile_mount' => $voiceProfileMount,
-        ]);
+            'resident_heartbeat_interval_seconds' => (float)($options['resident_heartbeat_interval_seconds'] ?? 10),
+            'resident_status_poll_seconds' => (int)($options['resident_status_poll_seconds'] ?? 5),
+        ] + (isset($options['resident_clock']) && is_callable($options['resident_clock']) ? ['resident_clock' => $options['resident_clock']] : [])
+          + (isset($options['resident_sleeper']) && is_callable($options['resident_sleeper']) ? ['resident_sleeper' => $options['resident_sleeper']] : []));
         $pidInspector = $gpuLease === null ? null : ($options['pid_inspector'] ?? static fn (): array => []);
         $baseline = $pidInspector === null ? [] : hub_runtime_gpu_recovery_pids($pidInspector($context));
         $details = hub_pack_job_execution_details(['baseline_pids' => $baseline]);
