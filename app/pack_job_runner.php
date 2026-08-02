@@ -183,7 +183,7 @@ function hub_pack_job_resident_service(PDO $db, array $task, array $contract): ?
     return $plan ?? ['eligible' => false, 'reason' => 'resident_service_unavailable'];
 }
 
-function hub_pack_job_resident_plan_for_service(PDO $db, array $service, array $contract): ?array
+function hub_pack_job_resident_plan_for_service(PDO $db, array $service, array $contract, bool $requireResidentMode = true): ?array
 {
     $resident = $contract['resident'] ?? null;
     if (!is_array($resident) || ($resident['protocol'] ?? null) !== 'service_data_v1') {
@@ -198,7 +198,8 @@ function hub_pack_job_resident_plan_for_service(PDO $db, array $service, array $
     $settings = hub_service_settings_values($db, $service);
     $modeSetting = (string)$resident['mode_setting'];
     $tokenSetting = hub_pack_job_resident_token_setting($resident);
-    if (($settings[$modeSetting] ?? null) !== $resident['mode_value'] || $tokenSetting === null || trim((string)($settings[$tokenSetting] ?? '')) === '') {
+    if (($requireResidentMode && ($settings[$modeSetting] ?? null) !== $resident['mode_value'])
+        || $tokenSetting === null || trim((string)($settings[$tokenSetting] ?? '')) === '') {
         return null;
     }
 
@@ -254,14 +255,14 @@ function hub_pack_job_resident_transport_intent(Throwable $error): ?string
     return preg_match('/^resident_transport_(fence_lost|cancelled|timed_out)$/', $message, $matches) === 1 ? $matches[1] : null;
 }
 
-function hub_pack_job_resident_transport(string $method, string $url, array $headers, ?array $payload = null, ?callable $transport = null, int $timeoutSeconds = 15, ?callable $progress = null): array
+function hub_pack_job_resident_transport(string $method, string $url, array $headers, ?array $payload = null, ?callable $transport = null, float $timeoutSeconds = 15.0, ?callable $progress = null): array
 {
     if ($transport !== null) {
         $intent = $progress === null ? null : $progress();
         if ($intent !== null) {
             throw new RuntimeException('resident_transport_' . $intent);
         }
-        $response = $transport($method, $url, $headers, $payload, $progress);
+        $response = $transport($method, $url, $headers, $payload, $progress, $timeoutSeconds);
         if (!is_array($response)) {
             throw new RuntimeException('resident_transport_invalid');
         }
@@ -278,6 +279,10 @@ function hub_pack_job_resident_transport(string $method, string $url, array $hea
     if ($body === false) {
         throw new RuntimeException('resident_transport_invalid');
     }
+    $timeoutMilliseconds = max(1, (int)floor(max(0.001, $timeoutSeconds) * 1000));
+    if (!defined('CURLOPT_TIMEOUT_MS') || !defined('CURLOPT_CONNECTTIMEOUT_MS')) {
+        throw new RuntimeException('resident_transport_unavailable');
+    }
     $handle = curl_init($url);
     if ($handle === false) {
         throw new RuntimeException('resident_transport_unavailable');
@@ -288,8 +293,8 @@ function hub_pack_job_resident_transport(string $method, string $url, array $hea
             CURLOPT_CUSTOMREQUEST => $method,
             CURLOPT_HTTPHEADER => $headers,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_CONNECTTIMEOUT => 3,
-            CURLOPT_TIMEOUT => max(1, $timeoutSeconds),
+            constant('CURLOPT_CONNECTTIMEOUT_MS') => min(3000, $timeoutMilliseconds),
+            constant('CURLOPT_TIMEOUT_MS') => $timeoutMilliseconds,
         ] + ($body === null ? [] : [CURLOPT_POSTFIELDS => $body]);
         if ($progress !== null) {
             $callback = static function (...$unused) use ($progress, &$intent): int {
@@ -330,7 +335,7 @@ function hub_pack_job_resident_transport(string $method, string $url, array $hea
     }
 }
 
-function hub_pack_job_resident_request(array $residentPlan, string $method, string $path, ?array $payload = null, ?callable $transport = null, int $timeoutSeconds = 15, ?callable $progress = null): array
+function hub_pack_job_resident_request(array $residentPlan, string $method, string $path, ?array $payload = null, ?callable $transport = null, float $timeoutSeconds = 15.0, ?callable $progress = null): array
 {
     if (!preg_match('~^/internal(?:/|$)~', $path)) {
         throw new RuntimeException('resident_endpoint_invalid');
@@ -350,13 +355,13 @@ function hub_pack_job_resident_request(array $residentPlan, string $method, stri
     );
 }
 
-function hub_pack_job_resident_status(array $residentPlan, string $residentRunId, ?callable $transport = null, ?callable $progress = null): ?string
+function hub_pack_job_resident_status(array $residentPlan, string $residentRunId, ?callable $transport = null, ?callable $progress = null, float $timeoutSeconds = 15.0): ?string
 {
     if (preg_match('/^[a-z0-9][a-z0-9_.-]{0,95}$/', $residentRunId) !== 1) {
         return null;
     }
     try {
-        $response = hub_pack_job_resident_request($residentPlan, 'GET', '/internal/jobs/' . rawurlencode($residentRunId), null, $transport, 15, $progress);
+        $response = hub_pack_job_resident_request($residentPlan, 'GET', '/internal/jobs/' . rawurlencode($residentRunId), null, $transport, $timeoutSeconds, $progress);
     } catch (Throwable) {
         return null;
     }
@@ -413,7 +418,11 @@ function hub_pack_job_resident_confirm_terminal(array $context, string $resident
         if ($intent !== null) {
             return ['intent' => $intent];
         }
-        $state = hub_pack_job_resident_status($residentPlan, $residentRunId, $transport, $progress);
+        $remaining = $deadline - $clock();
+        if ($remaining <= 0) {
+            break;
+        }
+        $state = hub_pack_job_resident_status($residentPlan, $residentRunId, $transport, $progress, min(15.0, $remaining));
         if (in_array($state, ['succeeded', 'failed', 'cancelled'], true)) {
             return ['state' => $state];
         }
@@ -2328,7 +2337,7 @@ function hub_reconcile_resident_job_runs(PDO $db, ?callable $transport = null): 
         if (($service['pack_id'] ?? null) !== ($task['pack_id'] ?? null)) {
             continue;
         }
-        $residentPlan = hub_pack_job_resident_plan_for_service($db, $service, $contract);
+        $residentPlan = hub_pack_job_resident_plan_for_service($db, $service, $contract, false);
         if ($residentPlan === null) {
             continue;
         }

@@ -479,6 +479,38 @@ hub_test('Resident Vox clone stages its managed reference and relays artifacts w
     }
 });
 
+hub_test('Resident confirmation caps each status request at the remaining grace deadline', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_resident_vox_fixture($db);
+    $plan = hub_pack_job_resident_plan_for_service($db, $fixture['service'], $fixture['contract']);
+    hub_test_assert(is_array($plan), 'resident confirmation fixture requires an eligible service');
+    $now = 0.0;
+    $advanced = false;
+    $timeouts = [];
+    $sleeps = [];
+    $result = hub_pack_job_resident_confirm_terminal([
+        'resident_plan' => $plan,
+        'resident_clock' => static function () use (&$now): float {
+            return $now;
+        },
+        'resident_sleeper' => static function (float $seconds) use (&$now, &$sleeps): void {
+            $sleeps[] = $seconds;
+            $now += $seconds;
+        },
+    ], 'resident-confirm-deadline', static function (string $method, string $url, array $headers, ?array $payload, ?callable $progress, float $timeoutSeconds) use (&$timeouts): array {
+        $timeouts[] = $timeoutSeconds;
+        return ['status' => 200, 'json' => ['run_id' => rawurldecode((string)basename($url)), 'state' => 'unknown']];
+    }, static function () use (&$now, &$advanced): ?string {
+        if (!$advanced) {
+            $now = 58.0;
+            $advanced = true;
+        }
+
+        return null;
+    });
+    hub_test_assert($result === [] && $timeouts === [2.0] && $sleeps === [2.0] && $now === 60.0, 'resident confirmation must cap status timeout to the remaining grace and stop without a busy retry');
+});
+
 hub_test('Resident unconfirmed cancellation retains its exact stage until authenticated reconciliation', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_resident_vox_fixture($db);
@@ -500,7 +532,7 @@ hub_test('Resident unconfirmed cancellation retains its exact stage until authen
     $stage = hub_pack_job_resident_stage_path($fixture['service'], (string)$row['resident_run_id']);
     $statusPolls = array_values(array_filter($requests, static fn (array $request): bool => ($request['method'] ?? '') === 'GET' && str_contains((string)($request['url'] ?? ''), '/internal/jobs/')));
     hub_test_assert(($outcome['error_code'] ?? '') === 'cleanup_failed' && ($row['lifecycle'] ?? '') === 'unconfirmed' && is_dir($stage)
-        && count($statusPolls) === 3 && $now === 60.0, 'resident status confirmation must use the full 60-second grace before retaining its staged run');
+        && count($statusPolls) === 2 && $now === 60.0, 'resident status confirmation must use the full 60-second grace without starting a request at its deadline');
     hub_test_assert((string)$db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() === 'blocked', 'unconfirmed resident status must block only its GPU lease');
 
     $plan = hub_pack_job_resident_plan_for_service($db, $fixture['service'], $fixture['contract']);
@@ -530,7 +562,13 @@ hub_test('Resident unconfirmed cancellation retains its exact stage until authen
     $cancelPosts = array_values(array_filter($cancelRequests, static fn (array $request): bool => ($request['method'] ?? '') === 'POST'));
     $cancelStatusPolls = array_values(array_filter($cancelRequests, static fn (array $request): bool => ($request['method'] ?? '') === 'GET'));
     hub_test_assert(($cancel['cleanup'] ?? null) === [] && is_dir($stage)
-        && count($cancelPosts) === 1 && count($cancelStatusPolls) === 3 && $cancelNow === 60.0, 'unconfirmed cancel must post once, then poll authenticated status for the 60-second grace without deleting the staged resident run');
+        && count($cancelPosts) === 1 && count($cancelStatusPolls) === 2 && $cancelNow === 60.0, 'unconfirmed cancel must post once, then poll authenticated status until the 60-second deadline without deleting the staged resident run');
+
+    hub_update_service_settings($db, (int)$fixture['service']['id'], ['VOXCPM2_EXECUTION_MODE' => 'isolated']);
+    $service = hub_get_service($db, (int)$fixture['service']['id']) ?: [];
+    $dispatchPlan = hub_pack_job_resident_service($db, $fixture['task'], $fixture['contract']);
+    $recoveryPlan = hub_pack_job_resident_plan_for_service($db, $service, $fixture['contract'], false);
+    hub_test_assert(empty($dispatchPlan['eligible']) && is_array($recoveryPlan), 'switching to isolated must reject new resident dispatch while preserving an enabled resident endpoint for recovery');
 
     $reconciled = hub_reconcile_resident_job_runs($db, hub_test_resident_transport($fixture['service'], 'cold', $requests));
     $row = $db->query('SELECT * FROM resident_job_runs')->fetch();
