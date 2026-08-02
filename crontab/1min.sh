@@ -12,6 +12,8 @@ CLUSTER_REFRESH_LOG_PATH="${CLUSTER_REFRESH_LOG_PATH:-data/logs/cluster_refresh_
 WORKER_LIMIT="${WORKER_LIMIT:-5}"
 TASK_WORKER_LIMIT="${TASK_WORKER_LIMIT:-5}"
 CALLBACK_WORKER_LIMIT="${CALLBACK_WORKER_LIMIT:-5}"
+TASK_WORKER_TICKS="${TASK_WORKER_TICKS:-100}"
+TASK_WORKER_SLEEP="${TASK_WORKER_SLEEP:-0.5}"
 WORKER_TICKS="${WORKER_TICKS:-6}"
 WORKER_SLEEP="${WORKER_SLEEP:-10}"
 
@@ -78,11 +80,11 @@ fi
   fi
 
   task_tick=1
-  while [ "$task_tick" -le "$WORKER_TICKS" ]; do
+  while [ "$task_tick" -le "$TASK_WORKER_TICKS" ]; do
     php scripts/task_worker.php --limit="$TASK_WORKER_LIMIT"
     php scripts/callback_worker.php --limit="$CALLBACK_WORKER_LIMIT"
-    if [ "$task_tick" -lt "$WORKER_TICKS" ]; then
-      sleep "$WORKER_SLEEP"
+    if [ "$task_tick" -lt "$TASK_WORKER_TICKS" ]; then
+      sleep "$TASK_WORKER_SLEEP"
     fi
     task_tick=$((task_tick + 1))
   done
