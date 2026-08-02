@@ -54,10 +54,13 @@ consent, transcript-confirmation, retention, audit, and artifact-relay rules
 remain the canonical Hub implementation; the new Pack creates no second voice
 profile table.
 
-The gateway extracts that governed voice context through a small shared private
-helper used by VoxCPM2 and GPT-SoVITS. The helper receives each Pack's explicit
-allowed modes and container staging target. It must preserve VoxCPM2's current
-request/result contract exactly. This is shared validation, not a generic TTS
+The existing asynchronous task path derives that governed voice-context
+snapshot from each Pack's declared contract before queueing work. It needs one
+small additional declared shape for a clone-only Pack: mode, clone,
+ultimate-clone, profile, profile-task, and container path, with no design
+value or design prompt. GPT-SoVITS therefore reuses the current voice-profile
+task and Pack-job validation rather than adding a synchronous gateway helper
+or a second profile mechanism. This is a declared contract, not a generic TTS
 provider framework.
 
 The new explicit mode is included in the existing async route resolver, public
