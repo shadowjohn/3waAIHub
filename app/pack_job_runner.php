@@ -1725,7 +1725,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 : ['design', 'clone', 'ultimate_clone'];
             if (
                 (string)($task['pack_id'] ?? '') === 'tts-voxcpm2'
-                && in_array($storedVersion, ['0.1.4', '0.1.5'], true)
+                && in_array($storedVersion, ['0.1.4', '0.1.5', '0.1.6'], true)
                 && (string)($task['job'] ?? '') === 'synthesize'
                 && (string)($task['requested_mode'] ?? '') === 'voice_generate'
                 && (string)($task['accelerator'] ?? '') === 'gpu'

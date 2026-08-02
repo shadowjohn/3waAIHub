@@ -1188,7 +1188,7 @@ function hub_resolve_stored_pack_job(PDO $db, array $task): array
     $currentVersion = (string)($pack['manifest']['version'] ?? '');
     $taskInput = is_array($task['input'] ?? null) ? $task['input'] : [];
     $legacyVoxCpm2 = (string)$task['pack_id'] === 'tts-voxcpm2'
-        && in_array((string)$task['pack_version'], ['0.1.4', '0.1.5'], true)
+        && in_array((string)$task['pack_version'], ['0.1.4', '0.1.5', '0.1.6'], true)
         && $currentVersion === '0.1.7'
         && (string)$task['job'] === 'synthesize'
         && (string)($task['requested_mode'] ?? '') === 'voice_generate'

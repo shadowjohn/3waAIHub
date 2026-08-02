@@ -3699,7 +3699,7 @@ hub_test('VoxCPM2 async clone admission distinguishes unavailable profiles from 
     });
 });
 
-hub_test('VoxCPM2 executes immutable 0.1.4 and 0.1.5 queued tasks after the 0.1.7 Pack bump', function (): void {
+hub_test('VoxCPM2 executes immutable 0.1.4 through 0.1.6 queued tasks after the 0.1.7 Pack bump', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
         hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
@@ -3832,6 +3832,44 @@ hub_test('VoxCPM2 executes immutable 0.1.4 and 0.1.5 queued tasks after the 0.1.
             && $previousExecuted
             && ($previousOutcome['error_code'] ?? '') === 'synthetic_legacy_exit',
             'queued 0.1.5 task must execute through its immutable stored contract'
+        );
+        $preResident = $route;
+        $preResident['runner']['image'] = '3waaihub/tts-voxcpm2:0.1.6';
+        $preResidentSnapshot = hub_pack_job_contract_snapshot($preResident, true);
+        $preResidentTaskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, ['text' => 'queued 0.1.6 design'], null, '203.0.113.51', [
+            'owner_member_id' => $owner,
+            'requested_mode' => 'voice_generate',
+            'pack_id' => 'tts-voxcpm2',
+            'pack_version' => '0.1.6',
+            'job' => 'synthesize',
+            'job_contract_json' => $preResidentSnapshot['json'],
+            'job_contract_digest' => $preResidentSnapshot['digest'],
+            'runtime_mode' => 'job',
+            'accelerator' => 'gpu',
+            'route_resolved_at' => '2026-07-30 00:00:00',
+        ]);
+        $preResidentStored = hub_get_task($db, $preResidentTaskId);
+        $preResidentContract = $preResidentStored ? hub_resolve_stored_pack_job($db, $preResidentStored) : null;
+        hub_test_assert(($preResidentContract['runner']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.6', '0.1.6 stored contract must resolve against the current Pack');
+        $preResidentClaimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+        $preResidentExecuted = false;
+        $preResidentOutcome = hub_run_pack_job_task($db, $preResidentClaimed ?? [], [
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+            'executor' => static function () use (&$preResidentExecuted): array {
+                $preResidentExecuted = true;
+                return [
+                    'exit_code' => 1,
+                    'error_code' => 'synthetic_legacy_exit',
+                    'completed_no_process_evidence' => true,
+                    'cleanup' => ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true],
+                ];
+            },
+        ]);
+        hub_test_assert(
+            (int)($preResidentClaimed['id'] ?? 0) === $preResidentTaskId
+            && $preResidentExecuted
+            && ($preResidentOutcome['error_code'] ?? '') === 'synthetic_legacy_exit',
+            'queued 0.1.6 task must execute through its immutable stored contract'
         );
         hub_test_assert((string)$db->query("SELECT pack_version FROM services WHERE pack_id = 'tts-voxcpm2'")->fetchColumn() === '0.1.7', 'compatibility must run against the upgraded installed Pack');
         $unsupported = hub_get_task($db, $designTaskId) ?? [];
