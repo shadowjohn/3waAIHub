@@ -267,7 +267,7 @@
   "lifecycle": {
     "lifecycle": "on_demand",
     "gpu_policy": "exclusive_gpu",
-    "idle_unload_seconds": 900
+    "idle_unload_seconds": 0
   },
   "queue": {
     "supported": true,

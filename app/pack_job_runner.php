@@ -1731,7 +1731,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 && (string)($task['accelerator'] ?? '') === 'gpu'
                 && in_array($storedMode, $compatibleModes, true)
             ) {
-                $resolutionTask['pack_version'] = '0.1.6';
+                $resolutionTask['pack_version'] = '0.1.7';
             }
             $contract = hub_resolve_stored_pack_job($db, $resolutionTask);
         } catch (Throwable $e) {
