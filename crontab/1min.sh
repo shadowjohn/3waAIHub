@@ -70,6 +70,25 @@ else
   echo "[3waAIHub] cluster station refresh already running; skip."
 fi
 
+(
+  exec 8>"$TASK_LOCK_FILE"
+  if ! flock -n 8; then
+    echo "[3waAIHub] task worker already running; skip task jobs."
+    exit 0
+  fi
+
+  task_tick=1
+  while [ "$task_tick" -le "$WORKER_TICKS" ]; do
+    php scripts/task_worker.php --limit="$TASK_WORKER_LIMIT"
+    php scripts/callback_worker.php --limit="$CALLBACK_WORKER_LIMIT"
+    if [ "$task_tick" -lt "$WORKER_TICKS" ]; then
+      sleep "$WORKER_SLEEP"
+    fi
+    task_tick=$((task_tick + 1))
+  done
+) &
+task_worker_pid=$!
+
 tick=1
 exec 9>"$COMMAND_LOCK_FILE"
 if flock -n 9; then
@@ -97,18 +116,4 @@ else
   echo "[3waAIHub] command worker already running; skip command jobs."
 fi
 
-exec 8>"$TASK_LOCK_FILE"
-if ! flock -n 8; then
-  echo "[3waAIHub] task worker already running; skip task jobs."
-  exit 0
-fi
-
-tick=1
-while [ "$tick" -le "$WORKER_TICKS" ]; do
-  php scripts/task_worker.php --limit="$TASK_WORKER_LIMIT"
-  php scripts/callback_worker.php --limit="$CALLBACK_WORKER_LIMIT"
-  if [ "$tick" -lt "$WORKER_TICKS" ]; then
-    sleep "$WORKER_SLEEP"
-  fi
-  tick=$((tick + 1))
-done
+wait "$task_worker_pid"

@@ -276,6 +276,11 @@ hub_test('cron loop runs both command and task workers', function (): void {
     hub_test_assert(str_contains($loop, 'data/3waaihub.sqlite-wal'), 'cron permission guard must include SQLite WAL file');
     hub_test_assert(str_contains($loop, "stat -c '%G'"), 'cron permission guard must detect wrong runtime group');
     hub_test_assert(str_contains($loop, 'TASK_WORKER_LIMIT'), 'cron loop must expose task worker limit');
+    hub_test_assert(str_contains($loop, 'task_worker_pid=$!') && str_contains($loop, 'wait "$task_worker_pid"'), 'cron loop must wait for its background task worker loop');
+    hub_test_assert(
+        strpos($loop, 'task_worker_pid=$!') < strpos($loop, 'php scripts/command_worker.php'),
+        'task worker loop must start before command worker ticks so queued inference does not wait behind command work'
+    );
 });
 
 hub_test('permission fixer repairs deployed source readability without touching runtime model', function (): void {
