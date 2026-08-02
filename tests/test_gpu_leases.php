@@ -381,11 +381,16 @@ hub_test('Stopped resident services wait before GPU acquisition or dispatch', fu
     $fixture = hub_test_resident_vox_fixture($db);
     hub_update_service_status($db, (int)$fixture['service']['id'], 'stopped');
     $requests = [];
+    $containerStarted = false;
     $outcome = hub_run_pack_job_task($db, $fixture['task'], [
         'gpu_probe' => static fn (): array => throw new RuntimeException('stopped resident must not probe GPU'),
         'resident_transport' => static function () use (&$requests): array {
             $requests[] = true;
             throw new RuntimeException('stopped resident must not dispatch');
+        },
+        'command_runner' => static function () use (&$containerStarted): array {
+            $containerStarted = true;
+            throw new RuntimeException('stopped resident must not fall back to container');
         },
     ]);
     $task = hub_get_task($db, $fixture['task_id']);
@@ -393,8 +398,54 @@ hub_test('Stopped resident services wait before GPU acquisition or dispatch', fu
     hub_test_assert(($outcome['status'] ?? '') === 'waiting_gpu'
         && ($task['waiting_reason'] ?? '') === 'resident_service_unavailable'
         && $requests === []
+        && !$containerStarted
         && (int)$db->query('SELECT COUNT(*) FROM resident_job_runs')->fetchColumn() === 0
         && ($lease === null || ($lease['state'] ?? '') === 'available'), 'stopped resident must not acquire GPU, stage work, or fall back to container dispatch');
+});
+
+hub_test('Isolated VoxCPM2 jobs retain the exact container runner and managed clone mount', function (): void {
+    foreach (['0.1.7', '0.1.6'] as $storedVersion) {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_resident_vox_fixture($db, true);
+        hub_update_service_settings($db, (int)$fixture['service']['id'], ['VOXCPM2_EXECUTION_MODE' => 'isolated']);
+        $task = $fixture['task'];
+        if ($storedVersion !== '0.1.7') {
+            $db->prepare('UPDATE tasks SET pack_version = :pack_version WHERE id = :id')->execute([
+                ':pack_version' => $storedVersion,
+                ':id' => (int)$fixture['task_id'],
+            ]);
+            $task['pack_version'] = $storedVersion;
+        }
+        $dockerRun = [];
+        try {
+            hub_test_assert(
+                hub_pack_job_resident_service($db, $task, $fixture['contract']) === null,
+                'isolated VoxCPM2 ' . $storedVersion . ' jobs must skip resident selection'
+            );
+            $outcome = hub_run_pack_job_task($db, $task, [
+                'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+                'resident_transport' => static fn (): array => throw new RuntimeException('isolated jobs must not call resident transport'),
+                'command_runner' => static function (array $command) use (&$dockerRun): array {
+                    if (($command[1] ?? '') === 'run') {
+                        $dockerRun = $command;
+
+                        return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'synthetic isolated runner failure'];
+                    }
+
+                    return ['exit_code' => 1, 'stdout' => '', 'stderr' => 'No such container'];
+                },
+            ]);
+            $profileMount = 'type=bind,src=' . realpath((string)$fixture['reference_path']) . ',dst=/data/voice_profiles/reference.wav,readonly';
+            hub_test_assert(($outcome['status'] ?? '') === 'failed'
+                && in_array($profileMount, $dockerRun, true)
+                && !in_array('type=bind,src=' . hub_task_result_dir((int)$fixture['task_id']) . '/workspace/input/source,dst=/workspace/input/source,readonly', $dockerRun, true),
+                'isolated VoxCPM2 ' . $storedVersion . ' clone jobs must use the container runner with only the managed private reference mount');
+        } finally {
+            if (is_string($fixture['reference_path']) && is_file($fixture['reference_path'])) {
+                unlink($fixture['reference_path']);
+            }
+        }
+    }
 });
 
 hub_test('Resident heartbeat interval stays within the runtime lease TTL', function (): void {
@@ -568,7 +619,7 @@ hub_test('Resident unconfirmed cancellation retains its exact stage until authen
     $service = hub_get_service($db, (int)$fixture['service']['id']) ?: [];
     $dispatchPlan = hub_pack_job_resident_service($db, $fixture['task'], $fixture['contract']);
     $recoveryPlan = hub_pack_job_resident_plan_for_service($db, $service, $fixture['contract'], false);
-    hub_test_assert(empty($dispatchPlan['eligible']) && is_array($recoveryPlan), 'switching to isolated must reject new resident dispatch while preserving an enabled resident endpoint for recovery');
+    hub_test_assert($dispatchPlan === null && is_array($recoveryPlan), 'switching to isolated must skip new resident dispatch while preserving an enabled resident endpoint for recovery');
 
     $reconciled = hub_reconcile_resident_job_runs($db, hub_test_resident_transport($fixture['service'], 'cold', $requests));
     $row = $db->query('SELECT * FROM resident_job_runs')->fetch();

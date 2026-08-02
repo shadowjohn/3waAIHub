@@ -176,7 +176,12 @@ function hub_pack_job_resident_service(PDO $db, array $task, array $contract): ?
     ]);
     $service = $stmt->fetch();
     if (!is_array($service)) {
-        return ['eligible' => false, 'reason' => 'resident_service_unavailable'];
+        return null;
+    }
+    $settings = hub_service_settings_values($db, $service);
+    $modeSetting = (string)($resident['mode_setting'] ?? '');
+    if (($settings[$modeSetting] ?? null) !== ($resident['mode_value'] ?? null)) {
+        return null;
     }
     $plan = hub_pack_job_resident_plan_for_service($db, $service, $contract);
 
