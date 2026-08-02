@@ -200,6 +200,20 @@ rm -f "$TTS_HEALTH_JSON"
 
 `tts-voxcpm2` health does not expose an effective CUDA device, and its slim Python image does not provide `nvidia-smi`. Therefore the exact PyTorch probe above is mandatory: it proves the running TTS container, rather than only the host, can use CUDA and names its device. A failing probe fails this real-inference smoke even when the health response and `mock: false` look good.
 
+### Resident Cluster Operation
+
+For async Cluster `voice_generate`, set `VOXCPM2_EXECUTION_MODE=resident`, keep `VOXCPM2_IDLE_UNLOAD_SECONDS=0`, set `VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB=1024`, then save and restart the VoxCPM2 service. Idle `0` deliberately never auto-unloads Vox; an administrator must explicitly stop/restart the service when its VRAM must be released.
+
+Admission is conservative. A `cold` model must pass the normal `9600 MB` Pack capacity check. A `ready` model reuses its loaded weights but still requires `1024 MB` free VRAM. A `running` or unknown capacity remains waiting; a competing GPU Pack waits or the Cluster Router routes it to another eligible station rather than unloading Vox automatically.
+
+Submit two serial real Cluster `voice_generate` acceptance tasks and wait for the first terminal result before submitting the second. Inspect the loaded model with:
+
+```bash
+nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader
+```
+
+The second task must reuse the resident model and avoid a one-shot container bootstrap. On timeout or cancellation with no authenticated terminal response, retain the staged run, do not dispatch a duplicate, and keep the GPU lease blocked until authenticated reconciliation confirms a terminal state. Finish the smoke by explicitly stopping or restarting VoxCPM2 and confirm with `nvidia-smi` that its VRAM is released.
+
 1. Sign in and open `admin/playground.php?mode=tts`. Select the installed TTS service, enter a fresh API token with `tts` permission only in the Bearer Token field, and leave `真實推論` selected. The field is request-local; do not paste it into shell history, screenshots, or deployment notes.
 2. In **Voice Profile**, upload the same consented WAV, choose the correct consent type, and select the resulting profile. A first upload creates an owner-only profile; an identical upload by the same member may say it reused the cache. Verify the displayed ASR status becomes `ready / draft`. For `pending`, wait and reload; for `failed`, inspect ASR diagnostics and use `重試字幕` only after the cause is fixed.
 3. Review and edit the drafted text manually, then click `確認字幕`. Verify the profile changes to `ready / confirmed`. Before confirmation, Ultimate Clone must return HTTP `409` with `voice_profile_transcript_unconfirmed`; this is a required ownership and transcript-confirmation guard, not a TTS fault.

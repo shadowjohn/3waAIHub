@@ -68,6 +68,8 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 
 16 GB VRAM 主機應避免把 VoxCPM2、兩個 Nemotron NIM 與其他大型 GPU Pack 無限制地同時常駐。語音工作優先；RAG 目前保留映像與模型快取，日後把 Embed / Rerank NIM 納入受管服務與 GPU lease 後，才開放 `rag` mode 給客戶。
 
+VoxCPM2 可在服務設定切為 `resident` 後重啟：首次 `voice_generate` 依正常 `9600 MB` cold admission，已載入模型則保留 `1024 MB` 可用 VRAM 餘裕。預設 idle 為 `0`，不會自動卸載；GPU 需要讓出時由管理員停止或重啟服務。這只改變節點內部執行方式，客戶仍使用原本的 `cluster_api.php` 與 `voice_generate` contract。
+
 ## 平台能力矩陣
 
 | 能力 | 狀態 |

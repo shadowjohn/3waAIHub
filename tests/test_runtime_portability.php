@@ -340,6 +340,43 @@ hub_test('guarded Linux Docker command rejects Windows before invoking the comma
     @unlink($marker);
 });
 
+hub_test('resident VoxCPM2 request stays loopback-only and portable on Windows', function (): void {
+    $requests = [];
+    $plan = [
+        'service' => ['local_port' => 18108],
+        'settings' => ['VOXCPM2_INTERNAL_JOB_TOKEN' => 'test-internal-token'],
+        'token_setting' => 'VOXCPM2_INTERNAL_JOB_TOKEN',
+    ];
+    $response = hub_pack_job_resident_request(
+        $plan,
+        'POST',
+        '/internal/jobs',
+        ['run_id' => 'resident-portability-fixture'],
+        static function (string $method, string $url, array $headers, ?array $payload) use (&$requests): array {
+            $requests[] = compact('method', 'url', 'headers', 'payload');
+            return ['status' => 200, 'json' => ['run_id' => $payload['run_id'] ?? null]];
+        },
+    );
+    hub_test_assert(($response['status'] ?? null) === 200 && count($requests) === 1, 'resident request must use the injected HTTP transport exactly once');
+    hub_test_assert(
+        ($requests[0]['url'] ?? '') === 'http://127.0.0.1:18108/internal/jobs'
+        && ($requests[0]['method'] ?? '') === 'POST'
+        && ($requests[0]['payload'] ?? []) === ['run_id' => 'resident-portability-fixture'],
+        'resident execution must use only its loopback internal jobs endpoint'
+    );
+    hub_test_assert(in_array('X-AIHub-Internal-Token: test-internal-token', $requests[0]['headers'] ?? [], true), 'resident request must retain internal authentication');
+
+    $marker = sys_get_temp_dir() . '/3waaihub_resident_windows_docker_' . getmypid();
+    @unlink($marker);
+    $blocked = hub_run_linux_docker_command([
+        PHP_BINARY,
+        '-r',
+        'file_put_contents(' . var_export($marker, true) . ', "invoked");',
+    ], 10, [], 'windows');
+    hub_test_assert(($blocked['error_code'] ?? '') === 'platform_target_unsupported' && !is_file($marker), 'resident loopback transport must not need a Windows Docker CLI or direct Linux Docker runner');
+    @unlink($marker);
+});
+
 hub_test('PhaseRuntime-0 portability docs and pack UI expose target source and reason', function (): void {
     $doc = (string)@file_get_contents(HUB_ROOT . '/docs/runtime_portability_guardrails.md');
     hub_test_assert(str_contains($doc, 'Portability Guardrails'), 'portability guardrails doc missing');

@@ -4278,6 +4278,20 @@ hub_test('VoxCPM2 three-mode smoke runbook keeps the safe operator contract', fu
         'does not authorize use of non-consented voice audio',
         'https://github.com/SYSTRAN/faster-whisper/blob/master/README.md',
         'https://huggingface.co/openbmb/VoxCPM2',
+        'VOXCPM2_EXECUTION_MODE=resident',
+        'VOXCPM2_IDLE_UNLOAD_SECONDS=0',
+        'VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB=1024',
+        'cold',
+        'ready',
+        '9600 MB',
+        'two serial real Cluster `voice_generate` acceptance tasks',
+        'nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv,noheader',
+        'retain the staged run',
+        'do not dispatch a duplicate',
+        'GPU lease blocked until authenticated reconciliation',
+        'stopping or restarting VoxCPM2',
+        'never auto-unloads Vox',
+        'competing GPU Pack waits or the Cluster Router routes it to another eligible station',
     ] as $needle) {
         hub_test_assert(str_contains($doc, $needle), 'three-mode smoke runbook missing ' . $needle);
     }
