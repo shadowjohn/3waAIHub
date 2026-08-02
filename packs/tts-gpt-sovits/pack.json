@@ -1,0 +1,233 @@
+{
+  "schema_version": "0.1",
+  "id": "tts-gpt-sovits",
+  "name": "GPT-SoVITS Governed Voice Clone",
+  "version": "0.1.0",
+  "category": "audio",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L5-benchmark-ready",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": true,
+  "default_mode": "voice_generate_gpt_sovits",
+  "capability": "text_to_speech",
+  "experimental": true,
+  "tts_modes": ["clone", "ultimate_clone"],
+  "description": "Local GPT-SoVITS adapter for governed reference-audio cloning and transcript-confirmed ultimate cloning. Voice design and runtime model downloads are intentionally unavailable.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "runner_build": {
+    "context": ".",
+    "dockerfile": "service/Dockerfile",
+    "image": "3waaihub/tts-gpt-sovits:0.1.0"
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/v1/tts",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 2
+  },
+  "model_allowlist": {
+    "gpt_sovits": {
+      "aliases": {
+        "gpt_sovits_v2": {
+          "label": "GPT-SoVITS V2",
+          "gpt_weights": "/models/gpt_sovits/checkpoints/gpt_v2.ckpt",
+          "sovits_weights": "/models/gpt_sovits/checkpoints/sovits_v2.pth"
+        }
+      }
+    }
+  },
+  "async_jobs": [
+    {
+      "job": "synthesize",
+      "input": {
+        "fields": ["text", "mode", "voice_profile_id", "voice_profile_task_id", "model", "language", "waveform_preview"],
+        "source_artifact_types": [],
+        "source_required": false,
+        "request_schema": {
+          "text": {"type": "string", "required": true, "max_length": 4096},
+          "mode": {"type": "string", "required": false, "enum": ["clone", "ultimate_clone"], "default": "clone", "max_length": 16},
+          "voice_profile_id": {"type": "integer", "required": false, "min": 1, "max": 2147483647},
+          "voice_profile_task_id": {"type": "string", "required": false, "max_length": 64},
+          "model": {"type": "string", "required": false, "enum": ["gpt_sovits_v2"], "default": "gpt_sovits_v2", "max_length": 32},
+          "language": {"type": "string", "required": false, "enum": ["zh", "zh_tw", "auto"], "default": "zh_tw", "max_length": 8},
+          "waveform_preview": {"type": "boolean", "required": false}
+        },
+        "voice_context": {
+          "mode_input": "mode",
+          "clone_value": "clone",
+          "ultimate_value": "ultimate_clone",
+          "profile_input": "voice_profile_id",
+          "profile_task_input": "voice_profile_task_id",
+          "container_path": "/data/voice_profiles/reference.wav"
+        }
+      },
+      "runner": {
+        "image": "3waaihub/tts-gpt-sovits:0.1.0",
+        "entrypoint": ["/app/voice-generate"],
+        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 6144,
+        "timeout_seconds": 7200,
+        "network_profile": "isolated",
+        "executor": "container",
+        "asset_mounts": [
+          {
+            "id": "gpt_sovits_models",
+            "storage": "models",
+            "host_subdir": "gpt_sovits",
+            "container_path": "/models/gpt_sovits",
+            "required_paths": [
+              "checkpoints/gpt_v2.ckpt",
+              "checkpoints/sovits_v2.pth",
+              "pretrained_models/chinese-hubert-base/config.json",
+              "pretrained_models/chinese-hubert-base/pytorch_model.bin",
+              "pretrained_models/chinese-hubert-base/preprocessor_config.json",
+              "pretrained_models/chinese-roberta-wwm-ext-large/config.json",
+              "pretrained_models/chinese-roberta-wwm-ext-large/pytorch_model.bin",
+              "pretrained_models/chinese-roberta-wwm-ext-large/tokenizer.json",
+              "g2pw/config.py",
+              "g2pw/g2pW.onnx",
+              "g2pw/POLYPHONIC_CHARS.txt",
+              "nltk_data/corpora/cmudict/cmudict",
+              "nltk_data/corpora/cmudict.zip",
+              "nltk_data/taggers/averaged_perceptron_tagger/averaged_perceptron_tagger.pickle",
+              "nltk_data/taggers/averaged_perceptron_tagger.zip",
+              "nltk_data/taggers/averaged_perceptron_tagger_eng/averaged_perceptron_tagger_eng.weights.json",
+              "nltk_data/taggers/averaged_perceptron_tagger_eng.zip"
+            ]
+          }
+        ]
+      },
+      "resident": {
+        "protocol": "service_data_v1",
+        "mode_setting": "GPT_SOVITS_EXECUTION_MODE",
+        "mode_value": "resident",
+        "min_free_vram_setting": "GPT_SOVITS_RESIDENT_MIN_FREE_VRAM_MB"
+      },
+      "runner_config": {
+        "alias_input": "model",
+        "model_allowlist": "gpt_sovits",
+        "default_alias": "gpt_sovits_v2"
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "generated_audio",
+            "path": "generated_audio.wav",
+            "mime_types": ["audio/wav", "audio/x-wav"],
+            "max_bytes": 67108864,
+            "audio": {}
+          },
+          {
+            "type": "synthesis_metadata",
+            "path": "synthesis_metadata.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 1048576,
+            "json": {"required_keys": ["mode", "model", "reference_seconds", "text_chars", "device", "elapsed_ms"]}
+          }
+        ]
+      }
+    }
+  ],
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 6144,
+    "recommended_vram_mb": 8192,
+    "cpu_fallback": false,
+    "min_compute_capability": "8.0"
+  },
+  "lifecycle": {
+    "lifecycle": "on_demand",
+    "gpu_policy": "exclusive_gpu",
+    "idle_unload_seconds": 0
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {"type": "models", "host_subdir": "gpt_sovits", "container_path": "/models/gpt_sovits", "read_only": true},
+      {"type": "cache", "host_subdir": "gpt_sovits", "container_path": "/cache/gpt_sovits", "read_only": false},
+      {"type": "service_data", "host_subdir": "", "container_path": "/data/service", "read_only": false},
+      {"type": "uploads", "host_subdir": "voice_profiles", "container_path": "/data/voice_profiles", "read_only": true}
+    ]
+  },
+  "settings_schema": [
+    {
+      "key": "GPT_SOVITS_EXECUTION_MODE",
+      "label": "執行模式",
+      "type": "select",
+      "default": "isolated",
+      "options": ["isolated", "resident"],
+      "option_labels": {"isolated": "一次性容器", "resident": "常駐模型"},
+      "required": true,
+      "restart_required": true,
+      "install_option": true
+    },
+    {
+      "key": "GPT_SOVITS_RESIDENT_MIN_FREE_VRAM_MB",
+      "label": "常駐模式最低可用 VRAM (MB)",
+      "type": "integer",
+      "default": "1024",
+      "min": 0,
+      "max": 16384,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "GPT_SOVITS_IDLE_UNLOAD_SECONDS",
+      "label": "閒置卸載秒數",
+      "type": "integer",
+      "default": "0",
+      "min": 0,
+      "max": 86400,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "GPT_SOVITS_INTERNAL_JOB_TOKEN",
+      "label": "內部工作權杖",
+      "type": "secret",
+      "secret": true,
+      "default": "",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "GPU_VISIBLE_DEVICES",
+      "label": "GPU visible devices",
+      "type": "text",
+      "default": "all",
+      "required": false,
+      "restart_required": true
+    }
+  ],
+  "env": [
+    {"name": "GPT_SOVITS_EXECUTION_MODE", "default": "isolated", "required": true},
+    {"name": "GPT_SOVITS_RESIDENT_MIN_FREE_VRAM_MB", "default": "1024", "required": true},
+    {"name": "GPT_SOVITS_IDLE_UNLOAD_SECONDS", "default": "0", "required": true},
+    {"name": "GPT_SOVITS_INTERNAL_JOB_TOKEN", "default": "", "required": true},
+    {"name": "GPU_VISIBLE_DEVICES", "default": "all", "required": false}
+  ],
+  "preflight": {
+    "checks": ["docker", "docker_compose", "nvidia_smi", "docker_gpus", "vram", "compute_capability", "storage"]
+  },
+  "service": {
+    "default_local_port": 18109,
+    "local_port_env": "GPT_SOVITS_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "gpt-sovits-main",
+    "compose_project": "3waaihub_gpt_sovits_main"
+  }
+}

@@ -2616,8 +2616,13 @@ hub_test('VoxCPM2 guarded final test storage teardown removes only its requested
     }
     $rootWav = $root . '/owned.wav';
     $siblingWav = $sibling . '/other.wav';
+    $snapshotDir = $root . '/.snapshots';
+    $snapshotWav = $snapshotDir . '/voice_profile_snapshot_' . str_repeat('a', 32) . '.wav';
     file_put_contents($rootWav, 'RIFFowned');
     file_put_contents($siblingWav, 'RIFFother');
+    if (!mkdir($snapshotDir, 0700) || file_put_contents($snapshotWav, 'RIFFsnapshot') === false) {
+        throw new RuntimeException('Cannot create test snapshot fixture.');
+    }
 
     try {
         hub_test_remove_voice_profile_storage_dir($root);

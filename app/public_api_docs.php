@@ -232,8 +232,11 @@ function hub_public_api_service_mode_uses_pack(array $service): bool
     return (string)($service['pack_id'] ?? '') === (string)(hub_pack_job_async_routes()[$mode]['pack_id'] ?? '');
 }
 
-function hub_public_api_voice_generate_examples(bool $cluster = false): array
+function hub_public_api_voice_generate_examples(bool $cluster = false, string $mode = 'voice_generate', bool $allowDesign = true): array
 {
+    if (!hub_is_voice_profile_mode($mode)) {
+        throw new InvalidArgumentException('unsupported voice profile mode');
+    }
     $api = $cluster ? '<ROUTER_BASE_URL>/cluster_api.php' : '<HUB_BASE_URL>/api.php';
     $statusMode = $cluster ? 'cluster_task_status' : 'task_status';
     $resultMode = $cluster ? 'cluster_task_result' : 'task_result';
@@ -262,7 +265,7 @@ resolve_url() {
 PREPARED="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'operation=profile_prepare' -F 'profile_name=<PROFILE_NAME>' \
   -F 'consent_type=self_recorded' -F 'reference_wav=@<REFERENCE_WAV>' \
-  "${API}?mode=voice_generate")"
+  "${API}?mode={{MODE}}")"
 VOICE_PROFILE_TASK_ID="$(printf '%s' "${PREPARED}" | json_value task_id)" # <VOICE_PROFILE_TASK_ID>
 STATUS_URL_LINK="$(printf '%s' "${PREPARED}" | json_value status_url)"
 STATUS_URL="$(resolve_url "${API}" "${STATUS_URL_LINK}")"
@@ -270,19 +273,17 @@ STATUS_URL="$(resolve_url "${API}" "${STATUS_URL_LINK}")"
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   "${STATUS_URL}" # returned mode={{STATUS_MODE}}
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
-  "${API}?mode=voice_generate&operation=profile_status&voice_profile_task_id=${VOICE_PROFILE_TASK_ID}"
+  "${API}?mode={{MODE}}&operation=profile_status&voice_profile_task_id=${VOICE_PROFILE_TASK_ID}"
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   --data-urlencode 'operation=profile_confirm' \
   --data-urlencode "voice_profile_task_id=${VOICE_PROFILE_TASK_ID}" \
   --data-urlencode 'prompt_text=<CONFIRMED_TRANSCRIPT>' \
-  "${API}?mode=voice_generate"
-curl -sS -H "Authorization: Bearer ${TOKEN}" \
-  -F 'text=<TEXT>' -F 'mode=design' -F 'voice_prompt=<VOICE_PROMPT>' \
-  "${API}?mode=voice_generate"
+  "${API}?mode={{MODE}}"
+{{DESIGN}}
 SYNTHESIS="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'operation=synthesize' -F 'text=<TEXT>' -F 'mode=ultimate_clone' \
   -F "voice_profile_task_id=${VOICE_PROFILE_TASK_ID}" \
-  "${API}?mode=voice_generate")"
+  "${API}?mode={{MODE}}")"
 TASK_ID="$(printf '%s' "${SYNTHESIS}" | json_value task_id)" # <TASK_ID>
 RESULT_URL_LINK="$(printf '%s' "${SYNTHESIS}" | json_value result_url)"
 RESULT_URL="$(resolve_url "${API}" "${RESULT_URL_LINK}")"
@@ -297,15 +298,21 @@ curl -sS -H "Authorization: Bearer ${TOKEN}" "${ARTIFACT_URL}" # {{ARTIFACT_MODE
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -d 'operation=profile_delete' \
   --data-urlencode "voice_profile_task_id=${VOICE_PROFILE_TASK_ID}" \
-  "${API}?mode=voice_generate"
+  "${API}?mode={{MODE}}"
 CURL, [
         '{{API}}' => $api,
+        '{{MODE}}' => $mode,
         '{{STATUS_MODE}}' => $statusMode,
         '{{RESULT_MODE}}' => $resultMode,
         '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $curlAffinity,
         '{{ACK}}' => $curlAck,
     ]);
+    $curl = str_replace('{{DESIGN}}', $allowDesign ? <<<'CURL'
+curl -sS -H "Authorization: Bearer ${TOKEN}" \
+  -F 'text=<TEXT>' -F 'mode=design' -F 'voice_prompt=<VOICE_PROMPT>' \
+  "${API}?mode=voice_generate"
+CURL : '', $curl);
     $phpAck = $cluster ? <<<'PHP'
 if (isset($synthesis['ack_url_template'])) {
     $ackUrlTemplate = $resolveUrl($api, (string)$synthesis['ack_url_template']);
@@ -362,7 +369,7 @@ $request = static function (string $url, mixed $body = null, array $headers = []
 };
 $decode = static fn (string $json): array => json_decode($json, true, 32, JSON_THROW_ON_ERROR);
 
-$prepared = $decode($request($api . '?mode=voice_generate', [
+$prepared = $decode($request($api . '?mode={{MODE}}', [
     'operation' => 'profile_prepare',
     'profile_name' => '<PROFILE_NAME>',
     'consent_type' => 'self_recorded',
@@ -371,18 +378,14 @@ $prepared = $decode($request($api . '?mode=voice_generate', [
 $voiceProfileTaskId = $prepared['task_id']; // MyAI stores this as <VOICE_PROFILE_TASK_ID>.
 $statusUrl = $resolveUrl($api, (string)$prepared['status_url']);
 $decode($request($statusUrl)); // {{STATUS_MODE}}
-$decode($request($api . '?mode=voice_generate&operation=profile_status&voice_profile_task_id=' . rawurlencode((string)$voiceProfileTaskId)));
-$decode($request($api . '?mode=voice_generate', json_encode([
+$decode($request($api . '?mode={{MODE}}&operation=profile_status&voice_profile_task_id=' . rawurlencode((string)$voiceProfileTaskId)));
+$decode($request($api . '?mode={{MODE}}', json_encode([
     'operation' => 'profile_confirm',
     'voice_profile_task_id' => $voiceProfileTaskId,
     'prompt_text' => '<CONFIRMED_TRANSCRIPT>',
 ], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
-$decode($request($api . '?mode=voice_generate', json_encode([
-    'text' => '<TEXT>',
-    'mode' => 'design',
-    'voice_prompt' => '<VOICE_PROMPT>',
-], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
-$synthesis = $decode($request($api . '?mode=voice_generate', json_encode([
+{{DESIGN}}
+$synthesis = $decode($request($api . '?mode={{MODE}}', json_encode([
     'operation' => 'synthesize',
     'text' => '<TEXT>',
     'mode' => 'ultimate_clone',
@@ -396,18 +399,26 @@ $artifactUrlTemplate = $resolveUrl($api, (string)$synthesis['artifact_url_templa
 $artifactUrl = str_replace('{artifact_id}', (string)$artifactId, $artifactUrlTemplate);
 $audio = $request($artifactUrl); // {{ARTIFACT_MODE}}
 {{ACK}}
-$decode($request($api . '?mode=voice_generate', json_encode([
+$decode($request($api . '?mode={{MODE}}', json_encode([
     'operation' => 'profile_delete',
     'voice_profile_task_id' => $voiceProfileTaskId,
 ], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
 PHP, [
         '{{API}}' => $api,
+        '{{MODE}}' => $mode,
         '{{STATUS_MODE}}' => $statusMode,
         '{{RESULT_MODE}}' => $resultMode,
         '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $codeAffinity,
         '{{ACK}}' => $phpAck,
     ]);
+    $php = str_replace('{{DESIGN}}', $allowDesign ? <<<'PHP'
+$decode($request($api . '?mode=voice_generate', json_encode([
+    'text' => '<TEXT>',
+    'mode' => 'design',
+    'voice_prompt' => '<VOICE_PROMPT>',
+], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
+PHP : '', $php);
     $jsAck = $cluster ? <<<'JS'
 if (synthesis.ack_url_template) {
   const ackUrlTemplate = resolveUrl(synthesis.ack_url_template);
@@ -432,22 +443,18 @@ profile.append('operation', 'profile_prepare');
 profile.append('profile_name', '<PROFILE_NAME>');
 profile.append('consent_type', 'self_recorded');
 profile.append('reference_wav', new File([], '<REFERENCE_WAV>', {type: 'audio/wav'}));
-const prepared = await call(`${api}?mode=voice_generate`, {method: 'POST', body: profile});
+const prepared = await call(`${api}?mode={{MODE}}`, {method: 'POST', body: profile});
 const voiceProfileTaskId = prepared.task_id; // MyAI stores this as <VOICE_PROFILE_TASK_ID>.
 const statusUrl = resolveUrl(prepared.status_url);
 await call(statusUrl); // {{STATUS_MODE}}
-await call(`${api}?mode=voice_generate&operation=profile_status&voice_profile_task_id=${voiceProfileTaskId}`);
-await call(`${api}?mode=voice_generate`, {
+await call(`${api}?mode={{MODE}}&operation=profile_status&voice_profile_task_id=${voiceProfileTaskId}`);
+await call(`${api}?mode={{MODE}}`, {
   method: 'POST',
   headers: {'Content-Type': 'application/json'},
   body: JSON.stringify({operation: 'profile_confirm', voice_profile_task_id: voiceProfileTaskId, prompt_text: '<CONFIRMED_TRANSCRIPT>'}),
 });
-await call(`${api}?mode=voice_generate`, {
-  method: 'POST',
-  headers: {'Content-Type': 'application/json'},
-  body: JSON.stringify({text: '<TEXT>', mode: 'design', voice_prompt: '<VOICE_PROMPT>'}),
-});
-const synthesis = await call(`${api}?mode=voice_generate`, {
+{{DESIGN}}
+const synthesis = await call(`${api}?mode={{MODE}}`, {
   method: 'POST',
   headers: {'Content-Type': 'application/json'},
   body: JSON.stringify({operation: 'synthesize', text: '<TEXT>', mode: 'ultimate_clone', voice_profile_task_id: voiceProfileTaskId}),
@@ -461,25 +468,36 @@ const artifactUrl = artifactUrlTemplate.replace('{artifact_id}', artifactId);
 const artifactResponse = await fetch(artifactUrl, {headers: {Authorization: `Bearer ${token}`}});
 const audio = await artifactResponse.blob(); // {{ARTIFACT_MODE}}
 {{ACK}}
-await call(`${api}?mode=voice_generate`, {
+await call(`${api}?mode={{MODE}}`, {
   method: 'POST',
   headers: {'Content-Type': 'application/json'},
   body: JSON.stringify({operation: 'profile_delete', voice_profile_task_id: voiceProfileTaskId}),
 });
 JS, [
         '{{API}}' => $api,
+        '{{MODE}}' => $mode,
         '{{STATUS_MODE}}' => $statusMode,
         '{{RESULT_MODE}}' => $resultMode,
         '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $codeAffinity,
         '{{ACK}}' => $jsAck,
     ]);
+    $js = str_replace('{{DESIGN}}', $allowDesign ? <<<'JS'
+await call(`${api}?mode=voice_generate`, {
+  method: 'POST',
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({text: '<TEXT>', mode: 'design', voice_prompt: '<VOICE_PROMPT>'}),
+});
+JS : '', $js);
 
     return ['curl' => $curl, 'php' => $php, 'js_fetch' => $js];
 }
 
-function hub_public_api_voice_generate_contract(array $contract): array
+function hub_public_api_voice_generate_contract(array $contract, string $mode = 'voice_generate'): array
 {
+    if (!hub_is_voice_profile_mode($mode)) {
+        throw new InvalidArgumentException('unsupported voice profile mode');
+    }
     foreach ($contract['input']['fields'] as &$field) {
         if (($field['name'] ?? '') === 'text') {
             $field['example'] = '<TEXT>';
@@ -545,14 +563,14 @@ function hub_public_api_voice_generate_contract(array $contract): array
             'method' => 'POST',
             'content_type' => 'multipart/form-data or application/json',
             'default_when_omitted' => true,
-            'modes' => ['design', 'clone', 'ultimate_clone'],
+            'modes' => array_values((array)(array_column((array)$contract['input']['fields'], null, 'name')['mode']['enum'] ?? [])),
             'input_fields' => $contract['input']['fields'],
             'output_keys' => $taskOutput,
         ],
     ];
     $contract['workflow'] = [
         'client_state' => 'MyAI stores voice_profile_task_id returned by profile_prepare.',
-        'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with voice_generate permission. Task and artifact followups remain bound to the submitting Token.',
+        'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with ' . $mode . ' permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
         'steps' => [
@@ -584,7 +602,7 @@ function hub_public_api_voice_generate_contract(array $contract): array
         ['code' => 'pack_runtime_not_ready', 'http_status' => 503],
     ];
     $contract['errors'] = array_values(array_unique(array_merge($contract['errors'], array_column($contract['error_table'], 'code'))));
-    $contract['workflow_examples'] = hub_public_api_voice_generate_examples();
+    $contract['workflow_examples'] = hub_public_api_voice_generate_examples(false, $mode, $mode === 'voice_generate');
 
     return $contract;
 }
@@ -667,8 +685,8 @@ function hub_public_api_pack_job_async_contract(array $route): array
             ['method' => 'GET', 'query' => ['voice' => '<voice-id>'], 'response' => 'audio/mpeg; Cache-Control: private, no-store'],
             ['method' => 'POST', 'response' => 'asynchronous synthesis task'],
         ];
-    } elseif (($route['requested_mode'] ?? null) === 'voice_generate') {
-        $contract = hub_public_api_voice_generate_contract($contract);
+    } elseif (hub_is_voice_profile_mode((string)($route['requested_mode'] ?? ''))) {
+        $contract = hub_public_api_voice_generate_contract($contract, (string)$route['requested_mode']);
     }
 
     return $contract;

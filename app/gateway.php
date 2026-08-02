@@ -60,7 +60,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
                 return hub_gateway_finish($db, $service, $mode, hub_edge_tts_demo_dispatch((string)$service['service_key'], $query), $started, $requestId, $authContext, $requestContext);
             }
         }
-        if ($mode === 'voice_generate') {
+        if (hub_is_voice_profile_mode($mode)) {
             $profileResponse = hub_voice_profile_api_dispatch($db, $route, $authContext);
             if ($profileResponse !== null) {
                 return hub_gateway_finish($db, null, $mode, $profileResponse, $started, $requestId, $authContext, $requestContext);
@@ -2238,12 +2238,17 @@ function hub_gateway_cluster_child_task_artifacts_ack(PDO $db, array $task, int 
 
 function hub_gateway_cluster_child_rich_artifact_contract(array $task): bool
 {
+    $voiceSynthesis = (
+        (($task['requested_mode'] ?? '') === 'voice_generate'
+            && ($task['pack_id'] ?? '') === 'tts-voxcpm2')
+        || (($task['requested_mode'] ?? '') === 'voice_generate_gpt_sovits'
+            && ($task['pack_id'] ?? '') === 'tts-gpt-sovits')
+    );
+
     return (($task['requested_mode'] ?? '') === 'edge_tts'
             && ($task['pack_id'] ?? '') === 'edge-tts'
             && ($task['job'] ?? '') === 'synthesize')
-        || (($task['requested_mode'] ?? '') === 'voice_generate'
-            && ($task['pack_id'] ?? '') === 'tts-voxcpm2'
-            && ($task['job'] ?? '') === 'synthesize');
+        || ($voiceSynthesis && ($task['job'] ?? '') === 'synthesize');
 }
 
 function hub_gateway_cluster_child_task_result(PDO $db, array $task): array

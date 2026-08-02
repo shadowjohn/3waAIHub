@@ -83,6 +83,15 @@
       "featured": true
     },
     {
+      "id": "tts-gpt-sovits",
+      "name": "GPT-SoVITS Governed Voice Clone",
+      "version": "0.1.0",
+      "category": "audio",
+      "description": "Local GPT-SoVITS governed clone and transcript-confirmed ultimate clone service.",
+      "path": "packs/tts-gpt-sovits",
+      "featured": true
+    },
+    {
       "id": "edge-tts",
       "name": "Edge TTS External Service",
       "version": "0.2.0",

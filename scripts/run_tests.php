@@ -67,6 +67,27 @@ function hub_test_voice_profile_cleanup_dir(?string $dir = null): string
 function hub_test_remove_voice_profile_storage_dir(string $dir): void
 {
     $realDir = hub_test_voice_profile_cleanup_dir($dir);
+    $snapshotDir = $realDir . '/.snapshots';
+    if (file_exists($snapshotDir) || is_link($snapshotDir)) {
+        if (is_link($snapshotDir) || !is_dir($snapshotDir) || realpath($snapshotDir) !== $snapshotDir) {
+            throw new RuntimeException('Cannot remove isolated test voice profile snapshots.');
+        }
+        foreach (new FilesystemIterator($snapshotDir, FilesystemIterator::SKIP_DOTS) as $entry) {
+            $name = $entry->getFilename();
+            $path = $entry->getPathname();
+            if (
+                preg_match('/^voice_profile_snapshot_[a-f0-9]{32}\.wav$/', $name) !== 1
+                || $entry->isLink()
+                || !$entry->isFile()
+                || !unlink($path)
+            ) {
+                throw new RuntimeException('Cannot remove isolated test voice profile snapshot: ' . $path);
+            }
+        }
+        if (!rmdir($snapshotDir)) {
+            throw new RuntimeException('Cannot remove isolated test voice profile snapshots.');
+        }
+    }
     foreach (glob($realDir . '/*') ?: [] as $path) {
         if (is_link($path) || !is_file($path) || !unlink($path)) {
             throw new RuntimeException('Cannot remove isolated test voice profile storage: ' . $path);

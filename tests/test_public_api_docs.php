@@ -753,13 +753,23 @@ hub_test('Public API audio async contracts use normalized job routes', function 
             $text = (string)($fields['text']['example'] ?? $fields['text']['default'] ?? '');
             $voicePrompt = (string)($fields['voice_prompt']['example'] ?? $fields['voice_prompt']['default'] ?? '');
             $voiceMode = (string)($fields['mode']['example'] ?? $fields['mode']['default'] ?? '');
-            hub_test_assert($text !== '' && $voiceMode === 'design' && $voicePrompt !== '', 'voice generate examples must use nonempty text/design fields');
-            hub_test_assert(
-                str_contains((string)$service['examples']['curl'], 'text=' . $text)
-                && str_contains((string)$service['examples']['curl'], 'mode=design')
-                && str_contains((string)$service['examples']['curl'], 'voice_prompt=' . $voicePrompt),
-                'voice generate multipart example fields missing'
-            );
+            if ($mode === 'voice_generate') {
+                hub_test_assert($text !== '' && $voiceMode === 'design' && $voicePrompt !== '', 'voice generate examples must use nonempty text/design fields');
+                hub_test_assert(
+                    str_contains((string)$service['examples']['curl'], 'text=' . $text)
+                    && str_contains((string)$service['examples']['curl'], 'mode=design')
+                    && str_contains((string)$service['examples']['curl'], 'voice_prompt=' . $voicePrompt),
+                    'voice generate multipart example fields missing'
+                );
+            } else {
+                hub_test_assert($text !== '' && $voiceMode === 'clone' && $voicePrompt === '', 'GPT-SoVITS examples must use managed clone fields only');
+                hub_test_assert(
+                    str_contains((string)$service['examples']['curl'], 'text=' . $text)
+                    && str_contains((string)$service['examples']['curl'], 'mode=clone')
+                    && !str_contains((string)$service['examples']['curl'], 'voice_prompt='),
+                    'GPT-SoVITS multipart example fields must omit design prompt'
+                );
+            }
         }
 
         $json = json_encode($service, JSON_UNESCAPED_SLASHES);

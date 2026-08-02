@@ -1,0 +1,7 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: service/Dockerfile
+    ports:
+      - "127.0.0.1:${GPT_SOVITS_LOCAL_PORT:-18109}:8000"

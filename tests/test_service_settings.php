@@ -87,6 +87,61 @@ hub_test('VoxCPM2 settings default to isolated execution and preserve generated 
     }
 });
 
+hub_test('GPT-SoVITS settings default to isolated execution and preserve generated tokens', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'tts-gpt-sovits', [
+        'service_key' => 'gpt-sovits-settings-default',
+        'mode' => 'gpt_sovits_settings_default',
+    ]);
+    $service = $installed['service'];
+    $settings = hub_list_service_settings($db, (int)$service['id']);
+    $token = (string)($settings['GPT_SOVITS_INTERNAL_JOB_TOKEN']['value'] ?? '');
+
+    hub_test_assert(($settings['GPT_SOVITS_EXECUTION_MODE']['value'] ?? '') === 'isolated', 'GPT-SoVITS must default to isolated execution');
+    hub_test_assert(($settings['GPT_SOVITS_IDLE_UNLOAD_SECONDS']['value'] ?? '') === '0', 'GPT-SoVITS idle unload must default to zero');
+    hub_test_assert(preg_match('/^[a-f0-9]{64}$/D', $token) === 1, 'GPT-SoVITS internal job token must be 64 lowercase hex characters');
+    hub_test_assert(
+        (hub_ensure_service_settings($db, $service)['GPT_SOVITS_INTERNAL_JOB_TOKEN']['value'] ?? '') === $token,
+        'GPT-SoVITS generated token must remain stable after backfill'
+    );
+    $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+    hub_test_assert(str_contains($env, 'GPT_SOVITS_SERVICE_DATA_DIR=/data/service'), 'GPT-SoVITS service data path missing from env');
+    hub_test_assert(str_contains($env, 'GPT_SOVITS_INTERNAL_JOB_TOKEN=' . $token), 'GPT-SoVITS generated token missing from env');
+});
+
+hub_test('resident TTS internal job tokens are restored automatically and never required in the form', function (): void {
+    $db = hub_test_reset_db();
+    $fixtures = [
+        ['tts-voxcpm2', 'voxcpm2-settings-token-repair', 'VOXCPM2_EXECUTION_MODE', 'VOXCPM2_INTERNAL_JOB_TOKEN'],
+        ['tts-gpt-sovits', 'gpt-sovits-settings-token-repair', 'GPT_SOVITS_EXECUTION_MODE', 'GPT_SOVITS_INTERNAL_JOB_TOKEN'],
+    ];
+
+    foreach ($fixtures as [$packId, $serviceKey, $modeKey, $tokenKey]) {
+        $service = hub_install_pack($db, $packId, [
+            'service_key' => $serviceKey,
+            'mode' => str_replace('-', '_', $serviceKey),
+        ])['service'];
+        $db->prepare('UPDATE service_settings SET value = :value WHERE service_id = :service_id AND key = :key')
+            ->execute([':value' => '', ':service_id' => (int)$service['id'], ':key' => $tokenKey]);
+
+        hub_update_service_settings($db, (int)$service['id'], [
+            $modeKey => 'resident',
+            $tokenKey => '',
+        ]);
+        $settings = hub_list_service_settings($db, (int)$service['id']);
+        hub_test_assert(
+            preg_match('/^[a-f0-9]{64}$/D', (string)($settings[$tokenKey]['value'] ?? '')) === 1,
+            $packId . ' must restore a blank internal job token during save'
+        );
+
+        $page = hub_test_service_settings_request((int)$service['id'], 'zh-TW');
+        hub_test_assert($page['exit_code'] === 0, $packId . ' settings page must render');
+        hub_test_assert(str_contains($page['stdout'], 'name="' . $tokenKey . '" type="password"'), $packId . ' internal token must be a password field');
+        hub_test_assert(!str_contains($page['stdout'], 'name="' . $tokenKey . '" type="password" required'), $packId . ' internal token must not block saving when blank');
+        hub_test_assert(str_contains($page['stdout'], '留空則保留既有值'), $packId . ' internal token form must explain blank preservation');
+    }
+});
+
 hub_test('service settings update validates values writes env and marks restart', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'ocr-ppocrv5', [

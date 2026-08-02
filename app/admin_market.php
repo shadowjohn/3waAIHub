@@ -93,6 +93,9 @@ function hub_admin_market_runtime_badge_class(string $runtimeLevel): string
     if (str_contains($runtime, 'l4a')) {
         return 'pack-badge pack-badge-purple';
     }
+    if (str_contains($runtime, 'l4')) {
+        return 'pack-badge pack-badge-purple';
+    }
     if (str_contains($runtime, 'l3')) {
         return 'pack-badge pack-badge-warn';
     }
@@ -111,6 +114,12 @@ function hub_admin_market_runtime_label(string $runtimeLevel): string
     }
     if (str_contains($runtime, 'l4a')) {
         return 'L4a 模型檢查';
+    }
+    if (str_contains($runtime, 'l4')) {
+        return 'L4 本機模型';
+    }
+    if (str_contains($runtime, 'l3-adapter')) {
+        return 'L3 服務介接';
     }
     if (str_contains($runtime, 'l3')) {
         return 'L3 儲存掛載';
@@ -149,6 +158,26 @@ function hub_admin_market_gpu_label(array $manifest, string $surface = 'packs'):
 
 function hub_admin_market_model_label(PDO $db, array $manifest, string $surface = 'packs'): array
 {
+    foreach ((array)($manifest['async_jobs'] ?? []) as $job) {
+        $runner = is_array($job) && is_array($job['runner'] ?? null) ? $job['runner'] : [];
+        $assets = hub_pack_async_job_runner_asset_mounts($runner['asset_mounts'] ?? []);
+        $fixedAssets = is_array($assets)
+            ? array_values(array_filter($assets, static fn (array $asset): bool => !isset($asset['when'])))
+            : [];
+        if ($fixedAssets === []) {
+            continue;
+        }
+        try {
+            hub_pack_job_resolve_asset_mounts($db, ['asset_mounts' => $fixedAssets]);
+            return $surface === 'marketplace'
+                ? ['label' => __('模型已就緒'), 'class' => 'hub-badge hub-badge-ok']
+                : ['label' => '模型已就緒', 'class' => 'pack-badge pack-badge-ok'];
+        } catch (Throwable) {
+            return $surface === 'marketplace'
+                ? ['label' => __('缺少模型'), 'class' => 'hub-badge hub-badge-bad']
+                : ['label' => '缺少模型', 'class' => 'pack-badge pack-badge-bad'];
+        }
+    }
     $schema = is_array($manifest['settings_schema'] ?? null) ? $manifest['settings_schema'] : [];
     $selectors = [];
     $required = false;

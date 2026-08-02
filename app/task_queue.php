@@ -177,18 +177,19 @@ function hub_pack_job_voice_context_snapshot(array $definition, array $input, mi
     $legacy = $keys === ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path'];
     $modern = $keys === ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path'];
     $ultimate = $keys === ['mode_input', 'design_value', 'clone_value', 'ultimate_value', 'profile_input', 'profile_task_input', 'design_prompt_input', 'container_path'];
-    if (!$legacy && !$modern && !$ultimate) {
+    $cloneOnly = $keys === ['mode_input', 'clone_value', 'ultimate_value', 'profile_input', 'profile_task_input', 'container_path'];
+    if (!$legacy && !$modern && !$ultimate && !$cloneOnly) {
         throw new InvalidArgumentException('invalid_request');
     }
     $mode = $input[$definition['mode_input']] ?? null;
     if ($mode === null) {
-        if ($snapshot !== null) {
+        if ($cloneOnly || $snapshot !== null) {
             throw new InvalidArgumentException('invalid_request');
         }
 
         return [];
     }
-    if ($mode === $definition['design_value']) {
+    if (!$cloneOnly && $mode === $definition['design_value']) {
         if ($snapshot !== null || array_key_exists($definition['profile_input'], $input)
             || ($ultimate && array_key_exists($definition['profile_task_input'], $input))) {
             throw new InvalidArgumentException('invalid_request');
@@ -199,14 +200,14 @@ function hub_pack_job_voice_context_snapshot(array $definition, array $input, mi
     if (!is_array($snapshot) || array_is_list($snapshot)) {
         throw new InvalidArgumentException('invalid_request');
     }
-    $designPromptInput = $legacy ? 'voice_prompt' : $definition['design_prompt_input'];
-    if (array_key_exists($designPromptInput, $input)
-        || ($ultimate && array_key_exists($definition['profile_task_input'], $input))) {
+    $designPromptInput = $legacy ? 'voice_prompt' : ($definition['design_prompt_input'] ?? null);
+    if (($designPromptInput !== null && array_key_exists($designPromptInput, $input))
+        || (($ultimate || $cloneOnly) && array_key_exists($definition['profile_task_input'], $input))) {
         throw new InvalidArgumentException('invalid_request');
     }
     $profileId = $input[$definition['profile_input']] ?? null;
     $sha256 = $snapshot['reference_audio_sha256'] ?? null;
-    if ($ultimate && $mode === $definition['ultimate_value']) {
+    if (($ultimate || $cloneOnly) && $mode === $definition['ultimate_value']) {
         $promptSha256 = $snapshot['prompt_text_sha256'] ?? null;
         $confirmedAt = $snapshot['prompt_text_confirmed_at'] ?? null;
         $expected = [

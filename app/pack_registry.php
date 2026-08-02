@@ -101,9 +101,20 @@ function hub_pack_job_async_routes(): array
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup', 'accelerator' => 'gpu'],
         'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe', 'accelerator' => 'gpu'],
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
+        'voice_generate_gpt_sovits' => ['pack_id' => 'tts-gpt-sovits', 'job' => 'synthesize', 'accelerator' => 'gpu'],
         'edge_tts' => ['pack_id' => 'edge-tts', 'job' => 'synthesize', 'accelerator' => 'cpu'],
         'web_capture' => ['pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu'],
     ];
+}
+
+function hub_voice_profile_modes(): array
+{
+    return ['voice_generate', 'voice_generate_gpt_sovits'];
+}
+
+function hub_is_voice_profile_mode(string $mode): bool
+{
+    return in_array($mode, hub_voice_profile_modes(), true);
 }
 
 function hub_is_pack_job_async_mode(string $mode): bool
@@ -317,7 +328,7 @@ function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
 function hub_audio_async_routes(): array
 {
     $routes = [];
-    foreach (['audio_cleanup', 'speech_transcribe', 'voice_generate'] as $mode) {
+    foreach (['audio_cleanup', 'speech_transcribe', 'voice_generate', 'voice_generate_gpt_sovits'] as $mode) {
         $route = hub_pack_job_async_routes()[$mode];
         $routes[$mode] = ['pack_id' => $route['pack_id'], 'job' => $route['job']];
     }
@@ -931,7 +942,33 @@ function hub_pack_async_job_voice_context_contract(mixed $definition, array $fie
     $ultimateKeys = ['mode_input', 'design_value', 'clone_value', 'ultimate_value', 'profile_input', 'profile_task_input', 'design_prompt_input', 'container_path'];
     $modernKeys = ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path'];
     $legacyKeys = ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path'];
+    $cloneOnlyKeys = ['mode_input', 'clone_value', 'ultimate_value', 'profile_input', 'profile_task_input', 'container_path'];
     $keys = is_array($definition) ? array_keys($definition) : [];
+    if ($keys === $cloneOnlyKeys) {
+        $modeInput = $definition['mode_input'] ?? null;
+        $cloneValue = $definition['clone_value'] ?? null;
+        $ultimateValue = $definition['ultimate_value'] ?? null;
+        $profileInput = $definition['profile_input'] ?? null;
+        $profileTaskInput = $definition['profile_task_input'] ?? null;
+        $containerPath = $definition['container_path'] ?? null;
+        if (!is_string($modeInput) || !is_string($cloneValue) || !is_string($ultimateValue) || !is_string($profileInput)
+            || !is_string($profileTaskInput) || !is_string($containerPath) || $cloneValue === '' || $ultimateValue === '' || $cloneValue === $ultimateValue
+            || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || !in_array($profileTaskInput, $fields, true)
+            || ($requestSchema[$modeInput]['type'] ?? null) !== 'string' || !in_array($cloneValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true)
+            || !in_array($ultimateValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true) || ($requestSchema[$profileInput]['type'] ?? null) !== 'integer'
+            || ($requestSchema[$profileTaskInput]['type'] ?? null) !== 'string' || $containerPath !== '/data/voice_profiles/reference.wav') {
+            return null;
+        }
+
+        return [
+            'mode_input' => $modeInput,
+            'clone_value' => $cloneValue,
+            'ultimate_value' => $ultimateValue,
+            'profile_input' => $profileInput,
+            'profile_task_input' => $profileTaskInput,
+            'container_path' => $containerPath,
+        ];
+    }
     $legacy = $keys === $legacyKeys;
     $modern = $keys === $modernKeys;
     $ultimate = $keys === $ultimateKeys;
@@ -1892,6 +1929,17 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'HOME' => $cacheDir . '/home',
             'PYTHONUNBUFFERED' => '1',
         ],
+        'tts-gpt-sovits' => [
+            'GPT_SOVITS_MODEL_DIR' => $modelDir,
+            'GPT_SOVITS_CACHE_DIR' => $cacheDir,
+            'GPT_SOVITS_SERVICE_DATA_DIR' => $serviceDataDir,
+            'HF_HOME' => $modelDir . '/huggingface',
+            'HF_HUB_OFFLINE' => '1',
+            'TRANSFORMERS_OFFLINE' => '1',
+            'XDG_CACHE_HOME' => $cacheDir . '/xdg',
+            'HOME' => $cacheDir . '/home',
+            'PYTHONUNBUFFERED' => '1',
+        ],
         'llm-gemma4-12b' => [
             'GEMMA4_CACHE_DIR' => $cacheDir,
             'GEMMA4_SERVICE_DATA_DIR' => $serviceDataDir,
@@ -2036,13 +2084,15 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     $portEnv = hub_pack_port_env($manifest);
     $buildContext = $pack['dir'] . '/service';
     $dockerfile = '';
-    if (in_array(($manifest['id'] ?? ''), ['tts-voxcpm2', 'whisper-asr'], true)) {
+    if (in_array(($manifest['id'] ?? ''), ['tts-voxcpm2', 'tts-gpt-sovits', 'whisper-asr'], true)) {
         $buildContext = $pack['dir'];
         $dockerfile = "      dockerfile: service/Dockerfile\n";
     }
-    $imageTag = ($manifest['id'] ?? '') === 'whisper-asr'
-        ? '3waaihub/whisper-asr:' . (string)($manifest['version'] ?? 'latest')
-        : hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest'));
+    $imageTag = match ($manifest['id'] ?? '') {
+        'whisper-asr' => '3waaihub/whisper-asr:' . (string)($manifest['version'] ?? 'latest'),
+        'tts-gpt-sovits' => (string)($manifest['runner_build']['image'] ?? ''),
+        default => hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest')),
+    };
 
     $compose = "services:\n"
         . "  {$composeService}:\n"

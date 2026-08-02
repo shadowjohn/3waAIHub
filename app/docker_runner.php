@@ -238,6 +238,9 @@ function hub_service_image_tag(array $service): string
     if ((string)($service['pack_id'] ?? '') === 'whisper-asr') {
         return '3waaihub/whisper-asr:' . (string)($service['pack_version'] ?? 'latest');
     }
+    if ((string)($service['pack_id'] ?? '') === 'tts-gpt-sovits') {
+        return '3waaihub/tts-gpt-sovits:' . (string)($service['pack_version'] ?? 'latest');
+    }
 
     return hub_pack_image_tag((string)($service['service_key'] ?? $service['mode']), (string)($service['pack_version'] ?? 'latest'));
 }

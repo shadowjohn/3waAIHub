@@ -6,7 +6,7 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 
 目前通用 Job Runtime 薄版已完成；外部資料庫、Volume Resource Profile 與任意服務自動發佈仍在後續階段。Local Job Runtime 薄版已完成，YOLO `yolo_predict` / `yolo_train` / `yolo_export_onnx` 已接真實 Ultralytics runner。Runtime portability guardrails 已建立，Linux 仍是預設執行主機，但新 runtime 邏輯需分離 host path、container path 與 platform target。
 
-目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics 與 Pack hardware preflight。Pack 能力層級：`hello`、`ocr-ppocrv5`、`yolo`、`sam3`、`translate-gemma12b`、`structure-ppstructurev3`、`docparser`、`llm-gemma4-12b`、`image-birefnet`、`bioclip`、`whisper-asr` 已達 L5 benchmark-ready；`tts-voxcpm2` 是 experimental 且已達 L5 benchmark-ready；`taiwan-address` 是 L3 trusted upstream adapter；`rag-nemotron` 是 `L3-adapter`；`yolo-serving` 是 `L3-storage-mount`；`audio-cleanup` 是 L1 contract。
+目前已完成 Local HubPack Catalog、多 Service Instance、service-level IP whitelist、API trace、Bearer token auth、SQLite retention guard、Dashboard metrics 與 Pack hardware preflight。Pack 能力層級：`hello`、`ocr-ppocrv5`、`yolo`、`sam3`、`translate-gemma12b`、`structure-ppstructurev3`、`docparser`、`llm-gemma4-12b`、`image-birefnet`、`bioclip`、`whisper-asr` 已達 L5 benchmark-ready；`tts-voxcpm2` 與 `tts-gpt-sovits` 為 experimental，且都已達 L5 benchmark-ready；`taiwan-address` 是 L3 trusted upstream adapter；`rag-nemotron` 是 `L3-adapter`；`yolo-serving` 是 `L3-storage-mount`；`audio-cleanup` 是 L1 contract。
 
 ## 功能
 
@@ -61,6 +61,7 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 | 能力 | 3wa 運行定位 | 已完成的真實驗收 |
 | --- | --- | --- |
 | `voice_generate` / `tts` | 主要 GPU 語音生成 | Router relay 回傳真實 WAV，GPU lease 會正確釋放。 |
+| `voice_generate_gpt_sovits` | 可選 GPT-SoVITS 仿聲比較 | 獨立 clone-only Mode，使用同一個受管 profile；真實 Cluster 驗收已確認 CUDA 合成、WAV relay 與 artifact ACK。 |
 | `speech_transcribe` / `asr` | 主要 GPU 語音辨識 | Router relay 回傳非 mock 中文辨識，faster-whisper 使用 CUDA `float16`。 |
 | `background_remove` | 可展示的影像能力 | BiRefNet 經 Router 回傳透明 PNG，已確認 CUDA 與 alpha 通道。 |
 | `ocr` | 可用的影像文字能力 | PP-OCRv5 經 Router 完成非 mock GPU 推論。 |
@@ -69,6 +70,8 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 16 GB VRAM 主機應避免把 VoxCPM2、兩個 Nemotron NIM 與其他大型 GPU Pack 無限制地同時常駐。語音工作優先；RAG 目前保留映像與模型快取，日後把 Embed / Rerank NIM 納入受管服務與 GPU lease 後，才開放 `rag` mode 給客戶。
 
 VoxCPM2 可在服務設定切為 `resident` 後重啟：首次 `voice_generate` 依正常 `9600 MB` cold admission，已載入模型則保留 `1024 MB` 可用 VRAM 餘裕。預設 idle 為 `0`，不會自動卸載；GPU 需要讓出時由管理員停止或重啟服務。這只改變節點內部執行方式，客戶仍使用原本的 `cluster_api.php` 與 `voice_generate` contract。
+
+`tts-gpt-sovits` 另以 `voice_generate_gpt_sovits` 提供 `clone`、`ultimate_clone`，不混入 VoxCPM2 的 `design` contract。它預設一次性容器，也可由管理員切成 `resident`；idle 預設同樣為 `0`。16 GB 主機在兩種服務無法同時滿足 VRAM 餘裕時，由管理員明確停止其中一個，Pack 不會自動驅逐其他常駐模型。
 
 ## 平台能力矩陣
 

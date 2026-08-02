@@ -13,7 +13,7 @@ function hub_audio_acceptance_main(array $argv): int
         'text::', 'timeout::', 'subtitle-reflow::', 'json', 'help',
     ]);
     if (isset($options['help'])) {
-        echo "Usage: php scripts/audio_packs_acceptance.php --base-url=<api.php URL> --token=<token> --pack=audio-cleanup|whisper-asr|tts-voxcpm2|all [--fixture=<audio>] [--callback-target=<alias>] [--voice-profile-id=<managed numeric id>] [--text=<text>] [--timeout=<seconds>] [--subtitle-reflow=none|legacy_adaptive_v1] [--json]\n";
+        echo "Usage: php scripts/audio_packs_acceptance.php --base-url=<api.php URL> --token=<token> --pack=audio-cleanup|whisper-asr|tts-voxcpm2|tts-gpt-sovits|all [--fixture=<audio>] [--callback-target=<alias>] [--voice-profile-id=<managed numeric id>] [--text=<text>] [--timeout=<seconds>] [--subtitle-reflow=none|legacy_adaptive_v1] [--json]\n";
         return 0;
     }
 
@@ -39,6 +39,15 @@ function hub_audio_acceptance_main(array $argv): int
                     'voice_profile_id' => (string)$config['voice_profile_id'],
                 ]);
             }
+        }
+        if (in_array('tts-gpt-sovits', $config['packs'], true)) {
+            if ($config['voice_profile_id'] === null) {
+                throw new InvalidArgumentException('voice-profile-id is required for GPT-SoVITS clone acceptance');
+            }
+            $runs[] = hub_audio_acceptance_run($config, 'tts-gpt-sovits', [
+                'mode' => 'clone',
+                'voice_profile_id' => (string)$config['voice_profile_id'],
+            ]);
         }
         $output = ['ok' => true, 'readiness' => $readiness, 'runs' => $runs];
     } catch (Throwable $error) {
@@ -68,13 +77,13 @@ function hub_audio_acceptance_config(array $options): array
     $baseUrl = rtrim(trim((string)($options['base-url'] ?? getenv('AIHUB_ACCEPTANCE_BASE_URL') ?: '')), '/');
     $token = trim((string)($options['token'] ?? getenv('AIHUB_ACCEPTANCE_TOKEN') ?: ''));
     $pack = trim((string)($options['pack'] ?? ''));
-    if ($baseUrl === '' || $token === '' || !in_array($pack, ['audio-cleanup', 'whisper-asr', 'tts-voxcpm2', 'all'], true)) {
+    if ($baseUrl === '' || $token === '' || !in_array($pack, ['audio-cleanup', 'whisper-asr', 'tts-voxcpm2', 'tts-gpt-sovits', 'all'], true)) {
         throw new InvalidArgumentException('base-url, token, and a valid pack are required; use --help');
     }
     if (!str_ends_with($baseUrl, 'api.php')) {
         $baseUrl .= '/api.php';
     }
-    $packs = $pack === 'all' ? ['audio-cleanup', 'whisper-asr', 'tts-voxcpm2'] : [$pack];
+    $packs = $pack === 'all' ? ['audio-cleanup', 'whisper-asr', 'tts-voxcpm2', 'tts-gpt-sovits'] : [$pack];
     $fixture = trim((string)($options['fixture'] ?? ''));
     if ((in_array('audio-cleanup', $packs, true) || in_array('whisper-asr', $packs, true)) && (!is_file($fixture) || !is_readable($fixture))) {
         throw new InvalidArgumentException('a readable --fixture audio file is required for cleanup or ASR acceptance');
@@ -128,11 +137,13 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
         'audio-cleanup' => 'audio_cleanup',
         'whisper-asr' => 'speech_transcribe',
         'tts-voxcpm2' => 'voice_generate',
+        'tts-gpt-sovits' => 'voice_generate_gpt_sovits',
     };
     $fields = match ($pack) {
         'audio-cleanup' => ['operation' => 'separate', 'demucs_model' => 'balanced'],
         'whisper-asr' => ['model' => 'large_v3', 'language' => 'auto', 'diarization' => '0', 'output_srt' => '1', 'output_vtt' => '1', 'subtitle_reflow' => $config['subtitle_reflow']],
         'tts-voxcpm2' => ['text' => $config['text'], 'model' => 'voxcpm2', 'waveform_preview' => '1'],
+        'tts-gpt-sovits' => ['text' => $config['text'], 'model' => 'gpt_sovits_v2', 'language' => 'zh_tw'],
     };
     $fields = array_replace($fields, $override);
     if ($pack === 'tts-voxcpm2') {
@@ -147,7 +158,7 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
     if ($config['callback_target'] !== '') {
         $fields['callback_target'] = $config['callback_target'];
     }
-    $sourceFile = empty($override['source_artifact_id']) && $pack !== 'tts-voxcpm2' ? $config['fixture'] : '';
+    $sourceFile = empty($override['source_artifact_id']) && !in_array($pack, ['tts-voxcpm2', 'tts-gpt-sovits'], true) ? $config['fixture'] : '';
     $started = microtime(true);
     $submitted = hub_audio_acceptance_submit($config, $mode, $fields, $sourceFile);
     $taskId = (int)($submitted['task_id'] ?? 0);
@@ -164,6 +175,7 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
         'audio-cleanup' => ['vocals_audio', 'background_audio', 'cleanup_report'],
         'whisper-asr' => ['transcript_json', 'subtitle_srt', 'subtitle_vtt', 'transcription_report'],
         'tts-voxcpm2' => ['generated_audio', 'synthesis_metadata', 'waveform_preview'],
+        'tts-gpt-sovits' => ['generated_audio', 'synthesis_metadata'],
     };
     $downloaded = hub_audio_acceptance_verify_artifacts($config, $taskId, $artifacts, $required);
     foreach ($downloaded as $artifact) {

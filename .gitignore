@@ -20,6 +20,7 @@ data/services/*
 data/install/*
 data/test_services/*
 data/sessions/*
+data/docker-cli/
 !data/.gitkeep
 !data/logs/.gitkeep
 !data/logs/jobs/.gitkeep
@@ -36,6 +37,10 @@ data/sessions/*
 *.log
 *.pyc
 __pycache__/
+docs/8月7日GIDAY/rendered/
+docs/8月7日GIDAY/rendered-light/
+docs/8月7日GIDAY/*.pdf
+docs/8月7日GIDAY/*.pptx
 .DS_Store
 vendor/
 node_modules/

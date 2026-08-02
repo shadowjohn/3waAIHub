@@ -103,7 +103,11 @@ function hub_service_setting_default(array $service, string $key, array $item): 
     if ($environmentOverride !== null) {
         return hub_validate_service_setting_value($item, $environmentOverride);
     }
-    if ((string)($service['pack_id'] ?? '') === 'tts-voxcpm2' && $key === 'VOXCPM2_INTERNAL_JOB_TOKEN') {
+    $residentInternalTokens = [
+        'tts-voxcpm2' => 'VOXCPM2_INTERNAL_JOB_TOKEN',
+        'tts-gpt-sovits' => 'GPT_SOVITS_INTERNAL_JOB_TOKEN',
+    ];
+    if (($residentInternalTokens[(string)($service['pack_id'] ?? '')] ?? null) === $key) {
         return bin2hex(random_bytes(32));
     }
     if ((string)($service['pack_id'] ?? '') === 'ocr-ppocrv5' && hub_service_key_requests_gpu((string)($service['service_key'] ?? ''))) {
@@ -269,6 +273,19 @@ function hub_update_service_settings(PDO $db, int $serviceId, array $values): ar
             }
             $item = $schema[$key];
             if (!empty($item['secret']) && (string)$rawValue === '') {
+                if ((string)($settings[$key]['value'] ?? '') === '') {
+                    $value = hub_service_setting_default($service, $key, $item);
+                    if ($value !== '') {
+                        $stmt->execute([
+                            ':value' => $value,
+                            ':updated_at' => $now,
+                            ':service_id' => $serviceId,
+                            ':key' => $key,
+                        ]);
+                        $changed = true;
+                        $needsRestart = $needsRestart || !empty($item['restart_required']);
+                    }
+                }
                 continue;
             }
             $value = hub_validate_service_setting_value($item, (string)$rawValue);

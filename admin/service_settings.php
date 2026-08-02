@@ -114,7 +114,9 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $va
 {
     $label = __((string)($item['label'] ?? $key));
     $type = (string)($item['type'] ?? 'text');
-    $required = !empty($item['required']) ? ' required' : '';
+    $isSecret = !empty($item['secret']);
+    $isInternalJobToken = $isSecret && str_ends_with($key, '_INTERNAL_JOB_TOKEN');
+    $required = !empty($item['required']) && (!$isSecret || ($value === '' && !$isInternalJobToken)) ? ' required' : '';
     $help = trim((string)($item['help'] ?? ''));
     $selector = is_array($item['model_selector'] ?? null) ? $item['model_selector'] : null;
     ob_start();
@@ -129,10 +131,11 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $va
             <?php endforeach; ?>
         </select>
     <?php else: ?>
-        <?php $inputType = in_array($type, ['integer', 'number'], true) ? 'number' : 'text'; ?>
+        <?php $inputType = $isSecret ? 'password' : (in_array($type, ['integer', 'number'], true) ? 'number' : 'text'); ?>
+        <?php $secretAttributes = $isSecret ? ' autocomplete="new-password" placeholder="' . hub_h(__('留空則保留既有值')) . '"' : ''; ?>
         <?php if ($selector): ?>
             <?php $listId = 'models-' . preg_replace('/[^A-Za-z0-9_-]/', '-', $key); ?>
-            <input name="<?= hub_h($key) ?>" list="<?= hub_h($listId) ?>" type="<?= hub_h($inputType) ?>" value="<?= !empty($item['secret']) ? '' : hub_h($value) ?>"<?= $required ?>>
+            <input name="<?= hub_h($key) ?>" list="<?= hub_h($listId) ?>" type="<?= hub_h($inputType) ?>" value="<?= $isSecret ? '' : hub_h($value) ?>"<?= $secretAttributes ?><?= $required ?>>
             <datalist id="<?= hub_h($listId) ?>">
                 <?php foreach (hub_model_selector_options($db, $selector) as $option): ?>
                     <option value="<?= hub_h((string)$option['value']) ?>"><?= hub_h((string)$option['label']) ?></option>
@@ -150,9 +153,10 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $va
                 <?= $status['size_bytes'] !== null ? ' / ' . hub_h(hub_model_format_bytes((int)$status['size_bytes'])) : '' ?>
             </p>
         <?php else: ?>
-            <input name="<?= hub_h($key) ?>" type="<?= hub_h($inputType) ?>" value="<?= !empty($item['secret']) ? '' : hub_h($value) ?>"<?= $required ?>>
+            <input name="<?= hub_h($key) ?>" type="<?= hub_h($inputType) ?>" value="<?= $isSecret ? '' : hub_h($value) ?>"<?= $secretAttributes ?><?= $required ?>>
         <?php endif; ?>
     <?php endif; ?>
+    <?php if ($isInternalJobToken): ?><p class="muted"><?= hub_h($value !== '' ? __('已由系統設定；留空則保留既有值。') : __('由系統自動產生；留空即可。')) ?></p><?php endif; ?>
     <?php if ($help !== ''): ?><p class="muted"><?= hub_h($help) ?></p><?php endif; ?>
     <?php
     return (string)ob_get_clean();

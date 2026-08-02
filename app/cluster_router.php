@@ -924,8 +924,11 @@ function hub_cluster_voice_generate_relay_response(array $response, mixed $paylo
     );
 }
 
-function hub_cluster_rewrite_voice_generate_contract(array $service): array
+function hub_cluster_rewrite_voice_generate_contract(array $service, string $mode = 'voice_generate'): array
 {
+    if (!hub_is_voice_profile_mode($mode)) {
+        throw new InvalidArgumentException('unsupported voice profile mode');
+    }
     unset($service['examples']);
     $forbiddenIdentifierPattern = '/(?<![A-Za-z0-9_])voice_profile_id(?![A-Za-z0-9_])/i';
     $containsForbiddenIdentifier = static fn (mixed $value): bool => is_string($value)
@@ -1004,7 +1007,7 @@ function hub_cluster_rewrite_voice_generate_contract(array $service): array
     $service['workflow'] = [
         'client_state' => 'MyAI stores only voice_profile_task_id returned by profile_prepare.',
         'profile_affinity' => 'Profile followups and clone synthesis stay on the pinned station; there is no failover.',
-        'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with voice_generate permission. Task and artifact followups remain bound to the submitting Token.',
+        'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with ' . $mode . ' permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
         'steps' => [
@@ -1018,7 +1021,7 @@ function hub_cluster_rewrite_voice_generate_contract(array $service): array
             'profile_delete',
         ],
     ];
-    $service['workflow_examples'] = hub_public_api_voice_generate_examples(true);
+    $service['workflow_examples'] = hub_public_api_voice_generate_examples(true, $mode, $mode === 'voice_generate');
 
     return $service;
 }
@@ -1069,8 +1072,8 @@ function hub_cluster_public_manifest(PDO $db): array
         }
         $station = $stations[$stationId];
         $service = $contracts[$stationId][$mode];
-        if ($mode === 'voice_generate') {
-            $service = hub_cluster_rewrite_voice_generate_contract($service);
+        if (hub_is_voice_profile_mode($mode)) {
+            $service = hub_cluster_rewrite_voice_generate_contract($service, $mode);
         }
         $service = hub_cluster_project_example_collections($service, $mode === 'voice_generate');
         foreach (['public_base_url', 'internal_base_url'] as $field) {
@@ -1088,6 +1091,9 @@ function hub_cluster_public_manifest(PDO $db): array
             } catch (Throwable) {
                 continue;
             }
+        }
+        if (hub_is_voice_profile_mode($mode)) {
+            $service['workflow_examples'] = hub_public_api_voice_generate_examples(true, $mode, $mode === 'voice_generate');
         }
         if (is_string($service['url'] ?? null)
             && is_string($service['method'] ?? null)
@@ -1331,13 +1337,13 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     }
     if ($profileReference !== null) {
         $profileRoute = hub_cluster_get_route_for_customer($db, $profileReference, (array)$auth['context']);
-        if ($profileRoute === null && $mode === 'voice_generate') {
-            $profileRoute = hub_cluster_get_voice_profile_route_for_member($db, $profileReference, (array)$auth['context']);
+        if ($profileRoute === null && hub_is_voice_profile_mode($mode)) {
+            $profileRoute = hub_cluster_get_voice_profile_route_for_member($db, $profileReference, (array)$auth['context'], $mode);
         }
         $remoteTaskId = $profileRoute['remote_task_id'] ?? null;
         if ($profileRoute === null
-            || $mode !== 'voice_generate'
-            || (string)($profileRoute['mode'] ?? '') !== 'voice_generate'
+            || !hub_is_voice_profile_mode($mode)
+            || (string)($profileRoute['mode'] ?? '') !== $mode
             || (int)($profileRoute['station_id'] ?? 0) < 1
             || (!is_int($remoteTaskId) && !is_string($remoteTaskId))
             || preg_match('/\A[1-9][0-9]{0,17}\z/', (string)$remoteTaskId) !== 1
@@ -1350,7 +1356,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             return $finish(hub_gateway_error(400, 'invalid_request', 'invalid request'));
         }
     }
-    if ($mode === 'voice_generate') {
+    if (hub_is_voice_profile_mode($mode)) {
         try {
             $profilePayload = hub_cluster_router_voice_profile_payload($normalized);
         } catch (Throwable) {
@@ -1366,9 +1372,9 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         && is_string($profilePayload['mode'] ?? null)
         && in_array($profilePayload['mode'], ['clone', 'ultimate_clone'], true);
     $profileResponseOperation = $isImplicitProfileSynthesis ? 'synthesize' : $profileOperation;
-    $isProfileRequest = $mode === 'voice_generate'
+    $isProfileRequest = hub_is_voice_profile_mode($mode)
         && ($profileRoute !== null || in_array($profileOperation, ['profile_prepare', 'profile_status', 'profile_confirm', 'profile_delete', 'synthesize'], true));
-    $profileSensitive = $mode === 'voice_generate'
+    $profileSensitive = hub_is_voice_profile_mode($mode)
         && ($profileRoute !== null || $profileOperation === 'profile_prepare');
 
     $refreshDue = is_callable($seams['refresh_due'] ?? null)
@@ -1428,7 +1434,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         return $finish(hub_gateway_error(503, $profileRoute === null ? 'router_unavailable' : 'station_unavailable', 'selected cluster station is unavailable'));
     }
 
-    $routeRole = $mode === 'voice_generate' && $profileResponseOperation === 'profile_prepare'
+    $routeRole = hub_is_voice_profile_mode($mode) && $profileResponseOperation === 'profile_prepare'
         ? 'profile_prepare'
         : 'task';
     $routeId = hub_cluster_router_admit_route(
@@ -1481,7 +1487,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         if ($profileRoute !== null && !$selfStation && hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable');
         } elseif ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
-            $response = $mode === 'voice_generate'
+            $response = hub_is_voice_profile_mode($mode)
                 ? hub_cluster_voice_generate_relay_response($response, $payload)
                 : null;
             $response ??= hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
@@ -1973,7 +1979,7 @@ function hub_cluster_replace_voice_profile_reference(array $normalized, string $
 
 function hub_cluster_router_multipart_scalar_limits(string $mode, array $source): ?array
 {
-    if ($mode !== 'voice_generate') {
+    if (!hub_is_voice_profile_mode($mode)) {
         return null;
     }
     $operation = $source['operation'] ?? null;
@@ -2136,7 +2142,7 @@ function hub_cluster_router_api_base_url(): string
 
 function hub_cluster_router_rich_artifact_mode(?string $mode): bool
 {
-    return in_array($mode, ['edge_tts', 'voice_generate'], true);
+    return $mode === 'edge_tts' || hub_is_voice_profile_mode((string)$mode);
 }
 
 function hub_cluster_router_task_links(string $routeId, string $routerBase, ?string $routeMode = null): array
@@ -2963,20 +2969,20 @@ function hub_cluster_get_route_for_customer(PDO $db, string $routeId, array $aut
     return $route === false ? null : $route;
 }
 
-function hub_cluster_get_voice_profile_route_for_member(PDO $db, string $routeId, array $auth): ?array
+function hub_cluster_get_voice_profile_route_for_member(PDO $db, string $routeId, array $auth, string $mode = 'voice_generate'): ?array
 {
     $memberId = (int)($auth['member_id'] ?? 0);
-    if (!hub_cluster_router_profile_sensitive_route_id($routeId) || $memberId < 1) {
+    if (!hub_cluster_router_profile_sensitive_route_id($routeId) || $memberId < 1 || !hub_is_voice_profile_mode($mode)) {
         return null;
     }
     $stmt = $db->prepare(
         "SELECT * FROM cluster_routes
          WHERE route_id = :route_id AND member_id = :member_id
-           AND mode = 'voice_generate' AND route_role = 'profile_prepare'
+           AND mode = :mode AND route_role = 'profile_prepare'
            AND is_async = 1 AND state = 'succeeded'
          LIMIT 1"
     );
-    $stmt->execute([':route_id' => $routeId, ':member_id' => $memberId]);
+    $stmt->execute([':route_id' => $routeId, ':member_id' => $memberId, ':mode' => $mode]);
     $route = $stmt->fetch();
 
     return $route === false ? null : $route;
