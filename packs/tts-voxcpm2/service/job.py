@@ -8,14 +8,14 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from long_form import BOUNDARY_ACTIONS, assemble, canonical_json, fake_synthesize, global_loudness_pass, make_plan, peak_guard, read_pcm, sha256_text, write_pcm
 
 ALLOWED_REQUEST = {"text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "prompt_text", "waveform_preview", "voice_context"}
 DEFAULTS = {"mode": "design", "seed": 42, "seed_policy": "derived_per_chunk", "model": "voxcpm2", "waveform_preview": False}
 DEFAULT_DESIGN_PROMPT = "沉穩的台灣男性技師，語速稍慢，清楚自然"
-NON_RETRYABLE_SYNTHESIS_ERRORS = {"gpu_unavailable", "model_load_failed", "runtime_dependency_missing", "sample_rate_mismatch"}
+NON_RETRYABLE_SYNTHESIS_ERRORS = {"gpu_unavailable", "model_load_failed", "runtime_dependency_missing", "sample_rate_mismatch", "job_cancelled"}
 STABLE_ERROR_CODE = re.compile(r"^[a-z0-9_]{1,120}$")
 
 
@@ -99,7 +99,7 @@ def model_snapshot(config: dict[str, Any]) -> dict[str, Any]:
     return model
 
 
-def voice_context(request: dict[str, Any]) -> dict[str, Any]:
+def voice_context(request: dict[str, Any], managed_reference_path: Path | None = None) -> dict[str, Any]:
     trusted = request.get("voice_context")
     if request["mode"] == "design":
         expected = {"mode": "design", "container_path": "/data/voice_profiles/reference.wav"}
@@ -115,7 +115,7 @@ def voice_context(request: dict[str, Any]) -> dict[str, Any]:
         }
         if not isinstance(trusted, dict) or set(trusted) != set(expected) or trusted.get("mode") != expected["mode"] or trusted.get("voice_profile_id") != expected["voice_profile_id"] or trusted.get("container_path") != expected["container_path"] or not isinstance(trusted.get("reference_audio_sha256"), str) or len(trusted["reference_audio_sha256"]) != 64:
             raise RuntimeError("voice_context_invalid")
-        reference = Path(trusted["container_path"])
+        reference = managed_reference_path or Path(trusted["container_path"])
         if not regular(reference) or hashlib.sha256(reference.read_bytes()).hexdigest() != trusted["reference_audio_sha256"]:
             raise RuntimeError("voice_profile_unavailable")
         context = {"mode": "clone", "control": request.get("control", ""), "reference_audio_sha256": trusted["reference_audio_sha256"], "container_path": trusted["container_path"]}
@@ -140,7 +140,7 @@ def voice_context(request: dict[str, Any]) -> dict[str, Any]:
             or len(trusted["prompt_text_sha256"]) != 64
             or hashlib.sha256(request["prompt_text"].encode("utf-8")).hexdigest() != trusted["prompt_text_sha256"]):
             raise RuntimeError("voice_context_invalid")
-        reference = Path(trusted["container_path"])
+        reference = managed_reference_path or Path(trusted["container_path"])
         if not regular(reference) or hashlib.sha256(reference.read_bytes()).hexdigest() != trusted["reference_audio_sha256"]:
             raise RuntimeError("voice_profile_unavailable")
         context = {
@@ -186,10 +186,13 @@ def ensure_cuda_model(tts_app: Any, model_path: str, torch_module: Any) -> Any:
     return loaded
 
 
-def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path, model: dict[str, Any], checkpoints: Path, prompt_text: str | None = None, voice_prompt: str | None = None) -> list[int]:
+def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path, model: dict[str, Any], checkpoints: Path, prompt_text: str | None = None, voice_prompt: str | None = None, cancelled: Callable[[], bool] | None = None) -> list[int]:
     if fake_enabled():
         private_voice = voice["sha256"] if voice_prompt is None else sha256_text(canonical_json({"voice_context_sha256": voice["sha256"], "voice_prompt": voice_prompt}))
-        return fake_synthesize(chunk["text"], chunk["seed"], private_voice, model["sample_rate"])
+        samples = fake_synthesize(chunk["text"], chunk["seed"], private_voice, model["sample_rate"])
+        if cancelled and cancelled():
+            raise RuntimeError("job_cancelled")
+        return samples
     try:
         import torch
         import app as tts_app
@@ -210,6 +213,8 @@ def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path,
     temporary = checkpoints / (chunk["id"] + ".model.wav")
     try:
         tts_app.write_real_wav(temporary, request, chunk["seed"])
+        if cancelled and cancelled():
+            raise RuntimeError("job_cancelled")
         ensure_cuda_model(tts_app, model["model"], torch)
         sample_rate, samples = read_pcm(temporary)
     finally:
@@ -248,7 +253,7 @@ def cached_chunk(path: Path, metadata_path: Path, expected: dict[str, Any], samp
     return samples, metadata
 
 
-def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, str], voice: dict[str, Any], source: Path, model: dict[str, Any], prompt_text: str | None = None, voice_prompt: str | None = None) -> dict[str, Any]:
+def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, str], voice: dict[str, Any], source: Path, model: dict[str, Any], prompt_text: str | None = None, voice_prompt: str | None = None, cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
     sample_rate = model["sample_rate"]
     wav_path = checkpoints / (chunk["id"] + ".wav")
     metadata_path = checkpoints / (chunk["id"] + ".json")
@@ -273,7 +278,9 @@ def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, st
     error: Exception | None = None
     for attempt in range(1, 4):
         try:
-            samples, gain = peak_guard(synthesize_chunk(chunk, voice, source, model, checkpoints, prompt_text=prompt_text, voice_prompt=voice_prompt))
+            if cancelled and cancelled():
+                raise RuntimeError("job_cancelled")
+            samples, gain = peak_guard(synthesize_chunk(chunk, voice, source, model, checkpoints, prompt_text=prompt_text, voice_prompt=voice_prompt, cancelled=cancelled))
             expected |= {"duration_frames": len(samples), "attempts": attempt, "peak_gain": gain}
             checkpoints.mkdir(parents=True, exist_ok=True)
             write_pcm(wav_path, sample_rate, samples)
@@ -304,22 +311,33 @@ def clean_output(output: Path, preview: bool) -> None:
             path.unlink()
 
 
-def run_job(workspace: Path, input_dir: Path, output: Path, runner_config_path: Path) -> None:
+def run_job(workspace: Path, input_dir: Path, output: Path, runner_config_path: Path, cancelled: Callable[[], bool] | None = None, managed_reference_path: Path | None = None) -> None:
     workspace = workspace.resolve()
     input_dir = input_dir.resolve()
     output = output.resolve()
     if input_dir != workspace / "input" or output != workspace / "output" or runner_config_path.resolve() != input_dir / "runner_config.json":
         raise RuntimeError("workspace_invalid")
+    if managed_reference_path is not None:
+        if managed_reference_path.is_symlink() or not managed_reference_path.is_file():
+            raise RuntimeError("voice_profile_unavailable")
+        managed_reference_path = managed_reference_path.resolve(strict=True)
+        if workspace not in managed_reference_path.parents:
+            raise RuntimeError("voice_profile_forbidden")
     request = validate_request(read_json(input_dir / "request.json"))
     model = model_snapshot(read_json(runner_config_path))
     source = input_dir / "source"
-    voice = voice_context(request)
-    source = Path(voice["container_path"]) if request["mode"] in {"clone", "ultimate_clone"} else input_dir / "source"
+    voice = voice_context(request, managed_reference_path)
+    if request["mode"] in {"clone", "ultimate_clone"}:
+        source = managed_reference_path or Path(voice["container_path"])
     plan = make_plan(request["text"], request["seed"], request["seed_policy"], 240)
     plan_path = workspace / "checkpoints" / "plan" / "chunks.json"
     write_immutable_json(plan_path, plan, "checkpoint_plan_mismatch")
     context = checkpoint_context(plan, model, voice, request.get("voice_prompt"))
-    chunks = [create_chunk(chunk, workspace / "checkpoints" / "chunks", context, voice, source, model, prompt_text=request.get("prompt_text"), voice_prompt=request.get("voice_prompt")) for chunk in plan["chunks"]]
+    chunks = []
+    for chunk in plan["chunks"]:
+        if cancelled and cancelled():
+            raise RuntimeError("job_cancelled")
+        chunks.append(create_chunk(chunk, workspace / "checkpoints" / "chunks", context, voice, source, model, prompt_text=request.get("prompt_text"), voice_prompt=request.get("voice_prompt"), cancelled=cancelled))
     final, timeline = assemble(chunks, model["sample_rate"])
     final, loudness = global_loudness_pass(final)
     clean_output(output, request["waveform_preview"])

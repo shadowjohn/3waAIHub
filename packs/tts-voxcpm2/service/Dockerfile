@@ -20,9 +20,9 @@ COPY service/smoke.py service/storage_smoke.py service/long_form.py service/long
 RUN python3 /app/smoke.py
 RUN python3 /app/long_form_smoke.py
 
-COPY service/app.py service/job.py service/test_app.py ./
+COPY service/app.py service/job.py service/test_app.py service/test_job.py ./
 COPY jobs/voice_generate.sh ./voice_generate.sh
-RUN python3 -m unittest -v test_app.py \
+RUN python3 -m unittest -v test_app.py test_job.py \
     && python3 -c 'import app' \
     && chmod 0755 /app/voice_generate.sh \
     && ln -s /app/voice_generate.sh /app/voice-generate

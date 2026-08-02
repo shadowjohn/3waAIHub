@@ -6,20 +6,32 @@ import json
 import math
 import os
 import random
+import gc
+import re
+import secrets
 import struct
 import tempfile
+import threading
 import time
 import wave
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 app = FastAPI(title="3waAIHub VoxCPM2 Experimental TTS")
 _MODEL: Any | None = None
+_MODEL_WORK_LOCK = threading.RLock()
+_MODEL_WORK_DEPTH = 0
+_IDLE_TIMER: threading.Timer | None = None
+_ACTIVE_JOBS: dict[str, threading.Event] = {}
+_ACTIVE_JOBS_LOCK = threading.RLock()
+RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,95}$")
+TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
 
 
 def runtime_level() -> str:
@@ -57,6 +69,123 @@ def configure_env() -> None:
         "/data/voice_profiles",
     ]:
         Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def resident_idle_seconds() -> int:
+    return max(0, env_int("VOXCPM2_IDLE_UNLOAD_SECONDS", 0))
+
+
+def _cancel_idle_timer() -> None:
+    global _IDLE_TIMER
+    if _IDLE_TIMER is not None:
+        _IDLE_TIMER.cancel()
+        _IDLE_TIMER = None
+
+
+def _unload_idle_model() -> None:
+    global _IDLE_TIMER, _MODEL
+    with _MODEL_WORK_LOCK:
+        _IDLE_TIMER = None
+        if _MODEL_WORK_DEPTH or _MODEL is None:
+            return
+        _MODEL = None
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+
+def _schedule_idle_unload() -> None:
+    global _IDLE_TIMER
+    seconds = resident_idle_seconds()
+    if seconds <= 0 or _MODEL is None:
+        return
+    _cancel_idle_timer()
+    _IDLE_TIMER = threading.Timer(seconds, _unload_idle_model)
+    _IDLE_TIMER.daemon = True
+    _IDLE_TIMER.start()
+
+
+@contextmanager
+def model_work() -> Any:
+    global _MODEL_WORK_DEPTH
+    with _MODEL_WORK_LOCK:
+        _cancel_idle_timer()
+        _MODEL_WORK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _MODEL_WORK_DEPTH -= 1
+            if _MODEL_WORK_DEPTH == 0:
+                _schedule_idle_unload()
+
+
+def internal_authorized(token: str | None) -> bool:
+    expected = os.getenv("VOXCPM2_INTERNAL_JOB_TOKEN", "")
+    return bool(expected and token and secrets.compare_digest(expected, token))
+
+
+def resident_jobs_root() -> Path:
+    root = Path(os.getenv("VOXCPM2_SERVICE_DATA_DIR", "/data/service")) / "resident_jobs"
+    if root.exists() and (root.is_symlink() or not root.is_dir()):
+        raise RuntimeError("resident_job_invalid")
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink():
+        raise RuntimeError("resident_job_invalid")
+    return root.resolve(strict=True)
+
+
+def resident_stage(run_id: str) -> Path:
+    if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
+        raise RuntimeError("resident_job_invalid")
+    root = resident_jobs_root()
+    stage = root / run_id
+    if not stage.is_dir() or stage.is_symlink():
+        raise RuntimeError("resident_job_invalid")
+    resolved = stage.resolve(strict=True)
+    if root not in resolved.parents:
+        raise RuntimeError("resident_job_invalid")
+    return resolved
+
+
+def resident_regular(stage: Path, *parts: str) -> Path:
+    target = stage.joinpath(*parts)
+    if not target.is_file() or target.is_symlink():
+        raise RuntimeError("resident_job_invalid")
+    resolved = target.resolve(strict=True)
+    if stage not in resolved.parents:
+        raise RuntimeError("resident_job_invalid")
+    return resolved
+
+
+def resident_terminal_state(stage: Path) -> str:
+    try:
+        state_path = resident_regular(stage, "terminal.json")
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RuntimeError):
+        return "unknown"
+    return str(payload.get("state")) if isinstance(payload, dict) and set(payload) == {"state"} and payload.get("state") in TERMINAL_JOB_STATES else "unknown"
+
+
+def write_resident_terminal_state(stage: Path, state: str) -> None:
+    if state not in TERMINAL_JOB_STATES:
+        raise RuntimeError("resident_job_invalid")
+    target = stage / "terminal.json"
+    if target.exists() and (target.is_symlink() or not target.is_file()):
+        raise RuntimeError("resident_job_invalid")
+    temporary = stage / ".terminal.json.tmp"
+    if temporary.exists() and (temporary.is_symlink() or not temporary.is_file()):
+        raise RuntimeError("resident_job_invalid")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump({"state": state}, handle, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(target)
 
 
 def storage_path_status(path: str, writable_expected: bool = True) -> dict[str, Any]:
@@ -372,6 +501,98 @@ def artifact(filename: str) -> FileResponse | JSONResponse:
     return FileResponse(target, media_type=media_type)
 
 
+def internal_error(status: int, error: str) -> JSONResponse:
+    return response_error(status, error, "Internal resident job request was rejected.")
+
+
+@app.get("/internal/capacity", response_model=None)
+def internal_capacity(x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, Any] | JSONResponse:
+    if not internal_authorized(x_aihub_internal_token):
+        return internal_error(403, "internal_auth_failed")
+    with _ACTIVE_JOBS_LOCK, _MODEL_WORK_LOCK:
+        state = "running" if _ACTIVE_JOBS or _MODEL_WORK_DEPTH else "ready" if _MODEL is not None else "cold"
+        return {"model_state": state, "active_runs": len(_ACTIVE_JOBS)}
+
+
+@app.get("/internal/jobs/{run_id}", response_model=None)
+def internal_job_status(run_id: str, x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, str] | JSONResponse:
+    if not internal_authorized(x_aihub_internal_token):
+        return internal_error(403, "internal_auth_failed")
+    try:
+        stage = resident_stage(run_id)
+    except RuntimeError:
+        return internal_error(404, "resident_job_not_found")
+    with _ACTIVE_JOBS_LOCK:
+        state = "running" if run_id in _ACTIVE_JOBS else resident_terminal_state(stage)
+    return {"run_id": run_id, "state": state}
+
+
+@app.post("/internal/jobs/{run_id}/cancel", response_model=None)
+def internal_job_cancel(run_id: str, x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, str] | JSONResponse:
+    if not internal_authorized(x_aihub_internal_token):
+        return internal_error(403, "internal_auth_failed")
+    if not RUN_ID.fullmatch(run_id):
+        return internal_error(404, "resident_job_not_found")
+    with _ACTIVE_JOBS_LOCK:
+        cancelled = _ACTIVE_JOBS.get(run_id)
+        if cancelled is None:
+            return internal_error(404, "resident_job_not_found")
+        cancelled.set()
+    return {"run_id": run_id, "state": "running"}
+
+
+@app.post("/internal/jobs", response_model=None)
+def internal_job_start(payload: dict[str, Any], x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, str] | JSONResponse:
+    if not internal_authorized(x_aihub_internal_token):
+        return internal_error(403, "internal_auth_failed")
+    if set(payload) != {"run_id"} or not isinstance(payload.get("run_id"), str):
+        return internal_error(400, "resident_job_invalid")
+    run_id = payload["run_id"]
+    try:
+        stage = resident_stage(run_id)
+        request_path = resident_regular(stage, "input", "request.json")
+        runner_config_path = resident_regular(stage, "input", "runner_config.json")
+        managed_reference_path = resident_regular(stage, "input", "source") if (stage / "input" / "source").exists() else None
+    except RuntimeError:
+        return internal_error(400, "resident_job_invalid")
+
+    terminal = resident_terminal_state(stage)
+    if terminal != "unknown":
+        return {"run_id": run_id, "state": terminal}
+    cancelled = threading.Event()
+    with _ACTIVE_JOBS_LOCK:
+        if run_id in _ACTIVE_JOBS:
+            return internal_error(409, "resident_job_active")
+        _ACTIVE_JOBS[run_id] = cancelled
+
+    state = "failed"
+    try:
+        import job
+
+        with model_work():
+            job.run_job(
+                stage,
+                request_path.parent,
+                stage / "output",
+                runner_config_path,
+                cancelled=cancelled.is_set,
+                managed_reference_path=managed_reference_path,
+            )
+        state = "cancelled" if cancelled.is_set() else "succeeded"
+    except RuntimeError as exc:
+        state = "cancelled" if str(exc) == "job_cancelled" else "failed"
+    except Exception:
+        state = "failed"
+    try:
+        write_resident_terminal_state(stage, state)
+    except Exception:
+        return internal_error(500, "resident_job_state_failed")
+    finally:
+        with _ACTIVE_JOBS_LOCK:
+            _ACTIVE_JOBS.pop(run_id, None)
+    return {"run_id": run_id, "state": state}
+
+
 @app.post("/v1/tts")
 def tts(request: TtsRequest) -> JSONResponse:
     started = time.perf_counter()
@@ -403,7 +624,8 @@ def tts(request: TtsRequest) -> JSONResponse:
         if mock:
             duration_ms = write_mock_wav(path, "\n".join(chunks), seed, sample_rate)
         else:
-            duration_ms = write_real_wav(path, request, seed)
+            with model_work():
+                duration_ms = write_real_wav(path, request, seed)
     except RuntimeError as exc:
         code = str(exc) if str(exc) in {"runtime_dependency_missing", "model_load_failed"} else "tts_failed"
         return response_error(501 if code == "runtime_dependency_missing" else 500, code, "VoxCPM2 runtime is not ready.")

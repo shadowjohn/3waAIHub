@@ -257,6 +257,64 @@ class UltimateCloneJobTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(prompt.encode()).hexdigest(), checkpoint["context"]["voice_prompt_sha256"])
         self.assertNotIn(prompt, json.dumps(checkpoint, ensure_ascii=False))
 
+    def test_cancellation_stops_immediately_after_synthesis(self):
+        cancelled = {"value": False}
+        self.write_input({
+            "text": "target text",
+            "mode": "design",
+            "voice_prompt": "steady",
+            "seed": 42,
+            "seed_policy": "fixed",
+            "model": "voxcpm2",
+            "waveform_preview": False,
+        })
+
+        def synthesize(*args, **kwargs):
+            cancelled["value"] = True
+            return [100, -100] * 240
+
+        with patch.dict(os.environ, {"VOXCPM2_JOB_FAKE_SYNTHESIS": "1"}), patch.object(job, "fake_synthesize", side_effect=synthesize):
+            with self.assertRaisesRegex(RuntimeError, "^job_cancelled$"):
+                job.run_job(
+                    self.workspace,
+                    self.workspace / "input",
+                    self.workspace / "output",
+                    self.workspace / "input" / "runner_config.json",
+                    cancelled=lambda: cancelled["value"],
+                )
+        self.assertFalse((self.workspace / "output" / "synthesis_metadata.json").exists())
+
+    def test_resident_reference_must_be_a_regular_workspace_file(self):
+        source = self.workspace / "input" / "source"
+        outside = self.workspace.parent / "outside.wav"
+        source.write_bytes(self.wav)
+        outside.write_bytes(self.wav)
+        self.write_input(self.request())
+        managed, wav_bytes = self.managed_wav()
+        seen_sources = []
+
+        def synthesize(chunk, voice, actual_source, model, checkpoints, **kwargs):
+            seen_sources.append(actual_source)
+            return [100, -100] * 240
+
+        with managed, wav_bytes, patch.dict(os.environ, {"VOXCPM2_JOB_FAKE_SYNTHESIS": "1"}):
+            with self.assertRaisesRegex(RuntimeError, "^voice_profile_forbidden$"):
+                self.run_job_with_reference(outside)
+            with patch.object(job, "regular", side_effect=lambda path: path in {Path("/data/voice_profiles/reference.wav"), source}), patch.object(job, "synthesize_chunk", side_effect=synthesize):
+                metadata = self.run_job_with_reference(source)
+        self.assertEqual("ultimate_clone", metadata["controls"]["mode"])
+        self.assertEqual([source], seen_sources)
+
+    def run_job_with_reference(self, reference):
+        job.run_job(
+            self.workspace,
+            self.workspace / "input",
+            self.workspace / "output",
+            self.workspace / "input" / "runner_config.json",
+            managed_reference_path=reference,
+        )
+        return json.loads((self.workspace / "output" / "synthesis_metadata.json").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()
