@@ -621,7 +621,7 @@ function hub_promote_due_waiting_gpu_task(PDO $db): bool
     }
 }
 
-function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null): ?array
+function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callable $candidateFilter = null): ?array
 {
     $taskTypes = $supportedTaskTypes ?? hub_allowed_task_types();
     foreach ($taskTypes as $taskType) {
@@ -642,32 +642,35 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null): ?array
         $stmt = $db->prepare(
             "SELECT * FROM tasks
              WHERE status = 'queued' AND lock_token IS NULL AND task_type IN ({$placeholders})
-             ORDER BY priority DESC, created_at ASC, id ASC
-             LIMIT 1"
+             ORDER BY priority DESC, created_at ASC, id ASC"
         );
         $stmt->execute($taskTypes);
-        $task = $stmt->fetch();
-        if (!$task) {
-            $db->commit();
-            return null;
+        while ($task = $stmt->fetch()) {
+            if ($candidateFilter !== null && !$candidateFilter($task)) {
+                continue;
+            }
+
+            $token = bin2hex(random_bytes(16));
+            $now = hub_now();
+            $claim = $db->prepare(
+                "UPDATE tasks
+                 SET status = 'running', lock_token = :lock_token, started_at = :started_at, updated_at = :updated_at
+                 WHERE id = :id AND status = 'queued' AND lock_token IS NULL"
+            );
+            $claim->execute([
+                ':lock_token' => $token,
+                ':started_at' => $now,
+                ':updated_at' => $now,
+                ':id' => (int)$task['id'],
+            ]);
+            if ($claim->rowCount() === 1) {
+                $db->commit();
+                return hub_get_task($db, (int)$task['id']);
+            }
         }
 
-        $token = bin2hex(random_bytes(16));
-        $now = hub_now();
-        $stmt = $db->prepare(
-            "UPDATE tasks
-             SET status = 'running', lock_token = :lock_token, started_at = :started_at, updated_at = :updated_at
-             WHERE id = :id AND status = 'queued' AND lock_token IS NULL"
-        );
-        $stmt->execute([
-            ':lock_token' => $token,
-            ':started_at' => $now,
-            ':updated_at' => $now,
-            ':id' => (int)$task['id'],
-        ]);
         $db->commit();
-
-        return hub_get_task($db, (int)$task['id']);
+        return null;
     } catch (Throwable $e) {
         $db->rollBack();
         throw $e;

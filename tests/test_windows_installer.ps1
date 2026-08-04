@@ -15,8 +15,12 @@ $profileWriter = Join-Path $PSScriptRoot '..\scripts\windows\write-runtime-profi
 $profileWriterSource = Get-Content -LiteralPath $profileWriter -Raw -Encoding UTF8
 $workerTaskTemplate = Join-Path $PSScriptRoot '..\3waAIHub_Crontab.xml'
 $workerTaskRunner = Join-Path $PSScriptRoot '..\scripts\windows\run-command-worker.ps1'
+$wslWorkerRunner = Join-Path $PSScriptRoot '..\scripts\windows\run-wsl-command-worker.ps1'
+$wslAgentInstaller = Join-Path $PSScriptRoot '..\scripts\windows\install-wsl-task-agent.ps1'
 $workerTaskTemplateSource = if (Test-Path -LiteralPath $workerTaskTemplate) { Get-Content -LiteralPath $workerTaskTemplate -Raw -Encoding Unicode } else { '' }
 $workerTaskRunnerSource = if (Test-Path -LiteralPath $workerTaskRunner) { Get-Content -LiteralPath $workerTaskRunner -Raw -Encoding UTF8 } else { '' }
+$wslWorkerRunnerSource = if (Test-Path -LiteralPath $wslWorkerRunner) { Get-Content -LiteralPath $wslWorkerRunner -Raw -Encoding UTF8 } else { '' }
+$wslAgentInstallerSource = if (Test-Path -LiteralPath $wslAgentInstaller) { Get-Content -LiteralPath $wslAgentInstaller -Raw -Encoding UTF8 } else { '' }
 $yoloDefaultDockerfile = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\packs\yolo\service\Dockerfile') -Raw -Encoding UTF8
 $yoloPascalDockerfile = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\packs\yolo\service\Dockerfile.pascal-cu118') -Raw -Encoding UTF8
 $uninstallSource = Get-Content -LiteralPath $uninstaller -Raw -Encoding UTF8
@@ -93,12 +97,23 @@ Assert-InstallerContract ($workerTaskTemplateSource -match '<UserId>S-1-5-18</Us
 Assert-InstallerContract ($workerTaskTemplateSource -notmatch '<LogonType>') 'Windows worker task must use the LocalSystem principal format accepted by Task Scheduler'
 Assert-InstallerContract (Test-Path -LiteralPath $workerTaskRunner) 'Windows command worker runner must exist'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'command_worker\.php') 'Windows worker runner must execute command_worker.php'
+Assert-InstallerContract ($workerTaskRunnerSource -match '\[string\]\$Runtime = ''core''') 'LocalSystem task worker must default to Core jobs'
+Assert-InstallerContract (Test-Path -LiteralPath $wslWorkerRunner) 'interactive WSL command worker must exist'
+Assert-InstallerContract ($wslWorkerRunnerSource -match "'--runtime=wsl'") 'interactive WSL command worker must claim only WSL jobs'
+Assert-InstallerContract ($wslWorkerRunnerSource -match 'task_worker\.php' -and $wslWorkerRunnerSource -match 'command_worker\.php') 'interactive WSL command worker must process Pack tasks and service command jobs'
+Assert-InstallerContract ($wslWorkerRunnerSource -match 'interactive Windows user') 'interactive WSL command worker must reject LocalSystem'
+Assert-InstallerContract (Test-Path -LiteralPath $wslAgentInstaller) 'WSL Runtime Agent installer must exist'
+Assert-InstallerContract ($wslAgentInstallerSource -match 'systemctl enable --now aihub-wsl-worker\.service') 'WSL Runtime Agent installer must enable the systemd worker'
+Assert-InstallerContract ($wslAgentInstallerSource -match 'LogonTrigger') 'WSL Runtime Agent launcher must start only at interactive user logon'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'collect_host_metrics\.php') 'Windows worker runner must collect host metric snapshots'
 Assert-InstallerContract ($workerTaskRunnerSource -match '--limit=5') 'Windows worker runner must keep the bounded command worker limit'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'function Write-WorkerLog') 'Windows worker runner must own compatible log writing'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'System\.IO\.StreamWriter') 'Windows worker runner must use StreamWriter for compatible log encoding'
 Assert-InstallerContract ($workerTaskRunnerSource -notmatch 'AppendAllLines|AppendAllText') 'Windows worker runner must not depend on unavailable File append overloads'
 Assert-InstallerContract ($workerTaskRunnerSource -match '\$ErrorActionPreference = ''Continue''') 'Windows worker runner must not abandon claimed jobs when PHP writes expected stderr'
+Assert-InstallerContract ($workerTaskRunnerSource -match 'scripts\\task_worker\.php' -and $workerTaskRunnerSource -match "'--runtime=core'") 'Windows system worker must consume Core-safe task jobs before command jobs'
+Assert-InstallerContract ($workerTaskRunnerSource -match 'task_worker exit=') 'Windows worker log must record task worker exit status'
+Assert-InstallerContract ($workerTaskRunnerSource -match 'Start-Job' -and $workerTaskRunnerSource -match '\$tick -le 100' -and $workerTaskRunnerSource -match 'Start-Sleep -Milliseconds 500') 'Windows task worker must match the Linux half-second task polling cadence'
 Assert-InstallerContract ($coreSource -match 'function Write-WindowsWorkerTaskTemplate') 'Core installer must materialize the Windows worker task template for custom roots'
 Assert-InstallerContract ($coreSource -match 'function Install-IisWebAdministration') 'Core installer must install IIS through a dedicated function'
 Assert-InstallerContract ($coreSource -match 'IIS-ManagementScriptingTools') 'Workstation IIS plan must include WebAdministration tooling'
@@ -116,6 +131,9 @@ Assert-InstallerContract ($installWslSource -match 'php-sqlite3') 'WSL installer
 Assert-InstallerContract ($installWslSource -match "tr -d '\\015'") 'WSL installer must normalize copied executable source to LF'
 Assert-InstallerContract ($installWslSource -match 'edge-tts/service/\*\.py') 'WSL installer must normalize copied Edge TTS Python source to LF'
 Assert-InstallerContract ($installWslSource -match 'Get-WslYoloRuntimeProfile') 'WSL installer must select the YOLO runtime profile from Pack metadata'
+Assert-InstallerContract ($installWslSource -match 'Get-WslWhisperRuntimeProfile') 'WSL installer must select the Whisper runtime profile from Pack metadata'
+Assert-InstallerContract ($installWslSource -match 'packs/whisper-asr') 'WSL installer must synchronize Whisper Pack source to ext4 runtime storage'
+Assert-InstallerContract ($checkWslSource -match 'Get-WslWhisperRuntimeProfile') 'WSL readiness check must report the Whisper GPU profile from Pack metadata'
 Assert-InstallerContract ($installWslSource -match '\$wslCommand = if') 'WSL installer must resolve its executable before passing it to Get-Command'
 Assert-InstallerContract ($installWslSource -match 'function Test-WslCommand') 'WSL installer must treat missing prerequisites as a probe result before attempting repair'
 Assert-InstallerContract ($installWslSource -match 'function Invoke-WslScript') 'WSL installer must send multi-line sync commands through a single WSL-safe payload'
@@ -131,6 +149,8 @@ if (Test-Path -LiteralPath $wslProfileScript) {
     . $wslProfileScript
     $pascalProfile = Get-WslYoloRuntimeProfile -InstallRoot $repo -GpuName 'NVIDIA GeForce GTX 1080'
     Assert-InstallerContract ($pascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the Pascal CUDA 11.8 profile'
+    $whisperPascalProfile = Get-WslWhisperRuntimeProfile -InstallRoot $repo -GpuName 'NVIDIA GeForce GTX 1080'
+    Assert-InstallerContract ($whisperPascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the Whisper Pascal CUDA 11.8 profile'
 }
 Assert-InstallerContract ($source -notmatch 'Docker\.DockerDesktop') 'Core installer must not install Docker Desktop'
 Assert-InstallerContract (($checkCoreSource + $checkWslSource) -notmatch 'Docker\.DockerDesktop|Enable-WindowsOptionalFeature|Install-WindowsFeature|dism\.exe') 'installer checks must not mutate Windows features or install Docker Desktop'
@@ -212,10 +232,11 @@ try {
     $readyProfile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InstallerContract ($readyProfile.runtime_targets.'windows-wsl2-linux-docker'.supported) 'WSL target may be supported after readiness passes'
 
-    & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' -WslReady -YoloRuntimeProfile 'pascal-cu118' 6>&1 2>&1 | Out-Null
+    & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' -WslReady -YoloRuntimeProfile 'pascal-cu118' -WhisperRuntimeProfile 'pascal-cu118' 6>&1 2>&1 | Out-Null
     Assert-InstallerContract ($?) 'Pascal WSL runtime profile writer must succeed'
     $pascalRuntimeProfile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.yolo -eq 'pascal-cu118') 'runtime profile must persist the selected YOLO Pascal profile'
+    Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'whisper-asr' -eq 'pascal-cu118') 'runtime profile must persist the selected Whisper Pascal profile'
 } finally {
     if (Test-Path -LiteralPath $profileRoot) {
         Remove-Item -LiteralPath $profileRoot -Recurse -Force

@@ -100,6 +100,26 @@ class WhisperInferenceTests(unittest.TestCase):
             result["device"],
         )
 
+    def test_pascal_int8_float32_stays_on_cuda(self):
+        calls = []
+
+        def factory(model_name, device, compute_type, download_root):
+            calls.append((model_name, device, compute_type, download_root))
+            return FakeModel()
+
+        result = app.run_real_inference(
+            "/tmp/input.wav",
+            "en",
+            model_factory=factory,
+            model_name="small",
+            requested_device="cuda",
+            requested_compute_type="int8_float32",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([("small", "cuda", "int8_float32", "/models/whisper")], calls)
+        self.assertEqual("int8_float32", result["device"]["compute_type"])
+
     def test_all_candidate_failures_return_safe_error(self):
         def factory(model_name, device, compute_type, download_root):
             raise RuntimeError("secret CUDA failure detail")
@@ -139,6 +159,14 @@ class WhisperInferenceTests(unittest.TestCase):
         self.assertIsInstance(model, FakeModel)
         self.assertEqual([("cpu", "int8")], calls)
         require_cuda.assert_not_called()
+
+    def test_pascal_small_runner_config_allows_the_service_to_download_only_small(self):
+        self.assertEqual(
+            ("small", "small", False),
+            app.job.runner_model_config({"model": "small", "label": "small", "required_vram_mb": 2500, "allow_download": True}),
+        )
+        with self.assertRaisesRegex(RuntimeError, "runner_config_invalid"):
+            app.job.runner_model_config({"model": "small", "label": "small"})
 
 
 class WhisperResidentJobTests(unittest.TestCase):

@@ -12,7 +12,14 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
     $manifest = $pack['manifest'];
     $job = hub_pack_async_job_contract($manifest, 'transcribe');
     hub_test_assert(is_array($job), 'Whisper ASR transcribe job contract missing');
-    hub_test_assert(($manifest['version'] ?? '') === '0.1.1' && ($manifest['runner_build']['image'] ?? '') === '3waaihub/whisper-asr:0.1.1' && ($job['runner']['image'] ?? '') === '3waaihub/whisper-asr:0.1.1', 'Whisper reflow release must use the matching Pack and runner image version');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.2' && ($manifest['runner_build']['image'] ?? '') === '3waaihub/whisper-asr:0.1.2' && ($job['runner']['image'] ?? '') === '3waaihub/whisper-asr:0.1.2', 'Whisper Pascal release must use the matching Pack and runner image version');
+    hub_test_assert(($manifest['runtime']['windows_wsl_compose'] ?? false) === true && ($manifest['platform_targets']['windows-wsl2-linux-docker'] ?? false) === true, 'Whisper must declare its explicit WSL runtime target');
+    hub_test_assert(($manifest['wsl_runtime_profiles']['pascal-cu118'] ?? null) === [
+        'id' => 'pascal-cu118',
+        'dockerfile' => 'service/Dockerfile.pascal-cu118',
+        'image' => '3waaihub/whisper-asr:0.1.2-pascal-cu118',
+        'gpu_name_patterns' => ['GTX 1050', 'GTX 1080'],
+    ], 'Whisper Pascal WSL runtime profile mismatch');
     hub_test_assert(($job['input_fields'] ?? []) === ['model', 'language', 'word_timestamps', 'diarization', 'min_speakers', 'max_speakers', 'output_srt', 'output_vtt', 'subtitle_reflow'], 'Whisper input field allowlist mismatch');
     hub_test_assert(($job['request_schema']['subtitle_reflow'] ?? null) === [
         'type' => 'string',
@@ -39,6 +46,7 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
             'host_subdir' => 'whisper/asr/large-v3',
             'container_path' => '/models/whisper/asr/large-v3',
             'required_paths' => ['config.json', 'model.bin', 'tokenizer.json'],
+            'when' => ['input' => 'model', 'equals' => 'large_v3'],
         ],
         [
             'id' => 'whisper_alignment_torch',
@@ -99,13 +107,35 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
         ],
     ], 'Whisper must declare only controlled Hub model/cache mount descriptors');
     hub_test_assert(!array_key_exists('secret_env', $job['runner'] ?? []), 'Whisper task runtime must not receive a pyannote credential');
-    hub_test_assert(($job['runner_config']['alias_input'] ?? '') === 'model' && array_keys($job['runner_config']['aliases'] ?? []) === ['large_v3'], 'Whisper model must be a fixed manifest allowlist');
+    hub_test_assert(($job['runner_config']['alias_input'] ?? '') === 'model' && ($job['runner_config']['aliases'] ?? []) === [
+        'large_v3' => ['model' => '/models/whisper/asr/large-v3', 'label' => 'large-v3', 'required_vram_mb' => 10000],
+        'small' => ['model' => 'small', 'label' => 'small', 'required_vram_mb' => 2500, 'allow_download' => true],
+    ], 'Whisper model allowlist must distinguish the Pascal small runtime from the Linux large-v3 model');
+    $smallRunnerConfig = hub_pack_job_runner_config_for_task($job, ['model' => 'small']);
+    hub_test_assert(hub_pack_job_runner_required_vram($job['runner'], $smallRunnerConfig) === 2500, 'Whisper Pascal small must reserve only its declared 2500 MiB admission target');
+    $pascalContract = hub_pack_job_apply_runtime_defaults($job, 'whisper-asr', 'transcribe', 'windows', [
+        'runtime_targets' => ['windows-wsl2-linux-docker' => [
+            'supported' => true,
+            'pack_profiles' => ['whisper-asr' => 'pascal-cu118'],
+        ]],
+    ]);
+    hub_test_assert(($pascalContract['request_schema']['model']['default'] ?? null) === 'small', 'Whisper Pascal stations must publish small as the default model');
+    hub_test_assert(($job['request_schema']['model']['default'] ?? null) === 'large_v3', 'Whisper Linux contract must retain large-v3 as its default model');
     hub_test_assert(array_column($job['artifact_contract']['artifacts'] ?? [], 'type') === ['transcript_json', 'transcription_report', 'subtitle_srt', 'subtitle_vtt', 'speaker_timeline'], 'Whisper artifact contract mismatch');
     hub_test_assert(($job['artifact_contract']['artifacts'][1]['json']['required_keys'] ?? []) === ['model', 'language', 'word_timestamps', 'diarization', 'segment_count', 'elapsed_seconds', 'subtitle_reflow_profile', 'subtitle_breaker', 'subtitle_breakers', 'timing_source'], 'Whisper report must attest the selected subtitle reflow diagnostics');
     hub_test_assert(is_file(HUB_ROOT . '/packs/whisper-asr/jobs/speech_transcribe.sh')
         && is_file(HUB_ROOT . '/packs/whisper-asr/jobs/provision_offline_models.sh')
         && is_file(HUB_ROOT . '/packs/whisper-asr/service/provision_offline_assets.py')
         && is_file(hub_test_whisper_async_runner()), 'Whisper Pack runner assets missing');
+    $pascalDockerfile = (string)file_get_contents(HUB_ROOT . '/packs/whisper-asr/service/Dockerfile.pascal-cu118');
+    hub_test_assert(str_contains($pascalDockerfile, 'pkg-config')
+        && str_contains($pascalDockerfile, 'libavformat-dev')
+        && str_contains($pascalDockerfile, 'libswscale-dev')
+        && str_contains($pascalDockerfile, "Cython<3")
+        && str_contains($pascalDockerfile, "--no-build-isolation 'av==10.0.0'"), 'Whisper Pascal image must pin compatible PyAV source-build dependencies');
+    $pascalRequirements = (string)file_get_contents(HUB_ROOT . '/packs/whisper-asr/service/requirements.pascal-cu118.txt');
+    hub_test_assert(str_contains($pascalRequirements, 'faster-whisper==0.9.0')
+        && str_contains($pascalRequirements, 'ctranslate2==3.24.0'), 'Whisper Pascal runtime must pin the compatible CUDA 11.8 inference pair');
 });
 
 hub_test('Whisper ASR can select the running asr-main resident service', function (): void {
@@ -220,10 +250,11 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
     $asrAssets = [
         ['id' => 'whisper_asr_large_v3', 'source' => $models . '/whisper/asr/large-v3', 'container_path' => '/models/whisper/asr/large-v3'],
     ];
-    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'none']) === $asrAssets, 'basic ASR without subtitle reflow must preflight only the fixed CTranslate2 model');
-    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'zh', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1'])), 'legacy subtitle reflow must preflight its missing CKIP assets before GPU work');
-    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => true, 'diarization' => false])), 'word timestamps must preflight the missing alignment cache before GPU work');
-    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => false, 'diarization' => true])), 'diarization must preflight its missing local model before GPU work');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'none']) === $asrAssets, 'basic ASR without subtitle reflow must preflight only the fixed CTranslate2 model');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'small', 'language' => 'auto', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'none']) === [], 'Pascal small ASR must not require the Linux large-v3 asset');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'large_v3', 'language' => 'zh', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1'])), 'legacy subtitle reflow must preflight its missing CKIP assets before GPU work');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => true, 'diarization' => false])), 'word timestamps must preflight the missing alignment cache before GPU work');
+    hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => false, 'diarization' => true])), 'diarization must preflight its missing local model before GPU work');
 
     mkdir($cache . '/whisper/torch', 0775, true);
     file_put_contents($cache . '/whisper/torch/wav2vec2_fairseq_base_ls960_asr_ls960.pth', 'weights', LOCK_EX);
@@ -232,7 +263,7 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
         ...$asrAssets,
         ['id' => 'whisper_alignment_torch', 'source' => $cache . '/whisper/torch', 'container_path' => '/cache/whisper/torch'],
     ];
-    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'en', 'word_timestamps' => true, 'diarization' => false]) === $alignmentAssets, 'word timestamps must mount only its exact local alignment cache');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'large_v3', 'language' => 'en', 'word_timestamps' => true, 'diarization' => false]) === $alignmentAssets, 'word timestamps must mount only its exact local alignment cache');
 
     mkdir($cache . '/whisper/ckip/bert-base-chinese-ws', 0775, true);
     foreach (['config.json', 'pytorch_model.bin', 'vocab.txt'] as $path) {
@@ -243,8 +274,8 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
         ...$asrAssets,
         ['id' => 'whisper_ckip_bert_base', 'source' => $cache . '/whisper/ckip/bert-base-chinese-ws', 'container_path' => '/cache/whisper/ckip/bert-base-chinese-ws'],
     ];
-    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'zh', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1']) === $ckipAssets, 'legacy subtitle reflow must mount only its exact ready CKIP model');
-    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'en', 'word_timestamps' => true, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1']) === [...$alignmentAssets, $ckipAssets[1]], 'legacy subtitle reflow with explicit words must mount CKIP and WhisperX alignment together');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'large_v3', 'language' => 'zh', 'word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1']) === $ckipAssets, 'legacy subtitle reflow must mount only its exact ready CKIP model');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'large_v3', 'language' => 'en', 'word_timestamps' => true, 'diarization' => false, 'subtitle_reflow' => 'legacy_adaptive_v1']) === [...$alignmentAssets, $ckipAssets[1]], 'legacy subtitle reflow with explicit words must mount CKIP and WhisperX alignment together');
 
     mkdir($cache . '/whisper/pyannote/speaker-diarization-3.1/models', 0775, true);
     foreach (['config.yaml', 'models/pyannote_segmentation-3.0.bin', 'models/pyannote_model_wespeaker-voxceleb-resnet34-LM.bin'] as $path) {
@@ -255,7 +286,7 @@ hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-on
         ...$asrAssets,
         ['id' => 'whisper_pyannote_diarization', 'source' => $cache . '/whisper/pyannote/speaker-diarization-3.1', 'container_path' => '/cache/whisper/pyannote/speaker-diarization-3.1'],
     ];
-    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['language' => 'auto', 'word_timestamps' => false, 'diarization' => true]) === $diarizationAssets, 'diarization must mount only its fixed local pyannote model');
+    hub_test_assert(hub_pack_job_resolve_asset_mounts($db, $runner, ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => false, 'diarization' => true]) === $diarizationAssets, 'diarization must mount only its fixed local pyannote model');
 
     $workspace = sys_get_temp_dir() . '/3waaihub_whisper_mount_workspace_' . bin2hex(random_bytes(4));
     mkdir($workspace . '/input', 0775, true);

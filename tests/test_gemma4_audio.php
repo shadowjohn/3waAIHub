@@ -237,6 +237,7 @@ hub_test('Gemma4 audio modes are selectable on admin token permission page', fun
 
     hub_test_assert(str_contains($source, 'hub_audio_modes()'), 'token permission page must load audio pseudo modes.');
     hub_test_assert(str_contains($source, 'Audio Mode'), 'token permission page must render audio mode section.');
+    hub_test_assert(str_contains($source, 'hub_pack_job_async_routes()') && str_contains($source, 'Pack 非同步任務 Mode'), 'token permission page must render Pack async modes such as speech_transcribe.');
     hub_test_assert(function_exists('hub_audio_modes'), 'audio mode label helper missing.');
     hub_test_assert(array_keys(hub_audio_modes()) === ['audio_upload', 'audio'], 'audio mode helper must expose upload and ask modes.');
 });

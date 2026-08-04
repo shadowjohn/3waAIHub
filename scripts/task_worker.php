@@ -6,10 +6,19 @@ hub_cli_only();
 umask(0002);
 
 $limit = 5;
+$runtime = 'all';
 foreach ($argv as $arg) {
     if (str_starts_with($arg, '--limit=')) {
         $limit = max(1, (int)substr($arg, 8));
+        continue;
     }
+    if (str_starts_with($arg, '--runtime=')) {
+        $runtime = substr($arg, 10);
+    }
+}
+if (!in_array($runtime, ['all', 'core', 'wsl'], true)) {
+    fwrite(STDERR, 'runtime must be all, core, or wsl.' . PHP_EOL);
+    exit(64);
 }
 
 $db = hub_db();
@@ -23,7 +32,23 @@ $processed = 0;
 while ($processed < $limit) {
     hub_reconcile_expired_pack_job_runs($db);
     hub_reconcile_resident_job_runs($db);
-    $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+    $task = hub_claim_next_task($db, hub_pack_job_worker_task_types(), static function (array $candidate) use ($db, $runtime): bool {
+        if ($runtime === 'all' || (string)($candidate['task_type'] ?? '') !== 'pack_job') {
+            return $runtime !== 'wsl';
+        }
+
+        $stmt = $db->prepare(
+            'SELECT * FROM services WHERE pack_id = :pack_id AND pack_version = :pack_version ORDER BY id ASC LIMIT 1'
+        );
+        $stmt->execute([
+            ':pack_id' => (string)($candidate['pack_id'] ?? ''),
+            ':pack_version' => (string)($candidate['pack_version'] ?? ''),
+        ]);
+        $service = $stmt->fetch();
+        $usesWsl = is_array($service) && hub_service_requires_wsl_task_worker($service);
+
+        return $runtime === 'wsl' ? $usesWsl : !$usesWsl;
+    });
     if (!$task) {
         break;
     }

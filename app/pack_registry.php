@@ -177,6 +177,7 @@ function hub_resolve_pack_job_async_route_from_pack(PDO $db, string $requestedMo
     if ($jobContract === null) {
         throw new RuntimeException('pack_version_unavailable');
     }
+    $jobContract = hub_pack_job_apply_runtime_defaults($jobContract, (string)$route['pack_id'], (string)$route['job']);
     if (($jobContract['runner']['accelerator'] ?? null) !== $route['accelerator']) {
         throw new RuntimeException('pack_version_unavailable');
     }
@@ -193,6 +194,28 @@ function hub_resolve_pack_job_async_route_from_pack(PDO $db, string $requestedMo
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
     ] + $jobContract;
+}
+
+function hub_pack_job_apply_runtime_defaults(
+    array $contract,
+    string $packId,
+    string $job,
+    ?string $platform = null,
+    ?array $runtimeProfile = null,
+): array {
+    $runtime = hub_runtime_target_resolution('windows-wsl2-linux-docker', $platform, $runtimeProfile);
+    if (
+        $packId === 'whisper-asr'
+        && $job === 'transcribe'
+        && ($runtime['platform'] ?? null) === 'windows'
+        && !empty($runtime['supported'])
+        && (($runtime['profile']['pack_profiles']['whisper-asr'] ?? null) === 'pascal-cu118')
+        && isset($contract['request_schema']['model'])
+    ) {
+        $contract['request_schema']['model']['default'] = 'small';
+    }
+
+    return $contract;
 }
 
 function hub_resolve_pack_job_async_route(PDO $db, string $requestedMode): array
@@ -779,7 +802,8 @@ function hub_pack_async_job_runner_config(mixed $config, array $fields, array $r
         return null;
     }
     foreach ($aliases as $alias => $model) {
-        if (!is_string($alias) || preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $alias) !== 1 || !hub_pack_async_job_runner_config_value($model)) {
+        if (!is_string($alias) || preg_match('/^[a-z][a-z0-9_-]{0,63}$/', $alias) !== 1 || !hub_pack_async_job_runner_config_value($model)
+            || (isset($model['required_vram_mb']) && (!is_int($model['required_vram_mb']) || $model['required_vram_mb'] < 0 || $model['required_vram_mb'] > 1048576))) {
             return null;
         }
     }

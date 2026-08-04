@@ -151,6 +151,10 @@ $yoloProfile = if ($gpuName -ne '') { Get-WslYoloRuntimeProfile -InstallRoot $In
 if ($null -ne $yoloProfile) {
     Write-Check 'YOLO GPU profile' $true $yoloProfile.Id
 }
+$whisperProfile = if ($gpuName -ne '') { Get-WslWhisperRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName } else { $null }
+if ($null -ne $whisperProfile) {
+    Write-Check 'Whisper GPU profile' $true $whisperProfile.Id
+}
 
 $dataFs = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', "findmnt -n -o FSTYPE -T '$LinuxDataRoot' 2>/dev/null")
 $isExt4 = $dataFs.ExitCode -eq 0 -and $dataFs.Output -match 'ext4'

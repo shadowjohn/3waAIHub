@@ -1,0 +1,18 @@
+[Unit]
+Description=3waAIHub Windows WSL runtime worker
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__AIHUB_WSL_USER__
+Environment="AIHUB_WINDOWS_PHP=__AIHUB_WINDOWS_PHP__"
+Environment="AIHUB_WINDOWS_HUB_ROOT=__AIHUB_WINDOWS_HUB_ROOT__"
+WorkingDirectory=/mnt/c
+ExecStart=__AIHUB_RUNTIME_ROOT__/scripts/aihub-wsl-worker.sh
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

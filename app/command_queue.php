@@ -184,16 +184,23 @@ function hub_list_command_jobs(PDO $db, int $limit = 20): array
     return $stmt->fetchAll();
 }
 
-function hub_claim_next_command_job(PDO $db): ?array
+function hub_claim_next_command_job(PDO $db, ?callable $eligible = null): ?array
 {
     $db->beginTransaction();
     try {
-        $job = $db->query(
+        // runtime worker 需要略過另一個 worker 已負責的 job，維持同一個原子 claim 流程。
+        $jobs = $db->query(
             "SELECT * FROM command_jobs
-             WHERE status = 'queued' AND lock_token IS NULL
-             ORDER BY id
-             LIMIT 1"
-        )->fetch();
+              WHERE status = 'queued' AND lock_token IS NULL
+              ORDER BY id"
+        )->fetchAll();
+        $job = null;
+        foreach ($jobs as $candidate) {
+            if ($eligible === null || $eligible($candidate)) {
+                $job = $candidate;
+                break;
+            }
+        }
         if (!$job) {
             $db->commit();
             return null;

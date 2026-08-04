@@ -15,6 +15,19 @@ function hub_test_wsl_script_payload(array $command): string
     return $value;
 }
 
+function hub_test_wsl_compose_payload(string $script): string
+{
+    if (preg_match("/compose_payload='([A-Za-z0-9+\\/=]+)'/", $script, $matches) !== 1) {
+        throw new RuntimeException('WSL compose payload is missing.');
+    }
+    $value = base64_decode($matches[1], true);
+    if ($value === false) {
+        throw new RuntimeException('WSL compose payload is invalid.');
+    }
+
+    return $value;
+}
+
 hub_test('PhaseRuntime-0 platform and path helpers keep host and container paths separate', function (): void {
     hub_test_assert(hub_platform_id('Linux') === 'linux', 'Linux platform id mismatch');
     hub_test_assert(hub_platform_id('Windows') === 'windows', 'Windows platform id mismatch');
@@ -154,6 +167,22 @@ hub_test('Web Screenshot explicitly selects the WSL job target only when ready',
         'platform_targets' => ['linux-docker' => true, 'windows-wsl2-linux-docker' => true],
     ], 'windows', $profile);
     hub_test_assert($direct['target'] === 'linux-docker' && $direct['supported'] === false, 'an internal Pack without windows_wsl_job must remain blocked');
+});
+
+hub_test('Hello explicitly selects the WSL compose target only when ready', function (): void {
+    $profile = [
+        'runtime_targets' => [
+            'windows-wsl2-linux-docker' => [
+                'supported' => true,
+                'distro' => 'Ubuntu-24.04',
+                'runtime_root' => '/DATA/3waAIHub-runtime',
+            ],
+        ],
+    ];
+    $pack = hub_get_pack('hello');
+    hub_test_assert(is_array($pack), 'Hello Pack must be available');
+    $resolution = hub_pack_runtime_target_resolution($pack['manifest'], 'windows', $profile);
+    hub_test_assert($resolution['target'] === 'windows-wsl2-linux-docker' && $resolution['supported'] === true, 'Hello must use its declared WSL compose target on Windows');
 });
 
 hub_test('Edge TTS explicitly selects the WSL job target only when ready', function (): void {
@@ -317,6 +346,64 @@ hub_test('runtime profile loader reads host-local readiness metadata', function 
     } finally {
         @unlink($path);
     }
+});
+
+hub_test('Windows WSL Compose Pack tasks stay with the interactive WSL worker', function (): void {
+    $db = hub_test_reset_db();
+    $whisper = hub_install_pack($db, 'whisper-asr', ['service_key' => 'wsl-task-worker-asr'])['service'];
+    $edgeTts = hub_install_pack($db, 'edge-tts', ['service_key' => 'wsl-task-worker-tts'])['service'];
+
+    hub_test_assert(
+        hub_service_requires_wsl_task_worker($whisper, 'windows')
+        && hub_service_requires_wsl_task_worker($edgeTts, 'windows')
+        && !hub_service_requires_wsl_task_worker($whisper, 'linux'),
+        'Windows WSL Compose and WSL job Pack tasks must not be claimed by the LocalSystem Core worker'
+    );
+});
+
+hub_test('WSL Runtime Agent is a systemd service, not a minute-by-minute Windows worker', function (): void {
+    $runner = (string)file_get_contents(HUB_ROOT . '/scripts/wsl/aihub-wsl-worker.sh');
+    $unit = (string)file_get_contents(HUB_ROOT . '/deploy/systemd/aihub-wsl-worker.service');
+    $installer = (string)file_get_contents(HUB_ROOT . '/scripts/windows/install-wsl-task-agent.ps1');
+
+    hub_test_assert(
+        str_contains($runner, '--runtime=wsl')
+        && str_contains($runner, 'sleep 0.5')
+        && str_contains($runner, 'command_worker.php'),
+        'WSL agent must own the bounded WSL task and command polling loop'
+    );
+    hub_test_assert(
+        str_contains($unit, 'Restart=on-failure')
+        && str_contains($unit, 'WantedBy=multi-user.target')
+        && str_contains($installer, 'systemctl enable --now aihub-wsl-worker.service')
+        && str_contains($installer, 'LogonTrigger'),
+        'WSL agent must be systemd-managed and start only once at Windows user logon'
+    );
+});
+
+hub_test('Whisper WSL Pascal service uses the explicit CUDA 11.8 compose profile', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'whisper-asr', ['idempotent' => true, 'provision_runner' => false])['service'];
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['whisper-asr' => 'pascal-cu118'],
+    ]]];
+    $runtime = hub_whisper_wsl_runtime_profile($service, $profile);
+    $script = hub_test_wsl_script_payload(hub_wsl_service_compose_command($service, ['build', '--progress=plain'], $profile));
+    $compose = hub_test_wsl_compose_payload($script);
+    hub_test_assert(($runtime['profile_id'] ?? '') === 'pascal-cu118'
+        && str_contains($compose, 'service/Dockerfile.pascal-cu118')
+        && str_contains($compose, '3waaihub/whisper-asr:0.1.2-pascal-cu118')
+        && str_contains($compose, 'gpus: all')
+        && str_contains($script, 'WHISPER_COMPUTE_TYPE=int8_float32')
+        && str_contains($compose, '/DATA/3waAIHub-runtime/services/asr-main/data:/data/service')
+        && str_contains($script, "DOCKER_BUILDKIT=0 docker build --tag '3waaihub/whisper-asr:0.1.2-pascal-cu118'")
+        && str_contains($script, "--file '/DATA/3waAIHub-runtime/packs/whisper-asr/service/Dockerfile.pascal-cu118'")
+        && !str_contains($script, str_replace('\\', '/', HUB_ROOT))
+        && !str_contains($compose, str_replace('\\', '/', HUB_ROOT)), 'Whisper WSL compose must use only the Pascal image and ext4 runtime roots');
 });
 
 hub_test('guarded Linux Docker command rejects Windows before invoking the command', function (): void {

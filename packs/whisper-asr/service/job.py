@@ -87,13 +87,16 @@ def require_cuda() -> None:
         raise RuntimeError("gpu_unavailable")
 
 
-def load_asr(model: str) -> Any:
+def load_asr(model: str, *, local_files_only: bool = True) -> Any:
     try:
         from faster_whisper import WhisperModel
     except ImportError as error:
         raise RuntimeError("asr_dependency_missing") from error
     try:
-        return WhisperModel(model, device="cuda", compute_type="float16", local_files_only=True)
+        compute_type = os.getenv("WHISPER_COMPUTE_TYPE", "auto").lower()
+        if compute_type == "auto":
+            compute_type = "float16"
+        return WhisperModel(model, device="cuda", compute_type=compute_type, local_files_only=local_files_only)
     except Exception as error:
         raise RuntimeError("asr_model_unavailable") from error
 
@@ -167,6 +170,17 @@ def diarize(loader: Any, source: Path, minimum: int | None, maximum: int | None)
         raise RuntimeError("diarization_failed") from error
 
 
+def runner_model_config(value: Any) -> tuple[str, str, bool]:
+    large = {"model": str(ASR_MODEL_DIR), "label": "large-v3"}
+    large_with_vram = large | {"required_vram_mb": 10000}
+    small = {"model": "small", "label": "small", "required_vram_mb": 2500, "allow_download": True}
+    if value == large or value == large_with_vram:
+        return str(ASR_MODEL_DIR), "large-v3", True
+    if value == small:
+        return "small", "small", False
+    raise RuntimeError("runner_config_invalid")
+
+
 def timestamp(seconds: float, separator: str) -> str:
     milliseconds = max(0, int(round(seconds * 1000)))
     hours, milliseconds = divmod(milliseconds, 3_600_000)
@@ -216,9 +230,7 @@ def run_job(
         raise RuntimeError("source_invalid")
     request = read_json(input_dir / "request.json")
     config = read_json(runner_config_path)
-    model = config.get("model")
-    if not isinstance(model, dict) or model.get("model") != str(ASR_MODEL_DIR) or model.get("label") != "large-v3":
-        raise RuntimeError("runner_config_invalid")
+    model_name, model_label, local_files_only = runner_model_config(config.get("model"))
     language = request.get("language", "auto")
     if not isinstance(language, str) or not language or len(language) > 16:
         raise RuntimeError("request_invalid")
@@ -248,11 +260,13 @@ def run_job(
     if is_cancelled():
         raise RuntimeError("job_cancelled")
     configure_offline_cache()
-    require_asr_assets()
+    if local_files_only:
+        require_asr_assets()
     (cuda_guard or require_cuda)()
     started = time.monotonic()
     native_word_timestamps = word_timestamps or subtitle_reflow == "legacy_adaptive_v1"
-    segments, detected_language = transcribe((asr_loader or load_asr)(model["model"]), source, None if language == "auto" else language, native_word_timestamps)
+    loader = asr_loader or (lambda model: load_asr(model, local_files_only=local_files_only))
+    segments, detected_language = transcribe(loader(model_name), source, None if language == "auto" else language, native_word_timestamps)
     if is_cancelled():
         raise RuntimeError("job_cancelled")
     if word_timestamps:
@@ -279,7 +293,7 @@ def run_job(
         "text": " ".join(str(segment.get("text", "")).strip() for segment in transcript_segments).strip(),
         "segments": transcript_segments,
         "language": detected_language,
-        "model": model["label"],
+        "model": model_label,
         "word_timestamps": word_timestamps,
     }
     (output_dir / "transcript.json").write_text(json.dumps(transcript, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -292,7 +306,7 @@ def run_job(
         timeline = anonymous_speakers(diarize(load_diarization(), source, minimum, maximum))
         (output_dir / "speaker_timeline.json").write_text(json.dumps({"speakers": timeline}, ensure_ascii=False) + "\n", encoding="utf-8")
     report = {
-        "model": model["label"],
+        "model": model_label,
         "language": detected_language,
         "word_timestamps": word_timestamps,
         "diarization": diarization,

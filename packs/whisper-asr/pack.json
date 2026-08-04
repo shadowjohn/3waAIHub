@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "whisper-asr",
   "name": "Whisper ASR Service",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "category": "asr",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -14,12 +14,30 @@
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
-    "default_internal_port": 8000
+    "default_internal_port": 8000,
+    "windows_wsl_compose": true
+  },
+  "platform_targets": {
+    "linux-docker": true,
+    "windows-wsl2-linux-docker": true
+  },
+  "wsl_runtime_profiles": {
+    "default": {
+      "id": "default",
+      "dockerfile": "service/Dockerfile",
+      "image": "3waaihub/whisper-asr:0.1.2"
+    },
+    "pascal-cu118": {
+      "id": "pascal-cu118",
+      "dockerfile": "service/Dockerfile.pascal-cu118",
+      "image": "3waaihub/whisper-asr:0.1.2-pascal-cu118",
+      "gpu_name_patterns": ["GTX 1050", "GTX 1080"]
+    }
   },
   "runner_build": {
     "context": ".",
     "dockerfile": "service/Dockerfile",
-    "image": "3waaihub/whisper-asr:0.1.1"
+    "image": "3waaihub/whisper-asr:0.1.2"
   },
   "gateway": {
     "health_path": "/health",
@@ -33,7 +51,14 @@
       "aliases": {
         "large_v3": {
           "model": "/models/whisper/asr/large-v3",
-          "label": "large-v3"
+          "label": "large-v3",
+          "required_vram_mb": 10000
+        },
+        "small": {
+          "model": "small",
+          "label": "small",
+          "required_vram_mb": 2500,
+          "allow_download": true
         }
       }
     }
@@ -45,7 +70,7 @@
         "fields": ["model", "language", "word_timestamps", "diarization", "min_speakers", "max_speakers", "output_srt", "output_vtt", "subtitle_reflow"],
         "source_artifact_types": ["audio", "cleaned_audio", "vocals_audio"],
         "request_schema": {
-          "model": {"type": "string", "required": false, "enum": ["large_v3"], "default": "large_v3", "max_length": 32},
+          "model": {"type": "string", "required": false, "enum": ["large_v3", "small"], "default": "large_v3", "max_length": 32},
           "language": {"type": "string", "required": false, "default": "auto", "max_length": 16},
           "word_timestamps": {"type": "boolean", "required": false, "default": false, "requires_when": {"equals": true, "field": "language", "not_equals": "auto"}},
           "diarization": {"type": "boolean", "required": false, "default": false},
@@ -57,7 +82,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/whisper-asr:0.1.1",
+        "image": "3waaihub/whisper-asr:0.1.2",
         "entrypoint": ["/app/speech-transcribe"],
         "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
         "output_dir": "output",
@@ -71,7 +96,8 @@
             "storage": "models",
             "host_subdir": "whisper/asr/large-v3",
             "container_path": "/models/whisper/asr/large-v3",
-            "required_paths": ["config.json", "model.bin", "tokenizer.json"]
+            "required_paths": ["config.json", "model.bin", "tokenizer.json"],
+            "when": {"input": "model", "equals": "large_v3"}
           },
           {
             "id": "whisper_alignment_torch",
@@ -298,7 +324,7 @@
       "label": "Compute type",
       "type": "select",
       "default": "auto",
-      "options": ["auto", "int8", "float16", "float32"],
+      "options": ["auto", "int8", "int8_float32", "float16", "float32"],
       "required": true,
       "restart_required": true
     },

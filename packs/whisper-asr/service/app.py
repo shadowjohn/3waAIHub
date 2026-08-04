@@ -177,7 +177,7 @@ def normalize_device(value: str | None = None) -> str:
 
 def normalize_compute_type(value: str | None = None) -> str:
     compute_type = str(value if value is not None else os.getenv("WHISPER_COMPUTE_TYPE", "auto")).lower()
-    return compute_type if compute_type in {"auto", "int8", "float16", "float32"} else "auto"
+    return compute_type if compute_type in {"auto", "int8", "int8_float32", "float16", "float32"} else "auto"
 
 
 def resident_cpu_policy_enabled() -> bool:

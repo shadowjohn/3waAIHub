@@ -29,6 +29,12 @@ $shownModes = array_fill_keys(array_merge(
     array_keys($photoModes),
     array_keys($audioModes),
 ), true);
+$asyncPackModes = array_filter(
+    hub_pack_job_async_routes(),
+    static fn (array $route, string $mode): bool => !isset($shownModes[$mode]),
+    ARRAY_FILTER_USE_BOTH,
+);
+$shownModes += array_fill_keys(array_keys($asyncPackModes), true);
 $routerModes = array_values(array_filter(
     hub_cluster_router_available_modes($db),
     static fn (string $mode): bool => !isset($shownModes[$mode]),
@@ -58,6 +64,12 @@ hub_admin_header('Token Mode 權限', $user);
         <?php foreach ($audioModes as $mode => $label): ?>
             <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
         <?php endforeach; ?>
+        <?php if ($asyncPackModes !== []): ?>
+            <h2>Pack 非同步任務 Mode</h2>
+            <?php foreach ($asyncPackModes as $mode => $route): ?>
+                <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h((string)$route['pack_id']) ?> / <?= hub_h((string)$route['job']) ?></label>
+            <?php endforeach; ?>
+        <?php endif; ?>
         <?php if ($routerModes !== []): ?>
             <h2>Cluster Router Mode</h2>
             <?php foreach ($routerModes as $mode): ?>

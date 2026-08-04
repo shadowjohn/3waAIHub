@@ -54,6 +54,21 @@ hub_test('command queue recovers stale running jobs without touching active long
     }
 });
 
+hub_test('command queue selector claims an eligible job without consuming an ineligible one', function (): void {
+    $db = hub_test_reset_db();
+    $firstId = hub_enqueue_command_job($db, 'service_start', null, [], null, '127.0.0.1');
+    $secondId = hub_enqueue_command_job($db, 'service_start', null, [], null, '127.0.0.1');
+
+    $claimed = hub_claim_next_command_job(
+        $db,
+        static fn (array $candidate): bool => (int)$candidate['id'] === $secondId
+    );
+
+    hub_test_assert((int)($claimed['id'] ?? 0) === $secondId, 'selector must claim the first eligible queued job');
+    hub_test_assert(hub_get_command_job($db, $firstId)['status'] === 'queued', 'ineligible job must remain queued for its worker');
+    hub_test_assert(hub_get_command_job($db, $secondId)['status'] === 'running', 'eligible job must be claimed');
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
     $logRoot = sys_get_temp_dir() . '/3waaihub_persistence_logs_' . getmypid() . '_' . bin2hex(random_bytes(4));
     $stdoutPath = $logRoot . '/job.out.log';
@@ -282,6 +297,16 @@ hub_test('cron loop runs both command and task workers', function (): void {
         strpos($loop, 'task_worker_pid=$!') < strpos($loop, 'php scripts/command_worker.php'),
         'task worker loop must start before command worker ticks so queued inference does not wait behind command work'
     );
+});
+
+hub_test('task claim filter leaves incompatible queued work for its matching worker', function (): void {
+    $db = hub_test_reset_db();
+    $skippedId = hub_enqueue_task($db, 'demo_task', 'default', 0, ['name' => 'skip'], null, '127.0.0.1');
+    $claimedId = hub_enqueue_task($db, 'demo_task', 'default', 0, ['name' => 'claim'], null, '127.0.0.1');
+    $task = hub_claim_next_task($db, ['demo_task'], static fn (array $candidate): bool => (int)$candidate['id'] === $claimedId);
+
+    hub_test_assert((int)($task['id'] ?? 0) === $claimedId, 'filtered task worker must claim its compatible task');
+    hub_test_assert((hub_get_task($db, $skippedId)['status'] ?? null) === 'queued', 'filtered task worker must not claim incompatible queued work');
 });
 
 hub_test('permission fixer repairs deployed source readability without touching runtime model', function (): void {

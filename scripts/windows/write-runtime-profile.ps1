@@ -6,6 +6,8 @@ param(
     [string]$SupportLevel = 'preview',
     [ValidateSet('default', 'pascal-cu118')]
     [string]$YoloRuntimeProfile = 'default',
+    [ValidateSet('default', 'pascal-cu118')]
+    [string]$WhisperRuntimeProfile = 'default',
     [switch]$WslReady
 )
 
@@ -35,6 +37,7 @@ $profile = [ordered]@{
             provides = @('linux-docker')
             pack_profiles = [ordered]@{
                 yolo = $YoloRuntimeProfile
+                'whisper-asr' = $WhisperRuntimeProfile
             }
             reason = if ($WslReady) { $null } else { 'WSL Runtime readiness has not passed' }
         }

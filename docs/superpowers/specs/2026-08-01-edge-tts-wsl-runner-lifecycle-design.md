@@ -21,6 +21,9 @@ Each `edge_tts` task runs through the existing job flow:
 
 The container-local, fail-closed Edge egress firewall remains unchanged.
 
+personal
+
+
 ## Runtime declaration and boundaries
 
 `packs/edge-tts/pack.json` will explicitly declare both `linux-docker` and `windows-wsl2-linux-docker`, and mark its internal task runner as `windows_wsl_job`.

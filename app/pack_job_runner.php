@@ -203,6 +203,27 @@ function hub_pack_job_resident_uses_cpu(array $residentPlan): bool
     return is_string($setting) && is_string($value) && ($settings[$setting] ?? null) === $value;
 }
 
+function hub_whisper_wsl_pascal_job_capability_error(array $task, ?array $runnerConfig, ?array $residentPlan): ?string
+{
+    if (hub_platform_id() !== 'windows' || (string)($task['pack_id'] ?? '') !== 'whisper-asr' || (string)($task['job'] ?? '') !== 'transcribe'
+        || !is_array($residentPlan) || empty($residentPlan['eligible'])) {
+        return null;
+    }
+    $runtime = hub_whisper_wsl_runtime_profile((array)$residentPlan['service']);
+    if ($runtime === null || ($runtime['profile_id'] ?? null) !== 'pascal-cu118') {
+        return null;
+    }
+    $input = is_array($task['input'] ?? null) ? $task['input'] : [];
+    if (($runnerConfig['alias'] ?? null) !== 'small') {
+        return 'Whisper CUDA 11.8 on Pascal requires model=small.';
+    }
+    if (!empty($input['word_timestamps']) || !empty($input['diarization']) || ($input['subtitle_reflow'] ?? 'none') !== 'none') {
+        return 'Whisper CUDA 11.8 on Pascal supports basic transcript, SRT, and VTT output only.';
+    }
+
+    return null;
+}
+
 function hub_pack_job_resident_plan_for_service(PDO $db, array $service, array $contract, bool $requireResidentMode = true): ?array
 {
     $resident = $contract['resident'] ?? null;
@@ -489,6 +510,48 @@ function hub_pack_job_resident_stage_path(array $service, string $residentRunId)
     return hub_pack_job_resident_stage_root($service) . '/' . $residentRunId;
 }
 
+function hub_whisper_wsl_resident_stage(array $service, string $residentRunId): ?array
+{
+    if (hub_platform_id() !== 'windows' || (string)($service['pack_id'] ?? '') !== 'whisper-asr'
+        || preg_match('/^[a-z0-9][a-z0-9_-]*$/', (string)($service['service_key'] ?? '')) !== 1
+        || preg_match('/^[a-z0-9][a-z0-9_.-]{0,95}$/', $residentRunId) !== 1) {
+        return null;
+    }
+    $runtime = hub_whisper_wsl_runtime_profile($service);
+    if ($runtime === null) {
+        return null;
+    }
+    $root = (string)$runtime['runtime_root'] . '/services/' . (string)$service['service_key'] . '/data/resident_jobs';
+
+    return ['runtime' => $runtime, 'root' => $root, 'stage' => $root . '/' . $residentRunId];
+}
+
+function hub_whisper_wsl_resident_prepare_stage(array $stage, string $workspace, ?array $voiceProfileMount): void
+{
+    $voiceSource = $voiceProfileMount['source'] ?? null;
+    if ($voiceSource !== null && (!is_string($voiceSource) || !is_file($voiceSource) || is_link($voiceSource))) {
+        throw new RuntimeException('voice_profile_unavailable');
+    }
+    $script = "set -eu\n"
+        . 'windows_workspace=' . hub_wsl_shell_literal($workspace) . "\n"
+        . 'stage_root=' . hub_wsl_shell_literal((string)$stage['root']) . "\n"
+        . 'stage=' . hub_wsl_shell_literal((string)$stage['stage']) . "\n"
+        . 'windows_voice_source=' . hub_wsl_shell_literal((string)($voiceSource ?? '')) . "\n"
+        . 'case "$stage" in "$stage_root"/resident-*) ;; *) echo "Invalid Whisper resident stage." >&2; exit 2;; esac' . "\n"
+        . 'host_workspace="$(wslpath -a "$windows_workspace")"' . "\n"
+        . 'if [ -e "$stage" ] || [ -L "$stage" ] || [ ! -d "$host_workspace/input" ] || [ -L "$host_workspace/input" ]; then echo "Whisper resident stage is unavailable." >&2; exit 2; fi' . "\n"
+        . 'copy_required() { source=$1; destination=$2; [ -f "$source" ] && [ ! -L "$source" ] || exit 2; cp -- "$source" "$destination"; }' . "\n"
+        . 'install -d -m 0700 "$stage/input" "$stage/output" "$stage/checkpoints"' . "\n"
+        . 'copy_required "$host_workspace/input/request.json" "$stage/input/request.json"' . "\n"
+        . 'copy_required "$host_workspace/input/runner_config.json" "$stage/input/runner_config.json"' . "\n"
+        . 'copy_required "$host_workspace/input/source" "$stage/input/source"' . "\n"
+        . 'if [ -n "$windows_voice_source" ]; then host_voice_source="$(wslpath -a "$windows_voice_source")"; copy_required "$host_voice_source" "$stage/input/source"; fi' . "\n";
+    $result = hub_run_command(hub_wsl_script_command((array)$stage['runtime'], $script), 60);
+    if ((int)($result['exit_code'] ?? 1) !== 0) {
+        throw new RuntimeException('resident_stage_unavailable');
+    }
+}
+
 function hub_pack_job_resident_copy_file(string $source, string $destination): void
 {
     if (!is_file($source) || is_link($source) || file_exists($destination) || is_link($destination) || !copy($source, $destination)) {
@@ -502,6 +565,12 @@ function hub_pack_job_resident_prepare_stage(array $residentPlan, string $reside
     $workspace = realpath($workspace);
     if ($workspace === false || is_link($workspace) || !is_dir($workspace . '/input')) {
         throw new RuntimeException('resident_stage_unavailable');
+    }
+    $wslStage = hub_whisper_wsl_resident_stage((array)$residentPlan['service'], $residentRunId);
+    if ($wslStage !== null) {
+        hub_whisper_wsl_resident_prepare_stage($wslStage, $workspace, $voiceProfileMount);
+
+        return (string)$wslStage['stage'];
     }
     $stage = hub_pack_job_resident_stage_path((array)$residentPlan['service'], $residentRunId);
     if (file_exists($stage) || is_link($stage) || !mkdir($stage, 0700)) {
@@ -579,6 +648,20 @@ function hub_pack_job_resident_remove_tree(string $path, string $root): void
 
 function hub_pack_job_resident_remove_stage(array $service, string $residentRunId): void
 {
+    $wslStage = hub_whisper_wsl_resident_stage($service, $residentRunId);
+    if ($wslStage !== null) {
+        $script = 'set -eu' . "\n"
+            . 'stage_root=' . hub_wsl_shell_literal((string)$wslStage['root']) . "\n"
+            . 'stage=' . hub_wsl_shell_literal((string)$wslStage['stage']) . "\n"
+            . 'case "$stage" in "$stage_root"/resident-*) ;; *) echo "Invalid Whisper resident stage." >&2; exit 2;; esac' . "\n"
+            . 'rm -rf -- "$stage"';
+        $result = hub_run_command(hub_wsl_script_command((array)$wslStage['runtime'], $script), 60);
+        if ((int)($result['exit_code'] ?? 1) !== 0) {
+            throw new RuntimeException('resident_stage_unavailable');
+        }
+
+        return;
+    }
     $root = hub_pack_job_resident_stage_root($service);
     $stage = $root . '/' . $residentRunId;
     if (!file_exists($stage) && !is_link($stage)) {
@@ -590,9 +673,37 @@ function hub_pack_job_resident_remove_stage(array $service, string $residentRunI
     hub_pack_job_resident_remove_tree($stage, $root);
 }
 
-function hub_pack_job_resident_copy_output(string $stage, string $workspace, array $artifactContract): void
+function hub_pack_job_resident_copy_output(string $stage, string $workspace, array $artifactContract, ?array $service = null): void
 {
     $workspace = realpath($workspace);
+    if ($service !== null && ($wslStage = hub_whisper_wsl_resident_stage($service, basename($stage))) !== null) {
+        if (!hub_storage_paths_equal($stage, (string)$wslStage['stage']) || $workspace === false || is_link($workspace) || !is_dir($workspace . '/output')) {
+            throw new RuntimeException('resident_output_unavailable');
+        }
+        $copies = '';
+        foreach ((array)($artifactContract['artifacts'] ?? []) as $artifact) {
+            $name = is_array($artifact) ? (string)($artifact['path'] ?? '') : '';
+            if ($name === '' || basename($name) !== $name) {
+                throw new RuntimeException('resident_output_unavailable');
+            }
+            $copies .= 'copy_optional ' . hub_wsl_shell_literal($name) . "\n";
+        }
+        $script = "set -eu\n"
+            . 'windows_workspace=' . hub_wsl_shell_literal($workspace) . "\n"
+            . 'stage_root=' . hub_wsl_shell_literal((string)$wslStage['root']) . "\n"
+            . 'stage=' . hub_wsl_shell_literal((string)$wslStage['stage']) . "\n"
+            . 'case "$stage" in "$stage_root"/resident-*) ;; *) echo "Invalid Whisper resident stage." >&2; exit 2;; esac' . "\n"
+            . 'host_workspace="$(wslpath -a "$windows_workspace")"' . "\n"
+            . 'if [ ! -d "$host_workspace/output" ] || [ -L "$host_workspace/output" ]; then echo "Whisper output is unavailable." >&2; exit 2; fi' . "\n"
+            . 'copy_optional() { source="$stage/output/$1"; [ ! -e "$source" ] && return 0; [ -f "$source" ] && [ ! -L "$source" ] || exit 2; cp -- "$source" "$host_workspace/output/$1"; }' . "\n"
+            . $copies;
+        $result = hub_run_command(hub_wsl_script_command((array)$wslStage['runtime'], $script), 60);
+        if ((int)($result['exit_code'] ?? 1) !== 0) {
+            throw new RuntimeException('resident_output_unavailable');
+        }
+
+        return;
+    }
     $stage = realpath($stage);
     if ($workspace === false || $stage === false || is_link($workspace) || is_link($stage)) {
         throw new RuntimeException('resident_output_unavailable');
@@ -657,7 +768,7 @@ function hub_pack_job_resident_existing(PDO $db, array $run): ?array
 function hub_pack_job_resident_terminal_result(PDO $db, array $context, string $residentRunId, string $stage, string $state): array
 {
     $residentPlan = (array)$context['resident_plan'];
-    hub_pack_job_resident_copy_output($stage, (string)$context['workspace'], (array)$context['contract']['artifact_contract']);
+    hub_pack_job_resident_copy_output($stage, (string)$context['workspace'], (array)$context['contract']['artifact_contract'], (array)$residentPlan['service']);
     hub_pack_job_resident_remove_stage((array)$residentPlan['service'], $residentRunId);
     hub_pack_job_resident_record($db, (array)$context['run'], (array)$context['task'], (array)$residentPlan['service'], $residentRunId, 'reconciled');
     if ($state === 'succeeded') {
@@ -767,7 +878,7 @@ function hub_pack_job_resident_cancel(array $context, string $reason, ?callable 
             $intent = hub_pack_job_resident_transport_intent($error);
         }
         if (isset($confirmed['state'])) {
-            hub_pack_job_resident_copy_output($stage, (string)$context['workspace'], (array)$context['contract']['artifact_contract']);
+            hub_pack_job_resident_copy_output($stage, (string)$context['workspace'], (array)$context['contract']['artifact_contract'], (array)$residentPlan['service']);
             hub_pack_job_resident_remove_stage((array)$residentPlan['service'], $residentRunId);
             hub_pack_job_resident_record($db, (array)$context['run'], (array)$context['task'], (array)$residentPlan['service'], $residentRunId, 'reconciled');
             return ['cleanup' => hub_pack_job_no_work_cleanup()];
@@ -1277,6 +1388,16 @@ function hub_pack_job_runner_config_for_task(array $contract, array $input): ?ar
     ];
 }
 
+function hub_pack_job_runner_required_vram(array $runner, ?array $config): int
+{
+    $value = $config['model']['required_vram_mb'] ?? ($runner['required_vram_mb'] ?? null);
+    if (!is_int($value) || $value < 0 || $value > 1048576) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+
+    return $value;
+}
+
 function hub_pack_job_asset_descendant(string $root, string $relative): ?string
 {
     $path = $root;
@@ -1475,7 +1596,7 @@ function hub_pack_job_runner_arguments(array $runner, array $task, array $run, s
         'args' => array_map($replace, $runner['args']),
         'output_dir' => $workspace . '/output',
         'accelerator' => $runner['accelerator'],
-        'required_vram_mb' => $runner['required_vram_mb'],
+        'required_vram_mb' => hub_pack_job_runner_required_vram($runner, $config),
         'timeout_seconds' => $runner['timeout_seconds'],
         'network_profile' => $runner['network_profile'] ?? 'isolated',
     ] + ($config === null ? [] : ['config' => $config])
@@ -2445,6 +2566,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $runner = $contract['runner'];
         $runnerConfig = hub_pack_job_runner_config_for_task($contract, (array)($task['input'] ?? []));
+        $requiredVram = hub_pack_job_runner_required_vram($runner, $runnerConfig);
         $residentPlan = hub_pack_job_resident_service($db, $task, $contract);
         $residentUsesCpu = is_array($residentPlan) && !empty($residentPlan['eligible'])
             && hub_pack_job_resident_uses_cpu($residentPlan);
@@ -2452,6 +2574,12 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $residentTransport = isset($options['resident_transport']) && is_callable($options['resident_transport'])
             ? $options['resident_transport']
             : null;
+        if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'whisper-asr' && (string)($task['job'] ?? '') === 'transcribe' && ($residentPlan === null || empty($residentPlan['eligible']))) {
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'resident_service_unavailable', 'Whisper ASR WSL Runtime service is unavailable', hub_pack_job_no_work_cleanup(), null);
+        }
+        if (($whisperCapabilityError = hub_whisper_wsl_pascal_job_capability_error($task, $runnerConfig, $residentPlan)) !== null) {
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'runtime_capability_unsupported', $whisperCapabilityError, hub_pack_job_no_work_cleanup(), null);
+        }
         if ($residentPlan !== null && empty($residentPlan['eligible'])) {
             if (hub_pack_job_wait_without_gpu(
                 $db,
@@ -2459,7 +2587,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 $run,
                 (string)($residentPlan['reason'] ?? 'resident_service_unavailable'),
                 max(1, (int)($options['gpu_backoff_seconds'] ?? 30)),
-                ['required_vram_mb' => (int)$runner['required_vram_mb']]
+                ['required_vram_mb' => $requiredVram]
             )) {
                 return ['status' => 'waiting_gpu'];
             }
@@ -2534,7 +2662,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                     $run,
                     'gpu_unavailable',
                     max(1, (int)($options['gpu_backoff_seconds'] ?? 30)),
-                    ['required_vram_mb' => (int)$runner['required_vram_mb']]
+                    ['required_vram_mb' => $requiredVram]
                 )) {
                     return ['status' => 'waiting_gpu'];
                 }
@@ -2543,7 +2671,6 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             $probe = isset($options['gpu_probe']) && is_callable($options['gpu_probe'])
                 ? $options['gpu_probe']
                 : static fn (): array => hub_runtime_gpu_probe(isset($options['gpu_probe_runner']) && is_callable($options['gpu_probe_runner']) ? $options['gpu_probe_runner'] : null);
-            $requiredVram = (int)$runner['required_vram_mb'];
             $safetyMargin = null;
             $probeSnapshot = null;
             if ($residentPlan !== null) {

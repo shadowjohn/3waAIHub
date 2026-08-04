@@ -245,6 +245,12 @@ function hub_service_image_tag(array $service): string
     return hub_pack_image_tag((string)($service['service_key'] ?? $service['mode']), (string)($service['pack_version'] ?? 'latest'));
 }
 
+function hub_service_runtime_image_tag(array $service): string
+{
+    $whisper = hub_whisper_wsl_runtime_profile($service);
+    return $whisper === null ? hub_service_image_tag($service) : (string)$whisper['image'];
+}
+
 function hub_internal_task_result(string $message): array
 {
     return ['exit_code' => 0, 'stdout' => $message, 'stderr' => '', 'output' => $message];
@@ -284,6 +290,17 @@ function hub_service_requires_wsl_job_runtime(array $service, ?string $platform 
     $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
 
     return is_array($pack['manifest'] ?? null) && !empty($pack['manifest']['runtime']['windows_wsl_job']);
+}
+
+function hub_service_requires_wsl_task_worker(array $service, ?string $platform = null): bool
+{
+    if (hub_platform_id($platform) !== 'windows') {
+        return false;
+    }
+    $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
+    $runtime = is_array($pack['manifest']['runtime'] ?? null) ? $pack['manifest']['runtime'] : [];
+
+    return !empty($runtime['windows_wsl_job']) || !empty($runtime['windows_wsl_compose']);
 }
 
 function hub_service_runtime_unsupported_result(array $service, ?string $platform = null, ?array $profile = null): ?array
@@ -491,9 +508,125 @@ function hub_service_runtime_inspection_command(array $service, array $command, 
         : null;
 }
 
-function hub_wsl_service_compose_command(array $service, array $args): array
+function hub_whisper_wsl_runtime_profile(array $service, ?array $profile = null): ?array
 {
-    $runtime = hub_wsl_service_runtime($service);
+    if ((string)($service['pack_id'] ?? '') !== 'whisper-asr') {
+        return null;
+    }
+    $resolution = hub_service_runtime_resolution($service, 'windows', $profile);
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $pack = hub_get_pack('whisper-asr');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null) || !is_array($resolution['profile'] ?? null)) {
+        return null;
+    }
+    $profiles = $pack['manifest']['wsl_runtime_profiles'] ?? null;
+    $profileId = (string)($resolution['profile']['pack_profiles']['whisper-asr'] ?? 'default');
+    $selected = is_array($profiles) ? ($profiles[$profileId] ?? null) : null;
+    $dockerfile = is_array($selected) ? (string)($selected['dockerfile'] ?? '') : '';
+    $image = is_array($selected) ? (string)($selected['image'] ?? '') : '';
+    if (
+        !is_array($selected)
+        || ($selected['id'] ?? null) !== $profileId
+        || preg_match('~^service/Dockerfile(?:\.[A-Za-z0-9._-]+)?$~', $dockerfile) !== 1
+        || preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
+    ) {
+        return null;
+    }
+    $modelsRoot = trim((string)($resolution['profile']['models_root'] ?? ''));
+    if ($modelsRoot === '') {
+        $modelsRoot = dirname((string)$runtime['runtime_root']) . '/models';
+    }
+    try {
+        $modelsRoot = hub_container_path($modelsRoot);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+
+    return $runtime + [
+        'profile_id' => $profileId,
+        'dockerfile' => $dockerfile,
+        'image' => $image,
+        'models_root' => $modelsRoot,
+    ];
+}
+
+function hub_whisper_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
+{
+    $runtime = hub_whisper_wsl_runtime_profile($service, $profile);
+    $pack = hub_get_pack('whisper-asr');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null)) {
+        throw new RuntimeException('WSL Runtime is not ready for Whisper ASR.');
+    }
+    $serviceKey = (string)($service['service_key'] ?? '');
+    $port = (int)($service['local_port'] ?? 0);
+    if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1 || $port < 1 || $port > 65535) {
+        throw new RuntimeException('Invalid WSL Whisper service configuration.');
+    }
+    $environment = [];
+    $sourceEnvironment = hub_compose_env($service);
+    foreach ((array)($pack['manifest']['env'] ?? []) as $item) {
+        $key = (string)($item['name'] ?? '');
+        $value = (string)($sourceEnvironment[$key] ?? $item['default'] ?? '');
+        if (preg_match('/^[A-Z][A-Z0-9_]*$/', $key) !== 1 || str_contains($value, "\0") || preg_match('/[\r\n]/', $value) === 1) {
+            throw new RuntimeException('Invalid WSL Whisper service environment.');
+        }
+        $environment[$key] = $value;
+    }
+    if (($runtime['profile_id'] ?? '') === 'pascal-cu118' && ($environment['WHISPER_COMPUTE_TYPE'] ?? '') === 'auto') {
+        $environment['WHISPER_COMPUTE_TYPE'] = 'int8_float32';
+    }
+    $environment[hub_pack_port_env($pack['manifest'])] = (string)$port;
+    $runtimeRoot = (string)$runtime['runtime_root'];
+    $packRoot = $runtimeRoot . '/packs/whisper-asr';
+    $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
+    $serviceData = $serviceRoot . '/data';
+    $cacheRoot = $runtimeRoot . '/cache/whisper';
+    $compose = "services:\n  adapter:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot, JSON_UNESCAPED_SLASHES) . "\n      dockerfile: " . json_encode((string)$runtime['dockerfile'], JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - .env\n    environment:\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode((string)$runtime['models_root'] . '/whisper:/models/whisper', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/whisper', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
+    $env = '';
+    foreach ($environment as $key => $value) {
+        $env .= $key . '=' . $value . "\n";
+    }
+    $composeArgs = array_values($args);
+    if (($composeArgs[0] ?? '') === 'build') {
+        // Docker Desktop BuildKit executor 無法走此主機已驗證可用的 bridge egress；只讓 WSL Whisper image build 使用 Docker bridge builder。
+        $dockerCommand = 'DOCKER_BUILDKIT=0 docker build --tag ' . hub_wsl_shell_literal((string)$runtime['image'])
+            . ' --file ' . hub_wsl_shell_literal($packRoot . '/' . (string)$runtime['dockerfile'])
+            . ' ' . hub_wsl_shell_literal($packRoot);
+    } else {
+        $dockerCommand = 'docker compose';
+        if (($progressIndex = array_search('--progress=plain', $composeArgs, true)) !== false) {
+            unset($composeArgs[$progressIndex]);
+            $composeArgs = array_values($composeArgs);
+            $dockerCommand .= ' --progress=plain';
+        }
+        $dockerCommand .= ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
+        foreach ($composeArgs as $arg) {
+            $dockerCommand .= ' ' . hub_wsl_shell_literal((string)$arg);
+        }
+    }
+    $script = "set -eu\n"
+        . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
+        . 'models_root=' . hub_wsl_shell_literal((string)$runtime['models_root']) . "\n"
+        . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
+        . 'service_data=' . hub_wsl_shell_literal($serviceData) . "\n"
+        . 'env_payload=' . hub_wsl_shell_literal(base64_encode($env)) . "\n"
+        . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
+        . 'if [ ! -f "$pack_root/' . (string)$runtime['dockerfile'] . '" ]; then echo "WSL Whisper source unavailable. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
+        . 'install -d -m 0775 "$service_root" "$models_root/whisper" "$cache_root" "$service_data"' . "\n"
+        . 'printf %s "$env_payload" | base64 -d > "$service_root/.env"' . "\n"
+        . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
+        . $dockerCommand . "\n";
+
+    return hub_wsl_script_command($runtime, $script);
+}
+
+function hub_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
+{
+    if ((string)($service['pack_id'] ?? '') === 'whisper-asr') {
+        return hub_whisper_wsl_service_compose_command($service, $args, $profile);
+    }
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
     $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
     if ($runtime === null || !$pack || !is_array($pack['manifest'] ?? null)) {
         throw new RuntimeException('WSL Runtime is not ready for this service.');
@@ -566,7 +699,7 @@ function hub_service_image_exists(array $service): bool
     if ($runtime === null) {
         return false;
     }
-    $script = 'docker image inspect ' . hub_wsl_shell_literal(hub_service_image_tag($service)) . ' >/dev/null';
+    $script = 'docker image inspect ' . hub_wsl_shell_literal(hub_service_runtime_image_tag($service)) . ' >/dev/null';
     return hub_run_command(hub_wsl_script_command($runtime, $script), 30)['exit_code'] === 0;
 }
 
@@ -713,13 +846,17 @@ function hub_build_service(PDO $db, array $service, ?array $job = null): array
         hub_job_progress($db, $job, 'docker_build', 70, $message);
         return $result;
     }
-    hub_job_progress($db, $job, 'docker_build', 20, 'Building image: ' . hub_service_image_tag($service));
+    hub_job_progress($db, $job, 'docker_build', 20, 'Building image: ' . hub_service_runtime_image_tag($service));
     $result = hub_run_service_compose_command($db, $job, $service, ['build', '--progress=plain'], hub_service_build_timeout_sec($service), 'docker_build', 20, 70);
     $summary = $result['exit_code'] === 0
-        ? 'Image build completed: ' . hub_service_image_tag($service)
+        ? 'Image build completed: ' . hub_service_runtime_image_tag($service)
         : substr(hub_command_error_summary($result), 0, 1000);
     hub_add_service_log($db, (int)$service['id'], 'build', $summary, (int)$result['exit_code']);
     if ($result['exit_code'] === 0) {
+        $db->prepare('UPDATE services SET restart_required = 1, updated_at = :updated_at WHERE id = :id')->execute([
+            ':updated_at' => hub_now(),
+            ':id' => (int)$service['id'],
+        ]);
         hub_job_progress($db, $job, 'docker_build', 70, 'Image build completed.');
     }
 
@@ -744,6 +881,10 @@ function hub_refresh_service_runtime_files(PDO $db, array $service, bool $initia
         'env' => is_array($env) ? $env : [],
         'idempotent' => true,
     ];
+    if (hub_service_uses_wsl_runtime($service)) {
+        // WSL Compose 會在 ext4 runtime 建 image，不能先走 Windows 的 direct linux-docker provision。
+        $options['provision_runner'] = false;
+    }
     if (hub_service_requires_wsl_job_runtime($service)) {
         $options['runner_build_runner'] = static function (array $docker, int $timeoutSeconds) use ($service): array {
             return hub_run_command(hub_wsl_job_runner_build_command($service, $docker), $timeoutSeconds);

@@ -12,11 +12,24 @@
   "role": "reference",
   "default_mode": "hello",
   "description": "Minimal L5 reference service for 3waAIHub smoke tests.",
+  "platform_targets": {
+    "linux-docker": {
+      "supported": true,
+      "source": "declared",
+      "reason": null
+    },
+    "windows-wsl2-linux-docker": {
+      "supported": true,
+      "source": "declared",
+      "reason": "Uses the explicitly configured WSL Runtime; direct linux-docker remains unavailable on Windows."
+    }
+  },
   "gpu_required": false,
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
-    "default_internal_port": 8000
+    "default_internal_port": 8000,
+    "windows_wsl_compose": true
   },
   "gateway": {
     "health_path": "/health",

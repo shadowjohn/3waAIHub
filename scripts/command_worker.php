@@ -5,10 +5,19 @@ require __DIR__ . '/../app/bootstrap.php';
 hub_cli_only();
 
 $limit = 5;
+$runtime = 'all';
 foreach ($argv as $arg) {
     if (str_starts_with($arg, '--limit=')) {
         $limit = max(1, (int)substr($arg, 8));
+        continue;
     }
+    if (str_starts_with($arg, '--runtime=')) {
+        $runtime = substr($arg, 10);
+    }
+}
+if (!in_array($runtime, ['all', 'core', 'wsl'], true)) {
+    fwrite(STDERR, 'runtime must be all, core, or wsl.' . PHP_EOL);
+    exit(64);
 }
 
 $db = hub_db();
@@ -26,7 +35,15 @@ if ($recovered > 0) {
 
 $processed = 0;
 while ($processed < $limit) {
-    $job = hub_claim_next_command_job($db);
+    $job = hub_claim_next_command_job($db, static function (array $candidate) use ($db, $runtime): bool {
+        if ($runtime === 'all' || $candidate['service_id'] === null) {
+            return $runtime !== 'wsl';
+        }
+        $service = hub_get_service($db, (int)$candidate['service_id']);
+        $usesWsl = $service !== null && (hub_service_runtime_resolution($service)['target'] ?? '') === 'windows-wsl2-linux-docker';
+
+        return $runtime === 'wsl' ? $usesWsl : !$usesWsl;
+    });
     if (!$job) {
         break;
     }

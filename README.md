@@ -169,7 +169,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 | Windows 11 | 建議 `3waAIHub Core（Control Plane）` + `WSL Runtime（Preview）` |
 | Windows Server | 預設 `3waAIHub Core（Control Plane）`；`WSL Runtime（Preview）` 選配；`Remote Linux Agent` 推薦；不建議或嘗試安裝 Docker Desktop |
 
-`windows-wsl2-linux-docker` 目前提供固定 distro／`/DATA/3waAIHub-runtime` 的 YOLO Local Job、Web Screenshot CPU Pack Job，以及 Edge TTS CPU Pack Job 三條明確 vertical slice。Web Screenshot 與 Edge TTS 僅在 Pack 明確宣告 WSL job target、runtime profile ready 時，才會由 PHP task worker 經 `wsl.exe` 呼叫 WSL Docker；前者維持 container-local fail-closed egress firewall，後者只允許 Edge Speech upstream，兩者都只回收既有 artifact contract 宣告的檔案。Edge TTS 的 Marketplace Build 只驗證／建立 WSL image；Start 才生成已驗證的 demo voices 並啟用 internal task，並不建立常駐容器。其他 UI 或 queue 的 `linux-docker` job 不會自動改送 WSL。Windows 直接選用 `linux-docker` 時，仍會在呼叫 Docker 前以 `exit 78`、`error_code=platform_target_unsupported` 回報不支援。
+`windows-wsl2-linux-docker` 目前提供固定 distro／`/DATA/3waAIHub-runtime` 的 YOLO Local Job、Web Screenshot CPU Pack Job、Edge TTS CPU Pack Job，以及 Whisper ASR resident Pack Job 四條明確 vertical slice。Whisper 在 Pascal profile 固定走 CUDA 11.8、`small` model、resident queue，stage 與模型快取都留在 WSL ext4；只支援基本逐字稿、SRT、VTT，`large_v3`、word timestamps、diarization、subtitle reflow 會在建立 workspace 前明確拒絕。Web Screenshot、Edge TTS 與 Whisper 僅在 Pack 明確宣告 WSL target、runtime profile ready 時，才會由 PHP task worker 經 `wsl.exe` 呼叫 WSL Docker；其他 UI 或 queue 的 `linux-docker` job 不會自動改送 WSL。Windows 直接選用 `linux-docker` 時，仍會在呼叫 Docker 前以 `exit 78`、`error_code=platform_target_unsupported` 回報不支援。
 
 GTX 1050／1050 Ti／1080／1080 Ti（Pascal）會選取 `pascal-cu118` profile，使用 CUDA 11.8 與 PyTorch CU118；較新 NVIDIA GPU 使用 default profile。YOLO model 仍由 `/DATA/models/yolo` 管理，安裝器不下載模型。
 
@@ -183,7 +183,13 @@ GTX 1050／1050 Ti／1080／1080 Ti（Pascal）會選取 `pascal-cu118` profile�
 
 Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。以系統管理員 PowerShell 執行 `scripts/windows/configure-iis-fastcgi.ps1`，它會建立指定 IIS virtual directory、註冊選定的 `php-cgi.exe`，並只對該 Hub location 加入 PHP handler；`web.config` 不應寫死其他機器的 PHP 路徑，並預設以 `index.php` 處理根目錄與 `/admin/` 等目錄入口。它會關閉 directory browsing，並封鎖程式庫、部署腳本、測試、Pack metadata、runtime data、版本控制與敏感靜態副檔名的 HTTP 直接存取；公開 API、`admin/`、`catalog_show/` 與 `assets/` 維持可用。若沿用 MS4W_MSSQL 的 PHP，直接指定其中的 `php-cgi.exe` 即可；Cluster key 會儲存在 `data/cluster.key`，不修改該套件的 `php.ini`。登入 session 會保存在 `data/sessions/`，而 IIS App Pool identity 必須對 `data/` 具備修改權限。
 
-Windows 不掛 Linux cron。可在 Task Scheduler 匯入 `3waAIHub_Crontab.xml`，它每分鐘以 LocalSystem 執行 `command_worker.php --limit=5`，不需保存使用者帳密，並以 `IgnoreNew` 避免 worker 重入；log 寫到 `data/logs/command_worker_windows.log`。預設 XML 對應 `D:\DATA\3waAIHub`；執行 Core installer 後，會在 `data/install/3waAIHub_Crontab.xml` 產生已依 `InstallRoot` 改寫的版本。System task 需要由 Machine PATH 或 `<InstallRoot>\tools\php\php.exe` 找到 PHP；WSL/Docker Desktop 若是使用者專屬 distro，仍應以 WSL/Linux runtime 或 Remote Linux Agent 執行，不把它當作 System worker 的保證能力。
+Windows 不掛 Linux cron。可在 Task Scheduler 匯入 `3waAIHub_Crontab.xml`，它每分鐘以 LocalSystem 啟動 100 tick 的 Core task loop：每 500 ms 執行 `task_worker.php --limit=5 --runtime=core`，並與 `command_worker.php --limit=5 --runtime=core` 並行；不需保存使用者帳密，並以 `IgnoreNew` 避免 worker 重入；log 寫到 `data/logs/command_worker_windows.log`。Core task worker 不認領使用者專屬 WSL distro 的 Pack task。WSL Pack 則由 Ubuntu 的 `aihub-wsl-worker.service` 常駐處理：它以 0.5 秒節奏消化 WSL task、每五秒消化 WSL service command job；Windows 僅保留一支登入時啟動 systemd service 的 Interactive Token task，不保存密碼、也不以每分鐘排程拉起 worker。預設 XML 對應 `D:\DATA\3waAIHub`；執行 Core installer 後，會在 `data/install/3waAIHub_Crontab.xml` 產生已依 `InstallRoot` 改寫的版本。System task 需要由 Machine PATH 或 `<InstallRoot>\tools\php\php.exe` 找到 PHP。
+
+```powershell
+.\scripts\windows\run-wsl-command-worker.ps1 -Limit 1
+```
+
+這支 worker保留為人工 fallback；正式安裝 WSL Runtime 時會由 `scripts\windows\install-wsl-task-agent.ps1` 安裝並啟動 systemd agent。它拒絕以 LocalSystem 執行；因此不需保存使用者帳密，也不會讓 SYSTEM 對 Docker Desktop／Ubuntu WSL 產生錯誤的 runtime 假設。
 
 ```powershell
 .\scripts\windows\configure-iis-fastcgi.ps1 `
