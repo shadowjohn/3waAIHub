@@ -132,6 +132,14 @@
           }
         ]
       },
+      "resident": {
+        "protocol": "service_data_v1",
+        "mode_setting": "WHISPER_EXECUTION_MODE",
+        "mode_value": "resident",
+        "min_free_vram_setting": "WHISPER_RESIDENT_MIN_FREE_VRAM_MB",
+        "cpu_fallback_setting": "WHISPER_GPU_SHORTAGE_POLICY",
+        "cpu_fallback_value": "cpu"
+      },
       "runner_config": {
         "alias_input": "model",
         "model_allowlist": "whisper"
@@ -214,6 +222,53 @@
   },
   "settings_schema": [
     {
+      "key": "WHISPER_EXECUTION_MODE",
+      "label": "非同步執行模式",
+      "type": "select",
+      "default": "isolated",
+      "options": ["isolated", "resident"],
+      "option_labels": {
+        "isolated": "一次性容器",
+        "resident": "常駐 ASR 服務"
+      },
+      "required": true,
+      "restart_required": true,
+      "install_option": true
+    },
+    {
+      "key": "WHISPER_RESIDENT_MIN_FREE_VRAM_MB",
+      "label": "常駐模式最低可用 VRAM (MB)",
+      "type": "integer",
+      "default": "512",
+      "min": 0,
+      "max": 16384,
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "WHISPER_GPU_SHORTAGE_POLICY",
+      "label": "GPU 不足時的路由策略",
+      "type": "select",
+      "default": "wait",
+      "options": ["wait", "cpu"],
+      "option_labels": {
+        "wait": "等待 GPU／由 Cluster 初始分流",
+        "cpu": "交給常駐 ASR 的 CPU worker"
+      },
+      "required": true,
+      "restart_required": true,
+      "help": "CPU 模式只套用於常駐 ASR 工作，不會停止或驅逐其他 GPU 服務。"
+    },
+    {
+      "key": "WHISPER_INTERNAL_JOB_TOKEN",
+      "label": "內部工作權杖",
+      "type": "secret",
+      "secret": true,
+      "default": "",
+      "required": true,
+      "restart_required": true
+    },
+    {
       "key": "USE_GPU",
       "label": "Use GPU",
       "type": "boolean",
@@ -268,6 +323,26 @@
     }
   ],
   "env": [
+    {
+      "name": "WHISPER_EXECUTION_MODE",
+      "default": "isolated",
+      "required": true
+    },
+    {
+      "name": "WHISPER_RESIDENT_MIN_FREE_VRAM_MB",
+      "default": "512",
+      "required": true
+    },
+    {
+      "name": "WHISPER_GPU_SHORTAGE_POLICY",
+      "default": "wait",
+      "required": true
+    },
+    {
+      "name": "WHISPER_INTERNAL_JOB_TOKEN",
+      "default": "",
+      "required": true
+    },
     {
       "name": "WHISPER_MODEL",
       "default": "small",

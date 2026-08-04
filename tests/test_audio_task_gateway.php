@@ -198,6 +198,70 @@ hub_test('audio async admission rejects controls and persists the managed route 
     });
 });
 
+hub_test('speech transcription returns field-level Pack validation errors', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'ASR Validation Owner');
+        $token = hub_create_api_token($db, $memberId, 'asr validation token', null, null);
+        hub_test_audio_allow($db, [$token], ['speech_transcribe']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+
+        $response = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [
+            'source_artifact_id' => (string)$source['artifact_id'],
+            'diarization' => 'false',
+            'min_speakers' => '2',
+        ]);
+        $payload = hub_test_audio_payload($response);
+
+        hub_test_assert($response['status'] === 400
+            && ($payload['error'] ?? '') === 'invalid_request'
+            && ($payload['message'] ?? '') === 'min_speakers requires diarization=true'
+            && ($payload['field_errors'] ?? null) === ['min_speakers' => 'requires diarization=true'],
+            'Pack validation must identify the failing field and dependency');
+    });
+});
+
+hub_test('audio async priority is validated, persisted, and claimed first', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'ASR Priority Owner');
+        $token = hub_create_api_token($db, $memberId, 'asr priority token', null, null);
+        hub_test_audio_allow($db, [$token], ['speech_transcribe']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $lowSource = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+        $highSource = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
+
+        $lowResponse = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [
+            'source_artifact_id' => (string)$lowSource['artifact_id'],
+            'priority' => '10',
+        ]);
+        $highResponse = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [
+            'source_artifact_id' => (string)$highSource['artifact_id'],
+            'priority' => '90',
+        ]);
+        $invalidResponse = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [
+            'source_artifact_id' => (string)$highSource['artifact_id'],
+            'priority' => '101',
+        ]);
+        $low = hub_test_audio_payload($lowResponse);
+        $high = hub_test_audio_payload($highResponse);
+        $invalid = hub_test_audio_payload($invalidResponse);
+        $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+
+        hub_test_assert($lowResponse['status'] === 200 && (int)(hub_get_task($db, (int)$low['task_id'])['priority'] ?? -1) === 10, 'low priority must persist');
+        hub_test_assert($highResponse['status'] === 200 && (int)(hub_get_task($db, (int)$high['task_id'])['priority'] ?? -1) === 90, 'high priority must persist');
+        hub_test_assert((int)($claimed['id'] ?? 0) === (int)$high['task_id'], 'worker must claim higher-priority work first');
+        hub_test_assert($invalidResponse['status'] === 400
+            && ($invalid['field_errors'] ?? null) === ['priority' => 'is invalid'],
+            'out-of-range priority must return a field-level error');
+    });
+});
+
 hub_test('audio upload fails safely when its staging workspace already exists', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -345,7 +409,10 @@ hub_test('audio manual retry creates a linked task without mutating terminal his
     hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
 
     $source = hub_test_audio_source_artifact($db, $memberId, (int)$token['token_id']);
-    $created = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], ['source_artifact_id' => (string)$source['artifact_id']]);
+    $created = hub_test_audio_request($db, 'speech_transcribe', (string)$token['plain_token'], [
+        'source_artifact_id' => (string)$source['artifact_id'],
+        'priority' => '67',
+    ]);
     $taskId = (int)(hub_test_audio_payload($created)['task_id'] ?? 0);
     $original = hub_get_task($db, $taskId);
     hub_finish_task_success($db, $original ?? [], ['finished' => true]);
@@ -356,7 +423,11 @@ hub_test('audio manual retry creates a linked task without mutating terminal his
     $replacement = hub_get_task($db, (int)($retryPayload['task_id'] ?? 0));
     $after = hub_get_task($db, $taskId);
     hub_test_assert($retry['status'] === 200 && (int)($replacement['retry_of_task_id'] ?? 0) === $taskId, 'manual retry must create a linked new task');
-    hub_test_assert((int)($replacement['source_artifact_id'] ?? 0) === $source['artifact_id'] && (int)($replacement['source_task_id'] ?? 0) === $source['task_id'] && ($replacement['status'] ?? '') === 'queued', 'retry must retain a valid source lineage');
+    hub_test_assert((int)($replacement['source_artifact_id'] ?? 0) === $source['artifact_id']
+        && (int)($replacement['source_task_id'] ?? 0) === $source['task_id']
+        && (int)($replacement['priority'] ?? -1) === 67
+        && ($replacement['status'] ?? '') === 'queued',
+        'retry must retain valid source lineage and scheduling priority');
     hub_test_assert(($after['status'] ?? '') === 'success' && ($after['finished_at'] ?? '') === ($before['finished_at'] ?? ''), 'manual retry must not mutate terminal history');
 
     $upload = tempnam(sys_get_temp_dir(), '3waaihub_retry_');
@@ -603,7 +674,60 @@ hub_test('external legacy task submit stores member ownership for status access'
         $task = hub_get_task($db, $taskId);
         hub_test_assert((int)($task['owner_member_id'] ?? 0) === $memberId && (int)($task['owner_token_id'] ?? 0) === (int)$token['token_id'], 'token-authenticated legacy task must store owner columns');
         $status = hub_test_audio_request($db, 'task_status', (string)$token['plain_token'], [], ['task_id' => (string)$taskId], [], 'GET');
-        hub_test_assert($status['status'] === 200, 'external submitter must be able to read its owned legacy task');
+        $statusPayload = hub_test_audio_payload($status);
+        hub_test_assert($status['status'] === 200
+            && ($statusPayload['status'] ?? '') === 'queued'
+            && ($statusPayload['progress'] ?? null) === 0
+            && ($statusPayload['message'] ?? '') === 'Queued.',
+            'task_status must always expose stable status, progress, and displayable message fields');
+    });
+});
+
+hub_test('task status publishes bounded GPU wait diagnostics', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'GPU Wait Owner');
+        $token = hub_create_api_token($db, $memberId, 'gpu wait token', null, null);
+        hub_test_audio_allow($db, [$token], ['task_status']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 20, [], null, '127.0.0.1', [
+            'owner_member_id' => $memberId,
+            'owner_token_id' => (int)$token['token_id'],
+            'accelerator' => 'gpu',
+        ]);
+        $db->prepare(
+            "UPDATE tasks SET status = 'waiting_gpu', waiting_reason = 'unmanaged_gpu_process',
+             next_attempt_at = :next_attempt_at, waiting_detail_json = :waiting_detail_json WHERE id = :id"
+        )->execute([
+            ':next_attempt_at' => date('Y-m-d H:i:s', time() + 30),
+            ':waiting_detail_json' => json_encode([
+                'required_vram_mb' => 10000,
+                'free_vram_mb' => 768,
+                'gpu_processes' => [[
+                    'pid' => 731,
+                    'process_name' => 'ffmpeg',
+                    'used_vram_mb' => 512,
+                    'classification' => 'external',
+                ]],
+            ], JSON_THROW_ON_ERROR),
+            ':id' => $taskId,
+        ]);
+
+        $response = hub_test_audio_request($db, 'task_status', (string)$token['plain_token'], [], ['task_id' => (string)$taskId], [], 'GET');
+        $payload = hub_test_audio_payload($response);
+        hub_test_assert(($payload['waiting_reason'] ?? '') === 'unmanaged_gpu_process'
+            && ($payload['required_vram_mb'] ?? null) === 10000
+            && ($payload['free_vram_mb'] ?? null) === 768
+            && is_int($payload['retry_after_seconds'] ?? null)
+            && $payload['retry_after_seconds'] >= 0
+            && $payload['retry_after_seconds'] <= 30
+            && ($payload['gpu_processes'][0] ?? null) === [
+                'pid' => 731,
+                'process_name' => 'ffmpeg',
+                'used_vram_mb' => 512,
+                'classification' => 'external',
+            ], 'task_status must expose the stable scheduler wait contract');
     });
 });
 

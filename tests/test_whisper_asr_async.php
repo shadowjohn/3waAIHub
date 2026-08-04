@@ -24,6 +24,14 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
     hub_test_assert(($job['request_schema']['word_timestamps']['requires_when'] ?? null) === ['equals' => true, 'field' => 'language', 'not_equals' => 'auto'], 'Word timestamps must require an explicit alignment language at admission');
     hub_test_assert(($job['source_artifact_types'] ?? []) === ['audio', 'cleaned_audio', 'vocals_audio'], 'Whisper must accept managed audio sources only');
     hub_test_assert(($job['runner']['accelerator'] ?? '') === 'gpu' && ($job['runner']['required_vram_mb'] ?? 0) === 10000 && ($job['runner']['executor'] ?? '') === 'container', 'Whisper transcription must use the generic GPU container runner');
+    hub_test_assert(($job['resident'] ?? null) === [
+        'protocol' => 'service_data_v1',
+        'mode_setting' => 'WHISPER_EXECUTION_MODE',
+        'mode_value' => 'resident',
+        'min_free_vram_setting' => 'WHISPER_RESIDENT_MIN_FREE_VRAM_MB',
+        'cpu_fallback_setting' => 'WHISPER_GPU_SHORTAGE_POLICY',
+        'cpu_fallback_value' => 'cpu',
+    ], 'Whisper async transcription must support the resident asr-main protocol');
     hub_test_assert(($job['runner']['asset_mounts'] ?? []) === [
         [
             'id' => 'whisper_asr_large_v3',
@@ -98,6 +106,77 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
         && is_file(HUB_ROOT . '/packs/whisper-asr/jobs/provision_offline_models.sh')
         && is_file(HUB_ROOT . '/packs/whisper-asr/service/provision_offline_assets.py')
         && is_file(hub_test_whisper_async_runner()), 'Whisper Pack runner assets missing');
+});
+
+hub_test('Whisper ASR can select the running asr-main resident service', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $service = $installed['service'];
+    $settings = hub_service_settings_values($db, $service);
+    hub_test_assert(($settings['WHISPER_EXECUTION_MODE'] ?? '') === 'isolated'
+        && preg_match('/\A[a-f0-9]{64}\z/', (string)($settings['WHISPER_INTERNAL_JOB_TOKEN'] ?? '')) === 1,
+        'Whisper must create a private resident token while preserving isolated mode until an operator opts in');
+
+    hub_update_service_settings($db, (int)$service['id'], ['WHISPER_EXECUTION_MODE' => 'resident']);
+    hub_set_service_enabled($db, 'asr', true);
+    hub_update_service_status($db, (int)$service['id'], 'running');
+    $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
+    $taskId = hub_enqueue_owned_pack_job($db, $route, [], 1, null, '127.0.0.1');
+    $task = hub_get_task($db, $taskId);
+    $plan = hub_pack_job_resident_service($db, $task ?? [], hub_pack_job_contract_from_snapshot($task ?? []));
+
+    hub_test_assert(($plan['eligible'] ?? false) === true
+        && ($plan['service']['service_key'] ?? '') === 'asr-main'
+        && ($plan['resident']['protocol'] ?? '') === 'service_data_v1',
+        'speech_transcribe must route through the opted-in running asr-main resident service');
+
+    hub_update_service_settings($db, (int)$service['id'], ['WHISPER_GPU_SHORTAGE_POLICY' => 'cpu']);
+    $service = hub_get_service($db, (int)$service['id']) ?: $service;
+    $cpuPlan = hub_pack_job_resident_plan_for_service($db, $service, hub_pack_job_contract_from_snapshot($task ?? []));
+    hub_test_assert(is_array($cpuPlan) && hub_pack_job_resident_uses_cpu($cpuPlan), 'Whisper CPU policy must be explicit in the frozen resident contract and service settings');
+});
+
+hub_test('Whisper resident CPU policy bypasses GPU admission without evicting services', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $service = $installed['service'];
+    hub_update_service_settings($db, (int)$service['id'], [
+        'WHISPER_EXECUTION_MODE' => 'resident',
+        'WHISPER_GPU_SHORTAGE_POLICY' => 'cpu',
+    ]);
+    hub_set_service_enabled($db, 'asr', true);
+    hub_update_service_status($db, (int)$service['id'], 'running');
+    $model = hub_test_models_dir() . '/whisper/asr/large-v3';
+    if (!is_dir($model) && !mkdir($model, 0700, true) && !is_dir($model)) {
+        throw new RuntimeException('Cannot create Whisper CPU routing fixture.');
+    }
+    foreach (['config.json', 'model.bin', 'tokenizer.json'] as $path) {
+        file_put_contents($model . '/' . $path, "fixture\n", LOCK_EX);
+    }
+    $taskId = hub_enqueue_owned_pack_job($db, hub_resolve_audio_async_route($db, 'speech_transcribe'), [], 1, null, '127.0.0.1');
+    $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+    $gpuProbeCalls = 0;
+    $requests = 0;
+    $outcome = hub_run_pack_job_task($db, $task ?? [], [
+        'worker_id' => 'whisper-cpu-routing-test',
+        'gpu_probe' => static function () use (&$gpuProbeCalls): array {
+            $gpuProbeCalls++;
+            throw new RuntimeException('CPU policy must not probe GPU admission');
+        },
+        'resident_transport' => static function (string $method, string $url) use (&$requests): array {
+            $requests++;
+            if ($method === 'GET' && str_ends_with($url, '/internal/capacity')) {
+                return ['status' => 200, 'json' => ['model_state' => 'cold', 'active_runs' => 0]];
+            }
+            throw new RuntimeException('fixture intentionally has no source');
+        },
+        'command_runner' => static fn (): array => throw new RuntimeException('CPU resident path must not launch a container'),
+    ]);
+    $lease = hub_runtime_gpu_fetch($db);
+
+    hub_test_assert($gpuProbeCalls === 0 && $requests >= 1, 'CPU resident routing must skip GPU probing and use only the resident endpoint');
+    hub_test_assert(($lease === null || ($lease['state'] ?? '') === 'available') && ($outcome['status'] ?? '') === 'failed', 'CPU routing must not acquire, recover, or evict the GPU lease');
+    hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
 });
 
 hub_test('Whisper ASR resolves only ready Hub-owned asset descriptors as read-only Docker mounts', function (): void {

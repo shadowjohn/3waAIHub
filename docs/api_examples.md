@@ -34,6 +34,8 @@ curl "<BASE_URL>?mode=hello" \
 4. 用 `request_id` 查 API 記錄。
 5. 複製 curl / PHP / JS fetch 範例到外部系統。
 
+Cluster Router 回傳的 `task_id` 是 opaque string，必須原樣保存，禁止轉成整數。Native `api.php` task IDs are numeric；兩者屬於不同命名空間，不可混用。非同步音訊服務 `speech_transcribe`、`audio_cleanup`、`voice_generate` 的流程固定為 submit → status → result → artifact download → ACK；實際可用 mode 仍以 Router 即時 manifest 的 `services` 為準。
+
 可先跑 token API smoke，確認建立 token、授權 OCR、curl 呼叫、Log Explorer 查詢與 usage aggregate 都正常：
 
 ```bash
@@ -698,6 +700,7 @@ curl -X POST "<BASE_URL>?mode=speech_transcribe" \
   -F "model=large_v3" \
   -F "language=auto" \
   -F "output_srt=1" \
+  -F "priority=50" \
   -F "callback_target=myai"
 ```
 
@@ -711,6 +714,8 @@ curl -X POST "<BASE_URL>?mode=speech_transcribe" \
 ```
 
 The client must send a normal `Content-Length` header for artifact-only requests; curl supplies it for this multipart request.
+
+`priority` is optional and ranges from 0 through 100. Higher-priority work is claimed first within the same queue; retries preserve it. It never authorizes Hub to stop a resident service or an external GPU process.
 
 ### `mode=voice_generate`
 
@@ -747,6 +752,8 @@ curl -H "Authorization: Bearer <TOKEN>" "<BASE_URL>?mode=task_result&task_id=<TA
 curl -H "Authorization: Bearer <TOKEN>" -OJ "<BASE_URL>?mode=artifact&artifact_id=<ARTIFACT_ID>"
 curl -X POST "<BASE_URL>?mode=task_artifacts_ack" -H "Authorization: Bearer <TOKEN>" -F "task_id=<TASK_ID>" -F "artifact_id=<ARTIFACT_ID>"
 ```
+
+`task_status` always returns `status`, integer `progress`, and a displayable `message`. While waiting for GPU capacity it may also return `waiting_reason`, `required_vram_mb`, `free_vram_mb`, `retry_after_seconds`, and a bounded `gpu_processes` list. `retry_after_seconds` estimates the next scheduler check, not completion time. See [Whisper ASR resident operation](operations/whisper-asr-resident.md) for the `wait`, resident CPU, and Cluster routing policies.
 
 ACK records receipt and can shorten retention, but never deletes a file immediately. Defaults are one hour for failed partial uploads, 24 hours for workspace/temporary files, seven days for source media, 30 days for result artifacts, and 180 days for audit metadata. A purged artifact returns `410 Gone`.
 

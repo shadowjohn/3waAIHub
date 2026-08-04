@@ -836,6 +836,7 @@ SQL);
     hub_add_column_if_missing($db, 'tasks', 'callback_target_id', 'INTEGER NULL');
     hub_add_column_if_missing($db, 'tasks', 'waiting_reason', 'TEXT NULL');
     hub_add_column_if_missing($db, 'tasks', 'next_attempt_at', 'TEXT NULL');
+    hub_add_column_if_missing($db, 'tasks', 'waiting_detail_json', 'TEXT NULL');
     hub_add_column_if_missing($db, 'tasks', 'error_code', 'TEXT NULL');
     hub_add_column_if_missing($db, 'tasks', 'source_expires_at', 'TEXT NULL');
     hub_add_column_if_missing($db, 'tasks', 'workspace_expires_at', 'TEXT NULL');
@@ -1248,7 +1249,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'runtime_resource_leases' => ['resource_key', 'runtime_run_id', 'worker_id', 'lease_token', 'state', 'acquired_at', 'heartbeat_at', 'lease_expires_at', 'last_error', 'updated_at'],
         'resident_job_runs' => ['runtime_run_id', 'task_id', 'service_id', 'resident_run_id', 'lifecycle', 'dispatched_at', 'cancel_requested_at', 'unconfirmed_at', 'reconciled_at', 'updated_at'],
         'cluster_gpu_metric_snapshots' => ['id', 'station_id', 'sampled_at', 'gpu_json'],
-        'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
+        'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'waiting_detail_json', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
         'voice_profiles' => ['source_task_id'],
         'task_artifacts' => ['artifact_type', 'sha256', 'metadata_json', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],

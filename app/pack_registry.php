@@ -460,14 +460,16 @@ function hub_get_pack_settings_schema_from_manifest(array $manifest): array
 function hub_pack_async_job_resident_contract(mixed $resident, ?array $declaredSettings = null): ?array
 {
     if (!is_array($resident)
-        || array_diff(array_keys($resident), ['protocol', 'mode_setting', 'mode_value', 'min_free_vram_setting']) !== []
-        || count($resident) !== 4) {
+        || array_diff(array_keys($resident), ['protocol', 'mode_setting', 'mode_value', 'min_free_vram_setting', 'cpu_fallback_setting', 'cpu_fallback_value']) !== []
+        || !in_array(count($resident), [4, 6], true)) {
         return null;
     }
     $protocol = $resident['protocol'] ?? null;
     $modeSetting = $resident['mode_setting'] ?? null;
     $modeValue = $resident['mode_value'] ?? null;
     $minFreeSetting = $resident['min_free_vram_setting'] ?? null;
+    $cpuFallbackSetting = $resident['cpu_fallback_setting'] ?? null;
+    $cpuFallbackValue = $resident['cpu_fallback_value'] ?? null;
     if ($protocol !== 'service_data_v1' || $modeValue !== 'resident'
         || !is_string($modeSetting) || !is_string($minFreeSetting)
         || preg_match('/^[A-Z][A-Z0-9_]{0,63}$/', $modeSetting) !== 1
@@ -476,13 +478,24 @@ function hub_pack_async_job_resident_contract(mixed $resident, ?array $declaredS
         || ($declaredSettings !== null && (!isset($declaredSettings[$modeSetting]) || !isset($declaredSettings[$minFreeSetting])))) {
         return null;
     }
+    $hasCpuFallback = $cpuFallbackSetting !== null || $cpuFallbackValue !== null;
+    if ($hasCpuFallback && (!is_string($cpuFallbackSetting) || !is_string($cpuFallbackValue)
+        || preg_match('/^[A-Z][A-Z0-9_]{0,63}$/', $cpuFallbackSetting) !== 1
+        || preg_match('/^[a-z][a-z0-9_-]{0,31}$/', $cpuFallbackValue) !== 1
+        || in_array($cpuFallbackSetting, [$modeSetting, $minFreeSetting], true)
+        || ($declaredSettings !== null && !isset($declaredSettings[$cpuFallbackSetting])))) {
+        return null;
+    }
 
     return [
         'protocol' => 'service_data_v1',
         'mode_setting' => $modeSetting,
         'mode_value' => 'resident',
         'min_free_vram_setting' => $minFreeSetting,
-    ];
+    ] + (!$hasCpuFallback ? [] : [
+        'cpu_fallback_setting' => $cpuFallbackSetting,
+        'cpu_fallback_value' => $cpuFallbackValue,
+    ]);
 }
 
 function hub_pack_async_job_runner_asset_marker_json(mixed $marker, array $requiredPaths): ?array
@@ -1049,6 +1062,35 @@ function hub_pack_async_job_capability_requirements(mixed $requirements, array $
     return $normalized;
 }
 
+function hub_pack_job_requirement_value(mixed $value): string
+{
+    return match (true) {
+        is_bool($value) => $value ? 'true' : 'false',
+        is_int($value) => (string)$value,
+        is_string($value) && preg_match('/\A[a-zA-Z0-9_-]{1,64}\z/', $value) === 1 => $value,
+        default => 'required_value',
+    };
+}
+
+function hub_pack_job_invalid_field(string $field, string $reason): never
+{
+    if (preg_match('/\A[a-z][a-z0-9_]{0,63}\z/', $field) !== 1
+        || preg_match('/\A[a-zA-Z0-9_ =-]{1,160}\z/', $reason) !== 1) {
+        throw new InvalidArgumentException('invalid_request');
+    }
+
+    throw new InvalidArgumentException('invalid_request:' . $field . ':' . $reason);
+}
+
+function hub_pack_job_field_error(string $message): ?array
+{
+    if (preg_match('/\Ainvalid_request:([a-z][a-z0-9_]{0,63}):([a-zA-Z0-9_ =-]{1,160})\z/D', $message, $matches) !== 1) {
+        return null;
+    }
+
+    return ['field' => $matches[1], 'reason' => $matches[2]];
+}
+
 function hub_pack_job_normalize_request_input(array $input, array $contract): array
 {
     $fields = hub_pack_async_job_contract_names($contract['input_fields'] ?? null, '/^[a-z][a-z0-9_]*$/');
@@ -1072,7 +1114,7 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
                 continue;
             }
             if ($definition['required']) {
-                throw new InvalidArgumentException('invalid_request');
+                hub_pack_job_invalid_field($name, 'is required');
             }
             continue;
         }
@@ -1096,7 +1138,7 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
             }
         }
         if (!$valid) {
-            throw new InvalidArgumentException('invalid_request');
+            hub_pack_job_invalid_field($name, 'is invalid');
         }
     }
     foreach ($schema as $name => $definition) {
@@ -1105,30 +1147,30 @@ function hub_pack_job_normalize_request_input(array $input, array $contract): ar
         }
         foreach ((array)($definition['requires'] ?? []) as $field => $expected) {
             if (!array_key_exists($field, $input) || $input[$field] !== $expected) {
-                throw new InvalidArgumentException('invalid_request');
+                hub_pack_job_invalid_field($name, 'requires ' . $field . '=' . hub_pack_job_requirement_value($expected));
             }
         }
         foreach ((array)($definition['requires_all'] ?? []) as $field) {
             if (!array_key_exists($field, $input)) {
-                throw new InvalidArgumentException('invalid_request');
+                hub_pack_job_invalid_field($name, 'requires ' . $field);
             }
         }
         if (isset($definition['gte_field']) && array_key_exists($definition['gte_field'], $input)
             && $input[$name] < $input[$definition['gte_field']]) {
-            throw new InvalidArgumentException('invalid_request');
+            hub_pack_job_invalid_field($name, 'must be greater than or equal to ' . $definition['gte_field']);
         }
     }
     foreach ($schema as $name => $definition) {
         if (isset($definition['gt_field']) && array_key_exists($name, $input) && array_key_exists($definition['gt_field'], $input)
             && $input[$name] <= $input[$definition['gt_field']]) {
-            throw new InvalidArgumentException('invalid_request');
+            hub_pack_job_invalid_field($name, 'must be greater than ' . $definition['gt_field']);
         }
     }
     foreach ($schema as $name => $definition) {
         $rule = $definition['requires_when'] ?? null;
         if ($rule !== null && ($input[$name] ?? null) === $rule['equals']
             && ($input[$rule['field']] ?? null) === $rule['not_equals']) {
-            throw new InvalidArgumentException('invalid_request');
+            hub_pack_job_invalid_field($name, 'requires ' . $rule['field'] . '!=' . hub_pack_job_requirement_value($rule['not_equals']));
         }
     }
     foreach ($requirements as $capability => $values) {

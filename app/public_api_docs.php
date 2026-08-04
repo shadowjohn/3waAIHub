@@ -625,6 +625,7 @@ function hub_public_api_pack_job_async_contract(array $route): array
     }
     $fields[] = ['name' => 'callback', 'type' => 'boolean', 'required' => false];
     $fields[] = ['name' => 'callback_target', 'type' => 'string', 'required' => false];
+    $fields[] = ['name' => 'priority', 'type' => 'integer', 'required' => false, 'default' => 0, 'min' => 0, 'max' => 100];
     if ($route['source_required']) {
         $oneOf = ['file', 'source_artifact_id'];
         array_unshift(

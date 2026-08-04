@@ -665,6 +665,14 @@ hub_test('Public API audio async contracts use normalized job routes', function 
         );
 
         $fields = array_column($service['input_fields'], null, 'name');
+        hub_test_assert(
+            ($fields['priority']['type'] ?? '') === 'integer'
+            && ($fields['priority']['required'] ?? true) === false
+            && ($fields['priority']['default'] ?? null) === 0
+            && ($fields['priority']['min'] ?? null) === 0
+            && ($fields['priority']['max'] ?? null) === 100,
+            'audio async priority contract mismatch: ' . $mode
+        );
         foreach ($route['request_schema'] as $name => $definition) {
             hub_test_assert(isset($fields[$name]), 'audio async request field missing: ' . $mode . '/' . $name);
             foreach (['type', 'required', 'default', 'enum', 'max_length', 'min', 'max', 'requires', 'gte_field', 'requires_when'] as $constraint) {
@@ -726,7 +734,7 @@ hub_test('Public API audio async contracts use normalized job routes', function 
 
         $exampleInput = [];
         foreach ($fields as $field) {
-            if (($field['type'] ?? '') === 'file') {
+            if (($field['type'] ?? '') === 'file' || in_array(($field['name'] ?? null), ['source_artifact_id', 'callback', 'callback_target', 'priority'], true)) {
                 continue;
             }
             if (array_key_exists('example', $field)) {

@@ -44,6 +44,16 @@ To safely disable a station, set it disabled, refresh the cards until its modes 
 
 Router usage records customer account and Token route activity plus request and response byte reporting. V1 does **not** track departments, quotas, LLM tokens, GPU minutes, or kWh.
 
+## Async Task Identity and Audio Modes
+
+The production audio directory formally covers `speech_transcribe`, `audio_cleanup`, and `voice_generate`. A mode appears in the live Router `services` list only when an enabled station publishes a fresh, usable contract for it.
+
+Router `task_id` is an opaque string. Store it exactly and never cast it to an integer. Native `api.php` task IDs are numeric and belong to a different namespace; a Router ID and a native station ID must never be substituted for each other.
+
+The asynchronous flow is submit, poll `cluster_task_status`, read `cluster_task_result`, download each managed artifact, then POST its ID through the returned ACK URL. Status clients may rely on `status`, integer `progress`, and a displayable `message`; a GPU wait can additionally include bounded scheduling diagnostics.
+
+Before creating a child task, the Router prefers a fresh eligible station without an active GPU lease or queued work. Station priority then breaks ties. This is the cross-node fallback boundary: after the child accepts a task, Router keeps it pinned to preserve task ownership, artifacts, ACK, and idempotency. It does not migrate an accepted task or evict a resident service. `retry_after_seconds` describes the next child scheduler check, not a promised completion time.
+
 ## Station Status Contract
 
 Cron invokes `scripts/cluster_refresh.php` once per minute. Router request

@@ -1314,6 +1314,15 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
     if ($ownerMemberId <= 0) {
         return hub_gateway_error(403, 'member_required', 'Pack job submission requires an API member');
     }
+    $priority = hub_pack_job_task_priority($payload['priority'] ?? 0);
+    if ($priority === null) {
+        return hub_gateway_json(400, [
+            'ok' => false,
+            'error' => 'invalid_request',
+            'message' => 'priority is invalid',
+            'field_errors' => ['priority' => 'is invalid'],
+        ]);
+    }
     $sourceArtifactId = trim((string)($payload['source_artifact_id'] ?? ''));
     if ($sourceArtifactId !== '' && !hub_pack_job_task_has_valid_content_length()) {
         return hub_gateway_error(411, 'length_required', 'source artifact requests require Content-Length');
@@ -1324,7 +1333,7 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
     try {
         $callbackTargetId = hub_pack_job_task_callback_target_id($db, $ownerMemberId, $payload);
         $taskInput = $payload;
-        unset($taskInput['callback'], $taskInput['callback_target']);
+        unset($taskInput['callback'], $taskInput['callback_target'], $taskInput['priority']);
         $input = hub_pack_job_task_input($taskInput, $route);
         if (($route['requested_mode'] ?? '') === 'web_capture') {
             $input = hub_web_capture_validate_input($db, $input);
@@ -1339,6 +1348,15 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         }
         if ($e->getMessage() === 'url_not_allowed') {
             return hub_gateway_error(400, 'url_not_allowed', 'URL host is not allowed for web capture');
+        }
+        $fieldError = hub_pack_job_field_error($e->getMessage());
+        if ($fieldError !== null) {
+            return hub_gateway_json(400, [
+                'ok' => false,
+                'error' => 'invalid_request',
+                'message' => $fieldError['field'] . ' ' . $fieldError['reason'],
+                'field_errors' => [$fieldError['field'] => $fieldError['reason']],
+            ]);
         }
         if ($e->getMessage() === 'invalid_request') {
             return hub_gateway_error(400, 'invalid_request', 'Pack job request does not match the Pack contract');
@@ -1383,6 +1401,7 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
             'source_artifact_id' => (int)$source['id'],
             'source_task_id' => (int)$source['task_id'],
             'callback_target_id' => $callbackTargetId,
+            'priority' => $priority,
         ]);
         return hub_gateway_json(200, hub_task_submit_response($taskId));
     }
@@ -1390,6 +1409,7 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
     if (!$sourceRequired) {
         $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip(), [
             'callback_target_id' => $callbackTargetId,
+            'priority' => $priority,
         ]);
 
         return hub_gateway_json(200, hub_task_submit_response($taskId));
@@ -1406,6 +1426,7 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
     $extension = preg_match('/^[a-z0-9]{1,8}$/', $extension) ? $extension : 'bin';
     $taskId = hub_stage_owned_pack_job($db, $route, $input, $ownerMemberId, (int)($authContext['token_id'] ?? 0), hub_get_client_ip(), [
         'callback_target_id' => $callbackTargetId,
+        'priority' => $priority,
     ]);
     try {
         $input = hub_get_task($db, $taskId)['input'] ?? [];
@@ -1436,6 +1457,19 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
     }
 
     return hub_gateway_json(200, hub_task_submit_response($taskId));
+}
+
+function hub_pack_job_task_priority(mixed $value): ?int
+{
+    if (is_int($value)) {
+        $priority = $value;
+    } elseif (is_string($value) && preg_match('/\A\d{1,3}\z/', $value) === 1) {
+        $priority = (int)$value;
+    } else {
+        return null;
+    }
+
+    return $priority >= 0 && $priority <= 100 ? $priority : null;
 }
 
 function hub_pack_job_task_has_forbidden_control(array $input): bool
@@ -1948,13 +1982,14 @@ function hub_api_task_status(PDO $db, array $authContext = []): array
         'priority' => (int)$task['priority'],
         'status' => $task['status'],
         'progress' => (int)$task['progress'],
+        'message' => hub_task_status_message((string)$task['status'], is_string($task['waiting_reason'] ?? null) ? $task['waiting_reason'] : null),
         'cancel_requested' => (string)($task['input']['cancel_requested'] ?? '') === '1',
         'error_code' => $task['error_code'],
         'error_message' => $task['error_message'],
         'created_at' => $task['created_at'],
         'started_at' => $task['started_at'],
         'finished_at' => $task['finished_at'],
-    ]);
+    ] + hub_task_waiting_status_fields($task));
 }
 
 function hub_api_task_result(PDO $db, array $authContext = []): array

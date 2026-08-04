@@ -558,7 +558,7 @@ hub_test('audio-cleanup default executor dispatches its snapshotted container ru
 
         hub_test_assert($probes === [
             ['nvidia-smi', '--query-gpu=memory.free', '--format=csv,noheader,nounits'],
-            ['nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader,nounits'],
+            ['nvidia-smi', '--query-compute-apps=pid,process_name,used_memory', '--format=csv,noheader,nounits'],
         ] && $runs === 1 && ($result['status'] ?? '') === 'success', 'task-worker default executor must use the real GPU probe and not wait solely because no probe hook was supplied');
         hub_test_assert((hub_get_task($db, $taskId)['error_code'] ?? null) === null, 'default executor must not report runner_unavailable');
     } finally {

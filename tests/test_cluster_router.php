@@ -925,6 +925,20 @@ hub_test('cluster router selects the highest-priority healthy station', function
     hub_test_assert((int)($selected['id'] ?? 0) === 1, 'highest-priority healthy station must win');
 });
 
+hub_test('cluster station inventory preserves configured routing priority', function (): void {
+    $inventory = hub_cluster_station_inventory([
+        'id' => 17,
+        'station_key' => 'priority_station',
+        'priority' => 42,
+        'enabled' => 1,
+        'status_json' => json_encode(['modes' => ['speech_transcribe']], JSON_THROW_ON_ERROR),
+        'status_fetched_at' => hub_now(),
+        'last_error' => '',
+    ]);
+
+    hub_test_assert(($inventory['priority'] ?? null) === 42, 'refreshed station inventory must retain the configured routing priority');
+});
+
 hub_test('cluster router favors lower-priority unpressured stations over pressured preferred stations', function (): void {
     foreach ([
         ['gpu_free_vram_mb' => 0],
@@ -2615,11 +2629,48 @@ hub_test('cluster router maps pre-run task statuses to queued', function (): voi
 
         hub_test_assert(
             ($payload['status'] ?? null) === 'queued'
+            && ($payload['progress'] ?? null) === 0
+            && ($payload['message'] ?? null) === 'Queued.'
             && array_key_exists('status', $payload)
             && !str_contains(json_encode($payload, JSON_THROW_ON_ERROR), $status),
-            $status . ' must project to queued in public cluster status payloads'
+            $status . ' must project to a fixed public cluster status payload'
         );
     }
+});
+
+hub_test('cluster router relays bounded GPU wait diagnostics without child details', function (): void {
+    $payload = hub_cluster_router_rewrite_task_payload(
+        hub_test_reset_db(),
+        ['route_id' => 'router_task_wait', 'mode' => 'speech_transcribe'],
+        [
+            'ok' => true,
+            'task_id' => 'remote_task_42',
+            'status' => 'waiting_gpu',
+            'waiting_reason' => 'unmanaged_gpu_process',
+            'required_vram_mb' => 10000,
+            'free_vram_mb' => 768,
+            'retry_after_seconds' => 30,
+            'gpu_processes' => [[
+                'pid' => 731,
+                'process_name' => 'ffmpeg',
+                'used_vram_mb' => 512,
+                'classification' => 'external',
+            ]],
+        ],
+        'cluster_api.php',
+        'remote_task_42',
+        'status'
+    );
+
+    hub_test_assert(($payload['status'] ?? '') === 'queued'
+        && ($payload['waiting_reason'] ?? '') === 'unmanaged_gpu_process'
+        && ($payload['required_vram_mb'] ?? null) === 10000
+        && ($payload['free_vram_mb'] ?? null) === 768
+        && ($payload['retry_after_seconds'] ?? null) === 30
+        && ($payload['gpu_processes'][0]['process_name'] ?? '') === 'ffmpeg'
+        && ($payload['message'] ?? '') === 'Waiting for GPU memory used by another process.'
+        && !str_contains(json_encode($payload, JSON_THROW_ON_ERROR), 'remote_task_42'),
+        'Router must relay only the stable GPU scheduling snapshot');
 });
 
 hub_test('cluster router rewrites fake remote async dispatch responses', function (): void {
@@ -5079,7 +5130,7 @@ hub_test('cluster router guide documents the unified customer entry', function (
     $manifestEndpoint = (string)file_get_contents(HUB_ROOT . '/cluster_manifest.json.php');
     $docsEndpoint = (string)file_get_contents(HUB_ROOT . '/cluster_public_api_docs.php');
 
-    foreach (['Cluster Router Mode', '登錄 / 更新本機服務', 'cluster_api.php'] as $needle) {
+    foreach (['Cluster Router Mode', '登錄 / 更新本機服務', 'cluster_api.php', 'never cast it to an integer', 'Native `api.php` task IDs are numeric'] as $needle) {
         hub_test_assert(str_contains($guide, $needle), 'cluster guide must document ' . $needle);
     }
     foreach (['live read-only Git probes', 'cached CLI snapshot', 'complete valid set'] as $needle) {
@@ -5094,7 +5145,20 @@ hub_test('cluster public docs explain an empty Router inventory', function (): v
     $db = hub_test_reset_db();
     hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
 
-    hub_test_assert(str_contains(hub_cluster_public_api_docs_html($db), 'No Router modes are currently available.'), 'empty Router docs must explain that no mode is available');
+    $manifest = hub_cluster_public_manifest($db);
+    $docs = hub_cluster_public_api_docs_html($db);
+    hub_test_assert(str_contains($docs, 'No Router modes are currently available.'), 'empty Router docs must explain that no mode is available');
+    hub_test_assert(($manifest['production_audio_modes'] ?? null) === ['audio_cleanup', 'speech_transcribe', 'voice_generate']
+        && str_contains($docs, 'Production audio modes')
+        && str_contains($docs, 'audio_cleanup')
+        && str_contains($docs, 'speech_transcribe')
+        && str_contains($docs, 'voice_generate'),
+        'Cluster discovery must formally publish the three production audio modes even while live availability is empty');
+    hub_test_assert(str_contains((string)($manifest['async_task_contract']['task_id'] ?? ''), 'opaque string')
+        && str_contains((string)($manifest['async_task_contract']['task_id'] ?? ''), 'never cast to integer')
+        && str_contains((string)($manifest['async_task_contract']['native_difference'] ?? ''), 'Native api.php task_id is numeric')
+        && str_contains($docs, 'Async task, result, artifact, and ACK contract'),
+        'Cluster discovery must distinguish opaque Router task IDs from native numeric IDs');
 });
 
 hub_test('cluster public manifest selects only fresh contracts and rewrites router endpoints', function (): void {
@@ -5253,7 +5317,7 @@ hub_test('cluster artifact docs reserve rich metadata and ACK for rich Router mo
         'result_artifact_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
         'artifact_delivery_note' => 'Choose id and ACK via ack_url_template.',
     ];
-    foreach (['edge_tts', 'voice_generate'] as $mode) {
+    foreach (['edge_tts', 'audio_cleanup', 'speech_transcribe', 'voice_generate'] as $mode) {
         $rich = hub_cluster_rewrite_contract_endpoint(
             array_replace($contract, ['mode' => $mode]),
             'https://station.invalid/aihub/api.php',
@@ -5581,6 +5645,32 @@ hub_test('cluster voice dispatch safely relays only documented child error pairs
             'unknown profile-free voice_generate child errors must remain generic 502 responses'
         );
     });
+});
+
+hub_test('cluster router relays only structured field-level Pack validation errors', function (): void {
+    $response = hub_cluster_pack_validation_error_response(
+        hub_gateway_json(400, [
+            'ok' => false,
+            'error' => 'invalid_request',
+            'message' => 'min_speakers requires diarization=true',
+            'field_errors' => ['min_speakers' => 'requires diarization=true'],
+        ]),
+        [
+            'ok' => false,
+            'error' => 'invalid_request',
+            'message' => 'min_speakers requires diarization=true',
+            'field_errors' => ['min_speakers' => 'requires diarization=true'],
+        ]
+    );
+    $payload = json_decode((string)($response['body'] ?? ''), true);
+
+    hub_test_assert(($response['status'] ?? null) === 400
+        && ($payload['field_errors'] ?? null) === ['min_speakers' => 'requires diarization=true'],
+        'Router must retain the bounded field error needed by Cluster clients');
+    hub_test_assert(hub_cluster_pack_validation_error_response(
+        hub_gateway_json(400, ['ok' => false]),
+        ['ok' => false, 'error' => 'invalid_request', 'message' => 'private URL https://station.invalid', 'field_errors' => ['min_speakers' => 'private URL']]
+    ) === null, 'Router must reject malformed or free-form child validation errors');
 });
 
 hub_test('cluster docs example URL normalization is exact and idempotent', function (): void {

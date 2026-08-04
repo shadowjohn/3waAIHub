@@ -928,6 +928,44 @@ function hub_cluster_voice_generate_relay_response(array $response, mixed $paylo
     );
 }
 
+function hub_cluster_pack_validation_error_response(array $response, mixed $payload): ?array
+{
+    if ((int)($response['status'] ?? 0) !== 400
+        || !is_array($payload)
+        || ($payload['ok'] ?? null) !== false
+        || ($payload['error'] ?? null) !== 'invalid_request'
+        || !is_string($payload['message'] ?? null)
+        || !is_array($payload['field_errors'] ?? null)
+        || count($payload['field_errors']) !== 1
+    ) {
+        return null;
+    }
+    foreach (array_keys($payload) as $key) {
+        if (!is_string($key) || !in_array($key, ['ok', 'error', 'message', 'field_errors', 'request_id'], true)) {
+            return null;
+        }
+    }
+    if (isset($payload['request_id']) && (!is_string($payload['request_id']) || strlen($payload['request_id']) > 128)) {
+        return null;
+    }
+    $field = array_key_first($payload['field_errors']);
+    $reason = $field === null ? null : $payload['field_errors'][$field];
+    if (!is_string($field) || preg_match('/\A[a-z][a-z0-9_]{0,63}\z/', $field) !== 1
+        || !is_string($reason)
+        || preg_match('/\A(?:is required|is invalid|requires [a-z][a-z0-9_]{0,63}(?:!?=(?:true|false|-?\d+|[a-zA-Z0-9_-]{1,64}))?|must be greater than(?: or equal to)? [a-z][a-z0-9_]{0,63})\z/D', $reason) !== 1
+        || $payload['message'] !== $field . ' ' . $reason
+    ) {
+        return null;
+    }
+
+    return hub_gateway_json(400, [
+        'ok' => false,
+        'error' => 'invalid_request',
+        'message' => $field . ' ' . $reason,
+        'field_errors' => [$field => $reason],
+    ]);
+}
+
 function hub_cluster_rewrite_voice_generate_contract(array $service, string $mode = 'voice_generate'): array
 {
     if (!hub_is_voice_profile_mode($mode)) {
@@ -1114,6 +1152,13 @@ function hub_cluster_public_manifest(PDO $db): array
         'auth' => ['type' => 'bearer', 'header' => 'Authorization: Bearer <TOKEN>'],
         'generated_at' => hub_now(),
         'inventory_note' => 'Router inventory refresh may temporarily remove unavailable modes.',
+        'production_audio_modes' => ['audio_cleanup', 'speech_transcribe', 'voice_generate'],
+        'async_task_contract' => [
+            'task_id' => 'Router task_id is an opaque string; store it exactly and never cast to integer.',
+            'native_difference' => 'Native api.php task_id is numeric and belongs to a different namespace.',
+            'flow' => ['submit', 'status', 'result', 'artifact', 'ACK'],
+            'status_fields' => ['status', 'progress', 'message'],
+        ],
         'services' => $services,
     ];
 }
@@ -1229,6 +1274,17 @@ function hub_cluster_public_api_docs_html(PDO $db): string
         <div><span class="summary-label">Available modes</span><strong class="summary-value"><?= count($services) ?></strong></div>
         <div><span class="summary-label">Catalog status</span><strong class="summary-value live">Live catalog</strong></div>
         <div><span class="summary-label">Updated</span><strong class="summary-value"><?= hub_h((string)$manifest['generated_at']) ?></strong></div>
+    </section>
+
+    <section class="contract-block" aria-labelledby="production-audio-modes">
+        <h2 id="production-audio-modes">Production audio modes</h2>
+        <pre><?= hub_h($json($manifest['production_audio_modes'] ?? [])) ?></pre>
+        <p>Live availability still comes from the fresh services listed below.</p>
+    </section>
+
+    <section class="contract-block" aria-labelledby="async-task-contract">
+        <h2 id="async-task-contract">Async task, result, artifact, and ACK contract</h2>
+        <pre><?= hub_h($json($manifest['async_task_contract'] ?? [])) ?></pre>
     </section>
 
     <?php if ($services === []): ?>
@@ -1491,9 +1547,8 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         if ($profileRoute !== null && !$selfStation && hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable');
         } elseif ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
-            $response = hub_is_voice_profile_mode($mode)
-                ? hub_cluster_voice_generate_relay_response($response, $payload)
-                : null;
+            $response = hub_cluster_pack_validation_error_response($response, $payload)
+                ?? (hub_is_voice_profile_mode($mode) ? hub_cluster_voice_generate_relay_response($response, $payload) : null);
             $response ??= hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
         } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300) {
             if ($isProfileRequest && !is_array($payload)) {
@@ -2146,7 +2201,7 @@ function hub_cluster_router_api_base_url(): string
 
 function hub_cluster_router_rich_artifact_mode(?string $mode): bool
 {
-    return $mode === 'edge_tts' || hub_is_voice_profile_mode((string)$mode);
+    return $mode === 'edge_tts' || hub_is_audio_async_mode((string)$mode);
 }
 
 function hub_cluster_router_task_links(string $routeId, string $routerBase, ?string $routeMode = null): array
@@ -2281,8 +2336,13 @@ function hub_cluster_router_rewrite_task_payload(PDO $db, array $route, array $p
         if ($status !== null) {
             $response['status'] = $status;
         }
-        if ($kind === 'status' && is_int($payload['progress'] ?? null) && $payload['progress'] >= 0 && $payload['progress'] <= 100) {
-            $response['progress'] = $payload['progress'];
+        if ($kind === 'status') {
+            $response['progress'] = is_int($payload['progress'] ?? null) && $payload['progress'] >= 0 && $payload['progress'] <= 100
+                ? $payload['progress']
+                : 0;
+            $waiting = hub_cluster_router_public_waiting_fields($payload);
+            $response['message'] = hub_task_status_message($waiting === [] ? ($status ?? 'queued') : 'waiting_gpu', $waiting['waiting_reason'] ?? null);
+            $response += $waiting;
         }
         if (in_array($kind, ['status', 'cancel'], true) && is_bool($payload['cancel_requested'] ?? null)) {
             $response['cancel_requested'] = $payload['cancel_requested'];
@@ -2298,6 +2358,46 @@ function hub_cluster_router_rewrite_task_payload(PDO $db, array $route, array $p
     return array_replace($response, hub_cluster_router_task_links($routeId, $routerBase, (string)($route['mode'] ?? '')));
 }
 
+function hub_cluster_router_public_waiting_fields(array $payload): array
+{
+    $reason = $payload['waiting_reason'] ?? null;
+    if (($payload['status'] ?? null) !== 'waiting_gpu'
+        || !is_string($reason)
+        || !in_array($reason, [
+            'gpu_unavailable', 'insufficient_vram', 'unmanaged_gpu_process',
+            'resident_busy', 'resident_unknown', 'resident_service_unavailable',
+        ], true)
+    ) {
+        return [];
+    }
+    foreach (['required_vram_mb', 'free_vram_mb'] as $field) {
+        if (!array_key_exists($field, $payload)
+            || ($payload[$field] !== null && (!is_int($payload[$field]) || $payload[$field] < 0 || $payload[$field] > 1_000_000_000))) {
+            return [];
+        }
+    }
+    $retry = $payload['retry_after_seconds'] ?? null;
+    if (!is_int($retry) || $retry < 0 || $retry > 86400 || !is_array($payload['gpu_processes'] ?? null)) {
+        return [];
+    }
+    $snapshot = hub_task_waiting_detail_snapshot([
+        'required_vram_mb' => $payload['required_vram_mb'],
+        'free_vram_mb' => $payload['free_vram_mb'],
+        'gpu_processes' => $payload['gpu_processes'],
+    ]);
+    if (count($snapshot['gpu_processes']) !== count($payload['gpu_processes'])) {
+        return [];
+    }
+
+    return [
+        'waiting_reason' => $reason,
+        'required_vram_mb' => $snapshot['required_vram_mb'],
+        'free_vram_mb' => $snapshot['free_vram_mb'],
+        'retry_after_seconds' => $retry,
+        'gpu_processes' => $snapshot['gpu_processes'],
+    ];
+}
+
 function hub_cluster_router_public_task_status(mixed $status): ?string
 {
     if (!is_string($status)) {
@@ -2309,6 +2409,7 @@ function hub_cluster_router_public_task_status(mixed $status): ?string
         ? match ($status) {
             'staging',
             'waiting_gpu' => 'queued',
+            'completed', 'succeeded' => 'success',
             'timeout' => 'timed_out',
             default => $status,
         }
@@ -4943,6 +5044,7 @@ function hub_cluster_station_inventory(array $station): array
     return [
         'id' => (int)($station['id'] ?? 0),
         'station_key' => (string)($station['station_key'] ?? ''),
+        'priority' => (int)($station['priority'] ?? 0),
         'enabled' => !empty($station['enabled']),
         'fresh' => hub_cluster_station_is_fresh($station),
         'last_error' => (string)($station['last_error'] ?? ''),

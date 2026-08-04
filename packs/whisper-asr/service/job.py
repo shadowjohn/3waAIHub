@@ -8,7 +8,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from offline_paths import (
     ALIGNMENT_LANGUAGE,
@@ -196,7 +196,16 @@ def anonymous_speakers(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_path: Path) -> None:
+def run_job(
+    workspace: Path,
+    input_dir: Path,
+    output_dir: Path,
+    runner_config_path: Path,
+    *,
+    asr_loader: Callable[[str], Any] | None = None,
+    cuda_guard: Callable[[], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> None:
     workspace = workspace.resolve()
     input_dir = input_dir.resolve()
     output_dir = output_dir.resolve()
@@ -235,12 +244,17 @@ def run_job(workspace: Path, input_dir: Path, output_dir: Path, runner_config_pa
     if subtitle_reflow == "legacy_adaptive_v1" and not (output_srt or output_vtt):
         raise RuntimeError("request_invalid")
 
+    is_cancelled = cancelled or (lambda: False)
+    if is_cancelled():
+        raise RuntimeError("job_cancelled")
     configure_offline_cache()
     require_asr_assets()
-    require_cuda()
+    (cuda_guard or require_cuda)()
     started = time.monotonic()
     native_word_timestamps = word_timestamps or subtitle_reflow == "legacy_adaptive_v1"
-    segments, detected_language = transcribe(load_asr(model["model"]), source, None if language == "auto" else language, native_word_timestamps)
+    segments, detected_language = transcribe((asr_loader or load_asr)(model["model"]), source, None if language == "auto" else language, native_word_timestamps)
+    if is_cancelled():
+        raise RuntimeError("job_cancelled")
     if word_timestamps:
         require_alignment_assets(detected_language)
         segments = align(load_alignment(detected_language), segments, source, detected_language)

@@ -636,9 +636,9 @@ function hub_runtime_gpu_probe(?callable $runner = null): array
 {
     $runner ??= 'hub_run_command';
     $memory = $runner(['nvidia-smi', '--query-gpu=memory.free', '--format=csv,noheader,nounits'], 10);
-    $processes = $runner(['nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader,nounits'], 10);
+    $processes = $runner(['nvidia-smi', '--query-compute-apps=pid,process_name,used_memory', '--format=csv,noheader,nounits'], 10);
     if (($memory['exit_code'] ?? 1) !== 0 || ($processes['exit_code'] ?? 1) !== 0) {
-        return ['free_vram_mb' => 0, 'processes' => [], 'probe_error' => 'gpu_probe_failed'];
+        return ['free_vram_mb' => 0, 'processes' => [], 'process_details' => [], 'probe_error' => 'gpu_probe_failed'];
     }
     $freeVram = 0;
     foreach (preg_split('/\R/', trim((string)($memory['stdout'] ?? ''))) ?: [] as $value) {
@@ -647,9 +647,30 @@ function hub_runtime_gpu_probe(?callable $runner = null): array
         }
     }
 
+    $processDetails = [];
+    foreach (preg_split('/\R/', trim((string)($processes['stdout'] ?? ''))) ?: [] as $line) {
+        if (trim($line) === '') {
+            continue;
+        }
+        $parts = array_map('trim', explode(',', $line, 3));
+        if (count($parts) !== 3
+            || preg_match('/\A[1-9]\d{0,9}\z/', $parts[0]) !== 1
+            || preg_match('/\A\d{1,10}\z/', $parts[2]) !== 1
+            || preg_match('/\A[\x20-\x7E]{1,128}\z/D', $parts[1]) !== 1) {
+            continue;
+        }
+        $processDetails[] = [
+            'pid' => (int)$parts[0],
+            'process_name' => $parts[1],
+            'used_vram_mb' => (int)$parts[2],
+            'classification' => 'external',
+        ];
+    }
+
     return [
         'free_vram_mb' => $freeVram,
-        'processes' => hub_runtime_gpu_recovery_pids(preg_split('/\R/', trim((string)($processes['stdout'] ?? ''))) ?: []),
+        'processes' => hub_runtime_gpu_recovery_pids(array_column($processDetails, 'pid')),
+        'process_details' => $processDetails,
     ];
 }
 
@@ -661,11 +682,24 @@ function hub_runtime_gpu_preflight_result(array $run, int $requiredVramMb, int $
         ? hub_runtime_gpu_recovery_pids($probe['unmanaged_pids'])
         : array_values(array_diff(hub_runtime_gpu_recovery_pids($probe['processes'] ?? []), $owned));
     $freeVram = (int)($probe['free_vram_mb'] ?? 0);
+    $details = [];
+    foreach (is_array($probe['process_details'] ?? null) ? $probe['process_details'] : [] as $process) {
+        if (!is_array($process) || !in_array((int)($process['pid'] ?? 0), $unmanaged, true)) {
+            continue;
+        }
+        $details[] = $process;
+    }
+    $result = [
+        'required_vram_mb' => max(0, $requiredVramMb),
+        'free_vram_mb' => max(0, $freeVram),
+        'unmanaged_pids' => $unmanaged,
+        'gpu_processes' => hub_task_waiting_detail_snapshot(['gpu_processes' => $details])['gpu_processes'],
+    ];
     if ($freeVram < max(0, $requiredVramMb) + max(0, $safetyMarginMb)) {
-        return ['ok' => false, 'reason' => $unmanaged !== [] ? 'unmanaged_gpu_process' : 'insufficient_vram'];
+        return ['ok' => false, 'reason' => $unmanaged !== [] ? 'unmanaged_gpu_process' : 'insufficient_vram'] + $result;
     }
 
-    return ['ok' => true, 'reason' => null, 'unmanaged_pids' => $unmanaged];
+    return ['ok' => true, 'reason' => null] + $result;
 }
 
 function hub_runtime_gpu_active(PDO $db, array $run, array $lease, ?int $taskId = null): bool
@@ -723,7 +757,7 @@ function hub_runtime_gpu_start_allowed(PDO $db, array $run, array $lease, int $r
     return (bool)(hub_runtime_gpu_preflight_result($run, $requiredVramMb, $margin, $probe())['ok'] ?? false);
 }
 
-function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, array $lease, string $reason, int $backoffSeconds): array
+function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, array $lease, string $reason, int $backoffSeconds, array $details = []): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('runtime_gpu_wait_transaction_required');
@@ -756,12 +790,14 @@ function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, arr
         $taskStmt = $db->prepare(
             "UPDATE tasks
              SET status = 'waiting_gpu', waiting_reason = :reason, next_attempt_at = :next_attempt_at,
+                 waiting_detail_json = :waiting_detail_json,
                  lock_token = NULL, updated_at = :now
              WHERE id = :id AND task_type = 'pack_job' AND status = 'running'"
         );
         $taskStmt->execute([
             ':reason' => $reason,
             ':next_attempt_at' => $nextAttemptAt,
+            ':waiting_detail_json' => hub_task_waiting_detail_json($details),
             ':now' => $now,
             ':id' => $taskId,
         ]);
@@ -771,7 +807,7 @@ function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, arr
         }
         $db->exec('COMMIT');
 
-        return ['ok' => false, 'reason' => $reason, 'next_attempt_at' => $nextAttemptAt];
+        return ['ok' => false, 'reason' => $reason, 'next_attempt_at' => $nextAttemptAt] + hub_task_waiting_detail_snapshot($details);
     } catch (Throwable $e) {
         try {
             $db->exec('ROLLBACK');
@@ -833,7 +869,7 @@ function hub_runtime_gpu_preflight(PDO $db, int $taskId, array $run, array $leas
         return $result;
     }
 
-    return hub_runtime_gpu_wait_for_capacity($db, $taskId, $run, $lease, (string)$result['reason'], $backoffSeconds);
+    return hub_runtime_gpu_wait_for_capacity($db, $taskId, $run, $lease, (string)$result['reason'], $backoffSeconds, $result);
 }
 
 function hub_runtime_fetch_run(PDO $db, int $id): ?array

@@ -25,6 +25,87 @@ function hub_is_valid_task_queue(string $queueName): bool
     return in_array($queueName, hub_default_task_queues(), true);
 }
 
+function hub_task_status_message(string $status, ?string $waitingReason = null): string
+{
+    return match ($status) {
+        'staging' => 'Preparing input.',
+        'queued' => 'Queued.',
+        'waiting_gpu' => match ($waitingReason) {
+            'insufficient_vram' => 'Waiting for enough GPU memory.',
+            'unmanaged_gpu_process' => 'Waiting for GPU memory used by another process.',
+            'resident_busy' => 'Waiting for the resident GPU service.',
+            'resident_service_unavailable', 'resident_unknown' => 'Waiting for the resident GPU service to become ready.',
+            default => 'Waiting for GPU capacity.',
+        },
+        'running' => 'Processing.',
+        'success', 'succeeded', 'completed' => 'Completed.',
+        'failed' => 'Failed.',
+        'cancelled', 'canceled' => 'Cancelled.',
+        'timed_out', 'timeout' => 'Timed out.',
+        default => 'Task status updated.',
+    };
+}
+
+function hub_task_waiting_detail_snapshot(array $detail): array
+{
+    $snapshot = [];
+    foreach (['required_vram_mb', 'free_vram_mb'] as $field) {
+        $value = $detail[$field] ?? null;
+        $snapshot[$field] = is_int($value) && $value >= 0 && $value <= 1_000_000_000 ? $value : null;
+    }
+    $processes = [];
+    foreach (array_slice(is_array($detail['gpu_processes'] ?? null) ? $detail['gpu_processes'] : [], 0, 32) as $process) {
+        if (!is_array($process)) {
+            continue;
+        }
+        $pid = $process['pid'] ?? null;
+        $name = $process['process_name'] ?? null;
+        $vram = $process['used_vram_mb'] ?? null;
+        $classification = $process['classification'] ?? 'external';
+        if (!is_int($pid) || $pid < 1 || $pid > 1_000_000_000
+            || !is_string($name) || preg_match('/\A[\x20-\x7E]{1,128}\z/D', $name) !== 1
+            || !is_int($vram) || $vram < 0 || $vram > 1_000_000_000
+            || !in_array($classification, ['managed_task', 'managed_service', 'external', 'unknown'], true)) {
+            continue;
+        }
+        $processes[] = [
+            'pid' => $pid,
+            'process_name' => $name,
+            'used_vram_mb' => $vram,
+            'classification' => $classification,
+        ];
+    }
+    $snapshot['gpu_processes'] = $processes;
+
+    return $snapshot;
+}
+
+function hub_task_waiting_detail_json(array $detail): string
+{
+    return json_encode(hub_task_waiting_detail_snapshot($detail), JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+}
+
+function hub_task_waiting_status_fields(array $task, ?int $now = null): array
+{
+    if (($task['status'] ?? null) !== 'waiting_gpu') {
+        return [];
+    }
+    $detail = json_decode((string)($task['waiting_detail_json'] ?? ''), true);
+    $detail = hub_task_waiting_detail_snapshot(is_array($detail) ? $detail : []);
+    $nextAttempt = strtotime((string)($task['next_attempt_at'] ?? ''));
+    $now ??= time();
+
+    return [
+        'waiting_reason' => preg_match('/\A[a-z][a-z0-9_]{0,63}\z/', (string)($task['waiting_reason'] ?? '')) === 1
+            ? (string)$task['waiting_reason']
+            : 'gpu_unavailable',
+        'required_vram_mb' => $detail['required_vram_mb'],
+        'free_vram_mb' => $detail['free_vram_mb'],
+        'retry_after_seconds' => $nextAttempt === false ? 0 : max(0, $nextAttempt - $now),
+        'gpu_processes' => $detail['gpu_processes'],
+    ];
+}
+
 function hub_retention_deadline(int $seconds, ?string $from = null): string
 {
     $base = $from === null ? time() : (strtotime($from) ?: time());
@@ -119,6 +200,10 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
     if (!in_array($queueName, ['cpu', 'gpu'], true)) {
         throw new InvalidArgumentException('Invalid Pack job accelerator.');
     }
+    $priority = $lineage['priority'] ?? 0;
+    if (!is_int($priority) || $priority < 0 || $priority > 100) {
+        throw new InvalidArgumentException('Invalid Pack job priority.');
+    }
     $voiceContext = $input['voice_context'] ?? null;
     unset($input['voice_context']);
     $input = hub_pack_job_normalize_request_input($input, $route);
@@ -141,7 +226,7 @@ function hub_enqueue_owned_pack_job(PDO $db, array $route, array $input, int $ow
         $startedTransaction = true;
     }
     try {
-        $taskId = hub_enqueue_task($db, 'pack_job', $queueName, 0, $input, null, $requestedIp, $route + [
+        $taskId = hub_enqueue_task($db, 'pack_job', $queueName, $priority, $input, null, $requestedIp, $route + [
             'owner_member_id' => $ownerMemberId,
             'owner_token_id' => $ownerTokenId,
             'source_artifact_id' => $sourceArtifactId > 0 ? $sourceArtifactId : null,
@@ -393,11 +478,13 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
             'source_artifact_id' => $sourceArtifactId,
             'source_task_id' => (int)($source['task_id'] ?? 0),
             'retry_of_task_id' => $taskId,
+            'priority' => (int)($task['priority'] ?? 0),
         ]);
     }
     if (($route['source_required'] ?? true) !== true) {
         return hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
             'retry_of_task_id' => $taskId,
+            'priority' => (int)($task['priority'] ?? 0),
         ]);
     }
     $sourcePath = hub_managed_task_upload_path($taskId, (string)$sourceUploadPath);
@@ -410,6 +497,7 @@ function hub_create_manual_retry(PDO $db, int $taskId, array $authContext = []):
     unset($input['source_upload_path']);
     $retryId = hub_stage_owned_pack_job($db, $route, $input, $ownerMemberId, !empty($authContext['token_id']) ? (int)$authContext['token_id'] : (int)($task['owner_token_id'] ?? 0), $task['requested_ip'] ?? null, [
         'retry_of_task_id' => $taskId,
+        'priority' => (int)($task['priority'] ?? 0),
     ]);
     $copiedPath = null;
     try {
@@ -504,7 +592,8 @@ function hub_promote_due_waiting_gpu_task(PDO $db): bool
 
         $taskStmt = $db->prepare(
             "UPDATE tasks
-             SET status = 'queued', waiting_reason = NULL, next_attempt_at = NULL, lock_token = NULL, updated_at = :now
+             SET status = 'queued', waiting_reason = NULL, next_attempt_at = NULL, waiting_detail_json = NULL,
+                 lock_token = NULL, updated_at = :now
              WHERE id = :id AND task_type = 'pack_job' AND status = 'waiting_gpu'
                AND lock_token IS NULL AND next_attempt_at IS NOT NULL AND next_attempt_at <= :now"
         );
@@ -854,7 +943,8 @@ function hub_finish_task_failed(PDO $db, array $task, string $errorMessage): voi
 {
     $stmt = $db->prepare(
         "UPDATE tasks
-         SET status = 'failed', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
+         SET status = 'failed', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at,
+             waiting_reason = NULL, next_attempt_at = NULL, waiting_detail_json = NULL
          WHERE id = :id"
     );
     $now = hub_now();
@@ -872,7 +962,8 @@ function hub_finish_task_cancelled(PDO $db, array $task, string $message = 'canc
 {
     $stmt = $db->prepare(
         "UPDATE tasks
-         SET status = 'cancelled', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
+         SET status = 'cancelled', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at,
+             waiting_reason = NULL, next_attempt_at = NULL, waiting_detail_json = NULL
          WHERE id = :id"
     );
     $now = hub_now();
@@ -890,7 +981,8 @@ function hub_finish_task_timed_out(PDO $db, array $task, string $message = 'time
 {
     $stmt = $db->prepare(
         "UPDATE tasks
-         SET status = 'timed_out', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
+         SET status = 'timed_out', error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at,
+             waiting_reason = NULL, next_attempt_at = NULL, waiting_detail_json = NULL
          WHERE id = :id"
     );
     $now = hub_now();
@@ -972,7 +1064,8 @@ function hub_cancel_task(PDO $db, int $taskId): bool
             $stmt = $db->prepare(
                 "UPDATE tasks
                  SET status = 'cancelled', progress = 100, error_code = 'cancelled', error_message = 'cancelled',
-                     finished_at = :finished_at, updated_at = :updated_at, waiting_reason = NULL, next_attempt_at = NULL
+                     finished_at = :finished_at, updated_at = :updated_at, waiting_reason = NULL, next_attempt_at = NULL,
+                     waiting_detail_json = NULL
                  WHERE id = :id AND task_type = 'pack_job' AND status IN ('queued', 'waiting_gpu') AND lock_token IS NULL"
             );
             $stmt->execute([':finished_at' => $now, ':updated_at' => $now, ':id' => $taskId]);
@@ -4408,7 +4501,8 @@ function hub_pack_job_mark_task_terminal(PDO $db, int $taskId, string $status, ?
     $stmt = $db->prepare(
         "UPDATE tasks
          SET status = :status, progress = 100, result_json = :result_json, error_code = :error_code,
-             error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at
+             error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at,
+             waiting_reason = NULL, next_attempt_at = NULL, waiting_detail_json = NULL
          WHERE id = :id AND task_type = 'pack_job' AND status = 'running'"
     );
     $now = hub_now();

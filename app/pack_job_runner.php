@@ -92,7 +92,7 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
     }
 }
 
-function hub_pack_job_wait_without_gpu(PDO $db, int $taskId, array $run, string $reason, int $backoffSeconds): bool
+function hub_pack_job_wait_without_gpu(PDO $db, int $taskId, array $run, string $reason, int $backoffSeconds, array $details = []): bool
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_wait_transaction_required');
@@ -121,12 +121,14 @@ function hub_pack_job_wait_without_gpu(PDO $db, int $taskId, array $run, string 
         $taskStmt = $db->prepare(
             "UPDATE tasks
              SET status = 'waiting_gpu', waiting_reason = :reason, next_attempt_at = :next_attempt_at,
+                 waiting_detail_json = :waiting_detail_json,
                  lock_token = NULL, updated_at = :now
              WHERE id = :id AND task_type = 'pack_job' AND status = 'running'"
         );
         $taskStmt->execute([
             ':reason' => $reason,
             ':next_attempt_at' => hub_runtime_lease_until(max(1, $backoffSeconds)),
+            ':waiting_detail_json' => hub_task_waiting_detail_json($details),
             ':now' => $now,
             ':id' => $taskId,
         ]);
@@ -186,6 +188,19 @@ function hub_pack_job_resident_service(PDO $db, array $task, array $contract): ?
     $plan = hub_pack_job_resident_plan_for_service($db, $service, $contract);
 
     return $plan ?? ['eligible' => false, 'reason' => 'resident_service_unavailable'];
+}
+
+function hub_pack_job_resident_uses_cpu(array $residentPlan): bool
+{
+    $resident = $residentPlan['resident'] ?? null;
+    $settings = $residentPlan['settings'] ?? null;
+    if (!is_array($resident) || !is_array($settings)) {
+        return false;
+    }
+    $setting = $resident['cpu_fallback_setting'] ?? null;
+    $value = $resident['cpu_fallback_value'] ?? null;
+
+    return is_string($setting) && is_string($value) && ($settings[$setting] ?? null) === $value;
 }
 
 function hub_pack_job_resident_plan_for_service(PDO $db, array $service, array $contract, bool $requireResidentMode = true): ?array
@@ -2240,7 +2255,7 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
             "UPDATE tasks
              SET status = 'failed', progress = 100, result_json = NULL, error_code = :error_code,
                  error_message = :error_message, finished_at = :finished_at, updated_at = :updated_at,
-                 lock_token = NULL, waiting_reason = NULL, next_attempt_at = NULL
+                 lock_token = NULL, waiting_reason = NULL, next_attempt_at = NULL, waiting_detail_json = NULL
              WHERE id = :id AND task_type = 'pack_job' AND status = 'running' AND {$lockPredicate}"
         );
         $params = [
@@ -2430,11 +2445,20 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $runner = $contract['runner'];
         $runnerConfig = hub_pack_job_runner_config_for_task($contract, (array)($task['input'] ?? []));
         $residentPlan = hub_pack_job_resident_service($db, $task, $contract);
+        $residentUsesCpu = is_array($residentPlan) && !empty($residentPlan['eligible'])
+            && hub_pack_job_resident_uses_cpu($residentPlan);
         $residentTransport = isset($options['resident_transport']) && is_callable($options['resident_transport'])
             ? $options['resident_transport']
             : null;
         if ($residentPlan !== null && empty($residentPlan['eligible'])) {
-            if (hub_pack_job_wait_without_gpu($db, $taskId, $run, (string)($residentPlan['reason'] ?? 'resident_service_unavailable'), max(1, (int)($options['gpu_backoff_seconds'] ?? 30)))) {
+            if (hub_pack_job_wait_without_gpu(
+                $db,
+                $taskId,
+                $run,
+                (string)($residentPlan['reason'] ?? 'resident_service_unavailable'),
+                max(1, (int)($options['gpu_backoff_seconds'] ?? 30)),
+                ['required_vram_mb' => (int)$runner['required_vram_mb']]
+            )) {
                 return ['status' => 'waiting_gpu'];
             }
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
@@ -2483,10 +2507,33 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         } else {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'No controlled Pack job executor is configured', hub_pack_job_no_work_cleanup(), null);
         }
-        if (hub_runtime_task_requires_gpu($task)) {
+        if ($residentUsesCpu) {
+            $capacity = hub_pack_job_resident_capacity($residentPlan, $residentTransport);
+            if ($capacity !== 'cold' && $capacity !== 'ready') {
+                if (hub_pack_job_wait_without_gpu(
+                    $db,
+                    $taskId,
+                    $run,
+                    $capacity === 'running' ? 'resident_busy' : 'resident_unknown',
+                    max(1, (int)($options['gpu_backoff_seconds'] ?? 30)),
+                    ['required_vram_mb' => 0]
+                )) {
+                    return ['status' => 'waiting_gpu'];
+                }
+                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
+            }
+        }
+        if (hub_runtime_task_requires_gpu($task) && !$residentUsesCpu) {
             $gpuLease = hub_runtime_gpu_acquire_for_task($db, $task, $run, $leaseSeconds);
             if ($gpuLease === null) {
-                if (hub_pack_job_wait_without_gpu($db, $taskId, $run, 'gpu_unavailable', max(1, (int)($options['gpu_backoff_seconds'] ?? 30)))) {
+                if (hub_pack_job_wait_without_gpu(
+                    $db,
+                    $taskId,
+                    $run,
+                    'gpu_unavailable',
+                    max(1, (int)($options['gpu_backoff_seconds'] ?? 30)),
+                    ['required_vram_mb' => (int)$runner['required_vram_mb']]
+                )) {
                     return ['status' => 'waiting_gpu'];
                 }
                 return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
@@ -2496,9 +2543,11 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 : static fn (): array => hub_runtime_gpu_probe(isset($options['gpu_probe_runner']) && is_callable($options['gpu_probe_runner']) ? $options['gpu_probe_runner'] : null);
             $requiredVram = (int)$runner['required_vram_mb'];
             $safetyMargin = null;
+            $probeSnapshot = null;
             if ($residentPlan !== null) {
                 $capacity = hub_pack_job_resident_capacity($residentPlan, $residentTransport);
                 if ($capacity !== 'cold' && $capacity !== 'ready') {
+                    $probeSnapshot = $probe();
                     $waiting = hub_runtime_gpu_wait_for_capacity(
                         $db,
                         $taskId,
@@ -2506,6 +2555,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                         $gpuLease,
                         $capacity === 'running' ? 'resident_busy' : 'resident_unknown',
                         max(1, (int)($options['gpu_backoff_seconds'] ?? 30)),
+                        hub_runtime_gpu_preflight_result($run, $requiredVram, 0, $probeSnapshot),
                     );
                     if (($waiting['reason'] ?? '') !== 'lost_gpu_lease') {
                         return ['status' => 'waiting_gpu'];
@@ -2517,7 +2567,8 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                     $safetyMargin = max(0, (int)($residentPlan['settings'][$residentPlan['resident']['min_free_vram_setting']] ?? 1024));
                 }
             }
-            $preflight = hub_runtime_gpu_preflight($db, $taskId, $run, $gpuLease, $requiredVram, $probe, max(1, (int)($options['gpu_backoff_seconds'] ?? 30)), $safetyMargin);
+            $preflightProbe = $probeSnapshot === null ? $probe : static fn (): array => $probeSnapshot;
+            $preflight = hub_runtime_gpu_preflight($db, $taskId, $run, $gpuLease, $requiredVram, $preflightProbe, max(1, (int)($options['gpu_backoff_seconds'] ?? 30)), $safetyMargin);
             if (empty($preflight['ok'])) {
                 if (($preflight['reason'] ?? '') !== 'lost_gpu_lease') {
                     return ['status' => 'waiting_gpu'];
