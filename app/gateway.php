@@ -2273,17 +2273,17 @@ function hub_gateway_cluster_child_task_artifacts_ack(PDO $db, array $task, int 
 
 function hub_gateway_cluster_child_rich_artifact_contract(array $task): bool
 {
-    $voiceSynthesis = (
-        (($task['requested_mode'] ?? '') === 'voice_generate'
-            && ($task['pack_id'] ?? '') === 'tts-voxcpm2')
-        || (($task['requested_mode'] ?? '') === 'voice_generate_gpt_sovits'
-            && ($task['pack_id'] ?? '') === 'tts-gpt-sovits')
-    );
+    $mode = (string)($task['requested_mode'] ?? '');
+    $route = hub_audio_async_routes()[$mode] ?? null;
+    if (is_array($route)
+        && ($task['pack_id'] ?? '') === $route['pack_id']
+        && ($task['job'] ?? '') === $route['job']) {
+        return true;
+    }
 
-    return (($task['requested_mode'] ?? '') === 'edge_tts'
-            && ($task['pack_id'] ?? '') === 'edge-tts'
-            && ($task['job'] ?? '') === 'synthesize')
-        || ($voiceSynthesis && ($task['job'] ?? '') === 'synthesize');
+    return $mode === 'edge_tts'
+        && ($task['pack_id'] ?? '') === 'edge-tts'
+        && ($task['job'] ?? '') === 'synthesize';
 }
 
 function hub_gateway_cluster_child_task_result(PDO $db, array $task): array

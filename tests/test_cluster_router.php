@@ -5342,6 +5342,27 @@ hub_test('cluster artifact docs reserve rich metadata and ACK for rich Router mo
     );
 });
 
+hub_test('cluster child preserves rich artifacts for every production audio task', function (): void {
+    foreach (hub_audio_async_routes() as $mode => $route) {
+        hub_test_assert(
+            hub_gateway_cluster_child_rich_artifact_contract([
+                'requested_mode' => $mode,
+                'pack_id' => $route['pack_id'],
+                'job' => $route['job'],
+            ]),
+            'Cluster child must preserve type, SHA-256, and ACK for ' . $mode
+        );
+    }
+    hub_test_assert(
+        !hub_gateway_cluster_child_rich_artifact_contract([
+            'requested_mode' => 'speech_transcribe',
+            'pack_id' => 'tts-voxcpm2',
+            'job' => 'synthesize',
+        ]),
+        'Cluster child must not grant a rich artifact contract to a mismatched task'
+    );
+});
+
 hub_test('cluster voice docs expose only opaque profile task workflow fields', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
