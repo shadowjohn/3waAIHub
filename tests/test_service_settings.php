@@ -16,6 +16,25 @@ function hub_test_service_settings_request(int $serviceId, string $lang): array
     ]);
 }
 
+hub_test('service runtime lock accepts a root-created read-only lock file', function (): void {
+    $runtimeDir = sys_get_temp_dir() . '/3waaihub_runtime_lock_' . bin2hex(random_bytes(8));
+    if (!mkdir($runtimeDir, 0700)) {
+        throw new RuntimeException('Cannot create runtime lock fixture.');
+    }
+    $lockPath = $runtimeDir . '/.3waaihub-runtime.lock';
+    touch($lockPath);
+    chmod($lockPath, 0444);
+
+    try {
+        $result = hub_with_pack_runtime_lock($runtimeDir, static fn (): string => 'locked');
+        hub_test_assert($result === 'locked', 'an existing readable lock must not require write access');
+    } finally {
+        chmod($lockPath, 0600);
+        unlink($lockPath);
+        rmdir($runtimeDir);
+    }
+});
+
 hub_test('service settings defaults are created from pack schema and write env', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'ocr-ppocrv5', [

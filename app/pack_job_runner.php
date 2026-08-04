@@ -2409,6 +2409,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
     $pidInspector = null;
     $details = [];
     $cleanup = null;
+    $terminalErrorCode = null;
     $privatePromptWorkspace = null;
     $scrubPrivatePrompt = static function () use (&$privatePromptWorkspace): void {
         if ($privatePromptWorkspace !== null) {
@@ -2682,6 +2683,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             if (preg_match('/^[a-z0-9_:-]{1,120}$/i', $code) !== 1) {
                 $code = 'runtime_exit_nonzero';
             }
+            $terminalErrorCode = $code;
             return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Pack job exited unsuccessfully', $cleanup, $gpuLease);
         }
         $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, $audioProbe, $gpuLease, $contract['runner_config'] ?? null, $sourceAudioAttestation);
@@ -2695,15 +2697,18 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         if (hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds) === 'fence_lost') {
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, $started, $context, $details, $pidInspector, $gpuLease, $cleanup);
         }
-        $cleanup = $started && $context !== null
-            ? hub_pack_job_cleanup_after_started_failure($options, $context, $details, $pidInspector, 'runtime_execution_failed')
-            : hub_pack_job_no_work_cleanup();
+        if (!is_array($cleanup) || !hub_pack_job_cleanup_attested($cleanup)) {
+            $cleanup = $started && $context !== null
+                ? hub_pack_job_cleanup_after_started_failure($options, $context, $details, $pidInspector, 'runtime_execution_failed')
+                : hub_pack_job_no_work_cleanup();
+        }
+        $errorCode = $terminalErrorCode ?? hub_pack_job_failure_code($e, 'runtime_execution_failed');
         return hub_pack_job_adapter_failure(
             $db,
             $taskId,
             $run,
-            hub_pack_job_failure_code($e, 'runtime_execution_failed'),
-            'Pack job adapter failed: ' . substr($e->getMessage(), 0, 512),
+            $errorCode,
+            $terminalErrorCode === null ? 'Pack job adapter failed: ' . substr($e->getMessage(), 0, 512) : 'Pack job exited unsuccessfully',
             $cleanup,
             $gpuLease
         );

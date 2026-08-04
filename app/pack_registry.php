@@ -2051,7 +2051,14 @@ function hub_with_pack_runtime_lock(string $runtimeDir, callable $callback): mix
     if (!is_dir($runtimeDir) || is_link($runtimeDir)) {
         throw new RuntimeException('Service runtime directory is unavailable.');
     }
-    $lock = @fopen($runtimeDir . '/.3waaihub-runtime.lock', 'c');
+    $lockPath = $runtimeDir . '/.3waaihub-runtime.lock';
+    if (is_link($lockPath) || (file_exists($lockPath) && !is_file($lockPath))) {
+        throw new RuntimeException('Cannot lock service runtime directory.');
+    }
+    $lock = @fopen($lockPath, is_file($lockPath) ? 'r' : 'c');
+    if ($lock === false && is_file($lockPath) && !is_link($lockPath)) {
+        $lock = @fopen($lockPath, 'r');
+    }
     if ($lock === false || !flock($lock, LOCK_EX)) {
         if (is_resource($lock)) {
             fclose($lock);

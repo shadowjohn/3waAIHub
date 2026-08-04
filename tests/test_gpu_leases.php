@@ -530,6 +530,54 @@ hub_test('Resident Vox clone stages its managed reference and relays artifacts w
     }
 });
 
+hub_test('Resident terminal failure survives one transient Hub terminal write failure', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_resident_vox_fixture($db);
+    $terminalWrites = 0;
+    $db->sqliteCreateFunction('hub_test_fail_first_resident_terminal_write', static function () use (&$terminalWrites): int {
+        $terminalWrites++;
+        if ($terminalWrites === 1) {
+            throw new RuntimeException('transient_terminal_write_failure');
+        }
+
+        return 1;
+    }, 0);
+    $db->exec("CREATE TEMP TRIGGER fail_first_resident_terminal_write
+        BEFORE UPDATE OF state ON runtime_runs
+        WHEN NEW.state = 'failed'
+        BEGIN
+            SELECT hub_test_fail_first_resident_terminal_write();
+        END");
+    $requests = [];
+    $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+        'resident_transport' => static function (string $method, string $url, array $headers, ?array $payload) use (&$requests): array {
+            $requests[] = compact('method', 'url');
+            if ($method === 'GET' && str_ends_with($url, '/internal/capacity')) {
+                return ['status' => 200, 'json' => ['model_state' => 'ready', 'active_runs' => 0]];
+            }
+            if ($method === 'POST' && str_ends_with($url, '/internal/jobs')) {
+                return ['status' => 200, 'json' => ['run_id' => (string)($payload['run_id'] ?? ''), 'state' => 'running']];
+            }
+            if ($method === 'GET' && str_contains($url, '/internal/jobs/')) {
+                return ['status' => 200, 'json' => ['run_id' => rawurldecode((string)basename($url)), 'state' => 'failed']];
+            }
+
+            return ['status' => 500, 'json' => []];
+        },
+    ]);
+    $task = hub_get_task($db, $fixture['task_id']);
+    $resident = $db->query('SELECT lifecycle FROM resident_job_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetchColumn();
+
+    hub_test_assert(
+        ($outcome['error_code'] ?? '') === 'resident_job_failed'
+        && ($task['error_code'] ?? '') === 'resident_job_failed'
+        && $resident === 'reconciled'
+        && $terminalWrites === 2,
+        'a confirmed resident failure must retain its terminal error and cleanup attestation across a transient Hub write failure'
+    );
+});
+
 hub_test('Resident confirmation caps each status request at the remaining grace deadline', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_resident_vox_fixture($db);

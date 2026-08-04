@@ -1,6 +1,10 @@
 <?php
 declare(strict_types=1);
 
+const HUB_DB_MIGRATION_VERSION = '2026-08-04.1';
+const HUB_DB_MIGRATION_VERSION_KEY = 'db_migration_version';
+const HUB_DB_MIGRATION_SCHEMA_KEY = 'db_migration_schema_version';
+
 function hub_db(): PDO
 {
     hub_ensure_runtime_dirs();
@@ -30,8 +34,57 @@ function hub_voice_profile_active_sha_index_unique(PDO $db): ?bool
     return null;
 }
 
+function hub_db_migration_is_current(PDO $db): bool
+{
+    try {
+        $settings = $db->query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'")->fetchColumn();
+        if ($settings === false) {
+            return false;
+        }
+        $keys = [
+            HUB_DB_MIGRATION_VERSION_KEY,
+            HUB_DB_MIGRATION_SCHEMA_KEY,
+            'db_migration_voice_profiles_prompt_text_confirmed_at_v1',
+            'db_migration_voice_profiles_transcription_state_v1',
+        ];
+        $stmt = $db->prepare('SELECT key, value FROM settings WHERE key IN (?, ?, ?, ?)');
+        $stmt->execute($keys);
+        $values = array_column($stmt->fetchAll(), 'value', 'key');
+        if (
+            ($values[HUB_DB_MIGRATION_VERSION_KEY] ?? '') !== HUB_DB_MIGRATION_VERSION
+            || ($values[HUB_DB_MIGRATION_SCHEMA_KEY] ?? '') !== (string)$db->query('PRAGMA schema_version')->fetchColumn()
+            || ($values[$keys[2]] ?? '') !== '1'
+            || ($values[$keys[3]] ?? '') !== '1'
+        ) {
+            return false;
+        }
+        if ($db->query("SELECT 1 FROM runtime_runs WHERE state = 'success' LIMIT 1")->fetchColumn() !== false) {
+            return false;
+        }
+        if ($db->query("SELECT 1 FROM tasks WHERE status = 'timeout' LIMIT 1")->fetchColumn() !== false) {
+            return false;
+        }
+
+        return $db->query("SELECT 1 FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn() !== false;
+    } catch (Throwable) {
+        return false;
+    }
+}
+
+function hub_db_mark_migration_current(PDO $db): void
+{
+    hub_set_storage_setting($db, HUB_DB_MIGRATION_VERSION_KEY, HUB_DB_MIGRATION_VERSION);
+    hub_set_storage_setting($db, HUB_DB_MIGRATION_SCHEMA_KEY, (string)$db->query('PRAGMA schema_version')->fetchColumn());
+}
+
 function hub_migrate(PDO $db): void
 {
+    if (hub_db_migration_is_current($db)) {
+        if (function_exists('hub_cluster_node_reconcile_token_permissions')) {
+            hub_cluster_node_reconcile_token_permissions($db);
+        }
+        return;
+    }
     $db->exec(<<<'SQL'
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -995,6 +1048,7 @@ SQL);
     if (function_exists('hub_cluster_node_reconcile_token_permissions')) {
         hub_cluster_node_reconcile_token_permissions($db);
     }
+    hub_db_mark_migration_current($db);
 }
 
 function hub_migrate_service_logs_service_reference(PDO $db): void

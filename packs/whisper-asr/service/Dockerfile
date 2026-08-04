@@ -21,7 +21,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel \
     && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 
-COPY service/app.py service/smoke.py service/storage_smoke.py service/test_app.py ./
+COPY service/app.py service/job.py service/offline_paths.py service/subtitle_reflow.py service/smoke.py service/storage_smoke.py service/test_app.py ./
 RUN mkdir -p /tmp/home /tmp/xdg \
     && HOME=/tmp/home \
        XDG_CACHE_HOME=/tmp/xdg \
@@ -30,7 +30,7 @@ RUN mkdir -p /tmp/home /tmp/xdg \
 
 RUN python3 -m unittest -v test_app.py
 
-COPY service/job.py service/offline_paths.py service/provision_offline_assets.py service/subtitle_reflow.py jobs/speech_transcribe.sh ./
+COPY service/provision_offline_assets.py jobs/speech_transcribe.sh ./
 RUN chmod 0755 /app/speech_transcribe.sh /app/provision_offline_assets.py \
     && ln -s /app/speech_transcribe.sh /app/speech-transcribe \
     && ln -s /app/provision_offline_assets.py /app/provision-offline-assets

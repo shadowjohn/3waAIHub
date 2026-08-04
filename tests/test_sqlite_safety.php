@@ -10,6 +10,18 @@ hub_test('sqlite connection applies write safety pragmas', function (): void {
     hub_test_assert((int)$db->query('PRAGMA synchronous')->fetchColumn() === 1, 'synchronous must be NORMAL');
 });
 
+hub_test('current sqlite migration stays read-only while another worker owns the write lock', function (): void {
+    $writer = hub_test_reset_db();
+    $writer->exec('BEGIN IMMEDIATE');
+    try {
+        $reader = hub_db();
+        hub_migrate($reader);
+        hub_test_assert(strtolower((string)$reader->query('PRAGMA journal_mode')->fetchColumn()) === 'wal', 'a current migration must not compete for the write lock');
+    } finally {
+        $writer->exec('ROLLBACK');
+    }
+});
+
 hub_test('sqlite safety storage defaults exist', function (): void {
     $db = hub_test_reset_db();
 
