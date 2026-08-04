@@ -361,7 +361,7 @@ function hub_list_customer_usage(PDO $db, int $userId): array
 
 function hub_playground_supported_modes(): array
 {
-    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'bioclip', 'tts', 'edge_tts', 'chat', 'photo', 'audio', 'background_remove', 'taiwan_address', 'web_capture'];
+    return ['hello', 'translate', 'ocr', 'yolo', 'sam3', 'bioclip', 'tts', 'edge_tts', 'chat', 'photo', 'audio', 'speech_transcribe', 'background_remove', 'taiwan_address', 'web_capture'];
 }
 
 function hub_playground_parse_response(int $status, string $rawHeaders, string $contentType, string $body, int $elapsedMs): array
@@ -479,6 +479,14 @@ function hub_playground_service_options(PDO $db, ?array $user = null): array
             $audioService['mode'] = 'audio';
             $audioService['name'] = 'Gemma 4 Audio Input';
             $services[] = $audioService;
+        }
+    }
+    if ($allowedModes === null || isset($allowedModes['speech_transcribe'])) {
+        $asrService = hub_get_service_by_key($db, 'asr-main');
+        if ($asrService) {
+            $asrService['mode'] = 'speech_transcribe';
+            $asrService['name'] = 'Whisper 語音轉文字';
+            $services[] = $asrService;
         }
     }
 

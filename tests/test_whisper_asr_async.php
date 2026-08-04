@@ -163,19 +163,43 @@ hub_test('Whisper resident CPU policy bypasses GPU admission without evicting se
             $gpuProbeCalls++;
             throw new RuntimeException('CPU policy must not probe GPU admission');
         },
-        'resident_transport' => static function (string $method, string $url) use (&$requests): array {
+        'resident_transport' => static function (string $method, string $url, array $headers, ?array $payload) use (&$requests, $service): array {
             $requests++;
             if ($method === 'GET' && str_ends_with($url, '/internal/capacity')) {
                 return ['status' => 200, 'json' => ['model_state' => 'cold', 'active_runs' => 0]];
             }
-            throw new RuntimeException('fixture intentionally has no source');
+            if ($method === 'POST' && str_ends_with($url, '/internal/jobs')) {
+                $runId = (string)($payload['run_id'] ?? '');
+                $stage = hub_pack_job_resident_stage_path($service, $runId) . '/output';
+                file_put_contents($stage . '/transcript.json', json_encode([
+                    'text' => 'hello', 'segments' => [], 'language' => 'en', 'model' => 'large_v3', 'word_timestamps' => false,
+                ], JSON_THROW_ON_ERROR));
+                file_put_contents($stage . '/transcription_report.json', json_encode([
+                    'model' => 'large_v3', 'language' => 'en', 'word_timestamps' => false, 'diarization' => false,
+                    'segment_count' => 0, 'elapsed_seconds' => 1, 'subtitle_reflow_profile' => 'none',
+                    'subtitle_breaker' => 'none', 'subtitle_breakers' => [], 'timing_source' => 'whisper',
+                ], JSON_THROW_ON_ERROR));
+                return ['status' => 200, 'json' => ['run_id' => $runId, 'state' => 'running']];
+            }
+            if ($method === 'GET' && str_contains($url, '/internal/jobs/')) {
+                return ['status' => 200, 'json' => ['run_id' => rawurldecode((string)basename($url)), 'state' => 'succeeded']];
+            }
+            return ['status' => 500, 'json' => []];
         },
         'command_runner' => static fn (): array => throw new RuntimeException('CPU resident path must not launch a container'),
     ]);
     $lease = hub_runtime_gpu_fetch($db);
 
     hub_test_assert($gpuProbeCalls === 0 && $requests >= 1, 'CPU resident routing must skip GPU probing and use only the resident endpoint');
-    hub_test_assert(($lease === null || ($lease['state'] ?? '') === 'available') && ($outcome['status'] ?? '') === 'failed', 'CPU routing must not acquire, recover, or evict the GPU lease');
+    $latest = hub_get_task($db, $taskId);
+    $resident = $db->query('SELECT lifecycle FROM resident_job_runs WHERE task_id = ' . $taskId)->fetchColumn();
+    hub_test_assert(
+        ($lease === null || ($lease['state'] ?? '') === 'available')
+        && ($outcome['status'] ?? '') === 'success'
+        && ($latest['status'] ?? '') === 'success'
+        && $resident === 'reconciled',
+        'CPU resident terminal state must finalize without a GPU lease'
+    );
     hub_test_audio_cleanup_remove(hub_task_result_dir($taskId));
 });
 

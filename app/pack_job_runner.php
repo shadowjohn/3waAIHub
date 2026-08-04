@@ -2448,6 +2448,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $residentPlan = hub_pack_job_resident_service($db, $task, $contract);
         $residentUsesCpu = is_array($residentPlan) && !empty($residentPlan['eligible'])
             && hub_pack_job_resident_uses_cpu($residentPlan);
+        $run['effective_gpu_lease_required'] = hub_runtime_task_requires_gpu($task) && !$residentUsesCpu;
         $residentTransport = isset($options['resident_transport']) && is_callable($options['resident_transport'])
             ? $options['resident_transport']
             : null;
@@ -2629,6 +2630,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, $details, $pidInspector, $gpuLease);
         }
         $run = $startedRun;
+        $run['effective_gpu_lease_required'] = hub_runtime_task_requires_gpu($task) && !$residentUsesCpu;
         $context['run'] = $run;
         $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts, $voiceProfileMount);
         $fenceLost = false;

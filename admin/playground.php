@@ -21,6 +21,7 @@ function hub_playground_profiles(): array
         'chat' => ['label' => 'Chat', 'method' => 'POST', 'kind' => 'json'],
         'photo' => ['label' => '圖片問答', 'method' => 'POST', 'kind' => 'photo'],
         'audio' => ['label' => '音訊理解', 'method' => 'POST', 'kind' => 'audio'],
+        'speech_transcribe' => ['label' => 'Whisper 語音轉文字', 'method' => 'POST', 'kind' => 'speech_transcribe'],
         'background_remove' => ['label' => 'BiRefNet 去背', 'method' => 'POST', 'kind' => 'background_remove'],
         'taiwan_address' => ['label' => '台灣地址洗滌／地理編碼', 'method' => 'POST', 'kind' => 'json'],
         'web_capture' => ['label' => 'Web Screenshot', 'method' => 'POST', 'kind' => 'json'],
@@ -162,6 +163,14 @@ function hub_playground_request_payload(string $mode): array
             'text' => trim((string)($_POST['text'] ?? '這段錄音的重點是什麼？')),
             'max_tokens' => (int)($_POST['max_tokens'] ?? 512),
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
+        ];
+    }
+    if ($mode === 'speech_transcribe') {
+        return [
+            'language' => trim((string)($_POST['language'] ?? 'zh')) ?: 'zh',
+            'word_timestamps' => !empty($_POST['word_timestamps']) ? '1' : '0',
+            'output_srt' => !empty($_POST['output_srt']) ? '1' : '0',
+            'output_vtt' => !empty($_POST['output_vtt']) ? '1' : '0',
         ];
     }
     if ($mode === 'sam3') {
@@ -458,17 +467,18 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
             $options[CURLOPT_HTTPHEADER] = $headers;
             $options[CURLOPT_POSTFIELDS] = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         } else {
-            $fieldName = $mode === 'structure' ? 'file' : ($mode === 'audio' ? 'audio' : 'image');
+            $isAudioFile = in_array($mode, ['audio', 'speech_transcribe'], true);
+            $fieldName = $mode === 'structure' ? 'file' : ($isAudioFile ? 'audio' : 'image');
             $file = $_FILES[$fieldName] ?? null;
             $hasFile = is_array($file) && (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK;
             if (!$hasFile && !($mode === 'audio' && trim((string)($payload['audio_id'] ?? '')) !== '')) {
                 curl_close($ch);
-                return ['ok' => false, 'error' => 'missing_file', 'message' => $mode === 'structure' ? __('請選擇 PDF 或文件圖片。') : ($mode === 'audio' ? __('請選擇 WAV 音訊檔。') : __('請選擇圖片檔。'))];
+                return ['ok' => false, 'error' => 'missing_file', 'message' => $mode === 'structure' ? __('請選擇 PDF 或文件圖片。') : ($isAudioFile ? __('請選擇音訊檔。') : __('請選擇圖片檔。'))];
             }
             if ($hasFile) {
                 $payload[$fieldName] = new CURLFile(
                     (string)$file['tmp_name'],
-                    (string)($file['type'] ?? ($mode === 'audio' ? 'audio/wav' : 'application/octet-stream')),
+                    (string)($file['type'] ?? ($isAudioFile ? 'audio/wav' : 'application/octet-stream')),
                     (string)($file['name'] ?? $fieldName)
                 );
             }
@@ -854,6 +864,48 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'speech_transcribe') {
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n"
+            . "  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n"
+            . "  -F \"audio=@sample.wav\" $curlContinuation\n"
+            . "  -F \"language=zh\" $curlContinuation\n"
+            . "  -F \"word_timestamps=1\" $curlContinuation\n"
+            . "  -F \"output_srt=1\" $curlContinuation\n"
+            . "  -F \"output_vtt=1\"";
+        $php = <<<PHP
+\$fields = [
+    'audio' => new CURLFile('/path/to/sample.wav'),
+    'language' => 'zh',
+    'word_timestamps' => '1',
+    'output_srt' => '1',
+    'output_vtt' => '1',
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>'],
+    CURLOPT_POSTFIELDS => \$fields,
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const form = new FormData();
+const audioInput = document.querySelector('input[name="audio"]');
+form.append('audio', audioInput.files[0], 'sample.wav');
+form.append('language', 'zh');
+form.append('word_timestamps', '1');
+form.append('output_srt', '1');
+form.append('output_vtt', '1');
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer <TOKEN>' },
+  body: form
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
     if ($mode === 'background_remove') {
         $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n"
             . "  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n"
@@ -1063,7 +1115,7 @@ hub_admin_header(__('API 測試場'), $user);
     <h1><?= hub_h(__('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(__('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(__('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(__('需要 Bearer Token')) ?></strong>。<?= hub_h(__('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(__('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code></p>
+    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -1329,6 +1381,19 @@ hub_admin_header(__('API 測試場'), $user);
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(__('真實音訊理解')) ?></label>
                 <p class="muted"><?= hub_h(__('可直接上傳 WAV，或先用 mode=audio_upload 取得 audio_id 後重複追問；只支援 16kHz mono WAV、30 秒內、16MB 內。')) ?></p>
                 <p class="muted"><?= hub_h(__('Gemma4 Audio 目前是實驗性音訊理解，非正式 ASR；逐字稿或長音訊請改用 Whisper ASR。')) ?></p>
+            <?php elseif ($selectedMode === 'speech_transcribe'): ?>
+                <label><?= hub_h(__('音訊檔')) ?></label>
+                <input name="audio" type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg" required>
+                <label><?= hub_h(__('語言')) ?> language</label>
+                <select name="language">
+                    <option value="zh">zh / 中文</option>
+                    <option value="en">en / English</option>
+                    <option value="auto">auto</option>
+                </select>
+                <label><input name="word_timestamps" type="checkbox" value="1" checked> word_timestamps / <?= hub_h(__('逐字時間戳')) ?></label>
+                <label><input name="output_srt" type="checkbox" value="1" checked> output_srt / SRT <?= hub_h(__('字幕')) ?></label>
+                <label><input name="output_vtt" type="checkbox" value="1" checked> output_vtt / VTT <?= hub_h(__('字幕')) ?></label>
+                <p class="muted"><?= hub_h(__('送出後會回傳非同步 task ID；可由工作狀態與結果連結追蹤逐字稿及字幕 artifacts。')) ?></p>
             <?php elseif ($selectedMode === 'sam3'): ?>
                 <label><?= hub_h(__('圖片')) ?></label>
                 <input name="image" type="file" accept="image/*">

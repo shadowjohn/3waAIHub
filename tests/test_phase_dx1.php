@@ -26,6 +26,11 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     hub_test_assert(str_contains($page, 'Authorization: Bearer <TOKEN>'), 'examples must use token placeholder');
     hub_test_assert(!str_contains($page, '3wa_live_'), 'playground must not embed real token');
 
+    hub_test_assert(in_array('speech_transcribe', hub_playground_supported_modes(), true), 'Whisper public mode must be available in the playground');
+    foreach (['name="audio"', 'name="language"', 'name="word_timestamps"', 'name="output_srt"', 'name="output_vtt"'] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'Whisper playground form missing ' . $needle);
+    }
+
     $db = hub_test_reset_db();
     hub_install_pack($db, 'ocr-ppocrv5', [
         'service_key' => 'ocr-main',
@@ -36,6 +41,7 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     ]);
     hub_set_service_enabled($db, 'hello', true);
     hub_set_service_enabled($db, 'ocr', true);
+    hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
 
     $_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];
     $_SERVER['REQUEST_METHOD'] = 'GET';
@@ -45,6 +51,14 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
     ob_start();
     require HUB_ROOT . '/admin/playground.php';
     $html = (string)ob_get_clean();
+
+    $whisperService = hub_playground_selected_service(hub_playground_service_options($db), 'speech_transcribe');
+    hub_test_assert(($whisperService['service_key'] ?? '') === 'asr-main', 'Whisper playground mode must map to the installed asr-main service');
+    $whisperExamples = hub_playground_examples('speech_transcribe');
+    foreach (['curl', 'php', 'js'] as $kind) {
+        hub_test_assert(str_contains($whisperExamples[$kind], 'mode=speech_transcribe'), 'Whisper ' . $kind . ' example must use the public speech_transcribe mode');
+        hub_test_assert(str_contains($whisperExamples[$kind], 'sample.wav'), 'Whisper ' . $kind . ' example must upload an audio file');
+    }
 
     foreach (['hello', 'ocr', 'OCR Main', 'name="image"', 'real_inference', 'api.php?mode=ocr', '<TOKEN>', '服務尚未執行'] as $needle) {
         hub_test_assert(str_contains($html, $needle), 'rendered playground missing ' . $needle);

@@ -3524,8 +3524,11 @@ function hub_revalidate_published_pack_job_artifacts(int $taskId, array $publish
     }
 }
 
-function hub_pack_job_requires_gpu_lease(PDO $db, int $taskId): bool
+function hub_pack_job_requires_gpu_lease(PDO $db, int $taskId, ?array $run = null): bool
 {
+    if (is_bool($run['effective_gpu_lease_required'] ?? null)) {
+        return $run['effective_gpu_lease_required'];
+    }
     $stmt = $db->prepare('SELECT accelerator FROM tasks WHERE id = :id AND task_type = :task_type');
     $stmt->execute([':id' => $taskId, ':task_type' => 'pack_job']);
 
@@ -3561,7 +3564,7 @@ function hub_pack_job_active_gpu_fence(PDO $db, int $taskId, ?array $run, ?array
     if (!is_array($current)) {
         throw new RuntimeException('runtime_ownership_conflict');
     }
-    if (!hub_pack_job_requires_gpu_lease($db, $taskId)) {
+    if (!hub_pack_job_requires_gpu_lease($db, $taskId, $run)) {
         return;
     }
     if ($gpuLease === null) {
@@ -3584,7 +3587,7 @@ function hub_pack_job_terminal_fence(PDO $db, ?array $run, int $taskId, string $
     if ($runId <= 0 || $leaseToken === '') {
         throw new InvalidArgumentException('runtime_fence_invalid');
     }
-    if (hub_pack_job_requires_gpu_lease($db, $taskId)) {
+    if (hub_pack_job_requires_gpu_lease($db, $taskId, $run)) {
         if ($gpuLease === null) {
             // A Pack/version rejection can happen before any GPU acquisition or runner start.
             // Do not require a lease that was deliberately never taken, but never use this for success.
