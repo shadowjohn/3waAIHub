@@ -104,6 +104,15 @@ fix_runtime_permissions() {
   ./scripts/fix_permissions.sh
 }
 
+configure_git_hooks() {
+  if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+
+  git config --local core.hooksPath .githooks
+  echo "[3waAIHub] Git post-merge permission repair enabled."
+}
+
 install_command_worker_cron() {
   if [ "$(id -u)" = "0" ]; then
     echo "[3waAIHub] Installing command worker cron..."
@@ -166,6 +175,7 @@ fi
 mkdir -p data/cache data/uploads data/results data/logs data/logs/jobs data/logs/install data/jobs data/services
 ensure_host_models_dir
 fix_runtime_permissions
+configure_git_hooks
 
 echo "[3waAIHub] Checking environment..."
 check_app_dependencies

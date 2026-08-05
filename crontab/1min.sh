@@ -40,6 +40,11 @@ wrong_runtime_group() {
 }
 
 needs_permission_fix() {
+  if find app admin -type f ! -perm -004 -print -quit | grep -q . \
+    || find . -maxdepth 1 -type f -name '*.php' ! -perm -004 -print -quit | grep -q .; then
+    return 0
+  fi
+
   local dir
   for dir in data data/cache data/uploads data/results data/logs data/logs/jobs data/logs/tasks data/jobs data/services; do
     if [ ! -d "$dir" ] || wrong_runtime_group "$dir" || find "$dir" -maxdepth 0 \( ! -perm -020 -o ! -perm -2000 \) -print -quit | grep -q .; then

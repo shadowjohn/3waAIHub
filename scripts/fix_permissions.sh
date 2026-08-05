@@ -3,6 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+SOURCE_ONLY=0
+if [ "${1:-}" = "--source-only" ]; then
+  SOURCE_ONLY=1
+elif [ "$#" -gt 0 ]; then
+  echo "Usage: $0 [--source-only]" >&2
+  exit 2
+fi
+
 APP_USER="${APP_USER:-}"
 APP_GROUP="${APP_GROUP:-}"
 WEB_GROUP="${WEB_GROUP:-}"
@@ -35,6 +43,11 @@ done
 find . \( -path './.git' -o -path './data' \) -prune -o -type d -exec chmod u+rwx,go+rx {} +
 find . \( -path './.git' -o -path './data' \) -prune -o -type f -exec chmod u+rw,go+r {} +
 find . \( -path './.git' -o -path './data' \) -prune -o -type f -perm -0100 -exec chmod go+rx {} +
+
+if [ "$SOURCE_ONLY" = "1" ]; then
+  echo "[3waAIHub] Web-source permissions fixed."
+  exit 0
+fi
 
 for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/yolo/registry /DATA/models/ollama /DATA/models/sam3 /DATA/models/birefnet; do
   mkdir -p "$dir" 2>/dev/null || true

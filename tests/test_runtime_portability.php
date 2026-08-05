@@ -41,6 +41,16 @@ function hub_test_wsl_env_payload(string $script): string
     return $value;
 }
 
+hub_test('Linux pulls repair unreadable web source before PHP-FPM serves it', function (): void {
+    $hook = (string)file_get_contents(HUB_ROOT . '/.githooks/post-merge');
+    $cron = (string)file_get_contents(HUB_ROOT . '/crontab/1min.sh');
+    $installer = (string)file_get_contents(HUB_ROOT . '/install.sh');
+
+    hub_test_assert(str_contains($hook, 'scripts/fix_permissions.sh --source-only') && str_contains($hook, 'uname -s'), 'post-merge hook must repair Linux web-source permissions');
+    hub_test_assert(str_contains($cron, "find app admin -type f ! -perm -004"), 'cron fallback must detect unreadable web source');
+    hub_test_assert(str_contains($installer, 'configure_git_hooks'), 'installer must enable versioned Git hooks');
+});
+
 hub_test('PhaseRuntime-0 platform and path helpers keep host and container paths separate', function (): void {
     hub_test_assert(hub_platform_id('Linux') === 'linux', 'Linux platform id mismatch');
     hub_test_assert(hub_platform_id('Windows') === 'windows', 'Windows platform id mismatch');

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Git does not preserve read bits. Repair Linux web-source modes immediately
+# after a successful pull, before PHP-FPM can load the new files.
+[ "$(uname -s)" = "Linux" ] || exit 0
+cd "$(git rev-parse --show-toplevel)"
+exec bash scripts/fix_permissions.sh --source-only
