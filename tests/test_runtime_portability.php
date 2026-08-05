@@ -28,6 +28,19 @@ function hub_test_wsl_compose_payload(string $script): string
     return $value;
 }
 
+function hub_test_wsl_env_payload(string $script): string
+{
+    if (preg_match("/env_payload='([A-Za-z0-9+\\/=]+)'/", $script, $matches) !== 1) {
+        throw new RuntimeException('WSL environment payload is missing.');
+    }
+    $value = base64_decode($matches[1], true);
+    if ($value === false) {
+        throw new RuntimeException('WSL environment payload is invalid.');
+    }
+
+    return $value;
+}
+
 hub_test('PhaseRuntime-0 platform and path helpers keep host and container paths separate', function (): void {
     hub_test_assert(hub_platform_id('Linux') === 'linux', 'Linux platform id mismatch');
     hub_test_assert(hub_platform_id('Windows') === 'windows', 'Windows platform id mismatch');
@@ -398,7 +411,7 @@ hub_test('Whisper WSL Pascal service uses the explicit CUDA 11.8 compose profile
         && str_contains($compose, 'service/Dockerfile.pascal-cu118')
         && str_contains($compose, '3waaihub/whisper-asr:0.1.2-pascal-cu118')
         && str_contains($compose, 'gpus: all')
-        && str_contains($script, 'WHISPER_COMPUTE_TYPE=int8_float32')
+        && str_contains(hub_test_wsl_env_payload($script), 'WHISPER_COMPUTE_TYPE=int8_float32')
         && str_contains($compose, '/DATA/3waAIHub-runtime/services/asr-main/data:/data/service')
         && str_contains($script, "DOCKER_BUILDKIT=0 docker build --tag '3waaihub/whisper-asr:0.1.2-pascal-cu118'")
         && str_contains($script, "--file '/DATA/3waAIHub-runtime/packs/whisper-asr/service/Dockerfile.pascal-cu118'")
