@@ -757,6 +757,15 @@ hub_test('Public API audio async contracts use normalized job routes', function 
                 hub_test_assert(isset($fields[$field]), 'speech transcribe async field missing: ' . $field);
             }
             hub_test_assert(str_contains((string)$service['examples']['curl'], 'model=large_v3'), 'speech transcribe async model missing from curl');
+        } elseif ($mode === 'speech_transcribe_fast_zh') {
+            hub_test_assert(
+                ($fields['include_draft_subtitles']['type'] ?? '') === 'boolean'
+                && ($fields['include_draft_subtitles']['default'] ?? null) === false
+                && ($fields['include_draft_subtitles']['example'] ?? null) === true
+                && ($service['result_artifact_types'] ?? []) === ['transcript_json', 'transcription_report', 'draft_subtitle_srt', 'draft_segments']
+                && str_contains((string)$service['examples']['curl'], 'include_draft_subtitles=1'),
+                'fast Chinese ASR must document its optional rough subtitle flag'
+            );
         } else {
             $text = (string)($fields['text']['example'] ?? $fields['text']['default'] ?? '');
             $voicePrompt = (string)($fields['voice_prompt']['example'] ?? $fields['voice_prompt']['default'] ?? '');

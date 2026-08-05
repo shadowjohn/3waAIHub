@@ -25,10 +25,21 @@ php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=structure-main -
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=structure-main --case=structure_10page_pdf
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=docparser --case=docparser_submit_pdf
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=docparser --case=docparser_submit_10page_pdf
+php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=speech-fast-zh --case=speech_fast_zh_submit_audio
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --pack=translate-gemma12b --case=translate_mock_text
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --service=translate-main --case=translate_real_text
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --case=hello_api
 php <?= hub_h(HUB_ROOT . '/scripts/benchmark.php') ?> --case=host_smoke</pre>
+    <h2>Fast Chinese ASR L5 實際驗收</h2>
+    <p class="muted">submit smoke 只驗證 API contract，並會取消示範 task。下列命令才會以本機公開 API 跑真實 CPU 推論、校驗 artifacts，並更新 L5 狀態。</p>
+    <pre class="inline-pre">php <?= hub_h(HUB_ROOT . '/scripts/audio_packs_acceptance.php') ?> \
+  --base-url=&lt;LOCAL_API_URL&gt; \
+  --token='&lt;TOKEN&gt;' \
+  --pack=speech-fast-zh \
+  --fixture=<?= hub_h(HUB_ROOT . '/packs/llm-gemma4-12b/demo/audio_zh_smoke.wav') ?> \
+  --record-l5 \
+  --json</pre>
+    <p class="muted"><code>--record-l5</code> 僅接受 loopback API URL，避免遠端驗收結果被登記成本機狀態。</p>
 </section>
 <section class="panel">
     <h2>Benchmark 執行紀錄</h2>

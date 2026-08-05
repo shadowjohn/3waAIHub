@@ -22,6 +22,7 @@ function hub_playground_profiles(): array
         'photo' => ['label' => '圖片問答', 'method' => 'POST', 'kind' => 'photo'],
         'audio' => ['label' => '音訊理解', 'method' => 'POST', 'kind' => 'audio'],
         'speech_transcribe' => ['label' => 'Whisper 語音轉文字', 'method' => 'POST', 'kind' => 'speech_transcribe'],
+        'speech_transcribe_fast_zh' => ['label' => '快速中文語音辨識', 'method' => 'POST', 'kind' => 'speech_transcribe_fast_zh'],
         'background_remove' => ['label' => 'BiRefNet 去背', 'method' => 'POST', 'kind' => 'background_remove'],
         'taiwan_address' => ['label' => '台灣地址洗滌／地理編碼', 'method' => 'POST', 'kind' => 'json'],
         'web_capture' => ['label' => 'Web Screenshot', 'method' => 'POST', 'kind' => 'json'],
@@ -172,6 +173,9 @@ function hub_playground_request_payload(string $mode): array
             'output_srt' => !empty($_POST['output_srt']) ? '1' : '0',
             'output_vtt' => !empty($_POST['output_vtt']) ? '1' : '0',
         ];
+    }
+    if ($mode === 'speech_transcribe_fast_zh') {
+        return ['include_draft_subtitles' => !empty($_POST['include_draft_subtitles']) ? '1' : '0'];
     }
     if ($mode === 'sam3') {
         return [
@@ -467,8 +471,8 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
             $options[CURLOPT_HTTPHEADER] = $headers;
             $options[CURLOPT_POSTFIELDS] = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
         } else {
-            $isAudioFile = in_array($mode, ['audio', 'speech_transcribe'], true);
-            $fieldName = $mode === 'structure' ? 'file' : ($isAudioFile ? 'audio' : 'image');
+            $isAudioFile = in_array($mode, ['audio', 'speech_transcribe', 'speech_transcribe_fast_zh'], true);
+            $fieldName = in_array($mode, ['structure', 'speech_transcribe_fast_zh'], true) ? 'file' : ($isAudioFile ? 'audio' : 'image');
             $file = $_FILES[$fieldName] ?? null;
             $hasFile = is_array($file) && (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK;
             if (!$hasFile && !($mode === 'audio' && trim((string)($payload['audio_id'] ?? '')) !== '')) {
@@ -906,6 +910,39 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'speech_transcribe_fast_zh') {
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n"
+            . "  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n"
+            . "  -F \"file=@sample.wav\" $curlContinuation\n"
+            . "  -F \"include_draft_subtitles=1\"";
+        $php = <<<PHP
+\$fields = [
+    'file' => new CURLFile('/path/to/sample.wav'),
+    'include_draft_subtitles' => '1',
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>'],
+    CURLOPT_POSTFIELDS => \$fields,
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const form = new FormData();
+const fileInput = document.querySelector('input[name="file"]');
+form.append('file', fileInput.files[0], 'sample.wav');
+form.append('include_draft_subtitles', '1');
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer <TOKEN>' },
+  body: form
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
     if ($mode === 'background_remove') {
         $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n"
             . "  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n"
@@ -1115,7 +1152,7 @@ hub_admin_header(__('API 測試場'), $user);
     <h1><?= hub_h(__('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(__('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(__('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(__('需要 Bearer Token')) ?></strong>。<?= hub_h(__('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(__('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code></p>
+    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -1394,6 +1431,11 @@ hub_admin_header(__('API 測試場'), $user);
                 <label><input name="output_srt" type="checkbox" value="1" checked> output_srt / SRT <?= hub_h(__('字幕')) ?></label>
                 <label><input name="output_vtt" type="checkbox" value="1" checked> output_vtt / VTT <?= hub_h(__('字幕')) ?></label>
                 <p class="muted"><?= hub_h(__('送出後會回傳非同步 task ID；可由工作狀態與結果連結追蹤逐字稿及字幕 artifacts。')) ?></p>
+            <?php elseif ($selectedMode === 'speech_transcribe_fast_zh'): ?>
+                <label><?= hub_h(__('音訊檔')) ?></label>
+                <input name="file" type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg" required>
+                <label><input name="include_draft_subtitles" type="checkbox" value="1" <?= ($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST' || !empty($_POST['include_draft_subtitles']) ? 'checked' : '' ?>> include_draft_subtitles / <?= hub_h(__('產生粗字幕')) ?></label>
+                <p class="muted"><?= hub_h(__('純 CPU 中文草稿辨識；模型沒有 token 時間戳時，會輸出整段粗字幕，並在 report 標示 token_timestamps_unavailable。')) ?></p>
             <?php elseif ($selectedMode === 'sam3'): ?>
                 <label><?= hub_h(__('圖片')) ?></label>
                 <input name="image" type="file" accept="image/*">

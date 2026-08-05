@@ -46,7 +46,7 @@ Router usage records customer account and Token route activity plus request and 
 
 ## Async Task Identity and Audio Modes
 
-The production audio directory formally covers `speech_transcribe`, `audio_cleanup`, and `voice_generate`. A mode appears in the live Router `services` list only when an enabled station publishes a fresh, usable contract for it.
+The production audio directory formally covers `speech_transcribe`, `speech_transcribe_fast_zh`, `audio_cleanup`, and `voice_generate`. `speech_transcribe_fast_zh` is the CPU-only Chinese draft path; use `speech_transcribe` when precise Whisper transcription is required. A mode appears in the live Router `services` list only when an enabled station publishes a fresh, usable contract for it.
 
 Router `task_id` is an opaque string. Store it exactly and never cast it to an integer. Native `api.php` task IDs are numeric and belong to a different namespace; a Router ID and a native station ID must never be substituted for each other.
 

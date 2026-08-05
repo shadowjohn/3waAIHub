@@ -182,6 +182,42 @@ hub_test('Edge TTS Playground exposes form controls and URL-encoded examples', f
     }
 });
 
+hub_test('Fast Chinese ASR Playground exposes the L5 upload and rough subtitle contract', function (): void {
+    $page = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    foreach ([
+        "'speech_transcribe_fast_zh' => ['label' => '快速中文語音辨識', 'method' => 'POST', 'kind' => 'speech_transcribe_fast_zh']",
+        "if (\$mode === 'speech_transcribe_fast_zh')",
+        'name="file" type="file" accept="audio/*,.wav,.mp3,.m4a,.flac,.ogg" required',
+        'name="include_draft_subtitles"',
+        'token_timestamps_unavailable',
+    ] as $needle) {
+        hub_test_assert(str_contains($page, $needle), 'Fast Chinese ASR Playground missing ' . $needle);
+    }
+
+    $previousPost = $_POST;
+    try {
+        $_POST = ['include_draft_subtitles' => '1'];
+        hub_test_assert(
+            hub_playground_request_payload('speech_transcribe_fast_zh') === ['include_draft_subtitles' => '1'],
+            'Fast Chinese ASR Playground must submit the subtitle flag'
+        );
+        $_SERVER['HTTPS'] = 'on';
+        $_SERVER['HTTP_HOST'] = 'nature.focusit.tw';
+        $_SERVER['SCRIPT_NAME'] = '/3waAIHub/admin/playground.php';
+        $examples = hub_playground_examples('speech_transcribe_fast_zh');
+        foreach (['curl', 'php', 'js'] as $kind) {
+            hub_test_assert(
+                str_contains($examples[$kind], 'https://nature.focusit.tw/3waAIHub/api.php?mode=speech_transcribe_fast_zh')
+                && str_contains($examples[$kind], 'include_draft_subtitles'),
+                'Fast Chinese ASR Playground ' . $kind . ' example must publish the subtitle flag'
+            );
+        }
+        hub_test_assert(str_contains($examples['curl'], 'file=@sample.wav'), 'Fast Chinese ASR Playground curl must upload a file');
+    } finally {
+        $_POST = $previousPost;
+    }
+});
+
 hub_test('cluster Router public entry documents and endpoints remain disclosure-safe', function (): void {
     $guidePath = HUB_ROOT . '/docs/cluster-router.md';
     $manifestPath = HUB_ROOT . '/cluster_manifest.json.php';

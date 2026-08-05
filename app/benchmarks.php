@@ -116,15 +116,29 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     }
     $_POST = $hasFixture ? $form : [];
 
+    $benchmarkToken = null;
+    $benchmarkMemberId = null;
     try {
+        if (hub_is_pack_job_async_mode($mode)) {
+            $benchmarkMemberId = hub_create_api_member($db, 'Internal benchmark runner');
+            $benchmarkToken = hub_create_api_token($db, $benchmarkMemberId, 'Internal benchmark token', null, null);
+            hub_set_api_token_mode_permissions($db, (int)$benchmarkToken['token_id'], [$mode]);
+        }
         $response = hub_gateway_dispatch(
             $db,
             $mode,
             $realInference
                 ? ($jsonBody !== '' ? static fn (array $service, int $timeoutSec): array => hub_benchmark_proxy_json($service, $timeoutSec, $jsonBody) : null)
-                : static fn (): array => hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest'], is_array($bodyJson) ? $bodyJson : []))
+                : static fn (): array => hub_gateway_json(200, hub_benchmark_mock_payload($pack['manifest'], is_array($bodyJson) ? $bodyJson : [])),
+            $benchmarkToken === null ? [] : ['bearer_token' => (string)$benchmarkToken['plain_token']]
         );
     } finally {
+        if (is_array($benchmarkToken)) {
+            hub_delete_api_token($db, (int)$benchmarkToken['token_id']);
+        }
+        if ($benchmarkMemberId !== null) {
+            hub_delete_api_member($db, $benchmarkMemberId);
+        }
         $_SERVER = $oldServer;
         $_FILES = $oldFiles;
         $_POST = $oldPost;

@@ -1152,7 +1152,7 @@ function hub_cluster_public_manifest(PDO $db): array
         'auth' => ['type' => 'bearer', 'header' => 'Authorization: Bearer <TOKEN>'],
         'generated_at' => hub_now(),
         'inventory_note' => 'Router inventory refresh may temporarily remove unavailable modes.',
-        'production_audio_modes' => ['audio_cleanup', 'speech_transcribe', 'voice_generate'],
+        'production_audio_modes' => ['audio_cleanup', 'speech_transcribe', 'speech_transcribe_fast_zh', 'voice_generate'],
         'async_task_contract' => [
             'task_id' => 'Router task_id is an opaque string; store it exactly and never cast to integer.',
             'native_difference' => 'Native api.php task_id is numeric and belongs to a different namespace.',

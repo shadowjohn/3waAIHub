@@ -132,6 +132,7 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
     hub_test_assert(hub_pack_job_async_routes() === [
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup', 'accelerator' => 'gpu'],
         'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe', 'accelerator' => 'gpu'],
+        'speech_transcribe_fast_zh' => ['pack_id' => 'speech-fast-zh', 'job' => 'transcribe', 'accelerator' => 'cpu'],
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
         'edge_tts' => ['pack_id' => 'edge-tts', 'job' => 'synthesize', 'accelerator' => 'cpu'],
         'web_capture' => ['pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu'],
@@ -152,6 +153,7 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
     hub_test_assert(hub_audio_async_routes() === [
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
         'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
+        'speech_transcribe_fast_zh' => ['pack_id' => 'speech-fast-zh', 'job' => 'transcribe'],
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize'],
     ] && !hub_is_audio_async_mode('web_capture'), 'audio compatibility routes must remain audio-only');
 });

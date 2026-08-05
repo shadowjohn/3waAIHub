@@ -653,6 +653,10 @@ function hub_public_api_pack_job_async_contract(array $route): array
         );
     }
 
+    $artifactTypes = array_values(array_filter(array_map(
+        static fn (mixed $artifact): string => is_array($artifact) ? (string)($artifact['type'] ?? '') : '',
+        (array)($route['artifact_contract']['artifacts'] ?? [])
+    )));
     $contract = [
         'method' => 'POST',
         'content_type' => 'multipart/form-data',
@@ -662,6 +666,7 @@ function hub_public_api_pack_job_async_contract(array $route): array
         'output' => [
             'required_keys' => ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'],
             'result_artifact_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+            'result_artifact_types' => $artifactTypes,
             'artifact_delivery_note' => 'Choose id from result.artifacts[] and expand the artifact_url_template returned by the submit response. Task and artifact access requires the submitting Bearer Token.',
         ],
         'task_api' => [
@@ -715,6 +720,7 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         'response_content_type' => trim((string)($output['content_type'] ?? 'application/json')),
         'response_headers' => array_values(array_map('strval', is_array($output['required_headers'] ?? null) ? $output['required_headers'] : [])),
         'result_artifact_fields' => array_values(array_map('strval', is_array($output['result_artifact_fields'] ?? null) ? $output['result_artifact_fields'] : [])),
+        'result_artifact_types' => array_values(array_map('strval', is_array($output['result_artifact_types'] ?? null) ? $output['result_artifact_types'] : [])),
         'artifact_delivery_note' => trim((string)($output['artifact_delivery_note'] ?? '')),
         'error_codes' => array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : [])),
         'task_api' => hub_public_api_task_api_refs(is_array($contract['task_api'] ?? null) ? $contract['task_api'] : []),
@@ -1348,6 +1354,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                     <h3>Artifact delivery</h3>
                     <pre><?= hub_h(json_encode([
                         'result.artifacts[]' => $service['result_artifact_fields'],
+                        'types' => $service['result_artifact_types'] ?? [],
                         'note' => $service['artifact_delivery_note'] ?? '',
                     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <?php endif; ?>

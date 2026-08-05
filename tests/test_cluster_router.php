@@ -5148,12 +5148,13 @@ hub_test('cluster public docs explain an empty Router inventory', function (): v
     $manifest = hub_cluster_public_manifest($db);
     $docs = hub_cluster_public_api_docs_html($db);
     hub_test_assert(str_contains($docs, 'No Router modes are currently available.'), 'empty Router docs must explain that no mode is available');
-    hub_test_assert(($manifest['production_audio_modes'] ?? null) === ['audio_cleanup', 'speech_transcribe', 'voice_generate']
+    hub_test_assert(($manifest['production_audio_modes'] ?? null) === ['audio_cleanup', 'speech_transcribe', 'speech_transcribe_fast_zh', 'voice_generate']
         && str_contains($docs, 'Production audio modes')
         && str_contains($docs, 'audio_cleanup')
         && str_contains($docs, 'speech_transcribe')
+        && str_contains($docs, 'speech_transcribe_fast_zh')
         && str_contains($docs, 'voice_generate'),
-        'Cluster discovery must formally publish the three production audio modes even while live availability is empty');
+        'Cluster discovery must formally publish every production audio mode even while live availability is empty');
     hub_test_assert(str_contains((string)($manifest['async_task_contract']['task_id'] ?? ''), 'opaque string')
         && str_contains((string)($manifest['async_task_contract']['task_id'] ?? ''), 'never cast to integer')
         && str_contains((string)($manifest['async_task_contract']['native_difference'] ?? ''), 'Native api.php task_id is numeric')
@@ -5317,7 +5318,7 @@ hub_test('cluster artifact docs reserve rich metadata and ACK for rich Router mo
         'result_artifact_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
         'artifact_delivery_note' => 'Choose id and ACK via ack_url_template.',
     ];
-    foreach (['edge_tts', 'audio_cleanup', 'speech_transcribe', 'voice_generate'] as $mode) {
+    foreach (['edge_tts', 'audio_cleanup', 'speech_transcribe', 'speech_transcribe_fast_zh', 'voice_generate'] as $mode) {
         $rich = hub_cluster_rewrite_contract_endpoint(
             array_replace($contract, ['mode' => $mode]),
             'https://station.invalid/aihub/api.php',

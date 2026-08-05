@@ -101,20 +101,25 @@ hub_test('audio async routes are fixed and resolve installed Pack versions', fun
     hub_test_assert($routes === [
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
         'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
+        'speech_transcribe_fast_zh' => ['pack_id' => 'speech-fast-zh', 'job' => 'transcribe'],
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize'],
     ], 'audio route map must not be client-configurable');
 
     $whisper = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
+    $fast = hub_install_pack($db, 'speech-fast-zh', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'speech_transcribe_fast_zh', true);
     $tts = hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
     $asrRoute = hub_resolve_audio_async_route($db, 'speech_transcribe');
+    $fastRoute = hub_resolve_audio_async_route($db, 'speech_transcribe_fast_zh');
     $ttsRoute = hub_resolve_audio_async_route($db, 'voice_generate');
     foreach ([
-        [$asrRoute, 'speech_transcribe', 'whisper-asr', (string)$whisper['service']['pack_version'], 'transcribe'],
-        [$ttsRoute, 'voice_generate', 'tts-voxcpm2', (string)$tts['service']['pack_version'], 'synthesize'],
-    ] as [$route, $mode, $packId, $packVersion, $job]) {
+        [$asrRoute, 'speech_transcribe', 'whisper-asr', (string)$whisper['service']['pack_version'], 'transcribe', 'gpu'],
+        [$fastRoute, 'speech_transcribe_fast_zh', 'speech-fast-zh', (string)$fast['service']['pack_version'], 'transcribe', 'cpu'],
+        [$ttsRoute, 'voice_generate', 'tts-voxcpm2', (string)$tts['service']['pack_version'], 'synthesize', 'gpu'],
+    ] as [$route, $mode, $packId, $packVersion, $job, $accelerator]) {
         hub_test_assert(($route['requested_mode'] ?? '') === $mode, 'requested public mode must persist');
         hub_test_assert(($route['pack_id'] ?? '') === $packId && ($route['pack_version'] ?? '') === $packVersion && ($route['job'] ?? '') === $job, 'installed Pack route snapshot mismatch');
-        hub_test_assert(($route['runtime_mode'] ?? '') === 'job' && ($route['accelerator'] ?? '') === 'gpu' && !empty($route['route_resolved_at']), 'audio route runtime snapshot mismatch');
+        hub_test_assert(($route['runtime_mode'] ?? '') === 'job' && ($route['accelerator'] ?? '') === $accelerator && !empty($route['route_resolved_at']), 'audio route runtime snapshot mismatch');
     }
     hub_test_assert(($ttsRoute['source_required'] ?? true) === false && ($ttsRoute['source_artifact_types'] ?? null) === [], 'voice_generate must not inherit the audio-source requirement');
 

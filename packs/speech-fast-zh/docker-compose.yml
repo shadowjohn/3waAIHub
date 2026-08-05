@@ -1,0 +1,5 @@
+services:
+  speech-fast-zh:
+    image: 3waaihub/speech-fast-zh:0.1.0
+    build:
+      context: ./service

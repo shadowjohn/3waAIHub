@@ -100,6 +100,7 @@ function hub_pack_job_async_routes(): array
     return [
         'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup', 'accelerator' => 'gpu'],
         'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe', 'accelerator' => 'gpu'],
+        'speech_transcribe_fast_zh' => ['pack_id' => 'speech-fast-zh', 'job' => 'transcribe', 'accelerator' => 'cpu'],
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
         'voice_generate_gpt_sovits' => ['pack_id' => 'tts-gpt-sovits', 'job' => 'synthesize', 'accelerator' => 'gpu'],
         'edge_tts' => ['pack_id' => 'edge-tts', 'job' => 'synthesize', 'accelerator' => 'cpu'],
@@ -351,7 +352,7 @@ function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
 function hub_audio_async_routes(): array
 {
     $routes = [];
-    foreach (['audio_cleanup', 'speech_transcribe', 'voice_generate', 'voice_generate_gpt_sovits'] as $mode) {
+    foreach (['audio_cleanup', 'speech_transcribe', 'speech_transcribe_fast_zh', 'voice_generate', 'voice_generate_gpt_sovits'] as $mode) {
         $route = hub_pack_job_async_routes()[$mode];
         $routes[$mode] = ['pack_id' => $route['pack_id'], 'job' => $route['job']];
     }
@@ -850,7 +851,7 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
     $normalized = [];
     foreach ($schema as $name => $definition) {
         if (!is_string($name) || !isset($allowed[$name]) || !is_array($definition)
-            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'max_length', 'min', 'max', 'requires', 'requires_all', 'gte_field', 'gt_field', 'requires_when']) !== []) {
+            || array_diff(array_keys($definition), ['type', 'required', 'enum', 'default', 'example', 'max_length', 'min', 'max', 'requires', 'requires_all', 'gte_field', 'gt_field', 'requires_when']) !== []) {
             return null;
         }
         $type = (string)($definition['type'] ?? 'string');
@@ -950,6 +951,13 @@ function hub_pack_async_job_request_schema(mixed $schema, array $fields): ?array
                 return null;
             }
             $item['default'] = $default;
+        }
+        if (array_key_exists('example', $definition)) {
+            $example = $definition['example'];
+            if (!hub_pack_async_job_request_schema_scalar_valid($example, $item)) {
+                return null;
+            }
+            $item['example'] = $example;
         }
         $normalized[$name] = $item;
     }

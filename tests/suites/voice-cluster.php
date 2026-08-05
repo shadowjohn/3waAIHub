@@ -8,5 +8,6 @@ return [
     __DIR__ . '/../test_tts_gpt_sovits.php',
     __DIR__ . '/../test_cluster_router.php',
     __DIR__ . '/../test_tts_gpt_sovits_cluster.php',
+    __DIR__ . '/../test_speech_fast_zh_pack.php',
     __DIR__ . '/../test_public_api_docs.php',
 ];

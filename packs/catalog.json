@@ -74,6 +74,15 @@
       "featured": true
     },
     {
+      "id": "speech-fast-zh",
+      "name": "Fast Chinese Draft ASR",
+      "version": "0.1.0",
+      "category": "asr",
+      "description": "輕量 CPU 中文快速語音辨識，輸出保留原文與台灣繁體草稿，並可選擇粗略字幕。",
+      "path": "packs/speech-fast-zh",
+      "featured": true
+    },
+    {
       "id": "tts-voxcpm2",
       "name": "VoxCPM2 Experimental TTS Service",
       "version": "0.1.0",

@@ -1,0 +1,173 @@
+{
+  "schema_version": "0.1",
+  "id": "speech-fast-zh",
+  "name": "Fast Chinese Draft ASR",
+  "version": "0.1.0",
+  "category": "asr",
+  "type": "internal_task",
+  "execution_type": "async_task",
+  "runtime_level": "L5-benchmark-ready",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": true,
+  "default_mode": "speech_transcribe_fast_zh",
+  "description": "輕量 CPU 中文快速語音辨識，輸出保留原文與台灣繁體草稿，並可選擇粗略字幕。",
+  "runtime": {
+    "kind": "internal_task"
+  },
+  "platform_targets": {
+    "linux-docker": true
+  },
+  "runner_build": {
+    "context": "service",
+    "dockerfile": "Dockerfile",
+    "image": "3waaihub/speech-fast-zh:0.1.0"
+  },
+  "gateway": {
+    "invoke_path": "task_submit:pack_job",
+    "methods": ["POST"],
+    "timeout_sec": 600,
+    "max_upload_mb": 200,
+    "require_service_enabled": true
+  },
+  "l5_contract": {
+    "endpoint": "api.php?mode=speech_transcribe_fast_zh",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "task_type": "pack_job",
+    "input": {
+      "fields": [
+        {"name": "file", "type": "file", "required": false, "example": "sample.wav", "max_mb": 200, "one_of": ["file", "source_artifact_id"], "one_of_required": true},
+        {"name": "source_artifact_id", "type": "integer", "required": false, "min": 1, "one_of": ["file", "source_artifact_id"], "one_of_required": true},
+        {"name": "include_draft_subtitles", "type": "boolean", "required": false, "default": false, "example": true},
+        {"name": "callback", "type": "boolean", "required": false},
+        {"name": "callback_target", "type": "string", "required": false},
+        {"name": "priority", "type": "integer", "required": false, "default": 0, "min": 0, "max": 100}
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "task_id", "status", "status_url", "result_url", "log_url", "cancel_url", "artifact_url_template"],
+      "result_artifact_fields": ["id", "type", "mime_type", "size_bytes", "sha256"],
+      "artifact_types": ["transcript_json", "transcription_report", "draft_subtitle_srt", "draft_segments"]
+    },
+    "task_api": {
+      "status": "GET api.php?mode=task_status&task_id={task_id}",
+      "result": "GET api.php?mode=task_result&task_id={task_id}",
+      "log": "GET api.php?mode=task_log&task_id={task_id}",
+      "cancel": "POST api.php?mode=task_cancel&task_id={task_id}",
+      "artifact": "GET api.php?mode=artifact&artifact_id={artifact_id}"
+    },
+    "errors": ["method_not_allowed", "member_required", "payload_too_large", "invalid_request", "source_required", "source_ambiguous", "source_artifact_invalid", "source_artifact_not_found", "missing_token", "token_mode_not_allowed"],
+    "benchmark": {
+      "supported": true,
+      "cases": [
+        {"id": "speech_fast_zh_submit_audio", "name": "Fast Chinese ASR async submit smoke", "type": "async_submit", "mode": "speech_transcribe_fast_zh", "method": "POST", "fixture": "packs/llm-gemma4-12b/demo/audio_zh_smoke.wav", "fixture_field": "file", "form": {"include_draft_subtitles": "1"}, "expected_keys": ["ok", "task_id", "status", "status_url", "result_url", "log_url", "cancel_url", "artifact_url_template"]},
+        {"id": "speech_fast_zh_async_complete", "name": "Fast Chinese ASR real async public API acceptance", "type": "external_acceptance", "mode": "speech_transcribe_fast_zh", "method": "POST", "real_inference": true}
+      ]
+    }
+  },
+  "async_jobs": [
+    {
+      "job": "transcribe",
+      "input": {
+        "fields": ["include_draft_subtitles"],
+        "source_artifact_types": ["audio", "cleaned_audio", "vocals_audio"],
+        "request_schema": {
+          "include_draft_subtitles": {"type": "boolean", "required": false, "default": false, "example": true}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/speech-fast-zh:0.1.0",
+        "entrypoint": ["/app/speech-fast-zh"],
+        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
+        "output_dir": "output",
+        "accelerator": "cpu",
+        "required_vram_mb": 0,
+        "timeout_seconds": 600,
+        "executor": "container",
+        "asset_mounts": [
+          {
+            "id": "speech_fast_zh_paraformer",
+            "storage": "models",
+            "host_subdir": "speech-fast-zh/paraformer-zh-small-2024-03-09",
+            "container_path": "/models/paraformer",
+            "required_paths": ["model.int8.onnx", "tokens.txt", ".aihub-speech-fast-zh-ready.json"],
+            "marker_json": {
+              "path": ".aihub-speech-fast-zh-ready.json",
+              "required_strings": {
+                "schema": "aihub-speech-fast-zh/v1",
+                "model": "sherpa-onnx-paraformer-zh-small-2024-03-09",
+                "model_sha256": "3ef6c19369b912f7caf3cef8e545c5ccd1a33d9d7ec792a46668dc41c4b229ec",
+                "tokens_sha256": "4b2d964e18b9cf139b473003b6698fb2ed9a2a5ec55b93daa677b28f578897aa"
+              },
+              "exact_keys": ["schema", "model", "model_sha256", "tokens_sha256"]
+            }
+          }
+        ]
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "transcript_json",
+            "path": "transcript.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 4194304,
+            "json": {"required_keys": ["raw_text", "text", "language", "engine", "provider", "model", "audio_seconds", "elapsed_seconds", "rtf"]}
+          },
+          {
+            "type": "transcription_report",
+            "path": "transcription_report.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 65536,
+            "json": {"required_keys": ["engine", "provider", "model", "audio_seconds", "elapsed_seconds", "rtf", "draft_subtitles", "warnings"]}
+          },
+          {
+            "type": "draft_subtitle_srt",
+            "path": "draft_subtitle.srt",
+            "mime_types": ["application/x-subrip", "text/plain"],
+            "max_bytes": 4194304,
+            "when": {"input": "include_draft_subtitles", "equals": true},
+            "text": {"max_bytes": 4194304}
+          },
+          {
+            "type": "draft_segments",
+            "path": "draft_segments.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 4194304,
+            "when": {"input": "include_draft_subtitles", "equals": true},
+            "json": {"required_keys": ["segments"]}
+          }
+        ]
+      }
+    }
+  ],
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": false,
+    "min_vram_mb": 0,
+    "cpu_fallback": true,
+    "min_compute_capability": "0.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "cpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "speech-fast-zh",
+        "container_path": "/models/speech-fast-zh",
+        "read_only": false
+      }
+    ]
+  },
+  "env": [],
+  "preflight": {
+    "checks": ["docker"]
+  },
+  "install": {
+    "default_service_key": "speech-fast-zh-main",
+    "compose_project": "3waaihub_speech_fast_zh"
+  }
+}

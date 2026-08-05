@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/../app/bootstrap.php';
+
 if (PHP_SAPI !== 'cli') {
     http_response_code(403);
     exit('CLI only');
@@ -10,17 +12,17 @@ function hub_audio_acceptance_main(array $argv): int
 {
     $options = getopt('', [
         'base-url:', 'token:', 'pack:', 'fixture::', 'callback-target::', 'voice-profile-id::',
-        'text::', 'timeout::', 'subtitle-reflow::', 'json', 'help',
+        'text::', 'timeout::', 'subtitle-reflow::', 'record-l5', 'json', 'help',
     ]);
     if (isset($options['help'])) {
-        echo "Usage: php scripts/audio_packs_acceptance.php --base-url=<api.php URL> --token=<token> --pack=audio-cleanup|whisper-asr|tts-voxcpm2|tts-gpt-sovits|all [--fixture=<audio>] [--callback-target=<alias>] [--voice-profile-id=<managed numeric id>] [--text=<text>] [--timeout=<seconds>] [--subtitle-reflow=none|legacy_adaptive_v1] [--json]\n";
+        echo "Usage: php scripts/audio_packs_acceptance.php --base-url=<api.php URL> --token=<token> --pack=audio-cleanup|whisper-asr|speech-fast-zh|tts-voxcpm2|tts-gpt-sovits|all [--fixture=<audio>] [--callback-target=<alias>] [--voice-profile-id=<managed numeric id>] [--text=<text>] [--timeout=<seconds>] [--subtitle-reflow=none|legacy_adaptive_v1] [--record-l5] [--json]\n";
         return 0;
     }
 
     $config = ['json' => isset($options['json'])];
     try {
         $config = hub_audio_acceptance_config($options);
-        $readiness = hub_audio_acceptance_readiness();
+        $readiness = hub_audio_acceptance_readiness($config);
         $runs = [];
         $cleanup = null;
         if (in_array('audio-cleanup', $config['packs'], true)) {
@@ -30,6 +32,9 @@ function hub_audio_acceptance_main(array $argv): int
         if (in_array('whisper-asr', $config['packs'], true)) {
             $input = $cleanup === null ? [] : ['source_artifact_id' => (string)hub_audio_acceptance_artifact_id($cleanup['result'], 'vocals_audio')];
             $runs[] = hub_audio_acceptance_run($config, 'whisper-asr', $input);
+        }
+        if (in_array('speech-fast-zh', $config['packs'], true)) {
+            $runs[] = hub_audio_acceptance_run($config, 'speech-fast-zh', []);
         }
         if (in_array('tts-voxcpm2', $config['packs'], true)) {
             $runs[] = hub_audio_acceptance_run($config, 'tts-voxcpm2', ['mode' => 'design']);
@@ -49,7 +54,10 @@ function hub_audio_acceptance_main(array $argv): int
                 'voice_profile_id' => (string)$config['voice_profile_id'],
             ]);
         }
-        $output = ['ok' => true, 'readiness' => $readiness, 'runs' => $runs];
+        if ($config['record_l5']) {
+            hub_audio_acceptance_record_l5($runs);
+        }
+        $output = ['ok' => true, 'readiness' => $readiness, 'runs' => $runs, 'l5_recorded' => $config['record_l5']];
     } catch (Throwable $error) {
         $output = ['ok' => false, 'error' => $error->getMessage()];
     }
@@ -77,15 +85,15 @@ function hub_audio_acceptance_config(array $options): array
     $baseUrl = rtrim(trim((string)($options['base-url'] ?? getenv('AIHUB_ACCEPTANCE_BASE_URL') ?: '')), '/');
     $token = trim((string)($options['token'] ?? getenv('AIHUB_ACCEPTANCE_TOKEN') ?: ''));
     $pack = trim((string)($options['pack'] ?? ''));
-    if ($baseUrl === '' || $token === '' || !in_array($pack, ['audio-cleanup', 'whisper-asr', 'tts-voxcpm2', 'tts-gpt-sovits', 'all'], true)) {
+    if ($baseUrl === '' || $token === '' || !in_array($pack, ['audio-cleanup', 'whisper-asr', 'speech-fast-zh', 'tts-voxcpm2', 'tts-gpt-sovits', 'all'], true)) {
         throw new InvalidArgumentException('base-url, token, and a valid pack are required; use --help');
     }
     if (!str_ends_with($baseUrl, 'api.php')) {
         $baseUrl .= '/api.php';
     }
-    $packs = $pack === 'all' ? ['audio-cleanup', 'whisper-asr', 'tts-voxcpm2', 'tts-gpt-sovits'] : [$pack];
+    $packs = $pack === 'all' ? ['audio-cleanup', 'whisper-asr', 'speech-fast-zh', 'tts-voxcpm2', 'tts-gpt-sovits'] : [$pack];
     $fixture = trim((string)($options['fixture'] ?? ''));
-    if ((in_array('audio-cleanup', $packs, true) || in_array('whisper-asr', $packs, true)) && (!is_file($fixture) || !is_readable($fixture))) {
+    if ((array_intersect($packs, ['audio-cleanup', 'whisper-asr', 'speech-fast-zh']) !== []) && (!is_file($fixture) || !is_readable($fixture))) {
         throw new InvalidArgumentException('a readable --fixture audio file is required for cleanup or ASR acceptance');
     }
     $callbackTarget = trim((string)($options['callback-target'] ?? ''));
@@ -101,6 +109,11 @@ function hub_audio_acceptance_config(array $options): array
         throw new InvalidArgumentException('subtitle-reflow must be none or legacy_adaptive_v1');
     }
 
+    $recordL5 = isset($options['record-l5']);
+    if ($recordL5 && ($packs !== ['speech-fast-zh'] || !hub_audio_acceptance_local_base_url($baseUrl))) {
+        throw new InvalidArgumentException('--record-l5 requires the local speech-fast-zh API endpoint');
+    }
+
     return [
         'base_url' => $baseUrl,
         'token' => $token,
@@ -111,15 +124,28 @@ function hub_audio_acceptance_config(array $options): array
         'subtitle_reflow' => $subtitleReflow,
         'text' => trim((string)($options['text'] ?? '請檢查 RC Valve 間隙，並以清楚自然的語氣說明。')),
         'timeout' => max(30, min(14400, (int)($options['timeout'] ?? 7200))),
+        'requires_gpu' => array_intersect($packs, ['audio-cleanup', 'whisper-asr', 'tts-voxcpm2', 'tts-gpt-sovits']) !== [],
+        'record_l5' => $recordL5,
         'json' => isset($options['json']),
     ];
 }
 
-function hub_audio_acceptance_readiness(): array
+function hub_audio_acceptance_local_base_url(string $baseUrl): bool
 {
-    $gpu = hub_audio_acceptance_gpu_snapshot();
-    if (($gpu['total_mib'] ?? 0) < 16000) {
-        throw new RuntimeException('NVIDIA GPU readiness requires at least 16 GiB VRAM');
+    $parts = parse_url($baseUrl);
+    $host = is_array($parts) ? strtolower(trim((string)($parts['host'] ?? ''), '[]')) : '';
+
+    return in_array($host, ['127.0.0.1', '::1', 'localhost'], true);
+}
+
+function hub_audio_acceptance_readiness(array $config): array
+{
+    $gpu = null;
+    if ($config['requires_gpu']) {
+        $gpu = hub_audio_acceptance_gpu_snapshot();
+        if (($gpu['total_mib'] ?? 0) < 16000) {
+            throw new RuntimeException('NVIDIA GPU readiness requires at least 16 GiB VRAM');
+        }
     }
     $docker = hub_audio_acceptance_command(['docker', 'info', '--format', '{{.ServerVersion}}']);
     if ($docker['exit_code'] !== 0 || trim($docker['stdout']) === '') {
@@ -136,12 +162,14 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
     $mode = match ($pack) {
         'audio-cleanup' => 'audio_cleanup',
         'whisper-asr' => 'speech_transcribe',
+        'speech-fast-zh' => 'speech_transcribe_fast_zh',
         'tts-voxcpm2' => 'voice_generate',
         'tts-gpt-sovits' => 'voice_generate_gpt_sovits',
     };
     $fields = match ($pack) {
         'audio-cleanup' => ['operation' => 'separate', 'demucs_model' => 'balanced'],
         'whisper-asr' => ['model' => 'large_v3', 'language' => 'auto', 'diarization' => '0', 'output_srt' => '1', 'output_vtt' => '1', 'subtitle_reflow' => $config['subtitle_reflow']],
+        'speech-fast-zh' => ['include_draft_subtitles' => '1'],
         'tts-voxcpm2' => ['text' => $config['text'], 'model' => 'voxcpm2', 'waveform_preview' => '1'],
         'tts-gpt-sovits' => ['text' => $config['text'], 'model' => 'gpt_sovits_v2', 'language' => 'zh_tw'],
     };
@@ -160,7 +188,8 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
     }
     $sourceFile = empty($override['source_artifact_id']) && !in_array($pack, ['tts-voxcpm2', 'tts-gpt-sovits'], true) ? $config['fixture'] : '';
     $started = microtime(true);
-    $submitted = hub_audio_acceptance_submit($config, $mode, $fields, $sourceFile);
+    $sourceField = $pack === 'speech-fast-zh' ? 'file' : 'source';
+    $submitted = hub_audio_acceptance_submit($config, $mode, $fields, $sourceFile, $sourceField);
     $taskId = (int)($submitted['task_id'] ?? 0);
     if ($taskId < 1) {
         throw new RuntimeException($pack . ' submission did not return task_id');
@@ -174,6 +203,7 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
     $required = match ($pack) {
         'audio-cleanup' => ['vocals_audio', 'background_audio', 'cleanup_report'],
         'whisper-asr' => ['transcript_json', 'subtitle_srt', 'subtitle_vtt', 'transcription_report'],
+        'speech-fast-zh' => ['transcript_json', 'transcription_report', 'draft_subtitle_srt', 'draft_segments'],
         'tts-voxcpm2' => ['generated_audio', 'synthesis_metadata', 'waveform_preview'],
         'tts-gpt-sovits' => ['generated_audio', 'synthesis_metadata'],
     };
@@ -189,17 +219,18 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
         'task_id' => $taskId,
         'status' => $poll['status'],
         'elapsed_seconds' => round(microtime(true) - $started, 3),
+        'pack' => $pack,
         'peak_gpu_used_mib' => $poll['peak_gpu_used_mib'],
-        'gpu_after' => hub_audio_acceptance_gpu_snapshot(),
+        'gpu_after' => $config['requires_gpu'] ? hub_audio_acceptance_gpu_snapshot() : null,
         'artifacts' => $downloaded,
         'result' => $result,
     ];
 }
 
-function hub_audio_acceptance_submit(array $config, string $mode, array $fields, string $sourceFile): array
+function hub_audio_acceptance_submit(array $config, string $mode, array $fields, string $sourceFile, string $sourceField = 'source'): array
 {
     if ($sourceFile !== '') {
-        $fields['source'] = new CURLFile($sourceFile, 'audio/wav', basename($sourceFile));
+        $fields[$sourceField] = new CURLFile($sourceFile, 'audio/wav', basename($sourceFile));
     }
     return hub_audio_acceptance_json_request($config, $mode, $fields, 'POST');
 }
@@ -207,10 +238,12 @@ function hub_audio_acceptance_submit(array $config, string $mode, array $fields,
 function hub_audio_acceptance_poll(array $config, int $taskId): array
 {
     $deadline = time() + $config['timeout'];
-    $peakUsed = 0;
+    $peakUsed = null;
     do {
-        $snapshot = hub_audio_acceptance_gpu_snapshot();
-        $peakUsed = max($peakUsed, (int)($snapshot['used_mib'] ?? 0));
+        if ($config['requires_gpu']) {
+            $snapshot = hub_audio_acceptance_gpu_snapshot();
+            $peakUsed = max((int)$peakUsed, (int)($snapshot['used_mib'] ?? 0));
+        }
         $status = hub_audio_acceptance_json_request($config, 'task_status', ['task_id' => (string)$taskId]);
         $state = strtolower(trim((string)($status['status'] ?? '')));
         if (in_array($state, ['success', 'completed', 'failed', 'cancelled', 'timed_out'], true)) {
@@ -311,12 +344,48 @@ function hub_audio_acceptance_verify_artifacts(array $config, int $taskId, array
                 throw new RuntimeException('audio artifact failed ffprobe: ' . $type);
             }
         }
-        if ($mime === 'application/json' && !is_array(json_decode((string)file_get_contents($path), true))) {
+        $contents = (string)file_get_contents($path);
+        $json = $mime === 'application/json' ? json_decode($contents, true) : null;
+        if ($mime === 'application/json' && !is_array($json)) {
             throw new RuntimeException('JSON artifact is invalid: ' . $type);
+        }
+        if ($type === 'transcript_json' && trim((string)(is_array($json) ? ($json['text'] ?? '') : '')) === '') {
+            throw new RuntimeException('transcript artifact is empty');
+        }
+        if ($type === 'draft_segments' && (!is_array($json) || !is_array($json['segments'] ?? null) || $json['segments'] === [])) {
+            throw new RuntimeException('draft segments artifact is empty');
+        }
+        if ($type === 'draft_subtitle_srt' && (!str_contains($contents, '-->') || trim($contents) === '')) {
+            throw new RuntimeException('draft subtitle artifact is invalid');
         }
         $verified[] = ['id' => $artifactId, 'type' => $type, 'mime_type' => $mime, 'size_bytes' => $size, 'sha256' => $sha256];
     }
     return $verified;
+}
+
+function hub_audio_acceptance_record_l5(array $runs): void
+{
+    $run = null;
+    foreach ($runs as $candidate) {
+        if (($candidate['pack'] ?? '') === 'speech-fast-zh') {
+            $run = $candidate;
+            break;
+        }
+    }
+    if (!is_array($run)) {
+        throw new RuntimeException('speech-fast-zh acceptance result is missing');
+    }
+    $db = hub_db();
+    hub_migrate($db);
+    $service = hub_benchmark_service($db, 'speech-fast-zh', null);
+    if (!is_array($service)) {
+        throw new RuntimeException('speech-fast-zh benchmark service is missing');
+    }
+    hub_save_benchmark_run($db, 'speech_fast_zh_async_complete', (int)$service['id'], 'speech_transcribe_fast_zh', 'pass', (int)round((float)$run['elapsed_seconds'] * 1000), [
+        'ok' => true,
+        'task_completed' => true,
+        'artifact_types' => array_column((array)$run['artifacts'], 'type'),
+    ], null);
 }
 
 function hub_audio_acceptance_download_artifact(array $config, int $artifactId, string $path): void
