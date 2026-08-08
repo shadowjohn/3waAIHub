@@ -5,6 +5,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urlsplit
 
 from crawler.discovery.facebook import target_from_user_input
 from crawler.retry.policy import ErrorClass, RetryConfig
@@ -40,12 +41,20 @@ def execute(request: dict, output_dir: Path, scrape: Callable = scrape_target) -
     records: list[dict] = []
     outcomes: list[dict] = []
     for item in targets:
-        target = target_from_user_input(item["url"], kind="auto", scrolls=min(5, max(1, (limit + 9) // 10)), limit=limit, allow_zero=True)
-        result = scrape(target, options)
-        health = str((result.meta or {}).get("health_code", ""))
-        status = "completed" if result.error_class is ErrorClass.OK else "empty" if result.error_class is ErrorClass.ZERO_RECORDS else "not_accessible" if health == "group_access_denied" else "login_required" if result.error_class is ErrorClass.SESSION else "navigation_failed"
-        outcomes.append({"url": item["url"], "status": status, "count": len(result.records or []), "message": str(result.message)[:240]})
-        records.extend(result.records or [])
+        try:
+            url = item["url"]
+            parsed = urlsplit(url)
+            host = parsed.hostname or ""
+            if parsed.scheme != "https" or (host != "facebook.com" and not host.endswith(".facebook.com")) or parsed.username is not None or parsed.password is not None or parsed.port is not None or parsed.fragment:
+                raise ValueError("invalid Facebook target URL")
+            target = target_from_user_input(url, kind="auto", scrolls=min(5, max(1, (limit + 9) // 10)), limit=limit, allow_zero=True)
+            result = scrape(target, options)
+            health = str((result.meta or {}).get("health_code", ""))
+            status = "completed" if result.error_class is ErrorClass.OK else "empty" if result.error_class is ErrorClass.ZERO_RECORDS else "not_accessible" if health == "group_access_denied" else "login_required" if result.error_class is ErrorClass.SESSION else "navigation_failed"
+            outcomes.append({"url": url, "status": status, "count": len(result.records or []), "message": str(result.message)[:240]})
+            records.extend(result.records or [])
+        except Exception as exc:
+            outcomes.append({"url": item.get("url", "") if isinstance(item, dict) else "", "status": "extraction_failed", "count": 0, "message": str(exc)[:240]})
     records = _dedupe(records)
     valid = [item for item in outcomes if item["status"] in ("completed", "empty")]
     if not valid:
