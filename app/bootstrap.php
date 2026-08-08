@@ -69,6 +69,7 @@ require_once __DIR__ . '/environment_probe.php';
 require_once __DIR__ . '/host_metrics.php';
 require_once __DIR__ . '/benchmarks.php';
 require_once __DIR__ . '/docker_runner.php';
+require_once __DIR__ . '/facebook_crawler_login.php';
 require_once __DIR__ . '/release.php';
 require_once __DIR__ . '/gateway.php';
 require_once __DIR__ . '/cluster_router.php';

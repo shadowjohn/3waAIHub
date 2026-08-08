@@ -16,6 +16,7 @@ return [
     __DIR__ . '/../test_runtime_visibility.php',
     __DIR__ . '/../test_cluster_admin.php',
     __DIR__ . '/../test_environment_probe.php',
+    __DIR__ . '/../test_facebook_crawler_ui.php',
     __DIR__ . '/../test_release_status.php',
     __DIR__ . '/../test_release_ci.php',
 ];

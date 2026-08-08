@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HUB_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_ROOT="$HUB_ROOT"
 cd "$HUB_ROOT"
 
 COMMAND_LOCK_FILE="${COMMAND_WORKER_LOCK_FILE:-data/jobs/command_worker_1min_command.lock}"
@@ -107,6 +108,12 @@ if needs_permission_fix; then
     echo "[3waAIHub] runtime permissions repair failed."
     exit 1
   fi
+fi
+
+if ! {
+  php "$APP_ROOT/scripts/facebook_profile_cleanup.php" --limit=10 >> "$APP_ROOT/data/logs/facebook-profile-cleanup.log" 2>&1;
+}; then
+  echo "[3waAIHub] Facebook profile login cleanup failed."
 fi
 
 exec 7>"$CLUSTER_REFRESH_LOCK_FILE"

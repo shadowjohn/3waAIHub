@@ -95,6 +95,27 @@ done
 append_rule ip6tables AIHUB_CRAWLER_OUTPUT6 -d 2000::/3 -p tcp -m multiport --dports 80,443 -j ACCEPT
 append_rule ip6tables AIHUB_CRAWLER_OUTPUT6 -j REJECT
 
+if [[ "${1:-}" == /app/login_broker.py && "$#" == 1 ]]; then
+  [[ -d /profile && ! -L /profile && -f /profile/storage_state.json && ! -L /profile/storage_state.json ]] || {
+    printf 'invalid login profile mount\n' >&2
+    exit 1
+  }
+  profile_uid="$(stat -c '%u' /profile)"
+  profile_gid="$(stat -c '%g' /profile)"
+  state_uid="$(stat -c '%u' /profile/storage_state.json)"
+  state_gid="$(stat -c '%g' /profile/storage_state.json)"
+  [[ "$profile_uid" =~ ^[0-9]+$ && "$profile_gid" =~ ^[0-9]+$ \
+    && "$state_uid" == "$profile_uid" && "$state_gid" == "$profile_gid" \
+    && "$(stat -c '%a' /profile)" == 700 \
+    && "$(stat -c '%a' /profile/storage_state.json)" == 600 \
+    && "$(stat -c '%h' /profile/storage_state.json)" == 1 ]] || {
+    printf 'unsafe login profile mount\n' >&2
+    exit 1
+  }
+  exec env HOME=/tmp setpriv --reuid="$profile_uid" --regid="$profile_gid" --clear-groups \
+    --bounding-set=-all --ambient-caps=-all -- "$@"
+fi
+
 grant_crawler_workspace_access
 
 exec setpriv --reuid=crawler --regid=crawler --clear-groups \

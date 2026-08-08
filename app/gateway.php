@@ -22,6 +22,49 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if ($mode === 'yolo_gpu_internal') {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
     }
+    if (in_array($mode, ['facebook_profile_frame', 'facebook_profile_input', 'facebook_profile_login_status', 'facebook_profile_close'], true)) {
+        $relay = hub_facebook_login_relay_dispatch(
+            $db,
+            $mode,
+            $requestMethod,
+            $rawBody,
+            is_callable($internalRequest['command_runner'] ?? null) ? $internalRequest['command_runner'] : null,
+            is_callable($internalRequest['login_transport'] ?? null) ? $internalRequest['login_transport'] : null,
+            isset($internalRequest['platform']) ? (string)$internalRequest['platform'] : null,
+            is_array($internalRequest['runtime_profile'] ?? null) ? $internalRequest['runtime_profile'] : null
+        );
+        $authContext = is_array($relay['auth_context'] ?? null) ? $relay['auth_context'] : [];
+        return hub_gateway_finish($db, null, $mode, $relay['response'], $started, $requestId, $authContext, $requestContext);
+    }
+    if (in_array($mode, ['facebook_profile_start', 'facebook_profile_status', 'facebook_profile_reauth', 'facebook_profile_delete'], true)) {
+        $plainToken = $providedToken ?? hub_bearer_token_from_request();
+        $auth = hub_authenticate_api_token($db, $clientIp, $plainToken, 'facebook_crawl');
+        $authContext = $auth['context'] ?? [];
+        if (empty($auth['ok'])) {
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
+        }
+        $query = array_key_exists('query', $internalRequest) ? $internalRequest['query'] : $_GET;
+        if (!is_array($query)) {
+            $query = [];
+        }
+        $secureRequest = array_key_exists('https', $internalRequest)
+            ? (bool)$internalRequest['https']
+            : (!empty($_SERVER['HTTPS']) && strtolower((string)$_SERVER['HTTPS']) !== 'off');
+        $response = hub_facebook_login_api_dispatch(
+            $db,
+            $mode,
+            $authContext,
+            $requestMethod,
+            $rawBody,
+            $query,
+            $secureRequest,
+            is_callable($internalRequest['command_runner'] ?? null) ? $internalRequest['command_runner'] : null,
+            is_callable($internalRequest['login_transport'] ?? null) ? $internalRequest['login_transport'] : null,
+            isset($internalRequest['platform']) ? (string)$internalRequest['platform'] : null,
+            is_array($internalRequest['runtime_profile'] ?? null) ? $internalRequest['runtime_profile'] : null
+        );
+        return hub_gateway_finish($db, null, $mode, $response, $started, $requestId, $authContext, $requestContext);
+    }
     $service = hub_get_service_by_mode($db, $mode);
     if (hub_is_pack_job_async_mode($mode)) {
         $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp, $providedToken);

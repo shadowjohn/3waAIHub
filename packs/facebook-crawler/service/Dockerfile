@@ -10,9 +10,9 @@ RUN apt-get update \
     && groupadd --system crawler \
     && useradd --system --gid crawler --home-dir /app --shell /usr/sbin/nologin crawler
 COPY crawler ./crawler
-COPY crawl_runner.py crawl-entrypoint.sh ./
+COPY crawl_runner.py login_broker.py crawl-entrypoint.sh ./
 RUN sed -i 's/\r$//' crawl-entrypoint.sh \
-    && chmod 0755 crawl-entrypoint.sh crawl_runner.py \
+    && chmod 0755 crawl-entrypoint.sh crawl_runner.py login_broker.py \
     && install -d -m 0700 /workspace/input /workspace/output \
     && touch /workspace/input/request.json \
     && chmod 0600 /workspace/input/request.json
