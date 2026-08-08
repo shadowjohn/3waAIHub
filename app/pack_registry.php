@@ -104,6 +104,7 @@ function hub_pack_job_async_routes(): array
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
         'voice_generate_gpt_sovits' => ['pack_id' => 'tts-gpt-sovits', 'job' => 'synthesize', 'accelerator' => 'gpu'],
         'edge_tts' => ['pack_id' => 'edge-tts', 'job' => 'synthesize', 'accelerator' => 'cpu'],
+        'facebook_crawl' => ['pack_id' => 'facebook-crawler', 'job' => 'crawl', 'accelerator' => 'cpu'],
         'web_capture' => ['pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu'],
     ];
 }
@@ -432,7 +433,8 @@ function hub_pack_async_job_contract(array $manifest, string $job): ?array
         if ($runner !== null
             && ($runner['network_profile'] ?? 'isolated') === 'public_egress'
             && !(((string)($manifest['id'] ?? '') === 'web-screenshot' && $job === 'capture')
-                || ((string)($manifest['id'] ?? '') === 'edge-tts' && $job === 'synthesize'))) {
+                || ((string)($manifest['id'] ?? '') === 'edge-tts' && $job === 'synthesize')
+                || ((string)($manifest['id'] ?? '') === 'facebook-crawler' && $job === 'crawl'))) {
             return null;
         }
         $runnerConfig = null;

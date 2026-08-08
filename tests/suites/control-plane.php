@@ -6,6 +6,7 @@ return [
     __DIR__ . '/../test_cluster_admin.php',
     __DIR__ . '/../test_cluster_router.php',
     __DIR__ . '/../test_environment_probe.php',
+    __DIR__ . '/../test_facebook_crawler_pack.php',
     __DIR__ . '/../test_gateway.php',
     __DIR__ . '/../test_hardware_preflight.php',
     __DIR__ . '/../test_model_registry.php',

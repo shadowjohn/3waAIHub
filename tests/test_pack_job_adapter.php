@@ -170,7 +170,10 @@ hub_test('Pack job container runner restricts network profiles', function (): vo
 
         $edgeTts = hub_get_pack('edge-tts')['manifest'];
         $edgePublic = hub_pack_async_job_contract($edgeTts, 'synthesize');
-        hub_test_assert(is_array($edgePublic) && ($edgePublic['runner']['network_profile'] ?? null) === 'public_egress', 'only the immutable Web Screenshot capture and Edge TTS synthesize routes may use public egress');
+        $facebookCrawler = hub_get_pack('facebook-crawler')['manifest'];
+        $facebookPublic = hub_pack_async_job_contract($facebookCrawler, 'crawl');
+        hub_test_assert(is_array($edgePublic) && ($edgePublic['runner']['network_profile'] ?? null) === 'public_egress'
+            && is_array($facebookPublic) && ($facebookPublic['runner']['network_profile'] ?? null) === 'public_egress', 'only the three approved Web Screenshot capture, Edge TTS synthesize, and Facebook crawler crawl routes may use public egress');
 
         $arbitraryManifest = hub_test_adapter_manifest('adapter-network-arbitrary', '1.0.0');
         $arbitraryManifest['async_jobs'][0]['runner']['network_profile'] = 'customer-network';

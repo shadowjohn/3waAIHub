@@ -1,0 +1,51 @@
+{
+  "schema_version": "0.1",
+  "id": "facebook-crawler",
+  "name": "Facebook Recent Post Crawler",
+  "version": "0.1.0",
+  "category": "web",
+  "type": "internal_task",
+  "execution_type": "async_task",
+  "runtime_level": "L3-container-runner",
+  "runtime_ready": true,
+  "default_mode": "facebook_crawl",
+  "description": "輕量擷取授權 Facebook 粉專與社團的近期貼文；CPU 執行，登入失效時需人工重新登入。",
+  "runtime": {"kind": "internal_task", "windows_wsl_job": true},
+  "platform_targets": {"linux-docker": true, "windows-wsl2-linux-docker": true},
+  "runner_build": {"context": "service", "dockerfile": "Dockerfile", "image": "3waaihub/facebook-crawler:0.1.0"},
+  "gateway": {"invoke_path": "task_submit:pack_job", "methods": ["POST"], "timeout_sec": 1800, "max_upload_mb": 1, "require_service_enabled": true},
+  "async_jobs": [{
+    "job": "crawl",
+    "input": {
+      "fields": ["profile_id", "targets_json", "limit_per_target"],
+      "source_artifact_types": [],
+      "source_required": false,
+      "request_schema": {
+        "profile_id": {"type": "string", "required": false, "max_length": 68},
+        "targets_json": {"type": "string", "required": true, "max_length": 16384},
+        "limit_per_target": {"type": "integer", "required": false, "min": 10, "max": 30, "default": 10}
+      }
+    },
+    "runner": {
+      "image": "3waaihub/facebook-crawler:0.1.0",
+      "entrypoint": ["/app/crawl-entrypoint.sh", "/app/crawl_runner.py"],
+      "args": [],
+      "output_dir": "output",
+      "accelerator": "cpu",
+      "required_vram_mb": 0,
+      "timeout_seconds": 1800,
+      "network_profile": "public_egress",
+      "executor": "container"
+    },
+    "output": {"artifacts": [
+      {"type": "facebook_posts_jsonl", "path": "facebook_posts.jsonl", "mime_types": ["application/x-ndjson", "text/plain"], "max_bytes": 10485760},
+      {"type": "facebook_crawl_report", "path": "facebook_crawl_report.json", "mime_types": ["application/json"], "max_bytes": 262144, "json": {"required_keys": ["outcome", "target_count", "post_count", "limit_per_target", "targets", "created_at", "runner_version"]}}
+    ]}
+  }],
+  "hardware": {"gpu_required": false, "gpu_supported": false, "min_vram_mb": 0},
+  "queue": {"supported": true, "default_queue": "cpu", "max_concurrency": 1},
+  "storage": {"mounts": []},
+  "env": [],
+  "preflight": {"checks": ["docker"]},
+  "install": {"default_service_key": "facebook-crawler-main", "compose_project": "3waaihub_facebook_crawler_main"}
+}
