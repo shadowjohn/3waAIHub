@@ -274,6 +274,10 @@ class LoginBrokerHttpTests(unittest.TestCase):
 
 
 class NavigationTests(unittest.TestCase):
+    def test_login_browser_reuses_the_non_headless_http_profile(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn('get_profile("tw_desktop_chrome").context_options()', source)
+
     def test_only_facebook_top_level_navigation_is_allowed(self):
         for url in [
             "https://www.facebook.com/",

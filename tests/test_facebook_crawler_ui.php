@@ -73,3 +73,89 @@ hub_test('Facebook login cleanup and Docker stages keep the bounded runtime cont
         hub_test_assert(str_contains($entrypoint, $ownerContract), 'login broker must drop to the mounted profile owner: ' . $ownerContract);
     }
 });
+
+hub_test('Facebook crawler public docs expose only the managed local workflow', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'facebook-crawler', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'facebook_crawl', true);
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $service = null;
+    foreach (hub_public_api_services($db, static fn (): bool => true) as $candidate) {
+        if (($candidate['mode'] ?? '') === 'facebook_crawl') {
+            $service = $candidate;
+            break;
+        }
+    }
+    hub_test_assert(is_array($service), 'local public docs must include facebook_crawl');
+    hub_test_assert(($service['content_type'] ?? '') === 'application/json', 'crawler submission must use JSON');
+    hub_test_assert(
+        array_column($service['input_fields'] ?? [], 'name') === ['profile_id', 'targets', 'limit_per_target'],
+        'public crawler fields must hide runner and login internals'
+    );
+    $targets = $service['input_fields'][1] ?? [];
+    hub_test_assert(($targets['type'] ?? '') === 'array' && ($targets['min_items'] ?? 0) === 1 && ($targets['max_items'] ?? 0) === 30, 'target array bounds missing');
+    hub_test_assert(($targets['items']['required'] ?? []) === ['url'], 'target items must require only url');
+
+    $operationModes = array_column($service['operations'] ?? [], 'mode');
+    foreach ([
+        'facebook_profile_start', 'facebook_profile_status', 'facebook_profile_reauth', 'facebook_profile_delete',
+        'facebook_crawl', 'task_status', 'task_result', 'artifact', 'facebook_run_last', 'facebook_dataset_items',
+    ] as $mode) {
+        hub_test_assert(in_array($mode, $operationModes, true), 'crawler docs missing operation ' . $mode);
+    }
+
+    $serialized = hub_json_encode($service);
+    foreach (['targets_json', 'storage_state', 'login_port', 'cookie', 'session proof'] as $secret) {
+        hub_test_assert(!str_contains($serialized, $secret), 'crawler docs expose internal field ' . $secret);
+    }
+    hub_test_assert(str_contains((string)($service['examples']['curl'] ?? ''), 'https://www.facebook.com/wra.gov.tw'), 'crawler example must use a safe official page');
+});
+
+hub_test('Facebook crawler Test Center renders a focused localized workflow', function (): void {
+    $partial = HUB_ROOT . '/admin/_playground_facebook_crawler.php';
+    hub_test_assert(is_file($partial), 'crawler Playground partial missing');
+    hub_test_assert((fileperms($partial) & 0777) === 0755, 'new crawler PHP partial must be executable');
+    $source = (string)file_get_contents($partial);
+    foreach ([
+        "__('Facebook 登入 Profile')",
+        "__('目標粉絲專頁／社團')",
+        "__('每個目標近期文章數')",
+        "__('任務連結')",
+        "__('Dataset 預覽')",
+    ] as $translation) {
+        hub_test_assert(str_contains($source, $translation), 'crawler visible text must use __(): ' . $translation);
+    }
+    hub_test_assert(str_contains($source, 'type="password"') && !str_contains($source, "value=\"<?= hub_h((string)(\$_POST['facebook_password']"), 'credentials must be password-only and never redisplayed');
+    foreach (['http://', 'https://', '<script src=', '<link rel="stylesheet"'] as $remote) {
+        hub_test_assert(!str_contains($source, $remote), 'crawler partial must not load external assets');
+    }
+
+    ob_start();
+    require_once HUB_ROOT . '/admin/playground.php';
+    ob_end_clean();
+    hub_test_assert(in_array('facebook_crawl', hub_playground_supported_modes(), true), 'crawler must be selectable in Test Center');
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'facebook-crawler', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'facebook_crawl', true);
+    $service = hub_get_service_by_mode($db, 'facebook_crawl');
+    hub_test_assert(is_array($service) && hub_playground_basic_readiness($service) === null, 'enabled internal task must not require a resident service runtime');
+    $previousPost = $_POST;
+    try {
+        $_POST = [];
+        hub_test_assert(hub_playground_request_payload('facebook_crawl') === [
+            'targets' => [['url' => 'https://www.facebook.com/wra.gov.tw']],
+            'limit_per_target' => 10,
+        ], 'crawler Playground must submit the public JSON contract');
+    } finally {
+        $_POST = $previousPost;
+    }
+    foreach (['name="facebook_profile_id"', 'name="facebook_targets"', 'name="facebook_limit_per_target"', 'min="10" max="30"', 'data-facebook-task-links', 'data-facebook-dataset-preview'] as $needle) {
+        hub_test_assert(str_contains((string)file_get_contents(HUB_ROOT . '/admin/playground.php') . $source, $needle), 'crawler Playground missing ' . $needle);
+    }
+
+    $readme = (string)file_get_contents(HUB_ROOT . '/packs/facebook-crawler/README.md');
+    foreach (['Linux', 'Windows WSL', '2FA', 'CAPTCHA', '30 天', 'nchc_ai', 'Phase B', 'scripts/facebook_crawler_smoke.php'] as $needle) {
+        hub_test_assert(str_contains($readme, $needle), 'crawler README missing ' . $needle);
+    }
+});

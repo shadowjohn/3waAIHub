@@ -85,14 +85,17 @@ def _builtin_tw_desktop() -> FingerprintProfile:
     return FingerprintProfile(
         name="tw_desktop_chrome",
         user_agent=(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "Mozilla/5.0 (X11; Linux x86_64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
+            "Chrome/149.0.0.0 Safari/537.36"
         ),
         viewport={"width": 1440, "height": 900},
         locale="zh-TW",
         timezone_id="Asia/Taipei",
         extra_http_headers={
-            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"
+            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Sec-Ch-Ua": '"Google Chrome";v="149", "Chromium";v="149", "Not)A;Brand";v="24"',
+            "Sec-Ch-Ua-Mobile": "?0",
+            "Sec-Ch-Ua-Platform": '"Linux"',
         },
     )

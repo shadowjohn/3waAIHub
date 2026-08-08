@@ -17,7 +17,9 @@ hub_test('Facebook crawler Pack declares one fixed CPU job', function (): void {
     hub_test_assert(($dataset['type'] ?? '') === 'facebook_posts_jsonl'
         && ($dataset['max_bytes'] ?? 0) === 4194304
         && in_array('application/json', $dataset['mime_types'] ?? [], true)
-        && ($dataset['text']['max_bytes'] ?? 0) === 4194304, 'crawler JSONL must use the bounded text validator');
+        && in_array('application/x-empty', $dataset['mime_types'] ?? [], true)
+        && ($dataset['text']['max_bytes'] ?? 0) === 4194304
+        && ($dataset['text']['allow_empty'] ?? false) === true, 'crawler JSONL must use the bounded empty-dataset text validator');
 
     $shellCheck = HUB_ROOT . '/packs/facebook-crawler/service/test_egress_firewall.sh';
     $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/facebook-crawler/service/Dockerfile');
@@ -1162,4 +1164,44 @@ hub_test('Facebook login production command runner is bounded and web-safe', fun
     hub_test_assert((int)$timedOut['exit_code'] === 124 && str_contains((string)$timedOut['stderr'], 'timed out'), 'login command runner must enforce its timeout');
     $source = (string)file_get_contents(HUB_ROOT . '/app/facebook_crawler_login.php');
     hub_test_assert(!str_contains($source, "\$runner ??= 'hub_run_command'"), 'web login lifecycle must not call the CLI-only command runner');
+});
+
+hub_test('Facebook crawler remains local while Phase A Cluster publication excludes it', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'facebook-crawler', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'facebook_crawl', true);
+
+    hub_test_assert(hub_resolve_pack_job_async_route($db, 'facebook_crawl') !== null, 'local crawler route must remain available');
+    hub_test_assert(!in_array('facebook_crawl', hub_cluster_node_published_modes($db), true), 'Phase A must not publish node-owned crawler profiles through Cluster');
+});
+
+hub_test('Facebook profile bootstrap does not rechmod an already private directory', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/app/bootstrap.php');
+    hub_test_assert(str_contains($source, '((int)$facebookProfileMode & 0777) !== 0700'), 'bootstrap must inspect the private directory mode first');
+    hub_test_assert(!str_contains($source, "is_link(\$facebookProfileRoot) || !@chmod(\$facebookProfileRoot, 0700)"), 'bootstrap must not rechmod a secure directory on every request');
+});
+
+hub_test('Facebook crawler real smoke keeps credentials file-only and verifies content', function (): void {
+    $path = HUB_ROOT . '/scripts/facebook_crawler_smoke.php';
+    hub_test_assert(is_file($path) && (fileperms($path) & 0777) === 0755, 'crawler smoke script must be executable');
+    $source = (string)file_get_contents($path);
+    foreach ([
+        "!== 'https'",
+        'token_file_must_be_outside_webroot',
+        'token_file_permissions_too_open',
+        "(int)(\$stat['nlink'] ?? 0) !== 1",
+        'usleep(2000000)',
+        'hash_equals($expectedSha256, $actualSha256)',
+        '$jsonlCount < 1',
+    ] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'crawler smoke missing security/content check ' . $needle);
+    }
+    $outputStart = strpos($source, 'echo hub_json_encode([');
+    $outputEnd = $outputStart === false ? false : strpos($source, '], JSON_UNESCAPED_SLASHES', $outputStart);
+    $outputSource = $outputStart === false || $outputEnd === false
+        ? ''
+        : substr($source, $outputStart, $outputEnd - $outputStart);
+    hub_test_assert($outputSource !== ''
+        && !str_contains($outputSource, '$token')
+        && !str_contains($outputSource, '$profileId'), 'crawler smoke output must not print secrets or profile identity');
 });

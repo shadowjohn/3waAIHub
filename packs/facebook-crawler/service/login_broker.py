@@ -6,7 +6,10 @@ import queue
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 from urllib.parse import urlsplit
+
+from crawler.browser.fingerprint import get_profile
 
 
 MAX_FRAME_BYTES = 3 * 1024 * 1024
@@ -314,7 +317,9 @@ def create_browser_broker():
 
     playwright = sync_playwright().start()
     browser = playwright.chromium.launch(headless=True)
-    context = browser.new_context(viewport={"width": 1280, "height": 720})
+    context_options = get_profile("tw_desktop_chrome").context_options()
+    context_options["viewport"] = {"width": 1280, "height": 720}
+    context = browser.new_context(**context_options)
     page = context.new_page()
 
     page.route("**/*", route_browser_request)

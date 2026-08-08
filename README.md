@@ -44,6 +44,7 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 - Service IP whitelist 與 API access logs
 - `.htaccess` 阻擋直接下載 runtime/internal 檔案
 - Marketplace Pack preflight，依最新 host metrics 判斷 Docker / GPU / VRAM / compute capability / storage
+- Facebook Crawler HubPack：CPU 背景 task、節點私有登入 Profile、人工 2FA/CAPTCHA、近期貼文 JSONL Dataset 與 30 天 member-scoped API；Phase A 僅本機入口，不發布到 Cluster。
 
 ## 8/7 管理後台預覽
 
@@ -121,6 +122,7 @@ php scripts/check_release_update.php
 4. Windows control plane：維持 Core preview；Linux Docker / GPU Pack 仍走 Linux runtime 或未來 Remote Agent。
 5. Resource Profile：External Database Profile、Controlled Volume Binding、Generic Service Publishing 仍列規劃中。
 6. 8/7 後 Secretless Web Root：將 SQLite、uploads、results、logs 與 service runtime 全數移出 web root；一般 runtime config 與 `is_secret` 設定分離，後者改由 Compose secret file 掛載；保留 Apache / IIS / Nginx deny 規則與 probe，採可回退遷移並於完成後輪替內部權杖。
+7. Facebook Crawler Phase B：維持 `nchc_ai` 外部排程；累積 Phase A 使用資料後，再評估 Hub recurring schedules、hashtag discovery 與 Cluster node-pinned Profile routing。
 
 ## 安裝
 

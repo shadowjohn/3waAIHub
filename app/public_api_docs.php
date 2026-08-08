@@ -607,8 +607,98 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
     return $contract;
 }
 
+function hub_public_api_facebook_crawl_contract(array $route): array
+{
+    $artifactTypes = array_values(array_filter(array_map(
+        static fn (mixed $artifact): string => is_array($artifact) ? (string)($artifact['type'] ?? '') : '',
+        (array)($route['artifact_contract']['artifacts'] ?? [])
+    )));
+
+    return [
+        'method' => 'POST',
+        'content_type' => 'application/json',
+        'execution_type' => 'async_task',
+        'task_type' => 'pack_job',
+        'input' => ['fields' => [
+            [
+                'name' => 'profile_id',
+                'type' => 'string',
+                'required' => false,
+                'description' => 'Optional node-local managed Facebook login profile. Omit it for public pages that do not require login.',
+            ],
+            [
+                'name' => 'targets',
+                'type' => 'array',
+                'required' => true,
+                'min_items' => 1,
+                'max_items' => 30,
+                'items' => [
+                    'type' => 'object',
+                    'required' => ['url'],
+                    'properties' => ['url' => ['type' => 'string', 'format' => 'uri']],
+                ],
+                'example' => [['url' => 'https://www.facebook.com/wra.gov.tw']],
+            ],
+            [
+                'name' => 'limit_per_target',
+                'type' => 'integer',
+                'required' => false,
+                'default' => 10,
+                'min' => 10,
+                'max' => 30,
+            ],
+        ]],
+        'output' => [
+            'required_keys' => ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'],
+            'result_artifact_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+            'result_artifact_types' => $artifactTypes,
+            'artifact_delivery_note' => 'The JSONL dataset is private to the submitting API member and retained for 30 days. Use facebook_dataset_items for bounded pagination.',
+        ],
+        'task_api' => [
+            'status' => 'GET api.php?mode=task_status&task_id={task_id}',
+            'result' => 'GET api.php?mode=task_result&task_id={task_id}',
+            'log' => 'GET api.php?mode=task_log&task_id={task_id}',
+            'cancel' => 'POST api.php?mode=task_cancel&task_id={task_id}',
+            'artifact' => 'GET api.php?mode=artifact&artifact_id={artifact_id}',
+        ],
+        'operations' => [
+            ['mode' => 'facebook_profile_start', 'method' => 'POST', 'purpose' => 'Create a node-local login profile and open a short-lived browser or password-assisted login session.'],
+            ['mode' => 'facebook_profile_status', 'method' => 'GET', 'query' => ['profile_id'], 'purpose' => 'Read the owned profile state.'],
+            ['mode' => 'facebook_profile_reauth', 'method' => 'POST', 'purpose' => 'Reopen login for an idle owned profile.'],
+            ['mode' => 'facebook_profile_delete', 'method' => 'POST', 'purpose' => 'Delete an idle owned profile and its private browser state.'],
+            ['mode' => 'facebook_crawl', 'method' => 'POST', 'purpose' => 'Submit one manual background crawl.'],
+            ['mode' => 'task_status', 'method' => 'GET', 'query' => ['task_id'], 'purpose' => 'Poll task state.'],
+            ['mode' => 'task_result', 'method' => 'GET', 'query' => ['task_id'], 'purpose' => 'Read terminal metadata and artifact IDs.'],
+            ['mode' => 'artifact', 'method' => 'GET', 'query' => ['artifact_id'], 'purpose' => 'Download the private JSONL artifact.'],
+            ['mode' => 'facebook_run_last', 'method' => 'GET', 'purpose' => 'Read the latest terminal run for this API member.'],
+            ['mode' => 'facebook_dataset_items', 'method' => 'GET', 'query' => ['task_id', 'offset', 'limit'], 'purpose' => 'Read up to 500 JSONL items without downloading the full artifact.'],
+        ],
+        'workflow' => [
+            'Use facebook_profile_start only when a target needs an authenticated account; complete 2FA or CAPTCHA manually in the short-lived local login page.',
+            'Submit facebook_crawl once with 1-30 target URLs and a recent-post limit of 10-30.',
+            'Poll task_status, then read task_result or facebook_run_last and page facebook_dataset_items.',
+        ],
+        'error_table' => [
+            ['code' => 'facebook_profile_not_found', 'http_status' => 404],
+            ['code' => 'facebook_profile_unavailable', 'http_status' => 409],
+            ['code' => 'dataset_not_found', 'http_status' => 404],
+            ['code' => 'dataset_expired', 'http_status' => 410],
+        ],
+        'errors' => [
+            'method_not_allowed', 'content_type_invalid', 'payload_too_large', 'invalid_request',
+            'member_required', 'facebook_profile_not_found', 'facebook_profile_unavailable',
+            'facebook_crawl_unavailable', 'dataset_not_found', 'dataset_expired', 'dataset_invalid',
+            'missing_token', 'token_mode_not_allowed',
+        ],
+    ];
+}
+
 function hub_public_api_pack_job_async_contract(array $route): array
 {
+    if (($route['requested_mode'] ?? '') === 'facebook_crawl') {
+        return hub_public_api_facebook_crawl_contract($route);
+    }
+
     $fields = [];
     foreach ($route['request_schema'] as $name => $definition) {
         $field = ['name' => (string)$name] + $definition;
@@ -1049,6 +1139,7 @@ function hub_public_api_json_body(array $service): array
             'source_lang' => 'en',
             'target_lang' => 'zh-TW',
             'real_inference' => true,
+            'targets' => $field['example'] ?? [['url' => 'https://www.facebook.com/wra.gov.tw']],
             default => $field['default'] ?? '',
         };
     }

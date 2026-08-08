@@ -278,6 +278,30 @@ hub_test('Pack job artifact validation recomputes trusted metadata and respects 
     }
 });
 
+hub_test('Pack job text artifacts allow an empty dataset only when declared', function (): void {
+    $workspace = hub_test_pack_job_workspace();
+    $contract = ['artifacts' => [[
+        'type' => 'empty_dataset',
+        'path' => 'dataset.jsonl',
+        'mime_types' => ['application/x-empty', 'application/x-ndjson'],
+        'max_bytes' => 128,
+        'text' => ['max_bytes' => 128, 'allow_empty' => true],
+    ]]];
+    try {
+        hub_test_pack_job_write($workspace . '/output/dataset.jsonl', '');
+        $validated = hub_validate_pack_job_artifacts($workspace, [], $contract);
+        hub_test_assert(count($validated) === 1 && (int)$validated[0]['size_bytes'] === 0, 'declared empty dataset must retain trusted zero-byte metadata');
+
+        unset($contract['artifacts'][0]['text']['allow_empty']);
+        hub_test_assert(
+            hub_test_pack_job_contract_fails(static fn (): array => hub_validate_pack_job_artifacts($workspace, [], $contract)),
+            'ordinary text artifacts must remain non-empty'
+        );
+    } finally {
+        hub_test_pack_job_rm($workspace);
+    }
+});
+
 hub_test('Pack job image contracts accept only bounded PNG definitions', function (): void {
     $valid = hub_test_pack_job_image_contract();
     $normalized = hub_pack_job_contract_artifacts($valid);

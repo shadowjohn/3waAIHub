@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from crawl_runner import execute
+from crawler.browser.fingerprint import get_profile
 from crawler.retry.policy import AttemptResult, ErrorClass, EXIT_OK, EXIT_SESSION_FAILURE
 
 
@@ -41,6 +42,18 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(report["outcome"], "partial")
         self.assertEqual([item["status"] for item in report["targets"]], ["completed", "not_accessible"])
         self.assertEqual(len(lines), 1)
+        self.assertTrue(all(call.args[1].fingerprint_name == "tw_desktop_chrome" for call in scrape.call_args_list))
+
+    def test_browser_profile_hides_headless_brand_in_http_headers(self):
+        options = get_profile("tw_desktop_chrome").context_options()
+        headers = {
+            key.lower(): value
+            for key, value in options["extra_http_headers"].items()
+        }
+
+        self.assertIn("Chrome/149.", options["user_agent"])
+        self.assertNotIn("HeadlessChrome", json.dumps(options, sort_keys=True))
+        self.assertEqual(headers["sec-ch-ua-platform"], '"Linux"')
 
     def test_no_accessible_target_fails_without_success_dataset(self):
         scrape = Mock(return_value=AttemptResult(

@@ -2391,9 +2391,14 @@ function hub_pack_job_contract_artifacts(array $jobContract, ?array $inputFields
         }
         if (isset($definition['text'])) {
             $textMaxBytes = $definition['text']['max_bytes'] ?? $maxBytes;
-            if (array_diff(array_keys($definition['text']), ['max_bytes']) !== [] || !is_int($textMaxBytes) || $textMaxBytes !== $maxBytes || $maxBytes > hub_pack_job_parser_max_bytes()) {
+            $allowEmpty = $definition['text']['allow_empty'] ?? false;
+            if (array_diff(array_keys($definition['text']), ['max_bytes', 'allow_empty']) !== []
+                || !is_int($textMaxBytes) || $textMaxBytes !== $maxBytes || $maxBytes > hub_pack_job_parser_max_bytes()
+                || !is_bool($allowEmpty)
+            ) {
                 hub_pack_job_output_contract_invalid('artifact_text_contract_invalid');
             }
+            $definition['text']['allow_empty'] = $allowEmpty;
         }
         if (isset($definition['audio']) && $definition['audio'] !== []) {
             hub_pack_job_output_contract_invalid('artifact_audio_contract_invalid');
@@ -2894,7 +2899,7 @@ function hub_pack_job_validate_text_output(string $path, array $definition, int 
         return;
     }
     $contents = hub_pack_job_read_parser_output($path, $size);
-    if ($contents === '' || preg_match('//u', $contents) !== 1) {
+    if (($contents === '' && empty($definition['text']['allow_empty'])) || ($contents !== '' && preg_match('//u', $contents) !== 1)) {
         hub_pack_job_output_contract_invalid('artifact_text_invalid');
     }
 }

@@ -95,7 +95,16 @@ function hub_ensure_runtime_dirs(): void
     }
     clearstatcache(true, $facebookProfileParent);
     clearstatcache(true, $facebookProfileRoot);
-    if (is_link($facebookProfileParent) || is_link($facebookProfileRoot) || !@chmod($facebookProfileRoot, 0700)) {
+    $facebookProfileMode = @fileperms($facebookProfileRoot);
+    $facebookProfileModeNeedsRepair = $facebookProfileMode !== false
+        && (((int)$facebookProfileMode & 0777) !== 0700);
+    if (is_link($facebookProfileParent) || is_link($facebookProfileRoot) || $facebookProfileMode === false
+        || ($facebookProfileModeNeedsRepair && !@chmod($facebookProfileRoot, 0700))
+    ) {
+        throw new RuntimeException('Cannot secure Facebook crawler profile directory.');
+    }
+    clearstatcache(true, $facebookProfileRoot);
+    if ((((int)@fileperms($facebookProfileRoot)) & 0777) !== 0700) {
         throw new RuntimeException('Cannot secure Facebook crawler profile directory.');
     }
 }

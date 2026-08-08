@@ -34,6 +34,7 @@ def execute(request: dict, output_dir: Path, scrape: Callable = scrape_target) -
         headless=True,
         stealth=False,
         human=False,
+        fingerprint_name="tw_desktop_chrome",
         storage_state=state if state.is_file() else None,
         proxy=None,
         retry=RetryConfig(max_attempts=2),

@@ -4301,7 +4301,9 @@ function hub_cluster_node_published_modes(PDO $db): array
         }
     }
 
-    return hub_cluster_node_normalize_modes($modes);
+    $modes = hub_cluster_node_normalize_modes($modes);
+    // ponytail: Node-pinned Facebook Router dispatch belongs to Phase B when a real caller needs it.
+    return array_values(array_filter($modes, static fn (string $mode): bool => $mode !== 'facebook_crawl'));
 }
 
 function hub_cluster_node_service_is_cleanly_unloaded_on_demand(array $service): bool

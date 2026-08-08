@@ -5,6 +5,7 @@ require_once __DIR__ . '/../app/bootstrap.php';
 require_once __DIR__ . '/_layout.php';
 require_once __DIR__ . '/_playground_tts_artifacts.php';
 require_once __DIR__ . '/_playground_voice_profiles.php';
+require_once __DIR__ . '/_playground_facebook_crawler.php';
 
 function hub_playground_profiles(): array
 {
@@ -26,6 +27,7 @@ function hub_playground_profiles(): array
         'background_remove' => ['label' => 'BiRefNet 去背', 'method' => 'POST', 'kind' => 'background_remove'],
         'taiwan_address' => ['label' => '台灣地址洗滌／地理編碼', 'method' => 'POST', 'kind' => 'json'],
         'web_capture' => ['label' => 'Web Screenshot', 'method' => 'POST', 'kind' => 'json'],
+        'facebook_crawl' => ['label' => 'Facebook Crawler', 'method' => 'POST', 'kind' => 'json'],
     ];
 }
 
@@ -94,6 +96,9 @@ function hub_playground_edge_tts_presets(): array
 
 function hub_playground_request_payload(string $mode): array
 {
+    if ($mode === 'facebook_crawl') {
+        return hub_playground_facebook_request_payload($_POST);
+    }
     if ($mode === 'edge_tts') {
         return [
             'text' => trim((string)($_POST['text'] ?? '這是一段使用台灣女聲的 API 測試旁白。')),
@@ -230,6 +235,11 @@ function hub_playground_basic_readiness(array $service): ?array
             'error' => 'service_disabled',
             'message' => __('服務已停用，請先啟用服務。'),
         ];
+    }
+    if (hub_service_is_internal_task($service)) {
+        return (string)($service['install_status'] ?? '') === 'installed'
+            ? null
+            : ['error' => 'service_not_installed', 'message' => __('服務尚未安裝。')];
     }
     if ((string)($service['status'] ?? '') !== 'running') {
         return [
@@ -544,6 +554,42 @@ PHP;
         $js = <<<JS
 const res = await fetch($jsUrl, {
   headers: { Authorization: 'Bearer <TOKEN>' }
+});
+console.log(await res.json());
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
+    if ($mode === 'facebook_crawl') {
+        $json = '{"targets":[{"url":"https://www.facebook.com/wra.gov.tw"}],"limit_per_target":10}';
+        $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n  -H \"Content-Type: application/json\" $curlContinuation\n  -d '$json'";
+        $php = <<<PHP
+\$payload = [
+    'targets' => [['url' => 'https://www.facebook.com/wra.gov.tw']],
+    'limit_per_target' => 10,
+];
+\$ch = curl_init($phpUrl);
+curl_setopt_array(\$ch, [
+    CURLOPT_POST => true,
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_HTTPHEADER => [
+        'Authorization: Bearer <TOKEN>',
+        'Content-Type: application/json',
+    ],
+    CURLOPT_POSTFIELDS => json_encode(\$payload, JSON_UNESCAPED_SLASHES),
+]);
+echo curl_exec(\$ch);
+PHP;
+        $js = <<<JS
+const res = await fetch($jsUrl, {
+  method: 'POST',
+  headers: {
+    Authorization: 'Bearer <TOKEN>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    targets: [{ url: 'https://www.facebook.com/wra.gov.tw' }],
+    limit_per_target: 10
+  })
 });
 console.log(await res.json());
 JS;
@@ -1087,15 +1133,20 @@ $result = null;
 $action = '';
 $voiceProfileDraftPrefill = '';
 $readinessNotice = $selectedService ? hub_playground_basic_readiness($selectedService) : null;
-if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (!empty($_POST['load_voice_profiles']) || !empty($_POST['load_voice_profile_draft']) || in_array((string)($_POST['action'] ?? ''), ['execute', 'voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'], true))) {
+$facebookActions = ['facebook_profile_list', 'facebook_profile_start', 'facebook_profile_status', 'facebook_profile_reauth', 'facebook_profile_delete', 'facebook_run_last', 'facebook_dataset_preview'];
+if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && (!empty($_POST['load_voice_profiles']) || !empty($_POST['load_voice_profile_draft']) || !empty($_POST['load_facebook_profiles']) || in_array((string)($_POST['action'] ?? ''), array_merge(['execute', 'voice_profile_upload', 'voice_profile_confirm', 'voice_profile_retry_asr'], $facebookActions), true))) {
     hub_check_csrf();
     $action = !empty($_POST['load_voice_profiles'])
         ? 'voice_profile_list'
-        : (!empty($_POST['load_voice_profile_draft']) ? 'voice_profile_load_draft' : (string)$_POST['action']);
+        : (!empty($_POST['load_voice_profile_draft'])
+            ? 'voice_profile_load_draft'
+            : (!empty($_POST['load_facebook_profiles']) ? 'facebook_profile_list' : (string)$_POST['action']));
     if ($action === 'execute') {
         $token = trim((string)($_POST['bearer_token'] ?? ''));
         $guard = $selectedService ? hub_playground_readiness_guard($selectedService) : ['error' => 'service_not_found', 'message' => __('找不到可測試的服務。')];
         $result = $guard === null ? ($selectedMode === 'tts' ? hub_playground_execute_tts($token) : hub_playground_execute($selectedMode, $token)) : hub_playground_guard_result($guard);
+    } elseif ($selectedMode === 'facebook_crawl' && in_array($action, $facebookActions, true)) {
+        $result = hub_playground_facebook_action($db, $action, (string)($_POST['bearer_token'] ?? ''), $_POST);
     } elseif ($action === 'voice_profile_load_draft') {
         $draft = hub_playground_voice_profile_draft_prefill($db, (string)($_POST['bearer_token'] ?? ''), (int)($_POST['voice_profile_id'] ?? 0));
         $result = $draft === null ? hub_playground_voice_profile_error_result() : hub_playground_voice_profile_draft_result();
@@ -1113,6 +1164,7 @@ $edgeTtsValues = ($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST'
     : $edgeTtsPreset['payload'];
 $ttsProfiles = [];
 $ttsManagementProfiles = [];
+$facebookProfiles = [];
 $profileToken = trim((string)($_POST['bearer_token'] ?? ''));
 if ($selectedMode === 'tts' && ($profileToken !== '' || $action === 'voice_profile_list')) {
     $ttsProfileOptions = hub_playground_tts_profile_options_result($db, $profileToken);
@@ -1121,6 +1173,14 @@ if ($selectedMode === 'tts' && ($profileToken !== '' || $action === 'voice_profi
         $ttsManagementProfiles = $ttsProfileOptions['management_profiles'];
     } elseif ($action === 'voice_profile_list') {
         $result = $ttsProfileOptions;
+    }
+}
+if ($selectedMode === 'facebook_crawl' && $profileToken !== '') {
+    $facebookProfileOptions = hub_playground_facebook_profile_options_result($db, $profileToken);
+    if (!empty($facebookProfileOptions['ok'])) {
+        $facebookProfiles = is_array($facebookProfileOptions['profiles'] ?? null) ? $facebookProfileOptions['profiles'] : [];
+    } elseif ($action === 'facebook_profile_list') {
+        $result = $facebookProfileOptions;
     }
 }
 $selectedManagementProfileId = hub_playground_voice_profile_selected_id($_POST);
@@ -1152,7 +1212,7 @@ hub_admin_header(__('API 測試場'), $user);
     <h1><?= hub_h(__('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(__('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(__('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(__('需要 Bearer Token')) ?></strong>。<?= hub_h(__('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(__('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code></p>
+    <p class="muted"><?= hub_h(__('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code>、<code>api.php?mode=facebook_crawl</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -1229,7 +1289,9 @@ hub_admin_header(__('API 測試場'), $user);
                 <button type="button" data-copy-target="copy-auth-header"><?= hub_h(__('複製 Authorization header')) ?></button>
             </div>
             <p class="muted">Authorization header：<code id="copy-auth-header"><?= hub_h($authHeaderExample) ?></code></p>
-            <?php if ($selectedMode === 'translate'): ?>
+            <?php if ($selectedMode === 'facebook_crawl'): ?>
+                <?= hub_playground_facebook_request_fields_html($facebookProfiles, $_POST) ?>
+            <?php elseif ($selectedMode === 'translate'): ?>
                 <label><?= hub_h(__('來源語言')) ?> source_lang</label>
                 <input name="source_lang" value="en">
                 <label><?= hub_h(__('目標語言')) ?> target_lang</label>
@@ -1464,7 +1526,8 @@ hub_admin_header(__('API 測試場'), $user);
             <?php endif; ?>
             <div class="hub-actions">
                 <?php if ($selectedMode === 'tts'): ?><button type="submit" name="load_voice_profiles" value="1"><?= hub_h(__('載入可用 Voice Profile')) ?></button><?php endif; ?>
-                <button class="primary" type="submit"><?= hub_h(__('執行測試')) ?></button>
+                <?php if ($selectedMode === 'facebook_crawl'): ?><button type="submit" name="load_facebook_profiles" value="1"><?= hub_h(__('載入 Profile')) ?></button><?php endif; ?>
+                <button class="primary" type="submit"><?= hub_h($selectedMode === 'facebook_crawl' ? __('開始背景爬取') : __('執行測試')) ?></button>
             </div>
         </form>
         <?php if ($selectedMode === 'tts'): ?>
@@ -1522,6 +1585,8 @@ hub_admin_header(__('API 測試場'), $user);
                 </select>
                 <div class="hub-actions"><button type="submit" name="load_voice_profiles" value="1" formnovalidate><?= hub_h(__('載入可用 Voice Profile')) ?></button><button type="submit"><?= hub_h(__('重新嘗試 ASR')) ?></button></div>
             </form>
+        <?php elseif ($selectedMode === 'facebook_crawl'): ?>
+            <?= hub_playground_facebook_management_html($facebookProfiles) ?>
         <?php endif; ?>
     </section>
 </div>
@@ -1587,6 +1652,9 @@ hub_admin_header(__('API 測試場'), $user);
                 <audio controls src="<?= hub_h($audioUrl) ?>"></audio>
                 <p><a class="button" href="<?= hub_h($audioUrl) ?>"><?= hub_h(__('下載 WAV')) ?></a></p>
             </div>
+        <?php endif; ?>
+        <?php if ($selectedMode === 'facebook_crawl'): ?>
+            <?= hub_playground_facebook_result_html($result) ?>
         <?php endif; ?>
         <pre><?= hub_h((string)($result['pretty_body'] ?? json_encode($result, JSON_UNESCAPED_UNICODE))) ?></pre>
     <?php endif; ?>
