@@ -680,7 +680,7 @@ hub_test('Marketplace shows GPT-SoVITS promotion level and fixed assets', functi
     $db = hub_test_reset_db();
     $gptSoVits = hub_get_pack('tts-gpt-sovits');
     hub_test_assert($gptSoVits !== null && $gptSoVits['status'] === 'ok', 'GPT-SoVITS Pack must be valid');
-    hub_test_assert(($gptSoVits['manifest']['runtime_level'] ?? '') === 'L4-local-model', 'GPT-SoVITS must publish its verified L4 level');
+    hub_test_assert(($gptSoVits['manifest']['runtime_level'] ?? '') === 'L5-benchmark-ready', 'GPT-SoVITS must publish its verified L5 level');
     hub_test_assert(hub_admin_market_runtime_label('L3-adapter') === 'L3 服務介接', 'L3 adapter label mismatch');
     hub_test_assert(hub_admin_market_runtime_badge_class('L3-adapter') === 'pack-badge pack-badge-warn', 'L3 adapter badge mismatch');
     hub_test_assert(hub_admin_market_runtime_label('L4-local-model') === 'L4 本機模型', 'generic L4 local model label mismatch');
