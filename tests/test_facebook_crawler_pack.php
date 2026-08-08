@@ -110,6 +110,9 @@ hub_test('Facebook crawler profiles block owner deletion until private state is 
     hub_facebook_profile_delete($db, (string)$profile['profile_id'], $memberId);
     hub_delete_api_member($db, $memberId);
     hub_test_assert(hub_get_api_member($db, $memberId) === null, 'member must be deletable after its private profiles are finalized');
+
+    $apiSource = (string)file_get_contents(HUB_ROOT . '/app/api_tokens.php');
+    hub_test_assert(substr_count($apiSource, 'NOT EXISTS') >= 2, 'member deletion must atomically fence users and Facebook profiles');
 });
 
 hub_test('Facebook crawler bootstrap rejects a symlinked private parent', function (): void {

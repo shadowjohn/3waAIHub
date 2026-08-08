@@ -68,7 +68,19 @@ function hub_delete_api_member(PDO $db, int $memberId): void
         throw new InvalidArgumentException('此 API 會員仍有 Facebook 爬蟲登入 Profile，請先刪除 Profile。');
     }
 
-    $db->prepare('DELETE FROM api_members WHERE id = :id')->execute([':id' => $memberId]);
+    $delete = $db->prepare(
+        'DELETE FROM api_members
+         WHERE id = :id
+           AND NOT EXISTS (SELECT 1 FROM users WHERE api_member_id = :id)
+           AND NOT EXISTS (
+               SELECT 1 FROM facebook_crawler_profiles
+               WHERE owner_member_id = :id AND deleted_at IS NULL
+           )'
+    );
+    $delete->execute([':id' => $memberId]);
+    if ($delete->rowCount() !== 1) {
+        throw new RuntimeException('API 會員刪除時相依資料已變更，請重新整理後再試。');
+    }
 }
 
 function hub_get_api_member(PDO $db, int $memberId): ?array
