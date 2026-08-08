@@ -443,6 +443,18 @@ function hub_release_station_report(array $station, array $localReport): array
 {
     $status = json_decode((string)($station['status_json'] ?? ''), true);
     $status = is_array($status) ? $status : [];
+    $isSelf = ($station['is_self'] ?? false) === true;
+    if ($isSelf) {
+        $status = [
+            'release' => is_array($localReport['git'] ?? null) ? $localReport['git'] : [],
+            'packs' => is_array($localReport['packs'] ?? null) ? $localReport['packs'] : [],
+            'health' => is_array($localReport['health'] ?? null) ? $localReport['health'] : [],
+            'cluster' => [
+                'aggregate' => ($station['self_router_enabled'] ?? false) === true && ($station['self_node_enabled'] ?? false) === true,
+                'children_count' => is_int($station['self_children_count'] ?? null) ? $station['self_children_count'] : 0,
+            ],
+        ];
+    }
     $git = is_array($status['release'] ?? null) ? $status['release'] : [];
     $buildId = is_string($git['build_id'] ?? null) && preg_match('/\A\d{11}\z/', $git['build_id']) === 1
         ? $git['build_id']
@@ -471,6 +483,15 @@ function hub_release_station_report(array $station, array $localReport): array
     $health = is_array($status['health'] ?? null) && is_string($status['health']['status'] ?? null)
         ? substr($status['health']['status'], 0, 32)
         : 'unknown';
+    $cluster = is_array($status['cluster'] ?? null) ? $status['cluster'] : [];
+    $nodeType = 'child';
+    if ($isSelf && ($station['self_router_enabled'] ?? false) === true) {
+        $nodeType = ($station['self_node_enabled'] ?? false) === true ? 'aggregate' : 'parent';
+    } elseif (is_bool($cluster['aggregate'] ?? null) && is_int($cluster['children_count'] ?? null)) {
+        $nodeType = $cluster['aggregate']
+            ? 'aggregate'
+            : ((int)$cluster['children_count'] > 0 ? 'parent' : 'child');
+    }
     $localBuildId = (string)($localReport['git']['build_id'] ?? '');
     $localCommit = (string)($localReport['git']['commit'] ?? '');
     $localTag = (string)($localReport['git']['tag'] ?? '');
@@ -487,6 +508,9 @@ function hub_release_station_report(array $station, array $localReport): array
             }
         }
     }
+    if ($isSelf) {
+        $updateNeeded = false;
+    }
 
     return [
         'display_name' => (string)($station['display_name'] ?? ''),
@@ -497,6 +521,7 @@ function hub_release_station_report(array $station, array $localReport): array
         'tag' => $tag,
         'dirty' => $dirty,
         'health' => $health,
+        'node_type' => $nodeType,
         'pack_compatible' => $packs === null ? null : $packs === $localPacks,
         'pack_count' => $packs === null ? null : count($packs),
         'update_needed' => $updateNeeded,

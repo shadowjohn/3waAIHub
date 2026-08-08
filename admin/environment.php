@@ -32,18 +32,27 @@ $releaseReport = hub_release_node_report($db);
 $remoteRelease = hub_release_read_remote_cache();
 $stationReleaseReports = [];
 if (hub_table_exists($db, 'cluster_stations')) {
-    foreach (hub_cluster_list_stations($db) as $station) {
+    $stations = hub_cluster_list_stations($db);
+    $selfStationKey = hub_get_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY');
+    foreach ($stations as $station) {
+        if ($selfStationKey !== '' && hash_equals($selfStationKey, (string)$station['station_key'])) {
+            $station['is_self'] = true;
+            $station['self_router_enabled'] = hub_cluster_router_enabled($db);
+            $station['self_node_enabled'] = hub_cluster_node_enabled($db);
+            $station['self_children_count'] = count($stations);
+        }
         $stationReleaseReports[] = hub_release_station_report($station, $releaseReport);
     }
 }
-$knownRunnerDigests = count(array_filter(
-    $releaseReport['runners'],
-    static fn (array $runner): bool => (string)($runner['digest'] ?? '') !== ''
-));
-$latestRelease = (string)$remoteRelease['latest_release'];
-$localUpdateNeeded = preg_match('/\A\d{11}\z/', $latestRelease) === 1
-    ? strcmp($latestRelease, HUB_VERSION) > 0
-    : null;
+usort($stationReleaseReports, static function (array $left, array $right): int {
+    $order = ['aggregate' => 0, 'parent' => 1, 'child' => 2, 'unknown' => 3];
+    $comparison = ($order[(string)($left['node_type'] ?? 'unknown')] ?? 3)
+        <=> ($order[(string)($right['node_type'] ?? 'unknown')] ?? 3);
+
+    return $comparison !== 0
+        ? $comparison
+        : strcmp((string)($left['display_name'] ?? ''), (string)($right['display_name'] ?? ''));
+});
 
 function hub_env_section_label(string $section): string
 {
@@ -479,44 +488,14 @@ hub_admin_header('系統環境', $user);
                 <td><code><?= hub_h((string)$releaseReport['git']['display_version']) ?></code> / <?= hub_h(HUB_RELEASE_LABEL) ?></td>
             </tr>
             <tr>
-                <th><?= hub_h(__('Git commit')) ?></th>
-                <td><code><?= hub_h((string)($releaseReport['git']['commit'] ?: __('未知'))) ?></code></td>
-            </tr>
-            <tr>
                 <th><?= hub_h(__('工作樹狀態')) ?></th>
                 <td class="<?= $releaseReport['git']['dirty'] === null ? 'muted' : ($releaseReport['git']['dirty'] ? 'bad' : 'ok') ?>">
                     <?= hub_h(__($releaseReport['git']['dirty'] === null ? '未知' : ($releaseReport['git']['dirty'] ? '有未提交變更' : '乾淨'))) ?>
                 </td>
             </tr>
             <tr>
-                <th><?= hub_h(__('版本資料來源')) ?></th>
-                <td>
-                    <?= hub_h(hub_release_source_label((string)($releaseReport['git']['source'] ?? 'unknown'))) ?>
-                    <?php if (($releaseReport['git']['snapshot_at'] ?? '') !== ''): ?>
-                        / <?= hub_h((string)$releaseReport['git']['snapshot_at']) ?>
-                    <?php endif; ?>
-                </td>
-            </tr>
-            <tr>
-                <th><?= hub_h(__('目前 Tag')) ?></th>
-                <td><code><?= hub_h((string)($releaseReport['git']['tag'] ?: __('無'))) ?></code></td>
-            </tr>
-            <tr>
-                <th><?= hub_h(__('遠端最新版本')) ?></th>
-                <td>
-                    <code><?= hub_h($latestRelease !== '' ? hub_release_display_version($latestRelease) : __('未知')) ?></code>
-                    <?php if ($localUpdateNeeded !== null): ?>
-                        <span class="<?= $localUpdateNeeded ? 'bad' : 'ok' ?>"><?= hub_h(__($localUpdateNeeded ? '可更新' : '已是最新')) ?></span>
-                    <?php endif; ?>
-                </td>
-            </tr>
-            <tr>
                 <th><?= hub_h(__('最後檢查時間')) ?></th>
                 <td><?= hub_h((string)($remoteRelease['checked_at'] ?: __('未知'))) ?><?php if ($remoteRelease['error'] !== ''): ?> / <code><?= hub_h((string)$remoteRelease['error']) ?></code><?php endif; ?></td>
-            </tr>
-            <tr>
-                <th><?= hub_h(__('Pack / Runner Digest')) ?></th>
-                <td><?= number_format(count($releaseReport['packs'])) ?> / <?= number_format($knownRunnerDigests) ?></td>
             </tr>
         </table>
     </div>
@@ -528,32 +507,38 @@ hub_admin_header('系統環境', $user);
             <table>
                 <thead>
                 <tr>
+                    <th><?= hub_h(__('項次')) ?></th>
                     <th><?= hub_h(__('站台')) ?></th>
                     <th><?= hub_h(__('版本')) ?></th>
-                    <th><?= hub_h(__('Commit')) ?></th>
-                    <th><?= hub_h(__('Tag')) ?></th>
-                    <th><?= hub_h(__('工作樹')) ?></th>
+                    <th><?= hub_h(__('節點類型')) ?></th>
                     <th><?= hub_h(__('健康')) ?></th>
-                    <th><?= hub_h(__('Pack 相容性')) ?></th>
-                    <th><?= hub_h(__('更新狀態')) ?></th>
+                    <th><?= hub_h(__('Pack數')) ?></th>
+                    <th><?= hub_h(__('狀況')) ?></th>
                 </tr>
                 </thead>
                 <tbody>
-                <?php foreach ($stationReleaseReports as $stationRelease): ?>
+                <?php foreach ($stationReleaseReports as $index => $stationRelease): ?>
                     <tr>
+                        <td><?= number_format($index + 1) ?></td>
                         <td><?= hub_h((string)$stationRelease['display_name']) ?></td>
                         <td><code><?= hub_h((string)($stationRelease['display_version'] ?: __('未知'))) ?></code></td>
-                        <td><code><?= hub_h((string)($stationRelease['commit'] ?: __('未知'))) ?></code></td>
-                        <td><code><?= hub_h((string)($stationRelease['tag'] ?: __('無'))) ?></code></td>
-                        <td class="<?= $stationRelease['dirty'] === null ? 'muted' : ($stationRelease['dirty'] ? 'bad' : 'ok') ?>">
-                            <?= hub_h(__($stationRelease['dirty'] === null ? '未知' : ($stationRelease['dirty'] ? '有未提交變更' : '乾淨'))) ?>
-                        </td>
-                        <td><?= hub_h(hub_release_status_label((string)$stationRelease['health'])) ?></td>
                         <td>
-                            <?php if ($stationRelease['pack_compatible'] === null): ?>
+                            <?= hub_h(match ((string)$stationRelease['node_type']) {
+                                'aggregate' => __('主節點+子節點'),
+                                'parent' => __('主節點'),
+                                'child' => __('子節點'),
+                                default => __('未知'),
+                            }) ?>
+                        </td>
+                        <td>
+                            <?php $health = (string)$stationRelease['health']; ?>
+                            <span class="<?= $health === 'ok' ? 'ok' : ($health === 'degraded' ? 'bad' : 'muted') ?>"><?= hub_h(hub_release_status_label($health)) ?></span>
+                        </td>
+                        <td>
+                            <?php if ($stationRelease['pack_count'] === null): ?>
                                 <span class="muted"><?= hub_h(__('未知')) ?></span>
                             <?php else: ?>
-                                <span class="<?= $stationRelease['pack_compatible'] ? 'ok' : 'bad' ?>"><?= hub_h(__($stationRelease['pack_compatible'] ? '相容' : '不相容')) ?></span>
+                                <?= number_format((int)$stationRelease['pack_count']) ?>
                             <?php endif; ?>
                         </td>
                         <td>
@@ -573,12 +558,14 @@ hub_admin_header('系統環境', $user);
 <section class="panel" id="webProtectionLive">
     <h2>即時 Web 檔案防護</h2>
     <p class="muted" id="webProtectionLiveStatus">正在檢查同源保護規則...</p>
+    <ul id="webProtectionLiveList" hidden></ul>
 </section>
 <script>
 (() => {
     const root = new URL('../', window.location.href);
     const targets = ['data/cluster.key', 'docs/cluster-router.md', 'scripts/init_db.php'];
     const status = document.getElementById('webProtectionLiveStatus');
+    const list = document.getElementById('webProtectionLiveList');
     Promise.all(targets.map(async (path) => {
         try {
             const response = await fetch(new URL(path, root), {
@@ -587,12 +574,20 @@ hub_admin_header('系統環境', $user);
                 cache: 'no-store',
                 redirect: 'manual',
             });
-            return `${path}: ${[403, 404].includes(response.status) ? 'PASS' : `FAIL (${response.status})`}`;
+            const safe = [403, 404].includes(response.status);
+            return {path, safe, result: safe ? 'PASS（安全）' : `FAIL (${response.status})`};
         } catch {
-            return `${path}: FAIL (network)`;
+            return {path, safe: false, result: 'FAIL (network)'};
         }
     })).then((rows) => {
-        status.textContent = rows.join(' | ');
+        list.replaceChildren(...rows.map((row) => {
+            const item = document.createElement('li');
+            item.className = row.safe ? 'ok' : 'bad';
+            item.textContent = `${row.path}: ${row.result}`;
+            return item;
+        }));
+        list.hidden = false;
+        status.textContent = rows.every((row) => row.safe) ? '同源保護規則檢查完成。' : '部分同源保護規則檢查失敗。';
     });
 })();
 </script>

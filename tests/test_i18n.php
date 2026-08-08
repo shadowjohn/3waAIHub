@@ -265,7 +265,7 @@ hub_test('8/7 admin redesign routes visible labels through i18n without changing
     }
 
     $environment = (string)file_get_contents(HUB_ROOT . '/admin/environment.php');
-    foreach (['目前版本', '工作樹狀態', '版本資料來源', '遠端最新版本', '更新狀態'] as $label) {
+    foreach (['目前版本', '工作樹狀態', '最後檢查時間', '項次', '節點類型', 'Pack數', '狀況'] as $label) {
         hub_test_assert(str_contains($environment, "__('{$label}')"), 'release label must call __(): ' . $label);
     }
 

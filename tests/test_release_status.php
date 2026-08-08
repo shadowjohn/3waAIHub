@@ -213,6 +213,7 @@ hub_test('old Cluster stations degrade safely without release fields', function 
     hub_test_assert($old['update_needed'] === null, 'old station must not invent update state');
     hub_test_assert($old['pack_compatible'] === null, 'old station must not invent Pack compatibility');
     hub_test_assert($old['health'] === 'unknown', 'old station health must degrade to unknown');
+    hub_test_assert($old['node_type'] === 'child', 'paired legacy station must remain a child node');
 
     $newer = hub_release_station_report([
         'display_name' => 'Newer node',
@@ -256,6 +257,71 @@ hub_test('old Cluster stations degrade safely without release fields', function 
     hub_test_assert($sameCommit['update_needed'] === false, 'same build and commit should be aligned');
     hub_test_assert(hub_release_status_label('ok') === '正常', 'release status label mismatch');
     hub_test_assert(hub_release_status_label('unknown') === '未知', 'unknown release label mismatch');
+});
+
+hub_test('Cluster station release reports classify declared node roles', function (): void {
+    $local = ['git' => [], 'packs' => [], 'runners' => [], 'health' => ['status' => 'ok']];
+    $base = [
+        'display_name' => 'Cluster node',
+        'status_json' => json_encode([
+            'release' => ['build_id' => HUB_VERSION, 'commit' => '', 'dirty' => false, 'tag' => ''],
+            'packs' => [],
+            'health' => ['status' => 'ok'],
+        ], JSON_THROW_ON_ERROR),
+    ];
+
+    foreach ([
+        ['aggregate' => true, 'children_count' => 2, 'expected' => 'aggregate'],
+        ['aggregate' => false, 'children_count' => 2, 'expected' => 'parent'],
+        ['aggregate' => false, 'children_count' => 0, 'expected' => 'child'],
+    ] as $case) {
+        $status = json_decode($base['status_json'], true, 32, JSON_THROW_ON_ERROR);
+        $status['cluster'] = [
+            'aggregate' => $case['aggregate'],
+            'children_count' => $case['children_count'],
+            'published_mode_count' => 0,
+        ];
+        $base['status_json'] = json_encode($status, JSON_THROW_ON_ERROR);
+        $report = hub_release_station_report($base, $local);
+        hub_test_assert($report['node_type'] === $case['expected'], 'Cluster node type mismatch: ' . $case['expected']);
+    }
+});
+
+hub_test('self Cluster station uses its local report when the stored snapshot is legacy', function (): void {
+    $local = [
+        'git' => ['build_id' => HUB_VERSION, 'commit' => 'abcdef123456', 'dirty' => false, 'tag' => ''],
+        'packs' => ['hello' => '0.1.0'],
+        'runners' => [],
+        'health' => ['status' => 'ok'],
+    ];
+    $report = hub_release_station_report([
+        'display_name' => 'GIS集團-AI服務平台',
+        'is_self' => true,
+        'self_router_enabled' => true,
+        'self_node_enabled' => true,
+        'self_children_count' => 3,
+        'status_json' => json_encode(['ok' => true, 'modes' => ['hello']], JSON_THROW_ON_ERROR),
+    ], $local);
+
+    hub_test_assert($report['display_version'] === hub_release_display_version(HUB_VERSION), 'self station must use the local version');
+    hub_test_assert($report['node_type'] === 'aggregate', 'self aggregate station role mismatch');
+    hub_test_assert($report['health'] === 'ok' && $report['pack_count'] === 1, 'self station local health and Pack count mismatch');
+    hub_test_assert($report['update_needed'] === false, 'self station must already be aligned');
+});
+
+hub_test('Environment version page renders a concise Cluster inventory', function (): void {
+    $environment = (string)file_get_contents(HUB_ROOT . '/admin/environment.php');
+
+    foreach (['Git commit', '版本資料來源', '目前 Tag', '遠端最新版本', 'Pack / Runner Digest'] as $hidden) {
+        hub_test_assert(!str_contains($environment, "__('{$hidden}')"), 'Environment must hide: ' . $hidden);
+    }
+    foreach (['項次', '站台', '版本', '節點類型', '健康', 'Pack數', '狀況'] as $header) {
+        hub_test_assert(str_contains($environment, "__('{$header}')"), 'Environment Cluster header missing: ' . $header);
+    }
+    hub_test_assert(str_contains($environment, "'aggregate' => 0, 'parent' => 1, 'child' => 2"), 'aggregate nodes must sort first');
+    hub_test_assert(!str_contains($environment, "rows.join(' | ')"), 'web protection checks must not be inline');
+    hub_test_assert(str_contains($environment, "document.createElement('li')"), 'web protection checks must render list items');
+    hub_test_assert(str_contains($environment, '（安全）'), 'web protection pass entries need a safety label');
 });
 
 hub_test('release checker is CLI only and web pages cannot deploy', function (): void {
