@@ -68,6 +68,12 @@ if [ "$SOURCE_ONLY" = "1" ]; then
   exit 0
 fi
 
+if [ -d "$FACEBOOK_PROFILE_ROOT" ] \
+  && find "$FACEBOOK_PROFILE_ROOT" -type f ! -links 1 -print -quit | grep -q .; then
+  echo "[3waAIHub] ERROR: Facebook profile storage contains a multiply linked file." >&2
+  exit 1
+fi
+
 web_group="$(detect_web_group || true)"
 web_user=""
 private_group=""

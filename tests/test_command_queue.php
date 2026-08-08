@@ -296,7 +296,8 @@ hub_test('cron loop runs both command and task workers', function (): void {
         && str_contains($loop, 'WEB_USER')
         && str_contains($loop, "stat -c '%U'")
         && str_contains($loop, '! -perm 0700')
-        && str_contains($loop, '! -perm 0600'),
+        && str_contains($loop, '! -perm 0600')
+        && str_contains($loop, '! -links 1'),
         'cron permission guard must detect an inaccessible or non-private Facebook profile tree'
     );
     hub_test_assert(str_contains($loop, 'TASK_WORKER_LIMIT'), 'cron loop must expose task worker limit');
@@ -378,5 +379,58 @@ hub_test('permission fixer preserves private Facebook profile modes and web owne
         hub_test_assert(str_contains($source, 'Cannot determine a usable web runtime owner'), 'root repair must fail closed without a usable web owner');
     } finally {
         hub_test_remove_data_tree($root);
+    }
+});
+
+hub_test('permission fixer rejects external Facebook state hardlinks without mutation', function (): void {
+    if (PHP_OS_FAMILY === 'Windows') {
+        hub_test_skip('Facebook profile hardlink repair requires Linux inode semantics.');
+    }
+
+    $root = sys_get_temp_dir() . '/3waaihub_hardlink_fixture_' . bin2hex(random_bytes(16));
+    $scriptDir = $root . '/scripts';
+    $profileDir = $root . '/data/facebook-crawler/profiles/fbp_' . str_repeat('b', 48);
+    $statePath = $profileDir . '/storage_state.json';
+    $outside = tempnam(sys_get_temp_dir(), 'facebook_state_outside_');
+    if ($outside === false || !mkdir($scriptDir, 0700, true) || !mkdir($profileDir, 0700, true)) {
+        throw new RuntimeException('Cannot create hardlink permission fixture.');
+    }
+    copy(HUB_ROOT . '/scripts/fix_permissions.sh', $scriptDir . '/fix_permissions.sh');
+    file_put_contents($outside, 'outside-private-state');
+    chmod($outside, 0640);
+    if (!link($outside, $statePath)) {
+        throw new RuntimeException('Cannot create external Facebook state hardlink.');
+    }
+    $before = lstat($outside);
+
+    try {
+        $pipes = [];
+        $process = proc_open(
+            ['bash', $scriptDir . '/fix_permissions.sh'],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            $root,
+            null,
+            ['bypass_shell' => true]
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('Cannot run hardlink permission fixture.');
+        }
+        $output = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+        clearstatcache(true, $outside);
+        $after = lstat($outside);
+
+        hub_test_assert($exitCode !== 0, 'permission repair must fail on a multiply linked state file: ' . trim($output));
+        hub_test_assert(is_array($before) && is_array($after), 'outside hardlink inode must remain available');
+        foreach (['uid', 'gid', 'mode', 'nlink', 'size'] as $field) {
+            hub_test_assert($after[$field] === $before[$field], 'outside hardlink ' . $field . ' must remain unchanged');
+        }
+        hub_test_assert(file_get_contents($outside) === 'outside-private-state', 'outside hardlink content must remain unchanged');
+    } finally {
+        hub_test_remove_data_tree($root);
+        @unlink($outside);
     }
 });

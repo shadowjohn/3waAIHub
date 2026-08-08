@@ -68,6 +68,7 @@ needs_permission_fix() {
     || find "$FACEBOOK_PROFILE_ROOT" ! -user "$RUNTIME_USER" -print -quit 2>/dev/null | grep -q . \
     || find "$FACEBOOK_PROFILE_ROOT" -type d ! -perm 0700 -print -quit 2>/dev/null | grep -q . \
     || find "$FACEBOOK_PROFILE_ROOT" -type f ! -perm 0600 -print -quit 2>/dev/null | grep -q . \
+    || find "$FACEBOOK_PROFILE_ROOT" -type f ! -links 1 -print -quit 2>/dev/null | grep -q . \
     || find "$FACEBOOK_PROFILE_ROOT" -type l -print -quit 2>/dev/null | grep -q .; then
     return 0
   fi
