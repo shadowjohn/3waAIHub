@@ -75,13 +75,26 @@ require_once __DIR__ . '/cluster_router.php';
 
 function hub_ensure_runtime_dirs(): void
 {
+    $facebookProfileParent = HUB_DATA_DIR . '/facebook-crawler';
     $facebookProfileRoot = HUB_DATA_DIR . '/facebook-crawler/profiles';
-    foreach ([HUB_DATA_DIR, HUB_SESSION_DIR, HUB_LOG_DIR, HUB_JOB_LOG_DIR, HUB_TASK_LOG_DIR, HUB_DATA_DIR . '/jobs', HUB_DATA_DIR . '/results', HUB_DATA_DIR . '/uploads', HUB_DATA_DIR . '/uploads/voice_profiles', HUB_DATA_DIR . '/uploads/photo', HUB_DATA_DIR . '/uploads/audio', HUB_DATA_DIR . '/cache', HUB_LOG_DIR . '/install', HUB_SERVICE_DIR, $facebookProfileRoot] as $dir) {
+    foreach ([HUB_DATA_DIR, HUB_SESSION_DIR, HUB_LOG_DIR, HUB_JOB_LOG_DIR, HUB_TASK_LOG_DIR, HUB_DATA_DIR . '/jobs', HUB_DATA_DIR . '/results', HUB_DATA_DIR . '/uploads', HUB_DATA_DIR . '/uploads/voice_profiles', HUB_DATA_DIR . '/uploads/photo', HUB_DATA_DIR . '/uploads/audio', HUB_DATA_DIR . '/cache', HUB_LOG_DIR . '/install', HUB_SERVICE_DIR] as $dir) {
         if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
             throw new RuntimeException('Cannot create runtime directory: ' . $dir);
         }
     }
-    if (is_link($facebookProfileRoot) || !@chmod($facebookProfileRoot, 0700)) {
+
+    if (
+        is_link($facebookProfileParent)
+        || (file_exists($facebookProfileParent) && !is_dir($facebookProfileParent))
+        || is_link($facebookProfileRoot)
+        || (file_exists($facebookProfileRoot) && !is_dir($facebookProfileRoot))
+        || (!is_dir($facebookProfileRoot) && !mkdir($facebookProfileRoot, 0700, true))
+    ) {
+        throw new RuntimeException('Cannot secure Facebook crawler profile directory.');
+    }
+    clearstatcache(true, $facebookProfileParent);
+    clearstatcache(true, $facebookProfileRoot);
+    if (is_link($facebookProfileParent) || is_link($facebookProfileRoot) || !@chmod($facebookProfileRoot, 0700)) {
         throw new RuntimeException('Cannot secure Facebook crawler profile directory.');
     }
 }

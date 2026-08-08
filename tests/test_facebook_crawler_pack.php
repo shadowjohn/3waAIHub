@@ -63,8 +63,62 @@ hub_test('Facebook crawler profiles are member-owned and node-private', function
     hub_test_assert(in_array('idx_facebook_profiles_owner', $indexes, true), 'owner profile index missing');
     hub_test_assert(in_array('idx_facebook_profiles_login_expiry', $indexes, true), 'login expiry index missing');
     hub_test_assert(!in_array('facebook_crawler_profiles', hub_runtime_schema_missing($db), true), 'runtime profile schema missing');
+    hub_test_assert(str_contains((string)file_get_contents(HUB_ROOT . '/.gitignore'), 'data/facebook-crawler/'), 'private browser state must never enter Git');
 
     hub_facebook_profile_delete($db, $profile['profile_id'], $memberA);
+});
+
+hub_test('Facebook crawler deletion remains non-active and retryable after final DB failure', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler delete retry owner');
+    $profile = hub_facebook_profile_create($db, $memberId, 'Retry delete profile');
+    $path = hub_facebook_profile_state_path($profile);
+    $profileId = (string)$profile['profile_id'];
+    $db->exec("CREATE TRIGGER facebook_profile_delete_failure
+        BEFORE UPDATE OF deleted_at ON facebook_crawler_profiles
+        WHEN NEW.deleted_at IS NOT NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'delete_db_failed');
+        END");
+
+    try {
+        hub_test_assert(hub_test_throws(static fn (): bool => hub_facebook_profile_delete($db, $profileId, $memberId)), 'final metadata failure must be surfaced');
+        $row = $db->query("SELECT state, deleted_at FROM facebook_crawler_profiles WHERE profile_id = " . $db->quote($profileId))->fetch();
+        hub_test_assert(is_array($row) && $row['state'] === 'deleting' && $row['deleted_at'] === null, 'failed finalization must leave a resumable deleting tombstone');
+        hub_test_assert(hub_facebook_profile_for_member($db, $profileId, $memberId) === null, 'deleting profile must not remain API-active');
+        hub_test_assert(!is_file($path) && !is_dir(dirname($path)), 'successful state destruction must not be rolled back into an active row');
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS facebook_profile_delete_failure');
+    }
+
+    hub_test_assert(hub_facebook_profile_delete($db, $profileId, $memberId), 'deleting tombstone must finalize on retry');
+    $deletedAt = $db->query("SELECT deleted_at FROM facebook_crawler_profiles WHERE profile_id = " . $db->quote($profileId))->fetchColumn();
+    hub_test_assert(is_string($deletedAt) && $deletedAt !== '', 'retry must persist deleted_at');
+});
+
+hub_test('Facebook crawler bootstrap rejects a symlinked private parent', function (): void {
+    $parent = HUB_DATA_DIR . '/facebook-crawler';
+    $backup = HUB_DATA_DIR . '/facebook-crawler-safe-' . bin2hex(random_bytes(8));
+    $outside = sys_get_temp_dir() . '/3waaihub_bootstrap_parent_' . bin2hex(random_bytes(16));
+    if (!is_dir($parent) || !rename($parent, $backup) || !mkdir($outside, 0700, true) || !symlink($outside, $parent)) {
+        throw new RuntimeException('Cannot create bootstrap parent symlink fixture.');
+    }
+    $marker = $outside . '/marker.txt';
+    file_put_contents($marker, 'bootstrap-outside');
+    chmod($marker, 0640);
+    $before = lstat($marker);
+
+    try {
+        hub_test_assert(hub_test_throws(static function (): void {
+            hub_ensure_runtime_dirs();
+        }), 'bootstrap must reject a symlinked Facebook profile parent');
+        clearstatcache(true, $marker);
+        hub_test_assert(lstat($marker) === $before && file_get_contents($marker) === 'bootstrap-outside', 'bootstrap must not mutate the symlink target');
+    } finally {
+        @unlink($parent);
+        @rename($backup, $parent);
+        hub_test_remove_data_tree($outside);
+    }
 });
 
 hub_test('Facebook crawler profile repository caps owners and fails closed on active login metadata', function (): void {
@@ -129,8 +183,10 @@ hub_test('Facebook crawler profile deletion rejects symlinks and hardlinks', fun
         hub_test_assert(hub_test_throws(static fn (): bool => hub_facebook_profile_delete($db, $hardlinkProfile['profile_id'], $memberId)), 'state hardlink must be rejected');
         hub_test_assert(hub_test_throws(static fn (): bool => hub_facebook_profile_delete($db, $directoryProfile['profile_id'], $memberId)), 'profile directory symlink must be rejected');
         hub_test_assert(file_get_contents($outside) === 'private outside state', 'symlink target must remain untouched');
-        hub_test_assert(hub_facebook_profile_for_member($db, $symlinkProfile['profile_id'], $memberId) !== null, 'rejected symlink profile must remain active');
-        hub_test_assert(hub_facebook_profile_for_member($db, $hardlinkProfile['profile_id'], $memberId) !== null, 'rejected hardlink profile must remain active');
+        hub_test_assert(hub_facebook_profile_for_member($db, $symlinkProfile['profile_id'], $memberId) === null, 'rejected symlink profile must fail closed outside the active API');
+        hub_test_assert(hub_facebook_profile_for_member($db, $hardlinkProfile['profile_id'], $memberId) === null, 'rejected hardlink profile must fail closed outside the active API');
+        $deletingCount = (int)$db->query("SELECT COUNT(*) FROM facebook_crawler_profiles WHERE state = 'deleting' AND deleted_at IS NULL")->fetchColumn();
+        hub_test_assert($deletingCount === 3, 'rejected storage cleanup must retain retryable deleting tombstones');
     } finally {
         @unlink($symlinkPath);
         file_put_contents($symlinkPath, "{}\n");

@@ -152,9 +152,12 @@ function hub_facebook_profile_for_member(PDO $db, string $profileId, int $ownerM
     }
     $stmt = $db->prepare(
         'SELECT * FROM facebook_crawler_profiles
-         WHERE profile_id = :profile_id AND owner_member_id = :owner_member_id AND deleted_at IS NULL'
+         WHERE profile_id = :profile_id
+           AND owner_member_id = :owner_member_id
+           AND deleted_at IS NULL
+           AND state <> :deleting'
     );
-    $stmt->execute([':profile_id' => $profileId, ':owner_member_id' => $ownerMemberId]);
+    $stmt->execute([':profile_id' => $profileId, ':owner_member_id' => $ownerMemberId, ':deleting' => 'deleting']);
     $profile = $stmt->fetch();
 
     return $profile === false ? null : hub_facebook_profile_public($profile);
@@ -167,10 +170,10 @@ function hub_facebook_profiles_for_member(PDO $db, int $ownerMemberId): array
     }
     $stmt = $db->prepare(
         'SELECT * FROM facebook_crawler_profiles
-         WHERE owner_member_id = :owner_member_id AND deleted_at IS NULL
+         WHERE owner_member_id = :owner_member_id AND deleted_at IS NULL AND state <> :deleting
          ORDER BY updated_at DESC, id DESC'
     );
-    $stmt->execute([':owner_member_id' => $ownerMemberId]);
+    $stmt->execute([':owner_member_id' => $ownerMemberId, ':deleting' => 'deleting']);
 
     return array_map('hub_facebook_profile_public', $stmt->fetchAll());
 }
@@ -194,8 +197,11 @@ function hub_facebook_profile_create(PDO $db, int $ownerMemberId, string $displa
         if ($member->fetchColumn() === false) {
             throw new InvalidArgumentException('facebook_profile_invalid');
         }
-        $count = $db->prepare('SELECT COUNT(*) FROM facebook_crawler_profiles WHERE owner_member_id = :owner_member_id AND deleted_at IS NULL');
-        $count->execute([':owner_member_id' => $ownerMemberId]);
+        $count = $db->prepare(
+            'SELECT COUNT(*) FROM facebook_crawler_profiles
+             WHERE owner_member_id = :owner_member_id AND deleted_at IS NULL AND state <> :deleting'
+        );
+        $count->execute([':owner_member_id' => $ownerMemberId, ':deleting' => 'deleting']);
         if ((int)$count->fetchColumn() >= 20) {
             throw new RuntimeException('facebook_profile_limit_reached');
         }
@@ -244,6 +250,13 @@ function hub_facebook_profile_create(PDO $db, int $ownerMemberId, string $displa
 function hub_facebook_profile_delete_storage(array $profile): void
 {
     $profileId = (string)($profile['profile_id'] ?? '');
+    $path = hub_facebook_profile_state_path($profile);
+    $dir = dirname($path);
+    clearstatcache(true, $dir);
+    if (!file_exists($dir) && !is_link($dir) && (string)($profile['state'] ?? '') === 'deleting') {
+        return;
+    }
+
     $dir = hub_facebook_profile_directory($profileId);
     $entries = iterator_to_array(new FilesystemIterator(
         $dir,
@@ -253,7 +266,6 @@ function hub_facebook_profile_delete_storage(array $profile): void
         throw new RuntimeException('profile_storage_unavailable');
     }
 
-    $path = hub_facebook_profile_state_path($profile);
     clearstatcache(true, $path);
     $pathStat = @lstat($path);
     $pathReal = realpath($path);
@@ -307,6 +319,7 @@ function hub_facebook_profile_delete(PDO $db, string $profileId, int $ownerMembe
         throw new InvalidArgumentException('facebook_profile_forbidden');
     }
 
+    $profile = null;
     $transactionStarted = false;
     try {
         $db->exec('BEGIN IMMEDIATE');
@@ -320,21 +333,59 @@ function hub_facebook_profile_delete(PDO $db, string $profileId, int $ownerMembe
         if ($profile === false) {
             throw new InvalidArgumentException('facebook_profile_forbidden');
         }
-        foreach (['login_secret_hash', 'login_container_name', 'login_port', 'login_expires_at'] as $field) {
-            if (($profile[$field] ?? null) !== null) {
-                throw new RuntimeException('facebook_profile_login_active');
+        if ((string)$profile['state'] !== 'deleting') {
+            foreach (['login_secret_hash', 'login_container_name', 'login_port', 'login_expires_at'] as $field) {
+                if (($profile[$field] ?? null) !== null) {
+                    throw new RuntimeException('facebook_profile_login_active');
+                }
+            }
+            if (($profile['active_task_id'] ?? null) !== null) {
+                throw new RuntimeException('facebook_profile_busy');
+            }
+
+            $now = hub_now();
+            $mark = $db->prepare(
+                "UPDATE facebook_crawler_profiles
+                 SET state = 'deleting', updated_at = :updated_at
+                 WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL AND state <> 'deleting'"
+            );
+            $mark->execute([
+                ':updated_at' => $now,
+                ':id' => (int)$profile['id'],
+                ':owner_member_id' => $ownerMemberId,
+            ]);
+            if ($mark->rowCount() !== 1) {
+                throw new RuntimeException('facebook_profile_delete_conflict');
+            }
+            $profile['state'] = 'deleting';
+            $profile['updated_at'] = $now;
+        }
+        $db->exec('COMMIT');
+        $transactionStarted = false;
+    } catch (Throwable $e) {
+        if ($transactionStarted) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
             }
         }
-        if (($profile['active_task_id'] ?? null) !== null) {
-            throw new RuntimeException('facebook_profile_busy');
-        }
+        throw $e;
+    }
 
-        hub_facebook_profile_delete_storage($profile);
+    hub_facebook_profile_delete_storage($profile);
+
+    $transactionStarted = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $transactionStarted = true;
         $now = hub_now();
         $update = $db->prepare(
             "UPDATE facebook_crawler_profiles
              SET state = 'deleted', deleted_at = :deleted_at, updated_at = :updated_at
-             WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL"
+             WHERE id = :id
+               AND owner_member_id = :owner_member_id
+               AND deleted_at IS NULL
+               AND state = 'deleting'"
         );
         $update->execute([
             ':deleted_at' => $now,

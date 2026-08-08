@@ -345,7 +345,7 @@ hub_test('permission fixer preserves private Facebook profile modes and web owne
     file_put_contents($statePath, "{}\n");
     chmod($profileRoot, 0775);
     chmod($profileDir, 0775);
-    chmod($statePath, 0664);
+    chmod($statePath, 0600);
 
     try {
         $pipes = [];
@@ -377,6 +377,9 @@ hub_test('permission fixer preserves private Facebook profile modes and web owne
         hub_test_assert(str_contains($source, 'WEB_USER="${WEB_USER:-}"'), 'root repair must support an explicit web owner');
         hub_test_assert(str_contains($source, 'detect_web_user'), 'root repair must conservatively detect the web owner');
         hub_test_assert(str_contains($source, 'Cannot determine a usable web runtime owner'), 'root repair must fail closed without a usable web owner');
+        hub_test_assert(str_contains($source, "chown --"), 'root repair must terminate chown option parsing');
+        hub_test_assert(str_contains($source, "chgrp --"), 'root repair must terminate chgrp option parsing');
+        hub_test_assert(!str_contains($source, 'find "$FACEBOOK_PROFILE_ROOT" -type f -exec chmod'), 'permission repair must never mutate an existing browser-state inode');
     } finally {
         hub_test_remove_data_tree($root);
     }
@@ -432,5 +435,55 @@ hub_test('permission fixer rejects external Facebook state hardlinks without mut
     } finally {
         hub_test_remove_data_tree($root);
         @unlink($outside);
+    }
+});
+
+hub_test('permission fixer rejects a symlinked Facebook profile parent without external mutation', function (): void {
+    if (PHP_OS_FAMILY === 'Windows') {
+        hub_test_skip('Facebook profile symlink repair requires Linux link semantics.');
+    }
+
+    $root = sys_get_temp_dir() . '/3waaihub_parent_link_fixture_' . bin2hex(random_bytes(16));
+    $scriptDir = $root . '/scripts';
+    $dataDir = $root . '/data';
+    $outside = sys_get_temp_dir() . '/3waaihub_parent_link_outside_' . bin2hex(random_bytes(16));
+    $marker = $outside . '/marker.txt';
+    if (!mkdir($scriptDir, 0700, true) || !mkdir($dataDir, 0700, true) || !mkdir($outside, 0750, true)) {
+        throw new RuntimeException('Cannot create parent symlink permission fixture.');
+    }
+    copy(HUB_ROOT . '/scripts/fix_permissions.sh', $scriptDir . '/fix_permissions.sh');
+    file_put_contents($marker, 'outside-parent-state');
+    chmod($marker, 0640);
+    if (!symlink($outside, $dataDir . '/facebook-crawler')) {
+        throw new RuntimeException('Cannot create Facebook profile parent symlink.');
+    }
+    $before = lstat($marker);
+
+    try {
+        $pipes = [];
+        $process = proc_open(
+            ['bash', $scriptDir . '/fix_permissions.sh'],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            $root,
+            null,
+            ['bypass_shell' => true]
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('Cannot run parent symlink permission fixture.');
+        }
+        $output = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+        clearstatcache(true, $marker);
+        $after = lstat($marker);
+
+        hub_test_assert($exitCode !== 0, 'permission repair must fail on a symlinked profile parent: ' . trim($output));
+        hub_test_assert(is_array($before) && $after === $before, 'external parent marker metadata must remain unchanged');
+        hub_test_assert(file_get_contents($marker) === 'outside-parent-state', 'external parent marker content must remain unchanged');
+    } finally {
+        hub_test_remove_data_tree($root);
+        hub_test_remove_data_tree($outside);
     }
 });

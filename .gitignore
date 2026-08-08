@@ -21,6 +21,7 @@ data/install/*
 data/test_services/*
 data/sessions/*
 data/docker-cli/
+data/facebook-crawler/
 !data/.gitkeep
 !data/logs/.gitkeep
 !data/logs/jobs/.gitkeep

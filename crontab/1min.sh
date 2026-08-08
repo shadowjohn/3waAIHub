@@ -16,6 +16,7 @@ TASK_WORKER_TICKS="${TASK_WORKER_TICKS:-100}"
 TASK_WORKER_SLEEP="${TASK_WORKER_SLEEP:-0.5}"
 WORKER_TICKS="${WORKER_TICKS:-6}"
 WORKER_SLEEP="${WORKER_SLEEP:-10}"
+FACEBOOK_PROFILE_PARENT="data/facebook-crawler"
 FACEBOOK_PROFILE_ROOT="data/facebook-crawler/profiles"
 
 mkdir -p data/jobs data/logs
@@ -63,7 +64,7 @@ wrong_runtime_group() {
 }
 
 needs_permission_fix() {
-  if [ ! -d "$FACEBOOK_PROFILE_ROOT" ] || [ -L "$FACEBOOK_PROFILE_ROOT" ] || [ -z "$RUNTIME_USER" ] \
+  if [ ! -d "$FACEBOOK_PROFILE_ROOT" ] || [ -L "$FACEBOOK_PROFILE_PARENT" ] || [ -L "$FACEBOOK_PROFILE_ROOT" ] || [ -z "$RUNTIME_USER" ] \
     || [ "$(stat -c '%U' "$FACEBOOK_PROFILE_ROOT" 2>/dev/null || true)" != "$RUNTIME_USER" ] \
     || find "$FACEBOOK_PROFILE_ROOT" ! -user "$RUNTIME_USER" -print -quit 2>/dev/null | grep -q . \
     || find "$FACEBOOK_PROFILE_ROOT" -type d ! -perm 0700 -print -quit 2>/dev/null | grep -q . \

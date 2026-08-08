@@ -15,6 +15,7 @@ APP_USER="${APP_USER:-}"
 APP_GROUP="${APP_GROUP:-}"
 WEB_GROUP="${WEB_GROUP:-}"
 WEB_USER="${WEB_USER:-}"
+FACEBOOK_PROFILE_PARENT="data/facebook-crawler"
 FACEBOOK_PROFILE_ROOT="data/facebook-crawler/profiles"
 
 if [ "$(id -u)" = "0" ] && [ -z "$APP_USER" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
@@ -23,8 +24,11 @@ fi
 
 detect_web_group() {
   if [ -n "$WEB_GROUP" ]; then
-    echo "$WEB_GROUP"
-    return 0
+    if getent group "$WEB_GROUP" >/dev/null; then
+      echo "$WEB_GROUP"
+      return 0
+    fi
+    return 1
   fi
 
   for candidate in www-data apache nginx http; do
@@ -33,6 +37,17 @@ detect_web_group() {
       return 0
     fi
   done
+}
+
+validate_runtime_account() {
+  local kind="$1"
+  local value="$2"
+  [ -z "$value" ] && return 0
+  if [ "$kind" = "user" ]; then
+    getent passwd "$value" >/dev/null
+  else
+    getent group "$value" >/dev/null
+  fi
 }
 
 detect_web_user() {
@@ -68,9 +83,10 @@ if [ "$SOURCE_ONLY" = "1" ]; then
   exit 0
 fi
 
-if [ -d "$FACEBOOK_PROFILE_ROOT" ] \
-  && find "$FACEBOOK_PROFILE_ROOT" -type f ! -links 1 -print -quit | grep -q .; then
-  echo "[3waAIHub] ERROR: Facebook profile storage contains a multiply linked file." >&2
+if [ -L "$FACEBOOK_PROFILE_PARENT" ] || [ -L "$FACEBOOK_PROFILE_ROOT" ] \
+  || { [ -e "$FACEBOOK_PROFILE_PARENT" ] && [ ! -d "$FACEBOOK_PROFILE_PARENT" ]; } \
+  || { [ -e "$FACEBOOK_PROFILE_ROOT" ] && [ ! -d "$FACEBOOK_PROFILE_ROOT" ]; }; then
+  echo "[3waAIHub] ERROR: Facebook profile storage path is not a private directory." >&2
   exit 1
 fi
 
@@ -94,7 +110,47 @@ if [ "$(id -u)" = "0" ]; then
     echo "[3waAIHub] ERROR: Cannot determine a usable web runtime group." >&2
     exit 1
   fi
+  if ! validate_runtime_account user "$APP_USER" || ! validate_runtime_account group "$APP_GROUP"; then
+    echo "[3waAIHub] ERROR: APP_USER or APP_GROUP is not a local account." >&2
+    exit 1
+  fi
+else
+  web_user="$(id -un)"
+  private_group="$(id -gn)"
 fi
+
+mkdir -p "$FACEBOOK_PROFILE_ROOT"
+if [ -L "$FACEBOOK_PROFILE_PARENT" ] || [ -L "$FACEBOOK_PROFILE_ROOT" ]; then
+  echo "[3waAIHub] ERROR: Facebook profile storage path became a symlink." >&2
+  exit 1
+fi
+data_real="$(realpath data)"
+parent_real="$(realpath "$FACEBOOK_PROFILE_PARENT")"
+root_real="$(realpath "$FACEBOOK_PROFILE_ROOT")"
+if [ "$(dirname "$parent_real")" != "$data_real" ] || [ "$(dirname "$root_real")" != "$parent_real" ]; then
+  echo "[3waAIHub] ERROR: Facebook profile storage escaped the Hub data root." >&2
+  exit 1
+fi
+(
+  cd -P -- "$FACEBOOK_PROFILE_ROOT"
+  if find . -type l -print -quit | grep -q . \
+    || find . ! -type d ! -type f -print -quit | grep -q .; then
+    echo "[3waAIHub] ERROR: Facebook profile storage contains an unsupported entry." >&2
+    exit 1
+  fi
+  if find . -type f ! -links 1 -print -quit | grep -q .; then
+    echo "[3waAIHub] ERROR: Facebook profile storage contains a multiply linked file." >&2
+    exit 1
+  fi
+  if find . -type f \( ! -user "$web_user" -o ! -group "$private_group" -o ! -perm 0600 \) -print -quit | grep -q .; then
+    echo "[3waAIHub] ERROR: Existing Facebook profile state requires manual ownership repair." >&2
+    exit 1
+  fi
+  if [ "$(id -u)" = "0" ]; then
+    find . -type d -exec chown -- "$web_user:$private_group" {} +
+  fi
+  find . -type d -exec chmod 0700 {} +
+)
 
 for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/yolo/registry /DATA/models/ollama /DATA/models/sam3 /DATA/models/birefnet; do
   mkdir -p "$dir" 2>/dev/null || true
@@ -102,24 +158,24 @@ for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/yo
 done
 
 if [ "$(id -u)" = "0" ]; then
-  find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -type d -exec chmod u+rwx,g+rwx,o+rx {} +
+  find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d -exec chmod u+rwx,g+rwx,o+rx {} +
 else
-  find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -type d ! -perm -2000 -exec chmod u+rwx,g+rwx,o+rx {} +
+  find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d ! -perm -2000 -exec chmod u+rwx,g+rwx,o+rx {} +
 fi
-find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -type f -exec chmod u+rw,g+rw,o+r {} +
+find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type f -exec chmod u+rw,g+rw,o+r {} +
 
 if [ "$(id -u)" = "0" ]; then
   if [ -n "$APP_USER" ] || [ -n "$APP_GROUP" ]; then
     owner="${APP_USER:-}"
     group="${APP_GROUP:-}"
-    find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -exec chown "${owner}${group:+:$group}" {} +
+    find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -exec chown -- "${owner}${group:+:$group}" {} +
   fi
 
   if [ -n "$web_group" ]; then
-    find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -exec chgrp "$web_group" {} +
-    find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -type d -exec chmod 2775 {} +
+    find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -exec chgrp -- "$web_group" {} +
+    find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d -exec chmod 2775 {} +
     if [ -d /DATA/models/yolo/registry ]; then
-      chgrp -R "$web_group" /DATA/models/yolo/registry 2>/dev/null || true
+      chgrp -R -- "$web_group" /DATA/models/yolo/registry 2>/dev/null || true
       find /DATA/models/yolo/registry -type d -exec chmod 2775 {} + 2>/dev/null || true
       find /DATA/models/yolo/registry -type f -exec chmod u+rw,g+rw,o+r {} + 2>/dev/null || true
       if command -v setfacl >/dev/null 2>&1; then
@@ -135,20 +191,5 @@ else
     echo "[3waAIHub] YOLO registry writes need: /DATA/models/yolo/registry writable by www-data."
   fi
 fi
-
-if [ -L "$FACEBOOK_PROFILE_ROOT" ]; then
-  echo "[3waAIHub] ERROR: Facebook profile root must not be a symlink." >&2
-  exit 1
-fi
-mkdir -p "$FACEBOOK_PROFILE_ROOT"
-if find "$FACEBOOK_PROFILE_ROOT" -type l -print -quit | grep -q .; then
-  echo "[3waAIHub] ERROR: Facebook profile storage contains a symlink." >&2
-  exit 1
-fi
-if [ "$(id -u)" = "0" ]; then
-  chown -R "$web_user:$private_group" "$FACEBOOK_PROFILE_ROOT"
-fi
-find "$FACEBOOK_PROFILE_ROOT" -type d -exec chmod 0700 {} +
-find "$FACEBOOK_PROFILE_ROOT" -type f -exec chmod 0600 {} +
 
 echo "[3waAIHub] Permissions fixed without chmod 777."
