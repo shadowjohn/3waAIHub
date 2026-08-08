@@ -290,6 +290,15 @@ hub_test('cron loop runs both command and task workers', function (): void {
     hub_test_assert(str_contains($loop, 'scripts/fix_permissions.sh'), 'cron loop must auto-repair runtime permissions when needed');
     hub_test_assert(str_contains($loop, 'data/3waaihub.sqlite-wal'), 'cron permission guard must include SQLite WAL file');
     hub_test_assert(str_contains($loop, "stat -c '%G'"), 'cron permission guard must detect wrong runtime group');
+    hub_test_assert(
+        str_contains($loop, 'FACEBOOK_PROFILE_ROOT')
+        && str_contains($loop, 'detect_runtime_user')
+        && str_contains($loop, 'WEB_USER')
+        && str_contains($loop, "stat -c '%U'")
+        && str_contains($loop, '! -perm 0700')
+        && str_contains($loop, '! -perm 0600'),
+        'cron permission guard must detect an inaccessible or non-private Facebook profile tree'
+    );
     hub_test_assert(str_contains($loop, 'TASK_WORKER_LIMIT'), 'cron loop must expose task worker limit');
     hub_test_assert(str_contains($loop, 'TASK_WORKER_TICKS="${TASK_WORKER_TICKS:-100}"') && str_contains($loop, 'TASK_WORKER_SLEEP="${TASK_WORKER_SLEEP:-0.5}"'), 'cron task loop must poll at the configured half-second cadence');
     hub_test_assert(str_contains($loop, 'task_worker_pid=$!') && str_contains($loop, 'wait "$task_worker_pid"'), 'cron loop must wait for its background task worker loop');
@@ -316,4 +325,58 @@ hub_test('permission fixer repairs deployed source readability without touching 
     hub_test_assert(str_contains($script, '-type d -exec chmod u+rwx,go+rx'), 'permission fixer must make source directories traversable by PHP-FPM');
     hub_test_assert(str_contains($script, '-type f -exec chmod u+rw,go+r'), 'permission fixer must make source files readable by PHP-FPM');
     hub_test_assert(str_contains($script, '-perm -0100 -exec chmod go+rx'), 'permission fixer must preserve executable scripts for non-owner runners');
+});
+
+hub_test('permission fixer preserves private Facebook profile modes and web ownership', function (): void {
+    if (PHP_OS_FAMILY === 'Windows') {
+        hub_test_skip('Facebook profile permission repair requires Linux ownership semantics.');
+    }
+
+    $root = sys_get_temp_dir() . '/3waaihub_permission_fixture_' . bin2hex(random_bytes(16));
+    $scriptDir = $root . '/scripts';
+    $profileRoot = $root . '/data/facebook-crawler/profiles';
+    $profileDir = $profileRoot . '/fbp_' . str_repeat('a', 48);
+    $statePath = $profileDir . '/storage_state.json';
+    if (!mkdir($scriptDir, 0700, true) || !mkdir($profileDir, 0775, true)) {
+        throw new RuntimeException('Cannot create permission repair fixture.');
+    }
+    copy(HUB_ROOT . '/scripts/fix_permissions.sh', $scriptDir . '/fix_permissions.sh');
+    file_put_contents($statePath, "{}\n");
+    chmod($profileRoot, 0775);
+    chmod($profileDir, 0775);
+    chmod($statePath, 0664);
+
+    try {
+        $pipes = [];
+        $process = proc_open(
+            ['bash', $scriptDir . '/fix_permissions.sh'],
+            [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            $root,
+            null,
+            ['bypass_shell' => true]
+        );
+        if (!is_resource($process)) {
+            throw new RuntimeException('Cannot run permission repair fixture.');
+        }
+        $output = stream_get_contents($pipes[1]) . stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+        clearstatcache(true, $statePath);
+
+        hub_test_assert($exitCode === 0, 'permission repair fixture failed: ' . trim($output));
+        hub_test_assert((fileperms($profileRoot) & 0777) === 0700, 'Facebook profile root must remain 0700 after repair');
+        hub_test_assert((fileperms($profileDir) & 0777) === 0700, 'Facebook profile directory must remain 0700 after repair');
+        hub_test_assert((fileperms($statePath) & 0777) === 0600, 'Facebook storage state must remain 0600 after repair');
+        hub_test_assert(fileowner($profileRoot) === posix_geteuid() && fileowner($statePath) === posix_geteuid(), 'private profile tree must remain owned by the runtime user');
+        hub_test_assert(is_readable($statePath) && is_writable($statePath) && is_executable($profileDir), 'runtime owner must retain private profile access');
+
+        $source = (string)file_get_contents($scriptDir . '/fix_permissions.sh');
+        hub_test_assert(str_contains($source, 'WEB_USER="${WEB_USER:-}"'), 'root repair must support an explicit web owner');
+        hub_test_assert(str_contains($source, 'detect_web_user'), 'root repair must conservatively detect the web owner');
+        hub_test_assert(str_contains($source, 'Cannot determine a usable web runtime owner'), 'root repair must fail closed without a usable web owner');
+    } finally {
+        hub_test_remove_data_tree($root);
+    }
 });

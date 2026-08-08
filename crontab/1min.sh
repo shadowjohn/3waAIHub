@@ -16,6 +16,7 @@ TASK_WORKER_TICKS="${TASK_WORKER_TICKS:-100}"
 TASK_WORKER_SLEEP="${TASK_WORKER_SLEEP:-0.5}"
 WORKER_TICKS="${WORKER_TICKS:-6}"
 WORKER_SLEEP="${WORKER_SLEEP:-10}"
+FACEBOOK_PROFILE_ROOT="data/facebook-crawler/profiles"
 
 mkdir -p data/jobs data/logs
 
@@ -35,11 +36,42 @@ detect_runtime_group() {
 
 RUNTIME_GROUP="$(detect_runtime_group || true)"
 
+detect_runtime_user() {
+  local runtime_group="$1"
+  if [ -n "${WEB_USER:-}" ]; then
+    if getent passwd "$WEB_USER" >/dev/null && [ "$(id -u "$WEB_USER")" != "0" ]; then
+      echo "$WEB_USER"
+      return 0
+    fi
+    return 1
+  fi
+  if [ "$(id -u)" != "0" ]; then
+    id -un
+    return 0
+  fi
+  if [ -n "$runtime_group" ] && getent passwd "$runtime_group" >/dev/null && [ "$(id -u "$runtime_group")" != "0" ]; then
+    echo "$runtime_group"
+    return 0
+  fi
+  return 1
+}
+
+RUNTIME_USER="$(detect_runtime_user "$RUNTIME_GROUP" || true)"
+
 wrong_runtime_group() {
   [ -n "$RUNTIME_GROUP" ] && [ "$(stat -c '%G' "$1" 2>/dev/null || true)" != "$RUNTIME_GROUP" ]
 }
 
 needs_permission_fix() {
+  if [ ! -d "$FACEBOOK_PROFILE_ROOT" ] || [ -L "$FACEBOOK_PROFILE_ROOT" ] || [ -z "$RUNTIME_USER" ] \
+    || [ "$(stat -c '%U' "$FACEBOOK_PROFILE_ROOT" 2>/dev/null || true)" != "$RUNTIME_USER" ] \
+    || find "$FACEBOOK_PROFILE_ROOT" ! -user "$RUNTIME_USER" -print -quit 2>/dev/null | grep -q . \
+    || find "$FACEBOOK_PROFILE_ROOT" -type d ! -perm 0700 -print -quit 2>/dev/null | grep -q . \
+    || find "$FACEBOOK_PROFILE_ROOT" -type f ! -perm 0600 -print -quit 2>/dev/null | grep -q . \
+    || find "$FACEBOOK_PROFILE_ROOT" -type l -print -quit 2>/dev/null | grep -q .; then
+    return 0
+  fi
+
   if find app admin -type f ! -perm -004 -print -quit | grep -q . \
     || find . -maxdepth 1 -type f -name '*.php' ! -perm -004 -print -quit | grep -q .; then
     return 0
@@ -65,6 +97,14 @@ needs_permission_fix() {
 if ! command -v flock >/dev/null 2>&1; then
   echo "[3waAIHub] ERROR: flock not found. Install util-linux first."
   exit 1
+fi
+
+if needs_permission_fix; then
+  echo "[3waAIHub] runtime permissions need repair."
+  if ! bash scripts/fix_permissions.sh; then
+    echo "[3waAIHub] runtime permissions repair failed."
+    exit 1
+  fi
 fi
 
 exec 7>"$CLUSTER_REFRESH_LOCK_FILE"
@@ -99,11 +139,6 @@ task_worker_pid=$!
 tick=1
 exec 9>"$COMMAND_LOCK_FILE"
 if flock -n 9; then
-  if needs_permission_fix; then
-    echo "[3waAIHub] runtime permissions need repair."
-    bash scripts/fix_permissions.sh || echo "[3waAIHub] runtime permissions repair failed."
-  fi
-
   if ! php scripts/collect_host_metrics.php; then
     echo "[3waAIHub] host metrics collection failed."
   fi

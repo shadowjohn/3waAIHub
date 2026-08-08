@@ -14,6 +14,8 @@ fi
 APP_USER="${APP_USER:-}"
 APP_GROUP="${APP_GROUP:-}"
 WEB_GROUP="${WEB_GROUP:-}"
+WEB_USER="${WEB_USER:-}"
+FACEBOOK_PROFILE_ROOT="data/facebook-crawler/profiles"
 
 if [ "$(id -u)" = "0" ] && [ -z "$APP_USER" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
   APP_USER="$SUDO_USER"
@@ -33,6 +35,23 @@ detect_web_group() {
   done
 }
 
+detect_web_user() {
+  local web_group="$1"
+  if [ -n "$WEB_USER" ]; then
+    if getent passwd "$WEB_USER" >/dev/null && [ "$(id -u "$WEB_USER")" != "0" ]; then
+      echo "$WEB_USER"
+      return 0
+    fi
+    return 1
+  fi
+
+  if [ -n "$web_group" ] && getent passwd "$web_group" >/dev/null && [ "$(id -u "$web_group")" != "0" ]; then
+    echo "$web_group"
+    return 0
+  fi
+  return 1
+}
+
 for dir in data data/cache data/uploads data/results data/logs data/logs/jobs data/logs/tasks data/logs/install data/jobs data/services; do
   mkdir -p "$dir"
 done
@@ -49,29 +68,50 @@ if [ "$SOURCE_ONLY" = "1" ]; then
   exit 0
 fi
 
+web_group="$(detect_web_group || true)"
+web_user=""
+private_group=""
+if [ "$(id -u)" = "0" ]; then
+  web_user="$(detect_web_user "$web_group" || true)"
+  if [ -z "$web_user" ]; then
+    echo "[3waAIHub] ERROR: Cannot determine a usable web runtime owner. Set WEB_USER." >&2
+    exit 1
+  fi
+  if [ -n "$WEB_GROUP" ]; then
+    private_group="$WEB_GROUP"
+  elif [ -n "$WEB_USER" ]; then
+    private_group="$(id -gn "$web_user")"
+  else
+    private_group="$web_group"
+  fi
+  if [ -z "$private_group" ] || ! getent group "$private_group" >/dev/null; then
+    echo "[3waAIHub] ERROR: Cannot determine a usable web runtime group." >&2
+    exit 1
+  fi
+fi
+
 for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/yolo/registry /DATA/models/ollama /DATA/models/sam3 /DATA/models/birefnet; do
   mkdir -p "$dir" 2>/dev/null || true
   chmod u+rwx,g+rwx,o+rx "$dir" 2>/dev/null || true
 done
 
 if [ "$(id -u)" = "0" ]; then
-  find data -type d -exec chmod u+rwx,g+rwx,o+rx {} +
+  find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -type d -exec chmod u+rwx,g+rwx,o+rx {} +
 else
-  find data -type d ! -perm -2000 -exec chmod u+rwx,g+rwx,o+rx {} +
+  find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -type d ! -perm -2000 -exec chmod u+rwx,g+rwx,o+rx {} +
 fi
-find data -type f -exec chmod u+rw,g+rw,o+r {} +
+find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -type f -exec chmod u+rw,g+rw,o+r {} +
 
 if [ "$(id -u)" = "0" ]; then
   if [ -n "$APP_USER" ] || [ -n "$APP_GROUP" ]; then
     owner="${APP_USER:-}"
     group="${APP_GROUP:-}"
-    chown -R "${owner}${group:+:$group}" data
+    find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -exec chown "${owner}${group:+:$group}" {} +
   fi
 
-  web_group="$(detect_web_group || true)"
   if [ -n "$web_group" ]; then
-    chgrp -R "$web_group" data
-    find data -type d -exec chmod 2775 {} +
+    find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -exec chgrp "$web_group" {} +
+    find data -path "$FACEBOOK_PROFILE_ROOT" -prune -o -type d -exec chmod 2775 {} +
     if [ -d /DATA/models/yolo/registry ]; then
       chgrp -R "$web_group" /DATA/models/yolo/registry 2>/dev/null || true
       find /DATA/models/yolo/registry -type d -exec chmod 2775 {} + 2>/dev/null || true
@@ -89,5 +129,20 @@ else
     echo "[3waAIHub] YOLO registry writes need: /DATA/models/yolo/registry writable by www-data."
   fi
 fi
+
+if [ -L "$FACEBOOK_PROFILE_ROOT" ]; then
+  echo "[3waAIHub] ERROR: Facebook profile root must not be a symlink." >&2
+  exit 1
+fi
+mkdir -p "$FACEBOOK_PROFILE_ROOT"
+if find "$FACEBOOK_PROFILE_ROOT" -type l -print -quit | grep -q .; then
+  echo "[3waAIHub] ERROR: Facebook profile storage contains a symlink." >&2
+  exit 1
+fi
+if [ "$(id -u)" = "0" ]; then
+  chown -R "$web_user:$private_group" "$FACEBOOK_PROFILE_ROOT"
+fi
+find "$FACEBOOK_PROFILE_ROOT" -type d -exec chmod 0700 {} +
+find "$FACEBOOK_PROFILE_ROOT" -type f -exec chmod 0600 {} +
 
 echo "[3waAIHub] Permissions fixed without chmod 777."
