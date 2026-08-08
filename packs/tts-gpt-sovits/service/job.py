@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import audioop
 import hashlib
 import json
 import os
 import re
-import subprocess
+import shutil
 import sys
 import time
 import wave
@@ -67,84 +66,34 @@ def wav_seconds(path: Path) -> float:
         raise RuntimeError("reference_audio_invalid") from error
 
 
-def trim_seconds_at_boundary(path: Path) -> float:
-    duration = wav_seconds(path)
-    if duration < 3.0:
-        raise RuntimeError("reference_audio_too_short")
-    if duration <= 10.0:
-        return duration
-
+def is_gpt_sovits_reference_wav(path: Path) -> bool:
     try:
         with wave.open(str(path), "rb") as source:
-            if source.getsampwidth() != 2 or source.getnchannels() < 1:
-                return 5.0
-            rate = source.getframerate()
-            frame_width = source.getsampwidth() * source.getnchannels()
-            candidates: list[tuple[int, int]] = []
-            for milliseconds in range(3000, 7001, 100):
-                frame = int(milliseconds * rate / 1000)
-                source.setpos(max(0, frame - int(rate * 0.075)))
-                payload = source.readframes(int(rate * 0.15))
-                if len(payload) < frame_width:
-                    continue
-                candidates.append((milliseconds, audioop.rms(payload, source.getsampwidth())))
-    except (OSError, wave.Error, audioop.error):
-        return 5.0
-
-    quiet = [candidate for candidate in candidates if candidate[1] <= 700]
-    if quiet:
-        return min(quiet, key=lambda candidate: (abs(candidate[0] - 5000), candidate[1]))[0] / 1000.0
-    return 5.0
+            duration = source.getnframes() / source.getframerate()
+            return (
+                source.getcomptype() == "NONE"
+                and source.getnchannels() == 1
+                and source.getsampwidth() == 2
+                and source.getframerate() == 32000
+                and 3.0 <= duration <= 10.0
+            )
+    except (OSError, wave.Error, ZeroDivisionError):
+        return False
 
 
-def prompt_for_excerpt(prompt_text: str | None, source_seconds: float, staged_seconds: float) -> str | None:
-    if prompt_text is None:
-        return None
-    prompt = prompt_text.strip()
-    if not prompt:
-        raise RuntimeError("ultimate_clone_prompt_text_required")
-    if staged_seconds >= source_seconds:
-        return prompt
-
-    limit = max(1, int(len(prompt) * staged_seconds / source_seconds))
-    candidate = prompt[:limit]
-    boundary = max(candidate.rfind(mark) for mark in "。！？；，,.!?")
-    return candidate[: boundary + 1].strip() if boundary >= len(candidate) // 2 else candidate.strip()
-
-
-def normalize_reference(source: Path, prompt_text: str | None, stage_dir: Path) -> tuple[Path, str | None]:
-    if not regular(source):
-        raise RuntimeError("voice_profile_unavailable")
-    source_seconds = wav_seconds(source)
-    seconds = trim_seconds_at_boundary(source)
+def stage_prepared_reference(source: Path, stage_dir: Path) -> Path:
+    if not regular(source) or not is_gpt_sovits_reference_wav(source):
+        raise RuntimeError("voice_profile_reprepare_required")
     stage_dir.mkdir(parents=True, exist_ok=True)
     staged = stage_dir / "reference.wav"
-    command = [
-        "ffmpeg",
-        "-nostdin",
-        "-loglevel",
-        "error",
-        "-y",
-        "-i",
-        str(source),
-        "-ac",
-        "1",
-        "-ar",
-        "32000",
-        "-t",
-        f"{seconds:.3f}",
-        str(staged),
-    ]
     try:
-        completed = subprocess.run(command, check=False, capture_output=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise RuntimeError("reference_normalize_failed") from error
-    if completed.returncode != 0 or not regular(staged):
-        raise RuntimeError("reference_normalize_failed")
-    staged_seconds = wav_seconds(staged)
-    if not 3.0 <= staged_seconds <= 10.05:
-        raise RuntimeError("reference_normalize_failed")
-    return staged, prompt_for_excerpt(prompt_text, source_seconds, staged_seconds)
+        shutil.copyfile(source, staged)
+    except OSError as error:
+        raise RuntimeError("voice_profile_reprepare_required") from error
+    if not regular(staged) or not is_gpt_sovits_reference_wav(staged):
+        staged.unlink(missing_ok=True)
+        raise RuntimeError("voice_profile_reprepare_required")
+    return staged
 
 
 def validate_request(value: dict[str, Any]) -> dict[str, Any]:
@@ -339,8 +288,8 @@ def run_job(
     if cancelled is not None and cancelled():
         raise RuntimeError("job_cancelled")
     started = time.monotonic()
-    staged, prompt = normalize_reference(reference, request.get("prompt_text"), workspace / "checkpoints")
-    synthesize(runtime_loader(), request, staged, prompt, output_dir / "generated_audio.wav")
+    staged = stage_prepared_reference(reference, workspace / "checkpoints")
+    synthesize(runtime_loader(), request, staged, request.get("prompt_text"), output_dir / "generated_audio.wav")
     if cancelled is not None and cancelled():
         raise RuntimeError("job_cancelled")
     metadata = {
