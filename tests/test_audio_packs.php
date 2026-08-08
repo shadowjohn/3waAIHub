@@ -86,13 +86,14 @@ hub_test('Whisper ASR service instance generates GPU compose and gateway respons
 
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
     $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    $image = '3waaihub/whisper-asr:' . (string)$installed['service']['pack_version'];
     hub_test_assert(str_contains($compose, '127.0.0.1:${ASR_LOCAL_PORT:-18107}:8000'), 'whisper-asr compose port binding mismatch');
     hub_test_assert(str_contains($compose, 'context: ' . HUB_ROOT . '/packs/whisper-asr') && str_contains($compose, 'dockerfile: service/Dockerfile'), 'whisper-asr generated compose must include its controlled Pack job launcher');
-    hub_test_assert(str_contains($compose, 'image: 3waaihub/whisper-asr:0.1.1'), 'whisper-asr service image must match the generic Pack runner image');
+    hub_test_assert(str_contains($compose, 'image: ' . $image), 'whisper-asr service image must match the generic Pack runner image');
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/whisper:/models/whisper'), 'whisper-asr compose must mount model storage');
     hub_test_assert(str_contains($compose, '${AIHUB_CACHE_DIR}/whisper:/cache/whisper'), 'whisper-asr compose must mount cache storage');
     hub_test_assert(str_contains($compose, '${SERVICE_DATA_DIR}:/data/service'), 'whisper-asr compose must mount service data');
-    hub_test_assert($built && in_array(['docker', 'build', '--tag', '3waaihub/whisper-asr:0.1.1', '--file', HUB_ROOT . '/packs/whisper-asr/service/Dockerfile', HUB_ROOT . '/packs/whisper-asr'], $commands, true), 'install must build and verify the declared generic Pack runner image');
+    hub_test_assert($built && in_array(['docker', 'build', '--tag', $image, '--file', HUB_ROOT . '/packs/whisper-asr/service/Dockerfile', HUB_ROOT . '/packs/whisper-asr'], $commands, true), 'install must build and verify the declared generic Pack runner image');
     hub_test_assert(str_contains($compose, 'gpus: all'), 'whisper-asr generated compose must request GPUs via USE_GPU=1');
     foreach ([
         'WHISPER_MODEL_DIR=/models/whisper',
