@@ -112,7 +112,7 @@ function hub_voice_profile_task_status_payload(PDO $db, array $task, array $prof
     return $payload;
 }
 
-function hub_run_voice_profile_prepare_task(PDO $db, array $task): void
+function hub_run_voice_profile_prepare_task(PDO $db, array $task, ?callable $transcribe = null): void
 {
     $taskId = (int)($task['id'] ?? 0);
     $memberId = (int)($task['owner_member_id'] ?? 0);
@@ -134,13 +134,19 @@ function hub_run_voice_profile_prepare_task(PDO $db, array $task): void
     }
 
     hub_add_task_log($db, $taskId, 'info', 'voice_profile_prepare started');
+    if (
+        (string)($task['requested_mode'] ?? '') === 'voice_generate_gpt_sovits'
+        && ($profile['reference_contract'] ?? 'generic') !== 'gpt_sovits_v1'
+    ) {
+        $profile = hub_promote_gpt_sovits_reference($db, $task, $profile);
+    }
     $promptText = trim((string)($profile['prompt_text'] ?? ''));
     if ($promptText === '') {
         $transcriptionStatus = (string)($profile['transcription_status'] ?? '');
         if ($transcriptionStatus === 'failed') {
-            hub_retry_voice_profile_transcription($db, (int)$profile['id'], $memberId);
+            hub_retry_voice_profile_transcription($db, (int)$profile['id'], $memberId, $transcribe);
         } elseif ($transcriptionStatus === 'pending') {
-            hub_run_voice_profile_transcription($db, $profile, $memberId);
+            hub_run_voice_profile_transcription($db, $profile, $memberId, $transcribe);
         }
         if (in_array($transcriptionStatus, ['failed', 'pending'], true)) {
             $profile = hub_get_voice_profile($db, (int)$profile['id']) ?? throw new RuntimeException('voice_profile_unavailable');
@@ -320,6 +326,10 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
     if ($confirmed && $promptText === '') {
         return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'voice profile transcript is invalid');
     }
+    $isGptSoVits = (string)($route['requested_mode'] ?? '') === 'voice_generate_gpt_sovits';
+    if ($isGptSoVits && (array_key_exists('prompt_text', $payload) || array_key_exists('transcript_confirmed', $payload))) {
+        return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'GPT-SoVITS confirms the derived ASR draft');
+    }
     $expiresAt = null;
     if (array_key_exists('expires_in_seconds', $payload)) {
         $expiresIn = $payload['expires_in_seconds'];
@@ -349,7 +359,7 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
             'expires_at' => $expiresAt,
         ], $moveFile, null, [
             'defer_transcription' => true,
-            'allow_cache' => $expiresAt === null && !hub_cluster_node_token_is_current($db, $tokenId),
+            'allow_cache' => !$isGptSoVits && $expiresAt === null && !hub_cluster_node_token_is_current($db, $tokenId),
         ], static function (array $createdState) use (
             $db,
             $memberId,
