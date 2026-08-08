@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Status: approved design; pending written-spec review
+Status: approved design; implementation planned
 
 ## Goal
 
@@ -109,13 +109,15 @@ artifact, or log. Password-assisted setup is rejected when Hub is not served
 over HTTPS.
 
 The login URL is one-time, owner-bound, and expires after 10 minutes. The
-interactive view uses a bundled noVNC client through an authenticated Hub
-relay; the login broker and browser ports are not exposed directly. The
-one-time proof is carried in the URL fragment, exchanged in a POST body, and
-then removed, so it cannot enter normal request-URI access logs. Its browser
-container can navigate only within the Facebook login flow. All noVNC assets
-are bundled with the Pack; no CDN is required. Detecting a valid Facebook
-login cookie completes profile setup and closes the interactive session.
+interactive page relays bounded browser screenshots and pointer/keyboard
+events through same-origin HTTPS requests; the login broker and browser ports
+are bound to loopback and never exposed directly. The one-time proof is
+carried in the URL fragment, exchanged in a POST body, and then removed, so it
+cannot enter normal request-URI access logs. Its browser container can
+navigate only within the Facebook login flow. The small relay UI is bundled
+with Hub; no CDN, WebSocket proxy, or Web-server-specific configuration is
+required. Detecting a valid Facebook login cookie completes profile setup and
+closes the interactive session.
 
 Supporting profile operations are:
 
