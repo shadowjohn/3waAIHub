@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const HUB_DB_MIGRATION_VERSION = '2026-08-04.1';
+const HUB_DB_MIGRATION_VERSION = '2026-08-08.1';
 const HUB_DB_MIGRATION_VERSION_KEY = 'db_migration_version';
 const HUB_DB_MIGRATION_SCHEMA_KEY = 'db_migration_schema_version';
 
@@ -283,6 +283,26 @@ CREATE TABLE IF NOT EXISTS task_artifact_holds (
     UNIQUE(source_artifact_id, downstream_task_id),
     FOREIGN KEY(source_artifact_id) REFERENCES task_artifacts(id) ON DELETE CASCADE,
     FOREIGN KEY(downstream_task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS facebook_crawler_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id TEXT NOT NULL UNIQUE,
+    owner_member_id INTEGER NOT NULL,
+    node_name TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'preparing',
+    last_verified_at TEXT NULL,
+    active_task_id INTEGER NULL,
+    login_secret_hash TEXT NULL,
+    login_container_name TEXT NULL,
+    login_port INTEGER NULL,
+    login_expires_at TEXT NULL,
+    deleted_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE,
+    FOREIGN KEY(active_task_id) REFERENCES tasks(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS service_ip_whitelists (
@@ -1021,6 +1041,8 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_claim ON task_callback_deliveries(delivered_at, claim_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_callback_deliveries_task_id ON task_callback_deliveries(task_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifact_holds_active ON task_artifact_holds(source_artifact_id, released_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_facebook_profiles_owner ON facebook_crawler_profiles(owner_member_id, deleted_at, updated_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_facebook_profiles_login_expiry ON facebook_crawler_profiles(login_expires_at) WHERE login_expires_at IS NOT NULL');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifacts_retention ON task_artifacts(state, expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifacts_download_claim ON task_artifacts(download_claim_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_metadata_retention ON tasks(status, finished_at, metadata_purge_claim_token)');
@@ -1305,6 +1327,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'cluster_gpu_metric_snapshots' => ['id', 'station_id', 'sampled_at', 'gpu_json'],
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'waiting_detail_json', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
         'voice_profiles' => ['source_task_id'],
+        'facebook_crawler_profiles' => ['id', 'profile_id', 'owner_member_id', 'node_name', 'display_name', 'state', 'last_verified_at', 'active_task_id', 'login_secret_hash', 'login_container_name', 'login_port', 'login_expires_at', 'deleted_at', 'created_at', 'updated_at'],
         'task_artifacts' => ['artifact_type', 'sha256', 'metadata_json', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],
         'runtime_runs' => ['task_id', 'attempt_no', 'container_id', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],

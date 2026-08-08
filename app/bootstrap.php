@@ -52,6 +52,7 @@ require_once __DIR__ . '/service_settings.php';
 require_once __DIR__ . '/command_queue.php';
 require_once __DIR__ . '/task_queue.php';
 require_once __DIR__ . '/task_callbacks.php';
+require_once __DIR__ . '/facebook_crawler.php';
 require_once __DIR__ . '/web_capture.php';
 require_once __DIR__ . '/pack_job_runner.php';
 require_once __DIR__ . '/edge_tts_voices.php';
@@ -74,10 +75,14 @@ require_once __DIR__ . '/cluster_router.php';
 
 function hub_ensure_runtime_dirs(): void
 {
-    foreach ([HUB_DATA_DIR, HUB_SESSION_DIR, HUB_LOG_DIR, HUB_JOB_LOG_DIR, HUB_TASK_LOG_DIR, HUB_DATA_DIR . '/jobs', HUB_DATA_DIR . '/results', HUB_DATA_DIR . '/uploads', HUB_DATA_DIR . '/uploads/voice_profiles', HUB_DATA_DIR . '/uploads/photo', HUB_DATA_DIR . '/uploads/audio', HUB_DATA_DIR . '/cache', HUB_LOG_DIR . '/install', HUB_SERVICE_DIR] as $dir) {
+    $facebookProfileRoot = HUB_DATA_DIR . '/facebook-crawler/profiles';
+    foreach ([HUB_DATA_DIR, HUB_SESSION_DIR, HUB_LOG_DIR, HUB_JOB_LOG_DIR, HUB_TASK_LOG_DIR, HUB_DATA_DIR . '/jobs', HUB_DATA_DIR . '/results', HUB_DATA_DIR . '/uploads', HUB_DATA_DIR . '/uploads/voice_profiles', HUB_DATA_DIR . '/uploads/photo', HUB_DATA_DIR . '/uploads/audio', HUB_DATA_DIR . '/cache', HUB_LOG_DIR . '/install', HUB_SERVICE_DIR, $facebookProfileRoot] as $dir) {
         if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
             throw new RuntimeException('Cannot create runtime directory: ' . $dir);
         }
+    }
+    if (is_link($facebookProfileRoot) || !@chmod($facebookProfileRoot, 0700)) {
+        throw new RuntimeException('Cannot secure Facebook crawler profile directory.');
     }
 }
 
