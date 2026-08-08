@@ -65,6 +65,20 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
         );
         return hub_gateway_finish($db, null, $mode, $response, $started, $requestId, $authContext, $requestContext);
     }
+    if (in_array($mode, ['facebook_run_last', 'facebook_dataset_items'], true)) {
+        $plainToken = $providedToken ?? hub_bearer_token_from_request();
+        $auth = hub_authenticate_api_token($db, $clientIp, $plainToken, 'facebook_crawl');
+        $authContext = $auth['context'] ?? [];
+        if (empty($auth['ok'])) {
+            return hub_gateway_finish($db, null, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
+        }
+        $query = array_key_exists('query', $internalRequest) ? $internalRequest['query'] : $_GET;
+        if (!is_array($query)) {
+            $query = [];
+        }
+        $response = hub_facebook_dataset_api_dispatch($db, $mode, $authContext, $requestMethod, $query);
+        return hub_gateway_finish($db, null, $mode, $response, $started, $requestId, $authContext, $requestContext);
+    }
     $service = hub_get_service_by_mode($db, $mode);
     if (hub_is_pack_job_async_mode($mode)) {
         $auth = hub_gateway_authenticate_api_token($db, $mode, $clientIp, $providedToken);

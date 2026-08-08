@@ -483,6 +483,291 @@ function hub_facebook_profile_release_for_task(PDO $db, string $profileId, int $
     return $stmt->rowCount() === 1;
 }
 
+function hub_facebook_latest_terminal_run(PDO $db, int $ownerMemberId): ?array
+{
+    if ($ownerMemberId < 1) {
+        return null;
+    }
+    $stmt = $db->prepare(
+        "SELECT id FROM tasks
+         WHERE owner_member_id = :owner_member_id
+           AND requested_mode = 'facebook_crawl'
+           AND pack_id = 'facebook-crawler' AND job = 'crawl'
+           AND status IN ('success', 'failed', 'cancelled', 'timed_out', 'timeout')
+         ORDER BY id DESC LIMIT 1"
+    );
+    $stmt->execute([':owner_member_id' => $ownerMemberId]);
+    $taskId = (int)$stmt->fetchColumn();
+
+    return $taskId > 0 ? hub_get_task($db, $taskId) : null;
+}
+
+function hub_facebook_dataset_artifact_expired(array $artifact, ?int $now = null): bool
+{
+    if ((string)($artifact['state'] ?? '') !== 'available' || !empty($artifact['purged_at'])) {
+        return true;
+    }
+    if (!empty($artifact['pinned_at']) || (int)($artifact['legal_hold'] ?? 0) === 1) {
+        return false;
+    }
+    $expiresAt = trim((string)($artifact['expires_at'] ?? ''));
+    if ($expiresAt === '') {
+        return false;
+    }
+    $expires = strtotime($expiresAt);
+
+    return $expires === false || $expires <= ($now ?? time());
+}
+
+function hub_facebook_dataset_artifact_for_task(PDO $db, int $ownerMemberId, int $taskId): ?array
+{
+    if ($ownerMemberId < 1 || $taskId < 1) {
+        return null;
+    }
+    $stmt = $db->prepare(
+        "SELECT a.*
+         FROM tasks t
+         JOIN task_artifacts a ON a.task_id = t.id
+         WHERE t.id = :task_id AND t.owner_member_id = :owner_member_id
+           AND t.requested_mode = 'facebook_crawl'
+           AND t.pack_id = 'facebook-crawler' AND t.job = 'crawl'
+           AND t.status = 'success' AND a.artifact_type = 'facebook_posts_jsonl'
+         ORDER BY a.id DESC LIMIT 1"
+    );
+    $stmt->execute([':task_id' => $taskId, ':owner_member_id' => $ownerMemberId]);
+    $artifact = $stmt->fetch();
+
+    return is_array($artifact) ? $artifact : null;
+}
+
+function hub_facebook_latest_dataset_artifact(PDO $db, int $ownerMemberId): ?array
+{
+    if ($ownerMemberId < 1) {
+        return null;
+    }
+    $now = hub_now();
+    $stmt = $db->prepare(
+        "SELECT a.*
+         FROM tasks t
+         JOIN task_artifacts a ON a.task_id = t.id
+         WHERE t.owner_member_id = :owner_member_id
+           AND t.requested_mode = 'facebook_crawl'
+           AND t.pack_id = 'facebook-crawler' AND t.job = 'crawl'
+           AND t.status = 'success' AND a.artifact_type = 'facebook_posts_jsonl'
+           AND a.state = 'available' AND a.purged_at IS NULL
+           AND (a.expires_at IS NULL OR datetime(a.expires_at) > datetime(:now) OR a.pinned_at IS NOT NULL OR a.legal_hold = 1)
+         ORDER BY t.id DESC, a.id DESC LIMIT 1"
+    );
+    $stmt->execute([':owner_member_id' => $ownerMemberId, ':now' => $now]);
+    $artifact = $stmt->fetch();
+
+    return is_array($artifact) ? $artifact : null;
+}
+
+function hub_facebook_latest_dataset_artifact_record(PDO $db, int $ownerMemberId): ?array
+{
+    if ($ownerMemberId < 1) {
+        return null;
+    }
+    $stmt = $db->prepare(
+        "SELECT a.*
+         FROM tasks t
+         JOIN task_artifacts a ON a.task_id = t.id
+         WHERE t.owner_member_id = :owner_member_id
+           AND t.requested_mode = 'facebook_crawl'
+           AND t.pack_id = 'facebook-crawler' AND t.job = 'crawl'
+           AND t.status = 'success' AND a.artifact_type = 'facebook_posts_jsonl'
+         ORDER BY t.id DESC, a.id DESC LIMIT 1"
+    );
+    $stmt->execute([':owner_member_id' => $ownerMemberId]);
+    $artifact = $stmt->fetch();
+
+    return is_array($artifact) ? $artifact : null;
+}
+
+function hub_facebook_dataset_page(string $path, int $offset, int $limit): array
+{
+    if ($offset < 0 || $limit < 1 || $limit > 500) {
+        throw new InvalidArgumentException('dataset_query_invalid');
+    }
+    try {
+        $file = new SplFileObject($path, 'rb');
+    } catch (Throwable $e) {
+        throw new RuntimeException('dataset_invalid', 0, $e);
+    }
+    $items = [];
+    $index = 0;
+    try {
+        while (!$file->eof() && count($items) < $limit) {
+            $line = $file->fgets();
+            if ($line === '' || trim($line) === '') {
+                continue;
+            }
+            if (strlen($line) > 1024 * 1024) {
+                throw new RuntimeException('dataset_invalid');
+            }
+            $item = json_decode($line, true, 32, JSON_THROW_ON_ERROR);
+            if (!is_array($item) || array_is_list($item)) {
+                throw new RuntimeException('dataset_invalid');
+            }
+            if ($index++ < $offset) {
+                continue;
+            }
+            $items[] = $item;
+        }
+    } catch (JsonException $e) {
+        throw new RuntimeException('dataset_invalid', 0, $e);
+    }
+
+    return [
+        'items' => $items,
+        'next_offset' => count($items) === $limit ? $offset + count($items) : null,
+    ];
+}
+
+function hub_facebook_dataset_query_integer(mixed $value, int $minimum, int $maximum): ?int
+{
+    if (is_int($value)) {
+        $number = $value;
+    } elseif (is_string($value) && preg_match('/\A(?:0|[1-9][0-9]{0,9})\z/', $value) === 1) {
+        $number = (int)$value;
+    } else {
+        return null;
+    }
+
+    return $number >= $minimum && $number <= $maximum ? $number : null;
+}
+
+function hub_facebook_dataset_query(string $mode, array $query): array
+{
+    if (array_key_exists('mode', $query)) {
+        if (!is_string($query['mode']) || $query['mode'] !== $mode) {
+            throw new InvalidArgumentException('dataset_query_invalid');
+        }
+        unset($query['mode']);
+    }
+    if ($mode === 'facebook_run_last') {
+        if ($query !== []) {
+            throw new InvalidArgumentException('dataset_query_invalid');
+        }
+        return [];
+    }
+    if (array_diff(array_keys($query), ['task_id', 'offset', 'limit']) !== []) {
+        throw new InvalidArgumentException('dataset_query_invalid');
+    }
+    $taskId = null;
+    if (array_key_exists('task_id', $query)) {
+        $taskId = hub_facebook_dataset_query_integer($query['task_id'], 1, PHP_INT_MAX);
+        if ($taskId === null) {
+            throw new InvalidArgumentException('dataset_query_invalid');
+        }
+    }
+    $offset = hub_facebook_dataset_query_integer($query['offset'] ?? 0, 0, 1000000000);
+    $limit = hub_facebook_dataset_query_integer($query['limit'] ?? 100, 1, 500);
+    if ($offset === null || $limit === null) {
+        throw new InvalidArgumentException('dataset_query_invalid');
+    }
+
+    return ['task_id' => $taskId, 'offset' => $offset, 'limit' => $limit];
+}
+
+function hub_facebook_run_last_response(PDO $db, int $ownerMemberId): array
+{
+    $task = hub_facebook_latest_terminal_run($db, $ownerMemberId);
+    if ($task === null) {
+        return hub_gateway_error(404, 'facebook_run_not_found', 'Facebook crawl run was not found');
+    }
+    $taskId = (int)$task['id'];
+    $artifact = hub_facebook_dataset_artifact_for_task($db, $ownerMemberId, $taskId);
+    $datasetAvailable = is_array($artifact)
+        && !hub_facebook_dataset_artifact_expired($artifact)
+        && hub_artifact_safe_path((string)$artifact['path']) !== null;
+    $base = hub_gateway_api_base_url();
+    $response = [
+        'ok' => true,
+        'task_id' => $taskId,
+        'status' => (string)$task['status'],
+        'error_code' => $task['error_code'] ?? null,
+        'created_at' => $task['created_at'] ?? null,
+        'started_at' => $task['started_at'] ?? null,
+        'finished_at' => $task['finished_at'] ?? null,
+        'dataset_available' => $datasetAvailable,
+        'status_url' => $base . '?mode=task_status&task_id=' . $taskId,
+        'result_url' => $base . '?mode=task_result&task_id=' . $taskId,
+        'log_url' => $base . '?mode=task_log&task_id=' . $taskId,
+    ];
+    if ($datasetAvailable) {
+        $response['dataset_items_url'] = $base . '?mode=facebook_dataset_items&task_id=' . $taskId;
+        $response['artifact_url'] = $base . '?mode=artifact&artifact_id=' . (int)$artifact['id'];
+    }
+
+    return hub_gateway_json(200, $response);
+}
+
+function hub_facebook_dataset_items_response(PDO $db, int $ownerMemberId, array $query): array
+{
+    if ($query['task_id'] === null) {
+        $artifact = hub_facebook_latest_dataset_artifact($db, $ownerMemberId)
+            ?? hub_facebook_latest_dataset_artifact_record($db, $ownerMemberId);
+    } else {
+        $artifact = hub_facebook_dataset_artifact_for_task($db, $ownerMemberId, (int)$query['task_id']);
+    }
+    if ($artifact === null) {
+        return hub_gateway_error(404, 'dataset_not_found', 'Facebook dataset was not found');
+    }
+    if (hub_facebook_dataset_artifact_expired($artifact)) {
+        return hub_gateway_error(410, 'dataset_expired', 'Facebook dataset has expired');
+    }
+    $artifactId = (int)$artifact['id'];
+    $path = hub_artifact_safe_path((string)$artifact['path']);
+    if ($path === null) {
+        return hub_gateway_error(409, 'dataset_invalid', 'Facebook dataset is invalid');
+    }
+    $claim = hub_claim_task_artifact_download($db, $artifactId);
+    if ($claim === null) {
+        return hub_gateway_error(409, 'dataset_unavailable', 'Facebook dataset is currently unavailable');
+    }
+    try {
+        $page = hub_facebook_dataset_page($path, (int)$query['offset'], (int)$query['limit']);
+    } catch (Throwable) {
+        return hub_gateway_error(409, 'dataset_invalid', 'Facebook dataset is invalid');
+    } finally {
+        hub_release_task_artifact_download($db, $artifactId, $claim);
+    }
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'task_id' => (int)$artifact['task_id'],
+        'offset' => (int)$query['offset'],
+        'limit' => (int)$query['limit'],
+        'count' => count($page['items']),
+        'next_offset' => $page['next_offset'],
+        'items' => $page['items'],
+    ]);
+}
+
+function hub_facebook_dataset_api_dispatch(PDO $db, string $mode, array $authContext, string $method, array $query): array
+{
+    if ($method !== 'GET') {
+        return hub_gateway_error(405, 'method_not_allowed', 'Facebook dataset operations require GET');
+    }
+    $ownerMemberId = (int)($authContext['member_id'] ?? 0);
+    if ($ownerMemberId < 1) {
+        return hub_gateway_error(403, 'member_required', 'Facebook dataset operations require an API member');
+    }
+    try {
+        $parsed = hub_facebook_dataset_query($mode, $query);
+    } catch (InvalidArgumentException) {
+        return hub_gateway_error(400, 'invalid_request', 'Facebook dataset query is invalid');
+    }
+
+    return match ($mode) {
+        'facebook_run_last' => hub_facebook_run_last_response($db, $ownerMemberId),
+        'facebook_dataset_items' => hub_facebook_dataset_items_response($db, $ownerMemberId, $parsed),
+        default => hub_gateway_error(404, 'unknown_mode', 'mode is not registered'),
+    };
+}
+
 function hub_facebook_profile_create(PDO $db, int $ownerMemberId, string $displayName): array
 {
     $displayName = trim($displayName);

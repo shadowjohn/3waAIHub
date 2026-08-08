@@ -398,6 +398,54 @@ function hub_test_facebook_enqueue_crawl(PDO $db, int $memberId, int $tokenId, ?
     return hub_enqueue_owned_pack_job($db, $route, $input, $memberId, $tokenId, '203.0.113.44');
 }
 
+function hub_test_facebook_dataset_task(PDO $db, int $memberId, int $tokenId, array $items): array
+{
+    $taskId = hub_test_facebook_enqueue_crawl($db, $memberId, $tokenId, null);
+    $directory = hub_task_result_dir($taskId);
+    if (!is_dir($directory) && !mkdir($directory, 0700, true)) {
+        throw new RuntimeException('Cannot create Facebook dataset fixture directory.');
+    }
+    $path = $directory . '/facebook_posts.jsonl';
+    $content = '';
+    foreach ($items as $item) {
+        $content .= hub_json_encode($item) . "\n";
+    }
+    file_put_contents($path, $content);
+    chmod($path, 0600);
+    $artifactId = hub_register_task_artifact($db, $taskId, 'facebook_posts.jsonl', $path, 'application/x-ndjson');
+    $db->prepare(
+        "UPDATE task_artifacts
+         SET artifact_type = 'facebook_posts_jsonl', sha256 = :sha256
+         WHERE id = :id"
+    )->execute([':sha256' => hash_file('sha256', $path), ':id' => $artifactId]);
+    $now = hub_now();
+    $db->prepare(
+        "UPDATE tasks
+         SET status = 'success', progress = 100, result_json = :result_json,
+             started_at = :started_at, finished_at = :finished_at, updated_at = :updated_at
+         WHERE id = :id"
+    )->execute([
+        ':result_json' => hub_json_encode(['outcome' => 'complete', 'post_count' => count($items)]),
+        ':started_at' => $now,
+        ':finished_at' => $now,
+        ':updated_at' => $now,
+        ':id' => $taskId,
+    ]);
+
+    return ['task_id' => $taskId, 'artifact_id' => $artifactId, 'path' => $path];
+}
+
+function hub_test_facebook_dataset_request(PDO $db, string $mode, string $token, array $query = [], string $method = 'GET'): array
+{
+    return hub_gateway_dispatch($db, $mode, null, [
+        'bearer_token' => $token,
+        'client_ip' => '203.0.113.44',
+        'method' => $method,
+        'request_uri' => '/api.php?mode=' . $mode,
+        'query' => $query,
+    ]);
+}
+
 hub_test('Facebook profile lock serializes waits cancellation and promotion', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Crawler lock owner');
@@ -585,6 +633,112 @@ hub_test('Facebook crawler WSL plan copies only request and public artifacts', f
         hub_test_remove_data_tree($workspace);
         hub_facebook_profile_delete($db, (string)$profileRow['profile_id'], $memberId);
     }
+});
+
+hub_test('Facebook dataset APIs distinguish latest terminal run from latest available dataset', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler dataset owner');
+    $token = hub_test_facebook_login_token($db, $memberId, 'crawler dataset token');
+    $items = [
+        ['source_url' => 'https://www.facebook.com/wra.gov.tw', 'post_url' => 'https://www.facebook.com/posts/1', 'content' => 'one'],
+        ['source_url' => 'https://www.facebook.com/wra.gov.tw', 'post_url' => 'https://www.facebook.com/posts/2', 'content' => 'two'],
+        ['source_url' => 'https://www.facebook.com/wra.gov.tw', 'post_url' => 'https://www.facebook.com/posts/3', 'content' => 'three'],
+        ['source_url' => 'https://www.facebook.com/wra.gov.tw', 'post_url' => 'https://www.facebook.com/posts/4', 'content' => 'four'],
+    ];
+    $dataset = hub_test_facebook_dataset_task($db, $memberId, (int)$token['token_id'], $items);
+    $failedTaskId = hub_test_facebook_enqueue_crawl($db, $memberId, (int)$token['token_id'], null);
+    $db->prepare("UPDATE tasks SET status = 'failed', error_code = 'no_accessible_targets', finished_at = :now WHERE id = :id")
+        ->execute([':now' => hub_now(), ':id' => $failedTaskId]);
+
+    $last = hub_test_facebook_dataset_request($db, 'facebook_run_last', $token['plain_token']);
+    $lastPayload = hub_test_facebook_login_payload($last);
+    hub_test_assert($last['status'] === 200
+        && (int)($lastPayload['task_id'] ?? 0) === $failedTaskId
+        && ($lastPayload['status'] ?? '') === 'failed'
+        && ($lastPayload['dataset_available'] ?? null) === false,
+        'latest run must report the newest owned terminal task without inventing a dataset');
+
+    $page = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $token['plain_token'], ['offset' => '1', 'limit' => '2']);
+    $pagePayload = hub_test_facebook_login_payload($page);
+    hub_test_assert($page['status'] === 200
+        && (int)($pagePayload['task_id'] ?? 0) === $dataset['task_id']
+        && ($pagePayload['offset'] ?? null) === 1
+        && ($pagePayload['limit'] ?? null) === 2
+        && ($pagePayload['count'] ?? null) === 2
+        && ($pagePayload['next_offset'] ?? null) === 3
+        && array_column($pagePayload['items'] ?? [], 'content') === ['two', 'three'],
+        'dataset pagination must select the newest available success and return a deterministic slice');
+    $artifact = hub_get_task_artifact($db, (int)$dataset['artifact_id']);
+    hub_test_assert(!empty($artifact['last_accessed_at']) && empty($artifact['download_claim_token']), 'dataset reads must update access time and release the artifact claim');
+
+    $modes = $db->query("SELECT mode FROM api_access_logs WHERE mode IN ('facebook_run_last', 'facebook_dataset_items') ORDER BY id")->fetchAll(PDO::FETCH_COLUMN);
+    hub_test_assert($modes === ['facebook_run_last', 'facebook_dataset_items'], 'dataset convenience calls must retain their real operation names in API logs');
+});
+
+hub_test('Facebook dataset APIs enforce member scope and bounded query values', function (): void {
+    $db = hub_test_reset_db();
+    $memberA = hub_create_api_member($db, 'Crawler dataset A');
+    $memberB = hub_create_api_member($db, 'Crawler dataset B');
+    $tokenA = hub_test_facebook_login_token($db, $memberA, 'crawler dataset A');
+    $tokenB = hub_test_facebook_login_token($db, $memberB, 'crawler dataset B');
+    $dataset = hub_test_facebook_dataset_task($db, $memberA, (int)$tokenA['token_id'], [
+        ['source_url' => 'https://www.facebook.com/wra.gov.tw', 'content' => 'owned'],
+    ]);
+
+    $explicit = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $tokenA['plain_token'], [
+        'task_id' => (string)$dataset['task_id'],
+        'offset' => '0',
+        'limit' => '100',
+    ]);
+    hub_test_assert($explicit['status'] === 200 && (hub_test_facebook_login_payload($explicit)['count'] ?? null) === 1, 'owner must read an explicit successful dataset');
+    $foreign = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $tokenB['plain_token'], ['task_id' => (string)$dataset['task_id']]);
+    hub_test_assert($foreign['status'] === 404, 'another member must not discover a Facebook dataset');
+    $foreignLast = hub_test_facebook_dataset_request($db, 'facebook_run_last', $tokenB['plain_token']);
+    hub_test_assert($foreignLast['status'] === 404, 'another member must not inherit the latest run');
+
+    foreach ([
+        ['offset' => '-1'],
+        ['offset' => '1.5'],
+        ['limit' => '0'],
+        ['limit' => '501'],
+        ['limit' => '1.5'],
+        ['task_id' => 'not-a-task'],
+        ['task_id' => ['nested']],
+        ['unknown' => 'field'],
+    ] as $query) {
+        $response = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $tokenA['plain_token'], $query);
+        hub_test_assert($response['status'] === 400, 'invalid Facebook dataset query values must fail closed');
+    }
+    $wrongMethod = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $tokenA['plain_token'], [], 'POST');
+    hub_test_assert($wrongMethod['status'] === 405, 'dataset convenience API must remain GET-only');
+});
+
+hub_test('Facebook dataset API rejects invalid expired and purged artifacts', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler invalid dataset owner');
+    $token = hub_test_facebook_login_token($db, $memberId, 'crawler invalid dataset token');
+    $dataset = hub_test_facebook_dataset_task($db, $memberId, (int)$token['token_id'], [
+        ['source_url' => 'https://www.facebook.com/wra.gov.tw', 'content' => 'valid'],
+    ]);
+    file_put_contents($dataset['path'], "{not-json}\n");
+    $invalid = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $token['plain_token'], ['task_id' => (string)$dataset['task_id']]);
+    hub_test_assert($invalid['status'] === 409 && (hub_test_facebook_login_payload($invalid)['error'] ?? '') === 'dataset_invalid', 'invalid JSONL must fail closed');
+
+    file_put_contents($dataset['path'], hub_json_encode(['content' => str_repeat('x', 1024 * 1024 + 1)]) . "\n");
+    $oversized = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $token['plain_token'], ['task_id' => (string)$dataset['task_id']]);
+    hub_test_assert($oversized['status'] === 409 && (hub_test_facebook_login_payload($oversized)['error'] ?? '') === 'dataset_invalid', 'JSONL lines over one MiB must fail closed');
+
+    $db->prepare("UPDATE task_artifacts SET expires_at = :expired WHERE id = :id")
+        ->execute([':expired' => date('Y-m-d H:i:s', time() - 60), ':id' => $dataset['artifact_id']]);
+    $expired = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $token['plain_token'], ['task_id' => (string)$dataset['task_id']]);
+    hub_test_assert($expired['status'] === 410 && (hub_test_facebook_login_payload($expired)['error'] ?? '') === 'dataset_expired', 'expired datasets must return a stable tombstone');
+    $latestExpired = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $token['plain_token']);
+    hub_test_assert($latestExpired['status'] === 410 && (hub_test_facebook_login_payload($latestExpired)['error'] ?? '') === 'dataset_expired', 'latest lookup must preserve the expired dataset tombstone when none remain available');
+
+    $db->prepare("UPDATE task_artifacts SET state = 'purged', purged_at = :now WHERE id = :id")
+        ->execute([':now' => hub_now(), ':id' => $dataset['artifact_id']]);
+    $purged = hub_test_facebook_dataset_request($db, 'facebook_dataset_items', $token['plain_token'], ['task_id' => (string)$dataset['task_id']]);
+    hub_test_assert($purged['status'] === 410 && (hub_test_facebook_login_payload($purged)['error'] ?? '') === 'dataset_expired', 'purged datasets must return the same stable tombstone');
 });
 
 hub_test('Facebook login start stores only proof hash and confines credentials to one broker POST', function (): void {
