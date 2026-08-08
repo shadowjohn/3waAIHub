@@ -96,6 +96,22 @@ hub_test('Facebook crawler deletion remains non-active and retryable after final
     hub_test_assert(is_string($deletedAt) && $deletedAt !== '', 'retry must persist deleted_at');
 });
 
+hub_test('Facebook crawler profiles block owner deletion until private state is removed', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler protected owner');
+    $profile = hub_facebook_profile_create($db, $memberId, 'Protected login');
+    $path = hub_facebook_profile_state_path($profile);
+
+    hub_test_assert(hub_test_throws(static function () use ($db, $memberId): void {
+        hub_delete_api_member($db, $memberId);
+    }), 'member deletion must not orphan an active Facebook profile');
+    hub_test_assert(hub_get_api_member($db, $memberId) !== null && is_file($path), 'blocked member deletion must preserve metadata and private state');
+
+    hub_facebook_profile_delete($db, (string)$profile['profile_id'], $memberId);
+    hub_delete_api_member($db, $memberId);
+    hub_test_assert(hub_get_api_member($db, $memberId) === null, 'member must be deletable after its private profiles are finalized');
+});
+
 hub_test('Facebook crawler bootstrap rejects a symlinked private parent', function (): void {
     $parent = HUB_DATA_DIR . '/facebook-crawler';
     $backup = HUB_DATA_DIR . '/facebook-crawler-safe-' . bin2hex(random_bytes(8));

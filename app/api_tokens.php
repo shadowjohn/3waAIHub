@@ -59,6 +59,15 @@ function hub_delete_api_member(PDO $db, int $memberId): void
         throw new InvalidArgumentException('此 API 會員已連結客戶帳號，請從客戶管理刪除客戶。');
     }
 
+    $stmt = $db->prepare(
+        'SELECT COUNT(*) FROM facebook_crawler_profiles
+         WHERE owner_member_id = :member_id AND deleted_at IS NULL'
+    );
+    $stmt->execute([':member_id' => $memberId]);
+    if ((int)$stmt->fetchColumn() > 0) {
+        throw new InvalidArgumentException('此 API 會員仍有 Facebook 爬蟲登入 Profile，請先刪除 Profile。');
+    }
+
     $db->prepare('DELETE FROM api_members WHERE id = :id')->execute([':id' => $memberId]);
 }
 
