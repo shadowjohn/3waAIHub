@@ -21,5 +21,7 @@ CMD ["python3", "/app/crawl_runner.py"]
 
 FROM base AS test
 COPY tests ./tests
+COPY test_egress_firewall.sh ./
+RUN chmod 0755 test_egress_firewall.sh
 
 FROM base AS runtime

@@ -13,6 +13,15 @@ hub_test('Facebook crawler Pack declares one fixed CPU job', function (): void {
     hub_test_assert(($contract['runner']['network_profile'] ?? '') === 'public_egress', 'crawler requires bounded public egress');
     hub_test_assert(($contract['runner']['entrypoint'] ?? []) === ['/app/crawl-entrypoint.sh', 'python3', '/app/crawl_runner.py'], 'crawler must invoke the runner through Python');
     hub_test_assert(array_keys($contract['request_schema'] ?? []) === ['profile_id', 'targets_json', 'limit_per_target'], 'runner inputs must remain fixed');
+    $dataset = $contract['artifact_contract']['artifacts'][0] ?? [];
+    hub_test_assert(($dataset['type'] ?? '') === 'facebook_posts_jsonl'
+        && ($dataset['max_bytes'] ?? 0) === 4194304
+        && ($dataset['text']['max_bytes'] ?? 0) === 4194304, 'crawler JSONL must use the bounded text validator');
+
+    $shellCheck = HUB_ROOT . '/packs/facebook-crawler/service/test_egress_firewall.sh';
+    $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/facebook-crawler/service/Dockerfile');
+    hub_test_assert(is_file($shellCheck) && is_executable($shellCheck)
+        && str_contains($dockerfile, "FROM base AS test\nCOPY tests ./tests\nCOPY test_egress_firewall.sh ./\nRUN chmod 0755 test_egress_firewall.sh\n\nFROM base AS runtime"), 'crawler test target must include the executable egress boundary check only in its test stage');
 });
 
 hub_test('Facebook crawl resolves only the managed Pack route', function (): void {
