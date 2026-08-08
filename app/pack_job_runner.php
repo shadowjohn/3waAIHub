@@ -1548,6 +1548,12 @@ function hub_pack_job_resolve_voice_profile_mount(PDO $db, array $task, array $c
         || (!empty($profile['expires_at']) && (string)$profile['expires_at'] <= hub_now())) {
         throw new RuntimeException('voice_profile_unavailable');
     }
+    if (
+        ($task['requested_mode'] ?? '') === 'voice_generate_gpt_sovits'
+        && ($profile['reference_contract'] ?? 'generic') !== 'gpt_sovits_v1'
+    ) {
+        throw new RuntimeException('voice_profile_reprepare_required');
+    }
     $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
     if ($path === null) {
         throw new RuntimeException('voice_profile_unavailable');
@@ -2959,7 +2965,9 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         try {
             $voiceProfileMount = hub_pack_job_resolve_voice_profile_mount($db, $task, $contract);
         } catch (Throwable $e) {
-            $code = $e->getMessage() === 'voice_profile_changed' ? 'voice_profile_changed' : 'voice_profile_unavailable';
+            $code = in_array($e->getMessage(), ['voice_profile_changed', 'voice_profile_reprepare_required'], true)
+                ? $e->getMessage()
+                : 'voice_profile_unavailable';
             return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Managed voice profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease);
         }
         try {

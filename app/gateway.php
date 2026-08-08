@@ -1442,6 +1442,9 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         if ($e->getMessage() === 'voice_profile_unavailable') {
             return hub_gateway_error(410, 'voice_profile_unavailable', 'voice profile is unavailable');
         }
+        if ($e->getMessage() === 'voice_profile_reprepare_required') {
+            return hub_gateway_error(409, 'voice_profile_reprepare_required', 'GPT-SoVITS voice profile must be prepared again');
+        }
         if ($e->getMessage() === 'voice_profile_transcript_unconfirmed') {
             return hub_gateway_error(409, 'voice_profile_transcript_unconfirmed', 'Ultimate Clone requires a confirmed voice profile transcript');
         }
@@ -1717,6 +1720,12 @@ function hub_pack_job_task_resolve_voice_context(PDO $db, array $input, array $r
     }
     if (!empty($profile['expires_at']) && (string)$profile['expires_at'] <= hub_now()) {
         throw new InvalidArgumentException('voice_profile_unavailable');
+    }
+    if (
+        ($route['requested_mode'] ?? '') === 'voice_generate_gpt_sovits'
+        && ($profile['reference_contract'] ?? 'generic') !== 'gpt_sovits_v1'
+    ) {
+        throw new InvalidArgumentException('voice_profile_reprepare_required');
     }
     $path = hub_voice_profile_safe_host_path((string)($profile['reference_audio_path'] ?? ''));
     $sha256 = $path === null || !is_readable($path) ? false : @hash_file('sha256', $path);

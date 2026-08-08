@@ -14,6 +14,20 @@ function hub_test_gpt_sovits_write_pcm_wav(string $path, int $seconds, int $rate
     }
 }
 
+function hub_test_gpt_sovits_create_profile(PDO $db, int $memberId): array
+{
+    $path = hub_voice_profile_storage_dir() . '/gpt_sovits_test_' . bin2hex(random_bytes(8)) . '.wav';
+    hub_test_gpt_sovits_write_pcm_wav($path, 3);
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Generic GPT-SoVITS profile',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+    ]);
+
+    return ['id' => $profileId, 'path' => $path, 'sha256' => (string)hash_file('sha256', $path)];
+}
+
 hub_test('GPT-SoVITS is a separate governed audio mode', function (): void {
     hub_test_assert((hub_pack_job_async_routes()['voice_generate_gpt_sovits'] ?? null) === [
         'pack_id' => 'tts-gpt-sovits',
@@ -161,6 +175,62 @@ hub_test('GPT-SoVITS profile preparation rejects a client transcript', function 
             }
         }
     });
+});
+
+hub_test('GPT-SoVITS admission requires an aligned profile contract', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-gpt-sovits', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'GPT-SoVITS admission owner');
+        $token = hub_create_api_token($db, $memberId, 'GPT-SoVITS admission token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate_gpt_sovits']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $profile = hub_test_gpt_sovits_create_profile($db, $memberId);
+        $before = (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn();
+
+        $response = hub_test_audio_request($db, 'voice_generate_gpt_sovits', (string)$token['plain_token'], [
+            'text' => '請說明 RC Valve。',
+            'mode' => 'clone',
+            'voice_profile_id' => (string)$profile['id'],
+        ]);
+        $payload = hub_test_audio_payload($response);
+        hub_test_assert(
+            $response['status'] === 409
+            && ($payload['error'] ?? '') === 'voice_profile_reprepare_required'
+            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn() === $before,
+            'generic GPT-SoVITS profile must fail before queue admission'
+        );
+    });
+});
+
+hub_test('GPT-SoVITS mount revalidates its aligned profile contract', function (): void {
+    $db = hub_test_reset_db();
+    hub_install_pack($db, 'tts-gpt-sovits', ['idempotent' => true]);
+    $memberId = hub_create_api_member($db, 'GPT-SoVITS runner owner');
+    $profile = hub_test_gpt_sovits_create_profile($db, $memberId);
+    $route = hub_resolve_audio_async_route($db, 'voice_generate_gpt_sovits');
+    $task = [
+        'owner_member_id' => $memberId,
+        'requested_mode' => 'voice_generate_gpt_sovits',
+        'input' => [
+            'mode' => 'clone',
+            'voice_profile_id' => $profile['id'],
+            'voice_context' => [
+            'mode' => 'clone',
+            'voice_profile_id' => $profile['id'],
+            'reference_audio_sha256' => $profile['sha256'],
+            'container_path' => '/data/voice_profiles/reference.wav',
+            ],
+        ],
+    ];
+    try {
+        hub_pack_job_resolve_voice_profile_mount($db, $task, $route);
+        $error = '';
+    } catch (RuntimeException $e) {
+        $error = $e->getMessage();
+    }
+    hub_test_assert($error === 'voice_profile_reprepare_required', 'GPT-SoVITS runner must reject a generic profile before mounting it');
 });
 
 hub_test('GPT-SoVITS generated Compose builds from the Pack root', function (): void {
