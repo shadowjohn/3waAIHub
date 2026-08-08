@@ -75,8 +75,8 @@ class GptSoVitsResidentTest(unittest.TestCase):
         with wave.open(str(source), "wb") as output:
             output.setnchannels(1)
             output.setsampwidth(2)
-            output.setframerate(16000)
-            output.writeframes(b"\x00\x00" * 16000 * 3)
+            output.setframerate(32000)
+            output.writeframes(b"\x00\x00" * 32000 * 3)
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
         request = {
             "text": "測試",

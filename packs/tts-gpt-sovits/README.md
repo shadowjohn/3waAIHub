@@ -5,6 +5,11 @@ It only supports governed `clone` and transcript-confirmed `ultimate_clone`.
 The Pack accepts a Hub-managed voice profile handle; it never accepts a host
 path, a raw reference upload, or a runtime model download.
 
+For `profile_prepare`, Hub first derives a mono 32 kHz, 3–10-second reference
+WAV, transcribes that exact WAV, and asks the owner to confirm the resulting
+draft. The service only stages that prepared WAV byte-for-byte; generic or
+legacy Profiles must be prepared again before GPT-SoVITS synthesis.
+
 The Pack is `L5-benchmark-ready`: a real Cluster `ultimate_clone` smoke has
 verified managed-profile preparation, CUDA synthesis, WAV relay, SHA-256
 validation, and artifact acknowledgement.

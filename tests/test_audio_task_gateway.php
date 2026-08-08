@@ -103,6 +103,7 @@ hub_test('audio async routes are fixed and resolve installed Pack versions', fun
         'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
         'speech_transcribe_fast_zh' => ['pack_id' => 'speech-fast-zh', 'job' => 'transcribe'],
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize'],
+        'voice_generate_gpt_sovits' => ['pack_id' => 'tts-gpt-sovits', 'job' => 'synthesize'],
     ], 'audio route map must not be client-configurable');
 
     $whisper = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);

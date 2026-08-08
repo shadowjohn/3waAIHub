@@ -299,6 +299,198 @@ function hub_voice_profile_container_path(array $profile): string
     return '/data/voice_profiles/' . str_replace(DIRECTORY_SEPARATOR, '/', $relative);
 }
 
+function hub_gpt_sovits_reference_cut_seconds(string $path): float
+{
+    $result = hub_run_command([
+        'ffmpeg', '-nostdin', '-hide_banner', '-i', $path,
+        '-af', 'silencedetect=noise=-45dB:d=0.05', '-f', 'null', '-',
+    ], 60);
+    if ((int)($result['exit_code'] ?? 1) !== 0) {
+        return 5.0;
+    }
+    preg_match_all('/silence_start:\s*([0-9]+(?:\.[0-9]+)?)/', (string)($result['output'] ?? ''), $matches);
+    $cut = 5.0;
+    foreach ($matches[1] ?? [] as $candidate) {
+        $seconds = (float)$candidate;
+        if ($seconds >= 3.0 && $seconds <= 7.0 && abs($seconds - 5.0) < abs($cut - 5.0)) {
+            $cut = $seconds;
+        }
+    }
+
+    return $cut;
+}
+
+function hub_voice_profile_is_gpt_sovits_reference_wav(string $path): bool
+{
+    $path = hub_voice_profile_safe_host_path($path);
+    if ($path === null) {
+        return false;
+    }
+    $probe = hub_run_command([
+        'ffprobe', '-v', 'error', '-select_streams', 'a:0',
+        '-show_entries', 'format=duration:stream=codec_type,sample_rate,channels', '-of', 'json', $path,
+    ], 30);
+    $decoded = (int)($probe['exit_code'] ?? 1) === 0
+        ? json_decode((string)($probe['stdout'] ?? ''), true)
+        : null;
+    $stream = is_array($decoded['streams'] ?? null) ? ($decoded['streams'][0] ?? null) : null;
+    $duration = is_array($decoded['format'] ?? null) ? (float)($decoded['format']['duration'] ?? 0) : 0.0;
+
+    return is_array($stream)
+        && ($stream['codec_type'] ?? '') === 'audio'
+        && (int)($stream['sample_rate'] ?? 0) === 32000
+        && (int)($stream['channels'] ?? 0) === 1
+        && $duration >= 3.0
+        && $duration <= 10.0;
+}
+
+function hub_normalize_gpt_sovits_reference(string $sourcePath, string $stagePath): void
+{
+    $sourcePath = hub_voice_profile_safe_host_path($sourcePath);
+    $root = realpath(hub_voice_profile_storage_dir());
+    if (
+        $sourcePath === null
+        || $root === false
+        || dirname($stagePath) !== $root
+        || preg_match('/^voice_profile_stage_[1-9][0-9]*_[a-f0-9]{32}\.wav$/', basename($stagePath)) !== 1
+        || file_exists($stagePath)
+        || is_link($stagePath)
+    ) {
+        throw new RuntimeException('voice_profile_reference_invalid');
+    }
+    $result = hub_run_command([
+        'ffmpeg', '-nostdin', '-loglevel', 'error', '-y', '-i', $sourcePath,
+        '-map', '0:a:0', '-ac', '1', '-ar', '32000', '-t', number_format(hub_gpt_sovits_reference_cut_seconds($sourcePath), 3, '.', ''),
+        $stagePath,
+    ], 60);
+    if (
+        (int)($result['exit_code'] ?? 1) !== 0
+        || !@chmod($stagePath, 0600)
+        || !hub_voice_profile_is_gpt_sovits_reference_wav($stagePath)
+    ) {
+        @unlink($stagePath);
+        throw new RuntimeException('voice_profile_reference_invalid');
+    }
+}
+
+function hub_promote_gpt_sovits_reference(PDO $db, array $task, array $profile): array
+{
+    $taskId = (int)($task['id'] ?? 0);
+    $memberId = (int)($task['owner_member_id'] ?? 0);
+    $profileId = (int)($profile['id'] ?? 0);
+    $rawPath = (string)($profile['reference_audio_path'] ?? '');
+    $rawSha256 = (string)($profile['reference_audio_sha256'] ?? '');
+    if (
+        $taskId < 1
+        || $memberId < 1
+        || $profileId < 1
+        || (int)($profile['source_task_id'] ?? 0) !== $taskId
+        || ($profile['reference_contract'] ?? 'generic') !== 'generic'
+        || preg_match('/^[a-f0-9]{64}$/', $rawSha256) !== 1
+    ) {
+        throw new RuntimeException('voice_profile_reference_invalid');
+    }
+    $snapshot = hub_voice_profile_verified_upload($rawPath, $rawSha256);
+    if ($snapshot === null) {
+        throw new RuntimeException('voice_profile_reference_invalid');
+    }
+    $root = hub_voice_profile_storage_dir();
+    $stagePath = $root . '/voice_profile_stage_' . $memberId . '_' . bin2hex(random_bytes(16)) . '.wav';
+    $derivedPath = null;
+    $transactionStarted = false;
+    $promoted = false;
+    try {
+        hub_normalize_gpt_sovits_reference((string)$snapshot['tmp_name'], $stagePath);
+        $derivedPath = $root . '/voice_profile_' . $memberId . '_' . bin2hex(random_bytes(16)) . '.wav';
+        if (file_exists($derivedPath) || is_link($derivedPath) || !rename($stagePath, $derivedPath)) {
+            throw new RuntimeException('voice_profile_reference_invalid');
+        }
+        $derivedSha256 = hash_file('sha256', $derivedPath);
+        if (!is_string($derivedSha256) || !hub_voice_profile_is_gpt_sovits_reference_wav($derivedPath)) {
+            throw new RuntimeException('voice_profile_reference_invalid');
+        }
+
+        $db->exec('BEGIN IMMEDIATE');
+        $transactionStarted = true;
+        $current = hub_get_voice_profile($db, $profileId);
+        if (
+            $current === null
+            || (int)($current['owner_member_id'] ?? 0) !== $memberId
+            || (int)($current['source_task_id'] ?? 0) !== $taskId
+            || (string)($current['reference_audio_path'] ?? '') !== $rawPath
+            || !hash_equals($rawSha256, (string)($current['reference_audio_sha256'] ?? ''))
+            || ($current['reference_contract'] ?? 'generic') !== 'generic'
+        ) {
+            throw new RuntimeException('voice_profile_reference_changed');
+        }
+        $update = $db->prepare(
+            "UPDATE voice_profiles
+             SET reference_audio_path = :reference_audio_path,
+                 reference_audio_sha256 = :reference_audio_sha256,
+                 reference_contract = 'gpt_sovits_v1', updated_at = :updated_at
+             WHERE id = :id AND owner_member_id = :owner_member_id AND source_task_id = :source_task_id
+               AND reference_audio_path = :old_reference_audio_path
+               AND reference_audio_sha256 = :old_reference_audio_sha256
+               AND reference_contract = 'generic'"
+        );
+        $update->execute([
+            ':reference_audio_path' => $derivedPath,
+            ':reference_audio_sha256' => $derivedSha256,
+            ':updated_at' => hub_now(),
+            ':id' => $profileId,
+            ':owner_member_id' => $memberId,
+            ':source_task_id' => $taskId,
+            ':old_reference_audio_path' => $rawPath,
+            ':old_reference_audio_sha256' => $rawSha256,
+        ]);
+        if ($update->rowCount() !== 1) {
+            throw new RuntimeException('voice_profile_reference_changed');
+        }
+        hub_record_voice_profile_audit($db, $profileId, $memberId, null, 'prepare_reference', 'voice_generate_gpt_sovits', [
+            'reference_contract' => 'gpt_sovits_v1',
+        ]);
+        $db->exec('COMMIT');
+        $transactionStarted = false;
+        $promoted = true;
+
+        $raw = @fopen($rawPath, 'r+b');
+        $rawHash = is_resource($raw) ? hash_init('sha256') : null;
+        if (
+            !is_resource($raw)
+            || !hub_voice_profile_file_stats_match(fstat($raw), @lstat($rawPath))
+            || $rawHash === null
+            || !hash_update_stream($rawHash, $raw)
+            || !hash_equals($rawSha256, hash_final($rawHash))
+            || !hub_voice_profile_scrub_and_unlink($raw, $rawPath)
+        ) {
+            throw new RuntimeException('voice_profile_reference_cleanup_failed');
+        }
+        fclose($raw);
+
+        return hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing');
+    } catch (Throwable $e) {
+        if ($transactionStarted) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+        if (isset($raw) && is_resource($raw)) {
+            fclose($raw);
+        }
+        if (!$promoted && is_string($derivedPath) && is_file($derivedPath)) {
+            @unlink($derivedPath);
+        }
+        if (is_file($stagePath)) {
+            @unlink($stagePath);
+        }
+        throw $e;
+    } finally {
+        @unlink((string)$snapshot['tmp_name']);
+        @rmdir(dirname((string)$snapshot['tmp_name']));
+    }
+}
+
 function hub_find_active_voice_profile_by_owner_sha(PDO $db, int $ownerMemberId, string $sha256): ?array
 {
     $sha256 = strtolower(trim($sha256));

@@ -584,6 +584,16 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
             'profile_delete',
         ],
     ];
+    if ($mode === 'voice_generate_gpt_sovits') {
+        $prepareFields = &$contract['operations'][0]['input_fields'];
+        $prepareFields = array_values(array_filter(
+            $prepareFields,
+            static fn (array $field): bool => !in_array((string)($field['name'] ?? ''), ['prompt_text', 'transcript_confirmed'], true)
+        ));
+        $prepareFields[0]['description'] = 'MyAI derives a mono 32 kHz 3–10 second GPT-SoVITS reference before ASR; clients confirm the returned ASR draft with profile_confirm.';
+        unset($prepareFields);
+        $contract['workflow']['profile_reference'] = 'GPT-SoVITS derives a mono 32 kHz 3–10 second reference before ASR. Confirm its returned ASR draft with profile_confirm; client-supplied transcript text is rejected.';
+    }
     $contract['error_table'] = [
         ['code' => 'invalid_request', 'http_status' => 400],
         ['code' => 'voice_profile_wav_invalid', 'http_status' => 400],
@@ -601,6 +611,9 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
         ['code' => 'voice_profile_unavailable', 'http_status' => 410, 'task_status' => 'failed'],
         ['code' => 'pack_runtime_not_ready', 'http_status' => 503],
     ];
+    if ($mode === 'voice_generate_gpt_sovits') {
+        $contract['error_table'][] = ['code' => 'voice_profile_reprepare_required', 'http_status' => 409];
+    }
     $contract['errors'] = array_values(array_unique(array_merge($contract['errors'], array_column($contract['error_table'], 'code'))));
     $contract['workflow_examples'] = hub_public_api_voice_generate_examples(false, $mode, $mode === 'voice_generate');
 

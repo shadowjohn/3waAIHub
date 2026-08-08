@@ -14,12 +14,12 @@ import job
 
 
 class GptSoVitsJobTest(unittest.TestCase):
-    def fixture_wav(self, path: Path, seconds: int) -> Path:
+    def fixture_wav(self, path: Path, seconds: int, rate: int = 16000, channels: int = 1) -> Path:
         with wave.open(str(path), "wb") as output:
-            output.setnchannels(1)
+            output.setnchannels(channels)
             output.setsampwidth(2)
-            output.setframerate(16000)
-            output.writeframes(b"\x00\x00" * 16000 * seconds)
+            output.setframerate(rate)
+            output.writeframes(b"\x00\x00" * rate * channels * seconds)
         return path
 
     def test_rejects_non_governed_request_fields(self) -> None:
@@ -28,18 +28,21 @@ class GptSoVitsJobTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "request_invalid"):
             job.validate_request({"text": "測試", "mode": "clone", "reference_audio_path": "/tmp/a.wav"})
 
-    def test_normalizes_a_staged_copy_only(self) -> None:
+    def test_stages_only_prepared_references(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            source = self.fixture_wav(root / "reference.wav", 12)
+            source = self.fixture_wav(root / "reference.wav", 5, 32000)
             original = source.read_bytes()
-            staged, prompt = job.normalize_reference(source, "已確認逐字稿。下一句不應進入提示。", root / "stage")
+            stage = getattr(job, "stage_prepared_reference", None)
+            self.assertTrue(callable(stage), "prepared GPT-SoVITS references must use strict staging")
+            staged = stage(source, root / "stage")
 
             self.assertEqual(source.read_bytes(), original)
-            self.assertTrue(staged.is_file())
-            self.assertGreaterEqual(job.wav_seconds(staged), 3.0)
-            self.assertLessEqual(job.wav_seconds(staged), 10.0)
-            self.assertTrue(prompt)
+            self.assertEqual(source.read_bytes(), staged.read_bytes())
+            with self.assertRaisesRegex(RuntimeError, "voice_profile_reprepare_required"):
+                stage(self.fixture_wav(root / "legacy.wav", 12, 32000), root / "stage")
+            with self.assertRaisesRegex(RuntimeError, "voice_profile_reprepare_required"):
+                stage(self.fixture_wav(root / "wrong-rate.wav", 5, 16000), root / "stage")
 
     def test_clone_and_ultimate_contexts_are_exact(self) -> None:
         digest = "a" * 64

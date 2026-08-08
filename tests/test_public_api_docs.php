@@ -437,6 +437,25 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
     }
 });
 
+hub_test('GPT-SoVITS public docs require a derived ASR reference', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+    $pack = hub_get_pack('tts-gpt-sovits');
+    hub_test_assert($pack !== null && ($pack['status'] ?? '') === 'ok', 'GPT-SoVITS Pack must be documentable');
+    $route = hub_pack_async_job_contract((array)$pack['manifest'], 'synthesize');
+    $contract = hub_public_api_pack_job_async_contract($route + ['requested_mode' => 'voice_generate_gpt_sovits']);
+    $operations = array_column((array)$contract['operations'], null, 'operation');
+    $prepareFields = array_column((array)($operations['profile_prepare']['input_fields'] ?? []), 'name');
+    $errors = array_column((array)($contract['error_table'] ?? []), null, 'code');
+
+    hub_test_assert(
+        !in_array('prompt_text', $prepareFields, true)
+        && !in_array('transcript_confirmed', $prepareFields, true)
+        && str_contains((string)($contract['workflow']['profile_reference'] ?? ''), '3–10')
+        && ($errors['voice_profile_reprepare_required']['http_status'] ?? null) === 409,
+        'GPT-SoVITS docs must require confirmation of the derived ASR reference'
+    );
+});
+
 hub_test('Available async Pack inventory rejects missing disabled stale and runtime-unready Packs', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
     $published = static function (PDO $db): bool {
