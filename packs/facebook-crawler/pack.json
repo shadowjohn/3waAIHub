@@ -28,7 +28,7 @@
     },
     "runner": {
       "image": "3waaihub/facebook-crawler:0.1.0",
-      "entrypoint": ["/app/crawl-entrypoint.sh", "/app/crawl_runner.py"],
+      "entrypoint": ["/app/crawl-entrypoint.sh", "python3", "/app/crawl_runner.py"],
       "args": [],
       "output_dir": "output",
       "accelerator": "cpu",
