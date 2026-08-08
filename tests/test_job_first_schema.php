@@ -117,7 +117,7 @@ hub_test('job-first schema migration is idempotent and operational entry points 
         'task_callback_deliveries' => ['claim_token', 'claim_expires_at'],
         'task_artifacts' => ['artifact_type', 'sha256', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error'],
         'runtime_runs' => ['task_id', 'attempt_no', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],
-        'voice_profiles' => ['source_task_id'],
+        'voice_profiles' => ['source_task_id', 'reference_contract'],
         'cluster_routes' => ['route_role'],
     ];
     foreach ($requiredColumns as $table => $columns) {
@@ -168,6 +168,8 @@ hub_test('runtime and retention schema gates require voice profile source task l
 
     hub_test_assert(in_array('voice_profiles.source_task_id', hub_runtime_schema_missing($db), true), 'runtime schema gate must require voice_profiles.source_task_id');
     hub_test_assert(in_array('voice_profiles.source_task_id', hub_retention_schema_missing($db), true), 'retention schema gate must require voice_profiles.source_task_id');
+    hub_test_assert(in_array('voice_profiles.reference_contract', hub_runtime_schema_missing($db), true), 'runtime schema gate must require the GPT-SoVITS reference contract');
+    hub_test_assert(in_array('voice_profiles.reference_contract', hub_retention_schema_missing($db), true), 'retention schema gate must require the GPT-SoVITS reference contract');
 });
 
 hub_test('generic task submit cannot enqueue voice profile prepare tasks', function (): void {

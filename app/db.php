@@ -437,6 +437,7 @@ CREATE TABLE IF NOT EXISTS voice_profiles (
     name TEXT NOT NULL,
     reference_audio_path TEXT NOT NULL,
     reference_audio_sha256 TEXT NOT NULL,
+    reference_contract TEXT NOT NULL DEFAULT 'generic',
     prompt_text TEXT NULL,
     prompt_text_confirmed_at TEXT NULL,
     language TEXT NULL,
@@ -845,6 +846,7 @@ SQL);
     hub_add_column_if_missing($db, 'voice_profiles', 'usage_scope', "TEXT NOT NULL DEFAULT 'private'");
     hub_add_column_if_missing($db, 'voice_profiles', 'retain_original_audio', 'INTEGER NOT NULL DEFAULT 1');
     hub_add_column_if_missing($db, 'voice_profiles', 'source_task_id', 'INTEGER NULL');
+    hub_add_column_if_missing($db, 'voice_profiles', 'reference_contract', "TEXT NOT NULL DEFAULT 'generic'");
     $voiceProfileTranscriptionStateMarker = 'db_migration_voice_profiles_transcription_state_v1';
     if (hub_get_storage_setting($db, $voiceProfileTranscriptionStateMarker) !== '1') {
         $voiceProfileTranscriptionStateMigrationStarted = false;
@@ -1326,7 +1328,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'resident_job_runs' => ['runtime_run_id', 'task_id', 'service_id', 'resident_run_id', 'lifecycle', 'dispatched_at', 'cancel_requested_at', 'unconfirmed_at', 'reconciled_at', 'updated_at'],
         'cluster_gpu_metric_snapshots' => ['id', 'station_id', 'sampled_at', 'gpu_json'],
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'waiting_detail_json', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
-        'voice_profiles' => ['source_task_id'],
+        'voice_profiles' => ['source_task_id', 'reference_contract'],
         'facebook_crawler_profiles' => ['id', 'profile_id', 'owner_member_id', 'node_name', 'display_name', 'state', 'last_verified_at', 'active_task_id', 'login_secret_hash', 'login_container_name', 'login_port', 'login_expires_at', 'deleted_at', 'created_at', 'updated_at'],
         'task_artifacts' => ['artifact_type', 'sha256', 'metadata_json', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],

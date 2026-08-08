@@ -2136,7 +2136,7 @@ function hub_retention_schema_missing(PDO $db): array
 {
     $required = [
         'tasks' => ['source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
-        'voice_profiles' => ['source_task_id'],
+        'voice_profiles' => ['source_task_id', 'reference_contract'],
         'task_artifacts' => ['expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['source_artifact_id', 'downstream_task_id', 'released_at'],
         'runtime_runs' => ['task_id', 'state'],
