@@ -55,6 +55,7 @@ function hub_db_migration_is_current(PDO $db): bool
             || ($values[HUB_DB_MIGRATION_SCHEMA_KEY] ?? '') !== (string)$db->query('PRAGMA schema_version')->fetchColumn()
             || ($values[$keys[2]] ?? '') !== '1'
             || ($values[$keys[3]] ?? '') !== '1'
+            || hub_runtime_schema_missing($db) !== []
         ) {
             return false;
         }

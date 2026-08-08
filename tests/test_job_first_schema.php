@@ -155,6 +155,18 @@ hub_test('job-first schema migration is idempotent and operational entry points 
     }
 });
 
+hub_test('schema migration repairs a missing GPT-SoVITS reference contract column', function (): void {
+    $db = hub_test_reset_db();
+    $db->exec('ALTER TABLE voice_profiles DROP COLUMN reference_contract');
+    hub_db_mark_migration_current($db);
+
+    hub_migrate($db);
+
+    $columns = array_column($db->query('PRAGMA table_info(voice_profiles)')->fetchAll(), 'name');
+    hub_test_assert(in_array('reference_contract', $columns, true), 'migration must repair voice_profiles.reference_contract');
+    hub_test_assert(hub_runtime_schema_missing($db) === [], 'repaired schema must pass the runtime gate');
+});
+
 hub_test('voice profile prepare tasks are accepted by the queue and pack worker', function (): void {
     hub_test_assert(hub_is_valid_task_type('voice_profile_prepare'), 'voice_profile_prepare must be an allowed task type');
     hub_test_assert(in_array('voice_profile_prepare', hub_pack_job_worker_task_types(), true), 'pack worker must claim voice_profile_prepare tasks');
