@@ -78,6 +78,21 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
             $code = in_array($e->getMessage(), ['pack_not_installed', 'pack_runtime_not_ready', 'pack_service_disabled', 'pack_version_unavailable'], true) ? $e->getMessage() : 'pack_not_installed';
             return hub_gateway_finish($db, null, $mode, hub_gateway_error(503, $code, $code), $started, $requestId, $authContext, $requestContext);
         }
+        if ($mode === 'facebook_crawl') {
+            $contentType = array_key_exists('content_type', $internalRequest)
+                ? (string)$internalRequest['content_type']
+                : (string)($_SERVER['CONTENT_TYPE'] ?? '');
+            $response = hub_facebook_crawl_submit(
+                $db,
+                $route,
+                $authContext,
+                $requestMethod,
+                $rawBody,
+                $contentType,
+                $clientIp
+            );
+            return hub_gateway_finish($db, null, $mode, $response, $started, $requestId, $authContext, $requestContext);
+        }
         if ($mode === 'edge_tts') {
             if (!in_array($requestMethod, ['GET', 'POST'], true)) {
                 return hub_gateway_finish($db, $service, $mode, hub_gateway_error(405, 'method_not_allowed', 'HTTP method is not allowed for this mode'), $started, $requestId, $authContext, $requestContext);

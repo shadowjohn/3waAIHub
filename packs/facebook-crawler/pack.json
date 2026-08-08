@@ -38,7 +38,7 @@
       "executor": "container"
     },
     "output": {"artifacts": [
-      {"type": "facebook_posts_jsonl", "path": "facebook_posts.jsonl", "mime_types": ["application/x-ndjson", "text/plain"], "max_bytes": 4194304, "text": {"max_bytes": 4194304}},
+      {"type": "facebook_posts_jsonl", "path": "facebook_posts.jsonl", "mime_types": ["application/x-ndjson", "application/json", "text/plain"], "max_bytes": 4194304, "text": {"max_bytes": 4194304}},
       {"type": "facebook_crawl_report", "path": "facebook_crawl_report.json", "mime_types": ["application/json"], "max_bytes": 262144, "json": {"required_keys": ["outcome", "target_count", "post_count", "limit_per_target", "targets", "created_at", "runner_version"]}}
     ]}
   }],

@@ -19,13 +19,17 @@ printf ' %s' "$@" >> "$LOG"
 printf '\n' >> "$LOG"
 
 if [[ "$command_name" == id && "${1:-}" == -u ]]; then
-  printf '0\n'
+  if [[ "${2:-}" == crawler ]]; then
+    printf '999\n'
+  else
+    printf '0\n'
+  fi
 fi
 if [[ "$command_name" == getfacl && "${CRAWLER_ACL_INVALID:-}" != 1 ]]; then
   case "${!#}" in
-    /workspace/input) printf 'user:crawler:--x\n' ;;
-    /workspace/input/request.json) printf 'user:crawler:r--\n' ;;
-    /workspace/output) printf 'user:crawler:rwx\n' ;;
+    /workspace/input) printf 'user:999:--x\n' ;;
+    /workspace/input/request.json) printf 'user:999:r--\n' ;;
+    /workspace/output) printf 'user:999:rwx\n' ;;
   esac
 fi
 EOF
@@ -88,17 +92,17 @@ assert_contains 'iptables -A AIHUB_CRAWLER_OUTPUT -d 172.16.0.0/12 -j REJECT' "$
 assert_contains 'iptables -A AIHUB_CRAWLER_OUTPUT -d 169.254.0.0/16 -j REJECT' "$log"
 assert_contains 'ip6tables -A AIHUB_CRAWLER_OUTPUT6 -d fc00::/7 -j REJECT' "$log"
 assert_contains 'ip6tables -A AIHUB_CRAWLER_OUTPUT6 -d fe80::/10 -j REJECT' "$log"
-assert_contains 'setfacl -m u:crawler:--x /workspace/input' "$log"
-assert_contains 'getfacl -cp /workspace/input' "$log"
-assert_contains 'setfacl -m u:crawler:r-- /workspace/input/request.json' "$log"
-assert_contains 'getfacl -cp /workspace/input/request.json' "$log"
-assert_contains 'setfacl -m u:crawler:rwx /workspace/output' "$log"
-assert_contains 'getfacl -cp /workspace/output' "$log"
+assert_contains 'setfacl -m u:999:--x /workspace/input' "$log"
+assert_contains 'getfacl -cpn /workspace/input' "$log"
+assert_contains 'setfacl -m u:999:r-- /workspace/input/request.json' "$log"
+assert_contains 'getfacl -cpn /workspace/input/request.json' "$log"
+assert_contains 'setfacl -m u:999:rwx /workspace/output' "$log"
+assert_contains 'getfacl -cpn /workspace/output' "$log"
 privilege_drop='setpriv --reuid=crawler --regid=crawler --clear-groups --bounding-set=-all --ambient-caps=-all -- python3 /app/crawl_runner.py'
 assert_contains "$privilege_drop" "$log"
-assert_before 'setfacl -m u:crawler:--x /workspace/input' "$privilege_drop" "$log"
-assert_before 'setfacl -m u:crawler:r-- /workspace/input/request.json' "$privilege_drop" "$log"
-assert_before 'setfacl -m u:crawler:rwx /workspace/output' "$privilege_drop" "$log"
+assert_before 'setfacl -m u:999:--x /workspace/input' "$privilege_drop" "$log"
+assert_before 'setfacl -m u:999:r-- /workspace/input/request.json' "$privilege_drop" "$log"
+assert_before 'setfacl -m u:999:rwx /workspace/output' "$privilege_drop" "$log"
 
 : > "$log"
 if PATH="$mockbin:$PATH" LOG="$log" CRAWLER_EGRESS_FORCE_FAIL=1 "$entrypoint" python3 /app/crawl_runner.py; then

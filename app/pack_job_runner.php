@@ -1579,7 +1579,55 @@ function hub_pack_job_resolve_voice_profile_mount(PDO $db, array $task, array $c
     return ['source' => $path, 'container_path' => (string)$definition['container_path']];
 }
 
-function hub_pack_job_runner_arguments(array $runner, array $task, array $run, string $workspace, ?array $config = null, array $assetMounts = [], ?array $voiceProfileMount = null): array
+function hub_pack_job_resolve_facebook_profile_mount(PDO $db, array $task): ?array
+{
+    $profileId = hub_facebook_task_profile_id($task);
+    if ($profileId === null) {
+        return null;
+    }
+    $taskId = (int)($task['id'] ?? 0);
+    $ownerMemberId = (int)($task['owner_member_id'] ?? 0);
+    if ($taskId < 1 || $ownerMemberId < 1) {
+        throw new RuntimeException('facebook_profile_unavailable');
+    }
+    $stmt = $db->prepare(
+        "SELECT * FROM facebook_crawler_profiles
+         WHERE profile_id = :profile_id AND owner_member_id = :owner_member_id
+           AND active_task_id = :task_id AND state = 'ready' AND deleted_at IS NULL
+         LIMIT 1"
+    );
+    $stmt->execute([':profile_id' => $profileId, ':owner_member_id' => $ownerMemberId, ':task_id' => $taskId]);
+    $profile = $stmt->fetch();
+    if (!is_array($profile) || !hub_facebook_login_state_secure($profile)) {
+        throw new RuntimeException('facebook_profile_unavailable');
+    }
+    $source = hub_facebook_profile_state_path($profile);
+    clearstatcache(true, $source);
+    $stat = @lstat($source);
+    $real = realpath($source);
+    $root = realpath(hub_facebook_profile_root());
+    if (!is_array($stat) || $real === false || $root === false || is_link($source)
+        || (((int)$stat['mode'] & 0170000) !== 0100000)
+        || (((int)$stat['mode'] & 0777) !== 0600)
+        || (int)($stat['nlink'] ?? 0) !== 1
+        || dirname(dirname($real)) !== $root
+        || basename($real) !== 'storage_state.json') {
+        throw new RuntimeException('facebook_profile_unavailable');
+    }
+
+    return ['source' => $source, 'container_path' => '/data/facebook_profile/storage_state.json'];
+}
+
+function hub_pack_job_runner_arguments(
+    array $runner,
+    array $task,
+    array $run,
+    string $workspace,
+    ?array $config = null,
+    array $assetMounts = [],
+    ?array $voiceProfileMount = null,
+    ?array $facebookProfileMount = null
+): array
 {
     $replacements = [
         '{workspace}' => $workspace,
@@ -1601,7 +1649,8 @@ function hub_pack_job_runner_arguments(array $runner, array $task, array $run, s
         'network_profile' => $runner['network_profile'] ?? 'isolated',
     ] + ($config === null ? [] : ['config' => $config])
         + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts])
-        + ($voiceProfileMount === null ? [] : ['voice_profile_mount' => $voiceProfileMount]);
+        + ($voiceProfileMount === null ? [] : ['voice_profile_mount' => $voiceProfileMount])
+        + ($facebookProfileMount === null ? [] : ['facebook_profile_mount' => $facebookProfileMount]);
 }
 
 function hub_pack_job_default_runner_command(array $context): array
@@ -1681,6 +1730,27 @@ function hub_pack_job_default_runner_command(array $context): array
         if (!is_string($source) || !is_string($containerPath) || !is_file($source) || is_link($source)
             || $containerPath !== '/data/voice_profiles/reference.wav') {
             throw new RuntimeException('voice_profile_unavailable');
+        }
+        $command[] = '--mount';
+        $command[] = 'type=bind,src=' . $source . ',dst=' . $containerPath . ',readonly';
+    }
+    $facebookProfileMount = $runner['facebook_profile_mount'] ?? null;
+    if ($facebookProfileMount !== null) {
+        $source = is_array($facebookProfileMount) ? ($facebookProfileMount['source'] ?? null) : null;
+        $containerPath = is_array($facebookProfileMount) ? ($facebookProfileMount['container_path'] ?? null) : null;
+        clearstatcache(true, is_string($source) ? $source : '');
+        $stat = is_string($source) ? @lstat($source) : false;
+        $real = is_string($source) ? realpath($source) : false;
+        $root = realpath(hub_facebook_profile_root());
+        if (!is_string($source) || !is_string($containerPath) || !is_array($stat)
+            || $real === false || $root === false || is_link($source)
+            || (((int)$stat['mode'] & 0170000) !== 0100000)
+            || (((int)$stat['mode'] & 0777) !== 0600)
+            || (int)($stat['nlink'] ?? 0) !== 1
+            || dirname(dirname($real)) !== $root
+            || basename($real) !== 'storage_state.json'
+            || $containerPath !== '/data/facebook_profile/storage_state.json') {
+            throw new RuntimeException('facebook_profile_unavailable');
         }
         $command[] = '--mount';
         $command[] = 'type=bind,src=' . $source . ',dst=' . $containerPath . ',readonly';
@@ -2171,6 +2241,159 @@ function hub_edge_tts_wsl_executor(array $service, array $context, ?callable $pr
         + (isset($result['intent']) ? ['intent' => $result['intent']] : []);
 }
 
+function hub_facebook_crawler_wsl_service_for_task(PDO $db, array $task): ?array
+{
+    if ((string)($task['pack_id'] ?? '') !== 'facebook-crawler' || (string)($task['job'] ?? '') !== 'crawl') {
+        return null;
+    }
+    $service = hub_get_service_by_mode($db, 'facebook_crawl');
+
+    return is_array($service) && (string)($service['pack_id'] ?? '') === 'facebook-crawler' ? $service : null;
+}
+
+function hub_facebook_crawler_wsl_execution_plan(array $service, array $context, ?array $profile = null): array
+{
+    $task = is_array($context['task'] ?? null) ? $context['task'] : [];
+    $runner = is_array($context['runner'] ?? null) ? $context['runner'] : [];
+    if ((string)($service['pack_id'] ?? '') !== 'facebook-crawler'
+        || (string)($task['pack_id'] ?? '') !== 'facebook-crawler'
+        || (string)($task['job'] ?? '') !== 'crawl'
+        || ($runner['image'] ?? null) !== '3waaihub/facebook-crawler:0.1.0'
+        || ($runner['entrypoint'] ?? null) !== ['/app/crawl-entrypoint.sh', 'python3', '/app/crawl_runner.py']
+        || ($runner['args'] ?? null) !== []
+        || ($runner['accelerator'] ?? null) !== 'cpu'
+        || ($runner['required_vram_mb'] ?? null) !== 0
+        || ($runner['network_profile'] ?? null) !== 'public_egress') {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $workspace = realpath((string)($context['workspace'] ?? ''));
+    $runId = (string)($context['run']['run_id'] ?? '');
+    if ($runtime === null || $workspace === false || !is_dir($workspace . '/input') || !is_dir($workspace . '/output')
+        || !is_file($workspace . '/input/request.json') || is_link($workspace . '/input/request.json')
+        || !is_string($runner['output_dir'] ?? null) || !hub_storage_paths_equal($runner['output_dir'], $workspace . '/output')
+        || preg_match('/^[a-z0-9][a-z0-9_.-]{0,95}$/', $runId) !== 1) {
+        throw new RuntimeException('workspace_unavailable');
+    }
+    $execution = hub_pack_job_default_runner_command($context);
+    $runtimeRoot = rtrim((string)$runtime['runtime_root'], '/');
+    $jobRoot = hub_container_path($runtimeRoot . '/jobs/facebook-crawler/' . $runId);
+    if (!str_starts_with($jobRoot, $runtimeRoot . '/jobs/facebook-crawler/')) {
+        throw new RuntimeException('workspace_unavailable');
+    }
+    $facebookMount = $runner['facebook_profile_mount'] ?? null;
+    $windowsProfile = null;
+    if ($facebookMount !== null) {
+        $windowsProfile = is_array($facebookMount) ? ($facebookMount['source'] ?? null) : null;
+        if (!is_string($windowsProfile)
+            || ($facebookMount['container_path'] ?? null) !== '/data/facebook_profile/storage_state.json') {
+            throw new RuntimeException('facebook_profile_unavailable');
+        }
+    }
+    $docker = [
+        'docker', 'run', '--pull=never', '--network', 'bridge', '--cap-add', 'NET_ADMIN',
+        '--mount', 'type=bind,src=' . $jobRoot . '/output,dst=/workspace/output',
+        '--mount', 'type=bind,src=' . $jobRoot . '/checkpoints,dst=/workspace/checkpoints',
+        '--mount', 'type=bind,src=' . $jobRoot . '/input/request.json,dst=/workspace/input/request.json',
+    ];
+    $dockerCommand = implode(' ', array_map('hub_wsl_shell_literal', $docker));
+    if ($windowsProfile !== null) {
+        $dockerCommand .= ' --mount "$profile_mount"';
+    }
+    $dockerCommand .= ' ' . implode(' ', array_map('hub_wsl_shell_literal', [
+        '--name', (string)$execution['name'],
+        '--entrypoint', '/app/crawl-entrypoint.sh',
+        '3waaihub/facebook-crawler:0.1.0', 'python3', '/app/crawl_runner.py',
+    ]));
+    $script = "set -eu\n"
+        . 'windows_workspace=' . hub_wsl_shell_literal($workspace) . "\n"
+        . 'runtime_root=' . hub_wsl_shell_literal($runtimeRoot) . "\n"
+        . 'job_root=' . hub_wsl_shell_literal($jobRoot) . "\n"
+        . 'container_name=' . hub_wsl_shell_literal((string)$execution['name']) . "\n"
+        . 'case "$job_root" in "$runtime_root"/jobs/facebook-crawler/*) ;; *) echo "Invalid WSL job root." >&2; exit 2;; esac' . "\n"
+        . 'host_workspace="$(wslpath -a "$windows_workspace")"' . "\n"
+        . 'if [ ! -f "$host_workspace/input/request.json" ] || [ -L "$host_workspace/input/request.json" ]; then echo "Facebook crawler request is unavailable." >&2; exit 2; fi' . "\n"
+        . 'install -d -m 0700 "$job_root/input" "$job_root/output" "$job_root/checkpoints"' . "\n"
+        . 'cp -- "$host_workspace/input/request.json" "$job_root/input/request.json"' . "\n";
+    if ($windowsProfile !== null) {
+        $script .= 'windows_profile=' . hub_wsl_shell_literal($windowsProfile) . "\n"
+            . 'profile_state="$(wslpath -a "$windows_profile")"' . "\n"
+            . 'if [ ! -f "$profile_state" ] || [ -L "$profile_state" ]; then echo "Facebook profile state is unavailable." >&2; exit 2; fi' . "\n"
+            . 'profile_mount="type=bind,src=${profile_state},dst=/data/facebook_profile/storage_state.json,readonly"' . "\n";
+    }
+    $script .= 'cleanup() { docker container rm -f "$container_name" >/dev/null 2>&1 || true; rm -rf -- "$job_root"; }' . "\n"
+        . 'trap cleanup EXIT HUP INT TERM' . "\n"
+        . 'copy_required() { source=$1; destination=$2; if [ ! -f "$source" ] || [ -L "$source" ]; then echo "Facebook crawler artifact is unavailable: $source" >&2; exit 2; fi; cp -- "$source" "$destination"; }' . "\n"
+        . $dockerCommand . "\n"
+        . 'copy_required "$job_root/output/facebook_posts.jsonl" "$host_workspace/output/facebook_posts.jsonl"' . "\n"
+        . 'copy_required "$job_root/output/facebook_crawl_report.json" "$host_workspace/output/facebook_crawl_report.json"' . "\n";
+
+    return [
+        'command' => hub_wsl_script_command($runtime, $script),
+        'container_id' => (string)$execution['name'],
+        'runtime' => $runtime,
+        'job_root' => $jobRoot,
+    ];
+}
+
+function hub_facebook_crawler_wsl_executor(array $service, array $context, ?callable $processRunner = null, ?array $profile = null): array
+{
+    $unsupported = hub_service_runtime_unsupported_result($service, 'windows', $profile);
+    if ($unsupported !== null) {
+        return $unsupported + ['cleanup' => hub_pack_job_no_work_cleanup(), 'completed_no_process_evidence' => true];
+    }
+    try {
+        $plan = hub_facebook_crawler_wsl_execution_plan($service, $context, $profile);
+    } catch (Throwable) {
+        return ['exit_code' => 1, 'cleanup' => hub_pack_job_no_work_cleanup(), 'completed_no_process_evidence' => true];
+    }
+    $context['started'](['container_id' => $plan['container_id']]);
+    $intent = null;
+    $poll = static function () use ($context, &$intent): ?string {
+        if (!isset($context['tick']) || !is_callable($context['tick'])) {
+            return null;
+        }
+        $next = $context['tick']();
+        if (in_array($next, ['fence_lost', 'cancelled', 'timed_out'], true)) {
+            $intent = $next;
+        }
+        return $intent;
+    };
+    $runner = static function (array $docker, int $timeoutSeconds) use ($plan): array {
+        if (($docker[0] ?? null) !== 'docker') {
+            throw new InvalidArgumentException('Unexpected WSL Docker command.');
+        }
+        return hub_run_command(
+            hub_wsl_script_command($plan['runtime'], 'exec ' . implode(' ', array_map('hub_wsl_shell_literal', $docker))),
+            $timeoutSeconds
+        );
+    };
+    try {
+        $process = $processRunner ?? 'hub_pack_job_process_runner';
+        $result = $process($plan['command'], (int)$context['runner']['timeout_seconds'], $poll);
+    } catch (Throwable) {
+        $result = ['exit_code' => 1];
+    }
+    if (!is_array($result)) {
+        $result = ['exit_code' => 1];
+    }
+    $cleanup = hub_pack_job_default_container_cleanup($runner, (string)$plan['container_id'], (int)$context['runner']['timeout_seconds']);
+    if (!hub_wsl_job_cleanup_workspace($plan['runtime'], 'facebook-crawler', (string)$plan['job_root'], (int)$context['runner']['timeout_seconds'])
+        && (int)($result['exit_code'] ?? 1) === 0) {
+        $result = ['exit_code' => 1, 'error_code' => 'workspace_cleanup_failed'];
+    }
+    $exitCode = (int)($result['exit_code'] ?? 1);
+    $errorCode = $exitCode === 0 ? null : ((string)($result['error_code'] ?? '') ?: hub_pack_job_runner_error_code($result));
+
+    return [
+        'exit_code' => $exitCode,
+        'container_id' => (string)$plan['container_id'],
+        'owned_pids' => $cleanup['owned_pids'],
+        'cleanup' => $cleanup['cleanup'],
+    ] + ($errorCode === null ? [] : ['error_code' => $errorCode])
+        + (isset($result['intent']) ? ['intent' => $result['intent']] : []);
+}
+
 function hub_pack_job_execution_details(array $details, array $fallback = []): array
 {
     $reportedEvidence = (isset($details['container_id']) && trim((string)$details['container_id']) !== '')
@@ -2532,6 +2755,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
     $cleanup = null;
     $terminalErrorCode = null;
     $privatePromptWorkspace = null;
+    $facebookProfileId = null;
     $scrubPrivatePrompt = static function () use (&$privatePromptWorkspace): void {
         if ($privatePromptWorkspace !== null) {
             hub_pack_job_scrub_private_prompt($privatePromptWorkspace);
@@ -2563,6 +2787,20 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         if (!isset($contract['runner'])) {
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'job_unavailable', 'Stored Pack job has no runner contract', hub_pack_job_no_work_cleanup(), null);
+        }
+        try {
+            $facebookProfile = hub_facebook_profile_acquire_for_task($db, $task);
+        } catch (Throwable) {
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'facebook_profile_unavailable', 'Managed Facebook profile is unavailable', hub_pack_job_no_work_cleanup(), null);
+        }
+        if ($facebookProfile === false) {
+            if (hub_facebook_wait_for_profile($db, $taskId, $run, max(1, (int)($options['profile_backoff_seconds'] ?? 5)))) {
+                return ['status' => 'waiting_profile'];
+            }
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
+        }
+        if (is_array($facebookProfile)) {
+            $facebookProfileId = (string)$facebookProfile['profile_id'];
         }
         $runner = $contract['runner'];
         $runnerConfig = hub_pack_job_runner_config_for_task($contract, (array)($task['input'] ?? []));
@@ -2600,6 +2838,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $webScreenshotService = null;
         $edgeTtsService = null;
+        $facebookCrawlerService = null;
         if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'web-screenshot' && (string)($task['job'] ?? '') === 'capture') {
             $webScreenshotService = hub_web_screenshot_wsl_service_for_task($db, $task);
             if ($webScreenshotService === null) {
@@ -2610,6 +2849,12 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             $edgeTtsService = hub_edge_tts_wsl_service_for_task($db, $task);
             if ($edgeTtsService === null) {
                 return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Edge TTS service is unavailable', hub_pack_job_no_work_cleanup(), null);
+            }
+        }
+        if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'facebook-crawler' && (string)($task['job'] ?? '') === 'crawl') {
+            $facebookCrawlerService = hub_facebook_crawler_wsl_service_for_task($db, $task);
+            if ($facebookCrawlerService === null) {
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Facebook crawler service is unavailable', hub_pack_job_no_work_cleanup(), null);
             }
         }
         if ($residentPlan !== null) {
@@ -2625,6 +2870,12 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         } elseif ($edgeTtsService !== null) {
             $executor = static fn (array $context): array => hub_edge_tts_wsl_executor(
                 $edgeTtsService,
+                $context,
+                isset($options['process_runner']) && is_callable($options['process_runner']) ? $options['process_runner'] : null
+            );
+        } elseif ($facebookCrawlerService !== null) {
+            $executor = static fn (array $context): array => hub_facebook_crawler_wsl_executor(
+                $facebookCrawlerService,
                 $context,
                 isset($options['process_runner']) && is_callable($options['process_runner']) ? $options['process_runner'] : null
             );
@@ -2711,6 +2962,11 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             $code = $e->getMessage() === 'voice_profile_changed' ? 'voice_profile_changed' : 'voice_profile_unavailable';
             return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Managed voice profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease);
         }
+        try {
+            $facebookProfileMount = hub_pack_job_resolve_facebook_profile_mount($db, $task);
+        } catch (Throwable) {
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'facebook_profile_unavailable', 'Managed Facebook profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease);
+        }
         $hasPrivatePrompt = isset($voiceProfileMount['prompt_text']);
         $workspace = hub_pack_job_prepare_workspace($db, $task, $contract, $voiceProfileMount);
         if ($hasPrivatePrompt) {
@@ -2730,7 +2986,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             'run' => $run,
             'workspace' => $workspace,
             'contract' => $contract,
-            'runner' => hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts, $voiceProfileMount),
+            'runner' => hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts, $voiceProfileMount, $facebookProfileMount),
         ] + ($residentPlan === null ? [] : [
             'resident_plan' => $residentPlan,
             'resident_transport' => $residentTransport,
@@ -2759,7 +3015,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $run = $startedRun;
         $run['effective_gpu_lease_required'] = hub_runtime_task_requires_gpu($task) && !$residentUsesCpu;
         $context['run'] = $run;
-        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts, $voiceProfileMount);
+        $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts, $voiceProfileMount, $facebookProfileMount);
         $fenceLost = false;
         $context['started'] = static function (array $startedDetails) use (&$details, &$fenceLost, $db, $task, $run, $gpuLease, $baseline): void {
             $details = hub_pack_job_execution_details($startedDetails, ['baseline_pids' => $baseline]);
@@ -2843,5 +3099,8 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         );
     } finally {
         $scrubPrivatePrompt();
+        if ($facebookProfileId !== null) {
+            hub_facebook_profile_release_for_task($db, $facebookProfileId, $taskId);
+        }
     }
 }

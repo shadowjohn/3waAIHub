@@ -30,13 +30,15 @@ append_rule() {
   "$tool" -C "$chain" "$@"
 }
 
-grant_crawler_workspace_access() {
-  setfacl -m u:crawler:--x /workspace/input
-  getfacl -cp /workspace/input | grep -Fqx 'user:crawler:--x'
-  setfacl -m u:crawler:r-- /workspace/input/request.json
-  getfacl -cp /workspace/input/request.json | grep -Fqx 'user:crawler:r--'
-  setfacl -m u:crawler:rwx /workspace/output
-  getfacl -cp /workspace/output | grep -Fqx 'user:crawler:rwx'
+grant_workspace_access() {
+  local uid=$1
+
+  setfacl -m "u:${uid}:--x" /workspace/input
+  getfacl -cpn /workspace/input | grep -Fqx "user:${uid}:--x"
+  setfacl -m "u:${uid}:r--" /workspace/input/request.json
+  getfacl -cpn /workspace/input/request.json | grep -Fqx "user:${uid}:r--"
+  setfacl -m "u:${uid}:rwx" /workspace/output
+  getfacl -cpn /workspace/output | grep -Fqx "user:${uid}:rwx"
 }
 
 add_resolver_rules() {
@@ -116,7 +118,27 @@ if [[ "${1:-}" == /app/login_broker.py && "$#" == 1 ]]; then
     --bounding-set=-all --ambient-caps=-all -- "$@"
 fi
 
-grant_crawler_workspace_access
+facebook_state=/data/facebook_profile/storage_state.json
+if [[ -e "$facebook_state" || -L "$facebook_state" ]]; then
+  [[ -f "$facebook_state" && ! -L "$facebook_state" \
+    && "$(stat -c '%a' "$facebook_state")" == 600 \
+    && "$(stat -c '%h' "$facebook_state")" == 1 ]] || {
+    printf 'unsafe Facebook profile state mount\n' >&2
+    exit 1
+  }
+  profile_uid="$(stat -c '%u' "$facebook_state")"
+  profile_gid="$(stat -c '%g' "$facebook_state")"
+  [[ "$profile_uid" =~ ^[1-9][0-9]*$ && "$profile_gid" =~ ^[0-9]+$ ]] || {
+    printf 'invalid Facebook profile owner\n' >&2
+    exit 1
+  }
+  grant_workspace_access "$profile_uid"
+  exec env HOME=/tmp setpriv --reuid="$profile_uid" --regid="$profile_gid" --clear-groups \
+    --bounding-set=-all --ambient-caps=-all -- "$@"
+fi
+
+crawler_uid="$(id -u crawler)"
+grant_workspace_access "$crawler_uid"
 
 exec setpriv --reuid=crawler --regid=crawler --clear-groups \
   --bounding-set=-all --ambient-caps=-all -- "$@"

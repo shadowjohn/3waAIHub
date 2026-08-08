@@ -16,6 +16,7 @@ hub_test('Facebook crawler Pack declares one fixed CPU job', function (): void {
     $dataset = $contract['artifact_contract']['artifacts'][0] ?? [];
     hub_test_assert(($dataset['type'] ?? '') === 'facebook_posts_jsonl'
         && ($dataset['max_bytes'] ?? 0) === 4194304
+        && in_array('application/json', $dataset['mime_types'] ?? [], true)
         && ($dataset['text']['max_bytes'] ?? 0) === 4194304, 'crawler JSONL must use the bounded text validator');
 
     $shellCheck = HUB_ROOT . '/packs/facebook-crawler/service/test_egress_firewall.sh';
@@ -264,6 +265,327 @@ function hub_test_facebook_login_request(
         'platform' => 'linux',
     ]);
 }
+
+function hub_test_facebook_mark_ready(PDO $db, array $profile): void
+{
+    $row = $db->query("SELECT * FROM facebook_crawler_profiles WHERE profile_id = " . $db->quote((string)$profile['profile_id']))->fetch();
+    $path = hub_facebook_profile_state_path($row);
+    file_put_contents($path, '{"cookies":[{"name":"c_user","value":"123","domain":".facebook.com"}]}');
+    chmod($path, 0600);
+    $db->prepare("UPDATE facebook_crawler_profiles SET state = 'ready', last_verified_at = :now WHERE profile_id = :profile_id")
+        ->execute([':now' => hub_now(), ':profile_id' => $profile['profile_id']]);
+}
+
+function hub_test_facebook_crawl_request(PDO $db, string $token, array $payload): array
+{
+    return hub_gateway_dispatch($db, 'facebook_crawl', null, [
+        'bearer_token' => $token,
+        'client_ip' => '203.0.113.44',
+        'method' => 'POST',
+        'request_uri' => '/api.php?mode=facebook_crawl',
+        'raw_body' => hub_json_encode($payload),
+        'content_type' => 'application/json',
+    ]);
+}
+
+function hub_test_facebook_wsl_payload(array $command): string
+{
+    $script = (string)end($command);
+    if (preg_match('/printf %s ([A-Za-z0-9+\\/=]+) \\| base64 -d \\| bash/', $script, $matches) !== 1) {
+        throw new RuntimeException('Facebook WSL command payload is missing.');
+    }
+    $payload = base64_decode($matches[1], true);
+    if ($payload === false) {
+        throw new RuntimeException('Facebook WSL command payload is invalid.');
+    }
+
+    return $payload;
+}
+
+hub_test('Facebook crawl admission stores only normalized managed input', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler admission owner');
+    $token = hub_test_facebook_login_token($db, $memberId, 'crawler admission token');
+    $profile = hub_facebook_profile_create($db, $memberId, 'Public sources');
+    hub_test_facebook_mark_ready($db, $profile);
+
+    $response = hub_test_facebook_crawl_request($db, $token['plain_token'], [
+        'profile_id' => $profile['profile_id'],
+        'targets' => [
+            ['url' => 'https://www.facebook.com/wra.gov.tw/'],
+            ['url' => 'https://m.facebook.com/groups/123456789/'],
+        ],
+        'limit_per_target' => 20,
+    ]);
+    $payload = hub_test_facebook_login_payload($response);
+    $task = hub_get_task($db, (int)($payload['task_id'] ?? 0));
+    hub_test_assert($response['status'] === 200 && is_array($task), 'valid Facebook crawl JSON must enqueue one task');
+    hub_test_assert(array_keys($task['input']) === ['profile_id', 'targets_json', 'limit_per_target'], 'task input must contain only managed crawler fields');
+    hub_test_assert(json_decode((string)$task['input']['targets_json'], true) === [
+        ['url' => 'https://www.facebook.com/wra.gov.tw'],
+        ['url' => 'https://www.facebook.com/groups/123456789'],
+    ], 'Facebook target URLs must use one canonical host and path');
+    hub_test_assert(!str_contains($task['input_json'], 'password') && !str_contains($task['input_json'], 'cookie'), 'task JSON must contain no login secret');
+
+    hub_facebook_profile_delete($db, (string)$profile['profile_id'], $memberId);
+});
+
+hub_test('Facebook crawl admission rejects unsafe targets controls and unavailable profiles', function (): void {
+    $db = hub_test_reset_db();
+    $memberA = hub_create_api_member($db, 'Crawler admission A');
+    $memberB = hub_create_api_member($db, 'Crawler admission B');
+    $tokenA = hub_test_facebook_login_token($db, $memberA, 'crawler admission A');
+    $tokenB = hub_test_facebook_login_token($db, $memberB, 'crawler admission B');
+    $profile = hub_facebook_profile_create($db, $memberA, 'Admission profile');
+    hub_test_facebook_mark_ready($db, $profile);
+    $validTarget = [['url' => 'https://www.facebook.com/wra.gov.tw']];
+    $cases = [
+        [['targets' => []], 400],
+        [['targets' => array_fill(0, 31, ['url' => 'https://www.facebook.com/a'])], 400],
+        [['targets' => $validTarget, 'limit_per_target' => 9], 400],
+        [['targets' => $validTarget, 'limit_per_target' => 31], 400],
+        [['targets' => [['url' => 'http://www.facebook.com/a']]], 400],
+        [['targets' => [['url' => 'https://user:pass@www.facebook.com/a']]], 400],
+        [['targets' => [['url' => 'https://www.facebook.com/a#posts']]], 400],
+        [['targets' => [['url' => 'https://www.facebook.com:444/a']]], 400],
+        [['targets' => [['url' => 'https://127.0.0.1/a']]], 400],
+        [['targets' => [['url' => 'https://www.facebook.com/hashtag/flood']]], 400],
+        [['targets' => [['url' => 'https://www.facebook.com/search/top?q=flood']]], 400],
+        [['targets' => [['url' => 'https://www.facebook.com/a', 'cookie' => 'secret']]], 400],
+        [['targets' => $validTarget, 'command' => 'browser'], 400],
+        [['targets' => [
+            ['url' => 'https://www.facebook.com/wra.gov.tw/'],
+            ['url' => 'https://m.facebook.com/wra.gov.tw'],
+        ]], 400],
+    ];
+    foreach ($cases as [$request, $status]) {
+        $before = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+        $response = hub_test_facebook_crawl_request($db, $tokenA['plain_token'], $request);
+        hub_test_assert($response['status'] === $status, 'unsafe Facebook crawl request must fail admission');
+        hub_test_assert((int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn() === $before, 'invalid admission must not enqueue a task');
+    }
+
+    $foreign = hub_test_facebook_crawl_request($db, $tokenB['plain_token'], [
+        'profile_id' => $profile['profile_id'],
+        'targets' => $validTarget,
+    ]);
+    hub_test_assert($foreign['status'] === 404, 'another member profile must remain hidden');
+    $db->prepare("UPDATE facebook_crawler_profiles SET state = 'reauth_required' WHERE profile_id = :profile_id")
+        ->execute([':profile_id' => $profile['profile_id']]);
+    $unavailable = hub_test_facebook_crawl_request($db, $tokenA['plain_token'], [
+        'profile_id' => $profile['profile_id'],
+        'targets' => $validTarget,
+    ]);
+    hub_test_assert($unavailable['status'] === 409, 'unready owned profile must fail admission');
+
+    $anonymous = hub_test_facebook_crawl_request($db, $tokenA['plain_token'], ['targets' => $validTarget]);
+    hub_test_assert($anonymous['status'] === 200, 'public targets must remain usable without a profile');
+    $db->prepare("UPDATE facebook_crawler_profiles SET state = 'ready' WHERE profile_id = :profile_id")
+        ->execute([':profile_id' => $profile['profile_id']]);
+    hub_facebook_profile_delete($db, (string)$profile['profile_id'], $memberA);
+});
+
+function hub_test_facebook_enqueue_crawl(PDO $db, int $memberId, int $tokenId, ?string $profileId): int
+{
+    $route = hub_resolve_pack_job_async_route($db, 'facebook_crawl');
+    $input = [];
+    if ($profileId !== null) {
+        $input['profile_id'] = $profileId;
+    }
+    $input['targets_json'] = '[{"url":"https://www.facebook.com/wra.gov.tw"}]';
+    $input['limit_per_target'] = 10;
+
+    return hub_enqueue_owned_pack_job($db, $route, $input, $memberId, $tokenId, '203.0.113.44');
+}
+
+hub_test('Facebook profile lock serializes waits cancellation and promotion', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler lock owner');
+    $token = hub_test_facebook_login_token($db, $memberId, 'crawler lock token');
+    $profile = hub_facebook_profile_create($db, $memberId, 'Serialized profile');
+    hub_test_facebook_mark_ready($db, $profile);
+    $holderId = hub_test_facebook_enqueue_crawl($db, $memberId, (int)$token['token_id'], (string)$profile['profile_id']);
+    $db->prepare("UPDATE tasks SET status = 'running', lock_token = :lock_token WHERE id = :id")
+        ->execute([':lock_token' => str_repeat('a', 32), ':id' => $holderId]);
+    $holder = hub_get_task($db, $holderId);
+    $held = hub_facebook_profile_acquire_for_task($db, $holder);
+    hub_test_assert(is_array($held) && (int)$held['active_task_id'] === $holderId, 'first task must acquire its profile');
+
+    $waiterId = hub_test_facebook_enqueue_crawl($db, $memberId, (int)$token['token_id'], (string)$profile['profile_id']);
+    $waiter = hub_claim_next_task($db, ['pack_job']);
+    $called = 0;
+    $outcome = hub_run_pack_job_task($db, $waiter, [
+        'worker_id' => 'facebook-profile-waiter',
+        'profile_backoff_seconds' => 5,
+        'executor' => static function () use (&$called): array {
+            $called++;
+            return [];
+        },
+    ]);
+    $waitingTask = hub_get_task($db, $waiterId);
+    $waitingRun = $db->query('SELECT * FROM runtime_runs WHERE task_id = ' . $waiterId)->fetch();
+    hub_test_assert(($outcome['status'] ?? '') === 'waiting_profile' && $called === 0, 'busy profile must wait before executor dispatch');
+    hub_test_assert(($waitingTask['status'] ?? '') === 'waiting_profile' && ($waitingTask['waiting_reason'] ?? '') === 'profile_busy' && empty($waitingTask['lock_token']), 'waiting task must clear its worker fence');
+    hub_test_assert(($waitingRun['state'] ?? '') === 'waiting_profile' && $waitingRun['worker_id'] === null && $waitingRun['lease_token'] === null && $waitingRun['container_id'] === null, 'waiting runtime must clear its lease without a container');
+    hub_test_assert(!is_dir(hub_task_result_dir($waiterId) . '/workspace'), 'profile wait must happen before workspace staging');
+    hub_test_assert(hub_task_waiting_status_fields($waitingTask, time())['waiting_reason'] === 'profile_busy', 'profile wait status must expose one stable reason');
+    hub_test_assert(hub_cancel_task($db, $waiterId) && (hub_get_task($db, $waiterId)['status'] ?? '') === 'cancelled', 'waiting profile task must be cancellable without work cleanup');
+
+    $promotedId = hub_test_facebook_enqueue_crawl($db, $memberId, (int)$token['token_id'], (string)$profile['profile_id']);
+    $promotedTask = hub_claim_next_task($db, ['pack_job']);
+    $promotedOutcome = hub_run_pack_job_task($db, $promotedTask, ['worker_id' => 'facebook-profile-promote']);
+    hub_test_assert(($promotedOutcome['status'] ?? '') === 'waiting_profile', 'second waiter fixture must enter waiting_profile');
+    $db->prepare('UPDATE tasks SET next_attempt_at = :past WHERE id = :id')
+        ->execute([':past' => date('Y-m-d H:i:s', time() - 60), ':id' => $promotedId]);
+    hub_test_assert(!hub_promote_due_waiting_profile_task($db), 'held profile must not promote a waiter');
+    hub_test_assert(hub_facebook_profile_release_for_task($db, (string)$profile['profile_id'], $holderId), 'holder must release only its own profile fence');
+    hub_test_assert(hub_promote_due_waiting_profile_task($db) && !hub_promote_due_waiting_profile_task($db), 'released profile must promote one due waiter exactly once');
+    $queued = hub_get_task($db, $promotedId);
+    $queuedRun = $db->query('SELECT * FROM runtime_runs WHERE task_id = ' . $promotedId)->fetch();
+    hub_test_assert(($queued['status'] ?? '') === 'queued' && ($queuedRun['state'] ?? '') === 'queued', 'promotion must restore both task and runtime queues');
+
+    $otherProfile = hub_facebook_profile_create($db, $memberId, 'Independent profile');
+    hub_test_facebook_mark_ready($db, $otherProfile);
+    $otherId = hub_test_facebook_enqueue_crawl($db, $memberId, (int)$token['token_id'], (string)$otherProfile['profile_id']);
+    $db->prepare("UPDATE tasks SET status = 'running', lock_token = :lock_token WHERE id = :id")
+        ->execute([':lock_token' => str_repeat('b', 32), ':id' => $otherId]);
+    $other = hub_get_task($db, $otherId);
+    hub_test_assert(is_array(hub_facebook_profile_acquire_for_task($db, $other)), 'different profile must acquire independently');
+    $anonymousId = hub_test_facebook_enqueue_crawl($db, $memberId, (int)$token['token_id'], null);
+    hub_test_assert(hub_facebook_profile_acquire_for_task($db, hub_get_task($db, $anonymousId)) === null, 'anonymous public crawl must not request a profile lock');
+
+    hub_cancel_task($db, $promotedId);
+    hub_cancel_task($db, $anonymousId);
+    hub_facebook_profile_release_for_task($db, (string)$otherProfile['profile_id'], $otherId);
+    $db->prepare("UPDATE tasks SET status = 'cancelled', lock_token = NULL WHERE id = :id")->execute([':id' => $otherId]);
+    $db->prepare("UPDATE tasks SET status = 'cancelled' WHERE id = :id")->execute([':id' => $holderId]);
+    hub_facebook_profile_delete($db, (string)$otherProfile['profile_id'], $memberId);
+    hub_facebook_profile_delete($db, (string)$profile['profile_id'], $memberId);
+});
+
+hub_test('Facebook crawler mounts one verified profile file and releases every terminal path', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler mount owner');
+    $token = hub_test_facebook_login_token($db, $memberId, 'crawler mount token');
+    $profile = hub_facebook_profile_create($db, $memberId, 'Mounted profile');
+    hub_test_facebook_mark_ready($db, $profile);
+    $statePath = hub_facebook_profile_state_path($profile);
+
+    $taskId = hub_test_facebook_enqueue_crawl($db, $memberId, (int)$token['token_id'], (string)$profile['profile_id']);
+    $task = hub_claim_next_task($db, ['pack_job']);
+    $mountArguments = [];
+    $outcome = hub_run_pack_job_task($db, $task, [
+        'worker_id' => 'facebook-profile-mount',
+        'executor' => static function (array $context) use (&$mountArguments): array {
+            $execution = hub_pack_job_default_runner_command($context);
+            $mountArguments = array_values(array_filter(
+                $execution['command'],
+                static fn (mixed $argument): bool => is_string($argument) && str_contains($argument, '/data/facebook_profile/storage_state.json')
+            ));
+            hub_test_assert(!file_exists($context['workspace'] . '/input/storage_state.json'), 'profile state must never enter the task workspace');
+            $context['started'](['container_id' => 'facebook-mount-test']);
+            file_put_contents(
+                $context['workspace'] . '/output/facebook_posts.jsonl',
+                "{\"source_url\":\"https://www.facebook.com/wra.gov.tw\",\"content\":\"fixture one\"}\n"
+                . "{\"source_url\":\"https://www.facebook.com/wra.gov.tw\",\"content\":\"fixture two\"}\n"
+            );
+            file_put_contents($context['workspace'] . '/output/facebook_crawl_report.json', hub_json_encode([
+                'outcome' => 'complete',
+                'target_count' => 1,
+                'post_count' => 2,
+                'limit_per_target' => 10,
+                'targets' => [['url' => 'https://www.facebook.com/wra.gov.tw', 'status' => 'completed']],
+                'created_at' => hub_now(),
+                'runner_version' => 'test',
+            ]));
+            return ['exit_code' => 0, 'container_id' => 'facebook-mount-test', 'cleanup' => hub_pack_job_no_work_cleanup()];
+        },
+    ]);
+    $expectedMount = 'type=bind,src=' . $statePath . ',dst=/data/facebook_profile/storage_state.json,readonly';
+    hub_test_assert(
+        ($outcome['status'] ?? '') === 'success',
+        'verified Facebook profile fixture must complete: ' . hub_json_encode(['outcome' => $outcome, 'logs' => hub_list_task_logs($db, $taskId)])
+    );
+    hub_test_assert($mountArguments === [$expectedMount], 'crawler must receive exactly one fixed read-only profile mount');
+    hub_test_assert($db->query("SELECT active_task_id FROM facebook_crawler_profiles WHERE profile_id = " . $db->quote((string)$profile['profile_id']))->fetchColumn() === null, 'successful task must release its profile fence');
+
+    $failedId = hub_test_facebook_enqueue_crawl($db, $memberId, (int)$token['token_id'], (string)$profile['profile_id']);
+    $failedTask = hub_claim_next_task($db, ['pack_job']);
+    $failed = hub_run_pack_job_task($db, $failedTask, [
+        'worker_id' => 'facebook-profile-failure',
+        'executor' => static fn (): array => [
+            'exit_code' => 1,
+            'error_code' => 'fixture_failure',
+            'completed_no_process_evidence' => true,
+            'cleanup' => hub_pack_job_no_work_cleanup(),
+        ],
+    ]);
+    hub_test_assert(($failed['status'] ?? '') === 'failed' && (int)$failedTask['id'] === $failedId, 'failure fixture must reach one terminal task');
+    hub_test_assert($db->query("SELECT active_task_id FROM facebook_crawler_profiles WHERE profile_id = " . $db->quote((string)$profile['profile_id']))->fetchColumn() === null, 'failed task must release its profile fence');
+
+    hub_facebook_profile_delete($db, (string)$profile['profile_id'], $memberId);
+});
+
+hub_test('Facebook crawler WSL plan copies only request and public artifacts', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'facebook-crawler', ['idempotent' => true])['service'];
+    $pack = hub_get_pack('facebook-crawler');
+    $job = is_array($pack) ? hub_pack_async_job_contract($pack['manifest'], 'crawl') : null;
+    hub_test_assert(is_array($job), 'Facebook crawler WSL contract is required');
+    $memberId = hub_create_api_member($db, 'Crawler WSL owner');
+    $profileRow = hub_facebook_profile_create($db, $memberId, 'WSL profile');
+    hub_test_facebook_mark_ready($db, $profileRow);
+    $workspace = HUB_DATA_DIR . '/results/facebook-wsl-plan-' . bin2hex(random_bytes(8));
+    foreach (['input', 'output', 'checkpoints'] as $name) {
+        if (!mkdir($workspace . '/' . $name, 0700, true)) {
+            throw new RuntimeException('Cannot create Facebook WSL workspace fixture.');
+        }
+    }
+    file_put_contents($workspace . '/input/request.json', "{\"targets_json\":\"[]\",\"limit_per_target\":10}\n");
+    $runtimeProfile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+    ]]];
+    $mount = [
+        'source' => hub_facebook_profile_state_path($profileRow),
+        'container_path' => '/data/facebook_profile/storage_state.json',
+    ];
+    $task = ['id' => 42, 'pack_id' => 'facebook-crawler', 'job' => 'crawl', 'input' => ['profile_id' => $profileRow['profile_id']]];
+    $context = [
+        'task' => $task,
+        'run' => ['run_id' => 'packjob-42-facebook012345'],
+        'workspace' => $workspace,
+        'runner' => hub_pack_job_runner_arguments(
+            $job['runner'],
+            $task,
+            ['run_id' => 'packjob-42-facebook012345'],
+            $workspace,
+            null,
+            [],
+            null,
+            $mount
+        ),
+    ];
+    try {
+        $plan = hub_facebook_crawler_wsl_execution_plan($service, $context, $runtimeProfile);
+        $payload = hub_test_facebook_wsl_payload($plan['command']);
+        hub_test_assert(str_contains($payload, '/DATA/3waAIHub-runtime/jobs/facebook-crawler/packjob-42-facebook012345')
+            && str_contains($payload, "'--network' 'bridge'")
+            && str_contains($payload, "'--cap-add' 'NET_ADMIN'")
+            && str_contains($payload, '3waaihub/facebook-crawler:0.1.0')
+            && str_contains($payload, 'wslpath -a "$windows_profile"')
+            && str_contains($payload, 'dst=/data/facebook_profile/storage_state.json,readonly')
+            && str_contains($payload, 'facebook_posts.jsonl')
+            && str_contains($payload, 'facebook_crawl_report.json')
+            && !str_contains($payload, 'cp -- "$profile_state"')
+            && !str_contains($payload, 'storage_state.json" "$host_workspace')
+            && !str_contains($payload, 'cp -a'), 'Facebook WSL job must keep cookie state out of task workspaces');
+    } finally {
+        hub_test_remove_data_tree($workspace);
+        hub_facebook_profile_delete($db, (string)$profileRow['profile_id'], $memberId);
+    }
+});
 
 hub_test('Facebook login start stores only proof hash and confines credentials to one broker POST', function (): void {
     $db = hub_test_reset_db();

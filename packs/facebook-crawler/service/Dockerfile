@@ -14,6 +14,7 @@ COPY crawl_runner.py login_broker.py crawl-entrypoint.sh ./
 RUN sed -i 's/\r$//' crawl-entrypoint.sh \
     && chmod 0755 crawl-entrypoint.sh crawl_runner.py login_broker.py \
     && install -d -m 0700 /workspace/input /workspace/output \
+    && install -d -m 0755 /data/facebook_profile \
     && touch /workspace/input/request.json \
     && chmod 0600 /workspace/input/request.json
 ENTRYPOINT ["/app/crawl-entrypoint.sh"]

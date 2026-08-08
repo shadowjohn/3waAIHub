@@ -178,6 +178,311 @@ function hub_facebook_profiles_for_member(PDO $db, int $ownerMemberId): array
     return array_map('hub_facebook_profile_public', $stmt->fetchAll());
 }
 
+function hub_facebook_crawl_target_url(string $url): string
+{
+    if ($url === '' || strlen($url) > 2048 || preg_match('/[\x00-\x20\x7f]/', $url) === 1) {
+        throw new InvalidArgumentException('facebook_targets_invalid');
+    }
+    $parts = parse_url($url);
+    if (
+        !is_array($parts)
+        || strtolower((string)($parts['scheme'] ?? '')) !== 'https'
+        || !is_string($parts['host'] ?? null)
+        || isset($parts['user'])
+        || isset($parts['pass'])
+        || isset($parts['fragment'])
+        || isset($parts['query'])
+        || (isset($parts['port']) && (int)$parts['port'] !== 443)
+    ) {
+        throw new InvalidArgumentException('facebook_targets_invalid');
+    }
+    $host = strtolower(rtrim($parts['host'], '.'));
+    if ($host === '' || filter_var($host, FILTER_VALIDATE_IP) !== false
+        || ($host !== 'facebook.com' && !str_ends_with($host, '.facebook.com'))) {
+        throw new InvalidArgumentException('facebook_targets_invalid');
+    }
+    $path = (string)($parts['path'] ?? '');
+    if ($path === '' || str_contains($path, '%') || str_contains($path, '//')) {
+        throw new InvalidArgumentException('facebook_targets_invalid');
+    }
+    $segments = explode('/', trim($path, '/'));
+    if ($segments === [''] || count($segments) > 2) {
+        throw new InvalidArgumentException('facebook_targets_invalid');
+    }
+    foreach ($segments as $segment) {
+        if (preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]{0,99}\z/', $segment) !== 1) {
+            throw new InvalidArgumentException('facebook_targets_invalid');
+        }
+    }
+    $reserved = [
+        'ajax', 'events', 'gaming', 'hashtag', 'help', 'home.php', 'login', 'marketplace',
+        'messages', 'notifications', 'photo', 'photos', 'plugins', 'reel', 'reels', 'search',
+        'share', 'stories', 'watch',
+    ];
+    $kind = strtolower($segments[0]);
+    if (($kind === 'groups' && count($segments) !== 2)
+        || ($kind !== 'groups' && (count($segments) !== 1 || in_array($kind, $reserved, true)))) {
+        throw new InvalidArgumentException('facebook_targets_invalid');
+    }
+
+    return 'https://www.facebook.com/' . implode('/', $segments);
+}
+
+function hub_facebook_crawl_targets(mixed $targets): array
+{
+    if (!is_array($targets) || !array_is_list($targets) || count($targets) < 1 || count($targets) > 30) {
+        throw new InvalidArgumentException('facebook_targets_invalid');
+    }
+    $normalized = [];
+    $seen = [];
+    foreach ($targets as $target) {
+        if (!is_array($target) || array_is_list($target) || array_keys($target) !== ['url'] || !is_string($target['url'])) {
+            throw new InvalidArgumentException('facebook_targets_invalid');
+        }
+        $url = hub_facebook_crawl_target_url($target['url']);
+        $key = strtolower($url);
+        if (isset($seen[$key])) {
+            throw new InvalidArgumentException('facebook_targets_duplicate');
+        }
+        $seen[$key] = true;
+        $normalized[] = ['url' => $url];
+    }
+
+    return $normalized;
+}
+
+function hub_facebook_crawl_profile(PDO $db, string $profileId, int $ownerMemberId): array
+{
+    $profile = hub_facebook_login_owned_row($db, $profileId, $ownerMemberId);
+    if ($profile === null) {
+        throw new RuntimeException('facebook_profile_not_found');
+    }
+    if (
+        (string)$profile['state'] !== 'ready'
+        || $profile['login_secret_hash'] !== null
+        || $profile['login_container_name'] !== null
+        || $profile['login_port'] !== null
+        || $profile['login_expires_at'] !== null
+        || !hub_facebook_login_state_secure($profile)
+    ) {
+        throw new RuntimeException('facebook_profile_unavailable');
+    }
+
+    return $profile;
+}
+
+function hub_facebook_crawl_submit(
+    PDO $db,
+    array $route,
+    array $authContext,
+    string $method,
+    ?string $rawBody,
+    string $contentType,
+    string $clientIp
+): array {
+    if ($method !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'Facebook crawl submission requires POST');
+    }
+    $contentType = strtolower(trim(explode(';', $contentType)[0]));
+    if ($contentType !== 'application/json') {
+        return hub_gateway_error(415, 'content_type_invalid', 'Facebook crawl submission requires application/json');
+    }
+    $maxBytes = (int)($route['max_upload_bytes'] ?? 0);
+    if ($maxBytes < 1) {
+        return hub_gateway_error(413, 'payload_too_large', 'request body is larger than this service allows');
+    }
+    if ($rawBody === null) {
+        $stream = fopen('php://input', 'rb');
+        $rawBody = is_resource($stream) ? stream_get_contents($stream, $maxBytes + 1) : false;
+        if (is_resource($stream)) {
+            fclose($stream);
+        }
+        if (!is_string($rawBody)) {
+            $rawBody = '';
+        }
+    }
+    if ($rawBody === '' || strlen($rawBody) > $maxBytes) {
+        return hub_gateway_error(strlen($rawBody) > $maxBytes ? 413 : 400, strlen($rawBody) > $maxBytes ? 'payload_too_large' : 'invalid_request', 'Facebook crawl request is invalid');
+    }
+    try {
+        $payload = json_decode($rawBody, true, 32, JSON_THROW_ON_ERROR);
+        if (!is_array($payload) || array_is_list($payload)) {
+            throw new InvalidArgumentException('facebook_request_invalid');
+        }
+        $allowed = ['profile_id', 'targets', 'limit_per_target'];
+        if (array_diff(array_keys($payload), $allowed) !== [] || !array_key_exists('targets', $payload)) {
+            throw new InvalidArgumentException('facebook_request_invalid');
+        }
+        $limit = $payload['limit_per_target'] ?? 10;
+        if (!is_int($limit) || $limit < 10 || $limit > 30) {
+            throw new InvalidArgumentException('facebook_limit_invalid');
+        }
+        $targets = hub_facebook_crawl_targets($payload['targets']);
+        $ownerMemberId = (int)($authContext['member_id'] ?? 0);
+        $tokenId = (int)($authContext['token_id'] ?? 0);
+        if ($ownerMemberId < 1 || $tokenId < 1) {
+            return hub_gateway_error(403, 'member_required', 'Facebook crawl submission requires an API member');
+        }
+        $input = [];
+        if (array_key_exists('profile_id', $payload)) {
+            if (!is_string($payload['profile_id'])) {
+                throw new InvalidArgumentException('facebook_profile_invalid');
+            }
+            $profile = hub_facebook_crawl_profile($db, $payload['profile_id'], $ownerMemberId);
+            $input['profile_id'] = (string)$profile['profile_id'];
+        }
+        $input['targets_json'] = json_encode($targets, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $input['limit_per_target'] = $limit;
+        $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $ownerMemberId, $tokenId, $clientIp);
+
+        return hub_gateway_json(200, hub_task_submit_response($taskId));
+    } catch (JsonException | InvalidArgumentException) {
+        return hub_gateway_error(400, 'invalid_request', 'Facebook crawl request does not match the public contract');
+    } catch (RuntimeException $e) {
+        return match ($e->getMessage()) {
+            'facebook_profile_not_found' => hub_gateway_error(404, 'facebook_profile_not_found', 'Facebook profile was not found'),
+            'facebook_profile_unavailable' => hub_gateway_error(409, 'facebook_profile_unavailable', 'Facebook profile is unavailable'),
+            default => hub_gateway_error(409, 'facebook_crawl_unavailable', 'Facebook crawl is unavailable'),
+        };
+    }
+}
+
+function hub_facebook_task_profile_id(array $task): ?string
+{
+    if ((string)($task['task_type'] ?? '') !== 'pack_job'
+        || (string)($task['pack_id'] ?? '') !== 'facebook-crawler'
+        || (string)($task['job'] ?? '') !== 'crawl'
+        || (string)($task['requested_mode'] ?? '') !== 'facebook_crawl') {
+        return null;
+    }
+    $input = is_array($task['input'] ?? null) ? $task['input'] : [];
+    if (!array_key_exists('profile_id', $input)) {
+        return null;
+    }
+    $profileId = $input['profile_id'];
+    if (!is_string($profileId) || preg_match('/\Afbp_[a-f0-9]{48}\z/', $profileId) !== 1) {
+        throw new RuntimeException('facebook_profile_unavailable');
+    }
+
+    return $profileId;
+}
+
+function hub_facebook_profile_acquire_for_task(PDO $db, array $task): array|false|null
+{
+    $profileId = hub_facebook_task_profile_id($task);
+    if ($profileId === null) {
+        return null;
+    }
+    $taskId = (int)($task['id'] ?? 0);
+    $ownerMemberId = (int)($task['owner_member_id'] ?? 0);
+    $lockToken = (string)($task['lock_token'] ?? '');
+    if ($taskId < 1 || $ownerMemberId < 1 || preg_match('/\A[a-f0-9]{32}\z/', $lockToken) !== 1) {
+        throw new RuntimeException('facebook_profile_unavailable');
+    }
+    if ($db->inTransaction()) {
+        throw new LogicException('facebook_profile_lock_transaction_required');
+    }
+
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $taskGuard = $db->prepare(
+            "SELECT 1 FROM tasks
+             WHERE id = :id AND owner_member_id = :owner_member_id AND task_type = 'pack_job'
+               AND requested_mode = 'facebook_crawl' AND pack_id = 'facebook-crawler' AND job = 'crawl'
+               AND status = 'running' AND lock_token = :lock_token"
+        );
+        $taskGuard->execute([
+            ':id' => $taskId,
+            ':owner_member_id' => $ownerMemberId,
+            ':lock_token' => $lockToken,
+        ]);
+        if ($taskGuard->fetchColumn() === false) {
+            $db->exec('COMMIT');
+            throw new RuntimeException('facebook_profile_unavailable');
+        }
+        $stmt = $db->prepare(
+            "SELECT * FROM facebook_crawler_profiles
+             WHERE profile_id = :profile_id AND owner_member_id = :owner_member_id
+               AND state = 'ready' AND deleted_at IS NULL
+               AND login_secret_hash IS NULL AND login_container_name IS NULL
+               AND login_port IS NULL AND login_expires_at IS NULL
+             LIMIT 1"
+        );
+        $stmt->execute([':profile_id' => $profileId, ':owner_member_id' => $ownerMemberId]);
+        $profile = $stmt->fetch();
+        if (!is_array($profile)) {
+            $db->exec('COMMIT');
+            throw new RuntimeException('facebook_profile_unavailable');
+        }
+        $activeTaskId = (int)($profile['active_task_id'] ?? 0);
+        if ($activeTaskId === $taskId) {
+            $db->exec('COMMIT');
+            return $profile;
+        }
+        if ($activeTaskId > 0) {
+            $holder = $db->prepare('SELECT status FROM tasks WHERE id = :id');
+            $holder->execute([':id' => $activeTaskId]);
+            $holderStatus = $holder->fetchColumn();
+            if (is_string($holderStatus) && !in_array($holderStatus, ['success', 'failed', 'cancelled', 'timed_out', 'timeout'], true)) {
+                $db->exec('COMMIT');
+                return false;
+            }
+            $clear = $db->prepare(
+                'UPDATE facebook_crawler_profiles SET active_task_id = NULL, updated_at = :now
+                 WHERE id = :id AND active_task_id = :active_task_id'
+            );
+            $clear->execute([':now' => hub_now(), ':id' => (int)$profile['id'], ':active_task_id' => $activeTaskId]);
+            if ($clear->rowCount() !== 1) {
+                $db->exec('ROLLBACK');
+                return false;
+            }
+        }
+        $acquire = $db->prepare(
+            "UPDATE facebook_crawler_profiles
+             SET active_task_id = :task_id, updated_at = :now
+             WHERE id = :id AND profile_id = :profile_id AND owner_member_id = :owner_member_id
+               AND state = 'ready' AND deleted_at IS NULL AND active_task_id IS NULL
+               AND login_secret_hash IS NULL AND login_container_name IS NULL
+               AND login_port IS NULL AND login_expires_at IS NULL"
+        );
+        $acquire->execute([
+            ':task_id' => $taskId,
+            ':now' => hub_now(),
+            ':id' => (int)$profile['id'],
+            ':profile_id' => $profileId,
+            ':owner_member_id' => $ownerMemberId,
+        ]);
+        if ($acquire->rowCount() !== 1) {
+            $db->exec('ROLLBACK');
+            return false;
+        }
+        $profile['active_task_id'] = $taskId;
+        $db->exec('COMMIT');
+
+        return $profile;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+}
+
+function hub_facebook_profile_release_for_task(PDO $db, string $profileId, int $taskId): bool
+{
+    if ($taskId < 1 || preg_match('/\Afbp_[a-f0-9]{48}\z/', $profileId) !== 1) {
+        return false;
+    }
+    $stmt = $db->prepare(
+        'UPDATE facebook_crawler_profiles
+         SET active_task_id = NULL, updated_at = :now
+         WHERE profile_id = :profile_id AND active_task_id = :task_id AND deleted_at IS NULL'
+    );
+    $stmt->execute([':now' => hub_now(), ':profile_id' => $profileId, ':task_id' => $taskId]);
+
+    return $stmt->rowCount() === 1;
+}
+
 function hub_facebook_profile_create(PDO $db, int $ownerMemberId, string $displayName): array
 {
     $displayName = trim($displayName);

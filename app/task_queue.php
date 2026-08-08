@@ -37,6 +37,7 @@ function hub_task_status_message(string $status, ?string $waitingReason = null):
             'resident_service_unavailable', 'resident_unknown' => 'Waiting for the resident GPU service to become ready.',
             default => 'Waiting for GPU capacity.',
         },
+        'waiting_profile' => 'Waiting for the managed Facebook profile.',
         'running' => 'Processing.',
         'success', 'succeeded', 'completed' => 'Completed.',
         'failed' => 'Failed.',
@@ -87,13 +88,20 @@ function hub_task_waiting_detail_json(array $detail): string
 
 function hub_task_waiting_status_fields(array $task, ?int $now = null): array
 {
-    if (($task['status'] ?? null) !== 'waiting_gpu') {
+    $status = (string)($task['status'] ?? '');
+    if (!in_array($status, ['waiting_gpu', 'waiting_profile'], true)) {
         return [];
+    }
+    $nextAttempt = strtotime((string)($task['next_attempt_at'] ?? ''));
+    $now ??= time();
+    if ($status === 'waiting_profile') {
+        return [
+            'waiting_reason' => (string)($task['waiting_reason'] ?? '') === 'profile_busy' ? 'profile_busy' : 'profile_unavailable',
+            'retry_after_seconds' => $nextAttempt === false ? 0 : max(0, $nextAttempt - $now),
+        ];
     }
     $detail = json_decode((string)($task['waiting_detail_json'] ?? ''), true);
     $detail = hub_task_waiting_detail_snapshot(is_array($detail) ? $detail : []);
-    $nextAttempt = strtotime((string)($task['next_attempt_at'] ?? ''));
-    $now ??= time();
 
     return [
         'waiting_reason' => preg_match('/\A[a-z][a-z0-9_]{0,63}\z/', (string)($task['waiting_reason'] ?? '')) === 1
@@ -621,6 +629,160 @@ function hub_promote_due_waiting_gpu_task(PDO $db): bool
     }
 }
 
+function hub_facebook_wait_for_profile(PDO $db, int $taskId, array $run, int $backoffSeconds = 5): bool
+{
+    if ($db->inTransaction()) {
+        throw new LogicException('waiting_profile_transaction_required');
+    }
+    $runtime = hub_runtime_gpu_runtime_identity($run);
+    $now = hub_now();
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        if (!hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId)) {
+            $db->exec('ROLLBACK');
+            return false;
+        }
+        $runStmt = $db->prepare(
+            "UPDATE runtime_runs
+             SET state = 'waiting_profile', worker_id = NULL, lease_token = NULL,
+                 lease_expires_at = NULL, heartbeat_at = :now, error_code = NULL
+             WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
+               AND task_id = :task_id AND state IN ('claimed', 'running')
+               AND container_id IS NULL"
+        );
+        $runStmt->execute([
+            ':now' => $now,
+            ':run_id' => $runtime['run_id'],
+            ':worker_id' => $runtime['worker_id'],
+            ':lease_token' => $runtime['lease_token'],
+            ':task_id' => $taskId,
+        ]);
+        $taskStmt = $db->prepare(
+            "UPDATE tasks
+             SET status = 'waiting_profile', waiting_reason = 'profile_busy', next_attempt_at = :next_attempt_at,
+                 waiting_detail_json = NULL, lock_token = NULL, updated_at = :now
+             WHERE id = :id AND task_type = 'pack_job' AND status = 'running'"
+        );
+        $taskStmt->execute([
+            ':next_attempt_at' => hub_runtime_lease_until(max(1, $backoffSeconds)),
+            ':now' => $now,
+            ':id' => $taskId,
+        ]);
+        if ($runStmt->rowCount() !== 1 || $taskStmt->rowCount() !== 1) {
+            $db->exec('ROLLBACK');
+            return false;
+        }
+        $db->exec('COMMIT');
+        return true;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+}
+
+function hub_promote_due_waiting_profile_task(PDO $db): bool
+{
+    if ($db->inTransaction()) {
+        throw new LogicException('waiting_profile_promotion_transaction_required');
+    }
+    $now = hub_now();
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $candidates = $db->prepare(
+            "SELECT t.*, r.id AS runtime_id
+             FROM tasks t
+             JOIN runtime_runs r ON r.task_id = t.id
+             WHERE t.task_type = 'pack_job' AND t.status = 'waiting_profile'
+               AND t.lock_token IS NULL AND t.next_attempt_at IS NOT NULL AND t.next_attempt_at <= :now
+               AND r.state = 'waiting_profile' AND r.worker_id IS NULL AND r.lease_token IS NULL
+               AND r.container_id IS NULL AND r.lease_expires_at IS NULL
+             ORDER BY t.next_attempt_at ASC, t.id ASC
+             LIMIT 30"
+        );
+        $candidates->execute([':now' => $now]);
+        $selected = null;
+        foreach ($candidates->fetchAll() as $candidate) {
+            $candidate['input'] = json_decode((string)($candidate['input_json'] ?? ''), true) ?: [];
+            try {
+                $profileId = hub_facebook_task_profile_id($candidate);
+            } catch (Throwable) {
+                $profileId = null;
+            }
+            if ($profileId === null) {
+                $selected = $candidate;
+                break;
+            }
+            $profileStmt = $db->prepare(
+                'SELECT id, active_task_id FROM facebook_crawler_profiles
+                 WHERE profile_id = :profile_id AND owner_member_id = :owner_member_id
+                   AND state = :state AND deleted_at IS NULL LIMIT 1'
+            );
+            $profileStmt->execute([
+                ':profile_id' => $profileId,
+                ':owner_member_id' => (int)$candidate['owner_member_id'],
+                ':state' => 'ready',
+            ]);
+            $profile = $profileStmt->fetch();
+            if (!is_array($profile)) {
+                $selected = $candidate;
+                break;
+            }
+            $activeTaskId = (int)($profile['active_task_id'] ?? 0);
+            if ($activeTaskId > 0) {
+                $holder = $db->prepare('SELECT status FROM tasks WHERE id = :id');
+                $holder->execute([':id' => $activeTaskId]);
+                $holderStatus = $holder->fetchColumn();
+                if (is_string($holderStatus) && !in_array($holderStatus, hub_retention_terminal_statuses(), true)) {
+                    continue;
+                }
+                $clear = $db->prepare(
+                    'UPDATE facebook_crawler_profiles SET active_task_id = NULL, updated_at = :now
+                     WHERE id = :id AND active_task_id = :active_task_id'
+                );
+                $clear->execute([':now' => $now, ':id' => (int)$profile['id'], ':active_task_id' => $activeTaskId]);
+                if ($clear->rowCount() !== 1) {
+                    continue;
+                }
+            }
+            $selected = $candidate;
+            break;
+        }
+        if (!is_array($selected)) {
+            $db->exec('COMMIT');
+            return false;
+        }
+        $taskStmt = $db->prepare(
+            "UPDATE tasks
+             SET status = 'queued', waiting_reason = NULL, next_attempt_at = NULL, waiting_detail_json = NULL,
+                 lock_token = NULL, updated_at = :now
+             WHERE id = :id AND task_type = 'pack_job' AND status = 'waiting_profile'
+               AND lock_token IS NULL AND next_attempt_at IS NOT NULL AND next_attempt_at <= :now"
+        );
+        $taskStmt->execute([':now' => $now, ':id' => (int)$selected['id']]);
+        $runStmt = $db->prepare(
+            "UPDATE runtime_runs
+             SET state = 'queued', worker_id = NULL, lease_token = NULL, lease_expires_at = NULL,
+                 heartbeat_at = NULL, claimed_at = NULL
+             WHERE id = :id AND task_id = :task_id AND state = 'waiting_profile'
+               AND worker_id IS NULL AND lease_token IS NULL AND container_id IS NULL"
+        );
+        $runStmt->execute([':id' => (int)$selected['runtime_id'], ':task_id' => (int)$selected['id']]);
+        if ($taskStmt->rowCount() !== 1 || $runStmt->rowCount() !== 1) {
+            $db->exec('ROLLBACK');
+            return false;
+        }
+        $db->exec('COMMIT');
+        return true;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+}
+
 function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callable $candidateFilter = null): ?array
 {
     $taskTypes = $supportedTaskTypes ?? hub_allowed_task_types();
@@ -635,6 +797,7 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callab
     }
 
     hub_promote_due_waiting_gpu_task($db);
+    hub_promote_due_waiting_profile_task($db);
 
     $db->beginTransaction();
     try {
@@ -1038,8 +1201,8 @@ function hub_cancel_task(PDO $db, int $taskId): bool
         }
     }
 
-    if ($task && ($task['task_type'] ?? '') === 'pack_job' && in_array(($task['status'] ?? ''), ['queued', 'waiting_gpu'], true)) {
-        // Neither queued nor waiting-GPU Pack jobs started a runner, container, or GPU PID.
+    if ($task && ($task['task_type'] ?? '') === 'pack_job' && in_array(($task['status'] ?? ''), ['queued', 'waiting_gpu', 'waiting_profile'], true)) {
+        // Queued and waiting Pack jobs have not started a runner, container, or GPU PID.
         $noWorkCleanup = ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true];
         if (!hub_pack_job_cleanup_attested($noWorkCleanup)) {
             throw new LogicException('pack_job_cleanup_incomplete');
@@ -1050,15 +1213,17 @@ function hub_cancel_task(PDO $db, int $taskId): bool
         $db->beginTransaction();
         try {
             $now = hub_now();
-            if (($task['status'] ?? '') === 'waiting_gpu') {
+            if (in_array(($task['status'] ?? ''), ['waiting_gpu', 'waiting_profile'], true)) {
+                $waitingState = (string)$task['status'];
                 $run = $db->prepare(
                     "UPDATE runtime_runs
                      SET state = 'cancelled', error_code = 'cancelled', cancelled_at = :now, finished_at = :now,
                          lease_expires_at = NULL
-                     WHERE task_id = :task_id AND state = 'waiting_gpu'
-                       AND container_id IS NULL AND lease_expires_at IS NULL"
+                     WHERE task_id = :task_id AND state = :waiting_state
+                       AND container_id IS NULL AND lease_expires_at IS NULL
+                       AND (:waiting_state <> 'waiting_profile' OR (worker_id IS NULL AND lease_token IS NULL))"
                 );
-                $run->execute([':now' => $now, ':task_id' => $taskId]);
+                $run->execute([':now' => $now, ':task_id' => $taskId, ':waiting_state' => $waitingState]);
                 if ($run->rowCount() !== 1) {
                     $db->commit();
                     return false;
@@ -1069,7 +1234,7 @@ function hub_cancel_task(PDO $db, int $taskId): bool
                  SET status = 'cancelled', progress = 100, error_code = 'cancelled', error_message = 'cancelled',
                      finished_at = :finished_at, updated_at = :updated_at, waiting_reason = NULL, next_attempt_at = NULL,
                      waiting_detail_json = NULL
-                 WHERE id = :id AND task_type = 'pack_job' AND status IN ('queued', 'waiting_gpu') AND lock_token IS NULL"
+                 WHERE id = :id AND task_type = 'pack_job' AND status IN ('queued', 'waiting_gpu', 'waiting_profile') AND lock_token IS NULL"
             );
             $stmt->execute([':finished_at' => $now, ':updated_at' => $now, ':id' => $taskId]);
             if ($stmt->rowCount() !== 1) {
@@ -1295,7 +1460,7 @@ function hub_retention_task_is_busy(PDO $db, int $taskId): bool
     $terminal = "'success', 'failed', 'cancelled', 'timed_out', 'timeout'";
     $checks = [
         "SELECT 1 FROM tasks WHERE id = :task_id AND status NOT IN ({$terminal})",
-        "SELECT 1 FROM runtime_runs WHERE task_id = :task_id AND state IN ('claimed', 'running', 'waiting_gpu')",
+        "SELECT 1 FROM runtime_runs WHERE task_id = :task_id AND state IN ('claimed', 'running', 'waiting_gpu', 'waiting_profile')",
         "SELECT 1 FROM tasks WHERE retry_of_task_id = :task_id AND status NOT IN ({$terminal})",
         "SELECT 1 FROM runtime_resource_leases l JOIN runtime_runs r ON r.run_id = l.runtime_run_id WHERE r.task_id = :task_id AND l.state = 'leased'",
     ];
