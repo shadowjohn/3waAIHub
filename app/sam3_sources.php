@@ -292,6 +292,10 @@ function hub_sam3_capture_command(array $source, string $destination): array
 
 function hub_sam3_run_capture_command(array $command): bool
 {
+    if (!hub_valid_argv($command)) {
+        return false;
+    }
+
     $process = @proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, null, ['bypass_shell' => true]);
     if (!is_resource($process)) {
         return false;

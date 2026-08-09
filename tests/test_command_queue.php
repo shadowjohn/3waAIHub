@@ -20,6 +20,8 @@ hub_test('command runner bypasses cmd.exe on Windows', function (): void {
 hub_test('command runner validates argv and Ollama model references before process launch', function (): void {
     hub_test_assert(hub_valid_argv(['docker', 'system', 'df']), 'fixed argv command must be accepted');
     hub_test_assert(!hub_valid_argv(['docker', "system\0df"]), 'NUL argv argument must be rejected');
+    hub_test_assert(!hub_valid_argv(['docker', "system\r\ndf"]), 'control characters must be rejected from argv arguments');
+    hub_test_assert(!hub_valid_argv(['cmd.exe', '/c', 'whoami']), 'unapproved executable must be rejected before process launch');
     hub_test_assert(!hub_valid_argv(['docker' => 'system']), 'non-list argv command must be rejected');
     hub_test_assert(hub_ollama_model_reference('translategemma:12b-it-q4_K_M') === 'translategemma:12b-it-q4_K_M', 'valid Ollama model reference changed');
     hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_reference('--config=/tmp/evil')), 'Ollama option prefix must be rejected');

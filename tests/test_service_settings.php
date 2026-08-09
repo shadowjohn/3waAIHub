@@ -10,10 +10,19 @@ function hub_test_service_settings_request(int $serviceId, string $lang): array
         . '$_GET = ' . var_export(['service_id' => $serviceId], true) . ';'
         . 'require ' . var_export(HUB_ROOT . '/admin/service_settings.php', true) . ';';
 
-    return hub_run_command([PHP_BINARY, '-r', $script], 30, [
-        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
-        'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
-    ]);
+    $path = tempnam(sys_get_temp_dir(), '3waaihub_service_settings_');
+    if ($path === false || file_put_contents($path, "<?php\n" . $script, LOCK_EX) === false) {
+        throw new RuntimeException('Cannot create service settings request fixture.');
+    }
+
+    try {
+        return hub_run_command([PHP_BINARY, $path], 30, [
+            'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+            'AIHUB_TEST_DATA_DIR' => (string)getenv('AIHUB_TEST_DATA_DIR'),
+        ]);
+    } finally {
+        @unlink($path);
+    }
 }
 
 hub_test('service runtime lock accepts a root-created read-only lock file', function (): void {

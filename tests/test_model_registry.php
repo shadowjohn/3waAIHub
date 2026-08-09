@@ -101,6 +101,14 @@ hub_test('model registry creates requested directories only under the physical m
     hub_test_assert(hub_storage_path_is_within($target, $root), 'model directory must remain under models root');
 });
 
+hub_test('YOLO registry slugs cannot introduce path components', function (): void {
+    $slug = hub_yolo_slug('../Vendor\\..\\Weights');
+
+    hub_test_assert($slug === 'vendor-weights', 'YOLO registry slug must collapse separators and traversal syntax');
+    hub_test_assert(preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/D', $slug) === 1, 'YOLO registry slug must contain only one safe path segment');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_yolo_slug('...')), 'empty YOLO registry slug must be rejected');
+});
+
 hub_test('model registry refuses model directories beneath a symlinked ancestor', function (): void {
     hub_test_require_symlink_fixture('Model registry directory creation requires symlink fixtures.');
     $root = sys_get_temp_dir() . '/3waaihub_model_symlink_root_' . bin2hex(random_bytes(4));

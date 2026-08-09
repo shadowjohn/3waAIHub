@@ -69,8 +69,26 @@ function hub_valid_argv(array $command): bool
     if ($command === [] || !array_is_list($command)) {
         return false;
     }
+
+    $executable = strtolower(basename(str_replace('\\', '/', (string)($command[0] ?? ''))));
+    if (!in_array($executable, [
+        'bash',
+        'curl',
+        'docker',
+        'ffmpeg',
+        'ffprobe',
+        'git',
+        'nvidia-smi',
+        'php',
+        'php.exe',
+        'powershell.exe',
+        'wsl.exe',
+    ], true)) {
+        return false;
+    }
+
     foreach ($command as $argument) {
-        if (!is_string($argument) || $argument === '' || str_contains($argument, "\0")) {
+        if (!is_string($argument) || $argument === '' || strlen($argument) > 65535 || preg_match('/[\x00-\x1F\x7F]/', $argument) === 1) {
             return false;
         }
     }

@@ -34,6 +34,17 @@ No category-wide suppression or rule disablement is included.
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
             <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>0B86FCB2-0579-4CBF-8C9C-2F79FA84902A</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_yolo_slug</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
                 <RuleID>9A5FD8E2-52D7-4A13-A64E-5C4A0D8D97B4</RuleID>
                 <TaintFlags>+VALIDATED_COMMAND_INJECTION</TaintFlags>
                 <FunctionIdentifier>
