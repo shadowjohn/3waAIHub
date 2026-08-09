@@ -2937,18 +2937,31 @@ function hub_gateway_public_success_body(array $response): string
 {
     $status = (int)($response['status'] ?? 0);
     $headers = hub_gateway_safe_response_headers(is_array($response['headers'] ?? null) ? $response['headers'] : []);
-    $hasContentType = false;
+    $contentType = null;
     foreach ($headers as $header) {
         if (str_starts_with($header, 'Content-Type: ')) {
-            $hasContentType = true;
+            $contentType = substr($header, strlen('Content-Type: '));
             break;
         }
     }
-    if ($status < 200 || $status >= 400 || !$hasContentType || !is_string($response['body'] ?? null)) {
+    if ($status < 200 || $status >= 400 || $contentType === null || !is_string($response['body'] ?? null)) {
         return '';
     }
 
-    return $response['body'];
+    $body = $response['body'];
+    $mimeType = strtolower((string)strtok($contentType, ';'));
+    if (!in_array($mimeType, ['application/json', 'application/geo+json', 'application/problem+json'], true)) {
+        return $body;
+    }
+
+    // JSON 回應重新編碼，避免 Pack 或任務資料中的 HTML 字元直接進入同源 API 回應。
+    try {
+        $decoded = json_decode($body, true, 64, JSON_THROW_ON_ERROR);
+    } catch (JsonException) {
+        return '';
+    }
+
+    return hub_json_encode($decoded, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '';
 }
 
 function hub_gateway_finish(PDO $db, ?array $service, string $mode, array $response, float $started, string $requestId, array $authContext = [], array $requestContext = []): array

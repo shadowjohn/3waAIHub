@@ -125,6 +125,32 @@ hub_test('gateway public success body requires a validated data response contrac
         ]) === '',
         'successful Pack payload without a validated content type must not be emitted'
     );
+    $jsonBody = hub_gateway_public_success_body([
+        'status' => 200,
+        'headers' => ['Content-Type: application/json; charset=utf-8'],
+        'body' => '{"message":"</script><img src=x onerror=alert(1)>"}',
+    ]);
+    hub_test_assert(!str_contains($jsonBody, '<'), 'successful JSON Pack payload must not emit HTML tag delimiters');
+    hub_test_assert(
+        json_decode($jsonBody, true) === ['message' => '</script><img src=x onerror=alert(1)>'],
+        'successful JSON Pack payload must preserve decoded values'
+    );
+    hub_test_assert(
+        hub_gateway_public_success_body([
+            'status' => 200,
+            'headers' => ['Content-Type: application/json'],
+            'body' => '{not-json}',
+        ]) === '',
+        'malformed Pack JSON must not be emitted as a successful API body'
+    );
+    hub_test_assert(
+        hub_gateway_public_success_body([
+            'status' => 200,
+            'headers' => ['Content-Type: image/png'],
+            'body' => "\x89PNG\x00\x01",
+        ]) === "\x89PNG\x00\x01",
+        'validated binary Pack payload must remain byte-for-byte available'
+    );
 });
 
 hub_test('test database reset clears stale request input', function (): void {
