@@ -52,8 +52,12 @@ hub_test('Facebook crawler profiles are member-owned and node-private', function
     hub_test_assert(count(hub_facebook_profiles_for_member($db, $memberA)) === 1, 'owner list must include profile');
     hub_test_assert(hub_facebook_profiles_for_member($db, $memberB) === [], 'other member list must exclude profile');
     hub_test_assert(is_file($path), 'storage-state file must exist');
-    hub_test_assert((fileperms(dirname($path)) & 0777) === 0700, 'profile directory must be private');
-    hub_test_assert((fileperms($path) & 0777) === 0600, 'storage-state file must be private');
+    if (PHP_OS_FAMILY === 'Windows') {
+        hub_test_assert(!is_link(dirname($path)) && !is_link($path), 'Windows profile storage must reject link paths');
+    } else {
+        hub_test_assert((fileperms(dirname($path)) & 0777) === 0700, 'profile directory must be private');
+        hub_test_assert((fileperms($path) & 0777) === 0600, 'storage-state file must be private');
+    }
 
     foreach ([$profile, hub_facebook_profile_for_member($db, $profile['profile_id'], $memberA)] as $publicProfile) {
         $json = json_encode($publicProfile, JSON_THROW_ON_ERROR);

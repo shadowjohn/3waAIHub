@@ -668,7 +668,7 @@ function hub_facebook_login_state_secure(array $profile): bool
             || !is_array($pathStat)
             || $real === false
             || dirname($real) !== realpath($dir)
-            || (((int)$pathStat['mode'] & 0777) !== 0600)
+            || (PHP_OS_FAMILY !== 'Windows' && (((int)$pathStat['mode'] & 0777) !== 0600))
             || (int)($openedStat['size'] ?? HUB_FACEBOOK_LOGIN_MAX_FRAME + 1) > HUB_FACEBOOK_LOGIN_MAX_FRAME
             || !hub_facebook_profile_file_stats_match($openedStat, $pathStat)
         ) {

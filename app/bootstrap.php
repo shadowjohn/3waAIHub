@@ -94,6 +94,10 @@ function hub_ensure_runtime_dirs(): void
     ) {
         throw new RuntimeException('Cannot secure Facebook crawler profile directory.');
     }
+    // NTFS ACLs handle Windows privacy; PHP cannot verify POSIX 0700 there.
+    if (PHP_OS_FAMILY === 'Windows') {
+        return;
+    }
     clearstatcache(true, $facebookProfileParent);
     clearstatcache(true, $facebookProfileRoot);
     $facebookProfileMode = @fileperms($facebookProfileRoot);

@@ -13,7 +13,9 @@ function hub_facebook_profile_root(): string
     ) {
         throw new RuntimeException('profile_storage_unavailable');
     }
-    @chmod($root, 0700);
+    if (PHP_OS_FAMILY !== 'Windows') {
+        @chmod($root, 0700);
+    }
     clearstatcache(true, $root);
     $dataRoot = realpath(HUB_DATA_DIR);
     $parentReal = realpath($parent);
@@ -25,7 +27,7 @@ function hub_facebook_profile_root(): string
         || $rootReal === false
         || !is_array($stat)
         || (((int)$stat['mode'] & 0170000) !== 0040000)
-        || (((int)$stat['mode'] & 0777) !== 0700)
+        || (PHP_OS_FAMILY !== 'Windows' && (((int)$stat['mode'] & 0777) !== 0700))
         || dirname($rootReal) !== $parentReal
         || !str_starts_with($parentReal, rtrim($dataRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR)
     ) {
@@ -58,7 +60,9 @@ function hub_facebook_profile_directory(string $profileId, bool $create = false)
         if (file_exists($dir) || is_link($dir) || !mkdir($dir, 0700)) {
             throw new RuntimeException('profile_storage_unavailable');
         }
-        @chmod($dir, 0700);
+        if (PHP_OS_FAMILY !== 'Windows') {
+            @chmod($dir, 0700);
+        }
     }
 
     clearstatcache(true, $dir);
@@ -71,7 +75,7 @@ function hub_facebook_profile_directory(string $profileId, bool $create = false)
         || $dirReal === false
         || !is_array($stat)
         || (((int)$stat['mode'] & 0170000) !== 0040000)
-        || (((int)$stat['mode'] & 0777) !== 0700)
+        || (PHP_OS_FAMILY !== 'Windows' && (((int)$stat['mode'] & 0777) !== 0700))
         || dirname($dirReal) !== $rootReal
     ) {
         throw new RuntimeException('profile_storage_unavailable');
@@ -101,7 +105,7 @@ function hub_facebook_profile_initialize_storage(string $profileId): void
         $payload = "{}\n";
         if (
             !is_resource($handle)
-            || !@chmod($path, 0600)
+            || (PHP_OS_FAMILY !== 'Windows' && !@chmod($path, 0600))
             || fwrite($handle, $payload) !== strlen($payload)
             || !fflush($handle)
             || (function_exists('fsync') && !fsync($handle))
@@ -116,7 +120,7 @@ function hub_facebook_profile_initialize_storage(string $profileId): void
             || dirname($real) !== realpath($dir)
             || !hub_facebook_profile_file_stats_match(fstat($handle), $stat)
             || !is_array($stat)
-            || (((int)$stat['mode'] & 0777) !== 0600)
+            || (PHP_OS_FAMILY !== 'Windows' && (((int)$stat['mode'] & 0777) !== 0600))
         ) {
             throw new RuntimeException('profile_storage_unavailable');
         }
@@ -866,7 +870,7 @@ function hub_facebook_profile_delete_storage(array $profile): void
         || $dirReal === false
         || dirname($pathReal) !== $dirReal
         || !is_array($pathStat)
-        || (((int)$pathStat['mode'] & 0777) !== 0600)
+        || (PHP_OS_FAMILY !== 'Windows' && (((int)$pathStat['mode'] & 0777) !== 0600))
         || (int)($pathStat['nlink'] ?? 0) !== 1
         || (((int)$pathStat['mode'] & 0170000) !== 0100000)
     ) {
