@@ -89,7 +89,7 @@ hub_test('YOLO and SAM3 packs have runnable adapter files', function (): void {
             hub_test_assert(str_contains($app, 'dependency_available'), 'sam3 health must report dependency availability');
             hub_test_assert(str_contains($app, 'model_not_present'), 'sam3 health must warn when model is missing');
             hub_test_assert(!str_contains($app, 'runtime_not_ready'), 'sam3 L5 real inference must not return runtime_not_ready');
-            foreach (['run_sam3', 'load_predictor', 'segment_single_image', 'release_predictor', '_SAM_LOCK'] as $needle) {
+            foreach (['run_sam3', 'resident_sam3_loader', 'segment_single_image', '_MODEL_CACHE', '_SAM_LOCK'] as $needle) {
                 hub_test_assert(str_contains($app, $needle), 'sam3 L5 app missing real inference path: ' . $needle);
             }
             foreach (['ultralytics', 'SAM3SemanticPredictor', 'SAM(', '.predict('] as $needle) {
@@ -219,7 +219,7 @@ hub_test('YOLO and SAM3 service instances generate GPU model mounts', function (
                 'SAM3_MAX_UPLOAD_MB=512',
                 'SAM3_DEVICE=cuda',
                 'SAM3_EXECUTION_MODE=resident',
-                'SAM3_RESIDENT_MIN_FREE_VRAM_MB=16000',
+                'SAM3_RESIDENT_MIN_FREE_VRAM_MB=4096',
                 'SAM3_INTERNAL_JOB_TOKEN=',
                 'HF_HOME=/cache/sam3/huggingface',
                 'TORCH_HOME=/cache/sam3/torch',

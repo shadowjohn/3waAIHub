@@ -14,7 +14,9 @@ hub_test('SAM3 Pack declares the fixed SAM 3.1 runtime and job contracts', funct
         $assetMount = ($job['runner']['asset_mounts'][0] ?? null);
         hub_test_assert(is_array($assetMount), 'SAM3 job must declare a model mount');
         hub_test_assert(in_array('sam3.1_multiplex.pt', $assetMount['required_paths'] ?? [], true), 'SAM3.1 checkpoint must be required');
+        hub_test_assert(($job['runner']['required_vram_mb'] ?? 0) === 8192, 'SAM3.1 cold starts must fit the available GPU headroom');
     }
+    hub_test_assert(($manifest['resources']['min_vram_mb'] ?? 0) === 8192, 'SAM3 service admission must allow the measured cold-start footprint');
     $imagePromptEnum = $jobs[0]['input']['request_schema']['prompt_type']['enum'] ?? [];
     hub_test_assert($imagePromptEnum === ['auto', 'points', 'boxes', 'text'], 'Async image jobs must not advertise a guidance upload they cannot receive');
 });
@@ -38,6 +40,7 @@ hub_test('SAM3 service provisions an internal token and an offline model mount',
     $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/sam3:/models/sam3:ro'), 'SAM3 model mount must be read-only');
     hub_test_assert(str_contains($env, 'HF_HUB_OFFLINE=1'), 'SAM3 runtime must disable model downloads');
+    hub_test_assert(str_contains($env, 'SAM3_RESIDENT_MIN_FREE_VRAM_MB=4096'), 'SAM3 runtime must keep its measured 4 GB resident safety margin');
     hub_test_assert(str_contains($env, 'SAM3_INTERNAL_JOB_TOKEN='), 'SAM3 runtime must receive its internal token');
     hub_test_assert(!str_contains($env, 'SAM3_CHECKPOINT='), 'SAM3 runtime must not accept an arbitrary checkpoint');
 });

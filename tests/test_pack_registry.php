@@ -222,13 +222,12 @@ hub_test('catalog and required packs are readable', function (): void {
     hub_test_assert(($sam3Mounts['cache'] ?? '') === '/cache/sam3', 'SAM3 cache mount mismatch');
     hub_test_assert(($sam3Mounts['service_data'] ?? '') === '/data/service', 'SAM3 service data mount mismatch');
     $sam3Schema = hub_get_pack_settings_schema('sam3');
-    foreach (['SAM3_CHECKPOINT', 'SAM3_MODEL_ID', 'SAM3_DEVICE', 'SAM3_MAX_UPLOAD_MB', 'SAM3_REAL_INFERENCE'] as $key) {
+    foreach (['SAM3_DEVICE', 'SAM3_MAX_UPLOAD_MB', 'SAM3_REAL_INFERENCE', 'SAM3_EXECUTION_MODE', 'SAM3_RESIDENT_MIN_FREE_VRAM_MB', 'SAM3_INTERNAL_JOB_TOKEN'] as $key) {
         hub_test_assert(isset($sam3Schema[$key]), 'SAM3 settings_schema missing ' . $key);
     }
-    hub_test_assert(($sam3Schema['SAM3_CHECKPOINT']['model_selector']['root_subdir'] ?? '') === 'sam3', 'SAM3_CHECKPOINT selector missing');
-    foreach (['.pt', '.pth', '.safetensors', '.ckpt'] as $extension) {
-        hub_test_assert(in_array($extension, $sam3Schema['SAM3_CHECKPOINT']['model_selector']['extensions'] ?? [], true), 'SAM3_CHECKPOINT selector missing ' . $extension);
-    }
+    hub_test_assert(!isset($sam3Schema['SAM3_CHECKPOINT']) && !isset($sam3Schema['SAM3_MODEL_ID']), 'SAM3 must use the fixed SAM3.1 checkpoint contract');
+    hub_test_assert(($sam3Schema['SAM3_EXECUTION_MODE']['default'] ?? '') === 'resident', 'SAM3 resident execution mode mismatch');
+    hub_test_assert(($sam3Schema['SAM3_RESIDENT_MIN_FREE_VRAM_MB']['default'] ?? '') === '4096', 'SAM3 resident VRAM threshold mismatch');
 
     $translateSchema = hub_get_pack_settings_schema('translate-gemma12b');
     hub_test_assert(($translateSchema['OLLAMA_MODEL']['model_selector']['type'] ?? '') === 'ollama_tag', 'OLLAMA_MODEL selector missing');

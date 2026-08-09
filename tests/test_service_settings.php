@@ -64,6 +64,34 @@ hub_test('service settings defaults are created from pack schema and write env',
     hub_test_assert(!str_contains($env, 'UNDECLARED_ENV='), 'env must not include arbitrary keys');
 });
 
+hub_test('service settings remove keys that the current pack schema no longer declares', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'ocr-ppocrv5', [
+        'service_key' => 'ocr-settings-prune',
+        'mode' => 'ocr_settings_prune',
+    ])['service'];
+    $db->prepare(
+        'INSERT INTO service_settings
+            (service_id, key, value, value_type, is_secret, restart_required, created_at, updated_at)
+         VALUES
+            (:service_id, :key, :value, :value_type, 0, 0, :created_at, :updated_at)'
+    )->execute([
+        ':service_id' => (int)$service['id'],
+        ':key' => 'LEGACY_REMOVED_SETTING',
+        ':value' => 'stale',
+        ':value_type' => 'text',
+        ':created_at' => hub_now(),
+        ':updated_at' => hub_now(),
+    ]);
+
+    hub_ensure_service_settings($db, $service);
+    $settings = hub_list_service_settings($db, (int)$service['id']);
+    hub_test_assert(!isset($settings['LEGACY_REMOVED_SETTING']), 'removed pack settings must not persist after schema synchronization');
+
+    $env = hub_write_service_env($db, $service);
+    hub_test_assert(!str_contains((string)file_get_contents($env), 'LEGACY_REMOVED_SETTING='), 'removed pack settings must not be written to runtime env');
+});
+
 hub_test('VoxCPM2 settings default to isolated execution and preserve generated tokens', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'tts-voxcpm2', [

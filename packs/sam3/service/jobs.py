@@ -9,7 +9,7 @@ import sys
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 from PIL import Image, UnidentifiedImageError
@@ -111,18 +111,18 @@ def _number(value: object) -> float:
     return number
 
 
-def run_job(job: str, workspace: Path, input_dir: Path, output_dir: Path) -> dict[str, Any]:
+def run_job(job: str, workspace: Path, input_dir: Path, output_dir: Path, predictor_loader: Callable[[], Any] | None = None) -> dict[str, Any]:
     workspace, input_dir, output_dir = _workspace_paths(workspace, input_dir, output_dir)
     if job == "segment_image":
-        return run_image_job(workspace, input_dir, output_dir)
+        return run_image_job(workspace, input_dir, output_dir, predictor_loader=predictor_loader)
     if job == "track_video":
-        return run_video_job(input_dir, output_dir)
+        return run_video_job(input_dir, output_dir, predictor_loader=predictor_loader)
     if job == "monitor":
-        return run_monitor_job(input_dir, output_dir)
+        return run_monitor_job(input_dir, output_dir, predictor_loader=predictor_loader)
     raise RuntimeError("invalid_job")
 
 
-def run_image_job(workspace: Path, input_dir: Path, output_dir: Path) -> dict[str, Any]:
+def run_image_job(workspace: Path, input_dir: Path, output_dir: Path, predictor_loader: Callable[[], Any] | None = None) -> dict[str, Any]:
     request = _read_request(input_dir)
     source = _source(input_dir)
     prompt_type = request.get("prompt_type", "auto")
@@ -141,8 +141,9 @@ def run_image_job(workspace: Path, input_dir: Path, output_dir: Path) -> dict[st
     points, labels, boxes, text_prompts = _image_prompt(request, prompt_type)
     started = time.monotonic()
     predictor = None
+    owns_predictor = predictor_loader is None
     try:
-        predictor = load_predictor(_checkpoint(), "cuda")
+        predictor = predictor_loader() if predictor_loader is not None else load_predictor(_checkpoint(), "cuda")
         items = segment_single_image(
             predictor,
             decoded,
@@ -160,7 +161,7 @@ def run_image_job(workspace: Path, input_dir: Path, output_dir: Path) -> dict[st
     except Exception as exc:
         raise RuntimeError("inference_failed") from exc
     finally:
-        if predictor is not None:
+        if owns_predictor and predictor is not None:
             release_predictor(predictor)
     masks = serialize_track_record(0, "image", items)["masks"]
     _write_json(output_dir / "sam3_masks.json", {"masks": masks})
@@ -171,7 +172,7 @@ def run_image_job(workspace: Path, input_dir: Path, output_dir: Path) -> dict[st
     return report
 
 
-def run_video_job(input_dir: Path, output_dir: Path, request: dict[str, Any] | None = None) -> dict[str, Any]:
+def run_video_job(input_dir: Path, output_dir: Path, request: dict[str, Any] | None = None, predictor_loader: Callable[[], Any] | None = None) -> dict[str, Any]:
     source = _source(input_dir)
     request = _read_request(input_dir) if request is None else request
     include_overlay = request.get("include_overlay", False)
@@ -195,10 +196,11 @@ def run_video_job(input_dir: Path, output_dir: Path, request: dict[str, Any] | N
     prompts = validate_track_prompts(request.get("prompts_json", ""), frame_count)
     started = time.monotonic()
     predictor = None
+    owns_predictor = predictor_loader is None
     records: list[dict[str, Any]] = []
     overlay_items: dict[int, list[dict[str, Any]]] = {}
     try:
-        predictor = load_predictor(_checkpoint(), "cuda")
+        predictor = predictor_loader() if predictor_loader is not None else load_predictor(_checkpoint(), "cuda")
         session = predictor.handle_request({"type": "start_session", "resource_path": str(source)})
         session_id = session.get("session_id") if isinstance(session, dict) else None
         if not isinstance(session_id, str) or not session_id:
@@ -232,7 +234,7 @@ def run_video_job(input_dir: Path, output_dir: Path, request: dict[str, Any] | N
     except Exception as exc:
         raise RuntimeError("inference_failed") from exc
     finally:
-        if predictor is not None:
+        if owns_predictor and predictor is not None:
             release_predictor(predictor)
     _write_jsonl(output_dir / "sam3_tracks.jsonl", records)
     if include_overlay:
@@ -247,7 +249,7 @@ def run_video_job(input_dir: Path, output_dir: Path, request: dict[str, Any] | N
     return report
 
 
-def run_monitor_job(input_dir: Path, output_dir: Path) -> dict[str, Any]:
+def run_monitor_job(input_dir: Path, output_dir: Path, predictor_loader: Callable[[], Any] | None = None) -> dict[str, Any]:
     request = _read_request(input_dir)
     source_id = request.get("source_id")
     if not isinstance(source_id, str) or not re.fullmatch(r"sam3src_[a-f0-9]{32}", source_id):
@@ -255,7 +257,7 @@ def run_monitor_job(input_dir: Path, output_dir: Path) -> dict[str, Any]:
     request = dict(request)
     request.setdefault("clip_seconds", 60)
     request.setdefault("prompts_json", '[{"track_key":"monitor","frame_index":0,"text":"object"}]')
-    report = run_video_job(input_dir, output_dir, request)
+    report = run_video_job(input_dir, output_dir, request, predictor_loader=predictor_loader)
     tracks = output_dir / "sam3_tracks.jsonl"
     events = output_dir / "sam3_monitor_events.jsonl"
     if not tracks.is_file() or tracks.is_symlink() or events.exists():

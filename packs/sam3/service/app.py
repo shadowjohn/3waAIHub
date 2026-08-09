@@ -7,6 +7,7 @@ import secrets
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -18,10 +19,13 @@ from PIL import Image, UnidentifiedImageError
 
 from geometry import polygon_from_mask, polygons_from_mask, rle_from_mask
 from model_smoke import CHECKPOINT_NAME, model_status as verified_model_status
-from sam31 import Sam31Error, load_predictor, release_predictor, segment_single_image
+from sam31 import Sam31Error, load_predictor, segment_single_image
 
 app = FastAPI(title="3waAIHub SAM3")
 _SAM_LOCK = threading.Lock()  # ponytail: one GPU request per service; use job scheduling only if throughput requires it.
+_MODEL_CACHE: dict[str, Any] = {}
+_MODEL_WORK_LOCK = threading.RLock()
+_MODEL_WORK_DEPTH = 0
 _ACTIVE_RESIDENT_JOBS: dict[str, threading.Event] = {}
 _ACTIVE_RESIDENT_JOBS_LOCK = threading.RLock()
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,95}$")
@@ -44,6 +48,17 @@ def runtime_level() -> str:
 
 def env_enabled(value: str | None) -> bool:
     return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+@contextmanager
+def model_work() -> Any:
+    global _MODEL_WORK_DEPTH
+    with _MODEL_WORK_LOCK:
+        _MODEL_WORK_DEPTH += 1
+        try:
+            yield
+        finally:
+            _MODEL_WORK_DEPTH -= 1
 
 
 def configure_sam3_env() -> None:
@@ -249,6 +264,17 @@ def current_checkpoint() -> Path:
     if not model.get("loadable"):
         raise Sam3Error("model_load_failed", "SAM3 checkpoint verification failed.", 503)
     return Path(os.getenv("SAM3_MODEL_DIR", "/models/sam3")) / CHECKPOINT_NAME
+
+
+def resident_sam3_loader() -> Any:
+    configure_sam3_env()
+    checkpoint = current_checkpoint()
+    key = str(checkpoint)
+    predictor = _MODEL_CACHE.get(key)
+    if predictor is None:
+        predictor = load_predictor(checkpoint, effective_device())
+        _MODEL_CACHE[key] = predictor
+    return predictor
 
 
 def effective_device() -> str:
@@ -469,22 +495,21 @@ def run_sam3(data: bytes, width: int, height: int, prompt_type: str, points_json
             raise Sam3Error("invalid_guidance_mask", "guidance_mask PNG is required for prompt_type=guidance_mask.", 400)
 
     started = time.perf_counter()
-    predictor: Any | None = None
     try:
         configure_sam3_env()
         with _SAM_LOCK:
-            predictor = load_predictor(checkpoint, effective_device())
-            results = segment_single_image(
-                predictor,
-                decoded_image(data),
-                prompt_type=prompt_type,
-                points=points,
-                labels=labels,
-                boxes=boxes,
-                text_prompts=text_prompts or None,
-                guidance_bitmap=guidance_bitmap,
-                workspace=Path(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")),
-            )
+            with model_work():
+                results = segment_single_image(
+                    resident_sam3_loader(),
+                    decoded_image(data),
+                    prompt_type=prompt_type,
+                    points=points,
+                    labels=labels,
+                    boxes=boxes,
+                    text_prompts=text_prompts or None,
+                    guidance_bitmap=guidance_bitmap,
+                    workspace=Path(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")),
+                )
     except TimeoutError as exc:
         raise Sam3Error("inference_timeout", "SAM3 inference timed out.", 504) from exc
     except Sam31Error as exc:
@@ -495,10 +520,6 @@ def run_sam3(data: bytes, width: int, height: int, prompt_type: str, points_json
         raise
     except Exception as exc:
         raise Sam3Error("inference_failed", safe_message(exc), 502) from exc
-    finally:
-        if predictor is not None:
-            release_predictor(predictor)
-
     if output_format == "png":
         return {
             "ok": True,
@@ -613,8 +634,9 @@ def internal_error(status: int, code: str) -> JSONResponse:
 def internal_capacity(x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, Any] | JSONResponse:
     if not internal_authorized(x_aihub_internal_token):
         return internal_error(403, "internal_auth_failed")
-    with _ACTIVE_RESIDENT_JOBS_LOCK:
-        return {"model_state": "running" if _ACTIVE_RESIDENT_JOBS else "cold", "active_runs": len(_ACTIVE_RESIDENT_JOBS)}
+    with _ACTIVE_RESIDENT_JOBS_LOCK, _MODEL_WORK_LOCK:
+        state = "running" if _ACTIVE_RESIDENT_JOBS or _MODEL_WORK_DEPTH else "ready" if _MODEL_CACHE else "cold"
+        return {"model_state": state, "active_runs": len(_ACTIVE_RESIDENT_JOBS)}
 
 
 @app.get("/internal/jobs/{run_id}", response_model=None)
@@ -668,7 +690,8 @@ def internal_job_start(payload: dict[str, Any], x_aihub_internal_token: str | No
         import jobs
 
         with _SAM_LOCK:
-            jobs.run_job("monitor", stage, stage / "input", stage / "output")
+            with model_work():
+                jobs.run_job("monitor", stage, stage / "input", stage / "output", predictor_loader=resident_sam3_loader)
         state = "cancelled" if cancelled.is_set() else "succeeded"
     except Exception:
         state = "failed"

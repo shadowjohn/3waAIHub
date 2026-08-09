@@ -3,7 +3,8 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_BREAK_SYSTEM_PACKAGES=1
 
 WORKDIR /app
 RUN apt-get update \
@@ -18,8 +19,7 @@ RUN apt-get update \
     && ln -sf /usr/bin/python3.12 /usr/local/bin/python3
 
 COPY requirements.txt .
-RUN python3 -m pip install --upgrade pip setuptools wheel \
-    && python3 -m pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu128 \
+RUN python3 -m pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu128 \
     && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 

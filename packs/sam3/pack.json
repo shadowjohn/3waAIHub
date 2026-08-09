@@ -215,7 +215,7 @@
         "args": ["--job", "segment_image", "--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
         "output_dir": "output",
         "accelerator": "gpu",
-        "required_vram_mb": 16000,
+        "required_vram_mb": 8192,
         "timeout_seconds": 900,
         "executor": "container",
         "asset_mounts": [
@@ -248,7 +248,7 @@
         "args": ["--job", "track_video", "--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
         "output_dir": "output",
         "accelerator": "gpu",
-        "required_vram_mb": 16000,
+        "required_vram_mb": 8192,
         "timeout_seconds": 1800,
         "executor": "container",
         "asset_mounts": [
@@ -280,7 +280,7 @@
         "args": ["--job", "monitor", "--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
         "output_dir": "output",
         "accelerator": "gpu",
-        "required_vram_mb": 16000,
+        "required_vram_mb": 8192,
         "timeout_seconds": 86400,
         "executor": "container",
         "asset_mounts": [
@@ -335,7 +335,7 @@
   "hardware": {
     "gpu_required": true,
     "gpu_supported": true,
-    "min_vram_mb": 16000,
+    "min_vram_mb": 8192,
     "recommended_vram_mb": 24000,
     "cpu_fallback": false,
     "min_compute_capability": "8.0"
@@ -409,7 +409,7 @@
       "key": "SAM3_RESIDENT_MIN_FREE_VRAM_MB",
       "label": "Resident minimum free VRAM MB",
       "type": "integer",
-      "default": "16000",
+      "default": "4096",
       "min": 1024,
       "max": 1048576,
       "required": true,
@@ -473,7 +473,7 @@
     },
     {
       "name": "SAM3_RESIDENT_MIN_FREE_VRAM_MB",
-      "default": "16000",
+      "default": "4096",
       "required": true
     },
     {

@@ -71,6 +71,13 @@ function hub_ensure_service_settings(PDO $db, array $service): array
         return [];
     }
     $existing = hub_list_service_settings($db, (int)$service['id']);
+    if ($existing !== []) {
+        $declaredKeys = array_keys($schema);
+        $placeholders = implode(', ', array_fill(0, count($declaredKeys), '?'));
+        $stmt = $db->prepare('DELETE FROM service_settings WHERE service_id = ? AND key NOT IN (' . $placeholders . ')');
+        $stmt->execute(array_merge([(int)$service['id']], $declaredKeys));
+        $existing = hub_list_service_settings($db, (int)$service['id']);
+    }
     $now = hub_now();
     $stmt = $db->prepare(
         'INSERT OR IGNORE INTO service_settings

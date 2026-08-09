@@ -65,8 +65,9 @@ class Sam31JobTests(unittest.TestCase):
             (input_dir / "source").write_bytes(b"video")
             (input_dir / "request.json").write_text(json.dumps({"source_id": "sam3src_" + "a" * 32}), encoding="utf-8")
 
-            def video_job(_: Path, output: Path, request: dict | None = None) -> dict:
+            def video_job(_: Path, output: Path, request: dict | None = None, predictor_loader: object | None = None) -> dict:
                 self.assertEqual("object", json.loads(request["prompts_json"])[0]["text"])
+                self.assertIsNone(predictor_loader)
                 (output / "sam3_tracks.jsonl").write_text('{"frame_index":0}\n', encoding="utf-8")
                 return {"elapsed_ms": 7}
 

@@ -3,11 +3,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
 
-from sam31 import Sam31Error, segment_single_image
+from sam31 import Sam31Error, _patch_multiplex_init_state, load_predictor, segment_single_image
 
 
 class FakePredictor:
@@ -99,6 +101,45 @@ class Sam31ImageAdapterTests(unittest.TestCase):
             self.assertIsNotNone(predictor.session_path)
             self.assertFalse(predictor.session_path.exists())
         self.assertEqual(["start_session", "add_prompt", "close_session"], [call["type"] for call in predictor.calls])
+
+    def test_multiplex_predictor_ignores_unsupported_offload_state_argument(self) -> None:
+        class LegacyMultiplexModel:
+            def init_state(self, resource_path: str, offload_video_to_cpu: bool = False) -> dict[str, object]:
+                return {"resource_path": resource_path, "offload_video_to_cpu": offload_video_to_cpu}
+
+        class Predictor:
+            model = LegacyMultiplexModel()
+
+        predictor = Predictor()
+        _patch_multiplex_init_state(predictor)
+
+        self.assertEqual(
+            {"resource_path": "fixture", "offload_video_to_cpu": False},
+            predictor.model.init_state(resource_path="fixture", offload_state_to_cpu=False),
+        )
+
+    def test_load_predictor_disables_optional_flash_attention_three(self) -> None:
+        calls: dict[str, object] = {}
+        model_builder = ModuleType("sam3.model_builder")
+
+        class Model:
+            def init_state(self, resource_path: str, offload_state_to_cpu: bool = False) -> dict[str, object]:
+                return {"resource_path": resource_path, "offload_state_to_cpu": offload_state_to_cpu}
+
+        class Predictor:
+            model = Model()
+
+        def build_sam3_multiplex_video_predictor(**kwargs: object) -> Predictor:
+            calls.update(kwargs)
+            return Predictor()
+
+        model_builder.build_sam3_multiplex_video_predictor = build_sam3_multiplex_video_predictor
+        sam3 = ModuleType("sam3")
+        sam3.__path__ = []  # type: ignore[attr-defined]
+        with patch.dict("sys.modules", {"sam3": sam3, "sam3.model_builder": model_builder}):
+            load_predictor(Path("/models/sam3/sam3.1_multiplex.pt"), "cuda")
+
+        self.assertIs(False, calls.get("use_fa3"))
 
 
 if __name__ == "__main__":

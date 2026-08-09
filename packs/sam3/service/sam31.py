@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import math
 import tempfile
 from pathlib import Path
@@ -20,12 +21,28 @@ def load_predictor(checkpoint: Path, device: str) -> Any:
     del device  # SAM 3.1 selects CUDA from its installed runtime.
     from sam3.model_builder import build_sam3_multiplex_video_predictor
 
-    return build_sam3_multiplex_video_predictor(
+    predictor = build_sam3_multiplex_video_predictor(
         checkpoint_path=str(checkpoint),
         max_num_objects=16,
         multiplex_count=16,
+        # The production CUDA image uses SAM's PyTorch attention fallback.
+        use_fa3=False,
         warm_up=False,
     )
+    _patch_multiplex_init_state(predictor)
+    return predictor
+
+
+def _patch_multiplex_init_state(predictor: Any) -> None:
+    init_state = predictor.model.init_state
+    if "offload_state_to_cpu" in inspect.signature(init_state).parameters:
+        return
+
+    def compatible_init_state(*args: Any, **kwargs: Any) -> Any:
+        kwargs.pop("offload_state_to_cpu", None)
+        return init_state(*args, **kwargs)
+
+    predictor.model.init_state = compatible_init_state
 
 
 def release_predictor(predictor: Any) -> None:
