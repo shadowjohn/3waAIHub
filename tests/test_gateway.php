@@ -95,6 +95,41 @@ hub_test('shared JSON encoder neutralizes HTML delimiters without changing value
     hub_test_assert(json_decode((string)$body, true) === ['message' => '<img src=x onerror=alert(1)>'], 'shared JSON encoder must preserve decoded values');
 });
 
+hub_test('audio sync maintenance commands use fixed argv instead of a shell string', function (): void {
+    $calls = [];
+    $inspectCalls = 0;
+    $runner = static function (array $command, int $timeoutSeconds) use (&$calls, &$inspectCalls): array {
+        $calls[] = ['command' => $command, 'timeout' => $timeoutSeconds];
+        if ($command === ['nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader,nounits']) {
+            return ['exit_code' => 0, 'stdout' => "101\n202\n", 'stderr' => ''];
+        }
+        if ($command === ['docker', 'container', 'inspect', '--format', '{{json .State}}', '3waaihub-demo']) {
+            $inspectCalls++;
+            return $inspectCalls === 1
+                ? ['exit_code' => 0, 'stdout' => '{"Running":true}', 'stderr' => '']
+                : ['exit_code' => 1, 'stdout' => '', 'stderr' => 'Error: No such container'];
+        }
+        if (in_array($command, [
+            ['docker', 'stop', '-t', '10', '3waaihub-demo'],
+            ['docker', 'container', 'rm', '-f', '3waaihub-demo'],
+        ], true)) {
+            return ['exit_code' => 0, 'stdout' => '', 'stderr' => ''];
+        }
+
+        throw new RuntimeException('Unexpected command fixture.');
+    };
+
+    hub_test_assert(hub_audio_sync_gpu_processes($runner) === [101, 202], 'GPU process probe must receive an argv runner result');
+    hub_test_assert(hub_audio_sync_remove_container('3waaihub-demo', $runner) === true, 'container cleanup must use argv commands and verify removal');
+    hub_test_assert(array_column($calls, 'command') === [
+        ['nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader,nounits'],
+        ['docker', 'container', 'inspect', '--format', '{{json .State}}', '3waaihub-demo'],
+        ['docker', 'stop', '-t', '10', '3waaihub-demo'],
+        ['docker', 'container', 'rm', '-f', '3waaihub-demo'],
+        ['docker', 'container', 'inspect', '--format', '{{json .State}}', '3waaihub-demo'],
+    ], 'audio sync maintenance must not reconstruct a shell command string');
+});
+
 hub_test('gateway applies manifest upload limit and timeout', function (): void {
     $db = hub_test_reset_db();
     hub_install_pack($db, 'translate-gemma12b', ['idempotent' => true]);

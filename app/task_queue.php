@@ -2934,19 +2934,21 @@ function hub_pack_job_validate_image_output(string $path, array $definition, str
     return ['width' => $width, 'height' => $height, 'format' => 'png'];
 }
 
-function hub_pack_job_ffprobe(string $path): ?array
+function hub_pack_job_ffprobe(string $path, ?callable $processRunner = null): ?array
 {
-    if (!function_exists('exec')) {
-        return null;
-    }
-    $output = [];
-    $exitCode = 1;
-    exec('ffprobe -v error -show_entries format=duration:stream=codec_type,sample_rate,channels,duration_ts,time_base -of json ' . escapeshellarg($path) . ' 2>&1', $output, $exitCode);
-    if ($exitCode !== 0) {
+    $runner = $processRunner ?? 'hub_run_command';
+    $result = $runner([
+        'ffprobe',
+        '-v', 'error',
+        '-show_entries', 'format=duration:stream=codec_type,sample_rate,channels,duration_ts,time_base',
+        '-of', 'json',
+        $path,
+    ], 30);
+    if (!is_array($result) || (int)($result['exit_code'] ?? 127) !== 0) {
         return null;
     }
     try {
-        $result = json_decode(implode("\n", $output), true, 32, JSON_THROW_ON_ERROR);
+        $result = json_decode((string)($result['stdout'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
     } catch (Throwable) {
         return null;
     }

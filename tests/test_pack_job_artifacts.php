@@ -80,6 +80,25 @@ function hub_test_pack_job_contract(): array
     ];
 }
 
+hub_test('ffprobe receives the artifact path as one argv argument', function (): void {
+    $calls = [];
+    $path = 'C:/3waAIHub test/input;not-a-shell.wav';
+    $metadata = hub_pack_job_ffprobe($path, static function (array $command, int $timeoutSeconds) use (&$calls): array {
+        $calls[] = ['command' => $command, 'timeout' => $timeoutSeconds];
+        return [
+            'exit_code' => 0,
+            'stdout' => '{"format":{"duration":"1.5"},"streams":[{"codec_type":"audio","sample_rate":"16000","channels":1,"duration_ts":"24000","time_base":"1/16000"}]}',
+            'stderr' => '',
+        ];
+    });
+
+    hub_test_assert($calls === [[
+        'command' => ['ffprobe', '-v', 'error', '-show_entries', 'format=duration:stream=codec_type,sample_rate,channels,duration_ts,time_base', '-of', 'json', $path],
+        'timeout' => 30,
+    ]], 'ffprobe path must remain a single argv value');
+    hub_test_assert($metadata === ['duration_seconds' => '1.5', 'sample_rate' => '16000', 'channels' => 1, 'frames' => '24000'], 'ffprobe argv runner output must preserve audio metadata');
+});
+
 function hub_test_pack_job_write(string $path, string $contents): void
 {
     if (file_put_contents($path, $contents, LOCK_EX) === false) {

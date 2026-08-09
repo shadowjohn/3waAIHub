@@ -22,6 +22,7 @@ data/test_services/*
 data/sessions/*
 data/docker-cli/
 data/facebook-crawler/
+data/fortify/
 !data/.gitkeep
 !data/logs/.gitkeep
 !data/logs/jobs/.gitkeep

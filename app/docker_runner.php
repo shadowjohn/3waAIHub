@@ -43,6 +43,24 @@ function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = 
 {
     hub_cli_only();
 
+    return hub_run_argv_command($command, $timeoutSeconds, $env);
+}
+
+/**
+ * 執行已由呼叫端固定或驗證完成的 argv；不接受 shell command string。
+ * Web 呼叫端不得將未驗證的 request 值直接放入 argv。
+ */
+function hub_run_argv_command(array $command, int $timeoutSeconds = 60, array $env = []): array
+{
+    if ($command === [] || !array_is_list($command)) {
+        return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
+    }
+    foreach ($command as $argument) {
+        if (!is_string($argument) || $argument === '' || str_contains($argument, "\0")) {
+            return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
+        }
+    }
+
     $descriptor = [
         1 => ['pipe', 'w'],
         2 => ['pipe', 'w'],

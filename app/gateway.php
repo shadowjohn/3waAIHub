@@ -542,24 +542,21 @@ function hub_audio_sync_container_name(array $service): string
     return '3waaihub-' . $serviceKey;
 }
 
-function hub_audio_sync_gpu_processes(): ?array
+function hub_audio_sync_gpu_processes(?callable $processRunner = null): ?array
 {
-    if (!function_exists('exec')) {
-        return null;
-    }
-    $output = [];
-    $exitCode = 1;
-    exec('nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits 2>&1', $output, $exitCode);
-    if ($exitCode !== 0) {
+    $runner = $processRunner ?? 'hub_run_argv_command';
+    $result = $runner(['nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader,nounits'], 10);
+    if (!is_array($result) || (int)($result['exit_code'] ?? 127) !== 0) {
         return null;
     }
 
-    return hub_runtime_gpu_recovery_pids($output);
+    return hub_runtime_gpu_recovery_pids(preg_split('/\R/', (string)($result['stdout'] ?? '')) ?: []);
 }
 
-function hub_audio_sync_remove_container(string $container): bool
+function hub_audio_sync_remove_container(string $container, ?callable $processRunner = null): bool
 {
-    $before = hub_audio_sync_container_state($container);
+    $runner = $processRunner ?? 'hub_run_argv_command';
+    $before = hub_audio_sync_container_state($container, $runner);
     if (!is_array($before)) {
         return false;
     }
@@ -567,31 +564,29 @@ function hub_audio_sync_remove_container(string $container): bool
         return true;
     }
     foreach ([['stop', '-t', '10'], ['container', 'rm', '-f']] as $command) {
-        $output = [];
-        $exitCode = 1;
-        exec('docker ' . implode(' ', array_map('escapeshellarg', $command)) . ' ' . escapeshellarg($container) . ' 2>&1', $output, $exitCode);
-        if ($exitCode !== 0) {
+        $result = $runner(array_merge(['docker'], $command, [$container]), 30);
+        if (!is_array($result) || (int)($result['exit_code'] ?? 127) !== 0) {
             return false;
         }
     }
-    $after = hub_audio_sync_container_state($container);
+    $after = hub_audio_sync_container_state($container, $runner);
 
     return is_array($after) && empty($after['exists']);
 }
 
-function hub_audio_sync_container_state(string $container): ?array
+function hub_audio_sync_container_state(string $container, ?callable $processRunner = null): ?array
 {
-    if (!function_exists('exec')) {
+    $runner = $processRunner ?? 'hub_run_argv_command';
+    $result = $runner(['docker', 'container', 'inspect', '--format', '{{json .State}}', $container], 30);
+    if (!is_array($result)) {
         return null;
     }
-    $output = [];
-    $exitCode = 1;
-    exec('docker container inspect --format ' . escapeshellarg('{{json .State}}') . ' ' . escapeshellarg($container) . ' 2>&1', $output, $exitCode);
-    if ($exitCode !== 0) {
-        return preg_match('/no such (?:container|object)/i', implode("\n", $output)) === 1 ? ['exists' => false] : null;
+    $output = trim((string)($result['stdout'] ?? '') . ((string)($result['stderr'] ?? '') === '' ? '' : "\n" . (string)$result['stderr']));
+    if ((int)($result['exit_code'] ?? 127) !== 0) {
+        return preg_match('/no such (?:container|object)/i', $output) === 1 ? ['exists' => false] : null;
     }
     try {
-        $state = json_decode(implode("\n", $output), true, 16, JSON_THROW_ON_ERROR);
+        $state = json_decode((string)($result['stdout'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
     } catch (Throwable) {
         return null;
     }
