@@ -87,3 +87,28 @@ hub_test('model registry scans models root safely and skips symlinks', function 
     ], 'translategemma:12b-it-q4_K_M');
     hub_test_assert(($ollamaStatus['model_present'] ?? false) === true, 'Ollama selector must detect present model tag');
 });
+
+hub_test('model registry creates requested directories only under the physical models root', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_model_create_' . bin2hex(random_bytes(4));
+    mkdir($root, 0775, true);
+
+    $target = hub_model_asset_safe_directory($root, 'huggingface/my-model');
+
+    hub_test_assert(is_dir($target), 'model directory must be created');
+    hub_test_assert(hub_storage_path_is_within($target, $root), 'model directory must remain under models root');
+});
+
+hub_test('model registry refuses model directories beneath a symlinked ancestor', function (): void {
+    hub_test_require_symlink_fixture('Model registry directory creation requires symlink fixtures.');
+    $root = sys_get_temp_dir() . '/3waaihub_model_symlink_root_' . bin2hex(random_bytes(4));
+    $outside = sys_get_temp_dir() . '/3waaihub_model_symlink_outside_' . bin2hex(random_bytes(4));
+    mkdir($root, 0775, true);
+    mkdir($outside, 0775, true);
+    symlink($outside, $root . '/linked');
+
+    hub_test_assert(
+        hub_test_throws(static fn (): string => hub_model_asset_safe_directory($root, 'linked/escape')),
+        'model directory creation must reject a symlinked ancestor'
+    );
+    hub_test_assert(!is_dir($outside . '/escape'), 'model directory creation must not escape through a symlinked ancestor');
+});

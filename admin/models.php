@@ -16,13 +16,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
     hub_check_csrf();
     try {
         $subdir = hub_model_asset_safe_path((string)($_POST['subdir'] ?? ''));
-        $target = hub_models_root($db) . '/' . $subdir;
-        if (is_link($target)) {
-            throw new RuntimeException(__('拒絕在 symlink 上建立模型子目錄。'));
-        }
-        if (!is_dir($target) && !mkdir($target, 0775, true) && !is_dir($target)) {
-            throw new RuntimeException(__('無法建立模型子目錄。'));
-        }
+        hub_model_asset_safe_directory(hub_models_root($db), $subdir);
         $message = __('模型子目錄已建立：') . $subdir;
     } catch (Throwable $e) {
         $error = $e->getMessage();

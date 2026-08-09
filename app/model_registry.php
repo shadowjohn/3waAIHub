@@ -22,6 +22,49 @@ function hub_model_asset_safe_path(string $relativePath): string
     return $path;
 }
 
+function hub_model_asset_safe_directory(string $modelsRoot, string $relativePath): string
+{
+    $relativePath = hub_model_asset_safe_path($relativePath);
+    $modelsRoot = rtrim($modelsRoot, '/\\');
+    if ($modelsRoot === '' || !hub_is_safe_models_root($modelsRoot)) {
+        throw new InvalidArgumentException('Invalid models root.');
+    }
+    if (!is_dir($modelsRoot) && !mkdir($modelsRoot, 0775, true) && !is_dir($modelsRoot)) {
+        throw new RuntimeException('Cannot create models root.');
+    }
+    if (is_link($modelsRoot)) {
+        throw new RuntimeException('Models root must not be a symlink.');
+    }
+
+    $root = realpath($modelsRoot);
+    if ($root === false) {
+        throw new RuntimeException('Cannot resolve models root.');
+    }
+
+    $directory = $root;
+    foreach (explode('/', $relativePath) as $part) {
+        $candidate = $directory . DIRECTORY_SEPARATOR . $part;
+        // 每一層都重新解析，避免既有或競態建立的 symlink 穿出 models root。
+        if (is_link($candidate)) {
+            throw new RuntimeException('Model directory must not use symlinks.');
+        }
+        if (!is_dir($candidate) && !mkdir($candidate, 0775) && !is_dir($candidate)) {
+            throw new RuntimeException('Cannot create model directory.');
+        }
+        if (is_link($candidate)) {
+            throw new RuntimeException('Model directory must not use symlinks.');
+        }
+
+        $resolved = realpath($candidate);
+        if ($resolved === false || !hub_storage_path_is_within($resolved, $root)) {
+            throw new RuntimeException('Model directory escapes models root.');
+        }
+        $directory = $resolved;
+    }
+
+    return $directory;
+}
+
 function hub_model_asset_type(string $path): string
 {
     if (is_link($path)) {
