@@ -37,7 +37,7 @@ hub_test('SAM3 service provisions an internal token and an offline model mount',
     hub_test_assert(preg_match('/^[a-f0-9]{64}$/', (string)($token['value'] ?? '')) === 1, 'SAM3 internal job token must be generated');
 
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
-    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/runtime-settings.conf');
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/sam3:/models/sam3:ro'), 'SAM3 model mount must be read-only');
     hub_test_assert(str_contains($env, 'HF_HUB_OFFLINE=1'), 'SAM3 runtime must disable model downloads');
     hub_test_assert(str_contains($env, 'SAM3_RESIDENT_MIN_FREE_VRAM_MB=4096'), 'SAM3 runtime must keep its measured 4 GB resident safety margin');

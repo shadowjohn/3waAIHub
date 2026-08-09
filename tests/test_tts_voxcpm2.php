@@ -2751,7 +2751,7 @@ hub_test('VoxCPM2 install generates GPU compose storage env and gateway contract
     ]);
 
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
-    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/runtime-settings.conf');
     hub_test_assert(str_contains($compose, '127.0.0.1:${TTS_LOCAL_PORT:-18108}:8000'), 'VoxCPM2 compose port binding mismatch');
     hub_test_assert(str_contains($compose, 'gpus: all'), 'VoxCPM2 compose must request GPU');
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/voxcpm2:/models/voxcpm2'), 'VoxCPM2 compose must mount model storage');

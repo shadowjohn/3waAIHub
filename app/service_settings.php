@@ -311,7 +311,7 @@ function hub_update_service_settings(PDO $db, int $serviceId, array $values): ar
         }
 
         if ($changed) {
-            hub_write_service_env($db, $service);
+            hub_write_service_runtime_settings($db, $service);
             hub_write_service_compose($db, $service);
             $restartSql = $needsRestart ? 'restart_required = 1' : 'restart_required = restart_required';
             $db->prepare(
@@ -341,7 +341,121 @@ function hub_service_settings_values(PDO $db, array $service): array
     return $values;
 }
 
-function hub_generate_service_env_for_instance(PDO $db, array $service): string
+function hub_runtime_settings_path(string $runtimeDir): string
+{
+    return rtrim(hub_normalize_host_path($runtimeDir), '/\\') . '/' . HUB_RUNTIME_SETTINGS_FILENAME;
+}
+
+function hub_legacy_runtime_env_path(string $runtimeDir): string
+{
+    return rtrim(hub_normalize_host_path($runtimeDir), '/\\') . '/' . HUB_LEGACY_RUNTIME_ENV_FILENAME;
+}
+
+function hub_resolve_runtime_settings_directory(string $runtimeDir): string
+{
+    if ($runtimeDir === '' || trim($runtimeDir) !== $runtimeDir) {
+        throw new RuntimeException('Service runtime directory is invalid.');
+    }
+    if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)) {
+        throw new RuntimeException('Cannot create service runtime directory.');
+    }
+    if (is_link($runtimeDir)) {
+        throw new RuntimeException('Service runtime directory must not be a symlink.');
+    }
+
+    $resolved = realpath($runtimeDir);
+    if ($resolved === false || !is_dir($resolved)) {
+        throw new RuntimeException('Cannot resolve service runtime directory.');
+    }
+
+    return $resolved;
+}
+
+function hub_retire_legacy_runtime_env(string $runtimeDir): void
+{
+    $legacyPath = hub_legacy_runtime_env_path($runtimeDir);
+    clearstatcache(true, $legacyPath);
+    if (!is_link($legacyPath) && !file_exists($legacyPath)) {
+        return;
+    }
+    if (is_link($legacyPath) || !is_file($legacyPath)) {
+        throw new RuntimeException('Legacy runtime env file is unsafe.');
+    }
+
+    $legacyResolved = realpath($legacyPath);
+    if ($legacyResolved === false || !hub_storage_paths_equal(dirname($legacyResolved), $runtimeDir)) {
+        throw new RuntimeException('Legacy runtime env file escapes its service directory.');
+    }
+    if (!@unlink($legacyPath)) {
+        throw new RuntimeException('Cannot retire legacy runtime env file.');
+    }
+}
+
+function hub_write_runtime_settings_file(string $runtimeDir, string $contents): string
+{
+    $runtimeDir = hub_resolve_runtime_settings_directory($runtimeDir);
+    $settingsPath = hub_runtime_settings_path($runtimeDir);
+    clearstatcache(true, $settingsPath);
+    if (is_link($settingsPath)) {
+        throw new RuntimeException('Runtime settings file must not be a symlink.');
+    }
+
+    $temporaryPath = tempnam($runtimeDir, '.runtime-settings-');
+    if ($temporaryPath === false) {
+        throw new RuntimeException('Cannot create runtime settings temporary file.');
+    }
+
+    try {
+        if (file_put_contents($temporaryPath, $contents, LOCK_EX) === false) {
+            throw new RuntimeException('Cannot write runtime settings file.');
+        }
+        if (PHP_OS_FAMILY !== 'Windows' && !@chmod($temporaryPath, 0600)) {
+            throw new RuntimeException('Cannot secure runtime settings file.');
+        }
+        $expectedHash = hash('sha256', $contents);
+        $temporaryHash = hash_file('sha256', $temporaryPath);
+        if ($temporaryHash === false || !hash_equals($expectedHash, $temporaryHash)) {
+            throw new RuntimeException('Runtime settings file hash verification failed.');
+        }
+        if (!@rename($temporaryPath, $settingsPath)) {
+            throw new RuntimeException('Cannot activate runtime settings file.');
+        }
+        clearstatcache(true, $settingsPath);
+        $activeHash = hash_file('sha256', $settingsPath);
+        if (is_link($settingsPath) || $activeHash === false || !hash_equals($expectedHash, $activeHash)) {
+            throw new RuntimeException('Runtime settings activation verification failed.');
+        }
+
+        hub_retire_legacy_runtime_env($runtimeDir);
+
+        return $settingsPath;
+    } finally {
+        if (is_file($temporaryPath) && !is_link($temporaryPath)) {
+            @unlink($temporaryPath);
+        }
+    }
+}
+
+function hub_service_runtime_directory(PDO $db, array $service): string
+{
+    $serviceKey = (string)($service['service_key'] ?? '');
+    if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1
+        || (string)($service['compose_file'] ?? '') !== hub_pack_compose_file($db, $serviceKey)) {
+        throw new RuntimeException('Service runtime configuration is invalid.');
+    }
+
+    $runtimeDir = hub_resolve_runtime_settings_directory(hub_pack_runtime_dir($db, $serviceKey));
+    $runtimeBase = realpath(hub_pack_runtime_base_dir($db));
+    if ($runtimeBase === false
+        || !hub_storage_path_is_within($runtimeDir, $runtimeBase)
+        || hub_storage_paths_equal($runtimeDir, $runtimeBase)) {
+        throw new RuntimeException('Service runtime directory escapes the Hub runtime root.');
+    }
+
+    return $runtimeDir;
+}
+
+function hub_generate_service_runtime_settings_for_instance(PDO $db, array $service): string
 {
     $pack = hub_get_pack((string)$service['pack_id']);
     if (!$pack) {
@@ -372,17 +486,12 @@ function hub_generate_service_env_for_instance(PDO $db, array $service): string
     return implode(PHP_EOL, $lines) . PHP_EOL;
 }
 
-function hub_write_service_env(PDO $db, array $service): string
+function hub_write_service_runtime_settings(PDO $db, array $service): string
 {
-    $runtimeDir = dirname(hub_path((string)$service['compose_file']));
-    if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)) {
-        throw new RuntimeException('Cannot create service runtime directory.');
-    }
-    $envPath = $runtimeDir . '/.env';
-    file_put_contents($envPath, hub_generate_service_env_for_instance($db, $service));
-    chmod($envPath, 0664);
-
-    return $envPath;
+    return hub_write_runtime_settings_file(
+        hub_service_runtime_directory($db, $service),
+        hub_generate_service_runtime_settings_for_instance($db, $service),
+    );
 }
 
 function hub_write_service_compose(PDO $db, array $service): string

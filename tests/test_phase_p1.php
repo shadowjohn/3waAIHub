@@ -398,7 +398,7 @@ hub_test('PhaseP-1 stale service removal cannot delete a service updated after q
 
     hub_test_assert(($result['error_code'] ?? '') === 'service_changed', 'stale removal must stop before Docker or registration deletion');
     hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'service updated after queueing must remain registered');
-    hub_test_assert(file_exists($composePath) && file_exists(dirname($composePath) . '/.env'), 'service updated after queueing must keep its regenerated runtime files');
+    hub_test_assert(file_exists($composePath) && file_exists(dirname($composePath) . '/runtime-settings.conf'), 'service updated after queueing must keep its regenerated runtime files');
 });
 
 hub_test('PhaseP-1 legacy removal jobs without a service snapshot fail safe', function (): void {
@@ -451,7 +451,7 @@ SH
         $service = hub_get_service_by_mode($db, 'hello');
         hub_test_assert($service !== null, 'hello service missing');
         $composePath = hub_path((string)$service['compose_file']);
-        $envPath = dirname($composePath) . '/.env';
+        $envPath = dirname($composePath) . '/runtime-settings.conf';
         $artifactPath = dirname($composePath) . '/artifact.keep';
         $pack = hub_get_pack((string)$service['pack_id']);
         hub_test_assert($pack !== null, 'hello HubPack missing');
@@ -530,7 +530,7 @@ SH
         $db = hub_test_reset_db();
         $service = hub_get_service_by_mode($db, 'hello');
         $composePath = hub_path((string)$service['compose_file']);
-        $envPath = dirname($composePath) . '/.env';
+        $envPath = dirname($composePath) . '/runtime-settings.conf';
         $artifactPath = dirname($composePath) . '/artifact.keep';
         file_put_contents($artifactPath, 'keep');
         putenv('MOCK_COMPOSE_PATH=' . $composePath);
@@ -549,7 +549,7 @@ SH
         $db = hub_test_reset_db();
         $service = hub_get_service_by_mode($db, 'hello');
         $composePath = hub_path((string)$service['compose_file']);
-        $envPath = dirname($composePath) . '/.env';
+        $envPath = dirname($composePath) . '/runtime-settings.conf';
         putenv('MOCK_COMPOSE_PATH=' . $composePath);
         putenv('MOCK_ENV_PATH=' . $envPath);
         $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
@@ -596,7 +596,7 @@ hub_test('PhaseP-1 service removal keeps generated files when registration delet
         $db = hub_test_reset_db();
         $service = hub_get_service_by_mode($db, 'hello');
         $composePath = hub_path((string)$service['compose_file']);
-        $envPath = dirname($composePath) . '/.env';
+        $envPath = dirname($composePath) . '/runtime-settings.conf';
         $db->exec(
             "CREATE TRIGGER fail_service_removal_delete
              BEFORE DELETE ON services
@@ -639,7 +639,7 @@ hub_test('PhaseP-1 service removal preflights generated runtime cleanup before d
         $db = hub_test_reset_db();
         $service = hub_get_service_by_mode($db, 'hello');
         $composePath = hub_path((string)$service['compose_file']);
-        $envPath = dirname($composePath) . '/.env';
+        $envPath = dirname($composePath) . '/runtime-settings.conf';
         $runtimeDir = dirname($composePath);
         $permissions = fileperms($runtimeDir) & 0777;
         if (!chmod($runtimeDir, 0555)) {
@@ -674,7 +674,7 @@ hub_test('PhaseP-1 removed service runtime cleanup retries only after registrati
     $service = hub_get_service_by_mode($db, 'hello');
     hub_test_assert($service !== null, 'hello service missing');
     $composePath = hub_path((string)$service['compose_file']);
-    $envPath = dirname($composePath) . '/.env';
+    $envPath = dirname($composePath) . '/runtime-settings.conf';
     $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
     $job = hub_get_command_job($db, $jobId);
     hub_test_assert($job !== null, 'service removal job missing');
@@ -885,7 +885,7 @@ hub_test('PhaseP-1 service removal accepts a symlinked runtime base with normal 
     $runtimeBase = hub_pack_runtime_base_dir($db);
     $runtimeBaseTarget = $runtimeBase . '.target';
     $composePath = hub_path((string)$service['compose_file']);
-    $envPath = dirname($composePath) . '/.env';
+    $envPath = dirname($composePath) . '/runtime-settings.conf';
     $dir = sys_get_temp_dir() . '/3waaihub_remove_base_link_' . bin2hex(random_bytes(4));
     $bin = $dir . '/bin';
     $log = $dir . '/docker.log';

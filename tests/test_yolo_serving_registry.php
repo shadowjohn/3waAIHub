@@ -85,7 +85,7 @@ hub_test('YOLO serving CPU pack installs yolo_predict service with read-only reg
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/yolo/registry:/models/registry:ro'), 'registry mount must be read-only');
     hub_test_assert(!str_contains($compose, 'gpus: all'), 'CPU serving compose must not request GPU');
 
-    $env = (string)file_get_contents(dirname(hub_path((string)$service['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path((string)$service['compose_file'])) . '/runtime-settings.conf');
     foreach (['YOLO_SERVING_DEVICE=cpu', 'YOLO_MODEL_REGISTRY_DIR=/models/registry'] as $needle) {
         hub_test_assert(str_contains($env, $needle), 'yolo-serving env missing ' . $needle);
     }

@@ -66,7 +66,7 @@ hub_test('Nemotron RAG adapter install generates compose env and mock benchmarks
     hub_test_assert(str_contains($compose, 'gpus: all'), 'Nemotron RAG compose must request GPU by default');
     hub_test_assert(str_contains($compose, 'NVIDIA_VISIBLE_DEVICES'), 'Nemotron RAG compose must expose NVIDIA devices');
 
-    $env = (string)file_get_contents(dirname(hub_path((string)$service['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path((string)$service['compose_file'])) . '/runtime-settings.conf');
     foreach (['NEMOTRON_EMBED_MODEL=nvidia/llama-nemotron-embed-1b-v2', 'NEMOTRON_RERANK_MODEL=nvidia/llama-nemotron-rerank-1b-v2', 'NEMOTRON_EMBED_URL=https://integrate.api.nvidia.com/v1/embeddings', 'NEMOTRON_RERANK_URL=https://ai.api.nvidia.com/v1/retrieval/nvidia/llama-nemotron-rerank-1b-v2/reranking', 'NEMOTRON_EMBED_INPUT_TYPE=query', 'NEMOTRON_REAL_INFERENCE=0', 'NEMOTRON_USE_GPU=1', 'NEMOTRON_DEVICE=auto', 'GPU_VISIBLE_DEVICES=all', 'NEMOTRON_GPU_FALLBACK_TO_CPU=1'] as $needle) {
         hub_test_assert(str_contains($env, $needle), 'Nemotron RAG env missing ' . $needle);
     }

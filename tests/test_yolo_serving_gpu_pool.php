@@ -170,7 +170,7 @@ hub_test('YOLO serving GPU service compose uses CUDA runtime without changing CP
 
     $cpuCompose = file_get_contents(hub_path((string)$cpu['service']['compose_file']));
     $gpuCompose = file_get_contents(hub_path((string)$gpu['service']['compose_file']));
-    $gpuEnv = file_get_contents(dirname(hub_path((string)$gpu['service']['compose_file'])) . '/.env');
+    $gpuEnv = file_get_contents(dirname(hub_path((string)$gpu['service']['compose_file'])) . '/runtime-settings.conf');
 
     hub_test_assert($cpuCompose !== false && !str_contains($cpuCompose, 'gpus: all'), 'CPU serving compose should not request GPU.');
     hub_test_assert($gpuCompose !== false && str_contains($gpuCompose, 'gpus: all'), 'GPU serving compose should request GPU.');

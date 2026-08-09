@@ -83,7 +83,7 @@ hub_test('PP-StructureV3 service instance generates storage env and compose', fu
     hub_test_assert(str_contains($compose, '${AIHUB_CACHE_DIR}/ppstructurev3:/cache/ppstructurev3'), 'PP-StructureV3 compose must mount cache');
     hub_test_assert(str_contains($compose, '${SERVICE_DATA_DIR}:/data/service'), 'PP-StructureV3 compose must mount service data');
 
-    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/runtime-settings.conf');
     foreach ([
         'STRUCTURE_MODEL_DIR=/models/ppstructurev3',
         'STRUCTURE_CACHE_DIR=/cache/ppstructurev3',

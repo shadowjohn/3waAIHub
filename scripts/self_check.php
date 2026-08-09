@@ -80,10 +80,10 @@ assert($installed['service']['install_status'] === 'installed');
 $helloRuntimeDir = dirname(hub_path((string)$installed['service']['compose_file']));
 assert(str_contains((string)$installed['service']['compose_file'], 'data/test_services/'));
 assert(is_dir($helloRuntimeDir));
-assert(is_file($helloRuntimeDir . '/.env'));
+assert(is_file($helloRuntimeDir . '/runtime-settings.conf'));
 assert(is_file($helloRuntimeDir . '/docker-compose.generated.yml'));
-assert(str_contains((string)file_get_contents($helloRuntimeDir . '/.env'), 'HELLO_LOCAL_PORT=18100'));
-assert(str_contains((string)file_get_contents($helloRuntimeDir . '/.env'), 'AIHUB_MODELS_DIR='));
+assert(str_contains((string)file_get_contents($helloRuntimeDir . '/runtime-settings.conf'), 'HELLO_LOCAL_PORT=18100'));
+assert(str_contains((string)file_get_contents($helloRuntimeDir . '/runtime-settings.conf'), 'AIHUB_MODELS_DIR='));
 assert(str_contains((string)file_get_contents($helloRuntimeDir . '/docker-compose.generated.yml'), '127.0.0.1:${HELLO_LOCAL_PORT:-18100}:8000'));
 
 hub_install_pack($db, 'hello', 'hello-main');
@@ -245,9 +245,9 @@ assert($ocr['service']['mode'] === 'ocr');
 assert($ocr['service']['pack_id'] === 'ocr-ppocrv5');
 $ocrRuntimeDir = dirname(hub_path((string)$ocr['service']['compose_file']));
 assert(is_dir($ocrRuntimeDir));
-assert(is_file($ocrRuntimeDir . '/.env'));
+assert(is_file($ocrRuntimeDir . '/runtime-settings.conf'));
 assert(is_file($ocrRuntimeDir . '/docker-compose.generated.yml'));
-assert(str_contains((string)file_get_contents($ocrRuntimeDir . '/.env'), 'OCR_MOCK_TEXT=3waAIHub OCR mock'));
+assert(str_contains((string)file_get_contents($ocrRuntimeDir . '/runtime-settings.conf'), 'OCR_MOCK_TEXT=3waAIHub OCR mock'));
 assert(str_contains((string)file_get_contents($ocrRuntimeDir . '/docker-compose.generated.yml'), 'env_file:'));
 assert(str_contains((string)file_get_contents($ocrRuntimeDir . '/docker-compose.generated.yml'), '127.0.0.1:${OCR_LOCAL_PORT:-18101}:8000'));
 
@@ -263,7 +263,7 @@ assert($ocrGpu['service']['service_key'] === 'ocr-gpu');
 assert($ocrGpu['service']['mode'] === 'ocr_gpu');
 assert((int)$ocrGpu['service']['local_port'] === 18103);
 $ocrGpuRuntimeDir = dirname(hub_path((string)$ocrGpu['service']['compose_file']));
-assert(is_file($ocrGpuRuntimeDir . '/.env'));
+assert(is_file($ocrGpuRuntimeDir . '/runtime-settings.conf'));
 assert(is_file($ocrGpuRuntimeDir . '/docker-compose.generated.yml'));
 
 $uploadTmp = tempnam(sys_get_temp_dir(), '3waaihub_upload_');
@@ -287,7 +287,7 @@ assert($translate['service']['service_key'] === 'translate-main');
 assert($translate['service']['mode'] === 'translate');
 assert($translate['service']['pack_id'] === 'translate-gemma12b');
 $translateRuntimeDir = dirname(hub_path((string)$translate['service']['compose_file']));
-assert(str_contains((string)file_get_contents($translateRuntimeDir . '/.env'), 'OLLAMA_MODEL=translategemma:12b-it-q4_K_M'));
+assert(str_contains((string)file_get_contents($translateRuntimeDir . '/runtime-settings.conf'), 'OLLAMA_MODEL=translategemma:12b-it-q4_K_M'));
 assert(is_file($translateRuntimeDir . '/docker-compose.generated.yml'));
 
 assert(hub_self_check_throws(static fn () => hub_install_pack($db, 'ocr-ppocrv5', [

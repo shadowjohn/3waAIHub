@@ -50,7 +50,7 @@ hub_test('BioCLIP service instance generates storage env compose and gateway moc
     ]);
 
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
-    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/runtime-settings.conf');
     hub_test_assert(str_contains($compose, '127.0.0.1:${BIOCLIP_LOCAL_PORT:-18111}:8000'), 'BioCLIP compose port binding mismatch');
     hub_test_assert(str_contains($compose, '${AIHUB_MODELS_DIR}/bioclip:/models/bioclip'), 'BioCLIP compose must mount model storage');
     hub_test_assert(str_contains($compose, '${AIHUB_CACHE_DIR}/bioclip:/cache/bioclip'), 'BioCLIP compose must mount cache storage');

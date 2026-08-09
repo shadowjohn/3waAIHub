@@ -20,7 +20,7 @@ hub_test('service instance uniqueness checks reject collisions', function (): vo
     hub_test_assert(str_contains($compose, '${AIHUB_CACHE_DIR}/paddleocr:/cache/paddleocr'), 'OCR generated compose must mount cache storage');
     hub_test_assert(str_contains($compose, '${SERVICE_DATA_DIR}:/data/service'), 'OCR generated compose must mount service data storage');
 
-    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/runtime-settings.conf');
     foreach ([
         'OCR_MODEL_DIR=/models/paddleocr',
         'OCR_CACHE_DIR=/cache/paddleocr',
@@ -63,7 +63,7 @@ hub_test('service instance uniqueness checks reject collisions', function (): vo
     $gpuCompose = (string)file_get_contents(hub_path($gpuInstalled['service']['compose_file']));
     hub_test_assert(str_contains($gpuCompose, 'gpus: all'), 'OCR GPU compose must request GPU access');
     hub_test_assert(str_contains($gpuCompose, 'NVIDIA_VISIBLE_DEVICES'), 'OCR GPU compose must set NVIDIA_VISIBLE_DEVICES');
-    $gpuEnv = (string)file_get_contents(dirname(hub_path($gpuInstalled['service']['compose_file'])) . '/.env');
+    $gpuEnv = (string)file_get_contents(dirname(hub_path($gpuInstalled['service']['compose_file'])) . '/runtime-settings.conf');
     foreach (['OCR_USE_GPU=1', 'OCR_DEVICE=gpu', 'GPU_VISIBLE_DEVICES=all', 'OCR_GPU_FALLBACK_TO_CPU=1'] as $needle) {
         hub_test_assert(str_contains($gpuEnv, $needle), 'OCR GPU env missing ' . $needle);
     }

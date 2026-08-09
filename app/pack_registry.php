@@ -1761,7 +1761,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         $edgeTtsDemos = hub_edge_tts_initialize_voice_demos($pack, $serviceKey, $edgeTtsDemoRunner);
     }
     $composeFile = hub_pack_compose_file($db, $serviceKey);
-    $envFile = $runtimeDir . '/.env';
+    $runtimeSettingsFile = hub_runtime_settings_path($runtimeDir);
     $portEnv = hub_pack_port_env($manifest);
     $now = hub_now();
     $composeProject = hub_compose_project_for_instance($manifest, $serviceKey);
@@ -1790,7 +1790,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
     ];
 
     hub_with_pack_runtime_lock($runtimeDir, static function () use (
-        $envFile,
+        $runtimeSettingsFile,
         $manifest,
         $envValues,
         $portEnv,
@@ -1818,9 +1818,11 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         $values[':runtime_status'] = (string)($current['runtime_status'] ?? $current['status'] ?? 'stopped');
         $values[':status'] = (string)($current['status'] ?? 'stopped');
 
-        file_put_contents($envFile, hub_generate_service_env($manifest, $envValues, $portEnv, (int)($localPort ?? 0), $runtimeDir, $storage));
+        hub_write_runtime_settings_file($runtimeDir, hub_generate_service_env($manifest, $envValues, $portEnv, (int)($localPort ?? 0), $runtimeDir, $storage));
         file_put_contents(hub_path($composeFile), $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort, $envValues));
-        chmod($envFile, 0664);
+        if (is_link($runtimeSettingsFile) || !is_file($runtimeSettingsFile)) {
+            throw new RuntimeException('Cannot activate service runtime settings.');
+        }
         chmod(hub_path($composeFile), 0664);
 
         if ($current) {
@@ -1857,7 +1859,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
                 return null;
             }
             hub_ensure_service_settings($db, $current);
-            hub_write_service_env($db, $current);
+            hub_write_service_runtime_settings($db, $current);
             hub_write_service_compose($db, $current);
 
             return hub_get_service_by_key($db, $serviceKey);
@@ -2247,7 +2249,7 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
         . $dockerfile
         . "    container_name: {$containerName}\n"
         . "    env_file:\n"
-        . "      - .env\n"
+        . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
         . "    ports:\n"
         . '      - "127.0.0.1:${' . $portEnv . ':-' . $localPort . '}:' . (int)$manifest['runtime']['default_internal_port'] . '"' . "\n"
         . "    restart: unless-stopped\n";
@@ -2284,7 +2286,7 @@ function hub_generate_translate_gemma_compose(array $pack, string $serviceKey, i
         . "    image: ollama/ollama:latest\n"
         . "    container_name: 3waaihub-{$serviceKey}-ollama\n"
         . "    env_file:\n"
-        . "      - .env\n"
+        . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
         . "    environment:\n"
         . '      OLLAMA_HOST: "0.0.0.0:11434"' . "\n"
         . '      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"' . "\n"
@@ -2299,7 +2301,7 @@ function hub_generate_translate_gemma_compose(array $pack, string $serviceKey, i
         . "      context: {$buildContext}\n"
         . "    container_name: 3waaihub-{$serviceKey}\n"
         . "    env_file:\n"
-        . "      - .env\n"
+        . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
         . "    depends_on:\n"
         . "      - ollama\n"
         . "    ports:\n"
@@ -2326,7 +2328,7 @@ function hub_generate_llm_gemma4_compose(array $pack, string $serviceKey, int $l
         . "      context: {$vllmBuildContext}\n"
         . "    container_name: 3waaihub-{$serviceKey}-vllm\n"
         . "    env_file:\n"
-        . "      - .env\n"
+        . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
         . "    entrypoint: [\"/bin/bash\", \"-lc\"]\n"
         . "    command:\n"
         . "      - >-\n"
@@ -2352,7 +2354,7 @@ function hub_generate_llm_gemma4_compose(array $pack, string $serviceKey, int $l
         . "      context: {$buildContext}\n"
         . "    container_name: 3waaihub-{$serviceKey}\n"
         . "    env_file:\n"
-        . "      - .env\n"
+        . "      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n"
         . "    depends_on:\n"
         . "      - vllm\n"
         . "    ports:\n"

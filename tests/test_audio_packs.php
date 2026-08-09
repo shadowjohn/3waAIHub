@@ -85,7 +85,7 @@ hub_test('Whisper ASR service instance generates GPU compose and gateway respons
     ]);
 
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
-    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/runtime-settings.conf');
     $image = '3waaihub/whisper-asr:' . (string)$installed['service']['pack_version'];
     hub_test_assert(str_contains($compose, '127.0.0.1:${ASR_LOCAL_PORT:-18107}:8000'), 'whisper-asr compose port binding mismatch');
     hub_test_assert(str_contains($compose, 'context: ' . HUB_ROOT . '/packs/whisper-asr') && str_contains($compose, 'dockerfile: service/Dockerfile'), 'whisper-asr generated compose must include its controlled Pack job launcher');
@@ -115,13 +115,13 @@ hub_test('Whisper ASR service instance generates GPU compose and gateway respons
 
     $updated = hub_update_service_settings($db, (int)$installed['service']['id'], ['USE_GPU' => '0', 'WHISPER_REAL_INFERENCE' => '0']);
     hub_test_assert($updated['changed'] === true, 'whisper-asr USE_GPU update must change service settings');
-    $cpuEnv = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+    $cpuEnv = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/runtime-settings.conf');
     hub_test_assert(str_contains($cpuEnv, 'USE_GPU=0'), 'whisper-asr USE_GPU update must rewrite env');
     $cpuCompose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
     hub_test_assert(!str_contains($cpuCompose, 'gpus: all'), 'whisper-asr USE_GPU=0 must regenerate a CPU compose');
 
     $refreshed = hub_refresh_service_runtime_files($db, hub_get_service($db, (int)$installed['service']['id']) ?: $installed['service']);
-    $refreshEnv = (string)file_get_contents(dirname(hub_path($refreshed['compose_file'])) . '/.env');
+    $refreshEnv = (string)file_get_contents(dirname(hub_path($refreshed['compose_file'])) . '/runtime-settings.conf');
     $refreshCompose = (string)file_get_contents(hub_path($refreshed['compose_file']));
     hub_test_assert(str_contains($refreshEnv, 'USE_GPU=0'), 'whisper-asr refresh must preserve persisted CPU env');
     hub_test_assert(!str_contains($refreshCompose, 'gpus: all'), 'whisper-asr refresh must preserve persisted CPU compose');
@@ -167,7 +167,7 @@ hub_test('Whisper ASR install-time CPU override survives non-GPU settings update
 
     $settings = hub_list_service_settings($db, (int)$service['id']);
     hub_test_assert(($settings['USE_GPU']['value'] ?? '') === '0', 'whisper-asr install USE_GPU override must seed service settings');
-    $envPath = dirname(hub_path($service['compose_file'])) . '/.env';
+    $envPath = dirname(hub_path($service['compose_file'])) . '/runtime-settings.conf';
     hub_test_assert(str_contains((string)file_get_contents($envPath), 'USE_GPU=0'), 'whisper-asr install USE_GPU override must write env');
     $composePath = hub_path($service['compose_file']);
     hub_test_assert(!str_contains((string)file_get_contents($composePath), 'gpus: all'), 'whisper-asr install USE_GPU=0 must generate CPU compose');

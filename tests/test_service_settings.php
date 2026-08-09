@@ -54,7 +54,7 @@ hub_test('service settings defaults are created from pack schema and write env',
     hub_test_assert(isset($settings['OCR_REAL_INFERENCE']), 'OCR_REAL_INFERENCE setting missing');
     hub_test_assert($settings['OCR_REAL_INFERENCE']['value'] === '0', 'OCR_REAL_INFERENCE default mismatch');
 
-    $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(hub_runtime_settings_path(dirname(hub_path($service['compose_file']))));
     hub_test_assert(str_contains($env, 'AIHUB_MODELS_DIR='), 'env missing AIHUB_MODELS_DIR');
     hub_test_assert(str_contains($env, 'LOCAL_PORT=18160'), 'env missing LOCAL_PORT');
     hub_test_assert(str_contains($env, 'SERVICE_KEY=ocr-settings-main'), 'env missing SERVICE_KEY');
@@ -88,7 +88,7 @@ hub_test('service settings remove keys that the current pack schema no longer de
     $settings = hub_list_service_settings($db, (int)$service['id']);
     hub_test_assert(!isset($settings['LEGACY_REMOVED_SETTING']), 'removed pack settings must not persist after schema synchronization');
 
-    $env = hub_write_service_env($db, $service);
+    $env = hub_write_service_runtime_settings($db, $service);
     hub_test_assert(!str_contains((string)file_get_contents($env), 'LEGACY_REMOVED_SETTING='), 'removed pack settings must not be written to runtime env');
 });
 
@@ -151,7 +151,7 @@ hub_test('GPT-SoVITS settings default to isolated execution and preserve generat
         (hub_ensure_service_settings($db, $service)['GPT_SOVITS_INTERNAL_JOB_TOKEN']['value'] ?? '') === $token,
         'GPT-SoVITS generated token must remain stable after backfill'
     );
-    $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(hub_runtime_settings_path(dirname(hub_path($service['compose_file']))));
     hub_test_assert(str_contains($env, 'GPT_SOVITS_SERVICE_DATA_DIR=/data/service'), 'GPT-SoVITS service data path missing from env');
     hub_test_assert(str_contains($env, 'GPT_SOVITS_INTERNAL_JOB_TOKEN=' . $token), 'GPT-SoVITS generated token missing from env');
 });
@@ -212,7 +212,7 @@ hub_test('service settings update validates values writes env and marks restart'
     hub_test_assert($service !== null && (int)$service['restart_required'] === 1, 'restart_required must be marked');
     hub_test_assert((int)$service['config_dirty'] === 0, 'config_dirty must be clear after env write');
 
-    $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(hub_runtime_settings_path(dirname(hub_path($service['compose_file']))));
     hub_test_assert(str_contains($env, 'OCR_MOCK_TEXT=PhaseP-2 smoke text'), 'updated OCR_MOCK_TEXT missing from env');
     hub_test_assert(str_contains($env, 'OCR_MAX_UPLOAD_MB=64'), 'updated OCR_MAX_UPLOAD_MB missing from env');
     hub_test_assert(str_contains($env, 'OCR_LANG=en'), 'updated OCR_LANG missing from env');
@@ -223,6 +223,60 @@ hub_test('service settings update validates values writes env and marks restart'
     hub_test_assert(hub_test_throws(static fn () => hub_update_service_settings($db, (int)$service['id'], [
         'OCR_LANG' => 'invalid_lang',
     ])), 'invalid select was accepted');
+});
+
+hub_test('service settings use an explicit runtime file and retire only a regular legacy env', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'hello', [
+        'service_key' => 'runtime-settings-migrate',
+        'mode' => 'runtime_settings_migrate',
+    ])['service'];
+    $runtimeDir = dirname(hub_path((string)$service['compose_file']));
+    $legacyPath = $runtimeDir . '/.env';
+    file_put_contents($legacyPath, "LEGACY_ONLY=1\n");
+
+    $settingsPath = hub_write_service_runtime_settings($db, $service);
+    hub_write_service_compose($db, $service);
+    $compose = (string)file_get_contents(hub_path((string)$service['compose_file']));
+    $command = hub_compose_command($service, ['config']);
+    $envFileIndex = array_search('--env-file', $command, true);
+
+    hub_test_assert(basename($settingsPath) === 'runtime-settings.conf', 'runtime settings file name mismatch');
+    hub_test_assert(is_file($settingsPath), 'runtime settings file must be generated');
+    hub_test_assert(!file_exists($legacyPath), 'legacy env must be retired after a successful write');
+    hub_test_assert(str_contains($compose, "env_file:\n      - runtime-settings.conf\n"), 'generated compose must use the explicit runtime settings file');
+    hub_test_assert(
+        $envFileIndex !== false && ($command[$envFileIndex + 1] ?? null) === $settingsPath,
+        'Docker Compose must receive the explicit runtime settings file',
+    );
+});
+
+hub_test('service settings reject a legacy env symlink without touching its target', function (): void {
+    hub_test_require_symlink_fixture('Runtime settings legacy symlink rejection requires symlink fixtures.');
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'hello', [
+        'service_key' => 'runtime-settings-symlink',
+        'mode' => 'runtime_settings_symlink',
+    ])['service'];
+    $runtimeDir = dirname(hub_path((string)$service['compose_file']));
+    $outside = sys_get_temp_dir() . '/3waaihub_runtime_settings_outside_' . bin2hex(random_bytes(4));
+    $outsideFile = $outside . '/legacy.env';
+    mkdir($outside, 0700, true);
+    file_put_contents($outsideFile, "OUTSIDE=1\n");
+    @unlink($runtimeDir . '/.env');
+    symlink($outsideFile, $runtimeDir . '/.env');
+
+    try {
+        hub_test_assert(
+            hub_test_throws(static fn (): string => hub_write_service_runtime_settings($db, $service)),
+            'legacy env symlink was accepted',
+        );
+        hub_test_assert((string)file_get_contents($outsideFile) === "OUTSIDE=1\n", 'legacy env symlink target was modified');
+    } finally {
+        @unlink($runtimeDir . '/.env');
+        @unlink($outsideFile);
+        @rmdir($outside);
+    }
 });
 
 hub_test('service settings override pack runtime env defaults when writing env', function (): void {
@@ -243,7 +297,7 @@ hub_test('service settings override pack runtime env defaults when writing env',
     $service = hub_get_service($db, (int)$service['id']);
     hub_test_assert($service !== null, 'updated structure service missing');
 
-    $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(hub_runtime_settings_path(dirname(hub_path($service['compose_file']))));
     hub_test_assert(str_contains($env, 'STRUCTURE_DEVICE=gpu'), 'service setting must override runtime env default');
     hub_test_assert(!str_contains($env, 'STRUCTURE_DEVICE=cpu'), 'runtime env default must not shadow updated service setting');
     hub_test_assert(str_contains($env, 'STRUCTURE_MAX_UPLOAD_MB=512'), 'updated structure upload limit missing from env');
@@ -276,7 +330,7 @@ hub_test('install environment overrides seed declared GPU settings', function ()
         hub_test_assert(is_array($storedOverrides) && ($storedOverrides[$key] ?? '') === $value, $service['pack_id'] . ' must persist the validated install override');
         $settings = hub_list_service_settings($db, (int)$service['id']);
         hub_test_assert(($settings[$key]['value'] ?? '') === $value, $service['pack_id'] . ' setting must honor install override');
-        $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+        $env = (string)file_get_contents(hub_runtime_settings_path(dirname(hub_path($service['compose_file']))));
         $compose = (string)file_get_contents(hub_path($service['compose_file']));
         hub_test_assert(str_contains($env, $key . '=' . $value), $service['pack_id'] . ' env must honor install override');
         hub_test_assert(str_contains($compose, 'gpus: all') === $usesGpu, $service['pack_id'] . ' compose must honor install override');

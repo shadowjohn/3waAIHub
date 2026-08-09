@@ -83,7 +83,7 @@ hub_test('TranslateGemma service instance generates Ollama sidecar compose and s
     hub_test_assert(str_contains($installed['service']['compose_file'], 'data/test_services/'), 'test DB runtime files must not overwrite translate-main');
     $runtimeDir = dirname(hub_path($installed['service']['compose_file']));
     $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
-    $env = (string)file_get_contents($runtimeDir . '/.env');
+    $env = (string)file_get_contents($runtimeDir . '/runtime-settings.conf');
 
     hub_test_assert(str_contains($compose, '  ollama:'), 'Translate generated compose must include ollama service');
     hub_test_assert(str_contains($compose, '  translator-api:'), 'Translate generated compose must include translator-api service');

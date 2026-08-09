@@ -205,9 +205,15 @@ function hub_output_tail(string $text, int $bytes = 12000): string
 
 function hub_compose_command(array $service, array $args): array
 {
+    $settingsPath = hub_runtime_settings_path(dirname(hub_path((string)$service['compose_file'])));
+    if (!is_file($settingsPath) || is_link($settingsPath)) {
+        throw new RuntimeException('Service runtime settings file is unavailable.');
+    }
     $command = [
         'docker',
         'compose',
+        '--env-file',
+        $settingsPath,
         '-p',
         $service['compose_project'],
         '-f',
@@ -228,9 +234,9 @@ function hub_compose_command(array $service, array $args): array
 function hub_compose_env(array $service): array
 {
     $env = [];
-    $envFile = dirname(hub_path($service['compose_file'])) . '/.env';
-    if (is_file($envFile)) {
-        foreach (file($envFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
+    $settingsPath = hub_runtime_settings_path(dirname(hub_path((string)$service['compose_file'])));
+    if (is_file($settingsPath) && !is_link($settingsPath)) {
+        foreach (file($settingsPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
             if (preg_match('/^([A-Z][A-Z0-9_]*)=(.*)$/', $line, $matches)) {
                 $env[$matches[1]] = $matches[2];
             }
@@ -599,7 +605,7 @@ function hub_whisper_wsl_service_compose_command(array $service, array $args, ?a
     $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
     $serviceData = $serviceRoot . '/data';
     $cacheRoot = $runtimeRoot . '/cache/whisper';
-    $compose = "services:\n  adapter:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot, JSON_UNESCAPED_SLASHES) . "\n      dockerfile: " . json_encode((string)$runtime['dockerfile'], JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - .env\n    environment:\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode((string)$runtime['models_root'] . '/whisper:/models/whisper', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/whisper', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
+    $compose = "services:\n  adapter:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot, JSON_UNESCAPED_SLASHES) . "\n      dockerfile: " . json_encode((string)$runtime['dockerfile'], JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    environment:\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode((string)$runtime['models_root'] . '/whisper:/models/whisper', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/whisper', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
     $env = '';
     foreach ($environment as $key => $value) {
         $env .= $key . '=' . $value . "\n";
@@ -617,7 +623,8 @@ function hub_whisper_wsl_service_compose_command(array $service, array $args, ?a
             $composeArgs = array_values($composeArgs);
             $dockerCommand .= ' --progress=plain';
         }
-        $dockerCommand .= ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
+        $dockerCommand .= ' --env-file ' . hub_wsl_shell_literal($serviceRoot . '/' . HUB_RUNTIME_SETTINGS_FILENAME)
+            . ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
         foreach ($composeArgs as $arg) {
             $dockerCommand .= ' ' . hub_wsl_shell_literal((string)$arg);
         }
@@ -632,7 +639,8 @@ function hub_whisper_wsl_service_compose_command(array $service, array $args, ?a
         . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
         . 'if [ ! -f "$pack_root/' . (string)$runtime['dockerfile'] . '" ]; then echo "WSL Whisper source unavailable. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
         . 'install -d -m 0775 "$service_root" "$models_root/whisper" "$cache_root" "$service_data"' . "\n"
-        . 'printf %s "$env_payload" | base64 -d > "$service_root/.env"' . "\n"
+        . 'printf %s "$env_payload" | base64 -d > "$service_root/' . HUB_RUNTIME_SETTINGS_FILENAME . '"' . "\n"
+        . 'if [ -e "$service_root/.env" ] || [ -L "$service_root/.env" ]; then if [ -L "$service_root/.env" ] || [ ! -f "$service_root/.env" ]; then echo "Unsafe legacy runtime env file." >&2; exit 2; fi; rm -- "$service_root/.env"; fi' . "\n"
         . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
         . $dockerCommand . "\n";
 
@@ -676,7 +684,7 @@ function hub_wsl_service_compose_command(array $service, array $args, ?array $pr
     $runtimeRoot = (string)$runtime['runtime_root'];
     $packRoot = $runtimeRoot . '/packs/' . $packId;
     $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
-    $compose = "services:\n  adapter:\n    image: " . json_encode(hub_service_image_tag($service), JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot . '/service', JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - .env\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    restart: unless-stopped\n";
+    $compose = "services:\n  adapter:\n    image: " . json_encode(hub_service_image_tag($service), JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot . '/service', JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    restart: unless-stopped\n";
     $env = '';
     foreach ($environment as $key => $value) {
         $env .= $key . '=' . $value . "\n";
@@ -689,7 +697,8 @@ function hub_wsl_service_compose_command(array $service, array $args, ?array $pr
         $composeArgs = array_values($composeArgs);
         $dockerCommand .= ' --progress=plain';
     }
-    $dockerCommand .= ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
+    $dockerCommand .= ' --env-file ' . hub_wsl_shell_literal($serviceRoot . '/' . HUB_RUNTIME_SETTINGS_FILENAME)
+        . ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
     foreach ($composeArgs as $arg) {
         $dockerCommand .= ' ' . hub_wsl_shell_literal((string)$arg);
     }
@@ -700,7 +709,8 @@ function hub_wsl_service_compose_command(array $service, array $args, ?array $pr
         . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
         . 'if [ ! -d "$pack_root/service" ]; then echo "WSL Pack source unavailable: $pack_root/service. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
         . 'install -d -m 0775 "$service_root"' . "\n"
-        . 'printf %s "$env_payload" | base64 -d > "$service_root/.env"' . "\n"
+        . 'printf %s "$env_payload" | base64 -d > "$service_root/' . HUB_RUNTIME_SETTINGS_FILENAME . '"' . "\n"
+        . 'if [ -e "$service_root/.env" ] || [ -L "$service_root/.env" ]; then if [ -L "$service_root/.env" ] || [ ! -f "$service_root/.env" ]; then echo "Unsafe legacy runtime env file." >&2; exit 2; fi; rm -- "$service_root/.env"; fi' . "\n"
         . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
         . $dockerCommand . "\n";
 
@@ -986,8 +996,8 @@ function hub_service_generated_runtime_files(PDO $db, array $service): ?array
         return null;
     }
 
-    $envPath = $runtimeDir . '/.env';
-    foreach ([$composePath, $envPath] as $path) {
+    $settingsPath = hub_runtime_settings_path($runtimeDir);
+    foreach ([$composePath, $settingsPath] as $path) {
         clearstatcache(true, $path);
         $realPath = realpath($path);
         if (
@@ -1029,7 +1039,11 @@ function hub_service_generated_runtime_cleanup_files(PDO $db, string $serviceKey
     if (dirname($composePath) !== $runtimeDir) {
         return null;
     }
-    $files = [$composePath, $runtimeDir . '/.env'];
+    $files = [$composePath, hub_runtime_settings_path($runtimeDir)];
+    $legacyPath = hub_legacy_runtime_env_path($runtimeDir);
+    if (is_link($legacyPath) || file_exists($legacyPath)) {
+        $files[] = $legacyPath;
+    }
     foreach ($files as $path) {
         clearstatcache(true, $path);
         if (!file_exists($path)) {

@@ -61,7 +61,7 @@ hub_test('Taiwan address service instance writes only declared trusted upstream 
         ],
     ]);
     $service = $installed['service'];
-    $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path($service['compose_file'])) . '/runtime-settings.conf');
     $compose = (string)file_get_contents(hub_path($service['compose_file']));
     hub_test_assert(str_contains($env, 'TWADDR_UPSTREAM_URL=http://host.docker.internal/tw-address/api.php'), 'Taiwan address upstream missing from env');
     hub_test_assert(str_contains($env, 'TWADDR_TIMEOUT_SEC=12'), 'Taiwan address timeout missing from env');

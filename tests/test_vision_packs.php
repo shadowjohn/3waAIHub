@@ -189,7 +189,7 @@ hub_test('YOLO and SAM3 service instances generate GPU model mounts', function (
 
     foreach ([$yolo, $sam3] as $installed) {
         $compose = (string)file_get_contents(hub_path($installed['service']['compose_file']));
-        $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/.env');
+        $env = (string)file_get_contents(dirname(hub_path($installed['service']['compose_file'])) . '/runtime-settings.conf');
         hub_test_assert(str_contains($compose, '/models'), $installed['service']['service_key'] . ' compose must mount models');
         if ($installed['service']['pack_id'] === 'yolo') {
             hub_test_assert(!str_contains($compose, 'gpus: all'), 'yolo L2 compose must keep GPU optional');

@@ -2,6 +2,8 @@
 declare(strict_types=1);
 
 define('HUB_ROOT', dirname(__DIR__));
+const HUB_RUNTIME_SETTINGS_FILENAME = 'runtime-settings.conf';
+const HUB_LEGACY_RUNTIME_ENV_FILENAME = '.env';
 $hubDbPath = trim((string)(getenv('AIHUB_TEST_DB') ?: ''));
 $hubTestDataDir = trim((string)(getenv('AIHUB_TEST_DATA_DIR') ?: ''));
 $hubDataDir = HUB_ROOT . '/data';

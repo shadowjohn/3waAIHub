@@ -109,7 +109,7 @@ hub_test('Gemma 4 LLM install generates vLLM sidecar plus Hub chat adapter compo
         hub_test_assert(!str_contains($compose, $forbidden), 'LLM generated compose leaked deferred feature ' . $forbidden);
     }
 
-    $env = (string)file_get_contents(dirname(hub_path((string)$service['compose_file'])) . '/.env');
+    $env = (string)file_get_contents(dirname(hub_path((string)$service['compose_file'])) . '/runtime-settings.conf');
     foreach (['VLLM_BASE_URL=http://vllm:8000', 'GEMMA4_REAL_INFERENCE=0', 'MAX_INPUT_CHARS=12000'] as $needle) {
         hub_test_assert(str_contains($env, $needle), 'LLM generated env missing ' . $needle);
     }

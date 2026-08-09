@@ -113,7 +113,7 @@ hub_test('BiRefNet install generates GPU-first compose and permits explicit CPU 
         'local_port' => 18112,
     ]);
     $gpuCompose = (string)file_get_contents(hub_path($gpu['service']['compose_file']));
-    $gpuEnv = (string)file_get_contents(dirname(hub_path($gpu['service']['compose_file'])) . '/.env');
+    $gpuEnv = (string)file_get_contents(dirname(hub_path($gpu['service']['compose_file'])) . '/runtime-settings.conf');
     hub_test_assert(str_contains($gpuCompose, 'gpus: all'), 'BiRefNet default install must request GPU');
     foreach (['${AIHUB_MODELS_DIR}/birefnet:/models/birefnet:ro'] as $needle) {
         hub_test_assert(str_contains($gpuCompose, $needle), 'BiRefNet generated compose missing ' . $needle);
@@ -132,7 +132,7 @@ hub_test('BiRefNet install generates GPU-first compose and permits explicit CPU 
         'env' => ['BIREFNET_USE_GPU' => '0', 'BIREFNET_DEVICE' => 'cpu'],
     ]);
     $cpuCompose = (string)file_get_contents(hub_path($cpu['service']['compose_file']));
-    $cpuEnv = (string)file_get_contents(dirname(hub_path($cpu['service']['compose_file'])) . '/.env');
+    $cpuEnv = (string)file_get_contents(dirname(hub_path($cpu['service']['compose_file'])) . '/runtime-settings.conf');
     hub_test_assert(!str_contains($cpuCompose, 'gpus: all'), 'BiRefNet CPU override must not request GPU');
     hub_test_assert(str_contains($cpuEnv, 'BIREFNET_USE_GPU=0'), 'BiRefNet CPU env must disable GPU');
     hub_test_assert(str_contains($cpuEnv, 'BIREFNET_DEVICE=cpu'), 'BiRefNet CPU env must select CPU');
