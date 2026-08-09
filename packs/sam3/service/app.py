@@ -2,26 +2,30 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import secrets
 import tempfile
+import threading
 import time
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse, Response
 from PIL import Image, UnidentifiedImageError
 
 from geometry import polygon_from_mask, polygons_from_mask, rle_from_mask
+from model_smoke import CHECKPOINT_NAME, model_status as verified_model_status
+from sam31 import Sam31Error, load_predictor, release_predictor, segment_single_image
 
 app = FastAPI(title="3waAIHub SAM3")
-MODEL_EXTENSIONS = {".pt", ".pth", ".safetensors", ".ckpt"}
-MIN_CHECKPOINT_BYTES = 1024 * 1024  # ponytail: catches fake smoke files; real validation happens at SAM load.
-_SAM_MODEL: Any | None = None
-_SAM_CHECKPOINT = ""
-_SAM_SEMANTIC_PREDICTOR: Any | None = None
-_SAM_SEMANTIC_CHECKPOINT = ""
+_SAM_LOCK = threading.Lock()  # ponytail: one GPU request per service; use job scheduling only if throughput requires it.
+_ACTIVE_RESIDENT_JOBS: dict[str, threading.Event] = {}
+_ACTIVE_RESIDENT_JOBS_LOCK = threading.RLock()
+RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,95}$")
+TERMINAL_RESIDENT_STATES = {"succeeded", "failed", "cancelled"}
 OUTPUT_FORMATS = {"metadata", "polygon", "rle", "both", "png"}
 PROMPT_TYPES = {"auto", "points", "boxes", "text", "guidance_mask"}
 
@@ -43,51 +47,50 @@ def env_enabled(value: str | None) -> bool:
 
 
 def configure_sam3_env() -> None:
-    model_dir = os.getenv("SAM3_MODEL_DIR", "/models/sam3")
     cache_dir = os.getenv("SAM3_CACHE_DIR", "/cache/sam3")
     env = {
-        "HF_HOME": os.getenv("HF_HOME", f"{model_dir}/huggingface"),
-        "TORCH_HOME": os.getenv("TORCH_HOME", f"{model_dir}/torch"),
+        "HF_HOME": os.getenv("HF_HOME", f"{cache_dir}/huggingface"),
+        "TORCH_HOME": os.getenv("TORCH_HOME", f"{cache_dir}/torch"),
         "XDG_CACHE_HOME": os.getenv("XDG_CACHE_HOME", f"{cache_dir}/xdg"),
         "HOME": os.getenv("HOME", f"{cache_dir}/home"),
-        "YOLO_CONFIG_DIR": os.getenv("YOLO_CONFIG_DIR", f"{cache_dir}/ultralytics"),
-        "ULTRALYTICS_SETTINGS_DIR": os.getenv("ULTRALYTICS_SETTINGS_DIR", f"{cache_dir}/ultralytics"),
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
         "PYTHONUNBUFFERED": os.getenv("PYTHONUNBUFFERED", "1"),
     }
     os.environ.update(env)
     for path in [
-        model_dir,
         cache_dir,
         os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service"),
         env["HF_HOME"],
         env["TORCH_HOME"],
         env["XDG_CACHE_HOME"],
         env["HOME"],
-        env["ULTRALYTICS_SETTINGS_DIR"],
     ]:
         Path(path).mkdir(parents=True, exist_ok=True)
 
 
-def storage_path_status(path: str) -> dict[str, Any]:
+def storage_path_status(path: str, require_writable: bool) -> dict[str, Any]:
     target = Path(path)
     exists = target.is_dir()
     readable = exists and os.access(target, os.R_OK)
     writable = False
     error = ""
-    if exists and readable:
+    if exists and readable and require_writable:
         try:
             with tempfile.NamedTemporaryFile(prefix=".3waaihub-write-", dir=target, delete=False) as handle:
                 test_path = Path(handle.name)
             test_path.unlink(missing_ok=True)
             writable = True
         except OSError as exc:
-            error = str(exc)
+            error = exc.__class__.__name__
+    elif exists and readable:
+        writable = os.access(target, os.W_OK)
     elif not exists:
         error = "directory missing"
     else:
         error = "directory not readable"
 
-    status: dict[str, Any] = {"path": path, "exists": exists, "readable": readable, "writable": writable}
+    status: dict[str, Any] = {"exists": exists, "readable": readable, "writable": writable}
     if error:
         status["error"] = error
     return status
@@ -96,130 +99,37 @@ def storage_path_status(path: str) -> dict[str, Any]:
 def storage_status() -> tuple[dict[str, Any], list[str]]:
     configure_sam3_env()
     storage = {
-        "models": storage_path_status(os.getenv("SAM3_MODEL_DIR", "/models/sam3")),
-        "cache": storage_path_status(os.getenv("SAM3_CACHE_DIR", "/cache/sam3")),
-        "service_data": storage_path_status(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")),
+        "models": storage_path_status(os.getenv("SAM3_MODEL_DIR", "/models/sam3"), False),
+        "cache": storage_path_status(os.getenv("SAM3_CACHE_DIR", "/cache/sam3"), True),
+        "service_data": storage_path_status(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service"), True),
     }
     errors = [
-        f"{name} {key} failed: {status['path']}"
+        f"{name} {key} failed"
         for name, status in storage.items()
-        for key in ("exists", "readable", "writable")
-        if not status[key]
+        for key in ("exists", "readable") + (("writable",) if name != "models" else ())
+        if not bool(status[key])
     ]
     return storage, errors
 
 
-def is_path_under(path: Path, root: Path) -> bool:
-    try:
-        path.resolve(strict=False).relative_to(root.resolve(strict=False))
-        return True
-    except ValueError:
-        return False
-
-
-def safe_checkpoint_path(raw: str, model_root: Path) -> tuple[Path | None, str]:
-    value = raw.strip()
-    if value == "":
-        return None, "scan"
-    if "\x00" in value:
-        return None, "invalid_checkpoint_path"
-
-    candidate = Path(value)
-    if not candidate.is_absolute():
-        candidate = model_root / candidate
-    if not is_path_under(candidate, model_root):
-        return None, "invalid_checkpoint_path"
-
-    return candidate, "SAM3_CHECKPOINT"
-
-
-def is_safe_model_file(path: Path, model_root: Path) -> bool:
-    if path.suffix.lower() not in MODEL_EXTENSIONS or path.is_dir():
-        return False
-    try:
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(model_root.resolve(strict=True))
-    except (OSError, ValueError):
-        return False
-
-    return path.is_file()
-
-
-def checkpoint_loadable(path: Path) -> bool:
-    try:
-        return path.stat().st_size >= MIN_CHECKPOINT_BYTES
-    except OSError:
-        return False
-
-
-def model_candidates(model_root: Path) -> list[Path]:
-    candidates: list[Path] = []
-    if not model_root.is_dir():
-        return candidates
-
-    for current_root, dirs, files in os.walk(model_root):
-        root_path = Path(current_root)
-        dirs[:] = [name for name in dirs if not (root_path / name).is_symlink()]
-        for filename in files:
-            candidate = root_path / filename
-            if is_safe_model_file(candidate, model_root):
-                candidates.append(candidate)
-
-    return sorted(candidates, key=lambda path: (not checkpoint_loadable(path), str(path)))
-
-
-def checkpoint_payload(path: Path, source: str, candidates_count: int) -> dict[str, Any]:
-    size = path.stat().st_size
-    return {
-        "present": True,
-        "checkpoint": str(path.resolve(strict=True)),
-        "source": source,
-        "size_bytes": size,
-        "loadable": size >= MIN_CHECKPOINT_BYTES,
-        "required_for_real_inference": True,
-        "candidates_count": candidates_count,
-    }
-
-
 def model_status() -> dict[str, Any]:
-    model_root = Path(os.getenv("SAM3_MODEL_DIR", "/models/sam3"))
-    raw_checkpoint = os.getenv("SAM3_CHECKPOINT", "")
-    candidates = model_candidates(model_root)
-    checkpoint, source = safe_checkpoint_path(raw_checkpoint, model_root)
-
-    error = ""
-    if source == "invalid_checkpoint_path":
-        error = "invalid_checkpoint_path"
-        checkpoint = None
-    elif checkpoint is not None and is_safe_model_file(checkpoint, model_root):
-        return checkpoint_payload(checkpoint, source, len(candidates))
-    elif checkpoint is None and candidates:
-        return checkpoint_payload(candidates[0], "scan", len(candidates))
-
-    status: dict[str, Any] = {
-        "present": False,
-        "checkpoint": str(checkpoint) if checkpoint is not None else "",
-        "source": source,
-        "size_bytes": 0,
-        "loadable": False,
+    verified = verified_model_status()
+    return {
+        "present": bool(verified.get("present")),
+        "checkpoint": CHECKPOINT_NAME,
+        "loadable": bool(verified.get("ok")),
         "required_for_real_inference": True,
-        "candidates_count": len(candidates),
+        "error": verified.get("error", ""),
     }
-    if error:
-        status["error"] = error
-
-    return status
 
 
 def runtime_status(model: dict[str, Any] | None = None) -> dict[str, Any]:
     try:
-        from ultralytics import SAM  # noqa: F401
+        from sam3.model_builder import build_sam3_multiplex_video_predictor  # noqa: F401
 
         dependency_available = True
-        error = ""
-    except Exception as exc:
+    except Exception:
         dependency_available = False
-        error = safe_message(exc)
 
     model = model if model is not None else model_status()
     runtime = {
@@ -227,8 +137,6 @@ def runtime_status(model: dict[str, Any] | None = None) -> dict[str, Any]:
         "backend": "sam3",
         "can_load_model": dependency_available and bool(model.get("present")) and bool(model.get("loadable")),
     }
-    if error:
-        runtime["error"] = error
     return runtime
 
 
@@ -265,19 +173,73 @@ app.get("/health")(health)
 
 
 def safe_message(exc: Exception) -> str:
-    message = str(exc) or exc.__class__.__name__
-    for value in [
-        os.getenv("SAM3_MODEL_DIR", ""),
-        os.getenv("SAM3_CACHE_DIR", ""),
-        os.getenv("SAM3_SERVICE_DATA_DIR", ""),
-    ]:
-        if value:
-            message = message.replace(value, Path(value).as_posix())
-    return message.splitlines()[0][:300]
+    del exc
+    return "SAM3 inference failed."
 
 
 def error_response(status_code: int, code: str, message: str) -> JSONResponse:
     return JSONResponse(status_code=status_code, content={"ok": False, "error": code, "message": message})
+
+
+def internal_authorized(token: str | None) -> bool:
+    expected = os.getenv("SAM3_INTERNAL_JOB_TOKEN", "")
+    return bool(expected and token and secrets.compare_digest(expected, token))
+
+
+def resident_jobs_root() -> Path:
+    root = Path(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")) / "resident_jobs"
+    if root.exists() and (root.is_symlink() or not root.is_dir()):
+        raise RuntimeError("resident_job_invalid")
+    root.mkdir(parents=True, exist_ok=True)
+    if root.is_symlink():
+        raise RuntimeError("resident_job_invalid")
+    return root.resolve(strict=True)
+
+
+def resident_stage(run_id: str) -> Path:
+    if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):
+        raise RuntimeError("resident_job_invalid")
+    root = resident_jobs_root()
+    stage = root / run_id
+    if not stage.is_dir() or stage.is_symlink():
+        raise RuntimeError("resident_job_invalid")
+    resolved = stage.resolve(strict=True)
+    if root not in resolved.parents:
+        raise RuntimeError("resident_job_invalid")
+    return resolved
+
+
+def resident_regular(stage: Path, *parts: str) -> Path:
+    target = stage.joinpath(*parts)
+    if not target.is_file() or target.is_symlink():
+        raise RuntimeError("resident_job_invalid")
+    resolved = target.resolve(strict=True)
+    if stage not in resolved.parents:
+        raise RuntimeError("resident_job_invalid")
+    return resolved
+
+
+def resident_terminal_state(stage: Path) -> str:
+    try:
+        payload = json.loads(resident_regular(stage, "terminal.json").read_text(encoding="utf-8"))
+    except (OSError, RuntimeError, ValueError):
+        return "unknown"
+    return str(payload.get("state")) if isinstance(payload, dict) and set(payload) == {"state"} and payload.get("state") in TERMINAL_RESIDENT_STATES else "unknown"
+
+
+def write_resident_terminal_state(stage: Path, state: str) -> None:
+    if state not in TERMINAL_RESIDENT_STATES:
+        raise RuntimeError("resident_job_invalid")
+    target = stage / "terminal.json"
+    temporary = stage / ".terminal.json.tmp"
+    if any(path.exists() and (path.is_symlink() or not path.is_file()) for path in (target, temporary)):
+        raise RuntimeError("resident_job_invalid")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump({"state": state}, handle, separators=(",", ":"))
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    temporary.replace(target)
 
 
 def current_checkpoint() -> Path:
@@ -285,68 +247,19 @@ def current_checkpoint() -> Path:
     if not model.get("present"):
         raise Sam3Error("model_not_present", "SAM3 checkpoint is not present.", 503)
     if not model.get("loadable"):
-        raise Sam3Error("model_load_failed", "SAM3 checkpoint is present but checkpoint is too small to load.", 503)
-    return Path(str(model["checkpoint"]))
+        raise Sam3Error("model_load_failed", "SAM3 checkpoint verification failed.", 503)
+    return Path(os.getenv("SAM3_MODEL_DIR", "/models/sam3")) / CHECKPOINT_NAME
 
 
 def effective_device() -> str:
-    requested = os.getenv("SAM3_DEVICE", "auto").lower()
-    if requested == "cpu":
-        return "cpu"
     try:
         import torch
 
         if torch.cuda.is_available():
-            return "0"
+            return "cuda"
     except Exception as exc:
-        raise Sam3Error("runtime_dependency_missing", safe_message(exc), 503) from exc
-    if requested == "cuda":
-        raise Sam3Error("gpu_unavailable", "CUDA GPU is not available for SAM3.", 503)
+        raise Sam3Error("runtime_dependency_missing", "SAM3 runtime dependency is not available.", 503) from exc
     raise Sam3Error("gpu_unavailable", "SAM3 GPU runtime is not available.", 503)
-
-
-def sam_model(checkpoint: Path) -> Any:
-    global _SAM_MODEL, _SAM_CHECKPOINT
-    configure_sam3_env()
-    checkpoint_key = str(checkpoint)
-    if _SAM_MODEL is not None and _SAM_CHECKPOINT == checkpoint_key:
-        return _SAM_MODEL
-    try:
-        from ultralytics import SAM
-    except Exception as exc:
-        raise Sam3Error("runtime_dependency_missing", "Ultralytics SAM dependency is not available.", 503) from exc
-    try:
-        _SAM_MODEL = SAM(checkpoint_key)
-        _SAM_CHECKPOINT = checkpoint_key
-        return _SAM_MODEL
-    except Exception as exc:
-        raise Sam3Error("model_load_failed", safe_message(exc), 503) from exc
-
-
-def sam_semantic_predictor(checkpoint: Path) -> Any:
-    global _SAM_SEMANTIC_PREDICTOR, _SAM_SEMANTIC_CHECKPOINT
-    configure_sam3_env()
-    checkpoint_key = str(checkpoint)
-    if _SAM_SEMANTIC_PREDICTOR is not None and _SAM_SEMANTIC_CHECKPOINT == checkpoint_key:
-        return _SAM_SEMANTIC_PREDICTOR
-    try:
-        from ultralytics.models.sam import SAM3SemanticPredictor
-    except Exception as exc:
-        raise Sam3Error("runtime_dependency_missing", "Ultralytics SAM3 semantic predictor is not available.", 503) from exc
-    try:
-        _SAM_SEMANTIC_PREDICTOR = SAM3SemanticPredictor(overrides={
-            "conf": float(os.getenv("SAM3_TEXT_CONF", "0.25")),
-            "task": "segment",
-            "mode": "predict",
-            "model": checkpoint_key,
-            "device": effective_device(),
-            "save": False,
-            "verbose": False,
-        })
-        _SAM_SEMANTIC_CHECKPOINT = checkpoint_key
-        return _SAM_SEMANTIC_PREDICTOR
-    except Exception as exc:
-        raise Sam3Error("model_load_failed", safe_message(exc), 503) from exc
 
 
 def image_info(data: bytes) -> tuple[int, int]:
@@ -450,88 +363,38 @@ def parse_text_prompt(value: str) -> list[str]:
     return prompts
 
 
-def to_numpy(value: Any) -> np.ndarray:
-    if hasattr(value, "detach"):
-        value = value.detach()
-    if hasattr(value, "cpu"):
-        value = value.cpu()
-    if hasattr(value, "numpy"):
-        return value.numpy()
-    return np.asarray(value)
-
-
-def score_at(result: Any, index: int) -> float:
-    boxes = getattr(result, "boxes", None)
-    conf = getattr(boxes, "conf", None)
-    if conf is None:
-        return 0.0
-    try:
-        value = conf[index]
-        return float(value.item() if hasattr(value, "item") else value)
-    except Exception:
-        return 0.0
-
-
-def label_at(result: Any, index: int, label_hints: list[str]) -> str:
-    if index < len(label_hints):
-        return label_hints[index]
-    if label_hints:
-        return label_hints[0]
-    boxes = getattr(result, "boxes", None)
-    classes = getattr(boxes, "cls", None)
-    names = getattr(result, "names", None)
-    try:
-        if classes is not None and names:
-            value = classes[index]
-            class_id = int(value.item() if hasattr(value, "item") else value)
-            if isinstance(names, dict):
-                return str(names.get(class_id, ""))
-            if isinstance(names, list) and 0 <= class_id < len(names):
-                return str(names[class_id])
-    except Exception:
-        pass
-    return ""
-
-
 def mask_items(results: Any, output_format: str, label_hints: list[str] | None = None) -> list[dict[str, Any]]:
     label_hints = label_hints or []
     items: list[dict[str, Any]] = []
     for result in results or []:
-        masks = getattr(result, "masks", None)
-        data = getattr(masks, "data", None)
-        if data is None:
+        if not isinstance(result, dict) or "mask" not in result:
             continue
-        array = to_numpy(data)
-        if array.ndim == 2:
-            array = array[None, :, :]
-        for index, mask in enumerate(array):
-            bitmap = np.asarray(mask) > 0.5
-            ys, xs = np.where(bitmap)
-            if len(xs) == 0 or len(ys) == 0:
-                continue
-            x1, x2 = int(xs.min()), int(xs.max())
-            y1, y2 = int(ys.min()), int(ys.max())
-            score = score_at(result, index)
-            item: dict[str, Any] = {
-                "id": len(items) + 1,
-                "score": score,
-                "confidence": score,
-                "label_name": label_at(result, index, label_hints),
-                "bbox": [x1, y1, x2 - x1 + 1, y2 - y1 + 1],
-                "area": int(bitmap.sum()),
-            }
-            if output_format in {"polygon", "both"}:
-                try:
-                    item["polygon"] = polygon_from_mask(bitmap)
-                    item["polygons"] = polygons_from_mask(bitmap)
-                except Exception as exc:
-                    raise Sam3Error("polygon_extract_failed", safe_message(exc), 502) from exc
-            if output_format in {"rle", "both"}:
-                try:
-                    item["rle"] = rle_from_mask(bitmap)
-                except Exception as exc:
-                    raise Sam3Error("rle_encode_failed", safe_message(exc), 502) from exc
-            items.append(item)
+        bitmap = np.asarray(result["mask"]) > 0
+        ys, xs = np.where(bitmap)
+        if len(xs) == 0 or len(ys) == 0:
+            continue
+        x1, x2 = int(xs.min()), int(xs.max())
+        y1, y2 = int(ys.min()), int(ys.max())
+        item: dict[str, Any] = {
+            "id": int(result.get("id", len(items) + 1)),
+            "score": float(result.get("score", 1.0)),
+            "confidence": float(result.get("score", 1.0)),
+            "label_name": label_hints[min(len(items), len(label_hints) - 1)] if label_hints else "",
+            "bbox": [x1, y1, x2 - x1 + 1, y2 - y1 + 1],
+            "area": int(bitmap.sum()),
+        }
+        if output_format in {"polygon", "both"}:
+            try:
+                item["polygon"] = polygon_from_mask(bitmap)
+                item["polygons"] = polygons_from_mask(bitmap)
+            except Exception as exc:
+                raise Sam3Error("polygon_extract_failed", safe_message(exc), 502) from exc
+        if output_format in {"rle", "both"}:
+            try:
+                item["rle"] = rle_from_mask(bitmap)
+            except Exception as exc:
+                raise Sam3Error("rle_encode_failed", safe_message(exc), 502) from exc
+        items.append(item)
     return items
 
 
@@ -550,68 +413,92 @@ def mask_png(bitmap: np.ndarray, width: int, height: int) -> bytes:
 def merged_mask_png(results: Any, width: int, height: int) -> bytes:
     merged: np.ndarray | None = None
     for result in results or []:
-        masks = getattr(result, "masks", None)
-        data = getattr(masks, "data", None)
-        if data is None:
+        if not isinstance(result, dict) or "mask" not in result:
             continue
-        array = to_numpy(data)
-        if array.ndim == 2:
-            array = array[None, :, :]
-        for mask in array:
-            bitmap = np.asarray(mask) > 0.5
-            merged = bitmap if merged is None else np.logical_or(merged, bitmap)
+        bitmap = np.asarray(result["mask"]) > 0
+        merged = bitmap if merged is None else np.logical_or(merged, bitmap)
     if merged is None:
         merged = np.zeros((height, width), dtype=bool)
     return mask_png(merged, width, height)
 
 
-def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points_json: str, boxes_json: str, text_prompt: str, output_format: str, guidance_bitmap: np.ndarray | None = None) -> dict[str, Any]:
+def parse_boxes_prompt(value: str) -> list[list[float]]:
+    payload = parse_json(value, [])
+    if isinstance(payload, list) and len(payload) == 4 and not any(isinstance(item, list) for item in payload):
+        payload = [payload]
+    if not isinstance(payload, list) or not payload:
+        raise Sam3Error("invalid_prompt", "boxes prompt requires boxes_json.", 400)
+    boxes: list[list[float]] = []
+    for box in payload:
+        if not isinstance(box, list) or len(box) != 4:
+            raise Sam3Error("invalid_prompt", "boxes_json boxes must be [x1,y1,x2,y2].", 400)
+        try:
+            boxes.append([float(value) for value in box])
+        except (TypeError, ValueError) as exc:
+            raise Sam3Error("invalid_prompt", "boxes_json coordinates must be numeric.", 400) from exc
+    return boxes
+
+
+def decoded_image(data: bytes) -> Image.Image:
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.verify()
+        with Image.open(BytesIO(data)) as image:
+            return image.convert("RGB")
+    except (UnidentifiedImageError, OSError) as exc:
+        raise Sam3Error("bad_image", "Uploaded file is not a readable image.", 400) from exc
+
+
+def run_sam3(data: bytes, width: int, height: int, prompt_type: str, points_json: str, boxes_json: str, text_prompt: str, output_format: str, guidance_bitmap: np.ndarray | None = None) -> dict[str, Any]:
     if prompt_type not in PROMPT_TYPES:
         raise Sam3Error("invalid_prompt", "prompt_type must be auto, points, boxes, text, or guidance_mask.", 400)
 
     checkpoint = current_checkpoint()
-    kwargs: dict[str, Any] = {"source": str(image_path), "device": effective_device(), "verbose": False}
+    points: list[list[float]] | None = None
+    labels: list[int] | None = None
+    boxes: list[list[float]] | None = None
+    text_prompts: list[str] = []
     if prompt_type == "points":
-        model = sam_model(checkpoint)
         points, labels = parse_points_prompt(points_json)
-        kwargs["points"] = points
-        if labels is not None:
-            kwargs["labels"] = labels
     elif prompt_type == "boxes":
-        model = sam_model(checkpoint)
-        boxes = parse_json(boxes_json, [])
-        if not boxes:
-            raise Sam3Error("invalid_prompt", "boxes prompt requires boxes_json.", 400)
-        kwargs["bboxes"] = boxes
+        boxes = parse_boxes_prompt(boxes_json)
     elif prompt_type == "text":
-        model = sam_semantic_predictor(checkpoint)
-        kwargs["text"] = parse_text_prompt(text_prompt)
+        text_prompts = parse_text_prompt(text_prompt)
     elif prompt_type == "guidance_mask":
         if guidance_bitmap is None:
             raise Sam3Error("invalid_guidance_mask", "guidance_mask PNG is required for prompt_type=guidance_mask.", 400)
-        model = sam_model(checkpoint)
-        kwargs["bboxes"] = [guidance_bbox(guidance_bitmap)]
-    else:
-        model = sam_model(checkpoint)
 
     started = time.perf_counter()
+    predictor: Any | None = None
     try:
-        if prompt_type == "text":
-            model.set_image(str(image_path))
-            results = model(text=kwargs["text"])
-        else:
-            results = model.predict(**kwargs)
+        configure_sam3_env()
+        with _SAM_LOCK:
+            predictor = load_predictor(checkpoint, effective_device())
+            results = segment_single_image(
+                predictor,
+                decoded_image(data),
+                prompt_type=prompt_type,
+                points=points,
+                labels=labels,
+                boxes=boxes,
+                text_prompts=text_prompts or None,
+                guidance_bitmap=guidance_bitmap,
+                workspace=Path(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")),
+            )
     except TimeoutError as exc:
         raise Sam3Error("inference_timeout", "SAM3 inference timed out.", 504) from exc
+    except Sam31Error as exc:
+        if exc.code == "invalid_prompt":
+            raise Sam3Error("invalid_prompt", "SAM3 prompt is invalid.", 400) from exc
+        raise Sam3Error("inference_failed", "SAM3 inference failed.", 502) from exc
     except Sam3Error:
         raise
     except Exception as exc:
-        message = safe_message(exc)
-        if "cuda" in message.lower() or "gpu" in message.lower():
-            raise Sam3Error("gpu_unavailable", message, 503) from exc
-        raise Sam3Error("inference_failed", message, 502) from exc
+        raise Sam3Error("inference_failed", safe_message(exc), 502) from exc
+    finally:
+        if predictor is not None:
+            release_predictor(predictor)
 
-    text_prompts = kwargs.get("text", [])
     if output_format == "png":
         return {
             "ok": True,
@@ -625,7 +512,7 @@ def run_sam3(image_path: Path, width: int, height: int, prompt_type: str, points
         "ok": True,
         "mock": False,
         "runtime_level": runtime_level(),
-        "model": {"checkpoint": str(checkpoint)},
+        "model": {"checkpoint": CHECKPOINT_NAME},
         "prompt_type": prompt_type,
         "text_prompt": text_prompt if prompt_type == "text" else "",
         "text_prompts": text_prompts,
@@ -657,26 +544,18 @@ async def segment_image(
         return error_response(exc.status_code, exc.code, exc.message)
 
     if env_enabled(real_inference) or env_enabled(os.getenv("SAM3_REAL_INFERENCE")):
-        image_path: Path | None = None
         try:
             width, height = image_info(data)
             guidance_bitmap = None
             if (prompt_type or "auto") == "guidance_mask":
                 guidance_bitmap = parse_guidance_mask(await guidance_mask.read() if guidance_mask is not None else b"", width, height)
-            suffix = Path(image.filename or "upload.png").suffix or ".png"
-            with tempfile.NamedTemporaryFile(prefix="sam3-", suffix=suffix, delete=False) as handle:
-                handle.write(data)
-                image_path = Path(handle.name)
             semantic_text = text_prompt or text
-            payload = run_sam3(image_path, width, height, prompt_type or "auto", points_json, boxes_json, semantic_text, normalized_output_format, guidance_bitmap)
+            payload = run_sam3(data, width, height, prompt_type or "auto", points_json, boxes_json, semantic_text, normalized_output_format, guidance_bitmap)
             if isinstance(payload.get("png"), bytes):
                 return Response(content=payload["png"], media_type="image/png", headers={"X-SAM3-Output-Format": "png"})
             return JSONResponse(content=payload)
         except Sam3Error as exc:
             return error_response(exc.status_code, exc.code, exc.message)
-        finally:
-            if image_path is not None:
-                image_path.unlink(missing_ok=True)
 
     mock_text_prompts: list[str] = []
     mock_points: list[list[float]] = []
@@ -724,3 +603,80 @@ async def segment_image(
         "elapsed_ms": 0,
         "message": "SAM3 mock segmentation",
     })
+
+
+def internal_error(status: int, code: str) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"ok": False, "error": code})
+
+
+@app.get("/internal/capacity", response_model=None)
+def internal_capacity(x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, Any] | JSONResponse:
+    if not internal_authorized(x_aihub_internal_token):
+        return internal_error(403, "internal_auth_failed")
+    with _ACTIVE_RESIDENT_JOBS_LOCK:
+        return {"model_state": "running" if _ACTIVE_RESIDENT_JOBS else "cold", "active_runs": len(_ACTIVE_RESIDENT_JOBS)}
+
+
+@app.get("/internal/jobs/{run_id}", response_model=None)
+def internal_job_status(run_id: str, x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, str] | JSONResponse:
+    if not internal_authorized(x_aihub_internal_token):
+        return internal_error(403, "internal_auth_failed")
+    try:
+        stage = resident_stage(run_id)
+    except RuntimeError:
+        return internal_error(404, "resident_job_not_found")
+    with _ACTIVE_RESIDENT_JOBS_LOCK:
+        state = "running" if run_id in _ACTIVE_RESIDENT_JOBS else resident_terminal_state(stage)
+    return {"run_id": run_id, "state": state}
+
+
+@app.post("/internal/jobs/{run_id}/cancel", response_model=None)
+def internal_job_cancel(run_id: str, x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, str] | JSONResponse:
+    if not internal_authorized(x_aihub_internal_token):
+        return internal_error(403, "internal_auth_failed")
+    with _ACTIVE_RESIDENT_JOBS_LOCK:
+        cancelled = _ACTIVE_RESIDENT_JOBS.get(run_id)
+        if cancelled is None:
+            return internal_error(404, "resident_job_not_found")
+        cancelled.set()
+    return {"run_id": run_id, "state": "running"}
+
+
+@app.post("/internal/jobs", response_model=None)
+def internal_job_start(payload: dict[str, Any], x_aihub_internal_token: str | None = Header(default=None, alias="X-AIHub-Internal-Token")) -> dict[str, str] | JSONResponse:
+    if not internal_authorized(x_aihub_internal_token):
+        return internal_error(403, "internal_auth_failed")
+    if set(payload) != {"run_id"} or not isinstance(payload.get("run_id"), str):
+        return internal_error(400, "resident_job_invalid")
+    run_id = payload["run_id"]
+    try:
+        stage = resident_stage(run_id)
+        resident_regular(stage, "input", "request.json")
+        resident_regular(stage, "input", "source")
+    except RuntimeError:
+        return internal_error(400, "resident_job_invalid")
+    terminal = resident_terminal_state(stage)
+    if terminal != "unknown":
+        return {"run_id": run_id, "state": terminal}
+    cancelled = threading.Event()
+    with _ACTIVE_RESIDENT_JOBS_LOCK:
+        if _ACTIVE_RESIDENT_JOBS:
+            return internal_error(409, "resident_job_active")
+        _ACTIVE_RESIDENT_JOBS[run_id] = cancelled
+    state = "failed"
+    try:
+        import jobs
+
+        with _SAM_LOCK:
+            jobs.run_job("monitor", stage, stage / "input", stage / "output")
+        state = "cancelled" if cancelled.is_set() else "succeeded"
+    except Exception:
+        state = "failed"
+    try:
+        write_resident_terminal_state(stage, state)
+    except Exception:
+        return internal_error(500, "resident_job_state_failed")
+    finally:
+        with _ACTIVE_RESIDENT_JOBS_LOCK:
+            _ACTIVE_RESIDENT_JOBS.pop(run_id, None)
+    return {"run_id": run_id, "state": state}

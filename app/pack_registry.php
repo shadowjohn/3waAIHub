@@ -124,6 +124,41 @@ function hub_is_pack_job_async_mode(string $mode): bool
     return array_key_exists($mode, hub_pack_job_async_routes());
 }
 
+function hub_sam3_operation_from_request(array $input): ?string
+{
+    $aliases = [
+        '' => 'image',
+        'image' => 'image',
+        'sam3' => 'image',
+        'sam3_image' => 'image',
+        'image_task' => 'image_task',
+        'sam3_image_task' => 'image_task',
+        'video_task' => 'video_task',
+        'sam3_video_task' => 'video_task',
+    ];
+    $operation = trim((string)($input['operation'] ?? ''));
+    $actionMode = trim((string)($input['action_mode'] ?? ''));
+    $resolvedOperation = $aliases[$operation] ?? null;
+    $resolvedAction = $aliases[$actionMode] ?? null;
+    if (($operation !== '' && $resolvedOperation === null) || ($actionMode !== '' && $resolvedAction === null)) {
+        return null;
+    }
+    if ($operation !== '' && $actionMode !== '' && $resolvedOperation !== $resolvedAction) {
+        return null;
+    }
+
+    return $resolvedOperation ?? $resolvedAction ?? 'image';
+}
+
+function hub_sam3_operation_route_definition(string $operation): ?array
+{
+    return match ($operation) {
+        'image_task' => ['pack_id' => 'sam3', 'job' => 'segment_image', 'accelerator' => 'gpu'],
+        'video_task' => ['pack_id' => 'sam3', 'job' => 'track_video', 'accelerator' => 'gpu'],
+        default => null,
+    };
+}
+
 function hub_pack_job_async_route_service_enabled(PDO $db, string $packId, string $packVersion, string $requestedMode): bool
 {
     $enabled = $db->prepare(
@@ -147,6 +182,22 @@ function hub_resolve_pack_job_async_route_from_pack(PDO $db, string $requestedMo
     if ($route === null) {
         throw new InvalidArgumentException('unknown_pack_job_async_mode');
     }
+
+    return hub_resolve_pack_job_route_from_definition($db, $requestedMode, $route, $pack);
+}
+
+function hub_resolve_sam3_operation_route(PDO $db, string $operation): array
+{
+    $route = hub_sam3_operation_route_definition($operation);
+    if ($route === null) {
+        throw new InvalidArgumentException('invalid_operation');
+    }
+
+    return hub_resolve_pack_job_route_from_definition($db, 'sam3', $route, hub_get_pack('sam3'));
+}
+
+function hub_resolve_pack_job_route_from_definition(PDO $db, string $requestedMode, array $route, ?array $pack): array
+{
 
     if (!$pack || ($pack['status'] ?? '') !== 'ok') {
         throw new RuntimeException('pack_not_installed');
@@ -336,11 +387,20 @@ function hub_available_pack_job_async_modes(PDO $db): array
 function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
 {
     $requestedMode = (string)($snapshot['requested_mode'] ?? '');
-    if (!hub_is_pack_job_async_mode($requestedMode)) {
+    $sam3Operation = match ((string)($snapshot['job'] ?? '')) {
+        'segment_image' => 'image_task',
+        'track_video' => 'video_task',
+        default => null,
+    };
+    if ($requestedMode === 'sam3' && (string)($snapshot['pack_id'] ?? '') === 'sam3' && $sam3Operation !== null) {
+        hub_resolve_stored_pack_job($db, $snapshot);
+        $route = hub_resolve_sam3_operation_route($db, $sam3Operation);
+    } elseif (!hub_is_pack_job_async_mode($requestedMode)) {
         throw new RuntimeException('pack_version_unavailable');
+    } else {
+        hub_resolve_stored_pack_job($db, $snapshot);
+        $route = hub_resolve_pack_job_async_route($db, $requestedMode);
     }
-    hub_resolve_stored_pack_job($db, $snapshot);
-    $route = hub_resolve_pack_job_async_route($db, $requestedMode);
     foreach (['pack_id', 'pack_version', 'job', 'runtime_mode', 'accelerator'] as $field) {
         if (($snapshot[$field] ?? null) !== ($route[$field] ?? null)) {
             throw new RuntimeException('pack_version_unavailable');
@@ -1972,8 +2032,10 @@ function hub_pack_storage_runtime_env(array $manifest): array
             'SAM3_MODEL_DIR' => $modelDir,
             'SAM3_CACHE_DIR' => $cacheDir,
             'SAM3_SERVICE_DATA_DIR' => $serviceDataDir,
-            'HF_HOME' => $modelDir . '/huggingface',
-            'TORCH_HOME' => $modelDir . '/torch',
+            'HF_HOME' => $cacheDir . '/huggingface',
+            'TORCH_HOME' => $cacheDir . '/torch',
+            'HF_HUB_OFFLINE' => '1',
+            'TRANSFORMERS_OFFLINE' => '1',
             'XDG_CACHE_HOME' => $cacheDir . '/xdg',
             'HOME' => $cacheDir . '/home',
             'PYTHONUNBUFFERED' => '1',

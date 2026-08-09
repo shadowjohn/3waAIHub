@@ -14,17 +14,19 @@ def main() -> None:
     pillow = importlib.import_module("PIL")
     numpy = importlib.import_module("numpy")
     requests = importlib.import_module("requests")
-    ultralytics = importlib.import_module("ultralytics")
+    huggingface_hub = importlib.import_module("huggingface_hub")
+    sam3 = importlib.import_module("sam3")
     cv2 = importlib.import_module("cv2")
     print(json.dumps({
         "ok": True,
-        "message": "smoke.py import SAM3 adapter deps OK",
+        "message": "smoke.py import SAM 3.1 adapter deps OK",
         "runtime_level": "L2-deps-import",
         "fastapi": version(fastapi, "fastapi"),
         "PIL": version(pillow, "pillow"),
         "numpy": version(numpy, "numpy"),
         "requests": version(requests, "requests"),
-        "ultralytics": version(ultralytics, "ultralytics"),
+        "huggingface_hub": version(huggingface_hub, "huggingface-hub"),
+        "sam3": getattr(sam3, "__file__", "installed"),
         "cv2": version(cv2, "opencv-python-headless"),
     }, ensure_ascii=False))
 

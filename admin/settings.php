@@ -195,10 +195,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($formType === 'api') {
         $keys = ['AIHUB_REQUIRE_API_TOKEN', 'AIHUB_LOCALHOST_BYPASS_TOKEN', 'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST', 'AIHUB_TOKEN_DEFAULT_VALID_DAYS', 'AIHUB_PUBLIC_API_DOCS', 'AIHUB_PUBLIC_API_MANIFEST', 'AIHUB_PUBLIC_API_LOCAL_ONLY'];
         $rawAllowedHosts = (string)($_POST['AIHUB_WEB_CAPTURE_ALLOWED_HOSTS'] ?? '');
+        $rawSam3HlsHosts = (string)($_POST['AIHUB_SAM3_HLS_ALLOWED_HOSTS'] ?? '');
         try {
             hub_web_capture_parse_allowed_hosts($rawAllowedHosts);
+            hub_sam3_parse_hls_allowed_hosts($rawSam3HlsHosts);
         } catch (InvalidArgumentException $e) {
-            $error = hub_web_capture_allowed_hosts_error_message($e->getMessage());
+            $error = $e->getMessage() === 'hls_allowlist_invalid'
+                ? 'SAM3 HLS 允許主機清單格式不正確。'
+                : hub_web_capture_allowed_hosts_error_message($e->getMessage());
         }
         $input = $settings;
         foreach ($keys as $key) {
@@ -211,6 +215,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($error === '') {
             try {
                 hub_web_capture_save_allowed_hosts($db, (string)$user['username'], $rawAllowedHosts);
+                hub_sam3_save_hls_allowed_hosts($db, (string)$user['username'], $rawSam3HlsHosts);
                 foreach ($keys as $key) {
                     hub_set_storage_setting($db, $key, $input[$key]);
                 }
@@ -484,6 +489,8 @@ hub_admin_header('系統設定', $user);
             <p class="form-help"><?= hub_settings_t('0 代表建立 token 時不自動設定') ?> <code>valid_until</code>。</p>
         <label>Web Screenshot 允許主機 / <code>AIHUB_WEB_CAPTURE_ALLOWED_HOSTS</code></label>
         <textarea name="AIHUB_WEB_CAPTURE_ALLOWED_HOSTS" rows="8" spellcheck="false"><?= hub_h($settings['AIHUB_WEB_CAPTURE_ALLOWED_HOSTS']) ?></textarea>
+        <label>SAM3 HLS 允許主機 / <code>AIHUB_SAM3_HLS_ALLOWED_HOSTS</code></label>
+        <textarea name="AIHUB_SAM3_HLS_ALLOWED_HOSTS" rows="5" spellcheck="false"><?= hub_h($settings['AIHUB_SAM3_HLS_ALLOWED_HOSTS']) ?></textarea>
         <p class="form-help">每行一個精確主機名；空白清單會停用新的 web_capture 任務。</p>
         <div class="setting-card">
             <h3><?= hub_settings_t('未登入介接文件') ?></h3>

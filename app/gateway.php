@@ -198,6 +198,34 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if (empty($auth['ok'])) {
         return hub_gateway_finish($db, $service, $mode, $auth['response'], $started, $requestId, $authContext, $requestContext);
     }
+    if ($mode === 'sam3' && (string)($service['pack_id'] ?? '') === 'sam3') {
+        $sam3Input = $internalRequest['post'] ?? $_POST;
+        if (!is_array($sam3Input)) {
+            return hub_gateway_finish($db, $service, $mode, hub_gateway_error(400, 'invalid_operation', 'SAM3 operation is invalid'), $started, $requestId, $authContext, $requestContext);
+        }
+        $sam3Operation = hub_sam3_operation_from_request($sam3Input);
+        if ($sam3Operation === null) {
+            return hub_gateway_finish($db, $service, $mode, hub_gateway_error(400, 'invalid_operation', 'SAM3 operation is invalid'), $started, $requestId, $authContext, $requestContext);
+        }
+        if (in_array($sam3Operation, ['image_task', 'video_task'], true)) {
+            try {
+                $route = hub_resolve_sam3_operation_route($db, $sam3Operation);
+            } catch (RuntimeException $e) {
+                $code = in_array($e->getMessage(), ['pack_not_installed', 'pack_runtime_not_ready', 'pack_service_disabled', 'pack_version_unavailable'], true) ? $e->getMessage() : 'pack_not_installed';
+                return hub_gateway_finish($db, $service, $mode, hub_gateway_error(503, $code, $code), $started, $requestId, $authContext, $requestContext);
+            }
+            $originalPost = $_POST;
+            $_POST = $sam3Input;
+            unset($_POST['operation'], $_POST['action_mode']);
+            try {
+                $response = hub_api_pack_job_task_submit($db, $route, $authContext);
+            } finally {
+                $_POST = $originalPost;
+            }
+
+            return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext, $requestContext);
+        }
+    }
     if ((int)$service['enabled'] !== 1) {
         return hub_gateway_finish($db, $service, $mode, hub_gateway_error(503, 'service_disabled', 'service is disabled'), $started, $requestId, $authContext, $requestContext);
     }
@@ -1396,6 +1424,14 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         ]);
     }
     $sourceArtifactId = trim((string)($payload['source_artifact_id'] ?? ''));
+    $registeredSourceId = $payload['source_id'] ?? '';
+    if (!is_string($registeredSourceId)) {
+        return hub_gateway_error(400, 'source_not_allowed', 'source_id is invalid');
+    }
+    $registeredSourceId = trim($registeredSourceId);
+    if ($registeredSourceId !== '' && !hub_sam3_route_accepts_registered_source($route)) {
+        return hub_gateway_error(400, 'source_not_allowed', 'this Pack job does not accept a registered source');
+    }
     if ($sourceArtifactId !== '' && !hub_pack_job_task_has_valid_content_length()) {
         return hub_gateway_error(411, 'length_required', 'source artifact requests require Content-Length');
     }
@@ -1405,7 +1441,7 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
     try {
         $callbackTargetId = hub_pack_job_task_callback_target_id($db, $ownerMemberId, $payload);
         $taskInput = $payload;
-        unset($taskInput['callback'], $taskInput['callback_target'], $taskInput['priority']);
+        unset($taskInput['callback'], $taskInput['callback_target'], $taskInput['priority'], $taskInput['source_id']);
         $input = hub_pack_job_task_input($taskInput, $route);
         if (($route['requested_mode'] ?? '') === 'web_capture') {
             $input = hub_web_capture_validate_input($db, $input);
@@ -1453,11 +1489,24 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
 
     $uploads = hub_pack_job_task_uploads();
     $sourceRequired = ($route['source_required'] ?? true) === true;
-    if (!$sourceRequired && ($sourceArtifactId !== '' || $uploads !== [])) {
+    $sourceCount = ($sourceArtifactId === '' ? 0 : 1) + ($registeredSourceId === '' ? 0 : 1) + ($uploads === [] ? 0 : 1);
+    if (!$sourceRequired && $sourceCount !== 0) {
         return hub_gateway_error(400, 'source_not_allowed', 'this Pack job does not accept a source file');
     }
-    if ($sourceRequired && (($sourceArtifactId === '' && $uploads === []) || ($sourceArtifactId !== '' && $uploads !== []))) {
-        return hub_gateway_error(400, $sourceArtifactId === '' ? 'source_required' : 'source_ambiguous', 'provide exactly one managed source');
+    if ($sourceRequired && $sourceCount !== 1) {
+        return hub_gateway_error(400, $sourceCount === 0 ? 'source_required' : 'source_ambiguous', 'provide exactly one managed source');
+    }
+    if ($registeredSourceId !== '') {
+        return hub_sam3_submit_registered_source_task(
+            $db,
+            $route,
+            $input,
+            $ownerMemberId,
+            (int)($authContext['token_id'] ?? 0),
+            $callbackTargetId,
+            $priority,
+            $registeredSourceId
+        );
     }
     if ($sourceArtifactId !== '') {
         if (!ctype_digit($sourceArtifactId) || (int)$sourceArtifactId <= 0) {
@@ -1510,21 +1559,7 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
         hub_update_task_input($db, $taskId, $input);
         hub_publish_staged_pack_job($db, $taskId);
     } catch (Throwable $e) {
-        $now = hub_now();
-        $stmt = $db->prepare(
-            "UPDATE tasks SET status = 'failed', error_code = 'staging_failed', error_message = :error_message,
-                 finished_at = :finished_at, updated_at = :updated_at
-             WHERE id = :id AND status = 'staging'"
-        );
-        $stmt->execute([
-            ':error_message' => substr($e->getMessage(), 0, 2048),
-            ':finished_at' => $now,
-            ':updated_at' => $now,
-            ':id' => $taskId,
-        ]);
-        if ($stmt->rowCount() === 1) {
-            hub_apply_task_terminal_retention($db, $taskId, 'failed', $now);
-        }
+        hub_pack_job_fail_staging_task($db, $taskId, 'staging_failed', substr($e->getMessage(), 0, 2048));
         if ($e->getMessage() === 'task_upload_workspace_exists') {
             return hub_gateway_error(409, 'task_upload_workspace_conflict', 'managed task workspace already exists');
         }
@@ -1532,6 +1567,71 @@ function hub_api_pack_job_task_submit(PDO $db, array $route, array $authContext)
     }
 
     return hub_gateway_json(200, hub_task_submit_response($taskId));
+}
+
+function hub_sam3_route_accepts_registered_source(array $route): bool
+{
+    return ($route['requested_mode'] ?? '') === 'sam3'
+        && ($route['pack_id'] ?? '') === 'sam3'
+        && ($route['job'] ?? '') === 'track_video';
+}
+
+function hub_sam3_submit_registered_source_task(
+    PDO $db,
+    array $route,
+    array $input,
+    int $ownerMemberId,
+    int $tokenId,
+    ?int $callbackTargetId,
+    int $priority,
+    string $sourceId,
+): array {
+    $service = hub_get_service_by_mode($db, 'sam3');
+    $serviceId = (int)($service['id'] ?? 0);
+    $source = $serviceId > 0 ? hub_sam3_source_for_task($db, $sourceId, $serviceId) : null;
+    if ($source === null) {
+        return hub_gateway_error(404, 'source_not_found', 'registered source is unavailable');
+    }
+    $input['clip_seconds'] = min((int)($input['clip_seconds'] ?? 60), (int)$source['clip_seconds']);
+    $taskId = hub_stage_owned_pack_job($db, $route, $input, $ownerMemberId, $tokenId, hub_get_client_ip(), [
+        'callback_target_id' => $callbackTargetId,
+        'priority' => $priority,
+    ]);
+    try {
+        $taskInput = hub_get_task($db, $taskId)['input'] ?? [];
+        $taskInput['source_upload_path'] = hub_sam3_capture_source_to_task($source, $taskId);
+        $taskInput['original_filename'] = 'capture.mp4';
+        hub_update_task_input($db, $taskId, $taskInput);
+        hub_publish_staged_pack_job($db, $taskId);
+        hub_sam3_note_source_capture($db, $sourceId, $serviceId, null);
+    } catch (Throwable) {
+        hub_sam3_note_source_capture($db, $sourceId, $serviceId, 'capture_failed');
+        hub_pack_job_fail_staging_task($db, $taskId, 'capture_failed', 'registered source capture failed');
+
+        return hub_gateway_error(502, 'capture_failed', 'registered source capture failed');
+    }
+
+    return hub_gateway_json(200, hub_task_submit_response($taskId));
+}
+
+function hub_pack_job_fail_staging_task(PDO $db, int $taskId, string $errorCode, string $message): void
+{
+    $now = hub_now();
+    $stmt = $db->prepare(
+        "UPDATE tasks SET status = 'failed', error_code = :error_code, error_message = :error_message,
+             finished_at = :finished_at, updated_at = :updated_at
+         WHERE id = :id AND status = 'staging'"
+    );
+    $stmt->execute([
+        ':error_code' => $errorCode,
+        ':error_message' => $message,
+        ':finished_at' => $now,
+        ':updated_at' => $now,
+        ':id' => $taskId,
+    ]);
+    if ($stmt->rowCount() === 1) {
+        hub_apply_task_terminal_retention($db, $taskId, 'failed', $now);
+    }
 }
 
 function hub_pack_job_task_priority(mixed $value): ?int

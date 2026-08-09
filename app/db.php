@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const HUB_DB_MIGRATION_VERSION = '2026-08-08.1';
+const HUB_DB_MIGRATION_VERSION = '2026-08-09.2';
 const HUB_DB_MIGRATION_VERSION_KEY = 'db_migration_version';
 const HUB_DB_MIGRATION_SCHEMA_KEY = 'db_migration_schema_version';
 
@@ -304,6 +304,51 @@ CREATE TABLE IF NOT EXISTS facebook_crawler_profiles (
     updated_at TEXT NOT NULL,
     FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE,
     FOREIGN KEY(active_task_id) REFERENCES tasks(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS sam3_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id TEXT NOT NULL UNIQUE,
+    service_id INTEGER NOT NULL,
+    display_name TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    clip_seconds INTEGER NOT NULL DEFAULT 15,
+    monitor_enabled INTEGER NOT NULL DEFAULT 0,
+    monitor_interval_seconds INTEGER NOT NULL DEFAULT 60,
+    last_error_code TEXT NULL,
+    last_seen_at TEXT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_by INTEGER NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+    FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS sam3_monitor_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id TEXT NOT NULL UNIQUE,
+    service_id INTEGER NOT NULL,
+    task_id INTEGER NOT NULL,
+    runtime_run_id TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL,
+    last_heartbeat_at TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    stopped_at TEXT NULL,
+    last_safe_error_code TEXT NULL,
+    FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS sam3_monitor_event_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    runtime_run_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL,
+    artifact_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(runtime_run_id, sequence),
+    FOREIGN KEY(artifact_id) REFERENCES task_artifacts(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS service_ip_whitelists (
@@ -790,6 +835,54 @@ CREATE TABLE IF NOT EXISTS cluster_route_artifacts (
 SQL);
 
     hub_migrate_cluster_routes_route_id_not_null($db);
+    $db->exec(
+        'CREATE TABLE IF NOT EXISTS sam3_sources (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id TEXT NOT NULL UNIQUE,
+            service_id INTEGER NOT NULL,
+            display_name TEXT NOT NULL,
+            protocol TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            clip_seconds INTEGER NOT NULL DEFAULT 15,
+            monitor_enabled INTEGER NOT NULL DEFAULT 0,
+            monitor_interval_seconds INTEGER NOT NULL DEFAULT 60,
+            last_error_code TEXT NULL,
+            last_seen_at TEXT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_by INTEGER NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+            FOREIGN KEY(created_by) REFERENCES users(id) ON DELETE SET NULL
+        )'
+    );
+    $db->exec(
+        'CREATE TABLE IF NOT EXISTS sam3_monitor_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_id TEXT NOT NULL UNIQUE,
+            service_id INTEGER NOT NULL,
+            task_id INTEGER NOT NULL,
+            runtime_run_id TEXT NOT NULL UNIQUE,
+            state TEXT NOT NULL,
+            last_heartbeat_at TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            stopped_at TEXT NULL,
+            last_safe_error_code TEXT NULL,
+            FOREIGN KEY(service_id) REFERENCES services(id) ON DELETE CASCADE,
+            FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        )'
+    );
+    $db->exec(
+        'CREATE TABLE IF NOT EXISTS sam3_monitor_event_artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            runtime_run_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            artifact_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(runtime_run_id, sequence),
+            FOREIGN KEY(artifact_id) REFERENCES task_artifacts(id) ON DELETE CASCADE
+        )'
+    );
     hub_add_column_if_missing($db, 'cluster_routes', 'route_role', "TEXT NOT NULL DEFAULT 'task'");
     hub_add_column_if_missing($db, 'users', 'role', "TEXT NOT NULL DEFAULT 'system_admin'");
     hub_add_column_if_missing($db, 'users', 'api_member_id', 'INTEGER NULL');
@@ -1046,6 +1139,9 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifact_holds_active ON task_artifact_holds(source_artifact_id, released_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_facebook_profiles_owner ON facebook_crawler_profiles(owner_member_id, deleted_at, updated_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_facebook_profiles_login_expiry ON facebook_crawler_profiles(login_expires_at) WHERE login_expires_at IS NOT NULL');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_sam3_sources_service_enabled ON sam3_sources(service_id, enabled, updated_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_sam3_monitor_runs_state ON sam3_monitor_runs(state, last_heartbeat_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_sam3_monitor_events_run ON sam3_monitor_event_artifacts(runtime_run_id, sequence)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifacts_retention ON task_artifacts(state, expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_task_artifacts_download_claim ON task_artifacts(download_claim_expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_tasks_metadata_retention ON tasks(status, finished_at, metadata_purge_claim_token)');
@@ -1331,6 +1427,9 @@ function hub_runtime_schema_missing(PDO $db): array
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'waiting_detail_json', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
         'voice_profiles' => ['source_task_id', 'reference_contract'],
         'facebook_crawler_profiles' => ['id', 'profile_id', 'owner_member_id', 'node_name', 'display_name', 'state', 'last_verified_at', 'active_task_id', 'login_secret_hash', 'login_container_name', 'login_port', 'login_expires_at', 'deleted_at', 'created_at', 'updated_at'],
+        'sam3_sources' => ['id', 'source_id', 'service_id', 'display_name', 'protocol', 'source_url', 'clip_seconds', 'monitor_enabled', 'monitor_interval_seconds', 'last_error_code', 'last_seen_at', 'enabled', 'created_by', 'created_at', 'updated_at'],
+        'sam3_monitor_runs' => ['id', 'source_id', 'service_id', 'task_id', 'runtime_run_id', 'state', 'last_heartbeat_at', 'started_at', 'stopped_at', 'last_safe_error_code'],
+        'sam3_monitor_event_artifacts' => ['id', 'runtime_run_id', 'sequence', 'artifact_id', 'created_at'],
         'task_artifacts' => ['artifact_type', 'sha256', 'metadata_json', 'expires_at', 'state', 'pinned_at', 'legal_hold', 'acknowledged_at', 'last_accessed_at', 'purged_at', 'purge_error', 'purge_claim_token', 'purge_claimed_at', 'download_claim_token', 'download_claim_expires_at'],
         'task_artifact_holds' => ['id', 'source_artifact_id', 'downstream_task_id', 'held_at', 'released_at'],
         'runtime_runs' => ['task_id', 'attempt_no', 'container_id', 'gpu_process_baseline_json', 'owned_gpu_pids_json'],

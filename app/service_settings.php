@@ -104,6 +104,7 @@ function hub_service_setting_default(array $service, string $key, array $item): 
         return hub_validate_service_setting_value($item, $environmentOverride);
     }
     $residentInternalTokens = [
+        'sam3' => 'SAM3_INTERNAL_JOB_TOKEN',
         'whisper-asr' => 'WHISPER_INTERNAL_JOB_TOKEN',
         'tts-voxcpm2' => 'VOXCPM2_INTERNAL_JOB_TOKEN',
         'tts-gpt-sovits' => 'GPT_SOVITS_INTERNAL_JOB_TOKEN',

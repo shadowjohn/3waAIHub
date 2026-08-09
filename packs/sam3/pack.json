@@ -1,8 +1,8 @@
 {
   "schema_version": "0.1",
   "id": "sam3",
-  "name": "SAM3 Segmentation Service",
-  "version": "0.1.0",
+  "name": "SAM 3.1 Segmentation Service",
+  "version": "0.2.0",
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -10,18 +10,23 @@
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "sam3",
-  "description": "SAM3 segmentation API adapter with single-image real inference smoke and benchmark contract.",
+  "description": "Official SAM 3.1 image segmentation and bounded multiplex video tracking service.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
     "default_internal_port": 8000
+  },
+  "runner_build": {
+    "context": ".",
+    "dockerfile": "service/Dockerfile",
+    "image": "3waaihub/sam3:0.2.0"
   },
   "gateway": {
     "health_path": "/health",
     "invoke_path": "/segment/image",
     "methods": ["POST"],
     "timeout_sec": 180,
-    "max_upload_mb": 50
+    "max_upload_mb": 512
   },
   "l5_contract": {
     "endpoint": "/segment/image",
@@ -96,6 +101,7 @@
     "errors": [
       "bad_request",
       "model_not_present",
+      "model_access_required",
       "model_load_failed",
       "runtime_dependency_missing",
       "bad_image",
@@ -108,7 +114,19 @@
       "rle_encode_failed",
       "gpu_unavailable",
       "inference_failed",
-      "inference_timeout"
+      "inference_timeout",
+      "invalid_operation",
+      "invalid_prompts",
+      "source_not_found",
+      "source_not_allowed",
+      "source_unavailable",
+      "video_too_large",
+      "video_too_long",
+      "unsupported_video",
+      "capture_failed",
+      "sam3_monitor_busy",
+      "monitor_already_running",
+      "monitor_not_running"
     ],
     "limits": {
       "timeout_sec": 180,
@@ -174,9 +192,120 @@
       ]
     }
   },
+  "async_jobs": [
+    {
+      "job": "segment_image",
+      "input": {
+        "fields": ["prompt_type", "points_json", "boxes_json", "text", "text_prompt", "output_format", "include_mask_png"],
+        "source_artifact_types": ["image"],
+        "source_required": true,
+        "request_schema": {
+          "prompt_type": {"type": "string", "required": false, "enum": ["auto", "points", "boxes", "text"], "default": "auto", "max_length": 32},
+          "points_json": {"type": "string", "required": false, "max_length": 16384},
+          "boxes_json": {"type": "string", "required": false, "max_length": 16384},
+          "text": {"type": "string", "required": false, "max_length": 512},
+          "text_prompt": {"type": "string", "required": false, "max_length": 512},
+          "output_format": {"type": "string", "required": false, "enum": ["metadata", "polygon", "rle", "both", "png"], "default": "metadata", "max_length": 16},
+          "include_mask_png": {"type": "boolean", "required": false, "default": false}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/sam3:0.2.0",
+        "entrypoint": ["python3", "/app/jobs.py"],
+        "args": ["--job", "segment_image", "--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 16000,
+        "timeout_seconds": 900,
+        "executor": "container",
+        "asset_mounts": [
+          {"id": "sam31_models", "storage": "models", "host_subdir": "sam3", "container_path": "/models/sam3", "required_paths": ["sam3.1_multiplex.pt", "sam3.1-manifest.json"]}
+        ]
+      },
+      "output": {
+        "artifacts": [
+          {"type": "sam3_image_report", "path": "sam3_image_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": ["status", "mask_count", "elapsed_ms"]}},
+          {"type": "sam3_masks", "path": "sam3_masks.json", "mime_types": ["application/json"], "max_bytes": 4194304, "json": {"required_keys": ["masks"]}},
+          {"type": "sam3_mask_png", "path": "sam3_mask.png", "mime_types": ["image/png"], "max_bytes": 52428800, "when": {"input": "include_mask_png", "equals": true}, "image": {"format": "png", "max_width": 16384, "max_height": 16384, "max_pixels": 100000000}}
+        ]
+      }
+    },
+    {
+      "job": "track_video",
+      "input": {
+        "fields": ["prompts_json", "clip_seconds", "include_overlay"],
+        "source_artifact_types": ["video"],
+        "source_required": true,
+        "request_schema": {
+          "prompts_json": {"type": "string", "required": true, "max_length": 16384},
+          "clip_seconds": {"type": "integer", "required": false, "min": 1, "max": 60, "default": 60},
+          "include_overlay": {"type": "boolean", "required": false, "default": false}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/sam3:0.2.0",
+        "entrypoint": ["python3", "/app/jobs.py"],
+        "args": ["--job", "track_video", "--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 16000,
+        "timeout_seconds": 1800,
+        "executor": "container",
+        "asset_mounts": [
+          {"id": "sam31_models", "storage": "models", "host_subdir": "sam3", "container_path": "/models/sam3", "required_paths": ["sam3.1_multiplex.pt", "sam3.1-manifest.json"]}
+        ]
+      },
+      "output": {
+        "artifacts": [
+          {"type": "sam3_video_report", "path": "sam3_video_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": ["status", "frame_count", "track_count", "elapsed_ms"]}},
+          {"type": "sam3_tracks", "path": "sam3_tracks.jsonl", "mime_types": ["application/x-ndjson", "application/json", "text/plain", "application/x-empty"], "max_bytes": 4194304, "text": {"max_bytes": 4194304, "allow_empty": true}},
+          {"type": "sam3_overlay", "path": "sam3_overlay.mp4", "mime_types": ["video/mp4"], "max_bytes": 67108864, "when": {"input": "include_overlay", "equals": true}}
+        ]
+      }
+    },
+    {
+      "job": "monitor",
+      "input": {
+        "fields": ["source_id", "include_overlay"],
+        "source_artifact_types": [],
+        "source_required": false,
+        "request_schema": {
+          "source_id": {"type": "string", "required": true, "max_length": 64},
+          "include_overlay": {"type": "boolean", "required": false, "default": false}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/sam3:0.2.0",
+        "entrypoint": ["python3", "/app/jobs.py"],
+        "args": ["--job", "monitor", "--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 16000,
+        "timeout_seconds": 86400,
+        "executor": "container",
+        "asset_mounts": [
+          {"id": "sam31_models", "storage": "models", "host_subdir": "sam3", "container_path": "/models/sam3", "required_paths": ["sam3.1_multiplex.pt", "sam3.1-manifest.json"]}
+        ]
+      },
+      "resident": {
+        "protocol": "service_data_v1",
+        "mode_setting": "SAM3_EXECUTION_MODE",
+        "mode_value": "resident",
+        "min_free_vram_setting": "SAM3_RESIDENT_MIN_FREE_VRAM_MB"
+      },
+      "output": {
+        "artifacts": [
+          {"type": "sam3_monitor_report", "path": "sam3_monitor_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": ["status", "event_count", "elapsed_ms"]}},
+          {"type": "sam3_monitor_events", "path": "sam3_monitor_events.jsonl", "mime_types": ["application/x-ndjson", "application/json", "text/plain", "application/x-empty"], "max_bytes": 4194304, "text": {"max_bytes": 4194304, "allow_empty": true}},
+          {"type": "sam3_monitor_overlay", "path": "sam3_overlay.mp4", "mime_types": ["video/mp4"], "max_bytes": 67108864, "when": {"input": "include_overlay", "equals": true}}
+        ]
+      }
+    }
+  ],
   "error_codes": [
     "bad_request",
     "model_not_present",
+    "model_access_required",
     "model_load_failed",
     "runtime_dependency_missing",
     "bad_image",
@@ -189,7 +318,19 @@
     "rle_encode_failed",
     "gpu_unavailable",
     "inference_failed",
-    "inference_timeout"
+    "inference_timeout",
+    "invalid_operation",
+    "invalid_prompts",
+    "source_not_found",
+    "source_not_allowed",
+    "source_unavailable",
+    "video_too_large",
+    "video_too_long",
+    "unsupported_video",
+    "capture_failed",
+    "sam3_monitor_busy",
+    "monitor_already_running",
+    "monitor_not_running"
   ],
   "hardware": {
     "gpu_required": true,
@@ -210,7 +351,7 @@
         "type": "models",
         "host_subdir": "sam3",
         "container_path": "/models/sam3",
-        "read_only": false
+        "read_only": true
       },
       {
         "type": "cache",
@@ -228,32 +369,11 @@
   },
   "settings_schema": [
     {
-      "key": "SAM3_CHECKPOINT",
-      "label": "SAM3 checkpoint",
-      "type": "text",
-      "default": "",
-      "required": false,
-      "restart_required": true,
-      "model_selector": {
-        "type": "file",
-        "root_subdir": "sam3",
-        "extensions": [".pt", ".pth", ".safetensors", ".ckpt"]
-      }
-    },
-    {
-      "key": "SAM3_MODEL_ID",
-      "label": "SAM3 model id",
-      "type": "text",
-      "default": "",
-      "required": false,
-      "restart_required": true
-    },
-    {
       "key": "SAM3_DEVICE",
       "label": "Device",
       "type": "select",
-      "default": "auto",
-      "options": ["auto", "cuda", "cpu"],
+      "default": "cuda",
+      "options": ["cuda"],
       "required": true,
       "restart_required": true
     },
@@ -261,9 +381,9 @@
       "key": "SAM3_MAX_UPLOAD_MB",
       "label": "Max upload MB",
       "type": "integer",
-      "default": "50",
+      "default": "512",
       "min": 1,
-      "max": 1024,
+      "max": 512,
       "required": true,
       "restart_required": false
     },
@@ -275,6 +395,33 @@
       "required": true,
       "restart_required": true,
       "help": "Enable single-image SAM3 real inference smoke."
+    },
+    {
+      "key": "SAM3_EXECUTION_MODE",
+      "label": "Resident execution mode",
+      "type": "select",
+      "default": "resident",
+      "options": ["resident"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "SAM3_RESIDENT_MIN_FREE_VRAM_MB",
+      "label": "Resident minimum free VRAM MB",
+      "type": "integer",
+      "default": "16000",
+      "min": 1024,
+      "max": 1048576,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "SAM3_INTERNAL_JOB_TOKEN",
+      "label": "Internal job token",
+      "type": "secret",
+      "default": "",
+      "required": true,
+      "restart_required": true
     },
     {
       "key": "SAM3_POLYGON_EPSILON",
@@ -305,28 +452,33 @@
   ],
   "env": [
     {
-      "name": "SAM3_CHECKPOINT",
-      "default": "",
-      "required": false
-    },
-    {
-      "name": "SAM3_MODEL_ID",
-      "default": "",
-      "required": false
-    },
-    {
       "name": "SAM3_DEVICE",
-      "default": "auto",
+      "default": "cuda",
       "required": true
     },
     {
       "name": "SAM3_MAX_UPLOAD_MB",
-      "default": "50",
+      "default": "512",
       "required": true
     },
     {
       "name": "SAM3_REAL_INFERENCE",
       "default": "0",
+      "required": true
+    },
+    {
+      "name": "SAM3_EXECUTION_MODE",
+      "default": "resident",
+      "required": true
+    },
+    {
+      "name": "SAM3_RESIDENT_MIN_FREE_VRAM_MB",
+      "default": "16000",
+      "required": true
+    },
+    {
+      "name": "SAM3_INTERNAL_JOB_TOKEN",
+      "default": "",
       "required": true
     },
     {

@@ -588,7 +588,7 @@ function hub_pack_job_resident_prepare_stage(array $residentPlan, string $reside
                 hub_pack_job_resident_copy_file($source, $stage . '/input/' . $name);
             }
         }
-        if (!is_file($stage . '/input/request.json') || !is_file($stage . '/input/runner_config.json')) {
+        if (!is_file($stage . '/input/request.json')) {
             throw new RuntimeException('resident_stage_unavailable');
         }
         if ($voiceProfileMount !== null) {

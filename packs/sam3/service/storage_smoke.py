@@ -8,41 +8,42 @@ from typing import Any
 
 
 PATHS = {
-    "models": "/models/sam3",
-    "huggingface": "/models/sam3/huggingface",
-    "torch": "/models/sam3/torch",
-    "cache": "/cache/sam3",
-    "xdg": "/cache/sam3/xdg",
-    "home": "/cache/sam3/home",
-    "service_data": "/data/service",
+    "models": ("/models/sam3", False),
+    "cache": ("/cache/sam3", True),
+    "xdg": ("/cache/sam3/xdg", True),
+    "home": ("/cache/sam3/home", True),
+    "service_data": ("/data/service", True),
 }
 
 
-def check_path(path: str) -> dict[str, Any]:
+def check_path(path: str, require_writable: bool) -> dict[str, Any]:
     target = Path(path)
-    target.mkdir(parents=True, exist_ok=True)
+    if require_writable:
+        target.mkdir(parents=True, exist_ok=True)
     exists = target.is_dir()
     readable = exists and os.access(target, os.R_OK)
-    writable = False
+    writable = exists and os.access(target, os.W_OK)
     error = ""
-    if exists and readable:
+    if require_writable and writable:
         try:
             with tempfile.NamedTemporaryFile(prefix=".3waaihub-write-", dir=target, delete=False) as handle:
                 test_path = Path(handle.name)
             test_path.unlink(missing_ok=True)
-            writable = True
         except OSError as exc:
+            writable = False
             error = str(exc)
     elif not exists:
         error = "directory missing"
-    else:
+    elif not readable:
         error = "directory not readable"
+    elif require_writable:
+        error = "directory not writable"
 
     result: dict[str, Any] = {
-        "path": path,
         "exists": exists,
         "readable": readable,
         "writable": writable,
+        "required_writable": require_writable,
     }
     if error:
         result["error"] = error
@@ -50,12 +51,11 @@ def check_path(path: str) -> dict[str, Any]:
 
 
 def main() -> None:
-    storage = {name: check_path(path) for name, path in PATHS.items()}
+    storage = {name: check_path(path, require_writable) for name, (path, require_writable) in PATHS.items()}
     errors = [
-        f"{name} {key} failed: {status['path']}"
+        f"{name} unavailable"
         for name, status in storage.items()
-        for key in ("exists", "readable", "writable")
-        if not status[key]
+        if not status["exists"] or not status["readable"] or (status["required_writable"] and not status["writable"])
     ]
     print(json.dumps({"ok": not errors, "storage": storage, "errors": errors}, ensure_ascii=False))
     if errors:

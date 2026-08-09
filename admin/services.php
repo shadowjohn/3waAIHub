@@ -287,6 +287,9 @@ hub_admin_header('服務管理', $user);
                 </form>
                 <div class="hub-actions">
                     <a class="button" href="service_settings.php?service_id=<?= $serviceId ?>">設定</a>
+                    <?php if ((string)($service['pack_id'] ?? '') === 'sam3'): ?>
+                        <a class="button" href="sam3_sources.php?service_id=<?= $serviceId ?>">影片來源</a>
+                    <?php endif; ?>
                     <a class="button" href="service_logs.php?id=<?= $serviceId ?>">服務記錄</a>
                     <a class="button" href="log_explorer.php?service_id=<?= $serviceId ?>">API 記錄</a>
                     <a class="button" href="log_explorer.php?tab=jobs&amp;service_id=<?= $serviceId ?>">查看此服務工作</a>

@@ -52,6 +52,7 @@ require_once __DIR__ . '/service_settings.php';
 require_once __DIR__ . '/command_queue.php';
 require_once __DIR__ . '/task_queue.php';
 require_once __DIR__ . '/task_callbacks.php';
+require_once __DIR__ . '/sam3_sources.php';
 require_once __DIR__ . '/facebook_crawler.php';
 require_once __DIR__ . '/web_capture.php';
 require_once __DIR__ . '/pack_job_runner.php';
