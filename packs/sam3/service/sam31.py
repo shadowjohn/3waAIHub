@@ -78,6 +78,8 @@ def segment_single_image(
         image.convert("RGB").save(frame_dir / "000000.jpg", format="JPEG", quality=95)
         started = predictor.handle_request({"type": "start_session", "resource_path": str(frame_dir)})
         session_id = _session_id(started)
+        if prompt_type == "points":
+            _seed_multiplex_frame_cache(predictor, session_id)
         request.update({"type": "add_prompt", "session_id": session_id, "frame_index": 0, "rel_coordinates": True})
         try:
             return result_items(predictor.handle_request(request))
@@ -108,7 +110,7 @@ def _prompt_request(
         normalized_points = [_relative_point(point, width, height) for point in points]
         if any(label not in {0, 1} for label in labels) or 1 not in labels:
             raise Sam31Error("invalid_prompt")
-        return {"points": normalized_points, "point_labels": labels}
+        return {"points": normalized_points, "point_labels": labels, "obj_id": 1}
     if prompt_type == "boxes":
         if not boxes:
             raise Sam31Error("invalid_prompt")
@@ -155,6 +157,22 @@ def _session_id(response: object) -> str:
     if not isinstance(response, dict) or not isinstance(response.get("session_id"), str) or not response["session_id"]:
         raise Sam31Error("inference_failed")
     return response["session_id"]
+
+
+def _seed_multiplex_frame_cache(predictor: Any, session_id: str) -> None:
+    sessions = getattr(predictor, "_all_inference_states", None)
+    if not isinstance(sessions, dict):
+        return
+    session = sessions.get(session_id)
+    if not isinstance(session, dict):
+        return
+    state = session.get("state")
+    if not isinstance(state, dict):
+        return
+    cache = state.setdefault("cached_frame_outputs", {})
+    if isinstance(cache, dict):
+        # SAM 3.1 對全新 session 會忽略未快取 frame 的新點位物件。
+        cache.setdefault(0, {})
 
 
 def _result_items(response: object) -> list[dict[str, Any]]:

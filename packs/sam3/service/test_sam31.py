@@ -66,7 +66,38 @@ class Sam31ImageAdapterTests(unittest.TestCase):
         prompt = predictor.calls[1]
         self.assertEqual([[0.5, 0.5]], prompt["points"])
         self.assertEqual([1], prompt["point_labels"])
+        self.assertEqual(1, prompt["obj_id"])
         self.assertTrue(prompt["rel_coordinates"])
+
+    def test_points_seed_the_multiplex_frame_cache_before_add_prompt(self) -> None:
+        class MultiplexPointPredictor(FakePredictor):
+            def __init__(self) -> None:
+                super().__init__()
+                self._all_inference_states: dict[str, dict[str, object]] = {}
+
+            def handle_request(self, request: dict[str, object]) -> object:
+                self.calls.append(request)
+                if request["type"] == "start_session":
+                    self.session_path = Path(str(request["resource_path"]))
+                    self.assert_frame_exists()
+                    self._all_inference_states["session-1"] = {"state": {}}
+                    return {"session_id": "session-1"}
+                if request["type"] == "add_prompt":
+                    state = self._all_inference_states["session-1"]["state"]
+                    if not isinstance(state, dict) or 0 not in state.get("cached_frame_outputs", {}):
+                        return {"outputs": {}}
+                    return self.response
+                return {"ok": True}
+
+        masks = segment_single_image(
+            MultiplexPointPredictor(),
+            self.image(),
+            prompt_type="points",
+            points=[[3, 2]],
+            labels=[1],
+        )
+
+        self.assertEqual([9], [mask["id"] for mask in masks])
 
     def test_boxes_guidance_and_text_map_to_official_prompt_fields(self) -> None:
         for prompt_type, kwargs, expected in [
