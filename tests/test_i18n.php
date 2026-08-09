@@ -104,6 +104,12 @@ hub_test('Google translation failure opens a request-local circuit breaker', fun
     hub_i18n_google_circuit_state(false);
 });
 
+hub_test('language cookie value remains an allowlisted language key', function (): void {
+    hub_test_assert(hub_i18n_cookie_language('en') === 'en', 'known language must remain available for the cookie');
+    hub_test_assert(hub_i18n_cookie_language("en\r\nSet-Cookie: injected") === 'zh_TW', 'cookie language must normalize header injection input to the default language');
+    hub_test_assert(hub_i18n_cookie_value('en') === 'en' && hub_i18n_cookie_value("en\r\nSet-Cookie: injected") === 'zh_TW', 'cookie header must receive only a static allowed language value');
+});
+
 hub_test('i18n seed imports without overwriting local translations', function (): void {
     $db = hub_test_reset_db();
     $seed = sys_get_temp_dir() . '/3waaihub_i18n_seed_' . getmypid() . '.json';

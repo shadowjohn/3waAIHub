@@ -2909,6 +2909,48 @@ function hub_gateway_error(int $status, string $errorCode, string $message): arr
     return hub_gateway_json($status, ['ok' => false, 'error' => $errorCode, 'message' => $message]);
 }
 
+/**
+ * 服務錯誤正文不能直接越過 Gateway。保留可供程式判讀的錯誤碼與 request_id，
+ * 但不將 Pack、cURL 或 PHP 的診斷文字送回使用者端。
+ */
+function hub_gateway_public_error_body(array $response): string
+{
+    $payload = json_decode((string)($response['body'] ?? ''), true);
+    $errorCode = is_array($payload) && is_string($payload['error'] ?? null)
+        && preg_match('/\A[a-z0-9_]{1,80}\z/D', $payload['error']) === 1
+        ? $payload['error']
+        : 'proxy_error';
+    $public = ['ok' => false, 'error' => $errorCode, 'message' => 'service request failed'];
+    if (is_array($payload) && is_string($payload['request_id'] ?? null)
+        && preg_match('/\A[A-Za-z0-9_-]{1,128}\z/D', $payload['request_id']) === 1) {
+        $public['request_id'] = $payload['request_id'];
+    }
+
+    return hub_json_encode($public, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?: '{"ok":false,"error":"proxy_error","message":"service request failed"}';
+}
+
+/**
+ * 成功回應只可傳送已通過 Gateway header contract 的 Pack data payload；
+ * error payload 一律由 hub_gateway_public_error_body() 處理，不能混用。
+ */
+function hub_gateway_public_success_body(array $response): string
+{
+    $status = (int)($response['status'] ?? 0);
+    $headers = hub_gateway_safe_response_headers(is_array($response['headers'] ?? null) ? $response['headers'] : []);
+    $hasContentType = false;
+    foreach ($headers as $header) {
+        if (str_starts_with($header, 'Content-Type: ')) {
+            $hasContentType = true;
+            break;
+        }
+    }
+    if ($status < 200 || $status >= 400 || !$hasContentType || !is_string($response['body'] ?? null)) {
+        return '';
+    }
+
+    return $response['body'];
+}
+
 function hub_gateway_finish(PDO $db, ?array $service, string $mode, array $response, float $started, string $requestId, array $authContext = [], array $requestContext = []): array
 {
     $status = (int)$response['status'];
@@ -3083,6 +3125,10 @@ function hub_send_gateway_response(array $response): never
         }
         exit;
     }
-    echo $response['body'];
+    if ((int)$response['status'] >= 400) {
+        echo hub_gateway_public_error_body($response);
+        exit;
+    }
+    echo hub_gateway_public_success_body($response);
     exit;
 }

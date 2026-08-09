@@ -47,15 +47,43 @@ function hub_i18n_current_lang(): string
     return hub_i18n_normalize_lang((string)($_COOKIE['USER_LANG'] ?? 'zh_TW'));
 }
 
+/**
+ * Cookie 值只使用內建語系鍵，避免請求字串進入 HTTP response header。
+ */
+function hub_i18n_cookie_language(mixed $value): string
+{
+    $lang = hub_i18n_normalize_lang(is_string($value) ? $value : '');
+    if (!array_key_exists($lang, hub_i18n_languages()) || preg_match('/\A[a-z]{2}(?:_[A-Z]{2})?\z/D', $lang) !== 1) {
+        throw new RuntimeException('Language cookie value is invalid.');
+    }
+
+    return $lang;
+}
+
+function hub_i18n_cookie_value(string $lang): string
+{
+    return match ($lang) {
+        'zh_CN' => 'zh_CN',
+        'en' => 'en',
+        'ja' => 'ja',
+        'ko' => 'ko',
+        'es' => 'es',
+        'vi' => 'vi',
+        'th' => 'th',
+        'it' => 'it',
+        default => 'zh_TW',
+    };
+}
+
 function hub_i18n_apply_request_language(): void
 {
     if (PHP_SAPI === 'cli' || !isset($_GET['set_lang'])) {
         return;
     }
 
-    $lang = hub_i18n_normalize_lang((string)$_GET['set_lang']);
+    $lang = hub_i18n_cookie_language($_GET['set_lang']);
     $_COOKIE['USER_LANG'] = $lang;
-    setcookie('USER_LANG', $lang, [
+    setcookie('USER_LANG', hub_i18n_cookie_value($lang), [
         'expires' => time() + 86400 * 365,
         'path' => '/',
         'samesite' => 'Lax',

@@ -108,6 +108,39 @@ function hub_admin_record_api_filters(array $source): array
     ];
 }
 
+/**
+ * 舊 API access-log 入口只導向記錄中心的 API tab；所有查詢值都先走既有 filter。
+ */
+function hub_admin_record_api_redirect_query(array $source): array
+{
+    $clientIp = hub_admin_record_input_string($source['client_ip'] ?? '');
+    if ($clientIp !== '' && filter_var($clientIp, FILTER_VALIDATE_IP)) {
+        $source['client_ip_b64'] = aihub_b64url_encode($clientIp);
+    }
+    unset($source['client_ip']);
+
+    $filters = hub_admin_record_api_filters($source);
+    $query = ['tab' => 'api'];
+    foreach ($filters as $key => $value) {
+        if ($value !== '' && $value !== 0) {
+            $query[$key] = $value;
+        }
+    }
+
+    return $query;
+}
+
+function hub_admin_record_log_explorer_url(array $query): string
+{
+    $encoded = http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+    $url = 'log_explorer.php' . ($encoded !== '' ? '?' . $encoded : '');
+    if (strlen($url) > 4096 || preg_match('/\Alog_explorer\.php(?:\?[A-Za-z0-9._~%=&-]*)?\z/D', $url) !== 1) {
+        throw new InvalidArgumentException('Log explorer redirect is invalid.');
+    }
+
+    return $url;
+}
+
 function hub_admin_record_time_filter(mixed $value): string
 {
     $value = substr(hub_admin_record_input_string($value), 0, 32);

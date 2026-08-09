@@ -40,6 +40,19 @@ hub_test('Record Center API filters preserve base64url IP and validated tokens',
     hub_test_assert($invalid['client_ip_b64'] === '' && $invalid['mode'] === '' && $invalid['status_code'] === '' && $invalid['method'] === '' && $invalid['service_id'] === 0, 'invalid API filters must be discarded');
 });
 
+hub_test('legacy API log redirect emits only a bounded canonical relative URL', function (): void {
+    $query = hub_admin_record_api_redirect_query([
+        'client_ip' => '192.168.1.11',
+        'mode' => 'hello',
+        'keyword' => "needle\r\nLocation: https://evil.test",
+        'unexpected' => 'must-not-survive',
+    ]);
+    $url = hub_admin_record_log_explorer_url($query);
+    hub_test_assert(str_starts_with($url, 'log_explorer.php?tab=api&'), 'legacy redirect must stay on the canonical API log tab');
+    hub_test_assert(str_contains($url, 'client_ip_b64=MTkyLjE2OC4xLjEx') && str_contains($url, 'mode=hello'), 'legacy redirect must retain validated API filters');
+    hub_test_assert(!str_contains($url, "\r") && !str_contains($url, "\n") && !str_contains($url, 'unexpected'), 'legacy redirect must not reflect unsafe or unknown header input');
+});
+
 hub_test('api access query supports b64 client IP mode error and keyword filters', function (): void {
     $db = hub_test_reset_db();
     hub_insert_api_log_for_test($db, 'req_a', '192.168.1.10', 'hello', 200, 1, null, 'ok uri', 'normal ua');

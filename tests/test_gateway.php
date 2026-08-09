@@ -90,6 +90,43 @@ hub_test('gateway proxy content types cannot turn a Pack response into same-orig
     hub_test_assert(in_array('X-Content-Type-Options: nosniff', $proxyHeaders, true), 'proxy responses must disable MIME sniffing');
 });
 
+hub_test('gateway public errors keep only the stable client error contract', function (): void {
+    $safe = json_decode(hub_gateway_public_error_body([
+        'body' => hub_json_encode([
+            'ok' => false,
+            'error' => 'service_unavailable',
+            'message' => 'Fatal: C:\\internal\\runtime.php:42 with upstream credentials',
+            'request_id' => 'req_abc-123',
+        ]),
+    ]), true);
+    hub_test_assert(is_array($safe), 'public gateway error must remain JSON');
+    hub_test_assert($safe === [
+        'ok' => false,
+        'error' => 'service_unavailable',
+        'message' => 'service request failed',
+        'request_id' => 'req_abc-123',
+    ], 'public gateway error must retain only safe machine fields');
+});
+
+hub_test('gateway public success body requires a validated data response contract', function (): void {
+    hub_test_assert(
+        hub_gateway_public_success_body([
+            'status' => 200,
+            'headers' => ['Content-Type: application/json; charset=utf-8'],
+            'body' => '{"ok":true}',
+        ]) === '{"ok":true}',
+        'successful JSON Pack payload must remain available'
+    );
+    hub_test_assert(
+        hub_gateway_public_success_body([
+            'status' => 200,
+            'headers' => ['X-3waAIHub-Model: test'],
+            'body' => 'untyped',
+        ]) === '',
+        'successful Pack payload without a validated content type must not be emitted'
+    );
+});
+
 hub_test('test database reset clears stale request input', function (): void {
     $_GET = ['stale' => '1'];
     $_POST = ['real_inference' => '1'];
