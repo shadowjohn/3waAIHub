@@ -19,7 +19,14 @@ from PIL import Image, UnidentifiedImageError
 
 from geometry import polygon_from_mask, polygons_from_mask, rle_from_mask
 from model_smoke import CHECKPOINT_NAME, model_status as verified_model_status
-from sam31 import Sam31Error, load_predictor, segment_single_image
+from sam31 import (
+    Sam31Error,
+    load_image_predictor,
+    load_predictor,
+    release_cuda_cache,
+    segment_single_image,
+    segment_single_image_text,
+)
 
 app = FastAPI(title="3waAIHub SAM3")
 _SAM_LOCK = threading.Lock()  # ponytail: one GPU request per service; use job scheduling only if throughput requires it.
@@ -267,13 +274,26 @@ def current_checkpoint() -> Path:
 
 
 def resident_sam3_loader() -> Any:
+    return resident_sam3_model("video", load_predictor)
+
+
+def resident_sam3_image_loader() -> Any:
+    return resident_sam3_model("image", load_image_predictor)
+
+
+def resident_sam3_model(kind: str, loader: Any) -> Any:
     configure_sam3_env()
     checkpoint = current_checkpoint()
-    key = str(checkpoint)
+    key = f"{kind}:{checkpoint}"
     predictor = _MODEL_CACHE.get(key)
-    if predictor is None:
-        predictor = load_predictor(checkpoint, effective_device())
-        _MODEL_CACHE[key] = predictor
+    if predictor is not None:
+        return predictor
+
+    if _MODEL_CACHE:
+        _MODEL_CACHE.clear()
+        release_cuda_cache()
+    predictor = loader(checkpoint, effective_device())
+    _MODEL_CACHE[key] = predictor
     return predictor
 
 
@@ -499,17 +519,26 @@ def run_sam3(data: bytes, width: int, height: int, prompt_type: str, points_json
         configure_sam3_env()
         with _SAM_LOCK:
             with model_work():
-                results = segment_single_image(
-                    resident_sam3_loader(),
-                    decoded_image(data),
-                    prompt_type=prompt_type,
-                    points=points,
-                    labels=labels,
-                    boxes=boxes,
-                    text_prompts=text_prompts or None,
-                    guidance_bitmap=guidance_bitmap,
-                    workspace=Path(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")),
-                )
+                image = decoded_image(data)
+                if prompt_type in {"auto", "text"}:
+                    results = segment_single_image_text(
+                        resident_sam3_image_loader(),
+                        image,
+                        prompt_type=prompt_type,
+                        text_prompts=text_prompts or None,
+                    )
+                else:
+                    results = segment_single_image(
+                        resident_sam3_loader(),
+                        image,
+                        prompt_type=prompt_type,
+                        points=points,
+                        labels=labels,
+                        boxes=boxes,
+                        text_prompts=text_prompts or None,
+                        guidance_bitmap=guidance_bitmap,
+                        workspace=Path(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")),
+                    )
     except TimeoutError as exc:
         raise Sam3Error("inference_timeout", "SAM3 inference timed out.", 504) from exc
     except Sam31Error as exc:

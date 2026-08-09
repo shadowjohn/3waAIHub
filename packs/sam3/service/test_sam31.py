@@ -9,6 +9,7 @@ from unittest.mock import patch
 import numpy as np
 from PIL import Image
 
+import sam31
 from sam31 import Sam31Error, _patch_multiplex_init_state, load_predictor, segment_single_image
 
 
@@ -41,6 +42,15 @@ class FakePredictor:
     def assert_frame_exists(self) -> None:
         assert self.session_path is not None
         assert (self.session_path / "000000.jpg").is_file()
+
+
+class FakeImagePredictor:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def segment_text(self, image: Image.Image, text: str) -> list[dict[str, object]]:
+        self.prompts.append(text)
+        return [{"id": 1, "score": 0.9, "mask": np.array([[1]], dtype=bool)}]
 
 
 class Sam31ImageAdapterTests(unittest.TestCase):
@@ -117,6 +127,41 @@ class Sam31ImageAdapterTests(unittest.TestCase):
         predictor = FakePredictor(response={"outputs": {}})
         segment_single_image(predictor, self.image(), prompt_type="auto")
         self.assertEqual("object", predictor.calls[1]["text"])
+
+    def test_image_predictor_handles_text_and_auto_without_a_video_session(self) -> None:
+        predictor = FakeImagePredictor()
+        segment_text = getattr(sam31, "segment_single_image_text", None)
+        self.assertTrue(callable(segment_text), "semantic image fast path is required")
+        assert callable(segment_text)
+
+        text_results = segment_text(
+            predictor,
+            self.image(),
+            prompt_type="text",
+            text_prompts=["cat", "animal"],
+        )
+        auto_results = segment_text(predictor, self.image(), prompt_type="auto")
+
+        self.assertEqual(["cat/animal", "object"], predictor.prompts)
+        self.assertEqual(1, text_results[0]["id"])
+        self.assertEqual(1, auto_results[0]["id"])
+
+    def test_image_predictor_rejects_nonsemantic_prompt_types(self) -> None:
+        segment_text = getattr(sam31, "segment_single_image_text", None)
+        self.assertTrue(callable(segment_text), "semantic image fast path is required")
+        assert callable(segment_text)
+        with self.assertRaisesRegex(Sam31Error, "fast_path_unsupported"):
+            segment_text(FakeImagePredictor(), self.image(), prompt_type="points", text_prompts=["cat"])
+
+    def test_image_result_items_flattens_singleton_mask_channel(self) -> None:
+        result_items = getattr(sam31, "_image_result_items", None)
+        self.assertTrue(callable(result_items), "image result normalization is required")
+        assert callable(result_items)
+
+        results = result_items({"masks": np.array([[[[True]]]]), "scores": [0.9]})
+
+        self.assertEqual(1, len(results))
+        self.assertEqual((1, 1), results[0]["mask"].shape)
 
     def test_invalid_mixed_or_out_of_bounds_prompt_is_rejected_before_session(self) -> None:
         predictor = FakePredictor()

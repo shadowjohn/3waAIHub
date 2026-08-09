@@ -17,6 +17,49 @@ class Sam31Error(ValueError):
         self.code = code
 
 
+class Sam31ImagePredictor:
+    def __init__(self, processor: Any, device: str) -> None:
+        self.processor = processor
+        self.device = device
+
+    def segment_text(self, image: Image.Image, text: str) -> list[dict[str, Any]]:
+        import torch
+
+        with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.bfloat16):
+            state = self.processor.set_image(image)
+            state = self.processor.set_text_prompt(text, state)
+        return _image_result_items(state)
+
+
+def _image_result_items(state: object) -> list[dict[str, Any]]:
+    masks = state.get("masks") if isinstance(state, dict) else None
+    if masks is None:
+        return []
+    if hasattr(masks, "detach"):
+        masks = masks.detach()
+    if hasattr(masks, "cpu"):
+        masks = masks.cpu()
+    if hasattr(masks, "numpy"):
+        masks = masks.numpy()
+    masks = np.asarray(masks)
+    if masks.ndim == 2:
+        masks = masks[None, ...]
+    scores = _as_items(state.get("scores")) if isinstance(state, dict) else []
+    items: list[dict[str, Any]] = []
+    for index, mask in enumerate(masks):
+        bitmap = np.asarray(mask) > 0
+        if bitmap.ndim == 3 and bitmap.shape[0] == 1:
+            bitmap = bitmap[0]
+        if bitmap.ndim != 2 or not bool(bitmap.any()):
+            continue
+        items.append({
+            "id": index + 1,
+            "score": _score(scores[index]) if index < len(scores) else 1.0,
+            "mask": bitmap,
+        })
+    return items
+
+
 def load_predictor(checkpoint: Path, device: str) -> Any:
     del device  # SAM 3.1 selects CUDA from its installed runtime.
     from sam3.model_builder import build_sam3_multiplex_video_predictor
@@ -33,6 +76,20 @@ def load_predictor(checkpoint: Path, device: str) -> Any:
     return predictor
 
 
+def load_image_predictor(checkpoint: Path, device: str) -> Sam31ImagePredictor:
+    from sam3 import build_sam3_image_model
+    from sam3.model.sam3_image_processor import Sam3Processor
+
+    model = build_sam3_image_model(
+        checkpoint_path=str(checkpoint),
+        load_from_HF=False,
+        device=device,
+        compile=False,
+    )
+    processor = Sam3Processor(model, device=device, confidence_threshold=0.5)
+    return Sam31ImagePredictor(processor, device)
+
+
 def _patch_multiplex_init_state(predictor: Any) -> None:
     init_state = predictor.model.init_state
     if "offload_state_to_cpu" in inspect.signature(init_state).parameters:
@@ -47,6 +104,10 @@ def _patch_multiplex_init_state(predictor: Any) -> None:
 
 def release_predictor(predictor: Any) -> None:
     del predictor
+    release_cuda_cache()
+
+
+def release_cuda_cache() -> None:
     gc.collect()
     try:
         import torch
@@ -85,6 +146,26 @@ def segment_single_image(
             return result_items(predictor.handle_request(request))
         finally:
             predictor.handle_request({"type": "close_session", "session_id": session_id})
+
+
+def segment_single_image_text(
+    predictor: Any,
+    image: Image.Image,
+    *,
+    prompt_type: str,
+    text_prompts: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    if prompt_type == "auto":
+        if text_prompts:
+            raise Sam31Error("invalid_prompt")
+        prompt = "object"
+    elif prompt_type == "text" and text_prompts:
+        prompt = "/".join(text_prompts)
+    elif prompt_type not in {"auto", "text"}:
+        raise Sam31Error("fast_path_unsupported")
+    else:
+        raise Sam31Error("invalid_prompt")
+    return predictor.segment_text(image, prompt)
 
 
 def _prompt_request(
