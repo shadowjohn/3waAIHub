@@ -17,6 +17,15 @@ hub_test('command runner bypasses cmd.exe on Windows', function (): void {
     hub_test_assert(hub_process_execution_options('Linux') === [], 'Linux argv execution must not add Windows-only options');
 });
 
+hub_test('command runner validates argv and Ollama model references before process launch', function (): void {
+    hub_test_assert(hub_valid_argv(['docker', 'system', 'df']), 'fixed argv command must be accepted');
+    hub_test_assert(!hub_valid_argv(['docker', "system\0df"]), 'NUL argv argument must be rejected');
+    hub_test_assert(!hub_valid_argv(['docker' => 'system']), 'non-list argv command must be rejected');
+    hub_test_assert(hub_ollama_model_reference('translategemma:12b-it-q4_K_M') === 'translategemma:12b-it-q4_K_M', 'valid Ollama model reference changed');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_reference('--config=/tmp/evil')), 'Ollama option prefix must be rejected');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_reference('model name')), 'Ollama whitespace must be rejected');
+});
+
 hub_test('resident reconciliation uses a prepared read before building runtime commands', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/app/pack_job_runner.php');
     $start = strpos($source, 'function hub_reconcile_resident_job_runs');

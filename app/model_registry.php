@@ -3,7 +3,12 @@ declare(strict_types=1);
 
 function hub_models_root(PDO $db): string
 {
-    return rtrim(hub_get_storage_setting($db, 'AIHUB_MODELS_DIR'), '/') ?: '/';
+    $root = rtrim(hub_get_storage_setting($db, 'AIHUB_MODELS_DIR'), '/') ?: '/';
+    if (!hub_is_safe_models_root($root)) {
+        throw new RuntimeException('Invalid models root.');
+    }
+
+    return $root;
 }
 
 function hub_model_asset_safe_path(string $relativePath): string

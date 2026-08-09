@@ -1238,7 +1238,14 @@ function hub_proxy_audio_asset_request(string $url, int $timeoutSec, string $aud
     $body = substr($raw, $headerSize);
     curl_close($ch);
 
-    return ['status' => $status, 'headers' => ['Content-Type: ' . $contentType], 'body' => $body];
+    return [
+        'status' => $status,
+        'headers' => [
+            'Content-Type: ' . (hub_gateway_safe_content_type((string)$contentType) ?? 'application/octet-stream'),
+            'X-Content-Type-Options: nosniff',
+        ],
+        'body' => $body,
+    ];
 }
 
 function hub_api_photo_upload(PDO $db, array $authContext): array
@@ -2630,11 +2637,10 @@ function hub_gateway_admin_legacy_task_session_allowed(PDO $db, string $mode): b
 
 function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentType): array
 {
-    $contentType = trim($contentType);
-    if ($contentType === '' || strlen($contentType) > 200 || preg_match('/[\x00-\x1F\x7F]/', $contentType) === 1) {
-        $contentType = 'application/octet-stream';
-    }
-    $headers = ['Content-Type: ' . $contentType];
+    $headers = [
+        'Content-Type: ' . (hub_gateway_safe_content_type($contentType) ?? 'application/octet-stream'),
+        'X-Content-Type-Options: nosniff',
+    ];
     $normalized = str_replace("\r\n", "\n", $rawHeaders);
     $blocks = preg_split('/\n\n+/', trim($normalized)) ?: [];
     $final = '';
@@ -2768,6 +2774,46 @@ function hub_gateway_json(int $status, array $payload): array
 }
 
 /**
+ * Gateway 是同源 API proxy，不可把 service 回傳的 HTML/XML 當成本站頁面執行。
+ * 只放行 Pack 會使用的資料型態；未知型態一律以不可執行的下載資料處理。
+ */
+function hub_gateway_safe_content_type(string $value): ?string
+{
+    $value = strtolower(trim($value));
+    if (preg_match('/\A([a-z0-9.+-]{1,64}\/[a-z0-9.+-]{1,64})(?:;[ \t]*charset=(utf-8|binary))?\z/D', $value, $matches) !== 1) {
+        return null;
+    }
+
+    $mime = $matches[1];
+    $allowed = [
+        'application/json',
+        'application/geo+json',
+        'application/problem+json',
+        'application/octet-stream',
+        'application/pdf',
+        'application/zip',
+        'text/plain',
+        'text/csv',
+        'image/png',
+        'image/jpeg',
+        'image/webp',
+        'image/gif',
+        'audio/wav',
+        'audio/x-wav',
+        'audio/mpeg',
+        'audio/ogg',
+        'audio/webm',
+        'video/mp4',
+        'video/webm',
+    ];
+    if (!in_array($mime, $allowed, true)) {
+        return null;
+    }
+
+    return $mime . (isset($matches[2]) ? '; charset=' . $matches[2] : '');
+}
+
+/**
  * Gateway 最後一層回應標頭防線：只允許本系統已定義的標頭，並拒絕換行字元。
  * 即使未來某個 Pack 回傳了不安全的 header 字串，也不能讓它改寫 HTTP 回應。
  */
@@ -2798,8 +2844,9 @@ function hub_gateway_safe_response_headers(array $headers): array
             continue;
         }
         $value = trim($matches[2], " \t");
+        $safeContentType = $name === 'content-type' ? hub_gateway_safe_content_type($value) : null;
         $valid = match ($name) {
-            'content-type' => preg_match('/\A[a-z0-9.+-]{1,64}\/[a-z0-9.+-]{1,64}(?:;[ \t]*charset=(?:utf-8|binary))?\z/iD', $value) === 1,
+            'content-type' => $safeContentType !== null,
             'content-length', 'x-3waaihub-elapsed-ms', 'x-3waaihub-width', 'x-3waaihub-height' => $value !== '' && strlen($value) <= 20 && ctype_digit($value),
             'content-disposition' => preg_match('/\Aattachment; filename="[A-Za-z0-9._-]{1,255}"\z/D', $value) === 1,
             'cache-control' => $value === 'private, no-store',
@@ -2810,8 +2857,12 @@ function hub_gateway_safe_response_headers(array $headers): array
             default => false,
         };
         if ($valid) {
-            $accepted[$name] = $value;
+            $accepted[$name] = $safeContentType ?? $value;
         }
+    }
+
+    if (isset($accepted['content-type']) && !isset($accepted['x-content-type-options'])) {
+        $accepted['x-content-type-options'] = 'nosniff';
     }
 
     $safe = [];

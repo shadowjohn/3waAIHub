@@ -3,6 +3,7 @@ param(
     [string]$BuildId = '3waAIHub-production',
     [string]$OutputPath = '',
     [string]$SourceAnalyzerPath = '',
+    [string]$RulesPath = '',
     [switch]$Check
 )
 
@@ -10,6 +11,15 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+if ($RulesPath -eq '') {
+    $RulesPath = Join-Path $repoRoot 'fortify\rules'
+}
+$rulesDirectory = Test-Path -LiteralPath $RulesPath -PathType Container
+$rulesFiles = @()
+if ($rulesDirectory) {
+    $rulesFiles = @(Get-ChildItem -LiteralPath $RulesPath -File -Include '*.xml','*.bin' | Sort-Object -Property Name | Select-Object -ExpandProperty FullName)
+}
+$rulesArgs = if ($rulesFiles.Count -gt 0) { @('-rules', $RulesPath) } else { @() }
 $sourcePatterns = @(
     (Join-Path $repoRoot '*.php'),
     (Join-Path $repoRoot 'app\**\*.php'),
@@ -42,6 +52,7 @@ $scope = [ordered]@{
     repo_root = $repoRoot
     include = $sourcePatterns
     exclude = $excludedPatterns
+    custom_rules = $rulesFiles
     policy = 'production source plus Pack acceptance/service tests; root test fixtures and historical worktrees are excluded'
 }
 
@@ -108,11 +119,22 @@ if ($forbiddenFiles.Count -gt 0) {
     throw ('Fortify scan scope is contaminated: ' + ($forbiddenFiles -join '; '))
 }
 
-& $SourceAnalyzerPath -b $BuildId -scan -f $OutputPath
+& $SourceAnalyzerPath -b $BuildId @rulesArgs -scan -f $OutputPath
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
     throw "Fortify scan failed for build ID: $BuildId"
 }
 
-$hash = Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256
+$sha256 = [System.Security.Cryptography.SHA256]::Create()
+try {
+    $stream = [System.IO.File]::OpenRead($OutputPath)
+    try {
+        $hashBytes = $sha256.ComputeHash($stream)
+    } finally {
+        $stream.Dispose()
+    }
+} finally {
+    $sha256.Dispose()
+}
+$hash = -join ($hashBytes | ForEach-Object { $_.ToString('x2') })
 Write-Output ('fpr=' + $OutputPath)
-Write-Output ('sha256=' + $hash.Hash.ToLowerInvariant())
+Write-Output ('sha256=' + $hash)

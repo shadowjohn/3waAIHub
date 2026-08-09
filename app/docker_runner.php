@@ -50,6 +50,34 @@ function hub_process_execution_options(?string $platform = null): array
         : [];
 }
 
+/**
+ * Docker CLI 的 model 參數不是 shell 字串；仍拒絕 option 前綴、空白與控制字元，
+ * 避免模型名稱被解讀為另一個 CLI option 或跨越 argv 邊界。
+ */
+function hub_ollama_model_reference(string $model): string
+{
+    $model = trim($model);
+    if (preg_match('~^[A-Za-z0-9][A-Za-z0-9._:/@+_-]{0,254}$~D', $model) !== 1) {
+        throw new InvalidArgumentException('Invalid Ollama model reference.');
+    }
+
+    return $model;
+}
+
+function hub_valid_argv(array $command): bool
+{
+    if ($command === [] || !array_is_list($command)) {
+        return false;
+    }
+    foreach ($command as $argument) {
+        if (!is_string($argument) || $argument === '' || str_contains($argument, "\0")) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = []): array
 {
     hub_cli_only();
@@ -63,13 +91,8 @@ function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = 
  */
 function hub_run_argv_command(array $command, int $timeoutSeconds = 60, array $env = []): array
 {
-    if ($command === [] || !array_is_list($command)) {
+    if (!hub_valid_argv($command)) {
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
-    }
-    foreach ($command as $argument) {
-        if (!is_string($argument) || $argument === '' || str_contains($argument, "\0")) {
-            return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
-        }
     }
 
     $descriptor = [
@@ -134,6 +157,11 @@ function hub_run_linux_docker_command(array $command, int $timeoutSeconds = 60, 
 function hub_run_command_streamed(array $command, int $timeoutSeconds, array $env, string $stdoutPath, string $stderrPath, ?callable $onOutput = null): array
 {
     hub_cli_only();
+
+    if (!hub_valid_argv($command)) {
+        file_put_contents($stderrPath, "Invalid command.\n", FILE_APPEND);
+        return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
+    }
 
     $descriptor = [
         1 => ['pipe', 'w'],

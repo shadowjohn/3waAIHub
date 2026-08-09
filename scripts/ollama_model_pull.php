@@ -36,8 +36,10 @@ if ($model === '') {
     $schema = hub_get_pack_settings_schema('translate-gemma12b');
     $model = trim((string)($settings['OLLAMA_MODEL']['value'] ?? $schema['OLLAMA_MODEL']['default'] ?? 'translategemma:12b-it-q4_K_M'));
 }
-if ($model === '' || preg_match('/\s/', $model)) {
-    fwrite(STDERR, "model_empty\n");
+try {
+    $model = hub_ollama_model_reference($model);
+} catch (InvalidArgumentException) {
+    fwrite(STDERR, "invalid_model_reference\n");
     exit(5);
 }
 

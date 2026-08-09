@@ -86,6 +86,9 @@ hub_test('model registry scans models root safely and skips symlinks', function 
         'root_subdir' => 'ollama',
     ], 'translategemma:12b-it-q4_K_M');
     hub_test_assert(($ollamaStatus['model_present'] ?? false) === true, 'Ollama selector must detect present model tag');
+
+    hub_set_storage_setting($db, 'AIHUB_MODELS_DIR', '/');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_models_root($db)), 'models root must revalidate a corrupted setting before filesystem use');
 });
 
 hub_test('model registry creates requested directories only under the physical models root', function (): void {

@@ -77,6 +77,19 @@ hub_test('gateway response headers use a canonical injection-safe allowlist', fu
     ], 'gateway response headers must reject unapproved or line-breaking values');
 });
 
+hub_test('gateway proxy content types cannot turn a Pack response into same-origin HTML', function (): void {
+    hub_test_assert(hub_gateway_safe_content_type('application/json; charset=UTF-8') === 'application/json; charset=utf-8', 'JSON response must keep an explicit safe charset');
+    hub_test_assert(hub_gateway_safe_content_type('image/png') === 'image/png', 'image response must remain available');
+    hub_test_assert(hub_gateway_safe_content_type('text/html') === null, 'HTML response must not be proxied as executable same-origin content');
+    hub_test_assert(hub_gateway_safe_content_type('application/xml') === null, 'XML response must not be proxied as executable same-origin content');
+
+    $headers = hub_gateway_safe_response_headers(['Content-Type: text/html']);
+    hub_test_assert($headers === [], 'unsafe response content type must be dropped');
+    $proxyHeaders = hub_proxy_allowed_response_headers("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n", 'text/html');
+    hub_test_assert($proxyHeaders[0] === 'Content-Type: application/octet-stream', 'unsafe Pack content type must become a download type');
+    hub_test_assert(in_array('X-Content-Type-Options: nosniff', $proxyHeaders, true), 'proxy responses must disable MIME sniffing');
+});
+
 hub_test('test database reset clears stale request input', function (): void {
     $_GET = ['stale' => '1'];
     $_POST = ['real_inference' => '1'];

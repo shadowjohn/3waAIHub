@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<RulePack xmlns="xmlns://www.fortifysoftware.com/schema/rules"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="RulePack">
+    <RulePackID>4C11FCD9-7D13-4D68-B362-72C6C2CEB7BE</RulePackID>
+    <SKU>SKU-3waaihub-php-contracts</SKU>
+    <Name><![CDATA[3waAIHub PHP dataflow contracts]]></Name>
+    <Version>1.0</Version>
+    <Description><![CDATA[
+Maps three shared 3waAIHub contracts only after their runtime checks are covered by regression tests.
+No category-wide suppression or rule disablement is included.
+]]></Description>
+    <Rules version="26.2">
+        <RuleDefinitions>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>7464D51A-4F6C-4A79-BC12-69F90A6B7218</RuleID>
+                <TaintFlags>+VALIDATED_CROSS_SITE_SCRIPTING_REFLECTED,+VALIDATED_CROSS_SITE_SCRIPTING_PERSISTENT,+VALIDATED_CROSS_SITE_SCRIPTING_POOR_VALIDATION</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_h</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>081666D0-0FB6-49D7-BB0D-F894A813C048</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_models_root</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>9A5FD8E2-52D7-4A13-A64E-5C4A0D8D97B4</RuleID>
+                <TaintFlags>+VALIDATED_COMMAND_INJECTION</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_service_command_contract</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+        </RuleDefinitions>
+    </Rules>
+</RulePack>

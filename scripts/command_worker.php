@@ -148,7 +148,11 @@ function hub_run_ollama_model_pull_job(PDO $db, ?array $service, array $job): ar
     $model = trim((string)($args['model'] ?? ''));
     $command = ['php', HUB_ROOT . '/scripts/ollama_model_pull.php', '--service=' . (string)$service['service_key']];
     if ($model !== '') {
-        $command[] = '--model=' . $model;
+        try {
+            $command[] = '--model=' . hub_ollama_model_reference($model);
+        } catch (InvalidArgumentException) {
+            return ['exit_code' => 2, 'stdout' => '', 'stderr' => 'invalid_model_reference'];
+        }
     }
 
     hub_job_progress($db, $job, 'checking_ollama', 10, 'Checking Ollama container.');
