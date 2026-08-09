@@ -109,6 +109,32 @@ class Sam31ImageAdapterTests(unittest.TestCase):
 
         self.assertEqual([9], [mask["id"] for mask in masks])
 
+    def test_point_session_reuses_its_frame_until_closed(self) -> None:
+        open_session = getattr(sam31, "open_point_session", None)
+        segment_session = getattr(sam31, "segment_point_session", None)
+        close_session = getattr(sam31, "close_point_session", None)
+        self.assertTrue(callable(open_session), "point session opener is required")
+        self.assertTrue(callable(segment_session), "point session segmenter is required")
+        self.assertTrue(callable(close_session), "point session closer is required")
+        assert callable(open_session) and callable(segment_session) and callable(close_session)
+
+        predictor = FakePredictor()
+        with tempfile.TemporaryDirectory() as workspace:
+            session = open_session(predictor, self.image(), Path(workspace))
+            first = segment_session(predictor, session, self.image().size, [[3, 2]], [1])
+            second = segment_session(predictor, session, self.image().size, [[4, 2]], [1])
+
+            self.assertEqual([9], [mask["id"] for mask in first])
+            self.assertEqual([9], [mask["id"] for mask in second])
+            self.assertEqual(["start_session", "add_prompt", "add_prompt"], [call["type"] for call in predictor.calls])
+            self.assertIsNotNone(predictor.session_path)
+            assert predictor.session_path is not None
+            self.assertTrue(predictor.session_path.exists())
+            close_session(predictor, session)
+            self.assertFalse(predictor.session_path.exists())
+
+        self.assertEqual(["start_session", "add_prompt", "add_prompt", "close_session"], [call["type"] for call in predictor.calls])
+
     def test_boxes_guidance_and_text_map_to_official_prompt_fields(self) -> None:
         for prompt_type, kwargs, expected in [
             ("boxes", {"boxes": [[1, 1, 5, 3]]}, {"bounding_boxes": [[1 / 6, 1 / 4, 4 / 6, 2 / 4]]}),

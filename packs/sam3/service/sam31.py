@@ -3,7 +3,9 @@ from __future__ import annotations
 import gc
 import inspect
 import math
+import shutil
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,12 @@ class Sam31Error(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+@dataclass(frozen=True)
+class Sam31PointSession:
+    session_id: str
+    frame_dir: Path
 
 
 class Sam31ImagePredictor:
@@ -134,6 +142,12 @@ def segment_single_image(
     request = _prompt_request(image.size, prompt_type, points, labels, boxes, text_prompts, guidance_bitmap)
     if workspace is not None and not workspace.is_dir():
         raise Sam31Error("invalid_workspace")
+    if prompt_type == "points":
+        session = open_point_session(predictor, image, workspace)
+        try:
+            return segment_point_session(predictor, session, image.size, points or [], labels or [])
+        finally:
+            close_point_session(predictor, session)
     with tempfile.TemporaryDirectory(prefix="sam31-", dir=str(workspace) if workspace is not None else None) as folder:
         frame_dir = Path(folder)
         image.convert("RGB").save(frame_dir / "000000.jpg", format="JPEG", quality=95)
@@ -146,6 +160,40 @@ def segment_single_image(
             return result_items(predictor.handle_request(request))
         finally:
             predictor.handle_request({"type": "close_session", "session_id": session_id})
+
+
+def open_point_session(predictor: Any, image: Image.Image, workspace: Path | None = None) -> Sam31PointSession:
+    if workspace is not None and not workspace.is_dir():
+        raise Sam31Error("invalid_workspace")
+    frame_dir = Path(tempfile.mkdtemp(prefix="sam31-point-", dir=str(workspace) if workspace is not None else None))
+    try:
+        image.convert("RGB").save(frame_dir / "000000.jpg", format="JPEG", quality=95)
+        started = predictor.handle_request({"type": "start_session", "resource_path": str(frame_dir)})
+        session_id = _session_id(started)
+        _seed_multiplex_frame_cache(predictor, session_id)
+        return Sam31PointSession(session_id=session_id, frame_dir=frame_dir)
+    except Exception:
+        shutil.rmtree(frame_dir, ignore_errors=True)
+        raise
+
+
+def segment_point_session(
+    predictor: Any,
+    session: Sam31PointSession,
+    image_size: tuple[int, int],
+    points: list[list[float]],
+    labels: list[int],
+) -> list[dict[str, Any]]:
+    request = _prompt_request(image_size, "points", points, labels, None, None, None)
+    request.update({"type": "add_prompt", "session_id": session.session_id, "frame_index": 0, "rel_coordinates": True})
+    return result_items(predictor.handle_request(request))
+
+
+def close_point_session(predictor: Any, session: Sam31PointSession) -> None:
+    try:
+        predictor.handle_request({"type": "close_session", "session_id": session.session_id})
+    finally:
+        shutil.rmtree(session.frame_dir, ignore_errors=True)
 
 
 def segment_single_image_text(

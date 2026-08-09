@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -21,9 +22,12 @@ from geometry import polygon_from_mask, polygons_from_mask, rle_from_mask
 from model_smoke import CHECKPOINT_NAME, model_status as verified_model_status
 from sam31 import (
     Sam31Error,
+    close_point_session,
     load_image_predictor,
     load_predictor,
+    open_point_session,
     release_cuda_cache,
+    segment_point_session,
     segment_single_image,
     segment_single_image_text,
 )
@@ -39,6 +43,75 @@ RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,95}$")
 TERMINAL_RESIDENT_STATES = {"succeeded", "failed", "cancelled"}
 OUTPUT_FORMATS = {"metadata", "polygon", "rle", "both", "png"}
 PROMPT_TYPES = {"auto", "points", "boxes", "text", "guidance_mask"}
+
+
+class PointSessionCache:
+    def __init__(self, ttl_seconds: float, timer_factory: Any, work_lock: Any) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.timer_factory = timer_factory
+        self.work_lock = work_lock
+        self.entry: dict[str, Any] | None = None
+        self.timer: Any = None
+        self.generation = 0
+
+    def segment(
+        self,
+        predictor: Any,
+        image_sha256: str,
+        image: Image.Image,
+        workspace: Path,
+        points: list[list[float]],
+        labels: list[int],
+    ) -> list[dict[str, Any]]:
+        if self.entry is None or self.entry["image_sha256"] != image_sha256 or self.entry["predictor"] is not predictor:
+            self.clear()
+            self.entry = {
+                "image_sha256": image_sha256,
+                "predictor": predictor,
+                "session": open_point_session(predictor, image, workspace),
+            }
+        try:
+            results = segment_point_session(predictor, self.entry["session"], image.size, points, labels)
+        except Exception:
+            self.clear()
+            raise
+        self._schedule_expiry()
+        return results
+
+    def clear(self) -> None:
+        self.generation += 1
+        if self.timer is not None:
+            self.timer.cancel()
+            self.timer = None
+        entry, self.entry = self.entry, None
+        if entry is not None:
+            try:
+                close_point_session(entry["predictor"], entry["session"])
+            except Exception:
+                pass
+
+    def _schedule_expiry(self) -> None:
+        self.generation += 1
+        generation = self.generation
+        if self.timer is not None:
+            self.timer.cancel()
+        self.timer = self.timer_factory(self.ttl_seconds, lambda: self._expire(generation))
+        self.timer.daemon = True
+        self.timer.start()
+
+    def _expire(self, generation: int) -> None:
+        with self.work_lock:
+            if generation == self.generation:
+                self.clear()
+
+
+_POINT_SESSION_CACHE = PointSessionCache(60, threading.Timer, _SAM_LOCK)
+
+
+@app.on_event("shutdown")
+def shutdown_point_session_cache() -> None:
+    with _SAM_LOCK:
+        _POINT_SESSION_CACHE.clear()
 
 
 class Sam3Error(Exception):
@@ -290,6 +363,7 @@ def resident_sam3_model(kind: str, loader: Any) -> Any:
         return predictor
 
     if _MODEL_CACHE:
+        _POINT_SESSION_CACHE.clear()
         _MODEL_CACHE.clear()
         release_cuda_cache()
     predictor = loader(checkpoint, effective_device())
@@ -526,6 +600,16 @@ def run_sam3(data: bytes, width: int, height: int, prompt_type: str, points_json
                         image,
                         prompt_type=prompt_type,
                         text_prompts=text_prompts or None,
+                    )
+                elif prompt_type == "points":
+                    assert points is not None and labels is not None
+                    results = _POINT_SESSION_CACHE.segment(
+                        resident_sam3_loader(),
+                        hashlib.sha256(data).hexdigest(),
+                        image,
+                        Path(os.getenv("SAM3_SERVICE_DATA_DIR", "/data/service")),
+                        points,
+                        labels,
                     )
                 else:
                     results = segment_single_image(
