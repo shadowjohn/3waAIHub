@@ -279,6 +279,56 @@ hub_test('service settings reject a legacy env symlink without touching its targ
     }
 });
 
+hub_test('runtime settings migration checks applies and then becomes idempotent', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'hello', [
+        'service_key' => 'runtime-settings-cli',
+        'mode' => 'runtime_settings_cli',
+    ])['service'];
+    $runtimeDir = dirname(hub_path((string)$service['compose_file']));
+    $settingsPath = hub_runtime_settings_path($runtimeDir);
+    $legacyPath = hub_legacy_runtime_env_path($runtimeDir);
+    @unlink($settingsPath);
+    file_put_contents($legacyPath, "LEGACY_ONLY=1\n");
+
+    $check = hub_migrate_service_runtime_settings($db, false, 'runtime-settings-cli');
+    hub_test_assert(($check['scanned'] ?? null) === 1 && ($check['pending'] ?? null) === 1, 'runtime settings check must report a pending legacy service');
+    hub_test_assert(!is_file($settingsPath) && is_file($legacyPath), 'runtime settings check must not change files');
+
+    $apply = hub_migrate_service_runtime_settings($db, true, 'runtime-settings-cli');
+    hub_test_assert(($apply['migrated'] ?? null) === 1 && ($apply['rejected'] ?? null) === 0, 'runtime settings apply must migrate the legacy service');
+    hub_test_assert(is_file($settingsPath) && !file_exists($legacyPath), 'runtime settings apply must replace the legacy file');
+
+    $again = hub_migrate_service_runtime_settings($db, true, 'runtime-settings-cli');
+    hub_test_assert(($again['already_current'] ?? null) === 1 && ($again['migrated'] ?? null) === 0, 'runtime settings migration must be idempotent');
+});
+
+hub_test('runtime settings migration rejects a legacy env symlink without touching its target', function (): void {
+    hub_test_require_symlink_fixture('Runtime settings migration symlink rejection requires symlink fixtures.');
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'hello', [
+        'service_key' => 'runtime-settings-cli-symlink',
+        'mode' => 'runtime_settings_cli_symlink',
+    ])['service'];
+    $runtimeDir = dirname(hub_path((string)$service['compose_file']));
+    @unlink(hub_runtime_settings_path($runtimeDir));
+    $outside = sys_get_temp_dir() . '/3waaihub_runtime_settings_migration_' . bin2hex(random_bytes(4));
+    $outsideFile = $outside . '/legacy.env';
+    mkdir($outside, 0700, true);
+    file_put_contents($outsideFile, "OUTSIDE=1\n");
+    symlink($outsideFile, hub_legacy_runtime_env_path($runtimeDir));
+
+    try {
+        $result = hub_migrate_service_runtime_settings($db, true, 'runtime-settings-cli-symlink');
+        hub_test_assert(($result['rejected'] ?? null) === 1, 'runtime settings migration must reject a legacy env symlink');
+        hub_test_assert((string)file_get_contents($outsideFile) === "OUTSIDE=1\n", 'runtime settings migration modified a legacy env symlink target');
+    } finally {
+        @unlink(hub_legacy_runtime_env_path($runtimeDir));
+        @unlink($outsideFile);
+        @rmdir($outside);
+    }
+});
+
 hub_test('service settings override pack runtime env defaults when writing env', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'structure-ppstructurev3', [

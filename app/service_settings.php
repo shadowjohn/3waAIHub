@@ -351,12 +351,12 @@ function hub_legacy_runtime_env_path(string $runtimeDir): string
     return rtrim(hub_normalize_host_path($runtimeDir), '/\\') . '/' . HUB_LEGACY_RUNTIME_ENV_FILENAME;
 }
 
-function hub_resolve_runtime_settings_directory(string $runtimeDir): string
+function hub_resolve_runtime_settings_directory(string $runtimeDir, bool $create = true): string
 {
     if ($runtimeDir === '' || trim($runtimeDir) !== $runtimeDir) {
         throw new RuntimeException('Service runtime directory is invalid.');
     }
-    if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)) {
+    if (!is_dir($runtimeDir) && (!$create || (!mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)))) {
         throw new RuntimeException('Cannot create service runtime directory.');
     }
     if (is_link($runtimeDir)) {
@@ -436,7 +436,7 @@ function hub_write_runtime_settings_file(string $runtimeDir, string $contents): 
     }
 }
 
-function hub_service_runtime_directory(PDO $db, array $service): string
+function hub_service_runtime_directory(PDO $db, array $service, bool $create = true): string
 {
     $serviceKey = (string)($service['service_key'] ?? '');
     if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1
@@ -444,7 +444,7 @@ function hub_service_runtime_directory(PDO $db, array $service): string
         throw new RuntimeException('Service runtime configuration is invalid.');
     }
 
-    $runtimeDir = hub_resolve_runtime_settings_directory(hub_pack_runtime_dir($db, $serviceKey));
+    $runtimeDir = hub_resolve_runtime_settings_directory(hub_pack_runtime_dir($db, $serviceKey), $create);
     $runtimeBase = realpath(hub_pack_runtime_base_dir($db));
     if ($runtimeBase === false
         || !hub_storage_path_is_within($runtimeDir, $runtimeBase)
@@ -492,6 +492,73 @@ function hub_write_service_runtime_settings(PDO $db, array $service): string
         hub_service_runtime_directory($db, $service),
         hub_generate_service_runtime_settings_for_instance($db, $service),
     );
+}
+
+function hub_migrate_service_runtime_settings(PDO $db, bool $apply, ?string $serviceKey = null): array
+{
+    if ($serviceKey !== null && preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1) {
+        throw new InvalidArgumentException('Invalid service key.');
+    }
+
+    $sql = 'SELECT id, mode, pack_id, service_key, compose_file, local_port
+            FROM services
+            WHERE install_status = :install_status
+              AND pack_id IS NOT NULL
+              AND service_key IS NOT NULL';
+    $parameters = [':install_status' => 'installed'];
+    if ($serviceKey !== null) {
+        $sql .= ' AND service_key = :service_key';
+        $parameters[':service_key'] = $serviceKey;
+    }
+    $sql .= ' ORDER BY id';
+    $services = hub_sqlite_select_safe($db, $sql, $parameters);
+    $result = [
+        'scanned' => 0,
+        'migrated' => 0,
+        'already_current' => 0,
+        'pending' => 0,
+        'rejected' => 0,
+        'services' => [],
+    ];
+
+    foreach ($services as $service) {
+        $result['scanned']++;
+        $key = (string)($service['service_key'] ?? '');
+        try {
+            $runtimeDir = hub_service_runtime_directory($db, $service, $apply);
+            $settingsPath = hub_runtime_settings_path($runtimeDir);
+            $legacyPath = hub_legacy_runtime_env_path($runtimeDir);
+            clearstatcache(true, $settingsPath);
+            clearstatcache(true, $legacyPath);
+            if (is_link($settingsPath) || is_link($legacyPath)
+                || (file_exists($settingsPath) && !is_file($settingsPath))
+                || (file_exists($legacyPath) && !is_file($legacyPath))) {
+                throw new RuntimeException('Unsafe runtime settings file.');
+            }
+
+            $hasCurrent = is_file($settingsPath);
+            $hasLegacy = file_exists($legacyPath);
+            if ($hasCurrent && !$hasLegacy) {
+                $result['already_current']++;
+                $result['services'][] = ['service_key' => $key, 'outcome' => 'already_current'];
+                continue;
+            }
+            if (!$apply) {
+                $result['pending']++;
+                $result['services'][] = ['service_key' => $key, 'outcome' => 'pending'];
+                continue;
+            }
+
+            hub_write_service_runtime_settings($db, $service);
+            $result['migrated']++;
+            $result['services'][] = ['service_key' => $key, 'outcome' => 'migrated'];
+        } catch (Throwable) {
+            $result['rejected']++;
+            $result['services'][] = ['service_key' => $key, 'outcome' => 'rejected', 'reason' => 'runtime_settings_unsafe'];
+        }
+    }
+
+    return $result;
 }
 
 function hub_write_service_compose(PDO $db, array $service): string
