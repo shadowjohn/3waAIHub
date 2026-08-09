@@ -23,7 +23,7 @@ hub_test('Facebook crawler Pack declares one fixed CPU job', function (): void {
 
     $shellCheck = HUB_ROOT . '/packs/facebook-crawler/service/test_egress_firewall.sh';
     $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/facebook-crawler/service/Dockerfile');
-    hub_test_assert(is_file($shellCheck) && is_executable($shellCheck)
+    hub_test_assert(is_file($shellCheck) && (PHP_OS_FAMILY === 'Windows' || is_executable($shellCheck))
         && str_contains($dockerfile, "FROM base AS test\nCOPY tests ./tests\nCOPY test_egress_firewall.sh ./\nRUN chmod 0755 test_egress_firewall.sh\n\nFROM base AS runtime"), 'crawler test target must include the executable egress boundary check only in its test stage');
 });
 
@@ -123,6 +123,7 @@ hub_test('Facebook crawler profiles block owner deletion until private state is 
 });
 
 hub_test('Facebook crawler bootstrap rejects a symlinked private parent', function (): void {
+    hub_test_require_symlink_fixture('Facebook crawler profile symlink fixtures are unavailable on this Windows host.');
     $parent = HUB_DATA_DIR . '/facebook-crawler';
     $backup = HUB_DATA_DIR . '/facebook-crawler-safe-' . bin2hex(random_bytes(8));
     $outside = sys_get_temp_dir() . '/3waaihub_bootstrap_parent_' . bin2hex(random_bytes(16));
@@ -175,6 +176,7 @@ hub_test('Facebook crawler profile repository caps owners and fails closed on ac
 });
 
 hub_test('Facebook crawler profile deletion rejects symlinks and hardlinks', function (): void {
+    hub_test_require_symlink_fixture('Facebook crawler profile symlink fixtures are unavailable on this Windows host.');
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Crawler path owner');
     $outside = tempnam(sys_get_temp_dir(), 'facebook_state_');
@@ -1187,7 +1189,10 @@ hub_test('Facebook profile bootstrap does not rechmod an already private directo
 
 hub_test('Facebook crawler real smoke keeps credentials file-only and verifies content', function (): void {
     $path = HUB_ROOT . '/scripts/facebook_crawler_smoke.php';
-    hub_test_assert(is_file($path) && (fileperms($path) & 0777) === 0755, 'crawler smoke script must be executable');
+    hub_test_assert(is_file($path), 'crawler smoke script missing');
+    if (PHP_OS_FAMILY !== 'Windows') {
+        hub_test_assert((fileperms($path) & 0777) === 0755, 'crawler smoke script must be executable');
+    }
     $source = (string)file_get_contents($path);
     foreach ([
         "!== 'https'",

@@ -458,6 +458,18 @@ function hub_test_with_cluster_pair_url(callable $fn): void
     }
 }
 
+hub_test('cluster pairing descriptor normalizes the application root path', function (): void {
+    hub_test_with_cluster_pair_url(function (): void {
+        $db = hub_test_reset_db();
+        $descriptor = hub_cluster_node_pairing_descriptor($db);
+
+        hub_test_assert(
+            ($descriptor['public_base_url'] ?? '') === 'https://station.example/',
+            'pairing descriptor must emit a validator-safe application root URL'
+        );
+    });
+});
+
 hub_test('cluster router gives real audio requests their service timeout plus cleanup headroom', function (): void {
     hub_test_assert(hub_cluster_proxy_timeout_sec('tts') === 210, 'TTS proxy timeout must cover 180 second inference plus cleanup');
     hub_test_assert(hub_cluster_proxy_timeout_sec('asr') === 210, 'ASR proxy timeout must cover cold model inference plus cleanup');
@@ -1744,6 +1756,8 @@ hub_test('cluster inventory normalizes small future skew and rejects invalid sta
                 ], JSON_THROW_ON_ERROR)];
             });
             hub_test_assert((string)($refreshed['last_error'] ?? '') === 'status_invalid' && empty($refreshed['fresh']), 'invalid remote snapshot time must not become fresh');
+            unset($db, $station, $refreshed);
+            gc_collect_cycles();
         }
     });
 });

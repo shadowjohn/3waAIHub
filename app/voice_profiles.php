@@ -6,7 +6,7 @@ function hub_voice_profile_storage_dir(): string
     if (defined('HUB_TESTING') && HUB_TESTING) {
         static $testDir = null;
         if ($testDir === null) {
-            $testDir = sys_get_temp_dir() . '/3waaihub_test_voice_profiles_' . bin2hex(random_bytes(16));
+            $testDir = rtrim(sys_get_temp_dir(), "\\/") . DIRECTORY_SEPARATOR . '3waaihub_test_voice_profiles_' . bin2hex(random_bytes(16));
             if (!mkdir($testDir, 0700)) {
                 throw new RuntimeException('Cannot create test voice profile directory.');
             }
@@ -36,12 +36,24 @@ function hub_normalize_voice_profile_ref(string|int $value): int
 function hub_voice_profile_safe_host_path(string $path): ?string
 {
     $root = realpath(hub_voice_profile_storage_dir());
-    if ($root === false || $path === '' || !str_starts_with($path, $root . DIRECTORY_SEPARATOR)) {
+    if ($root === false || $path === '') {
+        return null;
+    }
+
+    $normalizedRoot = $root;
+    $normalizedPath = $path;
+    if (PHP_OS_FAMILY === 'Windows') {
+        $normalizedRoot = str_replace('/', DIRECTORY_SEPARATOR, $normalizedRoot);
+        $normalizedPath = str_replace('/', DIRECTORY_SEPARATOR, $normalizedPath);
+        if (!str_starts_with(strtolower($normalizedPath), strtolower($normalizedRoot . DIRECTORY_SEPARATOR))) {
+            return null;
+        }
+    } elseif (!str_starts_with($normalizedPath, $normalizedRoot . DIRECTORY_SEPARATOR)) {
         return null;
     }
 
     $candidate = $root;
-    $parts = explode(DIRECTORY_SEPARATOR, substr($path, strlen($root) + 1));
+    $parts = explode(DIRECTORY_SEPARATOR, substr($normalizedPath, strlen($normalizedRoot) + 1));
     foreach ($parts as $index => $part) {
         if ($part === '' || $part === '.' || $part === '..') {
             return null;
@@ -122,7 +134,7 @@ function hub_voice_profile_snapshot_dir(): string
     if ($root === false) {
         throw new RuntimeException('voice_profile_snapshot_storage_failed');
     }
-    $dir = $root . '/.snapshots';
+    $dir = $root . DIRECTORY_SEPARATOR . '.snapshots';
     clearstatcache(true, $dir);
     if (is_link($dir) || (!is_dir($dir) && !mkdir($dir, 0700))) {
         throw new RuntimeException('voice_profile_snapshot_storage_failed');
@@ -130,12 +142,14 @@ function hub_voice_profile_snapshot_dir(): string
     @chmod($dir, 0700);
     $stat = @lstat($dir);
     $real = realpath($dir);
-    if (
-        $real !== $dir
-        || !is_array($stat)
-        || (((int)($stat['mode'] ?? 0) & 0170000) !== 0040000)
-        || (((int)$stat['mode'] & 0777) !== 0700)
-    ) {
+    $isSafeDirectory = $real !== false
+        && hub_storage_paths_equal($real, $dir)
+        && is_array($stat)
+        && (((int)($stat['mode'] ?? 0) & 0170000) === 0040000);
+    if (PHP_OS_FAMILY !== 'Windows') {
+        $isSafeDirectory = $isSafeDirectory && (((int)$stat['mode'] & 0777) === 0700);
+    }
+    if (!$isSafeDirectory) {
         throw new RuntimeException('voice_profile_snapshot_storage_failed');
     }
 
@@ -351,7 +365,7 @@ function hub_normalize_gpt_sovits_reference(string $sourcePath, string $stagePat
     if (
         $sourcePath === null
         || $root === false
-        || dirname($stagePath) !== $root
+        || !hub_storage_paths_equal(dirname($stagePath), $root)
         || preg_match('/^voice_profile_stage_[1-9][0-9]*_[a-f0-9]{32}\.wav$/', basename($stagePath)) !== 1
         || file_exists($stagePath)
         || is_link($stagePath)
@@ -395,13 +409,13 @@ function hub_promote_gpt_sovits_reference(PDO $db, array $task, array $profile):
         throw new RuntimeException('voice_profile_reference_invalid');
     }
     $root = hub_voice_profile_storage_dir();
-    $stagePath = $root . '/voice_profile_stage_' . $memberId . '_' . bin2hex(random_bytes(16)) . '.wav';
+    $stagePath = $root . DIRECTORY_SEPARATOR . 'voice_profile_stage_' . $memberId . '_' . bin2hex(random_bytes(16)) . '.wav';
     $derivedPath = null;
     $transactionStarted = false;
     $promoted = false;
     try {
         hub_normalize_gpt_sovits_reference((string)$snapshot['tmp_name'], $stagePath);
-        $derivedPath = $root . '/voice_profile_' . $memberId . '_' . bin2hex(random_bytes(16)) . '.wav';
+        $derivedPath = $root . DIRECTORY_SEPARATOR . 'voice_profile_' . $memberId . '_' . bin2hex(random_bytes(16)) . '.wav';
         if (file_exists($derivedPath) || is_link($derivedPath) || !rename($stagePath, $derivedPath)) {
             throw new RuntimeException('voice_profile_reference_invalid');
         }

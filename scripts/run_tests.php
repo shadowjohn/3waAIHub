@@ -42,6 +42,66 @@ function hub_test_skip(string $reason): never
     throw new HubTestSkipped($reason);
 }
 
+function hub_test_release_failure_context(?Throwable &$error): void
+{
+    $error = null;
+    gc_collect_cycles();
+}
+
+/**
+ * Windows 的 SQLite 連線會被 closure capture 持有到 runner 結束；每筆測試結束後
+ * 立即移除註冊 closure，讓下一筆測試能安全重建同一個暫存資料庫。
+ *
+ * @param array<string, callable> $registry
+ */
+function hub_test_release_completed_test(array &$registry, string $name, ?callable &$test): void
+{
+    unset($registry[$name]);
+    $test = null;
+    gc_collect_cycles();
+}
+
+function hub_test_symlink_fixture_available(): bool
+{
+    static $available = null;
+    if ($available !== null) {
+        return $available;
+    }
+
+    $root = sys_get_temp_dir() . '/3waaihub_symlink_probe_' . bin2hex(random_bytes(12));
+    $fileTarget = $root . '/target.txt';
+    $fileLink = $root . '/file-link.txt';
+    $directoryTarget = $root . '/target-dir';
+    $directoryLink = $root . '/directory-link';
+    if (!mkdir($directoryTarget, 0700, true) || file_put_contents($fileTarget, 'probe') === false) {
+        throw new RuntimeException('Cannot create symlink capability probe.');
+    }
+
+    $fileCreated = @symlink($fileTarget, $fileLink);
+    $directoryCreated = @symlink($directoryTarget, $directoryLink);
+    $available = $fileCreated && $directoryCreated;
+
+    @unlink($fileLink);
+    @unlink($directoryLink);
+    @unlink($fileTarget);
+    @rmdir($directoryTarget);
+    @rmdir($root);
+
+    return $available;
+}
+
+function hub_test_require_symlink_fixture(string $reason): void
+{
+    if (hub_test_symlink_fixture_available()) {
+        return;
+    }
+    if (PHP_OS_FAMILY === 'Windows') {
+        hub_test_skip($reason);
+    }
+
+    throw new RuntimeException('Cannot create symlink fixture: ' . $reason);
+}
+
 function hub_test_voice_profile_cleanup_dir(?string $dir = null): string
 {
     $dir ??= hub_voice_profile_storage_dir();
@@ -233,6 +293,53 @@ function hub_test_clear_data_root(): void
     hub_ensure_runtime_dirs();
 }
 
+function hub_test_quote_sqlite_identifier(string $identifier): string
+{
+    return '"' . str_replace('"', '""', $identifier) . '"';
+}
+
+/**
+ * Windows 不允許刪除仍被同一筆測試 PDO 持有的 SQLite 檔案。此處只在測試資料庫
+ * 的刪檔失敗時，以新的連線刪除受信任 sqlite_master 列出的 schema 物件；若連線
+ * 仍有鎖定，回傳 false 讓原本的 reset 失敗訊息保留，不會把不完整 reset 當成功。
+ */
+function hub_test_rebuild_locked_sqlite_schema(): bool
+{
+    if (PHP_OS_FAMILY !== 'Windows' || !is_file(HUB_DB_PATH)) {
+        return false;
+    }
+
+    $db = null;
+    try {
+        $db = new PDO('sqlite:' . HUB_DB_PATH);
+        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $db->exec('PRAGMA busy_timeout = 5000');
+        $db->exec('PRAGMA foreign_keys = OFF');
+        $objects = $db->query(
+            "SELECT type, name
+             FROM sqlite_master
+             WHERE type IN ('table', 'view', 'trigger')
+               AND name NOT LIKE 'sqlite_%'
+             ORDER BY CASE type WHEN 'trigger' THEN 1 WHEN 'view' THEN 2 ELSE 3 END"
+        )->fetchAll();
+        foreach ($objects as $object) {
+            $type = (string)($object['type'] ?? '');
+            $name = (string)($object['name'] ?? '');
+            if (!in_array($type, ['table', 'view', 'trigger'], true) || $name === '') {
+                return false;
+            }
+            $db->exec('DROP ' . strtoupper($type) . ' IF EXISTS ' . hub_test_quote_sqlite_identifier($name));
+        }
+        $db->exec('PRAGMA foreign_keys = ON');
+        return true;
+    } catch (Throwable) {
+        return false;
+    } finally {
+        $db = null;
+        gc_collect_cycles();
+    }
+}
+
 function hub_test_reset_db(): PDO
 {
     // Windows 需先釋放上一個測試結束後的 PDO 循環參考，否則 SQLite 檔可能仍被鎖住。
@@ -257,9 +364,15 @@ function hub_test_reset_db(): PDO
     // isolated task files as well, otherwise one test can impersonate a
     // stale workspace from a previous fixture.
     hub_test_clear_data_root();
-    foreach ([HUB_DB_PATH, HUB_DB_PATH . '-wal', HUB_DB_PATH . '-shm'] as $path) {
-        if (is_file($path) && !unlink($path)) {
-            throw new RuntimeException('Cannot reset test SQLite file: ' . $path);
+    $databaseRemoved = !is_file(HUB_DB_PATH) || @unlink(HUB_DB_PATH);
+    if (!$databaseRemoved && !hub_test_rebuild_locked_sqlite_schema()) {
+        throw new RuntimeException('Cannot reset test SQLite file: ' . HUB_DB_PATH);
+    }
+    if ($databaseRemoved) {
+        foreach ([HUB_DB_PATH . '-wal', HUB_DB_PATH . '-shm'] as $path) {
+            if (is_file($path) && !unlink($path)) {
+                throw new RuntimeException('Cannot reset test SQLite file: ' . $path);
+            }
         }
     }
     $db = hub_db();
@@ -362,6 +475,7 @@ foreach ($testFiles as $file) {
     require $file;
 }
 
+$testCount = count($tests);
 foreach ($tests as $name => $fn) {
     try {
         $fn();
@@ -373,9 +487,13 @@ foreach ($tests as $name => $fn) {
         if (!$testQuiet) {
             echo '[SKIP] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
         }
+        hub_test_release_failure_context($e);
     } catch (Throwable $e) {
         $failures++;
         echo '[FAIL] ' . $name . ': ' . $e->getMessage() . PHP_EOL;
+        hub_test_release_failure_context($e);
+    } finally {
+        hub_test_release_completed_test($tests, $name, $fn);
     }
 }
 
@@ -400,5 +518,5 @@ try {
     echo '[FAIL] Test runtime data teardown: ' . $e->getMessage() . PHP_EOL;
 }
 
-echo 'suite=' . $suite . ' tests=' . count($tests) . ' failures=' . $failures . ' skipped=' . $skipped . PHP_EOL;
+echo 'suite=' . $suite . ' tests=' . $testCount . ' failures=' . $failures . ' skipped=' . $skipped . PHP_EOL;
 exit($failures === 0 ? 0 : 1);

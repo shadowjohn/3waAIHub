@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 hub_test('model registry scans models root safely and skips symlinks', function (): void {
+    hub_test_require_symlink_fixture('Model registry symlink fixtures are unavailable on this Windows host.');
     $db = hub_test_reset_db();
     hub_test_assert(is_file(HUB_ROOT . '/admin/models.php'), 'admin/models.php missing');
     $root = sys_get_temp_dir() . '/3waaihub_models_' . bin2hex(random_bytes(4));

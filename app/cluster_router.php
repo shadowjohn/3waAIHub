@@ -4430,7 +4430,7 @@ function hub_cluster_node_pairing_descriptor(PDO $db): array
 {
     $host = preg_replace('/[^A-Za-z0-9.:\-\[\]]/', '', (string)($_SERVER['HTTP_HOST'] ?? 'localhost')) ?: 'localhost';
     $script = str_replace('\\', '/', (string)($_SERVER['SCRIPT_NAME'] ?? '/cluster_pair.php'));
-    $path = rtrim(dirname($script), '/');
+    $path = rtrim(str_replace('\\', '/', dirname($script)), '/');
     if (str_ends_with($path, '/admin')) {
         $path = substr($path, 0, -strlen('/admin'));
     }

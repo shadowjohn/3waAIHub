@@ -334,6 +334,7 @@ hub_test('Pack job image validation records Hub-derived PNG dimensions', functio
 });
 
 hub_test('Pack job image validation rejects fake, oversized, and symlinked PNG outputs', function (): void {
+    hub_test_require_symlink_fixture('Pack job symlink fixtures are unavailable on this Windows host.');
     $cases = [
         'fake' => static function (string $path): void {
             hub_test_pack_job_write($path, 'runner says this is a PNG');
@@ -419,6 +420,7 @@ hub_test('Pack job invalid PNG terminalizes through the fenced failed callback p
 });
 
 hub_test('Pack job artifact validation rejects escape symlink nonregular extra and invalid content outputs', function (): void {
+    hub_test_require_symlink_fixture('Pack job symlink fixtures are unavailable on this Windows host.');
     $cases = [
         'traversal' => static function (string $workspace, array &$contract): void {
             $contract['artifacts'][0]['path'] = '../escape.json';
@@ -807,7 +809,9 @@ hub_test('Pack job handoff keeps registered artifacts immutable after runner wor
         $handoffScope = (string)($publishedTranscript['published_handoff_scope'] ?? '');
         $handoffId = (string)($publishedTranscript['published_handoff_id'] ?? '');
         $handoffDir = $artifactRoot . ($handoffScope === '' ? '' : '/' . $handoffScope) . '/' . $handoffId;
-        hub_test_assert((fileperms($taskResultDir) & 07777) === 02710 && (fileperms($artifactRoot) & 07777) === 02750 && (fileperms($handoffDir) & 07777) === 02750 && (fileperms($publishedPath) & 0777) === 0640, 'published artifacts must preserve web-service-group inheritance without granting any access to other users');
+        if (PHP_OS_FAMILY !== 'Windows') {
+            hub_test_assert((fileperms($taskResultDir) & 07777) === 02710 && (fileperms($artifactRoot) & 07777) === 02750 && (fileperms($handoffDir) & 07777) === 02750 && (fileperms($publishedPath) & 0777) === 0640, 'published artifacts must preserve web-service-group inheritance without granting any access to other users');
+        }
 
         rename($workspace . '/output/transcript.json', $workspace . '/output/transcript.runner-old.json');
         hub_test_pack_job_write($workspace . '/output/transcript.json', "{\"text\":\"runner changed it after handoff\"}");
@@ -821,6 +825,7 @@ hub_test('Pack job handoff keeps registered artifacts immutable after runner wor
 });
 
 hub_test('Pack job handoff failure terminalizes without a partial artifact registry', function (): void {
+    hub_test_require_symlink_fixture('Pack job symlink fixtures are unavailable on this Windows host.');
     $db = hub_test_reset_db();
     $fixture = hub_test_pack_job_create_terminal_fixture($db);
     $workspace = $fixture['workspace'];
