@@ -1322,7 +1322,7 @@ hub_test('Edge TTS artifact contract is exact', function (): void {
                 'mime_types' => ['text/plain', 'text/vtt'],
                 'max_bytes' => 524288,
                 'when' => ['input' => 'include_subtitles', 'equals' => true],
-                'text' => ['max_bytes' => 524288],
+                'text' => ['max_bytes' => 524288, 'allow_empty' => false],
             ],
             [
                 'type' => 'subtitle_srt',
@@ -1330,7 +1330,7 @@ hub_test('Edge TTS artifact contract is exact', function (): void {
                 'mime_types' => ['text/plain', 'application/x-subrip', 'text/x-subrip', 'text/srt'],
                 'max_bytes' => 524288,
                 'when' => ['input' => 'include_subtitles', 'equals' => true],
-                'text' => ['max_bytes' => 524288],
+                'text' => ['max_bytes' => 524288, 'allow_empty' => false],
             ],
             [
                 'type' => 'speech_timeline',
