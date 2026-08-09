@@ -98,7 +98,13 @@ hub_test('Gemma 4 LLM install generates vLLM sidecar plus Hub chat adapter compo
     ] as $needle) {
         hub_test_assert(str_contains($compose, $needle), 'LLM generated compose missing ' . $needle);
     }
-    hub_test_assert(str_contains((string)file_get_contents(HUB_ROOT . '/packs/llm-gemma4-12b/vllm/Dockerfile'), 'vllm[audio]'), 'Gemma4 vLLM Dockerfile must install audio extras');
+    $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/llm-gemma4-12b/vllm/Dockerfile');
+    hub_test_assert(str_contains($dockerfile, 'vllm[audio]'), 'Gemma4 vLLM Dockerfile must install audio extras');
+    hub_test_assert(
+        str_contains($dockerfile, 'ARG VLLM_IMAGE=vllm/vllm-openai@sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52'),
+        'Gemma4 vLLM Dockerfile must pin the reviewed multi-architecture base image digest'
+    );
+    hub_test_assert(!str_contains($dockerfile, 'vllm/vllm-openai:latest'), 'Gemma4 vLLM Dockerfile must not use a mutable latest base image');
     foreach (['--enable-auto-tool-choice', 'streaming_api'] as $forbidden) {
         hub_test_assert(!str_contains($compose, $forbidden), 'LLM generated compose leaked deferred feature ' . $forbidden);
     }

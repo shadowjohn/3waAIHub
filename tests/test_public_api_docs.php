@@ -1193,6 +1193,10 @@ PHP);
             && str_contains($translateCurl, '&quot;text&quot;: &quot;That was a wonderful time.&quot;'),
             'admin API docs Translate curl must include the JSON header, body flag, and representative payload'
         );
+        hub_test_assert(
+            str_contains($html, 'Authorization: Bearer &lt;TOKEN&gt;') && !str_contains($html, '3wa_live_xxx'),
+            'admin API docs must use a non-secret authorization placeholder'
+        );
         hub_test_assert(str_contains($html, 'Authorization: Bearer &lt;TOKEN&gt;') && str_contains($html, 'image=@sample.png') && str_contains($html, '--output result.png') && str_contains($html, 'file=@manual.pdf'), 'admin API docs missing canonical multipart, binary, or async curl details');
         hub_test_assert(str_contains($html, '</html>') && !str_contains($html, 'Fatal error'), 'admin API docs render must complete without fatal output');
     } finally {

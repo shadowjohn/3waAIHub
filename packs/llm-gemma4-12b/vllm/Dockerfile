@@ -1,4 +1,4 @@
-ARG VLLM_IMAGE=vllm/vllm-openai:latest
+ARG VLLM_IMAGE=vllm/vllm-openai@sha256:ffb2d59b1c059a5bd8d781320c9f5189de8293693b7d95da54befddaa54abf52
 FROM ${VLLM_IMAGE}
 
 RUN set -eux; \

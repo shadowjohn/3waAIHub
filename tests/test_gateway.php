@@ -44,6 +44,39 @@ function hub_test_gateway_remove_audio_runtime_bin(string $bin): void
     rmdir($bin);
 }
 
+hub_test('gateway response headers use a canonical injection-safe allowlist', function (): void {
+    $headers = hub_gateway_safe_response_headers([
+        'Content-Type: application/json; charset=utf-8',
+        'Content-Length: 42',
+        'Content-Disposition: attachment; filename="report.json"',
+        'Cache-Control: private, no-store',
+        'X-Content-Type-Options: nosniff',
+        'X-3waAIHub-Request-Id: req_abc-123',
+        'X-3waAIHub-Model: gemma-3-12b-it',
+        'X-3waAIHub-Device: cuda',
+        'X-3waAIHub-Elapsed-Ms: 42',
+        'X-3waAIHub-Width: 1280',
+        'X-3waAIHub-Height: 720',
+        'Set-Cookie: session=must-not-leave-the-gateway',
+        "X-3waAIHub-Model: safe\r\nSet-Cookie: injected",
+        'Malformed response header',
+    ]);
+
+    hub_test_assert($headers === [
+        'Content-Type: application/json; charset=utf-8',
+        'Content-Length: 42',
+        'Content-Disposition: attachment; filename="report.json"',
+        'Cache-Control: private, no-store',
+        'X-Content-Type-Options: nosniff',
+        'X-3waAIHub-Request-Id: req_abc-123',
+        'X-3waAIHub-Model: gemma-3-12b-it',
+        'X-3waAIHub-Device: cuda',
+        'X-3waAIHub-Elapsed-Ms: 42',
+        'X-3waAIHub-Width: 1280',
+        'X-3waAIHub-Height: 720',
+    ], 'gateway response headers must reject unapproved or line-breaking values');
+});
+
 hub_test('test database reset clears stale request input', function (): void {
     $_GET = ['stale' => '1'];
     $_POST = ['real_inference' => '1'];

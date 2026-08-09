@@ -24,7 +24,7 @@ hub_admin_header('API 文件', $user);
     <h2>Bearer Token</h2>
     <p class="muted">外部 IP 預設需要 Bearer token；localhost 可由 settings 略過 token。Token 明文只會在建立時顯示一次。</p>
     <pre><?= hub_h($curlExecutable) ?> "<?= hub_h($genericModeUrl) ?>" <?= hub_h($curlContinuation) ?>
-  -H "Authorization: Bearer 3wa_live_xxx"</pre>
+  -H "Authorization: Bearer &lt;TOKEN&gt;"</pre>
     <p><a class="button" href="api_members.php">API 會員</a> <a class="button" href="log_explorer.php?tab=api">API 用量</a></p>
 </section>
 <section class="panel">

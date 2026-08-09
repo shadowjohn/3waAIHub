@@ -2767,6 +2767,63 @@ function hub_gateway_json(int $status, array $payload): array
     ];
 }
 
+/**
+ * Gateway 最後一層回應標頭防線：只允許本系統已定義的標頭，並拒絕換行字元。
+ * 即使未來某個 Pack 回傳了不安全的 header 字串，也不能讓它改寫 HTTP 回應。
+ */
+function hub_gateway_safe_response_headers(array $headers): array
+{
+    $canonical = [
+        'content-type' => 'Content-Type',
+        'content-length' => 'Content-Length',
+        'content-disposition' => 'Content-Disposition',
+        'cache-control' => 'Cache-Control',
+        'x-content-type-options' => 'X-Content-Type-Options',
+        'x-3waaihub-request-id' => 'X-3waAIHub-Request-Id',
+        'x-3waaihub-model' => 'X-3waAIHub-Model',
+        'x-3waaihub-device' => 'X-3waAIHub-Device',
+        'x-3waaihub-elapsed-ms' => 'X-3waAIHub-Elapsed-Ms',
+        'x-3waaihub-width' => 'X-3waAIHub-Width',
+        'x-3waaihub-height' => 'X-3waAIHub-Height',
+    ];
+    $accepted = [];
+
+    foreach ($headers as $header) {
+        if (!is_string($header)
+            || preg_match('/\A([A-Za-z0-9-]{1,80}):[ \t]*([^\r\n\x00-\x1F\x7F]{0,1024})\z/D', $header, $matches) !== 1) {
+            continue;
+        }
+        $name = strtolower($matches[1]);
+        if (!isset($canonical[$name]) || array_key_exists($name, $accepted)) {
+            continue;
+        }
+        $value = trim($matches[2], " \t");
+        $valid = match ($name) {
+            'content-type' => preg_match('/\A[a-z0-9.+-]{1,64}\/[a-z0-9.+-]{1,64}(?:;[ \t]*charset=(?:utf-8|binary))?\z/iD', $value) === 1,
+            'content-length', 'x-3waaihub-elapsed-ms', 'x-3waaihub-width', 'x-3waaihub-height' => $value !== '' && strlen($value) <= 20 && ctype_digit($value),
+            'content-disposition' => preg_match('/\Aattachment; filename="[A-Za-z0-9._-]{1,255}"\z/D', $value) === 1,
+            'cache-control' => $value === 'private, no-store',
+            'x-content-type-options' => $value === 'nosniff',
+            'x-3waaihub-request-id' => preg_match('/\A[A-Za-z0-9_-]{1,128}\z/D', $value) === 1,
+            'x-3waaihub-model' => preg_match('/\A[\x20-\x7E]{1,200}\z/D', $value) === 1,
+            'x-3waaihub-device' => in_array($value, ['cuda', 'cpu'], true),
+            default => false,
+        };
+        if ($valid) {
+            $accepted[$name] = $value;
+        }
+    }
+
+    $safe = [];
+    foreach ($canonical as $name => $outputName) {
+        if (isset($accepted[$name])) {
+            $safe[] = $outputName . ': ' . $accepted[$name];
+        }
+    }
+
+    return $safe;
+}
+
 function hub_gateway_stream_file_response(string $path, string $mimeType, string $downloadName): ?array
 {
     $path = hub_artifact_safe_path($path);
@@ -2960,7 +3017,7 @@ function hub_send_gateway_response(array $response): never
         $response = hub_gateway_error(404, 'artifact_not_available', 'artifact is not available');
     }
     http_response_code((int)$response['status']);
-    foreach ($response['headers'] as $header) {
+    foreach (hub_gateway_safe_response_headers(is_array($response['headers'] ?? null) ? $response['headers'] : []) as $header) {
         header($header);
     }
     if (is_resource($stream)) {
