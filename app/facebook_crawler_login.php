@@ -19,12 +19,36 @@ function hub_facebook_login_command_runner(array $command, int $timeoutSeconds =
         }
     }
 
-    $process = @proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, HUB_ROOT, null);
+    $windowsOutputPaths = [];
+    $descriptor = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    if (PHP_OS_FAMILY === 'Windows') {
+        $stdoutPath = @tempnam(sys_get_temp_dir(), '3waaihub_fb_stdout_');
+        $stderrPath = @tempnam(sys_get_temp_dir(), '3waaihub_fb_stderr_');
+        if ($stdoutPath === false || $stderrPath === false) {
+            if (is_string($stdoutPath)) {
+                @unlink($stdoutPath);
+            }
+            if (is_string($stderrPath)) {
+                @unlink($stderrPath);
+            }
+
+            return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Cannot allocate process output.', 'output' => 'Cannot allocate process output.'];
+        }
+        $windowsOutputPaths = ['stdout' => $stdoutPath, 'stderr' => $stderrPath];
+        $descriptor = [1 => ['file', $stdoutPath, 'w'], 2 => ['file', $stderrPath, 'w']];
+    }
+    $process = @proc_open($command, $descriptor, $pipes, HUB_ROOT, null);
     if (!is_resource($process)) {
+        foreach ($windowsOutputPaths as $path) {
+            @unlink($path);
+        }
+
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Cannot start process.', 'output' => 'Cannot start process.'];
     }
-    foreach ($pipes as $pipe) {
-        stream_set_blocking($pipe, false);
+    if ($windowsOutputPaths === []) {
+        foreach ($pipes as $pipe) {
+            stream_set_blocking($pipe, false);
+        }
     }
 
     $stdout = '';
@@ -39,8 +63,10 @@ function hub_facebook_login_command_runner(array $command, int $timeoutSeconds =
         }
     };
     do {
-        $append($stdout, (string)stream_get_contents($pipes[1]));
-        $append($stderr, (string)stream_get_contents($pipes[2]));
+        if ($windowsOutputPaths === []) {
+            $append($stdout, (string)stream_get_contents($pipes[1]));
+            $append($stderr, (string)stream_get_contents($pipes[2]));
+        }
         $status = proc_get_status($process);
         if (!$status['running']) {
             $observedExitCode = hub_observed_process_exit_code($status) ?? $observedExitCode;
@@ -48,17 +74,42 @@ function hub_facebook_login_command_runner(array $command, int $timeoutSeconds =
         }
         if (microtime(true) >= $deadline) {
             $timedOut = true;
-            proc_terminate($process);
+            if (PHP_OS_FAMILY === 'Windows') {
+                proc_terminate($process, 9);
+            } else {
+                proc_terminate($process);
+                usleep(100000);
+                $status = proc_get_status($process);
+                if ($status['running']) {
+                    proc_terminate($process, 9);
+                    usleep(100000);
+                }
+            }
             break;
         }
         usleep(50000);
     } while (true);
 
-    $append($stdout, (string)stream_get_contents($pipes[1]));
-    $append($stderr, (string)stream_get_contents($pipes[2]));
-    fclose($pipes[1]);
-    fclose($pipes[2]);
+    if ($windowsOutputPaths === []) {
+        $append($stdout, (string)stream_get_contents($pipes[1]));
+        $append($stderr, (string)stream_get_contents($pipes[2]));
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+    }
     $exitCode = hub_process_exit_code(proc_close($process), $observedExitCode);
+    if ($windowsOutputPaths !== []) {
+        foreach ($windowsOutputPaths as $stream => $path) {
+            $captured = @file_get_contents($path);
+            if (is_string($captured)) {
+                if ($stream === 'stdout') {
+                    $append($stdout, $captured);
+                } else {
+                    $append($stderr, $captured);
+                }
+            }
+            @unlink($path);
+        }
+    }
     if ($timedOut) {
         $exitCode = 124;
         $append($stderr, ($stderr === '' ? '' : "\n") . 'Command timed out.');

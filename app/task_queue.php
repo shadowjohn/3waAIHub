@@ -2628,9 +2628,12 @@ function hub_pack_job_detect_mime(string $path): string
         $mime = false;
     }
 
-    return is_string($mime) && preg_match('/^[a-z0-9.+-]{1,64}\/[a-z0-9.+-]{1,64}$/i', $mime) === 1
-        ? strtolower($mime)
-        : 'application/octet-stream';
+    if (!is_string($mime) || preg_match('/^[a-z0-9.+-]{1,64}\/[a-z0-9.+-]{1,64}$/i', $mime) !== 1) {
+        return 'application/octet-stream';
+    }
+    $mime = strtolower($mime);
+
+    return $mime === 'application/x-ndjason' ? 'application/x-ndjson' : $mime;
 }
 
 function hub_pack_job_sha256_file(string $path, int $maxBytes): ?string

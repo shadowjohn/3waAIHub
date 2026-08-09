@@ -1614,7 +1614,7 @@ function hub_pack_job_resolve_facebook_profile_mount(PDO $db, array $task): ?arr
     $root = realpath(hub_facebook_profile_root());
     if (!is_array($stat) || $real === false || $root === false || is_link($source)
         || (((int)$stat['mode'] & 0170000) !== 0100000)
-        || (((int)$stat['mode'] & 0777) !== 0600)
+        || (PHP_OS_FAMILY !== 'Windows' && (((int)$stat['mode'] & 0777) !== 0600))
         || (int)($stat['nlink'] ?? 0) !== 1
         || dirname(dirname($real)) !== $root
         || basename($real) !== 'storage_state.json') {
@@ -1751,7 +1751,7 @@ function hub_pack_job_default_runner_command(array $context): array
         if (!is_string($source) || !is_string($containerPath) || !is_array($stat)
             || $real === false || $root === false || is_link($source)
             || (((int)$stat['mode'] & 0170000) !== 0100000)
-            || (((int)$stat['mode'] & 0777) !== 0600)
+            || (PHP_OS_FAMILY !== 'Windows' && (((int)$stat['mode'] & 0777) !== 0600))
             || (int)($stat['nlink'] ?? 0) !== 1
             || dirname(dirname($real)) !== $root
             || basename($real) !== 'storage_state.json'

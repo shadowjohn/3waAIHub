@@ -66,6 +66,9 @@ hub_test('PhaseP-1 default setting auto-builds missing images', function (): voi
 });
 
 hub_test('PhaseP-1 restart-required service builds a missing local image before recreate', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Direct Linux Docker lifecycle is unavailable on Windows control-plane hosts.');
+    }
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
     hub_test_assert($service !== null, 'hello service missing');
@@ -117,6 +120,9 @@ SH
 });
 
 hub_test('PhaseP-1 restart refreshes an old VoxCPM2 runtime before checking its image', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Direct Linux Docker lifecycle is unavailable on Windows control-plane hosts.');
+    }
     $db = hub_test_reset_db();
     $service = hub_install_pack($db, 'tts-voxcpm2', [
         'service_key' => 'voxcpm2-refresh-restart',
@@ -411,6 +417,9 @@ hub_test('PhaseP-1 legacy removal jobs without a service snapshot fail safe', fu
 });
 
 hub_test('PhaseP-1 service removal stops only an idle stopped service and preserves unrelated files', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('Direct Linux Docker removal lifecycle is unavailable on Windows control-plane hosts.');
+    }
     $dir = sys_get_temp_dir() . '/3waaihub_remove_' . bin2hex(random_bytes(4));
     $bin = $dir . '/bin';
     $log = $dir . '/docker.log';
@@ -483,6 +492,7 @@ SH
 
         $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
         $commands = file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+        $initialCommandCount = count($commands);
 
         hub_test_assert($result['exit_code'] === 0, 'idle stopped service removal must succeed');
         if (hub_platform_id() === 'windows') {
@@ -506,7 +516,7 @@ SH
 
         hub_test_assert(($result['error_code'] ?? '') === 'service_not_stopped', 'running service removal must be rejected');
         hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'running service must remain registered');
-        hub_test_assert(count(file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) === 1, 'Docker must not run for a running service');
+        hub_test_assert(count(file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) === $initialCommandCount, 'Docker must not run for a running service');
 
         $db = hub_test_reset_db();
         $service = hub_get_service_by_mode($db, 'hello');
@@ -515,7 +525,7 @@ SH
 
         hub_test_assert(($result['error_code'] ?? '') === 'service_job_active', 'busy service removal must be rejected');
         hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'busy service must remain registered');
-        hub_test_assert(count(file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) === 1, 'Docker must not run for a busy service');
+        hub_test_assert(count(file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: []) === $initialCommandCount, 'Docker must not run for a busy service');
 
         $db = hub_test_reset_db();
         $service = hub_get_service_by_mode($db, 'hello');

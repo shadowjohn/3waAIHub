@@ -1468,7 +1468,8 @@ function hub_voxcpm2_cluster_acceptance_temp_directory(): string
     }
     $path = $root . DIRECTORY_SEPARATOR . $name;
     if (!mkdir($path, 0700) || !chmod($path, 0700)
-        || realpath($path) !== $path || (fileperms($path) & 0777) !== 0700
+        || realpath($path) !== $path
+        || (PHP_OS_FAMILY !== 'Windows' && (fileperms($path) & 0777) !== 0700)
     ) {
         if (is_dir($path)) {
             @rmdir($path);

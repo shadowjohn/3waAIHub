@@ -22,7 +22,7 @@ hub_test('Facebook crawler Pack declares one fixed CPU job', function (): void {
         && ($dataset['text']['allow_empty'] ?? false) === true, 'crawler JSONL must use the bounded empty-dataset text validator');
 
     $shellCheck = HUB_ROOT . '/packs/facebook-crawler/service/test_egress_firewall.sh';
-    $dockerfile = (string)file_get_contents(HUB_ROOT . '/packs/facebook-crawler/service/Dockerfile');
+    $dockerfile = str_replace("\r\n", "\n", (string)file_get_contents(HUB_ROOT . '/packs/facebook-crawler/service/Dockerfile'));
     hub_test_assert(is_file($shellCheck) && (PHP_OS_FAMILY === 'Windows' || is_executable($shellCheck))
         && str_contains($dockerfile, "FROM base AS test\nCOPY tests ./tests\nCOPY test_egress_firewall.sh ./\nRUN chmod 0755 test_egress_firewall.sh\n\nFROM base AS runtime"), 'crawler test target must include the executable egress boundary check only in its test stage');
 });

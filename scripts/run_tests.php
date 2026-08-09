@@ -129,7 +129,8 @@ function hub_test_remove_voice_profile_storage_dir(string $dir): void
     $realDir = hub_test_voice_profile_cleanup_dir($dir);
     $snapshotDir = $realDir . '/.snapshots';
     if (file_exists($snapshotDir) || is_link($snapshotDir)) {
-        if (is_link($snapshotDir) || !is_dir($snapshotDir) || realpath($snapshotDir) !== $snapshotDir) {
+        $snapshotReal = realpath($snapshotDir);
+        if (is_link($snapshotDir) || !is_dir($snapshotDir) || $snapshotReal === false || !hub_storage_paths_equal($snapshotReal, $snapshotDir)) {
             throw new RuntimeException('Cannot remove isolated test voice profile snapshots.');
         }
         foreach (new FilesystemIterator($snapshotDir, FilesystemIterator::SKIP_DOTS) as $entry) {
