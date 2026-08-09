@@ -10,6 +10,44 @@ hub_test('sqlite connection applies write safety pragmas', function (): void {
     hub_test_assert((int)$db->query('PRAGMA synchronous')->fetchColumn() === 1, 'synchronous must be NORMAL');
 });
 
+hub_test('SQLite safe helpers bind values and reject dynamic identifiers', function (): void {
+    $db = hub_test_reset_db();
+    hub_sqlite_insert_safe($db, 'settings', [
+        'key' => 'sqlite_safe_test',
+        'value' => 'initial',
+        'updated_at' => hub_now(),
+    ]);
+    hub_sqlite_update_safe($db, 'settings', ['value' => 'updated'], ['key' => 'sqlite_safe_test']);
+    $rows = hub_sqlite_select_safe(
+        $db,
+        'SELECT value FROM settings WHERE key = :key',
+        [':key' => 'sqlite_safe_test'],
+    );
+
+    hub_test_assert(($rows[0]['value'] ?? null) === 'updated', 'safe SQLite helpers must bind values');
+    hub_test_assert(
+        hub_test_throws(static fn () => hub_sqlite_insert_safe($db, 'settings; DROP TABLE users', ['key' => 'unsafe'])),
+        'unsafe SQLite table identifier was accepted',
+    );
+    hub_test_assert(
+        hub_test_throws(static fn () => hub_sqlite_update_safe($db, 'settings', ['value; DROP TABLE users' => 'unsafe'], ['key' => 'sqlite_safe_test'])),
+        'unsafe SQLite column identifier was accepted',
+    );
+});
+
+hub_test('SQLite rebuild migrations never execute schema SQL read from sqlite master', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/app/db.php');
+
+    hub_test_assert(
+        !str_contains($source, "SELECT sql FROM sqlite_master WHERE type = 'index'"),
+        'SQLite rebuild migrations must not read executable index SQL from sqlite_master',
+    );
+    hub_test_assert(
+        !str_contains($source, '$db->exec((string)$indexSql)'),
+        'SQLite rebuild migrations must not execute database-owned index SQL',
+    );
+});
+
 hub_test('current sqlite migration stays read-only while another worker owns the write lock', function (): void {
     $writer = hub_test_reset_db();
     $writer->exec('BEGIN IMMEDIATE');

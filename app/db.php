@@ -5,6 +5,159 @@ const HUB_DB_MIGRATION_VERSION = '2026-08-09.2';
 const HUB_DB_MIGRATION_VERSION_KEY = 'db_migration_version';
 const HUB_DB_MIGRATION_SCHEMA_KEY = 'db_migration_schema_version';
 
+function hub_sqlite_identifier(string $identifier): string
+{
+    if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/D', $identifier) !== 1) {
+        throw new InvalidArgumentException('Invalid SQLite identifier.');
+    }
+
+    return '"' . $identifier . '"';
+}
+
+function hub_sqlite_exec_safe(PDO $db, string $sql, array $parameters = []): PDOStatement
+{
+    $statement = $db->prepare($sql);
+    $statement->execute($parameters);
+
+    return $statement;
+}
+
+function hub_sqlite_select_safe(PDO $db, string $sql, array $parameters = []): array
+{
+    return hub_sqlite_exec_safe($db, $sql, $parameters)->fetchAll();
+}
+
+function hub_sqlite_insert_safe(PDO $db, string $table, array $fields): int
+{
+    if ($fields === []) {
+        throw new InvalidArgumentException('SQLite insert fields are required.');
+    }
+
+    $columns = [];
+    $placeholders = [];
+    $parameters = [];
+    foreach ($fields as $name => $value) {
+        if (!is_string($name) || (!is_scalar($value) && $value !== null)) {
+            throw new InvalidArgumentException('Invalid SQLite insert field.');
+        }
+        $columns[] = hub_sqlite_identifier($name);
+        $placeholder = ':insert_' . count($placeholders);
+        $placeholders[] = $placeholder;
+        $parameters[$placeholder] = $value;
+    }
+
+    hub_sqlite_exec_safe(
+        $db,
+        'INSERT INTO ' . hub_sqlite_identifier($table)
+        . ' (' . implode(', ', $columns) . ') VALUES (' . implode(', ', $placeholders) . ')',
+        $parameters,
+    );
+
+    return (int)$db->lastInsertId();
+}
+
+function hub_sqlite_update_safe(PDO $db, string $table, array $fields, array $where): int
+{
+    if ($fields === [] || $where === []) {
+        throw new InvalidArgumentException('SQLite update fields and conditions are required.');
+    }
+
+    $assignments = [];
+    $conditions = [];
+    $parameters = [];
+    foreach ($fields as $name => $value) {
+        if (!is_string($name) || (!is_scalar($value) && $value !== null)) {
+            throw new InvalidArgumentException('Invalid SQLite update field.');
+        }
+        $placeholder = ':set_' . count($assignments);
+        $assignments[] = hub_sqlite_identifier($name) . ' = ' . $placeholder;
+        $parameters[$placeholder] = $value;
+    }
+    foreach ($where as $name => $value) {
+        if (!is_string($name) || (!is_scalar($value) && $value !== null)) {
+            throw new InvalidArgumentException('Invalid SQLite update condition.');
+        }
+        $placeholder = ':where_' . count($conditions);
+        $conditions[] = hub_sqlite_identifier($name) . ' = ' . $placeholder;
+        $parameters[$placeholder] = $value;
+    }
+
+    return hub_sqlite_exec_safe(
+        $db,
+        'UPDATE ' . hub_sqlite_identifier($table)
+        . ' SET ' . implode(', ', $assignments)
+        . ' WHERE ' . implode(' AND ', $conditions),
+        $parameters,
+    )->rowCount();
+}
+
+function hub_sqlite_capture_rebuild_indexes(PDO $db, string $table, array $allowedColumns): array
+{
+    $allowed = [];
+    foreach ($allowedColumns as $column) {
+        if (!is_string($column)) {
+            throw new InvalidArgumentException('Invalid SQLite rebuild column.');
+        }
+        $allowed[$column] = true;
+    }
+
+    $indexes = [];
+    foreach ($db->query('PRAGMA index_list(' . hub_sqlite_identifier($table) . ')')->fetchAll() as $index) {
+        if (($index['origin'] ?? '') !== 'c') {
+            continue;
+        }
+        $name = (string)($index['name'] ?? '');
+        if ((int)($index['partial'] ?? 0) !== 0 || hub_sqlite_identifier($name) === '') {
+            throw new RuntimeException('Unsupported SQLite index during table rebuild.');
+        }
+
+        $columns = [];
+        foreach ($db->query('PRAGMA index_info(' . hub_sqlite_identifier($name) . ')')->fetchAll() as $column) {
+            $columnName = (string)($column['name'] ?? '');
+            if (!isset($allowed[$columnName])) {
+                throw new RuntimeException('Invalid SQLite index column during table rebuild.');
+            }
+            $columns[] = $columnName;
+        }
+        if ($columns === []) {
+            throw new RuntimeException('SQLite index has no rebuildable columns.');
+        }
+        $indexes[] = [
+            'name' => $name,
+            'unique' => (int)($index['unique'] ?? 0) === 1,
+            'columns' => $columns,
+        ];
+    }
+
+    return $indexes;
+}
+
+function hub_sqlite_restore_rebuild_indexes(PDO $db, string $table, array $indexes): void
+{
+    foreach ($indexes as $index) {
+        if (!is_array($index) || !is_array($index['columns'] ?? null)) {
+            throw new InvalidArgumentException('Invalid SQLite rebuild index.');
+        }
+        $columns = [];
+        foreach ($index['columns'] as $column) {
+            if (!is_string($column)) {
+                throw new InvalidArgumentException('Invalid SQLite rebuild index column.');
+            }
+            $columns[] = hub_sqlite_identifier($column);
+        }
+        if ($columns === []) {
+            throw new InvalidArgumentException('SQLite rebuild index columns are required.');
+        }
+
+        hub_sqlite_exec_safe(
+            $db,
+            'CREATE ' . (!empty($index['unique']) ? 'UNIQUE ' : '') . 'INDEX '
+            . hub_sqlite_identifier((string)($index['name'] ?? ''))
+            . ' ON ' . hub_sqlite_identifier($table) . ' (' . implode(', ', $columns) . ')',
+        );
+    }
+}
+
 function hub_db(): PDO
 {
     hub_ensure_runtime_dirs();
@@ -1197,9 +1350,7 @@ function hub_migrate_service_logs_service_reference(PDO $db): void
         throw new RuntimeException('Service log migration requires no active transaction.');
     }
 
-    $indexes = $db->query(
-        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'service_logs' AND sql IS NOT NULL"
-    )->fetchAll(PDO::FETCH_COLUMN);
+    $indexes = hub_sqlite_capture_rebuild_indexes($db, 'service_logs', $expectedColumns);
     $foreignKeysEnabled = (int)$db->query('PRAGMA foreign_keys')->fetchColumn() === 1;
     if ($foreignKeysEnabled) {
         $db->exec('PRAGMA foreign_keys = OFF');
@@ -1227,9 +1378,7 @@ FROM service_logs;
 DROP TABLE service_logs;
 ALTER TABLE service_logs_rebuild RENAME TO service_logs;
 SQL);
-        foreach ($indexes as $indexSql) {
-            $db->exec((string)$indexSql);
-        }
+        hub_sqlite_restore_rebuild_indexes($db, 'service_logs', $indexes);
         $db->exec('COMMIT');
         $started = false;
     } catch (Throwable $e) {
@@ -1250,7 +1399,8 @@ SQL);
 function hub_migrate_playground_tts_artifacts_service_reference(PDO $db): void
 {
     $columns = array_column($db->query('PRAGMA table_info(playground_tts_artifacts)')->fetchAll(), null, 'name');
-    foreach (['id', 'filename', 'service_id', 'owner_member_id', 'request_id', 'created_at', 'updated_at'] as $column) {
+    $expectedColumns = ['id', 'filename', 'service_id', 'owner_member_id', 'request_id', 'created_at', 'updated_at'];
+    foreach ($expectedColumns as $column) {
         if (!isset($columns[$column])) {
             throw new RuntimeException('Playground TTS artifact schema is invalid.');
         }
@@ -1279,9 +1429,7 @@ function hub_migrate_playground_tts_artifacts_service_reference(PDO $db): void
         throw new RuntimeException('Playground TTS artifact migration requires no active transaction.');
     }
 
-    $indexes = $db->query(
-        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'playground_tts_artifacts' AND sql IS NOT NULL"
-    )->fetchAll(PDO::FETCH_COLUMN);
+    $indexes = hub_sqlite_capture_rebuild_indexes($db, 'playground_tts_artifacts', $expectedColumns);
     $foreignKeysEnabled = (int)$db->query('PRAGMA foreign_keys')->fetchColumn() === 1;
     if ($foreignKeysEnabled) {
         $db->exec('PRAGMA foreign_keys = OFF');
@@ -1315,9 +1463,7 @@ FROM playground_tts_artifacts;
 DROP TABLE playground_tts_artifacts;
 ALTER TABLE playground_tts_artifacts_rebuild RENAME TO playground_tts_artifacts;
 SQL);
-        foreach ($indexes as $indexSql) {
-            $db->exec((string)$indexSql);
-        }
+        hub_sqlite_restore_rebuild_indexes($db, 'playground_tts_artifacts', $indexes);
         $db->exec('COMMIT');
         $started = false;
     } catch (Throwable $e) {
@@ -1351,9 +1497,10 @@ function hub_migrate_cluster_routes_route_id_not_null(PDO $db): void
         throw new RuntimeException('Cluster route migration requires no active transaction.');
     }
 
-    $indexes = $db->query(
-        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'cluster_routes' AND sql IS NOT NULL"
-    )->fetchAll(PDO::FETCH_COLUMN);
+    $indexes = hub_sqlite_capture_rebuild_indexes($db, 'cluster_routes', [
+        'route_id', 'station_id', 'member_id', 'token_id', 'mode', 'remote_task_id', 'is_async', 'state',
+        'remote_status', 'expires_at', 'created_at', 'updated_at', 'completed_at',
+    ]);
     $foreignKeysEnabled = (int)$db->query('PRAGMA foreign_keys')->fetchColumn() === 1;
     if ($foreignKeysEnabled) {
         $db->exec('PRAGMA foreign_keys = OFF');
@@ -1396,9 +1543,7 @@ FROM cluster_routes;
 DROP TABLE cluster_routes;
 ALTER TABLE cluster_routes_rebuild RENAME TO cluster_routes;
 SQL);
-        foreach ($indexes as $indexSql) {
-            $db->exec((string)$indexSql);
-        }
+        hub_sqlite_restore_rebuild_indexes($db, 'cluster_routes', $indexes);
         $db->exec('COMMIT');
         $started = false;
     } catch (Throwable $e) {
