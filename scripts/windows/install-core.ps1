@@ -392,6 +392,10 @@ Write-Host '[3waAIHub] Initializing SQLite...'
 & $phpExe scripts/init_db.php "--models-root=$ModelsRoot"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+Write-Host '[3waAIHub] Migrating service runtime settings...'
+& $phpExe scripts/migrate_runtime_settings.php --apply
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 if ($InitializeClusterSecret) {
     Write-Host '[3waAIHub] -InitializeClusterSecret is deprecated; Cluster creates data\cluster.key when needed.'
     Write-InstallLog 'cluster_secret status=deferred store=data/cluster.key'

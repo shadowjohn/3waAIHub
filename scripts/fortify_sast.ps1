@@ -32,7 +32,6 @@ $excludedPatterns = @(
     (Join-Path $repoRoot 'docs\**'),
     (Join-Path $repoRoot 'tools\**'),
     (Join-Path $repoRoot 'assets\js\jquery.min.js'),
-    (Join-Path $repoRoot 'packs\**\tests\**'),
     (Join-Path $repoRoot 'packs\**\node_modules\**'),
     (Join-Path $repoRoot 'packs\**\.venv\**'),
     (Join-Path $repoRoot 'packs\**\vendor\**'),
@@ -43,7 +42,7 @@ $scope = [ordered]@{
     repo_root = $repoRoot
     include = $sourcePatterns
     exclude = $excludedPatterns
-    policy = 'production source only; test fixtures and historical worktrees are excluded'
+    policy = 'production source plus Pack acceptance/service tests; root test fixtures and historical worktrees are excluded'
 }
 
 if ($Check) {
@@ -94,7 +93,17 @@ $translatedFiles = @(& $SourceAnalyzerPath -b $BuildId -show-files)
 if ($LASTEXITCODE -ne 0) {
     throw "Fortify file inventory failed for build ID: $BuildId"
 }
-$forbiddenFiles = @($translatedFiles | Where-Object { $_ -match '(?i)[\\/]\.worktrees[\\/]|[\\/]tests[\\/]|[\\/]data[\\/]' })
+$repoRootPattern = [regex]::Escape($repoRoot.TrimEnd([char[]]@([char]'\', [char]'/')))
+$rootRelativePattern = '(?i)^(?:' + $repoRootPattern + '[\\/])?'
+$forbiddenFiles = @($translatedFiles | Where-Object {
+    if ($_ -match '(?i)[\\/]\.worktrees[\\/]') {
+        return $true
+    }
+    if ($_ -match ($rootRelativePattern + 'tests[\\/]')) {
+        return $true
+    }
+    return $_ -match ($rootRelativePattern + 'data[\\/]')
+})
 if ($forbiddenFiles.Count -gt 0) {
     throw ('Fortify scan scope is contaminated: ' + ($forbiddenFiles -join '; '))
 }

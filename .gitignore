@@ -33,9 +33,9 @@ data/fortify/
 !data/uploads/.gitkeep
 !data/cache/.gitkeep
 
-.env
-.env.*
-!.env.example
+runtime-settings.conf
+runtime-settings.*.conf
+!runtime-settings.example.conf
 *.log
 *.pyc
 __pycache__/

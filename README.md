@@ -704,7 +704,7 @@ php /DATA/3waAIHub/scripts/api_smoke_client.php \
 
 ## Service Runtime Settings
 
-PhaseP-2 起，Pack 可用 `settings_schema` 宣告可調 runtime/model 設定；安裝後的 service instance 會把實際值存在 `service_settings`，後台 `admin/service_settings.php?service_id=ID` 可編輯並重新產生 `.env`。
+Pack 可用 `settings_schema` 宣告可調 runtime/model 設定；安裝後的 service instance 會把實際值存在 `service_settings`，後台 `admin/service_settings.php?service_id=ID` 可編輯並重新產生 `runtime-settings.conf`。
 
 目前支援型別：
 
@@ -716,7 +716,19 @@ PhaseP-2 起，Pack 可用 `settings_schema` 宣告可調 runtime/model 設定�
 - `path`
 - `secret`
 
-`.env` 只輸出 storage/global settings、service fixed info，以及 Pack schema 宣告過的 settings，不提供任意 env key editor。若異動欄位標記 `restart_required=true`，服務列表會顯示需 Restart。
+`runtime-settings.conf` 只輸出 storage/global settings、service fixed info，以及 Pack schema 宣告過的 settings，不提供任意 env key editor；Compose 只透過明確 `--env-file` 載入它，不使用 `.env` 的隱式發現。若異動欄位標記 `restart_required=true`，服務列表會顯示需 Restart。
+
+既有主機升級後，先唯讀盤點再執行遷移；遷移會以 SQLite 的受管理設定重建檔案、驗證 SHA-256，成功後才移除 service runtime 內的一般 legacy `.env`。symlink、越界或異常檔案會被拒絕且不會刪除目標。
+
+```powershell
+php scripts/migrate_runtime_settings.php --check
+php scripts/migrate_runtime_settings.php --apply
+```
+
+```bash
+php scripts/migrate_runtime_settings.php --check
+php scripts/migrate_runtime_settings.php --apply
+```
 
 ## Local HubPack Catalog
 
@@ -1172,7 +1184,7 @@ L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；�
 `rag-nemotron` 目前維持 L3 `adapter`，提供 `operation=embed` 與 `operation=rerank` 的文字 RAG contract。`real_inference=1` 時，adapter 只會轉呼叫已配置且 ready 的 Nemotron Embed / Rerank backend；backend 不可用時會回明確錯誤，不會把結果偽裝成 mock。
 
 - adapter 不內嵌 NIM 模型權重；NIM image、模型權重與快取都必須放在 repo 外的可持久化儲存。
-- `NEMOTRON_API_KEY` 是 service secret，不可寫入 README、Git 或 client request；只應由 Hub 的受保護 runtime `.env` 提供給 adapter。
+- `NEMOTRON_API_KEY` 是 service secret，不可寫入 README、Git 或 client request；只應由 Hub 的受保護 `runtime-settings.conf` 提供給 adapter。
 - 3wa 已分別完成 `llama-nemotron-embed-1b-v2` 的真實 2048 維 embedding，以及 `llama-nemotron-rerank-1b-v2` 的真實語意排序驗收。
 - 這只證明本機 NIM 與 adapter contract 可用，不表示 `rag` 已可長期公開。兩個 NIM 必須先成為受管服務並參與 GPU lease / VRAM 排程，才可在 16 GB 語音優先節點加入 Router inventory。
 
@@ -1454,7 +1466,7 @@ compute capability 目前使用簡單 map，已涵蓋 RTX 5090 / RTX 5060 Ti / R
 安裝 service instance 會產生：
 
 ```text
-data/services/{service_key}/.env
+data/services/{service_key}/runtime-settings.conf
 data/services/{service_key}/docker-compose.generated.yml
 ```
 
@@ -1511,7 +1523,7 @@ AIHUB_MODELS_DIR=/DATA/models
 範例設定檔：
 
 ```text
-.env.example
+runtime-settings.example.conf
 ```
 
 ## 權限修復
@@ -1693,7 +1705,7 @@ php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_real_wav
 
 - SQLite DB
 - logs
-- `.env`
+- `runtime-settings.conf`
 - API key
 - 任何 host 私有資訊
 

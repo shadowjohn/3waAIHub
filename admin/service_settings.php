@@ -46,7 +46,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             $service = hub_get_service($db, (int)$service['id']) ?: $service;
             $settings = hub_ensure_service_settings($db, $service);
             $message = !empty($result['changed'])
-                ? '設定已儲存，.env 已重新產生。' . (!empty($result['restart_required']) ? ' 此服務需要重啟才會套用新設定。' : '')
+                ? '設定已儲存，runtime-settings.conf 已重新產生。' . (!empty($result['restart_required']) ? ' 此服務需要重啟才會套用新設定。' : '')
                 : '設定未變更。';
         }
     } catch (Throwable $e) {
@@ -55,7 +55,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 }
 
 $runtimeDir = dirname(hub_path((string)$service['compose_file']));
-$envPath = $runtimeDir . '/.env';
+$runtimeSettingsPath = hub_runtime_settings_path($runtimeDir);
 
 hub_admin_header('服務設定', $user);
 ?>
@@ -84,7 +84,7 @@ hub_admin_header('服務設定', $user);
                 <?php $row = $settings[$key] ?? ['value' => (string)($item['default'] ?? '')]; ?>
                 <?= hub_service_setting_field($db, $key, $item, (string)$row['value']) ?>
             <?php endforeach; ?>
-            <p><button class="primary" type="submit">儲存設定並重新產生 .env</button> <a class="button" href="services.php">返回服務管理</a></p>
+            <p><button class="primary" type="submit">儲存設定並重新產生 runtime-settings.conf</button> <a class="button" href="services.php">返回服務管理</a></p>
         </form>
     <?php endif; ?>
 </section>
@@ -104,7 +104,7 @@ hub_admin_header('服務設定', $user);
 <section class="panel">
     <h2>產生檔案</h2>
     <table>
-        <tr><th>.env</th><td><code><?= hub_h($envPath) ?></code></td></tr>
+        <tr><th>runtime-settings.conf</th><td><code><?= hub_h($runtimeSettingsPath) ?></code></td></tr>
         <tr><th>Compose 設定</th><td><code><?= hub_h(hub_path((string)$service['compose_file'])) ?></code></td></tr>
     </table>
 </section>

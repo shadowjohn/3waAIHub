@@ -423,10 +423,40 @@ hub_test('Whisper WSL Pascal service uses the explicit CUDA 11.8 compose profile
         && str_contains($compose, 'gpus: all')
         && str_contains(hub_test_wsl_env_payload($script), 'WHISPER_COMPUTE_TYPE=int8_float32')
         && str_contains($compose, '/DATA/3waAIHub-runtime/services/asr-main/data:/data/service')
+        && str_contains($script, 'command -v sha256sum')
+        && str_contains($script, 'settings_tmp="$service_root/.runtime-settings.conf.$$"')
+        && str_contains($script, 'sha256sum "$settings_tmp"')
+        && str_contains($script, 'chmod 0600 "$settings_tmp"')
+        && str_contains($script, 'mv -f -- "$settings_tmp" "$service_root/runtime-settings.conf"')
         && str_contains($script, "DOCKER_BUILDKIT=0 docker build --tag '3waaihub/whisper-asr:0.1.2-pascal-cu118'")
         && str_contains($script, "--file '/DATA/3waAIHub-runtime/packs/whisper-asr/service/Dockerfile.pascal-cu118'")
         && !str_contains($script, str_replace('\\', '/', HUB_ROOT))
         && !str_contains($compose, str_replace('\\', '/', HUB_ROOT)), 'Whisper WSL compose must use only the Pascal image and ext4 runtime roots');
+});
+
+hub_test('generic WSL service runtime settings use an atomic SHA-256 verified write', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'hello', ['idempotent' => true, 'provision_runner' => false])['service'];
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+    ]]];
+    $script = hub_test_wsl_script_payload(hub_wsl_service_compose_command($service, ['config'], $profile));
+    $compose = hub_test_wsl_compose_payload($script);
+
+    hub_test_assert(
+        str_contains($compose, "env_file:\n      - runtime-settings.conf\n")
+        && str_contains($script, 'env_sha256=')
+        && str_contains($script, 'command -v sha256sum')
+        && str_contains($script, 'settings_tmp="$service_root/.runtime-settings.conf.$$"')
+        && str_contains($script, 'sha256sum "$settings_tmp"')
+        && str_contains($script, 'chmod 0600 "$settings_tmp"')
+        && str_contains($script, 'mv -f -- "$settings_tmp" "$service_root/runtime-settings.conf"')
+        && str_contains($script, 'rm -- "$service_root/.env"'),
+        'generic WSL runtime settings must be verified before the legacy file is retired',
+    );
 });
 
 hub_test('guarded Linux Docker command rejects Windows before invoking the command', function (): void {

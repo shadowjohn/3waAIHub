@@ -5,114 +5,123 @@ const HUB_DB_MIGRATION_VERSION = '2026-08-09.2';
 const HUB_DB_MIGRATION_VERSION_KEY = 'db_migration_version';
 const HUB_DB_MIGRATION_SCHEMA_KEY = 'db_migration_schema_version';
 
-function hub_sqlite_identifier(string $identifier): string
-{
-    if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/D', $identifier) !== 1) {
-        throw new InvalidArgumentException('Invalid SQLite identifier.');
-    }
-
-    return '"' . $identifier . '"';
-}
-
-function hub_sqlite_exec_safe(PDO $db, string $sql, array $parameters = []): PDOStatement
-{
-    $statement = $db->prepare($sql);
-    $statement->execute($parameters);
-
-    return $statement;
-}
-
-function hub_sqlite_select_safe(PDO $db, string $sql, array $parameters = []): array
-{
-    return hub_sqlite_exec_safe($db, $sql, $parameters)->fetchAll();
-}
-
 function hub_sqlite_insert_safe(PDO $db, string $table, array $fields): int
 {
-    if ($fields === []) {
-        throw new InvalidArgumentException('SQLite insert fields are required.');
+    if ($table !== 'settings' || array_keys($fields) !== ['key', 'value', 'updated_at']) {
+        throw new InvalidArgumentException('Unsupported SQLite insert contract.');
     }
-
-    $columns = [];
-    $placeholders = [];
-    $parameters = [];
-    foreach ($fields as $name => $value) {
-        if (!is_string($name) || (!is_scalar($value) && $value !== null)) {
-            throw new InvalidArgumentException('Invalid SQLite insert field.');
+    foreach ($fields as $value) {
+        if (!is_scalar($value) && $value !== null) {
+            throw new InvalidArgumentException('Invalid SQLite insert value.');
         }
-        $columns[] = hub_sqlite_identifier($name);
-        $placeholder = ':insert_' . count($placeholders);
-        $placeholders[] = $placeholder;
-        $parameters[$placeholder] = $value;
     }
 
-    hub_sqlite_exec_safe(
-        $db,
-        'INSERT INTO ' . hub_sqlite_identifier($table)
-        . ' (' . implode(', ', $columns) . ') VALUES (' . implode(', ', $placeholders) . ')',
-        $parameters,
+    $statement = $db->prepare(
+        'INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)'
     );
+    $statement->execute([
+        ':key' => $fields['key'],
+        ':value' => $fields['value'],
+        ':updated_at' => $fields['updated_at'],
+    ]);
 
     return (int)$db->lastInsertId();
 }
 
 function hub_sqlite_update_safe(PDO $db, string $table, array $fields, array $where): int
 {
-    if ($fields === [] || $where === []) {
-        throw new InvalidArgumentException('SQLite update fields and conditions are required.');
+    if ($table !== 'settings' || array_keys($fields) !== ['value'] || array_keys($where) !== ['key']) {
+        throw new InvalidArgumentException('Unsupported SQLite update contract.');
+    }
+    if ((!is_scalar($fields['value']) && $fields['value'] !== null)
+        || (!is_scalar($where['key']) && $where['key'] !== null)) {
+        throw new InvalidArgumentException('Invalid SQLite update value.');
     }
 
-    $assignments = [];
-    $conditions = [];
-    $parameters = [];
-    foreach ($fields as $name => $value) {
-        if (!is_string($name) || (!is_scalar($value) && $value !== null)) {
-            throw new InvalidArgumentException('Invalid SQLite update field.');
-        }
-        $placeholder = ':set_' . count($assignments);
-        $assignments[] = hub_sqlite_identifier($name) . ' = ' . $placeholder;
-        $parameters[$placeholder] = $value;
-    }
-    foreach ($where as $name => $value) {
-        if (!is_string($name) || (!is_scalar($value) && $value !== null)) {
-            throw new InvalidArgumentException('Invalid SQLite update condition.');
-        }
-        $placeholder = ':where_' . count($conditions);
-        $conditions[] = hub_sqlite_identifier($name) . ' = ' . $placeholder;
-        $parameters[$placeholder] = $value;
+    $statement = $db->prepare('UPDATE settings SET value = :value WHERE key = :key');
+    $statement->execute([':value' => $fields['value'], ':key' => $where['key']]);
+
+    return $statement->rowCount();
+}
+
+function hub_sqlite_select_setting_safe(PDO $db, string $key): ?array
+{
+    if ($key === '') {
+        throw new InvalidArgumentException('SQLite settings key is required.');
     }
 
-    return hub_sqlite_exec_safe(
-        $db,
-        'UPDATE ' . hub_sqlite_identifier($table)
-        . ' SET ' . implode(', ', $assignments)
-        . ' WHERE ' . implode(' AND ', $conditions),
-        $parameters,
-    )->rowCount();
+    $statement = $db->prepare('SELECT key, value, updated_at FROM settings WHERE key = :key');
+    $statement->execute([':key' => $key]);
+    $row = $statement->fetch();
+
+    return is_array($row) ? $row : null;
+}
+
+function hub_sqlite_rebuild_index_contract(string $table): array
+{
+    return match ($table) {
+        'service_logs' => [
+            'idx_legacy_service_logs_action' => [
+                'unique' => false,
+                'columns' => ['action'],
+                'restore' => true,
+            ],
+        ],
+        'playground_tts_artifacts' => [
+            'idx_playground_tts_artifacts_owner' => [
+                'unique' => false,
+                'columns' => ['owner_member_id', 'service_id'],
+                'restore' => false,
+            ],
+        ],
+        'cluster_routes' => [
+            'idx_cluster_routes_legacy_remote_task' => [
+                'unique' => false,
+                'columns' => ['remote_task_id'],
+                'restore' => true,
+            ],
+            'idx_cluster_routes_station_state' => [
+                'unique' => false,
+                'columns' => ['station_id', 'state', 'updated_at'],
+                'restore' => false,
+            ],
+            'idx_cluster_routes_member_token' => [
+                'unique' => false,
+                'columns' => ['member_id', 'token_id', 'created_at'],
+                'restore' => false,
+            ],
+        ],
+        default => throw new InvalidArgumentException('Unsupported SQLite rebuild table.'),
+    };
 }
 
 function hub_sqlite_capture_rebuild_indexes(PDO $db, string $table, array $allowedColumns): array
 {
-    $allowed = [];
-    foreach ($allowedColumns as $column) {
-        if (!is_string($column)) {
-            throw new InvalidArgumentException('Invalid SQLite rebuild column.');
-        }
-        $allowed[$column] = true;
+    $allowed = array_fill_keys($allowedColumns, true);
+    if (count($allowed) !== count($allowedColumns)) {
+        throw new InvalidArgumentException('Invalid SQLite rebuild columns.');
     }
-
+    $contracts = hub_sqlite_rebuild_index_contract($table);
+    $indexList = $db->prepare(
+        'SELECT name, [unique] AS is_unique, origin, partial FROM pragma_index_list(:table_name)'
+    );
+    $indexList->execute([':table_name' => $table]);
     $indexes = [];
-    foreach ($db->query('PRAGMA index_list(' . hub_sqlite_identifier($table) . ')')->fetchAll() as $index) {
+    foreach ($indexList->fetchAll() as $index) {
         if (($index['origin'] ?? '') !== 'c') {
             continue;
         }
         $name = (string)($index['name'] ?? '');
-        if ((int)($index['partial'] ?? 0) !== 0 || hub_sqlite_identifier($name) === '') {
+        $contract = $contracts[$name] ?? null;
+        if (!is_array($contract) || (int)($index['partial'] ?? 0) !== 0
+            || (int)($index['is_unique'] ?? 0) !== (!empty($contract['unique']) ? 1 : 0)) {
             throw new RuntimeException('Unsupported SQLite index during table rebuild.');
         }
 
+        $indexInfo = $db->prepare('SELECT seqno, cid, name FROM pragma_index_info(:index_name) ORDER BY seqno');
+        $indexInfo->execute([':index_name' => $name]);
         $columns = [];
-        foreach ($db->query('PRAGMA index_info(' . hub_sqlite_identifier($name) . ')')->fetchAll() as $column) {
+        foreach ($indexInfo->fetchAll() as $column) {
             $columnName = (string)($column['name'] ?? '');
             if (!isset($allowed[$columnName])) {
                 throw new RuntimeException('Invalid SQLite index column during table rebuild.');
@@ -122,11 +131,12 @@ function hub_sqlite_capture_rebuild_indexes(PDO $db, string $table, array $allow
         if ($columns === []) {
             throw new RuntimeException('SQLite index has no rebuildable columns.');
         }
-        $indexes[] = [
-            'name' => $name,
-            'unique' => (int)($index['unique'] ?? 0) === 1,
-            'columns' => $columns,
-        ];
+        if ($columns !== ($contract['columns'] ?? [])) {
+            throw new RuntimeException('Unsupported SQLite index during table rebuild.');
+        }
+        if (!empty($contract['restore'])) {
+            $indexes[] = $name;
+        }
     }
 
     return $indexes;
@@ -134,27 +144,19 @@ function hub_sqlite_capture_rebuild_indexes(PDO $db, string $table, array $allow
 
 function hub_sqlite_restore_rebuild_indexes(PDO $db, string $table, array $indexes): void
 {
-    foreach ($indexes as $index) {
-        if (!is_array($index) || !is_array($index['columns'] ?? null)) {
+    foreach ($indexes as $name) {
+        if (!is_string($name)) {
             throw new InvalidArgumentException('Invalid SQLite rebuild index.');
         }
-        $columns = [];
-        foreach ($index['columns'] as $column) {
-            if (!is_string($column)) {
-                throw new InvalidArgumentException('Invalid SQLite rebuild index column.');
-            }
-            $columns[] = hub_sqlite_identifier($column);
+        if ($table === 'cluster_routes' && $name === 'idx_cluster_routes_legacy_remote_task') {
+            $db->exec('CREATE INDEX idx_cluster_routes_legacy_remote_task ON cluster_routes(remote_task_id)');
+            continue;
         }
-        if ($columns === []) {
-            throw new InvalidArgumentException('SQLite rebuild index columns are required.');
+        if ($table === 'service_logs' && $name === 'idx_legacy_service_logs_action') {
+            $db->exec('CREATE INDEX idx_legacy_service_logs_action ON service_logs(action)');
+            continue;
         }
-
-        hub_sqlite_exec_safe(
-            $db,
-            'CREATE ' . (!empty($index['unique']) ? 'UNIQUE ' : '') . 'INDEX '
-            . hub_sqlite_identifier((string)($index['name'] ?? ''))
-            . ' ON ' . hub_sqlite_identifier($table) . ' (' . implode(', ', $columns) . ')',
-        );
+        throw new InvalidArgumentException('Unsupported SQLite rebuild index.');
     }
 }
 

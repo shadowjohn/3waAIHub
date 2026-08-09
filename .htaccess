@@ -11,7 +11,7 @@ RewriteRule ^(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|packa
 SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
 </IfModule>
 
-<FilesMatch "(^\.|\.sqlite(?:-.+)?$|\.db$|\.env$|\.key$|\.log$|\.ps1$|\.bat$|\.cmd$|\.sh$|\.sql$|\.ini$|\.ya?ml$|\.xml$|\.bak$|~$)">
+<FilesMatch "(^\.|\.sqlite(?:-.+)?$|\.db$|\.env$|\.conf$|\.key$|\.log$|\.ps1$|\.bat$|\.cmd$|\.sh$|\.sql$|\.ini$|\.ya?ml$|\.xml$|\.bak$|~$)">
     <IfModule mod_authz_core.c>
         Require all denied
     </IfModule>

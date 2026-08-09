@@ -1,5 +1,9 @@
 # 3waAIHub History
 
+## Runtime Settings File Hardening
+
+Replaced implicit service runtime `.env` loading with `runtime-settings.conf`. Native and WSL Compose invocations now pass the file explicitly; generated and static Pack Compose files use the same name. Added `scripts/migrate_runtime_settings.php` for check/apply migration with SHA-256 verification and legacy symlink refusal, and extended IIS, Apache, and Nginx protection guidance to block the new configuration file.
+
 ## DocParser Translation Auto Skip
 
 Implemented `translation_policy=auto` for DocParser. When `target_language=zh-TW`, DocParser now keeps blocks that already look like target-language Chinese and only calls TranslateGemma for non-Chinese blocks. The policy is part of the DocParser cache key, task logs report planned/translated/skipped counts, and docs describe `auto`, `always`, and `never`.

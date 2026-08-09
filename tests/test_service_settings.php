@@ -329,6 +329,25 @@ hub_test('runtime settings migration rejects a legacy env symlink without touchi
     }
 });
 
+hub_test('tracked Pack Compose templates use only the explicit runtime settings file', function (): void {
+    $templates = [
+        'packs/llm-gemma4-12b/docker-compose.yml',
+        'packs/ocr-ppocrv5/docker-compose.yml',
+        'packs/rag-nemotron/docker-compose.yml',
+        'packs/sam3/docker-compose.yml',
+        'packs/taiwan-address/docker-compose.yml',
+        'packs/translate-gemma12b/docker-compose.yml',
+        'packs/whisper-asr/docker-compose.yml',
+        'packs/yolo-serving/docker-compose.yml',
+        'packs/yolo/docker-compose.yml',
+    ];
+    foreach ($templates as $template) {
+        $compose = (string)file_get_contents(HUB_ROOT . '/' . $template);
+        hub_test_assert(str_contains($compose, 'runtime-settings.conf'), $template . ' must name the explicit runtime settings file');
+        hub_test_assert(!str_contains($compose, '- .env'), $template . ' must not use an implicit env file');
+    }
+});
+
 hub_test('service settings override pack runtime env defaults when writing env', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'structure-ppstructurev3', [

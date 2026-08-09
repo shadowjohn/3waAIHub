@@ -51,7 +51,7 @@ location ~* ^/3waAIHub/(?:app|crontab|data|docs|i18n|packs|scripts|templates|tes
 location ~* ^/3waAIHub/(?:\.git|\.github|vendor|node_modules)(?:/|$) { return 404; }
 location ~* ^/3waAIHub/(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|package(?:-lock)?\.json)$ { return 404; }
 location ~* ^/3waAIHub/(?:.*/)?\. { return 404; }
-location ~* ^/3waAIHub/.*(?:\.sqlite(?:-.+)?|\.db|\.env|\.key|\.log|\.ps1|\.bat|\.cmd|\.sh|\.sql|\.ini|\.ya?ml|\.xml|\.bak|~)$ { return 404; }
+location ~* ^/3waAIHub/.*(?:\.sqlite(?:-.+)?|\.db|\.env|\.conf|\.key|\.log|\.ps1|\.bat|\.cmd|\.sh|\.sql|\.ini|\.ya?ml|\.xml|\.bak|~)$ { return 404; }
 NGINX;
 }
 
@@ -63,14 +63,14 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
         $webConfig = preg_replace('/<!--.*?-->/s', '', $webConfig) ?? '';
         $hasDirectoryBrowsingProtection = preg_match('/<directoryBrowse\s+enabled\s*=\s*"false"\s*\/?>/i', $webConfig) === 1;
         $hasProtectedSegments = true;
-        foreach (['.env', '.env.example', '.git', '.github', 'app', 'crontab', 'data', 'docs', 'i18n', 'packs', 'scripts', 'templates', 'tests', 'tools'] as $segment) {
+        foreach (['.env', '.env.example', 'runtime-settings.conf', 'runtime-settings.example.conf', '.git', '.github', 'app', 'crontab', 'data', 'docs', 'i18n', 'packs', 'scripts', 'templates', 'tests', 'tools'] as $segment) {
             if (preg_match('/<add\s+segment\s*=\s*"' . preg_quote($segment, '/') . '"\s*\/?>/i', $webConfig) !== 1) {
                 $hasProtectedSegments = false;
                 break;
             }
         }
         $hasSensitiveExtensions = true;
-        foreach (['.ps1', '.bat', '.cmd', '.sh', '.md', '.log', '.sqlite', '.db', '.sql', '.ini', '.yml', '.yaml', '.xml'] as $extension) {
+        foreach (['.ps1', '.bat', '.cmd', '.sh', '.md', '.log', '.sqlite', '.db', '.sql', '.ini', '.conf', '.yml', '.yaml', '.xml'] as $extension) {
             if (preg_match('/<add\s+fileExtension\s*=\s*"' . preg_quote($extension, '/') . '"\s+allowed\s*=\s*"false"\s*\/?>/i', $webConfig) !== 1) {
                 $hasSensitiveExtensions = false;
                 break;
@@ -105,7 +105,7 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
         $filesMatch = $matches[1];
     }
     $hasFilesMatchProtection = true;
-    foreach (['(^\\.', '\\.sqlite(?:-.+)?$', '\\.db$', '\\.env$', '\\.key$', '\\.log$', '\\.ps1$', '\\.bat$', '\\.cmd$', '\\.sh$', '\\.sql$', '\\.ini$', '\\.ya?ml$', '\\.xml$', '\\.bak$', '~$'] as $token) {
+    foreach (['(^\\.', '\\.sqlite(?:-.+)?$', '\\.db$', '\\.env$', '\\.conf$', '\\.key$', '\\.log$', '\\.ps1$', '\\.bat$', '\\.cmd$', '\\.sh$', '\\.sql$', '\\.ini$', '\\.ya?ml$', '\\.xml$', '\\.bak$', '~$'] as $token) {
         if (!str_contains($filesMatch, $token)) {
             $hasFilesMatchProtection = false;
             break;

@@ -500,18 +500,29 @@ function hub_migrate_service_runtime_settings(PDO $db, bool $apply, ?string $ser
         throw new InvalidArgumentException('Invalid service key.');
     }
 
-    $sql = 'SELECT id, mode, pack_id, service_key, compose_file, local_port
-            FROM services
-            WHERE install_status = :install_status
-              AND pack_id IS NOT NULL
-              AND service_key IS NOT NULL';
-    $parameters = [':install_status' => 'installed'];
     if ($serviceKey !== null) {
-        $sql .= ' AND service_key = :service_key';
-        $parameters[':service_key'] = $serviceKey;
+        $statement = $db->prepare(
+            'SELECT id, mode, pack_id, service_key, compose_file, local_port
+             FROM services
+             WHERE install_status = :install_status
+               AND pack_id IS NOT NULL
+               AND service_key IS NOT NULL
+               AND service_key = :service_key
+             ORDER BY id'
+        );
+        $statement->execute([':install_status' => 'installed', ':service_key' => $serviceKey]);
+    } else {
+        $statement = $db->prepare(
+            'SELECT id, mode, pack_id, service_key, compose_file, local_port
+             FROM services
+             WHERE install_status = :install_status
+               AND pack_id IS NOT NULL
+               AND service_key IS NOT NULL
+             ORDER BY id'
+        );
+        $statement->execute([':install_status' => 'installed']);
     }
-    $sql .= ' ORDER BY id';
-    $services = hub_sqlite_select_safe($db, $sql, $parameters);
+    $services = $statement->fetchAll();
     $result = [
         'scanned' => 0,
         'migrated' => 0,

@@ -10,7 +10,7 @@ hub_test('sqlite connection applies write safety pragmas', function (): void {
     hub_test_assert((int)$db->query('PRAGMA synchronous')->fetchColumn() === 1, 'synchronous must be NORMAL');
 });
 
-hub_test('SQLite safe helpers bind values and reject dynamic identifiers', function (): void {
+hub_test('SQLite safe helpers bind values and reject unsupported statement contracts', function (): void {
     $db = hub_test_reset_db();
     hub_sqlite_insert_safe($db, 'settings', [
         'key' => 'sqlite_safe_test',
@@ -18,20 +18,20 @@ hub_test('SQLite safe helpers bind values and reject dynamic identifiers', funct
         'updated_at' => hub_now(),
     ]);
     hub_sqlite_update_safe($db, 'settings', ['value' => 'updated'], ['key' => 'sqlite_safe_test']);
-    $rows = hub_sqlite_select_safe(
-        $db,
-        'SELECT value FROM settings WHERE key = :key',
-        [':key' => 'sqlite_safe_test'],
-    );
+    $row = hub_sqlite_select_setting_safe($db, 'sqlite_safe_test');
 
-    hub_test_assert(($rows[0]['value'] ?? null) === 'updated', 'safe SQLite helpers must bind values');
+    hub_test_assert(($row['value'] ?? null) === 'updated', 'safe SQLite helpers must bind values');
     hub_test_assert(
         hub_test_throws(static fn () => hub_sqlite_insert_safe($db, 'settings; DROP TABLE users', ['key' => 'unsafe'])),
-        'unsafe SQLite table identifier was accepted',
+        'unsafe SQLite table contract was accepted',
     );
     hub_test_assert(
         hub_test_throws(static fn () => hub_sqlite_update_safe($db, 'settings', ['value; DROP TABLE users' => 'unsafe'], ['key' => 'sqlite_safe_test'])),
-        'unsafe SQLite column identifier was accepted',
+        'unsafe SQLite update contract was accepted',
+    );
+    hub_test_assert(
+        hub_test_throws(static fn () => hub_sqlite_insert_safe($db, 'users', ['key' => 'unsafe', 'value' => 'unsafe', 'updated_at' => hub_now()])),
+        'non-whitelisted SQLite table contract was accepted',
     );
 });
 
@@ -86,8 +86,9 @@ hub_test('sqlite safety storage defaults exist', function (): void {
     hub_test_assert(hub_get_storage_setting($db, 'AIHUB_MODELS_DIR') === HUB_DATA_DIR . '/models', 'existing model dir setting must not be overwritten');
     hub_test_assert(hub_storage_settings_warnings(hub_get_storage_paths($db)) !== [], 'old in-repo model dir should warn');
 
-    $envExample = (string)file_get_contents(HUB_ROOT . '/.env.example');
-    hub_test_assert(str_contains($envExample, 'AIHUB_MODELS_DIR=/DATA/models'), '.env.example model dir default mismatch');
+    $runtimeSettingsExample = (string)file_get_contents(HUB_ROOT . '/runtime-settings.example.conf');
+    hub_test_assert(str_contains($runtimeSettingsExample, 'AIHUB_MODELS_DIR=/DATA/models'), 'runtime settings example model dir default mismatch');
+    hub_test_assert(!is_file(HUB_ROOT . '/.env.example'), 'legacy root env example must not remain tracked');
     $install = (string)file_get_contents(HUB_ROOT . '/install.sh');
     hub_test_assert(str_contains($install, '/DATA/models/paddleocr'), 'install.sh must create host model subdirs');
 });

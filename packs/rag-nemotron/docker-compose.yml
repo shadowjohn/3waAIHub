@@ -4,7 +4,7 @@ services:
       context: ./service
     image: 3waaihub-nemotron-rag:0.1.0
     env_file:
-      - .env
+      - runtime-settings.conf
     gpus: all
     environment:
       NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"

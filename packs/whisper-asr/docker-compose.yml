@@ -5,7 +5,7 @@ services:
       dockerfile: service/Dockerfile
     image: 3waaihub/whisper-asr:0.1.2
     env_file:
-      - .env
+      - runtime-settings.conf
     gpus: all
     environment:
       NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"

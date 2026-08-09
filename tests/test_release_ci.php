@@ -154,9 +154,15 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
         hub_test_assert(str_contains($ps1, $needle), 'install.ps1 missing: ' . $needle);
     }
     $coreInstall = (string)file_get_contents(HUB_ROOT . '/scripts/windows/install-core.ps1');
-    foreach (['scripts/init_db.php', 'Installing Windows Core control plane', 'php -S 127.0.0.1:8080'] as $needle) {
+    foreach (['scripts/init_db.php', 'scripts/migrate_runtime_settings.php --apply', 'Installing Windows Core control plane', 'php -S 127.0.0.1:8080'] as $needle) {
         hub_test_assert(str_contains($coreInstall, $needle), 'install-core.ps1 missing: ' . $needle);
     }
+    $linuxInstall = (string)file_get_contents(HUB_ROOT . '/install.sh');
+    hub_test_assert(str_contains($linuxInstall, 'scripts/migrate_runtime_settings.php --apply'), 'install.sh must migrate regular legacy runtime env files after DB initialization');
+
+    $fortifyScript = (string)file_get_contents(HUB_ROOT . '/scripts/fortify_sast.ps1');
+    hub_test_assert(!str_contains($fortifyScript, "packs\\**\\tests\\**"), 'Fortify scope must not exclude Pack acceptance or service tests');
+    hub_test_assert(str_contains($fortifyScript, "'packs\\**\\*.py'"), 'Fortify scope must include Pack runtime Python sources');
     foreach (['install NVIDIA', '--bootstrap-host', 'nvidia-smi'] as $needle) {
         hub_test_assert(!str_contains($ps1, $needle), 'install.ps1 must stay app-only preview: ' . $needle);
     }

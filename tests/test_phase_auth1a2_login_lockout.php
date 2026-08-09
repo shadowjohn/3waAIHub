@@ -110,10 +110,12 @@ hub_test('IIS web.config blocks non-public source and deployment material', func
 
     hub_test_assert(str_contains($webConfig, '<directoryBrowse enabled="false" />'), 'IIS directory browsing must stay disabled');
     hub_test_assert(str_contains($webConfig, '<add name="X-Content-Type-Options" value="nosniff" />'), 'IIS must disable MIME sniffing for static and HTML responses');
-    foreach (['.git', '.github', '.env', '.env.example', 'app', 'crontab', 'data', 'docs', 'i18n', 'packs', 'scripts', 'tests', 'tools', 'templates'] as $segment) {
+    foreach (['.git', '.github', '.env', '.env.example', 'runtime-settings.conf', 'runtime-settings.example.conf', 'app', 'crontab', 'data', 'docs', 'i18n', 'packs', 'scripts', 'tests', 'tools', 'templates'] as $segment) {
         hub_test_assert(str_contains($webConfig, '<add segment="' . $segment . '" />'), 'IIS must hide non-public segment: ' . $segment);
     }
-    foreach (['.ps1', '.bat', '.cmd', '.sh', '.md', '.log', '.sqlite', '.db', '.sql', '.ini', '.yml', '.yaml', '.xml'] as $extension) {
+    $htaccess = (string)(@file_get_contents(HUB_ROOT . '/.htaccess') ?: '');
+    hub_test_assert(str_contains($htaccess, '\\.conf$'), 'Apache must block runtime settings configuration files');
+    foreach (['.ps1', '.bat', '.cmd', '.sh', '.md', '.log', '.sqlite', '.db', '.sql', '.ini', '.conf', '.yml', '.yaml', '.xml'] as $extension) {
         hub_test_assert(str_contains($webConfig, '<add fileExtension="' . $extension . '" allowed="false" />'), 'IIS must deny sensitive static extension: ' . $extension);
     }
 });

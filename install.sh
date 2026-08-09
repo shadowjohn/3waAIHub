@@ -191,6 +191,8 @@ fi
 
 echo "[3waAIHub] Initializing SQLite..."
 php scripts/init_db.php
+echo "[3waAIHub] Migrating service runtime settings..."
+php scripts/migrate_runtime_settings.php --apply
 fix_runtime_permissions
 install_command_worker_cron
 

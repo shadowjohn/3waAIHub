@@ -3,7 +3,7 @@ services:
     build:
       context: ./service
     env_file:
-      - .env
+      - runtime-settings.conf
     ports:
       - "127.0.0.1:${YOLO_LOCAL_PORT:-18105}:8000"
     volumes:
