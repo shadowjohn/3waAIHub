@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import secrets
 import tempfile
 import threading
 import unittest
@@ -160,7 +161,7 @@ class LoginBrokerUnitTests(unittest.TestCase):
 
     def test_credentials_are_used_only_for_page_fill_and_not_returned(self):
         username = "person@example.test"
-        password = "very-private-password"
+        password = secrets.token_urlsafe(24)
         result = self.broker.credentials({"username": username, "password": password})
 
         self.assertEqual(result, self.broker.status())
@@ -245,7 +246,7 @@ class LoginBrokerHttpTests(unittest.TestCase):
 
     def test_http_never_echoes_credentials_or_unknown_request_bodies(self):
         username = "private-user@example.test"
-        password = "private-password"
+        password = secrets.token_urlsafe(24)
         status, _, body = self.request(
             "POST", "/credentials", {"username": username, "password": password}
         )
@@ -259,7 +260,7 @@ class LoginBrokerHttpTests(unittest.TestCase):
         self.assertNotIn(marker.encode(), body)
 
     def test_http_normalizes_browser_errors_without_logging_secrets(self):
-        password = "driver-secret-password"
+        password = secrets.token_urlsafe(24)
         self.broker.page.fail_on_fill = True
         status, _, body = self.request(
             "POST",

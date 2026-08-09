@@ -1,5 +1,6 @@
 import json
 import os
+import secrets
 import sys
 import tempfile
 import threading
@@ -102,6 +103,7 @@ class UltimateCloneTests(unittest.TestCase):
         reset_resident_state()
         self.reference = Path("/data/voice_profiles/reference.wav")
         self.other = Path("/data/voice_profiles/other.wav")
+        self.prompt_text = 'private-confirmed-' + secrets.token_urlsafe(12)
         self.model = FakeModel()
         app._MODEL = self.model
         self.patches = [
@@ -132,7 +134,7 @@ class UltimateCloneTests(unittest.TestCase):
             "real_inference": True,
             "reference_wav_path": "reference",
             "prompt_wav_path": "prompt",
-            "prompt_text": "private confirmed transcript",
+            "prompt_text": self.prompt_text,
         }
         payload.update(overrides)
         return app.TtsRequest(**payload)
@@ -146,7 +148,7 @@ class UltimateCloneTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(str(self.reference), self.model.kwargs["reference_wav_path"])
         self.assertEqual(str(self.reference), self.model.kwargs["prompt_wav_path"])
-        self.assertEqual("private confirmed transcript", self.model.kwargs["prompt_text"])
+        self.assertEqual(self.prompt_text, self.model.kwargs["prompt_text"])
 
     def test_ultimate_clone_rejects_missing_mismatched_or_empty_prompt_inputs(self):
         for overrides, error in [
@@ -159,7 +161,7 @@ class UltimateCloneTests(unittest.TestCase):
             self.assertEqual(error, self.response_body(response)["error"])
 
     def test_ultimate_clone_inference_error_does_not_echo_prompt_text(self):
-        secret = "private confirmed transcript"
+        secret = self.prompt_text
         self.model.error = secret
 
         response = app.tts(self.ultimate_request(prompt_text=secret))
@@ -180,11 +182,10 @@ class UltimateCloneTests(unittest.TestCase):
 
 
 class ResidentJobTests(unittest.TestCase):
-    token = "resident-test-token"
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.service_data = Path(self.temp_dir.name) / "service"
+        self.token = secrets.token_urlsafe(24)
         self.environment = patch.dict(os.environ, {
             "VOXCPM2_SERVICE_DATA_DIR": str(self.service_data),
             "VOXCPM2_INTERNAL_JOB_TOKEN": self.token,
