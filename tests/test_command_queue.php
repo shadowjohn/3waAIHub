@@ -12,6 +12,23 @@ hub_test('command runner preserves observed exit code when proc_close returns un
     hub_test_assert(hub_process_exit_code(0, 7) === 0, 'proc_close exit code must win when it is known');
 });
 
+hub_test('command runner bypasses cmd.exe on Windows', function (): void {
+    hub_test_assert(hub_process_execution_options('Windows') === ['bypass_shell' => true], 'Windows commands must bypass cmd.exe');
+    hub_test_assert(hub_process_execution_options('Linux') === [], 'Linux argv execution must not add Windows-only options');
+});
+
+hub_test('resident reconciliation uses a prepared read before building runtime commands', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/app/pack_job_runner.php');
+    $start = strpos($source, 'function hub_reconcile_resident_job_runs');
+    $end = strpos($source, 'function hub_run_pack_job_task', $start === false ? 0 : $start);
+    $body = $start === false || $end === false ? '' : substr($source, $start, $end - $start);
+
+    hub_test_assert($body !== '', 'resident reconciliation implementation must remain discoverable');
+    hub_test_assert(!str_contains($body, '$db->query('), 'resident reconciliation must not use query() as a database-to-command source');
+    hub_test_assert(str_contains($body, '$statement = $db->prepare('), 'resident reconciliation must use a named prepared statement');
+    hub_test_assert(str_contains($body, '$statement->execute();'), 'resident reconciliation prepared statement must execute before rows are read');
+});
+
 hub_test('command queue recovers stale running jobs without touching active long jobs', function (): void {
     $db = hub_test_reset_db();
     $now = '2030-01-01 12:00:00';

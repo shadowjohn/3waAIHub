@@ -1794,7 +1794,7 @@ function hub_pack_job_default_process_runner(array $command, int $timeoutSeconds
 function hub_pack_job_process_runner(array $command, int $timeoutSeconds, callable $poll): array
 {
     hub_cli_only();
-    $process = @proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, HUB_ROOT);
+    $process = @proc_open($command, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, HUB_ROOT, null, hub_process_execution_options());
     if (!is_resource($process)) {
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Cannot start process.'];
     }
@@ -2683,7 +2683,8 @@ function hub_reconcile_expired_pack_job_runs(PDO $db): int
 
 function hub_reconcile_resident_job_runs(PDO $db, ?callable $transport = null): int
 {
-    $rows = $db->query(
+    // 固定查詢與後續 WSL 執行鏈相連；保留 PDO prepared contract，避免將 DB 回傳列直接當成 command source。
+    $statement = $db->prepare(
         "SELECT resident_job_runs.*, runtime_runs.worker_id, runtime_runs.lease_token, runtime_runs.run_id,
                 runtime_runs.task_id AS runtime_task_id, services.pack_id AS service_pack_id
          FROM resident_job_runs
@@ -2691,7 +2692,9 @@ function hub_reconcile_resident_job_runs(PDO $db, ?callable $transport = null): 
          JOIN services ON services.id = resident_job_runs.service_id
          WHERE resident_job_runs.lifecycle IN ('cancel_requested', 'unconfirmed')
          ORDER BY resident_job_runs.updated_at ASC"
-    )->fetchAll();
+    );
+    $statement->execute();
+    $rows = $statement->fetchAll();
     $reconciled = 0;
     foreach ($rows as $row) {
         $task = hub_get_task($db, (int)($row['task_id'] ?? 0));

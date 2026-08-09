@@ -39,6 +39,17 @@ function hub_process_environment(array $overrides = [], ?array $baseEnvironment 
     return $environment;
 }
 
+/**
+ * Windows 的 proc_open 若退回 cmd.exe，會重新解讀 command line。
+ * argv 已分離時仍明確要求直接建立程序，避免平台預設值改變安全邊界。
+ */
+function hub_process_execution_options(?string $platform = null): array
+{
+    return strcasecmp($platform ?? PHP_OS_FAMILY, 'Windows') === 0
+        ? ['bypass_shell' => true]
+        : [];
+}
+
 function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = []): array
 {
     hub_cli_only();
@@ -66,7 +77,7 @@ function hub_run_argv_command(array $command, int $timeoutSeconds = 60, array $e
         2 => ['pipe', 'w'],
     ];
     $processEnv = hub_process_environment($env);
-    $process = @proc_open($command, $descriptor, $pipes, HUB_ROOT, $processEnv);
+    $process = @proc_open($command, $descriptor, $pipes, HUB_ROOT, $processEnv, hub_process_execution_options());
     if (!is_resource($process)) {
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Cannot start process.', 'output' => 'Cannot start process.'];
     }
@@ -129,7 +140,7 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
         2 => ['pipe', 'w'],
     ];
     $processEnv = hub_process_environment($env);
-    $process = @proc_open($command, $descriptor, $pipes, HUB_ROOT, $processEnv);
+    $process = @proc_open($command, $descriptor, $pipes, HUB_ROOT, $processEnv, hub_process_execution_options());
     if (!is_resource($process)) {
         file_put_contents($stderrPath, "Cannot start process.\n", FILE_APPEND);
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Cannot start process.', 'output' => 'Cannot start process.'];
