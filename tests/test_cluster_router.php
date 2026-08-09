@@ -760,6 +760,10 @@ hub_test('cluster router rejects an invalid secret and invalid station base URLs
             hub_cluster_validate_station_base_url('https://station.example/aihub') === 'https://station.example/aihub/',
             'station base URL must normalize its path trailing slash'
         );
+        hub_test_assert(
+            hub_cluster_pairing_request_url(parse_url('https://station.example/aihub/cluster_pair.php')) === 'https://station.example/aihub/cluster_pair.php',
+            'pairing request must retain its verified cluster_pair endpoint'
+        );
         foreach ([
             'ftp://station.example',
             'https://user:pass@station.example',

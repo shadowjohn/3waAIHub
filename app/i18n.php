@@ -145,6 +145,34 @@ function hub_i18n_google_circuit_state(?bool $open = null): bool
     return $circuitOpen;
 }
 
+/**
+ * Google 翻譯是唯一允許的外部 i18n transport；主機、協定與 endpoint 必須固定。
+ */
+function hub_i18n_google_translation_url(string $sourceLang, string $targetLang, string $text): string
+{
+    $query = http_build_query([
+        'client' => 'gtx',
+        'sl' => $sourceLang,
+        'tl' => $targetLang,
+        'dt' => 't',
+        'q' => $text,
+    ], '', '&', PHP_QUERY_RFC3986);
+    $url = 'https://translate.googleapis.com/translate_a/single?' . $query;
+    $parts = parse_url($url);
+
+    if (
+        $parts === false
+        || ($parts['scheme'] ?? null) !== 'https'
+        || ($parts['host'] ?? null) !== 'translate.googleapis.com'
+        || isset($parts['port'], $parts['user'], $parts['pass'], $parts['fragment'])
+        || ($parts['path'] ?? null) !== '/translate_a/single'
+    ) {
+        throw new RuntimeException('Google translation endpoint is invalid.');
+    }
+
+    return $url;
+}
+
 function hub_i18n_translate_google(
     string $text,
     string $targetLang,
@@ -164,14 +192,7 @@ function hub_i18n_translate_google(
         return '';
     }
 
-    $query = http_build_query([
-        'client' => 'gtx',
-        'sl' => $sl,
-        'tl' => $tl,
-        'dt' => 't',
-        'q' => $text,
-    ], '', '&', PHP_QUERY_RFC3986);
-    $url = 'https://translate.googleapis.com/translate_a/single?' . $query;
+    $url = hub_i18n_google_translation_url($sl, $tl, $text);
     if ($fetcher !== null) {
         try {
             $response = $fetcher($url);

@@ -62,6 +62,11 @@ hub_test('missing keyed translations return fallback without natural translation
 });
 
 hub_test('Google translation failure opens a request-local circuit breaker', function (): void {
+    $googleUrl = hub_i18n_google_translation_url('zh-TW', 'en', '控制台');
+    $googleParts = parse_url($googleUrl);
+    hub_test_assert(($googleParts['scheme'] ?? '') === 'https' && ($googleParts['host'] ?? '') === 'translate.googleapis.com', 'translation transport must keep the fixed Google HTTPS host');
+    hub_test_assert(($googleParts['path'] ?? '') === '/translate_a/single' && !isset($googleParts['port'], $googleParts['user'], $googleParts['pass']), 'translation transport must keep the fixed Google endpoint');
+
     hub_i18n_google_circuit_state(false);
     $calls = 0;
     $failed = hub_i18n_translate_google(

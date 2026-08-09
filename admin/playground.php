@@ -73,7 +73,7 @@ function hub_playground_api_url(string $mode): string
 
 function hub_playground_local_api_url(string $mode): string
 {
-    return 'http://127.0.0.1' . hub_playground_base_path() . '/api.php?mode=' . rawurlencode($mode);
+    return hub_local_gateway_url(hub_playground_base_path(), $mode);
 }
 
 function hub_playground_edge_tts_presets(): array

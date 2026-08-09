@@ -140,6 +140,45 @@ function hub_json_encode(mixed $value, int $flags = 0): string|false
     return json_encode($value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | $flags);
 }
 
+/**
+ * 內部展示頁只可呼叫同一台主機的 Gateway。基底路徑雖來自 Web server，
+ * 仍在組成 URL 前拒絕 query、fragment、控制字元與 traversal，避免它成為 SSRF 轉送器。
+ */
+function hub_local_gateway_url(string $basePath, string $mode): string
+{
+    $mode = trim($mode);
+    if (preg_match('/\A[a-z0-9_]{1,80}\z/D', $mode) !== 1) {
+        throw new InvalidArgumentException('Gateway mode is invalid.');
+    }
+
+    $basePath = str_replace('\\', '/', trim($basePath));
+    if (
+        ($basePath !== '' && !str_starts_with($basePath, '/'))
+        || preg_match('/[\x00-\x1F\x7F?#]/', $basePath) === 1
+        || preg_match('#(?:^|/)\.{1,2}(?:/|$)#', $basePath) === 1
+    ) {
+        throw new InvalidArgumentException('Gateway base path is invalid.');
+    }
+    $basePath = rtrim($basePath, '/');
+    $url = 'http://127.0.0.1' . $basePath . '/api.php?mode=' . rawurlencode($mode);
+    $parts = parse_url($url);
+    parse_str((string)($parts['query'] ?? ''), $query);
+
+    if (
+        $parts === false
+        || ($parts['scheme'] ?? null) !== 'http'
+        || ($parts['host'] ?? null) !== '127.0.0.1'
+        || isset($parts['port'], $parts['user'], $parts['pass'], $parts['fragment'])
+        || !is_array($query)
+        || $query !== ['mode' => $mode]
+        || !str_ends_with((string)($parts['path'] ?? ''), '/api.php')
+    ) {
+        throw new InvalidArgumentException('Gateway loopback URL is invalid.');
+    }
+
+    return $url;
+}
+
 function hub_now(): string
 {
     return date('Y-m-d H:i:s');

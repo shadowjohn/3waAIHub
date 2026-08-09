@@ -182,6 +182,22 @@ function hub_cluster_station_request_base_url(array $station): string
     return hub_cluster_validate_station_base_url($internal !== '' ? $internal : (string)($station['public_base_url'] ?? ''));
 }
 
+/**
+ * 配對請求只接受前面已驗證的 cluster_pair.php endpoint，並保留原始 endpoint 路徑。
+ */
+function hub_cluster_pairing_request_url(array $parts): string
+{
+    $requestUrl = strtolower((string)($parts['scheme'] ?? '')) . '://' . (string)($parts['host'] ?? '')
+        . (isset($parts['port']) ? ':' . (int)$parts['port'] : '') . (string)($parts['path'] ?? '');
+    $validated = hub_cluster_validate_station_base_url($requestUrl);
+    $requestUrl = rtrim($validated, '/');
+    if (!str_ends_with($requestUrl, '/cluster_pair.php')) {
+        throw new InvalidArgumentException('pairing failed');
+    }
+
+    return $requestUrl;
+}
+
 function hub_cluster_create_pair_invitation(PDO $db): array
 {
     if (hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_ENABLED') !== '1') {
@@ -226,10 +242,8 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
 
     $routerName = trim(hub_site_title($db));
     $routerName = function_exists('mb_substr') ? mb_substr($routerName, 0, 120, 'UTF-8') : substr($routerName, 0, 120);
-    $requestUrl = strtolower((string)$parts['scheme']) . '://' . (string)$parts['host']
-        . (isset($parts['port']) ? ':' . (int)$parts['port'] : '') . (string)$parts['path'];
     try {
-        hub_cluster_validate_station_base_url($requestUrl);
+        $requestUrl = hub_cluster_pairing_request_url($parts);
     } catch (Throwable) {
         throw new InvalidArgumentException('pairing failed');
     }
@@ -259,6 +273,8 @@ function hub_cluster_import_pairing_link(PDO $db, string $pairingLink, ?callable
             CURLOPT_HTTPHEADER => array_map(static fn (string $name, string $value): string => $name . ': ' . $value, array_keys($request['headers']), $request['headers']),
             CURLOPT_CONNECTTIMEOUT => 3,
             CURLOPT_TIMEOUT => 10,
+            CURLOPT_FOLLOWLOCATION => false,
+            CURLOPT_MAXREDIRS => 0,
         ])) {
             curl_close($handle);
             throw new RuntimeException('pairing failed');

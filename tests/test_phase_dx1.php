@@ -80,6 +80,14 @@ hub_test('PhaseDX-1 playground contract is present and renders', function (): vo
             hub_playground_local_api_url('hello') === 'http://127.0.0.1/3waAIHub/api.php?mode=hello',
             'playground server-side execution must use local loopback gateway URL'
         );
+        hub_test_assert(
+            hub_test_throws(static fn (): string => hub_playground_local_api_url('hello&url=https://example.test')),
+            'playground loopback URL must reject an injected mode'
+        );
+        hub_test_assert(
+            hub_test_throws(static fn (): string => hub_local_gateway_url('/3waAIHub?target=example.test', 'hello')),
+            'playground loopback URL must reject a query-bearing base path'
+        );
     }
     hub_test_assert(
         str_contains($page, '$url = hub_playground_local_api_url($mode);'),

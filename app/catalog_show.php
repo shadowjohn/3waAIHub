@@ -200,5 +200,5 @@ function hub_catalog_show_local_api_url(string $mode): string
     $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
     $base = preg_replace('#/catalog_show$#', '', $dir) ?: '';
 
-    return 'http://127.0.0.1' . $base . '/api.php?mode=' . rawurlencode($mode);
+    return hub_local_gateway_url($base, $mode);
 }
