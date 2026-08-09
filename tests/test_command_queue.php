@@ -29,6 +29,19 @@ hub_test('resident reconciliation uses a prepared read before building runtime c
     hub_test_assert(str_contains($body, '$statement->execute();'), 'resident reconciliation prepared statement must execute before rows are read');
 });
 
+hub_test('service command contract derives runtime fields from the declared Pack', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'hello', ['idempotent' => true, 'provision_runner' => false])['service'];
+    $contract = hub_service_command_contract($db, $service);
+
+    hub_test_assert($contract['compose_file'] === hub_pack_compose_file($db, (string)$service['service_key']), 'runtime contract must derive the managed compose path');
+    hub_test_assert($contract['compose_project'] === hub_compose_project_for_instance(hub_get_pack('hello')['manifest'], (string)$service['service_key']), 'runtime contract must derive the Pack compose project');
+
+    $tampered = $service;
+    $tampered['compose_file'] = 'C:/untrusted/docker-compose.yml';
+    hub_test_assert(hub_test_throws(static fn (): array => hub_service_command_contract($db, $tampered)), 'runtime contract must reject a database compose path that is not declared by the Pack');
+});
+
 hub_test('command queue recovers stale running jobs without touching active long jobs', function (): void {
     $db = hub_test_reset_db();
     $now = '2030-01-01 12:00:00';

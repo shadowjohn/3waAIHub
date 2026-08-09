@@ -214,6 +214,57 @@ function hub_output_tail(string $text, int $bytes = 12000): string
     return strlen($text) > $bytes ? substr($text, -$bytes) : $text;
 }
 
+/**
+ * 將資料庫 service row 收斂成 Pack 宣告的 runtime contract。
+ * Docker/WSL 的 compose 檔與 project 不接受資料表任意值，避免設定遭竄改後變成程序引數。
+ */
+function hub_service_command_contract(PDO $db, array $service): array
+{
+    $serviceKey = (string)($service['service_key'] ?? '');
+    $packId = (string)($service['pack_id'] ?? '');
+    $port = filter_var($service['local_port'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 65535]]);
+    $environment = (string)($service['environment'] ?? 'production');
+    if (
+        preg_match('/^[a-z0-9][a-z0-9_-]{0,127}$/', $serviceKey) !== 1
+        || preg_match('/^[a-z0-9][a-z0-9_-]{0,127}$/', $packId) !== 1
+        || $port === false
+        || !in_array($environment, ['production', 'development'], true)
+    ) {
+        throw new RuntimeException('Invalid service runtime contract.');
+    }
+
+    $pack = hub_get_pack($packId);
+    $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : null;
+    if (!is_array($manifest) || ($manifest['id'] ?? null) !== $packId) {
+        throw new RuntimeException('Service Pack runtime contract is unavailable.');
+    }
+
+    $expectedComposeFile = hub_pack_compose_file($db, $serviceKey);
+    $expectedComposeProject = hub_compose_project_for_instance($manifest, $serviceKey);
+    if (
+        !hash_equals($expectedComposeFile, (string)($service['compose_file'] ?? ''))
+        || !hash_equals($expectedComposeProject, (string)($service['compose_project'] ?? ''))
+    ) {
+        throw new RuntimeException('Service runtime contract does not match the declared Pack.');
+    }
+
+    $packVersion = (string)($manifest['version'] ?? '');
+    if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/', $packVersion) !== 1) {
+        throw new RuntimeException('Service Pack version is invalid.');
+    }
+
+    return [
+        'pack_id' => $packId,
+        'pack_version' => $packVersion,
+        'service_key' => $serviceKey,
+        'compose_file' => $expectedComposeFile,
+        'compose_project' => $expectedComposeProject,
+        'local_port' => $port,
+        'hot_reload' => (int)($service['hot_reload'] ?? 0) === 1 ? 1 : 0,
+        'environment' => $environment,
+    ];
+}
+
 function hub_compose_command(array $service, array $args): array
 {
     $settingsPath = hub_runtime_settings_path(dirname(hub_path((string)$service['compose_file'])));
@@ -756,6 +807,7 @@ function hub_service_image_exists(array $service): bool
 
 function hub_run_service_compose_command(PDO $db, ?array $job, array $service, array $args, int $timeoutSeconds, string $stage, int $minProgress, int $maxProgress): array
 {
+    $service = hub_service_command_contract($db, $service);
     $usesWsl = hub_service_uses_wsl_runtime($service);
     $command = $usesWsl ? hub_wsl_service_compose_command($service, $args) : hub_compose_command($service, $args);
     return hub_run_service_command($db, $job, $command, $timeoutSeconds, hub_docker_command_environment(), $stage, $minProgress, $maxProgress, !$usesWsl);
