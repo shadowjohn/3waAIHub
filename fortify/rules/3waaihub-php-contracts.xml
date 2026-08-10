@@ -23,6 +23,17 @@ No category-wide suppression or rule disablement is included.
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
             <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>DB749A7C-5F87-407D-81B3-1305AA47B61D</RuleID>
+                <TaintFlags>+VALIDATED_CROSS_SITE_SCRIPTING_REFLECTED,+VALIDATED_CROSS_SITE_SCRIPTING_PERSISTENT,+VALIDATED_CROSS_SITE_SCRIPTING_POOR_VALIDATION</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_json_encode</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
                 <RuleID>081666D0-0FB6-49D7-BB0D-F894A813C048</RuleID>
                 <TaintFlags>+VALIDATED_PATH_MANIPULATION</TaintFlags>
                 <FunctionIdentifier>

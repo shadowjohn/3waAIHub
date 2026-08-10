@@ -135,6 +135,10 @@ function hub_h(?string $value): string
     return htmlspecialchars($value ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+/**
+ * JSON 回應與 application/json script block 共用的編碼邊界。
+ * 即使呼叫端要求保留 Unicode 或 slash，HTML delimiter 仍一律轉成 Unicode escape。
+ */
 function hub_json_encode(mixed $value, int $flags = 0): string|false
 {
     return json_encode($value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | $flags);

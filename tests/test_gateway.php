@@ -77,6 +77,18 @@ hub_test('gateway response headers use a canonical injection-safe allowlist', fu
     ], 'gateway response headers must reject unapproved or line-breaking values');
 });
 
+hub_test('Hub JSON encoder keeps HTML delimiters escaped for JSON and script contexts', function (): void {
+    $payload = ['message' => '</script><img src=x onerror="alert(1)">&\''];
+    $encoded = hub_json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+    hub_test_assert(is_string($encoded), 'Hub JSON encoder must encode a valid payload');
+    foreach (['<', '>', '&', "'", '</script>'] as $unsafe) {
+        hub_test_assert(!str_contains($encoded, $unsafe), 'Hub JSON encoder leaked HTML delimiter ' . $unsafe);
+    }
+    hub_test_assert(str_contains($encoded, '\\u003C'), 'Hub JSON encoder must hex-escape angle brackets');
+    hub_test_assert(json_decode($encoded, true) === $payload, 'Hub JSON encoder must preserve JSON payload semantics');
+});
+
 hub_test('gateway proxy content types cannot turn a Pack response into same-origin HTML', function (): void {
     hub_test_assert(hub_gateway_safe_content_type('application/json; charset=UTF-8') === 'application/json; charset=utf-8', 'JSON response must keep an explicit safe charset');
     hub_test_assert(hub_gateway_safe_content_type('image/png') === 'image/png', 'image response must remain available');
