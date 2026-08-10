@@ -405,6 +405,10 @@ function hub_promote_gpt_sovits_reference(PDO $db, array $task, array $profile):
     ) {
         throw new RuntimeException('voice_profile_reference_invalid');
     }
+    $rawPath = hub_voice_profile_safe_host_path($rawPath);
+    if ($rawPath === null) {
+        throw new RuntimeException('voice_profile_reference_invalid');
+    }
     $snapshot = hub_voice_profile_verified_upload($rawPath, $rawSha256);
     if ($snapshot === null) {
         throw new RuntimeException('voice_profile_reference_invalid');

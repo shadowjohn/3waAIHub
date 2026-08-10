@@ -87,9 +87,14 @@ hub_test('Windows voice profile storage accepts normalized managed paths without
 
     $root = hub_voice_profile_storage_dir();
     $path = $root . '/windows_voice_profile_path.wav';
+    $outside = tempnam(sys_get_temp_dir(), '3waaihub_voice_outside_');
+    if ($outside === false) {
+        throw new RuntimeException('Cannot create unmanaged voice profile fixture.');
+    }
     file_put_contents($path, 'RIFFmanaged-voice-profile');
     try {
         hub_test_assert(hub_voice_profile_safe_host_path($path) !== null, 'mixed Windows separators must retain a managed voice profile path');
+        hub_test_assert(hub_voice_profile_safe_host_path($outside) === null, 'voice profile helper accepted a path outside managed storage');
         $snapshotDir = hub_voice_profile_snapshot_dir();
         hub_test_assert(
             hub_storage_paths_equal($snapshotDir, $root . DIRECTORY_SEPARATOR . '.snapshots'),
@@ -97,5 +102,13 @@ hub_test('Windows voice profile storage accepts normalized managed paths without
         );
     } finally {
         @unlink($path);
+        @unlink($outside);
     }
+});
+
+hub_test('GPT-SoVITS promotion rebinds stored audio paths through the managed voice profile boundary', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/app/voice_profiles.php');
+
+    hub_test_assert(str_contains($source, '$rawPath = hub_voice_profile_safe_host_path($rawPath);'), 'GPT-SoVITS promotion must canonicalize its stored audio path before sensitive I/O');
+    hub_test_assert(str_contains($source, "$raw = @fopen(\$rawPath, 'r+b');"), 'GPT-SoVITS cleanup must retain the canonicalized path for its descriptor check');
 });
