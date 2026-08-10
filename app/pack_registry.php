@@ -1590,6 +1590,55 @@ function hub_pack_provision_internal_runner_image(array $pack, ?callable $comman
     hub_pack_provision_container_runner_image($pack, $commandRunner);
 }
 
+function hub_pack_storage_mounts_contract(mixed $mounts): ?array
+{
+    if (!is_array($mounts) || !array_is_list($mounts) || count($mounts) > 16) {
+        return null;
+    }
+
+    $normalized = [];
+    $seen = [];
+    foreach ($mounts as $mount) {
+        if (!is_array($mount)
+            || array_diff(array_keys($mount), ['type', 'host_subdir', 'container_path', 'target_service', 'read_only']) !== []) {
+            return null;
+        }
+        $type = $mount['type'] ?? null;
+        $hostSubdir = $mount['host_subdir'] ?? null;
+        $containerPath = $mount['container_path'] ?? null;
+        $targetService = $mount['target_service'] ?? null;
+        $readOnly = $mount['read_only'] ?? false;
+        if (!is_string($type)
+            || !in_array($type, ['models', 'cache', 'uploads', 'results', 'service', 'service_data'], true)
+            || !is_string($hostSubdir)
+            || strlen($hostSubdir) > 240
+            || ($hostSubdir !== '' && preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*\z/D', $hostSubdir) !== 1)
+            || !is_string($containerPath)
+            || !is_bool($readOnly)
+            || ($targetService !== null && (!is_string($targetService) || preg_match('/\A[a-z][a-z0-9_-]{0,63}\z/D', $targetService) !== 1))) {
+            return null;
+        }
+        try {
+            $containerPath = hub_container_path($containerPath);
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+        $identity = $type . ':' . $hostSubdir;
+        if (isset($seen[$identity])) {
+            return null;
+        }
+        $seen[$identity] = true;
+        $normalized[] = [
+            'type' => $type,
+            'host_subdir' => $hostSubdir,
+            'container_path' => $containerPath,
+            'read_only' => $readOnly,
+        ] + ($targetService === null ? [] : ['target_service' => $targetService]);
+    }
+
+    return $normalized;
+}
+
 function hub_validate_pack_manifest(array $manifest, string $packDir): array
 {
     $errors = [];
@@ -1648,6 +1697,11 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     $hardware = is_array($manifest['hardware'] ?? null) ? $manifest['hardware'] : [];
     if (!is_bool($hardware['gpu_required'] ?? null)) {
         $errors[] = 'hardware.gpu_required must be boolean.';
+    }
+
+    $storage = is_array($manifest['storage'] ?? null) ? $manifest['storage'] : [];
+    if (array_keys($storage) !== ['mounts'] || hub_pack_storage_mounts_contract($storage['mounts'] ?? null) === null) {
+        $errors[] = 'storage.mounts must use the declared safe mount contract.';
     }
 
     $preflight = is_array($manifest['preflight'] ?? null) ? $manifest['preflight'] : [];
@@ -2407,6 +2461,11 @@ function hub_pack_image_tag(string $serviceKey, string $packVersion): string
 
 function hub_ensure_pack_storage_dirs(array $manifest, string $serviceKey, array $storage, ?string $serviceDir = null): void
 {
+    $serviceKey = hub_pack_runtime_service_key($serviceKey);
+    $mounts = hub_pack_storage_mounts_contract($manifest['storage']['mounts'] ?? null);
+    if ($mounts === null) {
+        throw new RuntimeException('Pack storage mount contract is invalid.');
+    }
     $prefix = [
         'models' => $storage['AIHUB_MODELS_DIR'],
         'cache' => $storage['AIHUB_CACHE_DIR'],
@@ -2415,20 +2474,80 @@ function hub_ensure_pack_storage_dirs(array $manifest, string $serviceKey, array
         'service' => $serviceDir ?? HUB_SERVICE_DIR . '/' . $serviceKey,
         'service_data' => $serviceDir ?? HUB_SERVICE_DIR . '/' . $serviceKey,
     ];
-    foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
-        if (!is_array($mount) || empty($prefix[$mount['type'] ?? ''])) {
-            continue;
+    foreach ($mounts as $mount) {
+        $root = $prefix[$mount['type']];
+        if (!is_string($root) || $root === '') {
+            throw new RuntimeException('Pack storage root is unavailable.');
         }
-        $hostSubdir = trim((string)($mount['host_subdir'] ?? ''), '/');
-        $dir = $prefix[(string)$mount['type']] . ($hostSubdir !== '' ? '/' . $hostSubdir : '');
-        if (!is_dir($dir) && !mkdir($dir, 0775, true) && !is_dir($dir)) {
-            throw new RuntimeException('Cannot create pack storage directory: ' . $dir);
-        }
+        hub_pack_storage_directory($root, $mount['host_subdir']);
     }
+}
+
+function hub_pack_storage_directory(string $root, string $hostSubdir): string
+{
+    $root = hub_pack_storage_root($root);
+    if (!is_dir($root) && !mkdir($root, 0775, true) && !is_dir($root)) {
+        throw new RuntimeException('Cannot create pack storage root.');
+    }
+    if (is_link($root)) {
+        throw new RuntimeException('Pack storage root must not be a symlink.');
+    }
+    $resolvedRoot = realpath($root);
+    if ($resolvedRoot === false || !is_dir($resolvedRoot)) {
+        throw new RuntimeException('Cannot resolve pack storage root.');
+    }
+
+    $directory = $resolvedRoot;
+    foreach ($hostSubdir === '' ? [] : explode('/', $hostSubdir) as $part) {
+        $candidate = hub_pack_storage_child_path($directory, $part);
+        if (is_link($candidate)) {
+            throw new RuntimeException('Pack storage directory must not use symlinks.');
+        }
+        if (!is_dir($candidate) && !mkdir($candidate, 0775) && !is_dir($candidate)) {
+            throw new RuntimeException('Cannot create pack storage directory.');
+        }
+        $resolved = realpath($candidate);
+        if ($resolved === false || is_link($candidate) || !hub_storage_path_is_within($resolved, $resolvedRoot)) {
+            throw new RuntimeException('Pack storage directory escapes its root.');
+        }
+        $directory = $resolved;
+    }
+
+    return $directory;
+}
+
+function hub_pack_storage_root(string $root): string
+{
+    if (!hub_is_safe_absolute_path($root)) {
+        throw new RuntimeException('Pack storage root is unsafe.');
+    }
+
+    $canonical = hub_storage_canonical_comparison_path($root);
+    if ($canonical === null) {
+        throw new RuntimeException('Cannot canonicalize pack storage root.');
+    }
+
+    return $canonical;
+}
+
+function hub_pack_storage_child_path(string $parent, string $part): string
+{
+    if (!is_dir($parent)
+        || is_link($parent)
+        || preg_match('/\A[A-Za-z0-9][A-Za-z0-9._-]*\z/D', $part) !== 1) {
+        throw new RuntimeException('Pack storage child path is invalid.');
+    }
+
+    return rtrim(hub_normalize_host_path($parent), '/') . '/' . $part;
 }
 
 function hub_generate_pack_storage_volumes(array $manifest, string $serviceKey): array
 {
+    $serviceKey = hub_pack_runtime_service_key($serviceKey);
+    $mounts = hub_pack_storage_mounts_contract($manifest['storage']['mounts'] ?? null);
+    if ($mounts === null) {
+        throw new RuntimeException('Pack storage mount contract is invalid.');
+    }
     $prefix = [
         'models' => '${AIHUB_MODELS_DIR}',
         'cache' => '${AIHUB_CACHE_DIR}',
@@ -2438,14 +2557,11 @@ function hub_generate_pack_storage_volumes(array $manifest, string $serviceKey):
         'service_data' => '${SERVICE_DATA_DIR}',
     ];
     $volumes = [];
-    foreach (($manifest['storage']['mounts'] ?? []) as $mount) {
-        if (!is_array($mount) || empty($prefix[$mount['type'] ?? '']) || empty($mount['container_path'])) {
-            continue;
-        }
-        $hostSubdir = trim((string)($mount['host_subdir'] ?? $serviceKey), '/');
-        $host = $prefix[(string)$mount['type']] . ($hostSubdir !== '' ? '/' . $hostSubdir : '');
+    foreach ($mounts as $mount) {
+        $hostSubdir = $mount['host_subdir'];
+        $host = $prefix[$mount['type']] . ($hostSubdir !== '' ? '/' . $hostSubdir : '');
         $mode = !empty($mount['read_only']) ? ':ro' : '';
-        $volumes[] = $host . ':' . (string)$mount['container_path'] . $mode;
+        $volumes[] = $host . ':' . $mount['container_path'] . $mode;
     }
 
     return $volumes;

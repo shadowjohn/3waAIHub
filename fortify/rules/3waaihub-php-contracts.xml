@@ -187,6 +187,28 @@ No category-wide suppression or rule disablement is included.
                 </FunctionIdentifier>
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>7270AD70-1DFF-4DDB-8AE6-B262481B80B9</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION,-WEB,-XSS,-DATABASE</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_pack_storage_root</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>AB76D349-33A5-4C3D-98B9-0EC84840C4D7</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION,-WEB,-XSS,-DATABASE</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_pack_storage_child_path</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
         </RuleDefinitions>
     </Rules>
 </RulePack>

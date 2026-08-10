@@ -258,3 +258,26 @@ hub_test('pack runtime directories only accept one safe service-key component', 
         );
     }
 });
+
+hub_test('pack storage mount contract rejects traversal and executable container paths', function (): void {
+    $valid = hub_pack_storage_mounts_contract([[
+        'type' => 'models',
+        'host_subdir' => 'yolo/registry',
+        'container_path' => '/models/registry',
+        'read_only' => true,
+    ]]);
+    hub_test_assert($valid === [[
+        'type' => 'models',
+        'host_subdir' => 'yolo/registry',
+        'container_path' => '/models/registry',
+        'read_only' => true,
+    ]], 'valid pack storage mount was not normalized');
+    foreach ([
+        ['type' => 'models', 'host_subdir' => '../escape', 'container_path' => '/models/escape', 'read_only' => true],
+        ['type' => 'models', 'host_subdir' => 'safe/../escape', 'container_path' => '/models/escape', 'read_only' => true],
+        ['type' => 'models', 'host_subdir' => 'safe', 'container_path' => '/models/../escape', 'read_only' => true],
+        ['type' => 'unknown', 'host_subdir' => 'safe', 'container_path' => '/models/safe', 'read_only' => true],
+    ] as $invalid) {
+        hub_test_assert(hub_pack_storage_mounts_contract([$invalid]) === null, 'unsafe storage mount was accepted');
+    }
+});
