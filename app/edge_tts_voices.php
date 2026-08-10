@@ -51,11 +51,19 @@ function hub_edge_tts_voice_catalog(): array
 
 function hub_edge_tts_demo_root(string $serviceKey): string
 {
-    if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1) {
+    if (preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/D', $serviceKey) !== 1) {
         hub_edge_tts_demo_failure();
     }
 
-    return HUB_DATA_DIR . '/results/edge-tts-demos/' . $serviceKey . '/current';
+    $base = HUB_DATA_DIR . '/results/edge-tts-demos';
+    $canonicalBase = hub_storage_canonical_comparison_path($base);
+    if ($canonicalBase === null
+        || !hub_storage_path_is_within($canonicalBase, HUB_DATA_DIR . '/results')
+        || hub_storage_paths_equal($canonicalBase, HUB_DATA_DIR . '/results')) {
+        hub_edge_tts_demo_failure();
+    }
+
+    return rtrim($canonicalBase, '/') . '/' . $serviceKey . '/current';
 }
 
 function hub_edge_tts_demo_request_has_duplicate_voice(string $requestUri): bool
