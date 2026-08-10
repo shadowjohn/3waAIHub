@@ -19,9 +19,10 @@ hub_test('Taiwan address pack keeps trusted upstream and quality contracts expli
     }
 
     $router = (string)file_get_contents(HUB_ROOT . '/packs/taiwan-address/service/router.php');
-    foreach (['TWADDR_UPSTREAM_URL', 'TWADDR_OPERATIONS', 'operation_not_allowed', 'getAddress_XY', 'searchOpenData'] as $needle) {
+    foreach (['TWADDR_UPSTREAM_URL', 'TWADDR_OPERATIONS', 'operation_not_allowed', 'getAddress_XY', 'searchOpenData', 'twaddr_request_url'] as $needle) {
         hub_test_assert(str_contains($router, $needle), 'Taiwan address router missing ' . $needle);
     }
+    hub_test_assert(str_contains($router, "twaddr_request_url(\$upstream, twaddr_params(\$input, \$operation))"), 'Taiwan address router must construct requests through the validated upstream URL boundary');
     hub_test_assert(!str_contains($router, "['url']"), 'Taiwan address router must not accept caller-controlled upstream URL');
 
     $acceptance = HUB_ROOT . '/packs/taiwan-address/acceptance/gateway_acceptance.php';

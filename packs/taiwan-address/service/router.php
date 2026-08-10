@@ -37,7 +37,34 @@ function twaddr_upstream_url(): ?string
         return null;
     }
 
-    return $url;
+    return twaddr_request_url($url, []);
+}
+
+function twaddr_request_url(string $baseUrl, array $params): ?string
+{
+    $parts = parse_url($baseUrl);
+    if ($parts === false || !is_array($parts)
+        || !in_array(strtolower((string)($parts['scheme'] ?? '')), ['http', 'https'], true)
+        || !isset($parts['host']) || isset($parts['user'], $parts['pass'], $parts['query'], $parts['fragment'])) {
+        return null;
+    }
+
+    $host = (string)$parts['host'];
+    if ($host === '' || preg_match('/[\x00-\x20\/\\?#@]/', $host) === 1) {
+        return null;
+    }
+    $path = (string)($parts['path'] ?? '');
+    if ($path !== '' && (!str_starts_with($path, '/') || str_contains($path, '..'))) {
+        return null;
+    }
+    $port = isset($parts['port']) ? (int)$parts['port'] : 0;
+    if ($port < 0 || $port > 65535) {
+        return null;
+    }
+
+    $url = strtolower((string)$parts['scheme']) . '://' . $host . ($port > 0 ? ':' . $port : '') . $path;
+    $query = http_build_query($params, '', '&', PHP_QUERY_RFC3986);
+    return $query === '' ? $url : $url . '?' . $query;
 }
 
 function twaddr_input(): array
@@ -127,7 +154,7 @@ if ($upstream === null) {
 }
 $timeout = min(30, max(1, (int)(getenv('TWADDR_TIMEOUT_SEC') ?: 10)));
 if ($path === '/health') {
-    [$status, $payload] = twaddr_fetch($upstream . '?mode=health', $timeout);
+    [$status, $payload] = twaddr_fetch(twaddr_request_url($upstream, ['mode' => 'health']) ?? $upstream, $timeout);
     twaddr_json($status, $payload);
 }
 if ($path !== '/lookup') {
@@ -139,6 +166,5 @@ if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'POST') {
 
 $input = twaddr_input();
 $operation = (string)($input['operation'] ?? '');
-$query = http_build_query(twaddr_params($input, $operation), '', '&', PHP_QUERY_RFC3986);
-[$status, $payload] = twaddr_fetch($upstream . '?' . $query, $timeout);
+[$status, $payload] = twaddr_fetch(twaddr_request_url($upstream, twaddr_params($input, $operation)) ?? $upstream, $timeout);
 twaddr_json($status, $payload);

@@ -166,6 +166,17 @@ No category-wide suppression or rule disablement is included.
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
             <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>53A65F94-066B-4CF1-BB2A-4C9B762A481F</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION,-WEB,-XSS,-DATABASE</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>twaddr_request_url</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
                 <RuleID>0B86FCB2-0579-4CBF-8C9C-2F79FA84902A</RuleID>
                 <TaintFlags>+VALIDATED_PATH_MANIPULATION</TaintFlags>
                 <FunctionIdentifier>
