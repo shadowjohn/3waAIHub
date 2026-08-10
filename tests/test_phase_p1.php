@@ -712,6 +712,25 @@ hub_test('PhaseP-1 removed service runtime cleanup retries only after registrati
     );
 });
 
+hub_test('PhaseP-1 removed-service cleanup uses canonical generated files only', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+
+    $runtimeDir = hub_pack_runtime_dir($db, (string)$service['service_key']);
+    $resolvedRuntimeDir = realpath($runtimeDir);
+    $files = hub_service_generated_runtime_cleanup_files($db, (string)$service['service_key']);
+
+    hub_test_assert($resolvedRuntimeDir !== false, 'service runtime must resolve before cleanup');
+    hub_test_assert(is_array($files) && count($files) === 2, 'cleanup must include the two generated runtime files');
+    foreach ($files as $path) {
+        hub_test_assert(is_file($path) && !is_link($path), 'cleanup must contain ordinary generated files only');
+        hub_test_assert(realpath($path) === $path, 'cleanup must use canonical file paths');
+        hub_test_assert(hub_storage_paths_equal(dirname($path), $resolvedRuntimeDir), 'cleanup file must remain in the current service runtime');
+    }
+    hub_test_assert(hub_service_generated_runtime_cleanup_files($db, '../escape') === null, 'cleanup must reject non-runtime service keys');
+});
+
 hub_test('PhaseP-1 playground TTS artifact migration preserves rows and owner references', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');

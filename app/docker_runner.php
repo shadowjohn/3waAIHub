@@ -1152,11 +1152,13 @@ function hub_service_generated_runtime_files(PDO $db, array $service): ?array
 
 function hub_service_generated_runtime_cleanup_files(PDO $db, string $serviceKey): ?array
 {
-    if (preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/D', $serviceKey) !== 1) {
+    try {
+        $serviceKey = hub_pack_runtime_service_key($serviceKey);
+        $runtimeDir = hub_pack_runtime_dir($db, $serviceKey);
+    } catch (InvalidArgumentException|RuntimeException) {
         return null;
     }
 
-    $runtimeDir = hub_pack_runtime_dir($db, $serviceKey);
     $runtimeBase = hub_pack_runtime_base_dir($db);
     $realRuntimeBase = realpath($runtimeBase);
     $realRuntimeDir = realpath($runtimeDir);
@@ -1181,6 +1183,7 @@ function hub_service_generated_runtime_cleanup_files(PDO $db, string $serviceKey
     if (is_link($legacyPath) || file_exists($legacyPath)) {
         $files[] = $legacyPath;
     }
+    $verifiedFiles = [];
     foreach ($files as $path) {
         clearstatcache(true, $path);
         if (!file_exists($path)) {
@@ -1195,9 +1198,11 @@ function hub_service_generated_runtime_cleanup_files(PDO $db, string $serviceKey
         ) {
             return null;
         }
+        // 僅將實體解析後仍位於本 service runtime 的普通檔案交給 cleanup。
+        $verifiedFiles[] = $realPath;
     }
 
-    return $files;
+    return $verifiedFiles;
 }
 
 function hub_service_removal_snapshot_matches(array $job, array $service): bool
