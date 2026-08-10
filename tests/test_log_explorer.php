@@ -51,6 +51,9 @@ hub_test('legacy API log redirect emits only a bounded canonical relative URL', 
     hub_test_assert(str_starts_with($url, 'log_explorer.php?tab=api&'), 'legacy redirect must stay on the canonical API log tab');
     hub_test_assert(str_contains($url, 'client_ip_b64=MTkyLjE2OC4xLjEx') && str_contains($url, 'mode=hello'), 'legacy redirect must retain validated API filters');
     hub_test_assert(!str_contains($url, "\r") && !str_contains($url, "\n") && !str_contains($url, 'unexpected'), 'legacy redirect must not reflect unsafe or unknown header input');
+
+    $page = (string)file_get_contents(HUB_ROOT . '/admin/log_explorer.php');
+    hub_test_assert(str_contains($page, 'hub_redirect(hub_admin_record_log_explorer_url($query))'), 'Record Center POST redirect must use the canonical relative URL helper');
 });
 
 hub_test('api access query supports b64 client IP mode error and keyword filters', function (): void {

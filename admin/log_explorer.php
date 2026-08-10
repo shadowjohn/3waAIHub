@@ -27,7 +27,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             }
         }
     }
-    hub_redirect('log_explorer.php?' . http_build_query($query));
+    hub_redirect(hub_admin_record_log_explorer_url($query));
 }
 
 $activeTab = hub_admin_record_tab($_GET['tab'] ?? 'runs');
