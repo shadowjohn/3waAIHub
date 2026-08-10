@@ -96,6 +96,18 @@ function hub_valid_argv(array $command): bool
     return true;
 }
 
+/**
+ * proc_open 的唯一 argv 邊界：只回傳已驗證的 list argv，禁止呼叫端退回 shell 字串。
+ */
+function hub_safe_argv(array $command): array
+{
+    if (!hub_valid_argv($command)) {
+        throw new InvalidArgumentException('Invalid command.');
+    }
+
+    return $command;
+}
+
 function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = []): array
 {
     hub_cli_only();
@@ -109,7 +121,9 @@ function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = 
  */
 function hub_run_argv_command(array $command, int $timeoutSeconds = 60, array $env = []): array
 {
-    if (!hub_valid_argv($command)) {
+    try {
+        $command = hub_safe_argv($command);
+    } catch (InvalidArgumentException) {
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
     }
 
@@ -176,7 +190,9 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
 {
     hub_cli_only();
 
-    if (!hub_valid_argv($command)) {
+    try {
+        $command = hub_safe_argv($command);
+    } catch (InvalidArgumentException) {
         file_put_contents($stderrPath, "Invalid command.\n", FILE_APPEND);
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
     }

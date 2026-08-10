@@ -23,6 +23,8 @@ hub_test('command runner validates argv and Ollama model references before proce
     hub_test_assert(!hub_valid_argv(['docker', "system\r\ndf"]), 'control characters must be rejected from argv arguments');
     hub_test_assert(!hub_valid_argv(['cmd.exe', '/c', 'whoami']), 'unapproved executable must be rejected before process launch');
     hub_test_assert(!hub_valid_argv(['docker' => 'system']), 'non-list argv command must be rejected');
+    hub_test_assert(hub_safe_argv(['docker', 'system', 'df']) === ['docker', 'system', 'df'], 'safe argv boundary must preserve validated argv');
+    hub_test_assert(hub_test_throws(static fn () => hub_safe_argv(['cmd.exe', '/c', 'whoami'])), 'safe argv boundary must reject unapproved commands');
     hub_test_assert(hub_ollama_model_reference('translategemma:12b-it-q4_K_M') === 'translategemma:12b-it-q4_K_M', 'valid Ollama model reference changed');
     hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_reference('--config=/tmp/evil')), 'Ollama option prefix must be rejected');
     hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_reference('model name')), 'Ollama whitespace must be rejected');
