@@ -194,6 +194,11 @@ hub_test('task worker output uses only its declared task and status contracts', 
     hub_test_assert(hub_task_worker_output_line(['id' => '<script>', 'task_type' => "pack_job\nforged"], ['status' => "failed\nforged"]) === 'task 0 invalid status=invalid', 'task worker must not emit malformed stored values');
 });
 
+hub_test('runtime settings migration output uses only its declared service result contracts', function (): void {
+    hub_test_assert(hub_runtime_settings_migration_output_line(['service_key' => 'hello-main', 'outcome' => 'rejected', 'reason' => 'runtime_settings_unsafe']) === 'service_key=hello-main outcome=rejected reason=runtime_settings_unsafe', 'runtime settings migration must retain valid output');
+    hub_test_assert(hub_runtime_settings_migration_output_line(['service_key' => '<script>', 'outcome' => "pending\nforged", 'reason' => 'leak']) === 'service_key=invalid outcome=invalid reason=invalid', 'runtime settings migration must not emit malformed stored values');
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
     $stmt = null;
     try {

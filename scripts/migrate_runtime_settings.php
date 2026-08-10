@@ -67,9 +67,7 @@ if ($json) {
         . ' rejected=' . $result['rejected']
         . PHP_EOL;
     foreach ($result['services'] as $service) {
-        echo 'service_key=' . $service['service_key'] . ' outcome=' . $service['outcome']
-            . (isset($service['reason']) ? ' reason=' . $service['reason'] : '')
-            . PHP_EOL;
+        echo hub_runtime_settings_migration_output_line($service) . PHP_EOL;
     }
 }
 

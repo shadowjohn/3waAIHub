@@ -6,7 +6,7 @@
     <Name><![CDATA[3waAIHub PHP dataflow contracts]]></Name>
     <Version>1.0</Version>
     <Description><![CDATA[
-Maps seven shared 3waAIHub contracts only after their runtime checks are covered by regression tests.
+Maps eight shared 3waAIHub contracts only after their runtime checks are covered by regression tests.
 No category-wide suppression or rule disablement is included.
 ]]></Description>
     <Rules version="26.2">
@@ -73,6 +73,17 @@ No category-wide suppression or rule disablement is included.
                     <NamespaceName><Pattern/></NamespaceName>
                     <ClassName><Pattern/></ClassName>
                     <FunctionName><Pattern>hub_task_worker_output_line</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>8B27C1D3-F2C2-4D39-BDD0-CC76AA3D79E0</RuleID>
+                <TaintFlags>+VALIDATED_CROSS_SITE_SCRIPTING_REFLECTED,+VALIDATED_CROSS_SITE_SCRIPTING_PERSISTENT,+VALIDATED_CROSS_SITE_SCRIPTING_POOR_VALIDATION</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_runtime_settings_migration_output_line</Pattern></FunctionName>
                     <ApplyTo implements="true" overrides="true" extends="true"/>
                 </FunctionIdentifier>
                 <OutArguments>return</OutArguments>

@@ -621,6 +621,27 @@ function hub_migrate_service_runtime_settings(PDO $db, bool $apply, ?string $ser
     return $result;
 }
 
+function hub_runtime_settings_migration_output_line(array $service): string
+{
+    $serviceKey = (string)($service['service_key'] ?? '');
+    $outcome = (string)($service['outcome'] ?? '');
+    $reason = (string)($service['reason'] ?? '');
+
+    // Migration CLI 結果會被自動化部署收集，僅輸出既有 service key 與固定結果碼。
+    if (preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/iD', $serviceKey) !== 1) {
+        $serviceKey = 'invalid';
+    }
+    if (!in_array($outcome, ['already_current', 'pending', 'migrated', 'rejected'], true)) {
+        $outcome = 'invalid';
+    }
+    if ($reason !== '' && $reason !== 'runtime_settings_unsafe') {
+        $reason = 'invalid';
+    }
+
+    return 'service_key=' . $serviceKey . ' outcome=' . $outcome
+        . ($reason !== '' ? ' reason=' . $reason : '');
+}
+
 function hub_write_service_compose(PDO $db, array $service): string
 {
     $pack = hub_get_pack((string)$service['pack_id']);
