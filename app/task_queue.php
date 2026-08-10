@@ -567,6 +567,26 @@ function hub_get_task(PDO $db, int $taskId): ?array
     return $task;
 }
 
+function hub_task_worker_output_line(array $task, ?array $latest): string
+{
+    $taskId = (int)($task['id'] ?? 0);
+    $taskType = (string)($task['task_type'] ?? '');
+    $status = (string)($latest['status'] ?? 'missing');
+
+    // Worker stdout 由排程器收集；只輸出 task queue 已定義的型別與狀態，避免毀損列寫入控制字元。
+    if ($taskId < 1) {
+        $taskId = 0;
+    }
+    if (!hub_is_valid_task_type($taskType)) {
+        $taskType = 'invalid';
+    }
+    if (!in_array($status, ['staging', 'queued', 'waiting_gpu', 'waiting_profile', 'running', 'success', 'succeeded', 'completed', 'failed', 'cancelled', 'canceled', 'timed_out', 'timeout', 'missing'], true)) {
+        $status = 'invalid';
+    }
+
+    return 'task ' . $taskId . ' ' . $taskType . ' status=' . $status;
+}
+
 function hub_promote_due_waiting_gpu_task(PDO $db): bool
 {
     if ($db->inTransaction()) {

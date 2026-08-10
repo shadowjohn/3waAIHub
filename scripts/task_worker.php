@@ -66,7 +66,7 @@ while ($processed < $limit) {
     }
 
     $latest = hub_get_task($db, (int)$task['id']);
-    echo 'task ' . $task['id'] . ' ' . $task['task_type'] . ' status=' . ($latest['status'] ?? 'missing') . PHP_EOL;
+    echo hub_task_worker_output_line($task, $latest) . PHP_EOL;
     $processed++;
 }
 

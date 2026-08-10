@@ -189,6 +189,11 @@ hub_test('command worker output uses only its declared job action contract', fun
     hub_test_assert(hub_command_worker_output_line(['id' => '<script>', 'action' => "service_start\nforged"], 2) === 'job 0 invalid exit=2', 'command worker must not emit malformed stored values');
 });
 
+hub_test('task worker output uses only its declared task and status contracts', function (): void {
+    hub_test_assert(hub_task_worker_output_line(['id' => 21, 'task_type' => 'pack_job'], ['status' => 'waiting_gpu']) === 'task 21 pack_job status=waiting_gpu', 'task worker must retain valid task output');
+    hub_test_assert(hub_task_worker_output_line(['id' => '<script>', 'task_type' => "pack_job\nforged"], ['status' => "failed\nforged"]) === 'task 0 invalid status=invalid', 'task worker must not emit malformed stored values');
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
     $stmt = null;
     try {
