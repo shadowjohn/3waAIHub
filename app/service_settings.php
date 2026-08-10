@@ -104,6 +104,37 @@ function hub_ensure_service_settings(PDO $db, array $service): array
     return hub_list_service_settings($db, (int)$service['id']);
 }
 
+/**
+ * 建立服務設定輸入欄位時，機密設定絕不進 HTML；其餘值與屬性皆在此完成編碼。
+ */
+function hub_service_setting_input_html(
+    string $key,
+    string $inputType,
+    string $settingValue,
+    bool $isSecret,
+    ?string $listId,
+    bool $isRequired
+): string {
+    $attributes = [
+        'name="' . hub_h($key) . '"',
+        'type="' . hub_h($isSecret ? 'password' : $inputType) . '"',
+    ];
+    if ($listId !== null) {
+        $attributes[] = 'list="' . hub_h($listId) . '"';
+    }
+    if ($isSecret) {
+        $attributes[] = 'autocomplete="new-password"';
+        $attributes[] = 'placeholder="' . hub_h(__('留空則保留既有值')) . '"';
+    } else {
+        $attributes[] = 'value="' . hub_h($settingValue) . '"';
+    }
+    if ($isRequired) {
+        $attributes[] = 'required';
+    }
+
+    return '<input ' . implode(' ', $attributes) . '>';
+}
+
 function hub_service_setting_default(array $service, string $key, array $item): string
 {
     $environmentOverride = hub_service_setting_environment_override($service, $key);

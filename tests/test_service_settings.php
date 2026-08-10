@@ -141,6 +141,7 @@ hub_test('VoxCPM2 settings default to isolated execution and preserve generated 
     foreach (['Execution mode', 'One-shot container', 'Resident model'] as $label) {
         hub_test_assert(str_contains($page['stdout'], $label), 'translated VoxCPM2 select label missing: ' . $label);
     }
+    hub_test_assert(!str_contains($page['stdout'], $token), 'VoxCPM2 service settings page must not disclose the internal job token');
 });
 
 hub_test('GPT-SoVITS settings default to isolated execution and preserve generated tokens', function (): void {
@@ -258,6 +259,15 @@ hub_test('service settings use an explicit runtime file and retire only a regula
         $envFileIndex !== false && ($command[$envFileIndex + 1] ?? null) === $settingsPath,
         'Docker Compose must receive the explicit runtime settings file',
     );
+});
+
+hub_test('service settings use separate secret and non-secret HTML branches', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/service_settings.php');
+    $secret = hub_service_setting_input_html('API_TOKEN', 'text', 'runtime-secret', true, 'models-api', true);
+    $plain = hub_service_setting_input_html('MODEL', 'text', 'model<&value', false, null, false);
+    hub_test_assert(str_contains($source, 'hub_service_setting_input_html('), 'service settings page must use the shared safe input renderer');
+    hub_test_assert(!str_contains($secret, 'runtime-secret') && str_contains($secret, 'type="password"') && !str_contains($secret, 'value='), 'secret input HTML must contain no secret value attribute');
+    hub_test_assert(str_contains($plain, 'value="model&lt;&amp;value"') && !str_contains($plain, 'password'), 'non-secret input HTML must preserve a safely encoded current value');
 });
 
 hub_test('service compose uses the canonical generated runtime file', function (): void {
