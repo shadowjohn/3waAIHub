@@ -1319,6 +1319,18 @@ hub_test('DocParser acceptance function evaluates registered artifact content at
     $passResult = hub_docparser_acceptance_result($db, $passTaskId, $fixture);
     hub_test_assert(($passResult['ok'] ?? false) === true, 'acceptance must pass when artifact content matches fixture');
 
+    $outsidePath = sys_get_temp_dir() . '/3waaihub_docparser_acceptance_outside_' . bin2hex(random_bytes(4)) . '.json';
+    file_put_contents($outsidePath, '{"status":"completed"}');
+    try {
+        $db->prepare("UPDATE task_artifacts SET path = :path WHERE task_id = :task_id AND name = 'docparser/manifest.json'")
+            ->execute([':path' => $outsidePath, ':task_id' => $passTaskId]);
+        $unsafeResult = hub_docparser_acceptance_result($db, $passTaskId, $fixture);
+        hub_test_assert(($unsafeResult['error'] ?? '') === 'missing_artifacts', 'acceptance must reject an artifact path outside managed results storage');
+        hub_test_assert(in_array('docparser/manifest.json', $unsafeResult['missing'] ?? [], true), 'unsafe required artifact must be reported as missing');
+    } finally {
+        @unlink($outsidePath);
+    }
+
     $failTaskId = hub_enqueue_task($db, 'docparser_parse', 'ocr', 0, [
         'profile' => 'technical_manual',
         'input_file' => '/tmp/input.pdf',

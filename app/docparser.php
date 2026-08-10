@@ -98,7 +98,11 @@ function hub_docparser_task_artifacts_complete(PDO $db, int $taskId): bool
     $stmt->execute([':task_id' => $taskId]);
     $artifacts = [];
     foreach ($stmt->fetchAll() as $artifact) {
-        $artifacts[(string)$artifact['name']] = (string)$artifact['path'];
+        $path = hub_artifact_safe_path((string)($artifact['path'] ?? ''));
+        if ($path === null) {
+            return false;
+        }
+        $artifacts[(string)($artifact['name'] ?? '')] = $path;
     }
 
     foreach ($required as $name) {

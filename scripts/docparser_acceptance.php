@@ -13,7 +13,10 @@ function hub_docparser_acceptance_result(PDO $db, int $taskId, array $fixture): 
 
     $paths = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $paths[(string)$row['name']] = (string)$row['path'];
+        $path = hub_artifact_safe_path((string)($row['path'] ?? ''));
+        if ($path !== null) {
+            $paths[(string)($row['name'] ?? '')] = $path;
+        }
     }
 
     $required = [
