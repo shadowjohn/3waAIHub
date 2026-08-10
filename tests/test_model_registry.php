@@ -101,6 +101,19 @@ hub_test('model registry creates requested directories only under the physical m
     hub_test_assert(hub_storage_path_is_within($target, $root), 'model directory must remain under models root');
 });
 
+hub_test('model registry resolves existing and missing assets only beneath the physical models root', function (): void {
+    $root = sys_get_temp_dir() . '/3waaihub_model_existing_' . bin2hex(random_bytes(4));
+    mkdir($root . '/yolo', 0775, true);
+    file_put_contents($root . '/yolo/model.pt', 'model');
+
+    $existing = hub_model_asset_safe_existing_path($root, 'yolo/model.pt');
+    $missing = hub_model_asset_safe_existing_path($root, 'future/model.pt');
+
+    hub_test_assert(is_file($existing) && hub_storage_path_is_within(dirname($existing), $root), 'existing model asset must stay under models root');
+    hub_test_assert(hub_storage_path_is_within($missing, $root) && !is_dir(dirname($missing)), 'missing model asset must not create a selector directory');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_model_asset_safe_existing_path($root, '../escape.pt')), 'existing model resolver accepted traversal');
+});
+
 hub_test('YOLO registry slugs cannot introduce path components', function (): void {
     $slug = hub_yolo_slug('../Vendor\\..\\Weights');
 

@@ -70,6 +70,63 @@ function hub_model_asset_safe_directory(string $modelsRoot, string $relativePath
     return $directory;
 }
 
+/**
+ * Model selector 只需要讀取狀態，不能因為尚未下載模型而建立目錄。
+ * 已存在的每一層都解析並驗證仍在物理 models root 內；不存在的尾段則只在
+ * 已驗證 ancestor 下組成相對路徑，避免設定值藉 symlink 或 traversal 逃逸。
+ */
+function hub_model_asset_safe_existing_path(string $modelsRoot, string $relativePath): string
+{
+    $relativePath = hub_model_asset_safe_path($relativePath);
+    $modelsRoot = rtrim($modelsRoot, '/\\');
+    if ($modelsRoot === '' || !hub_is_safe_models_root($modelsRoot) || is_link($modelsRoot)) {
+        throw new InvalidArgumentException('Invalid models root.');
+    }
+    if (!file_exists($modelsRoot)) {
+        return $modelsRoot . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
+    }
+    if (!is_dir($modelsRoot)) {
+        throw new RuntimeException('Models root is unavailable.');
+    }
+
+    $root = realpath($modelsRoot);
+    if ($root === false || !is_dir($root)) {
+        throw new RuntimeException('Cannot resolve models root.');
+    }
+
+    $parts = explode('/', $relativePath);
+    $current = $root;
+    foreach ($parts as $index => $part) {
+        $candidate = $current . DIRECTORY_SEPARATOR . $part;
+        clearstatcache(true, $candidate);
+        if (is_link($candidate)) {
+            throw new RuntimeException('Model asset must not use symlinks.');
+        }
+        if (!file_exists($candidate)) {
+            $tail = implode(DIRECTORY_SEPARATOR, array_slice($parts, $index));
+            return $current . DIRECTORY_SEPARATOR . $tail;
+        }
+
+        $resolved = realpath($candidate);
+        // hub_storage_path_is_within() 的 canonical 比對只接受目錄；最終模型
+        // 可能是檔案，因此以已解析且非 symlink 的父目錄做 confinement 檢查。
+        $comparisonDirectory = $resolved !== false && is_dir($resolved) ? $resolved : dirname((string)$resolved);
+        if (
+            $resolved === false
+            || !is_dir($comparisonDirectory)
+            || !hub_storage_path_is_within($comparisonDirectory, $root)
+        ) {
+            throw new RuntimeException('Model asset escapes models root.');
+        }
+        if ($index < count($parts) - 1 && !is_dir($resolved)) {
+            throw new RuntimeException('Model asset ancestor is not a directory.');
+        }
+        $current = $resolved;
+    }
+
+    return $current;
+}
+
 function hub_model_asset_type(string $path): string
 {
     if (is_link($path)) {
@@ -293,8 +350,13 @@ function hub_model_selector_status(PDO $db, array $selector, string $value): arr
 {
     $rootSubdir = hub_model_asset_safe_path((string)($selector['root_subdir'] ?? '.'));
     $type = (string)($selector['type'] ?? 'file');
+    $modelsRoot = hub_models_root($db);
     if ($type === 'ollama_tag') {
-        $path = hub_models_root($db) . '/' . $rootSubdir;
+        try {
+            $path = hub_model_asset_safe_existing_path($modelsRoot, $rootSubdir);
+        } catch (Throwable) {
+            return ['label' => $rootSubdir . ' / tag: ' . $value, 'path' => '', 'exists' => false, 'model_present' => false, 'model_manifest_path' => null, 'size_bytes' => null];
+        }
         $manifestPath = hub_ollama_model_manifest_path($path, $value);
         return [
             'label' => $rootSubdir . ' / tag: ' . $value,
@@ -308,10 +370,12 @@ function hub_model_selector_status(PDO $db, array $selector, string $value): arr
 
     try {
         $relative = hub_model_asset_safe_path($value);
+        $path = hub_model_asset_safe_existing_path($modelsRoot, $rootSubdir . '/' . $relative);
     } catch (InvalidArgumentException) {
         return ['label' => $rootSubdir . '/' . $value, 'path' => '', 'exists' => false, 'size_bytes' => null];
+    } catch (RuntimeException) {
+        return ['label' => $rootSubdir . '/' . $value, 'path' => '', 'exists' => false, 'size_bytes' => null];
     }
-    $path = hub_models_root($db) . '/' . $rootSubdir . '/' . $relative;
     return [
         'label' => $rootSubdir . '/' . $relative,
         'path' => $path,
