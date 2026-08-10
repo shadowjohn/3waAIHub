@@ -1873,11 +1873,18 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         $values[':status'] = (string)($current['status'] ?? 'stopped');
 
         hub_write_runtime_settings_file($runtimeDir, hub_generate_service_env($manifest, $envValues, $portEnv, (int)($localPort ?? 0), $runtimeDir, $storage));
-        file_put_contents(hub_path($composeFile), $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort, $envValues));
+        $composePath = hub_runtime_compose_path($runtimeDir);
+        if (
+            basename($composePath) !== 'docker-compose.generated.yml'
+            || !hub_storage_paths_equal(dirname($composePath), $runtimeDir)
+            || !hub_storage_paths_equal(dirname(hub_path($composeFile)), $runtimeDir)
+        ) {
+            throw new RuntimeException('Generated compose path escapes its service runtime.');
+        }
+        hub_write_runtime_compose_file($runtimeDir, $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort, $envValues));
         if (is_link($runtimeSettingsFile) || !is_file($runtimeSettingsFile)) {
             throw new RuntimeException('Cannot activate service runtime settings.');
         }
-        chmod(hub_path($composeFile), 0664);
 
         if ($current) {
             $values[':id'] = (int)$current['id'];

@@ -436,6 +436,55 @@ function hub_write_runtime_settings_file(string $runtimeDir, string $contents): 
     }
 }
 
+function hub_runtime_compose_path(string $runtimeDir): string
+{
+    $runtimeDir = hub_resolve_runtime_settings_directory($runtimeDir);
+    $composePath = rtrim($runtimeDir, '/\\') . '/docker-compose.generated.yml';
+    clearstatcache(true, $composePath);
+    if (is_link($composePath) || (file_exists($composePath) && !is_file($composePath))) {
+        throw new RuntimeException('Generated compose file must be a regular file.');
+    }
+
+    return $composePath;
+}
+
+function hub_write_runtime_compose_file(string $runtimeDir, string $contents): string
+{
+    $composePath = hub_runtime_compose_path($runtimeDir);
+    $temporaryPath = tempnam(dirname($composePath), '.docker-compose-');
+    if ($temporaryPath === false) {
+        throw new RuntimeException('Cannot create generated compose temporary file.');
+    }
+
+    try {
+        if (file_put_contents($temporaryPath, $contents, LOCK_EX) === false) {
+            throw new RuntimeException('Cannot write generated compose file.');
+        }
+        if (PHP_OS_FAMILY !== 'Windows' && !@chmod($temporaryPath, 0664)) {
+            throw new RuntimeException('Cannot set generated compose file permissions.');
+        }
+        $expectedHash = hash('sha256', $contents);
+        $temporaryHash = hash_file('sha256', $temporaryPath);
+        if ($temporaryHash === false || !hash_equals($expectedHash, $temporaryHash)) {
+            throw new RuntimeException('Generated compose file hash verification failed.');
+        }
+        if (!@rename($temporaryPath, $composePath)) {
+            throw new RuntimeException('Cannot activate generated compose file.');
+        }
+        clearstatcache(true, $composePath);
+        $activeHash = hash_file('sha256', $composePath);
+        if (is_link($composePath) || !is_file($composePath) || $activeHash === false || !hash_equals($expectedHash, $activeHash)) {
+            throw new RuntimeException('Generated compose activation verification failed.');
+        }
+
+        return $composePath;
+    } finally {
+        if (is_file($temporaryPath) && !is_link($temporaryPath)) {
+            @unlink($temporaryPath);
+        }
+    }
+}
+
 function hub_service_runtime_directory(PDO $db, array $service, bool $create = true): string
 {
     $serviceKey = (string)($service['service_key'] ?? '');
@@ -583,14 +632,20 @@ function hub_write_service_compose(PDO $db, array $service): string
         return '';
     }
 
-    $composePath = hub_path((string)$service['compose_file']);
-    file_put_contents($composePath, hub_generate_pack_compose(
+    $runtimeDir = hub_service_runtime_directory($db, $service);
+    $composePath = hub_runtime_compose_path($runtimeDir);
+    if (
+        basename($composePath) !== 'docker-compose.generated.yml'
+        || !hub_storage_paths_equal(dirname($composePath), $runtimeDir)
+        || !hub_storage_paths_equal(dirname(hub_path((string)$service['compose_file'])), $runtimeDir)
+    ) {
+        throw new RuntimeException('Service compose path escapes its runtime directory.');
+    }
+
+    return hub_write_runtime_compose_file($runtimeDir, hub_generate_pack_compose(
         $pack,
         (string)$service['service_key'],
         (int)$service['local_port'],
         hub_service_settings_values($db, $service),
     ));
-    chmod($composePath, 0664);
-
-    return $composePath;
 }

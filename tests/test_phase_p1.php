@@ -731,6 +731,19 @@ hub_test('PhaseP-1 removed-service cleanup uses canonical generated files only',
     hub_test_assert(hub_service_generated_runtime_cleanup_files($db, '../escape') === null, 'cleanup must reject non-runtime service keys');
 });
 
+hub_test('PhaseP-1 generated runtime file list uses explicit runtime settings', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    hub_test_assert($service !== null, 'hello service missing');
+
+    $composePath = hub_path((string)$service['compose_file']);
+    $settingsPath = hub_runtime_settings_path(dirname($composePath));
+    hub_test_assert(
+        hub_service_generated_runtime_files($db, $service) === [$composePath, $settingsPath],
+        'generated runtime files must use compose and explicit runtime settings paths',
+    );
+});
+
 hub_test('PhaseP-1 playground TTS artifact migration preserves rows and owner references', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');

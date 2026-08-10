@@ -260,6 +260,31 @@ hub_test('service settings use an explicit runtime file and retire only a regula
     );
 });
 
+hub_test('service compose uses the canonical generated runtime file', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'hello', [
+        'service_key' => 'runtime-compose-contract',
+        'mode' => 'runtime_compose_contract',
+    ])['service'];
+    $runtimeDir = hub_service_runtime_directory($db, $service);
+    $composePath = hub_write_service_compose($db, $service);
+
+    hub_test_assert(
+        basename($composePath) === 'docker-compose.generated.yml'
+        && hub_storage_paths_equal(dirname($composePath), $runtimeDir),
+        'service compose must use the fixed generated runtime path',
+    );
+    hub_test_assert(is_file($composePath) && !is_link($composePath), 'service compose must remain a regular runtime file');
+    hub_test_assert(hash_file('sha256', $composePath) === hash('sha256', (string)file_get_contents($composePath)), 'service compose must survive activation hash verification');
+
+    $unsafeService = $service;
+    $unsafeService['compose_file'] = 'data/services/runtime-compose-contract/alternate.yml';
+    hub_test_assert(
+        hub_test_throws(static fn (): string => hub_write_service_compose($db, $unsafeService)),
+        'service compose must reject an alternate generated filename',
+    );
+});
+
 hub_test('service settings reject a legacy env symlink without touching its target', function (): void {
     hub_test_require_symlink_fixture('Runtime settings legacy symlink rejection requires symlink fixtures.');
     $db = hub_test_reset_db();

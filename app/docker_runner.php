@@ -1147,7 +1147,7 @@ function hub_service_generated_runtime_files(PDO $db, array $service): ?array
         }
     }
 
-    return [$composePath, $envPath];
+    return [$composePath, $settingsPath];
 }
 
 function hub_service_generated_runtime_cleanup_files(PDO $db, string $serviceKey): ?array
