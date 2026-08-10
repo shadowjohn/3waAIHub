@@ -110,5 +110,5 @@ hub_test('GPT-SoVITS promotion rebinds stored audio paths through the managed vo
     $source = (string)file_get_contents(HUB_ROOT . '/app/voice_profiles.php');
 
     hub_test_assert(str_contains($source, '$rawPath = hub_voice_profile_safe_host_path($rawPath);'), 'GPT-SoVITS promotion must canonicalize its stored audio path before sensitive I/O');
-    hub_test_assert(str_contains($source, "$raw = @fopen(\$rawPath, 'r+b');"), 'GPT-SoVITS cleanup must retain the canonicalized path for its descriptor check');
+    hub_test_assert(str_contains($source, '$raw = @fopen($rawPath, \'r+b\');'), 'GPT-SoVITS cleanup must retain the canonicalized path for its descriptor check');
 });

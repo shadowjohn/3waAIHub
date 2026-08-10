@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -12,6 +14,21 @@ import app as sam3_app
 
 
 class Sam3ResidentModelTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.runtime_dir = tempfile.TemporaryDirectory()
+        root = Path(cls.runtime_dir.name)
+        cls.environment = patch.dict(os.environ, {
+            "SAM3_CACHE_DIR": str(root / "cache"),
+            "SAM3_SERVICE_DATA_DIR": str(root / "service"),
+        })
+        cls.environment.start()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.environment.stop()
+        cls.runtime_dir.cleanup()
+
     def test_shutdown_clears_point_session_cache(self) -> None:
         shutdown = getattr(sam3_app, "shutdown_point_session_cache", None)
         self.assertTrue(callable(shutdown), "point session shutdown hook is required")

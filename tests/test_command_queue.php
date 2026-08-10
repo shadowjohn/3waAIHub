@@ -24,6 +24,12 @@ hub_test('command runner resolves the PHP executable to its trusted absolute pat
     hub_test_assert(hub_command_path_is_absolute($command[0]), 'resolved PHP command must be absolute');
 });
 
+hub_test('command runner accepts the current PHP binary as trusted', function (): void {
+    $command = hub_safe_argv([PHP_BINARY, '-v']);
+
+    hub_test_assert($command[0] === PHP_BINARY, 'current PHP binary must remain an approved executable');
+});
+
 hub_test('Windows NVIDIA command resolves either supported driver installation location', function (): void {
     $systemRoot = 'C:\\Windows';
     $programFiles = 'C:\\Program Files';

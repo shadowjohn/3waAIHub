@@ -24,6 +24,7 @@ function hub_test_admin_market_request(array $get = [], array $post = [], bool $
         . '$_GET = ' . var_export($get, true) . ';'
         . '$_POST = ' . var_export($post, true) . ';'
         . 'require ' . var_export(HUB_ROOT . '/admin/marketplace.php', true) . ';';
+    $script = str_replace(["\r", "\n"], '', $script);
 
     $result = hub_run_command([PHP_BINARY, '-r', $script], 30, [
         'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
@@ -43,6 +44,7 @@ function hub_test_admin_services_request(): array
         . "\$_SESSION = ['user_id' => 1, 'username' => 'admin', 'csrf_token' => 'test'];"
         . "\$_SERVER = ['REQUEST_METHOD' => 'GET', 'REMOTE_ADDR' => '203.0.113.80'];"
         . 'require ' . var_export(HUB_ROOT . '/admin/services.php', true) . ';';
+    $script = str_replace(["\r", "\n"], '', $script);
 
     return hub_run_command([PHP_BINARY, '-r', $script], 30, [
         'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
@@ -57,6 +59,7 @@ function hub_test_admin_job_status_request(array $get): array
         . "\$_SERVER = ['REQUEST_METHOD' => 'GET', 'REMOTE_ADDR' => '203.0.113.80'];"
         . '$_GET = ' . var_export($get, true) . ';'
         . 'require ' . var_export(HUB_ROOT . '/admin/job_status.php', true) . ';';
+    $script = str_replace(["\r", "\n"], '', $script);
 
     return hub_run_command([PHP_BINARY, '-r', $script], 30, [
         'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),

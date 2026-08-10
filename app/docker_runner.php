@@ -141,6 +141,7 @@ function hub_trusted_command_path(string $executable, ?string $platform = null):
 {
     $platform ??= PHP_OS_FAMILY;
     $name = strtolower(basename(str_replace('\\', '/', trim($executable))));
+    $phpBinaryName = strtolower(basename(str_replace('\\', '/', PHP_BINARY)));
     $systemRoot = rtrim((string)getenv('SystemRoot'), '\\/');
     $programFiles = rtrim((string)getenv('ProgramFiles'), '\\/');
 
@@ -148,6 +149,7 @@ function hub_trusted_command_path(string $executable, ?string $platform = null):
         $paths = [
             'php' => PHP_BINARY,
             'php.exe' => PHP_BINARY,
+            $phpBinaryName => PHP_BINARY,
             'powershell.exe' => $systemRoot . '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
             'wsl.exe' => $systemRoot . '\\System32\\wsl.exe',
             'curl' => $systemRoot . '\\System32\\curl.exe',
@@ -159,6 +161,7 @@ function hub_trusted_command_path(string $executable, ?string $platform = null):
         $paths = [
             'php' => PHP_BINARY,
             'php.exe' => PHP_BINARY,
+            $phpBinaryName => PHP_BINARY,
             'bash' => '/usr/bin/bash',
             'curl' => '/usr/bin/curl',
             'docker' => '/usr/bin/docker',
@@ -184,6 +187,7 @@ function hub_valid_argv(array $command): bool
     }
 
     $executable = strtolower(basename(str_replace('\\', '/', (string)($command[0] ?? ''))));
+    $phpBinaryName = strtolower(basename(str_replace('\\', '/', PHP_BINARY)));
     if (!in_array($executable, [
         'bash',
         'curl',
@@ -194,6 +198,7 @@ function hub_valid_argv(array $command): bool
         'nvidia-smi',
         'php',
         'php.exe',
+        $phpBinaryName,
         'powershell.exe',
         'wsl.exe',
     ], true)) {

@@ -171,8 +171,19 @@ for model in [
     else:
         raise AssertionError("invalid frozen model config reached Demucs")
 PY;
-    $result = hub_run_command(['python3', '-c', $script, $runner, base64_encode((string)json_encode($models, JSON_THROW_ON_ERROR))], 10);
-    hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Demucs must receive validated snapshot segment/shifts argv: ' . ($result['stderr'] ?? ''));
+    $process = proc_open(
+        ['python3', '-c', $script, $runner, base64_encode((string)json_encode($models, JSON_THROW_ON_ERROR))],
+        [1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+    );
+    hub_test_assert(is_resource($process), 'Demucs test process must start');
+    $stdout = stream_get_contents($pipes[1]);
+    $stderr = stream_get_contents($pipes[2]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    $exitCode = proc_close($process);
+
+    hub_test_assert($exitCode === 0, 'Demucs must receive validated snapshot segment/shifts argv: ' . trim($stdout . "\n" . $stderr));
 });
 
 hub_test('audio-cleanup image provisions only offline Demucs weights', function (): void {
