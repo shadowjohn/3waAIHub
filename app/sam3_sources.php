@@ -292,7 +292,9 @@ function hub_sam3_capture_command(array $source, string $destination): array
 
 function hub_sam3_run_capture_command(array $command): bool
 {
-    if (!hub_valid_argv($command)) {
+    try {
+        $command = hub_safe_argv($command);
+    } catch (InvalidArgumentException) {
         return false;
     }
 
