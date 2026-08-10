@@ -705,25 +705,7 @@ function hub_facebook_login_api_dispatch(
 function hub_facebook_login_state_path(array $profile): string
 {
     $profileId = (string)($profile['profile_id'] ?? '');
-    $dir = hub_facebook_profile_directory($profileId);
-    $rootReal = realpath(hub_facebook_profile_root());
-    $dirReal = realpath($dir);
-    if (
-        $rootReal === false
-        || $dirReal === false
-        || is_link($dir)
-        || dirname($dirReal) !== $rootReal
-    ) {
-        throw new RuntimeException('profile_storage_unavailable');
-    }
-
-    $path = rtrim($dirReal, '/\\') . DIRECTORY_SEPARATOR . 'storage_state.json';
-    clearstatcache(true, $path);
-    if (is_link($path) || (file_exists($path) && !is_file($path))) {
-        throw new RuntimeException('profile_storage_unavailable');
-    }
-
-    return $path;
+    return hub_facebook_profile_storage_state_path($profileId);
 }
 
 function hub_facebook_login_state_secure(array $profile): bool

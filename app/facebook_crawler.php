@@ -84,6 +84,33 @@ function hub_facebook_profile_directory(string $profileId, bool $create = false)
     return $dir;
 }
 
+/**
+ * 私有 browser state 的檔名固定，且只允許位於已驗證的 profile 目錄內。
+ * 刪除、登入與掛載共用這條路徑契約，避免資料列內容成為檔案系統指標。
+ */
+function hub_facebook_profile_storage_state_path(string $profileId): string
+{
+    $dir = hub_facebook_profile_directory($profileId);
+    $rootReal = realpath(hub_facebook_profile_root());
+    $dirReal = realpath($dir);
+    if (
+        $rootReal === false
+        || $dirReal === false
+        || is_link($dir)
+        || dirname($dirReal) !== $rootReal
+    ) {
+        throw new RuntimeException('profile_storage_unavailable');
+    }
+
+    $path = rtrim($dirReal, '/\\') . DIRECTORY_SEPARATOR . 'storage_state.json';
+    clearstatcache(true, $path);
+    if (is_link($path) || (file_exists($path) && !is_file($path))) {
+        throw new RuntimeException('profile_storage_unavailable');
+    }
+
+    return $path;
+}
+
 function hub_facebook_profile_file_stats_match(mixed $openedStat, mixed $pathStat, bool $requireSingleLink = true): bool
 {
     return is_array($openedStat)
@@ -851,7 +878,8 @@ function hub_facebook_profile_delete_storage(array $profile): void
         return;
     }
 
-    $dir = hub_facebook_profile_directory($profileId);
+    $path = hub_facebook_profile_storage_state_path($profileId);
+    $dir = dirname($path);
     $entries = iterator_to_array(new FilesystemIterator(
         $dir,
         FilesystemIterator::SKIP_DOTS | FilesystemIterator::KEY_AS_FILENAME

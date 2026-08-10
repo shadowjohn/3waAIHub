@@ -88,6 +88,20 @@ hub_test('Facebook login verification opens only a canonical private state path'
     hub_facebook_profile_delete($db, (string)$profile['profile_id'], $memberId);
 });
 
+hub_test('Facebook crawler destruction resolves only a canonical private state path', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler destruction path owner');
+    $profile = hub_facebook_profile_create($db, $memberId, 'Destruction path profile');
+    $profileId = (string)$profile['profile_id'];
+    $path = hub_facebook_profile_storage_state_path($profileId);
+
+    hub_test_assert(basename($path) === 'storage_state.json', 'destruction state filename must remain fixed');
+    hub_test_assert(hub_storage_paths_equal(dirname($path), hub_facebook_profile_directory($profileId)), 'destruction state path must remain inside its verified profile directory');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_facebook_profile_storage_state_path('../escape')), 'destruction state path accepted traversal profile ID');
+
+    hub_facebook_profile_delete($db, $profileId, $memberId);
+});
+
 hub_test('Facebook crawler deletion remains non-active and retryable after final DB failure', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Crawler delete retry owner');
