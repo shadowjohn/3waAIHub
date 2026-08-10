@@ -73,7 +73,7 @@ while ($processed < $limit) {
         fwrite(STDERR, (string)$result['stderr'] . PHP_EOL);
     }
     hub_audit($db, 'command_worker', 'job_' . $job['action'], 'job_id=' . $job['id'] . ' exit=' . $result['exit_code']);
-    echo 'job ' . $job['id'] . ' ' . $job['action'] . ' exit=' . $result['exit_code'] . PHP_EOL;
+    echo hub_command_worker_output_line($job, (int)$result['exit_code']) . PHP_EOL;
     $processed++;
 }
 

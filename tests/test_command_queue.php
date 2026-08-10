@@ -184,6 +184,11 @@ hub_test('callback worker output uses only its declared delivery and state contr
     hub_test_assert(hub_callback_worker_output_line(['delivery_id' => '<script>', 'state' => "retry\nforged"]) === 'callback invalid state=invalid', 'callback worker must not emit malformed stored values');
 });
 
+hub_test('command worker output uses only its declared job action contract', function (): void {
+    hub_test_assert(hub_command_worker_output_line(['id' => 17, 'action' => 'service_start'], 0) === 'job 17 service_start exit=0', 'command worker must retain valid job output');
+    hub_test_assert(hub_command_worker_output_line(['id' => '<script>', 'action' => "service_start\nforged"], 2) === 'job 0 invalid exit=2', 'command worker must not emit malformed stored values');
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
     $stmt = null;
     try {

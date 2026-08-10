@@ -153,6 +153,22 @@ function hub_get_command_job(PDO $db, int $id): ?array
     return $job ?: null;
 }
 
+function hub_command_worker_output_line(array $job, int $exitCode): string
+{
+    $jobId = (int)($job['id'] ?? 0);
+    $action = (string)($job['action'] ?? '');
+
+    // Worker stdout 會進入排程與集中日誌；只輸出既有 allowlist action，毀損列仍保留可追查的固定標記。
+    if ($jobId < 1) {
+        $jobId = 0;
+    }
+    if (!hub_is_valid_job_action($action)) {
+        $action = 'invalid';
+    }
+
+    return 'job ' . $jobId . ' ' . $action . ' exit=' . $exitCode;
+}
+
 function hub_service_has_active_command_job(PDO $db, int $serviceId, ?int $excludingJobId = null): bool
 {
     $sql = "SELECT 1 FROM command_jobs
