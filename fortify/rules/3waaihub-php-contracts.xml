@@ -188,6 +188,17 @@ No category-wide suppression or rule disablement is included.
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
             <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>9A6E3D65-A3CC-4CF1-AC1D-44D965C578A3</RuleID>
+                <TaintFlags>+VALIDATED_SQL_INJECTION,-WEB,-XSS,-PATH_MANIPULATION</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_test_drop_sqlite_schema_object_statement</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
                 <RuleID>0B86FCB2-0579-4CBF-8C9C-2F79FA84902A</RuleID>
                 <TaintFlags>+VALIDATED_PATH_MANIPULATION</TaintFlags>
                 <FunctionIdentifier>

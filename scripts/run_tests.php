@@ -301,6 +301,16 @@ function hub_test_clear_data_root(): void
     hub_ensure_runtime_dirs();
 }
 
+function hub_test_drop_sqlite_schema_object_statement(string $type, string $name): string
+{
+    $type = strtolower($type);
+    if (!in_array($type, ['table', 'view', 'trigger'], true)) {
+        throw new InvalidArgumentException('Invalid SQLite schema object type.');
+    }
+
+    return 'DROP ' . strtoupper($type) . ' IF EXISTS ' . hub_sqlite_schema_identifier($name);
+}
+
 /**
  * Windows 不允許刪除仍被同一筆測試 PDO 持有的 SQLite 檔案。此處只在測試資料庫
  * 的刪檔失敗時，以新的連線刪除受信任 sqlite_master 列出的 schema 物件；若連線
@@ -328,10 +338,10 @@ function hub_test_rebuild_locked_sqlite_schema(): bool
         foreach ($objects as $object) {
             $type = (string)($object['type'] ?? '');
             $name = (string)($object['name'] ?? '');
-            if (!in_array($type, ['table', 'view', 'trigger'], true) || $name === '') {
+            if ($name === '') {
                 return false;
             }
-            $db->exec('DROP ' . strtoupper($type) . ' IF EXISTS ' . hub_sqlite_schema_identifier($name));
+            $db->exec(hub_test_drop_sqlite_schema_object_statement($type, $name));
         }
         $db->exec('PRAGMA foreign_keys = ON');
         return true;

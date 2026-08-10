@@ -8,6 +8,11 @@ hub_test('SQLite schema identifiers accept only declared identifier syntax', fun
     }
 });
 
+hub_test('Windows SQLite schema recovery builds DDL from fixed object types only', function (): void {
+    hub_test_assert(hub_test_drop_sqlite_schema_object_statement('table', 'command_jobs') === 'DROP TABLE IF EXISTS "command_jobs"', 'safe SQLite schema recovery statement changed');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_test_drop_sqlite_schema_object_statement('table; DROP', 'command_jobs')), 'unsafe SQLite schema object type was accepted');
+});
+
 hub_test('sqlite connection applies write safety pragmas', function (): void {
     $db = hub_test_reset_db();
 
