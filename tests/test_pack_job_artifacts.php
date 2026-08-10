@@ -99,6 +99,30 @@ hub_test('ffprobe receives the artifact path as one argv argument', function ():
     hub_test_assert($metadata === ['duration_seconds' => '1.5', 'sample_rate' => '16000', 'channels' => 1, 'frames' => '24000'], 'ffprobe argv runner output must preserve audio metadata');
 });
 
+hub_test('resident Pack output copy accepts only a direct managed output file', function (): void {
+    $workspace = hub_test_pack_job_workspace();
+    $stage = hub_test_pack_job_workspace();
+    try {
+        $path = hub_pack_job_resident_output_file($workspace, '.aihub-alignment-ready.json');
+        $outputRoot = realpath($workspace . '/output');
+
+        hub_test_assert($outputRoot !== false, 'resident output root must resolve');
+        hub_test_assert(hub_storage_paths_equal(dirname($path), $outputRoot), 'resident output copy path must remain in managed output root');
+        hub_test_assert(basename($path) === '.aihub-alignment-ready.json', 'resident output filename changed');
+        hub_test_assert(hub_test_throws(static fn (): string => hub_pack_job_resident_output_file($workspace, '../escape.json')), 'resident output path accepted traversal');
+        hub_test_assert(hub_test_throws(static fn (): string => hub_pack_job_resident_output_file($workspace, 'escape\\file.json')), 'resident output path accepted a Windows separator');
+
+        hub_test_pack_job_write($stage . '/output/.aihub-alignment-ready.json', "{\"ready\":true}\n");
+        hub_pack_job_resident_copy_output($stage, $workspace, [
+            'artifacts' => [['path' => '.aihub-alignment-ready.json']],
+        ]);
+        hub_test_assert(file_get_contents($path) === "{\"ready\":true}\n", 'resident output copy must preserve managed artifact contents');
+    } finally {
+        hub_test_pack_job_rm($workspace);
+        hub_test_pack_job_rm($stage);
+    }
+});
+
 function hub_test_pack_job_write(string $path, string $contents): void
 {
     if (file_put_contents($path, $contents, LOCK_EX) === false) {

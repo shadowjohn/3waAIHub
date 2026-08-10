@@ -297,6 +297,17 @@ No category-wide suppression or rule disablement is included.
                 </FunctionIdentifier>
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>9635B146-78E6-4EE2-887C-13BFE8118657</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION,-WEB,-XSS,-DATABASE</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_pack_job_resident_output_file</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
         </RuleDefinitions>
     </Rules>
 </RulePack>

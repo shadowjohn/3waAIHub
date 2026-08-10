@@ -673,11 +673,55 @@ function hub_pack_job_resident_remove_stage(array $service, string $residentRunI
     hub_pack_job_resident_remove_tree($stage, $root);
 }
 
+/**
+ * Resident task 僅回收固定 output 根目錄下一層的 Pack 宣告檔案。
+ * runtime run 的 workspace 與 artifact snapshot 都可能來自資料庫，因此先解析實體
+ * workspace/output，再拒絕分隔符、Windows ADS 與 link，才交給 copy()。
+ */
+function hub_pack_job_resident_output_file(string $workspace, string $name): string
+{
+    if (
+        $name === ''
+        || $name === '.'
+        || $name === '..'
+        || preg_match('/\A[.A-Za-z0-9][A-Za-z0-9._-]{0,254}\z/D', $name) !== 1
+    ) {
+        throw new RuntimeException('resident_output_unavailable');
+    }
+
+    clearstatcache(true, $workspace);
+    $workspaceReal = realpath($workspace);
+    if ($workspaceReal === false || !is_dir($workspaceReal) || is_link($workspace)) {
+        throw new RuntimeException('resident_output_unavailable');
+    }
+
+    $outputDir = rtrim($workspaceReal, '/\\') . DIRECTORY_SEPARATOR . 'output';
+    clearstatcache(true, $outputDir);
+    $outputReal = realpath($outputDir);
+    if (
+        $outputReal === false
+        || !is_dir($outputReal)
+        || is_link($outputDir)
+        || !hub_storage_paths_equal(dirname($outputReal), $workspaceReal)
+    ) {
+        throw new RuntimeException('resident_output_unavailable');
+    }
+
+    $path = rtrim($outputReal, '/\\') . DIRECTORY_SEPARATOR . $name;
+    clearstatcache(true, $path);
+    if (is_link($path) || (file_exists($path) && !is_file($path))) {
+        throw new RuntimeException('resident_output_unavailable');
+    }
+
+    return $path;
+}
+
 function hub_pack_job_resident_copy_output(string $stage, string $workspace, array $artifactContract, ?array $service = null): void
 {
+    $workspaceInput = $workspace;
     $workspace = realpath($workspace);
     if ($service !== null && ($wslStage = hub_whisper_wsl_resident_stage($service, basename($stage))) !== null) {
-        if (!hub_storage_paths_equal($stage, (string)$wslStage['stage']) || $workspace === false || is_link($workspace) || !is_dir($workspace . '/output')) {
+        if (!hub_storage_paths_equal($stage, (string)$wslStage['stage']) || $workspace === false || is_link($workspaceInput) || !is_dir($workspace . '/output')) {
             throw new RuntimeException('resident_output_unavailable');
         }
         $copies = '';
@@ -704,8 +748,9 @@ function hub_pack_job_resident_copy_output(string $stage, string $workspace, arr
 
         return;
     }
+    $stageInput = $stage;
     $stage = realpath($stage);
-    if ($workspace === false || $stage === false || is_link($workspace) || is_link($stage)) {
+    if ($workspace === false || $stage === false || is_link($workspaceInput) || is_link($stageInput)) {
         throw new RuntimeException('resident_output_unavailable');
     }
     foreach ((array)($artifactContract['artifacts'] ?? []) as $artifact) {
@@ -713,12 +758,12 @@ function hub_pack_job_resident_copy_output(string $stage, string $workspace, arr
         if ($name === '' || basename($name) !== $name) {
             throw new RuntimeException('resident_output_unavailable');
         }
-        $source = $stage . '/output/' . $name;
+        $source = hub_pack_job_resident_output_file($stageInput, $name);
         if (!is_file($source) || is_link($source)) {
             continue;
         }
-        $destination = $workspace . '/output/' . $name;
-        if (is_link($destination) || (file_exists($destination) && !is_file($destination)) || !copy($source, $destination)) {
+        $destination = hub_pack_job_resident_output_file($workspaceInput, $name);
+        if (!copy($source, $destination)) {
             throw new RuntimeException('resident_output_unavailable');
         }
     }
