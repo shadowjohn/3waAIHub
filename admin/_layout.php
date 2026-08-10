@@ -53,15 +53,15 @@ function hub_admin_header(string $title, array $user): void
     $script = basename((string)(parse_url((string)($_SERVER['SCRIPT_NAME'] ?? ''), PHP_URL_PATH) ?: ''));
     $activeGroup = hub_admin_nav_group($script);
     $topLabels = [
-        'dashboard' => __('控制台'),
-        'market' => __('安裝套件'),
-        'customers' => __('客戶管理'),
-        'keys' => __('API 金鑰'),
-        'cluster' => __('Cluster 管理'),
-        'testing' => __('測試中心'),
-        'records' => __('記錄中心'),
-        'environment' => __('系統環境'),
-        'settings' => __('系統設定'),
+        'dashboard' => hub_i18n_text('控制台'),
+        'market' => hub_i18n_text('安裝套件'),
+        'customers' => hub_i18n_text('客戶管理'),
+        'keys' => hub_i18n_text('API 金鑰'),
+        'cluster' => hub_i18n_text('Cluster 管理'),
+        'testing' => hub_i18n_text('測試中心'),
+        'records' => hub_i18n_text('記錄中心'),
+        'environment' => hub_i18n_text('系統環境'),
+        'settings' => hub_i18n_text('系統設定'),
     ];
     $navIcons = [
         'dashboard' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7.5" height="8.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="5" rx="1.5"/><rect x="13.5" y="11" width="7.5" height="10" rx="1.5"/><rect x="3" y="14.5" width="7.5" height="6.5" rx="1.5"/></svg>',
@@ -75,14 +75,14 @@ function hub_admin_header(string $title, array $user): void
         'settings' => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19 15.5a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.1h-4v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1-2.8-2.8.1-.1a1.7 1.7 0 0 0-1.2-2.9h-.1v-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1 2.8-2.8.1.1A1.7 1.7 0 0 0 9.6 3.6v-.1h4v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1 2.8 2.8-.1.1a1.7 1.7 0 0 0 1.2 2.9h.1v4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>',
     ];
     $customerNavigation = [
-        ['label' => __('我的服務'), 'href' => 'my_services.php'],
-        ['label' => __('我的 Token'), 'href' => 'my_tokens.php'],
-        ['label' => __('IP 白名單'), 'href' => 'my_ip_whitelist.php'],
-        ['label' => __('我的用量'), 'href' => 'my_usage.php', 'title' => __('用量統計')],
-        ['label' => __('帳號資料'), 'href' => 'my_profile.php'],
-        ['label' => __('變更密碼'), 'href' => 'change_password.php'],
-        ['label' => __('API 測試場'), 'href' => 'playground.php'],
-        ['label' => __('API 文件'), 'href' => '../public_api_docs.php'],
+        ['label' => hub_i18n_text('我的服務'), 'href' => 'my_services.php'],
+        ['label' => hub_i18n_text('我的 Token'), 'href' => 'my_tokens.php'],
+        ['label' => hub_i18n_text('IP 白名單'), 'href' => 'my_ip_whitelist.php'],
+        ['label' => hub_i18n_text('我的用量'), 'href' => 'my_usage.php', 'title' => hub_i18n_text('用量統計')],
+        ['label' => hub_i18n_text('帳號資料'), 'href' => 'my_profile.php'],
+        ['label' => hub_i18n_text('變更密碼'), 'href' => 'change_password.php'],
+        ['label' => hub_i18n_text('API 測試場'), 'href' => 'playground.php'],
+        ['label' => hub_i18n_text('API 文件'), 'href' => '../public_api_docs.php'],
     ];
     if ($showClusterDocs) {
         $customerNavigation[] = ['label' => 'Cluster API 文件', 'href' => '../cluster_public_api_docs.php'];
@@ -95,21 +95,21 @@ function hub_admin_header(string $title, array $user): void
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <title><?= hub_h(__($title)) ?> - <?= hub_h($siteTitle) ?></title>
+    <title><?= hub_h(hub_i18n_text($title)) ?> - <?= hub_h($siteTitle) ?></title>
     <link rel="icon" href="../branding_asset.php">
     <link rel="stylesheet" href="../assets/css/admin-base.css">
     <link rel="stylesheet" href="../assets/css/admin-shell.css">
 </head>
 <body class="app">
-<a class="skip-link" href="#main-content" data-drawer-inert><?= hub_h(__('跳至主要內容')) ?></a>
+<a class="skip-link" href="#main-content" data-drawer-inert><?= hub_h(hub_i18n_text('跳至主要內容')) ?></a>
 <header class="appbar">
     <div class="appbar__row">
         <a class="appbrand" href="<?= $isAdmin ? 'index.php' : 'my_services.php' ?>" data-drawer-inert>
-            <img class="appbrand__logo" src="../branding_asset.php" width="40" height="40" alt="<?= hub_h($siteTitle . ' ' . __('標誌')) ?>">
+            <img class="appbrand__logo" src="../branding_asset.php" width="40" height="40" alt="<?= hub_h($siteTitle . ' ' . hub_i18n_text('標誌')) ?>">
             <span class="appbrand__name"><?= hub_h($siteTitle) ?><small class="appbrand__sub"><?= hub_h($siteSubtitle) ?></small></span>
         </a>
-        <nav class="mainnav" id="mainnav" aria-label="<?= hub_h(__('主選單')) ?>">
-            <button type="button" class="iconbtn navclose" id="nav-close" aria-label="<?= hub_h(__('關閉主選單')) ?>">
+        <nav class="mainnav" id="mainnav" aria-label="<?= hub_h(hub_i18n_text('主選單')) ?>">
+            <button type="button" class="iconbtn navclose" id="nav-close" aria-label="<?= hub_h(hub_i18n_text('關閉主選單')) ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
             </button>
             <ul class="mainnav__list">
@@ -131,7 +131,7 @@ function hub_admin_header(string $title, array $user): void
                         </button>
                         <ul class="submenu" id="<?= hub_h($menuId) ?>" hidden>
                             <?php foreach ($item['children'] as $child): ?>
-                                <li><a class="submenu__link" href="<?= hub_h($child['href']) ?>"><?= hub_h(__($child['label'])) ?></a></li>
+                                <li><a class="submenu__link" href="<?= hub_h($child['href']) ?>"><?= hub_h(hub_i18n_text($child['label'])) ?></a></li>
                             <?php endforeach; ?>
                         </ul>
                     <?php else: ?>
@@ -164,18 +164,18 @@ function hub_admin_header(string $title, array $user): void
                     <span class="usermenu__avatar" aria-hidden="true"><?= hub_h($avatar) ?></span>
                     <span class="usermenu__meta">
                         <span class="usermenu__name"><?= hub_h($username) ?></span>
-                        <span class="usermenu__role"><?= hub_h($isAdmin ? __('系統管理員') : __('客戶')) ?></span>
+                        <span class="usermenu__role"><?= hub_h($isAdmin ? hub_i18n_text('系統管理員') : hub_i18n_text('客戶')) ?></span>
                     </span>
                     <svg class="usermenu__caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
                 </button>
                 <ul class="dropdown" id="user-menu" hidden>
-                    <li><a class="dropdown__link" href="my_profile.php"><?= hub_h(__('個人資料')) ?></a></li>
-                    <li><a class="dropdown__link" href="change_password.php"><?= hub_h(__('變更密碼')) ?></a></li>
+                    <li><a class="dropdown__link" href="my_profile.php"><?= hub_h(hub_i18n_text('個人資料')) ?></a></li>
+                    <li><a class="dropdown__link" href="change_password.php"><?= hub_h(hub_i18n_text('變更密碼')) ?></a></li>
                     <li><div class="dropdown__sep" role="separator"></div></li>
-                    <li><a class="dropdown__link dropdown__link--danger" href="logout.php"><?= hub_h(__('登出')) ?></a></li>
+                    <li><a class="dropdown__link dropdown__link--danger" href="logout.php"><?= hub_h(hub_i18n_text('登出')) ?></a></li>
                 </ul>
             </div>
-            <button type="button" class="iconbtn navtoggle" id="nav-toggle" aria-expanded="false" aria-controls="mainnav" aria-label="<?= hub_h(__('開啟主選單')) ?>">
+            <button type="button" class="iconbtn navtoggle" id="nav-toggle" aria-expanded="false" aria-controls="mainnav" aria-label="<?= hub_h(hub_i18n_text('開啟主選單')) ?>">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
             </button>
         </div>
@@ -183,7 +183,7 @@ function hub_admin_header(string $title, array $user): void
 </header>
 <main class="shell" id="main-content" data-drawer-inert>
 <?php if ((int)$user['must_change_password'] === 1): ?>
-    <div class="notice"><?= hub_h(__('預設密碼仍在使用中，請到「設定」修改密碼。')) ?></div>
+    <div class="notice"><?= hub_h(hub_i18n_text('預設密碼仍在使用中，請到「設定」修改密碼。')) ?></div>
 <?php endif; ?>
     <?php
 }

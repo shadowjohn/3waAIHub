@@ -226,9 +226,9 @@ hub_admin_header('Cluster', $user);
         <h1>Cluster 角色</h1>
         <?php if ($nodeEnabled && $routerEnabled): ?>
             <div class="hub-actions cluster-aggregate-summary">
-                <span class="badge badge--info"><?= hub_h(__('聚合站台')) ?></span>
-                <span><?= number_format(count($stationRows)) ?> <?= hub_h(__('個子節點')) ?></span>
-                <span><?= number_format(count($selectedModes)) ?> <?= hub_h(__('個已發佈 Mode')) ?></span>
+                <span class="badge badge--info"><?= hub_h(hub_i18n_text('聚合站台')) ?></span>
+                <span><?= number_format(count($stationRows)) ?> <?= hub_h(hub_i18n_text('個子節點')) ?></span>
+                <span><?= number_format(count($selectedModes)) ?> <?= hub_h(hub_i18n_text('個已發佈 Mode')) ?></span>
             </div>
         <?php endif; ?>
         <form method="post">
@@ -307,7 +307,7 @@ hub_admin_header('Cluster', $user);
                         $stationOnline = ($station['connection_state'] ?? 'offline') === 'online';
                         ?>
                         <article class="hub-card">
-                            <h2><?= hub_h((string)$station['display_name']) ?> <span class="station-connection station-connection--<?= $stationOnline ? 'online' : 'offline' ?>"><?= hub_h($stationOnline ? __('可連線') : __('無法連線')) ?></span></h2>
+                            <h2><?= hub_h((string)$station['display_name']) ?> <span class="station-connection station-connection--<?= $stationOnline ? 'online' : 'offline' ?>"><?= hub_h($stationOnline ? hub_i18n_text('可連線') : hub_i18n_text('無法連線')) ?></span></h2>
                             <div class="hub-meta"><span class="hub-meta-label">啟用</span><span class="hub-meta-value <?= $station['enabled'] ? 'ok' : 'bad' ?>"><?= $station['enabled'] ? '是' : '否' ?></span><span class="hub-meta-label">新鮮度</span><span class="hub-meta-value <?= $station['fresh'] ? 'ok' : 'bad' ?>"><?= $station['fresh'] ? '正常' : '過期' ?></span><span class="hub-meta-label">VRAM</span><span class="hub-meta-value"><?= number_format((int)$station['gpu_free_vram_mb']) ?> / <?= number_format((int)$station['gpu_total_vram_mb']) ?> MB</span><span class="hub-meta-label">GPU Lease</span><span class="hub-meta-value"><?= number_format((int)$station['active_gpu_leases']) ?></span><span class="hub-meta-label">排隊 / 執行</span><span class="hub-meta-value"><?= number_format((int)$station['queued_jobs']) ?> / <?= number_format((int)$station['running_jobs']) ?></span><span class="hub-meta-label">已發佈 Mode</span><span class="hub-meta-value"><?= count($station['modes']) ?></span><span class="hub-meta-label">作用中 Router 路由</span><span class="hub-meta-value"><?= number_format((int)$station['active_route_count']) ?></span></div>
                             <div class="hub-actions"><a class="button" href="cluster.php?station_id=<?= (int)$station['id'] ?>">查看詳情</a><form method="post"><input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>"><input type="hidden" name="station_id" value="<?= (int)$station['id'] ?>"><input type="hidden" name="enabled" value="<?= $station['enabled'] ? '0' : '1' ?>"><button name="action" value="toggle_station" type="submit"><?= $station['enabled'] ? '停用' : '啟用' ?></button></form><form method="post"><input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>"><input type="hidden" name="station_id" value="<?= (int)$station['id'] ?>"><button name="action" value="refresh_station" type="submit">重新整理</button></form><form method="post"><input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>"><input type="hidden" name="station_id" value="<?= (int)$station['id'] ?>"><button class="danger" name="action" value="delete_station" type="submit" onclick="return confirm('確定要刪除此子節點及其 Cluster 路由紀錄？');">刪除</button></form></div>
                         </article>

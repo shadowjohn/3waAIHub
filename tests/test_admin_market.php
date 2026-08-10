@@ -391,8 +391,8 @@ hub_test('canonical service removal client and legacy whitelist contracts are ex
 
     foreach ([
         "'remove' => 'service_remove'",
-        "'action_service_remove' => __('移除服務')",
-        "'remove_confirm' => __('確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。')",
+        "'action_service_remove' => hub_i18n_text('移除服務')",
+        "'remove_confirm' => hub_i18n_text('確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。')",
         'hub_service_removal_block_reason($db, $service)',
     ] as $needle) {
         hub_test_assert(str_contains($marketplace, $needle), 'canonical removal contract missing ' . $needle);

@@ -111,9 +111,9 @@ $tabCounts = $catalog['counts'];
 hub_admin_header('HubPack 套件', $user);
 ?>
 <section class="notice legacy-debug" role="note">
-    <strong><?= hub_h(__('Legacy debug 頁面')) ?></strong>
-    <?= hub_h(__('此頁已退出主選單，正式操作請使用「安裝套件」。')) ?>
-    <a href="marketplace.php"><?= hub_h(__('前往安裝套件')) ?></a>
+    <strong><?= hub_h(hub_i18n_text('Legacy debug 頁面')) ?></strong>
+    <?= hub_h(hub_i18n_text('此頁已退出主選單，正式操作請使用「安裝套件」。')) ?>
+    <a href="marketplace.php"><?= hub_h(hub_i18n_text('前往安裝套件')) ?></a>
 </section>
 <style>
     .pack-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
@@ -284,9 +284,9 @@ hub_admin_header('HubPack 套件', $user);
 </section>
 <script src="../assets/js/jquery.min.js"></script>
 <script id="market-i18n" type="application/json"><?= hub_json_encode([
-    'refreshing' => __('刷新中'),
-    'refresh' => __('刷新'),
-    'readiness_failed' => __('讀取失敗'),
+    'refreshing' => hub_i18n_text('刷新中'),
+    'refresh' => hub_i18n_text('刷新'),
+    'readiness_failed' => hub_i18n_text('讀取失敗'),
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?></script>
 <script src="../assets/js/packs.js"></script>
 <?php hub_admin_footer(); ?>

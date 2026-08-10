@@ -20,7 +20,7 @@ try {
 }
 
 if (!hub_cluster_router_enabled($db)) {
-    echo 'router_disabled ' . __('統一入口未啟用') . PHP_EOL;
+    echo 'router_disabled ' . hub_i18n_text('統一入口未啟用') . PHP_EOL;
     exit(0);
 }
 

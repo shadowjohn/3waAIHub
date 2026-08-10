@@ -171,9 +171,9 @@ foreach ($jobs as $job) {
 hub_admin_header('服務管理', $user);
 ?>
 <section class="notice legacy-debug" role="note">
-    <strong><?= hub_h(__('Legacy debug 頁面')) ?></strong>
-    <?= hub_h(__('此頁已退出主選單，正式操作請使用「安裝套件」。')) ?>
-    <a href="marketplace.php?view=services"><?= hub_h(__('前往已安裝服務')) ?></a>
+    <strong><?= hub_h(hub_i18n_text('Legacy debug 頁面')) ?></strong>
+    <?= hub_h(hub_i18n_text('此頁已退出主選單，正式操作請使用「安裝套件」。')) ?>
+    <a href="marketplace.php?view=services"><?= hub_h(hub_i18n_text('前往已安裝服務')) ?></a>
 </section>
 <div id="service-message" class="notice" role="status" aria-live="polite" aria-atomic="true"<?= $message === '' ? ' style="display:none"' : '' ?>><?= hub_h($message) ?></div>
 <section class="panel">
@@ -313,42 +313,42 @@ hub_admin_header('服務管理', $user);
 </section>
 <script src="../assets/js/jquery.min.js"></script>
 <script id="market-i18n" type="application/json"><?= hub_json_encode([
-    'running' => __('執行中'),
-    'stopped' => __('已停止'),
-    'unknown' => __('未知'),
-    'queued_status' => __('排隊中'),
-    'starting' => __('啟動中'),
-    'unhealthy' => __('異常'),
-    'failed' => __('失敗'),
-    'health_ok' => __('健康正常'),
-    'health_checking' => __('健康檢查中'),
-    'health_failed' => __('健康異常'),
-    'enabled' => __('已啟用'),
-    'disabled' => __('已停用'),
-    'restart_required' => __('需重啟'),
-    'restart_applied' => __('設定已套用'),
-    'poll_failed' => __('讀取背景工作狀態失敗，請稍後重試或重新整理。'),
-    'summary_failed' => __('讀取服務摘要失敗，請稍後重試。'),
-    'action_failed' => __('操作失敗，請重新整理後再試。'),
-    'queued' => __('已排入背景工作。'),
-    'job_failed_feedback' => __('背景工作失敗，已保留工作輸出。'),
-    'job_cancelled_feedback' => __('背景工作已取消，已保留工作輸出。'),
-    'job_timeout_feedback' => __('背景工作逾時，已保留工作輸出。'),
-    'action_service_start' => __('啟動服務'),
-    'action_service_stop' => __('停止服務'),
-    'action_service_restart' => __('重啟服務'),
-    'action_service_build' => __('建置服務'),
-    'action_service_rebuild' => __('重新建置'),
-    'action_service_health_check' => __('健康檢查'),
-    'action_service_install' => __('安裝服務'),
-    'job_status_queued' => __('排隊中'),
-    'job_status_running' => __('執行中'),
-    'job_status_success' => __('成功'),
-    'job_status_failed' => __('失敗'),
-    'job_status_cancelled' => __('已取消'),
-    'job_status_timeout' => __('逾時'),
-    'copied' => __('API URL 已複製。'),
-    'copy_failed' => __('無法自動複製，請手動複製。'),
+    'running' => hub_i18n_text('執行中'),
+    'stopped' => hub_i18n_text('已停止'),
+    'unknown' => hub_i18n_text('未知'),
+    'queued_status' => hub_i18n_text('排隊中'),
+    'starting' => hub_i18n_text('啟動中'),
+    'unhealthy' => hub_i18n_text('異常'),
+    'failed' => hub_i18n_text('失敗'),
+    'health_ok' => hub_i18n_text('健康正常'),
+    'health_checking' => hub_i18n_text('健康檢查中'),
+    'health_failed' => hub_i18n_text('健康異常'),
+    'enabled' => hub_i18n_text('已啟用'),
+    'disabled' => hub_i18n_text('已停用'),
+    'restart_required' => hub_i18n_text('需重啟'),
+    'restart_applied' => hub_i18n_text('設定已套用'),
+    'poll_failed' => hub_i18n_text('讀取背景工作狀態失敗，請稍後重試或重新整理。'),
+    'summary_failed' => hub_i18n_text('讀取服務摘要失敗，請稍後重試。'),
+    'action_failed' => hub_i18n_text('操作失敗，請重新整理後再試。'),
+    'queued' => hub_i18n_text('已排入背景工作。'),
+    'job_failed_feedback' => hub_i18n_text('背景工作失敗，已保留工作輸出。'),
+    'job_cancelled_feedback' => hub_i18n_text('背景工作已取消，已保留工作輸出。'),
+    'job_timeout_feedback' => hub_i18n_text('背景工作逾時，已保留工作輸出。'),
+    'action_service_start' => hub_i18n_text('啟動服務'),
+    'action_service_stop' => hub_i18n_text('停止服務'),
+    'action_service_restart' => hub_i18n_text('重啟服務'),
+    'action_service_build' => hub_i18n_text('建置服務'),
+    'action_service_rebuild' => hub_i18n_text('重新建置'),
+    'action_service_health_check' => hub_i18n_text('健康檢查'),
+    'action_service_install' => hub_i18n_text('安裝服務'),
+    'job_status_queued' => hub_i18n_text('排隊中'),
+    'job_status_running' => hub_i18n_text('執行中'),
+    'job_status_success' => hub_i18n_text('成功'),
+    'job_status_failed' => hub_i18n_text('失敗'),
+    'job_status_cancelled' => hub_i18n_text('已取消'),
+    'job_status_timeout' => hub_i18n_text('逾時'),
+    'copied' => hub_i18n_text('API URL 已複製。'),
+    'copy_failed' => hub_i18n_text('無法自動複製，請手動複製。'),
 ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?></script>
 <script src="../assets/js/services.js"></script>
 <?php hub_admin_footer(); ?>

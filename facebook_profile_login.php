@@ -11,12 +11,12 @@ header('Referrer-Policy: no-referrer');
 header('Cache-Control: no-store');
 header('X-Content-Type-Options: nosniff');
 $labels = [
-    'connecting' => __('連線中'),
-    'waiting' => __('等待登入'),
-    'logged_in' => __('登入完成'),
-    'unavailable' => __('連線失敗'),
-    'invalid' => __('登入連結無效或已過期'),
-    'closed' => __('已關閉'),
+    'connecting' => hub_i18n_text('連線中'),
+    'waiting' => hub_i18n_text('等待登入'),
+    'logged_in' => hub_i18n_text('登入完成'),
+    'unavailable' => hub_i18n_text('連線失敗'),
+    'invalid' => hub_i18n_text('登入連結無效或已過期'),
+    'closed' => hub_i18n_text('已關閉'),
 ];
 ?>
 <!doctype html>
@@ -24,7 +24,7 @@ $labels = [
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title><?= hub_h(__('Facebook 登入')) ?></title>
+    <title><?= hub_h(hub_i18n_text('Facebook 登入')) ?></title>
     <style>
         * { box-sizing: border-box; }
         body { margin: 0; background: #17191c; color: #f5f7f8; font: 16px system-ui, sans-serif; }
@@ -56,23 +56,23 @@ $labels = [
 <body>
 <main>
     <header>
-        <h1><?= hub_h(__('Facebook 登入')) ?></h1>
+        <h1><?= hub_h(hub_i18n_text('Facebook 登入')) ?></h1>
     </header>
     <div class="statusbar">
-        <strong><?= hub_h(__('登入狀態')) ?></strong>
-        <span id="status" role="status" aria-live="polite"><?= hub_h(__('連線中')) ?></span>
+        <strong><?= hub_h(hub_i18n_text('登入狀態')) ?></strong>
+        <span id="status" role="status" aria-live="polite"><?= hub_h(hub_i18n_text('連線中')) ?></span>
     </div>
-    <div class="screen"><img id="frame" width="1280" height="720" alt="<?= hub_h(__('Facebook 登入畫面')) ?>"></div>
+    <div class="screen"><img id="frame" width="1280" height="720" alt="<?= hub_h(hub_i18n_text('Facebook 登入畫面')) ?>"></div>
     <div class="controls">
-        <label for="text-input"><?= hub_h(__('輸入')) ?></label>
+        <label for="text-input"><?= hub_h(hub_i18n_text('輸入')) ?></label>
         <input id="text-input" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">
-        <button id="send" type="button"><?= hub_h(__('送出')) ?></button>
-        <button type="button" data-key="Tab" title="<?= hub_h(__('Tab')) ?>"><?= hub_h(__('Tab')) ?></button>
-        <button type="button" data-key="Enter" title="<?= hub_h(__('Enter')) ?>"><?= hub_h(__('Enter')) ?></button>
-        <button type="button" data-key="Backspace" title="<?= hub_h(__('退格')) ?>">&#9003;</button>
-        <button class="icon" type="button" data-scroll="up" title="<?= hub_h(__('向上捲動')) ?>" aria-label="<?= hub_h(__('向上捲動')) ?>">&#8593;</button>
-        <button class="icon" type="button" data-scroll="down" title="<?= hub_h(__('向下捲動')) ?>" aria-label="<?= hub_h(__('向下捲動')) ?>">&#8595;</button>
-        <button class="danger" id="close" type="button"><?= hub_h(__('關閉')) ?></button>
+        <button id="send" type="button"><?= hub_h(hub_i18n_text('送出')) ?></button>
+        <button type="button" data-key="Tab" title="<?= hub_h(hub_i18n_text('Tab')) ?>"><?= hub_h(hub_i18n_text('Tab')) ?></button>
+        <button type="button" data-key="Enter" title="<?= hub_h(hub_i18n_text('Enter')) ?>"><?= hub_h(hub_i18n_text('Enter')) ?></button>
+        <button type="button" data-key="Backspace" title="<?= hub_h(hub_i18n_text('退格')) ?>">&#9003;</button>
+        <button class="icon" type="button" data-scroll="up" title="<?= hub_h(hub_i18n_text('向上捲動')) ?>" aria-label="<?= hub_h(hub_i18n_text('向上捲動')) ?>">&#8593;</button>
+        <button class="icon" type="button" data-scroll="down" title="<?= hub_h(hub_i18n_text('向下捲動')) ?>" aria-label="<?= hub_h(hub_i18n_text('向下捲動')) ?>">&#8595;</button>
+        <button class="danger" id="close" type="button"><?= hub_h(hub_i18n_text('關閉')) ?></button>
     </div>
 </main>
 <script>

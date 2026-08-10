@@ -136,18 +136,18 @@ try {
         </div>
         <div class="content">
             <h1>3waAIHub</h1>
-            <p class="slogan cursor"><?= hub_h(function_exists('__') ? __('安裝、啟用、公開 AI 服務。') : '安裝、啟用、公開 AI 服務。') ?></p>
+            <p class="slogan cursor"><?= hub_h(function_exists('__') ? hub_i18n_text('安裝、啟用、公開 AI 服務。') : '安裝、啟用、公開 AI 服務。') ?></p>
             <div class="actions">
-                <a class="button" href="login.php"><?= hub_h(function_exists('__') ? __('進入後台管理') : '進入後台管理') ?></a>
+                <a class="button" href="login.php"><?= hub_h(function_exists('__') ? hub_i18n_text('進入後台管理') : '進入後台管理') ?></a>
             </div>
             <div class="links">
                 <div class="actions">
-                    <a class="button secondary" href="public_api_docs.php"><?= hub_h(function_exists('__') ? __('公開 API 文件') : '公開 API 文件') ?></a>
-                    <a class="button secondary" href="api_manifest.json.php"><?= hub_h(function_exists('__') ? __('Agent Manifest 文件') : 'Agent Manifest 文件') ?></a>
-                    <a class="button secondary" href="admin/"><?= hub_h(function_exists('__') ? __('後台管理') : '後台管理') ?></a>
+                    <a class="button secondary" href="public_api_docs.php"><?= hub_h(function_exists('__') ? hub_i18n_text('公開 API 文件') : '公開 API 文件') ?></a>
+                    <a class="button secondary" href="api_manifest.json.php"><?= hub_h(function_exists('__') ? hub_i18n_text('Agent Manifest 文件') : 'Agent Manifest 文件') ?></a>
+                    <a class="button secondary" href="admin/"><?= hub_h(function_exists('__') ? hub_i18n_text('後台管理') : '後台管理') ?></a>
                 </div>
-                <p class="status"><?= hub_h(function_exists('__') ? __('公開 API 文件') : '公開 API 文件') ?>：<?= hub_h($publicDocsLabel) ?> / <?= hub_h(function_exists('__') ? __('Agent Manifest 文件') : 'Agent Manifest 文件') ?>：<?= hub_h($manifestLabel) ?></p>
-                <p class="hint"><?= hub_h(function_exists('__') ? __('依系統設定，公開 API 文件可能僅允許本機讀取。') : '依系統設定，公開 API 文件可能僅允許本機讀取。') ?></p>
+                <p class="status"><?= hub_h(function_exists('__') ? hub_i18n_text('公開 API 文件') : '公開 API 文件') ?>：<?= hub_h($publicDocsLabel) ?> / <?= hub_h(function_exists('__') ? hub_i18n_text('Agent Manifest 文件') : 'Agent Manifest 文件') ?>：<?= hub_h($manifestLabel) ?></p>
+                <p class="hint"><?= hub_h(function_exists('__') ? hub_i18n_text('依系統設定，公開 API 文件可能僅允許本機讀取。') : '依系統設定，公開 API 文件可能僅允許本機讀取。') ?></p>
             </div>
         </div>
     </section>

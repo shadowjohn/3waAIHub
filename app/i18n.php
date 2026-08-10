@@ -113,9 +113,19 @@ function hub_i18n_language_selector(string $class = 'i18n-selector'): string
     return $html . '</select></span>';
 }
 
-function __(string $title, ?string $lang = null): string
+/**
+ * 翻譯字典只接受純文字；禁止標籤分隔符，避免資料庫或外部翻譯內容成為 HTML。
+ */
+function hub_i18n_plain_text(string $value): string
 {
-    $title = trim(stripslashes($title));
+    $value = trim(str_replace("\0", '', $value));
+
+    return $value !== '' && !str_contains($value, '<') && !str_contains($value, '>') ? $value : '';
+}
+
+function hub_i18n_text(string $title, ?string $lang = null): string
+{
+    $title = hub_i18n_plain_text(stripslashes($title));
     if ($title === '') {
         return '';
     }
@@ -128,12 +138,12 @@ function __(string $title, ?string $lang = null): string
     $db = hub_db();
     $stmt = $db->prepare('SELECT trans FROM i18n WHERE title = :title AND lang = :lang ORDER BY id DESC LIMIT 1');
     $stmt->execute([':title' => $title, ':lang' => $lang]);
-    $trans = trim((string)($stmt->fetchColumn() ?: ''));
+    $trans = hub_i18n_plain_text(str_replace('null', '', (string)($stmt->fetchColumn() ?: '')));
     if ($trans !== '') {
-        return str_replace('null', '', $trans);
+        return $trans;
     }
 
-    $trans = hub_i18n_translate_google($title, $lang, 'zh_TW');
+    $trans = hub_i18n_plain_text(hub_i18n_translate_google($title, $lang, 'zh_TW'));
     if ($trans === '') {
         return $title;
     }
@@ -146,16 +156,16 @@ function __(string $title, ?string $lang = null): string
 
 function hub_i18n_seeded(string $key, string $fallback, ?string $lang = null, ?PDO $db = null): string
 {
-    $key = trim($key);
-    $fallback = trim($fallback);
+    $key = hub_i18n_plain_text($key);
+    $fallback = hub_i18n_plain_text($fallback);
     if ($key === '') {
-        return __($fallback, $lang);
+        return hub_i18n_text($fallback, $lang);
     }
     $lang = hub_i18n_normalize_lang($lang ?? hub_i18n_current_lang());
     $db ??= hub_db();
     $stmt = $db->prepare('SELECT trans FROM i18n WHERE title = :title AND lang = :lang ORDER BY id DESC LIMIT 1');
     $stmt->execute([':title' => $key, ':lang' => $lang]);
-    $translation = trim((string)($stmt->fetchColumn() ?: ''));
+    $translation = hub_i18n_plain_text((string)($stmt->fetchColumn() ?: ''));
     if ($translation !== '') {
         return $translation;
     }
@@ -265,7 +275,7 @@ function hub_i18n_translate_google(
         $out .= (string)($row[0] ?? '');
     }
 
-    $out = trim(str_replace('null', '', $out));
+    $out = hub_i18n_plain_text(str_replace('null', '', $out));
     if ($out === '') {
         hub_i18n_google_circuit_state(true);
     }
@@ -302,9 +312,9 @@ function hub_i18n_import_seed(PDO $db, ?string $path = null): int
         if (!is_array($row)) {
             continue;
         }
-        $title = is_string($row['title'] ?? null) ? trim($row['title']) : '';
+        $title = is_string($row['title'] ?? null) ? hub_i18n_plain_text($row['title']) : '';
         $lang = is_string($row['lang'] ?? null) ? str_replace('-', '_', trim($row['lang'])) : '';
-        $trans = is_string($row['trans'] ?? null) ? trim($row['trans']) : '';
+        $trans = is_string($row['trans'] ?? null) ? hub_i18n_plain_text($row['trans']) : '';
         if (
             $title === ''
             || $trans === ''
@@ -336,15 +346,19 @@ function hub_i18n_export_seed(PDO $db): array
 
     $export = [];
     foreach ($rows as $row) {
-        $title = (string)$row['title'];
+        $title = hub_i18n_plain_text((string)$row['title']);
         $lang = str_replace('-', '_', trim((string)$row['lang']));
+        $trans = hub_i18n_plain_text((string)$row['trans']);
         if (
+            $title === ''
+            || $trans === ''
+            ||
             !array_key_exists($lang, hub_i18n_languages())
             || ($lang === 'zh_TW' && !hub_i18n_is_seed_key($title))
         ) {
             continue;
         }
-        $export[] = ['title' => $title, 'lang' => $lang, 'trans' => (string)$row['trans']];
+        $export[] = ['title' => $title, 'lang' => $lang, 'trans' => $trans];
     }
 
     return $export;

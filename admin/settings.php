@@ -18,15 +18,15 @@ function hub_settings_tab(string $rawTab): string
 function hub_settings_tab_label(string $tab): string
 {
     return [
-        'basic' => __('基本設定'),
-        'appearance' => __('介面顯示'),
-        'i18n' => __('多國語系'),
-        'storage' => __('儲存與模型'),
-        'api' => __('API 與安全'),
-        'docker' => __('Docker 與背景工作'),
-        'maintenance' => __('維護與保留'),
-        'account' => __('帳號密碼'),
-    ][$tab] ?? __('基本設定');
+        'basic' => hub_i18n_text('基本設定'),
+        'appearance' => hub_i18n_text('介面顯示'),
+        'i18n' => hub_i18n_text('多國語系'),
+        'storage' => hub_i18n_text('儲存與模型'),
+        'api' => hub_i18n_text('API 與安全'),
+        'docker' => hub_i18n_text('Docker 與背景工作'),
+        'maintenance' => hub_i18n_text('維護與保留'),
+        'account' => hub_i18n_text('帳號密碼'),
+    ][$tab] ?? hub_i18n_text('基本設定');
 }
 
 function hub_settings_tab_link(string $activeTab, string $tab): string
@@ -64,18 +64,18 @@ function hub_settings_format_bytes(int|float $bytes): string
 
 function hub_settings_t(string $value): string
 {
-    return hub_h(__($value));
+    return hub_h(hub_i18n_text($value));
 }
 
 function hub_settings_path_status(string $path): string
 {
     $usage = hub_get_disk_usage_for_path($path);
     if (!$usage['exists']) {
-        return __('目錄不存在，請用 CLI 建立並設定權限。');
+        return hub_i18n_text('目錄不存在，請用 CLI 建立並設定權限。');
     }
 
-    $free = is_numeric($usage['free_bytes']) ? hub_settings_format_bytes((float)$usage['free_bytes']) : __('未知');
-    return __('存在 / 可讀：') . ($usage['readable'] ? __('是') : __('否')) . __(' / 可寫：') . ($usage['writable'] ? __('是') : __('否')) . __(' / 可用：') . $free;
+    $free = is_numeric($usage['free_bytes']) ? hub_settings_format_bytes((float)$usage['free_bytes']) : hub_i18n_text('未知');
+    return hub_i18n_text('存在 / 可讀：') . ($usage['readable'] ? hub_i18n_text('是') : hub_i18n_text('否')) . hub_i18n_text(' / 可寫：') . ($usage['writable'] ? hub_i18n_text('是') : hub_i18n_text('否')) . hub_i18n_text(' / 可用：') . $free;
 }
 
 function hub_settings_validate_unsigned_ints(array $input, array $keys): array
@@ -84,7 +84,7 @@ function hub_settings_validate_unsigned_ints(array $input, array $keys): array
     foreach ($keys as $key) {
         $value = trim((string)($input[$key] ?? ''));
         if ($value === '' || !ctype_digit($value)) {
-            $errors[] = $key . __(' 必須是 0 或正整數。');
+            $errors[] = $key . hub_i18n_text(' 必須是 0 或正整數。');
         }
     }
 
@@ -94,12 +94,12 @@ function hub_settings_validate_unsigned_ints(array $input, array $keys): array
 function hub_settings_branding_error(string $code): string
 {
     return match ($code) {
-        'branding_payload_too_large' => __('Logo 檔案不可超過 2 MB。'),
-        'branding_unsupported_media_type' => __('只接受 PNG、WebP 或 JPEG 圖片。'),
-        'branding_invalid_image' => __('Logo 圖片無法辨識。'),
-        'branding_dimensions_too_large' => __('Logo 尺寸不可超過 2048 × 2048，總像素不可超過 4,194,304。'),
-        'branding_upload_failed', 'branding_upload_invalid' => __('Logo 上傳失敗，請重新選擇圖片。'),
-        default => __('Logo 無法儲存，請檢查資料目錄權限。'),
+        'branding_payload_too_large' => hub_i18n_text('Logo 檔案不可超過 2 MB。'),
+        'branding_unsupported_media_type' => hub_i18n_text('只接受 PNG、WebP 或 JPEG 圖片。'),
+        'branding_invalid_image' => hub_i18n_text('Logo 圖片無法辨識。'),
+        'branding_dimensions_too_large' => hub_i18n_text('Logo 尺寸不可超過 2048 × 2048，總像素不可超過 4,194,304。'),
+        'branding_upload_failed', 'branding_upload_invalid' => hub_i18n_text('Logo 上傳失敗，請重新選擇圖片。'),
+        default => hub_i18n_text('Logo 無法儲存，請檢查資料目錄權限。'),
     };
 }
 
@@ -120,7 +120,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $subtitle = trim((string)($_POST['AIHUB_SITE_SUBTITLE'] ?? ''));
         $brandingAction = (string)($_POST['branding_action'] ?? '');
         if ($title === '') {
-            $error = __('AIHUB_SITE_TITLE 不可空白。');
+            $error = hub_i18n_text('AIHUB_SITE_TITLE 不可空白。');
         } else {
             try {
                 if ($brandingAction === 'upload') {
@@ -137,9 +137,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 hub_set_storage_setting($db, 'AIHUB_SITE_TITLE', substr($title, 0, 80));
                 hub_set_storage_setting($db, 'AIHUB_SITE_SUBTITLE', substr($subtitle, 0, 120));
                 $message = match ($brandingAction) {
-                    'upload' => __('Logo 已上傳並套用。'),
-                    'restore' => __('預設 Logo 已恢復。'),
-                    default => __('介面顯示設定已更新。'),
+                    'upload' => hub_i18n_text('Logo 已上傳並套用。'),
+                    'restore' => hub_i18n_text('預設 Logo 已恢復。'),
+                    default => hub_i18n_text('介面顯示設定已更新。'),
                 };
             } catch (Throwable $brandingError) {
                 $error = hub_settings_branding_error($brandingError->getMessage());
@@ -152,26 +152,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if ($action === 'delete') {
                 $stmt = $db->prepare('DELETE FROM i18n WHERE id = :id');
                 $stmt->execute([':id' => (int)($_POST['id'] ?? 0)]);
-                $message = __('翻譯已刪除。');
+                $message = hub_i18n_text('翻譯已刪除。');
             } else {
-                $title = trim((string)($_POST['title'] ?? ''));
+                $title = hub_i18n_plain_text((string)($_POST['title'] ?? ''));
                 $lang = is_string($_POST['lang'] ?? null) ? str_replace('-', '_', trim($_POST['lang'])) : '';
-                $trans = trim((string)($_POST['trans'] ?? ''));
+                $trans = hub_i18n_plain_text((string)($_POST['trans'] ?? ''));
                 $id = (int)($_POST['id'] ?? 0);
                 if ($title === '' || !array_key_exists($lang, hub_i18n_languages()) || $trans === '') {
-                    throw new RuntimeException(__('請填寫標題、有效語系與翻譯內容。'));
+                    throw new RuntimeException(hub_i18n_text('請填寫標題、有效語系與翻譯內容。'));
                 }
                 if ($lang === 'zh_TW' && !hub_i18n_is_seed_key($title)) {
-                    throw new RuntimeException(__('正體中文翻譯標題必須是合法的命名空間 key。'));
+                    throw new RuntimeException(hub_i18n_text('正體中文翻譯標題必須是合法的命名空間 key。'));
                 }
                 if ($id > 0) {
                     $stmt = $db->prepare('UPDATE i18n SET title = :title, lang = :lang, trans = :trans WHERE id = :id');
                     $stmt->execute([':title' => $title, ':lang' => $lang, ':trans' => $trans, ':id' => $id]);
-                    $message = __('翻譯已更新。');
+                    $message = hub_i18n_text('翻譯已更新。');
                 } else {
                     $stmt = $db->prepare('INSERT INTO i18n (title, lang, trans) VALUES (:title, :lang, :trans)');
                     $stmt->execute([':title' => $title, ':lang' => $lang, ':trans' => $trans]);
-                    $message = __('翻譯已新增。');
+                    $message = hub_i18n_text('翻譯已新增。');
                 }
             }
         } catch (Throwable $e) {
@@ -190,7 +190,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($keys as $key) {
                 hub_set_storage_setting($db, $key, $input[$key]);
             }
-            $message = __('儲存與模型設定已更新。');
+            $message = hub_i18n_text('儲存與模型設定已更新。');
         }
     } elseif ($formType === 'api') {
         $keys = ['AIHUB_REQUIRE_API_TOKEN', 'AIHUB_LOCALHOST_BYPASS_TOKEN', 'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST', 'AIHUB_TOKEN_DEFAULT_VALID_DAYS', 'AIHUB_PUBLIC_API_DOCS', 'AIHUB_PUBLIC_API_MANIFEST', 'AIHUB_PUBLIC_API_LOCAL_ONLY'];
@@ -219,7 +219,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 foreach ($keys as $key) {
                     hub_set_storage_setting($db, $key, $input[$key]);
                 }
-                $message = __('API 與安全設定已更新。');
+                $message = hub_i18n_text('API 與安全設定已更新。');
             } catch (InvalidArgumentException $e) {
                 $error = hub_web_capture_allowed_hosts_error_message($e->getMessage());
             }
@@ -237,7 +237,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($keys as $key) {
                 hub_set_storage_setting($db, $key, $input[$key]);
             }
-            $message = __('Docker 與背景工作設定已更新。');
+            $message = hub_i18n_text('Docker 與背景工作設定已更新。');
         }
     } elseif ($formType === 'maintenance') {
         $keys = ['AIHUB_DB_MAX_SIZE_MB', 'AIHUB_LOG_RETENTION_DAYS', 'AIHUB_METRIC_RETENTION_DAYS', 'AIHUB_TASK_RETENTION_DAYS', 'AIHUB_MAX_TASK_LOG_ROWS', 'AIHUB_MAX_RESULT_JSON_BYTES'];
@@ -252,18 +252,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             foreach ($keys as $key) {
                 hub_set_storage_setting($db, $key, $input[$key]);
             }
-            $message = __('維護與保留設定已更新。');
+            $message = hub_i18n_text('維護與保留設定已更新。');
         }
     } else {
         $activeTab = 'account';
         $newPassword = (string)($_POST['new_password'] ?? '');
         $confirmPassword = (string)($_POST['confirm_password'] ?? '');
         if ($newPassword !== $confirmPassword) {
-            $error = __('兩次新密碼不一致。');
+            $error = hub_i18n_text('兩次新密碼不一致。');
         } else {
             $error = hub_update_password($db, (int)$user['id'], (string)($_POST['current_password'] ?? ''), $newPassword) ?? '';
             if ($error === '') {
-                $message = __('密碼已更新。');
+                $message = hub_i18n_text('密碼已更新。');
                 $user = hub_require_system_admin($db);
             }
         }
@@ -316,7 +316,7 @@ hub_admin_header('系統設定', $user);
 <?php if ($error !== ''): ?><div class="error"><?= hub_h($error) ?></div><?php endif; ?>
 <?php foreach ($storageWarnings as $warning): ?><div class="notice"><?= hub_h($warning) ?></div><?php endforeach; ?>
 <section class="panel">
-    <h1><?= hub_h(__('系統設定')) ?></h1>
+    <h1><?= hub_h(hub_i18n_text('系統設定')) ?></h1>
     <div class="settings-tabs" aria-label="設定分頁">
         <?= hub_settings_tab_link($activeTab, 'basic') ?>
         <?= hub_settings_tab_link($activeTab, 'appearance') ?>
@@ -331,7 +331,7 @@ hub_admin_header('系統設定', $user);
 
 <?php if ($activeTab === 'basic'): ?>
 <section class="panel">
-    <h2><?= hub_h(__('基本設定')) ?></h2>
+    <h2><?= hub_h(hub_i18n_text('基本設定')) ?></h2>
     <table>
         <tr><th><?= hub_settings_t('站台標題') ?></th><td><?= hub_h(hub_site_title($db)) ?></td></tr>
         <tr><th><?= hub_settings_t('站台副標') ?></th><td><?= hub_h(hub_site_subtitle($db)) ?></td></tr>
@@ -341,23 +341,23 @@ hub_admin_header('系統設定', $user);
     <p><a class="button" href="settings.php?tab=appearance"><?= hub_settings_t('調整介面顯示') ?></a></p>
 </section>
 <section class="panel">
-    <h2><?= hub_h(__('唯讀更新指引')) ?></h2>
-    <p class="muted"><?= hub_h(__('後台不會執行 Git 更新、部署或版本切換；請由具備對應權限的人員在主機 CLI 操作。')) ?></p>
+    <h2><?= hub_h(hub_i18n_text('唯讀更新指引')) ?></h2>
+    <p class="muted"><?= hub_h(hub_i18n_text('後台不會執行 Git 更新、部署或版本切換；請由具備對應權限的人員在主機 CLI 操作。')) ?></p>
     <div class="setting-card">
-        <h3><?= hub_h(__('3wa 整合主機')) ?></h3>
-        <p><?= hub_h(__('3wa 是平常唯一的 push 來源；先完成驗證，再以 fast-forward 對齊主線。')) ?></p>
+        <h3><?= hub_h(hub_i18n_text('3wa 整合主機')) ?></h3>
+        <p><?= hub_h(hub_i18n_text('3wa 是平常唯一的 push 來源；先完成驗證，再以 fast-forward 對齊主線。')) ?></p>
         <pre class="inline-pre"><?= hub_h((string)$releaseCommands['integration_host']['commands']) ?></pre>
     </div>
     <div class="setting-card">
-        <h3><?= hub_h(__('5090 / 1080 執行節點')) ?></h3>
-        <p><?= hub_h(__('執行節點只 fetch、fast-forward 或切到不可變 Tag，永不 push。請將 RELEASE_ID 換成已驗證的 11 位版本 ID。')) ?></p>
+        <h3><?= hub_h(hub_i18n_text('5090 / 1080 執行節點')) ?></h3>
+        <p><?= hub_h(hub_i18n_text('執行節點只 fetch、fast-forward 或切到不可變 Tag，永不 push。請將 RELEASE_ID 換成已驗證的 11 位版本 ID。')) ?></p>
         <pre class="inline-pre"><?= hub_h((string)$releaseCommands['execution_node']['commands']) ?></pre>
     </div>
-    <p class="form-help"><?= hub_h(__('WSL 只作為 authoring / validation 環境，不是 deployment authority。')) ?></p>
+    <p class="form-help"><?= hub_h(hub_i18n_text('WSL 只作為 authoring / validation 環境，不是 deployment authority。')) ?></p>
 </section>
 <?php elseif ($activeTab === 'appearance'): ?>
 <section class="panel">
-    <h2><?= hub_h(__('介面顯示')) ?></h2>
+    <h2><?= hub_h(hub_i18n_text('介面顯示')) ?></h2>
     <form method="post" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="form_type" value="appearance">
@@ -368,21 +368,21 @@ hub_admin_header('系統設定', $user);
         <label>AIHUB_SITE_SUBTITLE</label>
         <input name="AIHUB_SITE_SUBTITLE" value="<?= hub_h($settings['AIHUB_SITE_SUBTITLE']) ?>">
         <section class="setting-card branding-settings">
-            <h3><?= hub_h(__('站台識別')) ?></h3>
-            <img class="branding-preview" src="../branding_asset.php?v=<?= hub_h(urlencode(hub_branding_version($db))) ?>" width="96" height="96" alt="<?= hub_h(__('目前站台 Logo')) ?>">
-            <label for="branding-logo"><?= hub_h(__('上傳 Logo')) ?></label>
+            <h3><?= hub_h(hub_i18n_text('站台識別')) ?></h3>
+            <img class="branding-preview" src="../branding_asset.php?v=<?= hub_h(urlencode(hub_branding_version($db))) ?>" width="96" height="96" alt="<?= hub_h(hub_i18n_text('目前站台 Logo')) ?>">
+            <label for="branding-logo"><?= hub_h(hub_i18n_text('上傳 Logo')) ?></label>
             <input id="branding-logo" name="branding_logo" type="file" accept="image/png,image/webp,image/jpeg">
-            <p class="form-help"><?= hub_h(__('接受 PNG、WebP、JPEG；最大 2 MB、2048 × 2048。')) ?></p>
-            <button class="primary" name="branding_action" value="upload" type="submit"><?= hub_h(__('上傳並套用')) ?></button>
-            <button class="button" name="branding_action" value="restore" type="submit" onclick="return confirm(<?= hub_h((string)hub_json_encode(__('確定恢復預設 Logo？'))) ?>);"><?= hub_h(__('恢復預設')) ?></button>
+            <p class="form-help"><?= hub_h(hub_i18n_text('接受 PNG、WebP、JPEG；最大 2 MB、2048 × 2048。')) ?></p>
+            <button class="primary" name="branding_action" value="upload" type="submit"><?= hub_h(hub_i18n_text('上傳並套用')) ?></button>
+            <button class="button" name="branding_action" value="restore" type="submit" onclick="return confirm(<?= hub_h((string)hub_json_encode(hub_i18n_text('確定恢復預設 Logo？'))) ?>);"><?= hub_h(hub_i18n_text('恢復預設')) ?></button>
         </section>
         <p><button class="primary" type="submit"><?= hub_settings_t('儲存介面顯示') ?></button></p>
     </form>
 </section>
 <?php elseif ($activeTab === 'i18n'): ?>
 <section class="panel">
-    <h2><?= hub_h(__('多國語系')) ?></h2>
-    <p class="muted"><?= hub_settings_t('前後台使用') ?> <code>USER_LANG</code> cookie <?= hub_settings_t('選擇語系；程式可用') ?> <code>__('原字串')</code> <?= hub_settings_t('讀取翻譯。正體中文會直接回原字串，不查表。') ?></p>
+    <h2><?= hub_h(hub_i18n_text('多國語系')) ?></h2>
+    <p class="muted"><?= hub_settings_t('前後台使用') ?> <code>USER_LANG</code> cookie <?= hub_settings_t('選擇語系；程式可用') ?> <code>hub_i18n_text('原字串')</code> <?= hub_settings_t('讀取翻譯。正體中文會直接回原字串，不查表。') ?></p>
 </section>
 
 <section class="panel">
@@ -448,14 +448,14 @@ hub_admin_header('系統設定', $user);
 </section>
 <?php elseif ($activeTab === 'storage'): ?>
 <section class="panel">
-    <h2><?= hub_h(__('儲存與模型')) ?></h2>
+    <h2><?= hub_h(hub_i18n_text('儲存與模型')) ?></h2>
     <?php if (hub_platform_id() === 'windows'): ?><p class="form-help">以下為 3waAIHub Core（Control Plane）Windows 路徑；WSL Runtime（Preview）的 Linux data root 由 runtime profile 獨立管理。</p><?php endif; ?>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="form_type" value="storage">
         <input type="hidden" name="tab" value="storage">
         <?php foreach (['AIHUB_MODELS_DIR' => '模型目錄', 'AIHUB_CACHE_DIR' => '快取目錄', 'AIHUB_UPLOADS_DIR' => '上傳目錄', 'AIHUB_RESULTS_DIR' => '結果目錄', 'AIHUB_LOGS_DIR' => '記錄目錄'] as $key => $label): ?>
-            <label><?= hub_h(__($label)) ?> / <code><?= hub_h($key) ?></code></label>
+            <label><?= hub_h(hub_i18n_text($label)) ?> / <code><?= hub_h($key) ?></code></label>
             <input name="<?= hub_h($key) ?>" value="<?= hub_h($settings[$key]) ?>" required>
             <p class="form-help"><?= hub_h(hub_settings_path_status($settings[$key])) ?></p>
         <?php endforeach; ?>
@@ -464,7 +464,7 @@ hub_admin_header('系統設定', $user);
 </section>
 <?php elseif ($activeTab === 'api'): ?>
 <section class="panel">
-    <h2><?= hub_h(__('API 與安全')) ?></h2>
+    <h2><?= hub_h(hub_i18n_text('API 與安全')) ?></h2>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="form_type" value="api">
@@ -519,7 +519,7 @@ hub_admin_header('系統設定', $user);
 </section>
 <?php elseif ($activeTab === 'docker'): ?>
 <section class="panel">
-    <h2><?= hub_h(__('Docker 與背景工作')) ?></h2>
+    <h2><?= hub_h(hub_i18n_text('Docker 與背景工作')) ?></h2>
     <?php if (hub_platform_id() === 'windows'): ?><p class="form-help"><span class="muted">N/A（不適用）</span>：3waAIHub Core（Control Plane）不直接執行 linux-docker；WSL Runtime（Preview）readiness 另行檢查。</p><?php endif; ?>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
@@ -541,7 +541,7 @@ hub_admin_header('系統設定', $user);
 </section>
 <?php elseif ($activeTab === 'maintenance'): ?>
 <section class="panel">
-    <h2><?= hub_h(__('維護與保留')) ?></h2>
+    <h2><?= hub_h(hub_i18n_text('維護與保留')) ?></h2>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="form_type" value="maintenance">
@@ -554,7 +554,7 @@ hub_admin_header('系統設定', $user);
             'AIHUB_MAX_TASK_LOG_ROWS' => 'Task log DB rows 上限',
             'AIHUB_MAX_RESULT_JSON_BYTES' => 'result_json 最大 bytes',
         ] as $key => $label): ?>
-            <label><?= hub_h(__($label)) ?> / <code><?= hub_h($key) ?></code></label>
+            <label><?= hub_h(hub_i18n_text($label)) ?> / <code><?= hub_h($key) ?></code></label>
             <input name="<?= hub_h($key) ?>" value="<?= hub_h($settings[$key]) ?>" required>
         <?php endforeach; ?>
         <p class="form-help"><?= hub_settings_t('大量 log / result 仍應放在 data/ 檔案，SQLite 只存 metadata。') ?></p>
@@ -563,7 +563,7 @@ hub_admin_header('系統設定', $user);
 </section>
 <?php else: ?>
 <section class="panel">
-    <h2><?= hub_h(__('帳號密碼')) ?></h2>
+    <h2><?= hub_h(hub_i18n_text('帳號密碼')) ?></h2>
     <form method="post">
         <input type="hidden" name="csrf_token" value="<?= hub_h(hub_csrf_token()) ?>">
         <input type="hidden" name="form_type" value="password">

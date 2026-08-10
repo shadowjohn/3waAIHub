@@ -479,41 +479,41 @@ hub_admin_header('系統環境', $user);
     </form>
 </section>
 <section class="panel">
-    <h2><?= hub_h(__('版本與節點相容性')) ?></h2>
-    <p class="muted"><?= hub_h(__('此頁只顯示版本與相容性，不會執行更新或部署。')) ?></p>
+    <h2><?= hub_h(hub_i18n_text('版本與節點相容性')) ?></h2>
+    <p class="muted"><?= hub_h(hub_i18n_text('此頁只顯示版本與相容性，不會執行更新或部署。')) ?></p>
     <div class="table-wrap">
         <table>
             <tr>
-                <th><?= hub_h(__('目前版本')) ?></th>
+                <th><?= hub_h(hub_i18n_text('目前版本')) ?></th>
                 <td><code><?= hub_h((string)$releaseReport['git']['display_version']) ?></code> / <?= hub_h(HUB_RELEASE_LABEL) ?></td>
             </tr>
             <tr>
-                <th><?= hub_h(__('工作樹狀態')) ?></th>
+                <th><?= hub_h(hub_i18n_text('工作樹狀態')) ?></th>
                 <td class="<?= $releaseReport['git']['dirty'] === null ? 'muted' : ($releaseReport['git']['dirty'] ? 'bad' : 'ok') ?>">
-                    <?= hub_h(__($releaseReport['git']['dirty'] === null ? '未知' : ($releaseReport['git']['dirty'] ? '有未提交變更' : '乾淨'))) ?>
+                    <?= hub_h(hub_i18n_text($releaseReport['git']['dirty'] === null ? '未知' : ($releaseReport['git']['dirty'] ? '有未提交變更' : '乾淨'))) ?>
                 </td>
             </tr>
             <tr>
-                <th><?= hub_h(__('最後檢查時間')) ?></th>
-                <td><?= hub_h((string)($remoteRelease['checked_at'] ?: __('未知'))) ?><?php if ($remoteRelease['error'] !== ''): ?> / <code><?= hub_h((string)$remoteRelease['error']) ?></code><?php endif; ?></td>
+                <th><?= hub_h(hub_i18n_text('最後檢查時間')) ?></th>
+                <td><?= hub_h((string)($remoteRelease['checked_at'] ?: hub_i18n_text('未知'))) ?><?php if ($remoteRelease['error'] !== ''): ?> / <code><?= hub_h((string)$remoteRelease['error']) ?></code><?php endif; ?></td>
             </tr>
         </table>
     </div>
-    <h3><?= hub_h(__('Cluster 節點版本')) ?></h3>
+    <h3><?= hub_h(hub_i18n_text('Cluster 節點版本')) ?></h3>
     <?php if ($stationReleaseReports === []): ?>
-        <p class="muted"><?= hub_h(__('目前沒有已配對的子節點。')) ?></p>
+        <p class="muted"><?= hub_h(hub_i18n_text('目前沒有已配對的子節點。')) ?></p>
     <?php else: ?>
         <div class="table-wrap">
             <table>
                 <thead>
                 <tr>
-                    <th><?= hub_h(__('項次')) ?></th>
-                    <th><?= hub_h(__('站台')) ?></th>
-                    <th><?= hub_h(__('版本')) ?></th>
-                    <th><?= hub_h(__('節點類型')) ?></th>
-                    <th><?= hub_h(__('健康')) ?></th>
-                    <th><?= hub_h(__('Pack數')) ?></th>
-                    <th><?= hub_h(__('狀況')) ?></th>
+                    <th><?= hub_h(hub_i18n_text('項次')) ?></th>
+                    <th><?= hub_h(hub_i18n_text('站台')) ?></th>
+                    <th><?= hub_h(hub_i18n_text('版本')) ?></th>
+                    <th><?= hub_h(hub_i18n_text('節點類型')) ?></th>
+                    <th><?= hub_h(hub_i18n_text('健康')) ?></th>
+                    <th><?= hub_h(hub_i18n_text('Pack數')) ?></th>
+                    <th><?= hub_h(hub_i18n_text('狀況')) ?></th>
                 </tr>
                 </thead>
                 <tbody>
@@ -521,13 +521,13 @@ hub_admin_header('系統環境', $user);
                     <tr>
                         <td><?= number_format($index + 1) ?></td>
                         <td><?= hub_h((string)$stationRelease['display_name']) ?></td>
-                        <td><code><?= hub_h((string)($stationRelease['display_version'] ?: __('未知'))) ?></code></td>
+                        <td><code><?= hub_h((string)($stationRelease['display_version'] ?: hub_i18n_text('未知'))) ?></code></td>
                         <td>
                             <?= hub_h(match ((string)$stationRelease['node_type']) {
-                                'aggregate' => __('主節點+子節點'),
-                                'parent' => __('主節點'),
-                                'child' => __('子節點'),
-                                default => __('未知'),
+                                'aggregate' => hub_i18n_text('主節點+子節點'),
+                                'parent' => hub_i18n_text('主節點'),
+                                'child' => hub_i18n_text('子節點'),
+                                default => hub_i18n_text('未知'),
                             }) ?>
                         </td>
                         <td>
@@ -536,16 +536,16 @@ hub_admin_header('系統環境', $user);
                         </td>
                         <td>
                             <?php if ($stationRelease['pack_count'] === null): ?>
-                                <span class="muted"><?= hub_h(__('未知')) ?></span>
+                                <span class="muted"><?= hub_h(hub_i18n_text('未知')) ?></span>
                             <?php else: ?>
                                 <?= number_format((int)$stationRelease['pack_count']) ?>
                             <?php endif; ?>
                         </td>
                         <td>
                             <?php if ($stationRelease['update_needed'] === null): ?>
-                                <span class="muted"><?= hub_h(__('未知')) ?></span>
+                                <span class="muted"><?= hub_h(hub_i18n_text('未知')) ?></span>
                             <?php else: ?>
-                                <span class="<?= $stationRelease['update_needed'] ? 'bad' : 'ok' ?>"><?= hub_h(__($stationRelease['update_needed'] ? '需要更新' : '已對齊')) ?></span>
+                                <span class="<?= $stationRelease['update_needed'] ? 'bad' : 'ok' ?>"><?= hub_h(hub_i18n_text($stationRelease['update_needed'] ? '需要更新' : '已對齊')) ?></span>
                             <?php endif; ?>
                         </td>
                     </tr>

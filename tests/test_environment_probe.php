@@ -454,10 +454,10 @@ hub_test('release status stays read-only in Environment and Settings', function 
         hub_test_assert(str_contains($source, 'hub_release_'), 'admin release view must use the shared helper');
         hub_test_assert(!str_contains($source, 'check_release_update.php'), 'web UI must not invoke the CLI update checker');
     }
-    hub_test_assert(str_contains($environment, "__('版本與節點相容性')"), 'Environment release heading must use i18n');
+    hub_test_assert(str_contains($environment, "hub_i18n_text('版本與節點相容性')"), 'Environment release heading must use i18n');
     hub_test_assert(substr_count($environment, 'class="table-wrap"') >= 2, 'Environment release tables need responsive wrappers');
     hub_test_assert(str_contains($environment, 'hub_release_status_label'), 'Environment station health must use localized labels');
-    hub_test_assert(str_contains($settings, "__('唯讀更新指引')"), 'Settings update heading must use i18n');
+    hub_test_assert(str_contains($settings, "hub_i18n_text('唯讀更新指引')"), 'Settings update heading must use i18n');
 
     $baseCss = (string)file_get_contents(HUB_ROOT . '/assets/css/admin-base.css');
     hub_test_assert(str_contains($baseCss, 'body.app .table-wrap'), 'shared admin CSS must contain responsive table wrapping');

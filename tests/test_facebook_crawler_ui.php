@@ -25,15 +25,15 @@ hub_test('Facebook login page removes fragment proof and uses POST-only local re
 hub_test('Facebook login page keeps a stable password-safe localized control surface', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/facebook_profile_login.php');
     foreach ([
-        "__('Facebook 登入')",
-        "__('登入狀態')",
-        "__('輸入')",
-        "__('送出')",
-        "__('向上捲動')",
-        "__('向下捲動')",
-        "__('關閉')",
+        "hub_i18n_text('Facebook 登入')",
+        "hub_i18n_text('登入狀態')",
+        "hub_i18n_text('輸入')",
+        "hub_i18n_text('送出')",
+        "hub_i18n_text('向上捲動')",
+        "hub_i18n_text('向下捲動')",
+        "hub_i18n_text('關閉')",
     ] as $translation) {
-        hub_test_assert(str_contains($source, $translation), 'visible login string must use __(): ' . $translation);
+        hub_test_assert(str_contains($source, $translation), 'visible login string must use hub_i18n_text(): ' . $translation);
     }
     hub_test_assert(str_contains($source, 'aspect-ratio: 16 / 9'), 'login frame must keep a stable 16:9 surface');
     hub_test_assert(str_contains($source, 'type="password"') && str_contains($source, 'autocomplete="off"'), 'relay text input must be password-safe');
@@ -118,13 +118,13 @@ hub_test('Facebook crawler Test Center renders a focused localized workflow', fu
     hub_test_assert((fileperms($partial) & 0777) === 0755, 'new crawler PHP partial must be executable');
     $source = (string)file_get_contents($partial);
     foreach ([
-        "__('Facebook 登入 Profile')",
-        "__('目標粉絲專頁／社團')",
-        "__('每個目標近期文章數')",
-        "__('任務連結')",
-        "__('Dataset 預覽')",
+        "hub_i18n_text('Facebook 登入 Profile')",
+        "hub_i18n_text('目標粉絲專頁／社團')",
+        "hub_i18n_text('每個目標近期文章數')",
+        "hub_i18n_text('任務連結')",
+        "hub_i18n_text('Dataset 預覽')",
     ] as $translation) {
-        hub_test_assert(str_contains($source, $translation), 'crawler visible text must use __(): ' . $translation);
+        hub_test_assert(str_contains($source, $translation), 'crawler visible text must use hub_i18n_text(): ' . $translation);
     }
     hub_test_assert(str_contains($source, 'type="password"') && !str_contains($source, "value=\"<?= hub_h((string)(\$_POST['facebook_password']"), 'credentials must be password-only and never redisplayed');
     foreach (['http://', 'https://', '<script src=', '<link rel="stylesheet"'] as $remote) {

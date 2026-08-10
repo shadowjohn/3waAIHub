@@ -17,9 +17,9 @@ $runs = hub_admin_record_runtime_runs($db, $filters, 100);
 hub_admin_header('執行歷程', $user);
 ?>
 <section class="notice legacy-debug" role="note">
-    <strong><?= hub_h(__('Legacy debug 頁面')) ?></strong>
-    <?= hub_h(__('此頁已退出主選單，正式操作請使用「記錄中心」。')) ?>
-    <a href="log_explorer.php?tab=runs"><?= hub_h(__('前往執行歷程')) ?></a>
+    <strong><?= hub_h(hub_i18n_text('Legacy debug 頁面')) ?></strong>
+    <?= hub_h(hub_i18n_text('此頁已退出主選單，正式操作請使用「記錄中心」。')) ?>
+    <a href="log_explorer.php?tab=runs"><?= hub_h(hub_i18n_text('前往執行歷程')) ?></a>
 </section>
 <section class="panel">
     <h1>Runtime 執行歷程</h1>

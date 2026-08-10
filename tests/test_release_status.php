@@ -313,10 +313,10 @@ hub_test('Environment version page renders a concise Cluster inventory', functio
     $environment = (string)file_get_contents(HUB_ROOT . '/admin/environment.php');
 
     foreach (['Git commit', '版本資料來源', '目前 Tag', '遠端最新版本', 'Pack / Runner Digest'] as $hidden) {
-        hub_test_assert(!str_contains($environment, "__('{$hidden}')"), 'Environment must hide: ' . $hidden);
+        hub_test_assert(!str_contains($environment, "hub_i18n_text('{$hidden}')"), 'Environment must hide: ' . $hidden);
     }
     foreach (['項次', '站台', '版本', '節點類型', '健康', 'Pack數', '狀況'] as $header) {
-        hub_test_assert(str_contains($environment, "__('{$header}')"), 'Environment Cluster header missing: ' . $header);
+        hub_test_assert(str_contains($environment, "hub_i18n_text('{$header}')"), 'Environment Cluster header missing: ' . $header);
     }
     hub_test_assert(str_contains($environment, "'aggregate' => 0, 'parent' => 1, 'child' => 2"), 'aggregate nodes must sort first');
     hub_test_assert(!str_contains($environment, "rows.join(' | ')"), 'web protection checks must not be inline');

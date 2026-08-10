@@ -47,9 +47,9 @@ hub_admin_header('API 用量統計', $user);
     .usage-num { font-variant-numeric: tabular-nums; text-align: right; }
 </style>
 <section class="notice legacy-debug" role="note">
-    <strong><?= hub_h(__('Legacy debug 頁面')) ?></strong>
-    <?= hub_h(__('此頁已退出主選單，正式操作請使用「記錄中心」。')) ?>
-    <a href="log_explorer.php?tab=api"><?= hub_h(__('前往 API 記錄')) ?></a>
+    <strong><?= hub_h(hub_i18n_text('Legacy debug 頁面')) ?></strong>
+    <?= hub_h(hub_i18n_text('此頁已退出主選單，正式操作請使用「記錄中心」。')) ?>
+    <a href="log_explorer.php?tab=api"><?= hub_h(hub_i18n_text('前往 API 記錄')) ?></a>
 </section>
 <section class="panel">
     <h1>API 用量統計</h1>

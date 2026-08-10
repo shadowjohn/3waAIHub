@@ -1368,7 +1368,7 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
 {
     $services = hub_public_api_services($db, $healthProbe);
     $packIds = array_fill_keys(array_column($services, 'pack_id'), true);
-    $t = static fn (string $value): string => hub_h(__($value));
+    $t = static fn (string $value): string => hub_h(hub_i18n_text($value));
     ob_start();
     ?>
 <!doctype html>

@@ -26,7 +26,7 @@ hub_test('PhaseUI-5 Record Center tabs and service job links contract', function
 
     hub_test_assert(!str_contains($servicesPage, '<h2>近期背景工作</h2>'), 'services page should not render full recent jobs history');
     hub_test_assert(str_contains($servicesPage, 'log_explorer.php?tab=jobs'), 'services page must link to background jobs tab');
-    hub_test_assert(str_contains($servicesPage, "__('背景工作')"), 'service card must show the background jobs link');
+    hub_test_assert(str_contains($servicesPage, "hub_i18n_text('背景工作')"), 'service card must show the background jobs link');
     hub_test_assert(str_contains($servicesPage, '&amp;service_id='), 'service card must link to service-specific jobs');
     foreach (['service_key', 'pack_id', 'mode', 'runtime_level'] as $technical) {
         hub_test_assert(str_contains($servicesPage, $technical), 'technical value should stay English ' . $technical);

@@ -174,20 +174,20 @@ hub_test('Market scripts expose validation polling state and i18n consistency co
     hub_test_assert(!str_contains($servicesJs, 'job.status_label ||'), 'JS must map job status codes through the page dictionary');
 
     foreach ([
-        "'action_service_start' => __('啟動服務')",
-        "'action_service_stop' => __('停止服務')",
-        "'action_service_restart' => __('重啟服務')",
-        "'action_service_build' => __('建置服務')",
-        "'action_service_rebuild' => __('重新建置')",
-        "'action_service_health_check' => __('健康檢查')",
-        "'job_status_queued' => __('排隊中')",
-        "'job_status_running' => __('執行中')",
-        "'job_status_success' => __('成功')",
-        "'job_status_failed' => __('失敗')",
-        "'job_status_cancelled' => __('已取消')",
-        "'job_status_timeout' => __('逾時')",
-        "'summary_failed' => __('讀取服務摘要失敗，請稍後重試。')",
-        "'required_fields' => __('請完成標示的必填欄位。')",
+        "'action_service_start' => hub_i18n_text('啟動服務')",
+        "'action_service_stop' => hub_i18n_text('停止服務')",
+        "'action_service_restart' => hub_i18n_text('重啟服務')",
+        "'action_service_build' => hub_i18n_text('建置服務')",
+        "'action_service_rebuild' => hub_i18n_text('重新建置')",
+        "'action_service_health_check' => hub_i18n_text('健康檢查')",
+        "'job_status_queued' => hub_i18n_text('排隊中')",
+        "'job_status_running' => hub_i18n_text('執行中')",
+        "'job_status_success' => hub_i18n_text('成功')",
+        "'job_status_failed' => hub_i18n_text('失敗')",
+        "'job_status_cancelled' => hub_i18n_text('已取消')",
+        "'job_status_timeout' => hub_i18n_text('逾時')",
+        "'summary_failed' => hub_i18n_text('讀取服務摘要失敗，請稍後重試。')",
+        "'required_fields' => hub_i18n_text('請完成標示的必填欄位。')",
     ] as $needle) {
         hub_test_assert(str_contains($marketplace, $needle), 'canonical Market dictionary missing ' . $needle);
     }

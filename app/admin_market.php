@@ -136,12 +136,12 @@ function hub_admin_market_gpu_label(array $manifest, string $surface = 'packs'):
     $hardware = is_array($manifest['hardware'] ?? null) ? $manifest['hardware'] : [];
     if ($surface === 'marketplace') {
         if (!empty($hardware['gpu_required'])) {
-            return ['label' => __('需要 GPU'), 'class' => 'hub-badge hub-badge-warn'];
+            return ['label' => hub_i18n_text('需要 GPU'), 'class' => 'hub-badge hub-badge-warn'];
         }
         if (!empty($hardware['gpu_supported'])) {
-            return ['label' => __('可用 GPU'), 'class' => 'hub-badge hub-badge-ok'];
+            return ['label' => hub_i18n_text('可用 GPU'), 'class' => 'hub-badge hub-badge-ok'];
         }
-        return ['label' => __('不使用 GPU'), 'class' => 'hub-badge hub-badge-muted'];
+        return ['label' => hub_i18n_text('不使用 GPU'), 'class' => 'hub-badge hub-badge-muted'];
     }
 
     if (!empty($hardware['gpu_required'])) {
@@ -170,11 +170,11 @@ function hub_admin_market_model_label(PDO $db, array $manifest, string $surface 
         try {
             hub_pack_job_resolve_asset_mounts($db, ['asset_mounts' => $fixedAssets]);
             return $surface === 'marketplace'
-                ? ['label' => __('模型已就緒'), 'class' => 'hub-badge hub-badge-ok']
+                ? ['label' => hub_i18n_text('模型已就緒'), 'class' => 'hub-badge hub-badge-ok']
                 : ['label' => '模型已就緒', 'class' => 'pack-badge pack-badge-ok'];
         } catch (Throwable) {
             return $surface === 'marketplace'
-                ? ['label' => __('缺少模型'), 'class' => 'hub-badge hub-badge-bad']
+                ? ['label' => hub_i18n_text('缺少模型'), 'class' => 'hub-badge hub-badge-bad']
                 : ['label' => '缺少模型', 'class' => 'pack-badge pack-badge-bad'];
         }
     }
@@ -194,7 +194,7 @@ function hub_admin_market_model_label(PDO $db, array $manifest, string $surface 
         try {
             $status = hub_model_selector_status($db, $selector, trim((string)$item['default']));
             if (!empty($status['model_present']) || ((string)($selector['type'] ?? 'file') !== 'ollama_tag' && !empty($status['exists']))) {
-                return ['label' => __('模型已就緒'), 'class' => 'hub-badge hub-badge-ok'];
+                return ['label' => hub_i18n_text('模型已就緒'), 'class' => 'hub-badge hub-badge-ok'];
             }
         } catch (Throwable) {
         }
@@ -204,7 +204,7 @@ function hub_admin_market_model_label(PDO $db, array $manifest, string $surface 
         try {
             if (hub_model_selector_options($db, $selector) !== []) {
                 return $surface === 'marketplace'
-                    ? ['label' => __('模型已就緒'), 'class' => 'hub-badge hub-badge-ok']
+                    ? ['label' => hub_i18n_text('模型已就緒'), 'class' => 'hub-badge hub-badge-ok']
                     : ['label' => '模型已就緒', 'class' => 'pack-badge pack-badge-ok'];
             }
         } catch (Throwable) {
@@ -213,8 +213,8 @@ function hub_admin_market_model_label(PDO $db, array $manifest, string $surface 
 
     if ($surface === 'marketplace') {
         return $required
-            ? ['label' => __('缺少模型'), 'class' => 'hub-badge hub-badge-bad']
-            : ['label' => ($schema === [] ? __('無模型需求') : __('模型可選')), 'class' => 'hub-badge hub-badge-muted'];
+            ? ['label' => hub_i18n_text('缺少模型'), 'class' => 'hub-badge hub-badge-bad']
+            : ['label' => ($schema === [] ? hub_i18n_text('無模型需求') : hub_i18n_text('模型可選')), 'class' => 'hub-badge hub-badge-muted'];
     }
     if ($selectors === []) {
         return ['label' => '無模型需求', 'class' => 'pack-badge pack-badge-muted'];

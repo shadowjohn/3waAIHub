@@ -124,7 +124,7 @@ function hub_service_setting_input_html(
     }
     if ($isSecret) {
         $attributes[] = 'autocomplete="new-password"';
-        $attributes[] = 'placeholder="' . hub_h(__('留空則保留既有值')) . '"';
+        $attributes[] = 'placeholder="' . hub_h(hub_i18n_text('留空則保留既有值')) . '"';
     } else {
         $attributes[] = 'value="' . hub_h($settingValue) . '"';
     }

@@ -538,12 +538,12 @@ function hub_release_status_label(string $status): string
         '' => '未知',
     ][$status] ?? $status;
 
-    return __($label);
+    return hub_i18n_text($label);
 }
 
 function hub_release_source_label(string $source): string
 {
-    return __([
+    return hub_i18n_text([
         'git' => '即時 Git',
         'cli_snapshot' => 'CLI 快照',
         'unknown' => '未知',

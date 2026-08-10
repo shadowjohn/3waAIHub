@@ -120,7 +120,7 @@ function hub_playground_execute_tts_mode(string $ttsMode, string $token, ?callab
 
     $rawBody = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
     if (!is_string($rawBody)) {
-        return ['ok' => false, 'error' => 'request_failed', 'message' => __('Gateway 回傳錯誤。')];
+        return ['ok' => false, 'error' => 'request_failed', 'message' => hub_i18n_text('Gateway 回傳錯誤。')];
     }
     $db = hub_db();
     hub_migrate($db);
@@ -174,7 +174,7 @@ function hub_playground_execute_tts(string $token, ?callable $request = null): a
         'elapsed_ms' => array_sum(array_map(static fn (array $result): int => (int)($result['elapsed_ms'] ?? 0), $results)),
         'request_id' => '',
         'error' => $allFailed ? 'tts_comparison_failed' : '',
-        'message' => $allFailed ? __('所有 TTS 模式皆失敗。') : '',
+        'message' => $allFailed ? hub_i18n_text('所有 TTS 模式皆失敗。') : '',
         'results' => $results,
         'pretty_body' => json_encode(['results' => $results], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
     ];
@@ -230,7 +230,7 @@ function hub_playground_voice_profile_error_result(): array
         'elapsed_ms' => 0,
         'request_id' => '',
         'error' => 'voice_profile_request_failed',
-        'message' => __('Voice Profile 操作失敗。'),
+        'message' => hub_i18n_text('Voice Profile 操作失敗。'),
         'pretty_body' => json_encode(['ok' => false, 'error' => 'voice_profile_request_failed'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE),
     ];
 }

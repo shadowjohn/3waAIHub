@@ -31,7 +31,7 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 - HubPack registry 與 hello pack 安裝
 - Storage settings / model directory
 - 後台 shell 中文化、站台標題設定、設定頁分頁
-- i18n foundation：SQLite 翻譯表、`USER_LANG` cookie 語系選擇、`__()` helper 與後台多國語系維護頁
+- i18n foundation：SQLite 翻譯表、`USER_LANG` cookie 語系選擇、`hub_i18n_text()` helper 與後台多國語系維護頁
 - 單一 Market 工作區：套件探索、模型需求、安裝狀態與已安裝服務管理
 - 已安裝服務可啟停、重啟、健康檢查，技術細節預設收合
 - 服務狀態拆分：啟用 / 容器 / 健康 / 設定 / 最後工作
@@ -260,7 +260,7 @@ Customer 頁面不顯示 `local_port`、Docker compose 路徑、host model path�
 - 維護頁：`admin/settings.php?tab=i18n`，`admin/i18n.php` 保留為相容轉址入口
 - 預載 seed：`i18n/seed.json`
 
-`zh_TW` 會直接回原字串，不查表。其他語系先查 `i18n`，缺資料時會用短 timeout Google translate fallback 寫入快取；外部翻譯失敗時回原字串。全站 literal 會逐步在後續修改時套用 `__()`，本階段不做一次性全站重包。
+`zh_TW` 會直接回原字串，不查表。其他語系先查 `i18n`，缺資料時會用短 timeout Google translate fallback 寫入快取；外部翻譯失敗時回原字串。PHP 介面文字統一透過 `hub_i18n_text()` 查詢，翻譯內容僅接受純文字。
 
 目前可用這台主機已翻完整的內容匯出成 seed：
 

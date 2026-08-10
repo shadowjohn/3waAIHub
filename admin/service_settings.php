@@ -112,7 +112,7 @@ hub_admin_header('服務設定', $user);
 <?php
 function hub_service_setting_field(PDO $db, string $key, array $item, string $settingValue): string
 {
-    $label = __((string)($item['label'] ?? $key));
+    $label = hub_i18n_text((string)($item['label'] ?? $key));
     $type = (string)($item['type'] ?? 'text');
     $isSecret = !empty($item['secret']);
     $isInternalJobToken = $isSecret && str_ends_with($key, '_INTERNAL_JOB_TOKEN');
@@ -128,7 +128,7 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $se
     <?php elseif ($type === 'select'): ?>
         <select name="<?= hub_h($key) ?>"<?= $required ?>>
             <?php foreach ((array)($item['options'] ?? []) as $option): ?>
-                <option value="<?= hub_h((string)$option) ?>"<?= $settingValue === (string)$option ? ' selected' : '' ?>><?= hub_h(__((string)($item['option_labels'][$option] ?? $option))) ?></option>
+                <option value="<?= hub_h((string)$option) ?>"<?= $settingValue === (string)$option ? ' selected' : '' ?>><?= hub_h(hub_i18n_text((string)($item['option_labels'][$option] ?? $option))) ?></option>
             <?php endforeach; ?>
         </select>
     <?php else: ?>
@@ -156,7 +156,7 @@ function hub_service_setting_field(PDO $db, string $key, array $item, string $se
             <?= hub_service_setting_input_html($key, $inputType, $settingValue, $isSecret, null, $isRequired) ?>
         <?php endif; ?>
     <?php endif; ?>
-    <?php if ($isInternalJobToken): ?><p class="muted"><?= hub_h($settingValue !== '' ? __('已由系統設定；留空則保留既有值。') : __('由系統自動產生；留空即可。')) ?></p><?php endif; ?>
+    <?php if ($isInternalJobToken): ?><p class="muted"><?= hub_h($settingValue !== '' ? hub_i18n_text('已由系統設定；留空則保留既有值。') : hub_i18n_text('由系統自動產生；留空即可。')) ?></p><?php endif; ?>
     <?php if ($help !== ''): ?><p class="muted"><?= hub_h($help) ?></p><?php endif; ?>
     <?php
     return (string)ob_get_clean();

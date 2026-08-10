@@ -51,16 +51,16 @@ function hub_admin_dashboard_service_status_label(array $service): string
     $install = (string)($service['install_status'] ?? '');
     $runtime = (string)($service['runtime_status'] ?? $service['status'] ?? '');
     if ($install === 'failed' || in_array($runtime, ['failed', 'error'], true)) {
-        return __('異常');
+        return hub_i18n_text('異常');
     }
     if (array_key_exists('enabled', $service) && $service['enabled'] === false) {
-        return __('已停用');
+        return hub_i18n_text('已停用');
     }
 
     return match ($runtime) {
-        'running' => __('執行中'),
-        'stopped' => __('已停止'),
-        'pending', 'not_ready' => __('啟動中'),
+        'running' => hub_i18n_text('執行中'),
+        'stopped' => hub_i18n_text('已停止'),
+        'pending', 'not_ready' => hub_i18n_text('啟動中'),
         default => '',
     };
 }
