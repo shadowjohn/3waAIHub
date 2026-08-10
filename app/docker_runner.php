@@ -468,13 +468,19 @@ function hub_compose_command(array $service, array $args): array
     if (!is_file($settingsPath) || is_link($settingsPath)) {
         throw new RuntimeException('Service runtime settings file is unavailable.');
     }
+
+    $composeProject = trim((string)($service['active_compose_project'] ?? ''));
+    if ($composeProject === '') {
+        $composeProject = (string)$service['compose_project'];
+    }
+
     $command = [
         'docker',
         'compose',
         '--env-file',
         $settingsPath,
         '-p',
-        $service['compose_project'],
+        $composeProject,
         '-f',
         hub_path($service['compose_file']),
     ];
@@ -988,6 +994,60 @@ function hub_wsl_service_compose_command(array $service, array $args, ?array $pr
     return hub_wsl_script_command($runtime, $script);
 }
 
+function hub_active_service_compose_project(array $service, ?callable $runner = null): ?string
+{
+    $configuredProject = trim((string)($service['compose_project'] ?? ''));
+    $composeFile = hub_path((string)($service['compose_file'] ?? ''));
+    if ($configuredProject === '' || !is_file($composeFile)) {
+        return null;
+    }
+
+    $runner ??= static fn (array $command, int $timeoutSeconds, array $env): array => hub_run_linux_docker_command($command, $timeoutSeconds, $env);
+    $filter = 'label=com.docker.compose.project.config_files=' . $composeFile;
+    $containers = $runner([
+        'docker',
+        'ps',
+        '-q',
+        '--filter',
+        $filter,
+    ], 15, hub_docker_command_environment());
+    if ((int)$containers['exit_code'] !== 0) {
+        return null;
+    }
+
+    $containerIds = array_values(array_filter(preg_split('/\R/', trim((string)$containers['stdout'])) ?: []));
+    if ($containerIds === []) {
+        return null;
+    }
+
+    $projects = $runner(array_merge([
+        'docker',
+        'inspect',
+        '-f',
+        '{{ index .Config.Labels "com.docker.compose.project" }}',
+    ], $containerIds), 15, hub_docker_command_environment());
+    if ((int)$projects['exit_code'] !== 0) {
+        return null;
+    }
+
+    $activeProjects = [];
+    foreach (preg_split('/\R/', trim((string)$projects['stdout'])) ?: [] as $project) {
+        $project = trim($project);
+        if ($project !== '' && preg_match('/^[A-Za-z0-9][A-Za-z0-9_-]*$/', $project) === 1) {
+            $activeProjects[$project] = true;
+        }
+    }
+    if ($activeProjects === []) {
+        return null;
+    }
+    if (isset($activeProjects[$configuredProject])) {
+        return $configuredProject;
+    }
+
+    // 舊版安裝可能曾使用不同 project 名稱；僅在唯一候選時安全接管。
+    return count($activeProjects) === 1 ? (string)array_key_first($activeProjects) : null;
+}
+
 function hub_service_image_exists(array $service): bool
 {
     if (!hub_service_uses_wsl_runtime($service)) {
@@ -1214,6 +1274,14 @@ function hub_stop_service(PDO $db, array $service, ?array $job = null): array
     $unsupported = hub_service_runtime_unsupported_result($service);
     if ($unsupported !== null) {
         return $unsupported;
+    }
+
+    $runtimeState = (string)($service['runtime_status'] ?? $service['status'] ?? '');
+    if (!hub_service_uses_wsl_runtime($service) && $runtimeState !== 'stopped') {
+        $activeProject = hub_active_service_compose_project($service);
+        if ($activeProject !== null) {
+            $service['active_compose_project'] = $activeProject;
+        }
     }
 
     hub_job_progress($db, $job, 'docker_down', 10, 'Stopping container.');

@@ -41,6 +41,11 @@ function hub_test_wsl_env_payload(string $script): string
     return $value;
 }
 
+function hub_test_host_root_child_needle(): string
+{
+    return rtrim(str_replace('\\', '/', HUB_ROOT), '/') . '/';
+}
+
 hub_test('Linux pulls repair unreadable release web source before PHP-FPM serves it', function (): void {
     $hook = (string)file_get_contents(HUB_ROOT . '/.githooks/post-merge');
     $cron = (string)file_get_contents(HUB_ROOT . '/crontab/1min.sh');
@@ -263,7 +268,7 @@ hub_test('Edge TTS WSL provisioning uses synced source and preserves its demo eg
         && str_contains($buildPayload, 'docker build')
         && str_contains($buildPayload, "service_root='/DATA/3waAIHub-runtime/packs/edge-tts/service'")
         && str_contains($buildPayload, '--file "$service_root/Dockerfile" "$service_root"')
-        && !str_contains($buildPayload, str_replace('\\', '/', HUB_ROOT)), 'Edge TTS WSL image provisioning must use synced WSL Pack source only');
+        && !str_contains($buildPayload, hub_test_host_root_child_needle()), 'Edge TTS WSL image provisioning must use synced WSL Pack source only');
     hub_test_assert(hub_test_throws(static fn (): array => hub_wsl_job_runner_build_command($service, ['docker', 'pull', $image], $profile)), 'Edge TTS WSL builder must reject undeclared Docker commands');
 
     $parent = dirname(hub_edge_tts_demo_root((string)$service['service_key']));
@@ -435,8 +440,8 @@ hub_test('Whisper WSL Pascal service uses the explicit CUDA 11.8 compose profile
         && str_contains($script, 'mv -f -- "$settings_tmp" "$service_root/runtime-settings.conf"')
         && str_contains($script, "DOCKER_BUILDKIT=0 docker build --tag '3waaihub/whisper-asr:0.1.2-pascal-cu118'")
         && str_contains($script, "--file '/DATA/3waAIHub-runtime/packs/whisper-asr/service/Dockerfile.pascal-cu118'")
-        && !str_contains($script, str_replace('\\', '/', HUB_ROOT))
-        && !str_contains($compose, str_replace('\\', '/', HUB_ROOT)), 'Whisper WSL compose must use only the Pascal image and ext4 runtime roots');
+        && !str_contains($script, hub_test_host_root_child_needle())
+        && !str_contains($compose, hub_test_host_root_child_needle()), 'Whisper WSL compose must use only the Pascal image and ext4 runtime roots');
 });
 
 hub_test('generic WSL service runtime settings use an atomic SHA-256 verified write', function (): void {
