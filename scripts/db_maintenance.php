@@ -57,13 +57,13 @@ function hub_db_maintenance_status(PDO $db): void
         ],
     ];
 
-    echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . PHP_EOL;
+    echo hub_json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . PHP_EOL;
 }
 
 function hub_db_maintenance_checkpoint(PDO $db): void
 {
     $rows = $db->query('PRAGMA wal_checkpoint(TRUNCATE)')->fetchAll();
-    echo json_encode([
+    echo hub_json_encode([
         'ok' => true,
         'action' => 'checkpoint',
         'mode' => 'TRUNCATE',
@@ -84,7 +84,7 @@ function hub_db_maintenance_vacuum(PDO $db, bool $yes): void
 
     $db->exec('PRAGMA wal_checkpoint(TRUNCATE)');
     $db->exec('VACUUM');
-    echo json_encode([
+    echo hub_json_encode([
         'ok' => true,
         'action' => 'vacuum',
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . PHP_EOL;

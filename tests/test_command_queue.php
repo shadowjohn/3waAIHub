@@ -170,6 +170,13 @@ hub_test('managed file tails read only command logs and task result roots', func
     hub_test_assert(hub_tail_file($outsidePath) === '', 'tail helper must reject files outside managed roots');
 });
 
+hub_test('database maintenance CLI uses the shared safe JSON encoder', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/scripts/db_maintenance.php');
+
+    hub_test_assert(substr_count($source, 'hub_json_encode(') === 3, 'database maintenance must encode every JSON report through the shared safe boundary');
+    hub_test_assert(!str_contains($source, 'echo json_encode('), 'database maintenance must not bypass the shared safe JSON encoder');
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
     $stmt = null;
     try {
