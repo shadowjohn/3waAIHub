@@ -8,6 +8,10 @@ param(
     [ValidateSet(0, 1, 2, 3)]
     [int]$ProductType = 0,
     [switch]$InstallIis,
+    [switch]$ConfigureIis,
+    [string]$IisPhpCgiPath,
+    [string]$IisSiteName = 'Default Web Site',
+    [string]$IisVirtualPath = '/3waAIHub',
     [switch]$InitializeClusterSecret,
     [switch]$Check,
     [switch]$Help,
@@ -20,7 +24,7 @@ $ErrorActionPreference = 'Stop'
 
 function Show-Usage {
     Write-Host 'Usage:'
-    Write-Host '  .\install.ps1 -Mode Core [-InstallIis] [-InitializeClusterSecret] [-ModelsRoot D:\DATA\models] [-Check] [-InstallRoot D:\DATA\3waAIHub]'
+    Write-Host '  .\install.ps1 -Mode Core [-InstallIis] [-ConfigureIis] [-IisPhpCgiPath C:\PHP\php-cgi.exe] [-InitializeClusterSecret] [-ModelsRoot D:\DATA\models] [-Check] [-InstallRoot D:\DATA\3waAIHub]'
     Write-Host '  .\install.ps1 -Mode WslRuntime -InstallRoot "D:\DATA\3waAIHub" -ModelsRoot "D:\DATA\models" -WslDistro "Ubuntu-24.04" -LinuxDataRoot "/DATA" -Check'
     Write-Host '  .\install.ps1 -Mode NativeAgent -Check'
     Write-Host '  .\install.ps1 -Mode RemoteControlPlane -Check'
@@ -48,13 +52,16 @@ switch ($Mode) {
             if ($InstallIis) {
                 Write-Host '[3waAIHub] -InstallIis is ignored during -Check.'
             }
+            if ($ConfigureIis) {
+                Write-Host '[3waAIHub] -ConfigureIis is ignored during -Check.'
+            }
             if ($InitializeClusterSecret) {
                 Write-Host '[3waAIHub] -InitializeClusterSecret is deprecated; Cluster creates data\cluster.key when needed.'
             }
             exit 0
         }
 
-        & $installCore -InstallRoot $InstallRoot -ModelsRoot $ModelsRoot -ProductType $ProductType -InstallIis:$InstallIis -InitializeClusterSecret:$InitializeClusterSecret -PhpZipUri $PhpZipUri -PhpZipSha256 $PhpZipSha256
+        & $installCore -InstallRoot $InstallRoot -ModelsRoot $ModelsRoot -ProductType $ProductType -InstallIis:$InstallIis -ConfigureIis:$ConfigureIis -IisPhpCgiPath $IisPhpCgiPath -IisSiteName $IisSiteName -IisVirtualPath $IisVirtualPath -InitializeClusterSecret:$InitializeClusterSecret -PhpZipUri $PhpZipUri -PhpZipSha256 $PhpZipSha256
         exit $LASTEXITCODE
     }
     'WslRuntime' {

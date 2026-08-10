@@ -138,15 +138,27 @@ cd /DATA/3waAIHub
 - 檢查 Docker / Docker Compose 是否可用
 - 建立 `data/` runtime 目錄
 - 初始化 SQLite
+- 建立並驗證 `dist/release-manifest.json`
 - 整理 runtime 權限
 
 預設不會安裝 Docker 或 NVIDIA 套件。
+
+Linux 也採與 Windows 相同的 release boundary：Web server 的唯一
+DocumentRoot 必須是 `/DATA/3waAIHub/dist/public`；`dist/app`、`dist/scripts`
+與 `dist/packs` 是私有 runtime code，SQLite、sessions、jobs、logs 與 Cluster key
+則留在 artifact 同層的 `/DATA/3waAIHub/data`。正式 worker cron 由
+`dist/scripts/install_command_worker_cron.sh` 安裝，因此 Git checkout 更新後必須重新執行
+`./install.sh`，才會重建 artifact、驗證 hash，並讓 Web 與 worker 同步切到同一版。
 
 只檢查環境，不初始化、不修改主機：
 
 ```bash
 ./install.sh --check
 ```
+
+`--check` 不會修改主機；它會顯示 release artifact 是否通過 manifest 驗證，以及應設定的
+`Web document root`。Fortify 掃描也應以 `dist/` 為輸入，而不是只掃 `dist/public/`；後者
+會漏掉私有 `app/`、worker scripts 與 Pack runtime source。
 
 Windows installer 依主機角色執行：
 
@@ -155,6 +167,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core
 # 僅在要用 IIS 部署時，以系統管理員 PowerShell 執行：
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -InstallIis
+# IIS 實際掛載經 hash 驗證的 dist\public，而不是 checkout 根目錄：
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -InstallIis -ConfigureIis -IisPhpCgiPath 'C:\PHP\php-cgi.exe'
 # 先做不變更系統的 readiness 檢查；READY 後移除 -Check 才會安裝 WSL runtime。
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode WslRuntime -InstallRoot "D:\DATA\3waAIHub" -ModelsRoot "D:\DATA\models" -WslDistro "Ubuntu-24.04" -LinuxDataRoot "/DATA" -Check
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Mode WslRuntime -InstallRoot "D:\DATA\3waAIHub" -ModelsRoot "D:\DATA\models" -WslDistro "Ubuntu-24.04" -LinuxDataRoot "/DATA"
@@ -162,7 +176,7 @@ powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode Core -Check
 powershell -ExecutionPolicy Bypass -File .\uninstall.ps1 -Mode WslRuntime -Check
 ```
 
-`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite，建立 `data/` runtime 目錄並初始化 SQLite，並把 `-ModelsRoot` 寫入 Hub Settings 的 `AIHUB_MODELS_DIR`。既有 PHP 只會檢查，絕不修改外部 `php.ini`；若缺少或不符合需求，才下載官方 PHP 8.3 NTS x64 FastCGI、比對官方 SHA-256 後安裝到 `<InstallRoot>\tools\php`，並只設定這份 managed PHP 的 `Asia/Taipei`、`short_open_tag` 與必要 extensions。IIS `WebAdministration` 不需下載第三方套件；要啟用時，`-InstallIis` 會以系統管理員權限啟用 Windows 內建 IIS／管理腳本工具，不會自動重開機，且 `-Check` 永遠不變更系統。Cluster 首次使用時會在 `data/cluster.key` 建立每台 Hub 自己的加密材料；舊版 `AIHUB_CLUSTER_SECRET_KEY` 只會被讀取一次並遷入該檔案，之後不再依賴環境變數。移機時搬遷 `data/` 即可保留配對，若要建立全新身份則不搬此檔並重新配對。Core readiness 與 IIS readiness 分開報告，前者可用 `php -S` 運作，不會因 IIS 尚未配置而變成 Core not ready。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、IIS、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
+`Core` 是 Windows Control Plane preview：檢查 PHP / SQLite，建立 `data/` runtime 目錄並初始化 SQLite，並把 `-ModelsRoot` 寫入 Hub Settings 的 `AIHUB_MODELS_DIR`。每次正式 Core 安裝都會先重建並驗證 `<InstallRoot>\dist\release-manifest.json`；IIS 只能掛載 `<InstallRoot>\dist\public`，而 SQLite、sessions、jobs、logs 與 Cluster key 仍固定留在 artifact 同層的 `<InstallRoot>\data`。既有 PHP 只會檢查，絕不修改外部 `php.ini`；若缺少或不符合需求，才下載官方 PHP 8.3 NTS x64 FastCGI、比對官方 SHA-256 後安裝到 `<InstallRoot>\tools\php`，並只設定這份 managed PHP 的 `Asia/Taipei`、`short_open_tag` 與必要 extensions。IIS `WebAdministration` 不需下載第三方套件；要啟用時，`-InstallIis` 會以系統管理員權限啟用 Windows 內建 IIS／管理腳本工具，不會自動重開機，且 `-Check` 永遠不變更系統。要實際掛載 release，另加 `-ConfigureIis`；它必須與 `-InstallIis` 同用，並可用 `-IisPhpCgiPath` 指向既有 MS4W PHP。Cluster 首次使用時會在 `data/cluster.key` 建立每台 Hub 自己的加密材料；舊版 `AIHUB_CLUSTER_SECRET_KEY` 只會被讀取一次並遷入該檔案，之後不再依賴環境變數。移機時搬遷 `data/` 即可保留配對，若要建立全新身份則不搬此檔並重新配對。Core readiness 與 IIS readiness 分開報告；前者可用 `php -S` 運作，而後者還要求 release artifact 已通過 manifest 驗證。`uninstall.ps1 -Check` 目前只列出移除範圍，不會刪除全域 PHP、IIS、WSL、NVIDIA driver、專案資料、SQLite DB 或 models。
 
 `WslRuntime -Check` 只做 read-only readiness report：檢查 WSL2、指定 Ubuntu distro、distro 內 Docker Engine / Compose、PHP CLI、PDO SQLite、`nvidia-smi`、依 GPU 選出的 YOLO profile，以及 `/DATA` 是否在 WSL ext4。移除 `-Check` 後，安裝器只在既有 distro 內補齊 `php-cli`／`php-sqlite3`、同步最小 runtime 到 `/DATA/3waAIHub-runtime`（shell job 強制 LF）、建立 SQLite 與 runtime profile，並依 Pack metadata 建立對應 YOLO image。它不自動啟用 Windows Features、不安裝 Docker Desktop、不改顯示卡驅動；Docker Engine 必須已由 Docker Desktop WSL2 backend 或 distro 自行提供。
 
@@ -183,7 +197,7 @@ GTX 1050／1050 Ti／1080／1080 Ti（Pascal）會選取 `pascal-cu118` profile�
 >
 > Windows Core 的不適用能力顯示 N/A，不顯示成系統故障。
 
-Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。以系統管理員 PowerShell 執行 `scripts/windows/configure-iis-fastcgi.ps1`，它會建立指定 IIS virtual directory、註冊選定的 `php-cgi.exe`，並只對該 Hub location 加入 PHP handler；`web.config` 不應寫死其他機器的 PHP 路徑，並預設以 `index.php` 處理根目錄與 `/admin/` 等目錄入口。它會關閉 directory browsing，並封鎖程式庫、部署腳本、測試、Pack metadata、runtime data、版本控制與敏感靜態副檔名的 HTTP 直接存取；公開 API、`admin/`、`catalog_show/` 與 `assets/` 維持可用。若沿用 MS4W_MSSQL 的 PHP，直接指定其中的 `php-cgi.exe` 即可；Cluster key 會儲存在 `data/cluster.key`，不修改該套件的 `php.ini`。登入 session 會保存在 `data/sessions/`，而 IIS App Pool identity 必須對 `data/` 具備修改權限。
+Windows 的多人部署請使用 IIS + PHP FastCGI，不要使用 `php -S`。以系統管理員 PowerShell 執行 `scripts/windows/configure-iis-fastcgi.ps1`，它會先驗證 `dist/release-manifest.json`，再建立或更新指定 IIS virtual directory 到固定的 `dist\public`、註冊選定的 `php-cgi.exe`，並只對該 Hub location 加入 PHP handler；`web.config` 不應寫死其他機器的 PHP 路徑，並預設以 `index.php` 處理根目錄與 `/admin/` 等目錄入口。它會關閉 directory browsing，並封鎖程式庫、部署腳本、測試、Pack metadata、runtime data、版本控制與敏感靜態副檔名的 HTTP 直接存取；公開 API、`admin/`、`catalog_show/` 與 `assets/` 維持可用。若沿用 MS4W_MSSQL 的 PHP，直接指定其中的 `php-cgi.exe` 即可；Cluster key 會儲存在 `data/cluster.key`，不修改該套件的 `php.ini`。登入 session 會保存在 `data/sessions/`，而 IIS App Pool identity 必須對 `data/` 具備修改權限。
 
 Windows 不掛 Linux cron。可在 Task Scheduler 匯入 `3waAIHub_Crontab.xml`，它每分鐘以 LocalSystem 啟動 100 tick 的 Core task loop：每 500 ms 執行 `task_worker.php --limit=5 --runtime=core`，並與 `command_worker.php --limit=5 --runtime=core` 並行；不需保存使用者帳密，並以 `IgnoreNew` 避免 worker 重入；log 寫到 `data/logs/command_worker_windows.log`。Core task worker 不認領使用者專屬 WSL distro 的 Pack task。WSL Pack 則由 Ubuntu 的 `aihub-wsl-worker.service` 常駐處理：它以 0.5 秒節奏消化 WSL task、每五秒消化 WSL service command job；Windows 僅保留一支登入時啟動 systemd service 的 Interactive Token task，不保存密碼、也不以每分鐘排程拉起 worker。預設 XML 對應 `D:\DATA\3waAIHub`；執行 Core installer 後，會在 `data/install/3waAIHub_Crontab.xml` 產生已依 `InstallRoot` 改寫的版本。System task 需要由 Machine PATH 或 `<InstallRoot>\tools\php\php.exe` 找到 PHP。
 
@@ -195,14 +209,16 @@ Windows 不掛 Linux cron。可在 Task Scheduler 匯入 `3waAIHub_Crontab.xml`�
 
 ```powershell
 .\scripts\windows\configure-iis-fastcgi.ps1 `
+  -InstallRoot 'D:\DATA\3waAIHub' `
   -PhpCgiPath 'C:\PHP\php-cgi.exe' `
-  -PhysicalPath 'D:\DATA\3waAIHub'
+  -SiteName 'Default Web Site' `
+  -VirtualPath '/3waAIHub'
 ```
 
 啟動 Core 測試可用：
 
 ```powershell
-php -S 127.0.0.1:8080
+php -S 127.0.0.1:8080 -t .\dist\public
 ```
 
 測試 runner 使用顯式 suite allowlist：Linux 無參數執行完整回歸；Windows Control Plane 使用下列指令，Linux Docker/GPU runtime 不會被當成 Windows 本機能力測試。
@@ -1709,9 +1725,23 @@ php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_real_wav
 - API key
 - 任何 host 私有資訊
 
-## Apache 防護
+## Linux Web 根目錄與 Apache 防護
 
-專案附帶 `.htaccess`，會阻擋直接 HTTP 存取：
+不得把 checkout 根目錄 `/DATA/3waAIHub` 掛到 Web server。Apache 至少應設定：
+
+```apache
+DocumentRoot "/DATA/3waAIHub/dist/public"
+
+<Directory "/DATA/3waAIHub/dist/public">
+    AllowOverride Options FileInfo AuthConfig Limit
+    Require all granted
+</Directory>
+```
+
+artifact 內的 `dist/public/.htaccess` 會阻擋不應公開的靜態檔；由於 `app/`、`scripts/`、
+`packs/` 與 `data/` 已在 DocumentRoot 外，它們不依賴 deny rule 才安全。
+
+它仍會阻擋直接 HTTP 存取：
 
 - `data/`
 - `app/`
@@ -1720,11 +1750,15 @@ php scripts/benchmark.php --pack=tts-voxcpm2 --case=tts_real_wav
 - `.git/`
 - SQLite / log / shell script / local docs
 
-Apache 需允許此專案目錄使用：
+Apache 需允許 release public 目錄使用：
 
 ```apache
 AllowOverride Options FileInfo AuthConfig Limit
 ```
+
+Nginx 同樣只能設定 `root /DATA/3waAIHub/dist/public;`；PHP FastCGI 的
+`SCRIPT_FILENAME` 應由 `$document_root$fastcgi_script_name` 組成。各發行版的
+PHP-FPM socket 名稱不同，請沿用主機既有 `fastcgi_pass` 設定，不要改指向 checkout 根目錄。
 
 ## 驗證
 
@@ -1732,5 +1766,7 @@ AllowOverride Options FileInfo AuthConfig Limit
 find . -path './data' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
 php -d assert.exception=1 scripts/self_check.php
 bash -n install.sh scripts/*.sh crontab/*.sh
+php scripts/build_release.php --check
+./install.sh --check
 git diff --check
 ```

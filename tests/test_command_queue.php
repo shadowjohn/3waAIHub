@@ -24,6 +24,22 @@ hub_test('command runner resolves the PHP executable to its trusted absolute pat
     hub_test_assert(hub_command_path_is_absolute($command[0]), 'resolved PHP command must be absolute');
 });
 
+hub_test('Windows NVIDIA command resolves either supported driver installation location', function (): void {
+    $systemRoot = 'C:\\Windows';
+    $programFiles = 'C:\\Program Files';
+    $systemPath = $systemRoot . '\\System32\\nvidia-smi.exe';
+    $legacyPath = $programFiles . '\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe';
+
+    hub_test_assert(
+        hub_windows_nvidia_smi_path($systemRoot, $programFiles, static fn (string $path): bool => $path === $systemPath) === $systemPath,
+        'Windows NVIDIA command must use System32 when the current driver installs it there',
+    );
+    hub_test_assert(
+        hub_windows_nvidia_smi_path($systemRoot, $programFiles, static fn (string $path): bool => $path === $legacyPath) === $legacyPath,
+        'Windows NVIDIA command must retain the legacy NVSMI installation fallback',
+    );
+});
+
 hub_test('command runner rejects an untrusted absolute executable path', function (): void {
     hub_test_assert(
         hub_test_throws(static fn (): array => hub_safe_argv(['C:\\untrusted\\docker', 'version'])),
@@ -404,7 +420,7 @@ hub_test('cron loop runs both command and task workers', function (): void {
     hub_test_assert(str_contains($loop, 'scripts/task_worker.php'), 'cron loop must run task worker');
     hub_test_assert(str_contains($loop, 'scripts/collect_host_metrics.php'), 'cron loop must refresh host metrics snapshots');
     hub_test_assert(str_contains($loop, 'scripts/fix_permissions.sh'), 'cron loop must auto-repair runtime permissions when needed');
-    hub_test_assert(str_contains($loop, 'data/3waaihub.sqlite-wal'), 'cron permission guard must include SQLite WAL file');
+    hub_test_assert(str_contains($loop, '$RUNTIME_DATA_ROOT/3waaihub.sqlite-wal'), 'cron permission guard must include the external runtime SQLite WAL file');
     hub_test_assert(str_contains($loop, "stat -c '%G'"), 'cron permission guard must detect wrong runtime group');
     hub_test_assert(
         str_contains($loop, 'FACEBOOK_PROFILE_ROOT')

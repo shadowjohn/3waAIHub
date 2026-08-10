@@ -78,11 +78,12 @@ print_check() {
   status_line "nvidia-smi" nvidia-smi --query-gpu=name --format=csv,noheader
   status_line "nvidia-ctk" nvidia-ctk --version
   status_line "flock" flock --version
+  check_release_artifact
   if [ -f /etc/cron.d/3waaihub-command-worker ] && grep -q 'crontab/1min.sh' /etc/cron.d/3waaihub-command-worker; then
     echo "Command worker cron: OK (/etc/cron.d/3waaihub-command-worker)"
   else
     echo "Command worker cron: MISSING"
-    echo "Command worker cron install: sudo $(pwd)/scripts/install_command_worker_cron.sh"
+    echo "Command worker cron install: sudo $(release_root)/scripts/install_command_worker_cron.sh"
   fi
 }
 
@@ -100,8 +101,12 @@ check_app_dependencies() {
 }
 
 fix_runtime_permissions() {
+  local app_root="${1:-$(pwd)}"
   echo "[3waAIHub] Fixing runtime permissions..."
-  ./scripts/fix_permissions.sh
+  (
+    cd "$app_root"
+    ./scripts/fix_permissions.sh
+  )
 }
 
 configure_git_hooks() {
@@ -114,13 +119,41 @@ configure_git_hooks() {
 }
 
 install_command_worker_cron() {
+  local app_root="${1:-$(pwd)}"
   if [ "$(id -u)" = "0" ]; then
     echo "[3waAIHub] Installing command worker cron..."
-    ./scripts/install_command_worker_cron.sh
+    (
+      cd "$app_root"
+      ./scripts/install_command_worker_cron.sh
+    )
   else
     echo "[3waAIHub] Command worker cron not installed: root required."
-    echo "[3waAIHub] Run: sudo $(pwd)/scripts/install_command_worker_cron.sh"
+    echo "[3waAIHub] Run: sudo $app_root/scripts/install_command_worker_cron.sh"
   fi
+}
+
+release_root() {
+  printf '%s/dist\n' "$(pwd)"
+}
+
+check_release_artifact() {
+  local root
+  root="$(release_root)"
+  if [ -d "$root/public" ] && php scripts/build_release.php --check >/dev/null 2>&1; then
+    echo "Release artifact: VERIFIED ($root/release-manifest.json)"
+  else
+    echo "Release artifact: MISSING (run ./install.sh to build and verify dist/)"
+  fi
+  echo "Web document root: $root/public"
+}
+
+build_release_artifact() {
+  local root
+  root="$(release_root)"
+  echo "[3waAIHub] Building hash-verified release artifact..."
+  php scripts/build_release.php --output="$root"
+  php scripts/build_release.php --output="$root" --check
+  echo "[3waAIHub] Release artifact: VERIFIED ($root/public)"
 }
 
 ensure_host_models_dir() {
@@ -193,12 +226,15 @@ echo "[3waAIHub] Initializing SQLite..."
 php scripts/init_db.php
 echo "[3waAIHub] Migrating service runtime settings..."
 php scripts/migrate_runtime_settings.php --apply
-fix_runtime_permissions
-install_command_worker_cron
+build_release_artifact
+release_root_path="$(release_root)"
+fix_runtime_permissions "$release_root_path"
+install_command_worker_cron "$release_root_path"
 
 echo "[3waAIHub] Done."
 echo "Login URL: http://localhost/3waAIHub/login.php"
 echo "Admin URL: http://localhost/3waAIHub/admin/"
 echo "Default login: admin / admin123"
-echo "Command worker cron: sudo $(pwd)/scripts/install_command_worker_cron.sh"
-echo "Command worker loop: $(pwd)/crontab/1min.sh"
+echo "Release Web root: $release_root_path/public"
+echo "Command worker cron: sudo $release_root_path/scripts/install_command_worker_cron.sh"
+echo "Command worker loop: $release_root_path/crontab/1min.sh"

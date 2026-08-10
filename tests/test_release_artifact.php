@@ -41,9 +41,12 @@ function hub_test_release_artifact_remove_tree(string $path): void
 }
 
 hub_test('release builder creates a hash-verified private deployment artifact', function (): void {
-    $output = sys_get_temp_dir() . '/3waaihub_release_artifact_' . bin2hex(random_bytes(12));
+    $releaseRoot = sys_get_temp_dir() . '/3waaihub_release_artifact_' . bin2hex(random_bytes(12));
+    $output = $releaseRoot . '/dist';
+    $runtimeDataRoot = $releaseRoot . '/data';
 
     try {
+        hub_test_assert(mkdir($runtimeDataRoot, 0775, true), 'cannot create external release runtime data directory');
         $result = hub_run_command([PHP_BINARY, HUB_ROOT . '/scripts/build_release.php', '--output=' . $output], 120);
         hub_test_assert((int)$result['exit_code'] === 0, 'release build failed: ' . trim((string)$result['stderr']));
 
@@ -82,6 +85,21 @@ hub_test('release builder creates a hash-verified private deployment artifact', 
         $login = (string)file_get_contents($output . '/public/login.php');
         hub_test_assert(str_contains($login, "__DIR__ . '/_bootstrap.php'"), 'public entrypoint must use private bootstrap bridge');
 
+        $dataProbe = hub_run_command([
+            PHP_BINARY,
+            '-r',
+            'require ' . var_export($output . '/public/_bootstrap.php', true) . '; echo HUB_DATA_DIR;',
+        ], 60, [
+            'AIHUB_TEST_DB' => '',
+            'AIHUB_TEST_DATA_DIR' => '',
+        ]);
+        hub_test_assert((int)$dataProbe['exit_code'] === 0, 'release data-root probe failed: ' . trim((string)$dataProbe['stderr']));
+        hub_test_assert(
+            hub_storage_paths_equal(trim((string)$dataProbe['stdout']), $runtimeDataRoot),
+            'release bootstrap must use the external sibling data directory',
+        );
+        hub_test_assert(!file_exists($output . '/data'), 'release bootstrap must not create runtime data inside the artifact');
+
         hub_test_assert(file_put_contents($output . '/unexpected.txt', 'not-manifested', LOCK_EX) !== false, 'cannot create release tamper fixture');
         $tamperCheck = hub_run_command([PHP_BINARY, HUB_ROOT . '/scripts/build_release.php', '--output=' . $output, '--check'], 60);
         hub_test_assert((int)$tamperCheck['exit_code'] !== 0, 'release check must reject files missing from the manifest');
@@ -90,6 +108,6 @@ hub_test('release builder creates a hash-verified private deployment artifact', 
         $directoryCheck = hub_run_command([PHP_BINARY, HUB_ROOT . '/scripts/build_release.php', '--output=' . $output, '--check'], 60);
         hub_test_assert((int)$directoryCheck['exit_code'] !== 0, 'release check must reject a runtime data directory');
     } finally {
-        hub_test_release_artifact_remove_tree($output);
+        hub_test_release_artifact_remove_tree($releaseRoot);
     }
 });

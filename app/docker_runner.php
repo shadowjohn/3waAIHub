@@ -121,6 +121,22 @@ function hub_command_paths_equal(string $left, string $right, ?string $platform 
  * 命令執行一律指向平台固定位置，不從 PATH 解析 executable。
  * 呼叫端可提供的只是已驗證 argv；第一個元素只當成 allowlist key，不能指定路徑。
  */
+function hub_windows_nvidia_smi_path(string $systemRoot, string $programFiles, ?callable $isFile = null): string
+{
+    $isFile ??= static fn (string $path): bool => is_file($path);
+    $systemPath = $systemRoot . '\\System32\\nvidia-smi.exe';
+    $legacyPath = $programFiles . '\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe';
+
+    foreach ([$systemPath, $legacyPath] as $candidate) {
+        if ($isFile($candidate)) {
+            return $candidate;
+        }
+    }
+
+    // 保留固定系統路徑，不退回可被服務環境污染的 PATH。
+    return $systemPath;
+}
+
 function hub_trusted_command_path(string $executable, ?string $platform = null): string
 {
     $platform ??= PHP_OS_FAMILY;
@@ -137,7 +153,7 @@ function hub_trusted_command_path(string $executable, ?string $platform = null):
             'curl' => $systemRoot . '\\System32\\curl.exe',
             'docker' => $programFiles . '\\Docker\\Docker\\resources\\bin\\docker.exe',
             'git' => $programFiles . '\\Git\\cmd\\git.exe',
-            'nvidia-smi' => $programFiles . '\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe',
+            'nvidia-smi' => hub_windows_nvidia_smi_path($systemRoot, $programFiles),
         ];
     } else {
         $paths = [

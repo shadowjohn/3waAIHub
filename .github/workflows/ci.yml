@@ -49,6 +49,9 @@ jobs:
       - name: Shell syntax
         run: bash -n install.sh scripts/*.sh crontab/*.sh
 
+      - name: Linux release installer
+        run: bash tests/test_linux_release_install.sh
+
       - name: Capture egress installer tests
         run: bash tests/test_capture_egress_network.sh
 

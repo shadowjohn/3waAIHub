@@ -109,6 +109,34 @@ function Test-PhpConfiguration {
     return $true
 }
 
+function Test-ReleaseArtifact {
+    param(
+        [string]$PhpExe,
+        [string]$Root
+    )
+
+    $builder = Join-Path $Root 'scripts\build_release.php'
+    $releaseRoot = Join-Path $Root 'dist'
+    $publicRoot = Join-Path $releaseRoot 'public'
+    if ([string]::IsNullOrWhiteSpace($PhpExe) -or -not (Test-Path -LiteralPath $PhpExe)) {
+        Write-Host 'Release artifact: NOT RUN (PHP configuration is not ready)'
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $builder) -or -not (Test-Path -LiteralPath $publicRoot)) {
+        Write-Host "Release artifact: MISSING (run $PhpExe $builder)"
+        return $false
+    }
+
+    $check = Invoke-PhpProbe $PhpExe @($builder, "--output=$releaseRoot", '--check')
+    if ($check.ExitCode -ne 0) {
+        Write-Host ('Release artifact: INVALID (' + (($check.Output -join ' ').Trim()) + ')')
+        return $false
+    }
+
+    Write-Host "Release artifact: VERIFIED ($publicRoot)"
+    return $true
+}
+
 Write-Host 'Mode: Core'
 Write-Host 'Role: 3waAIHub Core (Control Plane)'
 Write-Host 'Check: read-only'
@@ -132,6 +160,7 @@ if ($hostProductType -eq 1) {
 
 $phpExe = Get-PhpCommand
 $phpOk = Test-PhpConfiguration $phpExe
+$releaseOk = Test-ReleaseArtifact -PhpExe $phpExe -Root $InstallRoot
 
 $clusterSecretPath = Join-Path $InstallRoot 'data\cluster.key'
 if (Test-Path -LiteralPath $clusterSecretPath) {
@@ -185,7 +214,7 @@ if ($phpOk) {
 }
 
 $coreReady = $phpOk -and $dataOk -and $smokeOk
-$iisReady = $iisOk -and $phpCgiOk
+$iisReady = $iisOk -and $phpCgiOk -and $releaseOk
 Write-Host ('Core readiness: ' + $(if ($coreReady) { 'READY' } else { 'NOT READY' }))
 Write-Host ('IIS readiness: ' + $(if ($iisReady) { 'READY' } else { 'NOT READY' }))
 

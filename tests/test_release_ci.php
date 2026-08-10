@@ -159,6 +159,12 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     }
     $linuxInstall = (string)file_get_contents(HUB_ROOT . '/install.sh');
     hub_test_assert(str_contains($linuxInstall, 'scripts/migrate_runtime_settings.php --apply'), 'install.sh must migrate regular legacy runtime env files after DB initialization');
+    foreach (['build_release_artifact', 'scripts/build_release.php --output="$root" --check', 'fix_runtime_permissions "$release_root_path"', 'install_command_worker_cron "$release_root_path"', 'Release artifact: VERIFIED', 'Web document root:'] as $needle) {
+        hub_test_assert(str_contains($linuxInstall, $needle), 'install.sh must keep Linux release deployment aligned: ' . $needle);
+    }
+    $linuxCron = (string)file_get_contents(HUB_ROOT . '/crontab/1min.sh');
+    hub_test_assert(str_contains($linuxCron, 'RUNTIME_DATA_ROOT'), 'Linux release worker must keep runtime data outside the artifact');
+    hub_test_assert(str_contains($linuxCron, '[ -d public/admin ]'), 'Linux release worker must check the release admin source path');
 
     $fortifyScript = (string)file_get_contents(HUB_ROOT . '/scripts/fortify_sast.ps1');
     foreach (['[string]$ReleaseRoot', 'release-manifest.json', "(Join-Path \$releaseRoot 'public", "(Join-Path \$releaseRoot 'app", "(Join-Path \$releaseRoot 'packs", 'verified deploy artifact'] as $needle) {

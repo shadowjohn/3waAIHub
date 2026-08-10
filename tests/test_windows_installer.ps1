@@ -6,7 +6,10 @@ $repo = Resolve-Path (Join-Path $PSScriptRoot '..')
 $source = Get-Content -LiteralPath $installer -Raw -Encoding UTF8
 $checkCoreSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\check-core.ps1') -Raw -Encoding UTF8
 $checkWslSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\check-wsl-runtime.ps1') -Raw -Encoding UTF8
+$coreInstaller = Join-Path $PSScriptRoot '..\scripts\windows\install-core.ps1'
 $coreSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\scripts\windows\install-core.ps1') -Raw -Encoding UTF8
+$iisConfigurer = Join-Path $PSScriptRoot '..\scripts\windows\configure-iis-fastcgi.ps1'
+$iisConfigurerSource = Get-Content -LiteralPath $iisConfigurer -Raw -Encoding UTF8
 $installWsl = Join-Path $PSScriptRoot '..\scripts\windows\install-wsl-runtime.ps1'
 $installWslSource = if (Test-Path -LiteralPath $installWsl) { Get-Content -LiteralPath $installWsl -Raw -Encoding UTF8 } else { '' }
 $wslProfileScript = Join-Path $PSScriptRoot '..\scripts\windows\wsl-yolo-runtime-profile.ps1'
@@ -79,6 +82,9 @@ Assert-InstallerContract ($initDbSource -match '--models-root') 'Core DB initial
 Assert-InstallerContract ($coreSource -match 'migrate_runtime_settings\.php --apply') 'Core installer must retire regular legacy runtime env files after DB initialization'
 Assert-InstallerContract ($source -match '\[switch\]\$InstallIis') 'Core installer must expose explicit IIS installation opt-in'
 Assert-InstallerContract ($source -match '-InstallIis:\$InstallIis') 'Core installer must forward the IIS opt-in to the Core installer'
+Assert-InstallerContract ($source -match '\[switch\]\$ConfigureIis') 'Core installer must expose explicit IIS release configuration opt-in'
+Assert-InstallerContract ($source -match '-ConfigureIis:\$ConfigureIis') 'Core installer must forward the IIS release configuration opt-in'
+Assert-InstallerContract ($coreSource -match '-ConfigureIis requires -InstallIis') 'Core installer must reject IIS release configuration before mutating without the IIS prerequisite'
 Assert-InstallerContract ($source -match '\[switch\]\$InitializeClusterSecret') 'Core installer must expose explicit Cluster secret initialization'
 Assert-InstallerContract ($source -match '-InitializeClusterSecret:\$InitializeClusterSecret') 'Core installer must forward the Cluster secret opt-in to the Core installer'
 Assert-InstallerContract ($checkCoreSource -match 'Cluster secret:') 'Core readiness must report Cluster secret state without revealing it'
@@ -86,6 +92,14 @@ Assert-InstallerContract ($checkCoreSource -match 'data\\cluster.key') 'Core rea
 Assert-InstallerContract ($coreSource -notmatch "SetEnvironmentVariable\('AIHUB_CLUSTER_SECRET_KEY'.*'Machine'\)") 'Core installer must not persist Cluster keys in Machine environment'
 Assert-InstallerContract ($webConfigSource -match '<defaultDocument>') 'IIS web.config must declare a default document'
 Assert-InstallerContract ($webConfigSource -match '<add value="index.php" />') 'IIS default document must route directory URLs to index.php'
+Assert-InstallerContract (Test-Path -LiteralPath $iisConfigurer) 'IIS FastCGI release configuration script must exist'
+Assert-InstallerContract ($coreSource -match 'build_release\.php') 'Core installer must build a verified release artifact'
+Assert-InstallerContract ($iisConfigurerSource -match 'dist[\\/]public') 'IIS FastCGI configuration must target the release public root'
+Assert-InstallerContract ($iisConfigurerSource -match "'set', 'vdir'") 'IIS FastCGI configuration must update an existing virtual directory'
+Assert-InstallerContract ($iisConfigurerSource -match 'Release artifact verification failed') 'IIS FastCGI configuration must verify the release manifest before mutation'
+Assert-InstallerContract ($iisConfigurerSource -match 'PhysicalPath must be the verified release public root') 'IIS FastCGI configuration must reject source-root hosting'
+Assert-InstallerContract ($iisConfigurerSource -match 'Test-PhpFastCgiConfiguration') 'IIS FastCGI configuration must validate the selected PHP CGI runtime'
+Assert-InstallerContract ($checkCoreSource -match 'Release artifact:') 'Core readiness must report release artifact readiness separately'
 Assert-InstallerContract (Test-Path -LiteralPath $workerTaskTemplate) 'Windows command worker Task Scheduler XML must exist'
 Assert-InstallerContract ($workerTaskTemplateSource -match 'encoding="UTF-16"') 'Windows worker task XML must use the Task Scheduler UTF-16 declaration'
 $workerTaskTemplateBytes = [System.IO.File]::ReadAllBytes($workerTaskTemplate)
@@ -173,6 +187,14 @@ $iisCheck = & $installer -Mode Core -Check -InstallIis -InstallRoot $repo -Produ
 $iisCheckText = $iisCheck -join "`n"
 Assert-InstallerContract ($LASTEXITCODE -eq 0) 'Core -Check with -InstallIis must remain read-only'
 Assert-InstallerContract ($iisCheckText -match '-InstallIis is ignored during -Check') 'Core -Check must explicitly ignore the IIS installation opt-in'
+
+$iisConfigureCheck = & $installer -Mode Core -Check -ConfigureIis -InstallRoot $repo -ProductType 1 6>&1 2>&1
+$iisConfigureCheckText = $iisConfigureCheck -join "`n"
+Assert-InstallerContract ($LASTEXITCODE -eq 0) 'Core -Check with -ConfigureIis must remain read-only'
+Assert-InstallerContract ($iisConfigureCheckText -match '-ConfigureIis is ignored during -Check') 'Core -Check must explicitly ignore the IIS release configuration opt-in'
+
+$invalidIisConfigure = Invoke-ChildPowerShell @($coreInstaller, '-InstallRoot', $repo, '-ConfigureIis')
+Assert-InstallerContract ($invalidIisConfigure.ExitCode -ne 0) 'Core installer must reject -ConfigureIis without -InstallIis before installation work begins'
 
 $serverCheck = & $installer -Check -InstallRoot $repo -ProductType 3 6>&1 2>&1
 $serverCheckText = $serverCheck -join "`n"

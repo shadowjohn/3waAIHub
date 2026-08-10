@@ -10,6 +10,13 @@ $hubTestDataDir = trim((string)(getenv('AIHUB_TEST_DATA_DIR') ?: ''));
 $hubDataDir = HUB_ROOT . '/data';
 $hubTestDataDirActive = false;
 
+// Release artifact 位於 <InstallRoot>/dist；runtime data 必須留在同層，
+// 不可落入 IIS document root 或 hash-verified artifact 內。
+$hubReleaseDataDir = dirname(HUB_ROOT) . '/data';
+if (is_dir(HUB_ROOT . '/public') && is_dir($hubReleaseDataDir)) {
+    $hubDataDir = $hubReleaseDataDir;
+}
+
 if ($hubDbPath !== '' && $hubTestDataDir !== '') {
     $hubTempRoot = realpath(sys_get_temp_dir());
     $hubNormalizedTestDataDir = rtrim(str_replace('\\', '/', $hubTestDataDir), '/');

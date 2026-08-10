@@ -4,6 +4,10 @@ param(
     [ValidateSet(0, 1, 2, 3)]
     [int]$ProductType = 0,
     [switch]$InstallIis,
+    [switch]$ConfigureIis,
+    [string]$IisPhpCgiPath,
+    [string]$IisSiteName = 'Default Web Site',
+    [string]$IisVirtualPath = '/3waAIHub',
     [switch]$InitializeClusterSecret,
     [string]$PhpZipUri,
     [string]$PhpZipSha256
@@ -341,6 +345,70 @@ function New-RuntimeDirs {
     }
 }
 
+function Build-ReleaseArtifact {
+    param([string]$PhpExe)
+
+    $builder = Join-Path $InstallRoot 'scripts\build_release.php'
+    $output = Join-Path $InstallRoot 'dist'
+    if (-not (Test-Path -LiteralPath $builder)) {
+        throw 'Release builder is missing: scripts\build_release.php'
+    }
+
+    Write-Host '[3waAIHub] Building hash-verified release artifact...'
+    $build = Invoke-PhpProbe $PhpExe @($builder, "--output=$output")
+    if ($build.ExitCode -ne 0) {
+        throw ('Release artifact build failed: ' + (($build.Output -join "`n").Trim()))
+    }
+
+    $verify = Invoke-PhpProbe $PhpExe @($builder, "--output=$output", '--check')
+    if ($verify.ExitCode -ne 0) {
+        throw ('Release artifact verification failed: ' + (($verify.Output -join "`n").Trim()))
+    }
+
+    Write-InstallLog "release_artifact status=verified path=$output"
+    Write-Host "[3waAIHub] Release artifact: VERIFIED ($output\public)"
+}
+
+function Resolve-IisPhpCgiPath {
+    param(
+        [string]$PhpExe,
+        [string]$RequestedPath
+    )
+
+    $candidate = if ([string]::IsNullOrWhiteSpace($RequestedPath)) {
+        Join-Path (Split-Path -Parent $PhpExe) 'php-cgi.exe'
+    } else {
+        $RequestedPath
+    }
+    if (-not (Test-Path -LiteralPath $candidate)) {
+        throw "PHP FastCGI executable is missing: $candidate. Supply -IisPhpCgiPath with a valid php-cgi.exe path."
+    }
+
+    $resolved = (Resolve-Path -LiteralPath $candidate).Path
+    if ((Split-Path -Leaf $resolved).ToLowerInvariant() -ne 'php-cgi.exe') {
+        throw 'IisPhpCgiPath must point to php-cgi.exe.'
+    }
+    return $resolved
+}
+
+function Configure-IisReleaseSite {
+    param(
+        [string]$PhpCgiPath,
+        [string]$SiteName,
+        [string]$VirtualPath
+    )
+
+    $configurer = Join-Path $InstallRoot 'scripts\windows\configure-iis-fastcgi.ps1'
+    if (-not (Test-Path -LiteralPath $configurer)) {
+        throw 'IIS FastCGI configuration script is missing.'
+    }
+
+    & $configurer -InstallRoot $InstallRoot -PhpCgiPath $PhpCgiPath -SiteName $SiteName -VirtualPath $VirtualPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "IIS FastCGI configuration failed with exit code $LASTEXITCODE."
+    }
+}
+
 function Write-WindowsWorkerTaskTemplate {
     $templatePath = Join-Path $InstallRoot '3waAIHub_Crontab.xml'
     if (-not (Test-Path -LiteralPath $templatePath)) {
@@ -360,6 +428,10 @@ function Write-WindowsWorkerTaskTemplate {
 
 if ($env:AIHUB_WINDOWS_INSTALLER_TEST_FUNCTIONS_ONLY -eq '1') {
     return
+}
+
+if ($ConfigureIis -and -not $InstallIis) {
+    throw '-ConfigureIis requires -InstallIis so IIS prerequisites are verified before Core installation changes are made.'
 }
 
 Set-Location -LiteralPath $InstallRoot
@@ -386,6 +458,7 @@ if (-not (Test-PhpConfiguration $phpExe)) {
 }
 
 New-RuntimeDirs
+Build-ReleaseArtifact $phpExe
 Write-WindowsWorkerTaskTemplate
 
 Write-Host '[3waAIHub] Initializing SQLite...'
@@ -396,6 +469,11 @@ Write-Host '[3waAIHub] Migrating service runtime settings...'
 & $phpExe scripts/migrate_runtime_settings.php --apply
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+if ($ConfigureIis) {
+    $phpCgiPath = Resolve-IisPhpCgiPath -PhpExe $phpExe -RequestedPath $IisPhpCgiPath
+    Configure-IisReleaseSite -PhpCgiPath $phpCgiPath -SiteName $IisSiteName -VirtualPath $IisVirtualPath
+}
+
 if ($InitializeClusterSecret) {
     Write-Host '[3waAIHub] -InitializeClusterSecret is deprecated; Cluster creates data\cluster.key when needed.'
     Write-InstallLog 'cluster_secret status=deferred store=data/cluster.key'
@@ -403,7 +481,7 @@ if ($InitializeClusterSecret) {
 
 Write-Host '[3waAIHub] Done.'
 Write-Host 'Preview server:'
-Write-Host '  php -S 127.0.0.1:8080'
+Write-Host "  php -S 127.0.0.1:8080 -t `"$InstallRoot\dist\public`""
 Write-Host 'Home URL:'
 Write-Host '  http://127.0.0.1:8080/'
 Write-Host 'Admin URL:'

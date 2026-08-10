@@ -4,12 +4,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HUB_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 APP_ROOT="$HUB_ROOT"
+if [ -d "$HUB_ROOT/public" ] && [ -d "$(dirname "$HUB_ROOT")/data" ]; then
+  RUNTIME_DATA_ROOT="$(dirname "$HUB_ROOT")/data"
+else
+  RUNTIME_DATA_ROOT="$HUB_ROOT/data"
+fi
 cd "$HUB_ROOT"
 
-COMMAND_LOCK_FILE="${COMMAND_WORKER_LOCK_FILE:-data/jobs/command_worker_1min_command.lock}"
-TASK_LOCK_FILE="${TASK_WORKER_LOCK_FILE:-data/jobs/command_worker_1min.lock}"
-CLUSTER_REFRESH_LOCK_FILE="${CLUSTER_REFRESH_LOCK_FILE:-data/jobs/cluster_refresh_1min.lock}"
-CLUSTER_REFRESH_LOG_PATH="${CLUSTER_REFRESH_LOG_PATH:-data/logs/cluster_refresh_1min.log}"
+COMMAND_LOCK_FILE="${COMMAND_WORKER_LOCK_FILE:-$RUNTIME_DATA_ROOT/jobs/command_worker_1min_command.lock}"
+TASK_LOCK_FILE="${TASK_WORKER_LOCK_FILE:-$RUNTIME_DATA_ROOT/jobs/command_worker_1min.lock}"
+CLUSTER_REFRESH_LOCK_FILE="${CLUSTER_REFRESH_LOCK_FILE:-$RUNTIME_DATA_ROOT/jobs/cluster_refresh_1min.lock}"
+CLUSTER_REFRESH_LOG_PATH="${CLUSTER_REFRESH_LOG_PATH:-$RUNTIME_DATA_ROOT/logs/cluster_refresh_1min.log}"
 WORKER_LIMIT="${WORKER_LIMIT:-5}"
 TASK_WORKER_LIMIT="${TASK_WORKER_LIMIT:-5}"
 CALLBACK_WORKER_LIMIT="${CALLBACK_WORKER_LIMIT:-5}"
@@ -17,10 +22,10 @@ TASK_WORKER_TICKS="${TASK_WORKER_TICKS:-100}"
 TASK_WORKER_SLEEP="${TASK_WORKER_SLEEP:-0.5}"
 WORKER_TICKS="${WORKER_TICKS:-6}"
 WORKER_SLEEP="${WORKER_SLEEP:-10}"
-FACEBOOK_PROFILE_PARENT="data/facebook-crawler"
-FACEBOOK_PROFILE_ROOT="data/facebook-crawler/profiles"
+FACEBOOK_PROFILE_PARENT="$RUNTIME_DATA_ROOT/facebook-crawler"
+FACEBOOK_PROFILE_ROOT="$RUNTIME_DATA_ROOT/facebook-crawler/profiles"
 
-mkdir -p data/jobs data/logs
+mkdir -p "$RUNTIME_DATA_ROOT/jobs" "$RUNTIME_DATA_ROOT/logs"
 
 detect_runtime_group() {
   if [ -n "${WEB_GROUP:-}" ]; then
@@ -75,20 +80,22 @@ needs_permission_fix() {
     return 0
   fi
 
-  if find app admin -type f ! -perm -004 -print -quit | grep -q . \
+  admin_root="admin"
+  [ -d public/admin ] && admin_root="public/admin"
+  if find app "$admin_root" -type f ! -perm -004 -print -quit | grep -q . \
     || find . -maxdepth 1 -type f -name '*.php' ! -perm -004 -print -quit | grep -q .; then
     return 0
   fi
 
   local dir
-  for dir in data data/cache data/uploads data/results data/logs data/logs/jobs data/logs/tasks data/jobs data/services; do
+  for dir in "$RUNTIME_DATA_ROOT" "$RUNTIME_DATA_ROOT/cache" "$RUNTIME_DATA_ROOT/uploads" "$RUNTIME_DATA_ROOT/results" "$RUNTIME_DATA_ROOT/logs" "$RUNTIME_DATA_ROOT/logs/jobs" "$RUNTIME_DATA_ROOT/logs/tasks" "$RUNTIME_DATA_ROOT/jobs" "$RUNTIME_DATA_ROOT/services"; do
     if [ ! -d "$dir" ] || wrong_runtime_group "$dir" || find "$dir" -maxdepth 0 \( ! -perm -020 -o ! -perm -2000 \) -print -quit | grep -q .; then
       return 0
     fi
   done
 
   local file
-  for file in data/3waaihub.sqlite data/3waaihub.sqlite-wal data/3waaihub.sqlite-shm; do
+  for file in "$RUNTIME_DATA_ROOT/3waaihub.sqlite" "$RUNTIME_DATA_ROOT/3waaihub.sqlite-wal" "$RUNTIME_DATA_ROOT/3waaihub.sqlite-shm"; do
     if [ -e "$file" ] && { wrong_runtime_group "$file" || find "$file" -maxdepth 0 ! -perm -020 -print -quit | grep -q .; }; then
       return 0
     fi
@@ -111,7 +118,7 @@ if needs_permission_fix; then
 fi
 
 if ! {
-  php "$APP_ROOT/scripts/facebook_profile_cleanup.php" --limit=10 >> "$APP_ROOT/data/logs/facebook-profile-cleanup.log" 2>&1;
+  php "$APP_ROOT/scripts/facebook_profile_cleanup.php" --limit=10 >> "$RUNTIME_DATA_ROOT/logs/facebook-profile-cleanup.log" 2>&1;
 }; then
   echo "[3waAIHub] Facebook profile login cleanup failed."
 fi

@@ -3,6 +3,13 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+HUB_ROOT="$(pwd)"
+if [ -d "$HUB_ROOT/public" ] && [ -d "$(dirname "$HUB_ROOT")/data" ]; then
+  RUNTIME_DATA_ROOT="$(dirname "$HUB_ROOT")/data"
+else
+  RUNTIME_DATA_ROOT="$HUB_ROOT/data"
+fi
+
 SOURCE_ONLY=0
 if [ "${1:-}" = "--source-only" ]; then
   SOURCE_ONLY=1
@@ -15,8 +22,8 @@ APP_USER="${APP_USER:-}"
 APP_GROUP="${APP_GROUP:-}"
 WEB_GROUP="${WEB_GROUP:-}"
 WEB_USER="${WEB_USER:-}"
-FACEBOOK_PROFILE_PARENT="data/facebook-crawler"
-FACEBOOK_PROFILE_ROOT="data/facebook-crawler/profiles"
+FACEBOOK_PROFILE_PARENT="$RUNTIME_DATA_ROOT/facebook-crawler"
+FACEBOOK_PROFILE_ROOT="$RUNTIME_DATA_ROOT/facebook-crawler/profiles"
 
 if [ "$(id -u)" = "0" ] && [ -z "$APP_USER" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
   APP_USER="$SUDO_USER"
@@ -67,7 +74,7 @@ detect_web_user() {
   return 1
 }
 
-for dir in data data/cache data/uploads data/results data/logs data/logs/jobs data/logs/tasks data/logs/install data/jobs data/services; do
+for dir in "$RUNTIME_DATA_ROOT" "$RUNTIME_DATA_ROOT/cache" "$RUNTIME_DATA_ROOT/uploads" "$RUNTIME_DATA_ROOT/results" "$RUNTIME_DATA_ROOT/logs" "$RUNTIME_DATA_ROOT/logs/jobs" "$RUNTIME_DATA_ROOT/logs/tasks" "$RUNTIME_DATA_ROOT/logs/install" "$RUNTIME_DATA_ROOT/jobs" "$RUNTIME_DATA_ROOT/services"; do
   mkdir -p "$dir"
 done
 
@@ -124,7 +131,7 @@ if [ -L "$FACEBOOK_PROFILE_PARENT" ] || [ -L "$FACEBOOK_PROFILE_ROOT" ]; then
   echo "[3waAIHub] ERROR: Facebook profile storage path became a symlink." >&2
   exit 1
 fi
-data_real="$(realpath data)"
+data_real="$(realpath "$RUNTIME_DATA_ROOT")"
 parent_real="$(realpath "$FACEBOOK_PROFILE_PARENT")"
 root_real="$(realpath "$FACEBOOK_PROFILE_ROOT")"
 if [ "$(dirname "$parent_real")" != "$data_real" ] || [ "$(dirname "$root_real")" != "$parent_real" ]; then
@@ -158,22 +165,22 @@ for dir in /DATA/models /DATA/models/paddleocr /DATA/models/yolo /DATA/models/yo
 done
 
 if [ "$(id -u)" = "0" ]; then
-  find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d -exec chmod u+rwx,g+rwx,o+rx {} +
+  find "$RUNTIME_DATA_ROOT" -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d -exec chmod u+rwx,g+rwx,o+rx {} +
 else
-  find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d ! -perm -2000 -exec chmod u+rwx,g+rwx,o+rx {} +
+  find "$RUNTIME_DATA_ROOT" -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d ! -perm -2000 -exec chmod u+rwx,g+rwx,o+rx {} +
 fi
-find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type f -exec chmod u+rw,g+rw,o+r {} +
+find "$RUNTIME_DATA_ROOT" -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type f -exec chmod u+rw,g+rw,o+r {} +
 
 if [ "$(id -u)" = "0" ]; then
   if [ -n "$APP_USER" ] || [ -n "$APP_GROUP" ]; then
     owner="${APP_USER:-}"
     group="${APP_GROUP:-}"
-    find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -exec chown -- "${owner}${group:+:$group}" {} +
+    find "$RUNTIME_DATA_ROOT" -path "$FACEBOOK_PROFILE_PARENT" -prune -o -exec chown -- "${owner}${group:+:$group}" {} +
   fi
 
   if [ -n "$web_group" ]; then
-    find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -exec chgrp -- "$web_group" {} +
-    find data -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d -exec chmod 2775 {} +
+    find "$RUNTIME_DATA_ROOT" -path "$FACEBOOK_PROFILE_PARENT" -prune -o -exec chgrp -- "$web_group" {} +
+    find "$RUNTIME_DATA_ROOT" -path "$FACEBOOK_PROFILE_PARENT" -prune -o -type d -exec chmod 2775 {} +
     if [ -d /DATA/models/yolo/registry ]; then
       chgrp -R -- "$web_group" /DATA/models/yolo/registry 2>/dev/null || true
       find /DATA/models/yolo/registry -type d -exec chmod 2775 {} + 2>/dev/null || true

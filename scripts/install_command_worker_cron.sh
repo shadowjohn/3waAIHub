@@ -17,16 +17,21 @@ WORKER_TICKS="${WORKER_TICKS:-6}"
 WORKER_SLEEP="${WORKER_SLEEP:-10}"
 CRON_FILE="${CRON_FILE:-/etc/cron.d/3waaihub-command-worker}"
 HUB_ROOT="$(pwd)"
+if [ -d "$HUB_ROOT/public" ] && [ -d "$(dirname "$HUB_ROOT")/data" ]; then
+  RUNTIME_DATA_ROOT="$(dirname "$HUB_ROOT")/data"
+else
+  RUNTIME_DATA_ROOT="$HUB_ROOT/data"
+fi
 LOOP_SCRIPT="$HUB_ROOT/crontab/1min.sh"
-LOG_PATH="$HUB_ROOT/data/logs/command_worker_1min.log"
-CLUSTER_REFRESH_LOG_PATH="$HUB_ROOT/data/logs/cluster_refresh_1min.log"
+LOG_PATH="$RUNTIME_DATA_ROOT/logs/command_worker_1min.log"
+CLUSTER_REFRESH_LOG_PATH="$RUNTIME_DATA_ROOT/logs/cluster_refresh_1min.log"
 
 id "$WORKER_USER" >/dev/null 2>&1 || {
   echo "ERROR: worker user not found: $WORKER_USER"
   exit 1
 }
 
-mkdir -p data/jobs data/logs
+mkdir -p "$RUNTIME_DATA_ROOT/jobs" "$RUNTIME_DATA_ROOT/logs"
 chmod +x "$LOOP_SCRIPT"
 touch "$LOG_PATH"
 chmod 664 "$LOG_PATH"
