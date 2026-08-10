@@ -191,6 +191,13 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
     hub_cli_only();
 
     try {
+        $stdoutPath = hub_command_job_log_path($stdoutPath, 'stdout');
+        $stderrPath = hub_command_job_log_path($stderrPath, 'stderr');
+    } catch (RuntimeException) {
+        return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
+    }
+
+    try {
         $command = hub_safe_argv($command);
     } catch (InvalidArgumentException) {
         file_put_contents($stderrPath, "Invalid command.\n", FILE_APPEND);

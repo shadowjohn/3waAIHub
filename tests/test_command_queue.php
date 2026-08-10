@@ -30,6 +30,25 @@ hub_test('command runner validates argv and Ollama model references before proce
     hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_reference('model name')), 'Ollama whitespace must be rejected');
 });
 
+hub_test('streamed command validation records its error in the managed stderr log', function (): void {
+    $db = hub_test_reset_db();
+    $jobId = hub_enqueue_command_job($db, 'docker_prune_check', null, [], null, '127.0.0.1');
+    $job = hub_prepare_command_job_logs($db, hub_get_command_job($db, $jobId));
+    $result = hub_run_command_streamed(
+        ['cmd.exe', '/c', 'whoami'],
+        5,
+        [],
+        (string)$job['stdout_path'],
+        (string)$job['stderr_path'],
+    );
+
+    hub_test_assert((int)$result['exit_code'] === 127, 'invalid command must retain its existing exit contract');
+    hub_test_assert(
+        str_contains((string)file_get_contents((string)$job['stderr_path']), 'Invalid command.'),
+        'invalid command must be recorded in the managed stderr log',
+    );
+});
+
 hub_test('resident reconciliation uses a prepared read before building runtime commands', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/app/pack_job_runner.php');
     $start = strpos($source, 'function hub_reconcile_resident_job_runs');
@@ -112,24 +131,28 @@ hub_test('command queue selector claims an eligible job without consuming an ine
     hub_test_assert(hub_get_command_job($db, $secondId)['status'] === 'running', 'eligible job must be claimed');
 });
 
+hub_test('command job logs reject stored paths outside the managed job log root', function (): void {
+    $db = hub_test_reset_db();
+    $jobId = hub_enqueue_command_job($db, 'docker_prune_check', null, [], null, '127.0.0.1');
+    $job = hub_get_command_job($db, $jobId);
+    hub_test_assert($job !== null, 'command job missing');
+
+    $job['stdout_path'] = sys_get_temp_dir() . '/3waaihub_unmanaged_job_' . bin2hex(random_bytes(8)) . '.out.log';
+    $job['stderr_path'] = sys_get_temp_dir() . '/3waaihub_unmanaged_job_' . bin2hex(random_bytes(8)) . '.err.log';
+    hub_test_assert(
+        hub_test_throws(static fn (): array => hub_prepare_command_job_logs($db, $job)),
+        'stored command log paths outside the Hub job log root must be rejected',
+    );
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
-    $logRoot = sys_get_temp_dir() . '/3waaihub_persistence_logs_' . getmypid() . '_' . bin2hex(random_bytes(4));
-    $stdoutPath = $logRoot . '/job.out.log';
-    $stderrPath = $logRoot . '/job.err.log';
     $stmt = null;
     try {
-        mkdir($logRoot, 0775, true);
         $db = hub_test_reset_db();
         $jobId = hub_enqueue_command_job($db, 'docker_prune_check', null, [], null, '127.0.0.1');
-        $stmt = $db->prepare('UPDATE command_jobs SET stdout_path = :stdout_path, stderr_path = :stderr_path WHERE id = :id');
-        $stmt->execute([
-            ':stdout_path' => $stdoutPath,
-            ':stderr_path' => $stderrPath,
-            ':id' => $jobId,
-        ]);
-        $job = hub_get_command_job($db, $jobId);
-        hub_test_assert($job['stdout_path'] === $stdoutPath, 'unsupported job stdout log must use the isolated test path');
-        hub_test_assert($job['stderr_path'] === $stderrPath, 'unsupported job stderr log must use the isolated test path');
+        $job = hub_prepare_command_job_logs($db, hub_get_command_job($db, $jobId));
+        hub_test_assert(hub_storage_paths_equal(dirname((string)$job['stdout_path']), HUB_JOB_LOG_DIR), 'unsupported job stdout log must use the managed job log root');
+        hub_test_assert(hub_storage_paths_equal(dirname((string)$job['stderr_path']), HUB_JOB_LOG_DIR), 'unsupported job stderr log must use the managed job log root');
         hub_finish_command_job(
             $db,
             $job,
@@ -148,14 +171,6 @@ hub_test('command job finish and status preserve unsupported target error code',
         hub_test_assert($payload['error_message'] === 'linux-docker target is not available on Windows host', 'unsupported DB message must not include prefix');
     } finally {
         $stmt = null;
-        foreach ([$stdoutPath, $stderrPath] as $path) {
-            if (is_file($path)) {
-                @unlink($path);
-            }
-        }
-        if (is_dir($logRoot)) {
-            @rmdir($logRoot);
-        }
     }
 });
 
@@ -166,7 +181,6 @@ hub_test('Windows command worker rejects Linux Docker maintenance without invoki
 
     $workerRoot = sys_get_temp_dir() . '/3waaihub_worker_gate_' . getmypid() . '_' . bin2hex(random_bytes(4));
     $workerDbPath = $workerRoot . '/worker.sqlite';
-    $logPaths = [];
     $stmt = null;
     $workerDb = null;
     try {
@@ -219,20 +233,6 @@ hub_test('Windows command worker rejects Linux Docker maintenance without invoki
         $restartJobId = hub_enqueue_command_job($workerDb, 'service_restart', (int)$internalService['id'], [], null, '127.0.0.1');
         $logsJobId = hub_enqueue_command_job($workerDb, 'service_logs_collect', (int)$internalService['id'], [], null, '127.0.0.1');
         $removeJobId = hub_enqueue_command_job($workerDb, 'service_remove', (int)$removableService['id'], [], null, '127.0.0.1');
-        foreach ([$maintenanceJobId, $healthJobId, $restartJobId, $logsJobId, $removeJobId] as $jobId) {
-            $stdoutPath = $workerRoot . '/job_' . $jobId . '.out.log';
-            $stderrPath = $workerRoot . '/job_' . $jobId . '.err.log';
-            file_put_contents($stdoutPath, '');
-            file_put_contents($stderrPath, '');
-            $workerDb->prepare('UPDATE command_jobs SET stdout_path = :stdout_path, stderr_path = :stderr_path WHERE id = :id')->execute([
-                ':stdout_path' => $stdoutPath,
-                ':stderr_path' => $stderrPath,
-                ':id' => $jobId,
-            ]);
-            $logPaths[] = $stdoutPath;
-            $logPaths[] = $stderrPath;
-        }
-
         $result = hub_run_command(
             [PHP_BINARY, HUB_ROOT . '/scripts/command_worker.php', '--limit=5'],
             30,
@@ -266,17 +266,12 @@ hub_test('Windows command worker rejects Linux Docker maintenance without invoki
         ], 'internal-task restart/logs must record explicit no-op service logs');
         foreach ([$maintenanceJobId, $healthJobId, $restartJobId, $logsJobId, $removeJobId] as $jobId) {
             $job = hub_get_command_job($workerDb, $jobId);
-            hub_test_assert(str_starts_with(hub_normalize_host_path((string)$job['stdout_path']), hub_normalize_host_path($workerRoot) . '/'), 'worker stdout log must stay inside the isolated test root');
-            hub_test_assert(str_starts_with(hub_normalize_host_path((string)$job['stderr_path']), hub_normalize_host_path($workerRoot) . '/'), 'worker stderr log must stay inside the isolated test root');
+            hub_test_assert(hub_storage_paths_equal(dirname((string)$job['stdout_path']), HUB_JOB_LOG_DIR), 'worker stdout log must stay inside the managed job log root');
+            hub_test_assert(hub_storage_paths_equal(dirname((string)$job['stderr_path']), HUB_JOB_LOG_DIR), 'worker stderr log must stay inside the managed job log root');
         }
     } finally {
         $stmt = null;
         $workerDb = null;
-        foreach ($logPaths as $path) {
-            if ($path !== '' && is_file($path)) {
-                @unlink($path);
-            }
-        }
         foreach ([$workerDbPath, $workerDbPath . '-wal', $workerDbPath . '-shm'] as $path) {
             if (is_file($path)) {
                 @unlink($path);

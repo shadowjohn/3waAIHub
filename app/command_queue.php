@@ -295,8 +295,9 @@ function hub_finish_command_job(PDO $db, array $job, string $status, int $exitCo
 
     hub_ensure_runtime_dirs();
     $job = hub_prepare_command_job_logs($db, $job);
-    $stdoutPath = (string)$job['stdout_path'];
-    $stderrPath = (string)$job['stderr_path'];
+    $logPaths = hub_command_job_log_paths($job);
+    $stdoutPath = $logPaths['stdout_path'];
+    $stderrPath = $logPaths['stderr_path'];
     if ($stdout !== '' && (!is_file($stdoutPath) || filesize($stdoutPath) === 0)) {
         file_put_contents($stdoutPath, $stdout);
     } elseif (!is_file($stdoutPath)) {
@@ -362,15 +363,22 @@ function hub_update_command_job_progress(PDO $db, int $jobId, string $stage, int
 function hub_prepare_command_job_logs(PDO $db, array $job): array
 {
     hub_ensure_runtime_dirs();
-    if (!empty($job['stdout_path']) && !empty($job['stderr_path'])) {
+    $hasStoredPaths = !empty($job['stdout_path']) && !empty($job['stderr_path']);
+    $logPaths = hub_command_job_log_paths($job);
+    $stdoutPath = $logPaths['stdout_path'];
+    $stderrPath = $logPaths['stderr_path'];
+
+    if ($hasStoredPaths) {
+        $job['stdout_path'] = $stdoutPath;
+        $job['stderr_path'] = $stderrPath;
         return $job;
     }
 
-    $base = HUB_JOB_LOG_DIR . '/job_' . (int)$job['id'] . '_' . date('Ymd_His');
-    $stdoutPath = $base . '.out.log';
-    $stderrPath = $base . '.err.log';
-    touch($stdoutPath);
-    touch($stderrPath);
+    foreach ([$stdoutPath, $stderrPath] as $path) {
+        if (!is_file($path) && !@touch($path)) {
+            throw new RuntimeException('Cannot create command job log.');
+        }
+    }
 
     $stmt = $db->prepare(
         'UPDATE command_jobs
@@ -389,6 +397,71 @@ function hub_prepare_command_job_logs(PDO $db, array $job): array
     return $job;
 }
 
+function hub_command_job_log_paths(array $job): array
+{
+    $jobId = (int)($job['id'] ?? 0);
+    if ($jobId < 1) {
+        throw new RuntimeException('Command job log owner is invalid.');
+    }
+
+    $hasStoredPaths = !empty($job['stdout_path']) && !empty($job['stderr_path']);
+    if ($hasStoredPaths) {
+        $stdoutPath = (string)$job['stdout_path'];
+        $stderrPath = (string)$job['stderr_path'];
+    } else {
+        $base = rtrim(HUB_JOB_LOG_DIR, '/\\') . '/job_' . $jobId . '_' . date('Ymd_His');
+        $stdoutPath = $base . '.out.log';
+        $stderrPath = $base . '.err.log';
+    }
+
+    return [
+        'stdout_path' => hub_command_job_log_path($stdoutPath, 'stdout', $jobId),
+        'stderr_path' => hub_command_job_log_path($stderrPath, 'stderr', $jobId),
+    ];
+}
+
+function hub_command_job_log_path(string $path, string $stream, ?int $expectedJobId = null): string
+{
+    if (!in_array($stream, ['stdout', 'stderr'], true)) {
+        throw new InvalidArgumentException('Command log stream is invalid.');
+    }
+
+    hub_ensure_runtime_dirs();
+    $logRoot = realpath(HUB_JOB_LOG_DIR);
+    if ($logRoot === false || !is_dir($logRoot) || is_link(HUB_JOB_LOG_DIR)) {
+        throw new RuntimeException('Command job log root is unavailable.');
+    }
+
+    $suffix = $stream === 'stdout' ? 'out' : 'err';
+    $basename = basename($path);
+    if (preg_match('/^job_([1-9][0-9]*)_[0-9]{8}_[0-9]{6}\.' . $suffix . '\.log$/D', $basename, $matches) !== 1) {
+        throw new RuntimeException('Command job log filename is invalid.');
+    }
+    if ($expectedJobId !== null && (int)$matches[1] !== $expectedJobId) {
+        throw new RuntimeException('Command job log belongs to another job.');
+    }
+
+    $parent = dirname($path);
+    clearstatcache(true, $parent);
+    $resolvedParent = realpath($parent);
+    if (
+        $resolvedParent === false
+        || !is_dir($resolvedParent)
+        || is_link($parent)
+        || !hub_storage_paths_equal($resolvedParent, $logRoot)
+    ) {
+        throw new RuntimeException('Command job log path escapes the Hub log root.');
+    }
+
+    $safePath = rtrim($resolvedParent, '/\\') . DIRECTORY_SEPARATOR . $basename;
+    clearstatcache(true, $safePath);
+    if (is_link($safePath) || (file_exists($safePath) && !is_file($safePath))) {
+        throw new RuntimeException('Command job log must be a regular file.');
+    }
+
+    return $safePath;
+}
+
 function hub_command_job_status_payload(PDO $db, int $jobId): ?array
 {
     $job = hub_get_command_job($db, $jobId);
@@ -396,6 +469,12 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
         return null;
     }
     $service = (int)($job['service_id'] ?? 0) > 0 ? hub_get_service($db, (int)$job['service_id']) : null;
+
+    try {
+        $logPaths = hub_command_job_log_paths($job);
+    } catch (Throwable) {
+        $logPaths = ['stdout_path' => '', 'stderr_path' => ''];
+    }
 
     return [
         'id' => (int)$job['id'],
@@ -414,8 +493,8 @@ function hub_command_job_status_payload(PDO $db, int $jobId): ?array
         'error_code' => isset($job['error_code']) ? (string)$job['error_code'] : null,
         'created_at' => (string)($job['created_at'] ?? ''),
         'updated_at' => (string)($job['updated_at'] ?? ''),
-        'stdout_tail' => hub_tail_file((string)($job['stdout_path'] ?? '')),
-        'stderr_tail' => hub_tail_file((string)($job['stderr_path'] ?? '')),
+        'stdout_tail' => hub_tail_file($logPaths['stdout_path']),
+        'stderr_tail' => hub_tail_file($logPaths['stderr_path']),
         'service' => $service ? [
             'id' => (int)$service['id'],
             'status' => (string)$service['status'],
