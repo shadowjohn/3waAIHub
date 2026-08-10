@@ -286,6 +286,17 @@ No category-wide suppression or rule disablement is included.
                 </FunctionIdentifier>
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>98634D5C-BAAE-4238-9CDC-39802B0176E4</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION,-WEB,-XSS,-DATABASE</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_facebook_login_state_path</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
         </RuleDefinitions>
     </Rules>
 </RulePack>

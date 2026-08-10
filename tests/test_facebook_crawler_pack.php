@@ -75,6 +75,19 @@ hub_test('Facebook crawler profiles are member-owned and node-private', function
     hub_facebook_profile_delete($db, $profile['profile_id'], $memberA);
 });
 
+hub_test('Facebook login verification opens only a canonical private state path', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Crawler state path owner');
+    $profile = hub_facebook_profile_create($db, $memberId, 'State path profile');
+    $path = hub_facebook_login_state_path($profile);
+
+    hub_test_assert(basename($path) === 'storage_state.json', 'login state file name must remain fixed');
+    hub_test_assert(hub_storage_paths_equal(dirname($path), hub_facebook_profile_directory((string)$profile['profile_id'])), 'login state path must remain inside its verified profile directory');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_facebook_login_state_path(['profile_id' => '../escape'])), 'login state path accepted traversal profile ID');
+
+    hub_facebook_profile_delete($db, (string)$profile['profile_id'], $memberId);
+});
+
 hub_test('Facebook crawler deletion remains non-active and retryable after final DB failure', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Crawler delete retry owner');

@@ -698,11 +698,39 @@ function hub_facebook_login_api_dispatch(
     }
 }
 
+/**
+ * 登入驗證只能讀取 opaque profile ID 對應的私有 state 檔；先驗證實體 profile 目錄，
+ * 再使用固定檔名，避免登入流程把資料列內容當成可自由指定的檔案路徑。
+ */
+function hub_facebook_login_state_path(array $profile): string
+{
+    $profileId = (string)($profile['profile_id'] ?? '');
+    $dir = hub_facebook_profile_directory($profileId);
+    $rootReal = realpath(hub_facebook_profile_root());
+    $dirReal = realpath($dir);
+    if (
+        $rootReal === false
+        || $dirReal === false
+        || is_link($dir)
+        || dirname($dirReal) !== $rootReal
+    ) {
+        throw new RuntimeException('profile_storage_unavailable');
+    }
+
+    $path = rtrim($dirReal, '/\\') . DIRECTORY_SEPARATOR . 'storage_state.json';
+    clearstatcache(true, $path);
+    if (is_link($path) || (file_exists($path) && !is_file($path))) {
+        throw new RuntimeException('profile_storage_unavailable');
+    }
+
+    return $path;
+}
+
 function hub_facebook_login_state_secure(array $profile): bool
 {
     try {
-        $path = hub_facebook_profile_state_path($profile);
-        $dir = hub_facebook_profile_directory((string)$profile['profile_id']);
+        $path = hub_facebook_login_state_path($profile);
+        $dir = dirname($path);
     } catch (Throwable) {
         return false;
     }
