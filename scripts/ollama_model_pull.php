@@ -43,14 +43,14 @@ try {
     exit(5);
 }
 
-$logDir = HUB_LOG_DIR . '/models';
-if (!is_dir($logDir) && !mkdir($logDir, 0775, true) && !is_dir($logDir)) {
-    fwrite(STDERR, "log_dir_failed: {$logDir}\n");
+try {
+    $serviceKey = hub_pack_runtime_service_key((string)$service['service_key']);
+    $logPath = hub_ollama_model_pull_log_path($serviceKey, date('Ymd_His'));
+} catch (Throwable) {
+    fwrite(STDERR, "log_dir_failed\n");
     exit(6);
 }
-$safeServiceKey = preg_replace('/[^A-Za-z0-9_.-]/', '_', (string)$service['service_key']) ?: 'service';
-$logPath = $logDir . '/ollama_pull_' . $safeServiceKey . '_' . date('Ymd_His') . '.log';
-file_put_contents($logPath, "service={$service['service_key']}\nmodel={$model}\n");
+file_put_contents($logPath, "service={$serviceKey}\nmodel={$model}\n");
 
 $env = hub_compose_env($service);
 $check = hub_run_command(hub_compose_command($service, ['exec', '-T', 'ollama', 'ollama', 'list']), 60, $env);
@@ -75,5 +75,5 @@ if ((int)$verify['exit_code'] !== 0 || !str_contains((string)$verify['stdout'], 
     exit(7);
 }
 
-echo "model_present={$model}\n";
-echo "log={$logPath}\n";
+echo 'model_present=' . hub_h($model) . PHP_EOL;
+echo 'log=' . hub_h($logPath) . PHP_EOL;

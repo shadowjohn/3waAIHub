@@ -30,6 +30,17 @@ hub_test('command runner validates argv and Ollama model references before proce
     hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_reference('model name')), 'Ollama whitespace must be rejected');
 });
 
+hub_test('Ollama model pull logs are confined to the managed models log directory', function (): void {
+    $path = hub_ollama_model_pull_log_path('translate-main', '20300102_030405');
+    $logRoot = realpath(HUB_LOG_DIR . '/models');
+
+    hub_test_assert($logRoot !== false, 'managed models log directory must resolve');
+    hub_test_assert(hub_storage_paths_equal(dirname($path), $logRoot), 'Ollama pull log must stay beneath managed models log directory');
+    hub_test_assert(basename($path) === 'ollama_pull_translate-main_20300102_030405.log', 'Ollama pull log filename changed');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_pull_log_path('../escape', '20300102_030405')), 'Ollama pull log accepted traversal service key');
+    hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_pull_log_path('translate-main', '../escape')), 'Ollama pull log accepted invalid timestamp');
+});
+
 hub_test('streamed command validation records its error in the managed stderr log', function (): void {
     $db = hub_test_reset_db();
     $jobId = hub_enqueue_command_job($db, 'docker_prune_check', null, [], null, '127.0.0.1');

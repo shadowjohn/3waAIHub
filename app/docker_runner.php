@@ -64,6 +64,39 @@ function hub_ollama_model_reference(string $model): string
     return $model;
 }
 
+/**
+ * Ollama 拉取記錄不是由 service row 提供路徑；service key 僅能是 Pack runtime key，
+ * 檔名與目錄固定在 Hub 管理的 logs/models，避免損壞的資料列改寫任意檔案。
+ */
+function hub_ollama_model_pull_log_path(string $serviceKey, string $timestamp): string
+{
+    $serviceKey = hub_pack_runtime_service_key($serviceKey);
+    if (preg_match('/\A[0-9]{8}_[0-9]{6}\z/D', $timestamp) !== 1) {
+        throw new InvalidArgumentException('Ollama pull log timestamp is invalid.');
+    }
+
+    hub_ensure_runtime_dirs();
+    $modelsLogDir = HUB_LOG_DIR . '/models';
+    if (!is_dir($modelsLogDir) && !mkdir($modelsLogDir, 0775, true) && !is_dir($modelsLogDir)) {
+        throw new RuntimeException('Ollama pull log directory is unavailable.');
+    }
+
+    clearstatcache(true, $modelsLogDir);
+    $resolvedLogDir = realpath($modelsLogDir);
+    if ($resolvedLogDir === false || !is_dir($resolvedLogDir) || is_link($modelsLogDir)) {
+        throw new RuntimeException('Ollama pull log directory is unsafe.');
+    }
+
+    $path = rtrim($resolvedLogDir, '/\\') . DIRECTORY_SEPARATOR
+        . 'ollama_pull_' . $serviceKey . '_' . $timestamp . '.log';
+    clearstatcache(true, $path);
+    if (is_link($path) || (file_exists($path) && !is_file($path))) {
+        throw new RuntimeException('Ollama pull log must be a regular file.');
+    }
+
+    return $path;
+}
+
 function hub_valid_argv(array $command): bool
 {
     if ($command === [] || !array_is_list($command)) {
