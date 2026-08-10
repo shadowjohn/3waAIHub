@@ -27,9 +27,10 @@ hub_test('Taiwan address pack keeps trusted upstream and quality contracts expli
     $acceptance = HUB_ROOT . '/packs/taiwan-address/acceptance/gateway_acceptance.php';
     hub_test_assert(is_file($acceptance), 'Taiwan address gateway acceptance script missing');
     $acceptanceSource = (string)file_get_contents($acceptance);
-    foreach (['HUB_TEST_DATA_DIR_ACTIVE', 'hub_create_api_token', 'Authorization: Bearer', "'idempotent' => true", 'getAddress_XY', 'searchAlias', 'api_access_logs', 'status_code'] as $needle) {
+    foreach (['HUB_TEST_DATA_DIR_ACTIVE', 'hub_create_api_token', 'Authorization: Bearer', "'idempotent' => true", 'getAddress_XY', 'searchAlias', 'api_access_logs', 'status_code', 'hub_json_encode($result'] as $needle) {
         hub_test_assert(str_contains($acceptanceSource, $needle), 'Taiwan address gateway acceptance missing ' . $needle);
     }
+    hub_test_assert(!str_contains($acceptanceSource, 'echo json_encode($result'), 'Taiwan address gateway acceptance must not bypass the shared JSON output boundary');
 
     $examples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
     foreach (['## POST Taiwan Address', 'mode=taiwan_address', 'TWADDR_UPSTREAM_URL', 'operation_not_allowed', 'quality_flag'] as $needle) {

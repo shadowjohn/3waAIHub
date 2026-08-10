@@ -80,7 +80,12 @@ $result = [
     ],
     'access' => $access,
 ];
-echo json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . PHP_EOL;
+$output = hub_json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+if ($output === false) {
+    fwrite(STDERR, 'Gateway acceptance result encoding failed.' . PHP_EOL);
+    exit(1);
+}
+echo $output . PHP_EOL;
 
 $passed = ($result['address']['ok'] ?? false) === true
     && ($result['address']['kind'] ?? '') === 'official'
