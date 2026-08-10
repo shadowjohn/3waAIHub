@@ -59,7 +59,7 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
 {
     $platform = hub_platform_id($platform);
     if ($platform === 'windows') {
-        $webConfig ??= (string)(@file_get_contents(HUB_ROOT . DIRECTORY_SEPARATOR . 'web.config') ?: '');
+        $webConfig ??= (string)(@file_get_contents(HUB_WEB_ROOT . DIRECTORY_SEPARATOR . 'web.config') ?: '');
         $webConfig = preg_replace('/<!--.*?-->/s', '', $webConfig) ?? '';
         $hasDirectoryBrowsingProtection = preg_match('/<directoryBrowse\s+enabled\s*=\s*"false"\s*\/?>/i', $webConfig) === 1;
         $hasProtectedSegments = true;
@@ -92,7 +92,7 @@ function hub_collect_web_protection_status(?string $platform = null, ?callable $
     }
 
     $runner ??= 'hub_run_command';
-    $htaccess ??= (string)(@file_get_contents(HUB_ROOT . '/.htaccess') ?: '');
+    $htaccess ??= (string)(@file_get_contents(HUB_WEB_ROOT . '/.htaccess') ?: '');
     $apache = $runner(['systemctl', 'is-active', 'apache2'], 5);
     $apacheActive = ($apache['exit_code'] ?? 1) === 0;
     if (!$apacheActive) {

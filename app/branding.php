@@ -24,7 +24,7 @@ function hub_branding_allowed_mimes(): array
 function hub_branding_default_asset(): array
 {
     return [
-        'path' => HUB_ROOT . '/assets/images/logo.svg',
+        'path' => HUB_WEB_ROOT . '/assets/images/logo.svg',
         'mime' => 'image/svg+xml',
         'managed' => false,
     ];

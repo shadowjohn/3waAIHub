@@ -25,6 +25,7 @@ return [
     __DIR__ . '/../test_pack_job_artifacts.php',
     __DIR__ . '/../test_gpu_leases.php',
     __DIR__ . '/../test_release_ci.php',
+    __DIR__ . '/../test_release_artifact.php',
     __DIR__ . '/../test_runtime_portability.php',
     __DIR__ . '/../test_service_settings.php',
     __DIR__ . '/../test_sqlite_safety.php',

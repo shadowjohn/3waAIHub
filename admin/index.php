@@ -14,8 +14,8 @@ if (!hub_is_system_admin($user)) {
 $siteTitle = hub_site_title($db);
 $model = hub_admin_dashboard_model($db, $_GET);
 $summary = $model['summary'];
-$dashboardCssVersion = (string)(filemtime(HUB_ROOT . '/assets/css/admin-dashboard.css') ?: HUB_VERSION);
-$dashboardJsVersion = (string)(filemtime(HUB_ROOT . '/assets/js/admin-dashboard.js') ?: HUB_VERSION);
+$dashboardCssVersion = (string)(filemtime(HUB_WEB_ROOT . '/assets/css/admin-dashboard.css') ?: HUB_VERSION);
+$dashboardJsVersion = (string)(filemtime(HUB_WEB_ROOT . '/assets/js/admin-dashboard.js') ?: HUB_VERSION);
 $isStationDashboard = in_array($model['role'], ['router', 'aggregate'], true);
 $hasSummary = !$isStationDashboard || $model['active_station'] !== null;
 

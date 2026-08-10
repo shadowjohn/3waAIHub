@@ -8,8 +8,17 @@ RewriteRule ^(?:README\.md|history\.md|install\.sh|composer\.(?:json|lock)|packa
 </IfModule>
 
 <IfModule mod_setenvif.c>
-SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
+    SetEnvIfNoCase Authorization "^(.*)$" HTTP_AUTHORIZATION=$1
 </IfModule>
+
+<Files "_bootstrap.php">
+    <IfModule mod_authz_core.c>
+        Require all denied
+    </IfModule>
+    <IfModule !mod_authz_core.c>
+        Deny from all
+    </IfModule>
+</Files>
 
 <FilesMatch "(^\.|\.sqlite(?:-.+)?$|\.db$|\.env$|\.conf$|\.key$|\.log$|\.ps1$|\.bat$|\.cmd$|\.sh$|\.sql$|\.ini$|\.ya?ml$|\.xml$|\.bak$|~$)">
     <IfModule mod_authz_core.c>

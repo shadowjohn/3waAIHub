@@ -1,16 +1,77 @@
 [CmdletBinding()]
 param(
-    [string]$BuildId = '3waAIHub-production',
+    [string]$BuildId = '3waAIHub-release',
     [string]$OutputPath = '',
     [string]$SourceAnalyzerPath = '',
     [string]$RulesPath = '',
+    [string]$ReleaseRoot = '',
     [switch]$Check
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+function Assert-ReleaseManifest {
+    param([string]$Root)
+
+    $manifestPath = Join-Path $Root 'release-manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        throw "Release manifest is missing: $manifestPath. Run php scripts/build_release.php first."
+    }
+    $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ($manifest.schema_version -ne 1 -or $manifest.public_root -ne 'public' -or $null -eq $manifest.files) {
+        throw 'Release manifest schema is invalid.'
+    }
+    foreach ($forbidden in @('data', 'docs', 'fortify', 'tests', 'tools')) {
+        if (Test-Path -LiteralPath (Join-Path $Root $forbidden)) {
+            throw "Release artifact contains a non-deployable directory: $forbidden"
+        }
+    }
+    foreach ($privatePath in @('public\app', 'public\packs', 'public\scripts')) {
+        if (Test-Path -LiteralPath (Join-Path $Root $privatePath)) {
+            throw "Release public root contains private source: $privatePath"
+        }
+    }
+
+    $fileCount = 0
+    foreach ($property in $manifest.files.PSObject.Properties) {
+        $relativePath = [string]$property.Name
+        $expectedHash = ([string]$property.Value).ToLowerInvariant()
+        if ($relativePath -match '(^|/)(\.git|\.github|data|docs|fortify|tests|tools|node_modules|\.venv|__pycache__)(/|$)') {
+            throw "Release manifest contains a non-deployable path: $relativePath"
+        }
+        if ($relativePath -match '(^|/)(acceptance|test_[^/]+|[^/]+_test\.py)(/|$)') {
+            throw "Release manifest contains Pack acceptance or test source: $relativePath"
+        }
+        if ($expectedHash -notmatch '^[a-f0-9]{64}$') {
+            throw "Release manifest contains an invalid SHA256: $relativePath"
+        }
+        $path = Join-Path $Root ($relativePath.Replace('/', '\'))
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            throw "Release manifest file is missing: $relativePath"
+        }
+        $actualHash = ([string](Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash).ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) {
+            throw "Release manifest SHA256 mismatch: $relativePath"
+        }
+        $fileCount++
+    }
+    if ($fileCount -eq 0) {
+        throw 'Release manifest has no deployable files.'
+    }
+    return [pscustomobject]@{ ManifestPath = $manifestPath; FileCount = $fileCount }
+}
+
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
+if ($ReleaseRoot -eq '') {
+    $ReleaseRoot = Join-Path $repoRoot 'dist'
+}
+if (-not (Test-Path -LiteralPath $ReleaseRoot -PathType Container)) {
+    throw "Release root is missing: $ReleaseRoot. Run php scripts/build_release.php first."
+}
+$releaseRoot = (Resolve-Path -LiteralPath $ReleaseRoot).Path
+$release = Assert-ReleaseManifest $releaseRoot
+
 if ($RulesPath -eq '') {
     $RulesPath = Join-Path $repoRoot 'fortify\rules'
 }
@@ -20,40 +81,41 @@ if ($rulesDirectory) {
     $rulesFiles = @(Get-ChildItem -LiteralPath $RulesPath -File -Include '*.xml','*.bin' | Sort-Object -Property Name | Select-Object -ExpandProperty FullName)
 }
 $rulesArgs = if ($rulesFiles.Count -gt 0) { @('-rules', $RulesPath) } else { @() }
+
 $sourcePatterns = @(
-    (Join-Path $repoRoot '*.php'),
-    (Join-Path $repoRoot 'app\**\*.php'),
-    (Join-Path $repoRoot 'admin\**\*.php'),
-    (Join-Path $repoRoot 'catalog_show\**\*.php'),
-    (Join-Path $repoRoot 'scripts\**\*.php'),
-    (Join-Path $repoRoot 'i18n\**\*.php'),
-    (Join-Path $repoRoot 'packs\**\*.php'),
-    (Join-Path $repoRoot 'packs\**\*.py'),
-    (Join-Path $repoRoot 'packs\**\*.sh'),
-    (Join-Path $repoRoot 'deploy\**\*.ps1'),
-    (Join-Path $repoRoot 'assets\js\*.js'),
-    (Join-Path $repoRoot 'bin\aihub-run')
+    (Join-Path $releaseRoot 'public\*.php'),
+    (Join-Path $releaseRoot 'public\admin\**\*.php'),
+    (Join-Path $releaseRoot 'public\catalog_show\**\*.php'),
+    (Join-Path $releaseRoot 'public\assets\js\*.js'),
+    (Join-Path $releaseRoot 'app\**\*.php'),
+    (Join-Path $releaseRoot 'i18n\**\*.php'),
+    (Join-Path $releaseRoot 'scripts\**\*.php'),
+    (Join-Path $releaseRoot 'scripts\**\*.ps1'),
+    (Join-Path $releaseRoot 'packs\**\*.php'),
+    (Join-Path $releaseRoot 'packs\**\*.py'),
+    (Join-Path $releaseRoot 'packs\**\*.sh'),
+    (Join-Path $releaseRoot 'crontab\**\*.sh'),
+    (Join-Path $releaseRoot 'install.ps1'),
+    (Join-Path $releaseRoot 'install.sh'),
+    (Join-Path $releaseRoot 'bin\aihub-run')
 )
 $excludedPatterns = @(
-    (Join-Path $repoRoot '.git\**'),
-    (Join-Path $repoRoot '.worktrees\**'),
-    (Join-Path $repoRoot 'data\**'),
-    (Join-Path $repoRoot 'tests\**'),
-    (Join-Path $repoRoot 'docs\**'),
-    (Join-Path $repoRoot 'tools\**'),
-    (Join-Path $repoRoot 'assets\js\jquery.min.js'),
-    (Join-Path $repoRoot 'packs\**\node_modules\**'),
-    (Join-Path $repoRoot 'packs\**\.venv\**'),
-    (Join-Path $repoRoot 'packs\**\vendor\**'),
-    (Join-Path $repoRoot 'packs\**\__pycache__\**')
+    (Join-Path $releaseRoot 'public\assets\js\vendor\**'),
+    (Join-Path $releaseRoot 'public\assets\js\jquery.min.js'),
+    (Join-Path $releaseRoot 'packs\**\node_modules\**'),
+    (Join-Path $releaseRoot 'packs\**\.venv\**'),
+    (Join-Path $releaseRoot 'packs\**\vendor\**'),
+    (Join-Path $releaseRoot 'packs\**\__pycache__\**')
 )
-
 $scope = [ordered]@{
-    repo_root = $repoRoot
+    release_root = $releaseRoot
+    public_root = (Join-Path $releaseRoot 'public')
+    manifest = $release.ManifestPath
+    manifest_files = $release.FileCount
     include = $sourcePatterns
     exclude = $excludedPatterns
     custom_rules = $rulesFiles
-    policy = 'production source plus Pack acceptance/service tests; root test fixtures and historical worktrees are excluded'
+    policy = 'verified deploy artifact; includes private Control Plane and shipped Pack runtime, excludes tests, acceptance, docs, data, and static vendor JavaScript'
 }
 
 if ($Check) {
@@ -75,7 +137,6 @@ if ($SourceAnalyzerPath -eq '') {
 if ($SourceAnalyzerPath -eq '' -or -not (Test-Path -LiteralPath $SourceAnalyzerPath -PathType Leaf)) {
     throw 'sourceanalyzer.exe was not found. Set -SourceAnalyzerPath to the installed OpenText SAST executable.'
 }
-
 if ($OutputPath -eq '') {
     $OutputPath = Join-Path $repoRoot ('data\fortify\' + $BuildId + '.fpr')
 }
@@ -89,12 +150,10 @@ $excludeArgs = foreach ($pattern in $excludedPatterns) {
     '-exclude'
     $pattern
 }
-
 & $SourceAnalyzerPath -b $BuildId -clean
 if ($LASTEXITCODE -ne 0) {
     throw "Fortify clean failed for build ID: $BuildId"
 }
-
 & $SourceAnalyzerPath -b $BuildId @excludeArgs @sourcePatterns
 if ($LASTEXITCODE -ne 0) {
     throw "Fortify translation failed for build ID: $BuildId"
@@ -104,16 +163,11 @@ $translatedFiles = @(& $SourceAnalyzerPath -b $BuildId -show-files)
 if ($LASTEXITCODE -ne 0) {
     throw "Fortify file inventory failed for build ID: $BuildId"
 }
-$repoRootPattern = [regex]::Escape($repoRoot.TrimEnd([char[]]@([char]'\', [char]'/')))
-$rootRelativePattern = '(?i)^(?:' + $repoRootPattern + '[\\/])?'
+$releaseRootPattern = [regex]::Escape($releaseRoot.TrimEnd([char[]]@([char]'\', [char]'/')))
+$rootRelativePattern = '(?i)^(?:' + $releaseRootPattern + '[\\/])?'
 $forbiddenFiles = @($translatedFiles | Where-Object {
-    if ($_ -match '(?i)[\\/]\.worktrees[\\/]') {
-        return $true
-    }
-    if ($_ -match ($rootRelativePattern + 'tests[\\/]')) {
-        return $true
-    }
-    return $_ -match ($rootRelativePattern + 'data[\\/]')
+    $_ -match ($rootRelativePattern + '(?:data|docs|fortify|tests|tools)[\\/]') -or
+        $_ -match '(?i)[\\/](?:acceptance|tests|node_modules|vendor|\.venv|__pycache__)[\\/]'
 })
 if ($forbiddenFiles.Count -gt 0) {
     throw ('Fortify scan scope is contaminated: ' + ($forbiddenFiles -join '; '))
@@ -123,18 +177,6 @@ if ($forbiddenFiles.Count -gt 0) {
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) {
     throw "Fortify scan failed for build ID: $BuildId"
 }
-
-$sha256 = [System.Security.Cryptography.SHA256]::Create()
-try {
-    $stream = [System.IO.File]::OpenRead($OutputPath)
-    try {
-        $hashBytes = $sha256.ComputeHash($stream)
-    } finally {
-        $stream.Dispose()
-    }
-} finally {
-    $sha256.Dispose()
-}
-$hash = -join ($hashBytes | ForEach-Object { $_.ToString('x2') })
+$hash = ([string](Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash).ToLowerInvariant()
 Write-Output ('fpr=' + $OutputPath)
 Write-Output ('sha256=' + $hash)

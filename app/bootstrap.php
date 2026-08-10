@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 define('HUB_ROOT', dirname(__DIR__));
+define('HUB_WEB_ROOT', is_dir(HUB_ROOT . '/public') ? HUB_ROOT . '/public' : HUB_ROOT);
 const HUB_RUNTIME_SETTINGS_FILENAME = 'runtime-settings.conf';
 const HUB_LEGACY_RUNTIME_ENV_FILENAME = '.env';
 $hubDbPath = trim((string)(getenv('AIHUB_TEST_DB') ?: ''));
