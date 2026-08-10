@@ -1,6 +1,18 @@
 <?php
 declare(strict_types=1);
 
+function hub_sqlite_schema_identifier(string $identifier): string
+{
+    if (
+        preg_match('/\A[A-Za-z_][A-Za-z0-9_]*\z/D', $identifier) !== 1
+        || str_starts_with(strtolower($identifier), 'sqlite_')
+    ) {
+        throw new InvalidArgumentException('Invalid SQLite schema identifier.');
+    }
+
+    return '"' . $identifier . '"';
+}
+
 const HUB_DB_MIGRATION_VERSION = '2026-08-09.2';
 const HUB_DB_MIGRATION_VERSION_KEY = 'db_migration_version';
 const HUB_DB_MIGRATION_SCHEMA_KEY = 'db_migration_schema_version';

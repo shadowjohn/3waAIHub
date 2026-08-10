@@ -1,6 +1,13 @@
 <?php
 declare(strict_types=1);
 
+hub_test('SQLite schema identifiers accept only declared identifier syntax', function (): void {
+    hub_test_assert(hub_sqlite_schema_identifier('command_jobs') === '"command_jobs"', 'safe SQLite schema identifier changed');
+    foreach (['command_jobs; DROP TABLE users', '"command_jobs"', 'sqlite_master', 'jobs-name', '1jobs'] as $unsafe) {
+        hub_test_assert(hub_test_throws(static fn (): string => hub_sqlite_schema_identifier($unsafe)), 'unsafe SQLite schema identifier was accepted: ' . $unsafe);
+    }
+});
+
 hub_test('sqlite connection applies write safety pragmas', function (): void {
     $db = hub_test_reset_db();
 
