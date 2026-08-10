@@ -341,6 +341,17 @@ No category-wide suppression or rule disablement is included.
                 </FunctionIdentifier>
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>51E8B790-0BB9-40B4-93F7-18B55A81F0F3</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION,-WEB,-XSS,-DATABASE</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_voice_profile_safe_host_path</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
         </RuleDefinitions>
     </Rules>
 </RulePack>

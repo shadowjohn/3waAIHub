@@ -527,3 +527,15 @@ hub_test('PhaseRuntime-0 portability docs and pack UI expose target source and r
     hub_test_assert(str_contains($packsPage, 'legacy inferred'), 'packs UI must expose legacy inferred source');
     hub_test_assert(str_contains($packsPage, 'unsupported reason'), 'packs UI must expose unsupported reason');
 });
+
+hub_test('test runner clears isolated task data with canonical host path comparison', function (): void {
+    $taskDirectory = HUB_DATA_DIR . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'tasks' . DIRECTORY_SEPARATOR . 'windows-canonical-fixture';
+    if (!is_dir($taskDirectory) && !mkdir($taskDirectory, 0700, true) && !is_dir($taskDirectory)) {
+        throw new RuntimeException('Cannot create isolated task fixture.');
+    }
+    file_put_contents($taskDirectory . DIRECTORY_SEPARATOR . 'marker.txt', 'fixture', LOCK_EX);
+
+    hub_test_clear_data_root();
+
+    hub_test_assert(!file_exists($taskDirectory), 'test runner must clear its own isolated task directory across Windows separator forms');
+});

@@ -286,7 +286,14 @@ function hub_test_clear_data_root(): void
         if (!file_exists($path)) {
             continue;
         }
-        if (is_link($path) || !is_dir($path) || realpath($path) !== $path || !str_starts_with($path, $dataRoot . DIRECTORY_SEPARATOR)) {
+        $resolved = realpath($path);
+        if (
+            is_link($path)
+            || !is_dir($path)
+            || $resolved === false
+            || !hub_storage_paths_equal($resolved, $path)
+            || !hub_storage_path_is_within($resolved, $dataRoot)
+        ) {
             throw new RuntimeException('Test task data reset target is invalid.');
         }
         hub_test_remove_data_tree($path);

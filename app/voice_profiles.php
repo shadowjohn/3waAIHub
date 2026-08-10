@@ -35,8 +35,9 @@ function hub_normalize_voice_profile_ref(string|int $value): int
 
 function hub_voice_profile_safe_host_path(string $path): ?string
 {
-    $root = realpath(hub_voice_profile_storage_dir());
-    if ($root === false || $path === '') {
+    $storageDir = hub_voice_profile_storage_dir();
+    $root = realpath($storageDir);
+    if ($root === false || !is_dir($root) || is_link($storageDir) || $path === '') {
         return null;
     }
 
@@ -1350,6 +1351,7 @@ function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $
     $quarantineDir = null;
     $quarantinePath = null;
     $quarantine = null;
+    $path = null;
     try {
         if (!$db->inTransaction()) {
             $db->exec('BEGIN IMMEDIATE');
@@ -1446,10 +1448,11 @@ function hub_purge_deleted_voice_profile_audio(PDO $db, int $profileId, string $
         }
         if (
             is_string($quarantinePath)
+            && is_string($path)
             && @lstat($quarantinePath) !== false
-            && @lstat($rawPath) === false
+            && @lstat($path) === false
         ) {
-            @rename($quarantinePath, $rawPath);
+            @rename($quarantinePath, $path);
         }
         if (is_string($quarantineDir)) {
             @rmdir($quarantineDir);

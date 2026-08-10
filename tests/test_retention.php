@@ -1005,6 +1005,37 @@ hub_test('legacy soft-deleted voice profile WAV cleanup recovers safely and idem
     );
 });
 
+hub_test('voice profile purge rollback restores only the verified managed source path', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Disposal rollback owner');
+    $path = hub_voice_profile_storage_dir() . '/disposal-rollback.wav';
+    file_put_contents($path, 'RIFFprivate-disposal-rollback', LOCK_EX);
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Disposal rollback profile',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+    ]);
+    $profile = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing rollback profile.');
+    hub_soft_delete_voice_profile($db, $profileId, $memberId, false);
+
+    $purged = hub_purge_deleted_voice_profile_audio(
+        $db,
+        $profileId,
+        $path,
+        (string)$profile['reference_audio_sha256'],
+        static function (): void {
+            throw new RuntimeException('Inject rollback after quarantine.');
+        }
+    );
+
+    hub_test_assert(
+        !$purged
+        && is_file($path)
+        && file_get_contents($path) === 'RIFFprivate-disposal-rollback',
+        'failed disposal must restore only the verified managed source asset'
+    );
+});
+
 hub_test('retention expires a handle-lost voice profile and removes its managed WAV', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Expired voice profile owner');
