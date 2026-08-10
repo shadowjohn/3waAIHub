@@ -14,7 +14,12 @@ function hub_models_root(PDO $db): string
 function hub_model_asset_safe_path(string $relativePath): string
 {
     $raw = str_replace('\\', '/', $relativePath);
-    if ($raw === '' || str_contains($raw, "\0") || str_starts_with($raw, '/')) {
+    if (
+        $raw === ''
+        || str_contains($raw, "\0")
+        || str_starts_with($raw, '/')
+        || preg_match('/[\x00-\x1F\x7F:]/', $raw) === 1
+    ) {
         throw new InvalidArgumentException('Invalid model asset path.');
     }
     $path = trim($raw, '/');

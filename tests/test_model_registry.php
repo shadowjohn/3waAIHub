@@ -30,6 +30,8 @@ hub_test('model registry scans models root safely and skips symlinks', function 
     hub_test_assert(hub_model_asset_safe_path('yolo/yolo11n.pt') === 'yolo/yolo11n.pt', 'safe relative path mismatch');
     hub_test_assert(hub_test_throws(static fn () => hub_model_asset_safe_path('../etc/passwd')), 'path traversal was accepted');
     hub_test_assert(hub_test_throws(static fn () => hub_model_asset_safe_path('/etc/passwd')), 'absolute asset path was accepted');
+    hub_test_assert(hub_test_throws(static fn () => hub_model_asset_safe_path('C:\\models\\escape')), 'Windows drive path was accepted as a model asset path');
+    hub_test_assert(hub_test_throws(static fn () => hub_model_asset_safe_path('yolo/model:stream')), 'Windows alternate data stream separator was accepted as a model asset path');
     hub_test_assert(!hub_is_safe_models_root('/'), 'root path accepted as models root');
     if (hub_platform_id() === 'windows') {
         $systemRoot = (string)getenv('SystemRoot');
