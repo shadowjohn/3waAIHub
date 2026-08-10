@@ -387,11 +387,14 @@ hub_admin_header('控制台', $user);
                                 if ($serviceState === '') {
                                     $serviceState = $healthStatus === 'unknown' ? __('狀態未知') : __('已供應');
                                 }
+                                $serviceVramLabel = !empty($service['gpu_vram_measured']) && is_int($service['gpu_vram_used_mb'] ?? null)
+                                    ? number_format($service['gpu_vram_used_mb']) . ' MB'
+                                    : (($service['gpu_required'] ?? null) === false ? __('CPU') : __('尚未取得'));
                                 ?>
                                 <tr>
                                     <td><?= hub_h((string)($service['name'] ?? $service['pack_id'] ?? $service['mode'] ?? '—')) ?></td>
                                     <td><code><?= hub_h((string)($service['mode'] ?? '—')) ?></code></td>
-                                    <td><?php if (!empty($service['gpu_vram_measured']) && is_int($service['gpu_vram_used_mb'] ?? null)): ?><?= number_format($service['gpu_vram_used_mb']) . ' MB' ?><?php elseif (($service['gpu_required'] ?? null) === false): ?><?= hub_h(__('CPU')) ?><?php else: ?><?= hub_h(__('尚未取得')) ?><?php endif; ?></td>
+                                    <td><?= hub_h($serviceVramLabel) ?></td>
                                     <td><?= hub_h($serviceState) ?></td>
                                 </tr>
                             <?php endforeach; ?>

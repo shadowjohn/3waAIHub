@@ -770,8 +770,10 @@ hub_test('dashboard page uses accepted local assets and query-backed station tab
         '<th>Mode</th><th><?= hub_h(__(\'實際 VRAM\')) ?></th><th><?= hub_h(__(\'狀態\')) ?></th>',
         "!empty(\$service['gpu_vram_measured']) && is_int(\$service['gpu_vram_used_mb'] ?? null)",
         "number_format(\$service['gpu_vram_used_mb']) . ' MB'",
-        "hub_h(__('CPU'))",
-        "hub_h(__('尚未取得'))",
+        "\$serviceVramLabel =",
+        '<?= hub_h($serviceVramLabel) ?>',
+        "__('CPU')",
+        "__('尚未取得')",
     ] as $needle) {
         hub_test_assert(str_contains($page, $needle), 'dashboard page missing measured service VRAM contract: ' . $needle);
     }
