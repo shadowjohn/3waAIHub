@@ -212,7 +212,8 @@ function hub_run_docparser_parse_task(PDO $db, array $task): void
     hub_abort_if_task_cancel_requested($db, $taskId);
     $outputs = hub_docparser_render_outputs($docir, ['target_language' => $targetLanguage]);
     hub_abort_if_task_cancel_requested($db, $taskId);
-    $fixture = json_decode((string)file_get_contents(HUB_ROOT . '/packs/docparser/acceptance/' . $profile . '_v0.1.json'), true) ?: [];
+    $fixturePath = hub_docparser_acceptance_fixture_path($profile);
+    $fixture = $fixturePath === null ? [] : (json_decode((string)file_get_contents($fixturePath), true) ?: []);
     $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
     hub_update_task_progress($db, $taskId, 85);
     hub_abort_if_task_cancel_requested($db, $taskId);
@@ -287,8 +288,8 @@ function hub_run_docparser_repair_translation_task(PDO $db, array $task): void
     $targetLanguage = (string)($sourceInput['target_language'] ?? $docir['target_language'] ?? 'zh-TW');
     $outputs = hub_docparser_render_outputs($docir, ['target_language' => $targetLanguage]);
     $profile = (string)($sourceInput['profile'] ?? 'technical_manual');
-    $fixturePath = HUB_ROOT . '/packs/docparser/acceptance/' . $profile . '_v0.1.json';
-    $fixture = is_file($fixturePath) ? (json_decode((string)file_get_contents($fixturePath), true) ?: []) : [];
+    $fixturePath = hub_docparser_acceptance_fixture_path($profile);
+    $fixture = $fixturePath === null ? [] : (json_decode((string)file_get_contents($fixturePath), true) ?: []);
     $quality = hub_docparser_quality_report($docir, $outputs, $fixture);
     $toc = json_decode($outputs['toc_json'], true) ?: [];
     $rag = json_decode($outputs['rag_chunks_json'], true) ?: [];

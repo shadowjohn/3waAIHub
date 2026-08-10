@@ -114,6 +114,33 @@ function hub_docparser_task_artifacts_complete(PDO $db, int $taskId): bool
     return true;
 }
 
+function hub_docparser_acceptance_fixture_path(string $profile): ?string
+{
+    if (preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/D', $profile) !== 1) {
+        return null;
+    }
+
+    $fixtureRootPath = HUB_ROOT . '/packs/docparser/acceptance';
+    if (is_link($fixtureRootPath)) {
+        return null;
+    }
+    $fixtureRoot = realpath($fixtureRootPath);
+    if ($fixtureRoot === false || !is_dir($fixtureRoot)) {
+        return null;
+    }
+
+    $candidate = $fixtureRoot . DIRECTORY_SEPARATOR . $profile . '_v0.1.json';
+    if (is_link($candidate) || !is_file($candidate)) {
+        return null;
+    }
+    $resolved = realpath($candidate);
+    if ($resolved === false || !is_file($resolved) || !hub_storage_path_is_within(dirname($resolved), $fixtureRoot)) {
+        return null;
+    }
+
+    return $resolved;
+}
+
 function hub_docparser_build_docir(array $structurePayload, array $options): array
 {
     $pages = [];

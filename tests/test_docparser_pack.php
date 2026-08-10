@@ -1247,6 +1247,14 @@ hub_test('DocParser worker source fails quality-gated tasks instead of always su
     hub_test_assert(str_contains($worker, 'docparser_quality_gate_failed'), 'worker must emit docparser_quality_gate_failed for non-completed quality gate');
 });
 
+hub_test('DocParser fixture loader confines task profiles to the physical acceptance directory', function (): void {
+    $fixture = hub_docparser_acceptance_fixture_path('technical_manual');
+    hub_test_assert($fixture !== null && is_file($fixture), 'declared DocParser fixture must resolve');
+    hub_test_assert(hub_docparser_acceptance_fixture_path('../technical_manual') === null, 'fixture loader accepted traversal');
+    hub_test_assert(hub_docparser_acceptance_fixture_path('technical/manual') === null, 'fixture loader accepted a separator');
+    hub_test_assert(hub_docparser_acceptance_fixture_path('missing_profile') === null, 'fixture loader accepted a missing profile');
+});
+
 hub_test('DocParser acceptance script checks artifact content not only existence', function (): void {
     $script = (string)file_get_contents(HUB_ROOT . '/scripts/docparser_acceptance.php');
     foreach (['hub_docparser_acceptance_result', 'broken_asset_links', 'translation_identity_ratio', 'protected_token_preservation', 'toc_broken_anchor_count'] as $needle) {
