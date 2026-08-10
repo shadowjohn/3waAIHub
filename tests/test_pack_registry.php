@@ -241,3 +241,20 @@ hub_test('catalog and required packs are readable', function (): void {
         hub_test_assert(isset($whisperSchema[$key]), 'Whisper ASR settings_schema missing ' . $key);
     }
 });
+
+hub_test('pack runtime directories only accept one safe service-key component', function (): void {
+    $db = hub_test_reset_db();
+    $runtimeDir = hub_pack_runtime_dir($db, 'runtime-safe-main');
+
+    hub_test_assert(
+        hub_storage_path_is_within($runtimeDir, hub_pack_runtime_base_dir($db))
+            && !hub_storage_paths_equal($runtimeDir, hub_pack_runtime_base_dir($db)),
+        'runtime directory must remain below the resolved Hub runtime root'
+    );
+    foreach (['', '../escape', 'nested/path', 'nested\\path', 'UPPERCASE', str_repeat('a', 65)] as $invalid) {
+        hub_test_assert(
+            hub_test_throws(static fn () => hub_pack_runtime_dir($db, $invalid)),
+            'unsafe service key was accepted for runtime directory: ' . $invalid
+        );
+    }
+});

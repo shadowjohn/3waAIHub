@@ -2139,9 +2139,35 @@ function hub_pack_runtime_base_dir(PDO $db): string
     return HUB_DATA_DIR . '/test_services/' . $suffix;
 }
 
+function hub_pack_runtime_service_key(string $serviceKey): string
+{
+    if (preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/D', $serviceKey) !== 1) {
+        throw new InvalidArgumentException('Invalid service runtime key.');
+    }
+
+    return $serviceKey;
+}
+
 function hub_pack_runtime_dir(PDO $db, string $serviceKey): string
 {
-    return hub_pack_runtime_base_dir($db) . '/' . $serviceKey;
+    $serviceKey = hub_pack_runtime_service_key($serviceKey);
+    $runtimeBase = hub_pack_runtime_base_dir($db);
+    if (!is_dir($runtimeBase) && !mkdir($runtimeBase, 0775, true) && !is_dir($runtimeBase)) {
+        throw new RuntimeException('Cannot create service runtime root.');
+    }
+    if (is_link($runtimeBase)) {
+        throw new RuntimeException('Service runtime root must not be a symlink.');
+    }
+
+    $resolvedBase = realpath($runtimeBase);
+    if ($resolvedBase === false
+        || !hub_storage_path_is_within($resolvedBase, HUB_DATA_DIR)
+        || hub_storage_paths_equal($resolvedBase, HUB_DATA_DIR)) {
+        throw new RuntimeException('Service runtime root escapes Hub data.');
+    }
+
+    // 對外維持 Hub 一貫的 / 表示法；實體解析僅用於驗證，不能讓 Windows 分隔符破壞已生成檔案比對。
+    return rtrim(hub_normalize_host_path($resolvedBase), '/') . '/' . $serviceKey;
 }
 
 function hub_with_pack_runtime_lock(string $runtimeDir, callable $callback): mixed
