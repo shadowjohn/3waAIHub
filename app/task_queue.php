@@ -1517,6 +1517,33 @@ function hub_retention_managed_path(string $path, string $root): ?string
     return $realPath;
 }
 
+function hub_retention_task_partial_root(int $taskId): ?string
+{
+    if ($taskId < 1) {
+        return null;
+    }
+
+    $tasksRootPath = HUB_DATA_DIR . '/uploads/tasks';
+    if (is_link($tasksRootPath)) {
+        return null;
+    }
+    $tasksRoot = realpath($tasksRootPath);
+    if ($tasksRoot === false || !is_dir($tasksRoot)) {
+        return null;
+    }
+
+    $candidate = $tasksRoot . DIRECTORY_SEPARATOR . 'task_' . $taskId;
+    if (is_link($candidate) || !is_dir($candidate)) {
+        return null;
+    }
+    $resolved = realpath($candidate);
+    if ($resolved === false || !is_dir($resolved) || !hub_storage_path_is_within($resolved, $tasksRoot)) {
+        return null;
+    }
+
+    return $resolved;
+}
+
 function hub_retention_remove_managed_path(string $path, string $root): int
 {
     $path = hub_retention_managed_path($path, $root);
@@ -2049,8 +2076,8 @@ function hub_prune_retention_partials(PDO $db, string $now): int
         $partialRemains = false;
         $nextRetryAt = null;
         $retryError = null;
-        $root = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId;
-        if (!is_dir($root) || is_link($root)) {
+        $root = hub_retention_task_partial_root($taskId);
+        if ($root === null) {
             if ($hasRetryMarker) {
                 $clearRetry->execute([':id' => $taskId]);
             }

@@ -122,6 +122,17 @@ No category-wide suppression or rule disablement is included.
                 <OutArguments>return</OutArguments>
             </DataflowCleanseRule>
             <DataflowCleanseRule formatVersion="26.2" language="php">
+                <RuleID>8D5136DF-DF33-4888-82C7-49CA4AD1B4C2</RuleID>
+                <TaintFlags>+VALIDATED_PATH_MANIPULATION,-WEB,-XSS,-DATABASE</TaintFlags>
+                <FunctionIdentifier>
+                    <NamespaceName><Pattern/></NamespaceName>
+                    <ClassName><Pattern/></ClassName>
+                    <FunctionName><Pattern>hub_retention_task_partial_root</Pattern></FunctionName>
+                    <ApplyTo implements="true" overrides="true" extends="true"/>
+                </FunctionIdentifier>
+                <OutArguments>return</OutArguments>
+            </DataflowCleanseRule>
+            <DataflowCleanseRule formatVersion="26.2" language="php">
                 <RuleID>0B86FCB2-0579-4CBF-8C9C-2F79FA84902A</RuleID>
                 <TaintFlags>+VALIDATED_PATH_MANIPULATION</TaintFlags>
                 <FunctionIdentifier>

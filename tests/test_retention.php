@@ -120,6 +120,18 @@ hub_test('partial retention purges a failed terminal upload after one hour witho
     hub_test_assert(($after['source_state'] ?? '') === 'retention' && ($after['workspace_state'] ?? '') === 'retention', 'partial cleanup must not wait for or alter independent task resource retention');
 });
 
+hub_test('partial retention resolves only a physical managed task workspace', function (): void {
+    $db = hub_test_reset_db();
+    $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
+    $root = HUB_DATA_DIR . '/uploads/tasks/task_' . $taskId;
+    if (!mkdir($root, 0700, true)) {
+        throw new RuntimeException('Cannot create managed task workspace fixture.');
+    }
+
+    hub_test_assert(hub_retention_task_partial_root($taskId) === realpath($root), 'managed task workspace must resolve to its physical directory');
+    hub_test_assert(hub_retention_task_partial_root(0) === null, 'partial retention accepted an invalid task identifier');
+});
+
 hub_test('partial retention retries a failed deletion after source and workspace are purged', function (): void {
     $db = hub_test_reset_db();
     $taskId = hub_enqueue_task($db, 'demo_task', 'default', 0, [], null, '127.0.0.1');
