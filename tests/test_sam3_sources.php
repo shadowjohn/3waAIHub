@@ -57,7 +57,7 @@ hub_test('SAM3 capture command has fixed bounds and no shell interpolation', fun
         'protocol' => 'rtsps',
         'clip_seconds' => 15,
     ], '/tmp/sam3-capture.mp4');
-    hub_test_assert($command[0] === 'ffmpeg' && in_array('-rw_timeout', $command, true) && in_array('-fs', $command, true), 'capture must retain its fixed FFmpeg time and size bounds');
+    hub_test_assert($command[0] === hub_trusted_command_path('ffmpeg', 'Linux') && hub_command_path_is_absolute($command[0], 'Linux') && in_array('-rw_timeout', $command, true) && in_array('-fs', $command, true), 'capture must use the trusted absolute FFmpeg executable with its fixed time and size bounds');
     hub_test_assert(in_array('-rtsp_transport', $command, true) && in_array('tcp', $command, true), 'RTSP capture must use TCP transport');
     hub_test_assert(!in_array('sh', $command, true) && !in_array('-c', $command, true), 'capture must use argv execution rather than a shell');
     hub_test_assert(hub_test_throws(static fn (): array => hub_sam3_capture_command([

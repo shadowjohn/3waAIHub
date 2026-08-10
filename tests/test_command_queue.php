@@ -17,13 +17,30 @@ hub_test('command runner bypasses cmd.exe on Windows', function (): void {
     hub_test_assert(hub_process_execution_options('Linux') === [], 'Linux argv execution must not add Windows-only options');
 });
 
+hub_test('command runner resolves the PHP executable to its trusted absolute path', function (): void {
+    $command = hub_safe_argv(['php', '-v']);
+
+    hub_test_assert($command[0] === PHP_BINARY, 'PHP command must not rely on PATH lookup');
+    hub_test_assert(hub_command_path_is_absolute($command[0]), 'resolved PHP command must be absolute');
+});
+
+hub_test('command runner rejects an untrusted absolute executable path', function (): void {
+    hub_test_assert(
+        hub_test_throws(static fn (): array => hub_safe_argv(['C:\\untrusted\\docker', 'version'])),
+        'command runner must not replace an attacker-selected executable path by basename',
+    );
+});
+
 hub_test('command runner validates argv and Ollama model references before process launch', function (): void {
     hub_test_assert(hub_valid_argv(['docker', 'system', 'df']), 'fixed argv command must be accepted');
     hub_test_assert(!hub_valid_argv(['docker', "system\0df"]), 'NUL argv argument must be rejected');
     hub_test_assert(!hub_valid_argv(['docker', "system\r\ndf"]), 'control characters must be rejected from argv arguments');
     hub_test_assert(!hub_valid_argv(['cmd.exe', '/c', 'whoami']), 'unapproved executable must be rejected before process launch');
     hub_test_assert(!hub_valid_argv(['docker' => 'system']), 'non-list argv command must be rejected');
-    hub_test_assert(hub_safe_argv(['docker', 'system', 'df']) === ['docker', 'system', 'df'], 'safe argv boundary must preserve validated argv');
+    hub_test_assert(
+        hub_safe_argv(['docker', 'system', 'df']) === [hub_trusted_command_path('docker'), 'system', 'df'],
+        'safe argv boundary must resolve the validated executable to its trusted path',
+    );
     hub_test_assert(hub_test_throws(static fn () => hub_safe_argv(['cmd.exe', '/c', 'whoami'])), 'safe argv boundary must reject unapproved commands');
     hub_test_assert(hub_ollama_model_reference('translategemma:12b-it-q4_K_M') === 'translategemma:12b-it-q4_K_M', 'valid Ollama model reference changed');
     hub_test_assert(hub_test_throws(static fn (): string => hub_ollama_model_reference('--config=/tmp/evil')), 'Ollama option prefix must be rejected');

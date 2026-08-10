@@ -97,6 +97,70 @@ function hub_ollama_model_pull_log_path(string $serviceKey, string $timestamp): 
     return $path;
 }
 
+function hub_command_path_is_absolute(string $path, ?string $platform = null): bool
+{
+    if (strcasecmp($platform ?? PHP_OS_FAMILY, 'Windows') === 0) {
+        return preg_match('/\A[A-Za-z]:[\\\\\/]/D', $path) === 1 || str_starts_with($path, '\\\\');
+    }
+
+    return str_starts_with($path, '/');
+}
+
+function hub_command_paths_equal(string $left, string $right, ?string $platform = null): bool
+{
+    $platform ??= PHP_OS_FAMILY;
+    $left = rtrim(str_replace('\\', '/', $left), '/');
+    $right = rtrim(str_replace('\\', '/', $right), '/');
+
+    return strcasecmp($platform, 'Windows') === 0
+        ? strcasecmp($left, $right) === 0
+        : $left === $right;
+}
+
+/**
+ * 命令執行一律指向平台固定位置，不從 PATH 解析 executable。
+ * 呼叫端可提供的只是已驗證 argv；第一個元素只當成 allowlist key，不能指定路徑。
+ */
+function hub_trusted_command_path(string $executable, ?string $platform = null): string
+{
+    $platform ??= PHP_OS_FAMILY;
+    $name = strtolower(basename(str_replace('\\', '/', trim($executable))));
+    $systemRoot = rtrim((string)getenv('SystemRoot'), '\\/');
+    $programFiles = rtrim((string)getenv('ProgramFiles'), '\\/');
+
+    if (strcasecmp($platform, 'Windows') === 0) {
+        $paths = [
+            'php' => PHP_BINARY,
+            'php.exe' => PHP_BINARY,
+            'powershell.exe' => $systemRoot . '\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+            'wsl.exe' => $systemRoot . '\\System32\\wsl.exe',
+            'curl' => $systemRoot . '\\System32\\curl.exe',
+            'docker' => $programFiles . '\\Docker\\Docker\\resources\\bin\\docker.exe',
+            'git' => $programFiles . '\\Git\\cmd\\git.exe',
+            'nvidia-smi' => $programFiles . '\\NVIDIA Corporation\\NVSMI\\nvidia-smi.exe',
+        ];
+    } else {
+        $paths = [
+            'php' => PHP_BINARY,
+            'php.exe' => PHP_BINARY,
+            'bash' => '/usr/bin/bash',
+            'curl' => '/usr/bin/curl',
+            'docker' => '/usr/bin/docker',
+            'ffmpeg' => '/usr/bin/ffmpeg',
+            'ffprobe' => '/usr/bin/ffprobe',
+            'git' => '/usr/bin/git',
+            'nvidia-smi' => '/usr/bin/nvidia-smi',
+        ];
+    }
+
+    $path = $paths[$name] ?? '';
+    if ($path === '' || !hub_command_path_is_absolute($path, $platform)) {
+        throw new InvalidArgumentException('Untrusted command executable.');
+    }
+
+    return $path;
+}
+
 function hub_valid_argv(array $command): bool
 {
     if ($command === [] || !array_is_list($command)) {
@@ -138,6 +202,16 @@ function hub_safe_argv(array $command): array
         throw new InvalidArgumentException('Invalid command.');
     }
 
+    $requestedExecutable = (string)$command[0];
+    $trustedExecutable = hub_trusted_command_path($requestedExecutable);
+    if (
+        (str_contains($requestedExecutable, '/') || str_contains($requestedExecutable, '\\'))
+        && !hub_command_paths_equal($requestedExecutable, $trustedExecutable)
+    ) {
+        throw new InvalidArgumentException('Untrusted command executable.');
+    }
+
+    $command[0] = $trustedExecutable;
     return $command;
 }
 

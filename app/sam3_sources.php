@@ -281,7 +281,7 @@ function hub_sam3_capture_command(array $source, string $destination): array
         throw new RuntimeException('capture_failed');
     }
 
-    $command = ['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', '-rw_timeout', '15000000'];
+    $command = [hub_trusted_command_path('ffmpeg', 'Linux'), '-nostdin', '-hide_banner', '-loglevel', 'error', '-rw_timeout', '15000000'];
     if (in_array($sourceProtocol, ['rtsp', 'rtsps'], true)) {
         $command[] = '-rtsp_transport';
         $command[] = 'tcp';
