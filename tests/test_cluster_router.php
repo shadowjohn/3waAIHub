@@ -955,6 +955,17 @@ hub_test('cluster station inventory preserves configured routing priority', func
     hub_test_assert(($inventory['priority'] ?? null) === 42, 'refreshed station inventory must retain the configured routing priority');
 });
 
+hub_test('cluster refresh worker output preserves only the declared station and error contracts', function (): void {
+    hub_test_assert(
+        hub_cluster_refresh_worker_output_line(['station_key' => 'taipei_gpu_1', 'fresh' => true, 'last_error' => 'status_http_403']) === 'taipei_gpu_1 1 status_http_403',
+        'cluster refresh worker must retain valid station refresh output'
+    );
+    hub_test_assert(
+        hub_cluster_refresh_worker_output_line(['station_key' => '<script>', 'fresh' => false, 'last_error' => "status_fetch_failed\nforged"]) === 'invalid 0 invalid',
+        'cluster refresh worker must reject malformed stored values'
+    );
+});
+
 hub_test('cluster router favors lower-priority unpressured stations over pressured preferred stations', function (): void {
     foreach ([
         ['gpu_free_vram_mb' => 0],

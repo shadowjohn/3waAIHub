@@ -25,6 +25,5 @@ if (!hub_cluster_router_enabled($db)) {
 }
 
 foreach (hub_cluster_refresh_due_stations($db, $arguments === ['--force']) as $station) {
-    echo (string)$station['station_key'] . ' ' . (!empty($station['fresh']) ? '1' : '0') . ' '
-        . ((string)($station['last_error'] ?? '') ?: '-') . PHP_EOL;
+    echo hub_cluster_refresh_worker_output_line($station) . PHP_EOL;
 }

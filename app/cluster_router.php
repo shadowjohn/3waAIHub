@@ -4269,6 +4269,26 @@ function hub_cluster_refresh_due_stations(PDO $db, bool $force = false, ?callabl
     return $refreshed;
 }
 
+function hub_cluster_refresh_worker_output_line(array $station): string
+{
+    $stationKey = (string)($station['station_key'] ?? '');
+    $lastError = (string)($station['last_error'] ?? '');
+
+    // 排程器 stdout 只保留子節點既定 ID 與收斂過的 refresh 錯誤碼，避免資料庫殘值污染工作日誌。
+    if (preg_match('/\A[a-z0-9][a-z0-9_-]{0,63}\z/iD', $stationKey) !== 1) {
+        $stationKey = 'invalid';
+    }
+    if (
+        $lastError !== ''
+        && !in_array($lastError, ['refreshing', 'manifest_invalid', 'station_auth_failed', 'manifest_fetch_failed', 'status_fetch_failed', 'status_invalid'], true)
+        && preg_match('/\Astatus_http_(?:0|[1-5]\d{2})\z/D', $lastError) !== 1
+    ) {
+        $lastError = 'invalid';
+    }
+
+    return $stationKey . ' ' . (!empty($station['fresh']) ? '1' : '0') . ' ' . ($lastError !== '' ? $lastError : '-');
+}
+
 function hub_cluster_node_token_id(PDO $db): int
 {
     $value = hub_get_storage_setting($db, 'AIHUB_CLUSTER_NODE_TOKEN_ID');
