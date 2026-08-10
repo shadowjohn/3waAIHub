@@ -156,6 +156,20 @@ hub_test('command job logs reject stored paths outside the managed job log root'
     );
 });
 
+hub_test('managed file tails read only command logs and task result roots', function (): void {
+    $resultDir = HUB_DATA_DIR . DIRECTORY_SEPARATOR . 'results' . DIRECTORY_SEPARATOR . 'tail-fixture';
+    if (!is_dir($resultDir) && !mkdir($resultDir, 0700, true) && !is_dir($resultDir)) {
+        throw new RuntimeException('Cannot create managed tail fixture.');
+    }
+    $managedPath = $resultDir . DIRECTORY_SEPARATOR . 'stdout.log';
+    $outsidePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . '3waaihub_unmanaged_tail_' . bin2hex(random_bytes(8)) . '.log';
+    file_put_contents($managedPath, 'managed-tail', LOCK_EX);
+    file_put_contents($outsidePath, 'outside-tail', LOCK_EX);
+
+    hub_test_assert(hub_tail_file($managedPath) === 'managed-tail', 'managed task result tail must remain readable');
+    hub_test_assert(hub_tail_file($outsidePath) === '', 'tail helper must reject files outside managed roots');
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
     $stmt = null;
     try {

@@ -531,9 +531,38 @@ function hub_command_service_summary(PDO $db): array
     ];
 }
 
+/**
+ * Tail 輸出僅供 command job 與 task result 使用；資料庫中的路徑不得使管理頁
+ * 任意讀取主機檔案。最終檔案與每個允許根目錄均以實體路徑重新比對。
+ */
+function hub_tail_file_safe_path(string $path): ?string
+{
+    if ($path === '' || is_link($path) || !is_file($path)) {
+        return null;
+    }
+
+    $resolved = realpath($path);
+    if ($resolved === false || !is_file($resolved)) {
+        return null;
+    }
+
+    foreach ([HUB_JOB_LOG_DIR, HUB_DATA_DIR . '/results'] as $allowedRoot) {
+        if (is_link($allowedRoot)) {
+            continue;
+        }
+        $root = realpath($allowedRoot);
+        if ($root !== false && is_dir($root) && hub_storage_path_is_within(dirname($resolved), $root)) {
+            return $resolved;
+        }
+    }
+
+    return null;
+}
+
 function hub_tail_file(string $path, int $bytes = 6000): string
 {
-    if ($path === '' || !is_file($path)) {
+    $path = hub_tail_file_safe_path($path);
+    if ($path === null) {
         return '';
     }
     $size = filesize($path);
