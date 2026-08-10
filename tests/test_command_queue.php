@@ -177,6 +177,13 @@ hub_test('database maintenance CLI uses the shared safe JSON encoder', function 
     hub_test_assert(!str_contains($source, 'echo json_encode('), 'database maintenance must not bypass the shared safe JSON encoder');
 });
 
+hub_test('callback worker output uses only its declared delivery and state contracts', function (): void {
+    $deliveryId = 'cb_' . str_repeat('a', 64);
+
+    hub_test_assert(hub_callback_worker_output_line(['delivery_id' => $deliveryId, 'state' => 'delivered']) === 'callback ' . $deliveryId . ' state=delivered', 'callback worker must retain valid delivery output');
+    hub_test_assert(hub_callback_worker_output_line(['delivery_id' => '<script>', 'state' => "retry\nforged"]) === 'callback invalid state=invalid', 'callback worker must not emit malformed stored values');
+});
+
 hub_test('command job finish and status preserve unsupported target error code', function (): void {
     $stmt = null;
     try {

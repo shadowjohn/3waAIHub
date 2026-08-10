@@ -574,3 +574,19 @@ function hub_callback_process_next(PDO $db, ?callable $sender = null, ?int $time
         'state' => !$finalized ? 'lost' : (($status !== null && $status >= 200 && $status < 300) ? 'delivered' : 'retry'),
     ];
 }
+
+function hub_callback_worker_output_line(array $result): string
+{
+    $deliveryId = (string)($result['delivery_id'] ?? '');
+    $state = (string)($result['state'] ?? '');
+
+    // Worker stdout 會被排程器與日誌收集器直接使用，僅輸出 callback 既定的識別碼與狀態列舉值。
+    if (preg_match('/\Acb_[a-f0-9]{64}\z/D', $deliveryId) !== 1) {
+        $deliveryId = 'invalid';
+    }
+    if (!in_array($state, ['disabled', 'lost', 'delivered', 'retry'], true)) {
+        $state = 'invalid';
+    }
+
+    return 'callback ' . $deliveryId . ' state=' . $state;
+}

@@ -23,5 +23,5 @@ for ($processed = 0; $processed < $limit; $processed++) {
     if ($result === null) {
         break;
     }
-    echo 'callback ' . $result['delivery_id'] . ' state=' . $result['state'] . PHP_EOL;
+    echo hub_callback_worker_output_line($result) . PHP_EOL;
 }
