@@ -16,6 +16,7 @@ The skill produces:
 2. A Markdown exception register with one row per active instance: trace, business purpose, actual source-to-sink path, controls, executable regression evidence, owner decision, and suggested Fortify audit text.
 3. A remediation queue for confirmed vulnerabilities. Do not mix this queue with audit candidates.
 4. A scan-scope review that permits excluding only non-deployable fixtures, historical checkouts, or third-party/generated code with provenance.
+5. A modification-template catalog. Each template states the Fortify category it addresses, the required preconditions, the smallest compatible code pattern, regression checks, and conditions that require an exception register instead of a code change.
 
 ## 3WA legacy pattern policy
 
@@ -40,6 +41,23 @@ Apply the following tests before recommending audit disposition.
 - **Weak cryptographic hash:** distinguish non-security fingerprints/cache paths from password, signature, token, or integrity uses. Record the usage contract.
 - **JavaScript output:** identify HTML, attribute, URL, JavaScript-string, and JSON contexts separately. Prefer direct context-aware encoding and DOM APIs; preserve a legacy transport only with a regression test for quotes, tags, ampersands, and Unicode.
 
+## Modification-template catalog
+
+Bundle concise, copy-pasteable templates for the following cases. A template must retain the caller's existing contract and must not disguise a source or sink from the scanner.
+
+| Template | Use only when | Required verification |
+| --- | --- | --- |
+| PHP PDO value and identifier separation | SQL values are external and table/column/DDL identifiers have a finite server-owned set. | Parameter binding test and invalid-identifier rejection test. |
+| PHP upload intake | Endpoint receives `$_FILES` or a staged upload. | MIME/content, size, generated name, storage containment, authorization, and rejected-file tests. |
+| PHP cookie/session policy | Cookie is an application or session control rather than an intentional public preference. | HTTPS `Secure`, `HttpOnly`, `SameSite`, logout, and cross-site behavior checks. |
+| PHP JSON to JavaScript | PHP value is embedded into a `<script>` block or a JavaScript string. | Quote, closing-tag, ampersand, Unicode, and JSON parse checks. |
+| jQuery/AJAX state change | Browser action changes server state. | Request sends the existing CSRF proof and server rejects a missing/invalid proof. |
+| Password/secret data contract | A client, proxy, or upstream SDK requires a key named `password`. | No literal secret in source; no persistence, response, log, fingerprint, child environment, or exception text disclosure. |
+| Non-security hash/fingerprint | Hash selects a test runtime/cache path or identifies non-secret metadata. | Confirm it is not used for password storage, signatures, tokens, authorization, or integrity verification. |
+| Audit-exception text | Trace remains after source and runtime evidence show no exploitable flow. | Cite FPR instance ID, code path, controls, regression command, scope owner, and review date. |
+
+For each template, include a short **do not use** note. In particular, do not substitute base64, string concatenation, dynamic callables, reversible encodings, or renamed security terms for a real mitigation or audit decision.
+
 ## Validation contract
 
 Validate the skill itself with the 2026-08-10 3waAIHub FPR fixture. It must report the 59 active Low findings and identify the two proxy findings as separate `Null Password` and `Password in Comment` instances without conflating them with a hardcoded credential.
@@ -54,6 +72,7 @@ The global skill folder will contain only:
 - `agents/openai.yaml`: generated UI metadata.
 - `scripts/inspect-fpr.ps1`: read-only FPR inventory and Markdown/JSON output.
 - `references/3wa-legacy-patterns.md`: pattern classifications and evidence requirements.
+- `references/php-js-remediation-templates.md`: modification templates and corresponding evidence text.
 
 No scanner binary, FPR, credentials, source extract, or copied project code belongs in the skill.
 
@@ -63,4 +82,5 @@ No scanner binary, FPR, credentials, source extract, or copied project code belo
 - The FPR inspector runs on the 3waAIHub FPR without Fortify tooling installed.
 - The inspector's category total equals its active finding total.
 - The generated register differentiates remediation, audit candidate, and scan-scope candidate.
+- Every code template names its Fortify category, preconditions, regression verification, and audit fallback.
 - Existing application code remains unchanged by this task.
