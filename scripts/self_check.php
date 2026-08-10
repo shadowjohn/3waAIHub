@@ -147,8 +147,9 @@ hub_finish_command_job($db, $claimed, 'success', 0, 'ok', '');
 $finished = hub_get_command_job($db, $jobId);
 assert($finished['status'] === 'success');
 assert((int)$finished['exit_code'] === 0);
-assert(is_file($finished['stdout_path']));
-assert(trim((string)file_get_contents($finished['stdout_path'])) === 'ok');
+$stdoutPath = hub_command_job_log_path((string)$finished['stdout_path'], 'stdout', $jobId);
+assert(is_file($stdoutPath));
+assert(trim((string)file_get_contents($stdoutPath)) === 'ok');
 
 hub_save_env_snapshot($db, ['host' => ['hostname' => 'self-check']], 'ok', null);
 $snapshot = hub_latest_env_snapshot($db);

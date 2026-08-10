@@ -156,6 +156,13 @@ hub_test('command job logs reject stored paths outside the managed job log root'
     );
 });
 
+hub_test('self-check reads command stdout only through the managed job log boundary', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/scripts/self_check.php');
+
+    hub_test_assert(str_contains($source, "hub_command_job_log_path((string)\$finished['stdout_path'], 'stdout', \$jobId)"), 'self-check must bind stdout reads to the command job log owner');
+    hub_test_assert(!str_contains($source, "file_get_contents(\$finished['stdout_path'])"), 'self-check must not read the raw stored stdout path');
+});
+
 hub_test('managed file tails read only command logs and task result roots', function (): void {
     $resultDir = HUB_DATA_DIR . DIRECTORY_SEPARATOR . 'results' . DIRECTORY_SEPARATOR . 'tail-fixture';
     if (!is_dir($resultDir) && !mkdir($resultDir, 0700, true) && !is_dir($resultDir)) {
