@@ -122,6 +122,7 @@ class ModelRuntimeTest(unittest.TestCase):
         self.assertIn(torch_install, dockerfile)
         self.assertIn(source_install, dockerfile)
         self.assertLess(dockerfile.index(torch_install), dockerfile.index(source_install))
+        self.assertIn("COPY Dockerfile image_contract.py", dockerfile)
         self.assertIn("libgl1 libglib2.0-0", dockerfile)
         self.assertIn("python3 -c 'import cv2'", dockerfile)
         self.assertNotIn("pip install --upgrade pip setuptools wheel", dockerfile)

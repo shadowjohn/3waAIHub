@@ -16,7 +16,7 @@ RUN python3 -m pip install --extra-index-url https://download.pytorch.org/whl/cu
     && python3 -m pip check \
     && python3 -c 'import cv2'
 
-COPY image_contract.py model_runtime.py provision_offline_assets.py storage_smoke.py model_smoke.py inference_smoke.py upscale_runner.py app.py test_image_contract.py test_model_runtime.py test_upscale_runner.py test_app.py ./
+COPY Dockerfile image_contract.py model_runtime.py provision_offline_assets.py storage_smoke.py model_smoke.py inference_smoke.py upscale_runner.py app.py test_image_contract.py test_model_runtime.py test_upscale_runner.py test_app.py ./
 RUN python3 -m unittest -v test_image_contract.py test_model_runtime.py test_upscale_runner.py test_app.py \
     && chmod 0555 /app/*.py
 
