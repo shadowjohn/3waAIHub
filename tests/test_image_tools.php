@@ -624,3 +624,48 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
         );
     }
 });
+
+hub_test('image-tools publishes bounded Playground and documentation contracts', function (): void {
+    hub_test_assert(in_array('image-tools', hub_playground_supported_modes(), true), 'image-tools must be selectable in the Playground');
+
+    $playground = (string)file_get_contents(HUB_ROOT . '/admin/playground.php');
+    hub_test_assert(str_contains($playground, "'image-tools' => ['label' => 'Image Tools'")
+        && str_contains($playground, "'kind' => 'image_tools'")
+        && str_contains($playground, "&operation=' . rawurlencode((string)\$payload['operation'])")
+        && str_contains($playground, 'download="upscaled-image.png"'), 'image-tools Playground profile, guarded query operation, and PNG download name must be present');
+    hub_test_assert(substr_count($playground, 'name="image" type="file" accept="image/jpeg,image/png,image/webp,image/bmp"') === 1
+        && str_contains($playground, '<option value="upscale"')
+        && str_contains($playground, '<option value="upscale_task"')
+        && str_contains($playground, '<textarea name="base64_string"')
+        && !str_contains($playground, 'name="image_path"')
+        && !str_contains($playground, 'name="image_url"')
+        && !str_contains($playground, 'name="custom_command"')
+        && !str_contains($playground, 'name="output_filename"')
+        && !str_contains($playground, 'name="deferred_operation"'), 'image-tools Playground must accept exactly the bounded image-tools controls');
+    foreach (['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4', 'auto', 'cuda', 'cpu', 'X-3waAIHub-Model', 'X-3waAIHub-Backend', 'X-3waAIHub-Elapsed-Ms', 'X-3waAIHub-Width', 'X-3waAIHub-Height'] as $needle) {
+        hub_test_assert(str_contains($playground, $needle), 'image-tools Playground is missing ' . $needle);
+    }
+
+    $pack = hub_get_pack('image-tools');
+    hub_test_assert($pack !== null, 'image-tools Pack must exist for public docs');
+    $service = hub_public_api_service_from_contract('image-tools', $pack, $pack['manifest'], hub_public_api_contract_for_manifest($pack['manifest']));
+    hub_test_assert(array_column($service['operation_examples'] ?? [], 'operation') === ['upscale', 'upscale_task'], 'public docs must render separate image-tools sync and async operation examples');
+    hub_test_assert(($service['operation_examples'][0]['response_content_type'] ?? '') === 'image/png'
+        && ($service['operation_examples'][1]['execution_type'] ?? '') === 'async_task'
+        && ($service['examples'] ?? null) === []
+        && str_contains((string)($service['operation_examples'][0]['examples']['curl'] ?? ''), "-F 'image=@sample.png'")
+        && str_contains((string)($service['operation_examples'][1]['examples']['curl'] ?? ''), 'operation=upscale_task'), 'image-tools public examples must retain multipart sync and async task contracts');
+
+    $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
+    $runbook = HUB_ROOT . '/docs/operations/image-tools.md';
+    hub_test_assert(str_contains($readme, "-F 'image=@sample.png'")
+        && str_contains($readme, 'base64_string')
+        && str_contains($readme, 'upscale_task')
+        && str_contains($readme, 'JPEG/JPG, PNG, WEBP, BMP')
+        && str_contains($readme, 'file_required, source_ambiguous, invalid_base64'), 'README must publish image-tools source, async, format, and error guidance');
+    hub_test_assert(is_file($runbook), 'image-tools operation runbook must exist');
+    $runbookText = (string)file_get_contents($runbook);
+    foreach (['ready.json', 'SHA-256', 'Docker', 'CUDA', 'GPU-first', 'CPU', 'upscale_task', 'task_status', 'artifact', 'cancellation', 'cleanup', 'rollback', 'retention', 'pending'] as $needle) {
+        hub_test_assert(str_contains($runbookText, $needle), 'image-tools runbook is missing ' . $needle);
+    }
+});

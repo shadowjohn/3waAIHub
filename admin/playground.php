@@ -25,6 +25,7 @@ function hub_playground_profiles(): array
         'speech_transcribe' => ['label' => 'Whisper 語音轉文字', 'method' => 'POST', 'kind' => 'speech_transcribe'],
         'speech_transcribe_fast_zh' => ['label' => '快速中文語音辨識', 'method' => 'POST', 'kind' => 'speech_transcribe_fast_zh'],
         'background_remove' => ['label' => 'BiRefNet 去背', 'method' => 'POST', 'kind' => 'background_remove'],
+        'image-tools' => ['label' => 'Image Tools', 'method' => 'POST', 'kind' => 'image_tools'],
         'taiwan_address' => ['label' => '台灣地址洗滌／地理編碼', 'method' => 'POST', 'kind' => 'json'],
         'web_capture' => ['label' => 'Web Screenshot', 'method' => 'POST', 'kind' => 'json'],
         'facebook_crawl' => ['label' => 'Facebook Crawler', 'method' => 'POST', 'kind' => 'json'],
@@ -211,6 +212,25 @@ function hub_playground_request_payload(string $mode): array
             if ($background === 'color') {
                 $payload['background_color'] = trim((string)($_POST['background_color'] ?? '#ffffff')) ?: '#ffffff';
             }
+        }
+
+        return $payload;
+    }
+    if ($mode === 'image-tools') {
+        $operation = (string)($_POST['operation'] ?? 'upscale');
+        $model = (string)($_POST['model'] ?? 'realesrgan-x4plus');
+        $backend = (string)($_POST['backend'] ?? 'auto');
+        $operations = ['upscale', 'upscale_task'];
+        $models = ['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4'];
+        $backends = ['auto', 'cuda', 'cpu'];
+        $payload = [
+            'operation' => in_array($operation, $operations, true) ? $operation : 'upscale',
+            'model' => in_array($model, $models, true) ? $model : 'realesrgan-x4plus',
+            'backend' => in_array($backend, $backends, true) ? $backend : 'auto',
+        ];
+        $base64 = $_POST['base64_string'] ?? '';
+        if (is_string($base64) && $base64 !== '') {
+            $payload['base64_string'] = $base64;
         }
 
         return $payload;
@@ -403,7 +423,7 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
 
     $url = hub_playground_local_api_url($mode);
     $started = microtime(true);
-    $headers = ['Accept: ' . ($mode === 'background_remove' ? 'image/png' : 'application/json')];
+    $headers = ['Accept: ' . (in_array($mode, ['background_remove', 'image-tools'], true) ? 'image/png, application/json' : 'application/json')];
     $token = trim($token);
     if ($token !== '') {
         $headers[] = 'Authorization: Bearer ' . $token;
@@ -472,6 +492,9 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
     if ($profile['method'] === 'POST') {
         $options[CURLOPT_POST] = true;
         $payload = $requestPayload ?? hub_playground_request_payload($mode);
+        if ($mode === 'image-tools') {
+            $url .= '&operation=' . rawurlencode((string)$payload['operation']);
+        }
         if ($profile['kind'] === 'form') {
             $headers[] = 'Content-Type: application/x-www-form-urlencoded';
             $options[CURLOPT_HTTPHEADER] = $headers;
@@ -485,7 +508,7 @@ function hub_playground_execute(string $mode, string $token, ?array $requestPayl
             $fieldName = in_array($mode, ['structure', 'speech_transcribe_fast_zh'], true) ? 'file' : ($isAudioFile ? 'audio' : 'image');
             $file = $_FILES[$fieldName] ?? null;
             $hasFile = is_array($file) && (int)($file['error'] ?? UPLOAD_ERR_NO_FILE) === UPLOAD_ERR_OK;
-            if (!$hasFile && !($mode === 'audio' && trim((string)($payload['audio_id'] ?? '')) !== '')) {
+            if (!$hasFile && !($mode === 'audio' && trim((string)($payload['audio_id'] ?? '')) !== '') && !($mode === 'image-tools' && isset($payload['base64_string']))) {
                 curl_close($ch);
                 return ['ok' => false, 'error' => 'missing_file', 'message' => $mode === 'structure' ? hub_i18n_text('請選擇 PDF 或文件圖片。') : ($isAudioFile ? hub_i18n_text('請選擇音訊檔。') : hub_i18n_text('請選擇圖片檔。'))];
             }
@@ -989,6 +1012,36 @@ console.log(await res.json());
 JS;
         return ['curl' => $curl, 'php' => $php, 'js' => $js];
     }
+    if ($mode === 'image-tools') {
+        $imageToolsUrl = $url . '&operation=upscale';
+        $curl = "$curlExecutable -X POST \"$imageToolsUrl\" $curlContinuation\n"
+            . "  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n"
+            . "  -H \"Accept: image/png\" $curlContinuation\n"
+            . "  -F \"operation=upscale\" $curlContinuation\n"
+            . "  -F \"image=@sample.png\" $curlContinuation\n"
+            . "  -F \"model=realesrgan-x4plus\" $curlContinuation\n"
+            . "  -F \"backend=auto\" $curlContinuation\n"
+            . "  --output upscaled-image.png";
+        $php = <<<PHP
+\$fields = ['operation' => 'upscale', 'image' => new CURLFile('/path/to/sample.png'), 'model' => 'realesrgan-x4plus', 'backend' => 'auto'];
+\$ch = curl_init('$imageToolsUrl');
+curl_setopt_array(\$ch, [CURLOPT_POST => true, CURLOPT_RETURNTRANSFER => true, CURLOPT_HTTPHEADER => ['Authorization: Bearer <TOKEN>', 'Accept: image/png'], CURLOPT_POSTFIELDS => \$fields]);
+\$png = curl_exec(\$ch);
+if (\$png === false || curl_getinfo(\$ch, CURLINFO_HTTP_CODE) !== 200) throw new RuntimeException('image-tools upscale failed');
+file_put_contents('upscaled-image.png', \$png);
+PHP;
+        $js = <<<JS
+const form = new FormData();
+form.append('operation', 'upscale');
+form.append('image', document.querySelector('input[name="image"]').files[0]);
+form.append('model', 'realesrgan-x4plus');
+form.append('backend', 'auto');
+const res = await fetch('$imageToolsUrl', { method: 'POST', headers: { Authorization: 'Bearer <TOKEN>', Accept: 'image/png' }, body: form });
+if (!res.ok) throw new Error(await res.text());
+console.log(URL.createObjectURL(await res.blob()));
+JS;
+        return ['curl' => $curl, 'php' => $php, 'js' => $js];
+    }
     if ($mode === 'background_remove') {
         $curl = "$curlExecutable -X POST \"$url\" $curlContinuation\n"
             . "  -H \"Authorization: Bearer <TOKEN>\" $curlContinuation\n"
@@ -1212,7 +1265,7 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
     <h1><?= hub_h(hub_i18n_text('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(hub_i18n_text('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(hub_i18n_text('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(hub_i18n_text('需要 Bearer Token')) ?></strong>。<?= hub_h(hub_i18n_text('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(hub_i18n_text('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(hub_i18n_text('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code>、<code>api.php?mode=facebook_crawl</code></p>
+    <p class="muted"><?= hub_h(hub_i18n_text('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=image-tools</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code>、<code>api.php?mode=facebook_crawl</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -1387,6 +1440,34 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
                 <label>seed</label>
                 <input name="seed" type="number" value="42">
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(hub_i18n_text('真實推論')) ?></label>
+            <?php elseif ($selectedMode === 'image-tools'): ?>
+                <?php
+                $imageToolsOperation = in_array((string)($_POST['operation'] ?? ''), ['upscale', 'upscale_task'], true) ? (string)$_POST['operation'] : 'upscale';
+                $imageToolsModel = in_array((string)($_POST['model'] ?? ''), ['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4'], true) ? (string)$_POST['model'] : 'realesrgan-x4plus';
+                $imageToolsBackend = in_array((string)($_POST['backend'] ?? ''), ['auto', 'cuda', 'cpu'], true) ? (string)$_POST['backend'] : 'auto';
+                ?>
+                <label><?= hub_h(hub_i18n_text('來源圖片')) ?></label>
+                <input name="image" type="file" accept="image/jpeg,image/png,image/webp,image/bmp">
+                <label><?= hub_h(hub_i18n_text('操作')) ?> operation</label>
+                <select name="operation">
+                    <option value="upscale" <?= $imageToolsOperation === 'upscale' ? 'selected' : '' ?>>upscale</option>
+                    <option value="upscale_task" <?= $imageToolsOperation === 'upscale_task' ? 'selected' : '' ?>>upscale_task</option>
+                </select>
+                <label>model</label>
+                <select name="model">
+                    <?php foreach (['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4'] as $model): ?>
+                        <option value="<?= hub_h($model) ?>" <?= $imageToolsModel === $model ? 'selected' : '' ?>><?= hub_h($model) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <label>backend</label>
+                <select name="backend">
+                    <?php foreach (['auto', 'cuda', 'cpu'] as $backend): ?>
+                        <option value="<?= hub_h($backend) ?>" <?= $imageToolsBackend === $backend ? 'selected' : '' ?>><?= hub_h($backend) ?></option>
+                    <?php endforeach; ?>
+                </select>
+                <label>base64_string</label>
+                <textarea name="base64_string" rows="3" placeholder="Optional: raw Base64 or data:image/png;base64,..."></textarea>
+                <p class="muted"><?= hub_h(hub_i18n_text('上傳圖片或填入 Base64，二者只能選一；upscale_task 會回傳既有 task 與 artifact 連結。')) ?></p>
             <?php elseif ($selectedMode === 'background_remove'): ?>
                 <?php
                 $birefnetOutput = in_array((string)($_POST['output'] ?? ''), ['cutout', 'mask', 'composite'], true) ? (string)$_POST['output'] : 'cutout';
@@ -1634,6 +1715,27 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
                 <div class="hub-meta-value"><code><?= hub_h((string)($birefnetMetadata['elapsed_ms'] ?? '-')) ?></code></div>
             </div>
         <?php endif; ?>
+        <?php if ($selectedMode === 'image-tools' && (string)($result['preview_data_uri'] ?? '') !== ''): ?>
+            <?php $imageToolsMetadata = is_array($result['metadata'] ?? null) ? $result['metadata'] : []; ?>
+            <div class="birefnet-preview">
+                <img id="image-tools-preview-image" src="<?= hub_h((string)$result['preview_data_uri']) ?>" alt="<?= hub_h(hub_i18n_text('放大圖片輸出預覽')) ?>">
+            </div>
+            <div class="hub-actions">
+                <a id="image-tools-download" class="button" href="#" download="upscaled-image.png"><?= hub_h(hub_i18n_text('下載 PNG')) ?></a>
+            </div>
+            <div class="hub-meta">
+                <div class="hub-meta-label">X-3waAIHub-Model</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($imageToolsMetadata['model'] ?? '-')) ?></code></div>
+                <div class="hub-meta-label">X-3waAIHub-Backend</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($imageToolsMetadata['backend'] ?? '-')) ?></code></div>
+                <div class="hub-meta-label">X-3waAIHub-Elapsed-Ms</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($imageToolsMetadata['elapsed_ms'] ?? '-')) ?></code></div>
+                <div class="hub-meta-label">X-3waAIHub-Width</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($imageToolsMetadata['width'] ?? '-')) ?></code></div>
+                <div class="hub-meta-label">X-3waAIHub-Height</div>
+                <div class="hub-meta-value"><code><?= hub_h((string)($imageToolsMetadata['height'] ?? '-')) ?></code></div>
+            </div>
+        <?php endif; ?>
         <?php if ($selectedMode === 'tts' && is_array($result['results'] ?? null)): ?>
             <?php foreach ($result['results'] as $ttsMode => $ttsResult): ?>
                 <div class="hub-card">
@@ -1685,6 +1787,9 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
 const birefnetPreview = document.getElementById('birefnet-preview-image');
 const birefnetDownload = document.getElementById('birefnet-download');
 if (birefnetPreview && birefnetDownload) birefnetDownload.href = birefnetPreview.src;
+const imageToolsPreview = document.getElementById('image-tools-preview-image');
+const imageToolsDownload = document.getElementById('image-tools-download');
+if (imageToolsPreview && imageToolsDownload) imageToolsDownload.href = imageToolsPreview.src;
 document.querySelectorAll('[data-token-toggle]').forEach((button) => {
     button.addEventListener('click', () => {
         const input = document.getElementById(button.dataset.target || '');

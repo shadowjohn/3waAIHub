@@ -72,6 +72,15 @@ function hub_public_api_contract_for_manifest(array $manifest): array
 {
     $contract = hub_pack_l5_contract($manifest);
     if ($contract !== []) {
+        if (($manifest['id'] ?? '') === 'image-tools') {
+            $contract['input'] = ['fields' => [
+                ['name' => 'image', 'type' => 'file', 'required' => false, 'example' => 'sample.png', 'example_include' => true, 'one_of' => ['image', 'base64_string'], 'one_of_required' => true],
+                ['name' => 'base64_string', 'type' => 'string', 'required' => false, 'one_of' => ['image', 'base64_string'], 'one_of_required' => true],
+                ['name' => 'model', 'type' => 'string', 'required' => false, 'default' => 'realesrgan-x4plus', 'enum' => $contract['models'] ?? []],
+                ['name' => 'backend', 'type' => 'string', 'required' => false, 'default' => 'auto', 'enum' => $contract['backends'] ?? []],
+            ]];
+        }
+
         return $contract;
     }
     $gateway = is_array($manifest['gateway'] ?? null) ? $manifest['gateway'] : [];
@@ -834,6 +843,39 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         }
     }
     $service['examples'] = hub_public_api_examples($service);
+    $operationExamples = [];
+    foreach ((array)($contract['operations'] ?? []) as $definition) {
+        $operation = is_array($definition) ? (string)($definition['operation'] ?? '') : '';
+        if (preg_match('/\A[a-z][a-z0-9_]{0,63}\z/D', $operation) !== 1) {
+            continue;
+        }
+        $example = $service;
+        $example['operation'] = $operation;
+        $example['endpoint'] .= '&operation=' . rawurlencode($operation);
+        $example['url'] .= '&operation=' . rawurlencode($operation);
+        $example['input_fields'] = array_merge([
+            ['name' => 'operation', 'type' => 'string', 'required' => true, 'default' => $operation, 'enum' => [$operation]],
+        ], $service['input_fields']);
+        if (str_ends_with($operation, '_task')) {
+            $example['execution_type'] = 'async_task';
+            $example['response_content_type'] = 'application/json';
+            $example['response_headers'] = [];
+            $example['output_keys'] = ['ok', 'task_id', 'status', 'status_url', 'result_url', 'log_url', 'cancel_url', 'artifact_url_template'];
+            $example['task_api'] = hub_public_api_task_api_refs([
+                'status' => 'GET api.php?mode=task_status&task_id={task_id}',
+                'result' => 'GET api.php?mode=task_result&task_id={task_id}',
+                'log' => 'GET api.php?mode=task_log&task_id={task_id}',
+                'cancel' => 'POST api.php?mode=task_cancel&task_id={task_id}',
+                'artifact' => 'GET api.php?mode=artifact&artifact_id={artifact_id}',
+            ]);
+        }
+        $example['examples'] = hub_public_api_examples($example);
+        $operationExamples[] = $example;
+    }
+    if ($operationExamples !== []) {
+        $service['operation_examples'] = $operationExamples;
+        $service['examples'] = [];
+    }
 
     return $service;
 }
@@ -1171,6 +1213,9 @@ function hub_public_api_multipart_fields(array $service): array
         if ($name === '' || ($name === 'mode' && !hub_is_pack_job_async_mode((string)($service['mode'] ?? '')))) {
             continue;
         }
+        if ($name === 'base64_string' && empty($field['required']) && !array_key_exists('default', $field) && !array_key_exists('example', $field)) {
+            continue;
+        }
         $type = (string)($field['type'] ?? '');
         if ($type === 'file') {
             if (empty($field['required']) && empty($field['example_include']) && !(($service['mode'] ?? '') === 'sam3' && $name === 'guidance_mask')) {
@@ -1214,7 +1259,7 @@ function hub_public_api_examples(array $service): array
         $service['input_fields'] = array_values(array_filter(
             $service['input_fields'],
             static fn (mixed $field): bool => is_array($field)
-                && (!empty($field['required']) || array_key_exists('default', $field) || array_key_exists('example', $field))
+                && (!empty($field['required']) || array_key_exists('default', $field) || array_key_exists('example', $field) || !empty($field['example_include']))
         ));
     }
     $url = (string)$service['url'];
@@ -1256,6 +1301,9 @@ function hub_public_api_examples(array $service): array
             }
             $name = (string)($field['name'] ?? '');
             if ($name === '' || ($name === 'mode' && !hub_is_pack_job_async_mode((string)($service['mode'] ?? '')))) {
+                continue;
+            }
+            if ($name === 'base64_string' && empty($field['required']) && !array_key_exists('default', $field) && !array_key_exists('example', $field)) {
                 continue;
             }
             if (($field['type'] ?? '') === 'file') {
@@ -1466,6 +1514,16 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                     <h3>Additional operations</h3>
                     <pre><?= hub_h(json_encode($service['operations'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <?php endif; ?>
+                <?php if (($service['operation_examples'] ?? []) !== []): ?>
+                    <h3><?= $t('Operation examples') ?></h3>
+                    <?php foreach ($service['operation_examples'] as $operationExample): ?>
+                        <h4><code><?= hub_h((string)$operationExample['operation']) ?></code> / <code><?= hub_h((string)$operationExample['execution_type']) ?></code></h4>
+                        <pre><?= hub_h((string)$operationExample['examples']['curl']) ?></pre>
+                        <?php if (($operationExample['task_api'] ?? []) !== []): ?>
+                            <pre><?= hub_h(json_encode($operationExample['task_api'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                        <?php endif; ?>
+                    <?php endforeach; ?>
+                <?php endif; ?>
                 <?php if (($service['workflow'] ?? []) !== []): ?>
                     <h3><?= $t('Workflow') ?></h3>
                     <pre><?= hub_h(json_encode($service['workflow'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
@@ -1484,12 +1542,14 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                     <h3><?= $t('Error status table') ?></h3>
                     <pre><?= hub_h(json_encode($service['error_table'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <?php endif; ?>
-                <h3><?= $t('curl 範例') ?></h3>
-                <pre><?= hub_h((string)$service['examples']['curl']) ?></pre>
-                <h3><?= $t('PHP 範例') ?></h3>
-                <pre><?= hub_h((string)$service['examples']['php']) ?></pre>
-                <h3><?= $t('JS fetch 範例') ?></h3>
-                <pre><?= hub_h((string)$service['examples']['js_fetch']) ?></pre>
+                <?php if (($service['examples'] ?? []) !== []): ?>
+                    <h3><?= $t('curl 範例') ?></h3>
+                    <pre><?= hub_h((string)$service['examples']['curl']) ?></pre>
+                    <h3><?= $t('PHP 範例') ?></h3>
+                    <pre><?= hub_h((string)$service['examples']['php']) ?></pre>
+                    <h3><?= $t('JS fetch 範例') ?></h3>
+                    <pre><?= hub_h((string)$service['examples']['js_fetch']) ?></pre>
+                <?php endif; ?>
                 <?php if (($service['workflow_examples'] ?? []) !== []): ?>
                     <h3><?= $t('Workflow curl example') ?></h3>
                     <pre><?= hub_h((string)$service['workflow_examples']['curl']) ?></pre>
