@@ -312,6 +312,27 @@ hub_test('image-tools gateway validates the configured backend', function (): vo
     hub_test_assert($invalidBackend['status'] === 400 && hub_test_image_tools_error($invalidBackend) === 'invalid_backend', 'configured default backend must validate exactly');
 });
 
+hub_test('image-tools async runners fix their backend and artifact report contract', function (): void {
+    $pack = hub_get_pack('image-tools');
+    hub_test_assert(is_array($pack), 'image-tools Pack must be registered');
+    $expectedReport = ['model', 'backend', 'source_width', 'source_height', 'width', 'height', 'elapsed_ms', 'output_sha256'];
+    foreach ([
+        'upscale_image_gpu' => ['backend' => 'cuda', 'accelerator' => 'gpu'],
+        'upscale_image_cpu' => ['backend' => 'cpu', 'accelerator' => 'cpu'],
+    ] as $jobName => $expected) {
+        $job = hub_pack_async_job_contract((array)$pack['manifest'], $jobName);
+        hub_test_assert(is_array($job), $jobName . ' contract must be available');
+        $runner = (array)($job['runner'] ?? []);
+        $args = (array)($runner['args'] ?? []);
+        $backendPosition = array_search('--backend', $args, true);
+        hub_test_assert(($runner['accelerator'] ?? '') === $expected['accelerator'] && is_int($backendPosition)
+            && ($args[$backendPosition + 1] ?? null) === $expected['backend'], $jobName . ' must pass its immutable backend to jobs.py');
+        $artifacts = (array)(($job['artifact_contract']['artifacts'] ?? []));
+        hub_test_assert(array_column($artifacts, 'path') === ['upscaled_image.png', 'upscale_report.json'], $jobName . ' must publish only the image and report artifacts');
+        hub_test_assert(($artifacts[1]['json']['required_keys'] ?? null) === $expectedReport, $jobName . ' report must attest the image metadata and digest');
+    }
+});
+
 hub_test('image-tools async routing fixes the selected backend and stages Base64 without persisting it', function (): void {
     hub_test_with_image_tools_runtime_ready(function (): void {
         $db = hub_test_reset_db();
@@ -511,7 +532,7 @@ hub_test('image-tools Pack declares the L1 upscaling contract', function (): voi
         hub_test_assert(array_keys($job['input']['request_schema'] ?? []) === ['model', 'backend'], 'image-tools request schema must expose only model and backend');
         hub_test_assert(($job['input']['request_schema']['backend']['enum'] ?? []) === [$expectedBackend], 'image-tools job backend must already be resolved');
         hub_test_assert(($job['runner']['entrypoint'] ?? []) === ['python3', '/app/jobs.py'], 'image-tools job entrypoint mismatch');
-        hub_test_assert(($job['runner']['args'] ?? []) === ['--request', '/workspace/input/request.json', '--source', '/workspace/input/source', '--output-dir', '/workspace/output'], 'image-tools job args mismatch');
+        hub_test_assert(($job['runner']['args'] ?? []) === ['--request', '/workspace/input/request.json', '--source', '/workspace/input/source', '--output-dir', '/workspace/output', '--backend', $expectedBackend], 'image-tools job args mismatch');
         hub_test_assert(($job['runner']['output_dir'] ?? '') === 'output' && ($job['runner']['network_profile'] ?? '') === 'isolated', 'image-tools job runner isolation mismatch');
         hub_test_assert(($job['runner']['accelerator'] ?? '') === ($index === 0 ? 'gpu' : 'cpu'), 'image-tools job accelerator mismatch');
         hub_test_assert(($job['runner']['required_vram_mb'] ?? -1) === ($index === 0 ? 4096 : 0), 'image-tools job VRAM contract mismatch');

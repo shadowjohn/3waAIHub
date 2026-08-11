@@ -95,7 +95,7 @@
       "runner": {
         "image": "3waaihub/image-tools:0.1.0",
         "entrypoint": ["python3", "/app/jobs.py"],
-        "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output"],
+        "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output", "--backend", "cuda"],
         "output_dir": "output",
         "accelerator": "gpu",
         "required_vram_mb": 4096,
@@ -109,7 +109,7 @@
       "output": {
         "artifacts": [
           {"type": "upscaled_image", "path": "upscaled_image.png", "mime_types": ["image/png"], "max_bytes": 67108864, "image": {"format": "png", "max_width": 8192, "max_height": 8192, "max_pixels": 64000000}},
-          {"type": "upscale_report", "path": "upscale_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": []}}
+          {"type": "upscale_report", "path": "upscale_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": ["model", "backend", "source_width", "source_height", "width", "height", "elapsed_ms", "output_sha256"]}}
         ]
       }
     },
@@ -127,7 +127,7 @@
       "runner": {
         "image": "3waaihub/image-tools:0.1.0",
         "entrypoint": ["python3", "/app/jobs.py"],
-        "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output"],
+        "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output", "--backend", "cpu"],
         "output_dir": "output",
         "accelerator": "cpu",
         "required_vram_mb": 0,
@@ -141,7 +141,7 @@
       "output": {
         "artifacts": [
           {"type": "upscaled_image", "path": "upscaled_image.png", "mime_types": ["image/png"], "max_bytes": 67108864, "image": {"format": "png", "max_width": 8192, "max_height": 8192, "max_pixels": 64000000}},
-          {"type": "upscale_report", "path": "upscale_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": []}}
+          {"type": "upscale_report", "path": "upscale_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": ["model", "backend", "source_width", "source_height", "width", "height", "elapsed_ms", "output_sha256"]}}
         ]
       }
     }
