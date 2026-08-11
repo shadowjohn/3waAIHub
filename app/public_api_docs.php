@@ -870,6 +870,21 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
             ]);
         }
         $example['examples'] = hub_public_api_examples($example);
+        if ($mode === 'image-tools') {
+            $base64Example = $example;
+            $base64Example['input_fields'] = array_values(array_filter(array_map(
+                static function (array $field): array {
+                    if (($field['name'] ?? '') === 'base64_string') {
+                        $field['example'] = '<BASE64_STRING>';
+                    }
+
+                    return $field;
+                },
+                $example['input_fields']
+            ), static fn (array $field): bool => ($field['name'] ?? '') !== 'image'));
+            $base64Example['examples'] = hub_public_api_examples($base64Example);
+            $example['base64_examples'] = $base64Example['examples'];
+        }
         $operationExamples[] = $example;
     }
     if ($operationExamples !== []) {
@@ -1519,6 +1534,10 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                     <?php foreach ($service['operation_examples'] as $operationExample): ?>
                         <h4><code><?= hub_h((string)$operationExample['operation']) ?></code> / <code><?= hub_h((string)$operationExample['execution_type']) ?></code></h4>
                         <pre><?= hub_h((string)$operationExample['examples']['curl']) ?></pre>
+                        <?php if (($operationExample['base64_examples'] ?? []) !== []): ?>
+                            <h5>Base64 source (use instead of image)</h5>
+                            <pre><?= hub_h((string)$operationExample['base64_examples']['curl']) ?></pre>
+                        <?php endif; ?>
                         <?php if (($operationExample['task_api'] ?? []) !== []): ?>
                             <pre><?= hub_h(json_encode($operationExample['task_api'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                         <?php endif; ?>

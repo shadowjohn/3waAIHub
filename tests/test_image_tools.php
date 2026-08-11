@@ -655,6 +655,12 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
         && ($service['examples'] ?? null) === []
         && str_contains((string)($service['operation_examples'][0]['examples']['curl'] ?? ''), "-F 'image=@sample.png'")
         && str_contains((string)($service['operation_examples'][1]['examples']['curl'] ?? ''), 'operation=upscale_task'), 'image-tools public examples must retain multipart sync and async task contracts');
+    foreach ($service['operation_examples'] as $operationExample) {
+        $base64Curl = (string)($operationExample['base64_examples']['curl'] ?? '');
+        hub_test_assert(str_contains($base64Curl, "-F 'base64_string=<BASE64_STRING>'")
+            && !str_contains($base64Curl, 'image=@sample.png')
+            && str_contains($base64Curl, 'operation=' . (string)$operationExample['operation']), 'each image-tools operation must publish a Base64-only example without image bytes');
+    }
 
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
     $runbook = HUB_ROOT . '/docs/operations/image-tools.md';
