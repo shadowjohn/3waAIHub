@@ -196,6 +196,59 @@ function hub_resolve_sam3_operation_route(PDO $db, string $operation): array
     return hub_resolve_pack_job_route_from_definition($db, 'sam3', $route, hub_get_pack('sam3'));
 }
 
+function hub_image_tools_operation_route_definition(string $operation, string $backend): ?array
+{
+    if ($operation !== 'upscale_task') {
+        return null;
+    }
+
+    return match ($backend) {
+        'cuda' => ['pack_id' => 'image-tools', 'job' => 'upscale_image_gpu', 'accelerator' => 'gpu'],
+        'cpu' => ['pack_id' => 'image-tools', 'job' => 'upscale_image_cpu', 'accelerator' => 'cpu'],
+        default => null,
+    };
+}
+
+function hub_image_tools_effective_async_backend(PDO $db, string $requestedBackend, ?callable $gpuProbe = null): string
+{
+    if (!in_array($requestedBackend, ['auto', 'cuda', 'cpu'], true)) {
+        throw new InvalidArgumentException('invalid_backend');
+    }
+    if ($requestedBackend === 'cpu') {
+        return 'cpu';
+    }
+
+    $service = hub_get_service_by_mode($db, 'image-tools');
+    $settings = is_array($service) ? hub_service_settings_values($db, $service) : [];
+    $gpuReady = false;
+    if (($settings['IMAGE_TOOLS_USE_GPU'] ?? '0') === '1') {
+        $pack = hub_get_pack('image-tools');
+        $contract = $pack === null ? null : hub_pack_async_job_contract((array)$pack['manifest'], 'upscale_image_gpu');
+        $probe = ($gpuProbe ?? 'hub_runtime_gpu_probe')();
+        $gpuReady = is_array($contract)
+            && !isset($probe['probe_error'])
+            && hub_runtime_gpu_preflight_result([], (int)($contract['runner']['required_vram_mb'] ?? 0), 0, $probe)['ok'] === true;
+    }
+    if ($gpuReady) {
+        return 'cuda';
+    }
+    if ($requestedBackend === 'cuda') {
+        throw new RuntimeException('backend_unavailable');
+    }
+
+    return 'cpu';
+}
+
+function hub_resolve_image_tools_operation_route(PDO $db, string $operation, string $backend, ?callable $gpuProbe = null): array
+{
+    if ($operation !== 'upscale_task') {
+        throw new InvalidArgumentException('invalid_operation');
+    }
+    $route = hub_image_tools_operation_route_definition($operation, hub_image_tools_effective_async_backend($db, $backend, $gpuProbe));
+
+    return hub_resolve_pack_job_route_from_definition($db, 'image-tools', $route, hub_get_pack('image-tools'));
+}
+
 function hub_resolve_pack_job_route_from_definition(PDO $db, string $requestedMode, array $route, ?array $pack): array
 {
 
@@ -392,9 +445,18 @@ function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
         'track_video' => 'video_task',
         default => null,
     };
+    $imageToolsBackend = match ((string)($snapshot['job'] ?? '')) {
+        'upscale_image_gpu' => 'cuda',
+        'upscale_image_cpu' => 'cpu',
+        default => null,
+    };
     if ($requestedMode === 'sam3' && (string)($snapshot['pack_id'] ?? '') === 'sam3' && $sam3Operation !== null) {
         hub_resolve_stored_pack_job($db, $snapshot);
         $route = hub_resolve_sam3_operation_route($db, $sam3Operation);
+    } elseif ($requestedMode === 'image-tools' && (string)($snapshot['pack_id'] ?? '') === 'image-tools' && $imageToolsBackend !== null) {
+        hub_resolve_stored_pack_job($db, $snapshot);
+        $definition = hub_image_tools_operation_route_definition('upscale_task', $imageToolsBackend);
+        $route = hub_resolve_pack_job_route_from_definition($db, 'image-tools', $definition, hub_get_pack('image-tools'));
     } elseif (!hub_is_pack_job_async_mode($requestedMode)) {
         throw new RuntimeException('pack_version_unavailable');
     } else {

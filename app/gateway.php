@@ -245,7 +245,7 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
 
     $timeoutSec = hub_service_gateway_timeout_sec($service);
     if ($mode === 'image-tools' && (string)($service['pack_id'] ?? '') === 'image-tools') {
-        $response = hub_gateway_dispatch_image_tools($db, $service, $timeoutSec, $requester, $internalRequest);
+        $response = hub_gateway_dispatch_image_tools($db, $service, $timeoutSec, $requester, $internalRequest, $authContext);
 
         return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext, $requestContext);
     }
@@ -608,7 +608,7 @@ function hub_gateway_prepare_service_request(PDO $db, array $service, array $aut
     };
 }
 
-function hub_gateway_dispatch_image_tools(PDO $db, array $service, int $timeoutSec, ?callable $requester, array $internalRequest): array
+function hub_gateway_dispatch_image_tools(PDO $db, array $service, int $timeoutSec, ?callable $requester, array $internalRequest, array $authContext): array
 {
     $prepared = hub_prepare_image_tools_payload($db, $service, $internalRequest);
     if (isset($prepared['response'])) {
@@ -617,7 +617,26 @@ function hub_gateway_dispatch_image_tools(PDO $db, array $service, int $timeoutS
 
     try {
         if ($prepared['operation'] === 'upscale_task') {
-            return hub_gateway_error(400, 'invalid_operation', 'image-tools operation is not routed');
+            try {
+                $route = hub_resolve_image_tools_operation_route($db, 'upscale_task', (string)$prepared['post']['backend']);
+            } catch (RuntimeException $error) {
+                $code = $error->getMessage() === 'backend_unavailable'
+                    ? 'backend_unavailable'
+                    : (in_array($error->getMessage(), ['pack_not_installed', 'pack_runtime_not_ready', 'pack_service_disabled', 'pack_version_unavailable'], true) ? $error->getMessage() : 'pack_not_installed');
+
+                return hub_gateway_error(503, $code, $code);
+            }
+            $originalPost = $_POST;
+            $originalFiles = $_FILES;
+            $_POST = $prepared['post'];
+            $_FILES = $prepared['files'];
+            unset($_POST['operation']);
+            try {
+                return hub_api_pack_job_task_submit($db, $route, $authContext);
+            } finally {
+                $_POST = $originalPost;
+                $_FILES = $originalFiles;
+            }
         }
 
         $originalPost = $_POST;

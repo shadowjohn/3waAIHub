@@ -45,6 +45,25 @@ function hub_test_image_tools_fixture(string $bytes = 'image-tools fixture'): st
     return $path;
 }
 
+function hub_test_with_image_tools_runtime_ready(callable $callback): mixed
+{
+    $path = HUB_ROOT . '/packs/image-tools/pack.json';
+    $original = (string)file_get_contents($path);
+    $manifest = json_decode($original, true);
+    if (!is_array($manifest)) {
+        throw new RuntimeException('Cannot load image-tools Pack fixture.');
+    }
+    $manifest['runtime_ready'] = true;
+    if (file_put_contents($path, json_encode($manifest, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n", LOCK_EX) === false) {
+        throw new RuntimeException('Cannot enable image-tools Pack fixture.');
+    }
+    try {
+        return $callback();
+    } finally {
+        file_put_contents($path, $original, LOCK_EX);
+    }
+}
+
 hub_test('image-tools gateway injects query operations and stages Base64 without forwarding it', function (): void {
     $db = hub_test_reset_db();
     hub_test_image_tools_service($db);
@@ -275,7 +294,7 @@ hub_test('image-tools gateway rejects invalid and oversized Base64 without proxy
     }
 });
 
-hub_test('image-tools gateway validates the configured backend and recognizes async operations', function (): void {
+hub_test('image-tools gateway validates the configured backend', function (): void {
     $db = hub_test_reset_db();
     $service = hub_test_image_tools_service($db);
     $source = base64_encode('backend fixture');
@@ -291,17 +310,95 @@ hub_test('image-tools gateway validates the configured backend and recognizes as
         static fn (): array => throw new RuntimeException('invalid configured backend must not proxy')
     );
     hub_test_assert($invalidBackend['status'] === 400 && hub_test_image_tools_error($invalidBackend) === 'invalid_backend', 'configured default backend must validate exactly');
+});
 
-    $db->prepare("UPDATE service_settings SET value = 'auto' WHERE service_id = :service_id AND key = 'IMAGE_TOOLS_DEFAULT_BACKEND'")
-        ->execute([':service_id' => (int)$service['id']]);
-    $task = hub_test_image_tools_dispatch(
-        $db,
-        ['operation' => 'upscale_task', 'base64_string' => $source],
-        [],
-        [],
-        static fn (): array => throw new RuntimeException('Task 2 must not dispatch async work')
-    );
-    hub_test_assert($task['status'] === 400 && hub_test_image_tools_error($task) === 'invalid_operation', 'validated upscale_task must retain the Task 2 routing placeholder');
+hub_test('image-tools async routing fixes the selected backend and stages Base64 without persisting it', function (): void {
+    hub_test_with_image_tools_runtime_ready(function (): void {
+        $db = hub_test_reset_db();
+        $service = hub_test_image_tools_service($db);
+        $gpuProbe = static fn (): array => ['free_vram_mb' => 8192, 'processes' => [], 'process_details' => []];
+        $cpuProbe = static fn (): array => ['free_vram_mb' => 0, 'processes' => [], 'process_details' => [], 'probe_error' => 'gpu_probe_failed'];
+
+        $gpu = hub_resolve_image_tools_operation_route($db, 'upscale_task', 'cuda', $gpuProbe);
+        $cpu = hub_resolve_image_tools_operation_route($db, 'upscale_task', 'cpu', $gpuProbe);
+        $autoGpu = hub_resolve_image_tools_operation_route($db, 'upscale_task', 'auto', $gpuProbe);
+        $autoCpu = hub_resolve_image_tools_operation_route($db, 'upscale_task', 'auto', $cpuProbe);
+        hub_test_assert(($gpu['job'] ?? '') === 'upscale_image_gpu' && ($gpu['accelerator'] ?? '') === 'gpu', 'explicit CUDA must retain the GPU job contract');
+        hub_test_assert(($cpu['job'] ?? '') === 'upscale_image_cpu' && ($cpu['accelerator'] ?? '') === 'cpu', 'explicit CPU must retain the CPU job contract');
+        hub_test_assert(($autoGpu['job'] ?? '') === 'upscale_image_gpu' && ($autoCpu['job'] ?? '') === 'upscale_image_cpu', 'auto must select the ready GPU job or fall back to CPU once');
+        hub_test_assert((hub_revalidate_pack_job_async_route($db, $gpu + ['task_type' => 'pack_job'])['job'] ?? '') === 'upscale_image_gpu', 'stored GPU route must revalidate as the fixed GPU job without re-probing');
+        hub_test_assert((hub_revalidate_pack_job_async_route($db, $cpu + ['task_type' => 'pack_job'])['job'] ?? '') === 'upscale_image_cpu', 'stored CPU route must revalidate as the fixed CPU job');
+
+        $db->prepare("UPDATE service_settings SET value = '0' WHERE service_id = :service_id AND key = 'IMAGE_TOOLS_USE_GPU'")
+            ->execute([':service_id' => (int)$service['id']]);
+        try {
+            hub_resolve_image_tools_operation_route($db, 'upscale_task', 'cuda', $gpuProbe);
+            throw new RuntimeException('disabled CUDA must not select a CPU fallback');
+        } catch (RuntimeException $error) {
+            hub_test_assert($error->getMessage() === 'backend_unavailable', 'explicit unavailable CUDA must return backend_unavailable');
+        }
+        hub_test_assert((hub_resolve_image_tools_operation_route($db, 'upscale_task', 'auto', $gpuProbe)['job'] ?? '') === 'upscale_image_cpu', 'disabled CUDA must make auto choose CPU');
+        $db->prepare("UPDATE service_settings SET value = '1' WHERE service_id = :service_id AND key = 'IMAGE_TOOLS_USE_GPU'")
+            ->execute([':service_id' => (int)$service['id']]);
+
+        $memberId = hub_create_api_member($db, 'Image Tools Task Owner');
+        $token = hub_create_api_token($db, $memberId, 'image tools task token', null, null);
+        hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'image-tools', null);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $server = $_SERVER;
+        $post = $_POST;
+        $files = $_FILES;
+        try {
+            $_SERVER['REQUEST_METHOD'] = 'POST';
+            $_SERVER['CONTENT_LENGTH'] = '128';
+            $response = hub_gateway_dispatch($db, 'image-tools', null, [
+                'method' => 'POST',
+                'client_ip' => '203.0.113.51',
+                'request_uri' => '/api.php?mode=image-tools',
+                'bearer_token' => (string)$token['plain_token'],
+                'query' => ['mode' => 'image-tools'],
+                'post' => ['operation' => 'upscale_task', 'backend' => 'cpu', 'base64_string' => base64_encode('async source')],
+            ]);
+            $payload = json_decode((string)($response['body'] ?? ''), true);
+            hub_test_assert(($response['status'] ?? 0) === 200 && is_array($payload) && !empty($payload['task_id']), 'upscale_task must enqueue through the existing pack-job queue');
+            $task = hub_get_task($db, (int)$payload['task_id']);
+            hub_test_assert(($task['requested_mode'] ?? '') === 'image-tools' && ($task['job'] ?? '') === 'upscale_image_cpu', 'async request must snapshot its resolved CPU job');
+            hub_test_assert(is_string($task['input']['source_upload_path'] ?? null) && is_file((string)$task['input']['source_upload_path']), 'async Base64 must be stored through the owned-task upload flow');
+            hub_test_assert(!array_key_exists('base64_string', (array)($task['input'] ?? [])), 'raw Base64 must never enter stored task input');
+            hub_test_assert(($task['input']['backend'] ?? '') === 'cpu', 'stored task input must retain only the resolved backend');
+
+            $syncCalls = 0;
+            $sync = hub_gateway_dispatch($db, 'image-tools', static function () use (&$syncCalls): array {
+                $syncCalls++;
+                return ['status' => 200, 'headers' => ['content-type' => 'image/png'], 'body' => 'png'];
+            }, [
+                'method' => 'POST',
+                'client_ip' => '203.0.113.51',
+                'request_uri' => '/api.php?mode=image-tools',
+                'bearer_token' => (string)$token['plain_token'],
+                'query' => ['mode' => 'image-tools'],
+                'post' => ['operation' => 'upscale', 'base64_string' => base64_encode('sync source')],
+            ]);
+            hub_test_assert(($sync['status'] ?? 0) === 200 && $syncCalls === 1, 'sync upscale must continue to proxy unchanged');
+
+            $db->prepare("UPDATE service_settings SET value = '0' WHERE service_id = :service_id AND key = 'IMAGE_TOOLS_USE_GPU'")
+                ->execute([':service_id' => (int)$service['id']]);
+            $disabled = hub_gateway_dispatch($db, 'image-tools', null, [
+                'method' => 'POST',
+                'client_ip' => '203.0.113.51',
+                'request_uri' => '/api.php?mode=image-tools',
+                'bearer_token' => (string)$token['plain_token'],
+                'query' => ['mode' => 'image-tools'],
+                'post' => ['operation' => 'upscale_task', 'backend' => 'cuda', 'base64_string' => base64_encode('cuda source')],
+            ]);
+            hub_test_assert(($disabled['status'] ?? 0) === 503 && hub_test_image_tools_error($disabled) === 'backend_unavailable', 'unavailable CUDA must not enqueue a CPU fallback');
+        } finally {
+            $_SERVER = $server;
+            $_POST = $post;
+            $_FILES = $files;
+        }
+    });
 });
 
 hub_test('image-tools backend response header is canonical and rejects unsafe values', function (): void {
