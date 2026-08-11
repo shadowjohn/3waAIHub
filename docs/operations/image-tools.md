@@ -1,6 +1,6 @@
 # Image Tools 操作手冊
 
-`image-tools` 使用離線、可驗證的 Real-ESRGAN snapshot。Pack 目前是 `L1-contract`；真實模型／CPU／CUDA 的端到端 acceptance 仍 pending，只有完成 Task 8 的實機記錄後才能調整 `runtime_ready`。
+`image-tools` 使用離線、可驗證的 Real-ESRGAN snapshot。Pack 已完成 Task 8 的 Gateway CPU/CUDA sync 與 async acceptance，為 `L3-offline-assets` 且 `runtime_ready=true`；後續模型變更仍須重新驗證。
 
 ## 離線模型 staging
 

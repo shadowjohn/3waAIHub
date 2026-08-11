@@ -6,9 +6,9 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L1-contract",
+  "runtime_level": "L3-offline-assets",
   "target_level": "L1-contract",
-  "runtime_ready": false,
+  "runtime_ready": true,
   "default_mode": "image-tools",
   "description": "Real-ESRGAN image upscaling contract with GPU and CPU job routes.",
   "runtime": {

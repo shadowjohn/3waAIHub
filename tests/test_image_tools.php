@@ -536,14 +536,14 @@ hub_test('image-tools backend response header is canonical and rejects unsafe va
     hub_test_assert(in_array('X-3waAIHub-Backend: cuda', $final, true), 'validated Backend must survive the final Gateway response-header allowlist');
 });
 
-hub_test('image-tools Pack declares the L1 upscaling contract', function (): void {
+hub_test('image-tools Pack declares the verified L3 upscaling contract', function (): void {
     $pack = hub_get_pack('image-tools');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-tools pack missing or invalid');
     $manifest = $pack['manifest'];
 
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'image-tools must expose a sync API');
-    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L1-contract' && ($manifest['runtime_ready'] ?? true) === false, 'image-tools must remain an unready L1 contract');
+    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L3-offline-assets' && ($manifest['runtime_ready'] ?? false) === true, 'image-tools must retain its verified L3 offline-assets readiness');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'image-tools', 'image-tools public mode mismatch');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/process/image', 'image-tools invoke path mismatch');
     hub_test_assert(($manifest['gateway']['health_path'] ?? '') === '/health', 'image-tools health path mismatch');
@@ -743,7 +743,7 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
         && str_contains($readme, 'file_required, source_ambiguous, invalid_base64'), 'README must publish image-tools source, async, format, and error guidance');
     hub_test_assert(is_file($runbook), 'image-tools operation runbook must exist');
     $runbookText = (string)file_get_contents($runbook);
-    foreach (['ready.json', 'SHA-256', 'Docker', 'CUDA', 'GPU-first', 'CPU', 'upscale_task', 'task_status', 'artifact', 'cancellation', 'cleanup', 'rollback', 'retention', 'pending'] as $needle) {
+    foreach (['ready.json', 'SHA-256', 'Docker', 'CUDA', 'GPU-first', 'CPU', 'upscale_task', 'task_status', 'artifact', 'cancellation', 'cleanup', 'rollback', 'retention', 'L3-offline-assets'] as $needle) {
         hub_test_assert(str_contains($runbookText, $needle), 'image-tools runbook is missing ' . $needle);
     }
 });
