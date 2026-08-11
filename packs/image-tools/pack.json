@@ -102,6 +102,7 @@
         "timeout_seconds": 900,
         "network_profile": "isolated",
         "executor": "container",
+        "workspace_user": "owner",
         "asset_mounts": [
           {"id": "realesrgan_models", "storage": "models", "host_subdir": "image-tools/realesrgan", "container_path": "/models/image-tools/realesrgan", "required_paths": ["ready.json"]}
         ]
@@ -134,6 +135,7 @@
         "timeout_seconds": 900,
         "network_profile": "isolated",
         "executor": "container",
+        "workspace_user": "owner",
         "asset_mounts": [
           {"id": "realesrgan_models", "storage": "models", "host_subdir": "image-tools/realesrgan", "container_path": "/models/image-tools/realesrgan", "required_paths": ["ready.json"]}
         ]

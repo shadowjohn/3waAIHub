@@ -45,6 +45,33 @@ function hub_test_image_tools_fixture(string $bytes = 'image-tools fixture'): st
     return $path;
 }
 
+function hub_test_image_tools_runner_workspace(): string
+{
+    $workspace = sys_get_temp_dir() . '/3waaihub_image_tools_runner_' . bin2hex(random_bytes(8));
+    foreach (['input', 'output', 'checkpoints'] as $name) {
+        if (!mkdir($workspace . '/' . $name, 0700, true)) {
+            throw new RuntimeException('Cannot create image-tools runner workspace.');
+        }
+    }
+    if (file_put_contents($workspace . '/input/request.json', "{\"model\":\"realesrgan-x4plus\",\"backend\":\"cpu\"}\n", LOCK_EX) === false
+        || file_put_contents($workspace . '/input/source', 'source', LOCK_EX) === false) {
+        throw new RuntimeException('Cannot create image-tools runner input.');
+    }
+
+    return $workspace;
+}
+
+function hub_test_image_tools_remove_workspace(string $workspace): void
+{
+    foreach (['input/request.json', 'input/source'] as $file) {
+        @unlink($workspace . '/' . $file);
+    }
+    foreach (['input', 'output', 'checkpoints'] as $name) {
+        @rmdir($workspace . '/' . $name);
+    }
+    @rmdir($workspace);
+}
+
 function hub_test_with_image_tools_runtime_ready(callable $callback): mixed
 {
     $path = HUB_ROOT . '/packs/image-tools/pack.json';
@@ -327,9 +354,37 @@ hub_test('image-tools async runners fix their backend and artifact report contra
         $backendPosition = array_search('--backend', $args, true);
         hub_test_assert(($runner['accelerator'] ?? '') === $expected['accelerator'] && is_int($backendPosition)
             && ($args[$backendPosition + 1] ?? null) === $expected['backend'], $jobName . ' must pass its immutable backend to jobs.py');
+        hub_test_assert(($runner['workspace_user'] ?? '') === 'owner', $jobName . ' must opt into the private workspace output owner identity');
         $artifacts = (array)(($job['artifact_contract']['artifacts'] ?? []));
         hub_test_assert(array_column($artifacts, 'path') === ['upscaled_image.png', 'upscale_report.json'], $jobName . ' must publish only the image and report artifacts');
         hub_test_assert(($artifacts[1]['json']['required_keys'] ?? null) === $expectedReport, $jobName . ' report must attest the image metadata and digest');
+    }
+});
+
+hub_test('image-tools generic runner grants its non-root job only the private output owner identity', function (): void {
+    $pack = hub_get_pack('image-tools');
+    $job = is_array($pack) ? hub_pack_async_job_contract((array)$pack['manifest'], 'upscale_image_cpu') : null;
+    hub_test_assert(is_array($job), 'image-tools CPU runner contract must be available');
+    $workspace = hub_test_image_tools_runner_workspace();
+    try {
+        $outputStat = lstat($workspace . '/output');
+        hub_test_assert(is_array($outputStat) && (int)($outputStat['uid'] ?? 0) > 0 && (int)($outputStat['gid'] ?? 0) > 0, 'image-tools runner fixture needs a non-root private output owner');
+        $runner = (array)$job['runner'];
+        unset($runner['asset_mounts']);
+        $plan = hub_pack_job_default_runner_command([
+            'workspace' => $workspace,
+            'run' => ['run_id' => 'image-tools-owner-fixture'],
+            'runner' => $runner,
+        ]);
+        $command = $plan['command'] ?? [];
+        $user = array_search('--user', $command, true);
+        hub_test_assert(is_int($user) && ($command[$user + 1] ?? null) === ((int)$outputStat['uid'] . ':' . (int)$outputStat['gid']), 'generic runner must use only the private output owner identity for image-tools');
+        hub_test_assert(in_array('type=bind,src=' . realpath($workspace . '/output') . ',dst=/workspace/output', $command, true), 'generic runner must mount only the private task output directory writable');
+        foreach (['request.json', 'source'] as $file) {
+            hub_test_assert(in_array('type=bind,src=' . realpath($workspace . '/input/' . $file) . ',dst=/workspace/input/' . $file . ',readonly', $command, true), 'generic runner must keep image-tools input ' . $file . ' read-only');
+        }
+    } finally {
+        hub_test_image_tools_remove_workspace($workspace);
     }
 });
 
@@ -339,6 +394,21 @@ hub_test('image-tools async routing fixes the selected backend and stages Base64
         $service = hub_test_image_tools_service($db);
         $gpuProbe = static fn (): array => ['free_vram_mb' => 8192, 'processes' => [], 'process_details' => []];
         $cpuProbe = static fn (): array => ['free_vram_mb' => 0, 'processes' => [], 'process_details' => [], 'probe_error' => 'gpu_probe_failed'];
+
+        hub_save_host_metric_snapshot($db, ['gpu' => ['available' => false, 'memory_free_mb' => 0]]);
+        $cachedUnavailable = hub_image_tools_cached_gpu_probe($db);
+        hub_test_assert(($cachedUnavailable['probe_error'] ?? '') === 'gpu_snapshot_unavailable', 'HTTP async CUDA routing must fail closed from unavailable cached host metrics without executing a probe');
+        hub_test_assert(hub_image_tools_effective_async_backend($db, 'auto') === 'cpu', 'auto must use CPU when cached host metrics do not confirm CUDA');
+        try {
+            hub_image_tools_effective_async_backend($db, 'cuda');
+            throw new RuntimeException('explicit CUDA must not fall back when cached host metrics do not confirm it');
+        } catch (RuntimeException $error) {
+            hub_test_assert($error->getMessage() === 'backend_unavailable', 'explicit CUDA must remain unavailable without a cached CUDA confirmation');
+        }
+        hub_save_host_metric_snapshot($db, ['gpu' => ['available' => true, 'memory_free_mb' => 8192]]);
+        $cachedReady = hub_image_tools_cached_gpu_probe($db);
+        hub_test_assert(($cachedReady['free_vram_mb'] ?? 0) === 8192 && !isset($cachedReady['probe_error']), 'HTTP async CUDA routing must consume only the cached free-VRAM snapshot');
+        hub_test_assert(hub_image_tools_effective_async_backend($db, 'cuda') === 'cuda', 'explicit CUDA must retain CUDA when cached host metrics meet its contract');
 
         $gpu = hub_resolve_image_tools_operation_route($db, 'upscale_task', 'cuda', $gpuProbe);
         $cpu = hub_resolve_image_tools_operation_route($db, 'upscale_task', 'cpu', $gpuProbe);
