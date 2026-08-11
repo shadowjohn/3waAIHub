@@ -1,6 +1,7 @@
 services:
   image-tools:
     image: 3waaihub/image-tools:0.1.0
+    gpus: all
     env_file:
       - runtime-settings.conf
     ports:

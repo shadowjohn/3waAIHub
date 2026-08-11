@@ -118,6 +118,11 @@ hub_test('image-tools Pack declares the L1 upscaling contract', function (): voi
     }
 });
 
+hub_test('image-tools checked-in Compose requests all GPUs', function (): void {
+    $compose = (string)file_get_contents(HUB_ROOT . '/packs/image-tools/docker-compose.yml');
+    hub_test_assert(str_contains($compose, 'gpus: all'), 'image-tools checked-in Compose must request all GPUs');
+});
+
 hub_test('image-tools public mode permits internal hyphens only', function (): void {
     $pack = hub_get_pack('image-tools');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-tools pack must validate with its public hyphenated mode');
@@ -129,6 +134,18 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
         'local_port' => 18113,
     ]);
     hub_test_assert(($installed['service']['mode'] ?? '') === 'image-tools', 'image-tools install must retain its default public mode');
+    $compose = (string)file_get_contents(hub_path((string)$installed['service']['compose_file']));
+    hub_test_assert(str_contains($compose, 'gpus: all'), 'image-tools generated Compose must request all GPUs by default');
+
+    $cpuInstalled = hub_install_pack($db, 'image-tools', [
+        'service_key' => 'image-tools-cpu',
+        'mode' => 'image-tools-cpu',
+        'port_mode' => 'manual',
+        'local_port' => 18114,
+        'env' => ['IMAGE_TOOLS_USE_GPU' => '0'],
+    ]);
+    $cpuCompose = (string)file_get_contents(hub_path((string)$cpuInstalled['service']['compose_file']));
+    hub_test_assert(!str_contains($cpuCompose, 'gpus: all'), 'image-tools generated Compose must omit GPUs when explicitly disabled');
 
     foreach (['-image-tools', 'image/tools', 'image.tools', "image\ntools"] as $invalidMode) {
         $invalidManifest = $pack['manifest'];
