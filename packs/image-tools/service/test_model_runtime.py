@@ -116,11 +116,33 @@ class ModelRuntimeTest(unittest.TestCase):
 
     def test_docker_installs_pinned_torch_before_disabling_build_isolation(self) -> None:
         dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
+        requirements = (Path(__file__).parent / "requirements.txt").read_text(encoding="utf-8")
         torch_install = "python3 -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 torch==2.9.1+cu128 torchvision==0.24.1+cu128"
         source_install = "python3 -m pip install --no-build-isolation -r requirements.txt"
         self.assertIn(torch_install, dockerfile)
         self.assertIn(source_install, dockerfile)
         self.assertLess(dockerfile.index(torch_install), dockerfile.index(source_install))
+        self.assertIn("libgl1 libglib2.0-0", dockerfile)
+        self.assertIn("python3 -c 'import cv2'", dockerfile)
+        self.assertNotIn("pip install --upgrade pip setuptools wheel", dockerfile)
+        for requirement in (
+            "basicsr==1.4.2",
+            "facexlib==0.3.0",
+            "gfpgan==1.3.8",
+            "opencv-python==4.10.0.84",
+            "tqdm==4.67.1",
+            "addict==2.4.0",
+            "future==1.0.0",
+            "lmdb==1.6.2",
+            "pyyaml==6.0.2",
+            "requests==2.32.3",
+            "scikit-image==0.24.0",
+            "scipy==1.13.1",
+            "tb-nightly==2.18.0a20240827",
+            "yapf==0.43.0",
+            "cython==3.0.11",
+        ):
+            self.assertIn(requirement, requirements)
 
 
 if __name__ == "__main__":

@@ -7,14 +7,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git python3 python3-pip \
+    && apt-get install -y --no-install-recommends git libgl1 libglib2.0-0 python3 python3-pip \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN python3 -m pip install --upgrade pip setuptools wheel \
-    && python3 -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 torch==2.9.1+cu128 torchvision==0.24.1+cu128 \
+RUN python3 -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 torch==2.9.1+cu128 torchvision==0.24.1+cu128 \
     && python3 -m pip install --no-build-isolation -r requirements.txt \
-    && python3 -m pip check
+    && python3 -m pip check \
+    && python3 -c 'import cv2'
 
 COPY image_contract.py model_runtime.py provision_offline_assets.py storage_smoke.py model_smoke.py inference_smoke.py upscale_runner.py app.py test_image_contract.py test_model_runtime.py test_upscale_runner.py test_app.py ./
 RUN python3 -m unittest -v test_image_contract.py test_model_runtime.py test_upscale_runner.py test_app.py \
