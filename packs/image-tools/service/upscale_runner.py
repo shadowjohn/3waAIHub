@@ -17,7 +17,7 @@ def _upsampler(alias: str, backend: str, model_path: Path) -> Any:
     from basicsr.archs.rrdbnet_arch import RRDBNet
     from realesrgan import RealESRGANer
 
-    selection = select_model(alias)
+    select_model(alias)
     if alias == "realesrgan-x4plus":
         model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
     elif alias == "realesrgan-x4plus-anime":
@@ -25,7 +25,7 @@ def _upsampler(alias: str, backend: str, model_path: Path) -> Any:
     else:
         from realesrgan.archs.srvgg_arch import SRVGGNetCompact
         model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type="prelu")
-    return RealESRGANer(scale=selection.scale, model_path=str(model_path), model=model, tile=0, tile_pad=10, pre_pad=0, half=backend == "cuda", device=backend)
+    return RealESRGANer(scale=4, model_path=str(model_path), model=model, tile=0, tile_pad=10, pre_pad=0, half=backend == "cuda", device=backend)
 
 
 def _cuda_available() -> bool:

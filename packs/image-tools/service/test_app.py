@@ -200,6 +200,41 @@ class ProvisionTest(unittest.TestCase):
 
 
 class RunnerTest(unittest.TestCase):
+    def test_anime_video_aliases_keep_native_x4_runner_and_select_output_scale(self) -> None:
+        import upscale_runner
+        engine_calls: list[dict[str, object]] = []
+        rrdb = types.ModuleType("basicsr.archs.rrdbnet_arch")
+        rrdb.RRDBNet = lambda **kwargs: kwargs
+        srvgg = types.ModuleType("realesrgan.archs.srvgg_arch")
+        srvgg.SRVGGNetCompact = lambda **kwargs: kwargs
+        realesrgan = types.ModuleType("realesrgan")
+        realesrgan.RealESRGANer = lambda **kwargs: engine_calls.append(kwargs) or SimpleNamespace()
+        with patch.dict(sys.modules, {
+            "basicsr": types.ModuleType("basicsr"),
+            "basicsr.archs": types.ModuleType("basicsr.archs"),
+            "basicsr.archs.rrdbnet_arch": rrdb,
+            "realesrgan": realesrgan,
+            "realesrgan.archs": types.ModuleType("realesrgan.archs"),
+            "realesrgan.archs.srvgg_arch": srvgg,
+        }):
+            for alias in ("realesr-animevideov3-x2", "realesr-animevideov3-x3", "realesr-animevideov3-x4", "realesrgan-x4plus"):
+                upscale_runner._upsampler(alias, "cpu", Path("/models/pinned.pth"))
+        self.assertEqual([4, 4, 4, 4], [call["scale"] for call in engine_calls])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "source.bin"
+            source.write_bytes(png_bytes((2, 3)))
+            output_scales: list[int] = []
+            def enhance(_pixels, outscale):
+                output_scales.append(outscale)
+                return np.zeros((3 * outscale, 2 * outscale, 3), dtype=np.uint8), None
+            fake = SimpleNamespace(enhance=enhance)
+            with patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner, "_upsampler", return_value=fake):
+                for alias in ("realesr-animevideov3-x2", "realesr-animevideov3-x3", "realesr-animevideov3-x4"):
+                    upscale_runner.run_upscale(source=source, output=workspace / "output.png", alias=alias, backend="cpu", model_dir=Path("/models"))
+            self.assertEqual([2, 3, 4], output_scales)
+
     def test_runner_uses_local_alias_and_only_writes_workspace_output(self) -> None:
         import upscale_runner
         with tempfile.TemporaryDirectory() as temporary:
