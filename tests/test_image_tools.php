@@ -541,6 +541,12 @@ hub_test('image-tools Pack declares the verified L3 upscaling contract', functio
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-tools pack missing or invalid');
     $manifest = $pack['manifest'];
 
+    $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
+    preg_match('/### image-tools Runtime Level\\n\\n(.*?)(?=\\n### |\\z)/s', $readme, $runtimeSection);
+    $runtimeSection = (string)($runtimeSection[1] ?? '');
+    hub_test_assert(str_contains($runtimeSection, '`L3-offline-assets`／`runtime_ready=true`'), 'README image-tools runtime row must state verified L3 readiness');
+    hub_test_assert(!str_contains($runtimeSection, '`L1-contract`／`runtime_ready=false`'), 'README image-tools runtime row must not retain stale L1 readiness');
+
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'image-tools must expose a sync API');
     hub_test_assert(($manifest['runtime_level'] ?? '') === 'L3-offline-assets' && ($manifest['runtime_ready'] ?? false) === true, 'image-tools must retain its verified L3 offline-assets readiness');
