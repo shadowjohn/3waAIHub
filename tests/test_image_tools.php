@@ -126,6 +126,10 @@ hub_test('image-tools checked-in Compose requests all GPUs', function (): void {
 hub_test('image-tools public mode permits internal hyphens only', function (): void {
     $pack = hub_get_pack('image-tools');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-tools pack must validate with its public hyphenated mode');
+    hub_test_assert(
+        hub_local_gateway_url('/3waAIHub', 'image-tools') === 'http://127.0.0.1/3waAIHub/api.php?mode=image-tools',
+        'image-tools public mode must form a local gateway URL'
+    );
 
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'image-tools', [
@@ -154,6 +158,10 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
         hub_test_assert(
             hub_test_throws(static fn () => hub_validate_service_instance_input('image-tools-contract', $invalidMode, 'Image Tools', 'manual', 'production')),
             'service instance must reject invalid mode ' . json_encode($invalidMode, JSON_THROW_ON_ERROR)
+        );
+        hub_test_assert(
+            hub_test_throws(static fn (): string => hub_local_gateway_url('/3waAIHub', $invalidMode)),
+            'local gateway URL must reject invalid mode ' . json_encode($invalidMode, JSON_THROW_ON_ERROR)
         );
     }
 });
