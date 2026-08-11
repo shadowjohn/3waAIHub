@@ -43,8 +43,10 @@ class AcceptanceTest(unittest.TestCase):
             self.assertEqual("PNG", image.format)
             self.assertEqual((2, 3), image.size)
 
-    def test_health_requires_verified_assets_but_not_a_readiness_claim(self) -> None:
-        assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L1-contract", "runtime_ready": False})
+    def test_health_requires_verified_l3_readiness(self) -> None:
+        assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L3-offline-assets", "runtime_ready": True})
+        with self.assertRaises(AcceptanceUnavailable):
+            assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L1-contract", "runtime_ready": False})
         with self.assertRaises(AcceptanceUnavailable):
             assert_health({"ok": True, "service": "image-tools", "ready": False, "runtime_level": "L1-contract", "runtime_ready": False})
 

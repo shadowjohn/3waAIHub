@@ -93,13 +93,24 @@ class AppTest(unittest.TestCase):
     def response_body(self, response):
         return json.loads(response.body)
 
-    def test_health_reports_missing_and_verified_assets(self) -> None:
+    def test_health_reports_l1_when_assets_are_missing_and_l3_when_marker_verifies(self) -> None:
         with patch.object(self.app, "verify_ready", side_effect=self.app.ModelRuntimeError("model_not_present")):
-            self.assertFalse(self.app.health()["ready"])
+            self.assertEqual({
+                "ok": True,
+                "service": "image-tools",
+                "ready": False,
+                "runtime_level": "L1-contract",
+                "runtime_ready": False,
+            }, self.app.health())
         with patch.object(self.app, "verify_ready", return_value={"commit": "pinned"}):
             health = self.app.health()
-        self.assertTrue(health["ready"])
-        self.assertEqual("L1-contract", health["runtime_level"])
+        self.assertEqual({
+            "ok": True,
+            "service": "image-tools",
+            "ready": True,
+            "runtime_level": "L3-offline-assets",
+            "runtime_ready": True,
+        }, health)
 
     def test_process_returns_png_exact_metadata_and_cleans_workspace(self) -> None:
         workspaces: list[Path] = []

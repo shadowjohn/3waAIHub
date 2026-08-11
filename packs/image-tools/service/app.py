@@ -43,10 +43,9 @@ def error_response(status: int, code: str) -> JSONResponse:
 def health() -> dict[str, object]:
     try:
         verify_ready(model_dir())
-        ready = True
     except ModelRuntimeError:
-        ready = False
-    return {"ok": True, "service": "image-tools", "ready": ready, "runtime_level": "L1-contract", "runtime_ready": False}
+        return {"ok": True, "service": "image-tools", "ready": False, "runtime_level": "L1-contract", "runtime_ready": False}
+    return {"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L3-offline-assets", "runtime_ready": True}
 
 
 def _report(stdout: str, *, model: str, backend: str, output: Path) -> dict[str, object]:
