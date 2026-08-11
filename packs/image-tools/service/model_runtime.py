@@ -17,7 +17,11 @@ MODEL_FILES = (
     "RealESRGAN_x4plus_anime_6B.pth",
     "realesr-animevideov3.pth",
 )
-_RELEASE_PREFIX = "https://github.com/xinntao/Real-ESRGAN/releases/"
+MODEL_URLS = {
+    "RealESRGAN_x4plus.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4plus.pth",
+    "RealESRGAN_x4plus_anime_6B.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/RealESRGAN_x4plus_anime_6B.pth",
+    "realesr-animevideov3.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+}
 
 
 class ModelRuntimeError(RuntimeError):
@@ -66,7 +70,7 @@ def verify_ready(model_root: Path = DEFAULT_MODEL_ROOT) -> dict[str, Any]:
                 not isinstance(name, str) or name not in MODEL_FILES or name in listed
                 or not isinstance(size, int) or isinstance(size, bool) or size < 1
                 or not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
-                or not isinstance(url, str) or not url.startswith(_RELEASE_PREFIX)
+                or not isinstance(url, str) or url != MODEL_URLS[name]
             ):
                 raise _invalid_marker()
             candidate = root / name
