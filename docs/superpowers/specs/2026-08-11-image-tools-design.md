@@ -4,8 +4,11 @@
 
 Add a broad image-processing Pack without renaming or destabilizing the existing
 `image-birefnet` background-removal contract. The first operation is still
-small and concrete: single-image Real-ESRGAN upscaling/restoration using the
-portable NCNN/Vulkan assets already present under `/opt/ai/photo_clear/p2`.
+small and concrete: single-image Real-ESRGAN upscaling/restoration with an
+explicit CUDA/CPU backend switch. The existing portable NCNN/Vulkan assets
+under `/opt/ai/photo_clear/p2` remain useful reference assets, but the public
+CUDA/CPU contract uses the official PyTorch model format so both backends share
+one model family.
 
 The Pack is an operation registry so later image operations can be added behind
 the same Hub mode. `colorize`, old-photo restoration, DPED enhancement, and
@@ -50,6 +53,12 @@ Both forms accept exactly one source:
 - `base64_string`: a strict Base64 value, optionally prefixed with a
   `data:image/...;base64,` header.
 
+Both forms also accept `backend`, optional, default `auto`, with the enum
+`auto`, `cuda`, or `cpu`. An installation setting
+`IMAGE_TOOLS_DEFAULT_BACKEND` supplies the default when the request omits the
+field. An explicit backend never silently falls back: an unavailable CUDA
+request returns `backend_unavailable`.
+
 The Gateway stages a Base64 source for an async task and removes the raw value
 from the persisted task input. No URL, host path, container path, or arbitrary
 file path is accepted.
@@ -57,6 +66,7 @@ file path is accepted.
 The `upscale` fields are:
 
 - `model`, optional, default `realesrgan-x4plus`;
+- `backend`, optional, default `auto`, enum `auto|cuda|cpu`;
 - `image` or `base64_string`, exactly one.
 
 Allowed models are fixed to the staged assets:
@@ -67,10 +77,14 @@ Allowed models are fixed to the staged assets:
 - `realesr-animevideov3-x3`;
 - `realesr-animevideov3-x4`.
 
+These are stable Hub aliases. The first two map to the corresponding official
+Real-ESRGAN `.pth` models; the three `realesr-animevideov3-x*` aliases share
+one official anime-video `.pth` model and select output scale 2, 3, or 4.
+
 Success returns `image/png`. Sync returns the PNG body directly with:
 
 - `X-3waAIHub-Model`;
-- `X-3waAIHub-Backend: vulkan`;
+- `X-3waAIHub-Backend: cuda` or `cpu`;
 - `X-3waAIHub-Elapsed-Ms`;
 - `X-3waAIHub-Width`;
 - `X-3waAIHub-Height`.
@@ -105,8 +119,9 @@ Errors are explicit and stable:
 
 `file_required`, `source_ambiguous`, `invalid_base64`,
 `unsupported_media_type`, `invalid_image`, `invalid_operation`,
-`invalid_model`, `payload_too_large`, `runtime_not_ready`, and
-`inference_failed`.
+`invalid_model`, `invalid_backend`, `backend_unavailable`,
+`model_not_present`, `model_load_failed`, `payload_too_large`,
+`runtime_not_ready`, and `inference_failed`.
 
 The service rejects GIF, TIFF, SVG, PDF, HEIC, arbitrary text, truncated image
 data, decompression-bomb dimensions, and mismatched source fields.
@@ -115,21 +130,31 @@ data, decompression-bomb dimensions, and mismatched source fields.
 
 The synchronous service exposes `/health` and `/process/image`. Its operation
 router owns only validation and dispatch; the `upscale` adapter writes a
-validated source into a private `/tmp` job directory, invokes the Real-ESRGAN
-binary through an argument array, reads the PNG result, and removes the
-directory in a `finally` path. Shell interpolation is not used.
+validated source into a private `/tmp` job directory, invokes the pinned
+Real-ESRGAN PyTorch runner through an argument array, selects CUDA or CPU
+explicitly, reads the PNG result, and removes the directory in a `finally`
+path. CUDA uses the normal half-precision path; CPU forces fp32 because some
+half-precision operators are not implemented for CPU. Shell interpolation is
+not used.
 
-The portable binary and the five model pairs are staged as a checksummed,
+The official `.pth` weights and their manifest are staged as a checksummed,
 read-only model snapshot under `/DATA/models/image-tools/realesrgan`. Runtime
-network downloads are disabled. The service and job runner use a single
-inference slot; async jobs additionally use the existing Hub GPU lease and
-container runner, so a long upscale cannot occupy the HTTP request or the
-general PHP worker path.
+network downloads are disabled. The old NCNN/Vulkan binary and `.bin/.param`
+files are retained outside the public backend enum for future comparison or a
+separate Vulkan adapter; they do not silently stand in for CUDA or CPU.
 
-The async job is named `upscale_image`. It accepts an image source artifact or
-one staged upload, the allowlisted model, and no client-controlled execution
-command. Its output contract validates PNG MIME, dimensions, byte size, and the
-required report fields before publishing artifacts.
+The service and job runner use a single inference slot. Async dispatch selects
+the GPU or CPU queue from the resolved backend: CUDA jobs use the existing Hub
+GPU lease and container runner, while CPU jobs use the CPU queue. A long
+upscale therefore cannot occupy the HTTP request or the general PHP worker
+path.
+
+The async operation remains `operation=upscale_task`; internally it resolves to
+the `upscale_image` job with a backend-specific runner contract. It accepts an
+image source artifact or one staged upload, the allowlisted model and backend,
+and no client-controlled execution command. Its output contract validates PNG
+MIME, dimensions, byte size, backend metadata, and the required report fields
+before publishing artifacts.
 
 ## Documentation and test-machine acceptance
 
@@ -139,19 +164,21 @@ The first release updates all of these together:
 - generated public API inventory/examples and the admin playground entry;
 - the top-level README API examples;
 - `docs/operations/image-tools.md`, including offline asset staging, Docker /
-  Vulkan preflight, sync smoke, async submit/poll/download, and cleanup;
+  CUDA/CPU preflight, sync CUDA/CPU smoke, async GPU/CPU submit/poll/download,
+  and cleanup;
 - PHP contract tests for registry, install, Gateway operation routing, docs,
   and artifact behavior;
 - Python unit tests for Base64, format detection, dimension limits, model
   allowlisting, subprocess arguments, and temporary-directory cleanup;
-- a real test-machine smoke that invokes the HTTP sync endpoint and the async
-  task endpoint, verifies output PNG dimensions and metadata, polls the task,
-  downloads the artifact, and verifies its SHA-256.
+- a real test-machine smoke that invokes the HTTP sync endpoint on CUDA and CPU,
+  submits async CUDA and CPU tasks, verifies output PNG dimensions and
+  metadata, polls the tasks, downloads the artifacts, and verifies their
+  SHA-256.
 
-The real acceptance requires Docker, the staged checksums, a working Vulkan
-backend, and the declared test fixture. It is separate from ordinary offline
-unit CI; CI still covers all contract and safety checks without shipping model
-binaries.
+The real acceptance requires Docker, the staged checksums, a working CUDA host
+for GPU cases, a usable CPU runtime for CPU cases, and the declared test
+fixture. It is separate from ordinary offline unit CI; CI still covers all
+contract and safety checks without shipping model binaries.
 
 ## Deferred work
 
@@ -163,3 +190,8 @@ binaries.
 
 Each deferred operation must bring its own model provenance, output contract,
 fixture, and acceptance gate before being added to the operation enum.
+
+## Upstream references
+
+- [Real-ESRGAN image inference](https://github.com/xinntao/Real-ESRGAN/blob/master/inference_realesrgan.py)
+- [Real-ESRGAN CPU FAQ](https://github.com/xinntao/Real-ESRGAN/blob/master/docs/FAQ.md)
