@@ -323,6 +323,17 @@ hub_test('image-tools backend response header is canonical and rejects unsafe va
         'image/png'
     );
     hub_test_assert(!in_array('X-3waAIHub-Backend: CUDA', $invalid, true) && !array_filter($invalid, static fn (string $header): bool => str_starts_with($header, 'X-3waAIHub-Backend:')), 'invalid Backend values and controls must not escape');
+
+    foreach ([
+        "X-3waAIHub-Backend: cuda\r\nX-3waAIHub-Backend: vulkan\r\n",
+        "X-3waAIHub-Backend: cuda\r\nX-3waAIHub-Backend: cpu\r\n",
+    ] as $rawBackendHeaders) {
+        $duplicates = hub_proxy_allowed_response_headers("HTTP/1.1 200 OK\r\n" . $rawBackendHeaders, 'image/png');
+        hub_test_assert(!array_filter($duplicates, static fn (string $header): bool => str_starts_with($header, 'X-3waAIHub-Backend:')), 'invalid or mismatched duplicate Backend values must suppress the header');
+    }
+
+    $same = hub_proxy_allowed_response_headers("HTTP/1.1 200 OK\r\nX-3waAIHub-Backend: cuda\r\nX-3waAIHub-Backend: cuda\r\n", 'image/png');
+    hub_test_assert(count(array_filter($same, static fn (string $header): bool => $header === 'X-3waAIHub-Backend: cuda')) === 1, 'identical valid duplicate Backend values must remain canonical');
 });
 
 hub_test('image-tools Pack declares the L1 upscaling contract', function (): void {

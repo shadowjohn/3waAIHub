@@ -2877,6 +2877,7 @@ function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentT
         'cache-control' => 'Cache-Control',
     ];
     $accepted = [];
+    $rejected = [];
     foreach (preg_split('/\n/', $final) ?: [] as $line) {
         if (!str_contains($line, ':')) {
             continue;
@@ -2896,7 +2897,10 @@ function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentT
         } else {
             $valid = $value !== '' && strlen($value) <= 20 && ctype_digit($value);
         }
-        if ($valid) {
+        if (!$valid || (isset($accepted[$name]) && $accepted[$name] !== $value)) {
+            $rejected[$name] = true;
+            unset($accepted[$name]);
+        } elseif (!isset($rejected[$name])) {
             $accepted[$name] = $value;
         }
     }
