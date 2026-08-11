@@ -147,7 +147,7 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
     $cpuCompose = (string)file_get_contents(hub_path((string)$cpuInstalled['service']['compose_file']));
     hub_test_assert(!str_contains($cpuCompose, 'gpus: all'), 'image-tools generated Compose must omit GPUs when explicitly disabled');
 
-    foreach (['-image-tools', 'image/tools', 'image.tools', "image\ntools"] as $invalidMode) {
+    foreach (['-image-tools', 'image/tools', 'image.tools', "image\ntools", "\nimage-tools", "image-tools\n", "\0image-tools"] as $invalidMode) {
         $invalidManifest = $pack['manifest'];
         $invalidManifest['default_mode'] = $invalidMode;
         hub_test_assert(hub_validate_pack_manifest($invalidManifest, $pack['dir']) !== [], 'manifest must reject invalid mode ' . json_encode($invalidMode, JSON_THROW_ON_ERROR));

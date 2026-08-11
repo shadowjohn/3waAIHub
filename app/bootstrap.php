@@ -158,7 +158,6 @@ function hub_json_encode(mixed $value, int $flags = 0): string|false
  */
 function hub_local_gateway_url(string $basePath, string $mode): string
 {
-    $mode = trim($mode);
     if (preg_match('/\A[a-z0-9][a-z0-9_-]*\z/D', $mode) !== 1) {
         throw new InvalidArgumentException('Gateway mode is invalid.');
     }
