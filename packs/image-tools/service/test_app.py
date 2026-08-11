@@ -93,7 +93,7 @@ class AppTest(unittest.TestCase):
     def response_body(self, response):
         return json.loads(response.body)
 
-    def test_health_reports_l1_when_assets_are_missing_and_l3_when_marker_verifies(self) -> None:
+    def test_health_reports_l1_when_assets_are_missing_and_l4a_when_marker_verifies(self) -> None:
         with patch.object(self.app, "verify_ready", side_effect=self.app.ModelRuntimeError("model_not_present")):
             self.assertEqual({
                 "ok": True,
@@ -108,7 +108,7 @@ class AppTest(unittest.TestCase):
             "ok": True,
             "service": "image-tools",
             "ready": True,
-            "runtime_level": "L3-offline-assets",
+            "runtime_level": "L4a-model-init-smoke",
             "runtime_ready": True,
         }, health)
 

@@ -536,7 +536,7 @@ hub_test('image-tools backend response header is canonical and rejects unsafe va
     hub_test_assert(in_array('X-3waAIHub-Backend: cuda', $final, true), 'validated Backend must survive the final Gateway response-header allowlist');
 });
 
-hub_test('image-tools Pack declares the verified L3 upscaling contract', function (): void {
+hub_test('image-tools Pack declares the L4a generic image-tools contract', function (): void {
     $pack = hub_get_pack('image-tools');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-tools pack missing or invalid');
     $manifest = $pack['manifest'];
@@ -544,14 +544,23 @@ hub_test('image-tools Pack declares the verified L3 upscaling contract', functio
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
     preg_match('/### image-tools Runtime Level\\n\\n(.*?)(?=\\n### |\\z)/s', $readme, $runtimeSection);
     $runtimeSection = (string)($runtimeSection[1] ?? '');
-    hub_test_assert(str_contains($runtimeSection, '`L3-offline-assets`／`runtime_ready=true`'), 'README image-tools runtime row must state verified L3 readiness');
+    hub_test_assert(str_contains($runtimeSection, '影像工具'), 'README image-tools runtime row must use the generic Chinese Pack identity');
+    hub_test_assert(str_contains($runtimeSection, '`L4a-model-init-smoke`／`runtime_ready=true`'), 'README image-tools runtime row must state L4a model-init readiness');
     hub_test_assert(!str_contains($runtimeSection, '`L1-contract`／`runtime_ready=false`'), 'README image-tools runtime row must not retain stale L1 readiness');
     $runbook = (string)file_get_contents(HUB_ROOT . '/docs/operations/image-tools.md');
     hub_test_assert(str_contains($runbook, '[image-tools-acceptance.md](image-tools-acceptance.md)'), 'image-tools runbook must link the auditable acceptance record');
+    foreach (['影像工具', 'L4a-model-init-smoke', 'model_smoke.py --backend cpu'] as $needle) {
+        hub_test_assert(str_contains($readme . "\n" . $runbook, $needle), 'image-tools docs must publish ' . $needle);
+    }
+    hub_test_assert(!str_contains($readme . "\n" . $runbook, '`L4b-real-inference`／`runtime_ready=true`'), 'image-tools docs must not claim L4b ready');
+    hub_test_assert(!str_contains($readme . "\n" . $runbook, '`L5-benchmark-ready`／`runtime_ready=true`'), 'image-tools docs must not claim L5 ready');
 
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
+    hub_test_assert(($manifest['name'] ?? '') === '影像工具', 'image-tools display name must remain generic Chinese');
+    hub_test_assert(($manifest['description'] ?? '') === '本機複合式影像處理工具；目前提供 Real-ESRGAN 圖片放大，後續功能將以獨立 operation 擴充。', 'image-tools description must describe the extensible Chinese image-tools Pack');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'image-tools must expose a sync API');
-    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L3-offline-assets' && ($manifest['runtime_ready'] ?? false) === true, 'image-tools must retain its verified L3 offline-assets readiness');
+    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4a-model-init-smoke' && ($manifest['runtime_ready'] ?? false) === true, 'image-tools must publish L4a only after model-init smoke exists');
+    hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'image-tools target level mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'image-tools', 'image-tools public mode mismatch');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/process/image', 'image-tools invoke path mismatch');
     hub_test_assert(($manifest['gateway']['health_path'] ?? '') === '/health', 'image-tools health path mismatch');

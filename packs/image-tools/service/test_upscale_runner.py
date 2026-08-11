@@ -5,7 +5,7 @@ import unittest
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import numpy as np
 from PIL import Image
@@ -28,9 +28,11 @@ class UpscaleRunnerBoundaryTest(unittest.TestCase):
             output = workspace / "output.png"
             source.write_bytes(b"source")
             fake = SimpleNamespace(enhance=lambda _pixels, outscale: (np.zeros((12, 8, 3), dtype=np.uint8), None))
-            with patch.object(upscale_runner, "decode_image", return_value=Image.new("RGB", (2, 3))) as decoder, patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner, "_upsampler", return_value=fake):
+            self.assertTrue(hasattr(upscale_runner, "model_runtime"), "production runner must use the shared model_runtime module")
+            with patch.object(upscale_runner, "decode_image", return_value=Image.new("RGB", (2, 3))) as decoder, patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner.model_runtime, "build_upsampler", return_value=fake) as loader:
                 upscale_runner.run_upscale(source=source, output=output, alias="realesrgan-x4plus", backend="cpu", model_dir=Path("/models"), operation="upscale_task")
             decoder.assert_called_once_with(b"source", operation="upscale_task")
+            loader.assert_called_once_with("realesrgan-x4plus", "cpu", Path("/models/pinned.pth"))
             with Image.open(output) as rendered:
                 self.assertEqual((8, 12), rendered.size)
 

@@ -4,9 +4,10 @@ import hashlib
 import json
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, Mock, call, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -165,6 +166,46 @@ class ModelRuntimeTest(unittest.TestCase):
         self.assertIs(prepare_model(cuda, "cuda"), cuda)
         self.assertEqual(cuda.calls, ["to:cuda", "eval", "half"])
         self.assert_code("invalid_backend", lambda: prepare_model(FakeModel(), "auto"))
+
+    def test_build_upsampler_uses_only_known_architectures(self) -> None:
+        self.assertTrue(hasattr(model_runtime, "build_upsampler"), "model_runtime must expose the shared upsampler loader")
+        rrdbnet = Mock(name="RRDBNet")
+        srvgg = Mock(name="SRVGGNetCompact")
+        realesrganer = Mock(name="RealESRGANer")
+        modules = {
+            "basicsr": types.ModuleType("basicsr"),
+            "basicsr.archs": types.ModuleType("basicsr.archs"),
+            "basicsr.archs.rrdbnet_arch": types.ModuleType("basicsr.archs.rrdbnet_arch"),
+            "realesrgan": types.ModuleType("realesrgan"),
+            "realesrgan.archs": types.ModuleType("realesrgan.archs"),
+            "realesrgan.archs.srvgg_arch": types.ModuleType("realesrgan.archs.srvgg_arch"),
+        }
+        modules["basicsr.archs.rrdbnet_arch"].RRDBNet = rrdbnet
+        modules["realesrgan"].RealESRGANer = realesrganer
+        modules["realesrgan.archs.srvgg_arch"].SRVGGNetCompact = srvgg
+        model_path = Path("/models/pinned.pth")
+
+        with patch.dict(sys.modules, modules):
+            for alias in ("realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3-x4"):
+                for backend, half in (("cpu", False), ("cuda", True)):
+                    model_runtime.build_upsampler(alias, backend, model_path)
+                    self.assertEqual(
+                        call(scale=4, model_path=str(model_path), model=ANY, tile=0, tile_pad=10, pre_pad=0, half=half, device=backend),
+                        realesrganer.call_args,
+                    )
+
+            self.assertEqual([
+                call(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4),
+                call(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4),
+                call(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4),
+                call(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4),
+            ], rrdbnet.call_args_list)
+            self.assertEqual([
+                call(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type="prelu"),
+                call(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type="prelu"),
+            ], srvgg.call_args_list)
+            with self.assertRaisesRegex(ModelRuntimeError, "^invalid_backend$"):
+                model_runtime.build_upsampler("realesrgan-x4plus", "auto", model_path)
 
     def test_docker_installs_pinned_torch_before_disabling_build_isolation(self) -> None:
         dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
