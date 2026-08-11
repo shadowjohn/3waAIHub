@@ -462,6 +462,8 @@ hub_test('image-tools backend response header is canonical and rejects unsafe va
 
     $same = hub_proxy_allowed_response_headers("HTTP/1.1 200 OK\r\nX-3waAIHub-Backend: cuda\r\nX-3waAIHub-Backend: cuda\r\n", 'image/png');
     hub_test_assert(count(array_filter($same, static fn (string $header): bool => $header === 'X-3waAIHub-Backend: cuda')) === 1, 'identical valid duplicate Backend values must remain canonical');
+    $final = hub_gateway_safe_response_headers(['X-3waAIHub-Backend: cuda']);
+    hub_test_assert(in_array('X-3waAIHub-Backend: cuda', $final, true), 'validated Backend must survive the final Gateway response-header allowlist');
 });
 
 hub_test('image-tools Pack declares the L1 upscaling contract', function (): void {

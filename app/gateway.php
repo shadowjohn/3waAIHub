@@ -3068,6 +3068,7 @@ function hub_gateway_safe_response_headers(array $headers): array
         'x-3waaihub-request-id' => 'X-3waAIHub-Request-Id',
         'x-3waaihub-model' => 'X-3waAIHub-Model',
         'x-3waaihub-device' => 'X-3waAIHub-Device',
+        'x-3waaihub-backend' => 'X-3waAIHub-Backend',
         'x-3waaihub-elapsed-ms' => 'X-3waAIHub-Elapsed-Ms',
         'x-3waaihub-width' => 'X-3waAIHub-Width',
         'x-3waaihub-height' => 'X-3waAIHub-Height',
@@ -3094,6 +3095,7 @@ function hub_gateway_safe_response_headers(array $headers): array
             'x-3waaihub-request-id' => preg_match('/\A[A-Za-z0-9_-]{1,128}\z/D', $value) === 1,
             'x-3waaihub-model' => preg_match('/\A[\x20-\x7E]{1,200}\z/D', $value) === 1,
             'x-3waaihub-device' => in_array($value, ['cuda', 'cpu'], true),
+            'x-3waaihub-backend' => in_array($value, ['cuda', 'cpu'], true),
             default => false,
         };
         if ($valid) {
