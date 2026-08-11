@@ -6,9 +6,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import model_runtime
 from model_runtime import (
     MODEL_FILES,
     MODEL_URLS,
@@ -18,6 +20,34 @@ from model_runtime import (
     prepare_model,
     verify_ready,
 )
+
+
+EXPECTED_MODEL_ASSETS = {
+    "RealESRGAN_x4plus.pth": {
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+        "size": 67040989,
+        "sha256": "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
+    },
+    "RealESRGAN_x4plus_anime_6B.pth": {
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+        "size": 17938799,
+        "sha256": "f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da",
+    },
+    "realesr-animevideov3.pth": {
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+        "size": 2504012,
+        "sha256": "b8a8376811077954d82ca3fcf476f1ac3da3e8a68a4f4d71363008000a18b75d",
+    },
+}
+TEST_MODEL_PAYLOADS = {name: ("test-" + name).encode("ascii") for name in MODEL_FILES}
+TEST_MODEL_ASSETS = {
+    name: {
+        "url": MODEL_URLS[name],
+        "size": len(payload),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+    }
+    for name, payload in TEST_MODEL_PAYLOADS.items()
+}
 
 
 class FakeModel:
@@ -39,8 +69,7 @@ class FakeModel:
 
 def write_ready(root: Path) -> dict:
     files = []
-    for index, name in enumerate(MODEL_FILES):
-        data = f"model-{index}".encode("ascii")
+    for name, data in TEST_MODEL_PAYLOADS.items():
         (root / name).write_bytes(data)
         files.append({
             "path": name,
@@ -53,7 +82,29 @@ def write_ready(root: Path) -> dict:
     return marker
 
 
+class ModelAssetConstantsTest(unittest.TestCase):
+    def test_model_assets_pin_the_verified_snapshot_values(self) -> None:
+        self.assertEqual(EXPECTED_MODEL_ASSETS, model_runtime.MODEL_ASSETS)
+
+    def test_ready_marker_rejects_metadata_outside_the_fixed_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_ready(root)
+            with self.assertRaisesRegex(ModelRuntimeError, "^model_load_failed$"):
+                verify_ready(root)
+
+
 class ModelRuntimeTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.asset_patch = patch.object(model_runtime, "MODEL_ASSETS", TEST_MODEL_ASSETS)
+        self.file_patch = patch.object(model_runtime, "MODEL_FILES", tuple(TEST_MODEL_ASSETS))
+        self.asset_patch.start()
+        self.file_patch.start()
+
+    def tearDown(self) -> None:
+        self.file_patch.stop()
+        self.asset_patch.stop()
+
     def assert_code(self, code: str, callback) -> None:
         with self.assertRaisesRegex(ModelRuntimeError, f"^{code}$"):
             callback()

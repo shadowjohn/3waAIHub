@@ -12,15 +12,32 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from model_runtime import DEFAULT_MODEL_ROOT, MODEL_URLS, REAL_ESRGAN_COMMIT, REAL_ESRGAN_REPOSITORY
+from model_runtime import DEFAULT_MODEL_ROOT, MODEL_ASSETS, REAL_ESRGAN_COMMIT, REAL_ESRGAN_REPOSITORY
 
 
-ASSETS = MODEL_URLS
+ASSETS = MODEL_ASSETS
 MAX_ASSET_BYTES = 128 * 1024 * 1024
 
 
 class ProvisionError(RuntimeError):
     pass
+
+
+def _expected_asset(name: str) -> dict[str, object]:
+    asset = ASSETS.get(name)
+    if (
+        not isinstance(asset, dict)
+        or set(asset) != {"url", "size", "sha256"}
+        or not isinstance(asset["url"], str)
+        or not isinstance(asset["size"], int)
+        or isinstance(asset["size"], bool)
+        or asset["size"] < 1
+        or not isinstance(asset["sha256"], str)
+        or len(asset["sha256"]) != 64
+        or any(char not in "0123456789abcdef" for char in asset["sha256"])
+    ):
+        raise ProvisionError("unexpected asset")
+    return asset
 
 
 def _sha256(path: Path) -> str:
@@ -41,7 +58,11 @@ class _HttpsRedirect(urllib.request.HTTPRedirectHandler):
 
 def _download(url: str, destination: Path) -> None:
     parsed = urllib.parse.urlsplit(url)
-    if url not in ASSETS.values() or parsed.scheme != "https" or parsed.hostname != "github.com" or Path(parsed.path).name not in ASSETS:
+    name = Path(parsed.path).name
+    expected = _expected_asset(name)
+    expected_size = int(expected["size"])
+    expected_digest = str(expected["sha256"])
+    if destination.name != name or url != expected["url"] or parsed.scheme != "https" or parsed.hostname != "github.com":
         raise ProvisionError("unexpected asset")
     opener = urllib.request.build_opener(_HttpsRedirect())
     try:
@@ -60,15 +81,25 @@ def _download(url: str, destination: Path) -> None:
                     raise ProvisionError("invalid content length") from exc
                 if declared_size > MAX_ASSET_BYTES:
                     raise ProvisionError("asset_too_large")
+                if declared_size != expected_size:
+                    raise ProvisionError("asset_size_mismatch")
             total = 0
+            digest = hashlib.sha256()
             with destination.open("xb") as output:
                 while chunk := response.read(1024 * 1024):
                     total += len(chunk)
                     if total > MAX_ASSET_BYTES:
                         raise ProvisionError("asset_too_large")
+                    if total > expected_size:
+                        raise ProvisionError("asset_size_mismatch")
+                    digest.update(chunk)
                     output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
+            if total != expected_size:
+                raise ProvisionError("asset_size_mismatch")
+            if digest.hexdigest() != expected_digest:
+                raise ProvisionError("asset_hash_mismatch")
     except ProvisionError:
         destination.unlink(missing_ok=True)
         raise
@@ -128,7 +159,9 @@ def provision(*, model_root: Path = DEFAULT_MODEL_ROOT, fetcher: Callable[[str, 
     fetch = fetcher or _download
     try:
         files: list[dict[str, object]] = []
-        for name, url in ASSETS.items():
+        for name in ASSETS:
+            expected = _expected_asset(name)
+            url = str(expected["url"])
             destination = stage / name
             fetch(url, destination)
             size = destination.stat().st_size if destination.exists() else 0
@@ -136,8 +169,13 @@ def provision(*, model_root: Path = DEFAULT_MODEL_ROOT, fetcher: Callable[[str, 
                 raise ProvisionError("invalid downloaded asset")
             if size > MAX_ASSET_BYTES:
                 raise ProvisionError("asset_too_large")
+            if size != expected["size"]:
+                raise ProvisionError("asset_size_mismatch")
+            digest = _sha256(destination)
+            if digest != expected["sha256"]:
+                raise ProvisionError("asset_hash_mismatch")
             destination.chmod(0o644)
-            files.append({"path": name, "size": size, "sha256": _sha256(destination), "url": url})
+            files.append({"path": name, "size": expected["size"], "sha256": expected["sha256"], "url": expected["url"]})
         payload = _write_marker(stage, files)
         _fsync_dir(stage)
         _activate(stage, target)

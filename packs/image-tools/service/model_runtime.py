@@ -12,16 +12,25 @@ from image_contract import ImageToolsError, select_model
 DEFAULT_MODEL_ROOT = Path("/models/image-tools/realesrgan")
 REAL_ESRGAN_REPOSITORY = "https://github.com/xinntao/Real-ESRGAN"
 REAL_ESRGAN_COMMIT = "a4abfb2979a7bbff3f69f58f58ae324608821e27"
-MODEL_FILES = (
-    "RealESRGAN_x4plus.pth",
-    "RealESRGAN_x4plus_anime_6B.pth",
-    "realesr-animevideov3.pth",
-)
-MODEL_URLS = {
-    "RealESRGAN_x4plus.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
-    "RealESRGAN_x4plus_anime_6B.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
-    "realesr-animevideov3.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+MODEL_ASSETS = {
+    "RealESRGAN_x4plus.pth": {
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+        "size": 67040989,
+        "sha256": "4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1",
+    },
+    "RealESRGAN_x4plus_anime_6B.pth": {
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+        "size": 17938799,
+        "sha256": "f872d837d3c90ed2e05227bed711af5671a6fd1c9f7d7e91c911a61f155e99da",
+    },
+    "realesr-animevideov3.pth": {
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+        "size": 2504012,
+        "sha256": "b8a8376811077954d82ca3fcf476f1ac3da3e8a68a4f4d71363008000a18b75d",
+    },
 }
+MODEL_FILES = tuple(MODEL_ASSETS)
+MODEL_URLS = {name: str(asset["url"]) for name, asset in MODEL_ASSETS.items()}
 
 
 class ModelRuntimeError(RuntimeError):
@@ -70,13 +79,16 @@ def verify_ready(model_root: Path = DEFAULT_MODEL_ROOT) -> dict[str, Any]:
                 not isinstance(name, str) or name not in MODEL_FILES or name in listed
                 or not isinstance(size, int) or isinstance(size, bool) or size < 1
                 or not isinstance(digest, str) or len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest)
-                or not isinstance(url, str) or url != MODEL_URLS[name]
+                or not isinstance(url, str)
             ):
+                raise _invalid_marker()
+            expected = MODEL_ASSETS[name]
+            if size != expected["size"] or digest != expected["sha256"] or url != expected["url"]:
                 raise _invalid_marker()
             candidate = root / name
             if candidate.is_symlink() or not candidate.is_file() or not stat.S_ISREG(candidate.stat().st_mode):
                 raise _invalid_marker()
-            if candidate.stat().st_size != size or _hash_file(candidate) != digest:
+            if candidate.stat().st_size != expected["size"] or _hash_file(candidate) != expected["sha256"]:
                 raise _invalid_marker()
             listed.add(name)
         if listed != set(MODEL_FILES):

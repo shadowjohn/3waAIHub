@@ -2,6 +2,8 @@
 
 `image-tools` 使用離線、可驗證的 Real-ESRGAN snapshot。Pack 已完成 Task 8 的 Gateway CPU/CUDA sync 與 async acceptance，為 `L3-offline-assets` 且 `runtime_ready=true`；後續模型變更仍須重新驗證。
 
+本次驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
+
 ## 離線模型 staging
 
 1. 在受控網路環境執行 provisioner，將官方 allowlist 權重先下載到 staging；不要在 API request 或 worker 中下載。

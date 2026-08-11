@@ -546,6 +546,8 @@ hub_test('image-tools Pack declares the verified L3 upscaling contract', functio
     $runtimeSection = (string)($runtimeSection[1] ?? '');
     hub_test_assert(str_contains($runtimeSection, '`L3-offline-assets`／`runtime_ready=true`'), 'README image-tools runtime row must state verified L3 readiness');
     hub_test_assert(!str_contains($runtimeSection, '`L1-contract`／`runtime_ready=false`'), 'README image-tools runtime row must not retain stale L1 readiness');
+    $runbook = (string)file_get_contents(HUB_ROOT . '/docs/operations/image-tools.md');
+    hub_test_assert(str_contains($runbook, '[image-tools-acceptance.md](image-tools-acceptance.md)'), 'image-tools runbook must link the auditable acceptance record');
 
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'image-tools must expose a sync API');
