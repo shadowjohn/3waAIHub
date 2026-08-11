@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from model_runtime import (
     MODEL_FILES,
+    MODEL_URLS,
     REAL_ESRGAN_COMMIT,
     REAL_ESRGAN_REPOSITORY,
     ModelRuntimeError,
@@ -45,7 +46,7 @@ def write_ready(root: Path) -> dict:
             "path": name,
             "size": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
-            "url": f"https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/{name}",
+            "url": MODEL_URLS[name],
         })
     marker = {"repository": REAL_ESRGAN_REPOSITORY, "commit": REAL_ESRGAN_COMMIT, "files": files}
     (root / "ready.json").write_text(json.dumps(marker), encoding="utf-8")

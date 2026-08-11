@@ -209,9 +209,11 @@ class ProvisionTest(unittest.TestCase):
             self.assertFalse(list(target.parent.glob(target.name + ".stage-*")))
 
     def test_urls_and_names_are_fixed(self) -> None:
-        for name, url in self.provisioner.ASSETS.items():
-            self.assertEqual(name, Path(url).name)
-            self.assertTrue(url.startswith("https://github.com/xinntao/Real-ESRGAN/releases/download/"))
+        self.assertEqual(self.provisioner.ASSETS, {
+            "RealESRGAN_x4plus.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+            "RealESRGAN_x4plus_anime_6B.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth",
+            "realesr-animevideov3.pth": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-animevideov3.pth",
+        })
 
     def test_download_and_staging_reject_oversized_assets(self) -> None:
         name, url = next(iter(self.provisioner.ASSETS.items()))
