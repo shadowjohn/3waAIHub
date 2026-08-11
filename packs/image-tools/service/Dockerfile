@@ -12,7 +12,8 @@ RUN apt-get update \
 
 COPY requirements.txt .
 RUN python3 -m pip install --upgrade pip setuptools wheel \
-    && python3 -m pip install -r requirements.txt \
+    && python3 -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 torch==2.9.1+cu128 torchvision==0.24.1+cu128 \
+    && python3 -m pip install --no-build-isolation -r requirements.txt \
     && python3 -m pip check
 
 COPY image_contract.py model_runtime.py test_image_contract.py test_model_runtime.py test_upscale_runner.py ./

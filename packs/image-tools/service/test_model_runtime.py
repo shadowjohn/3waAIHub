@@ -114,6 +114,14 @@ class ModelRuntimeTest(unittest.TestCase):
         self.assertEqual(cuda.calls, ["to:cuda", "eval", "half"])
         self.assert_code("invalid_backend", lambda: prepare_model(FakeModel(), "auto"))
 
+    def test_docker_installs_pinned_torch_before_disabling_build_isolation(self) -> None:
+        dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
+        torch_install = "python3 -m pip install --extra-index-url https://download.pytorch.org/whl/cu128 torch==2.9.1+cu128 torchvision==0.24.1+cu128"
+        source_install = "python3 -m pip install --no-build-isolation -r requirements.txt"
+        self.assertIn(torch_install, dockerfile)
+        self.assertIn(source_install, dockerfile)
+        self.assertLess(dockerfile.index(torch_install), dockerfile.index(source_install))
+
 
 if __name__ == "__main__":
     unittest.main()
