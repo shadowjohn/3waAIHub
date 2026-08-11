@@ -1,6 +1,330 @@
 <?php
 declare(strict_types=1);
 
+function hub_test_image_tools_service(PDO $db): array
+{
+    $installed = hub_install_pack($db, 'image-tools', [
+        'service_key' => 'image-tools-gateway',
+        'port_mode' => 'manual',
+        'local_port' => 18113,
+    ]);
+    hub_set_service_enabled($db, 'image-tools', true);
+    hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+
+    return $installed['service'];
+}
+
+function hub_test_image_tools_dispatch(PDO $db, array $post, array $query = [], array $files = [], ?callable $requester = null): array
+{
+    $_FILES = $files;
+
+    return hub_gateway_dispatch($db, 'image-tools', $requester, [
+        'method' => 'POST',
+        'client_ip' => '127.0.0.1',
+        'request_uri' => '/3waAIHub/api.php?mode=image-tools',
+        'query' => $query,
+        'post' => $post,
+    ]);
+}
+
+function hub_test_image_tools_error(array $response): string
+{
+    $payload = json_decode((string)($response['body'] ?? ''), true);
+    hub_test_assert(is_array($payload), 'image-tools gateway error must be JSON');
+
+    return (string)($payload['error'] ?? '');
+}
+
+function hub_test_image_tools_fixture(string $bytes = 'image-tools fixture'): string
+{
+    $path = tempnam(sys_get_temp_dir(), '3waaihub_image_tools_');
+    if ($path === false || file_put_contents($path, $bytes, LOCK_EX) === false || !chmod($path, 0600)) {
+        throw new RuntimeException('Cannot create image-tools upload fixture.');
+    }
+
+    return $path;
+}
+
+hub_test('image-tools gateway injects query operations and stages Base64 without forwarding it', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_image_tools_service($db);
+    $_POST = ['sentinel' => 'keep'];
+    $stagedPaths = [];
+    $calls = 0;
+
+    foreach ([
+        base64_encode('raw Base64 source'),
+        'data:image/png;base64,' . base64_encode('data URI source'),
+    ] as $source) {
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            ['base64_string' => $source],
+            ['mode' => 'image-tools', 'operation' => 'upscale'],
+            [],
+            static function (array $service, int $timeoutSec) use (&$stagedPaths, &$calls, $source): array {
+                $calls++;
+                hub_test_assert(str_ends_with((string)$service['internal_url'], '/process/image'), 'image-tools must proxy to /process/image');
+                hub_test_assert($timeoutSec === 900, 'image-tools must retain the Pack gateway timeout');
+                hub_test_assert($_POST === [
+                    'operation' => 'upscale',
+                    'backend' => 'auto',
+                    'model' => 'realesrgan-x4plus',
+                ], 'image-tools must forward only normalized fields');
+                hub_test_assert(!str_contains(implode('', $_POST), $source), 'raw Base64 must never reach the proxy post fields');
+                hub_test_assert(array_keys($_FILES) === ['image'], 'Base64 must become one image upload');
+                $file = $_FILES['image'];
+                hub_test_assert(array_keys($file) === ['name', 'type', 'tmp_name', 'error', 'size'], 'staged Base64 upload must retain only safe metadata');
+                hub_test_assert($file['name'] === 'source.bin' && $file['type'] === 'application/octet-stream' && $file['error'] === UPLOAD_ERR_OK, 'staged Base64 upload metadata must be fixed');
+                hub_test_assert(is_file($file['tmp_name']) && (fileperms($file['tmp_name']) & 0777) === 0600, 'staged Base64 file must be private');
+                $stagedPaths[] = $file['tmp_name'];
+
+                return hub_gateway_json(200, ['ok' => true]);
+            }
+        );
+        hub_test_assert($response['status'] === 200, 'valid Base64 source must proxy');
+    }
+
+    hub_test_assert($calls === 2 && $_POST === ['sentinel' => 'keep'] && $_FILES === [], 'image-tools proxy scope must restore request globals');
+    foreach ($stagedPaths as $path) {
+        hub_test_assert(!is_file($path), 'staged Base64 file must be removed after proxying');
+    }
+});
+
+hub_test('image-tools gateway enforces exact query and form duplicates', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_image_tools_service($db);
+    $source = base64_encode('duplicate fixture');
+
+    foreach ([
+        'operation' => ['query' => 'upscale', 'form' => 'upscale_task'],
+        'backend' => ['query' => 'cpu', 'form' => 'cuda'],
+        'model' => ['query' => 'realesrgan-x4plus', 'form' => 'realesrgan-x4plus-anime'],
+    ] as $field => $case) {
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            ['operation' => 'upscale', 'base64_string' => $source, $field => $case['form']],
+            ['mode' => 'image-tools', $field => $case['query']],
+            [],
+            static fn (): array => throw new RuntimeException('mismatched duplicate must not proxy')
+        );
+        hub_test_assert($response['status'] === 400 && hub_test_image_tools_error($response) === 'invalid_request', $field . ' duplicate must match byte-for-byte');
+    }
+
+    $response = hub_test_image_tools_dispatch(
+        $db,
+        [
+            'operation' => 'upscale',
+            'backend' => 'cpu',
+            'model' => 'realesrgan-x4plus-anime',
+            'base64_string' => $source,
+        ],
+        [
+            'mode' => 'image-tools',
+            'operation' => 'upscale',
+            'backend' => 'cpu',
+            'model' => 'realesrgan-x4plus-anime',
+        ],
+        [],
+        static function (): array {
+            hub_test_assert($_POST === [
+                'operation' => 'upscale',
+                'backend' => 'cpu',
+                'model' => 'realesrgan-x4plus-anime',
+            ], 'matching query and form values must be normalized once');
+
+            return hub_gateway_json(200, ['ok' => true]);
+        }
+    );
+    hub_test_assert($response['status'] === 200, 'matching duplicates must proxy');
+});
+
+hub_test('image-tools gateway rejects untrusted field shapes and upload metadata', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_image_tools_service($db);
+    $source = base64_encode('validation fixture');
+
+    foreach ([
+        [['operation' => 'upscale', 'base64_string' => $source, 'unknown' => 'x'], []],
+        [['operation' => ['upscale'], 'base64_string' => $source], []],
+        [['operation' => "upscale\x00", 'base64_string' => $source], []],
+        [['operation' => 'upscale', 'model' => str_repeat('a', 65), 'base64_string' => $source], []],
+        [['operation' => 'upscale', 'base64_string' => $source], ['mode' => 'image-tools', 'unknown' => 'x']],
+        [['operation' => 'upscale', 'base64_string' => $source], ['mode' => 'image_tools']],
+    ] as [$post, $query]) {
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            $post,
+            $query,
+            [],
+            static fn (): array => throw new RuntimeException('invalid field request must not proxy')
+        );
+        hub_test_assert($response['status'] === 400, 'unknown, array, control, overlong, and invalid mode fields must reject');
+    }
+
+    $fixture = hub_test_image_tools_fixture();
+    try {
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            ['operation' => 'upscale'],
+            [],
+            ['image' => ['name' => '../source.png', 'type' => 'image/png', 'tmp_name' => $fixture, 'error' => UPLOAD_ERR_OK, 'size' => filesize($fixture)]],
+            static fn (): array => throw new RuntimeException('path-like filename must not proxy')
+        );
+        hub_test_assert($response['status'] === 400 && hub_test_image_tools_error($response) === 'invalid_request', 'path-like filenames must reject');
+
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            ['operation' => 'upscale'],
+            [],
+            ['image' => ['name' => ['source.png'], 'type' => 'image/png', 'tmp_name' => [$fixture], 'error' => [UPLOAD_ERR_OK], 'size' => [filesize($fixture)]]],
+            static fn (): array => throw new RuntimeException('nested upload must not proxy')
+        );
+        hub_test_assert($response['status'] === 400 && hub_test_image_tools_error($response) === 'invalid_request', 'nested image upload must reject');
+    } finally {
+        if (is_file($fixture)) {
+            unlink($fixture);
+        }
+    }
+});
+
+hub_test('image-tools gateway requires exactly one source and sanitizes file uploads', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_image_tools_service($db);
+    $source = base64_encode('source fixture');
+    $missing = hub_test_image_tools_dispatch(
+        $db,
+        ['operation' => 'upscale'],
+        [],
+        [],
+        static fn (): array => throw new RuntimeException('missing source must not proxy')
+    );
+    hub_test_assert($missing['status'] === 400 && hub_test_image_tools_error($missing) === 'file_required', 'missing image source must return file_required');
+
+    $fixture = hub_test_image_tools_fixture('uploaded source');
+    try {
+        $upload = ['image' => ['name' => 'source.png', 'type' => 'image/png', 'tmp_name' => $fixture, 'error' => UPLOAD_ERR_OK, 'size' => filesize($fixture)]];
+        $ambiguous = hub_test_image_tools_dispatch(
+            $db,
+            ['operation' => 'upscale', 'base64_string' => $source],
+            [],
+            $upload,
+            static fn (): array => throw new RuntimeException('ambiguous source must not proxy')
+        );
+        hub_test_assert($ambiguous['status'] === 400 && hub_test_image_tools_error($ambiguous) === 'source_ambiguous', 'both image sources must return source_ambiguous');
+
+        $calls = 0;
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            ['operation' => 'upscale', 'backend' => 'cpu', 'model' => 'realesr-animevideov3-x2'],
+            [],
+            $upload,
+            static function () use (&$calls, $fixture): array {
+                $calls++;
+                hub_test_assert($_POST === [
+                    'operation' => 'upscale',
+                    'backend' => 'cpu',
+                    'model' => 'realesr-animevideov3-x2',
+                ], 'file upload must proxy only normalized form values');
+                hub_test_assert($_FILES === ['image' => [
+                    'name' => 'source.png',
+                    'type' => 'application/octet-stream',
+                    'tmp_name' => $fixture,
+                    'error' => UPLOAD_ERR_OK,
+                    'size' => filesize($fixture),
+                ]], 'file upload must retain only safe metadata and be forwarded once');
+
+                return hub_gateway_json(200, ['ok' => true]);
+            }
+        );
+        hub_test_assert($response['status'] === 200 && $calls === 1, 'one valid file upload must proxy exactly once');
+    } finally {
+        if (is_file($fixture)) {
+            unlink($fixture);
+        }
+    }
+});
+
+hub_test('image-tools gateway rejects invalid and oversized Base64 without proxying', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_image_tools_service($db);
+
+    foreach (['AAAA=', 'data:image/gif;base64,QUFBQQ==', "QUFB\x00QQ=="] as $source) {
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            ['operation' => 'upscale', 'base64_string' => $source],
+            [],
+            [],
+            static fn (): array => throw new RuntimeException('invalid Base64 must not proxy')
+        );
+        hub_test_assert($response['status'] === 400 && hub_test_image_tools_error($response) === 'invalid_base64', 'invalid Base64 must reject');
+    }
+
+    $encodedCap = 4 * (int)ceil((50 * 1024 * 1024) / 3);
+    $oversized = str_repeat('A', $encodedCap + 1);
+    try {
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            ['operation' => 'upscale', 'base64_string' => $oversized],
+            [],
+            [],
+            static fn (): array => throw new RuntimeException('oversized Base64 must not proxy')
+        );
+        hub_test_assert($response['status'] === 400 && hub_test_image_tools_error($response) === 'invalid_base64', 'Base64 above the decoded-source cap must reject');
+    } finally {
+        unset($oversized);
+    }
+});
+
+hub_test('image-tools gateway validates the configured backend and recognizes async operations', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_test_image_tools_service($db);
+    $source = base64_encode('backend fixture');
+    hub_service_settings_values($db, $service);
+    $db->prepare("UPDATE service_settings SET value = 'cuda ' WHERE service_id = :service_id AND key = 'IMAGE_TOOLS_DEFAULT_BACKEND'")
+        ->execute([':service_id' => (int)$service['id']]);
+
+    $invalidBackend = hub_test_image_tools_dispatch(
+        $db,
+        ['operation' => 'upscale', 'base64_string' => $source],
+        [],
+        [],
+        static fn (): array => throw new RuntimeException('invalid configured backend must not proxy')
+    );
+    hub_test_assert($invalidBackend['status'] === 400 && hub_test_image_tools_error($invalidBackend) === 'invalid_backend', 'configured default backend must validate exactly');
+
+    $db->prepare("UPDATE service_settings SET value = 'auto' WHERE service_id = :service_id AND key = 'IMAGE_TOOLS_DEFAULT_BACKEND'")
+        ->execute([':service_id' => (int)$service['id']]);
+    $task = hub_test_image_tools_dispatch(
+        $db,
+        ['operation' => 'upscale_task', 'base64_string' => $source],
+        [],
+        [],
+        static fn (): array => throw new RuntimeException('Task 2 must not dispatch async work')
+    );
+    hub_test_assert($task['status'] === 400 && hub_test_image_tools_error($task) === 'invalid_operation', 'validated upscale_task must retain the Task 2 routing placeholder');
+});
+
+hub_test('image-tools backend response header is canonical and rejects unsafe values', function (): void {
+    $valid = hub_proxy_allowed_response_headers(
+        "HTTP/1.1 200 OK\r\nX-3waAIHub-Model: realesrgan-x4plus\r\nX-3waAIHub-Backend: cuda\r\nX-3waAIHub-Device: cpu\r\nX-3waAIHub-Elapsed-Ms: 12\r\n",
+        'image/png'
+    );
+    hub_test_assert($valid === [
+        'Content-Type: image/png',
+        'X-Content-Type-Options: nosniff',
+        'X-3waAIHub-Model: realesrgan-x4plus',
+        'X-3waAIHub-Device: cpu',
+        'X-3waAIHub-Backend: cuda',
+        'X-3waAIHub-Elapsed-Ms: 12',
+    ], 'valid Backend must be canonical without changing Device behavior');
+
+    $invalid = hub_proxy_allowed_response_headers(
+        "HTTP/1.1 200 OK\r\nX-3waAIHub-Backend: CUDA\r\nX-3waAIHub-Backend: cpu\x00\r\n",
+        'image/png'
+    );
+    hub_test_assert(!in_array('X-3waAIHub-Backend: CUDA', $invalid, true) && !array_filter($invalid, static fn (string $header): bool => str_starts_with($header, 'X-3waAIHub-Backend:')), 'invalid Backend values and controls must not escape');
+});
+
 hub_test('image-tools Pack declares the L1 upscaling contract', function (): void {
     $pack = hub_get_pack('image-tools');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-tools pack missing or invalid');
