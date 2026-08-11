@@ -180,13 +180,23 @@ def _artifact_urls(result: Mapping[str, Any], base_url: str) -> dict[str, str]:
         raise AssertionError("missing task artifacts")
     urls: dict[str, str] = {}
     template = result.get("artifact_url_template")
+    expected_names = {
+        "upscaled_image": "upscaled_image.png",
+        "upscale_report": "upscale_report.json",
+    }
     for artifact in artifacts:
         if not isinstance(artifact, dict):
             continue
-        name = artifact.get("name") or artifact.get("path")
+        artifact_id = artifact.get("id")
+        name = artifact.get("name") or artifact.get("path") or expected_names.get(artifact.get("type"))
         url = artifact.get("url")
-        if not isinstance(url, str) and isinstance(template, str) and isinstance(artifact.get("id"), (int, str)):
-            url = template.replace("{artifact_id}", str(artifact["id"]))
+        if not isinstance(artifact_id, int) or isinstance(artifact_id, bool) or artifact_id < 1:
+            continue
+        if not isinstance(url, str) and isinstance(template, str):
+            url = template.replace("{artifact_id}", str(artifact_id))
+        if not isinstance(url, str):
+            separator = "&" if "?" in base_url else "?"
+            url = f"{base_url}{separator}mode=artifact&artifact_id={artifact_id}"
         if isinstance(name, str) and isinstance(url, str):
             urls[name] = urllib.parse.urljoin(base_url, url)
     if set(urls) != {"upscaled_image.png", "upscale_report.json"}:

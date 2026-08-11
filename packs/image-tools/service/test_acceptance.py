@@ -12,7 +12,7 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from acceptance import AcceptanceUnavailable, assert_health, assert_no_raw_base64, validate_async_artifacts, validate_sync_response
+from acceptance import AcceptanceUnavailable, _artifact_urls, assert_health, assert_no_raw_base64, validate_async_artifacts, validate_sync_response
 
 
 MODEL = "realesrgan-x4plus"
@@ -90,6 +90,20 @@ class AcceptanceTest(unittest.TestCase):
         }).encode()
         with self.assertRaises(AssertionError):
             validate_async_artifacts(payload, report, backend="cuda", model=MODEL, dimensions=(8, 12))
+
+    def test_async_artifact_ids_use_the_existing_gateway_template(self) -> None:
+        urls = _artifact_urls({
+            "result": {
+                "artifacts": [
+                    {"id": 7, "type": "upscaled_image", "mime_type": "image/png"},
+                    {"id": 8, "type": "upscale_report", "mime_type": "application/json"},
+                ]
+            }
+        }, "http://127.0.0.1:18131/api.php")
+        self.assertEqual({
+            "upscaled_image.png": "http://127.0.0.1:18131/api.php?mode=artifact&artifact_id=7",
+            "upscale_report.json": "http://127.0.0.1:18131/api.php?mode=artifact&artifact_id=8",
+        }, urls)
 
 
 if __name__ == "__main__":
