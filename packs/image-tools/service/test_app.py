@@ -157,6 +157,21 @@ class AppTest(unittest.TestCase):
         self.assertEqual("inference_failed", self.response_body(response)["error"])
         self.assertNotIn("private", response.body.decode())
 
+    def test_cli_stable_errors_are_allowlisted_and_malformed_output_is_hidden(self) -> None:
+        cases = [
+            ("{\"error\":\"model_load_failed\"}", "model_load_failed", 503),
+            ("{\"error\":\"model_not_present\"}", "model_not_present", 404),
+            ("{\"error\":\"backend_unavailable\"}", "backend_unavailable", 503),
+            ("{\"error\":\"private /models/path\"}", "inference_failed", 500),
+            ("not json", "inference_failed", 500),
+        ]
+        for stdout, code, status in cases:
+            with self.subTest(stdout=stdout), patch.object(self.app, "verify_ready", return_value={}), patch.object(self.app, "cuda_available", return_value=False), patch.object(self.app.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout=stdout, stderr="private stderr")):
+                response = asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", model="realesrgan-x4plus", backend="cpu"))
+            self.assertEqual(status, response.status_code)
+            self.assertEqual(code, self.response_body(response)["error"])
+            self.assertNotIn("private", response.body.decode())
+
 
 class ProvisionTest(unittest.TestCase):
     @classmethod

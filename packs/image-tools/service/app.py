@@ -20,6 +20,7 @@ from model_runtime import DEFAULT_MODEL_ROOT, ModelRuntimeError, verify_ready
 
 app = FastAPI(title="3waAIHub Image Tools")
 _INFERENCE_LOCK = threading.Lock()
+_CLI_ERROR_CODES = frozenset({"backend_unavailable", "model_not_present", "model_load_failed", "inference_failed"})
 
 
 def model_dir() -> Path:
@@ -65,6 +66,15 @@ def _report(stdout: str, *, model: str, backend: str, output: Path) -> dict[str,
         raise RuntimeError("inference_failed") from exc
 
 
+def _cli_error(stdout: str) -> str:
+    try:
+        payload = json.loads(stdout)
+        code = payload.get("error") if isinstance(payload, dict) and set(payload) == {"error"} else None
+        return code if isinstance(code, str) and code in _CLI_ERROR_CODES else "inference_failed"
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "inference_failed"
+
+
 def _run(source_bytes: bytes, *, model: str, backend: str) -> tuple[bytes, dict[str, object]]:
     selection = select_model(model)
     source = decode_image(source_bytes, operation="upscale")
@@ -80,6 +90,11 @@ def _run(source_bytes: bytes, *, model: str, backend: str) -> tuple[bytes, dict[
             argv.append("--fp32")
         result = subprocess.run(argv, shell=False, check=False, capture_output=True, text=True, timeout=900)
         if result.returncode != 0:
+            code = _cli_error(result.stdout)
+            if code in {"model_not_present", "model_load_failed"}:
+                raise ModelRuntimeError(code)
+            if code == "backend_unavailable":
+                raise ImageToolsError(code)
             raise RuntimeError("inference_failed")
         report = _report(result.stdout, model=model, backend=backend, output=output_path)
         return output_path.read_bytes(), report
