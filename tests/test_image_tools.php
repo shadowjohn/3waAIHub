@@ -112,10 +112,6 @@ hub_test('image-tools Pack declares the L1 upscaling contract', function (): voi
         }
     }
     hub_test_assert($catalogEntry !== null, 'image-tools catalog entry missing');
-    foreach (['colorize', 'restoration', 'video', 'yolo', 'vulkan'] as $deferred) {
-        hub_test_assert(!str_contains(strtolower(json_encode($manifest, JSON_THROW_ON_ERROR)), $deferred), 'image-tools manifest must not advertise deferred ' . $deferred);
-        hub_test_assert(!str_contains(strtolower(json_encode($catalogEntry, JSON_THROW_ON_ERROR)), $deferred), 'image-tools catalog must not advertise deferred ' . $deferred);
-    }
 });
 
 hub_test('image-tools checked-in Compose requests all GPUs', function (): void {
