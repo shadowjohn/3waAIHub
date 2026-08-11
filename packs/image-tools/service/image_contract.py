@@ -158,15 +158,16 @@ def build_upscale_argv(
     model: str,
     backend: str,
     model_dir: Path,
+    operation: str = "upscale",
 ) -> list[str]:
     source_path = _workspace_path(workspace, source, must_exist=True)
     output_path = _workspace_path(workspace, output, must_exist=False)
-    if not source_path.is_file() or backend not in {"cuda", "cpu"}:
+    if not source_path.is_file() or backend not in {"cuda", "cpu"} or operation not in {"upscale", "upscale_task"}:
         raise ImageToolsError("invalid_request")
     select_model(model)
     return [
         "python3", "/app/upscale_runner.py", "--input", str(source_path), "--output", str(output_path),
-        "--model", model, "--backend", backend, "--model-dir", str(model_dir),
+        "--model", model, "--backend", backend, "--model-dir", str(model_dir), "--operation", operation,
     ]
 
 

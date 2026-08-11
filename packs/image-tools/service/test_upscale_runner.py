@@ -4,6 +4,11 @@ import tempfile
 import unittest
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import numpy as np
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -11,6 +16,24 @@ from image_contract import ImageToolsError, build_upscale_argv, private_job_dire
 
 
 class UpscaleRunnerBoundaryTest(unittest.TestCase):
+    def test_cli_defaults_to_sync_and_passes_only_its_controlled_operation_to_decoder(self) -> None:
+        import upscale_runner
+        with patch.object(upscale_runner, "run_upscale", return_value={"model": "realesrgan-x4plus", "backend": "cpu", "width": 8, "height": 12, "elapsed_ms": 1}) as runner:
+            self.assertEqual(0, upscale_runner.main(["--input", "/workspace/source", "--output", "/workspace/output.png", "--model", "realesrgan-x4plus", "--backend", "cpu"]))
+        self.assertEqual("upscale", runner.call_args.kwargs["operation"])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "source"
+            output = workspace / "output.png"
+            source.write_bytes(b"source")
+            fake = SimpleNamespace(enhance=lambda _pixels, outscale: (np.zeros((12, 8, 3), dtype=np.uint8), None))
+            with patch.object(upscale_runner, "decode_image", return_value=Image.new("RGB", (2, 3))) as decoder, patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner, "_upsampler", return_value=fake):
+                upscale_runner.run_upscale(source=source, output=output, alias="realesrgan-x4plus", backend="cpu", model_dir=Path("/models"), operation="upscale_task")
+            decoder.assert_called_once_with(b"source", operation="upscale_task")
+            with Image.open(output) as rendered:
+                self.assertEqual((8, 12), rendered.size)
+
     def test_command_is_literal_argv_and_stays_inside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -26,7 +49,7 @@ class UpscaleRunnerBoundaryTest(unittest.TestCase):
             )
             self.assertEqual(argv, [
                 "python3", "/app/upscale_runner.py", "--input", str(source), "--output", str(workspace / "output.png"),
-                "--model", "realesrgan-x4plus", "--backend", "cpu", "--model-dir", "/models/image-tools/realesrgan",
+                "--model", "realesrgan-x4plus", "--backend", "cpu", "--model-dir", "/models/image-tools/realesrgan", "--operation", "upscale",
             ])
             with self.assertRaisesRegex(ImageToolsError, "^invalid_request$"):
                 build_upscale_argv(workspace=workspace, source=Path(temporary).parent / "outside", output=workspace / "output.png", model="realesrgan-x4plus", backend="cpu", model_dir=Path("/models"))

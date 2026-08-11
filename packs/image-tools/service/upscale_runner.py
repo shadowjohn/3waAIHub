@@ -36,7 +36,7 @@ def _cuda_available() -> bool:
         return False
 
 
-def run_upscale(*, source: Path, output: Path, alias: str, backend: str, model_dir: Path) -> dict[str, object]:
+def run_upscale(*, source: Path, output: Path, alias: str, backend: str, model_dir: Path, operation: str = "upscale") -> dict[str, object]:
     try:
         workspace = source.parent.resolve(strict=True)
         if output.parent.resolve(strict=True) != workspace:
@@ -47,7 +47,7 @@ def run_upscale(*, source: Path, output: Path, alias: str, backend: str, model_d
         raise ImageToolsError("invalid_request")
     selection = select_model(alias)
     effective = resolve_backend(backend, cuda_available=_cuda_available())
-    source_image = decode_image(source.read_bytes(), operation="upscale")
+    source_image = decode_image(source.read_bytes(), operation=operation)
     validate_output_pixels(source_image.width * source_image.height, selection.scale)
     model_path = model_path_for_alias(alias, model_dir)
     started = time.perf_counter()
@@ -78,12 +78,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", required=True)
     parser.add_argument("--backend", choices=["cpu", "cuda"], required=True)
     parser.add_argument("--model-dir", default=str(DEFAULT_MODEL_ROOT))
+    parser.add_argument("--operation", choices=["upscale", "upscale_task"], default="upscale")
     parser.add_argument("--fp32", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.fp32 and args.backend != "cpu":
             raise ImageToolsError("invalid_request")
-        report = run_upscale(source=Path(args.input), output=Path(args.output), alias=args.model, backend=args.backend, model_dir=Path(args.model_dir))
+        report = run_upscale(source=Path(args.input), output=Path(args.output), alias=args.model, backend=args.backend, model_dir=Path(args.model_dir), operation=args.operation)
         print(json.dumps(report, separators=(",", ":"), sort_keys=True))
         return 0
     except (ImageToolsError, ModelRuntimeError) as exc:

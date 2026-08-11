@@ -134,6 +134,27 @@ class ImageToolsJobTests(unittest.TestCase):
             with patch.object(jobs, "MAX_OUTPUT_BYTES", 1), self.assertRaisesRegex(jobs.JobError, "inference_failed"):
                 jobs.run_job(request_path=request, source_path=source, output_dir=output_dir, backend="cpu", invoke=valid_png)
 
+    def test_async_job_uses_the_async_decoder_limit_only(self) -> None:
+        import jobs
+        report = {"model": "realesr-animevideov3-x2", "backend": "cpu", "width": 5000, "height": 8000, "elapsed_ms": 1}
+        with self.fixture(request={"model": "realesr-animevideov3-x2", "backend": "cpu"}) as (request, source, output_dir):
+            source.write_bytes(png_bytes((2500, 4000)))
+            calls: list[list[str]] = []
+
+            def invoke(argv: list[str]) -> str:
+                calls.append(argv)
+                Path(argv[argv.index("--output") + 1]).touch()
+                return json.dumps(report)
+
+            with patch.object(jobs, "_validated_output", return_value=(b"png", report)):
+                jobs.run_job(request_path=request, source_path=source, output_dir=output_dir, backend="cpu", invoke=invoke)
+            self.assertEqual("upscale_task", calls[0][calls[0].index("--operation") + 1])
+
+        with self.fixture(request={"model": "realesr-animevideov3-x2", "backend": "cpu"}) as (request, source, output_dir):
+            source.write_bytes(png_bytes((2500, 4001)))
+            with self.assertRaisesRegex(jobs.JobError, "invalid_image"):
+                jobs.run_job(request_path=request, source_path=source, output_dir=output_dir, backend="cpu", invoke=lambda _: (_ for _ in ()).throw(AssertionError("CLI must not run")))
+
     def test_image_build_includes_and_checks_the_async_runner(self) -> None:
         dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("jobs.py", dockerfile)

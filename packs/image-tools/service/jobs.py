@@ -152,7 +152,7 @@ def run_job(*, request_path: Path, source_path: Path, output_dir: Path, backend:
             staged_output = workspace / "output.png"
             staged_source.write_bytes(source_bytes)
             staged_source.chmod(0o600)
-            argv = build_upscale_argv(workspace=workspace, source=staged_source, output=staged_output, model=model, backend=stored_backend, model_dir=model_dir)
+            argv = build_upscale_argv(workspace=workspace, source=staged_source, output=staged_output, model=model, backend=stored_backend, model_dir=model_dir, operation="upscale_task")
             if stored_backend == "cpu":
                 argv.append("--fp32")
             stdout = invoke(argv)
