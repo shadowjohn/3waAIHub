@@ -124,7 +124,11 @@ class ModelRuntimeTest(unittest.TestCase):
         self.assertLess(dockerfile.index(torch_install), dockerfile.index(source_install))
         self.assertIn("COPY Dockerfile image_contract.py", dockerfile)
         self.assertIn("libgl1 libglib2.0-0", dockerfile)
-        self.assertIn("python3 -c 'import cv2'", dockerfile)
+        self.assertIn("from torchvision.transforms.functional_tensor import rgb_to_grayscale", dockerfile)
+        self.assertIn("from torchvision.transforms.functional import rgb_to_grayscale", dockerfile)
+        self.assertIn("python3 -c 'import cv2; import realesrgan'", dockerfile)
+        self.assertLess(dockerfile.index(source_install), dockerfile.index("functional_tensor"))
+        self.assertLess(dockerfile.index("functional_tensor"), dockerfile.index("import cv2; import realesrgan"))
         self.assertNotIn("pip install --upgrade pip setuptools wheel", dockerfile)
         for requirement in (
             "basicsr==1.4.2",
