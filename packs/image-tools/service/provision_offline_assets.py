@@ -16,6 +16,7 @@ from model_runtime import DEFAULT_MODEL_ROOT, MODEL_URLS, REAL_ESRGAN_COMMIT, RE
 
 
 ASSETS = MODEL_URLS
+MAX_ASSET_BYTES = 128 * 1024 * 1024
 
 
 class ProvisionError(RuntimeError):
@@ -44,17 +45,35 @@ def _download(url: str, destination: Path) -> None:
         raise ProvisionError("unexpected asset")
     opener = urllib.request.build_opener(_HttpsRedirect())
     try:
-        with opener.open(url, timeout=60) as response, destination.open("xb") as output:
+        with opener.open(url, timeout=60) as response:
             final = urllib.parse.urlsplit(response.geturl())
             name = re.search(r'filename="?([^";]+)', response.headers.get("Content-Disposition", ""))
             if final.scheme != "https" or final.hostname not in {"github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"} or name is None or name.group(1) != destination.name:
                 raise ProvisionError("unexpected redirect")
-            shutil.copyfileobj(response, output)
-            output.flush()
-            os.fsync(output.fileno())
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    declared_size = int(content_length)
+                    if declared_size < 0:
+                        raise ValueError
+                except ValueError as exc:
+                    raise ProvisionError("invalid content length") from exc
+                if declared_size > MAX_ASSET_BYTES:
+                    raise ProvisionError("asset_too_large")
+            total = 0
+            with destination.open("xb") as output:
+                while chunk := response.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > MAX_ASSET_BYTES:
+                        raise ProvisionError("asset_too_large")
+                    output.write(chunk)
+                output.flush()
+                os.fsync(output.fileno())
     except ProvisionError:
+        destination.unlink(missing_ok=True)
         raise
     except OSError as exc:
+        destination.unlink(missing_ok=True)
         raise ProvisionError("download_failed") from exc
 
 
@@ -112,10 +131,13 @@ def provision(*, model_root: Path = DEFAULT_MODEL_ROOT, fetcher: Callable[[str, 
         for name, url in ASSETS.items():
             destination = stage / name
             fetch(url, destination)
-            if destination.is_symlink() or not destination.is_file() or destination.name != name or destination.stat().st_size < 1:
+            size = destination.stat().st_size if destination.exists() else 0
+            if destination.is_symlink() or not destination.is_file() or destination.name != name or size < 1:
                 raise ProvisionError("invalid downloaded asset")
+            if size > MAX_ASSET_BYTES:
+                raise ProvisionError("asset_too_large")
             destination.chmod(0o644)
-            files.append({"path": name, "size": destination.stat().st_size, "sha256": _sha256(destination), "url": url})
+            files.append({"path": name, "size": size, "sha256": _sha256(destination), "url": url})
         payload = _write_marker(stage, files)
         _fsync_dir(stage)
         _activate(stage, target)

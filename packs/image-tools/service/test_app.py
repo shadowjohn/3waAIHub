@@ -198,6 +198,45 @@ class ProvisionTest(unittest.TestCase):
             self.assertEqual(name, Path(url).name)
             self.assertTrue(url.startswith("https://github.com/xinntao/Real-ESRGAN/releases/download/"))
 
+    def test_download_and_staging_reject_oversized_assets(self) -> None:
+        name, url = next(iter(self.provisioner.ASSETS.items()))
+
+        class Response:
+            def __init__(self, payload: bytes, length: str) -> None:
+                self.payload = payload
+                self.headers = {"Content-Disposition": f'attachment; filename="{name}"', "Content-Length": length}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args) -> None:
+                return None
+
+            def geturl(self) -> str:
+                return "https://release-assets.githubusercontent.com/approved/" + name
+
+            def read(self, _size: int) -> bytes:
+                payload, self.payload = self.payload, b""
+                return payload
+
+        with tempfile.TemporaryDirectory() as temporary, patch.object(self.provisioner, "MAX_ASSET_BYTES", 4):
+            destination = Path(temporary) / name
+            opener = SimpleNamespace(open=lambda *_args, **_kwargs: Response(b"12345", "5"))
+            with patch.object(self.provisioner.urllib.request, "build_opener", return_value=opener), self.assertRaisesRegex(self.provisioner.ProvisionError, "asset_too_large"):
+                self.provisioner._download(url, destination)
+            self.assertFalse(destination.exists())
+
+            opener = SimpleNamespace(open=lambda *_args, **_kwargs: Response(b"12345", "4"))
+            with patch.object(self.provisioner.urllib.request, "build_opener", return_value=opener), self.assertRaisesRegex(self.provisioner.ProvisionError, "asset_too_large"):
+                self.provisioner._download(url, destination)
+            self.assertFalse(destination.exists())
+
+            target = Path(temporary) / "realesrgan"
+            with self.assertRaisesRegex(self.provisioner.ProvisionError, "asset_too_large"):
+                self.provisioner.provision(model_root=target, fetcher=lambda _url, path: path.write_bytes(b"12345"))
+            self.assertFalse(target.exists())
+            self.assertFalse(list(target.parent.glob(target.name + ".stage-*")))
+
 
 class RunnerTest(unittest.TestCase):
     def test_anime_video_aliases_keep_native_x4_runner_and_select_output_scale(self) -> None:
