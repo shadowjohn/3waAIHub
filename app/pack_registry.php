@@ -225,9 +225,10 @@ function hub_image_tools_effective_async_backend(PDO $db, string $requestedBacke
         $pack = hub_get_pack('image-tools');
         $contract = $pack === null ? null : hub_pack_async_job_contract((array)$pack['manifest'], 'upscale_image_gpu');
         $probe = ($gpuProbe ?? 'hub_runtime_gpu_probe')();
+        $safetyMargin = max(0, (int)hub_get_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB'));
         $gpuReady = is_array($contract)
             && !isset($probe['probe_error'])
-            && hub_runtime_gpu_preflight_result([], (int)($contract['runner']['required_vram_mb'] ?? 0), 0, $probe)['ok'] === true;
+            && hub_runtime_gpu_preflight_result([], (int)($contract['runner']['required_vram_mb'] ?? 0), $safetyMargin, $probe)['ok'] === true;
     }
     if ($gpuReady) {
         return 'cuda';

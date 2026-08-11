@@ -329,6 +329,16 @@ hub_test('image-tools async routing fixes the selected backend and stages Base64
         hub_test_assert((hub_revalidate_pack_job_async_route($db, $gpu + ['task_type' => 'pack_job'])['job'] ?? '') === 'upscale_image_gpu', 'stored GPU route must revalidate as the fixed GPU job without re-probing');
         hub_test_assert((hub_revalidate_pack_job_async_route($db, $cpu + ['task_type' => 'pack_job'])['job'] ?? '') === 'upscale_image_cpu', 'stored CPU route must revalidate as the fixed CPU job');
 
+        hub_set_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB', '256');
+        $marginBoundaryProbe = static fn (): array => ['free_vram_mb' => 4096, 'processes' => [], 'process_details' => []];
+        hub_test_assert((hub_resolve_image_tools_operation_route($db, 'upscale_task', 'auto', $marginBoundaryProbe)['job'] ?? '') === 'upscale_image_cpu', 'auto must honor the configured GPU VRAM safety margin');
+        try {
+            hub_resolve_image_tools_operation_route($db, 'upscale_task', 'cuda', $marginBoundaryProbe);
+            throw new RuntimeException('CUDA at the bare model VRAM floor must not bypass the configured margin');
+        } catch (RuntimeException $error) {
+            hub_test_assert($error->getMessage() === 'backend_unavailable', 'explicit CUDA below its safety margin must return backend_unavailable');
+        }
+
         $db->prepare("UPDATE service_settings SET value = '0' WHERE service_id = :service_id AND key = 'IMAGE_TOOLS_USE_GPU'")
             ->execute([':service_id' => (int)$service['id']]);
         try {
