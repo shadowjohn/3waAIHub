@@ -72,7 +72,7 @@ Assert the two operation descriptors, five model aliases, three backend values, 
 Run:
 
 ```bash
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 ```
 
 Expected: failure because the Pack does not exist.
@@ -99,7 +99,7 @@ Register the Pack in `packs/catalog.json`. Keep `runtime_ready: false` and `runt
 Run:
 
 ```bash
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 php -r 'require "app/bootstrap.php"; $p=hub_get_pack("image-tools"); echo $p["manifest"]["default_mode"], PHP_EOL;'
 ```
 
@@ -135,7 +135,7 @@ Exercise `hub_gateway_dispatch()` with a stub requester and temporary fixtures. 
 Run:
 
 ```bash
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 ```
 
 Expected: failures for the missing Pack-specific request path and `Backend` metadata allowlist.
@@ -165,7 +165,7 @@ Scope the normalized `$_POST`/`$_FILES` around the proxy or async handoff and re
 Run:
 
 ```bash
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 php scripts/run_tests.php --suite=control-plane
 ```
 
@@ -204,7 +204,7 @@ Through `POST mode=image-tools&operation=upscale_task`, assert that a Base64 sou
 Run:
 
 ```bash
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 ```
 
 Expected: no image-tools operation resolver exists and task submission is not intercepted.
@@ -230,7 +230,7 @@ In the `hub_gateway_dispatch()` Pack-specific operation block, normalize once, d
 Run:
 
 ```bash
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 php scripts/run_tests.php --suite=full
 ```
 
@@ -348,7 +348,7 @@ Run:
 
 ```bash
 python3 -m unittest -v packs/image-tools/service/test_app.py
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 docker build -t 3waaihub-image-tools:test packs/image-tools/service
 ```
 
@@ -385,7 +385,7 @@ Run:
 
 ```bash
 python3 -m unittest -v packs/image-tools/service/test_jobs.py
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 ```
 
 Expected: `jobs.py` and its output artifact declaration are missing.
@@ -402,7 +402,7 @@ Run:
 
 ```bash
 python3 -m unittest -v packs/image-tools/service/test_jobs.py
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 php scripts/run_tests.php --suite=full
 ```
 
@@ -436,7 +436,7 @@ Assert a successful PNG response produces a preview/download named `upscaled-ima
 Run:
 
 ```bash
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 ```
 
 Expected: the mode, docs, and Playground profile are absent.
@@ -454,7 +454,7 @@ Write `docs/operations/image-tools.md` with: checksum/offline staging, Docker an
 Run:
 
 ```bash
-php scripts/run_tests.php --file=tests/test_image_tools.php
+php scripts/run_tests.php
 php scripts/run_tests.php --suite=control-plane
 ```
 
@@ -513,7 +513,8 @@ python3 -m unittest -v \
   packs/image-tools/service/test_model_runtime.py \
   packs/image-tools/service/test_upscale_runner.py \
   packs/image-tools/service/test_app.py \
-  packs/image-tools/service/test_jobs.py
+  packs/image-tools/service/test_jobs.py \
+  packs/image-tools/service/test_acceptance.py
 docker build -t 3waaihub-image-tools:test packs/image-tools/service
 git diff --check
 ```

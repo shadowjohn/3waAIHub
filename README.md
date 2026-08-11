@@ -1195,6 +1195,53 @@ L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；�
 - 可用 `output=cutout` 取得透明 PNG；背景合成與邊緣參數仍由 Pack contract 控制。
 - 3wa 已完成從 `cluster_api.php` 上傳圖片、CUDA 推論、透明 PNG relay 與下載驗收。
 
+### image-tools Runtime Level
+
+`image-tools` 是 Real-ESRGAN 單張圖片放大 Pack；目前為 `L3-offline-assets`／`runtime_ready=true`，由已 staged 的離線模型 marker 驗證。
+
+- 對外 mode 是 `image-tools`；operation 僅有同步 `upscale` 和非同步 `upscale_task`。
+- 來源只能二選一：multipart 的 `image` 或 `base64_string`。實際解碼後只接受 JPEG/JPG, PNG, WEBP, BMP；副檔名與 client MIME 不被信任。
+- 限制為 decoded source 50 MiB、單邊 8,192 px、同步 4,000,000 pixels、非同步 10,000,000 pixels、輸出 64,000,000 pixels，Gateway body 70 MiB。
+- `model` 僅接受 `realesrgan-x4plus`、`realesrgan-x4plus-anime`、`realesr-animevideov3-x2`、`realesr-animevideov3-x3`、`realesr-animevideov3-x4`；`backend` 僅接受 `auto|cuda|cpu`。明示 `cuda` 不會偷偷回退 CPU。
+- 穩定錯誤碼：`file_required, source_ambiguous, invalid_base64, unsupported_media_type, invalid_image, invalid_operation, invalid_model, invalid_backend, invalid_request, backend_unavailable, model_not_present, model_load_failed, payload_too_large, runtime_not_ready, inference_failed`。
+
+同步 multipart：
+
+```bash
+curl -X POST -H "Authorization: Bearer <TOKEN>" \
+  -H "Accept: image/png" \
+  -F 'operation=upscale' -F 'image=@sample.png' \
+  -F 'model=realesrgan-x4plus' -F 'backend=auto' \
+  '<HUB_BASE_URL>/api.php?mode=image-tools&operation=upscale' \
+  --output upscaled-image.png
+```
+
+Base64 來源仍使用同一個 operation（請勿同時傳 `image`）：
+
+```bash
+BASE64="$(base64 -w 0 sample.png)"
+curl -X POST -H "Authorization: Bearer <TOKEN>" \
+  -F 'operation=upscale' -F "base64_string=${BASE64}" \
+  -F 'model=realesrgan-x4plus' -F 'backend=cpu' \
+  '<HUB_BASE_URL>/api.php?mode=image-tools&operation=upscale' \
+  --output upscaled-image.png
+```
+
+非同步提交／輪詢／下載：
+
+```bash
+SUBMIT="$(curl -sS -X POST -H "Authorization: Bearer <TOKEN>" \
+  -F 'operation=upscale_task' -F 'image=@sample.png' -F 'backend=auto' \
+  '<HUB_BASE_URL>/api.php?mode=image-tools&operation=upscale_task')"
+TASK_ID="$(printf '%s' "$SUBMIT" | php -r '$v=json_decode(stream_get_contents(STDIN), true); echo $v["task_id"] ?? "";')"
+curl -sS -H "Authorization: Bearer <TOKEN>" "<HUB_BASE_URL>/api.php?mode=task_status&task_id=${TASK_ID}"
+curl -sS -H "Authorization: Bearer <TOKEN>" "<HUB_BASE_URL>/api.php?mode=task_result&task_id=${TASK_ID}"
+# Pick result.artifacts[].id for upscaled_image.png, then:
+curl -sS -H "Authorization: Bearer <TOKEN>" "<HUB_BASE_URL>/api.php?mode=artifact&artifact_id=<ARTIFACT_ID>" --output upscaled-image.png
+```
+
+部署、離線模型 marker、CPU/CUDA preflight、取消與 retention 請見 [`docs/operations/image-tools.md`](docs/operations/image-tools.md)。
+
 ### rag-nemotron Runtime Level
 
 `rag-nemotron` 目前維持 L3 `adapter`，提供 `operation=embed` 與 `operation=rerank` 的文字 RAG contract。`real_inference=1` 時，adapter 只會轉呼叫已配置且 ready 的 Nemotron Embed / Rerank backend；backend 不可用時會回明確錯誤，不會把結果偽裝成 mock。

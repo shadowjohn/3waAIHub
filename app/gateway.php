@@ -244,6 +244,11 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     }
 
     $timeoutSec = hub_service_gateway_timeout_sec($service);
+    if ($mode === 'image-tools' && (string)($service['pack_id'] ?? '') === 'image-tools') {
+        $response = hub_gateway_dispatch_image_tools($db, $service, $timeoutSec, $requester, $internalRequest, $authContext);
+
+        return hub_gateway_finish($db, $service, $mode, $response, $started, $requestId, $authContext, $requestContext);
+    }
     $prepared = [];
     if ($requester === null || (string)($service['pack_id'] ?? '') === 'yolo-serving') {
         $prepared = hub_gateway_prepare_service_request($db, $service, $authContext, $rawBody);
@@ -601,6 +606,236 @@ function hub_gateway_prepare_service_request(PDO $db, array $service, array $aut
         'yolo-serving' => hub_prepare_yolo_serving_payload($db, $service),
         default => [],
     };
+}
+
+function hub_gateway_dispatch_image_tools(PDO $db, array $service, int $timeoutSec, ?callable $requester, array $internalRequest, array $authContext): array
+{
+    $prepared = hub_prepare_image_tools_payload($db, $service, $internalRequest);
+    if (isset($prepared['response'])) {
+        return $prepared['response'];
+    }
+
+    try {
+        if ($prepared['operation'] === 'upscale_task') {
+            try {
+                $route = hub_resolve_image_tools_operation_route($db, 'upscale_task', (string)$prepared['post']['backend']);
+            } catch (RuntimeException $error) {
+                $code = $error->getMessage() === 'backend_unavailable'
+                    ? 'backend_unavailable'
+                    : (in_array($error->getMessage(), ['pack_not_installed', 'pack_runtime_not_ready', 'pack_service_disabled', 'pack_version_unavailable'], true) ? $error->getMessage() : 'pack_not_installed');
+
+                return hub_gateway_error(503, $code, $code);
+            }
+            $originalPost = $_POST;
+            $originalFiles = $_FILES;
+            $_POST = $prepared['post'];
+            $_FILES = $prepared['files'];
+            unset($_POST['operation']);
+            try {
+                return hub_api_pack_job_task_submit($db, $route, $authContext);
+            } finally {
+                $_POST = $originalPost;
+                $_FILES = $originalFiles;
+            }
+        }
+
+        $originalPost = $_POST;
+        $originalFiles = $_FILES;
+        $_POST = $prepared['post'];
+        $_FILES = $prepared['files'];
+        try {
+            $requester ??= static fn (array $service, int $timeoutSec): array => hub_proxy_request(
+                (string)$service['internal_url'],
+                $timeoutSec,
+                null,
+                null,
+                'POST'
+            );
+
+            return $requester($service, $timeoutSec);
+        } finally {
+            $_POST = $originalPost;
+            $_FILES = $originalFiles;
+        }
+    } finally {
+        foreach ($prepared['temporary_files'] as $path) {
+            if (is_file($path)) {
+                @unlink($path);
+            }
+        }
+    }
+}
+
+function hub_prepare_image_tools_payload(PDO $db, array $service, array $internalRequest): array
+{
+    $query = array_key_exists('query', $internalRequest) ? $internalRequest['query'] : $_GET;
+    $post = array_key_exists('post', $internalRequest) ? $internalRequest['post'] : $_POST;
+    if (!is_array($query) || !is_array($post)) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+
+    $queryValues = [];
+    foreach ($query as $key => $value) {
+        if (!is_string($key) || !in_array($key, ['mode', 'operation', 'backend', 'model'], true) || !is_scalar($value)) {
+            return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+        }
+        $value = (string)$value;
+        if (strlen($value) > 64 || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+            return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+        }
+        $queryValues[$key] = $value;
+    }
+    if (isset($queryValues['mode']) && $queryValues['mode'] !== 'image-tools') {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+
+    $formValues = [];
+    foreach ($post as $key => $value) {
+        if (!is_string($key) || !in_array($key, ['operation', 'backend', 'model', 'base64_string'], true) || !is_scalar($value)) {
+            return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+        }
+        $value = (string)$value;
+        if ($key === 'base64_string') {
+            if (strlen($value) > 70 * 1024 * 1024) {
+                return ['response' => hub_gateway_error(400, 'invalid_base64', 'image Base64 is invalid')];
+            }
+        } elseif (strlen($value) > 64 || preg_match('/[\x00-\x1F\x7F]/', $value) === 1) {
+            return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+        }
+        $formValues[$key] = $value;
+    }
+
+    $values = [];
+    foreach (['operation', 'backend', 'model'] as $key) {
+        if (isset($queryValues[$key], $formValues[$key]) && $queryValues[$key] !== $formValues[$key]) {
+            return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+        }
+        $values[$key] = $formValues[$key] ?? $queryValues[$key] ?? null;
+    }
+    if (!in_array($values['operation'], ['upscale', 'upscale_task'], true)) {
+        return ['response' => hub_gateway_error(400, 'invalid_operation', 'image-tools operation is invalid')];
+    }
+    if ($values['backend'] === null) {
+        $values['backend'] = hub_service_settings_values($db, $service)['IMAGE_TOOLS_DEFAULT_BACKEND'] ?? null;
+    }
+    if (!in_array($values['backend'], ['auto', 'cuda', 'cpu'], true)) {
+        return ['response' => hub_gateway_error(400, 'invalid_backend', 'image-tools backend is invalid')];
+    }
+    if ($values['model'] === null) {
+        $values['model'] = 'realesrgan-x4plus';
+    }
+    if (!is_string($values['model']) || strlen($values['model']) > 64 || preg_match('/\A[\x20-\x7E]+\z/D', $values['model']) !== 1 || !in_array($values['model'], [
+        'realesrgan-x4plus',
+        'realesrgan-x4plus-anime',
+        'realesr-animevideov3-x2',
+        'realesr-animevideov3-x3',
+        'realesr-animevideov3-x4',
+    ], true)) {
+        return ['response' => hub_gateway_error(400, 'invalid_model', 'image-tools model is invalid')];
+    }
+
+    $upload = hub_image_tools_upload_record($_FILES);
+    if (isset($upload['response'])) {
+        return $upload;
+    }
+    $hasBase64 = array_key_exists('base64_string', $formValues);
+    if (($upload['file'] !== null) === $hasBase64) {
+        return ['response' => hub_gateway_error(400, $hasBase64 ? 'source_ambiguous' : 'file_required', $hasBase64 ? 'provide exactly one image source' : 'image source is required')];
+    }
+
+    $temporaryFiles = [];
+    if ($hasBase64) {
+        $staged = hub_image_tools_stage_base64((string)$formValues['base64_string']);
+        if (isset($staged['response'])) {
+            return $staged;
+        }
+        $upload['file'] = $staged['file'];
+        $temporaryFiles[] = $staged['file']['tmp_name'];
+    }
+
+    return [
+        'operation' => $values['operation'],
+        'post' => ['operation' => $values['operation'], 'backend' => $values['backend'], 'model' => $values['model']],
+        'files' => ['image' => $upload['file']],
+        'temporary_files' => $temporaryFiles,
+    ];
+}
+
+function hub_image_tools_upload_record(array $files): array
+{
+    foreach ($files as $key => $file) {
+        if ($key !== 'image' || !is_array($file) || array_filter($file, 'is_array') !== []) {
+            return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+        }
+    }
+    $file = $files['image'] ?? null;
+    if ($file === null) {
+        return ['file' => null];
+    }
+    if (!is_int($file['error'] ?? null)) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+    if ($file['error'] === UPLOAD_ERR_NO_FILE) {
+        return ['file' => null];
+    }
+    if ($file['error'] !== UPLOAD_ERR_OK || !is_string($file['name'] ?? null) || !is_string($file['tmp_name'] ?? null)) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+    $name = $file['name'];
+    $path = $file['tmp_name'];
+    if ($name === '' || strlen($name) > 255 || preg_match('/[\x00-\x1F\x7F\\\\\/:]/', $name) === 1 || in_array($name, ['.', '..'], true) || !is_file($path)) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+    $size = filesize($path);
+    if ($size === false) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+
+    return ['file' => [
+        'name' => $name,
+        'type' => 'application/octet-stream',
+        'tmp_name' => $path,
+        'error' => UPLOAD_ERR_OK,
+        'size' => $size,
+    ]];
+}
+
+function hub_image_tools_stage_base64(string $source): array
+{
+    if (str_starts_with($source, 'data:')) {
+        if (preg_match('/\Adata:image\/(?:jpeg|png|webp|bmp);base64,/D', $source, $matches) !== 1) {
+            return ['response' => hub_gateway_error(400, 'invalid_base64', 'image Base64 is invalid')];
+        }
+        $source = substr($source, strlen($matches[0]));
+    }
+    if ($source === '' || preg_match('/\A[A-Za-z0-9+\/=\x09-\x0D\x20]+\z/D', $source) !== 1) {
+        return ['response' => hub_gateway_error(400, 'invalid_base64', 'image Base64 is invalid')];
+    }
+    $source = preg_replace('/[\x09-\x0D\x20]+/', '', $source) ?? '';
+    $maxEncoded = 4 * (int)ceil((50 * 1024 * 1024) / 3);
+    if (strlen($source) > $maxEncoded || preg_match('/\A(?:[A-Za-z0-9+\/]{4})*(?:[A-Za-z0-9+\/]{2}==|[A-Za-z0-9+\/]{3}=)?\z/D', $source) !== 1) {
+        return ['response' => hub_gateway_error(400, 'invalid_base64', 'image Base64 is invalid')];
+    }
+    $decoded = base64_decode($source, true);
+    if ($decoded === false || strlen($decoded) > 50 * 1024 * 1024) {
+        return ['response' => hub_gateway_error(400, 'invalid_base64', 'image Base64 is invalid')];
+    }
+    $path = tempnam(sys_get_temp_dir(), '3waaihub_image_tools_');
+    $length = strlen($decoded);
+    if ($path === false || !chmod($path, 0600) || file_put_contents($path, $decoded, LOCK_EX) !== $length) {
+        if ($path !== false && is_file($path)) {
+            @unlink($path);
+        }
+        return ['response' => hub_gateway_error(500, 'proxy_error', 'image source staging failed')];
+    }
+
+    return ['file' => [
+        'name' => 'source.bin',
+        'type' => 'application/octet-stream',
+        'tmp_name' => $path,
+        'error' => UPLOAD_ERR_OK,
+        'size' => $length,
+    ]];
 }
 
 function hub_dispatch_internal_task_service(PDO $db, array $service, array $authContext = []): array
@@ -2642,7 +2877,7 @@ function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentT
         'X-Content-Type-Options: nosniff',
     ];
     $normalized = str_replace("\r\n", "\n", $rawHeaders);
-    $blocks = preg_split('/\n\n+/', trim($normalized)) ?: [];
+    $blocks = preg_split('/\n\n+/', trim($normalized, "\r\n")) ?: [];
     $final = '';
     foreach (array_reverse($blocks) as $block) {
         if (preg_match('/^HTTP\/\S+\s+\d{3}(?:\s|$)/', $block) === 1) {
@@ -2654,12 +2889,14 @@ function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentT
     $canonical = [
         'x-3waaihub-model' => 'X-3waAIHub-Model',
         'x-3waaihub-device' => 'X-3waAIHub-Device',
+        'x-3waaihub-backend' => 'X-3waAIHub-Backend',
         'x-3waaihub-elapsed-ms' => 'X-3waAIHub-Elapsed-Ms',
         'x-3waaihub-width' => 'X-3waAIHub-Width',
         'x-3waaihub-height' => 'X-3waAIHub-Height',
         'cache-control' => 'Cache-Control',
     ];
     $accepted = [];
+    $rejected = [];
     foreach (preg_split('/\n/', $final) ?: [] as $line) {
         if (!str_contains($line, ':')) {
             continue;
@@ -2674,12 +2911,15 @@ function hub_proxy_allowed_response_headers(string $rawHeaders, string $contentT
             $valid = $value === 'private, no-store';
         } elseif ($name === 'x-3waaihub-model') {
             $valid = $value !== '' && strlen($value) <= 200 && preg_match('/[\x00-\x1F\x7F]/', $value) !== 1;
-        } elseif ($name === 'x-3waaihub-device') {
+        } elseif (in_array($name, ['x-3waaihub-device', 'x-3waaihub-backend'], true)) {
             $valid = in_array($value, ['cuda', 'cpu'], true);
         } else {
             $valid = $value !== '' && strlen($value) <= 20 && ctype_digit($value);
         }
-        if ($valid) {
+        if (!$valid || (isset($accepted[$name]) && $accepted[$name] !== $value)) {
+            $rejected[$name] = true;
+            unset($accepted[$name]);
+        } elseif (!isset($rejected[$name])) {
             $accepted[$name] = $value;
         }
     }
@@ -2828,6 +3068,7 @@ function hub_gateway_safe_response_headers(array $headers): array
         'x-3waaihub-request-id' => 'X-3waAIHub-Request-Id',
         'x-3waaihub-model' => 'X-3waAIHub-Model',
         'x-3waaihub-device' => 'X-3waAIHub-Device',
+        'x-3waaihub-backend' => 'X-3waAIHub-Backend',
         'x-3waaihub-elapsed-ms' => 'X-3waAIHub-Elapsed-Ms',
         'x-3waaihub-width' => 'X-3waAIHub-Width',
         'x-3waaihub-height' => 'X-3waAIHub-Height',
@@ -2854,6 +3095,7 @@ function hub_gateway_safe_response_headers(array $headers): array
             'x-3waaihub-request-id' => preg_match('/\A[A-Za-z0-9_-]{1,128}\z/D', $value) === 1,
             'x-3waaihub-model' => preg_match('/\A[\x20-\x7E]{1,200}\z/D', $value) === 1,
             'x-3waaihub-device' => in_array($value, ['cuda', 'cpu'], true),
+            'x-3waaihub-backend' => in_array($value, ['cuda', 'cpu'], true),
             default => false,
         };
         if ($valid) {

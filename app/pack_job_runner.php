@@ -1700,8 +1700,20 @@ function hub_pack_job_runner_arguments(
         'network_profile' => $runner['network_profile'] ?? 'isolated',
     ] + ($config === null ? [] : ['config' => $config])
         + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts])
+        + (!isset($runner['workspace_user']) ? [] : ['workspace_user' => $runner['workspace_user']])
         + ($voiceProfileMount === null ? [] : ['voice_profile_mount' => $voiceProfileMount])
         + ($facebookProfileMount === null ? [] : ['facebook_profile_mount' => $facebookProfileMount]);
+}
+
+function hub_pack_job_workspace_owner_identity(string $output): string
+{
+    $stat = lstat($output);
+    if (!is_array($stat) || ((int)$stat['mode'] & 0170000) !== 0040000
+        || (int)($stat['uid'] ?? 0) < 1 || (int)($stat['gid'] ?? 0) < 1) {
+        throw new RuntimeException('workspace_unavailable');
+    }
+
+    return (int)$stat['uid'] . ':' . (int)$stat['gid'];
 }
 
 function hub_pack_job_default_runner_command(array $context): array
@@ -1742,6 +1754,10 @@ function hub_pack_job_default_runner_command(array $context): array
         default => 'none',
     };
     $command = ['docker', 'run', '--pull=never', '--network', $network];
+    if (($runner['workspace_user'] ?? null) === 'owner') {
+        $command[] = '--user';
+        $command[] = hub_pack_job_workspace_owner_identity($output);
+    }
     if (($runner['network_profile'] ?? 'isolated') === 'public_egress') {
         $command[] = '--cap-add';
         $command[] = 'NET_ADMIN';

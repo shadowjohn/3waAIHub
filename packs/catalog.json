@@ -56,6 +56,15 @@
       "featured": true
     },
     {
+      "id": "image-tools",
+      "name": "Real-ESRGAN Image Tools",
+      "version": "0.1.0",
+      "category": "vision",
+      "description": "Real-ESRGAN image upscaling service.",
+      "path": "packs/image-tools",
+      "featured": true
+    },
+    {
       "id": "sam3",
       "name": "SAM3 Segmentation Service",
       "version": "0.1.0",

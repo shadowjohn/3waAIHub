@@ -196,6 +196,74 @@ function hub_resolve_sam3_operation_route(PDO $db, string $operation): array
     return hub_resolve_pack_job_route_from_definition($db, 'sam3', $route, hub_get_pack('sam3'));
 }
 
+function hub_image_tools_operation_route_definition(string $operation, string $backend): ?array
+{
+    if ($operation !== 'upscale_task') {
+        return null;
+    }
+
+    return match ($backend) {
+        'cuda' => ['pack_id' => 'image-tools', 'job' => 'upscale_image_gpu', 'accelerator' => 'gpu'],
+        'cpu' => ['pack_id' => 'image-tools', 'job' => 'upscale_image_cpu', 'accelerator' => 'cpu'],
+        default => null,
+    };
+}
+
+function hub_image_tools_cached_gpu_probe(PDO $db): array
+{
+    $snapshot = hub_latest_host_metric_snapshot($db);
+    $createdAt = is_array($snapshot) ? strtotime((string)($snapshot['created_at'] ?? '')) : false;
+    $gpu = is_array($snapshot['data']['gpu'] ?? null) ? $snapshot['data']['gpu'] : null;
+    $freeVram = is_array($gpu) ? ($gpu['memory_free_mb'] ?? null) : null;
+    if ($createdAt === false || $createdAt < time() - 300 || !is_array($gpu) || ($gpu['available'] ?? null) !== true
+        || !is_int($freeVram) || $freeVram < 0 || $freeVram > 1_000_000_000) {
+        return ['free_vram_mb' => 0, 'processes' => [], 'process_details' => [], 'probe_error' => 'gpu_snapshot_unavailable'];
+    }
+
+    return ['free_vram_mb' => $freeVram, 'processes' => [], 'process_details' => []];
+}
+
+function hub_image_tools_effective_async_backend(PDO $db, string $requestedBackend, ?callable $gpuProbe = null): string
+{
+    if (!in_array($requestedBackend, ['auto', 'cuda', 'cpu'], true)) {
+        throw new InvalidArgumentException('invalid_backend');
+    }
+    if ($requestedBackend === 'cpu') {
+        return 'cpu';
+    }
+
+    $service = hub_get_service_by_mode($db, 'image-tools');
+    $settings = is_array($service) ? hub_service_settings_values($db, $service) : [];
+    $gpuReady = false;
+    if (($settings['IMAGE_TOOLS_USE_GPU'] ?? '0') === '1') {
+        $pack = hub_get_pack('image-tools');
+        $contract = $pack === null ? null : hub_pack_async_job_contract((array)$pack['manifest'], 'upscale_image_gpu');
+        $probe = ($gpuProbe ?? static fn (): array => hub_image_tools_cached_gpu_probe($db))();
+        $safetyMargin = max(0, (int)hub_get_storage_setting($db, 'AIHUB_GPU_VRAM_SAFETY_MARGIN_MB'));
+        $gpuReady = is_array($contract)
+            && !isset($probe['probe_error'])
+            && hub_runtime_gpu_preflight_result([], (int)($contract['runner']['required_vram_mb'] ?? 0), $safetyMargin, $probe)['ok'] === true;
+    }
+    if ($gpuReady) {
+        return 'cuda';
+    }
+    if ($requestedBackend === 'cuda') {
+        throw new RuntimeException('backend_unavailable');
+    }
+
+    return 'cpu';
+}
+
+function hub_resolve_image_tools_operation_route(PDO $db, string $operation, string $backend, ?callable $gpuProbe = null): array
+{
+    if ($operation !== 'upscale_task') {
+        throw new InvalidArgumentException('invalid_operation');
+    }
+    $route = hub_image_tools_operation_route_definition($operation, hub_image_tools_effective_async_backend($db, $backend, $gpuProbe));
+
+    return hub_resolve_pack_job_route_from_definition($db, 'image-tools', $route, hub_get_pack('image-tools'));
+}
+
 function hub_resolve_pack_job_route_from_definition(PDO $db, string $requestedMode, array $route, ?array $pack): array
 {
 
@@ -392,9 +460,18 @@ function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
         'track_video' => 'video_task',
         default => null,
     };
+    $imageToolsBackend = match ((string)($snapshot['job'] ?? '')) {
+        'upscale_image_gpu' => 'cuda',
+        'upscale_image_cpu' => 'cpu',
+        default => null,
+    };
     if ($requestedMode === 'sam3' && (string)($snapshot['pack_id'] ?? '') === 'sam3' && $sam3Operation !== null) {
         hub_resolve_stored_pack_job($db, $snapshot);
         $route = hub_resolve_sam3_operation_route($db, $sam3Operation);
+    } elseif ($requestedMode === 'image-tools' && (string)($snapshot['pack_id'] ?? '') === 'image-tools' && $imageToolsBackend !== null) {
+        hub_resolve_stored_pack_job($db, $snapshot);
+        $definition = hub_image_tools_operation_route_definition('upscale_task', $imageToolsBackend);
+        $route = hub_resolve_pack_job_route_from_definition($db, 'image-tools', $definition, hub_get_pack('image-tools'));
     } elseif (!hub_is_pack_job_async_mode($requestedMode)) {
         throw new RuntimeException('pack_version_unavailable');
     } else {
@@ -761,7 +838,7 @@ function hub_pack_async_job_runner_asset_mount_conditions_valid(array $mounts, a
 
 function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null, ?array $requestSchema = null): ?array
 {
-    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'network_profile', 'executor', 'secret_env', 'asset_mounts']) !== []) {
+    if (!is_array($runner) || array_diff(array_keys($runner), ['image', 'entrypoint', 'args', 'output_dir', 'accelerator', 'required_vram_mb', 'timeout_seconds', 'network_profile', 'executor', 'secret_env', 'asset_mounts', 'workspace_user']) !== []) {
         return null;
     }
     $image = trim((string)($runner['image'] ?? ''));
@@ -774,13 +851,15 @@ function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null
     $hasNetworkProfile = array_key_exists('network_profile', $runner);
     $networkProfile = $hasNetworkProfile ? $runner['network_profile'] : 'isolated';
     $executor = $runner['executor'] ?? null;
+    $workspaceUser = $runner['workspace_user'] ?? null;
     if (preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
         || !is_array($entrypoint) || !array_is_list($entrypoint) || $entrypoint === []
         || !is_array($args) || !array_is_list($args)
         || $outputDir !== 'output' || !in_array($accelerator, ['cpu', 'gpu'], true)
         || !is_int($requiredVram) || $requiredVram < 0 || $requiredVram > 1048576
         || !is_int($timeout) || $timeout < 1 || $timeout > 86400
-        || !is_string($networkProfile) || !in_array($networkProfile, ['isolated', 'capture_egress', 'public_egress'], true)) {
+        || !is_string($networkProfile) || !in_array($networkProfile, ['isolated', 'capture_egress', 'public_egress'], true)
+        || ($workspaceUser !== null && $workspaceUser !== 'owner')) {
         return null;
     }
     if ($executor !== null && $executor !== 'container') {
@@ -825,7 +904,8 @@ function hub_pack_async_job_runner_contract(mixed $runner, ?array $fields = null
     ] + ($hasNetworkProfile ? ['network_profile' => $networkProfile] : [])
         + ($executor === null ? [] : ['executor' => $executor])
         + ($secretEnv === [] ? [] : ['secret_env' => $secretEnv])
-        + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts]);
+        + ($assetMounts === [] ? [] : ['asset_mounts' => $assetMounts])
+        + ($workspaceUser === null ? [] : ['workspace_user' => $workspaceUser]);
 }
 
 function hub_pack_async_job_runner_config_value(mixed $value, int $depth = 0): bool
@@ -1653,7 +1733,7 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', (string)($manifest['id'] ?? ''))) {
         $errors[] = 'Invalid id.';
     }
-    if (!preg_match('/^[a-z0-9][a-z0-9_]*$/', (string)($manifest['default_mode'] ?? ''))) {
+    if (!preg_match('/\A[a-z0-9][a-z0-9_-]*\z/D', (string)($manifest['default_mode'] ?? ''))) {
         $errors[] = 'Invalid default_mode.';
     }
     if (!in_array((string)($manifest['execution_type'] ?? ''), ['sync_api', 'async_task', 'long_job'], true)) {
@@ -1938,7 +2018,7 @@ function hub_validate_service_instance_input(string $serviceKey, string $mode, s
     if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey)) {
         throw new RuntimeException('Invalid service_key.');
     }
-    if (!preg_match('/^[a-z0-9][a-z0-9_]*$/', $mode)) {
+    if (!preg_match('/\A[a-z0-9][a-z0-9_-]*\z/D', $mode)) {
         throw new RuntimeException('Invalid mode.');
     }
     if ($name === '') {
