@@ -1,0 +1,188 @@
+{
+  "schema_version": "0.1",
+  "id": "image-tools",
+  "name": "Real-ESRGAN Image Tools",
+  "version": "0.1.0",
+  "category": "vision",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L1-contract",
+  "target_level": "L1-contract",
+  "runtime_ready": false,
+  "default_mode": "image-tools",
+  "description": "Real-ESRGAN image upscaling contract with GPU and CPU job routes.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/process/image",
+    "methods": ["POST"],
+    "timeout_sec": 900,
+    "max_upload_mb": 70
+  },
+  "model_source": {
+    "repository": "https://github.com/xinntao/Real-ESRGAN.git",
+    "commit": "a4abfb2979a7bbff3f69f58f58ae324608821e27",
+    "asset_dir": "/DATA/models/image-tools/realesrgan"
+  },
+  "l5_contract": {
+    "endpoint": "/process/image",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "operations": [
+      {"operation": "upscale"},
+      {"operation": "upscale_task"}
+    ],
+    "models": [
+      "realesrgan-x4plus",
+      "realesrgan-x4plus-anime",
+      "realesr-animevideov3-x2",
+      "realesr-animevideov3-x3",
+      "realesr-animevideov3-x4"
+    ],
+    "backends": ["auto", "cuda", "cpu"],
+    "output": {
+      "content_type": "image/png",
+      "required_headers": [
+        "X-3waAIHub-Model",
+        "X-3waAIHub-Backend",
+        "X-3waAIHub-Elapsed-Ms",
+        "X-3waAIHub-Width",
+        "X-3waAIHub-Height"
+      ]
+    },
+    "limits": {
+      "max_decoded_mb": 50,
+      "max_axis_px": 8192,
+      "max_sync_pixels": 4000000,
+      "max_async_pixels": 10000000,
+      "max_output_pixels": 64000000,
+      "accepted_formats": ["JPEG", "JPG", "PNG", "WEBP", "BMP"]
+    },
+    "errors": [
+      "file_required",
+      "source_ambiguous",
+      "invalid_base64",
+      "unsupported_media_type",
+      "invalid_image",
+      "invalid_operation",
+      "invalid_model",
+      "invalid_backend",
+      "invalid_request",
+      "backend_unavailable",
+      "model_not_present",
+      "model_load_failed",
+      "payload_too_large",
+      "runtime_not_ready",
+      "inference_failed"
+    ]
+  },
+  "async_jobs": [
+    {
+      "job": "upscale_image_gpu",
+      "input": {
+        "fields": ["model", "backend"],
+        "source_artifact_types": ["image"],
+        "source_required": true,
+        "request_schema": {
+          "model": {"type": "string", "required": false, "enum": ["realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3-x2", "realesr-animevideov3-x3", "realesr-animevideov3-x4"], "default": "realesrgan-x4plus", "max_length": 32},
+          "backend": {"type": "string", "required": true, "enum": ["cuda"], "max_length": 8}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/image-tools:0.1.0",
+        "entrypoint": ["python3", "/app/jobs.py"],
+        "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 4096,
+        "timeout_seconds": 900,
+        "network_profile": "isolated",
+        "executor": "container",
+        "asset_mounts": [
+          {"id": "realesrgan_models", "storage": "models", "host_subdir": "image-tools/realesrgan", "container_path": "/models/image-tools/realesrgan", "required_paths": ["ready.json"]}
+        ]
+      },
+      "output": {
+        "artifacts": [
+          {"type": "upscaled_image", "path": "upscaled_image.png", "mime_types": ["image/png"], "max_bytes": 67108864, "image": {"format": "png", "max_width": 8192, "max_height": 8192, "max_pixels": 64000000}},
+          {"type": "upscale_report", "path": "upscale_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": []}}
+        ]
+      }
+    },
+    {
+      "job": "upscale_image_cpu",
+      "input": {
+        "fields": ["model", "backend"],
+        "source_artifact_types": ["image"],
+        "source_required": true,
+        "request_schema": {
+          "model": {"type": "string", "required": false, "enum": ["realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3-x2", "realesr-animevideov3-x3", "realesr-animevideov3-x4"], "default": "realesrgan-x4plus", "max_length": 32},
+          "backend": {"type": "string", "required": true, "enum": ["cpu"], "max_length": 8}
+        }
+      },
+      "runner": {
+        "image": "3waaihub/image-tools:0.1.0",
+        "entrypoint": ["python3", "/app/jobs.py"],
+        "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output"],
+        "output_dir": "output",
+        "accelerator": "cpu",
+        "required_vram_mb": 0,
+        "timeout_seconds": 900,
+        "network_profile": "isolated",
+        "executor": "container",
+        "asset_mounts": [
+          {"id": "realesrgan_models", "storage": "models", "host_subdir": "image-tools/realesrgan", "container_path": "/models/image-tools/realesrgan", "required_paths": ["ready.json"]}
+        ]
+      },
+      "output": {
+        "artifacts": [
+          {"type": "upscaled_image", "path": "upscaled_image.png", "mime_types": ["image/png"], "max_bytes": 67108864, "image": {"format": "png", "max_width": 8192, "max_height": 8192, "max_pixels": 64000000}},
+          {"type": "upscale_report", "path": "upscale_report.json", "mime_types": ["application/json"], "max_bytes": 65536, "json": {"required_keys": []}}
+        ]
+      }
+    }
+  ],
+  "hardware": {
+    "gpu_required": false,
+    "gpu_supported": true,
+    "cpu_fallback": true,
+    "min_vram_mb": 0,
+    "recommended_vram_mb": 4096
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {"type": "models", "host_subdir": "image-tools/realesrgan", "container_path": "/models/image-tools/realesrgan", "read_only": true}
+    ]
+  },
+  "settings_schema": [
+    {"key": "IMAGE_TOOLS_USE_GPU", "label": "Use GPU", "type": "boolean", "default": "1", "required": true, "restart_required": true},
+    {"key": "IMAGE_TOOLS_DEFAULT_BACKEND", "label": "Default backend", "type": "select", "default": "auto", "options": ["auto", "cuda", "cpu"], "required": true, "restart_required": true},
+    {"key": "IMAGE_TOOLS_MAX_UPLOAD_MB", "label": "Max upload MB", "type": "integer", "default": "50", "min": 1, "max": 50, "required": true, "restart_required": true}
+  ],
+  "env": [
+    {"name": "IMAGE_TOOLS_USE_GPU", "default": "1", "required": true},
+    {"name": "IMAGE_TOOLS_DEFAULT_BACKEND", "default": "auto", "required": true},
+    {"name": "IMAGE_TOOLS_MODEL_DIR", "default": "/models/image-tools/realesrgan", "required": true},
+    {"name": "IMAGE_TOOLS_MAX_UPLOAD_MB", "default": "50", "required": true}
+  ],
+  "preflight": {
+    "checks": ["docker", "docker_compose", "storage"]
+  },
+  "service": {
+    "default_local_port": 18113,
+    "local_port_env": "IMAGE_TOOLS_PORT"
+  },
+  "install": {
+    "default_service_key": "image-tools-main",
+    "compose_project": "3waaihub_image_tools"
+  }
+}

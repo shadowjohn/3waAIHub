@@ -1,0 +1,14 @@
+services:
+  image-tools:
+    image: 3waaihub/image-tools:0.1.0
+    env_file:
+      - runtime-settings.conf
+    ports:
+      - "127.0.0.1:${IMAGE_TOOLS_PORT:-18113}:8000"
+    environment:
+      IMAGE_TOOLS_USE_GPU: ${IMAGE_TOOLS_USE_GPU:-1}
+      IMAGE_TOOLS_DEFAULT_BACKEND: ${IMAGE_TOOLS_DEFAULT_BACKEND:-auto}
+      IMAGE_TOOLS_MODEL_DIR: ${IMAGE_TOOLS_MODEL_DIR:-/models/image-tools/realesrgan}
+      IMAGE_TOOLS_MAX_UPLOAD_MB: ${IMAGE_TOOLS_MAX_UPLOAD_MB:-50}
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/realesrgan:/models/image-tools/realesrgan:ro"

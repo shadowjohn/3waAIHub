@@ -1653,7 +1653,7 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
     if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', (string)($manifest['id'] ?? ''))) {
         $errors[] = 'Invalid id.';
     }
-    if (!preg_match('/^[a-z0-9][a-z0-9_]*$/', (string)($manifest['default_mode'] ?? ''))) {
+    if (!preg_match('/\A[a-z0-9][a-z0-9_-]*\z/D', (string)($manifest['default_mode'] ?? ''))) {
         $errors[] = 'Invalid default_mode.';
     }
     if (!in_array((string)($manifest['execution_type'] ?? ''), ['sync_api', 'async_task', 'long_job'], true)) {
@@ -1938,7 +1938,7 @@ function hub_validate_service_instance_input(string $serviceKey, string $mode, s
     if (!preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey)) {
         throw new RuntimeException('Invalid service_key.');
     }
-    if (!preg_match('/^[a-z0-9][a-z0-9_]*$/', $mode)) {
+    if (!preg_match('/\A[a-z0-9][a-z0-9_-]*\z/D', $mode)) {
         throw new RuntimeException('Invalid mode.');
     }
     if ($name === '') {
