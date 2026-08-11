@@ -47,6 +47,29 @@ The Gateway normalizes the operation from the query string and form input. If
 both are present and disagree, it returns `invalid_operation`; the service is
 never allowed to choose a different operation from the Gateway route.
 
+All textual API inputs are bounded and allowlisted. The Gateway and service
+must reject unknown fields, NUL/disallowed control characters, path-like upload names,
+overlong values, and values that are not valid for the field. Trimming is only
+performed where the contract explicitly allows it; it must not turn an invalid
+value into a different accepted value.
+
+- `mode` must be exactly `image-tools`.
+- `operation` must be exactly `upscale` or `upscale_task`.
+- `backend` must be exactly `auto`, `cuda`, or `cpu`.
+- `model` must be an exact value from the declared model enum and use no more
+  than 64 ASCII characters.
+- The optional filename is treated as display metadata only; directory
+  separators, control characters, and path traversal are rejected, and the
+  filename never selects a runtime path.
+- The Base64 value has a bounded encoded length, accepts only the Base64
+  alphabet and permitted ASCII whitespace, and permits only an exact prefix
+  matching `data:image/(jpeg|png|webp|bmp);base64,`. The decoded bytes still go
+  through actual image-format verification.
+
+The same validation is applied before sync dispatch and before async task
+staging. Query/form duplicates for `operation`, `backend`, or `model` must
+match exactly; conflicting values return `invalid_request`.
+
 Both forms accept exactly one source:
 
 - `image`: an uploaded file; or
@@ -119,7 +142,7 @@ Errors are explicit and stable:
 
 `file_required`, `source_ambiguous`, `invalid_base64`,
 `unsupported_media_type`, `invalid_image`, `invalid_operation`,
-`invalid_model`, `invalid_backend`, `backend_unavailable`,
+`invalid_model`, `invalid_backend`, `invalid_request`, `backend_unavailable`,
 `model_not_present`, `model_load_failed`, `payload_too_large`,
 `runtime_not_ready`, and `inference_failed`.
 
