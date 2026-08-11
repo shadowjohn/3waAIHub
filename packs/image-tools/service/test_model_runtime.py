@@ -7,7 +7,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import ANY, Mock, call, patch
+from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -172,6 +172,11 @@ class ModelRuntimeTest(unittest.TestCase):
         rrdbnet = Mock(name="RRDBNet")
         srvgg = Mock(name="SRVGGNetCompact")
         realesrganer = Mock(name="RealESRGANer")
+        x4plus_architecture = object()
+        anime_architecture = object()
+        animevideo_architecture = object()
+        rrdbnet.side_effect = [x4plus_architecture, x4plus_architecture, anime_architecture, anime_architecture]
+        srvgg.side_effect = [animevideo_architecture, animevideo_architecture]
         modules = {
             "basicsr": types.ModuleType("basicsr"),
             "basicsr.archs": types.ModuleType("basicsr.archs"),
@@ -189,8 +194,13 @@ class ModelRuntimeTest(unittest.TestCase):
             for alias in ("realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3-x4"):
                 for backend, half in (("cpu", False), ("cuda", True)):
                     model_runtime.build_upsampler(alias, backend, model_path)
+                    architecture = {
+                        "realesrgan-x4plus": x4plus_architecture,
+                        "realesrgan-x4plus-anime": anime_architecture,
+                        "realesr-animevideov3-x4": animevideo_architecture,
+                    }[alias]
                     self.assertEqual(
-                        call(scale=4, model_path=str(model_path), model=ANY, tile=0, tile_pad=10, pre_pad=0, half=half, device=backend),
+                        call(scale=4, model_path=str(model_path), model=architecture, tile=0, tile_pad=10, pre_pad=0, half=half, device=backend),
                         realesrganer.call_args,
                     )
 

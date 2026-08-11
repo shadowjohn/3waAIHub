@@ -4,7 +4,7 @@ import io
 import json
 import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, call, patch
 
@@ -27,10 +27,11 @@ class ModelSmokeTest(unittest.TestCase):
     def test_cpu_smoke_verifies_before_loading_each_unique_family(self) -> None:
         events: list[str] = []
         loader = Mock(side_effect=lambda alias, _backend, _path: events.append(alias))
-        with patch.object(model_smoke, "verify_ready", side_effect=lambda _root: events.append("verify") or {"commit": REAL_ESRGAN_COMMIT}), patch.object(model_smoke, "build_upsampler", loader, create=True):
+        with patch.object(model_smoke, "verify_ready", side_effect=lambda _root: events.append("verify") or {"commit": REAL_ESRGAN_COMMIT}) as verify_ready, patch.object(model_smoke, "build_upsampler", loader, create=True):
             status, output = self.invoke(["--model-dir", "/models"])
 
         self.assertEqual(0, status)
+        verify_ready.assert_called_once_with(Path("/models"))
         self.assertEqual(["verify", "realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3-x4"], events)
         self.assertEqual([
             call("realesrgan-x4plus", "cpu", Path("/models/RealESRGAN_x4plus.pth")),
@@ -54,6 +55,17 @@ class ModelSmokeTest(unittest.TestCase):
 
         self.assertEqual(1, status)
         self.assertEqual({"ok": False, "error": "model_load_failed"}, json.loads(output))
+
+    def test_smoke_rejects_auto_backend(self) -> None:
+        try:
+            with redirect_stderr(io.StringIO()):
+                model_smoke.main(["--backend", "auto"])
+        except TypeError as exc:
+            self.fail(f"model_smoke.main must parse CLI argv: {exc}")
+        except SystemExit as exc:
+            self.assertEqual(2, exc.code)
+        else:
+            self.fail("model_smoke must reject the unsupported auto backend")
 
     def test_smoke_source_never_decodes_or_enhances_an_image(self) -> None:
         source = Path(model_smoke.__file__).read_text(encoding="utf-8")

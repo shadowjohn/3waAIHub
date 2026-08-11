@@ -94,14 +94,16 @@ class AppTest(unittest.TestCase):
         return json.loads(response.body)
 
     def test_health_reports_l1_when_assets_are_missing_and_l4a_when_marker_verifies(self) -> None:
-        with patch.object(self.app, "verify_ready", side_effect=self.app.ModelRuntimeError("model_not_present")):
-            self.assertEqual({
-                "ok": True,
-                "service": "image-tools",
-                "ready": False,
-                "runtime_level": "L1-contract",
-                "runtime_ready": False,
-            }, self.app.health())
+        unavailable = {
+            "ok": True,
+            "service": "image-tools",
+            "ready": False,
+            "runtime_level": "L1-contract",
+            "runtime_ready": False,
+        }
+        for code in ("model_not_present", "model_load_failed"):
+            with self.subTest(code=code), patch.object(self.app, "verify_ready", side_effect=self.app.ModelRuntimeError(code)):
+                self.assertEqual(unavailable, self.app.health())
         with patch.object(self.app, "verify_ready", return_value={"commit": "pinned"}):
             health = self.app.health()
         self.assertEqual({
