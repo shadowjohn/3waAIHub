@@ -616,7 +616,7 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     ];
     foreach ($evidenceKeys as $level => $keys) {
         $sectionMatch = [];
-        hub_test_assert(preg_match('/^## ' . $level . '[^\r\n]*\R+(.*?)(?=^##\s|\z)/ms', $acceptance, $sectionMatch) === 1, 'image-tools acceptance record must isolate an ' . $level . ' section');
+        hub_test_assert(preg_match('/^## ' . $level . '(?:[ \t]+[^\r\n]*)?\R+(.*?)(?=^##\s|\z)/ms', $acceptance, $sectionMatch) === 1, 'image-tools acceptance record must isolate an ' . $level . ' section');
         $section = (string)$sectionMatch[1];
         $blocks = [];
         hub_test_assert(preg_match_all('/^```json\s*\R(.*?)^```\s*$/ms', $section, $blocks) === 1, 'image-tools ' . $level . ' acceptance section must contain exactly one JSON evidence block');
