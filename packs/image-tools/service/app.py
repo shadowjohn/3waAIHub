@@ -45,7 +45,7 @@ def health() -> dict[str, object]:
         verify_ready(model_dir())
     except ModelRuntimeError:
         return {"ok": True, "service": "image-tools", "ready": False, "runtime_level": "L1-contract", "runtime_ready": False}
-    return {"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L3-offline-assets", "runtime_ready": True}
+    return {"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L4a-model-init-smoke", "runtime_ready": True}
 
 
 def _report(stdout: str, *, model: str, backend: str, output: Path) -> dict[str, object]:

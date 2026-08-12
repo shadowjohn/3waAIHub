@@ -29,3 +29,20 @@ Source dimensions were 2×3; every output was PNG at 8×12 using `realesrgan-x4p
 | async | `cpu` | 2,883 | `ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207f7` |
 
 The Gateway async submit, poll, result, and artifact checks completed for both backends; each report backend, dimensions, and SHA-256 matched its PNG artifact. Temporary acceptance service/container, Gateway and worker processes, DB/queue data, tokens, image tag, and generated outputs were removed after the checks.
+
+## L4a model initialization smoke
+
+no source image/inference output
+
+```json
+{
+  "date": "2026-08-12",
+  "image_tag": "3waaihub-image-tools-main:0.1.0",
+  "exit_result": 0,
+  "backend": "cpu",
+  "commit": "a4abfb2979a7bbff3f69f58f58ae324608821e27",
+  "loaded_family_ids": ["realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3"],
+  "aliases": ["realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3-x2", "realesr-animevideov3-x3", "realesr-animevideov3-x4"],
+  "elapsed_time_ms": 5703
+}
+```

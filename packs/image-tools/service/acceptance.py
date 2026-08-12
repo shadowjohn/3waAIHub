@@ -45,9 +45,9 @@ def assert_health(payload: object) -> None:
     if not isinstance(payload, dict) or payload.get("ok") is not True or payload.get("service") != "image-tools":
         raise AcceptanceUnavailable("invalid image-tools health response")
     if (payload.get("ready") is not True
-            or payload.get("runtime_level") != "L3-offline-assets"
+            or payload.get("runtime_level") != "L4a-model-init-smoke"
             or payload.get("runtime_ready") is not True):
-        raise AcceptanceUnavailable("image-tools verified L3 model snapshot is not ready")
+        raise AcceptanceUnavailable("image-tools verified L4a model initialization is not ready")
 
 
 def _validated_png(payload: bytes, dimensions: tuple[int, int]) -> None:

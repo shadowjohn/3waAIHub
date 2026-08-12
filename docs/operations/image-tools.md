@@ -1,6 +1,6 @@
 # 影像工具操作手冊
 
-`image-tools` 是可擴充的本機影像工具 Pack；目前的 `upscale` 與 `upscale_task` operation 使用離線、可驗證的 Real-ESRGAN snapshot，為 `L3-offline-assets` 且 `runtime_ready=true`。本次驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
+`image-tools` 是可擴充的本機影像工具 Pack；目前的 `upscale` 與 `upscale_task` operation 使用離線、可驗證的 Real-ESRGAN snapshot，為 `L4a-model-init-smoke` 且 `runtime_ready=true`。本次驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
 
 ## 離線模型 staging
 
@@ -17,6 +17,16 @@
 明確 CPU 安裝可設 `IMAGE_TOOLS_USE_GPU=0`，重新產生 Compose 後不應含 `gpus: all`。client 可送 `backend=cpu`；明確 `backend=cuda` 在 GPU／VRAM 不可用時必須回 `backend_unavailable`，不允許無聲 fallback。
 
 完成 staging 後，以非 secret 的管理 token 跑 health、Docker/CUDA preflight 與同步 smoke。確認 `/health` 仍正確表示 runtime 狀態；不要把 Docker build 或 mock test 當作真實模型 acceptance。
+
+## L4a model initialization smoke
+
+影像工具目前已完成 `L4a-model-init-smoke`：此階段只證明 marker 與三個 Real-ESRGAN model family 可在已安裝 runtime 中初始化，並不宣稱 HTTP 實際推論或 benchmark 品質。
+
+```bash
+docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu
+```
+
+命令必須只成功回傳 compact JSON；可稽核的安全 evidence 欄位為 date、image tag、exit result、backend、commit、loaded family IDs、aliases、elapsed time。完整 redacted record 見 [image-tools-acceptance.md](image-tools-acceptance.md)，其中不保存來源圖片或推論輸出。
 
 ## API 操作
 
