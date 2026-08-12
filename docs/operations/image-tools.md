@@ -1,6 +1,6 @@
 # 影像工具操作手冊
 
-`image-tools` 是可擴充的本機影像工具 Pack；目前的 `upscale` 與 `upscale_task` operation 使用離線、可驗證的 Real-ESRGAN snapshot，為 `L4a-model-init-smoke` 且 `runtime_ready=true`。本次驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
+`image-tools` 是可擴充的本機影像工具 Pack；目前的 `upscale` 與 `upscale_task` operation 使用離線、可驗證的 Real-ESRGAN snapshot，為 `L5-benchmark-ready` 且 `runtime_ready=true`。本次驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
 
 ## 離線模型 staging
 
@@ -27,6 +27,17 @@ docker compose -f data/services/image-tools-main/docker-compose.generated.yml ex
 ```
 
 命令必須只成功回傳 compact JSON；可稽核的安全 evidence 欄位為 date、image tag、exit result、backend、commit、loaded family IDs、aliases、elapsed time。完整 redacted record 見 [image-tools-acceptance.md](image-tools-acceptance.md)，其中不保存來源圖片或推論輸出。
+
+## L5 benchmark-ready
+
+影像工具的 L5 以固定 `smoke.png` 驗證 `realesrgan-x4plus` 的 CUDA 與 CPU 真實 HTTP 放大：每筆都必須回傳 8×12 `image/png`、五個公開 response headers 與 backend 對應的固定 SHA-256。這是品質 gate，不是延遲 SLA；L4a 初始化 smoke 保留為歷史驗證。
+
+```bash
+php scripts/benchmark.php --service=image-tools-main --case=image_tools_cuda_upscale_golden
+php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upscale_golden
+```
+
+兩筆 benchmark 都必須最新為 `pass`，Pack readiness 的 `real_inference_benchmark_passed` 才會成立。可稽核的 L4b 直接 HTTP 與 L5 gateway evidence 見 [image-tools-acceptance.md](image-tools-acceptance.md)；只保存日期、image tag、model、尺寸、hash、headers 結論與 elapsed time。
 
 ## API 操作
 

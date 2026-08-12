@@ -6,7 +6,7 @@
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
-  "runtime_level": "L4a-model-init-smoke",
+  "runtime_level": "L5-benchmark-ready",
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "image-tools",
@@ -47,7 +47,8 @@
       "realesr-animevideov3-x4"
     ],
     "backends": ["auto", "cuda", "cpu"],
-    "benchmark": [
+    "benchmark": {
+      "cases": [
       {
         "id": "image_tools_cuda_upscale_golden",
         "type": "api",
@@ -80,7 +81,8 @@
         "expected_response_headers": ["X-3waAIHub-Model", "X-3waAIHub-Backend", "X-3waAIHub-Elapsed-Ms", "X-3waAIHub-Width", "X-3waAIHub-Height"],
         "expected_response_header_values": {"X-3waAIHub-Model": "realesrgan-x4plus", "X-3waAIHub-Backend": "cpu"}
       }
-    ],
+      ]
+    },
     "output": {
       "content_type": "image/png",
       "required_headers": [

@@ -44,8 +44,10 @@ class AcceptanceTest(unittest.TestCase):
             self.assertEqual("PNG", image.format)
             self.assertEqual((2, 3), image.size)
 
-    def test_health_requires_l4a_after_recorded_cpu_smoke(self) -> None:
-        assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L4a-model-init-smoke", "runtime_ready": True})
+    def test_health_requires_l5_after_recorded_dual_backend_benchmarks(self) -> None:
+        assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L5-benchmark-ready", "runtime_ready": True})
+        with self.assertRaises(AcceptanceUnavailable):
+            assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L4a-model-init-smoke", "runtime_ready": True})
         with self.assertRaises(AcceptanceUnavailable):
             assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L3-offline-assets", "runtime_ready": True})
         with self.assertRaises(AcceptanceUnavailable):
@@ -58,6 +60,7 @@ class AcceptanceTest(unittest.TestCase):
         expected_sha256 = hashlib.sha256(payload).hexdigest()
         result = validate_sync_response(200, headers("cpu", 8, 12), payload, backend="cpu", model=MODEL, dimensions=(8, 12), expected_sha256=expected_sha256)
         self.assertEqual(expected_sha256, result["output_sha256"])
+        self.assertEqual(7, result["elapsed_time_ms"])
 
     def test_sync_response_rejects_unexpected_output_sha256(self) -> None:
         with self.assertRaisesRegex(AssertionError, "^unexpected output SHA-256$"):
@@ -72,7 +75,7 @@ class AcceptanceTest(unittest.TestCase):
     def test_cli_forwards_each_expected_digest_to_its_explicit_backend(self) -> None:
         cuda_digest = "a" * 64
         cpu_digest = "b" * 64
-        with patch.object(sys, "argv", ["acceptance.py", "--service-url", "http://example.test", "--fixture", "smoke.png", "--direct-sync", "--expected-cuda-sha256", cuda_digest, "--expected-cpu-sha256", cpu_digest]), patch("acceptance._json_response", return_value=({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L4a-model-init-smoke", "runtime_ready": True}, b"{}")), patch("acceptance.run_sync", side_effect=[{"backend": "cuda"}, {"backend": "cpu"}]) as run_sync:
+        with patch.object(sys, "argv", ["acceptance.py", "--service-url", "http://example.test", "--fixture", "smoke.png", "--direct-sync", "--expected-cuda-sha256", cuda_digest, "--expected-cpu-sha256", cpu_digest]), patch("acceptance._json_response", return_value=({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L5-benchmark-ready", "runtime_ready": True}, b"{}")), patch("acceptance.run_sync", side_effect=[{"backend": "cuda"}, {"backend": "cpu"}]) as run_sync:
             self.assertEqual(0, main())
         self.assertEqual([
             {"endpoint": "http://example.test", "fixture": Path("smoke.png"), "backend": "cuda", "model": MODEL, "gateway": False, "expected_sha256": cuda_digest},
@@ -82,7 +85,7 @@ class AcceptanceTest(unittest.TestCase):
     def test_cli_forwards_each_expected_digest_to_its_gateway_backend(self) -> None:
         cuda_digest = "a" * 64
         cpu_digest = "b" * 64
-        health = {"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L4a-model-init-smoke", "runtime_ready": True}
+        health = {"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L5-benchmark-ready", "runtime_ready": True}
         with patch.object(sys, "argv", ["acceptance.py", "--service-url", "http://service.test", "--fixture", "smoke.png", "--gateway-url", "http://gateway.test/api.php", "--token", "test-token", "--expected-cuda-sha256", cuda_digest, "--expected-cpu-sha256", cpu_digest]), patch("acceptance._json_response", return_value=(health, b"{}")), patch("acceptance.run_sync", side_effect=[{"backend": "cuda"}, {"backend": "cpu"}]) as run_sync, patch("acceptance.run_async", side_effect=[{"backend": "cuda"}, {"backend": "cpu"}]) as run_async:
             self.assertEqual(0, main())
         self.assertEqual([

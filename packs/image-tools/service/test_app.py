@@ -95,7 +95,7 @@ class AppTest(unittest.TestCase):
     def response_body(self, response):
         return json.loads(response.body)
 
-    def test_health_reports_l1_when_assets_are_missing_and_l4a_after_recorded_smoke(self) -> None:
+    def test_health_reports_l1_when_assets_are_missing_and_l5_after_recorded_benchmarks(self) -> None:
         unavailable = {
             "ok": True,
             "service": "image-tools",
@@ -117,7 +117,7 @@ class AppTest(unittest.TestCase):
             "ok": True,
             "service": "image-tools",
             "ready": True,
-            "runtime_level": "L4a-model-init-smoke",
+            "runtime_level": "L5-benchmark-ready",
             "runtime_ready": True,
         }, health)
 

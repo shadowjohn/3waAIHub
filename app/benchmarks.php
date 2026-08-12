@@ -111,7 +111,13 @@ function hub_benchmark_l5_contract_case(PDO $db, string $caseId, ?string $packId
     ] : [];
     $realInference = !empty($case['real_inference']);
     $form = is_array($case['form'] ?? null) ? array_map('strval', $case['form']) : [];
-    if ($hasFixture && $realInference) {
+    $declaresRealInference = false;
+    foreach (($contract['input']['fields'] ?? []) as $field) {
+        $declaresRealInference = $declaresRealInference
+            || $field === 'real_inference'
+            || (is_array($field) && ($field['name'] ?? null) === 'real_inference');
+    }
+    if ($hasFixture && $realInference && !array_key_exists('real_inference', $form) && $declaresRealInference) {
         $form['real_inference'] = '1';
     }
     $_POST = $hasFixture ? $form : [];

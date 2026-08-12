@@ -536,7 +536,7 @@ hub_test('image-tools backend response header is canonical and rejects unsafe va
     hub_test_assert(in_array('X-3waAIHub-Backend: cuda', $final, true), 'validated Backend must survive the final Gateway response-header allowlist');
 });
 
-hub_test('image-tools Pack declares the L4a generic image-tools contract', function (): void {
+hub_test('image-tools Pack declares the L5 generic image-tools contract', function (): void {
     $pack = hub_get_pack('image-tools');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'image-tools pack missing or invalid');
     $manifest = $pack['manifest'];
@@ -545,12 +545,14 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     preg_match('/### image-tools Runtime Level\\n\\n(.*?)(?=\\n### |\\z)/s', $readme, $runtimeSection);
     $runtimeSection = (string)($runtimeSection[1] ?? '');
     $l4aCommand = 'docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu';
+    $l5CudaCommand = 'php scripts/benchmark.php --service=image-tools-main --case=image_tools_cuda_upscale_golden';
+    $l5CpuCommand = 'php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upscale_golden';
     hub_test_assert(str_contains($runtimeSection, '影像工具'), 'README image-tools runtime row must use the generic Chinese Pack identity');
-    hub_test_assert(str_contains($runtimeSection, '`L4a-model-init-smoke`／`runtime_ready=true`'), 'README image-tools runtime row must state L4a model-init readiness');
+    hub_test_assert(str_contains($runtimeSection, '`L5-benchmark-ready`／`runtime_ready=true`'), 'README image-tools runtime row must state L5 benchmark readiness');
     hub_test_assert(str_contains($runtimeSection, $l4aCommand), 'README image-tools runtime row must publish the installed runtime smoke command');
+    hub_test_assert(str_contains($runtimeSection, $l5CudaCommand) && str_contains($runtimeSection, $l5CpuCommand), 'README image-tools runtime row must publish both L5 benchmark commands');
     hub_test_assert(!str_contains($runtimeSection, '`L1-contract`／`runtime_ready=false`'), 'README image-tools runtime row must not retain stale L1 readiness');
     hub_test_assert(!str_contains($runtimeSection, '`L4b-real-inference`／`runtime_ready=true`'), 'README image-tools runtime row must not claim L4b ready');
-    hub_test_assert(!str_contains($runtimeSection, '`L5-benchmark-ready`／`runtime_ready=true`'), 'README image-tools runtime row must not claim L5 ready');
     $runbook = (string)file_get_contents(HUB_ROOT . '/docs/operations/image-tools.md');
     preg_match('/^## L4a[^\r\n]*\R+(.*?)(?=^##\s|\z)/ms', $runbook, $l4aSectionMatch);
     $l4aSection = (string)($l4aSectionMatch[1] ?? '');
@@ -566,6 +568,15 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     }
     hub_test_assert(!str_contains($l4aSection, '`L4b-real-inference`／`runtime_ready=true`'), 'image-tools L4a runbook section must not claim L4b ready');
     hub_test_assert(!str_contains($l4aSection, '`L5-benchmark-ready`／`runtime_ready=true`'), 'image-tools L4a runbook section must not claim L5 ready');
+
+    $l5SectionMatch = [];
+    preg_match('/^## L5(?:[ \t]+[^\r\n]*)?\R+(.*?)(?=^##\s|\z)/ms', $runbook, $l5SectionMatch);
+    $l5Section = (string)($l5SectionMatch[1] ?? '');
+    hub_test_assert($l5Section !== '', 'image-tools runbook must isolate an L5 section');
+    foreach (['影像工具', 'L5-benchmark-ready', $l5CudaCommand, $l5CpuCommand, '[image-tools-acceptance.md](image-tools-acceptance.md)'] as $needle) {
+        hub_test_assert(str_contains($l5Section, $needle), 'image-tools L5 runbook section must publish ' . $needle);
+    }
+    hub_test_assert(!str_contains($l5Section, 'batch') && !str_contains($l5Section, 'video') && !str_contains($l5Section, 'latency SLA'), 'image-tools L5 runbook must not claim unimplemented image capabilities or a latency SLA');
 
     $acceptance = (string)file_get_contents(HUB_ROOT . '/docs/operations/image-tools-acceptance.md');
     preg_match('/^## L4a[^\r\n]*\R+(.*?)(?=^##\s|\z)/ms', $acceptance, $l4aAcceptanceMatch);
@@ -657,7 +668,7 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     $inputFields = $contract['input']['fields'] ?? [];
     sort($inputFields);
     hub_test_assert($inputFields === ['backend', 'image', 'model', 'operation'], 'image-tools L5 input fields mismatch');
-    $goldenCases = $contract['benchmark'] ?? [];
+    $goldenCases = $contract['benchmark']['cases'] ?? [];
     hub_test_assert(array_column($goldenCases, 'id') === ['image_tools_cuda_upscale_golden', 'image_tools_cpu_upscale_golden'], 'image-tools must declare CUDA then CPU L5 golden cases');
     foreach ($goldenCases as $index => $case) {
         $backend = $index === 0 ? 'cuda' : 'cpu';

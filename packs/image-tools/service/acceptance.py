@@ -45,9 +45,9 @@ def assert_health(payload: object) -> None:
     if not isinstance(payload, dict) or payload.get("ok") is not True or payload.get("service") != "image-tools":
         raise AcceptanceUnavailable("invalid image-tools health response")
     if (payload.get("ready") is not True
-            or payload.get("runtime_level") != "L4a-model-init-smoke"
+            or payload.get("runtime_level") != "L5-benchmark-ready"
             or payload.get("runtime_ready") is not True):
-        raise AcceptanceUnavailable("image-tools verified L4a model initialization is not ready")
+        raise AcceptanceUnavailable("image-tools verified L5 benchmarks are not ready")
 
 
 def _validated_png(payload: bytes, dimensions: tuple[int, int]) -> None:
@@ -66,7 +66,7 @@ def _validated_png(payload: bytes, dimensions: tuple[int, int]) -> None:
         raise AssertionError("invalid PNG payload") from exc
 
 
-def _metadata(values: Mapping[str, str] | Iterable[tuple[str, str]], *, backend: str, model: str, dimensions: tuple[int, int]) -> None:
+def _metadata(values: Mapping[str, str] | Iterable[tuple[str, str]], *, backend: str, model: str, dimensions: tuple[int, int]) -> int:
     headers = _headers(values)
     if headers.get("content-type", "").split(";", 1)[0].strip().lower() != "image/png":
         raise AssertionError("unexpected content type")
@@ -82,17 +82,18 @@ def _metadata(values: Mapping[str, str] | Iterable[tuple[str, str]], *, backend:
     elapsed = headers.get("x-3waaihub-elapsed-ms", "")
     if not elapsed.isascii() or not elapsed.isdecimal() or int(elapsed) < 1:
         raise AssertionError("invalid elapsed metadata")
+    return int(elapsed)
 
 
 def validate_sync_response(status: int, headers: Mapping[str, str] | Iterable[tuple[str, str]], payload: bytes, *, backend: str, model: str, dimensions: tuple[int, int], expected_sha256: str | None = None) -> dict[str, object]:
     if status != 200:
         raise AssertionError(f"unexpected sync status: {status}")
-    _metadata(headers, backend=backend, model=model, dimensions=dimensions)
+    elapsed_time_ms = _metadata(headers, backend=backend, model=model, dimensions=dimensions)
     _validated_png(payload, dimensions)
     digest = hashlib.sha256(payload).hexdigest()
     if expected_sha256 is not None and digest != expected_sha256:
         raise AssertionError("unexpected output SHA-256")
-    return {"backend": backend, "model": model, "width": dimensions[0], "height": dimensions[1], "output_sha256": digest}
+    return {"backend": backend, "model": model, "width": dimensions[0], "height": dimensions[1], "output_sha256": digest, "elapsed_time_ms": elapsed_time_ms}
 
 
 def validate_async_artifacts(image_payload: bytes, report_payload: bytes, *, backend: str, model: str, dimensions: tuple[int, int]) -> dict[str, object]:

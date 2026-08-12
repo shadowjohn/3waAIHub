@@ -19,6 +19,7 @@ from model_runtime import DEFAULT_MODEL_ROOT, ModelRuntimeError, verify_ready
 
 
 app = FastAPI(title="3waAIHub Image Tools")
+RUNTIME_LEVEL = "L5-benchmark-ready"
 _INFERENCE_LOCK = threading.Lock()
 _CLI_ERROR_CODES = frozenset({"backend_unavailable", "model_not_present", "model_load_failed", "inference_failed"})
 
@@ -45,7 +46,7 @@ def health() -> dict[str, object]:
         verify_ready(model_dir())
     except ModelRuntimeError:
         return {"ok": True, "service": "image-tools", "ready": False, "runtime_level": "L1-contract", "runtime_ready": False}
-    return {"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L4a-model-init-smoke", "runtime_ready": True}
+    return {"ok": True, "service": "image-tools", "ready": True, "runtime_level": RUNTIME_LEVEL, "runtime_ready": True}
 
 
 def _report(stdout: str, *, model: str, backend: str, output: Path) -> dict[str, object]:

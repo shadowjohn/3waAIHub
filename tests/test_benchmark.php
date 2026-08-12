@@ -546,3 +546,26 @@ hub_test('L5 readiness requires the latest pass for every real benchmark case', 
     hub_test_assert(hub_pack_l5_readiness($db, 'structure-ppstructurev3')['checks']['real_inference_benchmark_passed'] === false,
         'a later real benchmark failure must revoke readiness');
 });
+
+hub_test('fixture benchmarks inject real_inference only when the active contract declares it', function (): void {
+    $imageFields = hub_pack_l5_contract(hub_get_pack('image-tools')['manifest'])['input']['fields'] ?? [];
+    $imageDeclaresRealInference = false;
+    foreach ($imageFields as $field) {
+        $imageDeclaresRealInference = $imageDeclaresRealInference
+            || $field === 'real_inference'
+            || (is_array($field) && ($field['name'] ?? null) === 'real_inference');
+    }
+    hub_test_assert($imageDeclaresRealInference === false, 'image-tools must not declare benchmark-only real_inference as a public input');
+
+    $ocrFields = hub_pack_l5_contract(hub_get_pack('ocr-ppocrv5')['manifest'])['input']['fields'] ?? [];
+    $ocrDeclaresRealInference = false;
+    foreach ($ocrFields as $field) {
+        $ocrDeclaresRealInference = $ocrDeclaresRealInference
+            || $field === 'real_inference'
+            || (is_array($field) && ($field['name'] ?? null) === 'real_inference');
+    }
+    hub_test_assert($ocrDeclaresRealInference === true, 'object input fields must continue to declare real_inference when public');
+
+    $source = (string)file_get_contents(HUB_ROOT . '/app/benchmarks.php');
+    hub_test_assert(str_contains($source, '!array_key_exists(\'real_inference\', $form) && $declaresRealInference'), 'fixture benchmark payloads must inject real_inference only when the active input contract declares it');
+});

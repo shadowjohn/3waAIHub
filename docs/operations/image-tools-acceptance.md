@@ -46,3 +46,43 @@ no source image/inference output
   "elapsed_time_ms": 5703
 }
 ```
+
+## L4b
+
+no source image/inference output
+
+```json
+{
+  "date": "2026-08-12",
+  "image_tag": "3waaihub-image-tools-main:0.1.0",
+  "exit_result": 0,
+  "model": "realesrgan-x4plus",
+  "dimensions": [8, 12],
+  "headers_verified": true,
+  "cuda_output_sha256": "a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e",
+  "cpu_output_sha256": "ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207f7",
+  "cuda_elapsed_time_ms": 4384,
+  "cpu_elapsed_time_ms": 3774
+}
+```
+
+## L5
+
+no source image/inference output
+
+```json
+{
+  "date": "2026-08-12",
+  "image_tag": "3waaihub-image-tools-main:0.1.0",
+  "exit_result": 0,
+  "model": "realesrgan-x4plus",
+  "benchmark_cases": ["image_tools_cuda_upscale_golden", "image_tools_cpu_upscale_golden"],
+  "status": "pass",
+  "dimensions": [8, 12],
+  "headers_verified": true,
+  "cuda_output_sha256": "a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e",
+  "cpu_output_sha256": "ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207f7",
+  "cuda_elapsed_time_ms": 14412,
+  "cpu_elapsed_time_ms": 4947
+}
+```
