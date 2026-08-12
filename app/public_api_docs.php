@@ -525,7 +525,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
     $profileValidationOutput = [
         'name' => 'validation',
         'type' => 'object',
-        'condition' => 'Returned when a Whisper transcript is available; includes cer, status, needs_confirmation, and normalizer. When status=error it also includes error=transcript_validation_failed; error is omitted for every other status.',
+        'condition' => 'Returned when transcript validation metadata is available, including an expected_text seed before a Whisper transcript is available; that seed has cer=null and status=unverified. Includes cer, status, needs_confirmation, and normalizer. When status=error it also includes error=transcript_validation_failed; error is omitted for every other status.',
     ];
     $contract['operations'] = [
         [

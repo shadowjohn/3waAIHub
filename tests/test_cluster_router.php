@@ -5732,10 +5732,17 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
             'Cluster profile operations must document the exact status and confirmation proof fields'
         );
         $confirmConditionalOutputs = array_column((array)($operations['profile_confirm']['conditional_output_fields'] ?? []), null, 'name');
+        $validationCondition = (string)($conditionalOutputs['validation']['condition'] ?? '');
         hub_test_assert(
             ($confirmConditionalOutputs['validation'] ?? null) === ($conditionalOutputs['validation'] ?? null)
-            && str_contains((string)($confirmConditionalOutputs['validation']['condition'] ?? ''), 'status=error')
-            && str_contains((string)($confirmConditionalOutputs['validation']['condition'] ?? ''), 'transcript_validation_failed'),
+            && str_contains($validationCondition, 'transcript validation metadata is available')
+            && str_contains($validationCondition, 'expected_text seed')
+            && str_contains($validationCondition, 'before a Whisper transcript is available')
+            && str_contains($validationCondition, 'status=unverified')
+            && str_contains($validationCondition, 'cer=null')
+            && str_contains($validationCondition, 'status=error')
+            && str_contains($validationCondition, 'transcript_validation_failed')
+            && !str_contains($validationCondition, 'when a Whisper transcript is available'),
             'Cluster profile_confirm must retain the native conditional A0 validation result and error rule'
         );
         $confirmationProof = (string)($voice['workflow']['profile_confirmation_proof'] ?? '');

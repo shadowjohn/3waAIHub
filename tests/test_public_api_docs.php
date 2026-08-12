@@ -405,10 +405,17 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
         'profile_confirm must document its safe status plus exact confirmation proof'
     );
     $confirmConditionalOutputs = array_column((array)($operations['profile_confirm']['conditional_output_fields'] ?? []), null, 'name');
+    $validationCondition = (string)($conditionalOutputs['validation']['condition'] ?? '');
     hub_test_assert(
         ($confirmConditionalOutputs['validation'] ?? null) === ($conditionalOutputs['validation'] ?? null)
-        && str_contains((string)($confirmConditionalOutputs['validation']['condition'] ?? ''), 'status=error')
-        && str_contains((string)($confirmConditionalOutputs['validation']['condition'] ?? ''), 'transcript_validation_failed'),
+        && str_contains($validationCondition, 'transcript validation metadata is available')
+        && str_contains($validationCondition, 'expected_text seed')
+        && str_contains($validationCondition, 'before a Whisper transcript is available')
+        && str_contains($validationCondition, 'status=unverified')
+        && str_contains($validationCondition, 'cer=null')
+        && str_contains($validationCondition, 'status=error')
+        && str_contains($validationCondition, 'transcript_validation_failed')
+        && !str_contains($validationCondition, 'when a Whisper transcript is available'),
         'profile_confirm must document the same conditional A0 validation result and error rule as profile_status'
     );
     $confirmationProof = (string)($voice['workflow']['profile_confirmation_proof'] ?? '');
