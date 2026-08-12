@@ -208,7 +208,7 @@
 
   The CPU case is identical except ID
   `image_tools_cpu_upscale_golden`, `backend` `cpu`, and digest
-  `ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207`.
+  `ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207f7`.
   Keep runtime level at L4a until Task 4 succeeds.
 
 - [ ] **Step 3: Run focused Python/PHP tests.**
@@ -266,7 +266,7 @@
     --fixture packs/image-tools/demo/smoke.png \
     --direct-sync \
     --expected-cuda-sha256 a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e \
-    --expected-cpu-sha256 ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207
+    --expected-cpu-sha256 ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207f7
   ```
 
   Expected: both invocations exit 0 and output exactly one safe JSON object

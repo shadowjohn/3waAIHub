@@ -595,28 +595,48 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     hub_test_assert(is_int($l4aEvidence['elapsed_time_ms']) && $l4aEvidence['elapsed_time_ms'] > 0, 'image-tools L4a evidence elapsed time must be a positive integer');
     hub_test_assert(str_contains($l4aAcceptance, 'no source image/inference output'), 'image-tools L4a acceptance section must declare that it records no source image/inference output');
 
-    foreach (['L4b', 'L5'] as $level) {
+    $cudaOutputSha256 = 'a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e';
+    $cpuOutputSha256 = 'ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207f7';
+    $assertEvidenceBase = static function (array $evidence, string $level) use ($cudaOutputSha256, $cpuOutputSha256): void {
+        $dateParts = [];
+        hub_test_assert(is_string($evidence['date']) && preg_match('/\A(\d{4})-(\d{2})-(\d{2})\z/D', $evidence['date'], $dateParts) === 1 && checkdate((int)$dateParts[2], (int)$dateParts[3], (int)$dateParts[1]), 'image-tools ' . $level . ' evidence date must be a real YYYY-MM-DD calendar date');
+        hub_test_assert(is_string($evidence['image_tag']) && preg_match('/\A[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*:[A-Za-z0-9][A-Za-z0-9_.-]*\z/D', $evidence['image_tag']) === 1, 'image-tools ' . $level . ' evidence image tag must be a safe repository:tag');
+        hub_test_assert($evidence['exit_result'] === 0, 'image-tools ' . $level . ' evidence must record successful exit result 0');
+        hub_test_assert($evidence['model'] === 'realesrgan-x4plus', 'image-tools ' . $level . ' evidence model mismatch');
+        hub_test_assert($evidence['dimensions'] === [8, 12], 'image-tools ' . $level . ' evidence dimensions mismatch');
+        hub_test_assert($evidence['headers_verified'] === true, 'image-tools ' . $level . ' evidence must verify response headers');
+        hub_test_assert($evidence['cuda_output_sha256'] === $cudaOutputSha256 && $evidence['cpu_output_sha256'] === $cpuOutputSha256, 'image-tools ' . $level . ' evidence golden digests mismatch');
+        foreach (['cuda_elapsed_time_ms', 'cpu_elapsed_time_ms'] as $elapsedKey) {
+            hub_test_assert(is_int($evidence[$elapsedKey]) && $evidence[$elapsedKey] > 0, 'image-tools ' . $level . ' evidence ' . $elapsedKey . ' must be a positive integer');
+        }
+    };
+    $evidenceKeys = [
+        'L4b' => ['date', 'image_tag', 'exit_result', 'model', 'dimensions', 'headers_verified', 'cuda_output_sha256', 'cpu_output_sha256', 'cuda_elapsed_time_ms', 'cpu_elapsed_time_ms'],
+        'L5' => ['date', 'image_tag', 'exit_result', 'model', 'benchmark_cases', 'status', 'dimensions', 'headers_verified', 'cuda_output_sha256', 'cpu_output_sha256', 'cuda_elapsed_time_ms', 'cpu_elapsed_time_ms'],
+    ];
+    foreach ($evidenceKeys as $level => $keys) {
         $sectionMatch = [];
         hub_test_assert(preg_match('/^## ' . $level . '[^\r\n]*\R+(.*?)(?=^##\s|\z)/ms', $acceptance, $sectionMatch) === 1, 'image-tools acceptance record must isolate an ' . $level . ' section');
         $section = (string)$sectionMatch[1];
         $blocks = [];
         hub_test_assert(preg_match_all('/^```json\s*\R(.*?)^```\s*$/ms', $section, $blocks) === 1, 'image-tools ' . $level . ' acceptance section must contain exactly one JSON evidence block');
         hub_test_assert(str_contains($section, 'no source image/inference output'), 'image-tools ' . $level . ' acceptance section must redact source image/inference output');
+        $evidenceKeyTokens = [];
+        preg_match_all('/"((?:[^"\\\\]|\\\\.)*)"\s*:/', trim((string)$blocks[1][0]), $evidenceKeyTokens);
+        hub_test_assert($evidenceKeyTokens[1] === $keys, 'image-tools ' . $level . ' evidence keys must be unique and ordered before decoding');
         try {
             $evidence = json_decode((string)$blocks[1][0], true, 512, JSON_THROW_ON_ERROR);
         } catch (JsonException) {
             $evidence = null;
         }
         hub_test_assert(is_array($evidence), 'image-tools ' . $level . ' acceptance evidence block must be JSON');
+        hub_test_assert(array_keys($evidence) === $keys, 'image-tools ' . $level . ' evidence keys and order must stay allowlisted');
+        $assertEvidenceBase($evidence, $level);
         if ($level === 'L4b') {
-            hub_test_assert(($evidence['outputs'] ?? []) === [
-                'cuda' => 'a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e',
-                'cpu' => 'ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207',
-            ], 'image-tools L4b evidence golden digests mismatch');
-            hub_test_assert(($evidence['dimensions'] ?? []) === [8, 12] && ($evidence['headers_verified'] ?? false) === true, 'image-tools L4b evidence dimensions or headers mismatch');
+            continue;
         } else {
-            hub_test_assert(($evidence['benchmark_cases'] ?? []) === ['image_tools_cuda_upscale_golden', 'image_tools_cpu_upscale_golden'], 'image-tools L5 evidence benchmark IDs mismatch');
-            hub_test_assert(($evidence['status'] ?? '') === 'pass', 'image-tools L5 evidence must record pass');
+            hub_test_assert($evidence['benchmark_cases'] === ['image_tools_cuda_upscale_golden', 'image_tools_cpu_upscale_golden'], 'image-tools L5 evidence benchmark IDs mismatch');
+            hub_test_assert($evidence['status'] === 'pass', 'image-tools L5 evidence must record pass');
         }
     }
 
@@ -642,7 +662,7 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
         $backend = $index === 0 ? 'cuda' : 'cpu';
         $digest = $index === 0
             ? 'a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e'
-            : 'ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207';
+            : $cpuOutputSha256;
         hub_test_assert(($case['type'] ?? '') === 'api' && ($case['mode'] ?? '') === 'image-tools' && ($case['method'] ?? '') === 'POST', 'image-tools ' . $backend . ' golden case transport mismatch');
         hub_test_assert(($case['real_inference'] ?? false) === true && ($case['fixture'] ?? '') === 'packs/image-tools/demo/smoke.png' && ($case['fixture_field'] ?? '') === 'image', 'image-tools ' . $backend . ' golden case fixture mismatch');
         hub_test_assert(($case['form'] ?? []) === ['operation' => 'upscale', 'model' => 'realesrgan-x4plus', 'backend' => $backend], 'image-tools ' . $backend . ' golden case form mismatch');

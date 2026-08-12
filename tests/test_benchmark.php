@@ -382,6 +382,39 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
     $png = (string)file_get_contents($fixture);
     $size = getimagesizefromstring($png);
     hub_test_assert(is_array($size), 'BiRefNet binary benchmark fixture is not a PNG');
+    $response = [
+        'status' => 200,
+        'headers' => [
+            'Content-Type: image/png',
+            'X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision',
+            'X-3waAIHub-Device: cuda',
+            'X-3waAIHub-Elapsed-Ms: 12',
+            'X-3waAIHub-Width: ' . $size[0],
+            'X-3waAIHub-Height: ' . $size[1],
+        ],
+        'body' => $png,
+    ];
+    $legacyResult = hub_benchmark_binary_response_result([
+        'expected_content_type' => 'image/png',
+        'expected_png' => true,
+        'expected_dimensions_from_fixture' => true,
+        'expected_response_headers' => [
+            'X-3waAIHub-Model',
+            'X-3waAIHub-Device',
+            'X-3waAIHub-Elapsed-Ms',
+            'X-3waAIHub-Width',
+            'X-3waAIHub-Height',
+        ],
+        'expected_keys' => ['must_not_be_checked_for_binary'],
+    ], $response, $fixture);
+    hub_test_assert($legacyResult === [
+        'content_type' => 'image/png',
+        'output_bytes' => strlen($png),
+        'width' => $size[0],
+        'height' => $size[1],
+        'response_headers_pass' => true,
+    ], 'legacy binary benchmark result must remain unchanged without golden fields');
+
     $result = hub_benchmark_binary_response_result([
         'expected_content_type' => 'image/png',
         'expected_png' => true,
@@ -400,18 +433,7 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
             'X-3waAIHub-Device' => 'cuda',
         ],
         'expected_keys' => ['must_not_be_checked_for_binary'],
-    ], [
-        'status' => 200,
-        'headers' => [
-            'Content-Type: image/png',
-            'X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision',
-            'X-3waAIHub-Device: cuda',
-            'X-3waAIHub-Elapsed-Ms: 12',
-            'X-3waAIHub-Width: ' . $size[0],
-            'X-3waAIHub-Height: ' . $size[1],
-        ],
-        'body' => $png,
-    ], $fixture);
+    ], $response, $fixture);
 
     hub_test_assert($result === [
         'content_type' => 'image/png',
@@ -439,18 +461,7 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
             'X-3waAIHub-Device' => 'cuda',
         ],
     ];
-    $baseResponse = [
-        'status' => 200,
-        'headers' => [
-            'Content-Type: image/png',
-            'X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision',
-            'X-3waAIHub-Device: cuda',
-            'X-3waAIHub-Elapsed-Ms: 12',
-            'X-3waAIHub-Width: ' . $size[0],
-            'X-3waAIHub-Height: ' . $size[1],
-        ],
-        'body' => $png,
-    ];
+    $baseResponse = $response;
     foreach ([
         'wrong dimensions' => [
             array_replace($baseCase, ['expected_dimensions' => [(int)$size[0] + 1, (int)$size[1]]]),
