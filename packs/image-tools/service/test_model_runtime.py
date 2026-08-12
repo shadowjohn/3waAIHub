@@ -217,6 +217,36 @@ class ModelRuntimeTest(unittest.TestCase):
             with self.assertRaisesRegex(ModelRuntimeError, "^invalid_backend$"):
                 model_runtime.build_upsampler("realesrgan-x4plus", "auto", model_path)
 
+    def test_build_upsampler_hides_vendor_loader_failures(self) -> None:
+        model_path = Path("/models/pinned.pth")
+        with patch.dict(sys.modules, {
+            "basicsr": None,
+            "basicsr.archs": None,
+            "basicsr.archs.rrdbnet_arch": None,
+        }):
+            self.assert_code(
+                "model_load_failed",
+                lambda: model_runtime.build_upsampler("realesrgan-x4plus", "cpu", model_path),
+            )
+
+        rrdbnet = Mock(side_effect=ImportError("vendor architecture unavailable"))
+        modules = {
+            "basicsr": types.ModuleType("basicsr"),
+            "basicsr.archs": types.ModuleType("basicsr.archs"),
+            "basicsr.archs.rrdbnet_arch": types.ModuleType("basicsr.archs.rrdbnet_arch"),
+            "realesrgan": types.ModuleType("realesrgan"),
+            "realesrgan.archs": types.ModuleType("realesrgan.archs"),
+            "realesrgan.archs.srvgg_arch": types.ModuleType("realesrgan.archs.srvgg_arch"),
+        }
+        modules["basicsr.archs.rrdbnet_arch"].RRDBNet = rrdbnet
+        modules["realesrgan"].RealESRGANer = Mock(name="RealESRGANer")
+        modules["realesrgan.archs.srvgg_arch"].SRVGGNetCompact = Mock(name="SRVGGNetCompact")
+        with patch.dict(sys.modules, modules):
+            self.assert_code(
+                "model_load_failed",
+                lambda: model_runtime.build_upsampler("realesrgan-x4plus", "cpu", model_path),
+            )
+
     def test_docker_installs_pinned_torch_before_disabling_build_isolation(self) -> None:
         dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
         requirements = (Path(__file__).parent / "requirements.txt").read_text(encoding="utf-8")

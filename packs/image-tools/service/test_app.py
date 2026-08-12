@@ -19,6 +19,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import model_runtime
+
 
 class _FastAPI:
     def __init__(self, *args, **kwargs) -> None:
@@ -104,8 +106,13 @@ class AppTest(unittest.TestCase):
         for code in ("model_not_present", "model_load_failed"):
             with self.subTest(code=code), patch.object(self.app, "verify_ready", side_effect=self.app.ModelRuntimeError(code)):
                 self.assertEqual(unavailable, self.app.health())
-        with patch.object(self.app, "verify_ready", return_value={"commit": "pinned"}):
+        with patch.object(self.app, "verify_ready", return_value={"commit": "pinned"}), patch.object(
+            model_runtime,
+            "build_upsampler",
+            side_effect=AssertionError("health must not load models"),
+        ) as build_upsampler:
             health = self.app.health()
+        build_upsampler.assert_not_called()
         self.assertEqual({
             "ok": True,
             "service": "image-tools",

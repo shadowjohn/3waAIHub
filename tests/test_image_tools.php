@@ -567,6 +567,16 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     hub_test_assert(!str_contains($l4aSection, '`L4b-real-inference`／`runtime_ready=true`'), 'image-tools L4a runbook section must not claim L4b ready');
     hub_test_assert(!str_contains($l4aSection, '`L5-benchmark-ready`／`runtime_ready=true`'), 'image-tools L4a runbook section must not claim L5 ready');
 
+    $acceptance = (string)file_get_contents(HUB_ROOT . '/docs/operations/image-tools-acceptance.md');
+    preg_match('/^## L4a[^\r\n]*\R+(.*?)(?=^##\s|\z)/ms', $acceptance, $l4aAcceptanceMatch);
+    $l4aAcceptance = (string)($l4aAcceptanceMatch[1] ?? '');
+    hub_test_assert($l4aAcceptance !== '', 'image-tools acceptance record must isolate an L4a section before later runtime levels');
+    foreach (['date', 'image tag', 'exit result', 'backend', 'commit', 'loaded family IDs', 'aliases', 'elapsed time'] as $field) {
+        hub_test_assert(str_contains($l4aAcceptance, $field), 'image-tools L4a acceptance section must retain only the safe evidence field ' . $field);
+    }
+    hub_test_assert(str_contains($l4aAcceptance, 'no source image/inference output'), 'image-tools L4a acceptance section must declare that it records no source image/inference output');
+    hub_test_assert(!str_contains($l4aAcceptance, 'SHA-256'), 'image-tools L4a acceptance section must not record concrete SHA-256 values');
+
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['name'] ?? '') === '影像工具', 'image-tools display name must remain generic Chinese');
     hub_test_assert(($manifest['description'] ?? '') === '本機複合式影像處理工具；目前提供 Real-ESRGAN 圖片放大，後續功能將以獨立 operation 擴充。', 'image-tools description must describe the extensible Chinese image-tools Pack');
