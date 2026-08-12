@@ -481,8 +481,28 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
             array_replace($baseCase, ['expected_dimensions' => [(int)$size[0], 0]]),
             $baseResponse,
         ],
+        'non-array dimensions' => [
+            array_replace($baseCase, ['expected_dimensions' => '2x2']),
+            $baseResponse,
+        ],
+        'three dimensions' => [
+            array_replace($baseCase, ['expected_dimensions' => [(int)$size[0], (int)$size[1], 1]]),
+            $baseResponse,
+        ],
+        'float dimensions' => [
+            array_replace($baseCase, ['expected_dimensions' => [(float)$size[0], (int)$size[1]]]),
+            $baseResponse,
+        ],
         'invalid digest' => [
             array_replace($baseCase, ['expected_sha256' => strtoupper(hash('sha256', $png))]),
+            $baseResponse,
+        ],
+        'short lowercase digest' => [
+            array_replace($baseCase, ['expected_sha256' => str_repeat('a', 63)]),
+            $baseResponse,
+        ],
+        'non-array response header map' => [
+            array_replace($baseCase, ['expected_response_header_values' => 'cuda']),
             $baseResponse,
         ],
         'invalid response header map' => [
