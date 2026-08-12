@@ -103,6 +103,11 @@ tests, existing `unittest` runner.
    'runtime_level': 'L3-offline-assets', 'runtime_ready': True}
   ```
 
+  Patch `model_runtime.build_upsampler` to raise if called and assert it remains
+  uncalled: pre-promotion `/health` verifies only the marker and must not load
+  a model. Task 4 changes this same expectation to L4a only after its real
+  CPU smoke and recorded evidence succeed.
+
   Keep the missing/tampered marker case at `L1-contract` and `runtime_ready`
   false.
 
@@ -306,7 +311,8 @@ tests, existing `unittest` runner.
   Expected: all source-level Python tests pass and Docker reports a successful
   image build. The Docker output must include the L4a smoke unit tests, but
   not an unmounted real model smoke. Run the full PHP contract gate only in
-  Task 4 after recording actual CPU smoke evidence.
+  Task 4 after recording actual CPU smoke evidence; this source gate is valid
+  while the operational manifest and marker-only `/health` remain L3.
 
 - [ ] **Step 6: Commit the generic L3 identity and build gate.**
 
@@ -360,17 +366,25 @@ tests, existing `unittest` runner.
   source image/inference output` and exactly one `json` fenced evidence block.
   Its top-level key order is fixed: `date`, `image_tag`, `exit_result`,
   `backend`, `commit`, `loaded_family_ids`, `aliases`, `elapsed_time_ms`.
-  Populate every value from Step 2's command and its installed image metadata.
-  Do not add a second JSON block, host paths, model binaries, uploaded images,
-  output images, or full container logs.
+  Populate every value from Step 2's command and its installed image metadata:
+  nonempty date and image tag, numeric `exit_result` `0`, backend `cpu`, commit
+  `a4abfb2979a7bbff3f69f58f58ae324608821e27`, family IDs
+  `realesrgan-x4plus`, `realesrgan-x4plus-anime`, and
+  `realesr-animevideov3` in that order, all five public aliases in their
+  manifest order, and a nonnegative numeric elapsed time. Do not add a second
+  JSON block, host paths, model binaries, uploaded images, output images, or
+  full container logs.
 
 - [ ] **Step 4: Promote the public L4a state only after the evidence exists.**
 
-  First extend `test_app.py` and `tests/test_image_tools.php` to require
-  `L4a-model-init-smoke`, the exact installed Compose command from Step 2, the
-  structured acceptance JSON keys, and no L4b/L5-ready claim. Then change
-  `pack.json` and the marker-only ready branch in `app.py` to
-  `L4a-model-init-smoke`; `health()` must still not call `build_upsampler()`.
+  First change the pre-promotion `test_app.py` health expectation from
+  `L3-offline-assets` to `L4a-model-init-smoke`, preserving the patched
+  `build_upsampler` assertion that it remains uncalled. Extend
+  `tests/test_image_tools.php` to require the exact installed Compose command
+  from Step 2, the successful structured acceptance JSON, and no L4b/L5-ready
+  claim. Then change `pack.json` and the marker-only ready branch in `app.py`
+  to `L4a-model-init-smoke`; `health()` must still not call
+  `build_upsampler()`.
   Update the README and runbook to state current L4a, publish only Step 2's
   installed Compose command, and state that it proves initialization only.
   L4b HTTP inference and L5 benchmark/quality acceptance remain unclaimed.
