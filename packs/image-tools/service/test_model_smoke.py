@@ -80,6 +80,20 @@ class ModelSmokeTest(unittest.TestCase):
         self.assertEqual(1, status)
         self.assertEqual({"ok": False, "error": "model_load_failed"}, json.loads(output))
 
+    def test_smoke_hides_marker_failures_before_any_load(self) -> None:
+        self.assert_shared_loader()
+        for code in ("model_not_present", "model_load_failed"):
+            with self.subTest(code=code):
+                loader = Mock()
+                with patch.object(model_smoke, "verify_ready", side_effect=ModelRuntimeError(code)) as verify_ready, patch.object(model_smoke, "build_upsampler", loader):
+                    status, output = self.invoke(["--model-dir", "/models"])
+
+                verify_ready.assert_called_once_with(Path("/models"))
+                loader.assert_not_called()
+                self.assertEqual(1, status)
+                self.assertEqual({"ok": False, "error": code}, json.loads(output))
+                self.assertNotIn("/models", output)
+
     def test_smoke_rejects_auto_backend(self) -> None:
         try:
             with redirect_stderr(io.StringIO()):
