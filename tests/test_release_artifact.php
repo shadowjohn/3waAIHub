@@ -84,6 +84,12 @@ hub_test('release builder creates a hash-verified private deployment artifact', 
         hub_test_assert(str_contains($bootstrap, "dirname(__DIR__) . '/app/bootstrap.php'"), 'public bootstrap must load private app code');
         $login = (string)file_get_contents($output . '/public/login.php');
         hub_test_assert(str_contains($login, "__DIR__ . '/_bootstrap.php'"), 'public entrypoint must use private bootstrap bridge');
+        $publicApiDocs = (string)file_get_contents($output . '/public/public_api_docs.php');
+        hub_test_assert(str_contains($publicApiDocs, "dirname(__DIR__) . '/app/public_api_docs.php'"), 'public API docs must load private helper code outside document root');
+        foreach (glob($output . '/public/*.php') ?: [] as $entrypoint) {
+            $entrypointSource = (string)file_get_contents($entrypoint);
+            hub_test_assert(preg_match("#(?:require(?:_once)?\\s+)__DIR__\\s*\\.\\s*'/app/#", $entrypointSource) !== 1, 'public entrypoint must not load app code from document root: ' . basename($entrypoint));
+        }
 
         $dataProbe = hub_run_command([
             PHP_BINARY,

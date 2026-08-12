@@ -147,11 +147,12 @@ function hub_release_build_rewrite_public_php(string $content, string $relative)
         ) ?? $content;
         return preg_replace("#__DIR__\\s*\\.\\s*'/\\.\\./app/#", "dirname(__DIR__, 2) . '/app/", $content) ?? $content;
     }
-    return preg_replace(
+    $content = preg_replace(
         "#(require(?:_once)?\\s+)__DIR__\\s*\\.\\s*'/app/bootstrap\\.php'#",
         "$1__DIR__ . '/_bootstrap.php'",
         $content,
     ) ?? $content;
+    return preg_replace("#__DIR__\\s*\\.\\s*'/app/#", "dirname(__DIR__) . '/app/", $content) ?? $content;
 }
 
 function hub_release_build_manifest(string $root): array
