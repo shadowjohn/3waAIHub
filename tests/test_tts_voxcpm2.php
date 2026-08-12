@@ -37,6 +37,131 @@ if (is_file($hubPlaygroundTtsArtifacts)) {
     require_once $hubPlaygroundTtsArtifacts;
 }
 
+hub_test('Voice profile transcript validation normalizes UTF-8 text and reports CER', function (): void {
+    $clean = hub_voice_transcript_validation(
+        '今天天氣很好，我想出去走走。',
+        "今天天氣很好\n我想出去走走"
+    );
+    hub_test_assert(
+        ($clean['transcript']['normalized'] ?? '') === '今天天氣很好我想出去走走'
+        && ($clean['expected_text']['normalized'] ?? '') === '今天天氣很好我想出去走走'
+        && ($clean['validation']['cer'] ?? null) === 0.0
+        && ($clean['validation']['status'] ?? '') === 'clean'
+        && ($clean['validation']['needs_confirmation'] ?? true) === false,
+        'matching Chinese transcript must normalize punctuation/newlines and be clean'
+    );
+
+    $variant = hub_voice_transcript_validation('台湾今天很好', '臺灣今天很好');
+    hub_test_assert(($variant['validation']['cer'] ?? 1.0) === 0.0, 's2twp transcript validation must compare Taiwan variants consistently');
+
+    $pass = hub_voice_transcript_validation('一二三四五六七八九十一二三四五六七八九十', '一二三四五六七八九零一二三四五六七八九十');
+    hub_test_assert((float)($pass['validation']['cer'] ?? 1.0) <= 0.05 && ($pass['validation']['status'] ?? '') === 'pass' && !($pass['validation']['needs_confirmation'] ?? true), 'small CER must pass without a confirmation flag');
+
+    $review = hub_voice_transcript_validation('一二三四五六七八九十', '一二三四五六七八九零');
+    hub_test_assert(($review['validation']['status'] ?? '') === 'review_required' && ($review['validation']['needs_confirmation'] ?? false), 'large CER must require review');
+
+    $unverified = hub_voice_transcript_validation(null, 'draft only');
+    hub_test_assert(array_key_exists('cer', $unverified['validation']) && $unverified['validation']['cer'] === null && ($unverified['validation']['status'] ?? '') === 'unverified' && ($unverified['validation']['needs_confirmation'] ?? false), 'missing expected text must remain unverified');
+});
+
+hub_test('VoxCPM2 profile_prepare stores raw Whisper text and validation without confirming', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $memberId = hub_create_api_member($db, 'Transcript validation owner');
+        $path = hub_voice_profile_storage_dir() . '/transcript-validation.wav';
+        file_put_contents($path, 'RIFFvalidation');
+        try {
+            $profileId = hub_create_voice_profile($db, $memberId, [
+                'name' => 'Transcript validation profile',
+                'reference_audio_path' => $path,
+                'consent_type' => 'self_recorded',
+                'transcript_validation_json' => hub_voice_profile_validation_json('台湾今天很好', null),
+            ]);
+            $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '127.0.0.1', ['owner_member_id' => $memberId]);
+            $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')->execute([':task_id' => $taskId, ':id' => $profileId]);
+            $claimed = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_run_voice_profile_prepare_task($db, $claimed ?? [], static fn (): array => [
+                'ok' => true,
+                'text' => '臺灣今天很好',
+                'language' => 'zh',
+                'device' => ['effective' => 'cpu'],
+            ]);
+            $profile = hub_get_voice_profile($db, $profileId);
+            $validation = json_decode((string)($profile['transcript_validation_json'] ?? ''), true);
+            $status = hub_voice_profile_task_status_payload($db, hub_get_task($db, $taskId) ?? [], $profile ?? [], true);
+            hub_test_assert(
+                ($validation['transcript']['raw'] ?? '') === '臺灣今天很好'
+                && (float)($validation['validation']['cer'] ?? -1.0) === 0.0
+                && ($validation['validation']['status'] ?? '') === 'clean'
+                && ($status['transcript']['raw'] ?? '') === '臺灣今天很好'
+                && ($status['expected_text']['raw'] ?? '') === '台湾今天很好'
+                && ($status['validation']['status'] ?? '') === 'clean'
+                && ($profile['prompt_text_confirmed_at'] ?? null) === null,
+                'profile_prepare must retain raw Whisper text, validate it, and leave confirmation to profile_confirm'
+            );
+        } finally {
+            if (is_file($path)) {
+                unlink($path);
+            }
+        }
+    });
+});
+
+hub_test('Edge TTS ground-truth text can feed Voice Profile validation', function (): void {
+    hub_test_assert(is_file(HUB_ROOT . '/packs/edge-tts/pack.json'), 'Edge TTS fixture Pack must remain available');
+    $groundTruth = '今天台灣的天氣很好，我們一起出發。';
+    $validation = hub_voice_transcript_validation($groundTruth, "今天台灣的天氣很好\n我們一起出發");
+    hub_test_assert(($validation['validation']['status'] ?? '') === 'clean' && (float)($validation['validation']['cer'] ?? -1) === 0.0, 'Edge TTS ground truth must validate after subtitle formatting differences');
+});
+
+hub_test('VoxCPM2 profile_prepare accepts optional expected_text without putting it in task input', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Expected text owner');
+        $token = hub_create_api_token($db, $memberId, 'expected text token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $tmpName = tempnam(sys_get_temp_dir(), 'voice-profile-expected-');
+        if ($tmpName === false) {
+            throw new RuntimeException('Cannot create expected text WAV fixture.');
+        }
+        file_put_contents($tmpName, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+        try {
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=voice-profile-expected';
+            $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'Expected text profile',
+                'consent_type' => 'self_recorded',
+                'expected_text' => '台湾今天很好',
+            ], [], ['reference_wav' => [
+                'name' => 'expected.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $tmpName,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($tmpName),
+            ]]);
+            $taskId = (int)(hub_test_audio_payload($response)['task_id'] ?? 0);
+            $task = hub_get_task($db, $taskId);
+            $profile = hub_get_voice_profile($db, (int)($task['input']['voice_profile_id'] ?? 0));
+            $seed = json_decode((string)($profile['transcript_validation_json'] ?? ''), true);
+            hub_test_assert(
+                $response['status'] === 200
+                && array_keys((array)($task['input'] ?? [])) === ['voice_profile_id']
+                && ($seed['expected_text']['raw'] ?? '') === '台湾今天很好'
+                && ($seed['validation']['status'] ?? '') === 'unverified'
+                && ($profile['prompt_text_confirmed_at'] ?? null) === null,
+                'expected_text must be stored for validation while the queued task stays path-free and unconfirmed'
+            );
+        } finally {
+            if (is_file($tmpName)) {
+                unlink($tmpName);
+            }
+        }
+    });
+});
+
 hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', function (): void {
     $pack = hub_get_pack('tts-voxcpm2');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'tts-voxcpm2 pack must be valid');

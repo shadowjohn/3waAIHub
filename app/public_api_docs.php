@@ -273,7 +273,7 @@ resolve_url() {
 
 PREPARED="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
   -F 'operation=profile_prepare' -F 'profile_name=<PROFILE_NAME>' \
-  -F 'consent_type=self_recorded' -F 'reference_wav=@<REFERENCE_WAV>' \
+  -F 'consent_type=self_recorded' -F 'expected_text=<EXPECTED_TEXT>' -F 'reference_wav=@<REFERENCE_WAV>' \
   "${API}?mode={{MODE}}")"
 VOICE_PROFILE_TASK_ID="$(printf '%s' "${PREPARED}" | json_value task_id)" # <VOICE_PROFILE_TASK_ID>
 STATUS_URL_LINK="$(printf '%s' "${PREPARED}" | json_value status_url)"
@@ -532,6 +532,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
                 ['name' => 'profile_name', 'type' => 'string', 'required' => true, 'max_length' => 120],
                 ['name' => 'consent_type', 'type' => 'string', 'required' => true, 'enum' => ['self_recorded', 'explicit_permission', 'licensed_voice']],
                 ['name' => 'prompt_text', 'type' => 'string', 'required' => false, 'max_length' => 20000],
+                ['name' => 'expected_text', 'type' => 'string', 'required' => false, 'max_length' => 20000, 'description' => 'Optional ground-truth text for Whisper CER validation.'],
                 ['name' => 'transcript_confirmed', 'type' => 'boolean', 'required' => false],
                 ['name' => 'language', 'type' => 'string', 'required' => false, 'max_length' => 64],
                 ['name' => 'callback_target', 'type' => 'string', 'required' => false],
@@ -548,6 +549,18 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
                 'type' => 'string',
                 'condition' => 'Returned only to the authenticated Profile member when transcript_confirmed=false; omitted after confirmation.',
                 'max_length' => 20000,
+            ], [
+                'name' => 'transcript',
+                'type' => 'object',
+                'condition' => 'Returned to the authenticated Profile member while the transcript is unconfirmed; contains raw Whisper text and normalized validation text.',
+            ], [
+                'name' => 'expected_text',
+                'type' => 'object or null',
+                'condition' => 'Returned when expected_text was supplied; raw and normalized forms are included before confirmation.',
+            ], [
+                'name' => 'validation',
+                'type' => 'object',
+                'condition' => 'Returned when a Whisper transcript is available; includes cer, status, needs_confirmation, and normalizer.',
             ]],
         ],
         [
@@ -581,7 +594,8 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
         'client_state' => 'MyAI stores voice_profile_task_id returned by profile_prepare.',
         'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with ' . $mode . ' permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
-        'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft as prompt_text; the confirmed transcript is omitted.',
+        'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft and transcript validation (raw/normalized); the confirmed transcript is omitted.',
+        'transcript_validation' => 'profile_prepare accepts optional expected_text. Whisper raw text is preserved as transcript.raw, both sides use OpenCC s2twp normalization, and CER is Levenshtein distance divided by normalized expected character count. status is clean at CER 0, pass at <= 0.05, review_required above 0.05, and unverified when expected_text is absent. profile_prepare never confirms a profile; call profile_confirm with the human-reviewed text.',
         'steps' => [
             'profile_prepare',
             'task_status via returned status_url',
@@ -615,6 +629,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
         ['code' => 'voice_profile_prepare_incomplete', 'http_status' => 409],
         ['code' => 'voice_profile_confirm_failed', 'http_status' => 409],
         ['code' => 'voice_profile_prepare_failed', 'http_status' => 500],
+        ['code' => 'transcript_validation_failed', 'http_status' => 500],
         ['code' => 'voice_profile_delete_failed', 'http_status' => 500],
         ['code' => 'voice_profile_changed', 'task_status' => 'failed'],
         ['code' => 'voice_profile_unavailable', 'http_status' => 410, 'task_status' => 'failed'],

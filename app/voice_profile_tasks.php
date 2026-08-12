@@ -108,6 +108,26 @@ function hub_voice_profile_task_status_payload(PDO $db, array $task, array $prof
     if (!$tombstone && $includeDraft && !$confirmed && $promptText !== '') {
         $payload['prompt_text'] = substr($promptText, 0, 20000);
     }
+    if (!$tombstone) {
+        $validation = json_decode((string)($profile['transcript_validation_json'] ?? ''), true);
+        if (is_array($validation) && is_array($validation['validation'] ?? null)) {
+            $payload['validation'] = $validation['validation'] + [
+                'normalizer' => (string)($validation['normalizer'] ?? HUB_VOICE_TRANSCRIPT_NORMALIZER_VERSION),
+            ];
+            if ($includeDraft && !$confirmed) {
+                if (is_array($validation['transcript'] ?? null)) {
+                    $payload['transcript'] = [
+                        'raw' => substr((string)($validation['transcript']['raw'] ?? ''), 0, 20000),
+                        'normalized' => substr((string)($validation['transcript']['normalized'] ?? ''), 0, 20000),
+                    ];
+                }
+                $expected = $validation['expected_text'] ?? null;
+                $payload['expected_text'] = is_array($expected)
+                    ? ['raw' => substr((string)($expected['raw'] ?? ''), 0, 20000), 'normalized' => substr((string)($expected['normalized'] ?? ''), 0, 20000)]
+                    : null;
+            }
+        }
+    }
 
     return $payload;
 }
@@ -290,7 +310,7 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
         return hub_gateway_error(400, 'invalid_request', 'invalid request');
     }
     if (
-        array_diff(array_keys($payload), ['operation', 'profile_name', 'consent_type', 'prompt_text', 'transcript_confirmed', 'language', 'callback_target', 'expires_in_seconds']) !== []
+        array_diff(array_keys($payload), ['operation', 'profile_name', 'consent_type', 'prompt_text', 'expected_text', 'transcript_confirmed', 'language', 'callback_target', 'expires_in_seconds']) !== []
         || count($_FILES) !== 1
         || !is_array($_FILES['reference_wav'] ?? null)
     ) {
@@ -311,8 +331,15 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
     $tokenId = (int)($authContext['token_id'] ?? 0);
     $profileName = trim((string)($payload['profile_name'] ?? ''));
     $promptText = trim((string)($payload['prompt_text'] ?? ''));
+    if (array_key_exists('expected_text', $payload) && !is_string($payload['expected_text'])) {
+        return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'voice profile transcript is invalid');
+    }
+    $expectedText = array_key_exists('expected_text', $payload) ? $payload['expected_text'] : null;
     $language = trim((string)($payload['language'] ?? ''));
-    if ($memberId < 1 || $profileName === '' || strlen($profileName) > 120 || strlen($promptText) > 20000 || strlen($language) > 64) {
+    if ($expectedText === '' || ($expectedText !== null && preg_match('//u', $expectedText) !== 1)) {
+        return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'voice profile transcript is invalid');
+    }
+    if ($memberId < 1 || $profileName === '' || strlen($profileName) > 120 || strlen($promptText) > 20000 || ($expectedText !== null && strlen($expectedText) > 20000) || strlen($language) > 64) {
         return hub_gateway_error(400, 'invalid_request', 'invalid request');
     }
     $confirmed = false;
@@ -354,6 +381,7 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
             'name' => $profileName,
             'consent_type' => $consentType,
             'prompt_text' => $promptText,
+            'expected_text' => $expectedText,
             'language' => $language,
             'transcript_confirmed' => $confirmed,
             'expires_at' => $expiresAt,
@@ -368,10 +396,11 @@ function hub_voice_profile_api_prepare(PDO $db, array $route, array $authContext
             $callbackTargetId,
             $confirmed,
             $promptText,
+            $expectedText,
             &$taskId
         ): void {
             $profile = (array)$createdState['profile'];
-            if ($confirmed) {
+            if ($confirmed && $expectedText === null) {
                 $profile = hub_confirm_voice_profile_prompt_in_transaction($db, (int)$profile['id'], $memberId, $promptText);
             }
             $previousTaskId = (int)($createdState['previous_source_task_id'] ?? 0);

@@ -23,6 +23,166 @@ function hub_voice_profile_storage_dir(): string
     return $dir;
 }
 
+const HUB_VOICE_TRANSCRIPT_NORMALIZER_VERSION = 's2twp-strip-punctuation-v1';
+
+function hub_voice_transcript_opencc(string $text): string
+{
+    $binary = is_executable('/usr/bin/opencc') ? '/usr/bin/opencc' : (is_executable('/usr/local/bin/opencc') ? '/usr/local/bin/opencc' : 'opencc');
+    $config = null;
+    foreach (['/usr/share/opencc/s2twp.json', '/usr/local/share/opencc/s2twp.json'] as $candidate) {
+        if (is_file($candidate) && is_readable($candidate)) {
+            $config = $candidate;
+            break;
+        }
+    }
+    if ($config === null || !function_exists('proc_open')) {
+        throw new RuntimeException('voice_profile_transcript_normalization_failed');
+    }
+    $inputPath = tempnam(sys_get_temp_dir(), 'aihub-transcript-in-');
+    $outputPath = tempnam(sys_get_temp_dir(), 'aihub-transcript-out-');
+    if ($inputPath === false || $outputPath === false || file_put_contents($inputPath, $text) === false) {
+        if (is_string($inputPath)) {
+            @unlink($inputPath);
+        }
+        if (is_string($outputPath)) {
+            @unlink($outputPath);
+        }
+        throw new RuntimeException('voice_profile_transcript_normalization_failed');
+    }
+    @chmod($inputPath, 0600);
+    @chmod($outputPath, 0600);
+    $pipes = [];
+    $process = @proc_open([$binary, '-i', $inputPath, '-o', $outputPath, '-c', $config], [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
+    if (!is_resource($process)) {
+        @unlink($inputPath);
+        @unlink($outputPath);
+        throw new RuntimeException('voice_profile_transcript_normalization_failed');
+    }
+    $error = stream_get_contents($pipes[2]);
+    @fclose($pipes[1]);
+    @fclose($pipes[2]);
+    $exitCode = proc_close($process);
+    $converted = $exitCode === 0 ? file_get_contents($outputPath) : false;
+    @unlink($inputPath);
+    @unlink($outputPath);
+    if ($converted === false || $exitCode !== 0 || trim((string)$error) !== '') {
+        throw new RuntimeException('voice_profile_transcript_normalization_failed');
+    }
+
+    return str_replace('臺', '台', $converted);
+}
+
+function hub_voice_transcript_normalize(string $text): string
+{
+    if (preg_match('//u', $text) !== 1) {
+        throw new RuntimeException('voice_profile_transcript_normalization_failed');
+    }
+    if (!class_exists('Normalizer')) {
+        throw new RuntimeException('voice_profile_transcript_normalization_failed');
+    }
+    $normalized = Normalizer::normalize($text, Normalizer::FORM_C);
+    if ($normalized === false) {
+        throw new RuntimeException('voice_profile_transcript_normalization_failed');
+    }
+    $text = $normalized;
+    $text = hub_voice_transcript_opencc(str_replace(["\r", "\n", "\t"], ' ', $text));
+    $text = preg_replace('/[\p{P}]+/u', '', $text);
+    $text = preg_replace('/\s+/u', ' ', (string)$text);
+    if ($text === null) {
+        throw new RuntimeException('voice_profile_transcript_normalization_failed');
+    }
+    do {
+        $previous = $text;
+        $text = preg_replace('/([\p{Han}])\s+([\p{Han}])/u', '$1$2', $text);
+        if ($text === null) {
+            throw new RuntimeException('voice_profile_transcript_normalization_failed');
+        }
+    } while ($text !== $previous);
+
+    return trim($text);
+}
+
+function hub_voice_transcript_cer(string $reference, string $recognized): float
+{
+    $referenceChars = preg_split('//u', $reference, -1, PREG_SPLIT_NO_EMPTY);
+    $recognizedChars = preg_split('//u', $recognized, -1, PREG_SPLIT_NO_EMPTY);
+    if ($referenceChars === false || $recognizedChars === false) {
+        throw new RuntimeException('voice_profile_transcript_validation_failed');
+    }
+    $referenceCount = count($referenceChars);
+    if ($referenceCount === 0) {
+        return count($recognizedChars) === 0 ? 0.0 : 1.0;
+    }
+    $previous = range(0, count($recognizedChars));
+    foreach ($referenceChars as $row => $referenceChar) {
+        $current = [$row + 1];
+        foreach ($recognizedChars as $column => $recognizedChar) {
+            $current[] = min(
+                $current[$column] + 1,
+                $previous[$column + 1] + 1,
+                $previous[$column] + ($referenceChar === $recognizedChar ? 0 : 1)
+            );
+        }
+        $previous = $current;
+    }
+
+    return (float)$previous[count($recognizedChars)] / $referenceCount;
+}
+
+function hub_voice_transcript_validation(?string $expectedText, string $whisperRawText): array
+{
+    $transcriptNormalized = hub_voice_transcript_normalize($whisperRawText);
+    $transcript = ['raw' => $whisperRawText, 'normalized' => $transcriptNormalized];
+    if ($expectedText === null) {
+        return [
+            'normalizer' => HUB_VOICE_TRANSCRIPT_NORMALIZER_VERSION,
+            'transcript' => $transcript,
+            'expected_text' => null,
+            'validation' => ['cer' => null, 'status' => 'unverified', 'needs_confirmation' => true],
+        ];
+    }
+    if ($expectedText === '') {
+        throw new InvalidArgumentException('voice_profile_transcript_invalid');
+    }
+    $expectedNormalized = hub_voice_transcript_normalize($expectedText);
+    if ($expectedNormalized === '') {
+        throw new InvalidArgumentException('voice_profile_transcript_invalid');
+    }
+    $cer = hub_voice_transcript_cer($expectedNormalized, $transcriptNormalized);
+    $status = $cer === 0.0 ? 'clean' : ($cer <= 0.05 ? 'pass' : 'review_required');
+
+    return [
+        'normalizer' => HUB_VOICE_TRANSCRIPT_NORMALIZER_VERSION,
+        'transcript' => $transcript,
+        'expected_text' => ['raw' => $expectedText, 'normalized' => $expectedNormalized],
+        'validation' => ['cer' => $cer, 'status' => $status, 'needs_confirmation' => $status === 'review_required'],
+    ];
+}
+
+function hub_voice_profile_validation_json(?string $expectedText, ?string $whisperRawText): ?string
+{
+    if ($expectedText === null && $whisperRawText === null) {
+        return null;
+    }
+    if ($whisperRawText === null) {
+        $expectedNormalized = $expectedText === null ? null : hub_voice_transcript_normalize($expectedText);
+        if ($expectedText !== null && $expectedNormalized === '') {
+            throw new InvalidArgumentException('voice_profile_transcript_invalid');
+        }
+        $validation = [
+            'normalizer' => HUB_VOICE_TRANSCRIPT_NORMALIZER_VERSION,
+            'transcript' => null,
+            'expected_text' => $expectedText === null ? null : ['raw' => $expectedText, 'normalized' => $expectedNormalized],
+            'validation' => ['cer' => null, 'status' => 'unverified', 'needs_confirmation' => true],
+        ];
+    } else {
+        $validation = hub_voice_transcript_validation($expectedText, $whisperRawText);
+    }
+    $json = json_encode($validation, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+    return $json;
+}
+
 function hub_normalize_voice_profile_ref(string|int $value): int
 {
     $value = trim((string)$value);
@@ -567,7 +727,8 @@ function hub_validate_voice_profile_wav(array $upload): array
 
 function hub_voice_profile_transcription_error_code(mixed $error): string
 {
-    return trim((string)$error) === 'asr_unavailable' ? 'asr_unavailable' : 'asr_failed';
+    $error = trim((string)$error);
+    return in_array($error, ['asr_unavailable', 'transcript_validation_failed'], true) ? $error : 'asr_failed';
 }
 
 function hub_voice_profile_transcription_lease_seconds(PDO $db): int
@@ -778,18 +939,65 @@ function hub_run_voice_profile_transcription(PDO $db, array $profile, int $owner
         ];
     }
 
-    $text = trim((string)($transcription['text'] ?? ''));
+    $rawText = (string)($transcription['whisper_raw_text'] ?? $transcription['raw_text'] ?? $transcription['text'] ?? '');
+    $text = trim($rawText);
     $language = trim((string)($transcription['language'] ?? '')) ?: 'auto';
     $device = is_array($transcription['device'] ?? null) ? $transcription['device'] : [];
+    $validationJson = null;
+    try {
+        $storedValidation = json_decode((string)($profile['transcript_validation_json'] ?? ''), true);
+        $storedExpected = is_array($storedValidation) && is_array($storedValidation['expected_text'] ?? null)
+            ? (string)($storedValidation['expected_text']['raw'] ?? '')
+            : '';
+        $expectedText = $storedExpected === '' ? null : $storedExpected;
+        $validationJson = hub_voice_profile_validation_json($expectedText, $rawText);
+    } catch (Throwable) {
+        $validationJson = json_encode([
+            'normalizer' => HUB_VOICE_TRANSCRIPT_NORMALIZER_VERSION,
+            'transcript' => ['raw' => $rawText, 'normalized' => null],
+            'expected_text' => isset($expectedText) && $expectedText !== null ? ['raw' => $expectedText, 'normalized' => null] : null,
+            'validation' => ['cer' => null, 'status' => 'error', 'needs_confirmation' => true, 'error' => 'transcript_validation_failed'],
+        ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $error = 'transcript_validation_failed';
+        $finalization = hub_finalize_voice_profile_transcription(
+            $db,
+            $profileId,
+            $ownerMemberId,
+            "UPDATE voice_profiles SET prompt_text = :prompt_text, language = :language, prompt_text_confirmed_at = NULL, transcription_status = 'failed', transcription_error = :transcription_error, transcript_validation_json = :transcript_validation_json, transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND deleted_at IS NULL AND transcription_status = 'pending' AND transcription_lease_token = :transcription_lease_token",
+            [
+                ':prompt_text' => $text,
+                ':language' => $language,
+                ':transcription_error' => $error,
+                ':transcript_validation_json' => $validationJson,
+                ':updated_at' => hub_now(),
+                ':id' => $profileId,
+                ':transcription_lease_token' => $leaseToken,
+            ],
+            ['status' => 'validation_error', 'error' => $error]
+        );
+        if ($finalization === 'lost') {
+            return hub_voice_profile_lost_lease_response($db, $profileId, $profile);
+        }
+        if ($finalization !== 'applied') {
+            return hub_voice_profile_save_failure_response($db, $profileId, $profile);
+        }
+
+        return [
+            'profile' => hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing'),
+            'cache_hit' => false,
+            'transcription' => ['ok' => false, 'error' => $error, 'message' => 'Transcript validation failed'],
+        ];
+    }
     $finalization = hub_finalize_voice_profile_transcription(
         $db,
         $profileId,
         $ownerMemberId,
-        "UPDATE voice_profiles SET prompt_text = :prompt_text, language = :language, prompt_text_confirmed_at = NULL, transcription_status = :transcription_status, transcription_error = NULL, transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND deleted_at IS NULL AND transcription_status = 'pending' AND transcription_lease_token = :transcription_lease_token",
+        "UPDATE voice_profiles SET prompt_text = :prompt_text, language = :language, prompt_text_confirmed_at = NULL, transcription_status = :transcription_status, transcription_error = NULL, transcript_validation_json = :transcript_validation_json, transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND deleted_at IS NULL AND transcription_status = 'pending' AND transcription_lease_token = :transcription_lease_token",
         [
             ':prompt_text' => $text,
             ':language' => $language,
             ':transcription_status' => 'ready',
+            ':transcript_validation_json' => $validationJson,
             ':updated_at' => hub_now(),
             ':id' => $profileId,
             ':transcription_lease_token' => $leaseToken,
@@ -810,7 +1018,7 @@ function hub_run_voice_profile_transcription(PDO $db, array $profile, int $owner
     return [
         'profile' => hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('voice_profile_missing'),
         'cache_hit' => false,
-        'transcription' => ['ok' => true, 'text' => $text, 'language' => $language, 'device' => $device],
+        'transcription' => ['ok' => true, 'text' => $text, 'whisper_raw_text' => $rawText, 'language' => $language, 'device' => $device, 'validation' => json_decode((string)$validationJson, true)],
     ];
 }
 
@@ -1018,6 +1226,16 @@ function hub_create_uploaded_voice_profile_internal(PDO $db, int $ownerMemberId,
                 throw new RuntimeException('voice_profile_upload_failed');
             }
             if ($deferTranscription) {
+                if (array_key_exists('expected_text', $input) && $input['expected_text'] !== null) {
+                    $validationSeed = hub_voice_profile_validation_json((string)$input['expected_text'], null);
+                    $seed = $db->prepare('UPDATE voice_profiles SET transcript_validation_json = :validation WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL');
+                    $seed->execute([
+                        ':validation' => $validationSeed,
+                        ':id' => (int)$profile['id'],
+                        ':owner_member_id' => $ownerMemberId,
+                    ]);
+                    $profile = hub_get_voice_profile($db, (int)$profile['id']) ?? throw new RuntimeException('voice_profile_missing');
+                }
                 $deferredCache = hub_apply_cached_voice_profile_draft_in_transaction(
                     $db,
                     $profile,
@@ -1060,6 +1278,9 @@ function hub_create_uploaded_voice_profile_internal(PDO $db, int $ownerMemberId,
                 'visibility' => 'private',
                 'retain_original_audio' => $input['retain_original_audio'] ?? 1,
                 'prompt_text' => $deferTranscription ? ($input['prompt_text'] ?? null) : null,
+                'transcript_validation_json' => $deferTranscription
+                    ? hub_voice_profile_validation_json(isset($input['expected_text']) ? (string)$input['expected_text'] : null, null)
+                    : null,
                 'language' => $deferTranscription ? ($input['language'] ?? null) : null,
                 'transcription_status' => $deferTranscription && trim((string)($input['prompt_text'] ?? '')) !== '' ? 'ready' : 'pending',
                 'expires_at' => $input['expires_at'] ?? null,
@@ -1154,6 +1375,7 @@ function hub_transcribe_voice_profile(PDO $db, array $upload): array
             return [
                 'ok' => true,
                 'text' => trim((string)($body['text'] ?? '')),
+                'whisper_raw_text' => (string)($body['whisper_raw_text'] ?? $body['raw_text'] ?? $body['text'] ?? ''),
                 'language' => (string)($body['language'] ?? 'auto'),
                 'device' => is_array($body['device'] ?? null) ? $body['device'] : [],
             ];
@@ -1218,6 +1440,9 @@ function hub_create_voice_profile(PDO $db, int $ownerMemberId, array $input): in
     }
 
     $promptText = trim((string)($input['prompt_text'] ?? '')) ?: null;
+    $transcriptValidationJson = isset($input['transcript_validation_json'])
+        ? (string)$input['transcript_validation_json']
+        : null;
     $transcriptionStatus = trim((string)($input['transcription_status'] ?? ''));
     if ($transcriptionStatus === '') {
         $transcriptionStatus = $promptText === null ? 'pending' : 'ready';
@@ -1233,10 +1458,10 @@ function hub_create_voice_profile(PDO $db, int $ownerMemberId, array $input): in
     $transcriptionLeaseToken = $transcriptionStatus === 'pending' ? bin2hex(random_bytes(32)) : null;
     $stmt = $db->prepare(
         'INSERT INTO voice_profiles
-            (owner_member_id, name, reference_audio_path, reference_audio_sha256, prompt_text, language,
+            (owner_member_id, name, reference_audio_path, reference_audio_sha256, prompt_text, transcript_validation_json, language,
              transcription_status, transcription_error, transcription_started_at, transcription_lease_token, consent_type, usage_scope, visibility, retain_original_audio, expires_at, created_at, updated_at)
          VALUES
-            (:owner_member_id, :name, :reference_audio_path, :reference_audio_sha256, :prompt_text, :language,
+            (:owner_member_id, :name, :reference_audio_path, :reference_audio_sha256, :prompt_text, :transcript_validation_json, :language,
              :transcription_status, :transcription_error, :transcription_started_at, :transcription_lease_token, :consent_type, :usage_scope, :visibility, :retain_original_audio, :expires_at, :created_at, :updated_at)'
     );
     $stmt->execute([
@@ -1245,6 +1470,7 @@ function hub_create_voice_profile(PDO $db, int $ownerMemberId, array $input): in
         ':reference_audio_path' => $path,
         ':reference_audio_sha256' => hash_file('sha256', $path),
         ':prompt_text' => $promptText,
+        ':transcript_validation_json' => $transcriptValidationJson,
         ':language' => trim((string)($input['language'] ?? '')) ?: null,
         ':transcription_status' => $transcriptionStatus,
         ':transcription_error' => $transcriptionError,
@@ -1492,10 +1718,11 @@ function hub_soft_delete_voice_profile(PDO $db, int $profileId, int $ownerMember
         $now = hub_now();
         $stmt = $db->prepare(
             "UPDATE voice_profiles
-             SET deleted_at = COALESCE(deleted_at, :deleted_at),
+                 SET deleted_at = COALESCE(deleted_at, :deleted_at),
                  name = 'Deleted voice profile',
                  reference_audio_sha256 = '',
                  prompt_text = NULL,
+                 transcript_validation_json = NULL,
                  prompt_text_confirmed_at = NULL,
                  language = NULL,
                  transcription_status = 'failed',
@@ -1557,6 +1784,7 @@ function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100
                OR reference_audio_path <> ''
                OR reference_audio_sha256 <> ''
                OR prompt_text IS NOT NULL
+               OR transcript_validation_json IS NOT NULL
                OR prompt_text_confirmed_at IS NOT NULL
                OR language IS NOT NULL
                OR name <> 'Expired voice profile'
@@ -1600,6 +1828,7 @@ function hub_prune_expired_voice_profiles(PDO $db, string $now, int $limit = 100
                  SET name = 'Expired voice profile',
                      reference_audio_sha256 = '',
                      prompt_text = NULL,
+                     transcript_validation_json = NULL,
                      prompt_text_confirmed_at = NULL,
                      language = NULL,
                      transcription_error = NULL,
