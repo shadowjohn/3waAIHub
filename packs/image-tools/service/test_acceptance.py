@@ -79,6 +79,21 @@ class AcceptanceTest(unittest.TestCase):
             {"endpoint": "http://example.test", "fixture": Path("smoke.png"), "backend": "cpu", "model": MODEL, "gateway": False, "expected_sha256": cpu_digest},
         ], [call.kwargs for call in run_sync.call_args_list])
 
+    def test_cli_forwards_each_expected_digest_to_its_gateway_backend(self) -> None:
+        cuda_digest = "a" * 64
+        cpu_digest = "b" * 64
+        health = {"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L4a-model-init-smoke", "runtime_ready": True}
+        with patch.object(sys, "argv", ["acceptance.py", "--service-url", "http://service.test", "--fixture", "smoke.png", "--gateway-url", "http://gateway.test/api.php", "--token", "test-token", "--expected-cuda-sha256", cuda_digest, "--expected-cpu-sha256", cpu_digest]), patch("acceptance._json_response", return_value=(health, b"{}")), patch("acceptance.run_sync", side_effect=[{"backend": "cuda"}, {"backend": "cpu"}]) as run_sync, patch("acceptance.run_async", side_effect=[{"backend": "cuda"}, {"backend": "cpu"}]) as run_async:
+            self.assertEqual(0, main())
+        self.assertEqual([
+            {"endpoint": "http://gateway.test/api.php", "fixture": Path("smoke.png"), "backend": "cuda", "model": MODEL, "gateway": True, "token": "test-token", "expected_sha256": cuda_digest},
+            {"endpoint": "http://gateway.test/api.php", "fixture": Path("smoke.png"), "backend": "cpu", "model": MODEL, "gateway": True, "token": "test-token", "expected_sha256": cpu_digest},
+        ], [call.kwargs for call in run_sync.call_args_list])
+        self.assertEqual([
+            {"gateway_url": "http://gateway.test/api.php", "fixture": Path("smoke.png"), "backend": "cuda", "model": MODEL, "token": "test-token"},
+            {"gateway_url": "http://gateway.test/api.php", "fixture": Path("smoke.png"), "backend": "cpu", "model": MODEL, "token": "test-token"},
+        ], [call.kwargs for call in run_async.call_args_list])
+
     def test_sync_cuda_response_rejects_cpu_metadata(self) -> None:
         with self.assertRaises(AssertionError):
             validate_sync_response(200, headers("cpu", 8, 12), png_bytes((8, 12)), backend="cuda", model=MODEL, dimensions=(8, 12))
