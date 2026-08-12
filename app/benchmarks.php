@@ -256,6 +256,28 @@ function hub_benchmark_binary_response_result(array $case, array $response, stri
     $expectedType = strtolower(trim((string)$case['expected_content_type']));
     $body = (string)($response['body'] ?? '');
     $size = !empty($case['expected_png']) ? getimagesizefromstring($body) : false;
+    $expectedDimensions = $case['expected_dimensions'] ?? null;
+    $expectedDigest = $case['expected_sha256'] ?? null;
+    $expectedHeaderValues = $case['expected_response_header_values'] ?? null;
+    if (array_key_exists('expected_dimensions', $case)
+        && (!is_array($expectedDimensions) || array_keys($expectedDimensions) !== [0, 1]
+            || !is_int($expectedDimensions[0]) || !is_int($expectedDimensions[1])
+            || $expectedDimensions[0] < 1 || $expectedDimensions[1] < 1)) {
+        throw new RuntimeException('benchmark contract check failed.');
+    }
+    if (array_key_exists('expected_sha256', $case)
+        && (!is_string($expectedDigest) || preg_match('/^[0-9a-f]{64}$/', $expectedDigest) !== 1)) {
+        throw new RuntimeException('benchmark contract check failed.');
+    }
+    if (array_key_exists('expected_response_header_values', $case) && !is_array($expectedHeaderValues)) {
+        throw new RuntimeException('benchmark contract check failed.');
+    }
+    $expectedHeaderValues = is_array($expectedHeaderValues) ? $expectedHeaderValues : [];
+    foreach ($expectedHeaderValues as $name => $value) {
+        if (!is_string($name) || !is_string($value)) {
+            throw new RuntimeException('benchmark contract check failed.');
+        }
+    }
     $failed = (int)($response['status'] ?? 0) !== 200
         || strtolower((string)($headers['content-type'] ?? '')) !== $expectedType
         || (!empty($case['expected_png']) && (!str_starts_with($body, "\x89PNG\r\n\x1a\n") || !is_array($size) || ($size['mime'] ?? '') !== 'image/png'));
@@ -264,8 +286,17 @@ function hub_benchmark_binary_response_result(array $case, array $response, stri
         $fixtureSize = is_file($fixture) ? getimagesize($fixture) : false;
         $failed = $failed || !is_array($size) || !is_array($fixtureSize) || $size[0] !== $fixtureSize[0] || $size[1] !== $fixtureSize[1];
     }
+    if (is_array($expectedDimensions)) {
+        $failed = $failed || !is_array($size) || $size[0] !== $expectedDimensions[0] || $size[1] !== $expectedDimensions[1];
+    }
+    if (is_string($expectedDigest)) {
+        $failed = $failed || !hash_equals($expectedDigest, hash('sha256', $body));
+    }
     foreach (array_map('strval', $case['expected_response_headers'] ?? []) as $name) {
         $failed = $failed || trim((string)($headers[strtolower($name)] ?? '')) === '';
+    }
+    foreach ($expectedHeaderValues as $name => $value) {
+        $failed = $failed || ($headers[strtolower(trim($name))] ?? null) !== $value;
     }
     if (is_array($size)) {
         $failed = $failed
@@ -279,13 +310,18 @@ function hub_benchmark_binary_response_result(array $case, array $response, stri
         throw new RuntimeException('benchmark contract check failed.');
     }
 
-    return [
+    $result = [
         'content_type' => $expectedType,
         'output_bytes' => strlen($body),
         'width' => is_array($size) ? (int)$size[0] : 0,
         'height' => is_array($size) ? (int)$size[1] : 0,
         'response_headers_pass' => true,
     ];
+    if (is_string($expectedDigest)) {
+        $result['output_sha256'] = hash('sha256', $body);
+    }
+
+    return $result;
 }
 
 function hub_benchmark_gemma4_photo_case(PDO $db, array $pack, array $case, array $service, int $serviceId, string $mode): array
@@ -721,9 +757,25 @@ function hub_pack_l5_readiness(PDO $db, string $packId): array
     }
     if ($realCaseIds !== []) {
         $placeholders = implode(',', array_fill(0, count($realCaseIds), '?'));
-        $stmt = $db->prepare("SELECT status FROM benchmark_runs WHERE benchmark_key IN ({$placeholders}) ORDER BY id DESC LIMIT 1");
+        $stmt = $db->prepare(
+            "SELECT runs.benchmark_key, runs.status
+             FROM benchmark_runs AS runs
+             JOIN (
+                 SELECT benchmark_key, MAX(id) AS id
+                 FROM benchmark_runs
+                 WHERE benchmark_key IN ({$placeholders})
+                 GROUP BY benchmark_key
+             ) AS latest ON latest.id = runs.id"
+        );
         $stmt->execute($realCaseIds);
-        $realInferencePass = (string)($stmt->fetchColumn() ?: '') === 'pass';
+        $latestStatuses = [];
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $run) {
+            $latestStatuses[(string)$run['benchmark_key']] = (string)$run['status'];
+        }
+        $realInferencePass = count($latestStatuses) === count($realCaseIds);
+        foreach ($realCaseIds as $caseId) {
+            $realInferencePass = $realInferencePass && ($latestStatuses[$caseId] ?? null) === 'pass';
+        }
     }
 
     $output = is_array($contract['output'] ?? null) ? $contract['output'] : [];

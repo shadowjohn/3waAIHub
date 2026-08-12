@@ -190,6 +190,8 @@ hub_test('L5 SAM3 contract benchmark records mock and real cases', function (): 
         'elapsed_ms' => 1,
         'model' => ['checkpoint' => '/models/sam3/sam3.pt'],
     ], null);
+    hub_save_benchmark_run($db, 'sam3_real_polygon_image', (int)$service['id'], 'sam3', 'pass', 123, ['ok' => true], null);
+    hub_save_benchmark_run($db, 'sam3_real_png_mask', (int)$service['id'], 'sam3', 'pass', 123, ['ok' => true], null);
     $readiness = hub_pack_l5_readiness($db, 'sam3');
     hub_test_assert($readiness['checks']['real_inference_benchmark_passed'] === true, 'SAM3 real benchmark pass must update readiness');
     hub_test_assert($readiness['runtime_level'] === 'L5-benchmark-ready', 'SAM3 readiness must show promoted L5');
@@ -430,7 +432,7 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
         ],
         'expected_response_header_values' => [
             'X-3waAIHub-Model' => 'ZhengPeng7/BiRefNet@revision',
-            'X-3waAIHub-Device' => 'cuda',
+            'x-3waaihub-device' => 'cuda',
         ],
         'expected_keys' => ['must_not_be_checked_for_binary'],
     ], $response, $fixture);
@@ -475,6 +477,18 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
             array_replace($baseCase, ['expected_response_header_values' => ['X-3waAIHub-Device' => 'cpu']]),
             $baseResponse,
         ],
+        'invalid dimensions' => [
+            array_replace($baseCase, ['expected_dimensions' => [(int)$size[0], 0]]),
+            $baseResponse,
+        ],
+        'invalid digest' => [
+            array_replace($baseCase, ['expected_sha256' => strtoupper(hash('sha256', $png))]),
+            $baseResponse,
+        ],
+        'invalid response header map' => [
+            array_replace($baseCase, ['expected_response_header_values' => ['X-3waAIHub-Device' => 1]]),
+            $baseResponse,
+        ],
     ] as $label => [$case, $response]) {
         $caught = false;
         try {
@@ -485,4 +499,30 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
         }
         hub_test_assert($caught, $label . ' must fail the binary benchmark contract');
     }
+});
+
+hub_test('L5 readiness requires the latest pass for every real benchmark case', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'structure-ppstructurev3', [
+        'service_key' => 'structure-readiness-main',
+        'mode' => 'structure',
+        'name' => 'Structure Readiness Main',
+        'port_mode' => 'manual',
+        'local_port' => 18109,
+        'environment' => 'production',
+        'idempotent' => true,
+    ]);
+    $serviceId = (int)$installed['service']['id'];
+
+    hub_save_benchmark_run($db, 'structure_page_pdf', $serviceId, 'structure', 'pass', 1, ['ok' => true], null);
+    hub_test_assert(hub_pack_l5_readiness($db, 'structure-ppstructurev3')['checks']['real_inference_benchmark_passed'] === false,
+        'one real benchmark pass must not satisfy dual-case readiness');
+
+    hub_save_benchmark_run($db, 'structure_10page_pdf', $serviceId, 'structure', 'pass', 1, ['ok' => true], null);
+    hub_test_assert(hub_pack_l5_readiness($db, 'structure-ppstructurev3')['checks']['real_inference_benchmark_passed'] === true,
+        'both latest real benchmark passes must satisfy readiness');
+
+    hub_save_benchmark_run($db, 'structure_page_pdf', $serviceId, 'structure', 'fail', 1, ['ok' => false], 'failed');
+    hub_test_assert(hub_pack_l5_readiness($db, 'structure-ppstructurev3')['checks']['real_inference_benchmark_passed'] === false,
+        'a later real benchmark failure must revoke readiness');
 });
