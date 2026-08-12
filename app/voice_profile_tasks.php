@@ -540,11 +540,10 @@ function hub_voice_profile_api_confirm(PDO $db, array $authContext, array $paylo
         return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'voice profile transcript is invalid');
     }
     $rawTaskId = (string)$rawTaskId;
-    $promptText = trim($promptText);
     if (preg_match('/^[1-9][0-9]*$/', $rawTaskId) !== 1 || strlen($rawTaskId) > 18) {
         return hub_gateway_error(400, 'invalid_request', 'invalid request');
     }
-    if ($promptText === '' || strlen($promptText) > 20000) {
+    if (!hub_voice_profile_confirmation_text_is_valid($promptText)) {
         return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'voice profile transcript is invalid');
     }
 
@@ -581,7 +580,11 @@ function hub_voice_profile_api_confirm(PDO $db, array $authContext, array $paylo
         return hub_gateway_error(409, 'voice_profile_confirm_failed', 'voice profile confirmation failed');
     }
 
-    return hub_gateway_json(200, hub_voice_profile_task_status_payload($db, $task, $profile, false));
+    $response = hub_voice_profile_task_status_payload($db, $task, $profile, false);
+    $response['voice_profile_task_id'] = $rawTaskId;
+    $response['prompt_text_sha256'] = hash('sha256', (string)$profile['prompt_text']);
+
+    return hub_gateway_json(200, $response);
 }
 
 function hub_voice_profile_api_delete(PDO $db, array $authContext, array $payload): array

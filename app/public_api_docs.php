@@ -571,7 +571,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
                 $profileTaskField,
                 ['name' => 'prompt_text', 'type' => 'string', 'required' => true, 'max_length' => 20000],
             ],
-            'output_keys' => $profileStatusOutput,
+            'output_keys' => [...$profileStatusOutput, 'voice_profile_task_id', 'prompt_text_sha256'],
         ],
         [
             'operation' => 'profile_delete',

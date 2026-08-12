@@ -1538,10 +1538,24 @@ function hub_confirm_voice_profile_prompt(PDO $db, int $profileId, int $ownerMem
     }
 }
 
+function hub_voice_profile_confirmation_text_is_valid(string $promptText): bool
+{
+    if ($promptText === '' || strlen($promptText) > 80000 || preg_match('//u', $promptText) !== 1) {
+        return false;
+    }
+    if (preg_match('/[\x{0000}-\x{0008}\x{000B}\x{000C}\x{000E}-\x{001F}\x{007F}-\x{009F}]/u', $promptText) === 1) {
+        return false;
+    }
+    $characters = function_exists('mb_strlen')
+        ? mb_strlen($promptText, 'UTF-8')
+        : preg_match_all('/./us', $promptText);
+
+    return is_int($characters) && $characters <= 20000;
+}
+
 function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId, int $ownerMemberId, string $promptText): array
 {
-    $promptText = trim($promptText);
-    if ($promptText === '') {
+    if (!hub_voice_profile_confirmation_text_is_valid($promptText)) {
         throw new InvalidArgumentException('voice_profile_transcript_invalid');
     }
 

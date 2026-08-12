@@ -222,6 +222,14 @@ function hub_test_cluster_voice_profile_status_payload(array $overrides = []): a
     ], $overrides);
 }
 
+function hub_test_cluster_voice_profile_confirmation_payload(string $remoteTaskId, string $promptText, array $overrides = []): array
+{
+    return array_replace(hub_test_cluster_voice_profile_status_payload(), [
+        'voice_profile_task_id' => $remoteTaskId,
+        'prompt_text_sha256' => hash('sha256', $promptText),
+    ], $overrides);
+}
+
 function hub_test_cluster_voxcpm2_canonical_json(mixed $value): string
 {
     $normalize = static function (mixed $item) use (&$normalize): mixed {
@@ -3223,7 +3231,7 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
                     static function (array $request) use ($remotePrepareTaskId): void {
                         hub_test_assert($request['body'] === '{"operation":"profile_confirm","voice_profile_task_id":"' . $remotePrepareTaskId . '","prompt_text":"owner draft"}', 'profile_confirm JSON must replace only the opaque route');
                     },
-                    hub_test_cluster_voice_profile_status_payload(),
+                    hub_test_cluster_voice_profile_confirmation_payload($remotePrepareTaskId, 'owner draft'),
                 ],
                 [
                     hub_test_cluster_router_request((string)$customer['plain_token'], [
@@ -3322,8 +3330,15 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
             hub_test_assert(count($requests) === 8, 'prepare plus seven pinned profile requests must dispatch exactly once each');
             hub_test_assert(str_contains($responses[0]['body'], 'owner draft'), 'profile_status may return the owner unconfirmed transcript draft');
             hub_test_assert(str_contains($responses[3]['body'], 'owner query draft'), 'GET profile_status may return the owner unconfirmed transcript draft');
+            $confirmedPayload = json_decode($responses[1]['body'], true, 64, JSON_THROW_ON_ERROR);
             $deletedPayload = json_decode($responses[2]['body'], true, 64, JSON_THROW_ON_ERROR);
             $expiredPayload = json_decode($responses[4]['body'], true, 64, JSON_THROW_ON_ERROR);
+            hub_test_assert(
+                ($confirmedPayload['voice_profile_task_id'] ?? null) === $profileRoute
+                && ($confirmedPayload['prompt_text_sha256'] ?? null) === hash('sha256', 'owner draft')
+                && !array_key_exists('prompt_text', $confirmedPayload),
+                'profile_confirm must replace verified child proof with the opaque Router handle without returning transcript text'
+            );
             hub_test_assert(
                 ($deletedPayload['profile_status'] ?? null) === 'deleted'
                 && ($deletedPayload['transcription_status'] ?? null) === 'failed'
@@ -3340,10 +3355,13 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
                 && ($expiredPayload['reference_audio_sha256'] ?? null) === '',
                 'expired Profile tombstones must remain relayable with a null transcription error'
             );
-            foreach ($responses as $response) {
+            foreach ($responses as $index => $response) {
                 hub_test_assert($response['status'] === 200, 'all pinned profile operations must preserve successful child responses');
-                foreach ([$remotePrepareTaskId, '987654321012345677', '987654321012345676', 'profile-origin.internal', 'profile_loaded_token', '/private/profile.wav', '"voice_profile_id"', '"voice_profile_task_id"'] as $private) {
+                foreach ([$remotePrepareTaskId, '987654321012345677', '987654321012345676', 'profile-origin.internal', 'profile_loaded_token', '/private/profile.wav', '"voice_profile_id"'] as $private) {
                     hub_test_assert(!str_contains($response['body'], $private), 'Router profile response leaked child detail: ' . $private);
+                }
+                if ($index !== 1) {
+                    hub_test_assert(!str_contains($response['body'], '"voice_profile_task_id"'), 'only profile_confirm may return its opaque proof handle');
                 }
             }
             $routes = $db->query("SELECT route_id, station_id, remote_task_id FROM cluster_routes WHERE mode = 'voice_generate' AND is_async = 1 ORDER BY created_at, route_id")->fetchAll();
@@ -3355,6 +3373,79 @@ hub_test('cluster router keeps remote profile operations and synthesis on the pr
         } finally {
             @unlink($wavPath);
         }
+    });
+});
+
+hub_test('cluster router rejects missing forged or malformed profile confirmation proof', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'profile_confirmation_proof',
+            'station_token' => 'profile_confirmation_proof_token',
+        ], '42');
+        $inventory = hub_test_cluster_station_fixture([
+            'id' => (int)$fixture['station']['id'],
+            'station_key' => 'profile_confirmation_proof',
+            'modes' => ['voice_generate'],
+        ]);
+        $reviewed = "  reviewed\ttext  \\literal\r\n第二行  ";
+        $request = hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+            'headers' => ['Content-Type' => 'application/json'],
+            'raw_body' => json_encode([
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => $fixture['route_id'],
+                'prompt_text' => $reviewed,
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+        ]);
+        $valid = hub_test_cluster_voice_profile_confirmation_payload('42', $reviewed);
+        $missingTask = $valid;
+        unset($missingTask['voice_profile_task_id']);
+        $missingHash = $valid;
+        unset($missingHash['prompt_text_sha256']);
+        $cases = [
+            $missingTask,
+            $missingHash,
+            array_replace($valid, ['voice_profile_task_id' => '43']),
+            array_replace($valid, ['voice_profile_task_id' => ['42']]),
+            array_replace($valid, ['prompt_text_sha256' => hash('sha256', 'forged text')]),
+            array_replace($valid, ['prompt_text_sha256' => strtoupper(hash('sha256', $reviewed))]),
+            $valid + ['voice_profile_id' => 91],
+        ];
+        $calls = 0;
+        $accepted = hub_cluster_dispatch($db, 'voice_generate', $request, [
+            'refresh_due' => static fn (): array => [$inventory],
+            'transport' => static function () use (&$calls, $valid): array {
+                $calls++;
+                return hub_gateway_json(200, $valid);
+            },
+        ]);
+        $acceptedPayload = json_decode($accepted['body'], true, 64, JSON_THROW_ON_ERROR);
+        hub_test_assert(
+            $accepted['status'] === 200
+            && ($acceptedPayload['voice_profile_task_id'] ?? null) === $fixture['route_id']
+            && ($acceptedPayload['prompt_text_sha256'] ?? null) === hash('sha256', $reviewed)
+            && !array_key_exists('prompt_text', $acceptedPayload),
+            'valid exact-byte confirmation proof must return only its opaque route and authoritative hash'
+        );
+        foreach ($cases as $childPayload) {
+            $response = hub_cluster_dispatch($db, 'voice_generate', $request, [
+                'refresh_due' => static fn (): array => [$inventory],
+                'transport' => static function () use (&$calls, $childPayload): array {
+                    $calls++;
+                    return hub_gateway_json(200, $childPayload);
+                },
+            ]);
+            hub_test_assert(
+                $response['status'] === 502
+                && str_contains($response['body'], 'router_response_invalid')
+                && !str_contains($response['body'], '"voice_profile_task_id"')
+                && !str_contains($response['body'], $reviewed)
+                && !str_contains($response['body'], 'voice_profile_id'),
+                'profile confirmation proof mismatch must fail closed without leaking child identity or prompt material'
+            );
+        }
+        hub_test_assert($calls === count($cases) + 1, 'valid and invalid confirmation proofs must each dispatch exactly once to the pinned station');
     });
 });
 
@@ -3649,7 +3740,7 @@ hub_test('cluster voice profile handles survive same-member token rotation', fun
             ],
             [
                 'operation=profile_confirm&voice_profile_task_id=' . $fixture['route_id'] . '&prompt_text=confirmed',
-                hub_test_cluster_voice_profile_status_payload(),
+                hub_test_cluster_voice_profile_confirmation_payload('42', 'confirmed'),
             ],
             [
                 'operation=synthesize&mode=clone&voice_profile_task_id=' . $fixture['route_id'] . '&text=clone',
@@ -5509,9 +5600,9 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         );
         $operations = array_column((array)$voice['operations'], null, 'operation');
         hub_test_assert(
-            ($operations['profile_confirm']['output_keys'] ?? null) === $statusOutput
+            ($operations['profile_confirm']['output_keys'] ?? null) === [...$statusOutput, 'voice_profile_task_id', 'prompt_text_sha256']
             && ($operations['profile_delete']['output_keys'] ?? null) === $statusOutput,
-            'Cluster profile status responses must document the exact bounded transcription error field'
+            'Cluster profile operations must document the exact status and confirmation proof fields'
         );
         hub_test_assert(
             ($voice['result_artifact_fields'] ?? null) === ['id', 'type', 'mime_type', 'size_bytes', 'sha256']

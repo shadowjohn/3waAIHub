@@ -400,7 +400,10 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
         'consent_type', 'reference_audio_sha256', 'created_at', 'updated_at',
     ];
     hub_test_assert(($profileStatus['output_keys'] ?? null) === $statusOutput, 'profile_status must document its exact bounded transcription error field');
-    hub_test_assert(($operations['profile_confirm']['output_keys'] ?? null) === $statusOutput, 'profile_confirm must document its actual safe status response');
+    hub_test_assert(
+        ($operations['profile_confirm']['output_keys'] ?? null) === [...$statusOutput, 'voice_profile_task_id', 'prompt_text_sha256'],
+        'profile_confirm must document its safe status plus exact confirmation proof'
+    );
     hub_test_assert(($operations['profile_delete']['output_keys'] ?? null) === $statusOutput, 'profile_delete must document its actual safe status response');
 
     $errors = array_column((array)($voice['error_table'] ?? []), null, 'code');

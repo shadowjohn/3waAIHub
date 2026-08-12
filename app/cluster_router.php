@@ -1573,7 +1573,14 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
                 $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
             } elseif ($isProfileRequest && in_array($profileResponseOperation, ['profile_status', 'profile_confirm', 'profile_delete'], true)) {
                 try {
-                    $payload = hub_cluster_router_public_voice_profile_response($payload, $profileResponseOperation === 'profile_status');
+                    $payload = $profileResponseOperation === 'profile_confirm'
+                        ? hub_cluster_router_public_voice_profile_confirmation_response(
+                            $payload,
+                            (string)($profileRoute['remote_task_id'] ?? ''),
+                            (string)($profileRoute['route_id'] ?? ''),
+                            is_string($profilePayload['prompt_text'] ?? null) ? $profilePayload['prompt_text'] : ''
+                        )
+                        : hub_cluster_router_public_voice_profile_response($payload, $profileResponseOperation === 'profile_status');
                     $response = hub_cluster_router_with_json_payload($response, $payload, $profileSensitive);
                 } catch (Throwable) {
                     $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
@@ -2648,6 +2655,39 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
         }
         $safe['expected_text'] = $payload['expected_text'] === null ? null : ['raw' => $payload['expected_text']['raw'], 'normalized' => $payload['expected_text']['normalized']];
     }
+
+    return $safe;
+}
+
+function hub_cluster_router_public_voice_profile_confirmation_response(
+    array $payload,
+    string $remoteTaskId,
+    string $routeId,
+    string $promptText
+): array {
+    $childTaskId = $payload['voice_profile_task_id'] ?? null;
+    $promptSha256 = $payload['prompt_text_sha256'] ?? null;
+    if ((!is_int($childTaskId) && !is_string($childTaskId))
+        || preg_match('/\A[1-9][0-9]{0,17}\z/', (string)$childTaskId) !== 1
+        || preg_match('/\A[1-9][0-9]{0,17}\z/', $remoteTaskId) !== 1
+        || !hash_equals($remoteTaskId, (string)$childTaskId)
+        || !is_string($promptSha256)
+        || preg_match('/\A[a-f0-9]{64}\z/', $promptSha256) !== 1
+        || !hash_equals(hash('sha256', $promptText), $promptSha256)
+        || !hub_cluster_router_profile_sensitive_route_id($routeId)
+    ) {
+        throw new UnexpectedValueException('invalid voice profile confirmation response');
+    }
+    unset($payload['voice_profile_task_id'], $payload['prompt_text_sha256']);
+    $safe = hub_cluster_router_public_voice_profile_response($payload, false);
+    if (($safe['profile_status'] ?? null) !== 'active'
+        || ($safe['transcript_confirmed'] ?? null) !== true
+        || !is_string($safe['prompt_text_confirmed_at'] ?? null)
+    ) {
+        throw new UnexpectedValueException('invalid voice profile confirmation response');
+    }
+    $safe['voice_profile_task_id'] = $routeId;
+    $safe['prompt_text_sha256'] = $promptSha256;
 
     return $safe;
 }
