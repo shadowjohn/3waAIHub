@@ -575,7 +575,7 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     hub_test_assert(preg_match_all('/^```json\s*\R(.*?)^```\s*$/ms', $l4aAcceptance, $jsonEvidenceBlocks) === 1, 'image-tools L4a acceptance section must contain exactly one JSON evidence block');
     $l4aEvidenceKeys = ['date', 'image_tag', 'exit_result', 'backend', 'commit', 'loaded_family_ids', 'aliases', 'elapsed_time_ms'];
     $evidenceKeyTokens = [];
-    hub_test_assert(preg_match_all('/"([a-z_]+)"\s*:/', trim((string)$jsonEvidenceBlocks[1][0]), $evidenceKeyTokens) >= 0, 'image-tools L4a acceptance evidence keys must be tokenizable');
+    preg_match_all('/"((?:[^"\\\\]|\\\\.)*)"\s*:/', trim((string)$jsonEvidenceBlocks[1][0]), $evidenceKeyTokens);
     hub_test_assert($evidenceKeyTokens[1] === $l4aEvidenceKeys, 'image-tools L4a acceptance evidence keys must be unique and ordered before decoding');
     try {
         $l4aEvidence = json_decode((string)$jsonEvidenceBlocks[1][0], true, 512, JSON_THROW_ON_ERROR);
