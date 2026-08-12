@@ -2286,11 +2286,13 @@ hub_test('cluster router applies bounded native limits to voice multipart fields
         'query' => [],
     ]);
     $validPrompt = str_repeat('p', 1025);
+    $validExpectedText = str_repeat('e', 20000);
     $profile = $normalize([
         'operation' => 'profile_prepare',
         'profile_name' => 'Bounded profile',
         'consent_type' => 'self_recorded',
         'prompt_text' => $validPrompt,
+        'expected_text' => $validExpectedText,
     ]);
     $text = $normalize(['text' => str_repeat('t', 4096), 'voice_prompt' => str_repeat('v', 1024)]);
     $invalid = [
@@ -2299,6 +2301,12 @@ hub_test('cluster router applies bounded native limits to voice multipart fields
             'profile_name' => 'Oversized profile',
             'consent_type' => 'self_recorded',
             'prompt_text' => str_repeat('p', 20001),
+        ]),
+        $normalize([
+            'operation' => 'profile_prepare',
+            'profile_name' => 'Oversized expected text',
+            'consent_type' => 'self_recorded',
+            'expected_text' => str_repeat('e', 20001),
         ]),
         $normalize(['text' => 'synthesize', 'voice_prompt' => str_repeat('v', 1025)]),
         $normalize(['text' => str_repeat('t', 4097)]),
@@ -2310,8 +2318,9 @@ hub_test('cluster router applies bounded native limits to voice multipart fields
     hub_test_assert(
         !isset($profile['response'])
         && ($profile['form']['post']['prompt_text'] ?? null) === $validPrompt
+        && ($profile['form']['post']['expected_text'] ?? null) === $validExpectedText
         && !isset($text['response']),
-        'profile_prepare prompts over 1 KiB and synthesis text through 4096 bytes must reach the native contract'
+        'profile_prepare prompts and expected text through 20000 bytes and synthesis text through 4096 bytes must reach the native contract'
     );
     hub_test_assert(
         array_filter($invalid, static fn (array $result): bool => ($result['response']['status'] ?? 0) !== 400) === [],

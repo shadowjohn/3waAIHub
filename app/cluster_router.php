@@ -2070,6 +2070,7 @@ function hub_cluster_router_multipart_scalar_limits(string $mode, array $source)
             'profile_name' => 120,
             'consent_type' => 19,
             'prompt_text' => 20000,
+            'expected_text' => 20000,
             'transcript_confirmed' => 5,
             'language' => 64,
             'callback_target' => 32,
