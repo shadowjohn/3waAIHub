@@ -571,11 +571,16 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     preg_match('/^## L4a[^\r\n]*\R+(.*?)(?=^##\s|\z)/ms', $acceptance, $l4aAcceptanceMatch);
     $l4aAcceptance = (string)($l4aAcceptanceMatch[1] ?? '');
     hub_test_assert($l4aAcceptance !== '', 'image-tools acceptance record must isolate an L4a section before later runtime levels');
-    foreach (['date', 'image tag', 'exit result', 'backend', 'commit', 'loaded family IDs', 'aliases', 'elapsed time'] as $field) {
-        hub_test_assert(str_contains($l4aAcceptance, $field), 'image-tools L4a acceptance section must retain only the safe evidence field ' . $field);
+    $jsonEvidenceBlocks = [];
+    hub_test_assert(preg_match_all('/^```json\s*\R(.*?)^```\s*$/ms', $l4aAcceptance, $jsonEvidenceBlocks) === 1, 'image-tools L4a acceptance section must contain exactly one JSON evidence block');
+    try {
+        $l4aEvidence = json_decode((string)$jsonEvidenceBlocks[1][0], true, 512, JSON_THROW_ON_ERROR);
+    } catch (JsonException) {
+        $l4aEvidence = null;
     }
+    hub_test_assert(is_array($l4aEvidence), 'image-tools L4a acceptance evidence block must be a JSON object');
+    hub_test_assert(array_keys($l4aEvidence) === ['date', 'image_tag', 'exit_result', 'backend', 'commit', 'loaded_family_ids', 'aliases', 'elapsed_time_ms'], 'image-tools L4a acceptance evidence keys and order must stay allowlisted');
     hub_test_assert(str_contains($l4aAcceptance, 'no source image/inference output'), 'image-tools L4a acceptance section must declare that it records no source image/inference output');
-    hub_test_assert(!str_contains($l4aAcceptance, 'SHA-256'), 'image-tools L4a acceptance section must not record concrete SHA-256 values');
 
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['name'] ?? '') === '影像工具', 'image-tools display name must remain generic Chinese');

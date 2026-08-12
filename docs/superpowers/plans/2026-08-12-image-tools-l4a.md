@@ -9,9 +9,12 @@ upscaling, while retaining a generic Chinese Image Tools Pack identity.
 **Architecture:** Move only the Real-ESRGAN architecture/weight construction
 from `upscale_runner.py` to `model_runtime.py`. The existing runner still owns
 request/image/output processing, while `model_smoke.py` verifies the immutable
-marker once and calls the shared loader once per distinct model family. The
-manifest and `/health` announce L4a after this smoke implementation is
-available; L4b HTTP inference and L5 quality work remain separate.
+marker once and calls the shared loader once per distinct model family. Tasks
+1–3 retain the operational L3 marker state while they establish the generic
+identity and deterministic loader/build gate. Only a successful installed CPU
+smoke and its redacted L4a evidence record permit the manifest, `/health`, and
+operator documentation to announce L4a; L4b HTTP inference and L5 quality
+work remain separate.
 
 **Tech Stack:** Python 3.10, PyTorch/Real-ESRGAN, Docker, PHP Pack manifest
 tests, existing `unittest` runner.
@@ -28,11 +31,11 @@ tests, existing `unittest` runner.
 | `packs/image-tools/service/test_model_runtime.py` | Unit tests for the shared loader and marker boundary. |
 | `packs/image-tools/service/test_model_smoke.py` | Unit tests for family coverage, compact JSON, and failure behavior. |
 | `packs/image-tools/service/test_upscale_runner.py` | Regression that production inference calls the shared loader. |
-| `packs/image-tools/service/test_app.py` | Health level regression. |
+| `packs/image-tools/service/test_app.py` | Marker-only health regression before promotion and L4a promotion regression after evidence. |
 | `packs/image-tools/service/Dockerfile` | Runs the new deterministic L4a tests during image build. |
-| `packs/image-tools/pack.json` | Generic Chinese identity and L4a/L5 level declarations. |
-| `tests/test_image_tools.php` | Pack, UI-doc, and L4a command contract assertions. |
-| `README.md`, `docs/operations/image-tools.md`, `docs/operations/image-tools-acceptance.md` | Public level statement, exact L4a operator command, and redacted host evidence. |
+| `packs/image-tools/pack.json` | Generic Chinese identity, retained L3 operational state, and post-evidence L4a/L5 declarations. |
+| `tests/test_image_tools.php` | Pack, UI-doc, and post-evidence L4a command/evidence contract assertions. |
+| `README.md`, `docs/operations/image-tools.md`, `docs/operations/image-tools-acceptance.md` | Generic Pack statement, post-evidence L4a operator command, and redacted host evidence. |
 
 ## Task 1: Lock the L4a contract with failing tests
 
@@ -87,36 +90,39 @@ tests, existing `unittest` runner.
   `.enhance(`. A `ModelRuntimeError('model_load_failed')` must cause return 1
   and emit only `{'ok': False, 'error': 'model_load_failed'}`.
 
-- [ ] **Step 3: Extend the runner and health tests.**
+- [ ] **Step 3: Extend the runner and pre-promotion health tests.**
 
   In `test_upscale_runner.py`, replace the `_upsampler` patch with a
   `model_runtime.build_upsampler` patch and assert the runner passes the pinned
   resolved path, the requested alias, and resolved backend. In `test_app.py`,
-  change the ready-health expectation to:
+  keep a verified marker on the existing operational level until Task 4's
+  installed CPU smoke succeeds:
 
   ```python
   {'ok': True, 'service': 'image-tools', 'ready': True,
-   'runtime_level': 'L4a-model-init-smoke', 'runtime_ready': True}
+   'runtime_level': 'L3-offline-assets', 'runtime_ready': True}
   ```
 
   Keep the missing/tampered marker case at `L1-contract` and `runtime_ready`
   false.
 
-- [ ] **Step 4: Extend the PHP Pack contract assertions.**
+- [ ] **Step 4: Extend the generic Pack identity assertions without promoting runtime.**
 
-  Change the first image-tools test title to reflect L4a. Assert exact generic
-  identity and level values without changing endpoint/API assertions:
+  Assert exact generic identity and target-level values without changing
+  endpoint/API assertions. The current operational runtime remains L3 until
+  Task 4 records CPU smoke evidence:
 
   ```php
   hub_test_assert(($manifest['name'] ?? '') === '影像工具', 'image-tools display name must remain generic Chinese');
   hub_test_assert(($manifest['description'] ?? '') === '本機複合式影像處理工具；目前提供 Real-ESRGAN 圖片放大，後續功能將以獨立 operation 擴充。', 'image-tools description mismatch');
-  hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4a-model-init-smoke', 'image-tools must publish L4a only after model-init smoke exists');
+  hub_test_assert(($manifest['runtime_level'] ?? '') === 'L3-offline-assets', 'image-tools must retain L3 until installed L4a smoke evidence exists');
   hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'image-tools target level mismatch');
   ```
 
-  Assert the README and runbook include `影像工具`, `L4a-model-init-smoke`, and
-  `model_smoke.py --backend cpu`; assert they do not state that L4b/L5 is
-  complete.
+  Do not yet assert an L4a README/runbook command or a current L4a status;
+  those public assertions are added only after Task 4 has recorded the
+  successful installed-runtime evidence. Keep the L4b/L5 negative assertions
+  with that later public contract.
 
 - [ ] **Step 5: Run the focused tests and confirm they fail for the missing L4a implementation.**
 
@@ -128,13 +134,11 @@ tests, existing `unittest` runner.
     packs/image-tools/service/test_model_smoke.py \
     packs/image-tools/service/test_upscale_runner.py \
     packs/image-tools/service/test_app.py
-  php scripts/run_tests.php --suite=full
   ```
 
   Expected: Python fails because `build_upsampler` and the new smoke module
-  contract do not yet exist; PHP reports the image-tools Pack contract failure
-  because the Pack still declares its old English L3 identity. Record any
-  unrelated pre-existing PHP suite failures separately.
+  contract do not yet exist. The full PHP release gate is deliberately deferred
+  to Task 4, after actual CPU smoke evidence permits the L4a public contract.
 
 - [ ] **Step 6: Commit the failing-test contract.**
 
@@ -211,9 +215,10 @@ tests, existing `unittest` runner.
   path-free error JSON. Do not import image decoding, NumPy, or call
   `enhance()`.
 
-- [ ] **Step 4: Run focused tests and confirm the implementation passes.**
+- [ ] **Step 4: Run focused Python tests and confirm the implementation passes.**
 
-  Run the same Python and PHP commands from Task 1.
+  Run the Python command from Task 1 only; no real model download or GPU is
+  needed, and the full PHP gate remains deferred until Task 4.
 
   Expected: all focused tests pass; no test needs an actual model download or
   GPU.
@@ -227,7 +232,7 @@ tests, existing `unittest` runner.
   git commit -m "feat: add image tools L4a model smoke"
   ```
 
-## Task 3: Publish the L4a identity and build gate
+## Task 3: Publish the generic identity and offline build gate while retaining L3
 
 **Files:**
 - Modify: `packs/image-tools/pack.json`
@@ -236,13 +241,13 @@ tests, existing `unittest` runner.
 - Modify: `README.md`
 - Modify: `docs/operations/image-tools.md`
 
-- [ ] **Step 1: Update the Pack identity and level declaration.**
+- [ ] **Step 1: Update the Pack identity while retaining the operational L3 declaration.**
 
   Apply only these manifest changes:
 
   ```json
   "name": "影像工具",
-  "runtime_level": "L4a-model-init-smoke",
+  "runtime_level": "L3-offline-assets",
   "target_level": "L5-benchmark-ready",
   "description": "本機複合式影像處理工具；目前提供 Real-ESRGAN 圖片放大，後續功能將以獨立 operation 擴充。"
   ```
@@ -250,15 +255,16 @@ tests, existing `unittest` runner.
   Do not change `id`, `default_mode`, operations, aliases, endpoints, request
   schema, queue, or storage mounts.
 
-- [ ] **Step 2: Publish L4a in ready health without making health expensive.**
+- [ ] **Step 2: Keep marker-only health on L3 without making it expensive.**
 
-  In `app.py`, retain the same `verify_ready(model_dir())` boundary. Replace
-  only the ready branch's level with `L4a-model-init-smoke`; do not call
-  `build_upsampler()` from `/health`.
+  In `app.py`, retain the same `verify_ready(model_dir())` boundary and retain
+  the ready branch at `L3-offline-assets`; do not call `build_upsampler()` from
+  `/health`. Task 4 changes the label only after its installed CPU smoke and
+  evidence record both succeed.
 
   ```python
   return {'ok': True, 'service': 'image-tools', 'ready': True,
-          'runtime_level': 'L4a-model-init-smoke', 'runtime_ready': True}
+          'runtime_level': 'L3-offline-assets', 'runtime_ready': True}
   ```
 
 - [ ] **Step 3: Include and run all deterministic L4a tests in Docker.**
@@ -274,18 +280,12 @@ tests, existing `unittest` runner.
       && chmod 0555 /app/*.py
   ```
 
-- [ ] **Step 4: Update documentation without declaring L4b/L5.**
+- [ ] **Step 4: Publish generic identity documentation without claiming current L4a.**
 
-  In the README and runbook, call the Pack `影像工具`, describe Real-ESRGAN
-  as current `upscale` support, and publish the exact L4a command:
-
-  ```bash
-  docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu
-  ```
-
-  State that its JSON proves local model initialization only. L4b still needs
-  actual CPU/CUDA HTTP upscaling, and L5 still needs a declared benchmark and
-  quality acceptance; neither result may be inferred from this command.
+  In the README and runbook, call the Pack `影像工具` and describe Real-ESRGAN
+  as current `upscale` support, while retaining the actual current L3 status.
+  Do not add an `## L4a` section, the installed-runtime smoke command, or any
+  wording that says the Pack is currently L4a; those are Task 4 outputs.
 
 - [ ] **Step 5: Run the source-level release gate.**
 
@@ -300,26 +300,32 @@ tests, existing `unittest` runner.
     packs/image-tools/service/test_jobs.py \
     packs/image-tools/service/test_app.py \
     packs/image-tools/service/test_acceptance.py
-  php scripts/run_tests.php --suite=full
   docker build -t 3waaihub-image-tools:test packs/image-tools/service
   ```
 
-  Expected: all image-tools Python/PHP tests pass and Docker reports a
-  successful image build. The Docker output must include the L4a smoke unit
-  tests, but not an unmounted real model smoke.
+  Expected: all source-level Python tests pass and Docker reports a successful
+  image build. The Docker output must include the L4a smoke unit tests, but
+  not an unmounted real model smoke. Run the full PHP contract gate only in
+  Task 4 after recording actual CPU smoke evidence.
 
-- [ ] **Step 6: Commit the public L4a contract and build gate.**
+- [ ] **Step 6: Commit the generic L3 identity and build gate.**
 
   ```bash
   git add packs/image-tools/pack.json packs/image-tools/service/app.py \
     packs/image-tools/service/Dockerfile README.md docs/operations/image-tools.md
-  git commit -m "docs: publish image tools L4a runtime"
+  git commit -m "docs: publish image tools generic runtime identity"
   ```
 
 ## Task 4: Run controlled model acceptance and record the evidence
 
 **Files:**
 - Modify: `docs/operations/image-tools-acceptance.md`
+- Modify: `packs/image-tools/pack.json`
+- Modify: `packs/image-tools/service/app.py`
+- Modify: `packs/image-tools/service/test_app.py`
+- Modify: `README.md`
+- Modify: `docs/operations/image-tools.md`
+- Modify: `tests/test_image_tools.php`
 
 - [ ] **Step 1: Confirm the staged source is the pinned model set.**
 
@@ -348,16 +354,28 @@ tests, existing `unittest` runner.
   exit or any other output blocks L4a promotion; do not substitute L3 marker
   verification for this test.
 
-- [ ] **Step 3: Record only redacted L4a facts.**
+- [ ] **Step 3: Record one structured, redacted L4a evidence block.**
 
-  Append a dated L4a section to the acceptance record containing the image
-  digest/tag, exit result, CPU backend, source commit, three family IDs,
-  covered aliases, elapsed time, and the statement that no image inference
-  occurred. Do not record source paths beyond the documented model mount,
-  checksums, model binaries, tokens, uploaded images, output images, or full
-  container logs.
+  Append an isolated `## L4a` section containing the plain declaration `no
+  source image/inference output` and exactly one `json` fenced evidence block.
+  Its top-level key order is fixed: `date`, `image_tag`, `exit_result`,
+  `backend`, `commit`, `loaded_family_ids`, `aliases`, `elapsed_time_ms`.
+  Populate every value from Step 2's command and its installed image metadata.
+  Do not add a second JSON block, host paths, model binaries, uploaded images,
+  output images, or full container logs.
 
-- [ ] **Step 4: Run the final regressions and inspect the diff.**
+- [ ] **Step 4: Promote the public L4a state only after the evidence exists.**
+
+  First extend `test_app.py` and `tests/test_image_tools.php` to require
+  `L4a-model-init-smoke`, the exact installed Compose command from Step 2, the
+  structured acceptance JSON keys, and no L4b/L5-ready claim. Then change
+  `pack.json` and the marker-only ready branch in `app.py` to
+  `L4a-model-init-smoke`; `health()` must still not call `build_upsampler()`.
+  Update the README and runbook to state current L4a, publish only Step 2's
+  installed Compose command, and state that it proves initialization only.
+  L4b HTTP inference and L5 benchmark/quality acceptance remain unclaimed.
+
+- [ ] **Step 5: Run the final regressions and inspect the diff.**
 
   Run:
 
@@ -379,10 +397,12 @@ tests, existing `unittest` runner.
   separately report any pre-existing unrelated failures/warnings rather than
   calling the full suite wholly green.
 
-- [ ] **Step 5: Commit the redacted acceptance record.**
+- [ ] **Step 6: Commit the evidence-backed L4a promotion.**
 
   ```bash
-  git add docs/operations/image-tools-acceptance.md
+  git add docs/operations/image-tools-acceptance.md packs/image-tools/pack.json \
+    packs/image-tools/service/app.py packs/image-tools/service/test_app.py \
+    README.md docs/operations/image-tools.md tests/test_image_tools.php
   git commit -m "docs: record image tools L4a acceptance"
   ```
 
