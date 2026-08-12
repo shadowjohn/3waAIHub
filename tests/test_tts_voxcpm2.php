@@ -702,6 +702,72 @@ hub_test('VoxCPM2 profile confirmation validates Unicode characters and preserve
     );
 });
 
+hub_test('VoxCPM2 profile confirmation transaction fences expired profiles authoritatively', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Expired Profile Confirmation Owner');
+    $path = hub_voice_profile_storage_dir() . '/expired_profile_confirmation.wav';
+    file_put_contents($path, 'RIFFexpired-confirmation');
+    $createProfile = static function (string $name, ?string $expiresAt) use ($db, $memberId, $path): int {
+        return hub_create_voice_profile($db, $memberId, [
+            'name' => $name,
+            'reference_audio_path' => $path,
+            'consent_type' => 'self_recorded',
+            'prompt_text' => 'original draft',
+            'expires_at' => $expiresAt,
+        ]);
+    };
+    $stored = static function (int $profileId) use ($db): array {
+        $profile = $db->query('SELECT * FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+        return is_array($profile) ? $profile : throw new RuntimeException('Missing expiry test profile.');
+    };
+    $assertUnavailableWithoutMutation = static function (int $profileId, string $replacement) use ($db, $memberId, $stored): void {
+        $before = $stored($profileId);
+        $error = null;
+        try {
+            hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $replacement);
+        } catch (InvalidArgumentException $e) {
+            $error = $e->getMessage();
+        }
+        $after = $stored($profileId);
+        hub_test_assert(
+            $error === 'voice_profile_unavailable'
+            && $after['prompt_text'] === $before['prompt_text']
+            && $after['prompt_text_confirmed_at'] === $before['prompt_text_confirmed_at'],
+            'expired confirmation must fail unavailable without changing transcript or confirmation time'
+        );
+    };
+
+    $expiredId = $createProfile('Already expired profile', '2000-01-01 00:00:00');
+    $assertUnavailableWithoutMutation($expiredId, 'must remain expired');
+
+    $boundaryId = $createProfile('Boundary expired profile', hub_now());
+    $assertUnavailableWithoutMutation($boundaryId, 'expires_at equal to now is expired');
+
+    $raceId = $createProfile('Precheck race profile', null);
+    $raceBefore = $stored($raceId);
+    $precheck = hub_voice_profile_task_status_payload($db, ['status' => 'success'], $raceBefore, false);
+    hub_test_assert(($precheck['profile_status'] ?? '') === 'active', 'race fixture must pass the operation active precheck');
+    $db->prepare('UPDATE voice_profiles SET expires_at = :expires_at WHERE id = :id')
+        ->execute([':expires_at' => hub_now(), ':id' => $raceId]);
+    $assertUnavailableWithoutMutation($raceId, 'must reject precheck race');
+
+    $nullExpiryId = $createProfile('No expiry profile', null);
+    $nullConfirmed = hub_confirm_voice_profile_prompt($db, $nullExpiryId, $memberId, 'confirmed without expiry');
+    hub_test_assert(
+        ($nullConfirmed['prompt_text'] ?? null) === 'confirmed without expiry'
+        && trim((string)($nullConfirmed['prompt_text_confirmed_at'] ?? '')) !== '',
+        'confirmation must remain available when expires_at is null'
+    );
+
+    $futureExpiryId = $createProfile('Future expiry profile', hub_retention_deadline(3600));
+    $futureConfirmed = hub_confirm_voice_profile_prompt($db, $futureExpiryId, $memberId, 'confirmed before expiry');
+    hub_test_assert(
+        ($futureConfirmed['prompt_text'] ?? null) === 'confirmed before expiry'
+        && trim((string)($futureConfirmed['prompt_text_confirmed_at'] ?? '')) !== '',
+        'confirmation must remain available while expires_at is in the future'
+    );
+});
+
 hub_test('VoxCPM2 task-scoped profile confirm and delete stay owner-only and idempotent', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -800,15 +866,21 @@ hub_test('VoxCPM2 task-scoped profile confirm and delete stay owner-only and ide
 
             $db->prepare("UPDATE voice_profiles SET expires_at = '2000-01-01 00:00:00' WHERE id = :id")
                 ->execute([':id' => (int)$profile['id']]);
+            $beforeExpiredConfirm = $db->query('SELECT prompt_text, prompt_text_confirmed_at FROM voice_profiles WHERE id = ' . (int)$profile['id'])->fetch();
             $expiredConfirm = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
                 'operation' => 'profile_confirm',
                 'voice_profile_task_id' => (string)$taskId,
                 'prompt_text' => 'must not revive expired profile',
             ]);
+            $expiredPayload = hub_test_audio_payload($expiredConfirm);
+            $afterExpiredConfirm = $db->query('SELECT prompt_text, prompt_text_confirmed_at FROM voice_profiles WHERE id = ' . (int)$profile['id'])->fetch();
             hub_test_assert(
                 $expiredConfirm['status'] === 410
-                && (hub_test_audio_payload($expiredConfirm)['error'] ?? '') === 'voice_profile_unavailable',
-                'profile_confirm must report an expired profile as permanently unavailable'
+                && ($expiredPayload['error'] ?? '') === 'voice_profile_unavailable'
+                && !array_key_exists('voice_profile_task_id', $expiredPayload)
+                && !array_key_exists('prompt_text_sha256', $expiredPayload)
+                && $afterExpiredConfirm === $beforeExpiredConfirm,
+                'profile_confirm must report an expired profile without proof or stored transcript mutation'
             );
             $db->prepare('UPDATE voice_profiles SET expires_at = NULL WHERE id = :id')
                 ->execute([':id' => (int)$profile['id']]);

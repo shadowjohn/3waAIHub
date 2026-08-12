@@ -5731,6 +5731,13 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
             && ($operations['profile_delete']['output_keys'] ?? null) === $statusOutput,
             'Cluster profile operations must document the exact status and confirmation proof fields'
         );
+        $confirmConditionalOutputs = array_column((array)($operations['profile_confirm']['conditional_output_fields'] ?? []), null, 'name');
+        hub_test_assert(
+            ($confirmConditionalOutputs['validation'] ?? null) === ($conditionalOutputs['validation'] ?? null)
+            && str_contains((string)($confirmConditionalOutputs['validation']['condition'] ?? ''), 'status=error')
+            && str_contains((string)($confirmConditionalOutputs['validation']['condition'] ?? ''), 'transcript_validation_failed'),
+            'Cluster profile_confirm must retain the native conditional A0 validation result and error rule'
+        );
         $confirmationProof = (string)($voice['workflow']['profile_confirmation_proof'] ?? '');
         foreach (['caller', 'opaque', 'authoritative stored exact UTF-8 bytes', 'lowercase SHA-256', 'prompt_text is omitted'] as $needle) {
             hub_test_assert(str_contains($confirmationProof, $needle), 'Cluster confirmation proof docs missing: ' . $needle);
