@@ -476,11 +476,13 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
             $baseResponse,
         ],
     ] as $label => [$case, $response]) {
+        $caught = false;
         try {
             hub_benchmark_binary_response_result($case, $response, $fixture);
-            throw new RuntimeException($label . ' must fail the binary benchmark contract');
         } catch (RuntimeException $error) {
             hub_test_assert($error->getMessage() === 'benchmark contract check failed.', $label . ' must fail closed');
+            $caught = true;
         }
+        hub_test_assert($caught, $label . ' must fail the binary benchmark contract');
     }
 });

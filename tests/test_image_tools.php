@@ -620,7 +620,8 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
         $section = (string)$sectionMatch[1];
         $blocks = [];
         hub_test_assert(preg_match_all('/^```json\s*\R(.*?)^```\s*$/ms', $section, $blocks) === 1, 'image-tools ' . $level . ' acceptance section must contain exactly one JSON evidence block');
-        hub_test_assert(str_contains($section, 'no source image/inference output'), 'image-tools ' . $level . ' acceptance section must redact source image/inference output');
+        $outsideJson = preg_replace('/^```json\s*\R.*?^```\s*$/ms', '', $section, 1);
+        hub_test_assert(trim((string)$outsideJson) === 'no source image/inference output', 'image-tools ' . $level . ' acceptance section must contain only the redaction declaration outside its JSON evidence');
         $evidenceKeyTokens = [];
         preg_match_all('/"((?:[^"\\\\]|\\\\.)*)"\s*:/', trim((string)$blocks[1][0]), $evidenceKeyTokens);
         hub_test_assert($evidenceKeyTokens[1] === $keys, 'image-tools ' . $level . ' evidence keys must be unique and ordered before decoding');
