@@ -554,8 +554,14 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     $l4aSection = (string)($l4aSectionMatch[1] ?? '');
     hub_test_assert($l4aSection !== '', 'image-tools runbook must isolate an L4a section before later runtime levels');
     hub_test_assert(str_contains($l4aSection, '[image-tools-acceptance.md](image-tools-acceptance.md)'), 'image-tools L4a runbook section must link the auditable acceptance record');
-    foreach (['影像工具', 'L4a-model-init-smoke', 'model_smoke.py --backend cpu'] as $needle) {
+    foreach (['影像工具', 'L4a-model-init-smoke'] as $needle) {
         hub_test_assert(str_contains($l4aSection, $needle), 'image-tools L4a runbook section must publish ' . $needle);
+    }
+    $l4aCommand = 'docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu';
+    hub_test_assert(str_contains($l4aSection, $l4aCommand), 'image-tools L4a runbook section must use the installed runtime smoke command');
+    hub_test_assert(!str_contains($l4aSection, 'docker run'), 'image-tools L4a runbook section must not use a generic docker run smoke command');
+    foreach (['exit result', 'backend', 'commit', 'loaded family IDs', 'aliases', 'elapsed time', 'image tag', 'date'] as $field) {
+        hub_test_assert(str_contains($l4aSection, $field), 'image-tools L4a runbook section must retain only the safe evidence field ' . $field);
     }
     hub_test_assert(!str_contains($l4aSection, '`L4b-real-inference`／`runtime_ready=true`'), 'image-tools L4a runbook section must not claim L4b ready');
     hub_test_assert(!str_contains($l4aSection, '`L5-benchmark-ready`／`runtime_ready=true`'), 'image-tools L4a runbook section must not claim L5 ready');

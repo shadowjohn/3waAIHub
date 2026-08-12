@@ -11,10 +11,16 @@ from unittest.mock import Mock, call, patch
 sys.path.insert(0, str(Path(__file__).parent))
 
 import model_smoke
+import model_runtime
 from model_runtime import ModelRuntimeError, REAL_ESRGAN_COMMIT
 
 
 class ModelSmokeTest(unittest.TestCase):
+    def assert_shared_loader(self) -> None:
+        self.assertTrue(hasattr(model_runtime, "build_upsampler"), "model_runtime must expose the canonical shared loader")
+        self.assertTrue(hasattr(model_smoke, "build_upsampler"), "model_smoke must import the canonical shared loader")
+        self.assertIs(model_smoke.build_upsampler, model_runtime.build_upsampler, "model_smoke must use model_runtime.build_upsampler directly")
+
     def invoke(self, argv: list[str]) -> tuple[int, str]:
         output = io.StringIO()
         try:
@@ -25,9 +31,10 @@ class ModelSmokeTest(unittest.TestCase):
         return status, output.getvalue()
 
     def test_cpu_smoke_verifies_before_loading_each_unique_family(self) -> None:
+        self.assert_shared_loader()
         events: list[str] = []
         loader = Mock(side_effect=lambda alias, _backend, _path: events.append(alias))
-        with patch.object(model_smoke, "verify_ready", side_effect=lambda _root: events.append("verify") or {"commit": REAL_ESRGAN_COMMIT}) as verify_ready, patch.object(model_smoke, "build_upsampler", loader, create=True):
+        with patch.object(model_smoke, "verify_ready", side_effect=lambda _root: events.append("verify") or {"commit": REAL_ESRGAN_COMMIT}) as verify_ready, patch.object(model_smoke, "build_upsampler", loader):
             status, output = self.invoke(["--model-dir", "/models"])
 
         self.assertEqual(0, status)
@@ -49,8 +56,25 @@ class ModelSmokeTest(unittest.TestCase):
             ],
         }, json.loads(output))
 
+    def test_cuda_smoke_loads_each_unique_family_with_cuda(self) -> None:
+        self.assert_shared_loader()
+        loader = Mock()
+        with patch.object(model_smoke, "verify_ready", return_value={"commit": REAL_ESRGAN_COMMIT}), patch.object(model_smoke, "build_upsampler", loader):
+            status, output = self.invoke(["--backend", "cuda", "--model-dir", "/models"])
+
+        self.assertEqual(0, status)
+        self.assertEqual([
+            call("realesrgan-x4plus", "cuda", Path("/models/RealESRGAN_x4plus.pth")),
+            call("realesrgan-x4plus-anime", "cuda", Path("/models/RealESRGAN_x4plus_anime_6B.pth")),
+            call("realesr-animevideov3-x4", "cuda", Path("/models/realesr-animevideov3.pth")),
+        ], loader.call_args_list)
+        payload = json.loads(output)
+        self.assertTrue(payload["ok"])
+        self.assertEqual("cuda", payload["backend"])
+
     def test_smoke_hides_loader_failure(self) -> None:
-        with patch.object(model_smoke, "verify_ready", return_value={"commit": REAL_ESRGAN_COMMIT}), patch.object(model_smoke, "build_upsampler", side_effect=ModelRuntimeError("model_load_failed"), create=True):
+        self.assert_shared_loader()
+        with patch.object(model_smoke, "verify_ready", return_value={"commit": REAL_ESRGAN_COMMIT}), patch.object(model_smoke, "build_upsampler", side_effect=ModelRuntimeError("model_load_failed")):
             status, output = self.invoke(["--backend", "cuda", "--model-dir", "/models"])
 
         self.assertEqual(1, status)
