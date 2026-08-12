@@ -765,6 +765,24 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
     $modelsRoot = (string)(hub_get_storage_paths($mainDb)['AIHUB_MODELS_DIR'] ?? '');
     hub_test_assert(str_contains($mainCompose, '"' . $modelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"'), 'image-tools-main generated Compose must embed its managed model mount for the standalone L4a smoke command');
     hub_test_assert(!str_contains($mainCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main generated Compose must not require a shell model-root variable for the standalone L4a smoke command');
+
+    $customModelsRoot = sys_get_temp_dir() . '/3waaihub_image_tools_models_' . bin2hex(random_bytes(8));
+    if (!mkdir($customModelsRoot, 0700, true)) {
+        throw new RuntimeException('Cannot create image-tools custom models root.');
+    }
+    try {
+        hub_set_storage_setting($mainDb, 'AIHUB_MODELS_DIR', $customModelsRoot);
+        $mainService = hub_get_service_by_key($mainDb, 'image-tools-main');
+        hub_test_assert($mainService !== null, 'image-tools-main service must remain available for Compose regeneration');
+        hub_write_service_compose($mainDb, $mainService);
+        $regeneratedCompose = (string)file_get_contents(hub_path((string)$mainService['compose_file']));
+        hub_test_assert(str_contains($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"'), 'image-tools-main regenerated Compose must embed the current custom models root');
+        hub_test_assert(!str_contains($regeneratedCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main regenerated Compose must not require a shell model-root variable');
+    } finally {
+        if (is_dir($customModelsRoot) && !is_link($customModelsRoot) && !rmdir($customModelsRoot)) {
+            throw new RuntimeException('Cannot remove image-tools custom models root.');
+        }
+    }
 });
 
 hub_test('image-tools publishes bounded Playground and documentation contracts', function (): void {
