@@ -30,7 +30,7 @@ docker compose -f data/services/image-tools-main/docker-compose.generated.yml ex
 
 ## L5 benchmark-ready
 
-影像工具的 L5 以固定 `smoke.png` 驗證 `realesrgan-x4plus` 的 CUDA 與 CPU 真實 HTTP 放大：每筆都必須回傳 8×12 `image/png`、五個公開 response headers 與 backend 對應的固定 SHA-256。這是品質 gate，不是延遲 SLA；L4a 初始化 smoke 保留為歷史驗證。
+影像工具目前為 `L5-benchmark-ready`：以固定 `smoke.png` 驗證 `realesrgan-x4plus` 的 CUDA 與 CPU 真實 HTTP 放大；每筆都必須回傳 8×12 `image/png`、五個公開 response headers 與 backend 對應的固定 SHA-256。這是品質 gate，不是延遲 SLA；L4a 初始化 smoke 保留為歷史驗證。
 
 ```bash
 php scripts/benchmark.php --service=image-tools-main --case=image_tools_cuda_upscale_golden
