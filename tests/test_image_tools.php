@@ -580,14 +580,14 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     }
     hub_test_assert(is_array($l4aEvidence), 'image-tools L4a acceptance evidence block must be a JSON object');
     hub_test_assert(array_keys($l4aEvidence) === ['date', 'image_tag', 'exit_result', 'backend', 'commit', 'loaded_family_ids', 'aliases', 'elapsed_time_ms'], 'image-tools L4a acceptance evidence keys and order must stay allowlisted');
-    hub_test_assert(is_string($l4aEvidence['date']) && trim($l4aEvidence['date']) !== '', 'image-tools L4a evidence date must be nonempty');
-    hub_test_assert(is_string($l4aEvidence['image_tag']) && trim($l4aEvidence['image_tag']) !== '', 'image-tools L4a evidence image tag must be nonempty');
+    hub_test_assert(is_string($l4aEvidence['date']) && preg_match('/\A\d{4}-\d{2}-\d{2}\z/D', $l4aEvidence['date']) === 1, 'image-tools L4a evidence date must use YYYY-MM-DD');
+    hub_test_assert(is_string($l4aEvidence['image_tag']) && preg_match('/\A[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*:[A-Za-z0-9][A-Za-z0-9_.-]*\z/D', $l4aEvidence['image_tag']) === 1, 'image-tools L4a evidence image tag must be a safe repository:tag');
     hub_test_assert(is_int($l4aEvidence['exit_result']) && $l4aEvidence['exit_result'] === 0, 'image-tools L4a evidence must record successful exit result 0');
     hub_test_assert($l4aEvidence['backend'] === 'cpu', 'image-tools L4a evidence must record the required CPU backend');
     hub_test_assert($l4aEvidence['commit'] === 'a4abfb2979a7bbff3f69f58f58ae324608821e27', 'image-tools L4a evidence commit mismatch');
     hub_test_assert($l4aEvidence['loaded_family_ids'] === ['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3'], 'image-tools L4a evidence family IDs mismatch');
     hub_test_assert($l4aEvidence['aliases'] === ['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4'], 'image-tools L4a evidence aliases mismatch');
-    hub_test_assert((is_int($l4aEvidence['elapsed_time_ms']) || is_float($l4aEvidence['elapsed_time_ms'])) && $l4aEvidence['elapsed_time_ms'] >= 0, 'image-tools L4a evidence elapsed time must be nonnegative numeric');
+    hub_test_assert(is_int($l4aEvidence['elapsed_time_ms']) && $l4aEvidence['elapsed_time_ms'] > 0, 'image-tools L4a evidence elapsed time must be a positive integer');
     hub_test_assert(str_contains($l4aAcceptance, 'no source image/inference output'), 'image-tools L4a acceptance section must declare that it records no source image/inference output');
 
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');

@@ -43,7 +43,9 @@ class AcceptanceTest(unittest.TestCase):
             self.assertEqual("PNG", image.format)
             self.assertEqual((2, 3), image.size)
 
-    def test_health_requires_verified_l3_readiness(self) -> None:
+    def test_health_requires_l3_until_l4a_evidence_promotes_it(self) -> None:
+        # Task 4 changes this L3 expectation only after the real CPU smoke and
+        # its structured L4a evidence record have both succeeded.
         assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L3-offline-assets", "runtime_ready": True})
         with self.assertRaises(AcceptanceUnavailable):
             assert_health({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L1-contract", "runtime_ready": False})

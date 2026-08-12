@@ -329,6 +329,8 @@ tests, existing `unittest` runner.
 - Modify: `packs/image-tools/pack.json`
 - Modify: `packs/image-tools/service/app.py`
 - Modify: `packs/image-tools/service/test_app.py`
+- Modify: `packs/image-tools/service/acceptance.py`
+- Modify: `packs/image-tools/service/test_acceptance.py`
 - Modify: `README.md`
 - Modify: `docs/operations/image-tools.md`
 - Modify: `tests/test_image_tools.php`
@@ -367,11 +369,12 @@ tests, existing `unittest` runner.
   Its top-level key order is fixed: `date`, `image_tag`, `exit_result`,
   `backend`, `commit`, `loaded_family_ids`, `aliases`, `elapsed_time_ms`.
   Populate every value from Step 2's command and its installed image metadata:
-  nonempty date and image tag, numeric `exit_result` `0`, backend `cpu`, commit
+  a `YYYY-MM-DD` date, a nonempty safe Docker-style `repository:tag` image
+  tag, numeric `exit_result` `0`, backend `cpu`, commit
   `a4abfb2979a7bbff3f69f58f58ae324608821e27`, family IDs
   `realesrgan-x4plus`, `realesrgan-x4plus-anime`, and
   `realesr-animevideov3` in that order, all five public aliases in their
-  manifest order, and a nonnegative numeric elapsed time. Do not add a second
+  manifest order, and a positive integer elapsed time. Do not add a second
   JSON block, host paths, model binaries, uploaded images, output images, or
   full container logs.
 
@@ -379,7 +382,11 @@ tests, existing `unittest` runner.
 
   First change the pre-promotion `test_app.py` health expectation from
   `L3-offline-assets` to `L4a-model-init-smoke`, preserving the patched
-  `build_upsampler` assertion that it remains uncalled. Extend
+  `build_upsampler` assertion that it remains uncalled. Change both
+  `acceptance.py` and `test_acceptance.py` from accepting only
+  `L3-offline-assets` to accepting only `L4a-model-init-smoke`; this change is
+  permitted only after Steps 2 and 3 have recorded the successful evidence.
+  Extend
   `tests/test_image_tools.php` to require the exact installed Compose command
   from Step 2, the successful structured acceptance JSON, and no L4b/L5-ready
   claim. Then change `pack.json` and the marker-only ready branch in `app.py`
@@ -416,6 +423,7 @@ tests, existing `unittest` runner.
   ```bash
   git add docs/operations/image-tools-acceptance.md packs/image-tools/pack.json \
     packs/image-tools/service/app.py packs/image-tools/service/test_app.py \
+    packs/image-tools/service/acceptance.py packs/image-tools/service/test_acceptance.py \
     README.md docs/operations/image-tools.md tests/test_image_tools.php
   git commit -m "docs: record image tools L4a acceptance"
   ```
