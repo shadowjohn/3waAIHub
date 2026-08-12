@@ -27,6 +27,7 @@ return [
     __DIR__ . '/../test_release_ci.php',
     __DIR__ . '/../test_release_artifact.php',
     __DIR__ . '/../test_runtime_portability.php',
+    __DIR__ . '/../test_service_compose_project.php',
     __DIR__ . '/../test_service_settings.php',
     __DIR__ . '/../test_sqlite_safety.php',
     __DIR__ . '/../test_taiwan_address_pack.php',
