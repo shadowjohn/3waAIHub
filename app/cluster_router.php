@@ -1070,6 +1070,7 @@ function hub_cluster_rewrite_voice_generate_contract(array $service, string $mod
         'operation_default' => 'Omitting operation means synthesize.',
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft and transcript validation (raw/normalized); the confirmed transcript is omitted.',
         'transcript_validation' => 'profile_prepare accepts optional expected_text. Whisper raw text is preserved as transcript.raw; normalization uses OpenCC s2twp and CER is Unicode-character Levenshtein distance divided by normalized expected character count. profile_prepare never confirms a profile; call profile_confirm with the human-reviewed text.',
+        'profile_confirmation_proof' => 'profile_confirm returns the caller voice_profile_task_id handle (opaque through Cluster) and lowercase SHA-256 prompt_text_sha256 computed from the authoritative stored exact UTF-8 bytes; confirmed prompt_text is omitted.',
         'steps' => [
             'profile_prepare',
             'cluster_task_status via returned status_url',
@@ -2630,8 +2631,10 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
     }
     if (array_key_exists('validation', $payload)) {
         $validation = $payload['validation'];
+        $validationKeys = ['cer', 'status', 'needs_confirmation', 'normalizer'];
         if (!is_array($validation)
-            || !array_key_exists('cer', $validation)
+            || array_diff($validationKeys, array_keys($validation)) !== []
+            || array_diff(array_keys($validation), $validationKeys) !== []
             || ($validation['cer'] !== null && (!is_int($validation['cer']) && !is_float($validation['cer']) || $validation['cer'] < 0 || $validation['cer'] > 1))
             || !is_string($validation['status'])
             || !in_array($validation['status'], ['clean', 'pass', 'review_required', 'unverified', 'error'], true)
@@ -2641,19 +2644,42 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
         ) {
             throw new UnexpectedValueException('invalid voice profile response');
         }
-        $safe['validation'] = $validation;
+        $safe['validation'] = [
+            'cer' => $validation['cer'],
+            'status' => $validation['status'],
+            'needs_confirmation' => $validation['needs_confirmation'],
+            'normalizer' => $validation['normalizer'],
+        ];
     }
     if (array_key_exists('transcript', $payload)) {
-        if (!$includeDraft || !is_array($payload['transcript']) || !is_string($payload['transcript']['raw'] ?? null) || !is_string($payload['transcript']['normalized'] ?? null) || strlen($payload['transcript']['raw']) > 20000 || strlen($payload['transcript']['normalized']) > 20000) {
+        $transcript = $payload['transcript'];
+        if (!$includeDraft
+            || !is_array($transcript)
+            || array_diff(['raw', 'normalized'], array_keys($transcript)) !== []
+            || array_diff(array_keys($transcript), ['raw', 'normalized']) !== []
+            || !is_string($transcript['raw'])
+            || !is_string($transcript['normalized'])
+            || strlen($transcript['raw']) > 20000
+            || strlen($transcript['normalized']) > 20000
+        ) {
             throw new UnexpectedValueException('invalid voice profile response');
         }
-        $safe['transcript'] = ['raw' => $payload['transcript']['raw'], 'normalized' => $payload['transcript']['normalized']];
+        $safe['transcript'] = ['raw' => $transcript['raw'], 'normalized' => $transcript['normalized']];
     }
     if (array_key_exists('expected_text', $payload)) {
-        if (!$includeDraft || ($payload['expected_text'] !== null && (!is_array($payload['expected_text']) || !is_string($payload['expected_text']['raw'] ?? null) || !is_string($payload['expected_text']['normalized'] ?? null) || strlen($payload['expected_text']['raw']) > 20000 || strlen($payload['expected_text']['normalized']) > 20000))) {
+        $expectedText = $payload['expected_text'];
+        if (!$includeDraft || ($expectedText !== null && (
+            !is_array($expectedText)
+            || array_diff(['raw', 'normalized'], array_keys($expectedText)) !== []
+            || array_diff(array_keys($expectedText), ['raw', 'normalized']) !== []
+            || !is_string($expectedText['raw'])
+            || !is_string($expectedText['normalized'])
+            || strlen($expectedText['raw']) > 20000
+            || strlen($expectedText['normalized']) > 20000
+        ))) {
             throw new UnexpectedValueException('invalid voice profile response');
         }
-        $safe['expected_text'] = $payload['expected_text'] === null ? null : ['raw' => $payload['expected_text']['raw'], 'normalized' => $payload['expected_text']['normalized']];
+        $safe['expected_text'] = $expectedText === null ? null : ['raw' => $expectedText['raw'], 'normalized' => $expectedText['normalized']];
     }
 
     return $safe;
@@ -2667,10 +2693,10 @@ function hub_cluster_router_public_voice_profile_confirmation_response(
 ): array {
     $childTaskId = $payload['voice_profile_task_id'] ?? null;
     $promptSha256 = $payload['prompt_text_sha256'] ?? null;
-    if ((!is_int($childTaskId) && !is_string($childTaskId))
-        || preg_match('/\A[1-9][0-9]{0,17}\z/', (string)$childTaskId) !== 1
+    if (!is_string($childTaskId)
+        || preg_match('/\A[1-9][0-9]{0,17}\z/', $childTaskId) !== 1
         || preg_match('/\A[1-9][0-9]{0,17}\z/', $remoteTaskId) !== 1
-        || !hash_equals($remoteTaskId, (string)$childTaskId)
+        || !hash_equals($remoteTaskId, $childTaskId)
         || !is_string($promptSha256)
         || preg_match('/\A[a-f0-9]{64}\z/', $promptSha256) !== 1
         || !hash_equals(hash('sha256', $promptText), $promptSha256)

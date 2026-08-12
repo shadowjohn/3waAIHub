@@ -404,6 +404,10 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
         ($operations['profile_confirm']['output_keys'] ?? null) === [...$statusOutput, 'voice_profile_task_id', 'prompt_text_sha256'],
         'profile_confirm must document its safe status plus exact confirmation proof'
     );
+    $confirmationProof = (string)($voice['workflow']['profile_confirmation_proof'] ?? '');
+    foreach (['caller', 'opaque', 'authoritative stored exact UTF-8 bytes', 'lowercase SHA-256', 'prompt_text is omitted'] as $needle) {
+        hub_test_assert(str_contains($confirmationProof, $needle), 'native confirmation proof docs missing: ' . $needle);
+    }
     hub_test_assert(($operations['profile_delete']['output_keys'] ?? null) === $statusOutput, 'profile_delete must document its actual safe status response');
 
     $errors = array_column((array)($voice['error_table'] ?? []), null, 'code');

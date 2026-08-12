@@ -3389,7 +3389,7 @@ hub_test('cluster router rejects missing forged or malformed profile confirmatio
             'station_key' => 'profile_confirmation_proof',
             'modes' => ['voice_generate'],
         ]);
-        $reviewed = "  reviewed\ttext  \\literal\r\n第二行  ";
+        $reviewed = str_repeat('界', 20000);
         $request = hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
             'headers' => ['Content-Type' => 'application/json'],
             'raw_body' => json_encode([
@@ -3406,17 +3406,32 @@ hub_test('cluster router rejects missing forged or malformed profile confirmatio
         $cases = [
             $missingTask,
             $missingHash,
+            array_replace($valid, ['voice_profile_task_id' => 42]),
             array_replace($valid, ['voice_profile_task_id' => '43']),
             array_replace($valid, ['voice_profile_task_id' => ['42']]),
             array_replace($valid, ['prompt_text_sha256' => hash('sha256', 'forged text')]),
             array_replace($valid, ['prompt_text_sha256' => strtoupper(hash('sha256', $reviewed))]),
             $valid + ['voice_profile_id' => 91],
+            array_replace($valid, ['validation' => [
+                'cer' => 0.0,
+                'status' => 'clean',
+                'needs_confirmation' => false,
+                'normalizer' => 'opencc-s2twp-v1',
+                'token' => 'nested-confirmation-secret',
+                'prompt_text' => 'nested-private-prompt',
+            ]]),
         ];
         $calls = 0;
         $accepted = hub_cluster_dispatch($db, 'voice_generate', $request, [
             'refresh_due' => static fn (): array => [$inventory],
-            'transport' => static function () use (&$calls, $valid): array {
+            'transport' => static function (array $request) use (&$calls, $valid, $reviewed): array {
                 $calls++;
+                $downstream = json_decode((string)($request['body'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
+                hub_test_assert(
+                    ($downstream['voice_profile_task_id'] ?? null) === '42'
+                    && ($downstream['prompt_text'] ?? null) === $reviewed,
+                    'Router normalization must replace only the opaque handle and preserve all 20,000 Unicode prompt bytes'
+                );
                 return hub_gateway_json(200, $valid);
             },
         ]);
@@ -3440,12 +3455,36 @@ hub_test('cluster router rejects missing forged or malformed profile confirmatio
                 $response['status'] === 502
                 && str_contains($response['body'], 'router_response_invalid')
                 && !str_contains($response['body'], '"voice_profile_task_id"')
-                && !str_contains($response['body'], $reviewed)
+                && !str_contains($response['body'], 'nested-confirmation-secret')
+                && !str_contains($response['body'], 'nested-private-prompt')
                 && !str_contains($response['body'], 'voice_profile_id'),
                 'profile confirmation proof mismatch must fail closed without leaking child identity or prompt material'
             );
         }
         hub_test_assert($calls === count($cases) + 1, 'valid and invalid confirmation proofs must each dispatch exactly once to the pinned station');
+
+        $tooLong = str_repeat('界', 20001);
+        $tooLongRequest = hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+            'headers' => ['Content-Type' => 'application/json'],
+            'raw_body' => json_encode([
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => $fixture['route_id'],
+                'prompt_text' => $tooLong,
+            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+        ]);
+        $tooLongResponse = hub_cluster_dispatch($db, 'voice_generate', $tooLongRequest, [
+            'refresh_due' => static fn (): array => [$inventory],
+            'transport' => static function (array $request) use ($tooLong): array {
+                $downstream = json_decode((string)($request['body'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
+                hub_test_assert(($downstream['prompt_text'] ?? null) === $tooLong, 'Router must preserve the child-bound 20,001-character rejection input exactly');
+                return hub_gateway_error(400, 'voice_profile_transcript_invalid', 'voice profile transcript is invalid');
+            },
+        ]);
+        hub_test_assert(
+            $tooLongResponse['status'] === 400
+            && str_contains($tooLongResponse['body'], 'voice_profile_transcript_invalid'),
+            'Router must safely relay the child boundary rejection for 20,001 Unicode characters'
+        );
     });
 });
 
@@ -3490,6 +3529,36 @@ hub_test('cluster router relays only the bounded native profile transcription er
         hub_test_assert(
             hub_test_throws(static fn (): array => hub_cluster_router_public_voice_profile_response($invalid, true)),
             'profile status must reject missing, raw, or state-inconsistent transcription errors'
+        );
+    }
+
+    $draft = hub_test_cluster_voice_profile_status_payload([
+        'transcript_confirmed' => false,
+        'prompt_text_confirmed_at' => null,
+        'prompt_text' => 'draft',
+        'validation' => [
+            'cer' => 0.0,
+            'status' => 'clean',
+            'needs_confirmation' => false,
+            'normalizer' => 'opencc-s2twp-v1',
+        ],
+        'transcript' => ['raw' => 'draft', 'normalized' => 'draft'],
+        'expected_text' => ['raw' => 'expected', 'normalized' => 'expected'],
+    ]);
+    $safeDraft = hub_cluster_router_public_voice_profile_response($draft, true);
+    hub_test_assert(
+        ($safeDraft['transcript'] ?? null) === ['raw' => 'draft', 'normalized' => 'draft']
+        && ($safeDraft['expected_text'] ?? null) === ['raw' => 'expected', 'normalized' => 'expected'],
+        'profile draft nested objects must project only their exact public fields'
+    );
+    $transcriptExtra = $draft;
+    $transcriptExtra['transcript']['token'] = 'nested-transcript-secret';
+    $expectedExtra = $draft;
+    $expectedExtra['expected_text']['prompt_text'] = 'nested-expected-secret';
+    foreach ([$transcriptExtra, $expectedExtra] as $invalid) {
+        hub_test_assert(
+            hub_test_throws(static fn (): array => hub_cluster_router_public_voice_profile_response($invalid, true)),
+            'profile draft nested objects must reject every undeclared field'
         );
     }
 });
@@ -5604,6 +5673,10 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
             && ($operations['profile_delete']['output_keys'] ?? null) === $statusOutput,
             'Cluster profile operations must document the exact status and confirmation proof fields'
         );
+        $confirmationProof = (string)($voice['workflow']['profile_confirmation_proof'] ?? '');
+        foreach (['caller', 'opaque', 'authoritative stored exact UTF-8 bytes', 'lowercase SHA-256', 'prompt_text is omitted'] as $needle) {
+            hub_test_assert(str_contains($confirmationProof, $needle), 'Cluster confirmation proof docs missing: ' . $needle);
+        }
         hub_test_assert(
             ($voice['result_artifact_fields'] ?? null) === ['id', 'type', 'mime_type', 'size_bytes', 'sha256']
             && str_contains((string)($voice['artifact_delivery_note'] ?? ''), 'result.artifacts[]')

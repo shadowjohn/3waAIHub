@@ -596,6 +596,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
         'operation_default' => 'Omitting operation means synthesize.',
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft and transcript validation (raw/normalized); the confirmed transcript is omitted.',
         'transcript_validation' => 'profile_prepare accepts optional expected_text. Whisper raw text is preserved as transcript.raw, both sides use OpenCC s2twp normalization, and CER is Levenshtein distance divided by normalized expected character count. status is clean at CER 0, pass at <= 0.05, review_required above 0.05, and unverified when expected_text is absent. profile_prepare never confirms a profile; call profile_confirm with the human-reviewed text.',
+        'profile_confirmation_proof' => 'profile_confirm returns the caller voice_profile_task_id handle (opaque through Cluster) and lowercase SHA-256 prompt_text_sha256 computed from the authoritative stored exact UTF-8 bytes; confirmed prompt_text is omitted.',
         'steps' => [
             'profile_prepare',
             'task_status via returned status_url',
