@@ -54,8 +54,13 @@ class AcceptanceTest(unittest.TestCase):
 
     def test_sync_cpu_response_is_verified_png_with_exact_metadata(self) -> None:
         payload = png_bytes((8, 12))
-        result = validate_sync_response(200, headers("cpu", 8, 12), payload, backend="cpu", model=MODEL, dimensions=(8, 12))
-        self.assertEqual(hashlib.sha256(payload).hexdigest(), result["output_sha256"])
+        expected_sha256 = hashlib.sha256(payload).hexdigest()
+        result = validate_sync_response(200, headers("cpu", 8, 12), payload, backend="cpu", model=MODEL, dimensions=(8, 12), expected_sha256=expected_sha256)
+        self.assertEqual(expected_sha256, result["output_sha256"])
+
+    def test_sync_response_rejects_unexpected_output_sha256(self) -> None:
+        with self.assertRaisesRegex(AssertionError, "^unexpected output SHA-256$"):
+            validate_sync_response(200, headers("cpu", 8, 12), png_bytes((8, 12)), backend="cpu", model=MODEL, dimensions=(8, 12), expected_sha256="0" * 64)
 
     def test_sync_cuda_response_rejects_cpu_metadata(self) -> None:
         with self.assertRaises(AssertionError):

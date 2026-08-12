@@ -595,11 +595,36 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     hub_test_assert(is_int($l4aEvidence['elapsed_time_ms']) && $l4aEvidence['elapsed_time_ms'] > 0, 'image-tools L4a evidence elapsed time must be a positive integer');
     hub_test_assert(str_contains($l4aAcceptance, 'no source image/inference output'), 'image-tools L4a acceptance section must declare that it records no source image/inference output');
 
+    foreach (['L4b', 'L5'] as $level) {
+        $sectionMatch = [];
+        hub_test_assert(preg_match('/^## ' . $level . '[^\r\n]*\R+(.*?)(?=^##\s|\z)/ms', $acceptance, $sectionMatch) === 1, 'image-tools acceptance record must isolate an ' . $level . ' section');
+        $section = (string)$sectionMatch[1];
+        $blocks = [];
+        hub_test_assert(preg_match_all('/^```json\s*\R(.*?)^```\s*$/ms', $section, $blocks) === 1, 'image-tools ' . $level . ' acceptance section must contain exactly one JSON evidence block');
+        hub_test_assert(str_contains($section, 'no source image/inference output'), 'image-tools ' . $level . ' acceptance section must redact source image/inference output');
+        try {
+            $evidence = json_decode((string)$blocks[1][0], true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            $evidence = null;
+        }
+        hub_test_assert(is_array($evidence), 'image-tools ' . $level . ' acceptance evidence block must be JSON');
+        if ($level === 'L4b') {
+            hub_test_assert(($evidence['outputs'] ?? []) === [
+                'cuda' => 'a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e',
+                'cpu' => 'ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207',
+            ], 'image-tools L4b evidence golden digests mismatch');
+            hub_test_assert(($evidence['dimensions'] ?? []) === [8, 12] && ($evidence['headers_verified'] ?? false) === true, 'image-tools L4b evidence dimensions or headers mismatch');
+        } else {
+            hub_test_assert(($evidence['benchmark_cases'] ?? []) === ['image_tools_cuda_upscale_golden', 'image_tools_cpu_upscale_golden'], 'image-tools L5 evidence benchmark IDs mismatch');
+            hub_test_assert(($evidence['status'] ?? '') === 'pass', 'image-tools L5 evidence must record pass');
+        }
+    }
+
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['name'] ?? '') === '影像工具', 'image-tools display name must remain generic Chinese');
     hub_test_assert(($manifest['description'] ?? '') === '本機複合式影像處理工具；目前提供 Real-ESRGAN 圖片放大，後續功能將以獨立 operation 擴充。', 'image-tools description must describe the extensible Chinese image-tools Pack');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'image-tools must expose a sync API');
-    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L4a-model-init-smoke' && ($manifest['runtime_ready'] ?? false) === true, 'image-tools must publish L4a only after model-init smoke exists');
+    hub_test_assert(($manifest['runtime_level'] ?? '') === 'L5-benchmark-ready' && ($manifest['runtime_ready'] ?? false) === true, 'image-tools must publish L5 only after final L4b/L5 evidence exists');
     hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'image-tools target level mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'image-tools', 'image-tools public mode mismatch');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/process/image', 'image-tools invoke path mismatch');
@@ -608,6 +633,23 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     hub_test_assert(($manifest['queue']['max_concurrency'] ?? 0) === 1, 'image-tools must remain single concurrency');
 
     $contract = $manifest['l5_contract'] ?? [];
+    $inputFields = $contract['input']['fields'] ?? [];
+    sort($inputFields);
+    hub_test_assert($inputFields === ['backend', 'image', 'model', 'operation'], 'image-tools L5 input fields mismatch');
+    $goldenCases = $contract['benchmark'] ?? [];
+    hub_test_assert(array_column($goldenCases, 'id') === ['image_tools_cuda_upscale_golden', 'image_tools_cpu_upscale_golden'], 'image-tools must declare CUDA then CPU L5 golden cases');
+    foreach ($goldenCases as $index => $case) {
+        $backend = $index === 0 ? 'cuda' : 'cpu';
+        $digest = $index === 0
+            ? 'a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e'
+            : 'ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207';
+        hub_test_assert(($case['type'] ?? '') === 'api' && ($case['mode'] ?? '') === 'image-tools' && ($case['method'] ?? '') === 'POST', 'image-tools ' . $backend . ' golden case transport mismatch');
+        hub_test_assert(($case['real_inference'] ?? false) === true && ($case['fixture'] ?? '') === 'packs/image-tools/demo/smoke.png' && ($case['fixture_field'] ?? '') === 'image', 'image-tools ' . $backend . ' golden case fixture mismatch');
+        hub_test_assert(($case['form'] ?? []) === ['operation' => 'upscale', 'model' => 'realesrgan-x4plus', 'backend' => $backend], 'image-tools ' . $backend . ' golden case form mismatch');
+        hub_test_assert(($case['expected_content_type'] ?? '') === 'image/png' && ($case['expected_png'] ?? false) === true && ($case['expected_dimensions'] ?? []) === [8, 12] && ($case['expected_sha256'] ?? '') === $digest, 'image-tools ' . $backend . ' golden output contract mismatch');
+        hub_test_assert(($case['expected_response_headers'] ?? []) === ['X-3waAIHub-Model', 'X-3waAIHub-Backend', 'X-3waAIHub-Elapsed-Ms', 'X-3waAIHub-Width', 'X-3waAIHub-Height'], 'image-tools ' . $backend . ' golden response headers mismatch');
+        hub_test_assert(($case['expected_response_header_values'] ?? []) === ['X-3waAIHub-Model' => 'realesrgan-x4plus', 'X-3waAIHub-Backend' => $backend], 'image-tools ' . $backend . ' golden response header values mismatch');
+    }
     hub_test_assert(($contract['output']['content_type'] ?? '') === 'image/png', 'image-tools output must be PNG');
     hub_test_assert(($contract['output']['required_headers'] ?? []) === [
         'X-3waAIHub-Model',

@@ -386,12 +386,18 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
         'expected_content_type' => 'image/png',
         'expected_png' => true,
         'expected_dimensions_from_fixture' => true,
+        'expected_dimensions' => [(int)$size[0], (int)$size[1]],
+        'expected_sha256' => hash('sha256', $png),
         'expected_response_headers' => [
             'X-3waAIHub-Model',
             'X-3waAIHub-Device',
             'X-3waAIHub-Elapsed-Ms',
             'X-3waAIHub-Width',
             'X-3waAIHub-Height',
+        ],
+        'expected_response_header_values' => [
+            'X-3waAIHub-Model' => 'ZhengPeng7/BiRefNet@revision',
+            'X-3waAIHub-Device' => 'cuda',
         ],
         'expected_keys' => ['must_not_be_checked_for_binary'],
     ], [
@@ -413,5 +419,57 @@ hub_test('L5 binary benchmark validates PNG dimensions and declared response hea
         'width' => $size[0],
         'height' => $size[1],
         'response_headers_pass' => true,
+        'output_sha256' => hash('sha256', $png),
     ], 'binary benchmark result mismatch');
+
+    $baseCase = [
+        'expected_content_type' => 'image/png',
+        'expected_png' => true,
+        'expected_dimensions' => [(int)$size[0], (int)$size[1]],
+        'expected_sha256' => hash('sha256', $png),
+        'expected_response_headers' => [
+            'X-3waAIHub-Model',
+            'X-3waAIHub-Device',
+            'X-3waAIHub-Elapsed-Ms',
+            'X-3waAIHub-Width',
+            'X-3waAIHub-Height',
+        ],
+        'expected_response_header_values' => [
+            'X-3waAIHub-Model' => 'ZhengPeng7/BiRefNet@revision',
+            'X-3waAIHub-Device' => 'cuda',
+        ],
+    ];
+    $baseResponse = [
+        'status' => 200,
+        'headers' => [
+            'Content-Type: image/png',
+            'X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision',
+            'X-3waAIHub-Device: cuda',
+            'X-3waAIHub-Elapsed-Ms: 12',
+            'X-3waAIHub-Width: ' . $size[0],
+            'X-3waAIHub-Height: ' . $size[1],
+        ],
+        'body' => $png,
+    ];
+    foreach ([
+        'wrong dimensions' => [
+            array_replace($baseCase, ['expected_dimensions' => [(int)$size[0] + 1, (int)$size[1]]]),
+            $baseResponse,
+        ],
+        'wrong digest' => [
+            array_replace($baseCase, ['expected_sha256' => str_repeat('0', 64)]),
+            $baseResponse,
+        ],
+        'wrong header value' => [
+            array_replace($baseCase, ['expected_response_header_values' => ['X-3waAIHub-Device' => 'cpu']]),
+            $baseResponse,
+        ],
+    ] as $label => [$case, $response]) {
+        try {
+            hub_benchmark_binary_response_result($case, $response, $fixture);
+            throw new RuntimeException($label . ' must fail the binary benchmark contract');
+        } catch (RuntimeException $error) {
+            hub_test_assert($error->getMessage() === 'benchmark contract check failed.', $label . ' must fail closed');
+        }
+    }
 });
