@@ -550,12 +550,15 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     hub_test_assert(!str_contains($runtimeSection, '`L4b-real-inference`／`runtime_ready=true`'), 'README image-tools runtime row must not claim L4b ready');
     hub_test_assert(!str_contains($runtimeSection, '`L5-benchmark-ready`／`runtime_ready=true`'), 'README image-tools runtime row must not claim L5 ready');
     $runbook = (string)file_get_contents(HUB_ROOT . '/docs/operations/image-tools.md');
-    hub_test_assert(str_contains($runbook, '[image-tools-acceptance.md](image-tools-acceptance.md)'), 'image-tools runbook must link the auditable acceptance record');
+    preg_match('/^## L4a[^\r\n]*\R+(.*?)(?=^##\s|\z)/ms', $runbook, $l4aSectionMatch);
+    $l4aSection = (string)($l4aSectionMatch[1] ?? '');
+    hub_test_assert($l4aSection !== '', 'image-tools runbook must isolate an L4a section before later runtime levels');
+    hub_test_assert(str_contains($l4aSection, '[image-tools-acceptance.md](image-tools-acceptance.md)'), 'image-tools L4a runbook section must link the auditable acceptance record');
     foreach (['影像工具', 'L4a-model-init-smoke', 'model_smoke.py --backend cpu'] as $needle) {
-        hub_test_assert(str_contains($runbook, $needle), 'image-tools runbook must publish ' . $needle);
+        hub_test_assert(str_contains($l4aSection, $needle), 'image-tools L4a runbook section must publish ' . $needle);
     }
-    hub_test_assert(!str_contains($runbook, '`L4b-real-inference`／`runtime_ready=true`'), 'image-tools runbook must not claim L4b ready');
-    hub_test_assert(!str_contains($runbook, '`L5-benchmark-ready`／`runtime_ready=true`'), 'image-tools runbook must not claim L5 ready');
+    hub_test_assert(!str_contains($l4aSection, '`L4b-real-inference`／`runtime_ready=true`'), 'image-tools L4a runbook section must not claim L4b ready');
+    hub_test_assert(!str_contains($l4aSection, '`L5-benchmark-ready`／`runtime_ready=true`'), 'image-tools L4a runbook section must not claim L5 ready');
 
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['name'] ?? '') === '影像工具', 'image-tools display name must remain generic Chinese');
