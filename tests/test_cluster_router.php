@@ -3399,6 +3399,13 @@ hub_test('cluster router rejects missing forged or malformed profile confirmatio
             ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
         ]);
         $valid = hub_test_cluster_voice_profile_confirmation_payload('42', $reviewed);
+        $validationError = [
+            'cer' => null,
+            'status' => 'error',
+            'needs_confirmation' => true,
+            'normalizer' => 's2twp-strip-punctuation-v1',
+            'error' => 'transcript_validation_failed',
+        ];
         $missingTask = $valid;
         unset($missingTask['voice_profile_task_id']);
         $missingHash = $valid;
@@ -3443,6 +3450,22 @@ hub_test('cluster router rejects missing forged or malformed profile confirmatio
             && !array_key_exists('prompt_text', $acceptedPayload),
             'valid exact-byte confirmation proof must return only its opaque route and authoritative hash'
         );
+        $acceptedError = hub_cluster_dispatch($db, 'voice_generate', $request, [
+            'refresh_due' => static fn (): array => [$inventory],
+            'transport' => static function (array $request) use (&$calls, $valid, $validationError, $reviewed): array {
+                $calls++;
+                $downstream = json_decode((string)($request['body'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
+                hub_test_assert(($downstream['prompt_text'] ?? null) === $reviewed, 'confirmation error proof must retain the exact reviewed bytes');
+                return hub_gateway_json(200, array_replace($valid, ['validation' => $validationError]));
+            },
+        ]);
+        $acceptedErrorPayload = json_decode($acceptedError['body'], true, 64, JSON_THROW_ON_ERROR);
+        hub_test_assert(
+            $acceptedError['status'] === 200
+            && ($acceptedErrorPayload['validation'] ?? null) === $validationError
+            && !array_key_exists('prompt_text', $acceptedErrorPayload),
+            'profile_confirm must safely project the authoritative transcript validation error'
+        );
         foreach ($cases as $childPayload) {
             $response = hub_cluster_dispatch($db, 'voice_generate', $request, [
                 'refresh_due' => static fn (): array => [$inventory],
@@ -3461,7 +3484,7 @@ hub_test('cluster router rejects missing forged or malformed profile confirmatio
                 'profile confirmation proof mismatch must fail closed without leaking child identity or prompt material'
             );
         }
-        hub_test_assert($calls === count($cases) + 1, 'valid and invalid confirmation proofs must each dispatch exactly once to the pinned station');
+        hub_test_assert($calls === count($cases) + 2, 'valid and invalid confirmation proofs must each dispatch exactly once to the pinned station');
 
         $tooLong = str_repeat('界', 20001);
         $tooLongRequest = hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
@@ -3559,6 +3582,41 @@ hub_test('cluster router relays only the bounded native profile transcription er
         hub_test_assert(
             hub_test_throws(static fn (): array => hub_cluster_router_public_voice_profile_response($invalid, true)),
             'profile draft nested objects must reject every undeclared field'
+        );
+    }
+
+    $validationError = [
+        'cer' => null,
+        'status' => 'error',
+        'needs_confirmation' => true,
+        'normalizer' => 's2twp-strip-punctuation-v1',
+        'error' => 'transcript_validation_failed',
+    ];
+    $validationErrorPayload = hub_test_cluster_voice_profile_status_payload([
+        'transcription_status' => 'failed',
+        'transcription_error' => 'transcript_validation_failed',
+        'transcript_confirmed' => false,
+        'prompt_text_confirmed_at' => null,
+        'validation' => $validationError,
+    ]);
+    $safeValidationError = hub_cluster_router_public_voice_profile_response($validationErrorPayload, true);
+    hub_test_assert(
+        ($safeValidationError['validation'] ?? null) === $validationError,
+        'profile_status must safely project the authoritative transcript validation error'
+    );
+
+    $errorMissingCode = $validationErrorPayload;
+    unset($errorMissingCode['validation']['error']);
+    $nonErrorWithCode = $validationErrorPayload;
+    $nonErrorWithCode['validation']['status'] = 'clean';
+    $unknownError = $validationErrorPayload;
+    $unknownError['validation']['error'] = 'private_backend_failure';
+    $errorExtra = $validationErrorPayload;
+    $errorExtra['validation']['token'] = 'validation-private-token';
+    foreach ([$errorMissingCode, $nonErrorWithCode, $unknownError, $errorExtra] as $invalid) {
+        hub_test_assert(
+            hub_test_throws(static fn (): array => hub_cluster_router_public_voice_profile_response($invalid, true)),
+            'validation error projection must reject missing, misplaced, unknown, or extra error fields'
         );
     }
 });

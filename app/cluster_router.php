@@ -2632,6 +2632,9 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
     if (array_key_exists('validation', $payload)) {
         $validation = $payload['validation'];
         $validationKeys = ['cer', 'status', 'needs_confirmation', 'normalizer'];
+        if (is_array($validation) && ($validation['status'] ?? null) === 'error') {
+            $validationKeys[] = 'error';
+        }
         if (!is_array($validation)
             || array_diff($validationKeys, array_keys($validation)) !== []
             || array_diff(array_keys($validation), $validationKeys) !== []
@@ -2641,6 +2644,7 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
             || !is_bool($validation['needs_confirmation'])
             || !is_string($validation['normalizer'])
             || strlen($validation['normalizer']) > 64
+            || ($validation['status'] === 'error' && ($validation['error'] ?? null) !== 'transcript_validation_failed')
         ) {
             throw new UnexpectedValueException('invalid voice profile response');
         }
@@ -2650,6 +2654,9 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
             'needs_confirmation' => $validation['needs_confirmation'],
             'normalizer' => $validation['normalizer'],
         ];
+        if ($validation['status'] === 'error') {
+            $safe['validation']['error'] = $validation['error'];
+        }
     }
     if (array_key_exists('transcript', $payload)) {
         $transcript = $payload['transcript'];
