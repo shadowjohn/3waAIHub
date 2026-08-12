@@ -56,6 +56,21 @@ class ModelSmokeTest(unittest.TestCase):
             ],
         }, json.loads(output))
 
+    def test_smoke_uses_model_dir_environment_when_not_explicitly_provided(self) -> None:
+        self.assert_shared_loader()
+        loader = Mock()
+        with patch.dict("os.environ", {"IMAGE_TOOLS_MODEL_DIR": "/env-models"}, clear=False), patch.object(model_smoke, "verify_ready", return_value={"commit": REAL_ESRGAN_COMMIT}) as verify_ready, patch.object(model_smoke, "build_upsampler", loader):
+            status, output = self.invoke(["--backend", "cpu"])
+
+        self.assertEqual(0, status)
+        verify_ready.assert_called_once_with(Path("/env-models"))
+        self.assertEqual([
+            call("realesrgan-x4plus", "cpu", Path("/env-models/RealESRGAN_x4plus.pth")),
+            call("realesrgan-x4plus-anime", "cpu", Path("/env-models/RealESRGAN_x4plus_anime_6B.pth")),
+            call("realesr-animevideov3-x4", "cpu", Path("/env-models/realesr-animevideov3.pth")),
+        ], loader.call_args_list)
+        self.assertTrue(json.loads(output)["ok"])
+
     def test_cuda_smoke_loads_each_unique_family_with_cuda(self) -> None:
         self.assert_shared_loader()
         loader = Mock()

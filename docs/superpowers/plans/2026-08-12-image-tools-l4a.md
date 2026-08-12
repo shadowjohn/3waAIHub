@@ -205,8 +205,10 @@ tests, existing `unittest` runner.
 - [ ] **Step 3: Make `model_smoke.py` initialize but never infer.**
 
   Replace its marker-only `main()` with an argparse CLI accepting
-  `--backend {cpu,cuda}` (default `cpu`) and `--model-dir` (default existing
-  model root). Its implementation must follow this order:
+  `--backend {cpu,cuda}` (default `cpu`) and `--model-dir`. An explicit
+  `--model-dir` has highest precedence; otherwise resolve its default when
+  `main()` runs from `IMAGE_TOOLS_MODEL_DIR`, falling back to the existing
+  model root. Its implementation must follow this order:
 
   ```python
   marker = verify_ready(model_root)
