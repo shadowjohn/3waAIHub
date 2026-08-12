@@ -617,12 +617,9 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
         hub_test_assert($evidence['dimensions'] === [8, 12], 'image-tools ' . $level . ' evidence dimensions mismatch');
         hub_test_assert($evidence['headers_verified'] === true, 'image-tools ' . $level . ' evidence must verify response headers');
         hub_test_assert($evidence['cuda_output_sha256'] === $cudaOutputSha256 && $evidence['cpu_output_sha256'] === $cpuOutputSha256, 'image-tools ' . $level . ' evidence golden digests mismatch');
-        foreach (['cuda_elapsed_time_ms', 'cpu_elapsed_time_ms'] as $elapsedKey) {
-            hub_test_assert(is_int($evidence[$elapsedKey]) && $evidence[$elapsedKey] > 0, 'image-tools ' . $level . ' evidence ' . $elapsedKey . ' must be a positive integer');
-        }
     };
     $evidenceKeys = [
-        'L4b' => ['date', 'image_tag', 'exit_result', 'model', 'dimensions', 'headers_verified', 'cuda_output_sha256', 'cpu_output_sha256', 'cuda_elapsed_time_ms', 'cpu_elapsed_time_ms'],
+        'L4b' => ['date', 'image_tag', 'exit_result', 'model', 'dimensions', 'headers_verified', 'cuda_output_sha256', 'cpu_output_sha256', 'cuda_first_elapsed_time_ms', 'cpu_first_elapsed_time_ms', 'cuda_second_elapsed_time_ms', 'cpu_second_elapsed_time_ms'],
         'L5' => ['date', 'image_tag', 'exit_result', 'model', 'benchmark_cases', 'status', 'dimensions', 'headers_verified', 'cuda_output_sha256', 'cpu_output_sha256', 'cuda_elapsed_time_ms', 'cpu_elapsed_time_ms'],
     ];
     foreach ($evidenceKeys as $level => $keys) {
@@ -645,10 +642,12 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
         hub_test_assert(array_keys($evidence) === $keys, 'image-tools ' . $level . ' evidence keys and order must stay allowlisted');
         $assertEvidenceBase($evidence, $level);
         if ($level === 'L4b') {
+            hub_test_assert($evidence['cuda_first_elapsed_time_ms'] === 8335 && $evidence['cpu_first_elapsed_time_ms'] === 3879 && $evidence['cuda_second_elapsed_time_ms'] === 4384 && $evidence['cpu_second_elapsed_time_ms'] === 3774, 'image-tools L4b evidence must retain both direct CUDA and CPU runs');
             continue;
         } else {
             hub_test_assert($evidence['benchmark_cases'] === ['image_tools_cuda_upscale_golden', 'image_tools_cpu_upscale_golden'], 'image-tools L5 evidence benchmark IDs mismatch');
             hub_test_assert($evidence['status'] === 'pass', 'image-tools L5 evidence must record pass');
+            hub_test_assert($evidence['cuda_elapsed_time_ms'] === 14412 && $evidence['cpu_elapsed_time_ms'] === 4947, 'image-tools L5 evidence benchmark elapsed times mismatch');
         }
     }
 

@@ -548,24 +548,38 @@ hub_test('L5 readiness requires the latest pass for every real benchmark case', 
 });
 
 hub_test('fixture benchmarks inject real_inference only when the active contract declares it', function (): void {
-    $imageFields = hub_pack_l5_contract(hub_get_pack('image-tools')['manifest'])['input']['fields'] ?? [];
-    $imageDeclaresRealInference = false;
-    foreach ($imageFields as $field) {
-        $imageDeclaresRealInference = $imageDeclaresRealInference
-            || $field === 'real_inference'
-            || (is_array($field) && ($field['name'] ?? null) === 'real_inference');
+    $db = hub_test_reset_db();
+    $image = hub_install_pack($db, 'image-tools', ['service_key' => 'image-tools-payload-main', 'port_mode' => 'manual', 'local_port' => 18113]);
+    $ocr = hub_install_pack($db, 'ocr-ppocrv5', ['service_key' => 'ocr-payload-main', 'mode' => 'ocr', 'port_mode' => 'manual', 'local_port' => 18101]);
+    foreach ([$image['service'], $ocr['service']] as $service) {
+        hub_set_service_enabled($db, (string)$service['mode'], true);
+        hub_update_service_status($db, (int)$service['id'], 'running');
     }
-    hub_test_assert($imageDeclaresRealInference === false, 'image-tools must not declare benchmark-only real_inference as a public input');
 
-    $ocrFields = hub_pack_l5_contract(hub_get_pack('ocr-ppocrv5')['manifest'])['input']['fields'] ?? [];
-    $ocrDeclaresRealInference = false;
-    foreach ($ocrFields as $field) {
-        $ocrDeclaresRealInference = $ocrDeclaresRealInference
-            || $field === 'real_inference'
-            || (is_array($field) && ($field['name'] ?? null) === 'real_inference');
+    foreach ([
+        ['case' => 'image_tools_cuda_upscale_golden', 'pack' => 'image-tools', 'service' => 'image-tools-payload-main', 'form' => ['operation' => 'upscale', 'model' => 'realesrgan-x4plus', 'backend' => 'cuda']],
+        ['case' => 'ocr_real_image', 'pack' => 'ocr-ppocrv5', 'service' => 'ocr-payload-main', 'form' => ['real_inference' => '1']],
+    ] as $test) {
+        $reached = false;
+        $captured = [];
+        $serviceId = null;
+        $mode = null;
+        $caught = false;
+        try {
+            hub_benchmark_l5_contract_case($db, $test['case'], $test['pack'], $test['service'], $serviceId, $mode, static function (array $_service, int $_timeoutSec) use (&$reached, &$captured): array {
+                $reached = true;
+                $captured = $_POST;
+                return hub_gateway_json(503, ['ok' => false]);
+            });
+        } catch (RuntimeException $error) {
+            hub_test_assert($error->getMessage() === 'benchmark contract check failed.', 'fixture benchmark must fail only after the observing requester is reached');
+            $caught = true;
+        }
+        hub_test_assert($caught, 'fixture benchmark must fail after the observing requester returns non-200');
+        hub_test_assert($reached, 'fixture benchmark must reach the observing requester');
+        ksort($captured);
+        $expected = $test['form'];
+        ksort($expected);
+        hub_test_assert($captured === $expected, 'fixture benchmark payload mismatch for ' . $test['case']);
     }
-    hub_test_assert($ocrDeclaresRealInference === true, 'object input fields must continue to declare real_inference when public');
-
-    $source = (string)file_get_contents(HUB_ROOT . '/app/benchmarks.php');
-    hub_test_assert(str_contains($source, '!array_key_exists(\'real_inference\', $form) && $declaresRealInference'), 'fixture benchmark payloads must inject real_inference only when the active input contract declares it');
 });

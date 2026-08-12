@@ -61,8 +61,10 @@ no source image/inference output
   "headers_verified": true,
   "cuda_output_sha256": "a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e",
   "cpu_output_sha256": "ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207f7",
-  "cuda_elapsed_time_ms": 4384,
-  "cpu_elapsed_time_ms": 3774
+  "cuda_first_elapsed_time_ms": 8335,
+  "cpu_first_elapsed_time_ms": 3879,
+  "cuda_second_elapsed_time_ms": 4384,
+  "cpu_second_elapsed_time_ms": 3774
 }
 ```
 
