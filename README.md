@@ -1197,7 +1197,7 @@ L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；�
 
 ### image-tools Runtime Level
 
-`image-tools` 是 Real-ESRGAN 單張圖片放大 Pack；目前為 `L3-offline-assets`／`runtime_ready=true`，由已 staged 的離線模型 marker 驗證。
+`image-tools` 是「影像工具」Pack，可用獨立 operation 擴充本機影像處理；目前提供 Real-ESRGAN 單張圖片放大，為 `L3-offline-assets`／`runtime_ready=true`，由已 staged 的離線模型 marker 驗證。
 
 - 對外 mode 是 `image-tools`；operation 僅有同步 `upscale` 和非同步 `upscale_task`。
 - 來源只能二選一：multipart 的 `image` 或 `base64_string`。實際解碼後只接受 JPEG/JPG, PNG, WEBP, BMP；副檔名與 client MIME 不被信任。

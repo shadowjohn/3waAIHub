@@ -1,8 +1,6 @@
-# Image Tools 操作手冊
+# 影像工具操作手冊
 
-`image-tools` 使用離線、可驗證的 Real-ESRGAN snapshot。Pack 已完成 Task 8 的 Gateway CPU/CUDA sync 與 async acceptance，為 `L3-offline-assets` 且 `runtime_ready=true`；後續模型變更仍須重新驗證。
-
-本次驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
+`image-tools` 是可擴充的本機影像工具 Pack；目前的 `upscale` 與 `upscale_task` operation 使用離線、可驗證的 Real-ESRGAN snapshot，為 `L3-offline-assets` 且 `runtime_ready=true`。本次驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
 
 ## 離線模型 staging
 
