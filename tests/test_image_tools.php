@@ -752,6 +752,16 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
             'local gateway URL must reject invalid mode ' . json_encode($invalidMode, JSON_THROW_ON_ERROR)
         );
     }
+
+    $mainDb = hub_test_reset_db();
+    $mainInstalled = hub_install_pack($mainDb, 'image-tools', [
+        'service_key' => 'image-tools-main',
+        'port_mode' => 'manual',
+        'local_port' => 18113,
+    ]);
+    $mainCompose = (string)file_get_contents(hub_path((string)$mainInstalled['service']['compose_file']));
+    hub_test_assert(str_contains($mainCompose, "services:\n  image-tools:\n"), 'image-tools-main generated Compose must expose the stable image-tools service selector');
+    hub_test_assert(!str_contains($mainCompose, "services:\n  image-tools-main:\n"), 'image-tools-main generated Compose must not leak its instance key into the operator service selector');
 });
 
 hub_test('image-tools publishes bounded Playground and documentation contracts', function (): void {

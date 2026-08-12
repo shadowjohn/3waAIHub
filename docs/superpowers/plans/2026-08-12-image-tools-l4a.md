@@ -325,6 +325,7 @@ tests, existing `unittest` runner.
 ## Task 4: Run controlled model acceptance and record the evidence
 
 **Files:**
+- Modify: `app/pack_registry.php`
 - Modify: `docs/operations/image-tools-acceptance.md`
 - Modify: `packs/image-tools/pack.json`
 - Modify: `packs/image-tools/service/app.py`
@@ -335,7 +336,20 @@ tests, existing `unittest` runner.
 - Modify: `docs/operations/image-tools.md`
 - Modify: `tests/test_image_tools.php`
 
-- [ ] **Step 1: Confirm the staged source is the pinned model set.**
+- [ ] **Step 1: Generate the stable installed Compose service selector.**
+
+  First extend `tests/test_image_tools.php` to install the default
+  `image-tools-main` service and require its generated Compose file to expose
+  `services.image-tools`, not `services.image-tools-main`. Then make the
+  smallest `hub_generate_pack_compose()` special case that maps only Pack ID
+  `image-tools` with service key `image-tools-main` to the `image-tools`
+  Compose service selector. Keep the runtime directory, image tag, container
+  name, public mode, and all non-default service-key selectors unchanged.
+  Run `docker compose -f data/services/image-tools-main/docker-compose.generated.yml config`
+  after install; this is what makes the exact Step 3 `exec -T image-tools`
+  command resolvable.
+
+- [ ] **Step 2: Confirm the staged source is the pinned model set.**
 
   Run:
 
@@ -349,7 +363,7 @@ tests, existing `unittest` runner.
   `model_runtime.py`; `ready.json` must exist and the directory must be mounted
   read-only. Do not copy models into Git or a Docker layer.
 
-- [ ] **Step 2: Execute the CPU-only L4a smoke as the runtime user.**
+- [ ] **Step 3: Execute the CPU-only L4a smoke as the runtime user.**
 
   Run:
 
@@ -362,13 +376,13 @@ tests, existing `unittest` runner.
   exit or any other output blocks L4a promotion; do not substitute L3 marker
   verification for this test.
 
-- [ ] **Step 3: Record one structured, redacted L4a evidence block.**
+- [ ] **Step 4: Record one structured, redacted L4a evidence block.**
 
   Append an isolated `## L4a` section containing the plain declaration `no
   source image/inference output` and exactly one `json` fenced evidence block.
   Its top-level key order is fixed: `date`, `image_tag`, `exit_result`,
   `backend`, `commit`, `loaded_family_ids`, `aliases`, `elapsed_time_ms`.
-  Populate every value from Step 2's command and its installed image metadata:
+  Populate every value from Step 3's command and its installed image metadata:
   a `YYYY-MM-DD` date, a nonempty safe Docker-style `repository:tag` image
   tag, numeric `exit_result` `0`, backend `cpu`, commit
   `a4abfb2979a7bbff3f69f58f58ae324608821e27`, family IDs
@@ -378,25 +392,25 @@ tests, existing `unittest` runner.
   JSON block, host paths, model binaries, uploaded images, output images, or
   full container logs.
 
-- [ ] **Step 4: Promote the public L4a state only after the evidence exists.**
+- [ ] **Step 5: Promote the public L4a state only after the evidence exists.**
 
   First change the pre-promotion `test_app.py` health expectation from
   `L3-offline-assets` to `L4a-model-init-smoke`, preserving the patched
   `build_upsampler` assertion that it remains uncalled. Change both
   `acceptance.py` and `test_acceptance.py` from accepting only
   `L3-offline-assets` to accepting only `L4a-model-init-smoke`; this change is
-  permitted only after Steps 2 and 3 have recorded the successful evidence.
+  permitted only after Steps 3 and 4 have recorded the successful evidence.
   Extend
   `tests/test_image_tools.php` to require the exact installed Compose command
-  from Step 2, the successful structured acceptance JSON, and no L4b/L5-ready
+  from Step 3, the successful structured acceptance JSON, and no L4b/L5-ready
   claim. Then change `pack.json` and the marker-only ready branch in `app.py`
   to `L4a-model-init-smoke`; `health()` must still not call
   `build_upsampler()`.
-  Update the README and runbook to state current L4a, publish only Step 2's
+  Update the README and runbook to state current L4a, publish only Step 3's
   installed Compose command, and state that it proves initialization only.
   L4b HTTP inference and L5 benchmark/quality acceptance remain unclaimed.
 
-- [ ] **Step 5: Run the final regressions and inspect the diff.**
+- [ ] **Step 6: Run the final regressions and inspect the diff.**
 
   Run:
 
@@ -418,7 +432,7 @@ tests, existing `unittest` runner.
   separately report any pre-existing unrelated failures/warnings rather than
   calling the full suite wholly green.
 
-- [ ] **Step 6: Commit the evidence-backed L4a promotion.**
+- [ ] **Step 7: Commit the evidence-backed L4a promotion.**
 
   ```bash
   git add docs/operations/image-tools-acceptance.md packs/image-tools/pack.json \

@@ -2393,7 +2393,11 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
         return hub_generate_llm_gemma4_compose($pack, $serviceKey, $localPort);
     }
 
-    $composeService = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? 'hello' : $serviceKey;
+    $composeService = match ([(string)($manifest['id'] ?? ''), $serviceKey]) {
+        ['hello', 'hello-main'] => 'hello',
+        ['image-tools', 'image-tools-main'] => 'image-tools',
+        default => $serviceKey,
+    };
     $containerName = ($manifest['id'] ?? '') === 'hello' && $serviceKey === 'hello-main' ? '3waaihub-hello' : '3waaihub-' . $serviceKey;
     $portEnv = hub_pack_port_env($manifest);
     $buildContext = $pack['dir'] . '/service';
