@@ -762,6 +762,9 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
     $mainCompose = (string)file_get_contents(hub_path((string)$mainInstalled['service']['compose_file']));
     hub_test_assert(str_contains($mainCompose, "services:\n  image-tools:\n"), 'image-tools-main generated Compose must expose the stable image-tools service selector');
     hub_test_assert(!str_contains($mainCompose, "services:\n  image-tools-main:\n"), 'image-tools-main generated Compose must not leak its instance key into the operator service selector');
+    $modelsRoot = (string)(hub_get_storage_paths($mainDb)['AIHUB_MODELS_DIR'] ?? '');
+    hub_test_assert(str_contains($mainCompose, '"' . $modelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"'), 'image-tools-main generated Compose must embed its managed model mount for the standalone L4a smoke command');
+    hub_test_assert(!str_contains($mainCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main generated Compose must not require a shell model-root variable for the standalone L4a smoke command');
 });
 
 hub_test('image-tools publishes bounded Playground and documentation contracts', function (): void {

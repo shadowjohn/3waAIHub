@@ -1961,7 +1961,7 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         ) {
             throw new RuntimeException('Generated compose path escapes its service runtime.');
         }
-        hub_write_runtime_compose_file($runtimeDir, $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort, $envValues));
+        hub_write_runtime_compose_file($runtimeDir, $isInternalTask ? hub_generate_internal_task_compose($manifest) : hub_generate_pack_compose($pack, $serviceKey, (int)$localPort, $envValues, $storage));
         if (is_link($runtimeSettingsFile) || !is_file($runtimeSettingsFile)) {
             throw new RuntimeException('Cannot activate service runtime settings.');
         }
@@ -2383,7 +2383,7 @@ function hub_pack_requests_gpu(array $manifest, string $serviceKey = '', array $
     return false;
 }
 
-function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort, array $envValues = []): string
+function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPort, array $envValues = [], ?array $storage = null): string
 {
     $manifest = $pack['manifest'];
     if (($manifest['id'] ?? '') === 'translate-gemma12b') {
@@ -2433,11 +2433,11 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
             . '      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"' . "\n";
     }
 
-    $volumes = hub_generate_pack_storage_volumes($manifest, $serviceKey);
+    $volumes = hub_generate_pack_storage_volumes($manifest, $serviceKey, $storage);
     if ($volumes) {
         $compose .= "    volumes:\n";
         foreach ($volumes as $volume) {
-            $compose .= '      - "' . $volume . '"' . "\n";
+            $compose .= '      - ' . json_encode($volume, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . "\n";
         }
     }
 
@@ -2632,7 +2632,7 @@ function hub_pack_storage_child_path(string $parent, string $part): string
     return rtrim(hub_normalize_host_path($parent), '/') . '/' . $part;
 }
 
-function hub_generate_pack_storage_volumes(array $manifest, string $serviceKey): array
+function hub_generate_pack_storage_volumes(array $manifest, string $serviceKey, ?array $storage = null): array
 {
     $serviceKey = hub_pack_runtime_service_key($serviceKey);
     $mounts = hub_pack_storage_mounts_contract($manifest['storage']['mounts'] ?? null);
@@ -2647,6 +2647,12 @@ function hub_generate_pack_storage_volumes(array $manifest, string $serviceKey):
         'service' => '${SERVICE_DATA_DIR}',
         'service_data' => '${SERVICE_DATA_DIR}',
     ];
+    if (($manifest['id'] ?? '') === 'image-tools' && $serviceKey === 'image-tools-main') {
+        $modelsRoot = trim((string)($storage['AIHUB_MODELS_DIR'] ?? ''));
+        if (hub_is_safe_models_root($modelsRoot)) {
+            $prefix['models'] = rtrim($modelsRoot, '/\\');
+        }
+    }
     $volumes = [];
     foreach ($mounts as $mount) {
         $hostSubdir = $mount['host_subdir'];

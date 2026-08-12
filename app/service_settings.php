@@ -699,5 +699,6 @@ function hub_write_service_compose(PDO $db, array $service): string
         (string)$service['service_key'],
         (int)$service['local_port'],
         hub_service_settings_values($db, $service),
+        hub_get_storage_paths($db),
     ));
 }
