@@ -372,7 +372,7 @@ class RunnerTest(unittest.TestCase):
             "realesrgan.archs.srvgg_arch": srvgg,
         }):
             for alias in ("realesr-animevideov3-x2", "realesr-animevideov3-x3", "realesr-animevideov3-x4", "realesrgan-x4plus"):
-                upscale_runner._upsampler(alias, "cpu", Path("/models/pinned.pth"))
+                upscale_runner.model_runtime.build_upsampler(alias, "cpu", Path("/models/pinned.pth"))
         self.assertEqual([4, 4, 4, 4], [call["scale"] for call in engine_calls])
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -384,7 +384,7 @@ class RunnerTest(unittest.TestCase):
                 output_scales.append(outscale)
                 return np.zeros((3 * outscale, 2 * outscale, 3), dtype=np.uint8), None
             fake = SimpleNamespace(enhance=enhance)
-            with patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner, "_upsampler", return_value=fake):
+            with patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner.model_runtime, "build_upsampler", return_value=fake):
                 for alias in ("realesr-animevideov3-x2", "realesr-animevideov3-x3", "realesr-animevideov3-x4"):
                     upscale_runner.run_upscale(source=source, output=workspace / "output.png", alias=alias, backend="cpu", model_dir=Path("/models"))
             self.assertEqual([2, 3, 4], output_scales)
@@ -397,7 +397,7 @@ class RunnerTest(unittest.TestCase):
             output = workspace / "output.png"
             source.write_bytes(png_bytes((2, 3)))
             fake = SimpleNamespace(enhance=lambda _pixels, outscale: (np.zeros((6, 4, 3), dtype=np.uint8), None))
-            with patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner, "_upsampler", return_value=fake) as constructor:
+            with patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner.model_runtime, "build_upsampler", return_value=fake) as constructor:
                 report = upscale_runner.run_upscale(source=source, output=output, alias="realesr-animevideov3-x2", backend="cpu", model_dir=Path("/models"))
             self.assertEqual({"model": "realesr-animevideov3-x2", "backend": "cpu", "width": 4, "height": 6}, {key: report[key] for key in ("model", "backend", "width", "height")})
             self.assertEqual(("realesr-animevideov3-x2", "cpu", Path("/models/pinned.pth")), constructor.call_args.args)

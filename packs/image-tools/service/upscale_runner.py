@@ -4,28 +4,13 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 from PIL import Image
 
 from image_contract import ImageToolsError, decode_image, resolve_backend, select_model, validate_output_pixels
+import model_runtime
 from model_runtime import DEFAULT_MODEL_ROOT, ModelRuntimeError, model_path_for_alias
-
-
-def _upsampler(alias: str, backend: str, model_path: Path) -> Any:
-    from basicsr.archs.rrdbnet_arch import RRDBNet
-    from realesrgan import RealESRGANer
-
-    select_model(alias)
-    if alias == "realesrgan-x4plus":
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-    elif alias == "realesrgan-x4plus-anime":
-        model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4)
-    else:
-        from realesrgan.archs.srvgg_arch import SRVGGNetCompact
-        model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=16, upscale=4, act_type="prelu")
-    return RealESRGANer(scale=4, model_path=str(model_path), model=model, tile=0, tile_pad=10, pre_pad=0, half=backend == "cuda", device=backend)
 
 
 def _cuda_available() -> bool:
@@ -52,7 +37,7 @@ def run_upscale(*, source: Path, output: Path, alias: str, backend: str, model_d
     model_path = model_path_for_alias(alias, model_dir)
     started = time.perf_counter()
     try:
-        upsampler = _upsampler(alias, effective, model_path)
+        upsampler = model_runtime.build_upsampler(alias, effective, model_path)
     except Exception as exc:
         raise ModelRuntimeError("model_load_failed") from exc
     try:
