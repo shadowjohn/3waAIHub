@@ -573,14 +573,19 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     hub_test_assert($l4aAcceptance !== '', 'image-tools acceptance record must isolate an L4a section before later runtime levels');
     $jsonEvidenceBlocks = [];
     hub_test_assert(preg_match_all('/^```json\s*\R(.*?)^```\s*$/ms', $l4aAcceptance, $jsonEvidenceBlocks) === 1, 'image-tools L4a acceptance section must contain exactly one JSON evidence block');
+    $l4aEvidenceKeys = ['date', 'image_tag', 'exit_result', 'backend', 'commit', 'loaded_family_ids', 'aliases', 'elapsed_time_ms'];
+    $evidenceKeyTokens = [];
+    hub_test_assert(preg_match_all('/"([a-z_]+)"\s*:/', trim((string)$jsonEvidenceBlocks[1][0]), $evidenceKeyTokens) >= 0, 'image-tools L4a acceptance evidence keys must be tokenizable');
+    hub_test_assert($evidenceKeyTokens[1] === $l4aEvidenceKeys, 'image-tools L4a acceptance evidence keys must be unique and ordered before decoding');
     try {
         $l4aEvidence = json_decode((string)$jsonEvidenceBlocks[1][0], true, 512, JSON_THROW_ON_ERROR);
     } catch (JsonException) {
         $l4aEvidence = null;
     }
     hub_test_assert(is_array($l4aEvidence), 'image-tools L4a acceptance evidence block must be a JSON object');
-    hub_test_assert(array_keys($l4aEvidence) === ['date', 'image_tag', 'exit_result', 'backend', 'commit', 'loaded_family_ids', 'aliases', 'elapsed_time_ms'], 'image-tools L4a acceptance evidence keys and order must stay allowlisted');
-    hub_test_assert(is_string($l4aEvidence['date']) && preg_match('/\A\d{4}-\d{2}-\d{2}\z/D', $l4aEvidence['date']) === 1, 'image-tools L4a evidence date must use YYYY-MM-DD');
+    hub_test_assert(array_keys($l4aEvidence) === $l4aEvidenceKeys, 'image-tools L4a acceptance evidence keys and order must stay allowlisted');
+    $dateParts = [];
+    hub_test_assert(is_string($l4aEvidence['date']) && preg_match('/\A(\d{4})-(\d{2})-(\d{2})\z/D', $l4aEvidence['date'], $dateParts) === 1 && checkdate((int)$dateParts[2], (int)$dateParts[3], (int)$dateParts[1]), 'image-tools L4a evidence date must be a real YYYY-MM-DD calendar date');
     hub_test_assert(is_string($l4aEvidence['image_tag']) && preg_match('/\A[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)*:[A-Za-z0-9][A-Za-z0-9_.-]*\z/D', $l4aEvidence['image_tag']) === 1, 'image-tools L4a evidence image tag must be a safe repository:tag');
     hub_test_assert(is_int($l4aEvidence['exit_result']) && $l4aEvidence['exit_result'] === 0, 'image-tools L4a evidence must record successful exit result 0');
     hub_test_assert($l4aEvidence['backend'] === 'cpu', 'image-tools L4a evidence must record the required CPU backend');
