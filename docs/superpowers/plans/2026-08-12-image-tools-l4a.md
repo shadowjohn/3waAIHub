@@ -280,10 +280,7 @@ tests, existing `unittest` runner.
   as current `upscale` support, and publish the exact L4a command:
 
   ```bash
-  docker run --rm --user 65532:65532 \
-    -e IMAGE_TOOLS_MODEL_DIR=/models/image-tools/realesrgan \
-    -v /park/models/image-tools/realesrgan:/models/image-tools/realesrgan:ro \
-    3waaihub-image-tools:test python3 /app/model_smoke.py --backend cpu
+  docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu
   ```
 
   State that its JSON proves local model initialization only. L4b still needs
