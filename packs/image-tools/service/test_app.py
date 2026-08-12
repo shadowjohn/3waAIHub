@@ -12,7 +12,7 @@ import types
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from PIL import Image
 import numpy as np
@@ -75,6 +75,18 @@ class FakeUpload:
         return self.data
 
 
+class FakeUpsampler:
+    def __init__(self) -> None:
+        self.input_shapes: list[tuple[int, ...]] = []
+        self.outscales: list[int] = []
+
+    def enhance(self, pixels: np.ndarray, outscale: int) -> tuple[np.ndarray, None]:
+        self.input_shapes.append(pixels.shape)
+        self.outscales.append(outscale)
+        height, width = pixels.shape[:2]
+        return np.full((height * outscale, width * outscale, 3), (30, 20, 10), dtype=np.uint8), None
+
+
 class AppTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -87,13 +99,43 @@ class AppTest(unittest.TestCase):
         self.root.mkdir()
         self.environment = patch.dict(os.environ, {"IMAGE_TOOLS_MODEL_DIR": str(self.root)}, clear=False)
         self.environment.start()
+        self._reset_upsampler_cache()
 
     def tearDown(self) -> None:
+        self._reset_upsampler_cache()
         self.environment.stop()
         self.temp.cleanup()
 
+    def _reset_upsampler_cache(self) -> None:
+        self.app._UPSAMPLER_CACHE = None
+
     def response_body(self, response):
         return json.loads(response.body)
+
+    def process(self, **kwargs):
+        return asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", **kwargs))
+
+    def assert_png_response(self, response, *, model: str, backend: str, size: tuple[int, int]) -> None:
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("image/png", response.media_type)
+        headers = {key.lower(): value for key, value in response.headers.items()}
+        self.assertEqual({
+            "x-3waaihub-model",
+            "x-3waaihub-backend",
+            "x-3waaihub-elapsed-ms",
+            "x-3waaihub-width",
+            "x-3waaihub-height",
+        }, set(headers))
+        self.assertEqual({
+            "x-3waaihub-model": model,
+            "x-3waaihub-backend": backend,
+            "x-3waaihub-width": str(size[0]),
+            "x-3waaihub-height": str(size[1]),
+        }, {key: value for key, value in headers.items() if key != "x-3waaihub-elapsed-ms"})
+        self.assertTrue(headers["x-3waaihub-elapsed-ms"].isdigit())
+        with Image.open(io.BytesIO(response.body)) as rendered:
+            self.assertEqual(size, rendered.size)
+            self.assertEqual((10, 20, 30), rendered.getpixel((0, 0)))
 
     def test_health_reports_l1_when_assets_are_missing_and_l5_after_recorded_benchmarks(self) -> None:
         unavailable = {
@@ -121,92 +163,208 @@ class AppTest(unittest.TestCase):
             "runtime_ready": True,
         }, health)
 
-    def test_process_returns_png_exact_metadata_and_cleans_workspace(self) -> None:
-        workspaces: list[Path] = []
+    def test_process_rejects_symlinked_model_root_before_building(self) -> None:
+        symlink_root = Path(self.temp.name) / "symlink-models"
+        symlink_root.symlink_to(self.root, target_is_directory=True)
 
-        def run(argv, **kwargs):
-            self.assertIsInstance(argv, list)
-            self.assertFalse(kwargs["shell"])
-            self.assertFalse(kwargs["check"])
-            self.assertIn("--fp32", argv)
-            self.assertEqual("realesrgan-x4plus", argv[argv.index("--model") + 1])
-            output = Path(argv[argv.index("--output") + 1])
-            workspaces.append(output.parent)
-            output.write_bytes(png_bytes((8, 12)))
-            return SimpleNamespace(returncode=0, stdout=json.dumps({"model": "realesrgan-x4plus", "backend": "cpu", "width": 8, "height": 12, "elapsed_ms": 7}), stderr="")
+        def reject_symlink_root(root: Path) -> dict[str, object]:
+            if root.is_symlink():
+                raise self.app.ModelRuntimeError("model_not_present")
+            return {}
 
-        with patch.object(self.app, "verify_ready", return_value={}), patch.object(self.app, "cuda_available", return_value=False), patch.object(self.app.subprocess, "run", side_effect=run):
-            response = asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", model="realesrgan-x4plus", backend="cpu"))
+        with patch.dict(os.environ, {"IMAGE_TOOLS_MODEL_DIR": str(symlink_root)}, clear=False), patch.object(
+            self.app, "verify_ready", side_effect=reject_symlink_root
+        ) as verify_ready, patch.object(
+            model_runtime, "build_upsampler", side_effect=AssertionError("symlink root must not load a model")
+        ) as build_upsampler:
+            response = self.process(model="realesrgan-x4plus", backend="cpu")
 
-        self.assertEqual(200, response.status_code)
-        self.assertEqual("image/png", response.media_type)
-        headers = {key.lower(): value for key, value in response.headers.items() if key.lower().startswith("x-3waaihub-")}
-        self.assertEqual({
-            "x-3waaihub-model": "realesrgan-x4plus",
-            "x-3waaihub-backend": "cpu",
-            "x-3waaihub-width": "8",
-            "x-3waaihub-height": "12",
-        }, {key: value for key, value in headers.items() if key != "x-3waaihub-elapsed-ms"})
-        self.assertTrue(headers["x-3waaihub-elapsed-ms"].isdigit())
-        self.assertNotIn("x-3waaihub-device", {key.lower() for key in response.headers})
-        self.assertEqual((8, 12), Image.open(io.BytesIO(response.body)).size)
-        self.assertTrue(workspaces)
-        self.assertTrue(all(not path.exists() for path in workspaces))
+        self.assertEqual(404, response.status_code)
+        self.assertEqual("model_not_present", self.response_body(response)["error"])
+        verify_ready.assert_called_once_with(symlink_root)
+        build_upsampler.assert_not_called()
+
+    def test_process_rejects_model_root_beneath_symlink_loop_before_building(self) -> None:
+        loop = Path(self.temp.name) / "model-loop"
+        loop.symlink_to(loop.name, target_is_directory=True)
+        looped_root = loop / "models"
+
+        with patch.dict(os.environ, {"IMAGE_TOOLS_MODEL_DIR": str(looped_root)}, clear=False), patch.object(
+            self.app, "verify_ready", wraps=self.app.verify_ready
+        ) as verify_ready, patch.object(
+            model_runtime, "build_upsampler", side_effect=AssertionError("looped root must not load a model")
+        ) as build_upsampler:
+            response = self.process(model="realesrgan-x4plus", backend="cpu")
+
+        self.assertEqual(404, response.status_code)
+        self.assertEqual("model_not_present", self.response_body(response)["error"])
+        verify_ready.assert_called_once_with(looped_root)
+        build_upsampler.assert_not_called()
+
+    def test_process_validates_canonical_root_below_symlinked_parent(self) -> None:
+        canonical_root = Path(self.temp.name) / "canonical" / "models"
+        canonical_root.mkdir(parents=True)
+        symlinked_parent = Path(self.temp.name) / "symlinked-parent"
+        symlinked_parent.symlink_to(canonical_root.parent, target_is_directory=True)
+        configured_root = symlinked_parent / "models"
+        upsampler = FakeUpsampler()
+
+        with patch.dict(os.environ, {"IMAGE_TOOLS_MODEL_DIR": str(configured_root)}, clear=False), patch.object(
+            self.app, "verify_ready", return_value={}
+        ) as verify_ready, patch.object(
+            model_runtime, "build_upsampler", return_value=upsampler
+        ) as build_upsampler:
+            response = self.process(model="realesrgan-x4plus", backend="cpu")
+
+        verify_ready.assert_called_once_with(canonical_root)
+        build_upsampler.assert_called_once_with("realesrgan-x4plus", "cpu", canonical_root / "RealESRGAN_x4plus.pth")
+        self.assert_png_response(response, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+
+    def test_process_bounds_direct_inference_with_a_cancellable_timer(self) -> None:
+        upsampler = FakeUpsampler()
+        with patch.object(self.app, "verify_ready", return_value={}), patch.object(
+            model_runtime, "build_upsampler", return_value=upsampler
+        ), patch.object(self.app.threading, "Timer") as timer, patch.object(
+            self.app.os, "_exit", side_effect=AssertionError("timer must not fire in this test")
+        ) as exit_container:
+            response = self.process(model="realesrgan-x4plus", backend="cpu")
+
+        timer.assert_called_once()
+        timeout, callback = timer.call_args.args
+        self.assertEqual(900, timeout)
+        self.assertEqual("_exit_stalled_inference", callback.__name__)
+        self.assertTrue(timer.return_value.daemon)
+        timer.return_value.start.assert_called_once_with()
+        timer.return_value.cancel.assert_called_once_with()
+        exit_container.assert_not_called()
+        self.assert_png_response(response, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+
+    def test_process_reuses_in_process_upsampler_for_matching_selection(self) -> None:
+        upsampler = FakeUpsampler()
+        with patch.object(self.app, "verify_ready", return_value={}) as verify_ready, patch.object(model_runtime, "verify_ready", return_value={}), patch.object(
+            model_runtime, "build_upsampler", return_value=upsampler
+        ) as build_upsampler, patch("subprocess.run", side_effect=AssertionError("sync process must not use subprocesses")) as run, patch(
+            "tempfile.mkdtemp", wraps=tempfile.mkdtemp
+        ) as workspace:
+            first = self.process(model="realesrgan-x4plus", backend="cpu", outscale="2")
+            second = self.process(model="realesrgan-x4plus", backend="cpu", outscale="2")
+
+        run.assert_not_called()
+        workspace.assert_not_called()
+        verify_ready.assert_called_once_with(self.root)
+        build_upsampler.assert_called_once_with("realesrgan-x4plus", "cpu", self.root / "RealESRGAN_x4plus.pth")
+        self.assertEqual([(3, 2, 3), (3, 2, 3)], upsampler.input_shapes)
+        self.assertEqual([2, 2], upsampler.outscales)
+        self.assert_png_response(first, model="realesrgan-x4plus", backend="cpu", size=(4, 6))
+        self.assert_png_response(second, model="realesrgan-x4plus", backend="cpu", size=(4, 6))
+        self.assertEqual([], list(self.root.iterdir()))
+
+    def test_process_replaces_the_single_cached_upsampler_after_a_to_b_to_a(self) -> None:
+        first_a, b, second_a = FakeUpsampler(), FakeUpsampler(), FakeUpsampler()
+        with patch.object(self.app, "verify_ready", return_value={}) as verify_ready, patch.object(model_runtime, "verify_ready", return_value={}), patch.object(
+            model_runtime, "build_upsampler", side_effect=[first_a, b, second_a]
+        ) as build_upsampler:
+            first_a_response = self.process(model="realesrgan-x4plus", backend="cpu")
+            b_response = self.process(model="realesrgan-x4plus-anime", backend="cpu")
+            second_a_response = self.process(model="realesrgan-x4plus", backend="cpu")
+
+        self.assertEqual(3, build_upsampler.call_count)
+        self.assertEqual([
+            call("realesrgan-x4plus", "cpu", self.root / "RealESRGAN_x4plus.pth"),
+            call("realesrgan-x4plus-anime", "cpu", self.root / "RealESRGAN_x4plus_anime_6B.pth"),
+            call("realesrgan-x4plus", "cpu", self.root / "RealESRGAN_x4plus.pth"),
+        ], build_upsampler.call_args_list)
+        self.assertEqual([call(self.root), call(self.root), call(self.root)], verify_ready.call_args_list)
+        self.assertEqual([4], first_a.outscales)
+        self.assertEqual([4], b.outscales)
+        self.assertEqual([4], second_a.outscales)
+        self.assert_png_response(first_a_response, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+        self.assert_png_response(b_response, model="realesrgan-x4plus-anime", backend="cpu", size=(8, 12))
+        self.assert_png_response(second_a_response, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+
+    def test_process_cache_key_uses_model_dir_and_resolved_backend(self) -> None:
+        alternate_root = Path(self.temp.name) / "alternate-models"
+        alternate_root.mkdir()
+        cpu_first, cpu_second, cuda = FakeUpsampler(), FakeUpsampler(), FakeUpsampler()
+        with patch.object(self.app, "verify_ready", return_value={}) as verify_ready, patch.object(model_runtime, "verify_ready", return_value={}), patch.object(
+            self.app, "cuda_available", side_effect=[False, False, True]
+        ), patch.object(model_runtime, "build_upsampler", side_effect=[cpu_first, cpu_second, cuda]) as build_upsampler:
+            cpu_auto = self.process(model="realesrgan-x4plus", backend="auto")
+            cpu_spelling = self.process(model="realesrgan-x4plus", backend="cpu")
+            with patch.dict(os.environ, {"IMAGE_TOOLS_MODEL_DIR": str(alternate_root)}, clear=False):
+                alternate_cpu = self.process(model="realesrgan-x4plus", backend="auto")
+                alternate_cuda = self.process(model="realesrgan-x4plus", backend="auto")
+
+        self.assertEqual([
+            call("realesrgan-x4plus", "cpu", self.root / "RealESRGAN_x4plus.pth"),
+            call("realesrgan-x4plus", "cpu", alternate_root / "RealESRGAN_x4plus.pth"),
+            call("realesrgan-x4plus", "cuda", alternate_root / "RealESRGAN_x4plus.pth"),
+        ], build_upsampler.call_args_list)
+        self.assertEqual([call(self.root), call(alternate_root), call(alternate_root)], verify_ready.call_args_list)
+        self.assertEqual([4, 4], cpu_first.outscales)
+        self.assertEqual([4], cpu_second.outscales)
+        self.assertEqual([4], cuda.outscales)
+        self.assert_png_response(cpu_auto, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+        self.assert_png_response(cpu_spelling, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+        self.assert_png_response(alternate_cpu, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+        self.assert_png_response(alternate_cuda, model="realesrgan-x4plus", backend="cuda", size=(8, 12))
 
     def test_process_forwards_explicit_outscale_and_reports_scaled_dimensions(self) -> None:
-        def run(argv, **_kwargs):
-            self.assertEqual("2", argv[argv.index("--outscale") + 1])
-            output = Path(argv[argv.index("--output") + 1])
-            output.write_bytes(png_bytes((4, 6)))
-            return SimpleNamespace(returncode=0, stdout=json.dumps({"model": "realesrgan-x4plus", "backend": "cpu", "width": 4, "height": 6, "elapsed_ms": 7}), stderr="")
+        upsampler = FakeUpsampler()
+        with patch.object(self.app, "verify_ready", return_value={}), patch.object(model_runtime, "verify_ready", return_value={}), patch.object(
+            model_runtime, "build_upsampler", return_value=upsampler
+        ) as build_upsampler:
+            response = self.process(model="realesrgan-x4plus", backend="cpu", outscale="2")
 
-        with patch.object(self.app, "verify_ready", return_value={}), patch.object(self.app, "cuda_available", return_value=False), patch.object(self.app.subprocess, "run", side_effect=run):
-            response = asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", model="realesrgan-x4plus", backend="cpu", outscale="2"))
+        build_upsampler.assert_called_once_with("realesrgan-x4plus", "cpu", self.root / "RealESRGAN_x4plus.pth")
+        self.assertEqual([2], upsampler.outscales)
+        self.assert_png_response(response, model="realesrgan-x4plus", backend="cpu", size=(4, 6))
 
-        self.assertEqual(200, response.status_code)
-        headers = {key.lower(): value for key, value in response.headers.items()}
-        self.assertEqual("4", headers["x-3waaihub-width"])
-        self.assertEqual("6", headers["x-3waaihub-height"])
-        self.assertEqual((4, 6), Image.open(io.BytesIO(response.body)).size)
+    def test_process_uses_model_native_default_outscale(self) -> None:
+        upsampler = FakeUpsampler()
+        with patch.object(self.app, "verify_ready", return_value={}), patch.object(model_runtime, "verify_ready", return_value={}), patch.object(
+            model_runtime, "build_upsampler", return_value=upsampler
+        ):
+            response = self.process(model="realesrgan-x4plus", backend="cpu")
 
-    def test_cuda_has_no_fp32_and_stable_sanitized_errors(self) -> None:
+        self.assertEqual([4], upsampler.outscales)
+        self.assert_png_response(response, model="realesrgan-x4plus", backend="cpu", size=(8, 12))
+
+    def test_process_maps_model_build_and_enhance_failures_to_sanitized_errors(self) -> None:
         errors = [
-            (self.app.ModelRuntimeError("model_not_present"), "model_not_present"),
-            (self.app.ModelRuntimeError("model_load_failed"), "model_load_failed"),
+            (model_runtime.ModelRuntimeError("model_not_present"), "model_not_present", 404),
+            (model_runtime.ModelRuntimeError("model_load_failed"), "model_load_failed", 503),
         ]
-        for error, code in errors:
-            with self.subTest(code=code), patch.object(self.app, "verify_ready", side_effect=error):
-                response = asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", model="realesrgan-x4plus", backend="cpu"))
+        for error, code, status in errors:
+            with self.subTest(code=code), patch.object(self.app, "verify_ready", return_value={}), patch.object(model_runtime, "verify_ready", return_value={}), patch.object(
+                model_runtime, "build_upsampler", side_effect=error
+            ):
+                response = self.process(model="realesrgan-x4plus", backend="cpu")
+                self._reset_upsampler_cache()
+                self.assertEqual(status, response.status_code)
                 self.assertEqual(code, self.response_body(response)["error"])
                 self.assertNotIn("/", response.body.decode())
 
         with patch.object(self.app, "cuda_available", return_value=False):
-            response = asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", model="realesrgan-x4plus", backend="cuda"))
+            response = self.process(model="realesrgan-x4plus", backend="cuda")
         self.assertEqual("backend_unavailable", self.response_body(response)["error"])
 
-        def failed_run(argv, **kwargs):
-            self.assertNotIn("--fp32", argv)
-            return SimpleNamespace(returncode=1, stdout="", stderr="private /models/path")
+        class FailingUpsampler:
+            def enhance(self, _pixels, outscale):
+                raise RuntimeError(f"private /models/path at {outscale}")
 
-        with patch.object(self.app, "verify_ready", return_value={}), patch.object(self.app, "cuda_available", return_value=True), patch.object(self.app.subprocess, "run", side_effect=failed_run):
-            response = asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", model="realesrgan-x4plus", backend="cuda"))
+        failing_upsampler = FailingUpsampler()
+        with patch.object(self.app, "verify_ready", return_value={}), patch.object(model_runtime, "verify_ready", return_value={}), patch.object(
+            model_runtime, "build_upsampler", return_value=failing_upsampler
+        ) as build_upsampler:
+            response = self.process(model="realesrgan-x4plus", backend="cpu")
+        build_upsampler.assert_called_once_with("realesrgan-x4plus", "cpu", self.root / "RealESRGAN_x4plus.pth")
+        self.assertEqual(500, response.status_code)
         self.assertEqual("inference_failed", self.response_body(response)["error"])
-        self.assertNotIn("private", response.body.decode())
-
-    def test_cli_stable_errors_are_allowlisted_and_malformed_output_is_hidden(self) -> None:
-        cases = [
-            ("{\"error\":\"model_load_failed\"}", "model_load_failed", 503),
-            ("{\"error\":\"model_not_present\"}", "model_not_present", 404),
-            ("{\"error\":\"backend_unavailable\"}", "backend_unavailable", 503),
-            ("{\"error\":\"private /models/path\"}", "inference_failed", 500),
-            ("not json", "inference_failed", 500),
-        ]
-        for stdout, code, status in cases:
-            with self.subTest(stdout=stdout), patch.object(self.app, "verify_ready", return_value={}), patch.object(self.app, "cuda_available", return_value=False), patch.object(self.app.subprocess, "run", return_value=SimpleNamespace(returncode=1, stdout=stdout, stderr="private stderr")):
-                response = asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", model="realesrgan-x4plus", backend="cpu"))
-            self.assertEqual(status, response.status_code)
-            self.assertEqual(code, self.response_body(response)["error"])
-            self.assertNotIn("private", response.body.decode())
+        body = response.body.decode()
+        self.assertNotIn("private", body)
+        self.assertNotIn("/models/path", body)
+        self.assertNotIn("RuntimeError", body)
 
 
 class ProvisionTest(unittest.TestCase):

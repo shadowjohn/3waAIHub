@@ -1,27 +1,26 @@
 from __future__ import annotations
 
-import asyncio
-import json
+import io
 import os
-import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from PIL import Image
+import numpy as np
 
-from image_contract import ImageToolsError, build_upscale_argv, decode_image, private_job_directory, resolve_backend, resolve_outscale, select_model, validate_output_pixels
+import model_runtime
+from image_contract import ImageToolsError, decode_image, resolve_backend, resolve_outscale, select_model, validate_output_pixels
 from model_runtime import DEFAULT_MODEL_ROOT, ModelRuntimeError, verify_ready
 
 
 app = FastAPI(title="3waAIHub Image Tools")
 RUNTIME_LEVEL = "L5-benchmark-ready"
 _INFERENCE_LOCK = threading.Lock()
-_CLI_ERROR_CODES = frozenset({"backend_unavailable", "model_not_present", "model_load_failed", "inference_failed"})
+_UPSAMPLER_CACHE = None
 
 
 def model_dir() -> Path:
@@ -49,54 +48,54 @@ def health() -> dict[str, object]:
     return {"ok": True, "service": "image-tools", "ready": True, "runtime_level": RUNTIME_LEVEL, "runtime_ready": True}
 
 
-def _report(stdout: str, *, model: str, backend: str, output: Path) -> dict[str, object]:
-    try:
-        report = json.loads(stdout)
-        if not isinstance(report, dict) or set(report) != {"model", "backend", "width", "height", "elapsed_ms"}:
-            raise ValueError
-        with Image.open(output) as rendered:
-            rendered.load()
-            width, height = rendered.size
-            if rendered.format != "PNG" or report["model"] != model or report["backend"] != backend or report["width"] != width or report["height"] != height:
-                raise ValueError
-        if any(not isinstance(report[key], int) or isinstance(report[key], bool) or report[key] < 1 for key in ("width", "height", "elapsed_ms")):
-            raise ValueError
-        return report
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("inference_failed") from exc
-
-
-def _cli_error(stdout: str) -> str:
-    try:
-        payload = json.loads(stdout)
-        code = payload.get("error") if isinstance(payload, dict) and set(payload) == {"error"} else None
-        return code if isinstance(code, str) and code in _CLI_ERROR_CODES else "inference_failed"
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return "inference_failed"
+def _exit_stalled_inference() -> None:
+    os._exit(1)
 
 
 def _run(source_bytes: bytes, *, model: str, backend: str, outscale: int) -> tuple[bytes, dict[str, object]]:
+    global _UPSAMPLER_CACHE
+    started = time.perf_counter()
     source = decode_image(source_bytes, operation="upscale")
     validate_output_pixels(source.width * source.height, outscale)
-    verify_ready(model_dir())
-    with _INFERENCE_LOCK, private_job_directory() as workspace:
-        source_path = workspace / "source.bin"
-        output_path = workspace / "output.png"
-        source_path.write_bytes(source_bytes)
-        source_path.chmod(0o600)
-        argv = build_upscale_argv(workspace=workspace, source=source_path, output=output_path, model=model, backend=backend, model_dir=model_dir(), outscale=outscale)
-        if backend == "cpu":
-            argv.append("--fp32")
-        result = subprocess.run(argv, shell=False, check=False, capture_output=True, text=True, timeout=900)
-        if result.returncode != 0:
-            code = _cli_error(result.stdout)
-            if code in {"model_not_present", "model_load_failed"}:
-                raise ModelRuntimeError(code)
-            if code == "backend_unavailable":
-                raise ImageToolsError(code)
-            raise RuntimeError("inference_failed")
-        report = _report(result.stdout, model=model, backend=backend, output=output_path)
-        return output_path.read_bytes(), report
+    selected = select_model(model)
+    configured_root = model_dir()
+    with _INFERENCE_LOCK:
+        if configured_root.is_symlink():
+            verify_ready(configured_root)
+        try:
+            root = configured_root.resolve()
+        except (OSError, RuntimeError):
+            verify_ready(configured_root)
+            raise
+        key = (root, selected.alias, backend)
+        if _UPSAMPLER_CACHE is None or _UPSAMPLER_CACHE[0] != key:
+            verify_ready(root)
+            upsampler = model_runtime.build_upsampler(selected.alias, backend, root / selected.filename)
+            _UPSAMPLER_CACHE = (key, upsampler)
+        else:
+            upsampler = _UPSAMPLER_CACHE[1]
+        # ponytail: direct GPU calls cannot be cancelled safely in-process; container restart is the recovery boundary.
+        timer = threading.Timer(900, _exit_stalled_inference)
+        timer.daemon = True
+        timer.start()
+        try:
+            output, _ = upsampler.enhance(np.asarray(source)[:, :, ::-1].copy(), outscale=outscale)
+            width, height = source.width * outscale, source.height * outscale
+            if getattr(output, "shape", None) != (height, width, 3):
+                raise ValueError
+            encoded = io.BytesIO()
+            Image.fromarray(output[:, :, ::-1], "RGB").save(encoded, format="PNG")
+        except Exception as exc:
+            raise RuntimeError("inference_failed") from exc
+        finally:
+            timer.cancel()
+    return encoded.getvalue(), {
+        "model": selected.alias,
+        "backend": backend,
+        "width": width,
+        "height": height,
+        "elapsed_ms": max(1, int(round((time.perf_counter() - started) * 1000))),
+    }
 
 
 @app.post("/process/image", response_model=None)
@@ -115,7 +114,7 @@ async def process_image(
     try:
         select_model(model)
         selected_outscale = resolve_outscale(outscale, model=model)
-        effective = resolve_backend(backend, cuda_available=cuda_available())
+        effective = resolve_backend(backend, cuda_available=cuda_available() if backend != "cpu" else False)
         source_bytes = await image.read(50 * 1024 * 1024 + 1)
         png, report = await run_in_threadpool(_run, source_bytes, model=model, backend=effective, outscale=selected_outscale)
     except ImageToolsError as exc:
