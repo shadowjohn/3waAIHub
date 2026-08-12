@@ -84,12 +84,15 @@ def _metadata(values: Mapping[str, str] | Iterable[tuple[str, str]], *, backend:
         raise AssertionError("invalid elapsed metadata")
 
 
-def validate_sync_response(status: int, headers: Mapping[str, str] | Iterable[tuple[str, str]], payload: bytes, *, backend: str, model: str, dimensions: tuple[int, int]) -> dict[str, object]:
+def validate_sync_response(status: int, headers: Mapping[str, str] | Iterable[tuple[str, str]], payload: bytes, *, backend: str, model: str, dimensions: tuple[int, int], expected_sha256: str | None = None) -> dict[str, object]:
     if status != 200:
         raise AssertionError(f"unexpected sync status: {status}")
     _metadata(headers, backend=backend, model=model, dimensions=dimensions)
     _validated_png(payload, dimensions)
-    return {"backend": backend, "model": model, "width": dimensions[0], "height": dimensions[1], "output_sha256": hashlib.sha256(payload).hexdigest()}
+    digest = hashlib.sha256(payload).hexdigest()
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise AssertionError("unexpected output SHA-256")
+    return {"backend": backend, "model": model, "width": dimensions[0], "height": dimensions[1], "output_sha256": digest}
 
 
 def validate_async_artifacts(image_payload: bytes, report_payload: bytes, *, backend: str, model: str, dimensions: tuple[int, int]) -> dict[str, object]:
@@ -161,7 +164,7 @@ def _api_url(base_url: str, operation: str) -> str:
     return f"{base_url}{separator}mode=image-tools&operation={urllib.parse.quote(operation)}"
 
 
-def run_sync(*, endpoint: str, fixture: Path, backend: str, model: str, gateway: bool, token: str | None = None) -> dict[str, object]:
+def run_sync(*, endpoint: str, fixture: Path, backend: str, model: str, gateway: bool, token: str | None = None, expected_sha256: str | None = None) -> dict[str, object]:
     source = fixture.read_bytes()
     with Image.open(io.BytesIO(source)) as image:
         image.load()
@@ -171,7 +174,7 @@ def run_sync(*, endpoint: str, fixture: Path, backend: str, model: str, gateway:
     if token:
         headers["Authorization"] = f"Bearer {token}"
     status, response_headers, output = _request(_api_url(endpoint, "upscale") if gateway else endpoint.rstrip("/") + "/process/image", method="POST", body=body, headers=headers)
-    return validate_sync_response(status, response_headers, output, backend=backend, model=model, dimensions=expected)
+    return validate_sync_response(status, response_headers, output, backend=backend, model=model, dimensions=expected, expected_sha256=expected_sha256)
 
 
 def _artifact_urls(result: Mapping[str, Any], base_url: str) -> dict[str, str]:
@@ -247,6 +250,11 @@ def run_async(*, gateway_url: str, fixture: Path, backend: str, model: str, toke
 
 
 def main() -> int:
+    def sha256_argument(value: str) -> str:
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise argparse.ArgumentTypeError("must be 64 lowercase hexadecimal characters")
+        return value
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--service-url", required=True)
     parser.add_argument("--fixture", required=True)
@@ -254,18 +262,21 @@ def main() -> int:
     parser.add_argument("--token")
     parser.add_argument("--model", choices=sorted(MODEL_SCALES), default="realesrgan-x4plus")
     parser.add_argument("--direct-sync", action="store_true")
+    parser.add_argument("--expected-cuda-sha256", type=sha256_argument)
+    parser.add_argument("--expected-cpu-sha256", type=sha256_argument)
     args = parser.parse_args()
     fixture = Path(args.fixture)
     try:
         health, _ = _json_response(args.service_url.rstrip("/") + "/health", headers={})
         assert_health(health)
         records: list[dict[str, object]] = []
+        expected_sha256 = {"cuda": args.expected_cuda_sha256, "cpu": args.expected_cpu_sha256}
         if args.direct_sync:
             for backend in ("cuda", "cpu"):
-                records.append(run_sync(endpoint=args.service_url, fixture=fixture, backend=backend, model=args.model, gateway=False))
+                records.append(run_sync(endpoint=args.service_url, fixture=fixture, backend=backend, model=args.model, gateway=False, expected_sha256=expected_sha256[backend]))
         if args.gateway_url and args.token:
             for backend in ("cuda", "cpu"):
-                records.append(run_sync(endpoint=args.gateway_url, fixture=fixture, backend=backend, model=args.model, gateway=True, token=args.token))
+                records.append(run_sync(endpoint=args.gateway_url, fixture=fixture, backend=backend, model=args.model, gateway=True, token=args.token, expected_sha256=expected_sha256[backend]))
                 records.append(run_async(gateway_url=args.gateway_url, fixture=fixture, backend=backend, model=args.model, token=args.token))
         elif not args.direct_sync:
             raise AcceptanceUnavailable("gateway URL and token are required for Hub sync/async acceptance")

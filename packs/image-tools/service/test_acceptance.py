@@ -7,12 +7,13 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from acceptance import AcceptanceUnavailable, _artifact_urls, assert_health, assert_no_raw_base64, validate_async_artifacts, validate_sync_response
+from acceptance import AcceptanceUnavailable, _artifact_urls, assert_health, assert_no_raw_base64, main, validate_async_artifacts, validate_sync_response
 
 
 MODEL = "realesrgan-x4plus"
@@ -61,6 +62,22 @@ class AcceptanceTest(unittest.TestCase):
     def test_sync_response_rejects_unexpected_output_sha256(self) -> None:
         with self.assertRaisesRegex(AssertionError, "^unexpected output SHA-256$"):
             validate_sync_response(200, headers("cpu", 8, 12), png_bytes((8, 12)), backend="cpu", model=MODEL, dimensions=(8, 12), expected_sha256="0" * 64)
+
+    def test_cli_rejects_invalid_expected_sha256(self) -> None:
+        with patch.object(sys, "argv", ["acceptance.py", "--service-url", "http://example.test", "--fixture", "smoke.png", "--direct-sync", "--expected-cuda-sha256", "A" * 64]):
+            with self.assertRaises(SystemExit) as raised:
+                main()
+        self.assertEqual(2, raised.exception.code)
+
+    def test_cli_forwards_each_expected_digest_to_its_explicit_backend(self) -> None:
+        cuda_digest = "a" * 64
+        cpu_digest = "b" * 64
+        with patch.object(sys, "argv", ["acceptance.py", "--service-url", "http://example.test", "--fixture", "smoke.png", "--direct-sync", "--expected-cuda-sha256", cuda_digest, "--expected-cpu-sha256", cpu_digest]), patch("acceptance._json_response", return_value=({"ok": True, "service": "image-tools", "ready": True, "runtime_level": "L4a-model-init-smoke", "runtime_ready": True}, b"{}")), patch("acceptance.run_sync", side_effect=[{"backend": "cuda"}, {"backend": "cpu"}]) as run_sync:
+            self.assertEqual(0, main())
+        self.assertEqual([
+            {"endpoint": "http://example.test", "fixture": Path("smoke.png"), "backend": "cuda", "model": MODEL, "gateway": False, "expected_sha256": cuda_digest},
+            {"endpoint": "http://example.test", "fixture": Path("smoke.png"), "backend": "cpu", "model": MODEL, "gateway": False, "expected_sha256": cpu_digest},
+        ], [call.kwargs for call in run_sync.call_args_list])
 
     def test_sync_cuda_response_rejects_cpu_metadata(self) -> None:
         with self.assertRaises(AssertionError):

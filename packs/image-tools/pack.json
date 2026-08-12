@@ -32,6 +32,9 @@
     "endpoint": "/process/image",
     "method": "POST",
     "content_type": "multipart/form-data",
+    "input": {
+      "fields": ["image", "operation", "model", "backend"]
+    },
     "operations": [
       {"operation": "upscale"},
       {"operation": "upscale_task"}
@@ -44,6 +47,40 @@
       "realesr-animevideov3-x4"
     ],
     "backends": ["auto", "cuda", "cpu"],
+    "benchmark": [
+      {
+        "id": "image_tools_cuda_upscale_golden",
+        "type": "api",
+        "mode": "image-tools",
+        "method": "POST",
+        "fixture": "packs/image-tools/demo/smoke.png",
+        "fixture_field": "image",
+        "form": {"operation": "upscale", "model": "realesrgan-x4plus", "backend": "cuda"},
+        "real_inference": true,
+        "expected_content_type": "image/png",
+        "expected_png": true,
+        "expected_dimensions": [8, 12],
+        "expected_sha256": "a6e3d6e87a8fa8b68a177d85e24f427416b0acb81c9a8469aeea6e4ece38396e",
+        "expected_response_headers": ["X-3waAIHub-Model", "X-3waAIHub-Backend", "X-3waAIHub-Elapsed-Ms", "X-3waAIHub-Width", "X-3waAIHub-Height"],
+        "expected_response_header_values": {"X-3waAIHub-Model": "realesrgan-x4plus", "X-3waAIHub-Backend": "cuda"}
+      },
+      {
+        "id": "image_tools_cpu_upscale_golden",
+        "type": "api",
+        "mode": "image-tools",
+        "method": "POST",
+        "fixture": "packs/image-tools/demo/smoke.png",
+        "fixture_field": "image",
+        "form": {"operation": "upscale", "model": "realesrgan-x4plus", "backend": "cpu"},
+        "real_inference": true,
+        "expected_content_type": "image/png",
+        "expected_png": true,
+        "expected_dimensions": [8, 12],
+        "expected_sha256": "ebafc1306d63b9bc35ebb7b3f6e337e7919f18791e46d2901fb493eccb8207f7",
+        "expected_response_headers": ["X-3waAIHub-Model", "X-3waAIHub-Backend", "X-3waAIHub-Elapsed-Ms", "X-3waAIHub-Width", "X-3waAIHub-Height"],
+        "expected_response_header_values": {"X-3waAIHub-Model": "realesrgan-x4plus", "X-3waAIHub-Backend": "cpu"}
+      }
+    ],
     "output": {
       "content_type": "image/png",
       "required_headers": [
