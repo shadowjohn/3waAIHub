@@ -35,7 +35,7 @@ class ModelSmokeTest(unittest.TestCase):
         events: list[str] = []
         loader = Mock(side_effect=lambda alias, _backend, _path: events.append(alias))
         with patch.object(model_smoke, "verify_ready", side_effect=lambda _root: events.append("verify") or {"commit": REAL_ESRGAN_COMMIT}) as verify_ready, patch.object(model_smoke, "build_upsampler", loader):
-            status, output = self.invoke(["--model-dir", "/models"])
+            status, output = self.invoke(["--backend", "cpu", "--model-dir", "/models"])
 
         self.assertEqual(0, status)
         verify_ready.assert_called_once_with(Path("/models"))

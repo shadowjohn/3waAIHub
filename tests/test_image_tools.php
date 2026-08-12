@@ -544,8 +544,10 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     $readme = (string)file_get_contents(HUB_ROOT . '/README.md');
     preg_match('/### image-tools Runtime Level\\n\\n(.*?)(?=\\n### |\\z)/s', $readme, $runtimeSection);
     $runtimeSection = (string)($runtimeSection[1] ?? '');
+    $l4aCommand = 'docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu';
     hub_test_assert(str_contains($runtimeSection, '影像工具'), 'README image-tools runtime row must use the generic Chinese Pack identity');
     hub_test_assert(str_contains($runtimeSection, '`L4a-model-init-smoke`／`runtime_ready=true`'), 'README image-tools runtime row must state L4a model-init readiness');
+    hub_test_assert(str_contains($runtimeSection, $l4aCommand), 'README image-tools runtime row must publish the installed runtime smoke command');
     hub_test_assert(!str_contains($runtimeSection, '`L1-contract`／`runtime_ready=false`'), 'README image-tools runtime row must not retain stale L1 readiness');
     hub_test_assert(!str_contains($runtimeSection, '`L4b-real-inference`／`runtime_ready=true`'), 'README image-tools runtime row must not claim L4b ready');
     hub_test_assert(!str_contains($runtimeSection, '`L5-benchmark-ready`／`runtime_ready=true`'), 'README image-tools runtime row must not claim L5 ready');
@@ -557,7 +559,6 @@ hub_test('image-tools Pack declares the L4a generic image-tools contract', funct
     foreach (['影像工具', 'L4a-model-init-smoke'] as $needle) {
         hub_test_assert(str_contains($l4aSection, $needle), 'image-tools L4a runbook section must publish ' . $needle);
     }
-    $l4aCommand = 'docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu';
     hub_test_assert(str_contains($l4aSection, $l4aCommand), 'image-tools L4a runbook section must use the installed runtime smoke command');
     hub_test_assert(!str_contains($l4aSection, 'docker run'), 'image-tools L4a runbook section must not use a generic docker run smoke command');
     foreach (['exit result', 'backend', 'commit', 'loaded family IDs', 'aliases', 'elapsed time', 'image tag', 'date'] as $field) {
