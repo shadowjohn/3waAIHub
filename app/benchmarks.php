@@ -289,8 +289,9 @@ function hub_benchmark_binary_response_result(array $case, array $response, stri
     if (is_array($expectedDimensions)) {
         $failed = $failed || !is_array($size) || $size[0] !== $expectedDimensions[0] || $size[1] !== $expectedDimensions[1];
     }
+    $actualDigest = is_string($expectedDigest) ? hash('sha256', $body) : null;
     if (is_string($expectedDigest)) {
-        $failed = $failed || !hash_equals($expectedDigest, hash('sha256', $body));
+        $failed = $failed || !hash_equals($expectedDigest, $actualDigest);
     }
     foreach (array_map('strval', $case['expected_response_headers'] ?? []) as $name) {
         $failed = $failed || trim((string)($headers[strtolower($name)] ?? '')) === '';
@@ -318,7 +319,7 @@ function hub_benchmark_binary_response_result(array $case, array $response, stri
         'response_headers_pass' => true,
     ];
     if (is_string($expectedDigest)) {
-        $result['output_sha256'] = hash('sha256', $body);
+        $result['output_sha256'] = $actualDigest;
     }
 
     return $result;
