@@ -676,7 +676,7 @@ function hub_prepare_image_tools_payload(PDO $db, array $service, array $interna
 
     $queryValues = [];
     foreach ($query as $key => $value) {
-        if (!is_string($key) || !in_array($key, ['mode', 'operation', 'backend', 'model'], true) || !is_scalar($value)) {
+        if (!is_string($key) || !in_array($key, ['mode', 'operation', 'backend', 'model', 'outscale'], true) || !is_scalar($value) || ($key === 'outscale' && !is_string($value))) {
             return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
         }
         $value = (string)$value;
@@ -691,7 +691,7 @@ function hub_prepare_image_tools_payload(PDO $db, array $service, array $interna
 
     $formValues = [];
     foreach ($post as $key => $value) {
-        if (!is_string($key) || !in_array($key, ['operation', 'backend', 'model', 'base64_string'], true) || !is_scalar($value)) {
+        if (!is_string($key) || !in_array($key, ['operation', 'backend', 'model', 'base64_string', 'outscale'], true) || !is_scalar($value) || ($key === 'outscale' && !is_string($value))) {
             return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
         }
         $value = (string)$value;
@@ -706,7 +706,7 @@ function hub_prepare_image_tools_payload(PDO $db, array $service, array $interna
     }
 
     $values = [];
-    foreach (['operation', 'backend', 'model'] as $key) {
+    foreach (['operation', 'backend', 'model', 'outscale'] as $key) {
         if (isset($queryValues[$key], $formValues[$key]) && $queryValues[$key] !== $formValues[$key]) {
             return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
         }
@@ -733,6 +733,12 @@ function hub_prepare_image_tools_payload(PDO $db, array $service, array $interna
     ], true)) {
         return ['response' => hub_gateway_error(400, 'invalid_model', 'image-tools model is invalid')];
     }
+    if ($values['outscale'] !== null && !in_array($values['outscale'], ['2', '3', '4'], true)) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+    if ($values['operation'] === 'upscale_task' && $values['outscale'] !== null) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
 
     $upload = hub_image_tools_upload_record($_FILES);
     if (isset($upload['response'])) {
@@ -753,9 +759,14 @@ function hub_prepare_image_tools_payload(PDO $db, array $service, array $interna
         $temporaryFiles[] = $staged['file']['tmp_name'];
     }
 
+    $normalizedPost = ['operation' => $values['operation'], 'backend' => $values['backend'], 'model' => $values['model']];
+    if ($values['outscale'] !== null) {
+        $normalizedPost['outscale'] = $values['outscale'];
+    }
+
     return [
         'operation' => $values['operation'],
-        'post' => ['operation' => $values['operation'], 'backend' => $values['backend'], 'model' => $values['model']],
+        'post' => $normalizedPost,
         'files' => ['image' => $upload['file']],
         'temporary_files' => $temporaryFiles,
     ];

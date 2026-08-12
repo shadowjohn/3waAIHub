@@ -136,6 +136,45 @@ hub_test('image-tools gateway injects query operations and stages Base64 without
     }
 });
 
+hub_test('image-tools gateway forwards every explicit synchronous outscale', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_image_tools_service($db);
+
+    foreach (['form', 'query'] as $location) {
+        foreach (['2', '3', '4'] as $outscale) {
+            $post = [
+                'operation' => 'upscale',
+                'backend' => 'cpu',
+                'model' => 'realesrgan-x4plus',
+                'base64_string' => base64_encode('explicit outscale fixture'),
+            ];
+            $query = ['mode' => 'image-tools'];
+            if ($location === 'form') {
+                $post['outscale'] = $outscale;
+            } else {
+                $query['outscale'] = $outscale;
+            }
+            $response = hub_test_image_tools_dispatch(
+                $db,
+                $post,
+                $query,
+                [],
+                static function () use ($outscale): array {
+                    hub_test_assert($_POST === [
+                        'operation' => 'upscale',
+                        'backend' => 'cpu',
+                        'model' => 'realesrgan-x4plus',
+                        'outscale' => $outscale,
+                    ], 'image-tools must forward each explicit normalized synchronous outscale');
+
+                    return hub_gateway_json(200, ['ok' => true]);
+                }
+            );
+            hub_test_assert($response['status'] === 200, 'each explicit valid synchronous outscale must proxy');
+        }
+    }
+});
+
 hub_test('image-tools gateway enforces exact query and form duplicates', function (): void {
     $db = hub_test_reset_db();
     hub_test_image_tools_service($db);
@@ -145,6 +184,7 @@ hub_test('image-tools gateway enforces exact query and form duplicates', functio
         'operation' => ['query' => 'upscale', 'form' => 'upscale_task'],
         'backend' => ['query' => 'cpu', 'form' => 'cuda'],
         'model' => ['query' => 'realesrgan-x4plus', 'form' => 'realesrgan-x4plus-anime'],
+        'outscale' => ['query' => '2', 'form' => '3'],
     ] as $field => $case) {
         $response = hub_test_image_tools_dispatch(
             $db,
@@ -182,6 +222,50 @@ hub_test('image-tools gateway enforces exact query and form duplicates', functio
         }
     );
     hub_test_assert($response['status'] === 200, 'matching duplicates must proxy');
+});
+
+hub_test('image-tools gateway permits only synchronous exact outscale values', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_image_tools_service($db);
+    $source = base64_encode('outscale validation fixture');
+
+    foreach ([1, 5, '02', '2.0', 'auto', ['2']] as $outscale) {
+        foreach (['form', 'query'] as $location) {
+            $post = ['operation' => 'upscale', 'base64_string' => $source];
+            $query = ['mode' => 'image-tools'];
+            if ($location === 'form') {
+                $post['outscale'] = $outscale;
+            } else {
+                $query['outscale'] = $outscale;
+            }
+            $response = hub_test_image_tools_dispatch(
+                $db,
+                $post,
+                $query,
+                [],
+                static fn (): array => throw new RuntimeException('invalid outscale must not proxy')
+            );
+            hub_test_assert($response['status'] === 400 && hub_test_image_tools_error($response) === 'invalid_request', 'invalid ' . $location . ' outscale must reject before proxying');
+        }
+    }
+
+    foreach (['form', 'query'] as $location) {
+        $post = ['operation' => 'upscale_task', 'base64_string' => $source];
+        $query = ['mode' => 'image-tools'];
+        if ($location === 'form') {
+            $post['outscale'] = '2';
+        } else {
+            $query['outscale'] = '2';
+        }
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            $post,
+            $query,
+            [],
+            static fn (): array => throw new RuntimeException('async outscale must not proxy')
+        );
+        hub_test_assert($response['status'] === 400 && hub_test_image_tools_error($response) === 'invalid_request', 'upscale_task must reject ' . $location . ' outscale before proxying');
+    }
 });
 
 hub_test('image-tools gateway rejects untrusted field shapes and upload metadata', function (): void {
@@ -666,7 +750,7 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
     $contract = $manifest['l5_contract'] ?? [];
     $inputFields = $contract['input']['fields'] ?? [];
     sort($inputFields);
-    hub_test_assert($inputFields === ['backend', 'image', 'model', 'operation'], 'image-tools L5 input fields mismatch');
+    hub_test_assert($inputFields === ['backend', 'image', 'model', 'operation', 'outscale'], 'image-tools L5 input fields mismatch');
     $goldenCases = $contract['benchmark']['cases'] ?? [];
     hub_test_assert(array_column($goldenCases, 'id') === ['image_tools_cuda_upscale_golden', 'image_tools_cpu_upscale_golden'], 'image-tools must declare CUDA then CPU L5 golden cases');
     foreach ($goldenCases as $index => $case) {
@@ -676,7 +760,7 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
             : $cpuOutputSha256;
         hub_test_assert(($case['type'] ?? '') === 'api' && ($case['mode'] ?? '') === 'image-tools' && ($case['method'] ?? '') === 'POST', 'image-tools ' . $backend . ' golden case transport mismatch');
         hub_test_assert(($case['real_inference'] ?? false) === true && ($case['fixture'] ?? '') === 'packs/image-tools/demo/smoke.png' && ($case['fixture_field'] ?? '') === 'image', 'image-tools ' . $backend . ' golden case fixture mismatch');
-        hub_test_assert(($case['form'] ?? []) === ['operation' => 'upscale', 'model' => 'realesrgan-x4plus', 'backend' => $backend], 'image-tools ' . $backend . ' golden case form mismatch');
+        hub_test_assert(($case['form'] ?? []) === ['operation' => 'upscale', 'model' => 'realesrgan-x4plus', 'backend' => $backend, 'outscale' => 4], 'image-tools ' . $backend . ' golden case form mismatch');
         hub_test_assert(($case['expected_content_type'] ?? '') === 'image/png' && ($case['expected_png'] ?? false) === true && ($case['expected_dimensions'] ?? []) === [8, 12] && ($case['expected_sha256'] ?? '') === $digest, 'image-tools ' . $backend . ' golden output contract mismatch');
         hub_test_assert(($case['expected_response_headers'] ?? []) === ['X-3waAIHub-Model', 'X-3waAIHub-Backend', 'X-3waAIHub-Elapsed-Ms', 'X-3waAIHub-Width', 'X-3waAIHub-Height'], 'image-tools ' . $backend . ' golden response headers mismatch');
         hub_test_assert(($case['expected_response_header_values'] ?? []) === ['X-3waAIHub-Model' => 'realesrgan-x4plus', 'X-3waAIHub-Backend' => $backend], 'image-tools ' . $backend . ' golden response header values mismatch');

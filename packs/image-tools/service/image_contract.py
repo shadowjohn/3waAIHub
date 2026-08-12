@@ -121,6 +121,16 @@ def select_model(alias: str) -> ModelSelection:
     return model
 
 
+def resolve_outscale(raw: object, *, model: str) -> int:
+    if raw is None:
+        return select_model(model).scale
+    if type(raw) is int and raw in {2, 3, 4}:
+        return raw
+    if type(raw) is str and raw in {"2", "3", "4"}:
+        return int(raw)
+    raise ImageToolsError("invalid_request")
+
+
 def resolve_backend(requested: str, *, cuda_available: bool) -> str:
     if requested == "cpu":
         return "cpu"
@@ -159,16 +169,20 @@ def build_upscale_argv(
     backend: str,
     model_dir: Path,
     operation: str = "upscale",
+    outscale: int | None = None,
 ) -> list[str]:
     source_path = _workspace_path(workspace, source, must_exist=True)
     output_path = _workspace_path(workspace, output, must_exist=False)
     if not source_path.is_file() or backend not in {"cuda", "cpu"} or operation not in {"upscale", "upscale_task"}:
         raise ImageToolsError("invalid_request")
     select_model(model)
-    return [
+    argv = [
         "python3", "/app/upscale_runner.py", "--input", str(source_path), "--output", str(output_path),
         "--model", model, "--backend", backend, "--model-dir", str(model_dir), "--operation", operation,
     ]
+    if outscale is not None:
+        argv.extend(["--outscale", str(resolve_outscale(outscale, model=model))])
+    return argv
 
 
 @contextmanager

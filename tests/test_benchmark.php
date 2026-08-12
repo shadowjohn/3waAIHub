@@ -557,7 +557,7 @@ hub_test('fixture benchmarks inject real_inference only when the active contract
     }
 
     foreach ([
-        ['case' => 'image_tools_cuda_upscale_golden', 'pack' => 'image-tools', 'service' => 'image-tools-payload-main', 'form' => ['operation' => 'upscale', 'model' => 'realesrgan-x4plus', 'backend' => 'cuda']],
+        ['case' => 'image_tools_cuda_upscale_golden', 'pack' => 'image-tools', 'service' => 'image-tools-payload-main', 'form' => ['operation' => 'upscale', 'model' => 'realesrgan-x4plus', 'backend' => 'cuda', 'outscale' => '4']],
         ['case' => 'ocr_real_image', 'pack' => 'ocr-ppocrv5', 'service' => 'ocr-payload-main', 'form' => ['real_inference' => '1']],
     ] as $test) {
         $reached = false;

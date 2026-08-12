@@ -33,7 +33,7 @@
     "method": "POST",
     "content_type": "multipart/form-data",
     "input": {
-      "fields": ["image", "operation", "model", "backend"]
+      "fields": ["image", "operation", "model", "backend", "outscale"]
     },
     "operations": [
       {"operation": "upscale"},
@@ -56,7 +56,7 @@
         "method": "POST",
         "fixture": "packs/image-tools/demo/smoke.png",
         "fixture_field": "image",
-        "form": {"operation": "upscale", "model": "realesrgan-x4plus", "backend": "cuda"},
+        "form": {"operation": "upscale", "model": "realesrgan-x4plus", "backend": "cuda", "outscale": 4},
         "real_inference": true,
         "expected_content_type": "image/png",
         "expected_png": true,
@@ -72,7 +72,7 @@
         "method": "POST",
         "fixture": "packs/image-tools/demo/smoke.png",
         "fixture_field": "image",
-        "form": {"operation": "upscale", "model": "realesrgan-x4plus", "backend": "cpu"},
+        "form": {"operation": "upscale", "model": "realesrgan-x4plus", "backend": "cpu", "outscale": 4},
         "real_inference": true,
         "expected_content_type": "image/png",
         "expected_png": true,

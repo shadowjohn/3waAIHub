@@ -43,6 +43,8 @@ php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upsc
 
 同步 CUDA 或 CPU smoke 使用 `mode=image-tools&operation=upscale`，將 `operation=upscale` 同時放 query 與 multipart form。上傳 `image` 或 `base64_string`，但不可兩者同時傳。成功只接受 `image/png`，並記錄 `X-3waAIHub-Model`、`X-3waAIHub-Backend`、`X-3waAIHub-Elapsed-Ms`、`X-3waAIHub-Width`、`X-3waAIHub-Height`。
 
+`outscale` 僅用於同步 `upscale`，只接受 `2`、`3` 或 `4`；省略時維持所選 model 的原生輸出倍率。非同步 `upscale_task` 不接受 `outscale`。
+
 非同步 CUDA 或 CPU flow 使用 `mode=image-tools&operation=upscale_task`。Hub 在 submit 時固定 queue/backend；以既有 `task_status` 輪詢、`task_result` 取 artifact ID，透過 `artifact` 下載 `upscaled_image.png` 與 `upscale_report.json`。下載後比對 report 的 SHA-256、model、backend、尺寸與 image SHA-256；不將原始 Base64 寫入 task input、report 或 log。
 
 請在實機 acceptance log 僅記錄 elapsed time、dimensions、selected backend、model alias、output SHA-256 與版本資訊；不記錄 Token、來源圖片、Base64、路徑或模型二進位。

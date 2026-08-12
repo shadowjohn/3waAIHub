@@ -20,6 +20,7 @@ from image_contract import (
     decode_base64,
     decode_image,
     resolve_backend,
+    resolve_outscale,
     select_model,
     validate_output_pixels,
 )
@@ -114,6 +115,16 @@ class ImageContractTest(unittest.TestCase):
         self.assert_code("invalid_image", lambda: validate_output_pixels(16_000_001, 2))
         validate_output_pixels(64_000_000 // 9, 3)
         self.assert_code("invalid_image", lambda: validate_output_pixels(64_000_000 // 9 + 1, 3))
+
+    def test_outscale_uses_model_native_defaults_and_accepts_only_exact_values(self) -> None:
+        self.assertEqual(resolve_outscale(None, model="realesrgan-x4plus"), 4)
+        self.assertEqual(resolve_outscale("2", model="realesrgan-x4plus"), 2)
+        self.assertEqual(resolve_outscale(3, model="realesrgan-x4plus"), 3)
+        self.assertEqual(resolve_outscale("4", model="realesrgan-x4plus"), 4)
+        self.assertEqual(resolve_outscale(None, model="realesr-animevideov3-x2"), 2)
+        for invalid in (True, 1, 5, "02", "2.0", "auto"):
+            with self.subTest(invalid=invalid):
+                self.assert_code("invalid_request", lambda invalid=invalid: resolve_outscale(invalid, model="realesrgan-x4plus"))
 
 
 if __name__ == "__main__":

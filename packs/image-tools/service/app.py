@@ -14,7 +14,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from PIL import Image
 
-from image_contract import ImageToolsError, build_upscale_argv, decode_image, private_job_directory, resolve_backend, select_model, validate_output_pixels
+from image_contract import ImageToolsError, build_upscale_argv, decode_image, private_job_directory, resolve_backend, resolve_outscale, select_model, validate_output_pixels
 from model_runtime import DEFAULT_MODEL_ROOT, ModelRuntimeError, verify_ready
 
 
@@ -75,17 +75,16 @@ def _cli_error(stdout: str) -> str:
         return "inference_failed"
 
 
-def _run(source_bytes: bytes, *, model: str, backend: str) -> tuple[bytes, dict[str, object]]:
-    selection = select_model(model)
+def _run(source_bytes: bytes, *, model: str, backend: str, outscale: int) -> tuple[bytes, dict[str, object]]:
     source = decode_image(source_bytes, operation="upscale")
-    validate_output_pixels(source.width * source.height, selection.scale)
+    validate_output_pixels(source.width * source.height, outscale)
     verify_ready(model_dir())
     with _INFERENCE_LOCK, private_job_directory() as workspace:
         source_path = workspace / "source.bin"
         output_path = workspace / "output.png"
         source_path.write_bytes(source_bytes)
         source_path.chmod(0o600)
-        argv = build_upscale_argv(workspace=workspace, source=source_path, output=output_path, model=model, backend=backend, model_dir=model_dir())
+        argv = build_upscale_argv(workspace=workspace, source=source_path, output=output_path, model=model, backend=backend, model_dir=model_dir(), outscale=outscale)
         if backend == "cpu":
             argv.append("--fp32")
         result = subprocess.run(argv, shell=False, check=False, capture_output=True, text=True, timeout=900)
@@ -106,6 +105,7 @@ async def process_image(
     operation: str = Form(default="upscale"),
     model: str = Form(default="realesrgan-x4plus"),
     backend: str = Form(default="auto"),
+    outscale: str | None = Form(default=None),
 ) -> Response:
     started = time.perf_counter()
     if image is None:
@@ -114,9 +114,10 @@ async def process_image(
         return error_response(400, "invalid_operation")
     try:
         select_model(model)
+        selected_outscale = resolve_outscale(outscale, model=model)
         effective = resolve_backend(backend, cuda_available=cuda_available())
         source_bytes = await image.read(50 * 1024 * 1024 + 1)
-        png, report = await run_in_threadpool(_run, source_bytes, model=model, backend=effective)
+        png, report = await run_in_threadpool(_run, source_bytes, model=model, backend=effective, outscale=selected_outscale)
     except ImageToolsError as exc:
         status = 415 if exc.code == "unsupported_media_type" else 413 if exc.code == "payload_too_large" else 503 if exc.code == "backend_unavailable" else 400
         return error_response(status, exc.code)

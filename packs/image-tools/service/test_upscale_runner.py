@@ -20,7 +20,15 @@ class UpscaleRunnerBoundaryTest(unittest.TestCase):
         import upscale_runner
         with patch.object(upscale_runner, "run_upscale", return_value={"model": "realesrgan-x4plus", "backend": "cpu", "width": 8, "height": 12, "elapsed_ms": 1}) as runner:
             self.assertEqual(0, upscale_runner.main(["--input", "/workspace/source", "--output", "/workspace/output.png", "--model", "realesrgan-x4plus", "--backend", "cpu"]))
-        self.assertEqual("upscale", runner.call_args.kwargs["operation"])
+        self.assertEqual({
+            "source": Path("/workspace/source"),
+            "output": Path("/workspace/output.png"),
+            "alias": "realesrgan-x4plus",
+            "backend": "cpu",
+            "model_dir": Path("/models/image-tools/realesrgan"),
+            "operation": "upscale",
+            "outscale": None,
+        }, runner.call_args.kwargs)
 
         with tempfile.TemporaryDirectory() as temporary:
             workspace = Path(temporary)
@@ -36,6 +44,27 @@ class UpscaleRunnerBoundaryTest(unittest.TestCase):
             loader.assert_called_once_with("realesrgan-x4plus", "cpu", Path("/models/pinned.pth"))
             with Image.open(output) as rendered:
                 self.assertEqual((8, 12), rendered.size)
+
+    def test_runner_uses_explicit_outscale_for_inference_and_output_dimensions(self) -> None:
+        import upscale_runner
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            source = workspace / "source"
+            output = workspace / "output.png"
+            source.write_bytes(b"source")
+            outscales: list[int] = []
+
+            def enhance(_pixels, outscale):
+                outscales.append(outscale)
+                return np.zeros((9, 6, 3), dtype=np.uint8), None
+
+            fake = SimpleNamespace(enhance=enhance)
+            with patch.object(upscale_runner, "decode_image", return_value=Image.new("RGB", (2, 3))), patch.object(upscale_runner, "model_path_for_alias", return_value=Path("/models/pinned.pth")), patch.object(upscale_runner, "_cuda_available", return_value=False), patch.object(upscale_runner.model_runtime, "build_upsampler", return_value=fake):
+                report = upscale_runner.run_upscale(source=source, output=output, alias="realesrgan-x4plus", backend="cpu", model_dir=Path("/models"), outscale=3)
+            self.assertEqual([3], outscales)
+            self.assertEqual({"width": 6, "height": 9}, {key: report[key] for key in ("width", "height")})
+            with Image.open(output) as rendered:
+                self.assertEqual((6, 9), rendered.size)
 
     def test_command_is_literal_argv_and_stays_inside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

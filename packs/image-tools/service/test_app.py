@@ -153,6 +153,22 @@ class AppTest(unittest.TestCase):
         self.assertTrue(workspaces)
         self.assertTrue(all(not path.exists() for path in workspaces))
 
+    def test_process_forwards_explicit_outscale_and_reports_scaled_dimensions(self) -> None:
+        def run(argv, **_kwargs):
+            self.assertEqual("2", argv[argv.index("--outscale") + 1])
+            output = Path(argv[argv.index("--output") + 1])
+            output.write_bytes(png_bytes((4, 6)))
+            return SimpleNamespace(returncode=0, stdout=json.dumps({"model": "realesrgan-x4plus", "backend": "cpu", "width": 4, "height": 6, "elapsed_ms": 7}), stderr="")
+
+        with patch.object(self.app, "verify_ready", return_value={}), patch.object(self.app, "cuda_available", return_value=False), patch.object(self.app.subprocess, "run", side_effect=run):
+            response = asyncio.run(self.app.process_image(FakeUpload(png_bytes()), operation="upscale", model="realesrgan-x4plus", backend="cpu", outscale="2"))
+
+        self.assertEqual(200, response.status_code)
+        headers = {key.lower(): value for key, value in response.headers.items()}
+        self.assertEqual("4", headers["x-3waaihub-width"])
+        self.assertEqual("6", headers["x-3waaihub-height"])
+        self.assertEqual((4, 6), Image.open(io.BytesIO(response.body)).size)
+
     def test_cuda_has_no_fp32_and_stable_sanitized_errors(self) -> None:
         errors = [
             (self.app.ModelRuntimeError("model_not_present"), "model_not_present"),
