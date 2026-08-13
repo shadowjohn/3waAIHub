@@ -132,7 +132,7 @@ function hub_runtime_telemetry_parse_since(string $value, DateTimeImmutable $now
         throw new InvalidArgumentException('runtime_telemetry_since_invalid');
     }
 
-    return $now->modify('-' . ((int)$amount * $seconds) . ' seconds');
+    return $now->sub(new DateInterval('PT' . ((int)$amount * $seconds) . 'S'));
 }
 
 function hub_runtime_telemetry_quantile(array $values, float $quantile): float
@@ -190,6 +190,13 @@ function hub_runtime_telemetry_summary(DateTimeImmutable $since, DateTimeImmutab
                     continue;
                 }
                 $key = $event['action'] . '/' . $event['variant'];
+                if (
+                    ($groups[$key]['retries'] ?? 0) > PHP_INT_MAX - $event['retry_count']
+                    || ($groups[$key]['skipped'] ?? 0) > PHP_INT_MAX - $event['skipped_ticks']
+                ) {
+                    $invalidLines++;
+                    continue;
+                }
                 $groups[$key] ??= [
                     'action' => $event['action'], 'variant' => $event['variant'], 'count' => 0, 'samples' => [],
                     'lock_count' => 0, 'retries' => 0, 'exhausted' => 0, 'skipped' => 0,

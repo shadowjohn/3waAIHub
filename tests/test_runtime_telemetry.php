@@ -202,14 +202,50 @@ function hub_test_runtime_telemetry_fixture_line(array $event): string
 
 hub_test('runtime telemetry parses relative summary ranges and nearest-rank quantiles', function (): void {
     $now = new DateTimeImmutable('2026-08-14T01:00:00.000000+08:00');
+    $dstNow = new DateTimeImmutable('2026-03-08 03:30:00', new DateTimeZone('America/New_York'));
 
     hub_test_assert(
         hub_runtime_telemetry_parse_since('1 hour', $now)->format('c') === '2026-08-14T00:00:00+08:00',
         'one hour must parse relative to now'
     );
     hub_test_assert(hub_test_throws(static fn (): DateTimeImmutable => hub_runtime_telemetry_parse_since('all time', $now)), 'malformed relative range must be rejected');
+    hub_test_assert(
+        $dstNow->getTimestamp() - hub_runtime_telemetry_parse_since('1 hour', $dstNow)->getTimestamp() === 3600,
+        'relative ranges must subtract elapsed seconds across DST'
+    );
     hub_test_assert(hub_runtime_telemetry_quantile([1, 2, 3], 0.5) === 2.0, 'p50 must use nearest rank');
     hub_test_assert(hub_runtime_telemetry_quantile([10, 20], 0.95) === 20.0, 'p95 must use nearest rank');
+});
+
+hub_test('runtime telemetry summary rejects counter-overflow lines before aggregation', function () use ($validRuntimeTelemetryEvent): void {
+    $event = static function (int $txMs, int $retries, int $skipped) use ($validRuntimeTelemetryEvent): array {
+        return array_replace($validRuntimeTelemetryEvent, [
+            'schema_version' => HUB_RUNTIME_TELEMETRY_SCHEMA_VERSION,
+            'observed_at' => '2026-08-14T00:00:00.000000+08:00',
+            'tx_ms' => $txMs,
+            'retry_count' => $retries,
+            'skipped_ticks' => $skipped,
+        ]);
+    };
+    $fixture = hub_test_runtime_telemetry_fixture_line($event(1, PHP_INT_MAX, PHP_INT_MAX))
+        . hub_test_runtime_telemetry_fixture_line($event(2, 1, 1));
+    $summary = hub_runtime_telemetry_summary(
+        new DateTimeImmutable('2026-08-14T00:00:00.000000+08:00'),
+        new DateTimeImmutable('2026-08-14T00:00:00.000000+08:00'),
+        static function (string $path) use ($fixture) {
+            $handle = fopen('php://temp', 'w+b');
+            fwrite($handle, $fixture);
+            rewind($handle);
+
+            return $handle;
+        }
+    );
+
+    hub_test_assert(($summary['invalid_lines'] ?? null) === 1, 'counter-overflow line must be invalid');
+    hub_test_assert(($summary['groups']['heartbeat/cpu'] ?? null) === [
+        'action' => 'heartbeat', 'variant' => 'cpu', 'count' => 1, 'p50_tx' => 1.0, 'p95_tx' => 1.0, 'p99_tx' => 1.0,
+        'lock_count' => 0, 'retries' => PHP_INT_MAX, 'exhausted' => 0, 'skipped' => PHP_INT_MAX,
+    ], 'counter-overflow line must not partially mutate group totals');
 });
 
 hub_test('runtime telemetry summarizes only direct daily candidates with independent groups', function () use ($validRuntimeTelemetryEvent): void {
