@@ -2546,6 +2546,43 @@ hub_test('VoxCPM2 completes a matching transcription lease normally', function (
     }
 });
 
+hub_test('VoxCPM2 preserves the requested Profile locale over generic ASR detection', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Profile Locale Voice Owner');
+    $path = hub_voice_profile_storage_dir() . '/profile_locale.wav';
+    file_put_contents($path, 'RIFFlocale');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Profile locale draft',
+        'language' => 'zh-TW',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $claim = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing locale profile.');
+
+    try {
+        $result = hub_run_voice_profile_transcription(
+            $db,
+            $claim,
+            $memberId,
+            static fn (): array => ['ok' => true, 'text' => '語言保留測試', 'language' => 'zh', 'device' => []]
+        );
+        $stored = hub_get_voice_profile($db, $profileId) ?? throw new RuntimeException('Missing completed locale profile.');
+
+        hub_test_assert(
+            ($result['transcription']['language'] ?? '') === 'zh-TW'
+            && ($result['profile']['language'] ?? '') === 'zh-TW'
+            && ($stored['language'] ?? '') === 'zh-TW',
+            'The requested Profile locale must win over generic ASR detection.'
+        );
+    } finally {
+        if (hub_get_voice_profile($db, $profileId) !== null) {
+            hub_soft_delete_voice_profile($db, $profileId, $memberId, true);
+        }
+    }
+});
+
 hub_test('VoxCPM2 rolls back a transcription result when its audit cannot be written', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Audit Failure Voice Owner');

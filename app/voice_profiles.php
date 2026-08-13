@@ -941,7 +941,9 @@ function hub_run_voice_profile_transcription(PDO $db, array $profile, int $owner
 
     $rawText = (string)($transcription['whisper_raw_text'] ?? $transcription['raw_text'] ?? $transcription['text'] ?? '');
     $text = trim($rawText);
-    $language = trim((string)($transcription['language'] ?? '')) ?: 'auto';
+    $requestedLanguage = trim((string)($profile['language'] ?? ''));
+    $detectedLanguage = trim((string)($transcription['language'] ?? ''));
+    $language = $requestedLanguage !== '' ? $requestedLanguage : ($detectedLanguage ?: 'auto');
     $device = is_array($transcription['device'] ?? null) ? $transcription['device'] : [];
     $validationJson = null;
     try {
