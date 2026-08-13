@@ -1194,6 +1194,8 @@ hub_test('GPU heartbeat rolls back both rows before emitting a failed event', fu
         hub_pack_job_tick($db, $run, $lease, 60, $state);
     } catch (Throwable $e) {
         $error = $e;
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS heartbeat_gpu_abort');
     }
     $afterRuntime = hub_runtime_fetch_run($db, (int)$run['id']);
     $afterGpu = hub_runtime_gpu_fetch($db);
@@ -1374,6 +1376,129 @@ hub_test('GPU heartbeat classifies a real locked raw BEGIN failure', function ()
         && count($events) === 1
         && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
         && ($events[0]['retry_count'] ?? null) === 0
+        && $events[0]['tx_begin_at'] === null
+        && is_string($events[0]['tx_commit_at'] ?? null)
         && (float)($events[0]['tx_ms'] ?? -1) === 0.0,
         'locked GPU heartbeat must preserve rows and memory and emit zero-duration lock_exhausted telemetry');
+});
+
+hub_test('skipped CPU heartbeat rejects expired and divergent live runtime leases without writes', function (): void {
+    $db = hub_test_reset_db();
+    [, $run] = hub_test_runtime_telemetry_heartbeat_run($db);
+    $memoryExpiry = date('Y-m-d H:i:s', time() + 60);
+    $state = hub_pack_job_heartbeat_state($run, null);
+    $state['runtime_expires_at'] = $memoryExpiry;
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expires_at WHERE id = :id')->execute([
+        ':expires_at' => date('Y-m-d H:i:s', time() - 1),
+        ':id' => (int)$run['id'],
+    ]);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, null, 60, $state) === 'fence_lost', 'skipped CPU heartbeat must reject a lease that expired while the task was paused');
+    hub_test_assert(serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && $state['runtime_expires_at'] === $memoryExpiry
+        && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'cpu') === [],
+        'expired skipped CPU fence must not write or emit telemetry');
+
+    $state['skipped_ticks'] = 0;
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expires_at WHERE id = :id')->execute([
+        ':expires_at' => date('Y-m-d H:i:s', time() + 59),
+        ':id' => (int)$run['id'],
+    ]);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, null, 60, $state) === 'fence_lost', 'skipped CPU heartbeat must reject live expiry divergence from shared memory');
+    hub_test_assert(serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'cpu') === [],
+        'divergent skipped CPU fence must not write or emit telemetry');
+});
+
+hub_test('skipped GPU heartbeat rejects expired and mismatched live GPU leases without writes', function (): void {
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('Skipped GPU fence fixture must acquire GPU.');
+    }
+    $memoryExpiry = date('Y-m-d H:i:s', time() + 60);
+    $state = hub_pack_job_heartbeat_state($run, $lease);
+    $state['runtime_expires_at'] = $memoryExpiry;
+    $state['gpu_expires_at'] = $memoryExpiry;
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expires_at WHERE id = :id')->execute([':expires_at' => $memoryExpiry, ':id' => (int)$run['id']]);
+    $db->prepare("UPDATE runtime_resource_leases SET lease_expires_at = :expires_at WHERE resource_key = 'gpu:0'")->execute([':expires_at' => date('Y-m-d H:i:s', time() - 1)]);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, $lease, 60, $state) === 'fence_lost', 'skipped GPU heartbeat must reject an expired live GPU lease');
+    hub_test_assert(serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu)
+        && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'gpu') === [],
+        'expired skipped GPU fence must not write or emit telemetry');
+
+    $state['skipped_ticks'] = 0;
+    $db->prepare("UPDATE runtime_resource_leases SET lease_expires_at = :expires_at, lease_token = 'lost-skipped-gpu-fence' WHERE resource_key = 'gpu:0'")->execute([':expires_at' => $memoryExpiry]);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, $lease, 60, $state) === 'fence_lost', 'skipped GPU heartbeat must reject a mismatched live GPU identity');
+    hub_test_assert(serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu)
+        && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'gpu') === [],
+        'mismatched skipped GPU fence must not write or emit telemetry');
+
+    $state['skipped_ticks'] = 0;
+    $db->prepare("UPDATE runtime_resource_leases SET state = 'available', lease_token = :lease_token WHERE resource_key = 'gpu:0'")->execute([':lease_token' => (string)$lease['lease_token']]);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, $lease, 60, $state) === 'fence_lost', 'skipped GPU heartbeat must reject a live GPU lease that is no longer leased');
+    hub_test_assert(serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu)
+        && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'gpu') === [],
+        'unleased skipped GPU fence must not write or emit telemetry');
+});
+
+hub_test('GPU heartbeat suppresses telemetry when a rollback-triggered close is unconfirmed', function (): void {
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('GPU rollback-close fixture must acquire GPU.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, $lease);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['gpu_expires_at'] = $state['runtime_expires_at'];
+    $beforeState = serialize($state);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+    $db->exec("CREATE TEMP TRIGGER heartbeat_gpu_rollback BEFORE UPDATE ON runtime_resource_leases WHEN NEW.resource_key = 'gpu:0' BEGIN SELECT RAISE(ROLLBACK, 'heartbeat_gpu_rollback'); END");
+    $error = null;
+    $unlocked = false;
+    try {
+        hub_pack_job_tick($db, $run, $lease, 60, $state);
+    } catch (Throwable $e) {
+        $error = $e;
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS heartbeat_gpu_rollback');
+    }
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+        $db->exec('ROLLBACK');
+        $unlocked = true;
+    } catch (Throwable) {
+    }
+
+    hub_test_assert($error instanceof PDOException && str_contains($error->getMessage(), 'heartbeat_gpu_rollback'), 'rollback trigger must preserve the original UPDATE exception');
+    hub_test_assert(serialize($state) === $beforeState
+        && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu)
+        && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'gpu') === []
+        && $unlocked,
+        'unconfirmed GPU close must suppress telemetry, preserve memory, and leave no lock');
 });

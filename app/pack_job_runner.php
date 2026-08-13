@@ -2740,7 +2740,8 @@ function hub_pack_job_tick(PDO $db, array $run, ?array $gpuLease, int $leaseSeco
 {
     $actionStartedNs = hrtime(true);
     $now = time();
-    if (!hub_pack_job_heartbeat_should_renew($heartbeatState, $now)) {
+    $skipped = !hub_pack_job_heartbeat_should_renew($heartbeatState, $now);
+    if ($skipped) {
         hub_pack_job_heartbeat_mark_skipped($heartbeatState);
     } else {
         $expiresAt = date('Y-m-d H:i:s', $now + max(1, $leaseSeconds));
@@ -2750,7 +2751,9 @@ function hub_pack_job_tick(PDO $db, array $run, ?array $gpuLease, int $leaseSeco
                 ? hub_runtime_heartbeat($db, (int)$run['id'], (string)$run['lease_token'], $leaseSeconds, $expiresAt, $stats)
                 : hub_runtime_gpu_heartbeat($db, $run, $gpuLease, $leaseSeconds, $expiresAt, $stats);
         } catch (Throwable $e) {
-            hub_pack_job_heartbeat_emit($actionStartedNs, $stats, $gpuLease !== null, !empty($stats['lock_exhausted']) ? 'lock_exhausted' : 'failed', 0);
+            if (($stats['transaction_closed'] ?? null) !== false) {
+                hub_pack_job_heartbeat_emit($actionStartedNs, $stats, $gpuLease !== null, !empty($stats['lock_exhausted']) ? 'lock_exhausted' : 'failed', 0);
+            }
             throw $e;
         }
         if (!$alive) {
@@ -2766,6 +2769,38 @@ function hub_pack_job_tick(PDO $db, array $run, ?array $gpuLease, int $leaseSeco
     $current = hub_runtime_fetch_run($db, (int)$run['id']);
     if ($current === null || !hash_equals((string)$run['lease_token'], (string)$current['lease_token'])) {
         return 'fence_lost';
+    }
+    if ($skipped) {
+        $runtimeExpiry = $current['lease_expires_at'] ?? null;
+        if (!in_array((string)($current['state'] ?? ''), ['claimed', 'running'], true)
+            || (string)($current['worker_id'] ?? '') !== (string)($run['worker_id'] ?? '')
+            || !is_string($runtimeExpiry)
+            || !is_string($heartbeatState['runtime_expires_at'] ?? null)
+            || $runtimeExpiry !== $heartbeatState['runtime_expires_at']
+            || ($runtimeExpiryAt = hub_pack_job_heartbeat_expiry_timestamp($runtimeExpiry)) === null
+            || $runtimeExpiryAt <= time()) {
+            return 'fence_lost';
+        }
+        if ($gpuLease !== null) {
+            $gpu = hub_runtime_gpu_fetch($db);
+            $gpuExpiry = $gpu['lease_expires_at'] ?? null;
+            if (!is_array($gpu)
+                || (string)($gpu['resource_key'] ?? '') !== (string)($gpuLease['resource_key'] ?? '')
+                || (string)($gpu['state'] ?? '') !== 'leased'
+                || (string)($gpu['runtime_run_id'] ?? '') !== (string)($run['run_id'] ?? '')
+                || (string)($gpu['runtime_run_id'] ?? '') !== (string)($gpuLease['runtime_run_id'] ?? '')
+                || (string)($gpu['worker_id'] ?? '') !== (string)($run['worker_id'] ?? '')
+                || (string)($gpu['worker_id'] ?? '') !== (string)($gpuLease['worker_id'] ?? '')
+                || !hash_equals((string)($run['lease_token'] ?? ''), (string)($gpu['lease_token'] ?? ''))
+                || !hash_equals((string)($gpuLease['lease_token'] ?? ''), (string)($gpu['lease_token'] ?? ''))
+                || !is_string($gpuExpiry)
+                || !is_string($heartbeatState['gpu_expires_at'] ?? null)
+                || $gpuExpiry !== $heartbeatState['gpu_expires_at']
+                || ($gpuExpiryAt = hub_pack_job_heartbeat_expiry_timestamp($gpuExpiry)) === null
+                || $gpuExpiryAt <= time()) {
+                return 'fence_lost';
+            }
+        }
     }
     if (!empty($current['timeout_at']) && (string)$current['timeout_at'] <= hub_now()) {
         return 'timed_out';
