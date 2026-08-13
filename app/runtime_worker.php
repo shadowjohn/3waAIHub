@@ -313,6 +313,9 @@ function hub_runtime_gpu_heartbeat(PDO $db, array $run, array $lease, int $lease
             }
             $ownsTransaction = false;
         }
+        if ($e instanceof PDOException && str_contains(strtolower($e->getMessage()), 'database is locked')) {
+            $stats['lock_exhausted'] = true;
+        }
         throw $e;
     } finally {
         $stats['tx_ended_ns'] = hrtime(true);
@@ -1085,6 +1088,11 @@ function hub_runtime_heartbeat(PDO $db, int $runId, string $leaseToken, int $lea
         ]);
 
         return $stmt->rowCount() === 1;
+    } catch (Throwable $e) {
+        if ($e instanceof PDOException && str_contains(strtolower($e->getMessage()), 'database is locked')) {
+            $stats['lock_exhausted'] = true;
+        }
+        throw $e;
     } finally {
         $stats['tx_ended_ns'] = hrtime(true);
         if ($stats['tx_started_ns'] !== null) {

@@ -1301,3 +1301,79 @@ hub_test('direct GPU heartbeat preserves a raw caller-owned transaction on neste
         }
     }
 });
+
+hub_test('CPU heartbeat classifies a real locked autocommit writer failure', function (): void {
+    $db = hub_test_reset_db();
+    [, $run] = hub_test_runtime_telemetry_heartbeat_run($db);
+    $state = hub_pack_job_heartbeat_state($run, null);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['skipped_ticks'] = 2;
+    $beforeState = serialize($state);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+    $error = null;
+
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(200000, static function (string $attemptPath) use ($run, &$state, &$error): void {
+        $lockedDb = new PDO('sqlite:' . HUB_DB_PATH);
+        $lockedDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $lockedDb->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $lockedDb->exec('PRAGMA busy_timeout = 0');
+        if (file_put_contents($attemptPath, "attempt\n", LOCK_EX) === false) {
+            throw new RuntimeException('Cannot signal SQLite CPU heartbeat attempt.');
+        }
+        try {
+            hub_pack_job_tick($lockedDb, $run, null, 60, $state);
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+        hub_test_assert(!$lockedDb->inTransaction(), 'locked CPU heartbeat must not leave a caller transaction open');
+    });
+
+    $events = hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'cpu');
+    hub_test_assert($error instanceof PDOException && str_contains(strtolower($error->getMessage()), 'database is locked'), 'CPU heartbeat fixture must throw the real SQLite lock error');
+    hub_test_assert(serialize($state) === $beforeState
+        && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && ($events[0]['retry_count'] ?? null) === 0,
+        'locked CPU heartbeat must preserve memory and emit one lock_exhausted event');
+});
+
+hub_test('GPU heartbeat classifies a real locked raw BEGIN failure', function (): void {
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('GPU lock fixture must acquire GPU.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, $lease);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['gpu_expires_at'] = $state['runtime_expires_at'];
+    $state['skipped_ticks'] = 2;
+    $beforeState = serialize($state);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+    $error = null;
+
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(200000, static function (string $attemptPath) use ($run, $lease, &$state, &$error): void {
+        $lockedDb = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        try {
+            hub_pack_job_tick($lockedDb, $run, $lease, 60, $state);
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+        hub_test_assert(!$lockedDb->inTransaction(), 'locked GPU heartbeat must not leave a caller transaction open');
+    });
+
+    $events = hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'gpu');
+    hub_test_assert($error instanceof PDOException && str_contains(strtolower($error->getMessage()), 'database is locked'), 'GPU heartbeat fixture must throw the real SQLite lock error');
+    hub_test_assert(serialize($state) === $beforeState
+        && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu)
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && ($events[0]['retry_count'] ?? null) === 0
+        && (float)($events[0]['tx_ms'] ?? -1) === 0.0,
+        'locked GPU heartbeat must preserve rows and memory and emit zero-duration lock_exhausted telemetry');
+});
