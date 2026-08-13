@@ -263,11 +263,11 @@ hub_test('runtime telemetry summarizes only direct daily candidates with indepen
 
     hub_test_assert($requested === $paths, 'summary must request only the two direct daily paths in order');
     hub_test_assert(($summary['invalid_lines'] ?? null) === 1, 'summary must count malformed lines');
-    hub_test_assert(($summary['groups'][0] ?? null) === [
+    hub_test_assert(($summary['groups']['claim/runtime'] ?? null) === [
         'action' => 'claim', 'variant' => 'runtime', 'count' => 2, 'p50_tx' => 10.0, 'p95_tx' => 20.0, 'p99_tx' => 20.0,
         'lock_count' => 1, 'retries' => 3, 'exhausted' => 1, 'skipped' => 3,
     ], 'claim/runtime summary totals mismatch');
-    hub_test_assert(($summary['groups'][1] ?? null) === [
+    hub_test_assert(($summary['groups']['heartbeat/cpu'] ?? null) === [
         'action' => 'heartbeat', 'variant' => 'cpu', 'count' => 3, 'p50_tx' => 2.0, 'p95_tx' => 3.0, 'p99_tx' => 3.0,
         'lock_count' => 0, 'retries' => 0, 'exhausted' => 0, 'skipped' => 0,
     ], 'heartbeat/cpu summary quantiles mismatch');

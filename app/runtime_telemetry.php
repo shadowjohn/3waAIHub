@@ -189,7 +189,7 @@ function hub_runtime_telemetry_summary(DateTimeImmutable $since, DateTimeImmutab
                 if ($observedAt < $since || $observedAt > $until) {
                     continue;
                 }
-                $key = $event['action'] . "\0" . $event['variant'];
+                $key = $event['action'] . '/' . $event['variant'];
                 $groups[$key] ??= [
                     'action' => $event['action'], 'variant' => $event['variant'], 'count' => 0, 'samples' => [],
                     'lock_count' => 0, 'retries' => 0, 'exhausted' => 0, 'skipped' => 0,
@@ -220,7 +220,7 @@ function hub_runtime_telemetry_summary(DateTimeImmutable $since, DateTimeImmutab
     }
     unset($group);
 
-    return ['invalid_lines' => $invalidLines, 'groups' => array_values($groups)];
+    return ['invalid_lines' => $invalidLines, 'groups' => $groups];
 }
 
 function hub_runtime_telemetry_render_summary(array $summary): string
