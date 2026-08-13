@@ -58,6 +58,27 @@ hub_test('PhaseP-1 Compose host commands do not inherit container-only HOME', fu
     hub_test_assert(($hostEnvironment['DOCKER_CONFIG'] ?? null) === HUB_DATA_DIR . '/docker-cli', 'Docker host command must keep config outside the container HOME');
 });
 
+hub_test('PhaseP-1 invalid test Docker override fails closed', function (): void {
+    $testDockerBin = getenv('AIHUB_TEST_DOCKER_BIN');
+    try {
+        putenv('AIHUB_TEST_DOCKER_BIN');
+        $fixedDockerBin = hub_trusted_command_path('docker');
+        putenv('AIHUB_TEST_DOCKER_BIN=' . sys_get_temp_dir() . '/missing-docker-' . bin2hex(random_bytes(4)));
+        try {
+            hub_trusted_command_path('docker');
+            $rejected = false;
+        } catch (InvalidArgumentException) {
+            $rejected = true;
+        }
+        hub_test_assert($rejected, 'an invalid test Docker override must not fall through to host Docker');
+
+        putenv('AIHUB_TEST_DOCKER_BIN=');
+        hub_test_assert(hub_trusted_command_path('docker') === $fixedDockerBin, 'an empty test Docker override must use the fixed production path');
+    } finally {
+        putenv($testDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $testDockerBin);
+    }
+});
+
 hub_test('PhaseP-1 default setting auto-builds missing images', function (): void {
     $db = hub_test_reset_db();
 
@@ -96,9 +117,9 @@ exit 0
 SH
     );
     chmod($bin . '/docker', 0755);
-    $path = getenv('PATH');
+    $testDockerBin = getenv('AIHUB_TEST_DOCKER_BIN');
     try {
-        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        putenv('AIHUB_TEST_DOCKER_BIN=' . $bin . '/docker');
         putenv('MOCK_DOCKER_LOG=' . $log);
         putenv('MOCK_DOCKER_STATE=' . $state);
 
@@ -108,7 +129,7 @@ SH
         hub_test_assert($result['exit_code'] === 0, 'restart-required service must build its missing local image before recreate');
         hub_test_assert(count($commands) >= 3 && str_contains($commands[1], ' build ') && str_contains($commands[2], ' up '), 'restart must run build before compose up');
     } finally {
-        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        putenv($testDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $testDockerBin);
         putenv('MOCK_DOCKER_LOG');
         putenv('MOCK_DOCKER_STATE');
         @unlink($bin . '/docker');
@@ -151,9 +172,9 @@ exit 0
 SH
     );
     chmod($bin . '/docker', 0755);
-    $path = getenv('PATH');
+    $testDockerBin = getenv('AIHUB_TEST_DOCKER_BIN');
     try {
-        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        putenv('AIHUB_TEST_DOCKER_BIN=' . $bin . '/docker');
         putenv('MOCK_DOCKER_LOG=' . $log);
 
         $result = hub_restart_service($db, $service);
@@ -167,7 +188,7 @@ SH
         hub_test_assert(str_contains($commands, 'image inspect ' . $expectedTag) && !str_contains($commands, $oldTag), 'restart must inspect only the refreshed VoxCPM2 image tag');
         hub_test_assert(str_contains($compose, 'image: ' . $expectedTag), 'restart must regenerate the refreshed VoxCPM2 compose image');
     } finally {
-        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        putenv($testDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $testDockerBin);
         putenv('MOCK_DOCKER_LOG');
         @unlink($bin . '/docker');
         @unlink($log);
@@ -441,10 +462,10 @@ exit 0
 SH
     );
     chmod($bin . '/docker', 0755);
-    $path = getenv('PATH');
+    $testDockerBin = getenv('AIHUB_TEST_DOCKER_BIN');
 
     try {
-        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
+        putenv('AIHUB_TEST_DOCKER_BIN=' . $bin . '/docker');
         putenv('MOCK_DOCKER_LOG=' . $log);
 
         $db = hub_test_reset_db();
@@ -562,7 +583,7 @@ SH
         unlink($composePath);
         rename($composePath . '.after-down', $composePath);
     } finally {
-        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        putenv($testDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $testDockerBin);
         if (isset($composePath) && is_file($composePath . '.after-down')) {
             if (is_link($composePath)) {
                 unlink($composePath);
@@ -911,7 +932,7 @@ hub_test('PhaseP-1 service removal rejects a symlinked runtime directory before 
     }
 });
 
-hub_test('PhaseP-1 service removal accepts a symlinked runtime base with normal child files', function (): void {
+hub_test('PhaseP-1 service removal rejects a symlinked runtime base before Docker', function (): void {
     $db = hub_test_reset_db();
     $service = hub_get_service_by_mode($db, 'hello');
     $runtimeBase = hub_pack_runtime_base_dir($db);
@@ -924,7 +945,7 @@ hub_test('PhaseP-1 service removal accepts a symlinked runtime base with normal 
     mkdir($bin, 0775, true);
     file_put_contents($bin . '/docker', "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$log\"\n");
     chmod($bin . '/docker', 0755);
-    $path = getenv('PATH');
+    $testDockerBin = getenv('AIHUB_TEST_DOCKER_BIN');
     $linked = false;
 
     try {
@@ -935,18 +956,22 @@ hub_test('PhaseP-1 service removal accepts a symlinked runtime base with normal 
             hub_test_skip('Symlink fixture is unavailable.');
         }
         $linked = true;
-        putenv('PATH=' . $bin . PATH_SEPARATOR . $path);
-        hub_test_assert(hub_service_generated_runtime_files($db, $service) === [$composePath, $envPath], 'a symlinked runtime base must allow normal generated child files');
+        putenv('AIHUB_TEST_DOCKER_BIN=' . $bin . '/docker');
         $jobId = hub_enqueue_command_job($db, 'service_remove', (int)$service['id'], [], null, '127.0.0.1');
 
-        $result = hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
-        $commands = file($log, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+        try {
+            hub_remove_service($db, $service, hub_get_command_job($db, $jobId));
+            $rejected = false;
+        } catch (RuntimeException $error) {
+            $rejected = $error->getMessage() === 'Service runtime root must not be a symlink.';
+        }
 
-        hub_test_assert($result['exit_code'] === 0, 'a symlinked runtime base must allow service removal');
-        hub_test_assert(count($commands) === 1 && str_contains($commands[0], ' down '), 'a symlinked runtime base must still run docker compose down');
-        hub_test_assert(hub_get_service($db, (int)$service['id']) === null, 'a symlinked runtime base must allow registration deletion');
+        hub_test_assert($rejected, 'a symlinked runtime base must be rejected');
+        hub_test_assert(!file_exists($log), 'a symlinked runtime base must be rejected before Docker');
+        hub_test_assert(hub_get_service($db, (int)$service['id']) !== null, 'a symlinked runtime base must preserve registration');
+        hub_test_assert(file_exists($composePath) && file_exists($envPath), 'a symlinked runtime base must preserve generated files');
     } finally {
-        putenv($path === false ? 'PATH' : 'PATH=' . $path);
+        putenv($testDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $testDockerBin);
         if ($linked && is_link($runtimeBase)) {
             unlink($runtimeBase);
         }

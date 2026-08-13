@@ -469,7 +469,7 @@ hub_test('Whisper Pascal CKIP provisioning is an explicit WSL-only operation', f
         return;
     }
 
-    $plan = hub_whisper_pascal_ckip_provisioning_plan($service, $pascalProfile);
+    $plan = hub_whisper_pascal_ckip_provisioning_plan($service, $pascalProfile, 'windows');
     $script = is_array($plan) ? hub_test_wsl_script_payload((array)($plan['command'] ?? [])) : '';
     hub_test_assert(
         is_array($plan)
@@ -484,8 +484,9 @@ hub_test('Whisper Pascal CKIP provisioning is an explicit WSL-only operation', f
         && !str_contains($script, hub_test_host_root_child_needle()),
         'Pascal CKIP provisioning must use only the fixed WSL ext4 runtime and cache roots'
     );
-    hub_test_assert(hub_whisper_pascal_ckip_provisioning_plan($service, $defaultProfile) === null, 'Default Whisper profile must not expose Pascal CKIP provisioning');
-    hub_test_assert(hub_whisper_pascal_ckip_provisioning_plan($service, ['runtime_targets' => ['linux-docker' => ['supported' => true]]]) === null, 'Direct Linux Docker metadata must not expose a Windows WSL provisioning operation');
+    hub_test_assert(hub_whisper_pascal_ckip_provisioning_plan($service, $defaultProfile, 'windows') === null, 'Default Whisper profile must not expose Pascal CKIP provisioning');
+    hub_test_assert(hub_whisper_pascal_ckip_provisioning_plan($service, ['runtime_targets' => ['linux-docker' => ['supported' => true]]], 'windows') === null, 'Direct Linux Docker metadata must not expose a Windows WSL provisioning operation');
+    hub_test_assert(hub_whisper_pascal_ckip_provisioning_plan($service, $pascalProfile, 'linux') === null, 'Direct Linux hosts must not expose a Windows WSL provisioning operation');
 });
 
 hub_test('Whisper WSL resident asset preflight uses the ext4 runtime cache', function (): void {

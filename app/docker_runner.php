@@ -145,6 +145,26 @@ function hub_trusted_command_path(string $executable, ?string $platform = null):
     $systemRoot = rtrim((string)getenv('SystemRoot'), '\\/');
     $programFiles = rtrim((string)getenv('ProgramFiles'), '\\/');
 
+    if ($name === 'docker' && defined('HUB_TESTING') && HUB_TESTING) {
+        $testPath = (string)getenv('AIHUB_TEST_DOCKER_BIN');
+        if ($testPath !== '') {
+            $realTestPath = realpath($testPath);
+            $tempRoot = realpath(sys_get_temp_dir());
+            if (
+                hub_command_path_is_absolute($testPath)
+                && !is_link($testPath)
+                && $realTestPath !== false
+                && is_file($realTestPath)
+                && is_executable($realTestPath)
+                && $tempRoot !== false
+                && hub_storage_path_is_within(dirname($realTestPath), $tempRoot)
+            ) {
+                return $realTestPath;
+            }
+            throw new InvalidArgumentException('Invalid test Docker executable.');
+        }
+    }
+
     if (strcasecmp($platform, 'Windows') === 0) {
         $paths = [
             'php' => PHP_BINARY,
@@ -847,9 +867,9 @@ function hub_whisper_wsl_runtime_profile(array $service, ?array $profile = null)
  *
  * @return array{runtime: array<string, mixed>, command: list<string>}|null
  */
-function hub_whisper_pascal_ckip_provisioning_plan(array $service, ?array $profile = null): ?array
+function hub_whisper_pascal_ckip_provisioning_plan(array $service, ?array $profile = null, ?string $platform = null): ?array
 {
-    if (hub_platform_id() !== 'windows') {
+    if (hub_platform_id($platform) !== 'windows') {
         return null;
     }
     $runtime = hub_whisper_wsl_runtime_profile($service, $profile);
