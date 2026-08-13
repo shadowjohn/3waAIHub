@@ -2773,6 +2773,7 @@ function hub_pack_job_tick(PDO $db, array $run, ?array $gpuLease, int $leaseSeco
     if ($skipped) {
         $runtimeExpiry = $current['lease_expires_at'] ?? null;
         if (!in_array((string)($current['state'] ?? ''), ['claimed', 'running'], true)
+            || (string)($current['run_id'] ?? '') !== (string)($run['run_id'] ?? '')
             || (string)($current['worker_id'] ?? '') !== (string)($run['worker_id'] ?? '')
             || !is_string($runtimeExpiry)
             || !is_string($heartbeatState['runtime_expires_at'] ?? null)

@@ -263,12 +263,12 @@ function hub_runtime_gpu_heartbeat(PDO $db, array $run, array $lease, int $lease
         'lock_exhausted' => false,
         'transaction_closed' => false,
     ];
+    if ($db->inTransaction()) {
+        throw new LogicException('runtime_gpu_heartbeat_transaction_required');
+    }
     $ownsTransaction = false;
     $beginAttempted = false;
     try {
-        if ($db->inTransaction()) {
-            throw new LogicException('runtime_gpu_heartbeat_transaction_required');
-        }
         if (!hub_runtime_gpu_fence_matches_run($run, $lease)) {
             $stats['transaction_closed'] = true;
             return false;
@@ -1079,6 +1079,9 @@ function hub_runtime_heartbeat(PDO $db, int $runId, string $leaseToken, int $lea
         'lock_exhausted' => false,
         'transaction_closed' => false,
     ];
+    if ($db->inTransaction()) {
+        throw new LogicException('runtime_heartbeat_transaction_required');
+    }
     try {
         $expiresAt = hub_runtime_heartbeat_expiry($expiresAt, $leaseSeconds);
         $stmt = $db->prepare(

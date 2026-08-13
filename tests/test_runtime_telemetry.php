@@ -1415,6 +1415,26 @@ hub_test('skipped CPU heartbeat rejects expired and divergent live runtime lease
         'divergent skipped CPU fence must not write or emit telemetry');
 });
 
+hub_test('skipped heartbeat rejects a live runtime row whose run id changed', function (): void {
+    $db = hub_test_reset_db();
+    [, $run] = hub_test_runtime_telemetry_heartbeat_run($db);
+    $memoryExpiry = date('Y-m-d H:i:s', time() + 60);
+    $state = hub_pack_job_heartbeat_state($run, null);
+    $state['runtime_expires_at'] = $memoryExpiry;
+    $db->prepare('UPDATE runtime_runs SET run_id = :run_id, lease_expires_at = :expires_at WHERE id = :id')->execute([
+        ':run_id' => 'changed-live-run-' . bin2hex(random_bytes(4)),
+        ':expires_at' => $memoryExpiry,
+        ':id' => (int)$run['id'],
+    ]);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, null, 60, $state) === 'fence_lost', 'skipped heartbeat must reject a live runtime row whose run id no longer matches the claimed run');
+    hub_test_assert(serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+        && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'cpu') === [],
+        'changed live runtime run id must not write or emit telemetry');
+});
+
 hub_test('skipped GPU heartbeat rejects expired and mismatched live GPU leases without writes', function (): void {
     $db = hub_test_reset_db();
     [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
@@ -1461,6 +1481,121 @@ hub_test('skipped GPU heartbeat rejects expired and mismatched live GPU leases w
         && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu)
         && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'gpu') === [],
         'unleased skipped GPU fence must not write or emit telemetry');
+});
+
+hub_test('GPU heartbeat rejects a PDO caller transaction without telemetry', function (): void {
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('PDO GPU heartbeat fixture must acquire GPU.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, $lease);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['gpu_expires_at'] = $state['runtime_expires_at'];
+    $state['skipped_ticks'] = 3;
+    $beforeState = serialize($state);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+    $markerKey = 'gpu-heartbeat-pdo-' . bin2hex(random_bytes(4));
+    $directStats = [];
+    $directError = null;
+    $tickError = null;
+    $db->beginTransaction();
+    try {
+        $db->prepare('INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)')->execute([
+            ':key' => $markerKey,
+            ':value' => 'caller-owned',
+            ':updated_at' => hub_now(),
+        ]);
+        try {
+            hub_runtime_gpu_heartbeat($db, $run, $lease, 60, '2030-01-02 03:04:05', $directStats);
+        } catch (Throwable $e) {
+            $directError = $e;
+        }
+        try {
+            hub_pack_job_tick($db, $run, $lease, 60, $state);
+        } catch (Throwable $e) {
+            $tickError = $e;
+        }
+        $marker = $db->prepare('SELECT value FROM settings WHERE key = :key');
+        $marker->execute([':key' => $markerKey]);
+        hub_test_assert($directError instanceof LogicException
+            && $directError->getMessage() === 'runtime_gpu_heartbeat_transaction_required'
+            && $tickError instanceof LogicException
+            && $tickError->getMessage() === 'runtime_gpu_heartbeat_transaction_required'
+            && ($directStats['transaction_closed'] ?? true) === false
+            && $db->inTransaction()
+            && $marker->fetchColumn() === 'caller-owned',
+            'GPU heartbeat must reject a PDO caller transaction without closing it');
+        hub_test_assert(serialize($state) === $beforeState
+            && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+            && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu)
+            && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'gpu') === [],
+            'PDO GPU transaction rejection must leave rows and memory unchanged without telemetry');
+    } finally {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+    }
+    $marker = $db->prepare('SELECT 1 FROM settings WHERE key = :key');
+    $marker->execute([':key' => $markerKey]);
+    hub_test_assert($marker->fetchColumn() === false, 'GPU caller rollback must discard its marker');
+});
+
+hub_test('CPU heartbeat rejects a PDO caller transaction without telemetry', function (): void {
+    $db = hub_test_reset_db();
+    [, $run] = hub_test_runtime_telemetry_heartbeat_run($db);
+    $state = hub_pack_job_heartbeat_state($run, null);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['skipped_ticks'] = 3;
+    $beforeState = serialize($state);
+    $beforeRun = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+    $markerKey = 'cpu-heartbeat-pdo-' . bin2hex(random_bytes(4));
+    $directStats = [];
+    $directError = null;
+    $tickError = null;
+    $db->beginTransaction();
+    try {
+        $db->prepare('INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)')->execute([
+            ':key' => $markerKey,
+            ':value' => 'caller-owned',
+            ':updated_at' => hub_now(),
+        ]);
+        try {
+            hub_runtime_heartbeat($db, (int)$run['id'], (string)$run['lease_token'], 60, '2030-01-02 03:04:05', $directStats);
+        } catch (Throwable $e) {
+            $directError = $e;
+        }
+        try {
+            hub_pack_job_tick($db, $run, null, 60, $state);
+        } catch (Throwable $e) {
+            $tickError = $e;
+        }
+        $marker = $db->prepare('SELECT value FROM settings WHERE key = :key');
+        $marker->execute([':key' => $markerKey]);
+        hub_test_assert($directError instanceof LogicException
+            && $directError->getMessage() === 'runtime_heartbeat_transaction_required'
+            && $tickError instanceof LogicException
+            && $tickError->getMessage() === 'runtime_heartbeat_transaction_required'
+            && ($directStats['transaction_closed'] ?? true) === false
+            && $db->inTransaction()
+            && $marker->fetchColumn() === 'caller-owned',
+            'CPU heartbeat must reject a PDO caller transaction without closing it');
+        hub_test_assert(serialize($state) === $beforeState
+            && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRun)
+            && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'cpu') === [],
+            'PDO CPU transaction rejection must leave rows and memory unchanged without telemetry');
+    } finally {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+    }
+    $marker = $db->prepare('SELECT 1 FROM settings WHERE key = :key');
+    $marker->execute([':key' => $markerKey]);
+    hub_test_assert($marker->fetchColumn() === false, 'CPU caller rollback must discard its marker');
 });
 
 hub_test('GPU heartbeat suppresses telemetry when a rollback-triggered close is unconfirmed', function (): void {
