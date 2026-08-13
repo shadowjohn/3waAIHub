@@ -2637,6 +2637,22 @@ function hub_pack_job_heartbeat_state(array $run, ?array $gpuLease): array
     ];
 }
 
+function hub_pack_job_heartbeat_expiry_timestamp(string $expiry): ?int
+{
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry) !== 1) {
+        return null;
+    }
+    $parsed = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $expiry);
+    $errors = DateTimeImmutable::getLastErrors();
+    if ($parsed === false
+        || (is_array($errors) && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0))
+        || $parsed->format('Y-m-d H:i:s') !== $expiry) {
+        return null;
+    }
+
+    return $parsed->getTimestamp();
+}
+
 function hub_pack_job_heartbeat_should_renew(array $state, int $now): bool
 {
     $expiries = [$state['runtime_expires_at'] ?? null];
@@ -2647,18 +2663,9 @@ function hub_pack_job_heartbeat_should_renew(array $state, int $now): bool
         if (!is_string($expiry) || trim($expiry) === '') {
             return true;
         }
-        $parsed = strtotime($expiry);
-        if ($parsed === false) {
+        $parsed = hub_pack_job_heartbeat_expiry_timestamp($expiry);
+        if ($parsed === null) {
             return true;
-        }
-        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry) === 1) {
-            $roundTrip = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $expiry);
-            $errors = DateTimeImmutable::getLastErrors();
-            if ($roundTrip === false
-                || (is_array($errors) && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0))
-                || $roundTrip->format('Y-m-d H:i:s') !== $expiry) {
-                return true;
-            }
         }
         if ($parsed - $now <= HUB_PACK_JOB_HEARTBEAT_RENEW_THRESHOLD_SECONDS) {
             return true;
@@ -2677,11 +2684,7 @@ function hub_pack_job_heartbeat_mark_skipped(array &$state): void
 
 function hub_pack_job_heartbeat_mark_committed(array &$state, string $newExpiry): int
 {
-    $parsed = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $newExpiry);
-    $errors = DateTimeImmutable::getLastErrors();
-    if ($parsed === false
-        || (is_array($errors) && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0))
-        || $parsed->format('Y-m-d H:i:s') !== $newExpiry) {
+    if (hub_pack_job_heartbeat_expiry_timestamp($newExpiry) === null) {
         throw new InvalidArgumentException('pack_job_heartbeat_expiry_invalid');
     }
 

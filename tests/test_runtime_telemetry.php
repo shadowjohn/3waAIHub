@@ -954,7 +954,7 @@ hub_test('pack heartbeat renews for GPU expiry and invalid or exact-threshold da
     hub_test_assert($gpuState['runtime_expires_at'] === '2026-08-14 12:03:00'
         && $gpuState['gpu_expires_at'] === '2026-08-14 12:03:00', 'commit must write the exact expiry to both leases');
 
-    foreach ([null, 123, '', 'not-a-date', '2026-02-30 12:00:00'] as $expiry) {
+    foreach ([null, 123, '', 'not-a-date', 'tomorrow', '2026-08-14T12:01:00+08:00', '2026-02-30 12:00:00'] as $expiry) {
         $invalidState = [
             'runtime_expires_at' => $expiry,
             'gpu_required' => false,
