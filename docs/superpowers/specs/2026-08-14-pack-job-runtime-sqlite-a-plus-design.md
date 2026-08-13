@@ -1,7 +1,9 @@
 # Pack-job/runtime SQLite A+ 設計
 
 日期：2026-08-14
-狀態：已確認設計，待 implementation plan
+狀態：已確認設計，implementation plan 已完成，待執行
+
+實作計畫：`docs/superpowers/plans/2026-08-14-pack-job-runtime-sqlite-a-plus.md`
 
 ## 背景
 
