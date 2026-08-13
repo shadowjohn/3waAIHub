@@ -63,7 +63,7 @@ hub_test('TranslateGemma Ollama model pull CLI is explicit and allowlisted', fun
     $script = HUB_ROOT . '/scripts/ollama_model_pull.php';
     hub_test_assert(is_file($script), 'ollama_model_pull.php must exist');
     $text = (string)file_get_contents($script);
-    foreach (['hub_cli_only()', 'ollama pull', "HUB_LOG_DIR . '/models'", 'model_not_present_after_pull'] as $needle) {
+    foreach (['hub_cli_only()', 'ollama pull', 'hub_ollama_model_pull_log_path(', 'model_not_present_after_pull'] as $needle) {
         hub_test_assert(str_contains($text, $needle), 'ollama_model_pull.php missing ' . $needle);
     }
     hub_test_assert(!str_contains($text, '/api/generate'), 'ollama_model_pull.php must not run real translation');

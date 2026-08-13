@@ -6,6 +6,26 @@ function hub_test_whisper_async_runner(): string
     return HUB_ROOT . '/packs/whisper-asr/service/job.py';
 }
 
+function hub_test_whisper_run_python_script(string $script, array $args, int $timeout): array
+{
+    $tempPath = tempnam(sys_get_temp_dir(), '3waaihub_whisper_test_');
+    if ($tempPath === false) {
+        throw new RuntimeException('Cannot allocate Whisper Python test script.');
+    }
+    $scriptPath = $tempPath . '.py';
+    try {
+        if (!rename($tempPath, $scriptPath) || is_link($scriptPath) || !is_file($scriptPath)
+            || file_put_contents($scriptPath, $script, LOCK_EX) !== strlen($script)) {
+            throw new RuntimeException('Cannot write Whisper Python test script.');
+        }
+
+        return hub_run_command(['python3', $scriptPath, ...$args], $timeout);
+    } finally {
+        @unlink($scriptPath);
+        @unlink($tempPath);
+    }
+}
+
 hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (): void {
     $pack = hub_get_pack('whisper-asr');
     hub_test_assert(is_array($pack) && ($pack['status'] ?? '') === 'ok', 'Whisper ASR Pack must validate');
@@ -13,7 +33,9 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
     $job = hub_pack_async_job_contract($manifest, 'transcribe');
     hub_test_assert(is_array($job), 'Whisper ASR transcribe job contract missing');
     hub_test_assert(($manifest['version'] ?? '') === '0.1.2' && ($manifest['runner_build']['image'] ?? '') === '3waaihub/whisper-asr:0.1.2' && ($job['runner']['image'] ?? '') === '3waaihub/whisper-asr:0.1.2', 'Whisper Pascal release must use the matching Pack and runner image version');
-    hub_test_assert(($manifest['runtime']['windows_wsl_compose'] ?? false) === true && ($manifest['platform_targets']['windows-wsl2-linux-docker'] ?? false) === true, 'Whisper must declare its explicit WSL runtime target');
+    hub_test_assert(($manifest['runtime']['windows_wsl_compose'] ?? false) === true
+        && ($manifest['platform_targets']['windows-wsl2-linux-docker']['supported'] ?? false) === true
+        && ($manifest['platform_targets']['windows-wsl2-linux-docker']['source'] ?? '') === 'declared', 'Whisper must declare its explicit WSL runtime target');
     hub_test_assert(($manifest['wsl_runtime_profiles']['pascal-cu118'] ?? null) === [
         'id' => 'pascal-cu118',
         'dockerfile' => 'service/Dockerfile.pascal-cu118',
@@ -610,7 +632,13 @@ job.require_asr_assets = lambda: None
 job.require_alignment_assets = lambda language: None
 job.require_diarization_assets = lambda: None
 job.require_cuda = lambda: None
-job.load_asr = lambda model: loads.append(("asr", model)) or object()
+
+def load_asr(model, *, local_files_only):
+    assert local_files_only, "managed Whisper models must stay local-only"
+    loads.append(("asr", model))
+    return object()
+
+job.load_asr = load_asr
 
 def transcribe(model, source, language, words):
     transcriptions.append((language, words))
@@ -693,10 +721,10 @@ assert loads == [("asr", "/models/whisper/asr/large-v3"), ("diarize", "local-mod
 assert {"subtitle.srt", "subtitle.vtt", "speaker_timeline.json"} <= result["files"]
 assert result["speaker"] == "speaker_01"
 PY;
-    $result = hub_run_command(['python3', '-c', $script, $runner], 20);
+    $result = hub_test_whisper_run_python_script($script, [$runner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper runner loading matrix failed: ' . ($result['stderr'] ?? ''));
     $source = (string)file_get_contents($runner);
-    hub_test_assert(str_contains($source, 'local_files_only=True') && str_contains($source, 'HF_HUB_OFFLINE') && !str_contains($source, 'snapshot_download') && !str_contains($source, 'AIHUB_SECRET_PYANNOTE_TOKEN'), 'request execution must use local model/cache files without a download or runtime pyannote credential');
+    hub_test_assert(str_contains($source, 'HF_HUB_OFFLINE') && !str_contains($source, 'snapshot_download') && !str_contains($source, 'AIHUB_SECRET_PYANNOTE_TOKEN'), 'request execution must use local model/cache files without a download or runtime pyannote credential');
 });
 
 hub_test('Whisper ASR runner requires optional caches only for the requested feature', function (): void {
@@ -745,7 +773,7 @@ try:
             (job.ASR_MODEL_DIR / name).write_text("model", encoding="utf-8")
         cuda_calls = []
         job.require_cuda = lambda: cuda_calls.append("cuda")
-        job.load_asr = lambda model: loads.append(("asr", model)) or object()
+        job.load_asr = lambda model, *, local_files_only: loads.append(("asr", model)) or object()
         job.transcribe = lambda model, source, language, words: ([{"start": 0.0, "end": 1.0, "text": "hello"}], "en")
         job.diarize = lambda loader, source, minimum, maximum: [{"start": 0.0, "end": 1.0, "speaker": "private"}]
         runs = [0]
@@ -821,7 +849,7 @@ finally:
     else:
         sys.modules["whisperx"] = previous
 PY;
-    $result = hub_run_command(['python3', '-c', $script, $runner], 20);
+    $result = hub_test_whisper_run_python_script($script, [$runner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper optional-asset preflight matrix failed: ' . ($result['stderr'] ?? ''));
 });
 
@@ -920,7 +948,7 @@ assert mixed_diagnostic == {"subtitle_breaker": "mixed", "subtitle_breakers": ["
 text_only = {"start": 0.0, "end": 1.0, "text": "純文字不應失敗。"}
 assert reflow_legacy_segments([text_only], "zh")[0] == [text_only]
 PY;
-    $result = hub_run_command(['python3', '-c', $script, $runner], 20);
+    $result = hub_test_whisper_run_python_script($script, [$runner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper legacy subtitle reflow fixture failed: ' . ($result['stderr'] ?? ''));
 });
 
@@ -1041,7 +1069,7 @@ with tempfile.TemporaryDirectory() as directory:
         else:
             sys.modules["ckip_transformers.nlp"] = previous_ckip_nlp
 PY;
-    $result = hub_run_command(['python3', '-c', $script, $provisioner], 20);
+    $result = hub_test_whisper_run_python_script($script, [$provisioner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper provisioning option matrix failed: ' . ($result['stderr'] ?? ''));
 });
 
@@ -1117,7 +1145,7 @@ assert os.environ["HF_HUB_OFFLINE"] == "1"
 assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
 assert os.environ["PYANNOTE_METRICS_ENABLED"] == "0"
 PY;
-    $result = hub_run_command(['python3', '-c', $script, $runner, $provisioner], 20);
+    $result = hub_test_whisper_run_python_script($script, [$runner, $provisioner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper offline loader path matrix failed: ' . ($result['stderr'] ?? ''));
     $provisionSource = (string)file_get_contents($provisioner);
     $shellSource = (string)file_get_contents(HUB_ROOT . '/packs/whisper-asr/jobs/provision_offline_models.sh');
@@ -1144,7 +1172,7 @@ assert offline_paths.ckip_cache_manifest() == {
     "breaker": "ckip-transformers-0.3.4",
 }
 PY;
-    $result = hub_run_command(['python3', '-c', $script, $paths], 20);
+    $result = hub_test_whisper_run_python_script($script, [$paths], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper CKIP offline path contract failed: ' . ($result['stderr'] ?? ''));
 });
 
@@ -1193,6 +1221,6 @@ with tempfile.TemporaryDirectory() as directory:
     else:
         raise AssertionError("symlinked CKIP cache ancestor must be rejected")
 PY;
-    $result = hub_run_command(['python3', '-c', $script, $provisioner], 20);
+    $result = hub_test_whisper_run_python_script($script, [$provisioner], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0, 'Whisper CKIP symlink safety contract failed: ' . ($result['stderr'] ?? ''));
 });

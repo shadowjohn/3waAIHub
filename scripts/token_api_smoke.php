@@ -225,7 +225,7 @@ function hub_token_smoke_curl_ocr(int $appPort, string $plainToken, string $samp
         'curl',
         '-sS',
         '-w',
-        "\n%{http_code}",
+        '%{http_code}',
         '-X',
         'POST',
         'http://127.0.0.1:' . $appPort . '/api.php?mode=ocr',
@@ -237,14 +237,17 @@ function hub_token_smoke_curl_ocr(int $appPort, string $plainToken, string $samp
     if ($result['exit_code'] !== 0) {
         throw new RuntimeException('curl failed: ' . ($result['stderr'] ?: $result['output']));
     }
-    $lines = preg_split('/\r?\n/', $result['stdout']) ?: [];
-    $status = (string)array_pop($lines);
-    if (!preg_match('/^\d{3}$/', $status)) {
+    $stdout = (string)$result['stdout'];
+    if (strlen($stdout) < 3) {
+        throw new RuntimeException('curl did not return an HTTP status: ' . $result['output']);
+    }
+    $status = substr($stdout, -3);
+    if (preg_match('/^\d{3}$/D', $status) !== 1) {
         throw new RuntimeException('curl did not return an HTTP status: ' . $result['output']);
     }
     $httpCode = (int)$status;
 
-    return implode("\n", $lines);
+    return substr($stdout, 0, -3);
 }
 
 function hub_token_smoke_cleanup(array $servers, array $files, array $dirs, ?string $dbPath): void
