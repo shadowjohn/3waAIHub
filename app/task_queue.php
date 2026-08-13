@@ -805,6 +805,7 @@ function hub_promote_due_waiting_profile_task(PDO $db): bool
 
 function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callable $candidateFilter = null): ?array
 {
+    $actionStartedNs = hrtime(true);
     $taskTypes = $supportedTaskTypes ?? hub_allowed_task_types();
     foreach ($taskTypes as $taskType) {
         if (!is_string($taskType) || !hub_is_valid_task_type($taskType)) {
@@ -819,7 +820,10 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callab
     hub_promote_due_waiting_gpu_task($db);
     hub_promote_due_waiting_profile_task($db);
 
+    $beginRequestedNs = hrtime(true);
     $db->beginTransaction();
+    $txStartedNs = hrtime(true);
+    $txBeginAt = hub_runtime_telemetry_timestamp();
     try {
         $placeholders = implode(', ', array_fill(0, count($taskTypes), '?'));
         $stmt = $db->prepare(
@@ -840,15 +844,40 @@ function hub_claim_next_task(PDO $db, ?array $supportedTaskTypes = null, ?callab
                  SET status = 'running', lock_token = :lock_token, started_at = :started_at, updated_at = :updated_at
                  WHERE id = :id AND status = 'queued' AND lock_token IS NULL"
             );
+            $claimStartedNs = hrtime(true);
             $claim->execute([
                 ':lock_token' => $token,
                 ':started_at' => $now,
                 ':updated_at' => $now,
                 ':id' => (int)$task['id'],
             ]);
+            $lockWaitMs = hub_runtime_telemetry_elapsed_ms($claimStartedNs, hrtime(true));
             if ($claim->rowCount() === 1) {
                 $db->commit();
-                return hub_get_task($db, (int)$task['id']);
+                $txEndedNs = hrtime(true);
+                $txCommitAt = hub_runtime_telemetry_timestamp();
+                $claimedTask = hub_get_task($db, (int)$task['id']);
+                if (($task['task_type'] ?? '') === 'pack_job') {
+                    $emitStartedNs = hrtime(true);
+                    hub_runtime_telemetry_emit([
+                        'action' => 'claim',
+                        'variant' => 'task',
+                        'outcome' => 'committed',
+                        'tx_mode' => 'deferred',
+                        'tx_begin_at' => $txBeginAt,
+                        'tx_commit_at' => $txCommitAt,
+                        'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+                        'lock_wait_ms' => $lockWaitMs,
+                        'lock_wait_kind' => 'first_write_upper_bound',
+                        'tx_ms' => hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+                        'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+                        'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+                        'retry_count' => 0,
+                        'skipped_ticks' => 0,
+                    ]);
+                }
+
+                return $claimedTask;
             }
         }
 

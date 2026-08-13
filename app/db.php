@@ -13,18 +13,25 @@ function hub_sqlite_schema_identifier(string $identifier): string
     return '"' . $identifier . '"';
 }
 
-function hub_sqlite_begin_immediate(PDO $db): void
+function hub_sqlite_begin_immediate(PDO $db, ?array &$stats = null): void
 {
     // ponytail: SQLite has one writer; move sustained write contention to Postgres.
+    $stats = ['lock_wait_ms' => 0.0, 'retry_count' => 0, 'lock_exhausted' => false];
+    $startedNs = hrtime(true);
     for ($attempt = 0; $attempt < 7; $attempt++) {
         try {
             $db->exec('BEGIN IMMEDIATE');
+            $stats['lock_wait_ms'] = round((hrtime(true) - $startedNs) / 1_000_000, 3);
             return;
         } catch (PDOException $e) {
-            if (!str_contains(strtolower($e->getMessage()), 'database is locked') || $attempt === 6) {
+            $locked = str_contains(strtolower($e->getMessage()), 'database is locked');
+            if (!$locked || $attempt === 6) {
+                $stats['lock_exhausted'] = $locked && $attempt === 6;
+                $stats['lock_wait_ms'] = round((hrtime(true) - $startedNs) / 1_000_000, 3);
                 throw $e;
             }
             usleep(5000 * (1 << $attempt));
+            $stats['retry_count']++;
         }
     }
 }

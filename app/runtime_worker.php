@@ -53,16 +53,33 @@ function hub_runtime_gpu_fetch(PDO $db): ?array
     return is_array($row) ? $row : null;
 }
 
-function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds): ?array
+function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array &$stats = null): ?array
 {
+    $stats = [
+        'tx_begin_at' => null,
+        'tx_commit_at' => null,
+        'begin_requested_ns' => null,
+        'tx_started_ns' => null,
+        'tx_ended_ns' => null,
+        'lock_wait_ms' => 0.0,
+        'lock_wait_kind' => 'begin_immediate',
+        'retry_count' => 0,
+        'lock_exhausted' => false,
+        'outcome' => 'failed',
+    ];
     if ($db->inTransaction()) {
         throw new LogicException('runtime_gpu_acquire_transaction_required');
     }
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $now = hub_now();
-
-    hub_sqlite_begin_immediate($db);
+    $beginStats = [];
+    $result = null;
+    $error = null;
+    $stats['begin_requested_ns'] = hrtime(true);
     try {
+        hub_sqlite_begin_immediate($db, $beginStats);
+        $stats['tx_started_ns'] = hrtime(true);
+        $stats['tx_begin_at'] = hub_runtime_telemetry_timestamp();
         $runFence = $db->prepare(
             "SELECT 1 FROM runtime_runs
              WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
@@ -77,38 +94,49 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds): ?array
         ]);
         if ($runFence->fetchColumn() === false) {
             $db->exec('COMMIT');
-            return null;
+            $stats['outcome'] = 'fence_lost';
+        } else {
+            $stmt = $db->prepare(
+                "UPDATE runtime_resource_leases
+                 SET runtime_run_id = :runtime_run_id, worker_id = :worker_id, lease_token = :lease_token,
+                     state = 'leased', acquired_at = :now, heartbeat_at = :now, lease_expires_at = :lease_expires_at,
+                     last_error = NULL, updated_at = :now
+                 WHERE resource_key = 'gpu:0' AND state = 'available'"
+            );
+            $stmt->execute([
+                ':runtime_run_id' => $runtime['run_id'],
+                ':worker_id' => $runtime['worker_id'],
+                ':lease_token' => $runtime['lease_token'],
+                ':now' => $now,
+                ':lease_expires_at' => hub_runtime_lease_until($leaseSeconds),
+            ]);
+            if ($stmt->rowCount() !== 1) {
+                $db->exec('COMMIT');
+                $stats['outcome'] = 'committed';
+            } else {
+                $result = hub_runtime_gpu_fetch($db);
+                $db->exec('COMMIT');
+                $stats['outcome'] = 'committed';
+            }
         }
-
-        $stmt = $db->prepare(
-            "UPDATE runtime_resource_leases
-             SET runtime_run_id = :runtime_run_id, worker_id = :worker_id, lease_token = :lease_token,
-                 state = 'leased', acquired_at = :now, heartbeat_at = :now, lease_expires_at = :lease_expires_at,
-                 last_error = NULL, updated_at = :now
-             WHERE resource_key = 'gpu:0' AND state = 'available'"
-        );
-        $stmt->execute([
-            ':runtime_run_id' => $runtime['run_id'],
-            ':worker_id' => $runtime['worker_id'],
-            ':lease_token' => $runtime['lease_token'],
-            ':now' => $now,
-            ':lease_expires_at' => hub_runtime_lease_until($leaseSeconds),
-        ]);
-        if ($stmt->rowCount() !== 1) {
-            $db->exec('COMMIT');
-            return null;
-        }
-
-        $lease = hub_runtime_gpu_fetch($db);
-        $db->exec('COMMIT');
-        return $lease;
     } catch (Throwable $e) {
         try {
             $db->exec('ROLLBACK');
         } catch (Throwable) {
         }
-        throw $e;
+        $stats['outcome'] = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
+        $error = $e;
     }
+    $stats['tx_ended_ns'] = hrtime(true);
+    $stats['tx_commit_at'] = hub_runtime_telemetry_timestamp();
+    $stats['lock_wait_ms'] = (float)($beginStats['lock_wait_ms'] ?? 0.0);
+    $stats['retry_count'] = (int)($beginStats['retry_count'] ?? 0);
+    $stats['lock_exhausted'] = !empty($beginStats['lock_exhausted']);
+    if ($error !== null) {
+        throw $error;
+    }
+
+    return $result;
 }
 
 function hub_runtime_gpu_runtime_fence_in_transaction(PDO $db, array $run, ?int $taskId = null): bool
@@ -629,7 +657,49 @@ function hub_runtime_task_requires_gpu(array $task): bool
 
 function hub_runtime_gpu_acquire_for_task(PDO $db, array $task, array $run, int $leaseSeconds): ?array
 {
-    return hub_runtime_task_requires_gpu($task) ? hub_runtime_gpu_acquire($db, $run, $leaseSeconds) : null;
+    if (!hub_runtime_task_requires_gpu($task)) {
+        return null;
+    }
+    if (($task['task_type'] ?? '') !== 'pack_job') {
+        return hub_runtime_gpu_acquire($db, $run, $leaseSeconds);
+    }
+
+    $actionStartedNs = hrtime(true);
+    $stats = [];
+    $result = null;
+    $error = null;
+    try {
+        $result = hub_runtime_gpu_acquire($db, $run, $leaseSeconds, $stats);
+    } catch (Throwable $e) {
+        $error = $e;
+    }
+    if (!$db->inTransaction()) {
+        $emitStartedNs = hrtime(true);
+        $beginRequestedNs = $stats['begin_requested_ns'] ?? $actionStartedNs;
+        $txStartedNs = $stats['tx_started_ns'] ?? $beginRequestedNs;
+        $txEndedNs = $stats['tx_ended_ns'] ?? $emitStartedNs;
+        hub_runtime_telemetry_emit([
+            'action' => 'claim',
+            'variant' => 'gpu',
+            'outcome' => (string)($stats['outcome'] ?? 'failed'),
+            'tx_mode' => 'immediate',
+            'tx_begin_at' => $stats['tx_begin_at'] ?? null,
+            'tx_commit_at' => $stats['tx_commit_at'] ?? null,
+            'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+            'lock_wait_ms' => (float)($stats['lock_wait_ms'] ?? 0.0),
+            'lock_wait_kind' => 'begin_immediate',
+            'tx_ms' => hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+            'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+            'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+            'retry_count' => (int)($stats['retry_count'] ?? 0),
+            'skipped_ticks' => 0,
+        ]);
+    }
+    if ($error !== null) {
+        throw $error;
+    }
+
+    return $result;
 }
 
 function hub_runtime_gpu_probe(?callable $runner = null): array

@@ -27,6 +27,278 @@ function hub_test_runtime_telemetry_events(): array
     return $events;
 }
 
+function hub_test_runtime_telemetry_claim_events_after(int $before, string $variant): array
+{
+    return array_values(array_filter(
+        array_slice(hub_test_runtime_telemetry_events(), $before),
+        static fn (array $event): bool => ($event['action'] ?? null) === 'claim' && ($event['variant'] ?? null) === $variant
+    ));
+}
+
+function hub_test_runtime_telemetry_start_sqlite_writer_lock(string $readyPath, string $attemptPath, int $holdUs): array
+{
+    if (!function_exists('proc_open') || !defined('PHP_BINARY') || !is_file(PHP_BINARY) || !is_executable(PHP_BINARY)) {
+        hub_test_skip('SQLite lock telemetry test requires an executable PHP child process');
+    }
+    $child = <<<'PHP'
+$db = new PDO('sqlite:' . $argv[1]);
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$db->exec('PRAGMA busy_timeout = 5000');
+$db->exec('BEGIN IMMEDIATE');
+try {
+    if (file_put_contents($argv[2], "ready\n", LOCK_EX) === false) {
+        throw new RuntimeException('Cannot signal SQLite lock readiness.');
+    }
+    $deadline = microtime(true) + 2.0;
+    while (!is_file($argv[3])) {
+        if (microtime(true) >= $deadline) {
+            throw new RuntimeException('Timed out waiting for SQLite BEGIN attempt.');
+        }
+        usleep(5000);
+    }
+    usleep((int)$argv[4]);
+    $db->exec('COMMIT');
+} catch (Throwable $e) {
+    try {
+        $db->exec('ROLLBACK');
+    } catch (Throwable) {
+    }
+    fwrite(STDERR, $e->getMessage());
+    exit(1);
+}
+PHP;
+    $process = proc_open(
+        [PHP_BINARY, '-r', $child, HUB_DB_PATH, $readyPath, $attemptPath, (string)$holdUs],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+        HUB_ROOT,
+    );
+    if (!is_resource($process)) {
+        hub_test_skip('SQLite lock telemetry test requires an executable PHP child process');
+    }
+    fclose($pipes[0]);
+    $deadline = microtime(true) + 2.0;
+    while (microtime(true) < $deadline && trim((string)file_get_contents($readyPath)) !== 'ready') {
+        usleep(5000);
+    }
+    hub_test_assert(trim((string)file_get_contents($readyPath)) === 'ready', 'SQLite writer-lock child must signal readiness');
+
+    return [$process, $pipes];
+}
+
+function hub_test_runtime_telemetry_with_sqlite_writer_lock(int $holdUs, callable $fn): void
+{
+    $readyPath = tempnam(sys_get_temp_dir(), '3waaihub_telemetry_lock_');
+    $attemptPath = tempnam(sys_get_temp_dir(), '3waaihub_telemetry_attempt_');
+    if ($readyPath === false || $attemptPath === false || !unlink($attemptPath)) {
+        throw new RuntimeException('Cannot create SQLite lock telemetry fixture.');
+    }
+    $process = null;
+    $pipes = [];
+    try {
+        [$process, $pipes] = hub_test_runtime_telemetry_start_sqlite_writer_lock($readyPath, $attemptPath, $holdUs);
+        $fn($attemptPath);
+        $deadline = microtime(true) + 2.0;
+        do {
+            $status = proc_get_status($process);
+            if (!($status['running'] ?? false)) {
+                break;
+            }
+            usleep(5000);
+        } while (microtime(true) < $deadline);
+        hub_test_assert(
+            is_array($status) && !($status['running'] ?? true) && ($status['exitcode'] ?? -1) === 0,
+            'SQLite writer-lock child must exit successfully'
+        );
+    } finally {
+        if (is_resource($process) && (proc_get_status($process)['running'] ?? false)) {
+            proc_terminate($process);
+        }
+        foreach ($pipes as $pipe) {
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
+        if (is_resource($process)) {
+            proc_close($process);
+        }
+        if (is_file($readyPath)) {
+            unlink($readyPath);
+        }
+        if (is_file($attemptPath)) {
+            unlink($attemptPath);
+        }
+    }
+}
+
+function hub_test_runtime_telemetry_locking_pdo(string $attemptPath): PDO
+{
+    $db = new class('sqlite:' . HUB_DB_PATH, $attemptPath) extends PDO {
+        private bool $attemptSignaled = false;
+
+        public function __construct(string $dsn, private string $attemptPath)
+        {
+            parent::__construct($dsn);
+        }
+
+        public function exec(string $statement): int|false
+        {
+            if (!$this->attemptSignaled && $statement === 'BEGIN IMMEDIATE') {
+                if (is_file($this->attemptPath) || file_put_contents($this->attemptPath, "attempt\n", LOCK_EX) === false) {
+                    throw new RuntimeException('Cannot signal SQLite BEGIN attempt.');
+                }
+                $this->attemptSignaled = true;
+            }
+
+            return parent::exec($statement);
+        }
+    };
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $db->exec('PRAGMA busy_timeout = 0');
+
+    return $db;
+}
+
+function hub_test_runtime_telemetry_enqueue_pack_job(PDO $db, string $accelerator = 'gpu'): int
+{
+    return hub_enqueue_task($db, 'pack_job', $accelerator, 0, ['private_input' => 'must-not-emit'], null, '127.0.0.1', [
+        'pack_id' => 'telemetry-pack',
+        'pack_version' => '1.0.0',
+        'job' => 'convert',
+        'accelerator' => $accelerator,
+    ]);
+}
+
+hub_test('BEGIN IMMEDIATE reports retry timing after a coordinated SQLite writer lock', function (): void {
+    hub_test_reset_db();
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(150000, static function (string $attemptPath): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        $stats = [];
+        hub_sqlite_begin_immediate($db, $stats);
+        $rolledBack = false;
+        try {
+            hub_test_assert(($stats['retry_count'] ?? 0) >= 1, 'BEGIN IMMEDIATE retry must be counted');
+            hub_test_assert(($stats['lock_wait_ms'] ?? 0) > 0, 'BEGIN IMMEDIATE wait must be measured');
+            hub_test_assert(($stats['lock_exhausted'] ?? true) === false, 'successful retry must not be exhausted');
+            hub_test_assert($db->exec('ROLLBACK') === 0, 'successful BEGIN IMMEDIATE must leave a transaction open for rollback');
+            $rolledBack = true;
+        } finally {
+            if (!$rolledBack) {
+                try {
+                    $db->exec('ROLLBACK');
+                } catch (Throwable) {
+                }
+            }
+        }
+    });
+});
+
+hub_test('BEGIN IMMEDIATE reports exhaustion after seven locked attempts', function (): void {
+    hub_test_reset_db();
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(700000, static function (string $attemptPath): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        $stats = [];
+        hub_test_assert(hub_test_throws(static function () use ($db, &$stats): void {
+            hub_sqlite_begin_immediate($db, $stats);
+        }), 'locked BEGIN IMMEDIATE must throw after retries');
+        hub_test_assert(($stats['lock_exhausted'] ?? false) === true, 'seventh locked BEGIN failure must be exhausted');
+        hub_test_assert(($stats['retry_count'] ?? -1) === 6, 'exhausted BEGIN IMMEDIATE must count six sleeps');
+        hub_test_assert(($stats['lock_wait_ms'] ?? 0) > 0, 'exhausted BEGIN IMMEDIATE wait must be measured');
+        hub_test_assert(!$db->inTransaction(), 'exhausted BEGIN IMMEDIATE must not leave a transaction open');
+    });
+});
+
+hub_test('demo queue claim emits no task telemetry', function (): void {
+    $db = hub_test_reset_db();
+    hub_enqueue_task($db, 'demo_task', 'cpu', 0, ['private_input' => 'must-not-emit'], null, '127.0.0.1');
+    $before = count(hub_test_runtime_telemetry_events());
+    $task = hub_claim_next_task($db, ['demo_task']);
+
+    hub_test_assert(is_array($task) && ($task['task_type'] ?? null) === 'demo_task', 'demo task must be claimed');
+    hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'task') === [], 'demo task claim must not emit claim/task');
+});
+
+hub_test('pack queue claim emits one sanitized committed task telemetry event', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $before = count(hub_test_runtime_telemetry_events());
+    $task = hub_claim_next_task($db, ['pack_job']);
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'task');
+
+    hub_test_assert(is_array($task) && ($task['status'] ?? null) === 'running', 'pack task must commit before telemetry');
+    hub_test_assert(count($events) === 1, 'pack queue claim must emit exactly one claim/task event');
+    $event = $events[0];
+    hub_test_assert(($event['outcome'] ?? null) === 'committed' && ($event['tx_mode'] ?? null) === 'deferred'
+        && ($event['lock_wait_kind'] ?? null) === 'first_write_upper_bound' && ($event['retry_count'] ?? null) === 0
+        && ($event['skipped_ticks'] ?? null) === 0, 'pack queue claim telemetry fields mismatch');
+    $fields = ['action', 'variant', 'outcome', 'tx_mode', 'tx_begin_at', 'tx_commit_at', 'pre_tx_ms', 'lock_wait_ms', 'lock_wait_kind', 'tx_ms', 'post_tx_ms', 'total_ms', 'retry_count', 'skipped_ticks', 'schema_version', 'observed_at'];
+    sort($fields);
+    $eventFields = array_keys($event);
+    sort($eventFields);
+    hub_test_assert($eventFields === $fields, 'pack queue claim telemetry must not expose task identity or input fields');
+});
+
+hub_test('pack runtime claim emits committed and fence-lost telemetry after valid transactions', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Pack runtime telemetry fixture must claim a task.');
+    }
+    $before = count(hub_test_runtime_telemetry_events());
+    $run = hub_pack_job_claim_runtime($db, $task, 'telemetry-runtime-worker', 60);
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'runtime');
+
+    hub_test_assert(is_array($run) && ($run['state'] ?? null) === 'claimed', 'pack runtime must be claimed');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'committed'
+        && ($events[0]['tx_mode'] ?? null) === 'immediate' && ($events[0]['lock_wait_kind'] ?? null) === 'begin_immediate', 'successful runtime claim telemetry mismatch');
+
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_assert(hub_pack_job_claim_runtime($db, $task, 'telemetry-runtime-worker', 60) === null, 'claimed runtime must not be claimed twice');
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'runtime');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'fence_lost', 'normal runtime null result must emit fence_lost telemetry');
+});
+
+hub_test('invalid pack runtime claim emits no telemetry', function (): void {
+    $db = hub_test_reset_db();
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_assert(hub_pack_job_claim_runtime($db, [], 'telemetry-runtime-worker', 60) === null, 'invalid runtime claim must return null');
+    hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'runtime') === [], 'invalid runtime claim must not emit claim/runtime');
+});
+
+hub_test('pack GPU claim emits telemetry while CPU, non-pack, and direct callers do not', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db, 'gpu');
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Pack GPU telemetry fixture must claim a task.');
+    }
+    $run = hub_pack_job_claim_runtime($db, $task, 'telemetry-gpu-worker', 60);
+    if (!is_array($run)) {
+        throw new RuntimeException('Pack GPU telemetry fixture must claim a runtime.');
+    }
+
+    $before = count(hub_test_runtime_telemetry_events());
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'gpu');
+    hub_test_assert(is_array($lease) && ($lease['state'] ?? null) === 'leased', 'pack GPU claim must acquire the lease');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'committed'
+        && ($events[0]['tx_mode'] ?? null) === 'immediate' && ($events[0]['lock_wait_kind'] ?? null) === 'begin_immediate', 'pack GPU claim telemetry mismatch');
+
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_assert(hub_runtime_gpu_acquire_for_task($db, ['task_type' => 'pack_job', 'accelerator' => 'cpu'], $run, 60) === null, 'CPU task must not acquire GPU');
+    hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'gpu') === [], 'CPU task must not emit claim/gpu');
+
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_runtime_gpu_acquire_for_task($db, ['task_type' => 'demo_task', 'accelerator' => 'gpu'], $run, 60);
+    hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'gpu') === [], 'non-pack GPU task must not emit claim/gpu');
+
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_runtime_gpu_acquire($db, $run, 60);
+    hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'gpu') === [], 'direct gateway-shaped GPU caller must not emit claim/gpu');
+});
+
 $validRuntimeTelemetryEvent = [
     'action' => 'heartbeat',
     'variant' => 'cpu',
