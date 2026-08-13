@@ -16,7 +16,7 @@ hub_test('SAM3 Pack declares the fixed SAM 3.1 runtime and job contracts', funct
         hub_test_assert(in_array('sam3.1_multiplex.pt', $assetMount['required_paths'] ?? [], true), 'SAM3.1 checkpoint must be required');
         hub_test_assert(($job['runner']['required_vram_mb'] ?? 0) === 8192, 'SAM3.1 cold starts must fit the available GPU headroom');
     }
-    hub_test_assert(($manifest['resources']['min_vram_mb'] ?? 0) === 8192, 'SAM3 service admission must allow the measured cold-start footprint');
+    hub_test_assert(($manifest['hardware']['min_vram_mb'] ?? 0) === 8192, 'SAM3 service admission must allow the measured cold-start footprint');
     $imagePromptEnum = $jobs[0]['input']['request_schema']['prompt_type']['enum'] ?? [];
     hub_test_assert($imagePromptEnum === ['auto', 'points', 'boxes', 'text'], 'Async image jobs must not advertise a guidance upload they cannot receive');
 });

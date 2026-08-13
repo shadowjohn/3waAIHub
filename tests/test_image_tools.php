@@ -1020,10 +1020,16 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
     hub_test_assert($pack !== null, 'image-tools Pack must exist for public docs');
     $service = hub_public_api_service_from_contract('image-tools', $pack, $pack['manifest'], hub_public_api_contract_for_manifest($pack['manifest']));
     hub_test_assert(array_column($service['operation_examples'] ?? [], 'operation') === ['upscale', 'upscale_task', 'colorize'], 'public docs must render separate image-tools sync, async, and colorize operation examples');
+    $compositeCurl = (string)($service['examples']['curl'] ?? '');
     hub_test_assert(($service['operation_examples'][0]['response_content_type'] ?? '') === 'image/png'
         && ($service['operation_examples'][1]['execution_type'] ?? '') === 'async_task'
         && array_column($service['operation_examples'][2]['input_fields'] ?? [], 'name') === ['operation', 'image', 'base64_string', 'backend']
-        && ($service['examples'] ?? null) === []
+        && ($service['content_type'] ?? '') === 'multipart/form-data'
+        && str_contains($compositeCurl, 'mode=image-tools')
+        && str_contains($compositeCurl, "-F 'image=@sample.png'")
+        && str_contains($compositeCurl, "-F 'model=realesrgan-x4plus'")
+        && str_contains($compositeCurl, "-F 'backend=auto'")
+        && !str_contains($compositeCurl, 'operation=')
         && str_contains((string)($service['operation_examples'][0]['examples']['curl'] ?? ''), "-F 'image=@sample.png'")
         && str_contains((string)($service['operation_examples'][1]['examples']['curl'] ?? ''), 'operation=upscale_task')
         && str_contains((string)($service['operation_examples'][2]['examples']['curl'] ?? ''), 'operation=colorize'), 'image-tools public examples must retain multipart sync, async task, and colorize contracts');

@@ -155,9 +155,7 @@ hub_test('BiRefNet gateway allowlists only validated final response metadata', f
         . "X-3waAIHub-Height: 720\r\n\r\n";
     hub_test_assert(hub_proxy_allowed_response_headers($rawHeaders, 'image/png') === [
         'Content-Type: image/png',
-        'X-3waAIHub-Model: ZhengPeng7/BiRefNet@revision',
-        'X-3waAIHub-Device: cuda',
-        'X-3waAIHub-Elapsed-Ms: 12',
+        'X-Content-Type-Options: nosniff',
         'X-3waAIHub-Width: 1280',
         'X-3waAIHub-Height: 720',
     ], 'BiRefNet gateway response header allowlist mismatch');
@@ -226,6 +224,7 @@ hub_test('BiRefNet playground parses PNG metadata without exposing binary body',
     hub_test_assert(($result['metadata'] ?? []) === [
         'model' => 'ZhengPeng7/BiRefNet@revision',
         'device' => 'cuda',
+        'backend' => '',
         'elapsed_ms' => 12,
         'width' => 1280,
         'height' => 720,

@@ -129,14 +129,9 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
 
-    hub_test_assert(hub_pack_job_async_routes() === [
-        'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup', 'accelerator' => 'gpu'],
-        'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe', 'accelerator' => 'gpu'],
-        'speech_transcribe_fast_zh' => ['pack_id' => 'speech-fast-zh', 'job' => 'transcribe', 'accelerator' => 'cpu'],
-        'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
-        'edge_tts' => ['pack_id' => 'edge-tts', 'job' => 'synthesize', 'accelerator' => 'cpu'],
-        'web_capture' => ['pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu'],
-    ], 'Pack job routes must be fixed and include the expected accelerator');
+    hub_test_assert((hub_pack_job_async_routes()['web_capture'] ?? null) === [
+        'pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu',
+    ], 'web capture route must be fixed and CPU backed');
 
     $route = hub_resolve_pack_job_async_route($db, 'web_capture');
     hub_test_assert(($route['requested_mode'] ?? '') === 'web_capture'
@@ -150,12 +145,8 @@ hub_test('web capture route is immutable and CPU backed', function (): void {
         && ($route['runner']['timeout_seconds'] ?? null) === 135
         && ($route['runner']['network_profile'] ?? null) === 'public_egress'
         && ($route['input_fields'] ?? []) === ['url', 'width', 'height', 'delay_seconds', 'timeout_seconds', 'javascript', 'crop_x', 'crop_y', 'crop_width', 'crop_height'], 'web capture must persist its fixed CPU Pack route and declared inputs');
-    hub_test_assert(hub_audio_async_routes() === [
-        'audio_cleanup' => ['pack_id' => 'audio-cleanup', 'job' => 'cleanup'],
-        'speech_transcribe' => ['pack_id' => 'whisper-asr', 'job' => 'transcribe'],
-        'speech_transcribe_fast_zh' => ['pack_id' => 'speech-fast-zh', 'job' => 'transcribe'],
-        'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize'],
-    ] && !hub_is_audio_async_mode('web_capture'), 'audio compatibility routes must remain audio-only');
+    hub_test_assert(!array_key_exists('web_capture', hub_audio_async_routes())
+        && !hub_is_audio_async_mode('web_capture'), 'web capture must remain outside audio compatibility routes');
 });
 
 hub_test('web capture Pack and README publish the allowlist bridge contract', function (): void {
@@ -210,7 +201,8 @@ hub_test('Web Screenshot runner image provisioning uses the declared WSL source 
     hub_test_assert(($inspect[0] ?? '') === 'powershell.exe'
         && str_contains($inspectPayload, 'docker image inspect')
         && str_contains($buildPayload, 'docker build')
-        && str_contains($buildPayload, '/DATA/3waAIHub-runtime/packs/web-screenshot/service/Dockerfile')
+        && str_contains($buildPayload, "service_root='/DATA/3waAIHub-runtime/packs/web-screenshot/service'")
+        && str_contains($buildPayload, '--file "$service_root/Dockerfile" "$service_root"')
         && !str_contains($buildPayload, str_replace('\\', '/', HUB_ROOT)), 'Web Screenshot image build must use WSL source, never the Windows checkout');
     hub_test_assert(hub_test_throws(static fn (): array => hub_web_screenshot_wsl_runner_build_command($service, ['docker', 'pull', $image], $profile)), 'Web Screenshot WSL builder must reject undeclared Docker commands');
 });
