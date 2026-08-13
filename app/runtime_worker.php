@@ -73,11 +73,13 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array 
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $now = hub_now();
     $beginStats = [];
+    $ownsTransaction = false;
     $result = null;
     $error = null;
     $stats['begin_requested_ns'] = hrtime(true);
     try {
         hub_sqlite_begin_immediate($db, $beginStats);
+        $ownsTransaction = true;
         $stats['tx_started_ns'] = hrtime(true);
         $stats['tx_begin_at'] = hub_runtime_telemetry_timestamp();
         $runFence = $db->prepare(
@@ -94,6 +96,7 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array 
         ]);
         if ($runFence->fetchColumn() === false) {
             $db->exec('COMMIT');
+            $ownsTransaction = false;
             $stats['outcome'] = 'fence_lost';
         } else {
             $stmt = $db->prepare(
@@ -112,17 +115,22 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array 
             ]);
             if ($stmt->rowCount() !== 1) {
                 $db->exec('COMMIT');
+                $ownsTransaction = false;
                 $stats['outcome'] = 'committed';
             } else {
                 $result = hub_runtime_gpu_fetch($db);
                 $db->exec('COMMIT');
+                $ownsTransaction = false;
                 $stats['outcome'] = 'committed';
             }
         }
     } catch (Throwable $e) {
-        try {
-            $db->exec('ROLLBACK');
-        } catch (Throwable) {
+        if ($ownsTransaction) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+            $ownsTransaction = false;
         }
         $stats['outcome'] = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
         $error = $e;
@@ -673,10 +681,10 @@ function hub_runtime_gpu_acquire_for_task(PDO $db, array $task, array $run, int 
     } catch (Throwable $e) {
         $error = $e;
     }
-    if (!$db->inTransaction()) {
+    if (($stats['tx_started_ns'] ?? null) !== null || !empty($stats['lock_exhausted'])) {
         $emitStartedNs = hrtime(true);
         $beginRequestedNs = $stats['begin_requested_ns'] ?? $actionStartedNs;
-        $txStartedNs = $stats['tx_started_ns'] ?? $beginRequestedNs;
+        $txStartedNs = $stats['tx_started_ns'] ?? null;
         $txEndedNs = $stats['tx_ended_ns'] ?? $emitStartedNs;
         hub_runtime_telemetry_emit([
             'action' => 'claim',
@@ -688,7 +696,7 @@ function hub_runtime_gpu_acquire_for_task(PDO $db, array $task, array $run, int 
             'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
             'lock_wait_ms' => (float)($stats['lock_wait_ms'] ?? 0.0),
             'lock_wait_kind' => 'begin_immediate',
-            'tx_ms' => hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+            'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
             'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
             'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
             'retry_count' => (int)($stats['retry_count'] ?? 0),

@@ -31,6 +31,7 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
     $txBeginAt = null;
     $txCommitAt = null;
     $ownsTransaction = false;
+    $emitAction = false;
     $outcome = 'failed';
     $result = null;
     $error = null;
@@ -44,6 +45,7 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
         if ($guard->fetchColumn() === false) {
             $db->exec('COMMIT');
             $ownsTransaction = false;
+            $emitAction = true;
             $outcome = 'fence_lost';
         } else {
             $find = $db->prepare('SELECT * FROM runtime_runs WHERE task_id = :task_id ORDER BY id ASC LIMIT 1');
@@ -75,6 +77,7 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
             if (!is_array($run) || ($run['state'] ?? '') !== 'queued') {
                 $db->exec('COMMIT');
                 $ownsTransaction = false;
+                $emitAction = true;
                 $outcome = 'committed';
             } else {
                 $token = bin2hex(random_bytes(32));
@@ -95,11 +98,13 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
                 if ($claim->rowCount() !== 1) {
                     $db->exec('COMMIT');
                     $ownsTransaction = false;
+                    $emitAction = true;
                     $outcome = 'fence_lost';
                 } else {
                     $result = hub_runtime_fetch_run($db, (int)$run['id']);
                     $db->exec('COMMIT');
                     $ownsTransaction = false;
+                    $emitAction = true;
                     $outcome = 'committed';
                 }
             }
@@ -111,36 +116,33 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
             } catch (Throwable) {
             }
             $ownsTransaction = false;
+            $emitAction = true;
         }
         $outcome = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
+        $emitAction = $emitAction || !empty($beginStats['lock_exhausted']);
         $error = $e;
     }
     $txEndedNs = hrtime(true);
     $txCommitAt = hub_runtime_telemetry_timestamp();
-    if ($db->inTransaction()) {
-        if ($error !== null) {
-            throw $error;
-        }
-
-        return $result;
+    if ($emitAction) {
+        $emitStartedNs = hrtime(true);
+        hub_runtime_telemetry_emit([
+            'action' => 'claim',
+            'variant' => 'runtime',
+            'outcome' => $outcome,
+            'tx_mode' => 'immediate',
+            'tx_begin_at' => $txBeginAt,
+            'tx_commit_at' => $txCommitAt,
+            'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+            'lock_wait_ms' => (float)($beginStats['lock_wait_ms'] ?? 0.0),
+            'lock_wait_kind' => 'begin_immediate',
+            'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+            'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+            'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+            'retry_count' => (int)($beginStats['retry_count'] ?? 0),
+            'skipped_ticks' => 0,
+        ]);
     }
-    $emitStartedNs = hrtime(true);
-    hub_runtime_telemetry_emit([
-        'action' => 'claim',
-        'variant' => 'runtime',
-        'outcome' => $outcome,
-        'tx_mode' => 'immediate',
-        'tx_begin_at' => $txBeginAt,
-        'tx_commit_at' => $txCommitAt,
-        'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
-        'lock_wait_ms' => (float)($beginStats['lock_wait_ms'] ?? 0.0),
-        'lock_wait_kind' => 'begin_immediate',
-        'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
-        'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
-        'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
-        'retry_count' => (int)($beginStats['retry_count'] ?? 0),
-        'skipped_ticks' => 0,
-    ]);
     if ($error !== null) {
         throw $error;
     }

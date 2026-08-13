@@ -76,12 +76,25 @@ PHP;
     if (!is_resource($process)) {
         hub_test_skip('SQLite lock telemetry test requires an executable PHP child process');
     }
-    fclose($pipes[0]);
-    $deadline = microtime(true) + 2.0;
-    while (microtime(true) < $deadline && trim((string)file_get_contents($readyPath)) !== 'ready') {
-        usleep(5000);
+    try {
+        fclose($pipes[0]);
+        $deadline = microtime(true) + 2.0;
+        while (microtime(true) < $deadline && trim((string)file_get_contents($readyPath)) !== 'ready') {
+            usleep(5000);
+        }
+        hub_test_assert(trim((string)file_get_contents($readyPath)) === 'ready', 'SQLite writer-lock child must signal readiness');
+    } catch (Throwable $e) {
+        if ((proc_get_status($process)['running'] ?? false)) {
+            proc_terminate($process);
+        }
+        foreach ($pipes as $pipe) {
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
+        proc_close($process);
+        throw $e;
     }
-    hub_test_assert(trim((string)file_get_contents($readyPath)) === 'ready', 'SQLite writer-lock child must signal readiness');
 
     return [$process, $pipes];
 }
@@ -322,6 +335,52 @@ hub_test('pack runtime claim preserves a caller-owned transaction on BEGIN failu
     hub_test_assert($restored->fetchColumn() === $originalValue, 'caller transaction rollback must discard its uncommitted change');
 });
 
+hub_test('pack runtime claim preserves a raw SQLite caller transaction without telemetry', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Raw caller transaction fixture must claim a task.');
+    }
+    $markerKey = 'runtime-raw-marker-' . bin2hex(random_bytes(4));
+    $before = count(hub_test_runtime_telemetry_events());
+    $rawTransactionOpen = false;
+    $db->exec('BEGIN IMMEDIATE');
+    $rawTransactionOpen = true;
+    try {
+        hub_test_assert(!$db->inTransaction(), 'PDO must not report a raw SQLite BEGIN IMMEDIATE transaction');
+        $db->prepare('INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)')->execute([
+            ':key' => $markerKey,
+            ':value' => 'runtime-raw-marker',
+            ':updated_at' => hub_now(),
+        ]);
+        $error = null;
+        try {
+            hub_pack_job_claim_runtime($db, $task, 'telemetry-runtime-worker', 60);
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        hub_test_assert($error instanceof PDOException, 'raw caller transaction must receive the original BEGIN exception');
+        $marker = $db->prepare('SELECT value FROM settings WHERE key = :key');
+        $marker->execute([':key' => $markerKey]);
+        hub_test_assert($marker->fetchColumn() === 'runtime-raw-marker', 'raw caller marker must remain after nested runtime begin fails');
+        hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'runtime') === [], 'raw caller runtime rejection must not emit telemetry');
+        hub_test_assert($db->exec('ROLLBACK') !== false, 'raw caller must be able to roll back its own transaction');
+        $rawTransactionOpen = false;
+    } finally {
+        if ($rawTransactionOpen) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+    }
+    $marker = $db->prepare('SELECT 1 FROM settings WHERE key = :key');
+    $marker->execute([':key' => $markerKey]);
+    hub_test_assert($marker->fetchColumn() === false, 'raw caller rollback must discard its marker');
+});
+
 hub_test('invalid pack runtime claim emits no telemetry', function (): void {
     $db = hub_test_reset_db();
     $before = count(hub_test_runtime_telemetry_events());
@@ -359,6 +418,134 @@ hub_test('pack GPU claim emits telemetry while CPU, non-pack, and direct callers
     $before = count(hub_test_runtime_telemetry_events());
     hub_runtime_gpu_acquire($db, $run, 60);
     hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'gpu') === [], 'direct gateway-shaped GPU caller must not emit claim/gpu');
+});
+
+hub_test('pack GPU claim distinguishes unavailable resource from a lost runtime fence', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db, 'gpu');
+    hub_test_runtime_telemetry_enqueue_pack_job($db, 'gpu');
+    $firstTask = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($firstTask)) {
+        throw new RuntimeException('First GPU outcome fixture must claim a task.');
+    }
+    $firstRun = hub_pack_job_claim_runtime($db, $firstTask, 'telemetry-gpu-first-worker', 60);
+    if (!is_array($firstRun) || !is_array(hub_runtime_gpu_acquire_for_task($db, $firstTask, $firstRun, 60))) {
+        throw new RuntimeException('First GPU outcome fixture must occupy gpu:0.');
+    }
+    $secondTask = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($secondTask)) {
+        throw new RuntimeException('Second GPU outcome fixture must claim a task.');
+    }
+    $secondRun = hub_pack_job_claim_runtime($db, $secondTask, 'telemetry-gpu-second-worker', 60);
+    if (!is_array($secondRun)) {
+        throw new RuntimeException('Second GPU outcome fixture must claim a runtime.');
+    }
+
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_assert(hub_runtime_gpu_acquire_for_task($db, $secondTask, $secondRun, 60) === null, 'busy GPU resource must be unavailable');
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'gpu');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'committed', 'busy GPU resource must emit committed claim/gpu telemetry');
+
+    $db->prepare('UPDATE runtime_runs SET lease_token = :lease_token WHERE id = :id')->execute([
+        ':lease_token' => 'lost-runtime-fence',
+        ':id' => (int)$secondRun['id'],
+    ]);
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_assert(hub_runtime_gpu_acquire_for_task($db, $secondTask, $secondRun, 60) === null, 'lost runtime fence must reject GPU acquisition');
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'gpu');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'fence_lost', 'lost runtime fence must emit fence_lost claim/gpu telemetry');
+});
+
+hub_test('pack GPU claim preserves a raw SQLite caller transaction without telemetry', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db, 'gpu');
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Raw GPU caller fixture must claim a task.');
+    }
+    $run = hub_pack_job_claim_runtime($db, $task, 'telemetry-gpu-worker', 60);
+    if (!is_array($run)) {
+        throw new RuntimeException('Raw GPU caller fixture must claim a runtime.');
+    }
+    $markerKey = 'gpu-raw-marker-' . bin2hex(random_bytes(4));
+    $before = count(hub_test_runtime_telemetry_events());
+    $rawTransactionOpen = false;
+    $db->exec('BEGIN IMMEDIATE');
+    $rawTransactionOpen = true;
+    try {
+        hub_test_assert(!$db->inTransaction(), 'PDO must not report a raw SQLite GPU transaction');
+        $db->prepare('INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)')->execute([
+            ':key' => $markerKey,
+            ':value' => 'gpu-raw-marker',
+            ':updated_at' => hub_now(),
+        ]);
+        $error = null;
+        try {
+            hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        hub_test_assert($error instanceof PDOException, 'raw GPU caller transaction must receive the original BEGIN exception');
+        $marker = $db->prepare('SELECT value FROM settings WHERE key = :key');
+        $marker->execute([':key' => $markerKey]);
+        hub_test_assert($marker->fetchColumn() === 'gpu-raw-marker', 'raw GPU caller marker must remain after nested begin fails');
+        hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'gpu') === [], 'raw GPU caller rejection must not emit telemetry');
+        hub_test_assert($db->exec('ROLLBACK') !== false, 'raw GPU caller must be able to roll back its own transaction');
+        $rawTransactionOpen = false;
+    } finally {
+        if ($rawTransactionOpen) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+    }
+    $marker = $db->prepare('SELECT 1 FROM settings WHERE key = :key');
+    $marker->execute([':key' => $markerKey]);
+    hub_test_assert($marker->fetchColumn() === false, 'raw GPU caller rollback must discard its marker');
+});
+
+hub_test('runtime claim lock exhaustion emits zero transaction duration', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Runtime lock exhaustion fixture must claim a task.');
+    }
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(700000, static function (string $attemptPath) use ($task): void {
+        $lockedDb = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        hub_test_assert(hub_test_throws(static function () use ($lockedDb, $task): void {
+            hub_pack_job_claim_runtime($lockedDb, $task, 'telemetry-runtime-worker', 60);
+        }), 'runtime claim must throw when BEGIN IMMEDIATE exhausts');
+    });
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'runtime');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && (float)($events[0]['tx_ms'] ?? -1) === 0.0, 'runtime lock exhaustion must report zero transaction duration');
+});
+
+hub_test('GPU claim lock exhaustion emits zero transaction duration', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db, 'gpu');
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('GPU lock exhaustion fixture must claim a task.');
+    }
+    $run = hub_pack_job_claim_runtime($db, $task, 'telemetry-gpu-worker', 60);
+    if (!is_array($run)) {
+        throw new RuntimeException('GPU lock exhaustion fixture must claim a runtime.');
+    }
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(700000, static function (string $attemptPath) use ($task, $run): void {
+        $lockedDb = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        hub_test_assert(hub_test_throws(static function () use ($lockedDb, $task, $run): void {
+            hub_runtime_gpu_acquire_for_task($lockedDb, $task, $run, 60);
+        }), 'GPU claim must throw when BEGIN IMMEDIATE exhausts');
+    });
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'gpu');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && (float)($events[0]['tx_ms'] ?? -1) === 0.0, 'GPU lock exhaustion must report zero transaction duration');
 });
 
 $validRuntimeTelemetryEvent = [
