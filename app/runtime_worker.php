@@ -84,6 +84,7 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array 
         'lock_wait_kind' => 'begin_immediate',
         'retry_count' => 0,
         'lock_exhausted' => false,
+        'transaction_closed' => false,
         'outcome' => 'failed',
     ];
     if ($db->inTransaction()) {
@@ -116,6 +117,7 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array 
         if ($runFence->fetchColumn() === false) {
             $db->exec('COMMIT');
             $ownsTransaction = false;
+            $stats['transaction_closed'] = true;
             $stats['outcome'] = 'fence_lost';
         } else {
             $stmt = $db->prepare(
@@ -135,11 +137,13 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array 
             if ($stmt->rowCount() !== 1) {
                 $db->exec('COMMIT');
                 $ownsTransaction = false;
+                $stats['transaction_closed'] = true;
                 $stats['outcome'] = 'committed';
             } else {
                 $result = hub_runtime_gpu_fetch($db);
                 $db->exec('COMMIT');
                 $ownsTransaction = false;
+                $stats['transaction_closed'] = true;
                 $stats['outcome'] = 'committed';
             }
         }
@@ -147,10 +151,12 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array 
         if ($ownsTransaction) {
             try {
                 $db->exec('ROLLBACK');
+                $ownsTransaction = false;
+                $stats['transaction_closed'] = true;
             } catch (Throwable) {
             }
-            $ownsTransaction = false;
         }
+        $stats['transaction_closed'] = $stats['transaction_closed'] || !empty($beginStats['lock_exhausted']);
         $stats['outcome'] = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
         $error = $e;
     }
@@ -753,7 +759,7 @@ function hub_runtime_gpu_acquire_for_task(PDO $db, array $task, array $run, int 
     } catch (Throwable $e) {
         $error = $e;
     }
-    if (($stats['tx_started_ns'] ?? null) !== null || !empty($stats['lock_exhausted'])) {
+    if (!empty($stats['transaction_closed'])) {
         $emitStartedNs = hrtime(true);
         $beginRequestedNs = $stats['begin_requested_ns'] ?? $actionStartedNs;
         $txStartedNs = $stats['tx_started_ns'] ?? null;
@@ -1092,7 +1098,11 @@ function hub_runtime_heartbeat(PDO $db, int $runId, string $leaseToken, int $lea
     if ($db->inTransaction()) {
         throw new LogicException('runtime_heartbeat_transaction_required');
     }
+    $probeClosed = false;
     try {
+        $db->beginTransaction();
+        $db->rollBack();
+        $probeClosed = true;
         $expiresAt = hub_runtime_heartbeat_expiry($expiresAt, $leaseSeconds);
         $stmt = $db->prepare(
             "UPDATE runtime_runs
@@ -1113,7 +1123,7 @@ function hub_runtime_heartbeat(PDO $db, int $runId, string $leaseToken, int $lea
         $stats['transaction_closed'] = true;
         return $stmt->rowCount() === 1;
     } catch (Throwable $e) {
-        $stats['transaction_closed'] = true;
+        $stats['transaction_closed'] = $probeClosed;
         if ($e instanceof PDOException && str_contains(strtolower($e->getMessage()), 'database is locked')) {
             $stats['lock_exhausted'] = true;
         }

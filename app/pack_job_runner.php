@@ -113,10 +113,10 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
         if ($ownsTransaction) {
             try {
                 $db->exec('ROLLBACK');
+                $ownsTransaction = false;
+                $emitAction = true;
             } catch (Throwable) {
             }
-            $ownsTransaction = false;
-            $emitAction = true;
         }
         $outcome = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
         $emitAction = $emitAction || !empty($beginStats['lock_exhausted']);

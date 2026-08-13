@@ -196,6 +196,41 @@ function hub_test_runtime_telemetry_locking_pdo(string $attemptPath): PDO
     return $db;
 }
 
+function hub_test_runtime_telemetry_rollback_failure_pdo(string $statementNeedle, string $statementError): PDO
+{
+    $db = new class('sqlite:' . HUB_DB_PATH, $statementNeedle, $statementError) extends PDO {
+        public bool $failRollback = true;
+
+        public function __construct(string $dsn, private string $statementNeedle, private string $statementError)
+        {
+            parent::__construct($dsn);
+        }
+
+        public function prepare(string $query, array $options = []): PDOStatement|false
+        {
+            if (str_contains($query, $this->statementNeedle)) {
+                throw new PDOException($this->statementError);
+            }
+
+            return parent::prepare($query, $options);
+        }
+
+        public function exec(string $statement): int|false
+        {
+            if ($this->failRollback && $statement === 'ROLLBACK') {
+                throw new PDOException('forced_rollback_failure');
+            }
+
+            return parent::exec($statement);
+        }
+    };
+    $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+    $db->exec('PRAGMA busy_timeout = 0');
+
+    return $db;
+}
+
 function hub_test_runtime_telemetry_enqueue_pack_job(PDO $db, string $accelerator = 'gpu'): int
 {
     return hub_enqueue_task($db, 'pack_job', $accelerator, 0, ['private_input' => 'must-not-emit'], null, '127.0.0.1', [
@@ -448,6 +483,37 @@ hub_test('pack runtime claim preserves a raw SQLite caller transaction without t
     hub_test_assert($marker->fetchColumn() === false, 'raw caller rollback must discard its marker');
 });
 
+hub_test('pack runtime claim suppresses telemetry when its owned rollback fails', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Runtime rollback-failure fixture must claim a task.');
+    }
+    $claimDb = hub_test_runtime_telemetry_rollback_failure_pdo('SELECT 1 FROM tasks', 'runtime_claim_statement_failure');
+    $before = count(hub_test_runtime_telemetry_events());
+    $error = null;
+    try {
+        try {
+            hub_pack_job_claim_runtime($claimDb, $task, 'telemetry-runtime-worker', 60);
+        } catch (Throwable $caught) {
+            $error = $caught;
+        }
+        hub_test_assert($error instanceof PDOException
+            && $error->getMessage() === 'runtime_claim_statement_failure'
+            && hub_test_runtime_telemetry_claim_events_after($before, 'runtime') === [],
+            'runtime claim must preserve its statement error and suppress telemetry when rollback fails');
+        $claimDb->failRollback = false;
+        hub_test_assert($claimDb->exec('ROLLBACK') !== false, 'runtime claim test must explicitly close the held raw transaction');
+    } finally {
+        $claimDb->failRollback = false;
+        try {
+            $claimDb->exec('ROLLBACK');
+        } catch (Throwable) {
+        }
+    }
+});
+
 hub_test('invalid pack runtime claim emits no telemetry', function (): void {
     $db = hub_test_reset_db();
     $before = count(hub_test_runtime_telemetry_events());
@@ -571,6 +637,41 @@ hub_test('pack GPU claim preserves a raw SQLite caller transaction without telem
     $marker = $db->prepare('SELECT 1 FROM settings WHERE key = :key');
     $marker->execute([':key' => $markerKey]);
     hub_test_assert($marker->fetchColumn() === false, 'raw GPU caller rollback must discard its marker');
+});
+
+hub_test('pack GPU claim suppresses telemetry when its owned rollback fails', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db, 'gpu');
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('GPU rollback-failure fixture must claim a task.');
+    }
+    $run = hub_pack_job_claim_runtime($db, $task, 'telemetry-gpu-worker', 60);
+    if (!is_array($run)) {
+        throw new RuntimeException('GPU rollback-failure fixture must claim a runtime.');
+    }
+    $claimDb = hub_test_runtime_telemetry_rollback_failure_pdo('SELECT 1 FROM runtime_runs', 'gpu_claim_statement_failure');
+    $before = count(hub_test_runtime_telemetry_events());
+    $error = null;
+    try {
+        try {
+            hub_runtime_gpu_acquire_for_task($claimDb, $task, $run, 60);
+        } catch (Throwable $caught) {
+            $error = $caught;
+        }
+        hub_test_assert($error instanceof PDOException
+            && $error->getMessage() === 'gpu_claim_statement_failure'
+            && hub_test_runtime_telemetry_claim_events_after($before, 'gpu') === [],
+            'GPU claim must preserve its statement error and suppress telemetry when rollback fails');
+        $claimDb->failRollback = false;
+        hub_test_assert($claimDb->exec('ROLLBACK') !== false, 'GPU claim test must explicitly close the held raw transaction');
+    } finally {
+        $claimDb->failRollback = false;
+        try {
+            $claimDb->exec('ROLLBACK');
+        } catch (Throwable) {
+        }
+    }
 });
 
 hub_test('runtime claim lock exhaustion emits zero transaction duration', function (): void {
@@ -1642,6 +1743,65 @@ hub_test('CPU heartbeat rejects a PDO caller transaction without telemetry', fun
     hub_test_assert($marker->fetchColumn() === false, 'CPU caller rollback must discard its marker');
 });
 
+hub_test('CPU heartbeat rejects a raw caller transaction before its due renewal write', function (): void {
+    $db = hub_test_reset_db();
+    [, $run] = hub_test_runtime_telemetry_heartbeat_run($db);
+    $db->prepare("UPDATE runtime_runs SET heartbeat_at = '2000-01-01 00:00:00', lease_expires_at = :expires_at WHERE id = :id")->execute([
+        ':expires_at' => date('Y-m-d H:i:s', time() + 1),
+        ':id' => (int)$run['id'],
+    ]);
+    $run = hub_runtime_fetch_run($db, (int)$run['id']);
+    if (!is_array($run)) {
+        throw new RuntimeException('Raw CPU heartbeat fixture must retain its runtime.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, null);
+    $state['skipped_ticks'] = 3;
+    $beforeState = serialize($state);
+    $beforeRun = serialize($run);
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+    $markerKey = 'cpu-heartbeat-raw-' . bin2hex(random_bytes(4));
+    $rawTransactionOpen = false;
+    $db->exec('BEGIN IMMEDIATE');
+    $rawTransactionOpen = true;
+    try {
+        hub_test_assert(!$db->inTransaction(), 'PDO must not report the raw CPU heartbeat transaction');
+        $db->prepare('INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)')->execute([
+            ':key' => $markerKey,
+            ':value' => 'caller-owned',
+            ':updated_at' => hub_now(),
+        ]);
+        $error = null;
+        try {
+            hub_pack_job_tick($db, $run, null, 60, $state);
+        } catch (Throwable $caught) {
+            $error = $caught;
+        }
+        $marker = $db->prepare('SELECT value FROM settings WHERE key = :key');
+        $marker->execute([':key' => $markerKey]);
+        hub_test_assert($error instanceof PDOException
+            && $marker->fetchColumn() === 'caller-owned'
+            && serialize($state) === $beforeState
+            && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === $beforeRun
+            && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'cpu') === [],
+            'raw CPU heartbeat must reject before writing or mutating shared state');
+        hub_test_assert($db->exec('ROLLBACK') !== false, 'raw CPU heartbeat caller must be able to roll back its transaction');
+        $rawTransactionOpen = false;
+    } finally {
+        if ($rawTransactionOpen) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+        }
+    }
+    $marker = $db->prepare('SELECT 1 FROM settings WHERE key = :key');
+    $marker->execute([':key' => $markerKey]);
+    hub_test_assert($marker->fetchColumn() === false
+        && serialize($state) === $beforeState
+        && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === $beforeRun,
+        'raw CPU caller rollback must discard its marker and preserve heartbeat state');
+});
+
 hub_test('GPU heartbeat suppresses telemetry when a rollback-triggered close is unconfirmed', function (): void {
     $db = hub_test_reset_db();
     [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
@@ -1961,6 +2121,53 @@ hub_test('GPU terminal fence timing captures its first no-op runtime write', fun
             $db->rollBack();
         }
     }
+});
+
+hub_test('terminal writer lock emits one exhausted finish event after rollback', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 6;
+    $beforeState = serialize($state);
+    $beforeRun = serialize(hub_runtime_fetch_run($db, (int)$fixture['run']['id']));
+    $beforeTask = serialize(hub_get_task($db, (int)$fixture['task']['id']));
+    $beforeEvents = count(hub_test_runtime_telemetry_events());
+    $error = null;
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(700000, static function (string $attemptPath) use ($fixture, &$state, &$error): void {
+        $terminalDb = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        if (file_put_contents($attemptPath, "attempt\n", LOCK_EX) === false) {
+            throw new RuntimeException('Cannot signal terminal write attempt.');
+        }
+        try {
+            hub_commit_pack_job_failure($terminalDb, (int)$fixture['task']['id'], $fixture['run'], 'failed', 'runtime_exit_nonzero', 'terminal fixture', $fixture['cleanup'], null, $state);
+        } catch (Throwable $caught) {
+            $error = $caught;
+        }
+        hub_test_assert(!$terminalDb->inTransaction(), 'terminal writer lock must roll back before returning');
+    });
+    $events = hub_test_runtime_telemetry_events_after($beforeEvents, 'finish', 'failure');
+    hub_test_assert($error instanceof PDOException
+        && (int)($error->errorInfo[1] ?? 0) === 5
+        && serialize($state) !== $beforeState
+        && ($state['skipped_ticks'] ?? null) === 0
+        && serialize(hub_runtime_fetch_run($db, (int)$fixture['run']['id'])) === $beforeRun
+        && serialize(hub_get_task($db, (int)$fixture['task']['id'])) === $beforeTask
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && ($events[0]['skipped_ticks'] ?? null) === 6,
+        'terminal SQLITE_BUSY must emit exhausted telemetry only after rollback and skip consumption');
+    $observedAt = new DateTimeImmutable((string)$events[0]['observed_at']);
+    $line = hub_test_runtime_telemetry_fixture_line($events[0]);
+    $summary = hub_runtime_telemetry_summary($observedAt, $observedAt, static function (string $_path) use ($line) {
+        $handle = fopen('php://temp', 'w+b');
+        fwrite($handle, $line);
+        rewind($handle);
+
+        return $handle;
+    });
+    hub_test_assert(($summary['groups']['finish/failure']['count'] ?? null) === 1
+        && ($summary['groups']['finish/failure']['exhausted'] ?? null) === 1,
+        'terminal lock_exhausted event must increment the summary exhausted count');
 });
 
 hub_test('terminal automatic rollback emits after close and preserves its statement error', function (): void {

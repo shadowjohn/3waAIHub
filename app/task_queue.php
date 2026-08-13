@@ -4813,11 +4813,19 @@ function hub_pack_job_finish_telemetry_emit(int $actionStartedNs, int $beginRequ
 
 function hub_pack_job_terminal_telemetry_outcome(Throwable $error): string
 {
-    return $error instanceof RuntimeException && in_array($error->getMessage(), [
+    if ($error instanceof RuntimeException && in_array($error->getMessage(), [
         'runtime_ownership_conflict',
         'gpu_ownership_conflict',
         'task_ownership_conflict',
-    ], true) ? 'fence_lost' : 'rolled_back';
+    ], true)) {
+        return 'fence_lost';
+    }
+    if ($error instanceof PDOException
+        && ((int)($error->errorInfo[1] ?? 0) === 5 || str_contains(strtolower($error->getMessage()), 'database is locked'))) {
+        return 'lock_exhausted';
+    }
+
+    return 'rolled_back';
 }
 
 function hub_pack_job_terminal_repair_rollback(PDO $db): bool
