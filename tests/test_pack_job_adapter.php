@@ -112,6 +112,144 @@ function hub_test_adapter_cleanup(): array
     return ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true];
 }
 
+hub_test('Pack job GPU acquisition retries a short external SQLite write lock', function (): void {
+    if (!function_exists('proc_open') || !defined('PHP_BINARY') || !is_file(PHP_BINARY) || !is_executable(PHP_BINARY)) {
+        hub_test_skip('GPU SQLite lock retry test requires an executable PHP child process');
+    }
+
+    $db = hub_test_reset_db();
+    $fixture = hub_test_adapter_fixture($db, 'gpu');
+    $readyPath = '';
+    $attemptPath = '';
+    $process = null;
+    $pipes = [];
+    try {
+        $task = hub_test_adapter_claim($db);
+        $run = hub_pack_job_claim_runtime($db, $task, 'gpu-lock-retry-worker', 60);
+        hub_test_assert(is_array($run), 'GPU lock retry fixture must claim a runtime run');
+
+        $readyPath = tempnam(sys_get_temp_dir(), '3waaihub_gpu_lock_');
+        if ($readyPath === false) {
+            throw new RuntimeException('Cannot create GPU lock readiness file.');
+        }
+        $attemptPath = tempnam(sys_get_temp_dir(), '3waaihub_gpu_attempt_');
+        if ($attemptPath === false || !unlink($attemptPath)) {
+            throw new RuntimeException('Cannot create GPU acquisition attempt signal path.');
+        }
+        $child = <<<'PHP'
+$db = new PDO('sqlite:' . $argv[1]);
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$db->exec('PRAGMA busy_timeout = 5000');
+$db->exec('BEGIN IMMEDIATE');
+try {
+    if (file_put_contents($argv[2], "ready\n", LOCK_EX) === false) {
+        throw new RuntimeException('Cannot signal SQLite lock readiness.');
+    }
+    $deadline = microtime(true) + 2.0;
+    while (!is_file($argv[3])) {
+        if (microtime(true) >= $deadline) {
+            throw new RuntimeException('Timed out waiting for SQLite acquisition attempt.');
+        }
+        usleep(5000);
+    }
+    usleep(150000);
+    $db->exec('COMMIT');
+} catch (Throwable $e) {
+    try {
+        $db->exec('ROLLBACK');
+    } catch (Throwable) {
+    }
+    fwrite(STDERR, $e->getMessage());
+    exit(1);
+}
+PHP;
+        $process = proc_open(
+            [PHP_BINARY, '-r', $child, HUB_DB_PATH, $readyPath, $attemptPath],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            HUB_ROOT,
+        );
+        if (!is_resource($process)) {
+            hub_test_skip('GPU SQLite lock retry test requires an executable PHP child process');
+        }
+        fclose($pipes[0]);
+
+        $ready = false;
+        $deadline = microtime(true) + 2.0;
+        while (microtime(true) < $deadline) {
+            if (trim((string)file_get_contents($readyPath)) === 'ready') {
+                $ready = true;
+                break;
+            }
+            usleep(5000);
+        }
+        hub_test_assert($ready, 'SQLite write-lock child must signal readiness before GPU acquisition');
+
+        $acquireDb = new class('sqlite:' . HUB_DB_PATH, $attemptPath) extends PDO {
+            private bool $attemptSignaled = false;
+
+            public function __construct(string $dsn, private string $attemptPath)
+            {
+                parent::__construct($dsn);
+            }
+
+            public function exec(string $statement): int|false
+            {
+                if (!$this->attemptSignaled && $statement === 'BEGIN IMMEDIATE') {
+                    if (is_file($this->attemptPath) || file_put_contents($this->attemptPath, "attempt\n", LOCK_EX) === false) {
+                        throw new RuntimeException('Cannot signal GPU acquisition attempt.');
+                    }
+                    $this->attemptSignaled = true;
+                }
+
+                return parent::exec($statement);
+            }
+        };
+        $acquireDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $acquireDb->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $acquireDb->exec('PRAGMA busy_timeout = 0');
+        $startedAt = microtime(true);
+        $lease = hub_runtime_gpu_acquire($acquireDb, $run, 60);
+        hub_test_assert(
+            is_array($lease) && ($lease['state'] ?? '') === 'leased' && hub_runtime_gpu_fence_matches_run($run, $lease)
+                && microtime(true) - $startedAt >= 0.10,
+            'GPU acquisition must wait for a short SQLite write lock and return this run\'s lease'
+        );
+        $childStatus = null;
+        $deadline = microtime(true) + 2.0;
+        do {
+            $childStatus = proc_get_status($process);
+            if (!($childStatus['running'] ?? false)) {
+                break;
+            }
+            usleep(5000);
+        } while (microtime(true) < $deadline);
+        hub_test_assert(
+            is_array($childStatus) && !($childStatus['running'] ?? true) && ($childStatus['exitcode'] ?? -1) === 0,
+            'SQLite write-lock child must exit successfully after GPU acquisition'
+        );
+    } finally {
+        if (is_resource($process) && (proc_get_status($process)['running'] ?? false)) {
+            proc_terminate($process);
+        }
+        foreach ($pipes as $pipe) {
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
+        if (is_resource($process)) {
+            proc_close($process);
+        }
+        if ($readyPath !== '' && is_file($readyPath)) {
+            unlink($readyPath);
+        }
+        if ($attemptPath !== '' && is_file($attemptPath)) {
+            unlink($attemptPath);
+        }
+        hub_test_adapter_remove($fixture['dir']);
+    }
+});
+
 hub_test('Pack job container runner restricts network profiles', function (): void {
     $workspace = sys_get_temp_dir() . '/3waaihub_adapter_network_' . bin2hex(random_bytes(4));
     if (!mkdir($workspace . '/input', 0700, true) || !mkdir($workspace . '/output', 0700, true)

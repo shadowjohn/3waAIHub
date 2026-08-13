@@ -23,7 +23,7 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
     if ($taskId <= 0 || $taskLock === '') {
         return null;
     }
-    $db->exec('BEGIN IMMEDIATE');
+    hub_sqlite_begin_immediate($db);
     try {
         $guard = $db->prepare("SELECT 1 FROM tasks WHERE id = :id AND task_type = 'pack_job' AND status = 'running' AND lock_token = :lock_token");
         $guard->execute([':id' => $taskId, ':lock_token' => $taskLock]);
@@ -99,7 +99,7 @@ function hub_pack_job_wait_without_gpu(PDO $db, int $taskId, array $run, string 
     }
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $now = hub_now();
-    $db->exec('BEGIN IMMEDIATE');
+    hub_sqlite_begin_immediate($db);
     try {
         if (!hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId)) {
             $db->exec('ROLLBACK');
@@ -1442,7 +1442,7 @@ function hub_pack_job_begin_execution(PDO $db, array $task, array $run, array $r
     }
     $timeout = date('Y-m-d H:i:s', time() + (int)$runner['timeout_seconds']);
     $taskId = (int)$task['id'];
-    $db->exec('BEGIN IMMEDIATE');
+    hub_sqlite_begin_immediate($db);
     try {
         if ($gpuLease !== null && (!hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId) || !hub_runtime_gpu_active($db, $run, $gpuLease, $taskId))) {
             $db->exec('ROLLBACK');
@@ -2669,7 +2669,7 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
     $message = $clean ? 'Pack runtime lease expired' : 'Pack cleanup was not attested';
     $taskLock = (string)($task['lock_token'] ?? '');
     $lockPredicate = $taskLock === '' ? 'lock_token IS NULL' : 'lock_token = :task_lock';
-    $db->exec('BEGIN IMMEDIATE');
+    hub_sqlite_begin_immediate($db);
     try {
         if ($gpuLease !== null) {
             $gpu = hub_runtime_gpu_lease_identity($gpuLease);

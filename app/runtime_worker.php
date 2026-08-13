@@ -61,7 +61,7 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds): ?array
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $now = hub_now();
 
-    $db->exec('BEGIN IMMEDIATE');
+    hub_sqlite_begin_immediate($db);
     try {
         $runFence = $db->prepare(
             "SELECT 1 FROM runtime_runs
@@ -585,7 +585,7 @@ function hub_runtime_record_gpu_ownership(PDO $db, array $run, array $lease, ?st
         throw new InvalidArgumentException('runtime_gpu_pid_snapshot_invalid');
     }
 
-    $db->exec('BEGIN IMMEDIATE');
+    hub_sqlite_begin_immediate($db);
     try {
         $runStmt = $db->prepare(
             "UPDATE runtime_runs
@@ -768,7 +768,7 @@ function hub_runtime_gpu_wait_for_capacity(PDO $db, int $taskId, array $run, arr
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $now = hub_now();
     $nextAttemptAt = hub_runtime_lease_until(max(1, $backoffSeconds));
-    $db->exec('BEGIN IMMEDIATE');
+    hub_sqlite_begin_immediate($db);
     try {
         if (!hub_runtime_gpu_release_in_transaction($db, $run, $lease, $taskId)) {
             $db->exec('ROLLBACK');

@@ -13,6 +13,22 @@ function hub_sqlite_schema_identifier(string $identifier): string
     return '"' . $identifier . '"';
 }
 
+function hub_sqlite_begin_immediate(PDO $db): void
+{
+    // ponytail: SQLite has one writer; move sustained write contention to Postgres.
+    for ($attempt = 0; $attempt < 7; $attempt++) {
+        try {
+            $db->exec('BEGIN IMMEDIATE');
+            return;
+        } catch (PDOException $e) {
+            if (!str_contains(strtolower($e->getMessage()), 'database is locked') || $attempt === 6) {
+                throw $e;
+            }
+            usleep(5000 * (1 << $attempt));
+        }
+    }
+}
+
 const HUB_DB_MIGRATION_VERSION = '2026-08-09.2';
 const HUB_DB_MIGRATION_VERSION_KEY = 'db_migration_version';
 const HUB_DB_MIGRATION_SCHEMA_KEY = 'db_migration_schema_version';
