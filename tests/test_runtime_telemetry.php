@@ -194,3 +194,149 @@ hub_test('runtime telemetry validates elapsed milliseconds and paths', function 
     hub_test_assert(hub_runtime_telemetry_elapsed_ms(3, 2) === 0.0, 'elapsed milliseconds must be nonnegative');
     hub_test_assert(hub_runtime_telemetry_path(new DateTimeImmutable('2026-08-14')) === HUB_LOG_DIR . '/runtime-telemetry-2026-08-14.ndjson', 'telemetry path mismatch');
 });
+
+function hub_test_runtime_telemetry_fixture_line(array $event): string
+{
+    return json_encode($event, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES) . PHP_EOL;
+}
+
+hub_test('runtime telemetry parses relative summary ranges and nearest-rank quantiles', function (): void {
+    $now = new DateTimeImmutable('2026-08-14T01:00:00.000000+08:00');
+
+    hub_test_assert(
+        hub_runtime_telemetry_parse_since('1 hour', $now)->format('c') === '2026-08-14T00:00:00+08:00',
+        'one hour must parse relative to now'
+    );
+    hub_test_assert(hub_test_throws(static fn (): DateTimeImmutable => hub_runtime_telemetry_parse_since('all time', $now)), 'malformed relative range must be rejected');
+    hub_test_assert(hub_runtime_telemetry_quantile([1, 2, 3], 0.5) === 2.0, 'p50 must use nearest rank');
+    hub_test_assert(hub_runtime_telemetry_quantile([10, 20], 0.95) === 20.0, 'p95 must use nearest rank');
+});
+
+hub_test('runtime telemetry summarizes only direct daily candidates with independent groups', function () use ($validRuntimeTelemetryEvent): void {
+    $fixtureDir = sys_get_temp_dir() . '/3waaihub_runtime_telemetry_' . bin2hex(random_bytes(8));
+    if (!mkdir($fixtureDir, 0700)) {
+        throw new RuntimeException('Cannot create runtime telemetry summary fixture.');
+    }
+    $since = new DateTimeImmutable('2026-08-13T23:00:00.000000+08:00');
+    $until = new DateTimeImmutable('2026-08-14T01:00:00.000000+08:00');
+    $paths = [
+        hub_runtime_telemetry_path(new DateTimeImmutable('2026-08-13')),
+        hub_runtime_telemetry_path(new DateTimeImmutable('2026-08-14')),
+    ];
+    $event = static function (string $observedAt, int $txMs, array $overrides = []) use ($validRuntimeTelemetryEvent): array {
+        return array_replace($validRuntimeTelemetryEvent, [
+            'schema_version' => HUB_RUNTIME_TELEMETRY_SCHEMA_VERSION,
+            'observed_at' => $observedAt,
+            'tx_ms' => $txMs,
+        ], $overrides);
+    };
+    $fixtures = [
+        $paths[0] => hub_test_runtime_telemetry_fixture_line($event('2026-08-13T22:59:59.000000+08:00', 99))
+            . hub_test_runtime_telemetry_fixture_line($event('2026-08-13T23:15:00.000000+08:00', 1))
+            . hub_test_runtime_telemetry_fixture_line($event('2026-08-13T23:30:00.000000+08:00', 2)),
+        $paths[1] => hub_test_runtime_telemetry_fixture_line($event('2026-08-14T00:15:00.000000+08:00', 3))
+            . hub_test_runtime_telemetry_fixture_line($event('2026-08-14T00:20:00.000000+08:00', 10, [
+                'action' => 'claim', 'variant' => 'runtime', 'lock_wait_ms' => 4, 'retry_count' => 1, 'skipped_ticks' => 2,
+            ]))
+            . hub_test_runtime_telemetry_fixture_line($event('2026-08-14T00:50:00.000000+08:00', 20, [
+                'action' => 'claim', 'variant' => 'runtime', 'outcome' => 'lock_exhausted', 'retry_count' => 2, 'skipped_ticks' => 1,
+            ]))
+            . "{malformed\n",
+    ];
+    foreach ($fixtures as $path => $contents) {
+        if (file_put_contents($fixtureDir . '/' . basename($path), $contents) === false) {
+            throw new RuntimeException('Cannot write runtime telemetry summary fixture.');
+        }
+    }
+    $requested = [];
+    try {
+        $summary = hub_runtime_telemetry_summary($since, $until, static function (string $path) use (&$requested, $fixtureDir) {
+            $requested[] = $path;
+            return fopen($fixtureDir . '/' . basename($path), 'rb');
+        });
+    } finally {
+        foreach ($fixtures as $path => $_contents) {
+            unlink($fixtureDir . '/' . basename($path));
+        }
+        rmdir($fixtureDir);
+    }
+
+    hub_test_assert($requested === $paths, 'summary must request only the two direct daily paths in order');
+    hub_test_assert(($summary['invalid_lines'] ?? null) === 1, 'summary must count malformed lines');
+    hub_test_assert(($summary['groups'][0] ?? null) === [
+        'action' => 'claim', 'variant' => 'runtime', 'count' => 2, 'p50_tx' => 10.0, 'p95_tx' => 20.0, 'p99_tx' => 20.0,
+        'lock_count' => 1, 'retries' => 3, 'exhausted' => 1, 'skipped' => 3,
+    ], 'claim/runtime summary totals mismatch');
+    hub_test_assert(($summary['groups'][1] ?? null) === [
+        'action' => 'heartbeat', 'variant' => 'cpu', 'count' => 3, 'p50_tx' => 2.0, 'p95_tx' => 3.0, 'p99_tx' => 3.0,
+        'lock_count' => 0, 'retries' => 0, 'exhausted' => 0, 'skipped' => 0,
+    ], 'heartbeat/cpu summary quantiles mismatch');
+});
+
+hub_test('runtime telemetry renders sorted tabular summaries including invalid lines', function (): void {
+    $rendered = hub_runtime_telemetry_render_summary([
+        'invalid_lines' => 1,
+        'groups' => [
+            ['action' => 'heartbeat', 'variant' => 'cpu', 'count' => 3, 'p50_tx' => 2.0, 'p95_tx' => 3.0, 'p99_tx' => 3.0, 'lock_count' => 0, 'retries' => 0, 'exhausted' => 0, 'skipped' => 0],
+            ['action' => 'claim', 'variant' => 'runtime', 'count' => 2, 'p50_tx' => 10.0, 'p95_tx' => 20.0, 'p99_tx' => 20.0, 'lock_count' => 1, 'retries' => 3, 'exhausted' => 1, 'skipped' => 3],
+        ],
+    ]);
+
+    hub_test_assert($rendered === "action\tvariant\tcount\tp50_tx\tp95_tx\tp99_tx\tlock>0\tretries\texhausted\tskipped\nclaim\truntime\t2\t10\t20\t20\t1\t3\t1\t3\nheartbeat\tcpu\t3\t2\t3\t3\t0\t0\t0\t0\ninvalid_lines=1\n", 'summary table must remain sorted and complete');
+});
+
+hub_test('runtime telemetry retention removes only expired regular dated files', function (): void {
+    hub_test_require_symlink_fixture('Runtime telemetry retention requires symlink fixtures.');
+    $files = [
+        'runtime-telemetry-2026-08-07.ndjson',
+        'runtime-telemetry-2026-08-08.ndjson',
+        'runtime-telemetry-2026-08-14.ndjson',
+        'runtime-telemetry-bad.ndjson',
+        'runtime-telemetry-unrelated.log',
+    ];
+    $original = [];
+    foreach ($files as $file) {
+        $path = HUB_LOG_DIR . '/' . $file;
+        $original[$path] = is_file($path) ? file_get_contents($path) : null;
+        if (file_put_contents($path, 'runtime telemetry fixture') === false) {
+            throw new RuntimeException('Cannot create runtime telemetry retention fixture.');
+        }
+    }
+    $target = sys_get_temp_dir() . '/3waaihub_runtime_telemetry_link_' . bin2hex(random_bytes(8));
+    $link = HUB_LOG_DIR . '/runtime-telemetry-2026-08-01.ndjson';
+    if (file_put_contents($target, 'symlink target') === false || !symlink($target, $link)) {
+        throw new RuntimeException('Cannot create runtime telemetry symlink fixture.');
+    }
+    try {
+        $purged = hub_prune_runtime_telemetry(new DateTimeImmutable('2026-08-14T12:00:00.000000+08:00'));
+        hub_test_assert($purged === 1, 'only the expired regular telemetry file must be purged');
+        hub_test_assert(!file_exists(HUB_LOG_DIR . '/runtime-telemetry-2026-08-07.ndjson'), 'expired telemetry file must be removed');
+        foreach (array_slice($files, 1) as $file) {
+            hub_test_assert(is_file(HUB_LOG_DIR . '/' . $file), 'non-expired or unrelated file must be retained');
+        }
+        hub_test_assert(is_link($link) && file_exists($target), 'expired-looking telemetry symlink must be retained');
+    } finally {
+        if (is_link($link)) {
+            unlink($link);
+        }
+        unlink($target);
+        foreach ($original as $path => $contents) {
+            if ($contents === null) {
+                @unlink($path);
+            } else {
+                file_put_contents($path, $contents);
+            }
+        }
+    }
+});
+
+hub_test('runtime telemetry summary CLI accepts one strict since option', function (): void {
+    $script = HUB_ROOT . '/scripts/runtime_telemetry_summary.php';
+    $valid = [];
+    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg('--since=1 hour') . ' 2>&1', $valid, $validStatus);
+    hub_test_assert($validStatus === 0 && ($valid[0] ?? null) === "action\tvariant\tcount\tp50_tx\tp95_tx\tp99_tx\tlock>0\tretries\texhausted\tskipped", 'valid CLI range must render the summary table');
+
+    $invalid = [];
+    exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg('--since=all time') . ' 2>&1', $invalid, $invalidStatus);
+    hub_test_assert($invalidStatus === 64 && $invalid === ['runtime_telemetry_since_invalid'], 'invalid CLI range must use the fixed error');
+});

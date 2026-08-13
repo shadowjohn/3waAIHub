@@ -2126,6 +2126,7 @@ function hub_prune_retention_partials(PDO $db, string $now): int
 function hub_prune_retention(PDO $db, ?string $now = null): array
 {
     $now ??= hub_now();
+    $runtimeTelemetryPurged = hub_prune_runtime_telemetry(new DateTimeImmutable($now));
     $voiceProfiles = hub_prune_expired_voice_profiles($db, $now);
     $recovered = hub_retention_recover_stale_claims($db, $now);
     $stmt = $db->prepare(
@@ -2173,6 +2174,7 @@ function hub_prune_retention(PDO $db, ?string $now = null): array
         'recovered' => $recovered,
         'metadata_purged' => $metadataPurged,
         'cluster_gpu_metrics_purged' => $clusterGpuMetricsPurged,
+        'runtime_telemetry_files_purged' => $runtimeTelemetryPurged,
         'voice_profiles_deleted' => $voiceProfiles['profiles_deleted'],
         'voice_profile_audio_purged' => $voiceProfiles['audio_purged'],
         'voice_profile_errors' => $voiceProfiles['errors'],
