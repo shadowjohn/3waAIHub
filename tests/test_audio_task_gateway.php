@@ -940,11 +940,6 @@ hub_test('shared task worker claims Whisper Pack jobs and waits for its GPU cont
     $taskId = 0;
     try {
         hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
-        $modelDirectory = $models . '/whisper/asr/large-v3';
-        mkdir($modelDirectory, 0775, true);
-        foreach (['config.json', 'model.bin', 'tokenizer.json'] as $file) {
-            file_put_contents($modelDirectory . '/' . $file, '{}', LOCK_EX);
-        }
         $memberId = hub_create_api_member($db, 'Worker Queue Owner');
         $token = hub_create_api_token($db, $memberId, 'worker queue token', null, null);
         $route = hub_resolve_audio_async_route($db, 'speech_transcribe');
@@ -953,7 +948,7 @@ hub_test('shared task worker claims Whisper Pack jobs and waits for its GPU cont
         $claimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
         hub_test_assert((int)($claimed['id'] ?? 0) === $taskId, 'shared task worker claim contract must include Whisper Pack jobs');
         hub_run_pack_job_task($db, $claimed ?? [], [
-            'gpu_probe' => static fn (): array => ['free_vram_mb' => 4096, 'processes' => []],
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 2048, 'processes' => []],
         ]);
 
         $task = hub_get_task($db, $taskId);

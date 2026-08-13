@@ -49,7 +49,7 @@ hub_test('Facebook login cleanup and Docker stages keep the bounded runtime cont
     hub_test_assert(str_contains($cleanup, 'hub_facebook_login_cleanup_expired') && str_contains($cleanup, 'min(10'), 'cleanup script must call the bounded helper');
 
     $cron = (string)file_get_contents(HUB_ROOT . '/crontab/1min.sh');
-    $line = 'php "$APP_ROOT/scripts/facebook_profile_cleanup.php" --limit=10 >> "$APP_ROOT/data/logs/facebook-profile-cleanup.log" 2>&1';
+    $line = 'php "$APP_ROOT/scripts/facebook_profile_cleanup.php" --limit=10 >> "$RUNTIME_DATA_ROOT/logs/facebook-profile-cleanup.log" 2>&1';
     hub_test_assert(substr_count($cron, $line) === 1, 'one-minute cron must run exactly one bounded login cleanup');
     hub_test_assert(strpos($cron, $line) > strpos($cron, 'if needs_permission_fix; then'), 'login cleanup must run after runtime permission repair');
     hub_test_assert(str_contains($cron, "if ! {\n  " . $line . ";\n}; then"), 'login cleanup failure must not stop command and task workers');
@@ -131,27 +131,34 @@ hub_test('Facebook crawler Test Center renders a focused localized workflow', fu
         hub_test_assert(!str_contains($source, $remote), 'crawler partial must not load external assets');
     }
 
-    ob_start();
-    require_once HUB_ROOT . '/admin/playground.php';
-    ob_end_clean();
-    hub_test_assert(in_array('facebook_crawl', hub_playground_supported_modes(), true), 'crawler must be selectable in Test Center');
     $db = hub_test_reset_db();
     hub_install_pack($db, 'facebook-crawler', ['idempotent' => true]);
     hub_set_service_enabled($db, 'facebook_crawl', true);
-    $service = hub_get_service_by_mode($db, 'facebook_crawl');
-    hub_test_assert(is_array($service) && hub_playground_basic_readiness($service) === null, 'enabled internal task must not require a resident service runtime');
-    $previousPost = $_POST;
-    try {
-        $_POST = [];
-        hub_test_assert(hub_playground_request_payload('facebook_crawl') === [
-            'targets' => [['url' => 'https://www.facebook.com/wra.gov.tw']],
-            'limit_per_target' => 10,
-        ], 'crawler Playground must submit the public JSON contract');
-    } finally {
-        $_POST = $previousPost;
-    }
+    $script = "define('HUB_TESTING', true);"
+        . 'require ' . var_export(HUB_ROOT . '/app/bootstrap.php', true) . ';'
+        . '$db = hub_db();'
+        . '$previousSession = $_SESSION ?? []; $previousServer = $_SERVER; $previousGet = $_GET; $previousPost = $_POST;'
+        . 'try {'
+        . '$_SESSION = ["user_id" => 1, "username" => "admin", "csrf_token" => "test"];'
+        . '$_SERVER = ["REQUEST_METHOD" => "GET", "REMOTE_ADDR" => "127.0.0.1", "SCRIPT_NAME" => "/3waAIHub/admin/playground.php", "HTTP_HOST" => "localhost"];'
+        . '$_GET = ["mode" => "facebook_crawl"]; $_POST = [];'
+        . 'ob_start(); require ' . var_export(HUB_ROOT . '/admin/playground.php', true) . '; $html = (string)ob_get_clean();'
+        . '$service = hub_get_service_by_mode($db, "facebook_crawl");'
+        . 'echo json_encode(["html" => $html, "supported" => in_array("facebook_crawl", hub_playground_supported_modes(), true), "ready" => is_array($service) && hub_playground_basic_readiness($service) === null, "payload" => hub_playground_request_payload("facebook_crawl")], JSON_THROW_ON_ERROR);'
+        . '} finally { $_SESSION = $previousSession; $_SERVER = $previousServer; $_GET = $previousGet; $_POST = $previousPost; }';
+    $result = hub_run_command([PHP_BINARY, '-r', $script], 30, [
+        'AIHUB_TEST_DB' => (string)getenv('AIHUB_TEST_DB'),
+    ]);
+    $rendered = json_decode((string)$result['stdout'], true);
+    hub_test_assert($result['exit_code'] === 0 && is_array($rendered), 'Facebook crawler Test Center must render as an authenticated admin: ' . $result['output']);
+    hub_test_assert(($rendered['supported'] ?? false) === true, 'crawler must be selectable in Test Center');
+    hub_test_assert(($rendered['ready'] ?? false) === true, 'enabled internal task must not require a resident service runtime');
+    hub_test_assert(($rendered['payload'] ?? null) === [
+        'targets' => [['url' => 'https://www.facebook.com/wra.gov.tw']],
+        'limit_per_target' => 10,
+    ], 'crawler Playground must submit the public JSON contract');
     foreach (['name="facebook_profile_id"', 'name="facebook_targets"', 'name="facebook_limit_per_target"', 'min="10" max="30"', 'data-facebook-task-links', 'data-facebook-dataset-preview'] as $needle) {
-        hub_test_assert(str_contains((string)file_get_contents(HUB_ROOT . '/admin/playground.php') . $source, $needle), 'crawler Playground missing ' . $needle);
+        hub_test_assert(str_contains((string)($rendered['html'] ?? '') . $source, $needle), 'crawler Playground missing ' . $needle);
     }
 
     $readme = (string)file_get_contents(HUB_ROOT . '/packs/facebook-crawler/README.md');

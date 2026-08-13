@@ -721,7 +721,7 @@ hub_test('Edge TTS firewall setup is executed against command mocks', function (
     if (hub_platform_id() !== 'linux' || !function_exists('proc_open')) {
         hub_test_skip('Edge TTS mocked firewall test requires Linux and proc_open');
     }
-    $result = hub_run_command([HUB_ROOT . '/packs/edge-tts/service/test_egress_firewall.sh'], 20);
+    $result = hub_run_command(['bash', HUB_ROOT . '/packs/edge-tts/service/test_egress_firewall.sh'], 20);
     hub_test_assert(($result['exit_code'] ?? 1) === 0 && ($result['stdout'] ?? '') === 'test_egress_firewall: ok',
         'Edge TTS firewall test must execute provider-only TCP 443, DNS removal, terminal DROP, and forced-failure sentinel checks: ' . ($result['output'] ?? ''));
 });
