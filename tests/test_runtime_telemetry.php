@@ -239,7 +239,7 @@ hub_test('pack queue claim emits one sanitized committed task telemetry event', 
     hub_test_assert($eventFields === $fields, 'pack queue claim telemetry must not expose task identity or input fields');
 });
 
-hub_test('pack runtime claim emits committed and fence-lost telemetry after valid transactions', function (): void {
+hub_test('pack runtime claim emits committed telemetry for a claimed runtime no-match', function (): void {
     $db = hub_test_reset_db();
     hub_test_runtime_telemetry_enqueue_pack_job($db);
     $task = hub_claim_next_task($db, ['pack_job']);
@@ -257,7 +257,69 @@ hub_test('pack runtime claim emits committed and fence-lost telemetry after vali
     $before = count(hub_test_runtime_telemetry_events());
     hub_test_assert(hub_pack_job_claim_runtime($db, $task, 'telemetry-runtime-worker', 60) === null, 'claimed runtime must not be claimed twice');
     $events = hub_test_runtime_telemetry_claim_events_after($before, 'runtime');
-    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'fence_lost', 'normal runtime null result must emit fence_lost telemetry');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'committed', 'claimed runtime no-match must emit committed telemetry');
+});
+
+hub_test('pack runtime claim emits fence-lost telemetry when the task guard changes', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Pack runtime guard telemetry fixture must claim a task.');
+    }
+    $db->prepare('UPDATE tasks SET lock_token = :lock_token WHERE id = :id')->execute([
+        ':lock_token' => 'replaced-task-lock',
+        ':id' => (int)$task['id'],
+    ]);
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_claim_runtime($db, $task, 'telemetry-runtime-worker', 60) === null, 'changed task guard must reject the runtime claim');
+    $events = hub_test_runtime_telemetry_claim_events_after($before, 'runtime');
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'fence_lost', 'changed task guard must emit fence_lost telemetry');
+});
+
+hub_test('pack runtime claim preserves a caller-owned transaction on BEGIN failure', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db);
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Caller transaction fixture must claim a task.');
+    }
+    $key = 'AIHUB_MODELS_DIR';
+    $original = $db->prepare('SELECT value FROM settings WHERE key = :key');
+    $original->execute([':key' => $key]);
+    $originalValue = $original->fetchColumn();
+    $before = count(hub_test_runtime_telemetry_events());
+    $db->beginTransaction();
+    try {
+        $db->prepare('UPDATE settings SET value = :value WHERE key = :key')->execute([
+            ':value' => 'caller-transaction-value',
+            ':key' => $key,
+        ]);
+        $error = null;
+        try {
+            hub_pack_job_claim_runtime($db, $task, 'telemetry-runtime-worker', 60);
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+
+        hub_test_assert($error instanceof PDOException, 'caller transaction must receive the original BEGIN exception');
+        hub_test_assert($db->inTransaction(), 'runtime claim must not roll back a caller-owned transaction');
+        $current = $db->prepare('SELECT value FROM settings WHERE key = :key');
+        $current->execute([':key' => $key]);
+        hub_test_assert($current->fetchColumn() === 'caller-transaction-value', 'caller uncommitted change must remain intact');
+        hub_test_assert(hub_test_runtime_telemetry_claim_events_after($before, 'runtime') === [], 'caller-owned transaction rejection must not emit telemetry');
+    } finally {
+        if ($db->inTransaction()) {
+            try {
+                $db->rollBack();
+            } catch (Throwable) {
+            }
+        }
+    }
+    $restored = $db->prepare('SELECT value FROM settings WHERE key = :key');
+    $restored->execute([':key' => $key]);
+    hub_test_assert($restored->fetchColumn() === $originalValue, 'caller transaction rollback must discard its uncommitted change');
 });
 
 hub_test('invalid pack runtime claim emits no telemetry', function (): void {

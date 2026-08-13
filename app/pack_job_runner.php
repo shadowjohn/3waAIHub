@@ -30,20 +30,20 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
     $txEndedNs = null;
     $txBeginAt = null;
     $txCommitAt = null;
-    $transactionStarted = false;
+    $ownsTransaction = false;
     $outcome = 'failed';
     $result = null;
     $error = null;
     try {
         hub_sqlite_begin_immediate($db, $beginStats);
-        $transactionStarted = true;
+        $ownsTransaction = true;
         $txStartedNs = hrtime(true);
         $txBeginAt = hub_runtime_telemetry_timestamp();
         $guard = $db->prepare("SELECT 1 FROM tasks WHERE id = :id AND task_type = 'pack_job' AND status = 'running' AND lock_token = :lock_token");
         $guard->execute([':id' => $taskId, ':lock_token' => $taskLock]);
         if ($guard->fetchColumn() === false) {
             $db->exec('COMMIT');
-            $transactionStarted = false;
+            $ownsTransaction = false;
             $outcome = 'fence_lost';
         } else {
             $find = $db->prepare('SELECT * FROM runtime_runs WHERE task_id = :task_id ORDER BY id ASC LIMIT 1');
@@ -74,8 +74,8 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
             }
             if (!is_array($run) || ($run['state'] ?? '') !== 'queued') {
                 $db->exec('COMMIT');
-                $transactionStarted = false;
-                $outcome = 'fence_lost';
+                $ownsTransaction = false;
+                $outcome = 'committed';
             } else {
                 $token = bin2hex(random_bytes(32));
                 $now = hub_now();
@@ -94,23 +94,23 @@ function hub_pack_job_claim_runtime(PDO $db, array $task, string $workerId, int 
                 ]);
                 if ($claim->rowCount() !== 1) {
                     $db->exec('COMMIT');
-                    $transactionStarted = false;
+                    $ownsTransaction = false;
                     $outcome = 'fence_lost';
                 } else {
                     $result = hub_runtime_fetch_run($db, (int)$run['id']);
                     $db->exec('COMMIT');
-                    $transactionStarted = false;
+                    $ownsTransaction = false;
                     $outcome = 'committed';
                 }
             }
         }
     } catch (Throwable $e) {
-        if ($transactionStarted || $db->inTransaction()) {
+        if ($ownsTransaction) {
             try {
                 $db->exec('ROLLBACK');
             } catch (Throwable) {
             }
-            $transactionStarted = false;
+            $ownsTransaction = false;
         }
         $outcome = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
         $error = $e;
