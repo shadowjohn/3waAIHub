@@ -166,7 +166,7 @@ function hub_runtime_gpu_acquire(PDO $db, array $run, int $leaseSeconds, ?array 
     return $result;
 }
 
-function hub_runtime_gpu_runtime_fence_in_transaction(PDO $db, array $run, ?int $taskId = null): bool
+function hub_runtime_gpu_runtime_fence_in_transaction(PDO $db, array $run, ?int $taskId = null, ?array &$firstWriteTiming = null): bool
 {
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $now = hub_now();
@@ -186,7 +186,17 @@ function hub_runtime_gpu_runtime_fence_in_transaction(PDO $db, array $run, ?int 
     if ($taskId !== null) {
         $params[':task_id'] = $taskId;
     }
-    $stmt->execute($params);
+    $measureFirstWrite = $firstWriteTiming !== null && !isset($firstWriteTiming['started_ns']);
+    if ($measureFirstWrite) {
+        $firstWriteTiming['started_ns'] = hrtime(true);
+    }
+    try {
+        $stmt->execute($params);
+    } finally {
+        if ($measureFirstWrite) {
+            $firstWriteTiming['ended_ns'] = hrtime(true);
+        }
+    }
 
     return $stmt->rowCount() === 1;
 }
@@ -210,9 +220,9 @@ function hub_runtime_gpu_update_leased(PDO $db, array $lease, string $setSql, ar
     return $stmt->rowCount() === 1;
 }
 
-function hub_runtime_gpu_release_in_transaction(PDO $db, array $run, array $lease, ?int $taskId = null): bool
+function hub_runtime_gpu_release_in_transaction(PDO $db, array $run, array $lease, ?int $taskId = null, ?array &$firstWriteTiming = null): bool
 {
-    if (!hub_runtime_gpu_fence_matches_run($run, $lease) || !hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId)) {
+    if (!hub_runtime_gpu_fence_matches_run($run, $lease) || !hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId, $firstWriteTiming)) {
         return false;
     }
     $now = hub_now();
@@ -340,9 +350,9 @@ function hub_runtime_gpu_heartbeat(PDO $db, array $run, array $lease, int $lease
     }
 }
 
-function hub_runtime_gpu_block_in_transaction(PDO $db, array $run, array $lease, string $error, ?int $taskId = null): bool
+function hub_runtime_gpu_block_in_transaction(PDO $db, array $run, array $lease, string $error, ?int $taskId = null, ?array &$firstWriteTiming = null): bool
 {
-    if (!hub_runtime_gpu_fence_matches_run($run, $lease) || !hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId)) {
+    if (!hub_runtime_gpu_fence_matches_run($run, $lease) || !hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId, $firstWriteTiming)) {
         return false;
     }
     $error = substr(trim($error), 0, 512);

@@ -1939,3 +1939,152 @@ hub_test('Pack terminal and recovery reject caller transactions without telemetr
         $db->exec('ROLLBACK');
     }
 });
+
+hub_test('GPU terminal fence timing captures its first no-op runtime write', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $fixture['task'], $fixture['run'], 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('GPU terminal timing fixture must acquire a lease.');
+    }
+    $timing = [];
+    $db->beginTransaction();
+    try {
+        $matched = hub_runtime_gpu_runtime_fence_in_transaction($db, $fixture['run'], (int)$fixture['task']['id'], $timing);
+        hub_test_assert($matched
+            && is_int($timing['started_ns'] ?? null)
+            && is_int($timing['ended_ns'] ?? null)
+            && $timing['ended_ns'] >= $timing['started_ns'],
+            'GPU terminal timing must surround its existing no-op runtime UPDATE only');
+    } finally {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+    }
+});
+
+hub_test('terminal automatic rollback emits after close and preserves its statement error', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 5;
+    $before = count(hub_test_runtime_telemetry_events());
+    $db->exec("CREATE TEMP TRIGGER terminal_automatic_rollback BEFORE UPDATE ON runtime_runs WHEN NEW.id = " . (int)$fixture['run']['id'] . " BEGIN SELECT RAISE(ROLLBACK, 'terminal_automatic_rollback'); END");
+    $error = null;
+    try {
+        hub_commit_pack_job_failure($db, (int)$fixture['task']['id'], $fixture['run'], 'failed', 'runtime_exit_nonzero', 'terminal fixture', $fixture['cleanup'], null, $state);
+    } catch (Throwable $caught) {
+        $error = $caught;
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS terminal_automatic_rollback');
+    }
+    $freshTransaction = false;
+    try {
+        $db->beginTransaction();
+        $db->rollBack();
+        $freshTransaction = true;
+    } catch (Throwable) {
+    }
+    $events = hub_test_runtime_telemetry_events_after($before, 'finish', 'failure');
+    $run = hub_runtime_fetch_run($db, (int)$fixture['run']['id']);
+    hub_test_assert($error instanceof PDOException
+        && str_contains($error->getMessage(), 'terminal_automatic_rollback')
+        && !$db->inTransaction()
+        && $freshTransaction
+        && (hub_get_task($db, (int)$fixture['task']['id'])['status'] ?? null) === 'running'
+        && ($run['state'] ?? null) === 'claimed'
+        && $state['skipped_ticks'] === 0
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'rolled_back'
+        && ($events[0]['skipped_ticks'] ?? null) === 5,
+        'automatic terminal rollback must close before telemetry while preserving its original statement error');
+});
+
+hub_test('raw terminal BEGIN remains caller-owned without telemetry or skip consumption', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 3;
+    $beforeState = serialize($state);
+    $before = count(hub_test_runtime_telemetry_events());
+    $markerKey = 'terminal-raw-' . bin2hex(random_bytes(4));
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $db->prepare('INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)')->execute([
+            ':key' => $markerKey,
+            ':value' => 'caller-owned',
+            ':updated_at' => hub_now(),
+        ]);
+        $error = null;
+        try {
+            hub_commit_pack_job_failure($db, (int)$fixture['task']['id'], $fixture['run'], 'failed', 'runtime_exit_nonzero', 'terminal fixture', $fixture['cleanup'], null, $state);
+        } catch (Throwable $caught) {
+            $error = $caught;
+        }
+        $marker = $db->prepare('SELECT value FROM settings WHERE key = :key');
+        $marker->execute([':key' => $markerKey]);
+        hub_test_assert($error instanceof PDOException
+            && $marker->fetchColumn() === 'caller-owned'
+            && serialize($state) === $beforeState
+            && hub_test_runtime_telemetry_events_after($before, 'finish', 'failure') === [],
+            'raw terminal BEGIN must remain intact without telemetry or skip consumption');
+    } finally {
+        $db->exec('ROLLBACK');
+    }
+});
+
+hub_test('recovery lock exhaustion emits zero-duration telemetry after known no-begin close', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $db->prepare("UPDATE runtime_runs SET lease_expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => (int)$fixture['run']['id']]);
+    $task = hub_get_task($db, (int)$fixture['task']['id']);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 2;
+    $before = count(hub_test_runtime_telemetry_events());
+    $error = null;
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(700000, static function (string $attemptPath) use ($task, $fixture, &$state, &$error): void {
+        $lockedDb = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        try {
+            hub_pack_job_reconcile_lost_fence($lockedDb, $task, $fixture['run'], $fixture['cleanup'], null, $state);
+        } catch (Throwable $caught) {
+            $error = $caught;
+        }
+        hub_test_assert(!$lockedDb->inTransaction(), 'exhausted recovery BEGIN must not leave a transaction open');
+    });
+    $events = hub_test_runtime_telemetry_events_after($before, 'recovery', 'runtime');
+    hub_test_assert($error instanceof PDOException
+        && str_contains(strtolower($error->getMessage()), 'database is locked')
+        && $state['skipped_ticks'] === 0
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && (float)($events[0]['tx_ms'] ?? -1) === 0.0
+        && ($events[0]['skipped_ticks'] ?? null) === 2,
+        'recovery lock exhaustion may consume skips only after the helper proves no transaction began');
+});
+
+hub_test('terminal commit failure rolls back and preserves its commit exception', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 4;
+    $before = count(hub_test_runtime_telemetry_events());
+    $db->exec('PRAGMA defer_foreign_keys = ON');
+    $db->exec("CREATE TEMP TRIGGER terminal_commit_foreign_key AFTER UPDATE OF state ON runtime_runs WHEN NEW.id = " . (int)$fixture['run']['id'] . " BEGIN INSERT INTO task_artifact_holds (source_artifact_id, downstream_task_id, held_at) VALUES (-1, NEW.task_id, '2000-01-01 00:00:00'); END");
+    $error = null;
+    try {
+        hub_commit_pack_job_failure($db, (int)$fixture['task']['id'], $fixture['run'], 'failed', 'runtime_exit_nonzero', 'terminal fixture', $fixture['cleanup'], null, $state);
+    } catch (Throwable $caught) {
+        $error = $caught;
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS terminal_commit_foreign_key');
+    }
+    $events = hub_test_runtime_telemetry_events_after($before, 'finish', 'failure');
+    hub_test_assert($error instanceof PDOException
+        && str_contains($error->getMessage(), 'FOREIGN KEY constraint failed')
+        && (hub_get_task($db, (int)$fixture['task']['id'])['status'] ?? null) === 'running'
+        && $state['skipped_ticks'] === 0
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'rolled_back'
+        && ($events[0]['skipped_ticks'] ?? null) === 4,
+        'terminal commit failure must preserve its commit exception after a confirmed rollback');
+});

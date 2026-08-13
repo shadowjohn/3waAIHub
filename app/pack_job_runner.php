@@ -3036,10 +3036,9 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
                 $outcome = 'rolled_back';
             } catch (Throwable) {
             }
-        } elseif ($txStartedNs === null
-            && !($e instanceof PDOException && (str_contains(strtolower($e->getMessage()), 'within a transaction') || str_contains(strtolower($e->getMessage()), 'already an active transaction')))) {
+        } elseif ($txStartedNs === null && !empty($beginStats['lock_exhausted'])) {
             $transactionClosed = true;
-            $outcome = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
+            $outcome = 'lock_exhausted';
         }
     }
     $txEndedNs = hrtime(true);
