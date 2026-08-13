@@ -48,6 +48,7 @@ define('HUB_RELEASE_LABEL', '8/7 Admin Market + Cluster Dashboard Preview');
 date_default_timezone_set('Asia/Taipei');
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/runtime_telemetry.php';
 require_once __DIR__ . '/runtime_portability.php';
 require_once __DIR__ . '/runtime_worker.php';
 require_once __DIR__ . '/auth.php';
