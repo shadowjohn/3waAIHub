@@ -1,6 +1,6 @@
 # 影像工具操作手冊
 
-`image-tools` 是可擴充的本機影像工具 Pack；目前的 `upscale` 與 `upscale_task` operation 使用離線、可驗證的 Real-ESRGAN snapshot，為 `L5-benchmark-ready` 且 `runtime_ready=true`。本次驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
+`image-tools` 是可擴充的本機影像工具 Pack；`upscale` 與 `upscale_task` 使用離線、可驗證的 Real-ESRGAN snapshot，為 `L5-benchmark-ready` 且 `runtime_ready=true`。`colorize` 使用固定 DDColor ModelScope snapshot；它同樣必須離線 staging，但尚未宣告 DDColor benchmark。既有驗收的版本、checksum、輸出 metadata 與 cleanup 結論見 [image-tools-acceptance.md](image-tools-acceptance.md)。
 
 ## 離線模型 staging
 
@@ -9,6 +9,20 @@
 3. 將整個 snapshot 以唯讀方式掛入 container。啟動前確認 marker 的 repository commit 是 `a4abfb2979a7bbff3f69f58f58ae324608821e27`，所有 manifest SHA-256 都與實檔相同，且沒有 symlink 或未列檔案。
 
 模型與輸入圖片不應提交到 Git、寫入 README，或放進 log。任何 staging 失敗都保留舊 snapshot，清理 partial download 後再重試。
+
+### DDColor 黑白變彩色 staging
+
+DDColor source 固定為 `piddnad/DDColor@2adb63f2656ac41cbdf7b894cddd94121a3faf13`，權重固定為 `piddnad/DDColor-models@e9e7b527709c8aeb2f5e1bf701e72fd468a13baa` 的 `ddcolor_modelscope.pth`。先建置 0.1.1 image，再以可寫入的 model mount 執行一次 provision；正式服務仍只讀掛載模型。
+
+```bash
+docker compose -f data/services/image-tools-main/docker-compose.generated.yml build image-tools
+docker run --rm --user 0 \
+  -v /DATA/models/image-tools:/models/image-tools \
+  3waaihub-image-tools-main:0.1.1 \
+  python3 /app/provision_colorize_assets.py
+```
+
+provisioner 只接受 HTTPS allowlist redirect，下載後驗證 911,950,059 bytes 與 SHA-256，再原子建立 `/DATA/models/image-tools/ddcolor/ready.json`。不要在 API request、worker 或正式服務容器中下載權重。
 
 ## 安裝與 preflight
 
@@ -44,6 +58,15 @@ php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upsc
 同步 CUDA 或 CPU smoke 使用 `mode=image-tools&operation=upscale`，將 `operation=upscale` 同時放 query 與 multipart form。上傳 `image` 或 `base64_string`，但不可兩者同時傳。成功只接受 `image/png`，並記錄 `X-3waAIHub-Model`、`X-3waAIHub-Backend`、`X-3waAIHub-Elapsed-Ms`、`X-3waAIHub-Width`、`X-3waAIHub-Height`。
 
 `outscale` 僅用於同步 `upscale`，只接受 `2`、`3` 或 `4`；省略時維持所選 model 的原生輸出倍率。非同步 `upscale_task` 不接受 `outscale`。
+
+同步 `colorize` 固定使用 `ddcolor-modelscope`，接受 `image` 或 `base64_string` 與 `backend`，不接受 `model` 或 `outscale`。它會保留原圖尺寸並產出 PNG；顏色是模型推測，不應視為歷史事實。
+
+```bash
+curl -X POST -H "Authorization: Bearer <TOKEN>" -H "Accept: image/png" \
+  -F 'operation=colorize' -F 'image=@black-and-white.png' -F 'backend=auto' \
+  '<HUB_BASE_URL>/api.php?mode=image-tools&operation=colorize' \
+  --output colorized-image.png
+```
 
 非同步 CUDA 或 CPU flow 使用 `mode=image-tools&operation=upscale_task`。Hub 在 submit 時固定 queue/backend；以既有 `task_status` 輪詢、`task_result` 取 artifact ID，透過 `artifact` 下載 `upscaled_image.png` 與 `upscale_report.json`。下載後比對 report 的 SHA-256、model、backend、尺寸與 image SHA-256；不將原始 Base64 寫入 task input、report 或 log。
 

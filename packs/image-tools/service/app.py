@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, Response
 from PIL import Image
 import numpy as np
 
+import colorize_runtime
 import model_runtime
 from image_contract import ImageToolsError, decode_image, resolve_backend, resolve_outscale, select_model, validate_output_pixels
 from model_runtime import DEFAULT_MODEL_ROOT, ModelRuntimeError, verify_ready
@@ -21,10 +22,15 @@ app = FastAPI(title="3waAIHub Image Tools")
 RUNTIME_LEVEL = "L5-benchmark-ready"
 _INFERENCE_LOCK = threading.Lock()
 _UPSAMPLER_CACHE = None
+_COLORIZER_CACHE = None
 
 
 def model_dir() -> Path:
     return Path(os.getenv("IMAGE_TOOLS_MODEL_DIR", str(DEFAULT_MODEL_ROOT)))
+
+
+def colorize_model_dir() -> Path:
+    return Path(os.getenv("IMAGE_TOOLS_COLORIZE_MODEL_DIR", str(colorize_runtime.DEFAULT_COLORIZE_MODEL_ROOT)))
 
 
 def cuda_available() -> bool:
@@ -98,30 +104,75 @@ def _run(source_bytes: bytes, *, model: str, backend: str, outscale: int) -> tup
     }
 
 
+def _run_colorize(source_bytes: bytes, *, backend: str) -> tuple[bytes, dict[str, object]]:
+    global _COLORIZER_CACHE
+    started = time.perf_counter()
+    source = decode_image(source_bytes, operation="colorize")
+    configured_root = colorize_model_dir()
+    with _INFERENCE_LOCK:
+        if configured_root.is_symlink():
+            colorize_runtime.verify_ready(configured_root)
+        try:
+            root = configured_root.resolve()
+        except (OSError, RuntimeError):
+            colorize_runtime.verify_ready(configured_root)
+            raise
+        key = (root, backend)
+        if _COLORIZER_CACHE is None or _COLORIZER_CACHE[0] != key:
+            colorizer = colorize_runtime.build_colorizer(backend, root)
+            _COLORIZER_CACHE = (key, colorizer)
+        else:
+            colorizer = _COLORIZER_CACHE[1]
+        timer = threading.Timer(900, _exit_stalled_inference)
+        timer.daemon = True
+        timer.start()
+        try:
+            output = colorize_runtime.colorize(colorizer, source)
+            encoded = io.BytesIO()
+            output.save(encoded, format="PNG")
+        finally:
+            timer.cancel()
+    return encoded.getvalue(), {
+        "model": "ddcolor-modelscope",
+        "backend": backend,
+        "width": source.width,
+        "height": source.height,
+        "elapsed_ms": max(1, int(round((time.perf_counter() - started) * 1000))),
+    }
+
+
 @app.post("/process/image", response_model=None)
 async def process_image(
     image: UploadFile | None = File(default=None),
     operation: str = Form(default="upscale"),
-    model: str = Form(default="realesrgan-x4plus"),
+    model: str | None = Form(default=None),
     backend: str = Form(default="auto"),
     outscale: str | None = Form(default=None),
 ) -> Response:
     started = time.perf_counter()
     if image is None:
         return error_response(400, "file_required")
-    if operation != "upscale":
+    if operation not in {"upscale", "colorize"}:
         return error_response(400, "invalid_operation")
     try:
-        select_model(model)
-        selected_outscale = resolve_outscale(outscale, model=model)
         effective = resolve_backend(backend, cuda_available=cuda_available() if backend != "cpu" else False)
         source_bytes = await image.read(50 * 1024 * 1024 + 1)
-        png, report = await run_in_threadpool(_run, source_bytes, model=model, backend=effective, outscale=selected_outscale)
+        if operation == "colorize":
+            if model is not None or outscale is not None:
+                return error_response(400, "invalid_request")
+            png, report = await run_in_threadpool(_run_colorize, source_bytes, backend=effective)
+        else:
+            model = model or "realesrgan-x4plus"
+            select_model(model)
+            selected_outscale = resolve_outscale(outscale, model=model)
+            png, report = await run_in_threadpool(_run, source_bytes, model=model, backend=effective, outscale=selected_outscale)
     except ImageToolsError as exc:
         status = 415 if exc.code == "unsupported_media_type" else 413 if exc.code == "payload_too_large" else 503 if exc.code == "backend_unavailable" else 400
         return error_response(status, exc.code)
     except ModelRuntimeError as exc:
         return error_response(404 if exc.code == "model_not_present" else 503, exc.code)
+    except colorize_runtime.ColorizeRuntimeError as exc:
+        return error_response(404 if exc.code == "model_not_present" else 503 if exc.code == "model_load_failed" else 500, exc.code)
     except Exception:
         return error_response(500, "inference_failed")
     elapsed = max(1, int(round((time.perf_counter() - started) * 1000)))

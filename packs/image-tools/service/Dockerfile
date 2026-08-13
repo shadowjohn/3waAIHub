@@ -17,8 +17,14 @@ RUN python3 -m pip install --extra-index-url https://download.pytorch.org/whl/cu
     && python3 -c 'import cv2'
 RUN python3 -c "from importlib.util import find_spec; from pathlib import Path; spec = find_spec('basicsr'); assert spec and spec.submodule_search_locations; path = Path(next(iter(spec.submodule_search_locations))) / 'data' / 'degradations.py'; old = 'from torchvision.transforms.functional_tensor import rgb_to_grayscale'; new = 'from torchvision.transforms.functional import rgb_to_grayscale'; source = path.read_text(encoding='utf-8'); assert source.count(old) == 1, 'unexpected BasicSR rgb_to_grayscale import'; path.write_text(source.replace(old, new), encoding='utf-8')" \
     && python3 -c 'import cv2; import realesrgan'
+RUN git init /opt/ddcolor \
+    && git -C /opt/ddcolor remote add origin https://github.com/piddnad/DDColor.git \
+    && git -C /opt/ddcolor fetch --depth 1 origin 2adb63f2656ac41cbdf7b894cddd94121a3faf13 \
+    && git -C /opt/ddcolor checkout --detach FETCH_HEAD \
+    && rm -rf /opt/ddcolor/.git \
+    && test -f /opt/ddcolor/ddcolor/__init__.py
 
-COPY Dockerfile image_contract.py model_runtime.py provision_offline_assets.py storage_smoke.py model_smoke.py inference_smoke.py upscale_runner.py jobs.py app.py test_image_contract.py test_model_runtime.py test_model_smoke.py test_upscale_runner.py test_jobs.py test_app.py ./
+COPY Dockerfile image_contract.py model_runtime.py colorize_runtime.py provision_offline_assets.py provision_colorize_assets.py storage_smoke.py model_smoke.py inference_smoke.py upscale_runner.py jobs.py app.py test_image_contract.py test_model_runtime.py test_model_smoke.py test_upscale_runner.py test_jobs.py test_app.py ./
 RUN python3 -m unittest -v test_image_contract.py test_model_runtime.py test_model_smoke.py test_upscale_runner.py test_jobs.py test_app.py \
     && chmod 0555 /app/*.py
 

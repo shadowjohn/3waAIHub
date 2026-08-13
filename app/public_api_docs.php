@@ -868,9 +868,16 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         $example['operation'] = $operation;
         $example['endpoint'] .= '&operation=' . rawurlencode($operation);
         $example['url'] .= '&operation=' . rawurlencode($operation);
+        $operationFields = is_array($definition['input']['fields'] ?? null) ? $definition['input']['fields'] : [];
+        if ($operationFields !== []) {
+            $example['input_fields'] = array_values(array_filter(
+                $service['input_fields'],
+                static fn (array $field): bool => in_array((string)($field['name'] ?? ''), $operationFields, true)
+            ));
+        }
         $example['input_fields'] = array_merge([
             ['name' => 'operation', 'type' => 'string', 'required' => true, 'default' => $operation, 'enum' => [$operation]],
-        ], $service['input_fields']);
+        ], $example['input_fields']);
         if (str_ends_with($operation, '_task')) {
             $example['execution_type'] = 'async_task';
             $example['response_content_type'] = 'application/json';

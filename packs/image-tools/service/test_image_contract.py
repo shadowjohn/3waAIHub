@@ -55,6 +55,11 @@ class ImageContractTest(unittest.TestCase):
                 decoded = decode_image(image_bytes(Image.new("RGB", (3, 2), "red"), image_format), operation="upscale")
                 self.assertEqual((decoded.size, decoded.mode), ((3, 2), "RGB"))
 
+        self.assertEqual(
+            decode_image(image_bytes(Image.new("RGB", (3, 2), "black"), "PNG"), operation="colorize").size,
+            (3, 2),
+        )
+
         source = Image.new("RGB", (2, 3), "red")
         output = io.BytesIO()
         exif = Image.Exif()

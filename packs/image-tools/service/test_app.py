@@ -20,6 +20,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent))
 
 import model_runtime
+import colorize_runtime
 
 
 class _FastAPI:
@@ -61,9 +62,9 @@ fastapi_responses.Response = _Response
 sys.modules.update({"fastapi": fastapi, "fastapi.concurrency": fastapi_concurrency, "fastapi.responses": fastapi_responses})
 
 
-def png_bytes(size: tuple[int, int] = (2, 3)) -> bytes:
+def png_bytes(size: tuple[int, int] = (2, 3), color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
     output = io.BytesIO()
-    Image.new("RGB", size, "red").save(output, format="PNG")
+    Image.new("RGB", size, color).save(output, format="PNG")
     return output.getvalue()
 
 
@@ -87,6 +88,45 @@ class FakeUpsampler:
         return np.full((height * outscale, width * outscale, 3), (30, 20, 10), dtype=np.uint8), None
 
 
+class ColorizeRuntimeTest(unittest.TestCase):
+    def test_colorize_snapshot_requires_the_pinned_marker_and_weight_hash(self) -> None:
+        payload = b"ddcolor fixture"
+        asset = {
+            **colorize_runtime.DDCOLOR_MODEL_ASSET,
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        with tempfile.TemporaryDirectory() as temporary, patch.object(colorize_runtime, "DDCOLOR_MODEL_ASSET", asset):
+            root = Path(temporary) / "ddcolor"
+            root.mkdir()
+            (root / str(asset["path"])).write_bytes(payload)
+            (root / "ready.json").write_text(json.dumps(colorize_runtime.ready_marker()), encoding="utf-8")
+            self.assertEqual(colorize_runtime.ready_marker(), colorize_runtime.verify_ready(root))
+            (root / str(asset["path"])).write_bytes(b"tampered")
+            with self.assertRaisesRegex(colorize_runtime.ColorizeRuntimeError, "^model_load_failed$"):
+                colorize_runtime.verify_ready(root)
+
+
+class ColorizeProvisionTest(unittest.TestCase):
+    def test_colorize_provision_publishes_a_readable_atomic_snapshot(self) -> None:
+        import provision_colorize_assets as provisioner
+
+        payload = b"ddcolor fixture"
+        asset = {
+            **colorize_runtime.DDCOLOR_MODEL_ASSET,
+            "size": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+        with tempfile.TemporaryDirectory() as temporary, patch.object(colorize_runtime, "DDCOLOR_MODEL_ASSET", asset), patch.object(
+            provisioner, "DDCOLOR_MODEL_ASSET", asset
+        ), patch.object(provisioner, "_download", side_effect=lambda destination: destination.write_bytes(payload)):
+            root = Path(temporary) / "ddcolor"
+            provisioner.provision(root)
+            self.assertEqual(0o755, stat.S_IMODE(root.stat().st_mode))
+            self.assertEqual(0o644, stat.S_IMODE((root / "ready.json").stat().st_mode))
+            self.assertEqual(0o644, stat.S_IMODE((root / str(asset["path"])).stat().st_mode))
+
+
 class AppTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -108,6 +148,7 @@ class AppTest(unittest.TestCase):
 
     def _reset_upsampler_cache(self) -> None:
         self.app._UPSAMPLER_CACHE = None
+        self.app._COLORIZER_CACHE = None
 
     def response_body(self, response):
         return json.loads(response.body)
@@ -258,6 +299,21 @@ class AppTest(unittest.TestCase):
         self.assert_png_response(first, model="realesrgan-x4plus", backend="cpu", size=(4, 6))
         self.assert_png_response(second, model="realesrgan-x4plus", backend="cpu", size=(4, 6))
         self.assertEqual([], list(self.root.iterdir()))
+
+    def test_process_colorizes_with_the_fixed_ddcolor_modelscope_contract(self) -> None:
+        colorized = png_bytes(color=(10, 20, 30))
+        with patch.object(self.app, "_run_colorize", return_value=(colorized, {
+            "model": "ddcolor-modelscope",
+            "backend": "cpu",
+            "width": 2,
+            "height": 3,
+        }), create=True) as colorize:
+            response = asyncio.run(self.app.process_image(
+                FakeUpload(png_bytes()), operation="colorize", model=None, backend="cpu"
+            ))
+
+        colorize.assert_called_once_with(png_bytes(), backend="cpu")
+        self.assert_png_response(response, model="ddcolor-modelscope", backend="cpu", size=(2, 3))
 
     def test_process_replaces_the_single_cached_upsampler_after_a_to_b_to_a(self) -> None:
         first_a, b, second_a = FakeUpsampler(), FakeUpsampler(), FakeUpsampler()

@@ -712,7 +712,7 @@ function hub_prepare_image_tools_payload(PDO $db, array $service, array $interna
         }
         $values[$key] = $formValues[$key] ?? $queryValues[$key] ?? null;
     }
-    if (!in_array($values['operation'], ['upscale', 'upscale_task'], true)) {
+    if (!in_array($values['operation'], ['upscale', 'upscale_task', 'colorize'], true)) {
         return ['response' => hub_gateway_error(400, 'invalid_operation', 'image-tools operation is invalid')];
     }
     if ($values['backend'] === null) {
@@ -721,23 +721,28 @@ function hub_prepare_image_tools_payload(PDO $db, array $service, array $interna
     if (!in_array($values['backend'], ['auto', 'cuda', 'cpu'], true)) {
         return ['response' => hub_gateway_error(400, 'invalid_backend', 'image-tools backend is invalid')];
     }
-    if ($values['model'] === null) {
-        $values['model'] = 'realesrgan-x4plus';
-    }
-    if (!is_string($values['model']) || strlen($values['model']) > 64 || preg_match('/\A[\x20-\x7E]+\z/D', $values['model']) !== 1 || !in_array($values['model'], [
-        'realesrgan-x4plus',
-        'realesrgan-x4plus-anime',
-        'realesr-animevideov3-x2',
-        'realesr-animevideov3-x3',
-        'realesr-animevideov3-x4',
-    ], true)) {
-        return ['response' => hub_gateway_error(400, 'invalid_model', 'image-tools model is invalid')];
-    }
     if ($values['outscale'] !== null && !in_array($values['outscale'], ['2', '3', '4'], true)) {
         return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
     }
-    if ($values['operation'] === 'upscale_task' && $values['outscale'] !== null) {
+    if (in_array($values['operation'], ['upscale_task', 'colorize'], true) && $values['outscale'] !== null) {
         return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+    if ($values['operation'] === 'colorize' && $values['model'] !== null) {
+        return ['response' => hub_gateway_error(400, 'invalid_request', 'image-tools request is invalid')];
+    }
+    if ($values['operation'] !== 'colorize') {
+        if ($values['model'] === null) {
+            $values['model'] = 'realesrgan-x4plus';
+        }
+        if (!is_string($values['model']) || strlen($values['model']) > 64 || preg_match('/\A[\x20-\x7E]+\z/D', $values['model']) !== 1 || !in_array($values['model'], [
+            'realesrgan-x4plus',
+            'realesrgan-x4plus-anime',
+            'realesr-animevideov3-x2',
+            'realesr-animevideov3-x3',
+            'realesr-animevideov3-x4',
+        ], true)) {
+            return ['response' => hub_gateway_error(400, 'invalid_model', 'image-tools model is invalid')];
+        }
     }
 
     $upload = hub_image_tools_upload_record($_FILES);
@@ -759,7 +764,10 @@ function hub_prepare_image_tools_payload(PDO $db, array $service, array $interna
         $temporaryFiles[] = $staged['file']['tmp_name'];
     }
 
-    $normalizedPost = ['operation' => $values['operation'], 'backend' => $values['backend'], 'model' => $values['model']];
+    $normalizedPost = ['operation' => $values['operation'], 'backend' => $values['backend']];
+    if ($values['operation'] !== 'colorize') {
+        $normalizedPost['model'] = $values['model'];
+    }
     if ($values['outscale'] !== null) {
         $normalizedPost['outscale'] = $values['outscale'];
     }

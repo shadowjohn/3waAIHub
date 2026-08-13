@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "image-tools",
   "name": "影像工具",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "category": "vision",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -10,7 +10,7 @@
   "target_level": "L5-benchmark-ready",
   "runtime_ready": true,
   "default_mode": "image-tools",
-  "description": "本機複合式影像處理工具；目前提供 Real-ESRGAN 圖片放大，後續功能將以獨立 operation 擴充。",
+  "description": "本機複合式影像處理工具；提供 Real-ESRGAN 圖片放大與 DDColor 黑白變彩色。",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
@@ -28,6 +28,13 @@
     "commit": "a4abfb2979a7bbff3f69f58f58ae324608821e27",
     "asset_dir": "/DATA/models/image-tools/realesrgan"
   },
+  "colorize_model_source": {
+    "repository": "https://github.com/piddnad/DDColor",
+    "commit": "2adb63f2656ac41cbdf7b894cddd94121a3faf13",
+    "model_repository": "https://huggingface.co/piddnad/DDColor-models",
+    "model_revision": "e9e7b527709c8aeb2f5e1bf701e72fd468a13baa",
+    "asset_dir": "/DATA/models/image-tools/ddcolor"
+  },
   "l5_contract": {
     "endpoint": "/process/image",
     "method": "POST",
@@ -37,7 +44,8 @@
     },
     "operations": [
       {"operation": "upscale"},
-      {"operation": "upscale_task"}
+      {"operation": "upscale_task"},
+      {"operation": "colorize", "input": {"fields": ["image", "base64_string", "backend"]}}
     ],
     "models": [
       "realesrgan-x4plus",
@@ -132,7 +140,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/image-tools:0.1.0",
+        "image": "3waaihub/image-tools:0.1.1",
         "entrypoint": ["python3", "/app/jobs.py"],
         "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output", "--backend", "cuda"],
         "output_dir": "output",
@@ -165,7 +173,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/image-tools:0.1.0",
+        "image": "3waaihub/image-tools:0.1.1",
         "entrypoint": ["python3", "/app/jobs.py"],
         "args": ["--request", "/workspace/input/request.json", "--source", "/workspace/input/source", "--output-dir", "/workspace/output", "--backend", "cpu"],
         "output_dir": "output",
@@ -201,7 +209,8 @@
   },
   "storage": {
     "mounts": [
-      {"type": "models", "host_subdir": "image-tools/realesrgan", "container_path": "/models/image-tools/realesrgan", "read_only": true}
+      {"type": "models", "host_subdir": "image-tools/realesrgan", "container_path": "/models/image-tools/realesrgan", "read_only": true},
+      {"type": "models", "host_subdir": "image-tools/ddcolor", "container_path": "/models/image-tools/ddcolor", "read_only": true}
     ]
   },
   "settings_schema": [
@@ -213,6 +222,7 @@
     {"name": "IMAGE_TOOLS_USE_GPU", "default": "1", "required": true},
     {"name": "IMAGE_TOOLS_DEFAULT_BACKEND", "default": "auto", "required": true},
     {"name": "IMAGE_TOOLS_MODEL_DIR", "default": "/models/image-tools/realesrgan", "required": true},
+    {"name": "IMAGE_TOOLS_COLORIZE_MODEL_DIR", "default": "/models/image-tools/ddcolor", "required": true},
     {"name": "IMAGE_TOOLS_MAX_UPLOAD_MB", "default": "50", "required": true}
   ],
   "preflight": {

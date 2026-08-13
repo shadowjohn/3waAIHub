@@ -1185,7 +1185,7 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 
 function hub_service_build_timeout_sec(array $service): int
 {
-    return (string)($service['pack_id'] ?? '') === 'tts-voxcpm2' ? 1800 : 900;
+    return in_array((string)($service['pack_id'] ?? ''), ['image-tools', 'tts-voxcpm2'], true) ? 1800 : 900;
 }
 
 function hub_build_service(PDO $db, array $service, ?array $job = null): array

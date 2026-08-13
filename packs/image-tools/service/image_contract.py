@@ -76,7 +76,7 @@ def decode_base64(source: str) -> bytes:
 
 
 def _source_limit(operation: str) -> int:
-    if operation == "upscale":
+    if operation in {"upscale", "colorize"}:
         return MAX_SYNC_PIXELS
     if operation == "upscale_task":
         return MAX_ASYNC_PIXELS

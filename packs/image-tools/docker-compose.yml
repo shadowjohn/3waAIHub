@@ -1,6 +1,6 @@
 services:
   image-tools:
-    image: 3waaihub/image-tools:0.1.0
+    image: 3waaihub/image-tools:0.1.1
     gpus: all
     env_file:
       - runtime-settings.conf
@@ -10,6 +10,8 @@ services:
       IMAGE_TOOLS_USE_GPU: ${IMAGE_TOOLS_USE_GPU:-1}
       IMAGE_TOOLS_DEFAULT_BACKEND: ${IMAGE_TOOLS_DEFAULT_BACKEND:-auto}
       IMAGE_TOOLS_MODEL_DIR: ${IMAGE_TOOLS_MODEL_DIR:-/models/image-tools/realesrgan}
+      IMAGE_TOOLS_COLORIZE_MODEL_DIR: ${IMAGE_TOOLS_COLORIZE_MODEL_DIR:-/models/image-tools/ddcolor}
       IMAGE_TOOLS_MAX_UPLOAD_MB: ${IMAGE_TOOLS_MAX_UPLOAD_MB:-50}
     volumes:
       - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/realesrgan:/models/image-tools/realesrgan:ro"
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/image-tools/ddcolor:/models/image-tools/ddcolor:ro"

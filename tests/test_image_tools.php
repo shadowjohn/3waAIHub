@@ -91,6 +91,13 @@ function hub_test_with_image_tools_runtime_ready(callable $callback): mixed
     }
 }
 
+hub_test('image-tools allows enough time for a first image build', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_test_image_tools_service($db);
+
+    hub_test_assert(hub_service_build_timeout_sec($service) === 1800, 'image-tools first build must allow time for its CUDA dependencies and image export');
+});
+
 hub_test('image-tools gateway injects query operations and stages Base64 without forwarding it', function (): void {
     $db = hub_test_reset_db();
     hub_test_image_tools_service($db);
@@ -133,6 +140,41 @@ hub_test('image-tools gateway injects query operations and stages Base64 without
     hub_test_assert($calls === 2 && $_POST === ['sentinel' => 'keep'] && $_FILES === [], 'image-tools proxy scope must restore request globals');
     foreach ($stagedPaths as $path) {
         hub_test_assert(!is_file($path), 'staged Base64 file must be removed after proxying');
+    }
+});
+
+hub_test('image-tools gateway routes black and white colorize requests to DDColor ModelScope', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_image_tools_service($db);
+    $source = base64_encode('black and white colorize fixture');
+
+    $response = hub_test_image_tools_dispatch(
+        $db,
+        ['operation' => 'colorize', 'backend' => 'cpu', 'base64_string' => $source],
+        ['mode' => 'image-tools', 'operation' => 'colorize'],
+        [],
+        static function (): array {
+            hub_test_assert($_POST === [
+                'operation' => 'colorize',
+                'backend' => 'cpu',
+            ], 'colorize must use its fixed DDColor ModelScope model without accepting an arbitrary model alias');
+            hub_test_assert(array_keys($_FILES) === ['image'] && is_file((string)$_FILES['image']['tmp_name']), 'colorize must reuse the validated staged image source');
+
+            return hub_gateway_json(200, ['ok' => true]);
+        }
+    );
+
+    hub_test_assert($response['status'] === 200, 'colorize must proxy through image-tools');
+
+    foreach ([['model' => 'realesrgan-x4plus'], ['outscale' => '2']] as $forbidden) {
+        $response = hub_test_image_tools_dispatch(
+            $db,
+            ['operation' => 'colorize', 'base64_string' => $source] + $forbidden,
+            ['mode' => 'image-tools'],
+            [],
+            static fn (): array => throw new RuntimeException('colorize fixed contract must not proxy extra model controls')
+        );
+        hub_test_assert($response['status'] === 400 && hub_test_image_tools_error($response) === 'invalid_request', 'colorize must reject unsupported fixed-model controls');
     }
 });
 
@@ -737,7 +779,8 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
 
     hub_test_assert(($manifest['id'] ?? '') === 'image-tools', 'image-tools pack ID mismatch');
     hub_test_assert(($manifest['name'] ?? '') === '影像工具', 'image-tools display name must remain generic Chinese');
-    hub_test_assert(($manifest['description'] ?? '') === '本機複合式影像處理工具；目前提供 Real-ESRGAN 圖片放大，後續功能將以獨立 operation 擴充。', 'image-tools description must describe the extensible Chinese image-tools Pack');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.1', 'image-tools colorize release must bump the patch version');
+    hub_test_assert(($manifest['description'] ?? '') === '本機複合式影像處理工具；提供 Real-ESRGAN 圖片放大與 DDColor 黑白變彩色。', 'image-tools description must describe the extensible Chinese image-tools Pack');
     hub_test_assert(($manifest['execution_type'] ?? '') === 'sync_api', 'image-tools must expose a sync API');
     hub_test_assert(($manifest['runtime_level'] ?? '') === 'L5-benchmark-ready' && ($manifest['runtime_ready'] ?? false) === true, 'image-tools must publish L5 only after final L4b/L5 evidence exists');
     hub_test_assert(($manifest['target_level'] ?? '') === 'L5-benchmark-ready', 'image-tools target level mismatch');
@@ -773,7 +816,8 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
         'X-3waAIHub-Width',
         'X-3waAIHub-Height',
     ], 'image-tools PNG response headers mismatch');
-    hub_test_assert(array_column($contract['operations'] ?? [], 'operation') === ['upscale', 'upscale_task'], 'image-tools must expose only its two public operations');
+    hub_test_assert(array_column($contract['operations'] ?? [], 'operation') === ['upscale', 'upscale_task', 'colorize'], 'image-tools must expose its two upscale operations and fixed colorize');
+    hub_test_assert(($contract['operations'][2]['input']['fields'] ?? []) === ['image', 'base64_string', 'backend'], 'colorize must expose no client-selected model or scale');
     hub_test_assert(($contract['models'] ?? []) === [
         'realesrgan-x4plus',
         'realesrgan-x4plus-anime',
@@ -809,6 +853,13 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
     ], 'image-tools error contract mismatch');
     hub_test_assert(($manifest['model_source']['commit'] ?? '') === 'a4abfb2979a7bbff3f69f58f58ae324608821e27', 'image-tools source revision mismatch');
     hub_test_assert(($manifest['model_source']['asset_dir'] ?? '') === '/DATA/models/image-tools/realesrgan', 'image-tools asset directory mismatch');
+    hub_test_assert(($manifest['colorize_model_source'] ?? []) === [
+        'repository' => 'https://github.com/piddnad/DDColor',
+        'commit' => '2adb63f2656ac41cbdf7b894cddd94121a3faf13',
+        'model_repository' => 'https://huggingface.co/piddnad/DDColor-models',
+        'model_revision' => 'e9e7b527709c8aeb2f5e1bf701e72fd468a13baa',
+        'asset_dir' => '/DATA/models/image-tools/ddcolor',
+    ], 'image-tools DDColor source must stay pinned and offline staged');
 
     $jobs = $manifest['async_jobs'] ?? [];
     hub_test_assert(array_column($jobs, 'job') === ['upscale_image_gpu', 'upscale_image_cpu'], 'image-tools must declare only fixed GPU then CPU jobs');
@@ -832,12 +883,10 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
         hub_test_assert(array_column($job['output']['artifacts'] ?? [], 'path') === ['upscaled_image.png', 'upscale_report.json'], 'image-tools artifact contract mismatch');
     }
 
-    hub_test_assert(($manifest['storage']['mounts'] ?? []) === [[
-        'type' => 'models',
-        'host_subdir' => 'image-tools/realesrgan',
-        'container_path' => '/models/image-tools/realesrgan',
-        'read_only' => true,
-    ]], 'image-tools service model mount must be read-only');
+    hub_test_assert(($manifest['storage']['mounts'] ?? []) === [
+        ['type' => 'models', 'host_subdir' => 'image-tools/realesrgan', 'container_path' => '/models/image-tools/realesrgan', 'read_only' => true],
+        ['type' => 'models', 'host_subdir' => 'image-tools/ddcolor', 'container_path' => '/models/image-tools/ddcolor', 'read_only' => true],
+    ], 'image-tools service model mounts must be read-only');
 
     hub_test_assert(($manifest['settings_schema'] ?? []) === [
         ['key' => 'IMAGE_TOOLS_USE_GPU', 'label' => 'Use GPU', 'type' => 'boolean', 'default' => '1', 'required' => true, 'restart_required' => true],
@@ -848,6 +897,7 @@ hub_test('image-tools Pack declares the L5 generic image-tools contract', functi
         ['name' => 'IMAGE_TOOLS_USE_GPU', 'default' => '1', 'required' => true],
         ['name' => 'IMAGE_TOOLS_DEFAULT_BACKEND', 'default' => 'auto', 'required' => true],
         ['name' => 'IMAGE_TOOLS_MODEL_DIR', 'default' => '/models/image-tools/realesrgan', 'required' => true],
+        ['name' => 'IMAGE_TOOLS_COLORIZE_MODEL_DIR', 'default' => '/models/image-tools/ddcolor', 'required' => true],
         ['name' => 'IMAGE_TOOLS_MAX_UPLOAD_MB', 'default' => '50', 'required' => true],
     ], 'image-tools runtime environment mismatch');
     hub_test_assert(($manifest['service']['local_port_env'] ?? '') === 'IMAGE_TOOLS_PORT', 'image-tools port environment mismatch');
@@ -921,6 +971,7 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
     hub_test_assert(!str_contains($mainCompose, "services:\n  image-tools-main:\n"), 'image-tools-main generated Compose must not leak its instance key into the operator service selector');
     $modelsRoot = (string)(hub_get_storage_paths($mainDb)['AIHUB_MODELS_DIR'] ?? '');
     hub_test_assert(str_contains($mainCompose, '"' . $modelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"'), 'image-tools-main generated Compose must embed its managed model mount for the standalone L4a smoke command');
+    hub_test_assert(str_contains($mainCompose, '"' . $modelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"'), 'image-tools-main generated Compose must embed its managed DDColor model mount');
     hub_test_assert(!str_contains($mainCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main generated Compose must not require a shell model-root variable for the standalone L4a smoke command');
 
     $customModelsRoot = sys_get_temp_dir() . '/3waaihub_image_tools_models_' . bin2hex(random_bytes(8));
@@ -934,6 +985,7 @@ hub_test('image-tools public mode permits internal hyphens only', function (): v
         hub_write_service_compose($mainDb, $mainService);
         $regeneratedCompose = (string)file_get_contents(hub_path((string)$mainService['compose_file']));
         hub_test_assert(str_contains($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/realesrgan:/models/image-tools/realesrgan:ro"'), 'image-tools-main regenerated Compose must embed the current custom models root');
+        hub_test_assert(str_contains($regeneratedCompose, '"' . $customModelsRoot . '/image-tools/ddcolor:/models/image-tools/ddcolor:ro"'), 'image-tools-main regenerated Compose must embed the current custom DDColor root');
         hub_test_assert(!str_contains($regeneratedCompose, '${AIHUB_MODELS_DIR}'), 'image-tools-main regenerated Compose must not require a shell model-root variable');
     } finally {
         if (is_dir($customModelsRoot) && !is_link($customModelsRoot) && !rmdir($customModelsRoot)) {
@@ -949,10 +1001,11 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
     hub_test_assert(str_contains($playground, "'image-tools' => ['label' => 'Image Tools'")
         && str_contains($playground, "'kind' => 'image_tools'")
         && str_contains($playground, "&operation=' . rawurlencode((string)\$payload['operation'])")
-        && str_contains($playground, 'download="upscaled-image.png"'), 'image-tools Playground profile, guarded query operation, and PNG download name must be present');
+        && str_contains($playground, 'download="processed-image.png"'), 'image-tools Playground profile, guarded query operation, and PNG download name must be present');
     hub_test_assert(substr_count($playground, 'name="image" type="file" accept="image/jpeg,image/png,image/webp,image/bmp"') === 1
         && str_contains($playground, '<option value="upscale"')
         && str_contains($playground, '<option value="upscale_task"')
+        && str_contains($playground, '<option value="colorize"')
         && str_contains($playground, '<textarea name="base64_string"')
         && !str_contains($playground, 'name="image_path"')
         && !str_contains($playground, 'name="image_url"')
@@ -966,12 +1019,14 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
     $pack = hub_get_pack('image-tools');
     hub_test_assert($pack !== null, 'image-tools Pack must exist for public docs');
     $service = hub_public_api_service_from_contract('image-tools', $pack, $pack['manifest'], hub_public_api_contract_for_manifest($pack['manifest']));
-    hub_test_assert(array_column($service['operation_examples'] ?? [], 'operation') === ['upscale', 'upscale_task'], 'public docs must render separate image-tools sync and async operation examples');
+    hub_test_assert(array_column($service['operation_examples'] ?? [], 'operation') === ['upscale', 'upscale_task', 'colorize'], 'public docs must render separate image-tools sync, async, and colorize operation examples');
     hub_test_assert(($service['operation_examples'][0]['response_content_type'] ?? '') === 'image/png'
         && ($service['operation_examples'][1]['execution_type'] ?? '') === 'async_task'
+        && array_column($service['operation_examples'][2]['input_fields'] ?? [], 'name') === ['operation', 'image', 'base64_string', 'backend']
         && ($service['examples'] ?? null) === []
         && str_contains((string)($service['operation_examples'][0]['examples']['curl'] ?? ''), "-F 'image=@sample.png'")
-        && str_contains((string)($service['operation_examples'][1]['examples']['curl'] ?? ''), 'operation=upscale_task'), 'image-tools public examples must retain multipart sync and async task contracts');
+        && str_contains((string)($service['operation_examples'][1]['examples']['curl'] ?? ''), 'operation=upscale_task')
+        && str_contains((string)($service['operation_examples'][2]['examples']['curl'] ?? ''), 'operation=colorize'), 'image-tools public examples must retain multipart sync, async task, and colorize contracts');
     foreach ($service['operation_examples'] as $operationExample) {
         $base64Curl = (string)($operationExample['base64_examples']['curl'] ?? '');
         hub_test_assert(str_contains($base64Curl, "-F 'base64_string=<BASE64_STRING>'")
@@ -984,11 +1039,12 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
     hub_test_assert(str_contains($readme, "-F 'image=@sample.png'")
         && str_contains($readme, 'base64_string')
         && str_contains($readme, 'upscale_task')
+        && str_contains($readme, 'DDColor')
         && str_contains($readme, 'JPEG/JPG, PNG, WEBP, BMP')
         && str_contains($readme, 'file_required, source_ambiguous, invalid_base64'), 'README must publish image-tools source, async, format, and error guidance');
     hub_test_assert(is_file($runbook), 'image-tools operation runbook must exist');
     $runbookText = (string)file_get_contents($runbook);
-    foreach (['ready.json', 'SHA-256', 'Docker', 'CUDA', 'GPU-first', 'CPU', 'upscale_task', 'task_status', 'artifact', 'cancellation', 'cleanup', 'rollback', 'retention', 'L4a-model-init-smoke'] as $needle) {
+    foreach (['ready.json', 'SHA-256', 'Docker', 'CUDA', 'GPU-first', 'CPU', 'upscale_task', 'colorize', 'DDColor', 'task_status', 'artifact', 'cancellation', 'cleanup', 'rollback', 'retention', 'L4a-model-init-smoke'] as $needle) {
         hub_test_assert(str_contains($runbookText, $needle), 'image-tools runbook is missing ' . $needle);
     }
 });

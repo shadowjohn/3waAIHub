@@ -1197,7 +1197,7 @@ L5 缺 checkpoint 時 `/health` 會 `ready=false` 並回 `model_not_present`；�
 
 ### image-tools Runtime Level
 
-`image-tools` 是「影像工具」Pack，可用獨立 operation 擴充本機影像處理；目前提供 Real-ESRGAN 單張圖片放大，為 `L5-benchmark-ready`／`runtime_ready=true`。已完成固定 2×3 fixture 的 CUDA 與 CPU 真實 HTTP 推論、8×12 PNG、五個回應 headers 與各自固定 SHA-256 的雙 backend quality gate；沒有延遲 SLA。
+`image-tools` 是「影像工具」Pack，可用獨立 operation 擴充本機影像處理；提供 Real-ESRGAN 單張圖片放大與 DDColor 黑白變彩色。Real-ESRGAN 已為 `L5-benchmark-ready`／`runtime_ready=true`；DDColor 使用另一份離線、checksum 驗證的 ModelScope snapshot，色彩化輸出是 AI 推測，不能當作歷史真實顏色。
 
 ```bash
 docker compose -f data/services/image-tools-main/docker-compose.generated.yml exec -T image-tools python3 /app/model_smoke.py --backend cpu
@@ -1205,10 +1205,11 @@ php scripts/benchmark.php --service=image-tools-main --case=image_tools_cuda_ups
 php scripts/benchmark.php --service=image-tools-main --case=image_tools_cpu_upscale_golden
 ```
 
-- 對外 mode 是 `image-tools`；operation 僅有同步 `upscale` 和非同步 `upscale_task`。
+- 對外 mode 是 `image-tools`；operation 有同步 `upscale`、同步 `colorize`，以及非同步 `upscale_task`。
 - 來源只能二選一：multipart 的 `image` 或 `base64_string`。實際解碼後只接受 JPEG/JPG, PNG, WEBP, BMP；副檔名與 client MIME 不被信任。
 - 限制為 decoded source 50 MiB、單邊 8,192 px、同步 4,000,000 pixels、非同步 10,000,000 pixels、輸出 64,000,000 pixels，Gateway body 70 MiB。
 - `model` 僅接受 `realesrgan-x4plus`、`realesrgan-x4plus-anime`、`realesr-animevideov3-x2`、`realesr-animevideov3-x3`、`realesr-animevideov3-x4`；`backend` 僅接受 `auto|cuda|cpu`。明示 `cuda` 不會偷偷回退 CPU。
+- `colorize` 固定使用 `ddcolor-modelscope`，不接受 `model` 或 `outscale`。
 - 穩定錯誤碼：`file_required, source_ambiguous, invalid_base64, unsupported_media_type, invalid_image, invalid_operation, invalid_model, invalid_backend, invalid_request, backend_unavailable, model_not_present, model_load_failed, payload_too_large, runtime_not_ready, inference_failed`。
 
 同步 multipart：
@@ -1231,6 +1232,16 @@ curl -X POST -H "Authorization: Bearer <TOKEN>" \
   -F 'model=realesrgan-x4plus' -F 'backend=cpu' \
   '<HUB_BASE_URL>/api.php?mode=image-tools&operation=upscale' \
   --output upscaled-image.png
+```
+
+黑白變彩色（DDColor，先完成離線模型 staging）：
+
+```bash
+curl -X POST -H "Authorization: Bearer <TOKEN>" \
+  -H "Accept: image/png" \
+  -F 'operation=colorize' -F 'image=@black-and-white.png' -F 'backend=auto' \
+  '<HUB_BASE_URL>/api.php?mode=image-tools&operation=colorize' \
+  --output colorized-image.png
 ```
 
 非同步提交／輪詢／下載：

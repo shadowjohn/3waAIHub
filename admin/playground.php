@@ -220,14 +220,16 @@ function hub_playground_request_payload(string $mode): array
         $operation = (string)($_POST['operation'] ?? 'upscale');
         $model = (string)($_POST['model'] ?? 'realesrgan-x4plus');
         $backend = (string)($_POST['backend'] ?? 'auto');
-        $operations = ['upscale', 'upscale_task'];
+        $operations = ['upscale', 'upscale_task', 'colorize'];
         $models = ['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4'];
         $backends = ['auto', 'cuda', 'cpu'];
         $payload = [
             'operation' => in_array($operation, $operations, true) ? $operation : 'upscale',
-            'model' => in_array($model, $models, true) ? $model : 'realesrgan-x4plus',
             'backend' => in_array($backend, $backends, true) ? $backend : 'auto',
         ];
+        if ($payload['operation'] !== 'colorize') {
+            $payload['model'] = in_array($model, $models, true) ? $model : 'realesrgan-x4plus';
+        }
         $base64 = $_POST['base64_string'] ?? '';
         if (is_string($base64) && $base64 !== '') {
             $payload['base64_string'] = $base64;
@@ -1442,7 +1444,7 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(hub_i18n_text('真實推論')) ?></label>
             <?php elseif ($selectedMode === 'image-tools'): ?>
                 <?php
-                $imageToolsOperation = in_array((string)($_POST['operation'] ?? ''), ['upscale', 'upscale_task'], true) ? (string)$_POST['operation'] : 'upscale';
+                $imageToolsOperation = in_array((string)($_POST['operation'] ?? ''), ['upscale', 'upscale_task', 'colorize'], true) ? (string)$_POST['operation'] : 'upscale';
                 $imageToolsModel = in_array((string)($_POST['model'] ?? ''), ['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4'], true) ? (string)$_POST['model'] : 'realesrgan-x4plus';
                 $imageToolsBackend = in_array((string)($_POST['backend'] ?? ''), ['auto', 'cuda', 'cpu'], true) ? (string)$_POST['backend'] : 'auto';
                 ?>
@@ -1452,13 +1454,18 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
                 <select name="operation">
                     <option value="upscale" <?= $imageToolsOperation === 'upscale' ? 'selected' : '' ?>>upscale</option>
                     <option value="upscale_task" <?= $imageToolsOperation === 'upscale_task' ? 'selected' : '' ?>>upscale_task</option>
+                    <option value="colorize" <?= $imageToolsOperation === 'colorize' ? 'selected' : '' ?>>colorize / 黑白變彩色（DDColor）</option>
                 </select>
-                <label>model</label>
-                <select name="model">
-                    <?php foreach (['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4'] as $model): ?>
-                        <option value="<?= hub_h($model) ?>" <?= $imageToolsModel === $model ? 'selected' : '' ?>><?= hub_h($model) ?></option>
-                    <?php endforeach; ?>
-                </select>
+                <?php if ($imageToolsOperation !== 'colorize'): ?>
+                    <label>model</label>
+                    <select name="model">
+                        <?php foreach (['realesrgan-x4plus', 'realesrgan-x4plus-anime', 'realesr-animevideov3-x2', 'realesr-animevideov3-x3', 'realesr-animevideov3-x4'] as $model): ?>
+                            <option value="<?= hub_h($model) ?>" <?= $imageToolsModel === $model ? 'selected' : '' ?>><?= hub_h($model) ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                <?php else: ?>
+                    <p class="muted">DDColor ModelScope 固定模型；請確認原圖為黑白／灰階，輸出顏色為 AI 推測。</p>
+                <?php endif; ?>
                 <label>backend</label>
                 <select name="backend">
                     <?php foreach (['auto', 'cuda', 'cpu'] as $backend): ?>
@@ -1718,10 +1725,10 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
         <?php if ($selectedMode === 'image-tools' && (string)($result['preview_data_uri'] ?? '') !== ''): ?>
             <?php $imageToolsMetadata = is_array($result['metadata'] ?? null) ? $result['metadata'] : []; ?>
             <div class="birefnet-preview">
-                <img id="image-tools-preview-image" src="<?= hub_h((string)$result['preview_data_uri']) ?>" alt="<?= hub_h(hub_i18n_text('放大圖片輸出預覽')) ?>">
+                <img id="image-tools-preview-image" src="<?= hub_h((string)$result['preview_data_uri']) ?>" alt="<?= hub_h(hub_i18n_text('處理後圖片輸出預覽')) ?>">
             </div>
             <div class="hub-actions">
-                <a id="image-tools-download" class="button" href="#" download="upscaled-image.png"><?= hub_h(hub_i18n_text('下載 PNG')) ?></a>
+                <a id="image-tools-download" class="button" href="#" download="processed-image.png"><?= hub_h(hub_i18n_text('下載 PNG')) ?></a>
             </div>
             <div class="hub-meta">
                 <div class="hub-meta-label">X-3waAIHub-Model</div>

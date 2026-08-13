@@ -57,10 +57,10 @@
     },
     {
       "id": "image-tools",
-      "name": "Real-ESRGAN Image Tools",
-      "version": "0.1.0",
+      "name": "影像工具",
+      "version": "0.1.1",
       "category": "vision",
-      "description": "Real-ESRGAN image upscaling service.",
+      "description": "Real-ESRGAN 圖片放大與 DDColor 黑白變彩色服務。",
       "path": "packs/image-tools",
       "featured": true
     },
