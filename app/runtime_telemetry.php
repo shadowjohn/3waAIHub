@@ -86,12 +86,13 @@ function hub_runtime_telemetry_emit(array $event, ?callable $writer = null): boo
             }
         }
 
+        $observedAt = new DateTimeImmutable();
         $event['schema_version'] = HUB_RUNTIME_TELEMETRY_SCHEMA_VERSION;
-        $event['observed_at'] = hub_runtime_telemetry_timestamp();
+        $event['observed_at'] = $observedAt->format('Y-m-d\TH:i:s.uP');
         $line = json_encode($event, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR) . PHP_EOL;
-        $path = hub_runtime_telemetry_path(new DateTimeImmutable());
+        $path = hub_runtime_telemetry_path($observedAt);
         $bytes = $writer === null
-            ? file_put_contents($path, $line, FILE_APPEND | LOCK_EX)
+            ? @file_put_contents($path, $line, FILE_APPEND | LOCK_EX)
             : $writer($path, $line);
 
         return $bytes === strlen($line);

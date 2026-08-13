@@ -4,6 +4,9 @@ declare(strict_types=1);
 function hub_test_runtime_telemetry_events(): array
 {
     $path = HUB_LOG_DIR . '/runtime-telemetry-' . date('Y-m-d') . '.ndjson';
+    if (!file_exists($path)) {
+        return [];
+    }
     $handle = fopen($path, 'rb');
     if ($handle === false) {
         throw new RuntimeException('Cannot open runtime telemetry log.');
@@ -41,15 +44,82 @@ $validRuntimeTelemetryEvent = [
     'skipped_ticks' => 0,
 ];
 
+hub_test('runtime telemetry suppresses expected default write warnings', function () use ($validRuntimeTelemetryEvent): void {
+    $path = hub_runtime_telemetry_path(new DateTimeImmutable());
+    if (is_file($path) && !unlink($path)) {
+        throw new RuntimeException('Cannot reset runtime telemetry write fixture.');
+    }
+    if (is_dir($path) && !rmdir($path)) {
+        throw new RuntimeException('Cannot reset runtime telemetry write fixture.');
+    }
+    if (!mkdir($path, 0700)) {
+        throw new RuntimeException('Cannot create runtime telemetry write fixture.');
+    }
+
+    $warnings = 0;
+    set_error_handler(static function (int $severity) use (&$warnings): bool {
+        if (($severity & error_reporting()) !== 0) {
+            $warnings++;
+        }
+        return true;
+    });
+    try {
+        $result = hub_runtime_telemetry_emit($validRuntimeTelemetryEvent);
+    } finally {
+        restore_error_handler();
+        rmdir($path);
+    }
+
+    hub_test_assert($result === false, 'default write failure must return false');
+    hub_test_assert($warnings === 0, 'default write failure must not emit a PHP warning');
+});
+
 hub_test('runtime telemetry emits one heartbeat line with schema version', function () use ($validRuntimeTelemetryEvent): void {
+    $before = count(hub_test_runtime_telemetry_events());
     hub_test_assert(hub_runtime_telemetry_emit($validRuntimeTelemetryEvent), 'valid heartbeat must emit');
 
     $events = hub_test_runtime_telemetry_events();
-    hub_test_assert(count($events) === 1, 'heartbeat must append exactly one event');
-    hub_test_assert(($events[0]['action'] ?? null) === 'heartbeat', 'heartbeat action mismatch');
-    hub_test_assert(($events[0]['variant'] ?? null) === 'cpu', 'heartbeat variant mismatch');
-    hub_test_assert(($events[0]['schema_version'] ?? null) === 1, 'schema version mismatch');
-    hub_test_assert(is_string($events[0]['observed_at'] ?? null), 'observed_at must be emitted');
+    hub_test_assert(count($events) === $before + 1, 'heartbeat must append exactly one event');
+    $event = $events[array_key_last($events)];
+    hub_test_assert(($event['action'] ?? null) === 'heartbeat', 'heartbeat action mismatch');
+    hub_test_assert(($event['variant'] ?? null) === 'cpu', 'heartbeat variant mismatch');
+    hub_test_assert(($event['schema_version'] ?? null) === 1, 'schema version mismatch');
+    hub_test_assert(is_string($event['observed_at'] ?? null), 'observed_at must be emitted');
+});
+
+hub_test('runtime telemetry keeps observed date and writer path aligned', function () use ($validRuntimeTelemetryEvent): void {
+    $capturedPath = null;
+    $capturedEvent = null;
+    $result = hub_runtime_telemetry_emit(
+        $validRuntimeTelemetryEvent,
+        static function (string $path, string $line) use (&$capturedPath, &$capturedEvent): int {
+            $capturedPath = $path;
+            $capturedEvent = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+            return strlen($line);
+        }
+    );
+
+    hub_test_assert($result, 'valid telemetry must be written');
+    hub_test_assert(is_string($capturedPath) && is_array($capturedEvent), 'writer must capture telemetry');
+    preg_match('/runtime-telemetry-(\d{4}-\d{2}-\d{2})\.ndjson$/', $capturedPath, $pathMatch);
+    hub_test_assert(($pathMatch[1] ?? null) === substr((string)($capturedEvent['observed_at'] ?? ''), 0, 10), 'observed date and writer path must match');
+});
+
+hub_test('runtime telemetry rejects partial writes and invalid timings', function () use ($validRuntimeTelemetryEvent): void {
+    $partialWriter = static fn (string $path, string $line): int => strlen($line) - 1;
+    hub_test_assert(!hub_runtime_telemetry_emit($validRuntimeTelemetryEvent, $partialWriter), 'partial write must fail');
+
+    foreach ([NAN, INF, true] as $timing) {
+        $event = $validRuntimeTelemetryEvent;
+        $event['total_ms'] = $timing;
+        $writerCalls = 0;
+        $writer = static function (string $path, string $line) use (&$writerCalls): int {
+            $writerCalls++;
+            return strlen($line);
+        };
+        hub_test_assert(!hub_runtime_telemetry_emit($event, $writer), 'invalid timing must be rejected');
+        hub_test_assert($writerCalls === 0, 'invalid timing must not invoke the writer');
+    }
 });
 
 hub_test('runtime telemetry rejects unknown fields and absorbs writer failures', function () use ($validRuntimeTelemetryEvent): void {
