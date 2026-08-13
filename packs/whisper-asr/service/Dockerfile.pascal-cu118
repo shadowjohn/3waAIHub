@@ -28,21 +28,24 @@ RUN sed -i \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY service/requirements.pascal-cu118.txt .
 RUN python3 -m pip install --upgrade pip setuptools wheel \
     && python3 -m pip install --index-url https://download.pytorch.org/whl/cu118 \
         torch==2.7.0 torchaudio==2.7.0
+
+# CUDA 11.8 的 Torch layer 約 2GB；讓 Pack requirements 的小改動不致使它失去快取。
+COPY service/requirements.pascal-cu118.txt .
 RUN python3 -m pip install 'Cython<3' \
     && python3 -m pip install --no-build-isolation 'av==10.0.0' \
     && python3 -m pip install -r requirements.pascal-cu118.txt \
     && python3 -m pip check
 
-COPY service/app.py service/job.py service/offline_paths.py service/subtitle_reflow.py service/storage_smoke.py service/test_app.py ./
+COPY service/app.py service/job.py service/offline_paths.py service/subtitle_reflow.py service/storage_smoke.py service/test_app.py service/provision_offline_assets.py ./
 RUN python3 -m unittest -v test_app.py
 
 COPY jobs/speech_transcribe.sh ./
-RUN chmod 0755 /app/speech_transcribe.sh \
-    && ln -s /app/speech_transcribe.sh /app/speech-transcribe
+RUN chmod 0755 /app/speech_transcribe.sh /app/provision_offline_assets.py \
+    && ln -s /app/speech_transcribe.sh /app/speech-transcribe \
+    && ln -s /app/provision_offline_assets.py /app/provision-offline-assets
 
 EXPOSE 8000
 CMD ["python3", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

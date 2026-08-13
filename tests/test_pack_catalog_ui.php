@@ -88,6 +88,7 @@ hub_test('canonical Market JS uses one page dictionary and canonical readiness e
         'action_service_build',
         'action_service_rebuild',
         'action_service_health_check',
+        'action_whisper_pascal_ckip_provision',
         'job_status_queued',
         'job_status_running',
         'job_status_success',
@@ -180,6 +181,7 @@ hub_test('Market scripts expose validation polling state and i18n consistency co
         "'action_service_build' => hub_i18n_text('建置服務')",
         "'action_service_rebuild' => hub_i18n_text('重新建置')",
         "'action_service_health_check' => hub_i18n_text('健康檢查')",
+        "'action_whisper_pascal_ckip_provision' => hub_i18n_text('準備 CKIP 字幕資產')",
         "'job_status_queued' => hub_i18n_text('排隊中')",
         "'job_status_running' => hub_i18n_text('執行中')",
         "'job_status_success' => hub_i18n_text('成功')",
@@ -190,6 +192,14 @@ hub_test('Market scripts expose validation polling state and i18n consistency co
         "'required_fields' => hub_i18n_text('請完成標示的必填欄位。')",
     ] as $needle) {
         hub_test_assert(str_contains($marketplace, $needle), 'canonical Market dictionary missing ' . $needle);
+    }
+    foreach ([
+        "'provision_pascal_ckip' => 'whisper_pascal_ckip_provision'",
+        "hub_whisper_pascal_ckip_provisioning_plan($service)",
+        "value=\"provision_pascal_ckip\"",
+        '準備 CKIP 字幕資產',
+    ] as $needle) {
+        hub_test_assert(str_contains($marketplace, $needle), 'canonical Market Pascal CKIP provisioning contract missing ' . $needle);
     }
 });
 

@@ -841,6 +841,102 @@ function hub_whisper_wsl_runtime_profile(array $service, ?array $profile = null)
     ];
 }
 
+/**
+ * Pascal CKIP 僅能由明確宣告的 Windows WSL Runtime 執行；不能因 Docker 存在而放行
+ * direct linux-docker，也不可把資產下載到 Windows Control Plane 的 cache。
+ *
+ * @return array{runtime: array<string, mixed>, command: list<string>}|null
+ */
+function hub_whisper_pascal_ckip_provisioning_plan(array $service, ?array $profile = null): ?array
+{
+    if (hub_platform_id() !== 'windows') {
+        return null;
+    }
+    $runtime = hub_whisper_wsl_runtime_profile($service, $profile);
+    if ($runtime === null || ($runtime['profile_id'] ?? '') !== 'pascal-cu118') {
+        return null;
+    }
+
+    $runtimeRoot = (string)($runtime['runtime_root'] ?? '');
+    $modelsRoot = (string)($runtime['models_root'] ?? '');
+    if ($runtimeRoot === '' || $modelsRoot === '') {
+        return null;
+    }
+    try {
+        $runtimeRoot = hub_container_path($runtimeRoot);
+        $modelsRoot = hub_container_path($modelsRoot);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+    $cacheRoot = $runtimeRoot . '/cache';
+    $ckipRoot = $cacheRoot . '/whisper/ckip/bert-base-chinese-ws';
+    $provisioner = $runtimeRoot . '/packs/whisper-asr/jobs/provision_offline_models.sh';
+    $script = "set -eu\n"
+        . 'runtime_root=' . hub_wsl_shell_literal($runtimeRoot) . "\n"
+        . 'models_root=' . hub_wsl_shell_literal($modelsRoot) . "\n"
+        . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
+        . 'ckip_root=' . hub_wsl_shell_literal($ckipRoot) . "\n"
+        . 'provisioner=' . hub_wsl_shell_literal($provisioner) . "\n"
+        . 'test -x "$provisioner"' . "\n"
+        . 'mkdir -p "$models_root" "$cache_root"' . "\n"
+        . 'AIHUB_MODELS_DIR="$models_root" \\' . "\n"
+        . 'AIHUB_CACHE_DIR="$cache_root" \\' . "\n"
+        . 'AIHUB_WHISPER_RUNTIME_PROFILE=' . hub_wsl_shell_literal('pascal-cu118') . " \\\n"
+        . 'AIHUB_WHISPER_PROVISION_CKIP=1 \\' . "\n"
+        . 'AIHUB_WHISPER_PROVISION_DIARIZATION=0 \\' . "\n"
+        . '"$provisioner"' . "\n"
+        . 'test -f "$ckip_root/.aihub-ckip-ready.json"' . "\n"
+        . 'test -f "$ckip_root/config.json"' . "\n"
+        . 'test -f "$ckip_root/pytorch_model.bin"' . "\n"
+        . 'test -f "$ckip_root/vocab.txt"' . "\n"
+        . 'sha256sum "$ckip_root/.aihub-ckip-ready.json" "$ckip_root/config.json" "$ckip_root/pytorch_model.bin" "$ckip_root/vocab.txt"' . "\n";
+
+    return [
+        'runtime' => $runtime,
+        'command' => hub_wsl_script_command($runtime, $script),
+    ];
+}
+
+function hub_run_whisper_pascal_ckip_provision_job(PDO $db, ?array $service, array $job): array
+{
+    if ($service === null) {
+        return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service id is required.'];
+    }
+    $plan = hub_whisper_pascal_ckip_provisioning_plan($service);
+    if ($plan === null) {
+        return hub_unsupported_runtime_result(
+            'windows-wsl2-linux-docker',
+            'Pascal CKIP provisioning is available only for a ready Whisper CUDA 11.8 WSL runtime.'
+        );
+    }
+
+    hub_job_progress($db, $job, 'checking_wsl_runtime', 5, 'Checking Pascal CUDA 11.8 WSL Runtime.');
+    hub_job_progress($db, $job, 'provisioning_ckip', 15, 'Provisioning CKIP subtitle assets into the WSL runtime cache.');
+    $result = hub_run_service_command(
+        $db,
+        $job,
+        (array)$plan['command'],
+        1800,
+        [],
+        'provisioning_ckip',
+        15,
+        95,
+        false
+    );
+    if ((int)($result['exit_code'] ?? 1) === 0) {
+        hub_job_progress($db, $job, 'ckip_ready', 98, 'CKIP subtitle assets are ready in the WSL runtime cache.');
+    }
+    hub_add_service_log(
+        $db,
+        (int)$service['id'],
+        'whisper_pascal_ckip_provision',
+        trim((string)($result['stdout'] ?? '') . "\n" . (string)($result['stderr'] ?? '')),
+        (int)($result['exit_code'] ?? 1)
+    );
+
+    return $result;
+}
+
 function hub_whisper_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
 {
     $runtime = hub_whisper_wsl_runtime_profile($service, $profile);
@@ -879,8 +975,8 @@ function hub_whisper_wsl_service_compose_command(array $service, array $args, ?a
     }
     $composeArgs = array_values($args);
     if (($composeArgs[0] ?? '') === 'build') {
-        // Docker Desktop BuildKit executor 無法走此主機已驗證可用的 bridge egress；只讓 WSL Whisper image build 使用 Docker bridge builder。
-        $dockerCommand = 'DOCKER_BUILDKIT=0 docker build --tag ' . hub_wsl_shell_literal((string)$runtime['image'])
+        // Pascal image 的 PyTorch layer 很大；此主機的 legacy exporter 會在輸出 layer 時中斷，使用已驗證可連外的 BuildKit。
+        $dockerCommand = 'DOCKER_BUILDKIT=1 docker build --progress=plain --tag ' . hub_wsl_shell_literal((string)$runtime['image'])
             . ' --file ' . hub_wsl_shell_literal($packRoot . '/' . (string)$runtime['dockerfile'])
             . ' ' . hub_wsl_shell_literal($packRoot);
     } else {

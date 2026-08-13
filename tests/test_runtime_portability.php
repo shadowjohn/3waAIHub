@@ -438,10 +438,89 @@ hub_test('Whisper WSL Pascal service uses the explicit CUDA 11.8 compose profile
         && str_contains($script, 'sha256sum "$settings_tmp"')
         && str_contains($script, 'chmod 0600 "$settings_tmp"')
         && str_contains($script, 'mv -f -- "$settings_tmp" "$service_root/runtime-settings.conf"')
-        && str_contains($script, "DOCKER_BUILDKIT=0 docker build --tag '3waaihub/whisper-asr:0.1.2-pascal-cu118'")
+        && str_contains($script, "DOCKER_BUILDKIT=1 docker build --progress=plain --tag '3waaihub/whisper-asr:0.1.2-pascal-cu118'")
+        && !str_contains($script, 'DOCKER_BUILDKIT=0')
         && str_contains($script, "--file '/DATA/3waAIHub-runtime/packs/whisper-asr/service/Dockerfile.pascal-cu118'")
         && !str_contains($script, hub_test_host_root_child_needle())
         && !str_contains($compose, hub_test_host_root_child_needle()), 'Whisper WSL compose must use only the Pascal image and ext4 runtime roots');
+});
+
+hub_test('Whisper Pascal CKIP provisioning is an explicit WSL-only operation', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'whisper-asr', ['idempotent' => true, 'provision_runner' => false])['service'];
+    $pascalProfile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['whisper-asr' => 'pascal-cu118'],
+    ]]];
+    $defaultProfile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['whisper-asr' => 'default'],
+    ]]];
+
+    hub_test_assert(function_exists('hub_whisper_pascal_ckip_provisioning_plan'), 'Whisper Pascal CKIP provisioning plan helper must exist');
+    hub_test_assert(hub_is_valid_job_action('whisper_pascal_ckip_provision'), 'Whisper Pascal CKIP provisioning must be a declared command job action');
+    if (!function_exists('hub_whisper_pascal_ckip_provisioning_plan')) {
+        return;
+    }
+
+    $plan = hub_whisper_pascal_ckip_provisioning_plan($service, $pascalProfile);
+    $script = is_array($plan) ? hub_test_wsl_script_payload((array)($plan['command'] ?? [])) : '';
+    hub_test_assert(
+        is_array($plan)
+        && ($plan['runtime']['profile_id'] ?? '') === 'pascal-cu118'
+        && str_contains($script, "AIHUB_WHISPER_RUNTIME_PROFILE='pascal-cu118'")
+        && str_contains($script, 'AIHUB_WHISPER_PROVISION_CKIP=1')
+        && str_contains($script, 'AIHUB_WHISPER_PROVISION_DIARIZATION=0')
+        && str_contains($script, '/DATA/3waAIHub-runtime/packs/whisper-asr/jobs/provision_offline_models.sh')
+        && str_contains($script, '/DATA/3waAIHub-runtime/cache')
+        && str_contains($script, 'sha256sum ')
+        && str_contains($script, '"$ckip_root/pytorch_model.bin"')
+        && !str_contains($script, hub_test_host_root_child_needle()),
+        'Pascal CKIP provisioning must use only the fixed WSL ext4 runtime and cache roots'
+    );
+    hub_test_assert(hub_whisper_pascal_ckip_provisioning_plan($service, $defaultProfile) === null, 'Default Whisper profile must not expose Pascal CKIP provisioning');
+    hub_test_assert(hub_whisper_pascal_ckip_provisioning_plan($service, ['runtime_targets' => ['linux-docker' => ['supported' => true]]]) === null, 'Direct Linux Docker metadata must not expose a Windows WSL provisioning operation');
+});
+
+hub_test('Whisper WSL resident asset preflight uses the ext4 runtime cache', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'whisper-asr', ['idempotent' => true, 'provision_runner' => false])['service'];
+    $pack = hub_get_pack('whisper-asr');
+    $job = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), 'transcribe');
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['whisper-asr' => 'pascal-cu118'],
+    ]]];
+    $input = [
+        'model' => 'small',
+        'subtitle_reflow' => 'legacy_adaptive_v1',
+        'word_timestamps' => false,
+        'diarization' => false,
+    ];
+
+    hub_test_assert(function_exists('hub_whisper_wsl_resident_asset_preflight'), 'Whisper WSL resident asset preflight helper must exist');
+    if (!function_exists('hub_whisper_wsl_resident_asset_preflight')) {
+        return;
+    }
+    $preflight = hub_whisper_wsl_resident_asset_preflight($service, (array)($job['runner'] ?? []), $input, $profile);
+    $script = is_array($preflight) ? (string)($preflight['script'] ?? '') : '';
+    hub_test_assert(
+        is_array($preflight)
+        && str_contains($script, '/DATA/3waAIHub-runtime/cache/whisper/ckip/bert-base-chinese-ws')
+        && str_contains($script, '.aihub-ckip-ready.json')
+        && str_contains($script, 'test ! -L')
+        && !str_contains($script, hub_test_host_root_child_needle()),
+        'Whisper WSL resident preflight must validate CKIP from the ext4 runtime cache, never the Windows control-plane cache'
+    );
 });
 
 hub_test('generic WSL service runtime settings use an atomic SHA-256 verified write', function (): void {

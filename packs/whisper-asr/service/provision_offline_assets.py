@@ -173,7 +173,12 @@ def main() -> int:
     parser.add_argument("--languages", default=ALIGNMENT_LANGUAGE, help="Fixed WhisperX alignment language (en)")
     parser.add_argument("--with-diarization", action="store_true", help="Provision the local pyannote assets using the trusted token")
     parser.add_argument("--with-ckip", action="store_true", help="Provision the local CKIP word-segmentation model")
+    parser.add_argument("--ckip-only", action="store_true", help="Provision only the CKIP subtitle-reflow asset")
     args = parser.parse_args()
+    if args.ckip_only and not args.with_ckip:
+        raise RuntimeError("ckip_only_requires_ckip")
+    if args.ckip_only and args.with_diarization:
+        raise RuntimeError("ckip_only_diarization_unsupported")
     selected_languages = languages(args.languages)
     token = os.environ.get("AIHUB_SECRET_PYANNOTE_TOKEN", "") if args.with_diarization else ""
     if args.with_diarization and not token:
@@ -188,7 +193,8 @@ def main() -> int:
 
     from huggingface_hub import snapshot_download
 
-    snapshot_download("Systran/faster-whisper-large-v3", local_dir=str(ASR_MODEL_DIR))
+    if not args.ckip_only:
+        snapshot_download("Systran/faster-whisper-large-v3", local_dir=str(ASR_MODEL_DIR))
     if args.with_ckip:
         require_ckip_model_directory()
         invalidate_ckip_marker()
@@ -196,11 +202,12 @@ def main() -> int:
         require_ckip_model_directory()
         for name in ("config.json", "pytorch_model.bin", "vocab.txt"):
             require_regular_file(CKIP_MODEL_DIR / name, "ckip_snapshot_unavailable")
-    for language in selected_languages:
-        precache_alignment(language)
-    require_regular_file(ALIGNMENT_WEIGHT, "alignment_cache_unavailable")
-    configure_offline_cache()
-    write_atomic(ALIGNMENT_MARKER, (json.dumps(alignment_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
+    if not args.ckip_only:
+        for language in selected_languages:
+            precache_alignment(language)
+        require_regular_file(ALIGNMENT_WEIGHT, "alignment_cache_unavailable")
+        configure_offline_cache()
+        write_atomic(ALIGNMENT_MARKER, (json.dumps(alignment_cache_manifest(), sort_keys=True) + "\n").encode("utf-8"))
     if args.with_ckip:
         validate_local_ckip()
         require_ckip_model_directory()

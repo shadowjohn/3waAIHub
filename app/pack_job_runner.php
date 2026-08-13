@@ -214,11 +214,24 @@ function hub_whisper_wsl_pascal_job_capability_error(array $task, ?array $runner
         return null;
     }
     $input = is_array($task['input'] ?? null) ? $task['input'] : [];
+
+    return hub_whisper_pascal_reflow_capability_error($input, $runnerConfig);
+}
+
+/**
+ * Pascal CUDA 11.8 只接受已驗收的 small Whisper 與 CKIP 字幕重切組合。
+ * WhisperX 對齊與 Pyannote 說話者分離仍需要另一個獨立的資產／VRAM 驗收切片。
+ */
+function hub_whisper_pascal_reflow_capability_error(array $input, ?array $runnerConfig): ?string
+{
     if (($runnerConfig['alias'] ?? null) !== 'small') {
         return 'Whisper CUDA 11.8 on Pascal requires model=small.';
     }
-    if (!empty($input['word_timestamps']) || !empty($input['diarization']) || ($input['subtitle_reflow'] ?? 'none') !== 'none') {
-        return 'Whisper CUDA 11.8 on Pascal supports basic transcript, SRT, and VTT output only.';
+    if (!empty($input['word_timestamps'])) {
+        return 'Whisper CUDA 11.8 on Pascal does not support WhisperX word timestamps.';
+    }
+    if (!empty($input['diarization'])) {
+        return 'Whisper CUDA 11.8 on Pascal does not support speaker diarization.';
     }
 
     return null;
@@ -524,6 +537,58 @@ function hub_whisper_wsl_resident_stage(array $service, string $residentRunId): 
     $root = (string)$runtime['runtime_root'] . '/services/' . (string)$service['service_key'] . '/data/resident_jobs';
 
     return ['runtime' => $runtime, 'root' => $root, 'stage' => $root . '/' . $residentRunId];
+}
+
+/**
+ * Windows Whisper resident service 使用 WSL ext4 cache，不可沿用 Windows
+ * Control Plane storage path，否則預檢與實際 container 掛載會落在不同位置。
+ *
+ * @return array{runtime: array<string, mixed>, script: string}|null
+ */
+function hub_whisper_wsl_resident_asset_preflight(array $service, array $runner, array $input, ?array $profile = null): ?array
+{
+    $runtime = hub_whisper_wsl_runtime_profile($service, $profile);
+    if ($runtime === null) {
+        return null;
+    }
+    $descriptors = hub_pack_async_job_runner_asset_mounts($runner['asset_mounts'] ?? []);
+    if ($descriptors === null) {
+        return null;
+    }
+
+    $roots = [
+        'models' => (string)($runtime['models_root'] ?? ''),
+        'cache' => rtrim((string)($runtime['runtime_root'] ?? ''), '/') . '/cache',
+    ];
+    $checks = ['set -eu'];
+    foreach (hub_pack_job_asset_mounts_for_input($descriptors, $input) as $descriptor) {
+        $root = $roots[(string)($descriptor['storage'] ?? '')] ?? '';
+        $subdir = (string)($descriptor['host_subdir'] ?? '');
+        if ($root === '' || $subdir === '') {
+            return null;
+        }
+        try {
+            $source = hub_container_path(rtrim($root, '/') . '/' . $subdir);
+        } catch (InvalidArgumentException) {
+            return null;
+        }
+        $checks[] = 'test -d ' . hub_wsl_shell_literal($source);
+        $checks[] = 'test ! -L ' . hub_wsl_shell_literal($source);
+        foreach ((array)($descriptor['required_paths'] ?? []) as $requiredPath) {
+            if (!is_string($requiredPath) || $requiredPath === '') {
+                return null;
+            }
+            try {
+                $required = hub_container_path($source . '/' . $requiredPath);
+            } catch (InvalidArgumentException) {
+                return null;
+            }
+            $checks[] = 'test -f ' . hub_wsl_shell_literal($required);
+            $checks[] = 'test ! -L ' . hub_wsl_shell_literal($required);
+        }
+    }
+
+    return ['runtime' => $runtime, 'script' => implode("\n", $checks) . "\n"];
 }
 
 function hub_whisper_wsl_resident_prepare_stage(array $stage, string $workspace, ?array $voiceProfileMount): void
@@ -2901,10 +2966,29 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             }
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
         }
-        try {
-            $assetMounts = hub_pack_job_resolve_asset_mounts($db, $runner, (array)($task['input'] ?? []));
-        } catch (Throwable) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
+        $wslResidentAssets = null;
+        if ($residentPlan !== null && !empty($residentPlan['eligible'])) {
+            $wslResidentAssets = hub_whisper_wsl_resident_asset_preflight(
+                (array)($residentPlan['service'] ?? []),
+                $runner,
+                (array)($task['input'] ?? [])
+            );
+        }
+        if ($wslResidentAssets !== null) {
+            $assetCheck = hub_run_command(
+                hub_wsl_script_command((array)$wslResidentAssets['runtime'], (string)$wslResidentAssets['script']),
+                30
+            );
+            if ((int)($assetCheck['exit_code'] ?? 1) !== 0) {
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
+            }
+            $assetMounts = [];
+        } else {
+            try {
+                $assetMounts = hub_pack_job_resolve_asset_mounts($db, $runner, (array)($task['input'] ?? []));
+            } catch (Throwable) {
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
+            }
         }
         $webScreenshotService = null;
         $edgeTtsService = null;

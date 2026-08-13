@@ -27,7 +27,8 @@
             service_rebuild: t('action_service_rebuild', '重新建置'),
             service_remove: t('action_service_remove', '移除服務'),
             service_health_check: t('action_service_health_check', '健康檢查'),
-            service_install: t('action_service_install', '安裝服務')
+            service_install: t('action_service_install', '安裝服務'),
+            whisper_pascal_ckip_provision: t('action_whisper_pascal_ckip_provision', '準備 CKIP 字幕資產')
         };
         return labels[action] || action || '';
     }

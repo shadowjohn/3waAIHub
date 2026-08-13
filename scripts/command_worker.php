@@ -91,7 +91,7 @@ function hub_execute_command_job(PDO $db, array $job): array
             return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service not found.'];
         }
     }
-    if (str_starts_with($action, 'service_') && !$service) {
+    if ((str_starts_with($action, 'service_') || $action === 'whisper_pascal_ckip_provision') && !$service) {
         return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service id is required.'];
     }
 
@@ -124,6 +124,7 @@ function hub_execute_command_job(PDO $db, array $job): array
         'docker_prune_check' => hub_run_command(['docker', 'system', 'df'], 30),
         'docker_builder_prune' => hub_run_command(['docker', 'builder', 'prune', '-af'], 900),
         'ollama_model_pull' => hub_run_ollama_model_pull_job($db, $service, $job),
+        'whisper_pascal_ckip_provision' => hub_run_whisper_pascal_ckip_provision_job($db, $service, $job),
         'benchmark_run' => ['exit_code' => 4, 'stdout' => '', 'stderr' => 'benchmark_run is not implemented in PhaseB local hardening.'],
         default => ['exit_code' => 2, 'stdout' => '', 'stderr' => 'Unhandled action.'],
     };

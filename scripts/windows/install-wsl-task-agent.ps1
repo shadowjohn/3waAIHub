@@ -72,12 +72,14 @@ $runtimeRoot = "$LinuxDataRoot/3waAIHub-runtime"
 $sourceRoot = Invoke-WslShell -Wsl $wsl.Source -Distro $WslDistro -Command ('wslpath -a ' + (ConvertTo-LinuxShellLiteral $InstallRoot))
 $phpPath = Invoke-WslShell -Wsl $wsl.Source -Distro $WslDistro -Command ('wslpath -a ' + (ConvertTo-LinuxShellLiteral $php.Source))
 $wslUser = Invoke-WslShell -Wsl $wsl.Source -Distro $WslDistro -Command 'id -un'
-if ($sourceRoot -eq '' -or $phpPath -eq '' -or $wslUser -notmatch '^[a-z_][a-z0-9_-]{0,31}$') {
+$wslGroup = Invoke-WslShell -Wsl $wsl.Source -Distro $WslDistro -Command 'id -gn'
+if ($sourceRoot -eq '' -or $phpPath -eq '' -or $wslUser -notmatch '^[a-z_][a-z0-9_-]{0,31}$' -or $wslGroup -notmatch '^[a-z_][a-z0-9_-]{0,31}$') {
     throw 'The selected WSL distro cannot resolve the agent runtime identity.'
 }
-foreach ($value in @($runtimeRoot, $sourceRoot, $phpPath, $wslUser)) {
+foreach ($value in @($runtimeRoot, $sourceRoot, $phpPath, $wslUser, $wslGroup)) {
     Assert-SafeValue -Value $value -Name 'WSL agent value'
 }
+$runtimeOwner = ConvertTo-LinuxShellLiteral "$wslUser`:$wslGroup"
 
 $runner = Get-Content -LiteralPath $runnerPath -Raw -Encoding UTF8
 $unit = (Get-Content -LiteralPath $unitTemplatePath -Raw -Encoding UTF8).
@@ -89,8 +91,10 @@ $runnerPayload = ConvertTo-Base64Utf8 $runner
 $unitPayload = ConvertTo-Base64Utf8 $unit
 $installCommand = @"
 set -eu
-install -d -m 0755 $(ConvertTo-LinuxShellLiteral "$runtimeRoot/scripts") /etc/systemd/system
+install -d -m 0775 -o $(ConvertTo-LinuxShellLiteral $wslUser) -g $(ConvertTo-LinuxShellLiteral $wslGroup) $(ConvertTo-LinuxShellLiteral "$runtimeRoot/scripts")
+install -d -m 0755 /etc/systemd/system
 printf %s $(ConvertTo-LinuxShellLiteral $runnerPayload) | base64 -d > $(ConvertTo-LinuxShellLiteral "$runtimeRoot/scripts/aihub-wsl-worker.sh")
+chown $runtimeOwner $(ConvertTo-LinuxShellLiteral "$runtimeRoot/scripts/aihub-wsl-worker.sh")
 chmod 0755 $(ConvertTo-LinuxShellLiteral "$runtimeRoot/scripts/aihub-wsl-worker.sh")
 printf %s $(ConvertTo-LinuxShellLiteral $unitPayload) | base64 -d > /etc/systemd/system/aihub-wsl-worker.service
 chmod 0644 /etc/systemd/system/aihub-wsl-worker.service

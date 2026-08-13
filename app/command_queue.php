@@ -19,6 +19,7 @@ function hub_allowed_job_actions(): array
         'docker_prune_check',
         'docker_builder_prune',
         'ollama_model_pull',
+        'whisper_pascal_ckip_provision',
     ];
 }
 
@@ -61,6 +62,7 @@ function hub_command_action_label(string $action): string
         'service_health_check' => '健康檢查',
         'benchmark_run' => 'Benchmark 測試',
         'ollama_model_pull' => 'Ollama 模型拉取',
+        'whisper_pascal_ckip_provision' => '準備 CKIP 字幕資產',
         'service_install' => '安裝服務',
         'service_logs_collect' => '收集服務記錄',
         'env_probe' => '環境檢測',
@@ -249,7 +251,7 @@ function hub_command_job_stale_after_seconds(string $action): int
     return match ($action) {
         // 依現有 command timeout 加五分鐘緩衝，避免安靜執行的長任務被誤判。
         'ollama_model_pull' => 14700,
-        'service_start', 'service_install', 'service_build', 'service_rebuild' => 2100,
+        'service_start', 'service_install', 'service_build', 'service_rebuild', 'whisper_pascal_ckip_provision' => 2100,
         'docker_builder_prune' => 1200,
         default => 900,
     };

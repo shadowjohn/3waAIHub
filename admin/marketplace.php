@@ -129,12 +129,17 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'rebuild' => 'service_rebuild',
             'remove' => 'service_remove',
             'refresh' => 'service_health_check',
+            'provision_pascal_ckip' => 'whisper_pascal_ckip_provision',
         ];
         $serviceIdValue = (string)($_POST['service_id'] ?? '');
         $serviceId = preg_match('/^[1-9][0-9]*$/D', $serviceIdValue) === 1 ? (int)$serviceIdValue : 0;
         $action = (string)($_POST['action'] ?? '');
         $service = $serviceId > 0 ? hub_get_service($db, $serviceId) : null;
-        if (!$service || !isset($actionMap[$action])) {
+        if (
+            !$service
+            || !isset($actionMap[$action])
+            || ($action === 'provision_pascal_ckip' && hub_whisper_pascal_ckip_provisioning_plan($service) === null)
+        ) {
             $error = hub_i18n_text('無效的服務操作。');
             if ($isAjax) {
                 hub_marketplace_json(400, ['ok' => false, 'error' => $error]);
@@ -262,6 +267,7 @@ $dictionary = [
     'action_service_remove' => hub_i18n_text('移除服務'),
     'action_service_health_check' => hub_i18n_text('健康檢查'),
     'action_service_install' => hub_i18n_text('安裝服務'),
+    'action_whisper_pascal_ckip_provision' => hub_i18n_text('準備 CKIP 字幕資產'),
     'remove_confirm' => hub_i18n_text('確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。'),
     'job_status_queued' => hub_i18n_text('排隊中'),
     'job_status_running' => hub_i18n_text('執行中'),
@@ -630,6 +636,7 @@ hub_admin_header(hub_i18n_text('HubPack 套件'), $user);
                         $healthState = ['label' => hub_i18n_text('健康異常'), 'class' => 'hub-badge-bad'];
                     }
                     $runtimeLevel = hub_marketplace_service_runtime_level($service);
+                    $pascalCkipPlan = hub_whisper_pascal_ckip_provisioning_plan($service);
                     $endpoint = hub_marketplace_service_endpoint($service);
                     $apiUrl = '../api.php?mode=' . rawurlencode((string)$service['mode']);
                     $lastError = $lastJob && (string)$lastJob['status'] === 'failed'
@@ -690,6 +697,9 @@ hub_admin_header(hub_i18n_text('HubPack 套件'), $user);
                                 <button name="action" value="build" type="submit"><?= hub_h(hub_i18n_text('建置')) ?></button>
                                 <button name="action" value="rebuild" type="submit"><?= hub_h(hub_i18n_text('重新建置')) ?></button>
                                 <button name="action" value="refresh" type="submit"><?= hub_h(hub_i18n_text('健康檢查')) ?></button>
+                                <?php if ($pascalCkipPlan !== null): ?>
+                                    <button name="action" value="provision_pascal_ckip" type="submit"><?= hub_h(hub_i18n_text('準備 CKIP 字幕資產')) ?></button>
+                                <?php endif; ?>
                                 <?php if ($actualState === 'stopped' && !$serviceHasActiveJob): ?>
                                     <button class="danger" name="action" value="remove" type="submit"><?= hub_h(hub_i18n_text('移除')) ?></button>
                                 <?php endif; ?>

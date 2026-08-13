@@ -120,6 +120,7 @@ Assert-InstallerContract ($wslWorkerRunnerSource -match 'interactive Windows use
 Assert-InstallerContract (Test-Path -LiteralPath $wslAgentInstaller) 'WSL Runtime Agent installer must exist'
 Assert-InstallerContract ($wslAgentInstallerSource -match 'systemctl enable --now aihub-wsl-worker\.service') 'WSL Runtime Agent installer must enable the systemd worker'
 Assert-InstallerContract ($wslAgentInstallerSource -match 'LogonTrigger') 'WSL Runtime Agent launcher must start only at interactive user logon'
+Assert-InstallerContract ($wslAgentInstallerSource -match 'chown .*aihub-wsl-worker\.sh') 'WSL Runtime Agent installer must return the worker script to the WSL runtime user'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'collect_host_metrics\.php') 'Windows worker runner must collect host metric snapshots'
 Assert-InstallerContract ($workerTaskRunnerSource -match '--limit=5') 'Windows worker runner must keep the bounded command worker limit'
 Assert-InstallerContract ($workerTaskRunnerSource -match 'function Write-WorkerLog') 'Windows worker runner must own compatible log writing'

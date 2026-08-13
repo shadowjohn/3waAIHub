@@ -138,6 +138,41 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
         && str_contains($pascalRequirements, 'ctranslate2==3.24.0'), 'Whisper Pascal runtime must pin the compatible CUDA 11.8 inference pair');
 });
 
+hub_test('Whisper Pascal profile permits only small-model CKIP subtitle reflow', function (): void {
+    $basic = ['word_timestamps' => false, 'diarization' => false, 'subtitle_reflow' => 'none'];
+    $reflow = array_replace($basic, ['subtitle_reflow' => 'legacy_adaptive_v1']);
+
+    hub_test_assert(
+        hub_whisper_pascal_reflow_capability_error($reflow, ['alias' => 'small']) === null,
+        'Pascal CUDA 11.8 must allow small-model legacy subtitle reflow after its CKIP asset is provisioned'
+    );
+    hub_test_assert(
+        hub_whisper_pascal_reflow_capability_error(array_replace($basic, ['word_timestamps' => true]), ['alias' => 'small']) !== null,
+        'Pascal CUDA 11.8 must keep WhisperX word alignment unsupported'
+    );
+    hub_test_assert(
+        hub_whisper_pascal_reflow_capability_error(array_replace($basic, ['diarization' => true]), ['alias' => 'small']) !== null,
+        'Pascal CUDA 11.8 must keep speaker diarization unsupported'
+    );
+    hub_test_assert(
+        hub_whisper_pascal_reflow_capability_error($reflow, ['alias' => 'large_v3']) !== null,
+        'Pascal CUDA 11.8 must keep large-v3 unsupported even for subtitle reflow'
+    );
+
+    $pascalRequirements = (string)file_get_contents(HUB_ROOT . '/packs/whisper-asr/service/requirements.pascal-cu118.txt');
+    $pascalDockerfile = (string)file_get_contents(HUB_ROOT . '/packs/whisper-asr/service/Dockerfile.pascal-cu118');
+    $provisioner = (string)file_get_contents(HUB_ROOT . '/packs/whisper-asr/jobs/provision_offline_models.sh');
+    hub_test_assert(
+        str_contains($pascalRequirements, 'ckip-transformers==0.3.4')
+        && str_contains($pascalRequirements, 'transformers==4.30.2')
+        && str_contains($pascalDockerfile, 'service/provision_offline_assets.py')
+        && str_contains($pascalDockerfile, 'ln -s /app/provision_offline_assets.py /app/provision-offline-assets')
+        && str_contains($provisioner, 'AIHUB_WHISPER_RUNTIME_PROFILE')
+        && str_contains($provisioner, '3waaihub/whisper-asr:0.1.2-pascal-cu118'),
+        'Pascal reflow must use a profile-selected trusted image with its CKIP runtime and provision entrypoint'
+    );
+});
+
 hub_test('Whisper ASR can select the running asr-main resident service', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'whisper-asr', ['idempotent' => true]);
