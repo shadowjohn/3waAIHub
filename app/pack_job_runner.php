@@ -1063,9 +1063,9 @@ function hub_pack_job_failure_code(Throwable $error, string $fallback = 'job_una
     return in_array($message, ['pack_version_unavailable', 'job_unavailable', 'job_contract_unavailable', 'url_not_allowed'], true) ? $message : $fallback;
 }
 
-function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $code, string $message, array $cleanup, ?array $gpuLease): array
+function hub_pack_job_adapter_failure(PDO $db, int $taskId, array $run, string $code, string $message, array $cleanup, ?array $gpuLease, ?array &$heartbeatState = null): array
 {
-    hub_commit_pack_job_failure($db, $taskId, $run, 'failed', $code, $message, $cleanup, $gpuLease);
+    hub_commit_pack_job_failure($db, $taskId, $run, 'failed', $code, $message, $cleanup, $gpuLease, $heartbeatState);
     $task = hub_get_task($db, $taskId);
 
     return ['status' => (string)($task['status'] ?? 'failed'), 'error_code' => (string)($task['error_code'] ?? $code)];
@@ -2872,7 +2872,28 @@ function hub_pack_job_cleanup_after_started_failure(array $options, array $conte
     }
 }
 
-function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, array $cleanup, ?array $gpuLease = null): bool
+function hub_pack_job_recovery_telemetry_emit(int $actionStartedNs, int $beginRequestedNs, ?int $txStartedNs, int $txEndedNs, ?string $txBeginAt, ?string $txCommitAt, array $beginStats, bool $gpu, string $outcome, int $skippedTicks): void
+{
+    $emitStartedNs = hrtime(true);
+    hub_runtime_telemetry_emit([
+        'action' => 'recovery',
+        'variant' => $gpu ? 'gpu' : 'runtime',
+        'outcome' => $outcome,
+        'tx_mode' => 'immediate',
+        'tx_begin_at' => $txBeginAt,
+        'tx_commit_at' => $txCommitAt,
+        'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+        'lock_wait_ms' => (float)($beginStats['lock_wait_ms'] ?? 0.0),
+        'lock_wait_kind' => 'begin_immediate',
+        'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+        'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+        'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+        'retry_count' => (int)($beginStats['retry_count'] ?? 0),
+        'skipped_ticks' => $skippedTicks,
+    ]);
+}
+
+function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, array $cleanup, ?array $gpuLease = null, ?array &$heartbeatState = null): bool
 {
     $taskId = (int)($task['id'] ?? 0);
     $runId = (int)($run['id'] ?? 0);
@@ -2890,8 +2911,21 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
     $message = $clean ? 'Pack runtime lease expired' : 'Pack cleanup was not attested';
     $taskLock = (string)($task['lock_token'] ?? '');
     $lockPredicate = $taskLock === '' ? 'lock_token IS NULL' : 'lock_token = :task_lock';
-    hub_sqlite_begin_immediate($db);
+    $actionStartedNs = hrtime(true);
+    $beginRequestedNs = hrtime(true);
+    $beginStats = [];
+    $txStartedNs = null;
+    $txBeginAt = null;
+    $ownsTransaction = false;
+    $transactionClosed = false;
+    $result = false;
+    $outcome = 'failed';
+    $error = null;
     try {
+        hub_sqlite_begin_immediate($db, $beginStats);
+        $ownsTransaction = true;
+        $txStartedNs = hrtime(true);
+        $txBeginAt = hub_runtime_telemetry_timestamp();
         if ($gpuLease !== null) {
             $gpu = hub_runtime_gpu_lease_identity($gpuLease);
             $gpuSet = $clean
@@ -2925,7 +2959,13 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
                 : $gpuStmt->rowCount() === 1;
             if (!$gpuMatched) {
                 $db->exec('ROLLBACK');
-                return false;
+                $ownsTransaction = false;
+                $transactionClosed = true;
+                $outcome = 'fence_lost';
+                $result = false;
+            }
+            if (!$gpuMatched) {
+                throw new RuntimeException('runtime_ownership_conflict');
             }
         }
         $runStmt = $db->prepare(
@@ -2946,7 +2986,11 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
         ]);
         if ($runStmt->rowCount() !== 1) {
             $db->exec('ROLLBACK');
-            return false;
+            $ownsTransaction = false;
+            $transactionClosed = true;
+            $outcome = 'fence_lost';
+            $result = false;
+            throw new RuntimeException('runtime_ownership_conflict');
         }
         $taskStmt = $db->prepare(
             "UPDATE tasks
@@ -2968,30 +3012,66 @@ function hub_pack_job_reconcile_lost_fence(PDO $db, array $task, array $run, arr
         $taskStmt->execute($params);
         if ($taskStmt->rowCount() !== 1) {
             $db->exec('ROLLBACK');
-            return false;
+            $ownsTransaction = false;
+            $transactionClosed = true;
+            $outcome = 'fence_lost';
+            $result = false;
+            throw new RuntimeException('task_ownership_conflict');
         }
         hub_apply_task_terminal_retention($db, $taskId, 'failed', $now);
         hub_release_task_artifact_holds($db, $taskId);
         hub_enqueue_task_callback_delivery($db, $taskId);
         $db->exec('COMMIT');
-
-        return true;
+        $ownsTransaction = false;
+        $transactionClosed = true;
+        $outcome = 'committed';
+        $result = true;
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        $error = $e;
+        if ($ownsTransaction) {
+            try {
+                $db->exec('ROLLBACK');
+                $ownsTransaction = false;
+                $transactionClosed = true;
+                $outcome = 'rolled_back';
+            } catch (Throwable) {
+            }
+        } elseif ($txStartedNs === null
+            && !($e instanceof PDOException && (str_contains(strtolower($e->getMessage()), 'within a transaction') || str_contains(strtolower($e->getMessage()), 'already an active transaction')))) {
+            $transactionClosed = true;
+            $outcome = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
         }
-        throw $e;
     }
+    $txEndedNs = hrtime(true);
+    if ($transactionClosed) {
+        hub_pack_job_recovery_telemetry_emit(
+            $actionStartedNs,
+            $beginRequestedNs,
+            $txStartedNs,
+            $txEndedNs,
+            $txBeginAt,
+            hub_runtime_telemetry_timestamp(),
+            $beginStats,
+            $gpuLease !== null,
+            $outcome,
+            hub_pack_job_heartbeat_take_skipped($heartbeatState),
+        );
+    }
+    if ($error !== null && !($transactionClosed && $outcome === 'fence_lost')) {
+        throw $error;
+    }
+
+    return $result;
 }
 
-function hub_pack_job_lost_fence_outcome(PDO $db, array $task, array $run, array $options, bool $started, ?array $context, array $details, ?callable $pidInspector, ?array $gpuLease = null, ?array $cleanup = null): array
+function hub_pack_job_lost_fence_outcome(PDO $db, array $task, array $run, array $options, bool $started, ?array $context, array $details, ?callable $pidInspector, ?array $gpuLease = null, ?array $cleanup = null, ?array &$heartbeatState = null): array
 {
     if ($cleanup === null) {
         $cleanup = $started && $context !== null
             ? hub_pack_job_cleanup_after_started_failure($options, $context, $details, $pidInspector, 'runtime_lease_lost')
             : hub_pack_job_no_work_cleanup();
     }
-    if (!hub_pack_job_reconcile_lost_fence($db, $task, $run, $cleanup, $gpuLease)) {
+    if (!hub_pack_job_reconcile_lost_fence($db, $task, $run, $cleanup, $gpuLease, $heartbeatState)) {
         return ['status' => 'fence_lost'];
     }
     $latest = hub_get_task($db, (int)$task['id']);
@@ -3140,21 +3220,21 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             }
             $contract = hub_resolve_stored_pack_job($db, $resolutionTask);
         } catch (Throwable $e) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, hub_pack_job_failure_code($e), 'Stored Pack job is unavailable', hub_pack_job_no_work_cleanup(), null);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, hub_pack_job_failure_code($e), 'Stored Pack job is unavailable', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
         }
         if (!isset($contract['runner'])) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'job_unavailable', 'Stored Pack job has no runner contract', hub_pack_job_no_work_cleanup(), null);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'job_unavailable', 'Stored Pack job has no runner contract', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
         }
         try {
             $facebookProfile = hub_facebook_profile_acquire_for_task($db, $task);
         } catch (Throwable) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'facebook_profile_unavailable', 'Managed Facebook profile is unavailable', hub_pack_job_no_work_cleanup(), null);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'facebook_profile_unavailable', 'Managed Facebook profile is unavailable', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
         }
         if ($facebookProfile === false) {
             if (hub_facebook_wait_for_profile($db, $taskId, $run, max(1, (int)($options['profile_backoff_seconds'] ?? 5)))) {
                 return ['status' => 'waiting_profile'];
             }
-            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, null, null, $heartbeatState);
         }
         if (is_array($facebookProfile)) {
             $facebookProfileId = (string)$facebookProfile['profile_id'];
@@ -3170,10 +3250,10 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             ? $options['resident_transport']
             : null;
         if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'whisper-asr' && (string)($task['job'] ?? '') === 'transcribe' && ($residentPlan === null || empty($residentPlan['eligible']))) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'resident_service_unavailable', 'Whisper ASR WSL Runtime service is unavailable', hub_pack_job_no_work_cleanup(), null);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'resident_service_unavailable', 'Whisper ASR WSL Runtime service is unavailable', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
         }
         if (($whisperCapabilityError = hub_whisper_wsl_pascal_job_capability_error($task, $runnerConfig, $residentPlan)) !== null) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'runtime_capability_unsupported', $whisperCapabilityError, hub_pack_job_no_work_cleanup(), null);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'runtime_capability_unsupported', $whisperCapabilityError, hub_pack_job_no_work_cleanup(), null, $heartbeatState);
         }
         if ($residentPlan !== null && empty($residentPlan['eligible'])) {
             if (hub_pack_job_wait_without_gpu(
@@ -3186,7 +3266,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             )) {
                 return ['status' => 'waiting_gpu'];
             }
-            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, null, null, $heartbeatState);
         }
         $wslResidentAssets = null;
         if ($residentPlan !== null && !empty($residentPlan['eligible'])) {
@@ -3202,14 +3282,14 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 30
             );
             if ((int)($assetCheck['exit_code'] ?? 1) !== 0) {
-                return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
             }
             $assetMounts = [];
         } else {
             try {
                 $assetMounts = hub_pack_job_resolve_asset_mounts($db, $runner, (array)($task['input'] ?? []));
             } catch (Throwable) {
-                return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null);
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'model_assets_unavailable', 'Required offline model or cache assets are unavailable', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
             }
         }
         $webScreenshotService = null;
@@ -3218,19 +3298,19 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'web-screenshot' && (string)($task['job'] ?? '') === 'capture') {
             $webScreenshotService = hub_web_screenshot_wsl_service_for_task($db, $task);
             if ($webScreenshotService === null) {
-                return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Web Screenshot service is unavailable', hub_pack_job_no_work_cleanup(), null);
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Web Screenshot service is unavailable', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
             }
         }
         if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'edge-tts' && (string)($task['job'] ?? '') === 'synthesize') {
             $edgeTtsService = hub_edge_tts_wsl_service_for_task($db, $task);
             if ($edgeTtsService === null) {
-                return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Edge TTS service is unavailable', hub_pack_job_no_work_cleanup(), null);
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Edge TTS service is unavailable', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
             }
         }
         if (hub_platform_id() === 'windows' && (string)($task['pack_id'] ?? '') === 'facebook-crawler' && (string)($task['job'] ?? '') === 'crawl') {
             $facebookCrawlerService = hub_facebook_crawler_wsl_service_for_task($db, $task);
             if ($facebookCrawlerService === null) {
-                return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Facebook crawler service is unavailable', hub_pack_job_no_work_cleanup(), null);
+                return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'Facebook crawler service is unavailable', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
             }
         }
         if ($residentPlan !== null) {
@@ -3262,7 +3342,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 isset($options['process_runner']) && is_callable($options['process_runner']) ? $options['process_runner'] : null
             );
         } else {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'No controlled Pack job executor is configured', hub_pack_job_no_work_cleanup(), null);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'runner_unavailable', 'No controlled Pack job executor is configured', hub_pack_job_no_work_cleanup(), null, $heartbeatState);
         }
         if ($residentUsesCpu) {
             $capacity = hub_pack_job_resident_capacity($residentPlan, $residentTransport);
@@ -3277,7 +3357,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 )) {
                     return ['status' => 'waiting_gpu'];
                 }
-                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
+                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, null, null, $heartbeatState);
             }
         }
         if (hub_runtime_task_requires_gpu($task) && !$residentUsesCpu) {
@@ -3293,7 +3373,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 )) {
                     return ['status' => 'waiting_gpu'];
                 }
-                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
+                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, null, null, $heartbeatState);
             }
             $heartbeatState['gpu_required'] = true;
             $heartbeatState['gpu_expires_at'] = $gpuLease['lease_expires_at'] ?? null;
@@ -3318,7 +3398,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                     if (($waiting['reason'] ?? '') !== 'lost_gpu_lease') {
                         return ['status' => 'waiting_gpu'];
                     }
-                    return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, $gpuLease);
+                    return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, $gpuLease, null, $heartbeatState);
                 }
                 if ($capacity === 'ready') {
                     $requiredVram = 0;
@@ -3331,7 +3411,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 if (($preflight['reason'] ?? '') !== 'lost_gpu_lease') {
                     return ['status' => 'waiting_gpu'];
                 }
-                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, $gpuLease);
+                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null, $gpuLease, null, $heartbeatState);
             }
         }
         try {
@@ -3340,12 +3420,12 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             $code = in_array($e->getMessage(), ['voice_profile_changed', 'voice_profile_reprepare_required'], true)
                 ? $e->getMessage()
                 : 'voice_profile_unavailable';
-            return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Managed voice profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Managed voice profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease, $heartbeatState);
         }
         try {
             $facebookProfileMount = hub_pack_job_resolve_facebook_profile_mount($db, $task);
         } catch (Throwable) {
-            return hub_pack_job_adapter_failure($db, $taskId, $run, 'facebook_profile_unavailable', 'Managed Facebook profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, 'facebook_profile_unavailable', 'Managed Facebook profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease, $heartbeatState);
         }
         $hasPrivatePrompt = isset($voiceProfileMount['prompt_text']);
         $workspace = hub_pack_job_prepare_workspace($db, $task, $contract, $voiceProfileMount);
@@ -3385,12 +3465,12 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         $details['has_process_evidence'] = false;
         if (!hub_pack_job_record_execution($db, $task, $run, $gpuLease, $details)) {
             $scrubPrivatePrompt();
-            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, $details, $pidInspector, $gpuLease);
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, $details, $pidInspector, $gpuLease, null, $heartbeatState);
         }
         $startedRun = hub_pack_job_begin_execution($db, $task, $run, $runner, $gpuLease);
         if ($startedRun === null) {
             $scrubPrivatePrompt();
-            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, $details, $pidInspector, $gpuLease);
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, $details, $pidInspector, $gpuLease, null, $heartbeatState);
         }
         $run = $startedRun;
         $heartbeatState['runtime_expires_at'] = $run['lease_expires_at'] ?? null;
@@ -3429,17 +3509,17 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             ? $result['intent']
             : hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds, $heartbeatState);
         if ($fenceLost || $intent === 'fence_lost') {
-            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease);
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, null, $heartbeatState);
         }
         if ($intent === 'cancelled' || $intent === 'timed_out') {
             $result = hub_pack_job_stop_result($options, $context, $intent, $result);
             $details = hub_pack_job_execution_details($result, $details);
             if (!hub_pack_job_record_execution($db, $task, $run, $gpuLease, $details)) {
                 $cleanup = hub_pack_job_cleanup_from_result($result, $details, $pidInspector, $context);
-                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, $cleanup);
+                return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, $cleanup, $heartbeatState);
             }
             $cleanup = hub_pack_job_cleanup_from_result($result, $details, $pidInspector, $context);
-            hub_commit_pack_job_failure($db, $taskId, $run, $intent, $intent, 'Pack job ' . $intent, $cleanup, $gpuLease);
+            hub_commit_pack_job_failure($db, $taskId, $run, $intent, $intent, 'Pack job ' . $intent, $cleanup, $gpuLease, $heartbeatState);
             $latest = hub_get_task($db, $taskId);
             return ['status' => (string)($latest['status'] ?? 'failed'), 'error_code' => (string)($latest['error_code'] ?? $intent)];
         }
@@ -3450,18 +3530,18 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 $code = 'runtime_exit_nonzero';
             }
             $terminalErrorCode = $code;
-            return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Pack job exited unsuccessfully', $cleanup, $gpuLease);
+            return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Pack job exited unsuccessfully', $cleanup, $gpuLease, $heartbeatState);
         }
-        $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, $audioProbe, $gpuLease, $contract['runner_config'] ?? null, $sourceAudioAttestation);
+        $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, $audioProbe, $gpuLease, $contract['runner_config'] ?? null, $sourceAudioAttestation, $heartbeatState);
         $latest = hub_get_task($db, $taskId);
         if (($final['ok'] ?? false) !== true && ($latest['status'] ?? '') === 'running' && hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds, $heartbeatState) === 'fence_lost') {
-            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, $cleanup);
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, $cleanup, $heartbeatState);
         }
         return ['status' => (string)($latest['status'] ?? (($final['ok'] ?? false) ? 'success' : 'failed'))] + $final;
     } catch (Throwable $e) {
         $scrubPrivatePrompt();
         if (hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds, $heartbeatState) === 'fence_lost') {
-            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, $started, $context, $details, $pidInspector, $gpuLease, $cleanup);
+            return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, $started, $context, $details, $pidInspector, $gpuLease, $cleanup, $heartbeatState);
         }
         if (!is_array($cleanup) || !hub_pack_job_cleanup_attested($cleanup)) {
             $cleanup = $started && $context !== null
@@ -3476,7 +3556,8 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             $errorCode,
             $terminalErrorCode === null ? 'Pack job adapter failed: ' . substr($e->getMessage(), 0, 512) : 'Pack job exited unsuccessfully',
             $cleanup,
-            $gpuLease
+            $gpuLease,
+            $heartbeatState
         );
     } finally {
         $scrubPrivatePrompt();

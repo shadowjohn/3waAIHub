@@ -4780,13 +4780,43 @@ function hub_pack_job_mark_task_terminal(PDO $db, int $taskId, string $status, ?
     hub_apply_task_terminal_retention($db, $taskId, $status, $now);
 }
 
-function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run, array $publishedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $beforeTerminalFence = null): array
+function hub_pack_job_finish_telemetry_emit(int $actionStartedNs, int $beginRequestedNs, ?int $txStartedNs, int $txEndedNs, ?string $txBeginAt, ?string $txCommitAt, float $lockWaitMs, string $variant, string $outcome, int $skippedTicks): void
+{
+    $emitStartedNs = hrtime(true);
+    hub_runtime_telemetry_emit([
+        'action' => 'finish',
+        'variant' => $variant,
+        'outcome' => $outcome,
+        'tx_mode' => 'deferred',
+        'tx_begin_at' => $txBeginAt,
+        'tx_commit_at' => $txCommitAt,
+        'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+        'lock_wait_ms' => $lockWaitMs,
+        'lock_wait_kind' => 'first_write_upper_bound',
+        'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+        'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+        'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+        'retry_count' => 0,
+        'skipped_ticks' => $skippedTicks,
+    ]);
+}
+
+function hub_pack_job_terminal_telemetry_outcome(Throwable $error): string
+{
+    return $error instanceof RuntimeException && in_array($error->getMessage(), [
+        'runtime_ownership_conflict',
+        'gpu_ownership_conflict',
+        'task_ownership_conflict',
+    ], true) ? 'fence_lost' : 'rolled_back';
+}
+
+function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run, array $publishedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $beforeTerminalFence = null, ?array &$heartbeatState = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
     if (!hub_pack_job_cleanup_attested($cleanup)) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease, $heartbeatState);
 
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
     }
@@ -4803,17 +4833,35 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
         hub_revalidate_published_pack_job_artifacts($taskId, $publishedArtifacts);
     } catch (HubPackOutputContractInvalid $e) {
         hub_add_task_log($db, $taskId, 'error', 'Pack output contract rejected: ' . $e->getMessage());
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease, $heartbeatState);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
     }
     if ($beforeTerminalFence !== null) {
         $beforeTerminalFence($publishedArtifacts);
     }
-    $db->beginTransaction();
+    $actionStartedNs = hrtime(true);
+    $beginRequestedNs = hrtime(true);
+    $txStartedNs = null;
+    $txBeginAt = null;
+    $lockWaitMs = 0.0;
+    $ownsTransaction = false;
+    $transactionClosed = false;
+    $error = null;
+    $result = null;
+    $outcome = 'failed';
     try {
+        $db->beginTransaction();
+        $ownsTransaction = true;
+        $txStartedNs = hrtime(true);
+        $txBeginAt = hub_runtime_telemetry_timestamp();
         hub_pack_job_active_gpu_fence($db, $taskId, $run, $gpuLease);
-        hub_pack_job_terminal_fence($db, $run, $taskId, 'succeeded', null, $gpuLease);
+        $firstWriteNs = hrtime(true);
+        try {
+            hub_pack_job_terminal_fence($db, $run, $taskId, 'succeeded', null, $gpuLease);
+        } finally {
+            $lockWaitMs = hub_runtime_telemetry_elapsed_ms($firstWriteNs, hrtime(true));
+        }
         $resultArtifacts = [];
         foreach ($publishedArtifacts as $artifact) {
             $resultArtifacts[] = [
@@ -4836,23 +4884,54 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
         hub_release_task_artifact_holds($db, $taskId);
         hub_enqueue_task_callback_delivery($db, $taskId);
         $db->commit();
-
-        return ['ok' => true, 'artifacts' => count($resultArtifacts)];
+        $ownsTransaction = false;
+        $transactionClosed = true;
+        $outcome = 'committed';
+        $result = ['ok' => true, 'artifacts' => count($resultArtifacts)];
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        $error = $e;
+        if ($ownsTransaction && $db->inTransaction()) {
+            try {
+                $db->rollBack();
+                $ownsTransaction = false;
+                $transactionClosed = true;
+                $outcome = hub_pack_job_terminal_telemetry_outcome($e);
+            } catch (Throwable) {
+            }
+        } elseif (!$ownsTransaction && $txStartedNs === null
+            && !($e instanceof PDOException && (str_contains(strtolower($e->getMessage()), 'within a transaction') || str_contains(strtolower($e->getMessage()), 'already an active transaction')))) {
+            $transactionClosed = true;
         }
-        throw $e;
     }
+    $txEndedNs = hrtime(true);
+    if ($transactionClosed) {
+        hub_pack_job_finish_telemetry_emit(
+            $actionStartedNs,
+            $beginRequestedNs,
+            $txStartedNs,
+            $txEndedNs,
+            $txBeginAt,
+            hub_runtime_telemetry_timestamp(),
+            $lockWaitMs,
+            'success',
+            $outcome,
+            hub_pack_job_heartbeat_take_skipped($heartbeatState),
+        );
+    }
+    if ($error !== null) {
+        throw $error;
+    }
+
+    return $result ?? ['ok' => false];
 }
 
-function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $afterHandoff = null, ?callable $beforeTerminalFence = null): array
+function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $validatedArtifacts, array $cleanup, ?array $gpuLease = null, ?callable $afterHandoff = null, ?callable $beforeTerminalFence = null, ?array &$heartbeatState = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
     if (!hub_pack_job_cleanup_attested($cleanup)) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease, $heartbeatState);
 
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
     }
@@ -4861,7 +4940,7 @@ function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $v
         $publishedArtifacts = hub_handoff_pack_job_artifacts($db, $taskId, $run, $validatedArtifacts, $gpuLease, $afterHandoff);
     } catch (HubPackOutputContractInvalid $e) {
         hub_add_task_log($db, $taskId, 'error', 'Pack output contract rejected: ' . $e->getMessage());
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease, $heartbeatState);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
     }
@@ -4873,7 +4952,7 @@ function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $v
         return ['ok' => false, 'error_code' => 'gpu_ownership_conflict'];
     }
     try {
-        $result = hub_commit_published_pack_job_success($db, $taskId, $run, $publishedArtifacts, $cleanup, $gpuLease, $beforeTerminalFence);
+        $result = hub_commit_published_pack_job_success($db, $taskId, $run, $publishedArtifacts, $cleanup, $gpuLease, $beforeTerminalFence, $heartbeatState);
         if (($result['ok'] ?? false) !== true) {
             hub_pack_job_remove_published_handoff_artifacts($taskId, $publishedArtifacts);
         }
@@ -4885,7 +4964,7 @@ function hub_commit_pack_job_success(PDO $db, int $taskId, ?array $run, array $v
     }
 }
 
-function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $status, string $errorCode, string $errorMessage, array $cleanup = [], ?array $gpuLease = null): void
+function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $status, string $errorCode, string $errorMessage, array $cleanup = [], ?array $gpuLease = null, ?array &$heartbeatState = null): void
 {
     if (!in_array($status, ['failed', 'cancelled', 'timed_out'], true) || preg_match('/^[a-z0-9_:-]{1,120}$/i', $errorCode) !== 1) {
         throw new InvalidArgumentException('pack_job_terminal_invalid');
@@ -4898,28 +4977,75 @@ function hub_commit_pack_job_failure(PDO $db, int $taskId, ?array $run, string $
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
-    $db->beginTransaction();
+    $actionStartedNs = hrtime(true);
+    $beginRequestedNs = hrtime(true);
+    $txStartedNs = null;
+    $txBeginAt = null;
+    $lockWaitMs = 0.0;
+    $ownsTransaction = false;
+    $transactionClosed = false;
+    $error = null;
+    $outcome = 'failed';
     try {
-        hub_pack_job_terminal_fence($db, $run, $taskId, $status === 'failed' ? 'failed' : $status, $errorCode, $gpuLease);
+        $db->beginTransaction();
+        $ownsTransaction = true;
+        $txStartedNs = hrtime(true);
+        $txBeginAt = hub_runtime_telemetry_timestamp();
+        $firstWriteNs = hrtime(true);
+        try {
+            hub_pack_job_terminal_fence($db, $run, $taskId, $status === 'failed' ? 'failed' : $status, $errorCode, $gpuLease);
+        } finally {
+            $lockWaitMs = hub_runtime_telemetry_elapsed_ms($firstWriteNs, hrtime(true));
+        }
         hub_pack_job_mark_task_terminal($db, $taskId, $status, $errorCode, substr($errorMessage, 0, 2048));
         hub_release_task_artifact_holds($db, $taskId);
         hub_enqueue_task_callback_delivery($db, $taskId);
         $db->commit();
+        $ownsTransaction = false;
+        $transactionClosed = true;
+        $outcome = 'committed';
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        $error = $e;
+        if ($ownsTransaction && $db->inTransaction()) {
+            try {
+                $db->rollBack();
+                $ownsTransaction = false;
+                $transactionClosed = true;
+                $outcome = hub_pack_job_terminal_telemetry_outcome($e);
+            } catch (Throwable) {
+            }
+        } elseif (!$ownsTransaction && $txStartedNs === null
+            && !($e instanceof PDOException && (str_contains(strtolower($e->getMessage()), 'within a transaction') || str_contains(strtolower($e->getMessage()), 'already an active transaction')))) {
+            $transactionClosed = true;
         }
-        throw $e;
+    }
+    $txEndedNs = hrtime(true);
+    if ($transactionClosed) {
+        hub_pack_job_finish_telemetry_emit(
+            $actionStartedNs,
+            $beginRequestedNs,
+            $txStartedNs,
+            $txEndedNs,
+            $txBeginAt,
+            hub_runtime_telemetry_timestamp(),
+            $lockWaitMs,
+            'failure',
+            $outcome,
+            hub_pack_job_heartbeat_take_skipped($heartbeatState),
+        );
+    }
+    if ($error !== null) {
+        throw $error;
     }
 }
 
-function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null, ?array $gpuLease = null, ?array $runnerConfig = null, ?array $sourceAudioAttestation = null): array
+function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string $workspace, array $taskInput, array $jobContract, array $cleanup, ?callable $audioProbe = null, ?array $gpuLease = null, ?array $runnerConfig = null, ?array $sourceAudioAttestation = null, ?array &$heartbeatState = null): array
 {
     if ($db->inTransaction()) {
         throw new LogicException('pack_job_terminal_transaction_required');
     }
     if (!hub_pack_job_cleanup_attested($cleanup)) {
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'cleanup_failed', 'Pack cleanup was not attested', $cleanup, $gpuLease, $heartbeatState);
 
         return ['ok' => false, 'error_code' => 'cleanup_failed'];
     }
@@ -4928,9 +5054,9 @@ function hub_finalize_pack_job_success(PDO $db, int $taskId, ?array $run, string
         $artifacts = hub_validate_pack_job_artifacts($workspace, $taskInput, $jobContract, $audioProbe, $runnerConfig, $sourceAudioAttestation);
     } catch (HubPackOutputContractInvalid $e) {
         hub_add_task_log($db, $taskId, 'error', 'Pack output contract rejected: ' . $e->getMessage());
-        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease);
+        hub_commit_pack_job_failure($db, $taskId, $run, 'failed', 'output_contract_invalid', 'Pack output contract validation failed', $cleanup, $gpuLease, $heartbeatState);
 
         return ['ok' => false, 'error_code' => 'output_contract_invalid'];
     }
-    return hub_commit_pack_job_success($db, $taskId, $run, $artifacts, $cleanup, $gpuLease);
+    return hub_commit_pack_job_success($db, $taskId, $run, $artifacts, $cleanup, $gpuLease, null, null, $heartbeatState);
 }

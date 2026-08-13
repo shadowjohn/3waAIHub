@@ -206,6 +206,50 @@ function hub_test_runtime_telemetry_enqueue_pack_job(PDO $db, string $accelerato
     ]);
 }
 
+function hub_test_runtime_telemetry_events_after(int $before, string $action, string $variant): array
+{
+    return array_values(array_filter(
+        array_slice(hub_test_runtime_telemetry_events(), $before),
+        static fn (array $event): bool => ($event['action'] ?? null) === $action && ($event['variant'] ?? null) === $variant
+    ));
+}
+
+function hub_test_runtime_telemetry_terminal_fixture(PDO $db, string $accelerator = 'cpu'): array
+{
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, $accelerator);
+    $output = hub_task_result_dir((int)$task['id']) . '/workspace/output';
+    if (!is_dir($output) && !mkdir($output, 0775, true) && !is_dir($output)) {
+        throw new RuntimeException('Cannot create terminal telemetry output fixture.');
+    }
+    $path = $output . '/result.txt';
+    if (file_put_contents($path, "terminal telemetry\n", LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write terminal telemetry output fixture.');
+    }
+    $path = realpath($path);
+    $stat = $path === false ? false : lstat($path);
+    if ($path === false || !is_array($stat)) {
+        throw new RuntimeException('Cannot stat terminal telemetry output fixture.');
+    }
+
+    return [
+        'task' => $task,
+        'run' => $run,
+        'cleanup' => ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true],
+        'artifacts' => [[
+            'name' => 'result.txt',
+            'artifact_type' => 'result',
+            'path' => $path,
+            'mime_type' => hub_pack_job_detect_mime($path),
+            'size_bytes' => (int)$stat['size'],
+            'max_bytes' => 1024,
+            'sha256' => hash_file('sha256', $path),
+            'metadata' => [],
+            'device' => (int)$stat['dev'],
+            'inode' => (int)$stat['ino'],
+        ]],
+    ];
+}
+
 hub_test('BEGIN IMMEDIATE reports retry timing after a coordinated SQLite writer lock', function (): void {
     hub_test_reset_db();
     hub_test_runtime_telemetry_with_sqlite_writer_lock(150000, static function (string $attemptPath): void {
@@ -1636,4 +1680,262 @@ hub_test('GPU heartbeat suppresses telemetry when a rollback-triggered close is 
         && hub_test_runtime_telemetry_heartbeat_events_after($beforeEvents, 'gpu') === []
         && $unlocked,
         'unconfirmed GPU close must suppress telemetry, preserve memory, and leave no lock');
+});
+
+hub_test('published Pack success emits one committed finish event and drains terminal skips', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $published = hub_handoff_pack_job_artifacts($db, (int)$fixture['task']['id'], $fixture['run'], $fixture['artifacts']);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 2;
+    $before = count(hub_test_runtime_telemetry_events());
+
+    $result = hub_commit_published_pack_job_success($db, (int)$fixture['task']['id'], $fixture['run'], $published, $fixture['cleanup'], null, null, $state);
+    $events = hub_test_runtime_telemetry_events_after($before, 'finish', 'success');
+    hub_test_assert(($result['ok'] ?? false) === true
+        && (hub_get_task($db, (int)$fixture['task']['id'])['status'] ?? null) === 'success'
+        && $state['skipped_ticks'] === 0
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'committed'
+        && ($events[0]['tx_mode'] ?? null) === 'deferred'
+        && ($events[0]['lock_wait_kind'] ?? null) === 'first_write_upper_bound'
+        && ($events[0]['skipped_ticks'] ?? null) === 2,
+        'published Pack success must emit after commit and consume its skipped ticks once');
+
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $published = hub_handoff_pack_job_artifacts($db, (int)$fixture['task']['id'], $fixture['run'], $fixture['artifacts']);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 2;
+    $path = hub_runtime_telemetry_path(new DateTimeImmutable());
+    $previous = is_file($path) ? file_get_contents($path) : null;
+    if (is_file($path) && !unlink($path)) {
+        throw new RuntimeException('Cannot prepare terminal telemetry writer failure.');
+    }
+    if (!mkdir($path, 0700)) {
+        throw new RuntimeException('Cannot block terminal telemetry writer.');
+    }
+    try {
+        $result = hub_commit_published_pack_job_success($db, (int)$fixture['task']['id'], $fixture['run'], $published, $fixture['cleanup'], null, null, $state);
+    } finally {
+        rmdir($path);
+        if (is_string($previous)) {
+            file_put_contents($path, $previous, LOCK_EX);
+        }
+    }
+    hub_test_assert(($result['ok'] ?? false) === true
+        && (hub_get_task($db, (int)$fixture['task']['id'])['status'] ?? null) === 'success'
+        && $state['skipped_ticks'] === 0,
+        'a terminal telemetry writer failure must not undo success or retain skips');
+});
+
+hub_test('Pack failures emit one committed finish failure event for every terminal status', function (): void {
+    $db = hub_test_reset_db();
+    foreach (['failed', 'cancelled', 'timed_out'] as $status) {
+        $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+        if ($status === 'cancelled') {
+            $db->prepare('UPDATE runtime_runs SET cancel_requested_at = :now WHERE id = :id')->execute([
+                ':now' => hub_now(),
+                ':id' => (int)$fixture['run']['id'],
+            ]);
+        }
+        if ($status === 'timed_out') {
+            $db->prepare('UPDATE runtime_runs SET timeout_at = :now WHERE id = :id')->execute([
+                ':now' => '2000-01-01 00:00:00',
+                ':id' => (int)$fixture['run']['id'],
+            ]);
+        }
+        $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+        $state['skipped_ticks'] = 2;
+        $before = count(hub_test_runtime_telemetry_events());
+        hub_commit_pack_job_failure($db, (int)$fixture['task']['id'], $fixture['run'], $status, $status, 'terminal fixture', $fixture['cleanup'], null, $state);
+        $events = hub_test_runtime_telemetry_events_after($before, 'finish', 'failure');
+        hub_test_assert((hub_get_task($db, (int)$fixture['task']['id'])['status'] ?? null) === $status
+            && $state['skipped_ticks'] === 0
+            && count($events) === 1
+            && ($events[0]['outcome'] ?? null) === 'committed'
+            && ($events[0]['skipped_ticks'] ?? null) === 2,
+            'Pack ' . $status . ' must emit one committed finish/failure event');
+    }
+});
+
+hub_test('a short Pack task drains skipped ticks only at its first terminal attempt', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    hub_test_assert(hub_pack_job_tick($db, $fixture['run'], null, 60, $state) === null && $state['skipped_ticks'] === 1, 'short Pack task must skip an unnecessary renewal');
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_pack_job_adapter_failure($db, (int)$fixture['task']['id'], $fixture['run'], 'runtime_exit_nonzero', 'terminal fixture', $fixture['cleanup'], null, $state);
+    $first = hub_test_runtime_telemetry_events_after($before, 'finish', 'failure');
+
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_pack_job_adapter_failure($db, (int)$fixture['task']['id'], $fixture['run'], 'runtime_exit_nonzero', 'terminal fixture', $fixture['cleanup'], null, $state);
+    $second = hub_test_runtime_telemetry_events_after($before, 'finish', 'failure');
+    hub_test_assert($state['skipped_ticks'] === 0
+        && count($first) === 1 && ($first[0]['skipped_ticks'] ?? null) === 1
+        && count($second) === 1 && ($second[0]['skipped_ticks'] ?? null) === 0,
+        'a reset heartbeat state must not repeat terminal skipped ticks');
+});
+
+hub_test('terminal fences and rollback failures emit after the transaction closes', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $published = hub_handoff_pack_job_artifacts($db, (int)$fixture['task']['id'], $fixture['run'], $fixture['artifacts']);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 3;
+    $before = count(hub_test_runtime_telemetry_events());
+    $error = null;
+    try {
+        hub_commit_published_pack_job_success(
+            $db,
+            (int)$fixture['task']['id'],
+            $fixture['run'],
+            $published,
+            $fixture['cleanup'],
+            null,
+            static function () use ($db, $fixture): void {
+                $db->prepare('UPDATE runtime_runs SET lease_token = :lease_token WHERE id = :id')->execute([
+                    ':lease_token' => 'terminal-fence-lost',
+                    ':id' => (int)$fixture['run']['id'],
+                ]);
+            },
+            $state,
+        );
+    } catch (Throwable $caught) {
+        $error = $caught;
+    }
+    $fenceEvents = hub_test_runtime_telemetry_events_after($before, 'finish', 'success');
+    hub_test_assert($error instanceof Throwable
+        && (hub_get_task($db, (int)$fixture['task']['id'])['status'] ?? null) === 'running'
+        && $state['skipped_ticks'] === 0
+        && count($fenceEvents) === 1
+        && ($fenceEvents[0]['outcome'] ?? null) === 'fence_lost'
+        && ($fenceEvents[0]['skipped_ticks'] ?? null) === 3,
+        'a terminal fence conflict must roll back before emitting finish/success');
+
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 4;
+    $db->exec("CREATE TEMP TRIGGER terminal_telemetry_rollback BEFORE UPDATE ON runtime_runs WHEN NEW.id = " . (int)$fixture['run']['id'] . " BEGIN SELECT RAISE(FAIL, 'terminal_telemetry_rollback'); END");
+    $before = count(hub_test_runtime_telemetry_events());
+    $error = null;
+    try {
+        hub_commit_pack_job_failure($db, (int)$fixture['task']['id'], $fixture['run'], 'failed', 'runtime_exit_nonzero', 'terminal fixture', $fixture['cleanup'], null, $state);
+    } catch (Throwable $caught) {
+        $error = $caught;
+    } finally {
+        $db->exec('DROP TRIGGER IF EXISTS terminal_telemetry_rollback');
+    }
+    $rollbackEvents = hub_test_runtime_telemetry_events_after($before, 'finish', 'failure');
+    hub_test_assert($error instanceof PDOException
+        && (hub_get_task($db, (int)$fixture['task']['id'])['status'] ?? null) === 'running'
+        && $state['skipped_ticks'] === 0
+        && count($rollbackEvents) === 1
+        && ($rollbackEvents[0]['outcome'] ?? null) === 'rolled_back'
+        && ($rollbackEvents[0]['skipped_ticks'] ?? null) === 4,
+        'a terminal trigger failure must roll back before emitting finish/failure');
+});
+
+hub_test('expired Pack recovery emits one matching committed event and drains skips', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $db->prepare("UPDATE runtime_runs SET lease_expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => (int)$fixture['run']['id']]);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 2;
+    $before = count(hub_test_runtime_telemetry_events());
+    $reconciled = hub_pack_job_reconcile_lost_fence($db, hub_get_task($db, (int)$fixture['task']['id']), $fixture['run'], $fixture['cleanup'], null, $state);
+    $events = hub_test_runtime_telemetry_events_after($before, 'recovery', 'runtime');
+    hub_test_assert($reconciled
+        && $state['skipped_ticks'] === 0
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'committed'
+        && ($events[0]['tx_mode'] ?? null) === 'immediate'
+        && ($events[0]['skipped_ticks'] ?? null) === 2,
+        'expired CPU recovery must emit one committed recovery/runtime event');
+});
+
+hub_test('GPU recovery emits once as GPU and recovery fence loss drains only after rollback', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $fixture['task'], $fixture['run'], 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('GPU recovery telemetry fixture must acquire a lease.');
+    }
+    $db->prepare("UPDATE runtime_runs SET lease_expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => (int)$fixture['run']['id']]);
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_assert(hub_reconcile_expired_pack_job_runs($db) === 1, 'expired GPU fixture must reconcile once');
+    $events = array_values(array_filter(array_slice(hub_test_runtime_telemetry_events(), $before), static fn (array $event): bool => ($event['action'] ?? null) === 'recovery'));
+    hub_test_assert(count($events) === 1
+        && ($events[0]['variant'] ?? null) === 'gpu'
+        && ($events[0]['outcome'] ?? null) === 'committed'
+        && ($events[0]['skipped_ticks'] ?? null) === 0,
+        'matching GPU recovery must never duplicate recovery/runtime telemetry');
+
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $db->prepare("UPDATE runtime_runs SET lease_expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => (int)$fixture['run']['id']]);
+    $task = hub_get_task($db, (int)$fixture['task']['id']);
+    $db->prepare('UPDATE tasks SET lock_token = :lock_token WHERE id = :id')->execute([
+        ':lock_token' => 'changed-recovery-lock',
+        ':id' => (int)$fixture['task']['id'],
+    ]);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 2;
+    $before = count(hub_test_runtime_telemetry_events());
+    $reconciled = hub_pack_job_reconcile_lost_fence($db, $task, $fixture['run'], $fixture['cleanup'], null, $state);
+    $events = hub_test_runtime_telemetry_events_after($before, 'recovery', 'runtime');
+    hub_test_assert(!$reconciled
+        && $state['skipped_ticks'] === 0
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'fence_lost'
+        && ($events[0]['skipped_ticks'] ?? null) === 2,
+        'a recovery fence mismatch must emit after its rollback and consume skips');
+});
+
+hub_test('Pack terminal and recovery reject caller transactions without telemetry or skip consumption', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 3;
+    $beforeState = serialize($state);
+    $before = count(hub_test_runtime_telemetry_events());
+    $db->beginTransaction();
+    try {
+        $error = null;
+        try {
+            hub_commit_pack_job_failure($db, (int)$fixture['task']['id'], $fixture['run'], 'failed', 'runtime_exit_nonzero', 'terminal fixture', $fixture['cleanup'], null, $state);
+        } catch (Throwable $caught) {
+            $error = $caught;
+        }
+        hub_test_assert($error instanceof LogicException
+            && $db->inTransaction()
+            && serialize($state) === $beforeState
+            && hub_test_runtime_telemetry_events_after($before, 'finish', 'failure') === [],
+            'PDO terminal caller transaction must remain open without telemetry or skip consumption');
+    } finally {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+    }
+
+    $fixture = hub_test_runtime_telemetry_terminal_fixture($db);
+    $db->prepare("UPDATE runtime_runs SET lease_expires_at = '2000-01-01 00:00:00' WHERE id = :id")->execute([':id' => (int)$fixture['run']['id']]);
+    $state = hub_pack_job_heartbeat_state($fixture['run'], null);
+    $state['skipped_ticks'] = 3;
+    $beforeState = serialize($state);
+    $before = count(hub_test_runtime_telemetry_events());
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $error = null;
+        try {
+            hub_pack_job_reconcile_lost_fence($db, hub_get_task($db, (int)$fixture['task']['id']), $fixture['run'], $fixture['cleanup'], null, $state);
+        } catch (Throwable $caught) {
+            $error = $caught;
+        }
+        hub_test_assert($error instanceof PDOException
+            && serialize($state) === $beforeState
+            && hub_test_runtime_telemetry_events_after($before, 'recovery', 'runtime') === [],
+            'raw recovery caller transaction must remain untouched without telemetry or skip consumption');
+    } finally {
+        $db->exec('ROLLBACK');
+    }
 });
