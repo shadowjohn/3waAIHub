@@ -95,7 +95,11 @@ function hub_runtime_telemetry_emit(array $event, ?callable $writer = null): boo
             ? @file_put_contents($path, $line, FILE_APPEND | LOCK_EX)
             : $writer($path, $line);
 
-        return $bytes === strlen($line);
+        if ($bytes !== strlen($line)) {
+            throw new RuntimeException();
+        }
+
+        return true;
     } catch (Throwable) {
         error_log('[3waAIHub] runtime telemetry append failed');
         return false;

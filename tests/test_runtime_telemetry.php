@@ -122,6 +122,39 @@ hub_test('runtime telemetry rejects partial writes and invalid timings', functio
     }
 });
 
+hub_test('runtime telemetry diagnoses writer failures without path warnings', function () use ($validRuntimeTelemetryEvent): void {
+    $errorLogPath = tempnam(sys_get_temp_dir(), '3waaihub_telemetry_');
+    if ($errorLogPath === false) {
+        throw new RuntimeException('Cannot create runtime telemetry diagnostic fixture.');
+    }
+
+    $previousErrorLog = ini_get('error_log');
+    $warnings = [];
+    set_error_handler(static function (int $severity, string $message) use (&$warnings): bool {
+        if (($severity & error_reporting()) !== 0) {
+            $warnings[] = $message;
+        }
+        return true;
+    });
+    try {
+        if (ini_set('error_log', $errorLogPath) === false) {
+            throw new RuntimeException('Cannot redirect runtime telemetry diagnostics.');
+        }
+        $falseWriter = static fn (string $path, string $line): int|false => false;
+        $partialWriter = static fn (string $path, string $line): int => strlen($line) - 1;
+        hub_test_assert(!hub_runtime_telemetry_emit($validRuntimeTelemetryEvent, $falseWriter), 'false writer must fail');
+        hub_test_assert(!hub_runtime_telemetry_emit($validRuntimeTelemetryEvent, $partialWriter), 'partial writer must fail');
+        $diagnostics = (string)file_get_contents($errorLogPath);
+    } finally {
+        restore_error_handler();
+        ini_set('error_log', $previousErrorLog);
+        unlink($errorLogPath);
+    }
+
+    hub_test_assert($warnings === [], 'writer failures must not expose a filesystem warning');
+    hub_test_assert(substr_count($diagnostics, '[3waAIHub] runtime telemetry append failed') === 2, 'writer failures must emit exactly two fixed diagnostics');
+});
+
 hub_test('runtime telemetry rejects unknown fields and absorbs writer failures', function () use ($validRuntimeTelemetryEvent): void {
     $unknownFieldEvent = $validRuntimeTelemetryEvent;
     $unknownFieldEvent['token'] = 'secret';
