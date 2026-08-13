@@ -214,7 +214,7 @@ hub_test('self check snapshots into a private temporary database', function (): 
         'VACUUM INTO',
         'chmod($tmp, 0600)',
         "SELECT name FROM sqlite_schema WHERE type = 'table'",
-        "DELETE FROM \"' . str_replace",
+        'hub_sqlite_schema_identifier((string)$table)',
         'finally {',
     ] as $required) {
         hub_test_assert(str_contains($source, $required), "self_check must contain {$required}");

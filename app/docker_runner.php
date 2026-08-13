@@ -169,6 +169,7 @@ function hub_trusted_command_path(string $executable, ?string $platform = null):
             'ffprobe' => '/usr/bin/ffprobe',
             'git' => '/usr/bin/git',
             'nvidia-smi' => '/usr/bin/nvidia-smi',
+            'python3' => '/usr/bin/python3',
         ];
     }
 
@@ -199,6 +200,7 @@ function hub_valid_argv(array $command): bool
         'php',
         'php.exe',
         $phpBinaryName,
+        'python3',
         'powershell.exe',
         'wsl.exe',
     ], true)) {

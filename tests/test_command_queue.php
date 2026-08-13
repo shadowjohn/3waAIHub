@@ -30,6 +30,27 @@ hub_test('command runner accepts the current PHP binary as trusted', function ()
     hub_test_assert($command[0] === PHP_BINARY, 'current PHP binary must remain an approved executable');
 });
 
+hub_test('Linux command runner permits only the fixed system Python 3 executable', function (): void {
+    if (PHP_OS_FAMILY === 'Windows') {
+        return;
+    }
+
+    hub_test_assert(
+        hub_safe_argv(['python3', '/managed/test.py']) === ['/usr/bin/python3', '/managed/test.py'],
+        'Python test runners must resolve to the fixed system Python 3 executable',
+    );
+    hub_test_assert(!hub_valid_argv(['python3', 123]), 'Python argv must remain a list of nonempty strings');
+    hub_test_assert(!hub_valid_argv(['python', '-c', 'print(1)']), 'the ambiguous python executable must remain rejected');
+    hub_test_assert(
+        hub_test_throws(static fn (): array => hub_safe_argv(['/tmp/python3', '-c', 'print(1)'])),
+        'an attacker-selected Python 3 path must remain rejected',
+    );
+    hub_test_assert(
+        hub_test_throws(static fn (): array => hub_safe_argv(['perl', '-e', 'print 1'])),
+        'unrelated interpreter binaries must remain rejected',
+    );
+});
+
 hub_test('Windows NVIDIA command resolves either supported driver installation location', function (): void {
     $systemRoot = 'C:\\Windows';
     $programFiles = 'C:\\Program Files';

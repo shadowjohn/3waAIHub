@@ -907,7 +907,6 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
     }
     if ($operationExamples !== []) {
         $service['operation_examples'] = $operationExamples;
-        $service['examples'] = [];
     }
 
     return $service;

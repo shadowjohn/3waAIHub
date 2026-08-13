@@ -4290,11 +4290,14 @@ assert 'N·m' in ''.join(unit_chunks)
 protected = module.make_plan('A' * 250, 42, 'derived_per_chunk', 240)
 assert [len(chunk['text']) for chunk in protected['chunks']] == [250]
 PY;
-        $plan = hub_run_command(['python3', '-c', $planScript, $service . '/long_form.py'], 10);
+        $planSmoke = $workspace . '/input/plan_smoke.py';
+        file_put_contents($planSmoke, $planScript . "\n", LOCK_EX);
+        $plan = hub_run_command(['python3', $planSmoke, $service . '/long_form.py'], 10);
         hub_test_assert(($plan['exit_code'] ?? 1) === 0, 'semantic-v1 plan must be byte-deterministic: ' . ($plan['stderr'] ?? ''));
 
-        $command = ['env', 'VOXCPM2_JOB_FAKE_SYNTHESIS=1', 'python3', $service . '/job.py', '--workspace', $workspace, '--input', $workspace . '/input', '--output', $workspace . '/output', '--runner-config', $workspace . '/input/runner_config.json'];
-        $first = hub_run_command($command, 30);
+        $command = ['python3', $service . '/job.py', '--workspace', $workspace, '--input', $workspace . '/input', '--output', $workspace . '/output', '--runner-config', $workspace . '/input/runner_config.json'];
+        $environment = ['VOXCPM2_JOB_FAKE_SYNTHESIS' => '1'];
+        $first = hub_run_command($command, 30, $environment);
         hub_test_assert(($first['exit_code'] ?? 1) === 0, 'deterministic fake long-form synthesis must run without a model: ' . ($first['stderr'] ?? ''));
         $audio = $workspace . '/output/generated_audio.wav';
         $metadata = $workspace . '/output/synthesis_metadata.json';
@@ -4317,7 +4320,7 @@ PY;
             'runner defaults must be recorded without exposing the internal model path'
         );
         hub_test_assert(!str_contains((string)file_get_contents($metadata), $workspace), 'metadata must not disclose workspace paths');
-        $second = hub_run_command($command, 30);
+        $second = hub_run_command($command, 30, $environment);
         hub_test_assert(($second['exit_code'] ?? 1) === 0 && $audioHash === hash_file('sha256', $audio), 'resume must reuse matching chunk checkpoints deterministically');
         hub_test_assert(!is_file($workspace . '/output/chunks.json') && !is_dir($workspace . '/output/checkpoints'), 'checkpoints must never be public artifacts');
     } finally {
