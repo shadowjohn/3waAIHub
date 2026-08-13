@@ -467,6 +467,7 @@ hub_test('Resident cURL progress callback heartbeats and aborts in-flight loopba
     $url = 'http://127.0.0.1:' . (int)$server['port'] . '/internal/jobs';
     try {
         $heartbeats = 0;
+        $heartbeatState = hub_pack_job_heartbeat_state($run, $lease);
         $response = hub_pack_job_resident_transport(
             'POST',
             $url,
@@ -474,9 +475,9 @@ hub_test('Resident cURL progress callback heartbeats and aborts in-flight loopba
             ['run_id' => 'resident-curl-heartbeat'],
             null,
             5,
-            hub_pack_job_resident_progress(static function () use ($db, $run, $lease, &$heartbeats): ?string {
+            hub_pack_job_resident_progress(static function () use ($db, $run, $lease, &$heartbeats, &$heartbeatState): ?string {
                 $heartbeats++;
-                return hub_pack_job_tick($db, $run, $lease, 5);
+                return hub_pack_job_tick($db, $run, $lease, 5, $heartbeatState);
             }, 0.05),
         );
         $heartbeatAt = (string)$db->query('SELECT heartbeat_at FROM runtime_runs WHERE id = ' . (int)$run['id'])->fetchColumn();

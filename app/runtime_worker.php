@@ -6,6 +6,25 @@ function hub_runtime_lease_until(int $leaseSeconds): string
     return date('Y-m-d H:i:s', time() + max(1, $leaseSeconds));
 }
 
+function hub_runtime_heartbeat_expiry(?string $expiresAt, int $leaseSeconds): string
+{
+    if ($expiresAt === null) {
+        return hub_runtime_lease_until($leaseSeconds);
+    }
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiresAt) !== 1) {
+        throw new InvalidArgumentException('runtime_heartbeat_expiry_invalid');
+    }
+    $parsed = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $expiresAt);
+    $errors = DateTimeImmutable::getLastErrors();
+    if ($parsed === false
+        || (is_array($errors) && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0))
+        || $parsed->format('Y-m-d H:i:s') !== $expiresAt) {
+        throw new InvalidArgumentException('runtime_heartbeat_expiry_invalid');
+    }
+
+    return $expiresAt;
+}
+
 function hub_runtime_gpu_runtime_identity(array $run): array
 {
     $runId = trim((string)($run['run_id'] ?? ''));
@@ -230,20 +249,35 @@ function hub_runtime_gpu_release(PDO $db, array $run, array $lease): bool
     }
 }
 
-function hub_runtime_gpu_heartbeat(PDO $db, array $run, array $lease, int $leaseSeconds): bool
+function hub_runtime_gpu_heartbeat(PDO $db, array $run, array $lease, int $leaseSeconds, ?string $expiresAt = null, ?array &$stats = null): bool
 {
-    if ($db->inTransaction()) {
-        throw new LogicException('runtime_gpu_heartbeat_transaction_required');
-    }
-    if (!hub_runtime_gpu_fence_matches_run($run, $lease)) {
-        return false;
-    }
-    $runtime = hub_runtime_gpu_runtime_identity($run);
-    $now = hub_now();
-    $expiresAt = hub_runtime_lease_until($leaseSeconds);
-
-    $db->exec('BEGIN IMMEDIATE');
+    $stats = [
+        'tx_begin_at' => null,
+        'tx_commit_at' => null,
+        'begin_requested_ns' => null,
+        'tx_started_ns' => null,
+        'tx_ended_ns' => null,
+        'lock_wait_ms' => 0.0,
+        'lock_wait_kind' => 'begin_immediate',
+        'retry_count' => 0,
+        'lock_exhausted' => false,
+    ];
+    $ownsTransaction = false;
     try {
+        if ($db->inTransaction()) {
+            throw new LogicException('runtime_gpu_heartbeat_transaction_required');
+        }
+        if (!hub_runtime_gpu_fence_matches_run($run, $lease)) {
+            return false;
+        }
+        $runtime = hub_runtime_gpu_runtime_identity($run);
+        $now = hub_now();
+        $expiresAt = hub_runtime_heartbeat_expiry($expiresAt, $leaseSeconds);
+        $stats['begin_requested_ns'] = hrtime(true);
+        $db->exec('BEGIN IMMEDIATE');
+        $ownsTransaction = true;
+        $stats['tx_started_ns'] = hrtime(true);
+        $stats['tx_begin_at'] = hub_runtime_telemetry_timestamp();
         $runtimeStmt = $db->prepare(
             "UPDATE runtime_runs SET heartbeat_at = :now, lease_expires_at = :lease_expires_at
              WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
@@ -265,16 +299,32 @@ function hub_runtime_gpu_heartbeat(PDO $db, array $run, array $lease, int $lease
         );
         if (!$gpuHeartbeat) {
             $db->exec('ROLLBACK');
+            $ownsTransaction = false;
             return false;
         }
         $db->exec('COMMIT');
+        $ownsTransaction = false;
         return true;
     } catch (Throwable $e) {
-        try {
-            $db->exec('ROLLBACK');
-        } catch (Throwable) {
+        if ($ownsTransaction) {
+            try {
+                $db->exec('ROLLBACK');
+            } catch (Throwable) {
+            }
+            $ownsTransaction = false;
         }
         throw $e;
+    } finally {
+        $stats['tx_ended_ns'] = hrtime(true);
+        if ($stats['begin_requested_ns'] !== null) {
+            $stats['lock_wait_ms'] = hub_runtime_telemetry_elapsed_ms(
+                $stats['begin_requested_ns'],
+                $stats['tx_started_ns'] ?? $stats['tx_ended_ns']
+            );
+        }
+        if ($stats['tx_started_ns'] !== null) {
+            $stats['tx_commit_at'] = hub_runtime_telemetry_timestamp();
+        }
     }
 }
 
@@ -1003,22 +1053,45 @@ function hub_runtime_claim_next(PDO $db, string $workerId, int $leaseSeconds): ?
     }
 }
 
-function hub_runtime_heartbeat(PDO $db, int $runId, string $leaseToken, int $leaseSeconds): bool
+function hub_runtime_heartbeat(PDO $db, int $runId, string $leaseToken, int $leaseSeconds, ?string $expiresAt = null, ?array &$stats = null): bool
 {
-    $stmt = $db->prepare(
-        "UPDATE runtime_runs
-         SET heartbeat_at = :now, lease_expires_at = :lease_expires_at
-         WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')
-           AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
-    );
-    $stmt->execute([
-        ':now' => hub_now(),
-        ':lease_expires_at' => hub_runtime_lease_until($leaseSeconds),
-        ':id' => $runId,
-        ':lease_token' => $leaseToken,
-    ]);
+    $stats = [
+        'tx_begin_at' => null,
+        'tx_commit_at' => null,
+        'begin_requested_ns' => null,
+        'tx_started_ns' => null,
+        'tx_ended_ns' => null,
+        'lock_wait_ms' => 0.0,
+        'lock_wait_kind' => 'first_write_upper_bound',
+        'retry_count' => 0,
+        'lock_exhausted' => false,
+    ];
+    try {
+        $expiresAt = hub_runtime_heartbeat_expiry($expiresAt, $leaseSeconds);
+        $stmt = $db->prepare(
+            "UPDATE runtime_runs
+             SET heartbeat_at = :now, lease_expires_at = :lease_expires_at
+             WHERE id = :id AND lease_token = :lease_token AND state IN ('claimed', 'running')
+               AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
+        );
+        $stats['begin_requested_ns'] = hrtime(true);
+        $stats['tx_started_ns'] = $stats['begin_requested_ns'];
+        $stats['tx_begin_at'] = hub_runtime_telemetry_timestamp();
+        $stmt->execute([
+            ':now' => hub_now(),
+            ':lease_expires_at' => $expiresAt,
+            ':id' => $runId,
+            ':lease_token' => $leaseToken,
+        ]);
 
-    return $stmt->rowCount() === 1;
+        return $stmt->rowCount() === 1;
+    } finally {
+        $stats['tx_ended_ns'] = hrtime(true);
+        if ($stats['tx_started_ns'] !== null) {
+            $stats['tx_commit_at'] = hub_runtime_telemetry_timestamp();
+            $stats['lock_wait_ms'] = hub_runtime_telemetry_elapsed_ms($stats['tx_started_ns'], $stats['tx_ended_ns']);
+        }
+    }
 }
 
 function hub_runtime_mark_running(PDO $db, int $runId, string $leaseToken): bool

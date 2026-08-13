@@ -2712,13 +2712,53 @@ function hub_pack_job_heartbeat_take_skipped(?array &$state): int
     return $skipped;
 }
 
-function hub_pack_job_tick(PDO $db, array $run, ?array $gpuLease, int $leaseSeconds): ?string
+function hub_pack_job_heartbeat_emit(int $actionStartedNs, array $stats, bool $gpu, string $outcome, int $skippedTicks): void
 {
-    $alive = $gpuLease === null
-        ? hub_runtime_heartbeat($db, (int)$run['id'], (string)$run['lease_token'], $leaseSeconds)
-        : hub_runtime_gpu_heartbeat($db, $run, $gpuLease, $leaseSeconds);
-    if (!$alive) {
-        return 'fence_lost';
+    $emitStartedNs = hrtime(true);
+    $beginRequestedNs = $stats['begin_requested_ns'] ?? $actionStartedNs;
+    $txStartedNs = $stats['tx_started_ns'] ?? null;
+    $txEndedNs = $stats['tx_ended_ns'] ?? $emitStartedNs;
+    hub_runtime_telemetry_emit([
+        'action' => 'heartbeat',
+        'variant' => $gpu ? 'gpu' : 'cpu',
+        'outcome' => $outcome,
+        'tx_mode' => $gpu ? 'immediate' : 'autocommit',
+        'tx_begin_at' => $stats['tx_begin_at'] ?? null,
+        'tx_commit_at' => $stats['tx_commit_at'] ?? null,
+        'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+        'lock_wait_ms' => (float)($stats['lock_wait_ms'] ?? 0.0),
+        'lock_wait_kind' => (string)($stats['lock_wait_kind'] ?? ($gpu ? 'begin_immediate' : 'first_write_upper_bound')),
+        'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+        'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+        'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+        'retry_count' => (int)($stats['retry_count'] ?? 0),
+        'skipped_ticks' => $skippedTicks,
+    ]);
+}
+
+function hub_pack_job_tick(PDO $db, array $run, ?array $gpuLease, int $leaseSeconds, array &$heartbeatState): ?string
+{
+    $actionStartedNs = hrtime(true);
+    $now = time();
+    if (!hub_pack_job_heartbeat_should_renew($heartbeatState, $now)) {
+        hub_pack_job_heartbeat_mark_skipped($heartbeatState);
+    } else {
+        $expiresAt = date('Y-m-d H:i:s', $now + max(1, $leaseSeconds));
+        $stats = [];
+        try {
+            $alive = $gpuLease === null
+                ? hub_runtime_heartbeat($db, (int)$run['id'], (string)$run['lease_token'], $leaseSeconds, $expiresAt, $stats)
+                : hub_runtime_gpu_heartbeat($db, $run, $gpuLease, $leaseSeconds, $expiresAt, $stats);
+        } catch (Throwable $e) {
+            hub_pack_job_heartbeat_emit($actionStartedNs, $stats, $gpuLease !== null, !empty($stats['lock_exhausted']) ? 'lock_exhausted' : 'failed', 0);
+            throw $e;
+        }
+        if (!$alive) {
+            hub_pack_job_heartbeat_emit($actionStartedNs, $stats, $gpuLease !== null, 'fence_lost', 0);
+            return 'fence_lost';
+        }
+        $skippedTicks = hub_pack_job_heartbeat_mark_committed($heartbeatState, $expiresAt);
+        hub_pack_job_heartbeat_emit($actionStartedNs, $stats, $gpuLease !== null, 'committed', $skippedTicks);
     }
     if (hub_runtime_is_cancel_requested($db, (int)$run['id'])) {
         return 'cancelled';
@@ -3027,6 +3067,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
     if ($run === null) {
         return ['status' => 'fence_lost'];
     }
+    $heartbeatState = hub_pack_job_heartbeat_state($run, null);
     $gpuLease = null;
     $started = false;
     $context = null;
@@ -3218,6 +3259,8 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 }
                 return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, [], null);
             }
+            $heartbeatState['gpu_required'] = true;
+            $heartbeatState['gpu_expires_at'] = $gpuLease['lease_expires_at'] ?? null;
             $probe = isset($options['gpu_probe']) && is_callable($options['gpu_probe'])
                 ? $options['gpu_probe']
                 : static fn (): array => hub_runtime_gpu_probe(isset($options['gpu_probe_runner']) && is_callable($options['gpu_probe_runner']) ? $options['gpu_probe_runner'] : null);
@@ -3314,6 +3357,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, false, null, $details, $pidInspector, $gpuLease);
         }
         $run = $startedRun;
+        $heartbeatState['runtime_expires_at'] = $run['lease_expires_at'] ?? null;
         $run['effective_gpu_lease_required'] = hub_runtime_task_requires_gpu($task) && !$residentUsesCpu;
         $context['run'] = $run;
         $context['runner'] = hub_pack_job_runner_arguments($runner, $task, $run, $workspace, $runnerConfig, $assetMounts, $voiceProfileMount, $facebookProfileMount);
@@ -3324,8 +3368,8 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 $fenceLost = true;
             }
         };
-        $context['tick'] = static function () use ($db, $run, $gpuLease, $leaseSeconds): ?string {
-            return hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds);
+        $context['tick'] = static function () use ($db, $run, $gpuLease, $leaseSeconds, &$heartbeatState): ?string {
+            return hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds, $heartbeatState);
         };
         $started = true;
         try {
@@ -3347,7 +3391,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $intent = in_array($result['intent'] ?? null, ['fence_lost', 'cancelled', 'timed_out'], true)
             ? $result['intent']
-            : hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds);
+            : hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds, $heartbeatState);
         if ($fenceLost || $intent === 'fence_lost') {
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease);
         }
@@ -3374,13 +3418,13 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, $audioProbe, $gpuLease, $contract['runner_config'] ?? null, $sourceAudioAttestation);
         $latest = hub_get_task($db, $taskId);
-        if (($final['ok'] ?? false) !== true && ($latest['status'] ?? '') === 'running' && hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds) === 'fence_lost') {
+        if (($final['ok'] ?? false) !== true && ($latest['status'] ?? '') === 'running' && hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds, $heartbeatState) === 'fence_lost') {
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, true, $context, $details, $pidInspector, $gpuLease, $cleanup);
         }
         return ['status' => (string)($latest['status'] ?? (($final['ok'] ?? false) ? 'success' : 'failed'))] + $final;
     } catch (Throwable $e) {
         $scrubPrivatePrompt();
-        if (hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds) === 'fence_lost') {
+        if (hub_pack_job_tick($db, $run, $gpuLease, $leaseSeconds, $heartbeatState) === 'fence_lost') {
             return hub_pack_job_lost_fence_outcome($db, $task, $run, $options, $started, $context, $details, $pidInspector, $gpuLease, $cleanup);
         }
         if (!is_array($cleanup) || !hub_pack_job_cleanup_attested($cleanup)) {

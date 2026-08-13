@@ -35,6 +35,29 @@ function hub_test_runtime_telemetry_claim_events_after(int $before, string $vari
     ));
 }
 
+function hub_test_runtime_telemetry_heartbeat_events_after(int $before, string $variant): array
+{
+    return array_values(array_filter(
+        array_slice(hub_test_runtime_telemetry_events(), $before),
+        static fn (array $event): bool => ($event['action'] ?? null) === 'heartbeat' && ($event['variant'] ?? null) === $variant
+    ));
+}
+
+function hub_test_runtime_telemetry_heartbeat_run(PDO $db, string $accelerator = 'cpu'): array
+{
+    hub_test_runtime_telemetry_enqueue_pack_job($db, $accelerator);
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('Heartbeat fixture must claim a Pack task.');
+    }
+    $run = hub_pack_job_claim_runtime($db, $task, 'telemetry-heartbeat-worker', 60);
+    if (!is_array($run)) {
+        throw new RuntimeException('Heartbeat fixture must claim a runtime.');
+    }
+
+    return [$task, $run];
+}
+
 function hub_test_runtime_telemetry_start_sqlite_writer_lock(string $readyPath, string $attemptPath, int $holdUs): array
 {
     if (!function_exists('proc_open') || !defined('PHP_BINARY') || !is_file(PHP_BINARY) || !is_executable(PHP_BINARY)) {
@@ -1017,4 +1040,264 @@ hub_test('pack heartbeat counters normalize, saturate, and drain terminally', fu
     hub_test_assert(hub_pack_job_heartbeat_take_skipped($state) === 0, 'take must be terminal after reset');
     $null = null;
     hub_test_assert(hub_pack_job_heartbeat_take_skipped($null) === 0, 'take must return zero for null state');
+});
+
+hub_test('CPU heartbeat commits one due renewal and skips writes while checking cancellation', function (): void {
+    $db = hub_test_reset_db();
+    [, $run] = hub_test_runtime_telemetry_heartbeat_run($db);
+    $db->prepare("UPDATE runtime_runs SET heartbeat_at = '2000-01-01 00:00:00', lease_expires_at = :expires_at WHERE id = :id")->execute([
+        ':expires_at' => date('Y-m-d H:i:s', time() + 1),
+        ':id' => (int)$run['id'],
+    ]);
+    $run = hub_runtime_fetch_run($db, (int)$run['id']);
+    if (!is_array($run)) {
+        throw new RuntimeException('CPU heartbeat fixture must retain its runtime.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, null);
+    $state['skipped_ticks'] = 2;
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, null, 60, $state) === null, 'due CPU heartbeat must stay alive');
+    $renewed = hub_runtime_fetch_run($db, (int)$run['id']);
+    $events = hub_test_runtime_telemetry_heartbeat_events_after($before, 'cpu');
+    hub_test_assert(is_array($renewed)
+        && $state['runtime_expires_at'] === $renewed['lease_expires_at']
+        && $state['skipped_ticks'] === 0,
+        'committed CPU renewal must update database and memory to one exact expiry');
+    hub_test_assert(count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'committed'
+        && ($events[0]['tx_mode'] ?? null) === 'autocommit'
+        && ($events[0]['lock_wait_kind'] ?? null) === 'first_write_upper_bound'
+        && ($events[0]['skipped_ticks'] ?? null) === 2,
+        'CPU renewal must emit one committed autocommit heartbeat with consumed skips');
+
+    $beforeHeartbeat = [(string)$renewed['heartbeat_at'], (string)$renewed['lease_expires_at']];
+    hub_test_assert(hub_runtime_request_cancel($db, (int)$run['id'], 'test cancellation'), 'CPU fixture must accept cancellation');
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_assert(hub_pack_job_tick($db, $run, null, 60, $state) === 'cancelled', 'skipped CPU heartbeat must still observe cancellation');
+    $after = hub_runtime_fetch_run($db, (int)$run['id']);
+    hub_test_assert(is_array($after)
+        && [(string)$after['heartbeat_at'], (string)$after['lease_expires_at']] === $beforeHeartbeat
+        && $state['skipped_ticks'] === 1
+        && hub_test_runtime_telemetry_heartbeat_events_after($before, 'cpu') === [],
+        'healthy CPU skip must leave heartbeat values unchanged, increment skips, and emit nothing');
+});
+
+hub_test('CPU heartbeat fails safe for malformed memory and an expired database fence', function (): void {
+    $db = hub_test_reset_db();
+    [, $run] = hub_test_runtime_telemetry_heartbeat_run($db);
+    $state = hub_pack_job_heartbeat_state($run, null);
+    $state['runtime_expires_at'] = 'tomorrow';
+    $state['skipped_ticks'] = 3;
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, null, 60, $state) === null, 'malformed CPU state must renew rather than skip');
+    $renewed = hub_runtime_fetch_run($db, (int)$run['id']);
+    $events = hub_test_runtime_telemetry_heartbeat_events_after($before, 'cpu');
+    hub_test_assert(is_array($renewed)
+        && $state['runtime_expires_at'] === $renewed['lease_expires_at']
+        && $state['skipped_ticks'] === 0
+        && count($events) === 1
+        && ($events[0]['skipped_ticks'] ?? null) === 3,
+        'malformed CPU memory must commit a renewal and consume skips');
+
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expires_at WHERE id = :id')->execute([
+        ':expires_at' => date('Y-m-d H:i:s', time() - 1),
+        ':id' => (int)$run['id'],
+    ]);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['skipped_ticks'] = 5;
+    $beforeState = serialize($state);
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, null, 60, $state) === 'fence_lost', 'expired CPU database lease must lose its fence');
+    $events = hub_test_runtime_telemetry_heartbeat_events_after($before, 'cpu');
+    hub_test_assert(serialize($state) === $beforeState
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'fence_lost'
+        && ($events[0]['skipped_ticks'] ?? null) === 0,
+        'CPU fence loss must leave memory and skips unchanged');
+});
+
+hub_test('heartbeat writers preserve supplied exact expiry and reject normalized dates', function (): void {
+    $db = hub_test_reset_db();
+    [, $run] = hub_test_runtime_telemetry_heartbeat_run($db);
+    $stats = [];
+    $expiry = '2030-01-02 03:04:05';
+
+    hub_test_assert(hub_runtime_heartbeat($db, (int)$run['id'], (string)$run['lease_token'], 60, $expiry, $stats), 'CPU writer must renew a valid fence');
+    $renewed = hub_runtime_fetch_run($db, (int)$run['id']);
+    foreach (['tx_begin_at', 'tx_commit_at', 'begin_requested_ns', 'tx_started_ns', 'tx_ended_ns', 'lock_wait_ms', 'lock_wait_kind', 'retry_count', 'lock_exhausted'] as $field) {
+        hub_test_assert(array_key_exists($field, $stats), 'CPU heartbeat stats must include ' . $field);
+    }
+    hub_test_assert(is_array($renewed)
+        && $renewed['lease_expires_at'] === $expiry
+        && ($stats['lock_wait_kind'] ?? null) === 'first_write_upper_bound'
+        && ($stats['retry_count'] ?? null) === 0
+        && ($stats['lock_exhausted'] ?? null) === false,
+        'CPU writer must retain its supplied exact expiry and autocommit stats');
+    $before = [(string)$renewed['heartbeat_at'], (string)$renewed['lease_expires_at']];
+    hub_test_assert(hub_test_throws(static function () use ($db, $run): void {
+        hub_runtime_heartbeat($db, (int)$run['id'], (string)$run['lease_token'], 60, '2026-02-30 12:00:00');
+    }), 'CPU writer must reject impossible supplied expiry instead of normalizing it');
+    $after = hub_runtime_fetch_run($db, (int)$run['id']);
+    hub_test_assert(is_array($after) && [(string)$after['heartbeat_at'], (string)$after['lease_expires_at']] === $before, 'invalid supplied CPU expiry must not write');
+});
+
+hub_test('GPU heartbeat commits a single two-row renewal with one exact expiry', function (): void {
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('GPU heartbeat fixture must acquire GPU.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, $lease);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['gpu_expires_at'] = $state['runtime_expires_at'];
+    $state['skipped_ticks'] = 2;
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, $lease, 60, $state) === null, 'due GPU heartbeat must stay alive');
+    $runtime = hub_runtime_fetch_run($db, (int)$run['id']);
+    $gpu = hub_runtime_gpu_fetch($db);
+    $events = hub_test_runtime_telemetry_heartbeat_events_after($before, 'gpu');
+    hub_test_assert(is_array($runtime) && is_array($gpu)
+        && $runtime['lease_expires_at'] === $gpu['lease_expires_at']
+        && $runtime['lease_expires_at'] === $state['runtime_expires_at']
+        && $gpu['lease_expires_at'] === $state['gpu_expires_at'],
+        'GPU heartbeat must write byte-identical expiry to both rows and both memory fields');
+    hub_test_assert(count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'committed'
+        && ($events[0]['tx_mode'] ?? null) === 'immediate'
+        && ($events[0]['skipped_ticks'] ?? null) === 2,
+        'two-row GPU transaction must emit one committed heartbeat');
+});
+
+hub_test('GPU heartbeat rolls back both rows before emitting a failed event', function (): void {
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('GPU rollback fixture must acquire GPU.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, $lease);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['gpu_expires_at'] = $state['runtime_expires_at'];
+    $state['skipped_ticks'] = 4;
+    $beforeState = serialize($state);
+    $beforeRuntime = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $db->exec("CREATE TEMP TRIGGER heartbeat_gpu_abort BEFORE UPDATE ON runtime_resource_leases WHEN NEW.resource_key = 'gpu:0' BEGIN SELECT RAISE(ABORT, 'heartbeat_gpu_abort'); END");
+    $before = count(hub_test_runtime_telemetry_events());
+    $error = null;
+    try {
+        hub_pack_job_tick($db, $run, $lease, 60, $state);
+    } catch (Throwable $e) {
+        $error = $e;
+    }
+    $afterRuntime = hub_runtime_fetch_run($db, (int)$run['id']);
+    $afterGpu = hub_runtime_gpu_fetch($db);
+    $events = hub_test_runtime_telemetry_heartbeat_events_after($before, 'gpu');
+
+    hub_test_assert($error instanceof PDOException
+        && serialize($state) === $beforeState
+        && serialize($afterRuntime) === serialize($beforeRuntime)
+        && serialize($afterGpu) === serialize($beforeGpu),
+        'GPU trigger failure must roll back both rows and leave memory unchanged');
+    hub_test_assert(count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'failed'
+        && ($events[0]['skipped_ticks'] ?? null) === 0,
+        'GPU trigger failure must emit one failed heartbeat only after rollback');
+});
+
+hub_test('GPU heartbeat leaves state unchanged when its runtime or GPU fence is lost', function (): void {
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('GPU fence fixture must acquire GPU.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, $lease);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['gpu_expires_at'] = $state['runtime_expires_at'];
+    $state['skipped_ticks'] = 5;
+    $db->prepare('UPDATE runtime_runs SET lease_expires_at = :expires_at WHERE id = :id')->execute([
+        ':expires_at' => date('Y-m-d H:i:s', time() - 1),
+        ':id' => (int)$run['id'],
+    ]);
+    $beforeState = serialize($state);
+    $beforeRuntime = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $before = count(hub_test_runtime_telemetry_events());
+
+    hub_test_assert(hub_pack_job_tick($db, $run, $lease, 60, $state) === 'fence_lost', 'expired GPU runtime fence must fail');
+    $events = hub_test_runtime_telemetry_heartbeat_events_after($before, 'gpu');
+    hub_test_assert(serialize($state) === $beforeState
+        && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRuntime)
+        && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu)
+        && count($events) === 1
+        && ($events[0]['outcome'] ?? null) === 'fence_lost',
+        'expired GPU fence must roll back and preserve rows and memory');
+
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('GPU mismatch fixture must acquire GPU.');
+    }
+    $state = hub_pack_job_heartbeat_state($run, $lease);
+    $state['runtime_expires_at'] = date('Y-m-d H:i:s', time() + 1);
+    $state['gpu_expires_at'] = $state['runtime_expires_at'];
+    $beforeState = serialize($state);
+    $beforeRuntime = hub_runtime_fetch_run($db, (int)$run['id']);
+    $beforeGpu = hub_runtime_gpu_fetch($db);
+    $mismatched = $lease;
+    $mismatched['lease_token'] = 'mismatched-fence';
+
+    hub_test_assert(hub_pack_job_tick($db, $run, $mismatched, 60, $state) === 'fence_lost', 'mismatched GPU fence must fail');
+    hub_test_assert(serialize($state) === $beforeState
+        && serialize(hub_runtime_fetch_run($db, (int)$run['id'])) === serialize($beforeRuntime)
+        && serialize(hub_runtime_gpu_fetch($db)) === serialize($beforeGpu),
+        'mismatched GPU fence must leave rows and memory unchanged');
+});
+
+hub_test('direct GPU heartbeat preserves a raw caller-owned transaction on nested BEGIN', function (): void {
+    $db = hub_test_reset_db();
+    [$task, $run] = hub_test_runtime_telemetry_heartbeat_run($db, 'gpu');
+    $lease = hub_runtime_gpu_acquire_for_task($db, $task, $run, 60);
+    if (!is_array($lease)) {
+        throw new RuntimeException('Raw GPU heartbeat fixture must acquire GPU.');
+    }
+    $markerKey = 'gpu-heartbeat-raw-' . bin2hex(random_bytes(4));
+    $stats = [];
+    $open = false;
+    $db->exec('BEGIN IMMEDIATE');
+    $open = true;
+    try {
+        hub_test_assert(!$db->inTransaction(), 'PDO must not report raw GPU heartbeat transaction ownership');
+        $db->prepare('INSERT INTO settings (key, value, updated_at) VALUES (:key, :value, :updated_at)')->execute([
+            ':key' => $markerKey,
+            ':value' => 'caller-owned',
+            ':updated_at' => hub_now(),
+        ]);
+        $error = null;
+        try {
+            hub_runtime_gpu_heartbeat($db, $run, $lease, 60, '2030-01-02 03:04:05', $stats);
+        } catch (Throwable $e) {
+            $error = $e;
+        }
+        $marker = $db->prepare('SELECT value FROM settings WHERE key = :key');
+        $marker->execute([':key' => $markerKey]);
+        hub_test_assert($error instanceof PDOException
+            && $marker->fetchColumn() === 'caller-owned'
+            && ($stats['tx_started_ns'] ?? null) === null
+            && ($stats['lock_exhausted'] ?? true) === false,
+            'nested raw GPU heartbeat must rethrow without rolling back its caller');
+        $db->exec('ROLLBACK');
+        $open = false;
+    } finally {
+        if ($open) {
+            $db->exec('ROLLBACK');
+        }
+    }
 });
