@@ -63,7 +63,15 @@ function hub_runtime_telemetry_emit(array $event, ?callable $writer = null): boo
                 if (!is_string($event[$field])) {
                     throw new InvalidArgumentException('Runtime telemetry timestamp is invalid.');
                 }
-                new DateTimeImmutable($event[$field]);
+                $parsed = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.uP', $event[$field]);
+                $errors = DateTimeImmutable::getLastErrors();
+                if (
+                    $parsed === false
+                    || ($errors !== false && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0))
+                    || $parsed->format('Y-m-d\TH:i:s.uP') !== $event[$field]
+                ) {
+                    throw new InvalidArgumentException('Runtime telemetry timestamp is invalid.');
+                }
             }
         }
 

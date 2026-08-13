@@ -69,6 +69,22 @@ hub_test('runtime telemetry rejects unknown fields and absorbs writer failures',
     hub_test_assert(is_array($writerResult) && $writerResult[0] === hub_runtime_telemetry_path(new DateTimeImmutable()), 'writer path mismatch');
 });
 
+hub_test('runtime telemetry rejects empty and impossible timestamps before writing', function () use ($validRuntimeTelemetryEvent): void {
+    $writerCalls = 0;
+    $writer = static function (string $path, string $line) use (&$writerCalls): int {
+        $writerCalls++;
+        return strlen($line);
+    };
+
+    foreach (['', '2026-02-30T12:00:00.000000+08:00'] as $timestamp) {
+        $event = $validRuntimeTelemetryEvent;
+        $event['tx_begin_at'] = $timestamp;
+        hub_test_assert(!hub_runtime_telemetry_emit($event, $writer), 'invalid timestamp must be rejected');
+    }
+
+    hub_test_assert($writerCalls === 0, 'invalid timestamps must not invoke the writer');
+});
+
 hub_test('runtime telemetry validates elapsed milliseconds and paths', function (): void {
     hub_test_assert(preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}[+-]\d{2}:\d{2}$/', hub_runtime_telemetry_timestamp()) === 1, 'timestamp format mismatch');
     hub_test_assert(hub_runtime_telemetry_elapsed_ms(2_000_000, 3_234_567) === 1.235, 'elapsed milliseconds mismatch');
