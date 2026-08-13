@@ -70,7 +70,7 @@
         "fields": ["model", "language", "word_timestamps", "diarization", "min_speakers", "max_speakers", "output_srt", "output_vtt", "subtitle_reflow"],
         "source_artifact_types": ["audio", "cleaned_audio", "vocals_audio"],
         "request_schema": {
-          "model": {"type": "string", "required": false, "enum": ["large_v3", "small"], "default": "large_v3", "max_length": 32},
+          "model": {"type": "string", "required": false, "enum": ["large_v3", "small"], "default": "small", "max_length": 32},
           "language": {"type": "string", "required": false, "default": "auto", "max_length": 16},
           "word_timestamps": {"type": "boolean", "required": false, "default": false, "requires_when": {"equals": true, "field": "language", "not_equals": "auto"}},
           "diarization": {"type": "boolean", "required": false, "default": false},

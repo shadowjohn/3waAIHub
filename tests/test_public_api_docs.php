@@ -796,7 +796,7 @@ hub_test('Public API audio async contracts use normalized job routes', function 
             foreach (['model', 'language', 'word_timestamps', 'diarization'] as $field) {
                 hub_test_assert(isset($fields[$field]), 'speech transcribe async field missing: ' . $field);
             }
-            hub_test_assert(str_contains((string)$service['examples']['curl'], 'model=large_v3'), 'speech transcribe async model missing from curl');
+            hub_test_assert(str_contains((string)$service['examples']['curl'], 'model=small'), 'speech transcribe async resident model missing from curl');
         } elseif ($mode === 'speech_transcribe_fast_zh') {
             hub_test_assert(
                 ($fields['include_draft_subtitles']['type'] ?? '') === 'boolean'

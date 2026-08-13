@@ -120,7 +120,7 @@ hub_test('Whisper ASR declares the fixed GPU transcription Pack job', function (
         ]],
     ]);
     hub_test_assert(($pascalContract['request_schema']['model']['default'] ?? null) === 'small', 'Whisper Pascal stations must publish small as the default model');
-    hub_test_assert(($job['request_schema']['model']['default'] ?? null) === 'large_v3', 'Whisper Linux contract must retain large-v3 as its default model');
+    hub_test_assert(($job['request_schema']['model']['default'] ?? null) === 'small', 'Whisper Linux contract must default to the resident small model');
     hub_test_assert(array_column($job['artifact_contract']['artifacts'] ?? [], 'type') === ['transcript_json', 'transcription_report', 'subtitle_srt', 'subtitle_vtt', 'speaker_timeline'], 'Whisper artifact contract mismatch');
     hub_test_assert(($job['artifact_contract']['artifacts'][1]['json']['required_keys'] ?? []) === ['model', 'language', 'word_timestamps', 'diarization', 'segment_count', 'elapsed_seconds', 'subtitle_reflow_profile', 'subtitle_breaker', 'subtitle_breakers', 'timing_source'], 'Whisper report must attest the selected subtitle reflow diagnostics');
     hub_test_assert(is_file(HUB_ROOT . '/packs/whisper-asr/jobs/speech_transcribe.sh')
@@ -566,7 +566,7 @@ hub_test('Whisper ASR job enqueue stores defaulted transcription controls', func
     $token = hub_create_api_token($db, $member, 'whisper defaults token', null, null);
     $taskId = hub_enqueue_owned_pack_job($db, hub_resolve_audio_async_route($db, 'speech_transcribe'), [], $member, (int)$token['token_id'], '203.0.113.51');
     $task = hub_get_task($db, $taskId);
-    hub_test_assert(($task['input'] ?? null) === ['model' => 'large_v3', 'language' => 'auto', 'word_timestamps' => false, 'diarization' => false, 'output_srt' => false, 'output_vtt' => false, 'subtitle_reflow' => 'none'], 'generic Pack enqueue must persist the normalized defaults');
+    hub_test_assert(($task['input'] ?? null) === ['model' => 'small', 'language' => 'auto', 'word_timestamps' => false, 'diarization' => false, 'output_srt' => false, 'output_vtt' => false, 'subtitle_reflow' => 'none'], 'generic Pack enqueue must persist the resident small default');
 });
 
 hub_test('Whisper ASR runner loads optional models only when requested', function (): void {

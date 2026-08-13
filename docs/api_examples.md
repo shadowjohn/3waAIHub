@@ -697,7 +697,7 @@ curl -X POST "<BASE_URL>?mode=audio_cleanup" \
 curl -X POST "<BASE_URL>?mode=speech_transcribe" \
   -H "Authorization: Bearer <TOKEN>" \
   -F "source=@sample.wav" \
-  -F "model=large_v3" \
+  -F "model=small" \
   -F "language=auto" \
   -F "output_srt=1" \
   -F "priority=50" \

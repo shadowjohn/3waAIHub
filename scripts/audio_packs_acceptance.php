@@ -168,7 +168,7 @@ function hub_audio_acceptance_run(array $config, string $pack, array $override):
     };
     $fields = match ($pack) {
         'audio-cleanup' => ['operation' => 'separate', 'demucs_model' => 'balanced'],
-        'whisper-asr' => ['model' => 'large_v3', 'language' => 'auto', 'diarization' => '0', 'output_srt' => '1', 'output_vtt' => '1', 'subtitle_reflow' => $config['subtitle_reflow']],
+        'whisper-asr' => ['model' => 'small', 'language' => 'auto', 'diarization' => '0', 'output_srt' => '1', 'output_vtt' => '1', 'subtitle_reflow' => $config['subtitle_reflow']],
         'speech-fast-zh' => ['include_draft_subtitles' => '1'],
         'tts-voxcpm2' => ['text' => $config['text'], 'model' => 'voxcpm2', 'waveform_preview' => '1'],
         'tts-gpt-sovits' => ['text' => $config['text'], 'model' => 'gpt_sovits_v2', 'language' => 'zh_tw'],
