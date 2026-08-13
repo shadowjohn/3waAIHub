@@ -14,6 +14,7 @@ function hub_test_admin_i18n_post(array $input): string
         . '$_SERVER["REQUEST_METHOD"] = "POST";'
         . '$_POST = ' . var_export($post, true) . ';'
         . 'ob_start(); require ' . var_export(HUB_ROOT . '/admin/settings.php', true) . '; echo ob_get_clean();';
+    $script = str_replace(["\r", "\n"], '', $script);
     $result = hub_run_command([PHP_BINARY, '-r', $script], 30);
     hub_test_assert($result['exit_code'] === 0, 'settings i18n request failed: ' . $result['output']);
 

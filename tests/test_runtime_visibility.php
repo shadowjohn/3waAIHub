@@ -29,7 +29,7 @@ hub_test('PhaseRuntime-1B dashboard packs and nav expose runtime visibility', fu
 
 hub_test('PhaseRuntime-1B runtime run list and detail render safely', function (): void {
     $db = hub_test_reset_db();
-    $workspace = sys_get_temp_dir() . '/3waaihub_runtime_visibility_' . getmypid() . '/jobs/yolo/001';
+    $workspace = HUB_DATA_DIR . '/results/3waaihub_runtime_visibility_' . getmypid() . '/jobs/yolo/001';
     @mkdir($workspace . '/runtime', 0775, true);
     @mkdir($workspace . '/logs', 0775, true);
     file_put_contents($workspace . '/status.json', "{\"status\":\"succeeded\"}\n");

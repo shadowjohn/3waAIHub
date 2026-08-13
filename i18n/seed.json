@@ -4283,5 +4283,10 @@
         "title": "內部工作權杖",
         "lang": "en",
         "trans": "Internal job token"
+    },
+    {
+        "title": "準備 CKIP 字幕資產",
+        "lang": "en",
+        "trans": "Prepare CKIP subtitle assets"
     }
 ]

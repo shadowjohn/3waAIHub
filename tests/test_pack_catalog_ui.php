@@ -195,7 +195,7 @@ hub_test('Market scripts expose validation polling state and i18n consistency co
     }
     foreach ([
         "'provision_pascal_ckip' => 'whisper_pascal_ckip_provision'",
-        "hub_whisper_pascal_ckip_provisioning_plan($service)",
+        'hub_whisper_pascal_ckip_provisioning_plan($service)',
         "value=\"provision_pascal_ckip\"",
         '準備 CKIP 字幕資產',
     ] as $needle) {
