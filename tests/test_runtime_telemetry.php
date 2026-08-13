@@ -897,3 +897,124 @@ hub_test('runtime telemetry summary CLI accepts one strict since option', functi
     exec(escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($script) . ' ' . escapeshellarg('--since=all time') . ' 2>&1', $invalid, $invalidStatus);
     hub_test_assert($invalidStatus === 64 && $invalid === ['runtime_telemetry_since_invalid'], 'invalid CLI range must use the fixed error');
 });
+
+hub_test('pack heartbeat state preserves raw lease expiries and follows the 30 second cadence', function (): void {
+    $base = strtotime('2026-08-14 12:00:00');
+    $state = hub_pack_job_heartbeat_state(
+        ['lease_expires_at' => '2026-08-14 12:01:00'],
+        null
+    );
+    hub_test_assert($state === [
+        'runtime_expires_at' => '2026-08-14 12:01:00',
+        'gpu_required' => false,
+        'gpu_expires_at' => null,
+        'skipped_ticks' => 0,
+    ], 'heartbeat state must preserve raw runtime expiry and exact fields');
+
+    $skips = 0;
+    $renewals = 0;
+    $consumed = [];
+    foreach ([10, 20, 30, 40, 50, 60] as $offset) {
+        if (!hub_pack_job_heartbeat_should_renew($state, $base + $offset)) {
+            hub_pack_job_heartbeat_mark_skipped($state);
+            $skips++;
+            continue;
+        }
+        $renewals++;
+        $consumed[] = hub_pack_job_heartbeat_mark_committed(
+            $state,
+            date('Y-m-d H:i:s', $base + $offset + 60)
+        );
+    }
+
+    hub_test_assert($skips === 4 && $renewals === 2, 'heartbeat cadence must skip four ticks and renew twice');
+    hub_test_assert($consumed === [2, 2] && $state['skipped_ticks'] === 0, 'each committed renewal must consume and reset two skips');
+});
+
+hub_test('pack heartbeat closures observe committed state through an explicit reference', function (): void {
+    $base = strtotime('2026-08-14 12:00:00');
+    $state = hub_pack_job_heartbeat_state(['lease_expires_at' => '2026-08-14 12:01:00'], null);
+    $shouldRenew = static function (int $now) use (&$state): bool {
+        return hub_pack_job_heartbeat_should_renew($state, $now);
+    };
+
+    hub_test_assert($shouldRenew($base + 30), 'the first exact-threshold tick must renew');
+    hub_pack_job_heartbeat_mark_committed($state, '2026-08-14 12:01:30');
+    hub_test_assert(!$shouldRenew($base + 31), 'the next tick must observe the committed expiry');
+});
+
+hub_test('pack heartbeat renews for GPU expiry and invalid or exact-threshold dates', function (): void {
+    $base = strtotime('2026-08-14 12:00:00');
+    $gpuState = hub_pack_job_heartbeat_state(
+        ['lease_expires_at' => '2026-08-14 12:02:00'],
+        ['lease_expires_at' => '2026-08-14 12:00:20']
+    );
+    hub_test_assert(hub_pack_job_heartbeat_should_renew($gpuState, $base), 'the earlier GPU expiry must control renewal');
+    hub_pack_job_heartbeat_mark_committed($gpuState, '2026-08-14 12:03:00');
+    hub_test_assert($gpuState['runtime_expires_at'] === '2026-08-14 12:03:00'
+        && $gpuState['gpu_expires_at'] === '2026-08-14 12:03:00', 'commit must write the exact expiry to both leases');
+
+    foreach ([null, 123, '', 'not-a-date', '2026-02-30 12:00:00'] as $expiry) {
+        $invalidState = [
+            'runtime_expires_at' => $expiry,
+            'gpu_required' => false,
+            'gpu_expires_at' => null,
+            'skipped_ticks' => 0,
+        ];
+        hub_test_assert(hub_pack_job_heartbeat_should_renew($invalidState, $base), 'invalid expiry must fail safe to renewal');
+    }
+    hub_test_assert(hub_pack_job_heartbeat_should_renew([
+        'runtime_expires_at' => date('Y-m-d H:i:s', $base + 30),
+        'gpu_required' => false,
+        'gpu_expires_at' => null,
+        'skipped_ticks' => 0,
+    ], $base), 'exactly 30 seconds remaining must renew');
+    hub_test_assert(!hub_pack_job_heartbeat_should_renew([
+        'runtime_expires_at' => date('Y-m-d H:i:s', $base + 31),
+        'gpu_required' => false,
+        'gpu_expires_at' => null,
+        'skipped_ticks' => 0,
+    ], $base), 'more than 30 seconds remaining must skip');
+    hub_test_assert(hub_pack_job_heartbeat_should_renew([
+        'runtime_expires_at' => date('Y-m-d H:i:s', $base - 1),
+        'gpu_required' => false,
+        'gpu_expires_at' => null,
+        'skipped_ticks' => 0,
+    ], $base), 'expired runtime lease must renew');
+});
+
+hub_test('pack heartbeat rejects invalid commits without mutating state', function (): void {
+    foreach (['', '2026-02-30 12:00:00', '2026-08-14T12:01:00', 'tomorrow'] as $expiry) {
+        $state = [
+            'runtime_expires_at' => '2026-08-14 12:00:00',
+            'gpu_required' => true,
+            'gpu_expires_at' => '2026-08-14 12:00:00',
+            'skipped_ticks' => 3,
+        ];
+        $before = serialize($state);
+        $threw = false;
+        try {
+            hub_pack_job_heartbeat_mark_committed($state, $expiry);
+        } catch (InvalidArgumentException) {
+            $threw = true;
+        }
+        hub_test_assert($threw, 'invalid committed expiry must throw InvalidArgumentException');
+        hub_test_assert(serialize($state) === $before, 'invalid committed expiry must leave state unchanged');
+    }
+});
+
+hub_test('pack heartbeat counters normalize, saturate, and drain terminally', function (): void {
+    foreach ([[], ['skipped_ticks' => -1], ['skipped_ticks' => 2.5], ['skipped_ticks' => '2']] as $state) {
+        hub_pack_job_heartbeat_mark_skipped($state);
+        hub_test_assert($state['skipped_ticks'] === 1, 'invalid skipped count must normalize before incrementing');
+    }
+    $saturated = ['skipped_ticks' => PHP_INT_MAX];
+    hub_pack_job_heartbeat_mark_skipped($saturated);
+    hub_test_assert($saturated['skipped_ticks'] === PHP_INT_MAX, 'skipped count must saturate at PHP_INT_MAX');
+
+    $state = ['skipped_ticks' => 4];
+    hub_test_assert(hub_pack_job_heartbeat_take_skipped($state) === 4 && $state['skipped_ticks'] === 0, 'take must consume and reset skips');
+    hub_test_assert(hub_pack_job_heartbeat_take_skipped($state) === 0, 'take must be terminal after reset');
+    $null = null;
+    hub_test_assert(hub_pack_job_heartbeat_take_skipped($null) === 0, 'take must return zero for null state');
+});

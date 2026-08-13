@@ -2625,6 +2625,90 @@ function hub_pack_job_record_execution(PDO $db, array $task, array $run, ?array 
     return $stmt->rowCount() === 1;
 }
 
+const HUB_PACK_JOB_HEARTBEAT_RENEW_THRESHOLD_SECONDS = 30;
+
+function hub_pack_job_heartbeat_state(array $run, ?array $gpuLease): array
+{
+    return [
+        'runtime_expires_at' => $run['lease_expires_at'] ?? null,
+        'gpu_required' => $gpuLease !== null,
+        'gpu_expires_at' => $gpuLease['lease_expires_at'] ?? null,
+        'skipped_ticks' => 0,
+    ];
+}
+
+function hub_pack_job_heartbeat_should_renew(array $state, int $now): bool
+{
+    $expiries = [$state['runtime_expires_at'] ?? null];
+    if (($state['gpu_required'] ?? false) === true) {
+        $expiries[] = $state['gpu_expires_at'] ?? null;
+    }
+    foreach ($expiries as $expiry) {
+        if (!is_string($expiry) || trim($expiry) === '') {
+            return true;
+        }
+        $parsed = strtotime($expiry);
+        if ($parsed === false) {
+            return true;
+        }
+        if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $expiry) === 1) {
+            $roundTrip = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $expiry);
+            $errors = DateTimeImmutable::getLastErrors();
+            if ($roundTrip === false
+                || (is_array($errors) && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0))
+                || $roundTrip->format('Y-m-d H:i:s') !== $expiry) {
+                return true;
+            }
+        }
+        if ($parsed - $now <= HUB_PACK_JOB_HEARTBEAT_RENEW_THRESHOLD_SECONDS) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function hub_pack_job_heartbeat_mark_skipped(array &$state): void
+{
+    $skipped = $state['skipped_ticks'] ?? 0;
+    $skipped = is_int($skipped) && $skipped >= 0 ? $skipped : 0;
+    $state['skipped_ticks'] = $skipped === PHP_INT_MAX ? PHP_INT_MAX : $skipped + 1;
+}
+
+function hub_pack_job_heartbeat_mark_committed(array &$state, string $newExpiry): int
+{
+    $parsed = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $newExpiry);
+    $errors = DateTimeImmutable::getLastErrors();
+    if ($parsed === false
+        || (is_array($errors) && ($errors['warning_count'] !== 0 || $errors['error_count'] !== 0))
+        || $parsed->format('Y-m-d H:i:s') !== $newExpiry) {
+        throw new InvalidArgumentException('pack_job_heartbeat_expiry_invalid');
+    }
+
+    $skipped = $state['skipped_ticks'] ?? 0;
+    $skipped = is_int($skipped) && $skipped >= 0 ? $skipped : 0;
+    $state['runtime_expires_at'] = $newExpiry;
+    if (($state['gpu_required'] ?? false) === true) {
+        $state['gpu_expires_at'] = $newExpiry;
+    }
+    $state['skipped_ticks'] = 0;
+
+    return $skipped;
+}
+
+function hub_pack_job_heartbeat_take_skipped(?array &$state): int
+{
+    if ($state === null) {
+        return 0;
+    }
+
+    $skipped = $state['skipped_ticks'] ?? 0;
+    $skipped = is_int($skipped) && $skipped >= 0 ? $skipped : 0;
+    $state['skipped_ticks'] = 0;
+
+    return $skipped;
+}
+
 function hub_pack_job_tick(PDO $db, array $run, ?array $gpuLease, int $leaseSeconds): ?string
 {
     $alive = $gpuLease === null
