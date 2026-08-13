@@ -661,6 +661,113 @@ hub_test('VoxCPM2 voice profile public helpers keep their approved signatures', 
     );
 });
 
+hub_test('VoxCPM2 profile confirmation validates Unicode characters and preserves reviewed bytes', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Exact Profile Confirmation Owner');
+    $path = hub_voice_profile_storage_dir() . '/exact_profile_confirmation.wav';
+    file_put_contents($path, 'RIFFexact-confirmation');
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Exact confirmation profile',
+        'reference_audio_path' => $path,
+        'consent_type' => 'self_recorded',
+    ]);
+
+    $maxUnicode = str_repeat('界', 20000);
+    $confirmed = hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $maxUnicode);
+    hub_test_assert(
+        ($confirmed['prompt_text'] ?? null) === $maxUnicode && strlen($maxUnicode) === 60000,
+        'confirmation must use a 20,000 Unicode-character limit instead of a 20,000-byte limit'
+    );
+
+    $reviewed = "  台灣\tA  + \\literal\r\n第二行  ";
+    $confirmed = hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $reviewed);
+    hub_test_assert(($confirmed['prompt_text'] ?? null) === $reviewed, 'confirmation must preserve whitespace, backslashes, tabs, and CRLF byte-for-byte');
+
+    foreach ([
+        '',
+        str_repeat('x', 20001),
+        "invalid\xC3\x28",
+        "nul\0byte",
+        "vertical\x0btab",
+        "c1\xC2\x80control",
+    ] as $invalid) {
+        hub_test_assert(
+            hub_test_throws(static fn (): array => hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $invalid)),
+            'confirmation must reject empty, over-limit, malformed UTF-8, and dangerous control text'
+        );
+    }
+    hub_test_assert(
+        (hub_get_voice_profile($db, $profileId)['prompt_text'] ?? null) === $reviewed,
+        'rejected confirmation text must not alter the authoritative stored transcript'
+    );
+});
+
+hub_test('VoxCPM2 profile confirmation transaction fences expired profiles authoritatively', function (): void {
+    $db = hub_test_reset_db();
+    $memberId = hub_create_api_member($db, 'Expired Profile Confirmation Owner');
+    $path = hub_voice_profile_storage_dir() . '/expired_profile_confirmation.wav';
+    file_put_contents($path, 'RIFFexpired-confirmation');
+    $createProfile = static function (string $name, ?string $expiresAt) use ($db, $memberId, $path): int {
+        return hub_create_voice_profile($db, $memberId, [
+            'name' => $name,
+            'reference_audio_path' => $path,
+            'consent_type' => 'self_recorded',
+            'prompt_text' => 'original draft',
+            'expires_at' => $expiresAt,
+        ]);
+    };
+    $stored = static function (int $profileId) use ($db): array {
+        $profile = $db->query('SELECT * FROM voice_profiles WHERE id = ' . $profileId)->fetch();
+        return is_array($profile) ? $profile : throw new RuntimeException('Missing expiry test profile.');
+    };
+    $assertUnavailableWithoutMutation = static function (int $profileId, string $replacement) use ($db, $memberId, $stored): void {
+        $before = $stored($profileId);
+        $error = null;
+        try {
+            hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $replacement);
+        } catch (InvalidArgumentException $e) {
+            $error = $e->getMessage();
+        }
+        $after = $stored($profileId);
+        hub_test_assert(
+            $error === 'voice_profile_unavailable'
+            && $after['prompt_text'] === $before['prompt_text']
+            && $after['prompt_text_confirmed_at'] === $before['prompt_text_confirmed_at'],
+            'expired confirmation must fail unavailable without changing transcript or confirmation time'
+        );
+    };
+
+    $expiredId = $createProfile('Already expired profile', '2000-01-01 00:00:00');
+    $assertUnavailableWithoutMutation($expiredId, 'must remain expired');
+
+    $boundaryId = $createProfile('Boundary expired profile', hub_now());
+    $assertUnavailableWithoutMutation($boundaryId, 'expires_at equal to now is expired');
+
+    $raceId = $createProfile('Precheck race profile', null);
+    $raceBefore = $stored($raceId);
+    $precheck = hub_voice_profile_task_status_payload($db, ['status' => 'success'], $raceBefore, false);
+    hub_test_assert(($precheck['profile_status'] ?? '') === 'active', 'race fixture must pass the operation active precheck');
+    $db->prepare('UPDATE voice_profiles SET expires_at = :expires_at WHERE id = :id')
+        ->execute([':expires_at' => hub_now(), ':id' => $raceId]);
+    $assertUnavailableWithoutMutation($raceId, 'must reject precheck race');
+
+    $nullExpiryId = $createProfile('No expiry profile', null);
+    $nullConfirmed = hub_confirm_voice_profile_prompt($db, $nullExpiryId, $memberId, 'confirmed without expiry');
+    hub_test_assert(
+        ($nullConfirmed['prompt_text'] ?? null) === 'confirmed without expiry'
+        && trim((string)($nullConfirmed['prompt_text_confirmed_at'] ?? '')) !== '',
+        'confirmation must remain available when expires_at is null'
+    );
+
+    $futureExpiryId = $createProfile('Future expiry profile', hub_retention_deadline(3600));
+    $futureConfirmed = hub_confirm_voice_profile_prompt($db, $futureExpiryId, $memberId, 'confirmed before expiry');
+    hub_test_assert(
+        ($futureConfirmed['prompt_text'] ?? null) === 'confirmed before expiry'
+        && trim((string)($futureConfirmed['prompt_text_confirmed_at'] ?? '')) !== '',
+        'confirmation must remain available while expires_at is in the future'
+    );
+});
+
 hub_test('VoxCPM2 task-scoped profile confirm and delete stay owner-only and idempotent', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -708,31 +815,72 @@ hub_test('VoxCPM2 task-scoped profile confirm and delete stay owner-only and ide
             ]);
             hub_test_assert($foreignStatus['status'] === 403 && (hub_test_audio_payload($foreignStatus)['error'] ?? '') === 'voice_profile_forbidden', 'foreign member must not poll an owned profile task');
 
+            $reviewed = "  edited\tconfirmed  \\ transcript\r\n第二行  ";
             $confirmed = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
                 'operation' => 'profile_confirm',
                 'voice_profile_task_id' => (string)$taskId,
-                'prompt_text' => 'edited confirmed transcript',
+                'prompt_text' => $reviewed,
             ]);
             $confirmedPayload = hub_test_audio_payload($confirmed);
-            hub_test_assert($confirmed['status'] === 200 && !empty($confirmedPayload['transcript_confirmed']) && !array_key_exists('prompt_text', $confirmedPayload), 'profile_confirm must return confirmed safe status without transcript text');
+            $storedConfirmed = hub_get_voice_profile($db, (int)$profile['id']);
+            hub_test_assert(
+                $confirmed['status'] === 200
+                && !empty($confirmedPayload['transcript_confirmed'])
+                && !array_key_exists('prompt_text', $confirmedPayload)
+                && ($confirmedPayload['voice_profile_task_id'] ?? null) === (string)$taskId
+                && ($confirmedPayload['prompt_text_sha256'] ?? null) === hash('sha256', $reviewed)
+                && ($storedConfirmed['prompt_text'] ?? null) === $reviewed,
+                'profile_confirm must prove the caller task and authoritative exact transcript without returning its text'
+            );
+
+            $repeated = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => (string)$taskId,
+                'prompt_text' => $reviewed,
+            ]);
+            $replacement = "replacement  text\n";
+            $replaced = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+                'operation' => 'profile_confirm',
+                'voice_profile_task_id' => (string)$taskId,
+                'prompt_text' => $replacement,
+            ]);
+            hub_test_assert(
+                (hub_test_audio_payload($repeated)['prompt_text_sha256'] ?? null) === hash('sha256', $reviewed)
+                && (hub_test_audio_payload($replaced)['prompt_text_sha256'] ?? null) === hash('sha256', $replacement)
+                && (hub_get_voice_profile($db, (int)$profile['id'])['prompt_text'] ?? null) === $replacement,
+                'repeat confirmation must retain existing same-text and replacement semantics with authoritative hashes'
+            );
 
             $status = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
                 'operation' => 'profile_status',
                 'voice_profile_task_id' => (string)$taskId,
             ]);
-            hub_test_assert($status['status'] === 200 && !array_key_exists('prompt_text', hub_test_audio_payload($status)), 'confirmed transcript must disappear from profile_status');
+            $statusPayload = hub_test_audio_payload($status);
+            hub_test_assert(
+                $status['status'] === 200
+                && !array_key_exists('prompt_text', $statusPayload)
+                && !array_key_exists('voice_profile_task_id', $statusPayload)
+                && !array_key_exists('prompt_text_sha256', $statusPayload),
+                'confirmed transcript and confirmation proof must stay absent from profile_status'
+            );
 
             $db->prepare("UPDATE voice_profiles SET expires_at = '2000-01-01 00:00:00' WHERE id = :id")
                 ->execute([':id' => (int)$profile['id']]);
+            $beforeExpiredConfirm = $db->query('SELECT prompt_text, prompt_text_confirmed_at FROM voice_profiles WHERE id = ' . (int)$profile['id'])->fetch();
             $expiredConfirm = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
                 'operation' => 'profile_confirm',
                 'voice_profile_task_id' => (string)$taskId,
                 'prompt_text' => 'must not revive expired profile',
             ]);
+            $expiredPayload = hub_test_audio_payload($expiredConfirm);
+            $afterExpiredConfirm = $db->query('SELECT prompt_text, prompt_text_confirmed_at FROM voice_profiles WHERE id = ' . (int)$profile['id'])->fetch();
             hub_test_assert(
                 $expiredConfirm['status'] === 410
-                && (hub_test_audio_payload($expiredConfirm)['error'] ?? '') === 'voice_profile_unavailable',
-                'profile_confirm must report an expired profile as permanently unavailable'
+                && ($expiredPayload['error'] ?? '') === 'voice_profile_unavailable'
+                && !array_key_exists('voice_profile_task_id', $expiredPayload)
+                && !array_key_exists('prompt_text_sha256', $expiredPayload)
+                && $afterExpiredConfirm === $beforeExpiredConfirm,
+                'profile_confirm must report an expired profile without proof or stored transcript mutation'
             );
             $db->prepare('UPDATE voice_profiles SET expires_at = NULL WHERE id = :id')
                 ->execute([':id' => (int)$profile['id']]);
@@ -4142,11 +4290,14 @@ assert 'N·m' in ''.join(unit_chunks)
 protected = module.make_plan('A' * 250, 42, 'derived_per_chunk', 240)
 assert [len(chunk['text']) for chunk in protected['chunks']] == [250]
 PY;
-        $plan = hub_run_command(['python3', '-c', $planScript, $service . '/long_form.py'], 10);
+        $planSmoke = $workspace . '/input/plan_smoke.py';
+        file_put_contents($planSmoke, $planScript . "\n", LOCK_EX);
+        $plan = hub_run_command(['python3', $planSmoke, $service . '/long_form.py'], 10);
         hub_test_assert(($plan['exit_code'] ?? 1) === 0, 'semantic-v1 plan must be byte-deterministic: ' . ($plan['stderr'] ?? ''));
 
-        $command = ['env', 'VOXCPM2_JOB_FAKE_SYNTHESIS=1', 'python3', $service . '/job.py', '--workspace', $workspace, '--input', $workspace . '/input', '--output', $workspace . '/output', '--runner-config', $workspace . '/input/runner_config.json'];
-        $first = hub_run_command($command, 30);
+        $command = ['python3', $service . '/job.py', '--workspace', $workspace, '--input', $workspace . '/input', '--output', $workspace . '/output', '--runner-config', $workspace . '/input/runner_config.json'];
+        $environment = ['VOXCPM2_JOB_FAKE_SYNTHESIS' => '1'];
+        $first = hub_run_command($command, 30, $environment);
         hub_test_assert(($first['exit_code'] ?? 1) === 0, 'deterministic fake long-form synthesis must run without a model: ' . ($first['stderr'] ?? ''));
         $audio = $workspace . '/output/generated_audio.wav';
         $metadata = $workspace . '/output/synthesis_metadata.json';
@@ -4169,7 +4320,7 @@ PY;
             'runner defaults must be recorded without exposing the internal model path'
         );
         hub_test_assert(!str_contains((string)file_get_contents($metadata), $workspace), 'metadata must not disclose workspace paths');
-        $second = hub_run_command($command, 30);
+        $second = hub_run_command($command, 30, $environment);
         hub_test_assert(($second['exit_code'] ?? 1) === 0 && $audioHash === hash_file('sha256', $audio), 'resume must reuse matching chunk checkpoints deterministically');
         hub_test_assert(!is_file($workspace . '/output/chunks.json') && !is_dir($workspace . '/output/checkpoints'), 'checkpoints must never be public artifacts');
     } finally {

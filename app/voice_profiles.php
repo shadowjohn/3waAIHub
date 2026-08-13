@@ -1538,10 +1538,24 @@ function hub_confirm_voice_profile_prompt(PDO $db, int $profileId, int $ownerMem
     }
 }
 
+function hub_voice_profile_confirmation_text_is_valid(string $promptText): bool
+{
+    if ($promptText === '' || strlen($promptText) > 80000 || preg_match('//u', $promptText) !== 1) {
+        return false;
+    }
+    if (preg_match('/[\x{0000}-\x{0008}\x{000B}\x{000C}\x{000E}-\x{001F}\x{007F}-\x{009F}]/u', $promptText) === 1) {
+        return false;
+    }
+    $characters = function_exists('mb_strlen')
+        ? mb_strlen($promptText, 'UTF-8')
+        : preg_match_all('/./us', $promptText);
+
+    return is_int($characters) && $characters <= 20000;
+}
+
 function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId, int $ownerMemberId, string $promptText): array
 {
-    $promptText = trim($promptText);
-    if ($promptText === '') {
+    if (!hub_voice_profile_confirmation_text_is_valid($promptText)) {
         throw new InvalidArgumentException('voice_profile_transcript_invalid');
     }
 
@@ -1555,7 +1569,11 @@ function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId
         throw new InvalidArgumentException('voice_profile_unavailable');
     }
     $now = hub_now();
-    $stmt = $db->prepare('UPDATE voice_profiles SET prompt_text = :prompt_text, prompt_text_confirmed_at = :confirmed_at, transcription_status = :transcription_status, transcription_error = NULL, transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL');
+    $expiresAt = $profile['expires_at'] ?? null;
+    if ($expiresAt !== null && (string)$expiresAt <= $now) {
+        throw new InvalidArgumentException('voice_profile_unavailable');
+    }
+    $stmt = $db->prepare('UPDATE voice_profiles SET prompt_text = :prompt_text, prompt_text_confirmed_at = :confirmed_at, transcription_status = :transcription_status, transcription_error = NULL, transcription_started_at = NULL, transcription_lease_token = NULL, updated_at = :updated_at WHERE id = :id AND owner_member_id = :owner_member_id AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > :expires_at)');
     $stmt->execute([
         ':prompt_text' => $promptText,
         ':confirmed_at' => $now,
@@ -1563,9 +1581,10 @@ function hub_confirm_voice_profile_prompt_in_transaction(PDO $db, int $profileId
         ':updated_at' => $now,
         ':id' => $profileId,
         ':owner_member_id' => $ownerMemberId,
+        ':expires_at' => $now,
     ]);
     if ($stmt->rowCount() !== 1) {
-        throw new InvalidArgumentException('voice_profile_transcript_invalid');
+        throw new InvalidArgumentException('voice_profile_unavailable');
     }
     hub_record_voice_profile_audit($db, $profileId, $ownerMemberId, null, 'confirm_transcript', null, ['text_chars' => function_exists('mb_strlen') ? mb_strlen($promptText, 'UTF-8') : strlen($promptText)]);
 

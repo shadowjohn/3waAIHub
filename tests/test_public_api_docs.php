@@ -400,7 +400,28 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
         'consent_type', 'reference_audio_sha256', 'created_at', 'updated_at',
     ];
     hub_test_assert(($profileStatus['output_keys'] ?? null) === $statusOutput, 'profile_status must document its exact bounded transcription error field');
-    hub_test_assert(($operations['profile_confirm']['output_keys'] ?? null) === $statusOutput, 'profile_confirm must document its actual safe status response');
+    hub_test_assert(
+        ($operations['profile_confirm']['output_keys'] ?? null) === [...$statusOutput, 'voice_profile_task_id', 'prompt_text_sha256'],
+        'profile_confirm must document its safe status plus exact confirmation proof'
+    );
+    $confirmConditionalOutputs = array_column((array)($operations['profile_confirm']['conditional_output_fields'] ?? []), null, 'name');
+    $validationCondition = (string)($conditionalOutputs['validation']['condition'] ?? '');
+    hub_test_assert(
+        ($confirmConditionalOutputs['validation'] ?? null) === ($conditionalOutputs['validation'] ?? null)
+        && str_contains($validationCondition, 'transcript validation metadata is available')
+        && str_contains($validationCondition, 'expected_text seed')
+        && str_contains($validationCondition, 'before a Whisper transcript is available')
+        && str_contains($validationCondition, 'status=unverified')
+        && str_contains($validationCondition, 'cer=null')
+        && str_contains($validationCondition, 'status=error')
+        && str_contains($validationCondition, 'transcript_validation_failed')
+        && !str_contains($validationCondition, 'when a Whisper transcript is available'),
+        'profile_confirm must document the same conditional A0 validation result and error rule as profile_status'
+    );
+    $confirmationProof = (string)($voice['workflow']['profile_confirmation_proof'] ?? '');
+    foreach (['caller', 'opaque', 'authoritative stored exact UTF-8 bytes', 'lowercase SHA-256', 'prompt_text is omitted'] as $needle) {
+        hub_test_assert(str_contains($confirmationProof, $needle), 'native confirmation proof docs missing: ' . $needle);
+    }
     hub_test_assert(($operations['profile_delete']['output_keys'] ?? null) === $statusOutput, 'profile_delete must document its actual safe status response');
 
     $errors = array_column((array)($voice['error_table'] ?? []), null, 'code');

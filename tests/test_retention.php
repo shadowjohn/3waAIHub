@@ -1060,9 +1060,10 @@ hub_test('retention expires a handle-lost voice profile and removes its managed 
         'prompt_text' => $privatePrompt,
         'language' => 'zh-TW',
         'consent_type' => 'self_recorded',
-        'expires_at' => '2026-07-19 23:59:59',
     ]);
     hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $privatePrompt);
+    $db->prepare("UPDATE voice_profiles SET expires_at = '2026-07-19 23:59:59' WHERE id = :id")
+        ->execute([':id' => $profileId]);
 
     $result = hub_prune_retention($db, '2026-07-20 00:00:00');
     $stmt = $db->prepare(

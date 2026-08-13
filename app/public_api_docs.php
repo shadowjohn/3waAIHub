@@ -522,6 +522,11 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
         'transcript_confirmed', 'prompt_text_confirmed_at', 'profile_name', 'language',
         'consent_type', 'reference_audio_sha256', 'created_at', 'updated_at',
     ];
+    $profileValidationOutput = [
+        'name' => 'validation',
+        'type' => 'object',
+        'condition' => 'Returned when transcript validation metadata is available, including an expected_text seed before a Whisper transcript is available; that seed has cer=null and status=unverified. Includes cer, status, needs_confirmation, and normalizer. When status=error it also includes error=transcript_validation_failed; error is omitted for every other status.',
+    ];
     $contract['operations'] = [
         [
             'operation' => 'profile_prepare',
@@ -557,11 +562,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
                 'name' => 'expected_text',
                 'type' => 'object or null',
                 'condition' => 'Returned when expected_text was supplied; raw and normalized forms are included before confirmation.',
-            ], [
-                'name' => 'validation',
-                'type' => 'object',
-                'condition' => 'Returned when a Whisper transcript is available; includes cer, status, needs_confirmation, and normalizer.',
-            ]],
+            ], $profileValidationOutput],
         ],
         [
             'operation' => 'profile_confirm',
@@ -571,7 +572,8 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
                 $profileTaskField,
                 ['name' => 'prompt_text', 'type' => 'string', 'required' => true, 'max_length' => 20000],
             ],
-            'output_keys' => $profileStatusOutput,
+            'output_keys' => [...$profileStatusOutput, 'voice_profile_task_id', 'prompt_text_sha256'],
+            'conditional_output_fields' => [$profileValidationOutput],
         ],
         [
             'operation' => 'profile_delete',
@@ -596,6 +598,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
         'operation_default' => 'Omitting operation means synthesize.',
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft and transcript validation (raw/normalized); the confirmed transcript is omitted.',
         'transcript_validation' => 'profile_prepare accepts optional expected_text. Whisper raw text is preserved as transcript.raw, both sides use OpenCC s2twp normalization, and CER is Levenshtein distance divided by normalized expected character count. status is clean at CER 0, pass at <= 0.05, review_required above 0.05, and unverified when expected_text is absent. profile_prepare never confirms a profile; call profile_confirm with the human-reviewed text.',
+        'profile_confirmation_proof' => 'profile_confirm returns the caller voice_profile_task_id handle (opaque through Cluster) and lowercase SHA-256 prompt_text_sha256 computed from the authoritative stored exact UTF-8 bytes; confirmed prompt_text is omitted.',
         'steps' => [
             'profile_prepare',
             'task_status via returned status_url',
@@ -911,7 +914,6 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
     }
     if ($operationExamples !== []) {
         $service['operation_examples'] = $operationExamples;
-        $service['examples'] = [];
     }
 
     return $service;
