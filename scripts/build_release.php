@@ -87,6 +87,9 @@ function hub_release_build_copy_tree(string $source, string $destination, callab
         if ($entry->isLink()) {
             throw new RuntimeException('Release source must not contain symlinks: ' . $entryPath);
         }
+        if (strtolower($name) === '__pycache__' || (!$entry->isDir() && in_array(strtolower(pathinfo($name, PATHINFO_EXTENSION)), ['pyc', 'pyo'], true))) {
+            continue;
+        }
         if (!$include($entryRelative, $entry->isDir())) {
             continue;
         }
