@@ -280,6 +280,37 @@ hub_test('Public API health cap keeps later internal-task services healthy', fun
     hub_test_assert(isset($healthy[(int)$internal['id']]), 'HTTP probe cap hid a later internal-task service');
 });
 
+hub_test('Image tools public examples include the required upscale operation', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $pack = hub_get_pack('image-tools');
+    hub_test_assert($pack !== null, 'image-tools Pack must be documentable');
+    $contract = hub_public_api_contract_for_manifest((array)$pack['manifest']);
+    $fields = array_column((array)($contract['input']['fields'] ?? []), null, 'name');
+    hub_test_assert(
+        ($fields['operation'] ?? null) === ['name' => 'operation', 'type' => 'string', 'required' => true, 'default' => 'upscale', 'enum' => ['upscale', 'upscale_task', 'colorize']],
+        'image-tools public contract must require its default operation'
+    );
+
+    $examples = hub_public_api_examples([
+        'mode' => 'image-tools', 'url' => 'https://router.example/cluster_api.php?mode=image-tools',
+        'method' => 'POST', 'content_type' => 'multipart/form-data', 'execution_type' => 'sync_api',
+        'response_content_type' => 'image/png', 'input_fields' => array_values($fields),
+    ]);
+    foreach ($examples as $example) {
+        hub_test_assert(str_contains((string)$example, 'operation') && str_contains((string)$example, 'upscale'), 'image-tools public example omits the required operation');
+    }
+
+    $service = hub_public_api_service_from_contract('image-tools', $pack, (array)$pack['manifest'], $contract);
+    foreach ((array)($service['operation_examples'] ?? []) as $example) {
+        $operation = (string)($example['operation'] ?? '');
+        hub_test_assert(
+            $operation !== '' && str_contains((string)($example['examples']['curl'] ?? ''), 'operation=' . $operation),
+            'image-tools operation example must retain its selected operation'
+        );
+    }
+});
+
 hub_test('Public API inventory requires installed enabled running and healthy services', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
     $db = hub_test_reset_db();

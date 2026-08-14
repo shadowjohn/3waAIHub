@@ -74,6 +74,7 @@ function hub_public_api_contract_for_manifest(array $manifest): array
     if ($contract !== []) {
         if (($manifest['id'] ?? '') === 'image-tools') {
             $contract['input'] = ['fields' => [
+                ['name' => 'operation', 'type' => 'string', 'required' => true, 'default' => 'upscale', 'enum' => ['upscale', 'upscale_task', 'colorize']],
                 ['name' => 'image', 'type' => 'file', 'required' => false, 'example' => 'sample.png', 'example_include' => true, 'one_of' => ['image', 'base64_string'], 'one_of_required' => true],
                 ['name' => 'base64_string', 'type' => 'string', 'required' => false, 'one_of' => ['image', 'base64_string'], 'one_of_required' => true],
                 ['name' => 'model', 'type' => 'string', 'required' => false, 'default' => 'realesrgan-x4plus', 'enum' => $contract['models'] ?? []],
@@ -878,6 +879,10 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
                 static fn (array $field): bool => in_array((string)($field['name'] ?? ''), $operationFields, true)
             ));
         }
+        $example['input_fields'] = array_values(array_filter(
+            $example['input_fields'],
+            static fn (array $field): bool => ($field['name'] ?? '') !== 'operation'
+        ));
         $example['input_fields'] = array_merge([
             ['name' => 'operation', 'type' => 'string', 'required' => true, 'default' => $operation, 'enum' => [$operation]],
         ], $example['input_fields']);
