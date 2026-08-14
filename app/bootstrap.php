@@ -74,6 +74,7 @@ require_once __DIR__ . '/api_tokens.php';
 require_once __DIR__ . '/voice_profiles.php';
 require_once __DIR__ . '/voice_profile_tasks.php';
 require_once __DIR__ . '/photo_assets.php';
+require_once __DIR__ . '/cluster_photo_assets.php';
 require_once __DIR__ . '/audio_assets.php';
 require_once __DIR__ . '/customer_accounts.php';
 require_once __DIR__ . '/catalog_show.php';

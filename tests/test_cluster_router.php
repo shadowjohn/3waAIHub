@@ -2393,6 +2393,179 @@ hub_test('cluster router relays validated multipart uploads and rejects malforme
     });
 });
 
+hub_test('cluster photo handles stay owner-scoped and pinned to their upload station', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $owner = hub_test_cluster_router_customer_token($db, ['photo_upload', 'photo']);
+        $other = hub_test_cluster_router_customer_token($db, ['photo']);
+        $stationA = hub_test_cluster_router_station($db, [
+            'station_key' => 'photo_gpu_a',
+            'internal_base_url' => 'https://photo-a.internal/aihub',
+            'station_token' => 'photo_station_a_token',
+        ]);
+        $stationB = hub_test_cluster_router_station($db, [
+            'station_key' => 'photo_gpu_b',
+            'internal_base_url' => 'https://photo-b.internal/aihub',
+            'station_token' => 'photo_station_b_token',
+        ]);
+        $fixture = HUB_ROOT . '/packs/yolo/demo/camera_cat.png';
+        $childImageId = 'img_child_photo_handle_123456';
+        $phase = 'upload';
+        $proxied = [];
+        $seams = [
+            'refresh_due' => static function () use (&$phase, $stationA, $stationB): array {
+                $a = hub_test_cluster_station_fixture([
+                    'id' => (int)$stationA['id'],
+                    'station_key' => 'photo_gpu_a',
+                    'modes' => ['photo_upload', 'photo'],
+                    'priority' => $phase === 'upload' ? 10 : 1,
+                ]);
+                $b = hub_test_cluster_station_fixture([
+                    'id' => (int)$stationB['id'],
+                    'station_key' => 'photo_gpu_b',
+                    'modes' => ['photo_upload', 'photo'],
+                    'priority' => $phase === 'upload' ? 1 : 10,
+                ]);
+                return [$a, $b];
+            },
+            'transport' => static function (array $request) use (&$proxied, $childImageId): array {
+                $proxied[] = $request;
+                $mode = (string)($request['query']['mode'] ?? '');
+                if ($mode === 'photo_upload') {
+                    return [
+                        'status' => 200,
+                        'headers' => ['Content-Type: application/json'],
+                        'body' => json_encode([
+                            'ok' => true,
+                            'image_id' => $childImageId,
+                            'expires_at' => date('Y-m-d H:i:s', time() + 86400),
+                        ], JSON_THROW_ON_ERROR),
+                    ];
+                }
+                return [
+                    'status' => 200,
+                    'headers' => ['Content-Type: application/json'],
+                    'body' => json_encode(['ok' => true, 'image_id' => $childImageId, 'answer' => 'child answer'], JSON_THROW_ON_ERROR),
+                ];
+            },
+        ];
+
+        $upload = hub_cluster_dispatch($db, 'photo_upload', hub_test_cluster_router_request((string)$owner['plain_token'], [
+            'headers' => ['Content-Type' => 'multipart/form-data; boundary=photo-upload'],
+            'content_length' => (string)filesize($fixture),
+            'raw_body' => '',
+            'post' => [],
+            'files' => ['image' => [
+                'name' => 'camera_cat.png',
+                'type' => 'image/png',
+                'tmp_name' => $fixture,
+                'error' => UPLOAD_ERR_OK,
+                'size' => (int)filesize($fixture),
+            ]],
+        ]), $seams);
+        $uploadPayload = json_decode((string)$upload['body'], true);
+        $publicImageId = (string)($uploadPayload['image_id'] ?? '');
+        $phase = 'photo';
+        $photoRequest = hub_test_cluster_router_request((string)$owner['plain_token'], [
+            'raw_body' => json_encode(['image_id' => $publicImageId, 'text' => '這是什麼？'], JSON_THROW_ON_ERROR),
+        ]);
+        $photo = hub_cluster_dispatch($db, 'photo', $photoRequest, $seams);
+        $otherPhoto = hub_cluster_dispatch($db, 'photo', hub_test_cluster_router_request((string)$other['plain_token'], [
+            'raw_body' => json_encode(['image_id' => $publicImageId, 'text' => '我也想看'], JSON_THROW_ON_ERROR),
+        ]), $seams);
+
+        $proxiedPhoto = json_decode((string)($proxied[1]['body'] ?? ''), true);
+        hub_test_assert(
+            $upload['status'] === 200
+            && preg_match('/^img_[A-Za-z0-9_-]{20,64}$/', $publicImageId) === 1
+            && $publicImageId !== $childImageId
+            && !str_contains((string)$upload['body'], $childImageId),
+            'Router photo upload must replace the child image ID with an opaque public handle'
+        );
+        hub_test_assert(
+            $photo['status'] === 200
+            && str_starts_with((string)($proxied[1]['url'] ?? ''), 'https://photo-a.internal/')
+            && ($proxiedPhoto['image_id'] ?? null) === $childImageId,
+            'Router photo followup must pin the public handle to its upload station and restore only the child image ID upstream'
+        );
+        hub_test_assert(
+            $otherPhoto['status'] === 404
+            && str_contains((string)$otherPhoto['body'], 'image_not_found')
+            && count($proxied) === 2,
+            'Router photo handles must be owner-scoped and must not start an upstream request for another customer'
+        );
+    });
+});
+
+hub_test('cluster node publishes Gemma photo modes as an inseparable pair', function (): void {
+    $db = hub_test_reset_db();
+    $db->prepare(
+        "UPDATE services
+         SET service_key = 'gemma4-main', pack_id = 'llm-gemma4-12b', mode = 'chat',
+             enabled = 1, install_status = 'installed', runtime_status = 'running', status = 'running', updated_at = :updated_at
+         WHERE mode = 'hello'"
+    )->execute([':updated_at' => hub_now()]);
+
+    $available = hub_cluster_node_published_modes($db);
+    $selected = hub_cluster_node_selected_published_modes($db, ['photo']);
+
+    hub_test_assert(
+        in_array('photo', $available, true) && in_array('photo_upload', $available, true),
+        'running configured Gemma vision service must publish both photo modes to a cluster node'
+    );
+    hub_test_assert(
+        $selected === ['photo', 'photo_upload'],
+        'selecting either Cluster photo mode must publish the upload and followup pair together'
+    );
+});
+
+hub_test('cluster public manifest hides unpaired photo contracts', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_cluster_router_station($db, ['station_key' => 'photo_manifest_gpu']);
+        $store = $db->prepare(
+            'UPDATE cluster_stations
+             SET manifest_json = :manifest_json, manifest_fetched_at = :fetched_at,
+                 status_json = :status_json, status_fetched_at = :fetched_at
+             WHERE id = :id'
+        );
+        $store->execute([
+            ':manifest_json' => json_encode(['services' => [['mode' => 'photo']]], JSON_THROW_ON_ERROR),
+            ':status_json' => json_encode(['modes' => ['photo']], JSON_THROW_ON_ERROR),
+            ':fetched_at' => hub_now(),
+            ':id' => (int)$station['id'],
+        ]);
+        $unpaired = hub_cluster_public_manifest($db);
+
+        $store->execute([
+            ':manifest_json' => json_encode(['services' => [['mode' => 'photo'], ['mode' => 'photo_upload']]], JSON_THROW_ON_ERROR),
+            ':status_json' => json_encode(['modes' => ['photo', 'photo_upload']], JSON_THROW_ON_ERROR),
+            ':fetched_at' => hub_now(),
+            ':id' => (int)$station['id'],
+        ]);
+        $paired = hub_cluster_public_manifest($db);
+
+        hub_test_assert(
+            !in_array('photo', array_column($unpaired['services'], 'mode'), true),
+            'Router manifest must hide a child photo contract when its upload counterpart is absent'
+        );
+        hub_test_assert(
+            array_column($paired['services'], 'mode') === ['photo', 'photo_upload'],
+            'Router manifest must expose both photo contracts after the child publishes the complete pair'
+        );
+    });
+});
+
+hub_test('cluster photo preserves the Gemma vision response budget', function (): void {
+    hub_test_assert(
+        hub_cluster_proxy_timeout_sec('photo') === 600
+        && hub_cluster_proxy_stale_after_seconds('photo') === 630,
+        'Cluster photo requests must retain the Gemma vision service response budget'
+    );
+});
+
 hub_test('cluster router scopes multipart form globals for a self station', function (): void {
     hub_test_with_cluster_secret(function (): void {
         hub_test_with_cluster_pair_url(function (): void {

@@ -22,6 +22,14 @@ The manifest and the human docs expose only the Router contract. A cache refresh
 
 Synchronous modes return their normal Router response. An asynchronous submit returns an opaque Router `task_id`; use that value with the Router-provided `cluster_task_status`, `cluster_task_result`, `cluster_task_log`, `cluster_task_cancel`, and `cluster_artifact` templates. Do not reuse any task ID from a station. If the selected station becomes unavailable, the Router returns a stable station-unavailable response. It does not make a post-dispatch retry on another station, and it never reveals a node name, URL, port, Token, invitation, or local path.
 
+## Photo Vision
+
+Gemma Photo Vision is a paired Cluster capability: a child node publishes `photo_upload` and `photo` together only while its configured Vision service is running. Selecting either mode in the child-node configuration selects both, so clients can always upload before asking a question.
+
+The Router relays `photo_upload` to one eligible node, replaces the child image ID with a Router-owned opaque `img_...` handle, and records the owner, child node, child image ID, and expiry internally. A later `photo` request validates the same customer ownership and is pinned to that original node; it never load-balances the follow-up to a different GPU. When that node is unavailable, the Router returns `station_unavailable` instead of exposing node details or treating the image as portable. The original image remains only on the execution node and follows its normal child TTL cleanup.
+
+Photo inference uses a 600-second Router response budget to match the Gemma service contract. The Router still applies its normal bounded proxy-transfer admission, so slow Vision calls cannot create unlimited concurrent transfers.
+
 # Operator Setup and Recovery
 
 The Hub creates its own `data/cluster.key` the first time a Cluster role needs it. Do not put this key in a table, environment variable, ticket, chat, or log. A legacy `AIHUB_CLUSTER_SECRET_KEY` is migrated into the local key file once, then is no longer required. Move `data/` together with the Hub when preserving an installation; for a new host identity, start with a new key and pair the child nodes again.

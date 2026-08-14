@@ -716,7 +716,8 @@ function hub_cluster_select_station(string $mode, array $stations): ?array
         return !empty($station['enabled'])
             && !empty($station['fresh'])
             && is_array($station['modes'] ?? null)
-            && in_array($mode, $station['modes'], true);
+            && in_array($mode, $station['modes'], true)
+            && (!hub_cluster_is_photo_mode($mode) || hub_cluster_photo_modes_are_paired($station['modes']));
     }));
     if ($eligible === []) {
         return null;
@@ -1378,6 +1379,43 @@ document.querySelectorAll('[data-copy]').forEach((button) => {
     return (string)ob_get_clean();
 }
 
+function hub_cluster_router_photo_followup_request(PDO $db, array $normalized, array $authContext): array
+{
+    if (($normalized['method'] ?? null) !== 'POST') {
+        return ['response' => hub_gateway_error(405, 'method_not_allowed', 'photo requires POST')];
+    }
+    try {
+        $payload = json_decode((string)($normalized['raw_body'] ?? ''), true, 64, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'JSON body is required')];
+    }
+    if (!is_array($payload)) {
+        return ['response' => hub_gateway_error(400, 'bad_request', 'JSON body is required')];
+    }
+    $imageId = trim((string)($payload['image_id'] ?? ''));
+    if ($imageId === '') {
+        return ['response' => hub_gateway_error(400, 'image_id_required', 'image_id is required')];
+    }
+    $asset = hub_cluster_photo_asset_for_auth($db, $imageId, $authContext);
+    if ($asset === null) {
+        return ['response' => hub_gateway_error(404, 'image_not_found', 'image was not found or is not available')];
+    }
+    $payload['image_id'] = (string)$asset['remote_image_id'];
+    $normalized['raw_body'] = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+    return ['asset' => $asset, 'normalized' => $normalized];
+}
+
+function hub_cluster_router_photo_upload_payload(PDO $db, array $payload, int $stationId, array $authContext): array
+{
+    $remoteImageId = is_scalar($payload['image_id'] ?? null) ? trim((string)$payload['image_id']) : '';
+    $expiresAt = is_scalar($payload['expires_at'] ?? null) ? trim((string)$payload['expires_at']) : '';
+    $asset = hub_cluster_photo_asset_store($db, $stationId, $authContext, $remoteImageId, $expiresAt);
+    $payload['image_id'] = $asset['image_id'];
+
+    return $payload;
+}
+
 function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array $seams = []): array
 {
     $requestId = hub_new_request_id();
@@ -1406,6 +1444,16 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     }
     $normalized['client_ip'] = $clientIp;
     $normalized['bearer_token'] = $providedToken;
+
+    $photoAsset = null;
+    if ($mode === 'photo') {
+        $photoRequest = hub_cluster_router_photo_followup_request($db, $normalized, (array)$auth['context']);
+        if (isset($photoRequest['response'])) {
+            return $finish($photoRequest['response']);
+        }
+        $photoAsset = $photoRequest['asset'];
+        $normalized = $photoRequest['normalized'];
+    }
 
     $profileRoute = null;
     $profilePayload = null;
@@ -1455,6 +1503,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         && ($profileRoute !== null || in_array($profileOperation, ['profile_prepare', 'profile_status', 'profile_confirm', 'profile_delete', 'synthesize'], true));
     $profileSensitive = hub_is_voice_profile_mode($mode)
         && ($profileRoute !== null || $profileOperation === 'profile_prepare');
+    $pinnedStation = $profileRoute !== null || $photoAsset !== null;
 
     $refreshDue = is_callable($seams['refresh_due'] ?? null)
         ? $seams['refresh_due']
@@ -1467,10 +1516,13 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     if (!is_array($inventory)) {
         return $finish(hub_gateway_error(503, 'router_unavailable', 'cluster inventory is unavailable'));
     }
-    if ($profileRoute !== null) {
+    if ($pinnedStation) {
+        $pinnedStationId = $profileRoute !== null
+            ? (int)$profileRoute['station_id']
+            : (int)$photoAsset['station_id'];
         $selectedInventory = null;
         foreach ($inventory as $candidate) {
-            if (is_array($candidate) && (int)($candidate['id'] ?? 0) === (int)$profileRoute['station_id']) {
+            if (is_array($candidate) && (int)($candidate['id'] ?? 0) === $pinnedStationId) {
                 $selectedInventory = $candidate;
                 break;
             }
@@ -1480,6 +1532,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             || empty($selectedInventory['fresh'])
             || !is_array($selectedInventory['modes'] ?? null)
             || !in_array($mode, $selectedInventory['modes'], true)
+            || (hub_cluster_is_photo_mode($mode) && !hub_cluster_photo_modes_are_paired($selectedInventory['modes']))
         ) {
             return $finish(hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
         }
@@ -1492,7 +1545,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     $stationId = (int)($selectedInventory['id'] ?? 0);
     $station = $stationId > 0 ? hub_cluster_get_station($db, $stationId) : null;
     if ($station === null || empty($station['enabled'])) {
-        return $finish($profileRoute === null
+        return $finish(!$pinnedStation
             ? hub_gateway_error(503, 'router_unavailable', 'no eligible cluster station is available')
             : hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable'));
     }
@@ -1506,11 +1559,11 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $stationUrl = hub_cluster_station_request_base_url($station) . 'api.php';
         }
     } catch (Throwable) {
-        return $finish(hub_gateway_error(503, $profileRoute === null ? 'router_unavailable' : 'station_unavailable', 'selected cluster station is unavailable'));
+        return $finish(hub_gateway_error(503, !$pinnedStation ? 'router_unavailable' : 'station_unavailable', 'selected cluster station is unavailable'));
     }
     $selfPeerIp = $selfStation ? hub_cluster_router_self_station_peer_ip($db, $station, $stationToken) : null;
     if ($selfStation && $selfPeerIp === null) {
-        return $finish(hub_gateway_error(503, $profileRoute === null ? 'router_unavailable' : 'station_unavailable', 'selected cluster station is unavailable'));
+        return $finish(hub_gateway_error(503, !$pinnedStation ? 'router_unavailable' : 'station_unavailable', 'selected cluster station is unavailable'));
     }
 
     $routeRole = hub_is_voice_profile_mode($mode) && $profileResponseOperation === 'profile_prepare'
@@ -1563,14 +1616,31 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $response = hub_cluster_router_proxy_response($transport($proxyRequest), $stationToken);
         }
         $payload = hub_cluster_router_json_payload($response);
-        if ($profileRoute !== null && !$selfStation && hub_cluster_router_is_local_proxy_error($response)) {
+        if ($pinnedStation && !$selfStation && hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable');
         } elseif ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_cluster_pack_validation_error_response($response, $payload)
                 ?? (hub_is_voice_profile_mode($mode) ? hub_cluster_voice_generate_relay_response($response, $payload) : null);
             $response ??= hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
         } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300) {
-            if ($isProfileRequest && !is_array($payload)) {
+            if ($mode === 'photo_upload') {
+                try {
+                    if (!is_array($payload)) {
+                        throw new UnexpectedValueException('invalid photo upload response');
+                    }
+                    $payload = hub_cluster_router_photo_upload_payload($db, $payload, (int)$station['id'], (array)$auth['context']);
+                    $response = hub_cluster_router_with_json_payload($response, $payload, true);
+                } catch (Throwable) {
+                    $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+                }
+            } elseif ($mode === 'photo') {
+                if (!is_array($payload) || $photoAsset === null) {
+                    $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+                } else {
+                    $payload['image_id'] = (string)$photoAsset['image_id'];
+                    $response = hub_cluster_router_with_json_payload($response, $payload, true);
+                }
+            } elseif ($isProfileRequest && !is_array($payload)) {
                 $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
             } elseif ($isProfileRequest && in_array($profileResponseOperation, ['profile_status', 'profile_confirm', 'profile_delete'], true)) {
                 try {
@@ -1615,7 +1685,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             }
         }
     } catch (Throwable) {
-        $response = $profileRoute !== null
+        $response = $pinnedStation
             ? hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable')
             : hub_gateway_error(502, 'router_proxy_failed', 'cluster station request failed');
     } finally {
@@ -3760,25 +3830,37 @@ function hub_cluster_proxy_request_limit_bytes(): int
 
 function hub_cluster_proxy_timeout_sec(?string $mode = null): int
 {
-    return in_array($mode, ['asr', 'tts'], true) ? 210 : 60;
+    return match ($mode) {
+        'photo' => 600,
+        'asr', 'tts' => 210,
+        default => 60,
+    };
 }
 
-function hub_cluster_proxy_stale_after_seconds(): int
+function hub_cluster_proxy_stale_after_seconds(?string $mode = null): int
 {
-    return hub_cluster_proxy_timeout_sec('tts') + 30;
+    return hub_cluster_proxy_timeout_sec($mode ?? 'tts') + 30;
 }
 
 function hub_cluster_router_reap_expired_proxy_routes(PDO $db, string $now): void
 {
-    $cutoff = date('Y-m-d H:i:s', strtotime($now) - hub_cluster_proxy_stale_after_seconds());
+    $photoCutoff = date('Y-m-d H:i:s', strtotime($now) - hub_cluster_proxy_stale_after_seconds('photo'));
+    $audioCutoff = date('Y-m-d H:i:s', strtotime($now) - hub_cluster_proxy_stale_after_seconds('tts'));
+    $defaultCutoff = date('Y-m-d H:i:s', strtotime($now) - (hub_cluster_proxy_timeout_sec() + 30));
     $db->prepare(
         "UPDATE cluster_routes
          SET state = 'failed', remote_status = 'router_timeout', updated_at = :updated_at, completed_at = :completed_at
-         WHERE state = 'proxying' AND updated_at < :cutoff"
+         WHERE state = 'proxying' AND (
+             (mode = 'photo' AND updated_at < :photo_cutoff)
+             OR (mode IN ('asr', 'tts') AND updated_at < :audio_cutoff)
+             OR (mode NOT IN ('photo', 'asr', 'tts') AND updated_at < :default_cutoff)
+         )"
     )->execute([
         ':updated_at' => $now,
         ':completed_at' => $now,
-        ':cutoff' => $cutoff,
+        ':photo_cutoff' => $photoCutoff,
+        ':audio_cutoff' => $audioCutoff,
+        ':default_cutoff' => $defaultCutoff,
     ]);
 }
 
@@ -4406,6 +4488,7 @@ function hub_cluster_node_selected_published_modes(PDO $db, ?array $selectedMode
 {
     $selectedModes ??= hub_cluster_node_selected_modes($db);
     $selectedModes = hub_cluster_node_normalize_modes($selectedModes);
+    $selectedModes = hub_cluster_photo_pair_modes($selectedModes);
     $available = array_fill_keys(hub_cluster_node_published_modes($db), true);
 
     return array_values(array_filter($selectedModes, static fn (string $mode): bool => isset($available[$mode])));
@@ -4444,9 +4527,24 @@ function hub_cluster_node_published_modes(PDO $db): array
         }
     }
 
+    if (hub_cluster_node_photo_modes_available($db)) {
+        $modes = array_merge($modes, hub_cluster_photo_modes());
+    }
+
     $modes = hub_cluster_node_normalize_modes($modes);
     // ponytail: Node-pinned Facebook Router dispatch belongs to Phase B when a real caller needs it.
     return array_values(array_filter($modes, static fn (string $mode): bool => $mode !== 'facebook_crawl'));
+}
+
+function hub_cluster_node_photo_modes_available(PDO $db): bool
+{
+    $settings = hub_photo_settings($db);
+    $service = hub_get_service_by_key($db, (string)$settings['vision_service_key']);
+
+    return $service !== null
+        && (int)$service['enabled'] === 1
+        && (string)$service['install_status'] === 'installed'
+        && (string)$service['runtime_status'] === 'running';
 }
 
 function hub_cluster_node_service_is_cleanly_unloaded_on_demand(array $service): bool

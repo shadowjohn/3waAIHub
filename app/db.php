@@ -1023,6 +1023,21 @@ CREATE TABLE IF NOT EXISTS cluster_route_artifacts (
     UNIQUE(route_id, remote_artifact_id),
     FOREIGN KEY(route_id) REFERENCES cluster_routes(route_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS cluster_photo_assets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    image_id TEXT NOT NULL UNIQUE,
+    station_id INTEGER NOT NULL,
+    remote_image_id TEXT NOT NULL,
+    owner_member_id INTEGER NULL,
+    owner_token_id INTEGER NULL,
+    expires_at TEXT NOT NULL,
+    last_accessed_at TEXT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(station_id) REFERENCES cluster_stations(id) ON DELETE CASCADE,
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE SET NULL,
+    FOREIGN KEY(owner_token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
+);
 SQL);
 
     hub_migrate_cluster_routes_route_id_not_null($db);
@@ -1289,6 +1304,9 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_sha256 ON photo_assets(sha256)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_owner_member ON photo_assets(owner_member_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_owner_token ON photo_assets(owner_token_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_photo_assets_expires_at ON cluster_photo_assets(expires_at)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_photo_assets_owner_member ON cluster_photo_assets(owner_member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_photo_assets_owner_token ON cluster_photo_assets(owner_token_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_expires_at ON audio_assets(expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_sha256 ON audio_assets(sha256)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_audio_assets_owner_member ON audio_assets(owner_member_id)');

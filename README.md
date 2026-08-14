@@ -66,6 +66,7 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 | `speech_transcribe` / `asr` | 主要 GPU 語音辨識 | Router relay 回傳非 mock 中文辨識，faster-whisper 使用 CUDA `float16`。 |
 | `background_remove` | 可展示的影像能力 | BiRefNet 經 Router 回傳透明 PNG，已確認 CUDA 與 alpha 通道。 |
 | `ocr` | 可用的影像文字能力 | PP-OCRv5 經 Router 完成非 mock GPU 推論。 |
+| `photo_upload` / `photo` | Gemma 4 圖片問答 | Router 回傳 owner-scoped opaque image handle，後續問答固定回原本執行 GPU 節點。 |
 | `rag` | 已完成本機 NIM 驗證，尚未公開 | Embed 與 Rerank 都已跑過真實 GPU 推論；未納入長期 GPU 排程前，不會列入 Router inventory。 |
 
 16 GB VRAM 主機應避免把 VoxCPM2、兩個 Nemotron NIM 與其他大型 GPU Pack 無限制地同時常駐。語音工作優先；RAG 目前保留映像與模型快取，日後把 Embed / Rerank NIM 納入受管服務與 GPU lease 後，才開放 `rag` mode 給客戶。
