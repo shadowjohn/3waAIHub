@@ -167,6 +167,20 @@ hub_test('schema migration repairs a missing GPT-SoVITS reference contract colum
     hub_test_assert(hub_runtime_schema_missing($db) === [], 'repaired schema must pass the runtime gate');
 });
 
+hub_test('schema migration repairs a missing cluster photo asset table', function (): void {
+    $db = hub_test_reset_db();
+    $db->exec('DROP TABLE cluster_photo_assets');
+    hub_db_mark_migration_current($db);
+
+    hub_test_assert(in_array('cluster_photo_assets', hub_runtime_schema_missing($db), true), 'runtime schema gate must require the cluster photo asset table');
+
+    hub_migrate($db);
+
+    $columns = array_column($db->query('PRAGMA table_info(cluster_photo_assets)')->fetchAll(), 'name');
+    hub_test_assert(in_array('remote_image_id', $columns, true), 'migration must restore cluster_photo_assets');
+    hub_test_assert(hub_runtime_schema_missing($db) === [], 'repaired schema must pass the runtime gate');
+});
+
 hub_test('voice profile prepare tasks are accepted by the queue and pack worker', function (): void {
     hub_test_assert(hub_is_valid_task_type('voice_profile_prepare'), 'voice_profile_prepare must be an allowed task type');
     hub_test_assert(in_array('voice_profile_prepare', hub_pack_job_worker_task_types(), true), 'pack worker must claim voice_profile_prepare tasks');
