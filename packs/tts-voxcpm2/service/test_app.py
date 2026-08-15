@@ -150,6 +150,15 @@ class UltimateCloneTests(unittest.TestCase):
         self.assertEqual(str(self.reference), self.model.kwargs["prompt_wav_path"])
         self.assertEqual(self.prompt_text, self.model.kwargs["prompt_text"])
 
+    def test_ultimate_clone_passes_only_spoken_text_to_model(self):
+        spoken_text = "今天也一起把事情做好吧"
+        request = self.ultimate_request(text=spoken_text, control="沉穩、低穩")
+
+        with patch.dict(os.environ, {"VOXCPM2_DEFAULT_VOICE_PROMPT": "沉穩的台灣男性技師"}):
+            app.write_real_wav(Path(self.temp_dir.name) / "spoken.wav", request, 42)
+
+        self.assertEqual(spoken_text, self.model.kwargs["text"])
+
     def test_ultimate_clone_rejects_missing_mismatched_or_empty_prompt_inputs(self):
         for overrides, error in [
             ({"prompt_wav_path": None}, "ultimate_clone_prompt_wav_required"),

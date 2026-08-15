@@ -291,9 +291,7 @@ async def request_validation_error(_: Any, __: RequestValidationError) -> JSONRe
 
 
 def tts_text(request: TtsRequest) -> str:
-    prompt = request.control if request.mode == "clone" else request.voice_prompt
-    prompt = (prompt or os.getenv("VOXCPM2_DEFAULT_VOICE_PROMPT", "")).strip()
-    return f"({prompt}){request.text}" if prompt else request.text
+    return request.text
 
 
 def artifact_dir() -> Path:
