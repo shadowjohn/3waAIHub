@@ -72,6 +72,20 @@ hub_test('current sqlite migration stays read-only while another worker owns the
     }
 });
 
+hub_test('opening sqlite does not renegotiate journal mode while another worker owns the write lock', function (): void {
+    $writer = hub_test_reset_db();
+    hub_test_assert(strtolower((string)$writer->query('PRAGMA journal_mode = DELETE')->fetchColumn()) === 'delete', 'lock fixture must start in rollback journal mode');
+    $writer->exec('BEGIN IMMEDIATE');
+    try {
+        $reader = hub_db();
+        hub_test_assert(strtolower((string)$reader->query('PRAGMA journal_mode')->fetchColumn()) === 'delete', 'connection setup must not change persistent journal mode');
+    } finally {
+        $writer->exec('ROLLBACK');
+    }
+    hub_migrate($reader);
+    hub_test_assert(strtolower((string)$reader->query('PRAGMA journal_mode')->fetchColumn()) === 'wal', 'migration must restore WAL mode');
+});
+
 hub_test('sqlite safety storage defaults exist', function (): void {
     $db = hub_test_reset_db();
 
