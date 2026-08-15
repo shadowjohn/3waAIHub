@@ -167,23 +167,40 @@ function hub_test_runtime_telemetry_with_sqlite_writer_lock(int $holdUs, callabl
     }
 }
 
-function hub_test_runtime_telemetry_locking_pdo(string $attemptPath): PDO
+function hub_test_runtime_telemetry_locking_pdo(string $attemptPath, bool $signalDeferred = false): PDO
 {
-    $db = new class('sqlite:' . HUB_DB_PATH, $attemptPath) extends PDO {
+    $db = new class('sqlite:' . HUB_DB_PATH, $attemptPath, $signalDeferred) extends PDO {
         private bool $attemptSignaled = false;
 
-        public function __construct(string $dsn, private string $attemptPath)
+        public function __construct(string $dsn, private string $attemptPath, private bool $signalDeferred)
         {
             parent::__construct($dsn);
         }
 
+        private function signalAttempt(): void
+        {
+            if ($this->attemptSignaled) {
+                return;
+            }
+            if (is_file($this->attemptPath) || file_put_contents($this->attemptPath, "attempt\n", LOCK_EX) === false) {
+                throw new RuntimeException('Cannot signal SQLite BEGIN attempt.');
+            }
+            $this->attemptSignaled = true;
+        }
+
+        public function beginTransaction(): bool
+        {
+            if ($this->signalDeferred) {
+                $this->signalAttempt();
+            }
+
+            return parent::beginTransaction();
+        }
+
         public function exec(string $statement): int|false
         {
-            if (!$this->attemptSignaled && $statement === 'BEGIN IMMEDIATE') {
-                if (is_file($this->attemptPath) || file_put_contents($this->attemptPath, "attempt\n", LOCK_EX) === false) {
-                    throw new RuntimeException('Cannot signal SQLite BEGIN attempt.');
-                }
-                $this->attemptSignaled = true;
+            if ($statement === 'BEGIN IMMEDIATE') {
+                $this->signalAttempt();
             }
 
             return parent::exec($statement);
@@ -321,6 +338,45 @@ hub_test('BEGIN IMMEDIATE reports exhaustion after seven locked attempts', funct
         hub_test_assert(($stats['retry_count'] ?? -1) === 6, 'exhausted BEGIN IMMEDIATE must count six sleeps');
         hub_test_assert(($stats['lock_wait_ms'] ?? 0) > 0, 'exhausted BEGIN IMMEDIATE wait must be measured');
         hub_test_assert(!$db->inTransaction(), 'exhausted BEGIN IMMEDIATE must not leave a transaction open');
+    });
+});
+
+hub_test('waiting GPU promotion retries a short SQLite writer lock', function (): void {
+    hub_test_reset_db();
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(150000, static function (string $attemptPath): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        hub_test_assert(hub_promote_due_waiting_gpu_task($db) === false, 'empty waiting GPU promotion must complete after the writer lock clears');
+    });
+});
+
+hub_test('callback claim retries a short SQLite writer lock', function (): void {
+    hub_test_reset_db();
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(150000, static function (string $attemptPath): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        hub_test_assert(hub_callback_claim_due_delivery($db, time()) === null, 'empty callback claim must complete after the writer lock clears');
+    });
+});
+
+hub_test('cluster refresh retries a short SQLite writer lock before reading its write transaction', function (): void {
+    $setup = hub_test_reset_db();
+    $stationId = hub_cluster_save_paired_station($setup, [
+        'station_key' => 'sqlite_lock_station',
+        'display_name' => 'SQLite lock station',
+        'public_base_url' => 'https://station.example/aihub',
+        'internal_base_url' => null,
+        'priority' => 1,
+        'enabled' => true,
+        'station_token' => 'sqlite_lock_station_token',
+        'modes' => ['ocr'],
+    ]);
+    $station = hub_cluster_get_station($setup, $stationId);
+    hub_test_assert(is_array($station), 'cluster lock fixture station must exist');
+    $setup = null;
+
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(150000, static function (string $attemptPath) use ($station): void {
+        $db = hub_test_runtime_telemetry_locking_pdo($attemptPath, true);
+        $refreshed = hub_cluster_refresh_station_now($db, $station, true, static fn (): array => ['status' => 200, 'body' => '{}']);
+        hub_test_assert(($refreshed['last_error'] ?? null) === 'manifest_invalid', 'cluster refresh must continue after the writer lock clears');
     });
 });
 

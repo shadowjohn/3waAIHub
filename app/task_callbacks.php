@@ -358,7 +358,7 @@ function hub_callback_claim_due_delivery(PDO $db, int $timestamp, int $leaseSeco
     $now = hub_callback_time($timestamp);
     $started = false;
     try {
-        $db->exec('BEGIN IMMEDIATE');
+        hub_sqlite_begin_immediate($db);
         $started = true;
         $stmt = $db->prepare(
             'SELECT d.*, t.callback_url, t.signing_secret, t.enabled AS target_enabled

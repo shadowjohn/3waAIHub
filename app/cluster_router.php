@@ -4694,23 +4694,24 @@ function hub_cluster_refresh_station_now(PDO $db, array $station, bool $force, ?
         throw new InvalidArgumentException('station refresh failed');
     }
 
-    $db->beginTransaction();
+    hub_sqlite_begin_immediate($db);
     try {
         $station = hub_cluster_get_station($db, $stationId);
         if ($station === null) {
             throw new RuntimeException('station refresh failed');
         }
         if (!$force && !hub_cluster_station_refresh_due($station)) {
-            $db->commit();
+            $db->exec('COMMIT');
 
             return hub_cluster_station_inventory($station);
         }
         $db->prepare('UPDATE cluster_stations SET last_error = :last_error, updated_at = :updated_at WHERE id = :id')
             ->execute([':last_error' => 'refreshing', ':updated_at' => hub_now(), ':id' => $stationId]);
-        $db->commit();
+        $db->exec('COMMIT');
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
         }
         throw $e;
     }
