@@ -206,7 +206,6 @@ function hub_db(): PDO
     $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
     $db->exec('PRAGMA busy_timeout = 5000');
-    $db->exec('PRAGMA journal_mode = WAL');
     $db->exec('PRAGMA synchronous = NORMAL');
     $db->exec('PRAGMA foreign_keys = ON');
 
@@ -270,6 +269,9 @@ function hub_db_mark_migration_current(PDO $db): void
 
 function hub_migrate(PDO $db): void
 {
+    if (strtolower((string)$db->query('PRAGMA journal_mode')->fetchColumn()) !== 'wal') {
+        $db->exec('PRAGMA journal_mode = WAL');
+    }
     if (hub_db_migration_is_current($db)) {
         if (function_exists('hub_cluster_node_reconcile_token_permissions')) {
             hub_cluster_node_reconcile_token_permissions($db);

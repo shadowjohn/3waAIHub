@@ -1029,7 +1029,7 @@ hub_test('image-tools publishes bounded Playground and documentation contracts',
         && str_contains($compositeCurl, "-F 'image=@sample.png'")
         && str_contains($compositeCurl, "-F 'model=realesrgan-x4plus'")
         && str_contains($compositeCurl, "-F 'backend=auto'")
-        && !str_contains($compositeCurl, 'operation=')
+        && str_contains($compositeCurl, "-F 'operation=upscale'")
         && str_contains((string)($service['operation_examples'][0]['examples']['curl'] ?? ''), "-F 'image=@sample.png'")
         && str_contains((string)($service['operation_examples'][1]['examples']['curl'] ?? ''), 'operation=upscale_task')
         && str_contains((string)($service['operation_examples'][2]['examples']['curl'] ?? ''), 'operation=colorize'), 'image-tools public examples must retain multipart sync, async task, and colorize contracts');

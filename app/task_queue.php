@@ -594,7 +594,7 @@ function hub_promote_due_waiting_gpu_task(PDO $db): bool
     }
 
     $now = hub_now();
-    $db->exec('BEGIN IMMEDIATE');
+    hub_sqlite_begin_immediate($db);
     try {
         $resource = $db->query("SELECT state FROM runtime_resource_leases WHERE resource_key = 'gpu:0'")->fetchColumn();
         if ($resource !== 'available') {
