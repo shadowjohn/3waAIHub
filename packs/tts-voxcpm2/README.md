@@ -18,6 +18,13 @@ not require that sync runtime to stay running.
 
 Omitting `operation` means `synthesize`.
 
+## Spoken Text Boundary
+
+For Native and Cluster synthesis, `text` contains only intended spoken text.
+`voice_prompt`, `control`, role/scenario descriptions, and defaults are never concatenated
+into `text`. Until VoxCPM2 provides dedicated style parameters,
+that metadata is kept separate and not passed to VoxCPM2.
+
 ## Native Flow
 
 1. Call `profile_prepare`; MyAI stores the returned `task_id` as

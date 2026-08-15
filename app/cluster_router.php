@@ -1069,6 +1069,7 @@ function hub_cluster_rewrite_voice_generate_contract(array $service, string $mod
         'profile_affinity' => 'Profile followups and clone synthesis stay on the pinned station; there is no failover.',
         'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with ' . $mode . ' permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
+        'spoken_text_boundary' => hub_public_api_voice_generate_spoken_text_boundary(),
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft and transcript validation (raw/normalized); the confirmed transcript is omitted.',
         'transcript_validation' => 'profile_prepare accepts optional expected_text. Whisper raw text is preserved as transcript.raw; normalization uses OpenCC s2twp and CER is Unicode-character Levenshtein distance divided by normalized expected character count. profile_prepare never confirms a profile; call profile_confirm with the human-reviewed text.',
         'profile_confirmation_proof' => 'profile_confirm returns the caller voice_profile_task_id handle (opaque through Cluster) and lowercase SHA-256 prompt_text_sha256 computed from the authoritative stored exact UTF-8 bytes; confirmed prompt_text is omitted.',
