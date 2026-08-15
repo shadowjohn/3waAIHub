@@ -849,6 +849,22 @@ hub_test('Public API audio async contracts use normalized job routes', function 
                     && str_contains((string)$service['examples']['curl'], 'voice_prompt=' . $voicePrompt),
                     'voice generate multipart example fields missing'
                 );
+                hub_test_assert(
+                    str_contains((string)($fields['text']['description'] ?? ''), 'only intended spoken text')
+                    && str_contains((string)($fields['text']['description'] ?? ''), 'never concatenated')
+                    && str_contains((string)($fields['voice_prompt']['description'] ?? ''), 'not passed to VoxCPM2')
+                    && str_contains((string)($fields['control']['description'] ?? ''), 'not passed to VoxCPM2')
+                    && str_contains((string)($service['workflow']['spoken_text_boundary'] ?? ''), 'role/scenario descriptions')
+                    && str_contains((string)($service['workflow']['spoken_text_boundary'] ?? ''), 'never concatenated'),
+                    'native voice contract must keep spoken text separate from style metadata'
+                );
+                foreach ($service['workflow_examples'] as $example) {
+                    hub_test_assert(
+                        str_contains((string)$example, '<CONTROL>')
+                        && !str_contains((string)$example, '沉穩的台灣男性技師'),
+                        'native Ultimate Clone workflow must send control separately without a default role prompt'
+                    );
+                }
             } else {
                 hub_test_assert($text !== '' && $voiceMode === 'clone' && $voicePrompt === '', 'GPT-SoVITS examples must use managed clone fields only');
                 hub_test_assert(
@@ -1566,6 +1582,9 @@ hub_test('VoxCPM2 readmes document the safe native and Cluster profile lifecycle
             'artifact_url_template',
             'ack_url_template',
             'not public contract',
+            'only intended spoken text',
+            'never concatenated',
+            'not passed to VoxCPM2',
         ] as $needle) {
             hub_test_assert(str_contains($document, $needle), basename($path) . ' missing safe voice workflow detail: ' . $needle);
         }

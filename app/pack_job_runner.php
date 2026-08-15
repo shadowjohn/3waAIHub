@@ -3209,13 +3209,13 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 : ['design', 'clone', 'ultimate_clone'];
             if (
                 (string)($task['pack_id'] ?? '') === 'tts-voxcpm2'
-                && in_array($storedVersion, ['0.1.4', '0.1.5', '0.1.6'], true)
+                && in_array($storedVersion, ['0.1.4', '0.1.5', '0.1.6', '0.1.7'], true)
                 && (string)($task['job'] ?? '') === 'synthesize'
                 && (string)($task['requested_mode'] ?? '') === 'voice_generate'
                 && (string)($task['accelerator'] ?? '') === 'gpu'
                 && in_array($storedMode, $compatibleModes, true)
             ) {
-                $resolutionTask['pack_version'] = '0.1.7';
+                $resolutionTask['pack_version'] = '0.1.8';
             }
             $contract = hub_resolve_stored_pack_job($db, $resolutionTask);
         } catch (Throwable $e) {

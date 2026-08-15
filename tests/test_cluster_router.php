@@ -5861,8 +5861,18 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         $voice = array_column(hub_cluster_public_manifest($db)['services'], null, 'mode')['voice_generate'] ?? null;
         hub_test_assert(is_array($voice), 'Cluster voice_generate contract missing');
         $json = json_encode($voice, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
-        $fields = array_column((array)$voice['input_fields'], 'name');
+        $fieldContracts = array_column((array)$voice['input_fields'], null, 'name');
+        $fields = array_keys($fieldContracts);
         hub_test_assert(in_array('voice_profile_task_id', $fields, true) && !in_array('voice_profile_id', $fields, true), 'Cluster voice_generate must expose only the opaque profile task handle');
+        hub_test_assert(
+            str_contains((string)($fieldContracts['text']['description'] ?? ''), 'only intended spoken text')
+            && str_contains((string)($fieldContracts['text']['description'] ?? ''), 'never concatenated')
+            && str_contains((string)($fieldContracts['voice_prompt']['description'] ?? ''), 'not passed to VoxCPM2')
+            && str_contains((string)($fieldContracts['control']['description'] ?? ''), 'not passed to VoxCPM2')
+            && str_contains((string)($voice['workflow']['spoken_text_boundary'] ?? ''), 'role/scenario descriptions')
+            && str_contains((string)($voice['workflow']['spoken_text_boundary'] ?? ''), 'never concatenated'),
+            'Cluster voice contract must preserve the spoken-text boundary'
+        );
         hub_test_assert(preg_match('/(?<![A-Za-z0-9_])voice_profile_id(?![A-Za-z0-9_])/i', $json) !== 1, 'Cluster voice contract must remove exact child voice_profile_id field names case-insensitively');
         hub_test_assert(str_contains($json, 'voice_profile_identifier'), 'Cluster projection must preserve legitimate field-name substrings');
         hub_test_assert(!str_contains($json, 'CHILD_PROFILE_ID') && !str_contains($json, '123'), 'Cluster projection must omit untrusted child examples instead of rewriting their code');
@@ -5970,9 +5980,10 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
             foreach (['profile_prepare', 'cluster_task_status', 'profile_status', 'profile_confirm', 'ultimate_clone', 'cluster_artifact', 'profile_delete'] as $step) {
                 hub_test_assert(str_contains($example, $step), 'Cluster ' . $kind . ' workflow example missing ' . $step);
             }
-            foreach (['<TOKEN>', '<REFERENCE_WAV>', '<VOICE_PROFILE_TASK_ID>', '<CONFIRMED_TRANSCRIPT>', '<TASK_ID>', '<ARTIFACT_ID>'] as $placeholder) {
+            foreach (['<TOKEN>', '<REFERENCE_WAV>', '<VOICE_PROFILE_TASK_ID>', '<CONFIRMED_TRANSCRIPT>', '<CONTROL>', '<TASK_ID>', '<ARTIFACT_ID>'] as $placeholder) {
                 hub_test_assert(str_contains($example, $placeholder), 'Cluster ' . $kind . ' workflow example missing placeholder ' . $placeholder);
             }
+            hub_test_assert(!str_contains($example, '沉穩的台灣男性技師'), 'Cluster workflow example must not inject a default role prompt');
             hub_test_assert(str_contains($example, 'pinned station') && str_contains($example, 'no failover'), 'Cluster ' . $kind . ' workflow example must state profile affinity');
             foreach (['voice_profile_id', '3wa_live_', '/home/', '/data/', 'http://', 'https://', 'voice-docs.invalid'] as $forbidden) {
                 hub_test_assert(!str_contains($example, $forbidden), 'Cluster ' . $kind . ' workflow example leaked a concrete or child-only value: ' . $forbidden);
@@ -5988,7 +5999,7 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         } finally {
             $_SERVER = $server;
         }
-        foreach (['profile_prepare', 'cluster_task_status', 'profile_status', 'profile_confirm', 'ultimate_clone', 'cluster_artifact', 'profile_delete', 'pinned station', 'no failover'] as $needle) {
+        foreach (['profile_prepare', 'cluster_task_status', 'profile_status', 'profile_confirm', 'ultimate_clone', 'cluster_artifact', 'profile_delete', 'pinned station', 'no failover', 'only intended spoken text', 'never concatenated', 'not passed to VoxCPM2'] as $needle) {
             hub_test_assert(str_contains($docs, $needle), 'Cluster HTML docs missing voice workflow detail: ' . $needle);
         }
         hub_test_assert(

@@ -167,7 +167,7 @@ hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', funct
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'tts-voxcpm2 pack must be valid');
     $manifest = $pack['manifest'];
 
-    hub_test_assert(($manifest['version'] ?? '') === '0.1.7', 'VoxCPM2 Pack version mismatch');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.8', 'VoxCPM2 Pack version mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'tts', 'VoxCPM2 default mode mismatch');
     hub_test_assert(($manifest['capability'] ?? '') === 'text_to_speech', 'VoxCPM2 capability mismatch');
     hub_test_assert(($manifest['model'] ?? '') === 'openbmb/VoxCPM2', 'VoxCPM2 model id mismatch');
@@ -182,8 +182,8 @@ hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', funct
     hub_test_assert(($manifest['lifecycle']['lifecycle'] ?? '') === 'on_demand', 'VoxCPM2 lifecycle mismatch');
     hub_test_assert(($manifest['lifecycle']['gpu_policy'] ?? '') === 'exclusive_gpu', 'VoxCPM2 GPU policy mismatch');
     hub_test_assert((int)($manifest['lifecycle']['idle_unload_seconds'] ?? 0) === 0, 'VoxCPM2 idle unload mismatch');
-    hub_test_assert(($manifest['runner_build']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.7', 'VoxCPM2 runner build image mismatch');
-    hub_test_assert(($manifest['async_jobs'][0]['runner']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.7', 'VoxCPM2 runner image mismatch');
+    hub_test_assert(($manifest['runner_build']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.8', 'VoxCPM2 runner build image mismatch');
+    hub_test_assert(($manifest['async_jobs'][0]['runner']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.8', 'VoxCPM2 runner image mismatch');
     $settings = hub_get_pack_settings_schema('tts-voxcpm2');
     hub_test_assert(($settings['VOXCPM2_EXECUTION_MODE']['default'] ?? '') === 'isolated', 'VoxCPM2 execution mode must default to isolated');
     hub_test_assert(($settings['VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB']['default'] ?? '') === '1024', 'VoxCPM2 resident VRAM default mismatch');
@@ -3639,7 +3639,7 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
     $job = hub_pack_async_job_contract($manifest, 'synthesize');
     hub_test_assert(is_array($job), 'VoxCPM2 synthesize job contract missing');
     hub_test_assert(($job['input_fields'] ?? []) === ['text', 'mode', 'voice_prompt', 'control', 'seed', 'seed_policy', 'model', 'voice_profile_id', 'voice_profile_task_id', 'waveform_preview'], 'long-form input must be a closed Pack allowlist');
-    hub_test_assert(($manifest['version'] ?? '') === '0.1.7', 'resident execution changes must bump the Pack patch version');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.8', 'resident execution changes must bump the Pack patch version');
     hub_test_assert(($job['request_schema']['mode'] ?? []) === ['type' => 'string', 'required' => false, 'enum' => ['design', 'clone', 'ultimate_clone'], 'max_length' => 16, 'default' => 'design'], 'async synthesis mode must default to design and declare all three modes');
     hub_test_assert(($job['request_schema']['voice_profile_id'] ?? []) === ['type' => 'integer', 'required' => false, 'min' => 1, 'max' => 2147483647], 'managed profile IDs must retain exact integer bounds');
     hub_test_assert(($job['request_schema']['voice_profile_task_id'] ?? []) === ['type' => 'string', 'required' => false, 'max_length' => 64], 'native profile task handles must be bounded strings');
@@ -3655,7 +3655,7 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
     ], 'Voice Context must expose the exact Ultimate Clone contract');
     hub_test_assert(($job['source_required'] ?? true) === false && ($job['source_artifact_types'] ?? null) === [], 'long-form synthesis must receive text and managed voice context, never an external audio source');
     hub_test_assert(($job['runner'] ?? []) === [
-        'image' => '3waaihub/tts-voxcpm2:0.1.7',
+        'image' => '3waaihub/tts-voxcpm2:0.1.8',
         'entrypoint' => ['/app/voice-generate'],
         'args' => ['--workspace', '{workspace}', '--input', '{input_dir}', '--output', '{output_dir}', '--runner-config', '{input_dir}/runner_config.json'],
         'output_dir' => 'output',
@@ -4014,7 +4014,7 @@ hub_test('VoxCPM2 async clone admission distinguishes unavailable profiles from 
     });
 });
 
-hub_test('VoxCPM2 executes immutable 0.1.4 through 0.1.6 queued tasks after the 0.1.7 Pack bump', function (): void {
+hub_test('VoxCPM2 executes immutable 0.1.4 through 0.1.7 queued tasks after the 0.1.8 Pack bump', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
         hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
@@ -4148,45 +4148,47 @@ hub_test('VoxCPM2 executes immutable 0.1.4 through 0.1.6 queued tasks after the 
             && ($previousOutcome['error_code'] ?? '') === 'synthetic_legacy_exit',
             'queued 0.1.5 task must execute through its immutable stored contract'
         );
-        $preResident = $route;
-        $preResident['runner']['image'] = '3waaihub/tts-voxcpm2:0.1.6';
-        $preResidentSnapshot = hub_pack_job_contract_snapshot($preResident, true);
-        $preResidentTaskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, ['text' => 'queued 0.1.6 design'], null, '203.0.113.51', [
-            'owner_member_id' => $owner,
-            'requested_mode' => 'voice_generate',
-            'pack_id' => 'tts-voxcpm2',
-            'pack_version' => '0.1.6',
-            'job' => 'synthesize',
-            'job_contract_json' => $preResidentSnapshot['json'],
-            'job_contract_digest' => $preResidentSnapshot['digest'],
-            'runtime_mode' => 'job',
-            'accelerator' => 'gpu',
-            'route_resolved_at' => '2026-07-30 00:00:00',
-        ]);
-        $preResidentStored = hub_get_task($db, $preResidentTaskId);
-        $preResidentContract = $preResidentStored ? hub_resolve_stored_pack_job($db, $preResidentStored) : null;
-        hub_test_assert(($preResidentContract['runner']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.6', '0.1.6 stored contract must resolve against the current Pack');
-        $preResidentClaimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
-        $preResidentExecuted = false;
-        $preResidentOutcome = hub_run_pack_job_task($db, $preResidentClaimed ?? [], [
-            'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
-            'executor' => static function () use (&$preResidentExecuted): array {
-                $preResidentExecuted = true;
-                return [
-                    'exit_code' => 1,
-                    'error_code' => 'synthetic_legacy_exit',
-                    'completed_no_process_evidence' => true,
-                    'cleanup' => ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true],
-                ];
-            },
-        ]);
-        hub_test_assert(
-            (int)($preResidentClaimed['id'] ?? 0) === $preResidentTaskId
-            && $preResidentExecuted
-            && ($preResidentOutcome['error_code'] ?? '') === 'synthetic_legacy_exit',
-            'queued 0.1.6 task must execute through its immutable stored contract'
-        );
-        hub_test_assert((string)$db->query("SELECT pack_version FROM services WHERE pack_id = 'tts-voxcpm2'")->fetchColumn() === '0.1.7', 'compatibility must run against the upgraded installed Pack');
+        foreach (['0.1.6', '0.1.7'] as $preResidentVersion) {
+            $preResident = $route;
+            $preResident['runner']['image'] = '3waaihub/tts-voxcpm2:' . $preResidentVersion;
+            $preResidentSnapshot = hub_pack_job_contract_snapshot($preResident, true);
+            $preResidentTaskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, ['text' => 'queued ' . $preResidentVersion . ' design'], null, '203.0.113.51', [
+                'owner_member_id' => $owner,
+                'requested_mode' => 'voice_generate',
+                'pack_id' => 'tts-voxcpm2',
+                'pack_version' => $preResidentVersion,
+                'job' => 'synthesize',
+                'job_contract_json' => $preResidentSnapshot['json'],
+                'job_contract_digest' => $preResidentSnapshot['digest'],
+                'runtime_mode' => 'job',
+                'accelerator' => 'gpu',
+                'route_resolved_at' => '2026-07-30 00:00:00',
+            ]);
+            $preResidentStored = hub_get_task($db, $preResidentTaskId);
+            $preResidentContract = $preResidentStored ? hub_resolve_stored_pack_job($db, $preResidentStored) : null;
+            hub_test_assert(($preResidentContract['runner']['image'] ?? '') === '3waaihub/tts-voxcpm2:' . $preResidentVersion, $preResidentVersion . ' stored contract must resolve against the current Pack');
+            $preResidentClaimed = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+            $preResidentExecuted = false;
+            $preResidentOutcome = hub_run_pack_job_task($db, $preResidentClaimed ?? [], [
+                'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+                'executor' => static function () use (&$preResidentExecuted): array {
+                    $preResidentExecuted = true;
+                    return [
+                        'exit_code' => 1,
+                        'error_code' => 'synthetic_legacy_exit',
+                        'completed_no_process_evidence' => true,
+                        'cleanup' => ['runner_exited' => true, 'container_removed' => true, 'owned_gpu_pids_gone' => true],
+                    ];
+                },
+            ]);
+            hub_test_assert(
+                (int)($preResidentClaimed['id'] ?? 0) === $preResidentTaskId
+                && $preResidentExecuted
+                && ($preResidentOutcome['error_code'] ?? '') === 'synthetic_legacy_exit',
+                'queued ' . $preResidentVersion . ' task must execute through its immutable stored contract'
+            );
+        }
+        hub_test_assert((string)$db->query("SELECT pack_version FROM services WHERE pack_id = 'tts-voxcpm2'")->fetchColumn() === '0.1.8', 'compatibility must run against the upgraded installed Pack');
         $unsupported = hub_get_task($db, $designTaskId) ?? [];
         $unsupported['pack_version'] = '0.1.3';
         hub_test_assert(hub_test_throws(static fn (): array => hub_resolve_stored_pack_job($db, $unsupported)), 'the stored-version exception must reject every other VoxCPM2 version');
@@ -4419,11 +4421,11 @@ hub_test('VoxCPM2 upgrade builds the versioned runner when only the old image ex
         },
     ]);
     hub_test_assert($commands === [
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.7'],
-        ['docker', 'build', '--tag', '3waaihub/tts-voxcpm2:0.1.7', '--file', HUB_ROOT . '/packs/tts-voxcpm2/service/Dockerfile', HUB_ROOT . '/packs/tts-voxcpm2'],
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.7'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.8'],
+        ['docker', 'build', '--tag', '3waaihub/tts-voxcpm2:0.1.8', '--file', HUB_ROOT . '/packs/tts-voxcpm2/service/Dockerfile', HUB_ROOT . '/packs/tts-voxcpm2'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.8'],
     ] && ($images['3waaihub/tts-voxcpm2:0.1.0'] ?? '') === 'sha256:old-voxcpm2'
-        && ($images['3waaihub/tts-voxcpm2:0.1.7'] ?? '') === 'sha256:new-voxcpm2'
+        && ($images['3waaihub/tts-voxcpm2:0.1.8'] ?? '') === 'sha256:new-voxcpm2'
         && ($installed['service']['install_status'] ?? '') === 'installed',
         'an existing old image must not suppress building and verifying the new Pack-versioned runner');
 });
@@ -4978,7 +4980,7 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
         );
         [$currentTaskId, $currentArtifact] = $makeArtifact(
-            '0.1.7',
+            '0.1.8',
             'current-' . $mode . '-metadata.json',
             $currentJson,
             hub_test_voxcpm2_cluster_runner_input(
@@ -4998,7 +5000,7 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
                 $currentArtifact,
                 $audioProbe
             ) === $currentArtifact,
-            '0.1.7 must accept canonical ' . $mode . ' metadata without rewriting it'
+            '0.1.8 must accept canonical ' . $mode . ' metadata without rewriting it'
         );
     }
 
@@ -5246,7 +5248,7 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
         );
         [$currentTaskId, $currentArtifact] = $makeArtifact(
-            '0.1.7',
+            '0.1.8',
             'current-' . $case . '-metadata.json',
             $currentJson,
             $currentInput
@@ -5264,7 +5266,7 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
         }
         hub_test_assert(
             $rejected === 'validated_artifact_invalid',
-            '0.1.7 must reject metadata with ' . $case
+            '0.1.8 must reject metadata with ' . $case
         );
     }
 

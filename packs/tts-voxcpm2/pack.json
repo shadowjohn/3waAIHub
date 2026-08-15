@@ -2,7 +2,7 @@
   "schema_version": "0.1",
   "id": "tts-voxcpm2",
   "name": "VoxCPM2 Experimental TTS Service",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "category": "audio",
   "type": "api_service",
   "execution_type": "sync_api",
@@ -23,7 +23,7 @@
   "runner_build": {
     "context": ".",
     "dockerfile": "service/Dockerfile",
-    "image": "3waaihub/tts-voxcpm2:0.1.7"
+    "image": "3waaihub/tts-voxcpm2:0.1.8"
   },
   "gateway": {
     "health_path": "/health",
@@ -75,7 +75,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/tts-voxcpm2:0.1.7",
+        "image": "3waaihub/tts-voxcpm2:0.1.8",
         "entrypoint": ["/app/voice-generate"],
         "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
         "output_dir": "output",
@@ -141,7 +141,8 @@
         {
           "name": "text",
           "type": "string",
-          "required": true
+          "required": true,
+          "description": "Contains only intended spoken text sent to VoxCPM2; voice_prompt, control, role/scenario descriptions, and defaults are never concatenated into text."
         },
         {
           "name": "mode",
@@ -154,7 +155,8 @@
           "name": "voice_prompt",
           "type": "string",
           "required": false,
-          "default": "沉穩的台灣男性技師，語速稍慢，清楚自然"
+          "default": "沉穩的台灣男性技師，語速稍慢，清楚自然",
+          "description": "Design metadata kept separate from text; currently not passed to VoxCPM2 because no dedicated model parameter exists."
         },
         {
           "name": "seed",
@@ -184,7 +186,8 @@
           "name": "control",
           "type": "string",
           "required": false,
-          "mode": "clone"
+          "mode": "clone",
+          "description": "Style metadata kept separate from text; currently not passed to VoxCPM2 because no dedicated model parameter exists."
         }
       ]
     },

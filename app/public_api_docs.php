@@ -291,7 +291,7 @@ curl -sS -H "Authorization: Bearer ${TOKEN}" \
   "${API}?mode={{MODE}}"
 {{DESIGN}}
 SYNTHESIS="$(curl -sS -H "Authorization: Bearer ${TOKEN}" \
-  -F 'operation=synthesize' -F 'text=<TEXT>' -F 'mode=ultimate_clone' \
+  -F 'operation=synthesize' -F 'text=<TEXT>' -F 'mode=ultimate_clone'{{CONTROL}} \
   -F "voice_profile_task_id=${VOICE_PROFILE_TASK_ID}" \
   "${API}?mode={{MODE}}")"
 TASK_ID="$(printf '%s' "${SYNTHESIS}" | json_value task_id)" # <TASK_ID>
@@ -317,6 +317,7 @@ CURL, [
         '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $curlAffinity,
         '{{ACK}}' => $curlAck,
+        '{{CONTROL}}' => $allowDesign ? " -F 'control=<CONTROL>'" : '',
     ]);
     $curl = str_replace('{{DESIGN}}', $allowDesign ? <<<'CURL'
 curl -sS -H "Authorization: Bearer ${TOKEN}" \
@@ -399,7 +400,7 @@ $synthesis = $decode($request($api . '?mode={{MODE}}', json_encode([
     'operation' => 'synthesize',
     'text' => '<TEXT>',
     'mode' => 'ultimate_clone',
-    'voice_profile_task_id' => $voiceProfileTaskId,
+{{CONTROL}}    'voice_profile_task_id' => $voiceProfileTaskId,
 ], JSON_THROW_ON_ERROR), ['Content-Type: application/json']));
 $taskId = $synthesis['task_id']; // <TASK_ID>
 $resultUrl = $resolveUrl($api, (string)$synthesis['result_url']);
@@ -421,6 +422,7 @@ PHP, [
         '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $codeAffinity,
         '{{ACK}}' => $phpAck,
+        '{{CONTROL}}' => $allowDesign ? "    'control' => '<CONTROL>',\n" : '',
     ]);
     $php = str_replace('{{DESIGN}}', $allowDesign ? <<<'PHP'
 $decode($request($api . '?mode=voice_generate', json_encode([
@@ -467,7 +469,7 @@ await call(`${api}?mode={{MODE}}`, {
 const synthesis = await call(`${api}?mode={{MODE}}`, {
   method: 'POST',
   headers: {'Content-Type': 'application/json'},
-  body: JSON.stringify({operation: 'synthesize', text: '<TEXT>', mode: 'ultimate_clone', voice_profile_task_id: voiceProfileTaskId}),
+  body: JSON.stringify({operation: 'synthesize', text: '<TEXT>', mode: 'ultimate_clone',{{CONTROL}} voice_profile_task_id: voiceProfileTaskId}),
 });
 const taskId = synthesis.task_id; // <TASK_ID>
 const resultUrl = resolveUrl(synthesis.result_url);
@@ -491,6 +493,7 @@ JS, [
         '{{ARTIFACT_MODE}}' => $artifactMode,
         '{{AFFINITY}}' => $codeAffinity,
         '{{ACK}}' => $jsAck,
+        '{{CONTROL}}' => $allowDesign ? " control: '<CONTROL>'," : '',
     ]);
     $js = str_replace('{{DESIGN}}', $allowDesign ? <<<'JS'
 await call(`${api}?mode=voice_generate`, {
@@ -503,6 +506,11 @@ JS : '', $js);
     return ['curl' => $curl, 'php' => $php, 'js_fetch' => $js];
 }
 
+function hub_public_api_voice_generate_spoken_text_boundary(): string
+{
+    return 'For synthesize, text contains only intended spoken text. voice_prompt, control, role/scenario descriptions, and defaults are never concatenated into text; style metadata is not passed to VoxCPM2 until a dedicated model parameter exists.';
+}
+
 function hub_public_api_voice_generate_contract(array $contract, string $mode = 'voice_generate'): array
 {
     if (!hub_is_voice_profile_mode($mode)) {
@@ -511,8 +519,16 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
     foreach ($contract['input']['fields'] as &$field) {
         if (($field['name'] ?? '') === 'text') {
             $field['example'] = '<TEXT>';
+            if ($mode === 'voice_generate') {
+                $field['description'] = 'Contains only intended spoken text sent to VoxCPM2; voice_prompt, control, role/scenario descriptions, and defaults are never concatenated into text.';
+            }
         } elseif (($field['name'] ?? '') === 'voice_prompt') {
             $field['example'] = '<VOICE_PROMPT>';
+            if ($mode === 'voice_generate') {
+                $field['description'] = 'Design metadata kept separate from text; currently not passed to VoxCPM2 because no dedicated model parameter exists.';
+            }
+        } elseif (($field['name'] ?? '') === 'control' && $mode === 'voice_generate') {
+            $field['description'] = 'Style metadata kept separate from text; currently not passed to VoxCPM2 because no dedicated model parameter exists.';
         }
     }
     unset($field);
@@ -597,6 +613,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
         'client_state' => 'MyAI stores voice_profile_task_id returned by profile_prepare.',
         'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with ' . $mode . ' permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
+        'spoken_text_boundary' => hub_public_api_voice_generate_spoken_text_boundary(),
         'profile_status_visibility' => 'For the authenticated Profile member, profile_status may include the unconfirmed ASR draft and transcript validation (raw/normalized); the confirmed transcript is omitted.',
         'transcript_validation' => 'profile_prepare accepts optional expected_text. Whisper raw text is preserved as transcript.raw, both sides use OpenCC s2twp normalization, and CER is Levenshtein distance divided by normalized expected character count. status is clean at CER 0, pass at <= 0.05, review_required above 0.05, and unverified when expected_text is absent. profile_prepare never confirms a profile; call profile_confirm with the human-reviewed text.',
         'profile_confirmation_proof' => 'profile_confirm returns the caller voice_profile_task_id handle (opaque through Cluster) and lowercase SHA-256 prompt_text_sha256 computed from the authoritative stored exact UTF-8 bytes; confirmed prompt_text is omitted.',

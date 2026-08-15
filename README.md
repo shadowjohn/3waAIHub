@@ -1469,6 +1469,10 @@ Native Hub 流程：
    submit response 的 `artifact_url_template` 取回 WAV。
 5. 不再使用時呼叫 `profile_delete`；刪除是必要的 privacy lifecycle 步驟。
 
+Native 與 Cluster 的 `text` 都只包含 only intended spoken text。`voice_prompt`、
+`control`、角色／情境描述與預設 prompt are never concatenated into `text`；在
+VoxCPM2 提供正式獨立參數以前，這些 style metadata are not passed to VoxCPM2。
+
 Cluster 流程相同，但所有請求走 `cluster_api.php`，工作查詢與下載分別使用
 `cluster_task_status`、`cluster_task_result`、`cluster_artifact`。MyAI 只保存
 Router 回傳的 opaque `voice_profile_task_id`，不保存 child profile identifier。
