@@ -376,6 +376,81 @@ hub_test('Resident capacity uses cold full VRAM, ready floor, and never falls ba
     }
 });
 
+hub_test('Resident lifecycle record retries a short SQLite write lock', function (): void {
+    if (!function_exists('proc_open') || !defined('PHP_BINARY') || !is_file(PHP_BINARY) || !is_executable(PHP_BINARY)) {
+        hub_test_skip('resident lifecycle SQLite lock test requires an executable PHP child process');
+    }
+    $db = hub_test_reset_db();
+    $fixture = hub_test_resident_vox_fixture($db);
+    $run = hub_pack_job_claim_runtime($db, $fixture['task'], 'resident-lock-worker', 60);
+    hub_test_assert(is_array($run), 'resident lock fixture must claim a runtime run');
+    $readyPath = tempnam(sys_get_temp_dir(), '3waaihub_resident_lock_');
+    if ($readyPath === false) {
+        throw new RuntimeException('Cannot create resident lock readiness file.');
+    }
+    $process = null;
+    $pipes = [];
+    try {
+        $child = <<<'PHP'
+$db = new PDO('sqlite:' . $argv[1]);
+$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$db->exec('PRAGMA busy_timeout = 0');
+$db->exec('BEGIN IMMEDIATE');
+try {
+    if (file_put_contents($argv[2], "ready\n", LOCK_EX) === false) {
+        throw new RuntimeException('Cannot signal SQLite lock readiness.');
+    }
+    usleep(150000);
+    $db->exec('COMMIT');
+} catch (Throwable) {
+    try { $db->exec('ROLLBACK'); } catch (Throwable) {}
+    exit(1);
+}
+PHP;
+        $process = proc_open(
+            [PHP_BINARY, '-r', $child, HUB_DB_PATH, $readyPath],
+            [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes,
+            HUB_ROOT,
+        );
+        if (!is_resource($process)) {
+            hub_test_skip('resident lifecycle SQLite lock test requires an executable PHP child process');
+        }
+        fclose($pipes[0]);
+        $deadline = microtime(true) + 2.0;
+        while (microtime(true) < $deadline && trim((string)file_get_contents($readyPath)) !== 'ready') {
+            usleep(5000);
+        }
+        hub_test_assert(trim((string)file_get_contents($readyPath)) === 'ready', 'SQLite lock child must signal readiness before resident lifecycle write');
+
+        $recordDb = new PDO('sqlite:' . HUB_DB_PATH);
+        $recordDb->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $recordDb->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $recordDb->exec('PRAGMA busy_timeout = 0');
+        hub_test_assert(
+            hub_pack_job_resident_record($recordDb, $run, $fixture['task'], $fixture['service'], 'resident-lock-retry', 'dispatched'),
+            'resident lifecycle write must retry a short SQLite lock'
+        );
+        $row = $recordDb->query("SELECT lifecycle FROM resident_job_runs WHERE runtime_run_id = " . $recordDb->quote((string)$run['run_id']))->fetch();
+        hub_test_assert(($row['lifecycle'] ?? null) === 'dispatched', 'resident lifecycle retry must persist the dispatched record');
+    } finally {
+        if (is_resource($process) && (proc_get_status($process)['running'] ?? false)) {
+            proc_terminate($process);
+        }
+        foreach ($pipes as $pipe) {
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
+        }
+        if (is_resource($process)) {
+            proc_close($process);
+        }
+        if (is_file($readyPath)) {
+            unlink($readyPath);
+        }
+    }
+});
+
 hub_test('Stopped resident services wait before GPU acquisition or dispatch', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_resident_vox_fixture($db);
@@ -576,6 +651,41 @@ hub_test('Resident terminal failure survives one transient Hub terminal write fa
         && $resident === 'reconciled'
         && $terminalWrites === 2,
         'a confirmed resident failure must retain its terminal error and cleanup attestation across a transient Hub write failure'
+    );
+});
+
+hub_test('Resident failure preserves the service supplied stable error code', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_resident_vox_fixture($db);
+    $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 20000, 'processes' => []],
+        'resident_transport' => static function (string $method, string $url, array $headers, ?array $payload): array {
+            if ($method === 'GET' && str_ends_with($url, '/internal/capacity')) {
+                return ['status' => 200, 'json' => ['model_state' => 'ready', 'active_runs' => 0]];
+            }
+            if ($method === 'POST' && str_ends_with($url, '/internal/jobs')) {
+                return ['status' => 200, 'json' => ['run_id' => (string)($payload['run_id'] ?? ''), 'state' => 'running']];
+            }
+            if ($method === 'GET' && str_contains($url, '/internal/jobs/')) {
+                return [
+                    'status' => 200,
+                    'json' => [
+                        'run_id' => rawurldecode((string)basename($url)),
+                        'state' => 'failed',
+                        'error_code' => 'voice_profile_unavailable',
+                    ],
+                ];
+            }
+
+            return ['status' => 500, 'json' => []];
+        },
+    ]);
+    $task = hub_get_task($db, $fixture['task_id']);
+
+    hub_test_assert(
+        ($outcome['error_code'] ?? '') === 'voice_profile_unavailable'
+        && ($task['error_code'] ?? '') === 'voice_profile_unavailable',
+        'resident service failure was flattened into a generic error'
     );
 });
 

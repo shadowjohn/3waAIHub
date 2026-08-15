@@ -159,6 +159,24 @@ class UltimateCloneTests(unittest.TestCase):
 
         self.assertEqual(spoken_text, self.model.kwargs["text"])
 
+    def test_trusted_resident_reference_can_live_in_job_workspace(self):
+        source = Path(self.temp_dir.name) / "resident_jobs" / "run-1" / "input" / "source"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"RIFFtrusted-workspace-reference")
+        request = app.TtsRequest(
+            text="target text",
+            mode="ultimate_clone",
+            reference_wav_path=str(source),
+            prompt_wav_path=str(source),
+            prompt_text=self.prompt_text,
+        )
+
+        app.write_real_wav(Path(self.temp_dir.name) / "out.wav", request, 42, trusted_reference_paths=True)
+
+        self.assertEqual(str(source), self.model.kwargs["reference_wav_path"])
+        self.assertEqual(str(source), self.model.kwargs["prompt_wav_path"])
+        self.assertEqual(self.prompt_text, self.model.kwargs["prompt_text"])
+
     def test_ultimate_clone_rejects_missing_mismatched_or_empty_prompt_inputs(self):
         for overrides, error in [
             ({"prompt_wav_path": None}, "ultimate_clone_prompt_wav_required"),

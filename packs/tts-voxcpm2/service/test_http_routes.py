@@ -77,6 +77,18 @@ class ResidentHttpRoutesTests(unittest.TestCase):
         for value in ("private prompt", "private model", self.token, "artifact", str(self.service_data)):
             self.assertNotIn(value, rendered)
 
+    def test_failed_resident_job_reports_stable_error_code(self):
+        stage = self.stage("run-http-failed")
+        with patch.object(job, "run_job", side_effect=RuntimeError("voice_profile_unavailable")):
+            created = self.client.post("/internal/jobs", headers=self.headers(), json={"run_id": "run-http-failed"})
+
+        self.assertEqual(200, created.status_code)
+        self.assertEqual({"run_id": "run-http-failed", "state": "failed", "error_code": "voice_profile_unavailable"}, created.json())
+        status = self.client.get("/internal/jobs/run-http-failed", headers=self.headers())
+        self.assertEqual(created.json(), status.json())
+        terminal = json.loads((stage / "terminal.json").read_text(encoding="utf-8"))
+        self.assertEqual({"state": "failed", "error_code": "voice_profile_unavailable"}, terminal)
+
 
 if __name__ == "__main__":
     unittest.main()

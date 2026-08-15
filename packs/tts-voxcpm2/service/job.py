@@ -212,7 +212,7 @@ def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path,
     request = tts_app.TtsRequest(**values)
     temporary = checkpoints / (chunk["id"] + ".model.wav")
     try:
-        tts_app.write_real_wav(temporary, request, chunk["seed"])
+        tts_app.write_real_wav(temporary, request, chunk["seed"], trusted_reference_paths=True)
         if cancelled and cancelled():
             raise RuntimeError("job_cancelled")
         ensure_cuda_model(tts_app, model["model"], torch)

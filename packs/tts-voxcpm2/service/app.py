@@ -31,6 +31,7 @@ _IDLE_TIMER: threading.Timer | None = None
 _ACTIVE_JOBS: dict[str, threading.Event] = {}
 _ACTIVE_JOBS_LOCK = threading.RLock()
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,95}$")
+STABLE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 TERMINAL_JOB_STATES = {"succeeded", "failed", "cancelled"}
 
 
@@ -162,18 +163,37 @@ def resident_regular(stage: Path, *parts: str) -> Path:
     return resolved
 
 
-def resident_terminal_state(stage: Path) -> str:
+def resident_terminal_payload(stage: Path) -> dict[str, str] | None:
     try:
         state_path = resident_regular(stage, "terminal.json")
         payload = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, RuntimeError):
-        return "unknown"
-    return str(payload.get("state")) if isinstance(payload, dict) and set(payload) == {"state"} and payload.get("state") in TERMINAL_JOB_STATES else "unknown"
+        return None
+    if not isinstance(payload, dict) or not isinstance(payload.get("state"), str) or payload["state"] not in TERMINAL_JOB_STATES:
+        return None
+    if set(payload) == {"state"}:
+        return {"state": payload["state"]}
+    if (
+        payload["state"] == "failed"
+        and set(payload) == {"state", "error_code"}
+        and isinstance(payload.get("error_code"), str)
+        and STABLE_ERROR_CODE.fullmatch(payload["error_code"])
+    ):
+        return {"state": payload["state"], "error_code": payload["error_code"]}
+    return None
 
 
-def write_resident_terminal_state(stage: Path, state: str) -> None:
+def resident_terminal_state(stage: Path) -> str:
+    payload = resident_terminal_payload(stage)
+    return payload["state"] if payload is not None else "unknown"
+
+
+def write_resident_terminal_state(stage: Path, state: str, error_code: str | None = None) -> None:
     if state not in TERMINAL_JOB_STATES:
         raise RuntimeError("resident_job_invalid")
+    payload = {"state": state}
+    if state == "failed" and error_code is not None and STABLE_ERROR_CODE.fullmatch(error_code):
+        payload["error_code"] = error_code
     target = stage / "terminal.json"
     if target.exists() and (target.is_symlink() or not target.is_file()):
         raise RuntimeError("resident_job_invalid")
@@ -181,7 +201,7 @@ def write_resident_terminal_state(stage: Path, state: str) -> None:
     if temporary.exists() and (temporary.is_symlink() or not temporary.is_file()):
         raise RuntimeError("resident_job_invalid")
     with temporary.open("w", encoding="utf-8") as handle:
-        json.dump({"state": state}, handle, separators=(",", ":"))
+        json.dump(payload, handle, separators=(",", ":"))
         handle.write("\n")
         handle.flush()
         os.fsync(handle.fileno())
@@ -349,13 +369,26 @@ def validate_reference_path(path: str | None) -> Path | None:
     return real
 
 
-def validate_clone_inputs(request: TtsRequest) -> tuple[Path, Path | None]:
-    reference = validate_reference_path(request.reference_wav_path)
+def validate_trusted_reference_path(path: str | None) -> Path | None:
+    if not path:
+        return None
+    try:
+        real = Path(path).resolve(strict=True)
+    except OSError:
+        raise ValueError("voice_profile_required") from None
+    if not real.is_file() or real.is_symlink():
+        raise ValueError("voice_profile_forbidden")
+    return real
+
+
+def validate_clone_inputs(request: TtsRequest, trusted_reference_paths: bool = False) -> tuple[Path, Path | None]:
+    validator = validate_trusted_reference_path if trusted_reference_paths else validate_reference_path
+    reference = validator(request.reference_wav_path)
     if reference is None:
         raise ValueError("voice_profile_required")
     if request.mode != "ultimate_clone":
         return reference, None
-    prompt = validate_reference_path(request.prompt_wav_path)
+    prompt = validator(request.prompt_wav_path)
     if prompt is None or prompt != reference:
         raise ValueError("ultimate_clone_prompt_wav_required")
     if not (request.prompt_text or "").strip():
@@ -379,7 +412,7 @@ def voxcpm_model() -> Any:
     return _MODEL
 
 
-def write_real_wav(path: Path, request: TtsRequest, seed: int) -> int:
+def write_real_wav(path: Path, request: TtsRequest, seed: int, trusted_reference_paths: bool = False) -> int:
     if importlib.util.find_spec("soundfile") is None:
         raise RuntimeError("runtime_dependency_missing")
     import soundfile as sf
@@ -392,7 +425,7 @@ def write_real_wav(path: Path, request: TtsRequest, seed: int) -> int:
         "inference_timesteps": 10,
     }
     if request.mode in {"clone", "ultimate_clone"}:
-        reference, prompt = validate_clone_inputs(request)
+        reference, prompt = validate_clone_inputs(request, trusted_reference_paths)
         kwargs["reference_wav_path"] = str(reference)
         if request.mode == "ultimate_clone":
             kwargs["prompt_wav_path"] = str(prompt)
@@ -521,8 +554,8 @@ def internal_job_status(run_id: str, x_aihub_internal_token: str | None = Header
     except RuntimeError:
         return internal_error(404, "resident_job_not_found")
     with _ACTIVE_JOBS_LOCK:
-        state = "running" if run_id in _ACTIVE_JOBS else resident_terminal_state(stage)
-    return {"run_id": run_id, "state": state}
+        payload = {"state": "running"} if run_id in _ACTIVE_JOBS else resident_terminal_payload(stage) or {"state": "unknown"}
+    return {"run_id": run_id, **payload}
 
 
 @app.post("/internal/jobs/{run_id}/cancel", response_model=None)
@@ -554,9 +587,9 @@ def internal_job_start(payload: dict[str, Any], x_aihub_internal_token: str | No
     except RuntimeError:
         return internal_error(400, "resident_job_invalid")
 
-    terminal = resident_terminal_state(stage)
-    if terminal != "unknown":
-        return {"run_id": run_id, "state": terminal}
+    terminal = resident_terminal_payload(stage)
+    if terminal is not None:
+        return {"run_id": run_id, **terminal}
     cancelled = threading.Event()
     with _ACTIVE_JOBS_LOCK:
         if run_id in _ACTIVE_JOBS:
@@ -564,6 +597,7 @@ def internal_job_start(payload: dict[str, Any], x_aihub_internal_token: str | No
         _ACTIVE_JOBS[run_id] = cancelled
 
     state = "failed"
+    error_code = None
     try:
         import job
 
@@ -578,17 +612,25 @@ def internal_job_start(payload: dict[str, Any], x_aihub_internal_token: str | No
             )
         state = "cancelled" if cancelled.is_set() else "succeeded"
     except RuntimeError as exc:
-        state = "cancelled" if str(exc) == "job_cancelled" else "failed"
+        if str(exc) == "job_cancelled":
+            state = "cancelled"
+        else:
+            state = "failed"
+            error_code = str(exc) if STABLE_ERROR_CODE.fullmatch(str(exc)) else "runtime_execution_failed"
     except Exception:
         state = "failed"
+        error_code = "runtime_execution_failed"
     try:
-        write_resident_terminal_state(stage, state)
+        write_resident_terminal_state(stage, state, error_code)
     except Exception:
         return internal_error(500, "resident_job_state_failed")
     finally:
         with _ACTIVE_JOBS_LOCK:
             _ACTIVE_JOBS.pop(run_id, None)
-    return {"run_id": run_id, "state": state}
+    response = {"run_id": run_id, "state": state}
+    if state == "failed" and error_code is not None:
+        response["error_code"] = error_code
+    return response
 
 
 @app.post("/v1/tts")
