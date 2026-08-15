@@ -4593,7 +4593,7 @@ function hub_voxcpm2_public_metadata_artifact(
     $task = $stmt->fetch();
     if (!$task
         || ($task['pack_id'] ?? null) !== 'tts-voxcpm2'
-        || !in_array($task['pack_version'] ?? null, ['0.1.4', '0.1.5', '0.1.6', '0.1.7'], true)
+        || !in_array($task['pack_version'] ?? null, ['0.1.4', '0.1.5', '0.1.6', '0.1.7', '0.1.8'], true)
         || ($task['job'] ?? null) !== 'synthesize') {
         return $artifact;
     }
@@ -4627,7 +4627,7 @@ function hub_voxcpm2_public_metadata_artifact(
     $changed = false;
     $model = $metadata['model'] ?? null;
     $voice = $metadata['voice_context'] ?? null;
-    if (in_array($task['pack_version'] ?? null, ['0.1.6', '0.1.7'], true)) {
+    if (in_array($task['pack_version'] ?? null, ['0.1.6', '0.1.7', '0.1.8'], true)) {
         try {
             $taskInput = json_decode((string)($task['input_json'] ?? ''), true, 64, JSON_THROW_ON_ERROR);
         } catch (JsonException) {

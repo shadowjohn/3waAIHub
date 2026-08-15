@@ -184,7 +184,7 @@ SH
         $compose = (string)file_get_contents(hub_path((string)$service['compose_file']));
 
         hub_test_assert($result['exit_code'] === 0, 'VoxCPM2 restart must succeed with a refreshed runtime');
-        hub_test_assert(($refreshed['pack_version'] ?? '') === '0.1.7' && str_ends_with($expectedTag, ':0.1.7'), 'restart must refresh the stored VoxCPM2 version before resolving its image');
+        hub_test_assert(($refreshed['pack_version'] ?? '') === '0.1.8' && str_ends_with($expectedTag, ':0.1.8'), 'restart must refresh the stored VoxCPM2 version before resolving its image');
         hub_test_assert(str_contains($commands, 'image inspect ' . $expectedTag) && !str_contains($commands, $oldTag), 'restart must inspect only the refreshed VoxCPM2 image tag');
         hub_test_assert(str_contains($compose, 'image: ' . $expectedTag), 'restart must regenerate the refreshed VoxCPM2 compose image');
     } finally {

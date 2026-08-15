@@ -84,7 +84,7 @@ function hub_test_resident_vox_fixture(PDO $db, bool $clone = false): array
     $attributes = [
         'requested_mode' => 'voice_generate',
         'pack_id' => 'tts-voxcpm2',
-        'pack_version' => '0.1.7',
+        'pack_version' => '0.1.8',
         'job' => 'synthesize',
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
@@ -404,12 +404,12 @@ hub_test('Stopped resident services wait before GPU acquisition or dispatch', fu
 });
 
 hub_test('Isolated VoxCPM2 jobs retain the exact container runner and managed clone mount', function (): void {
-    foreach (['0.1.7', '0.1.6'] as $storedVersion) {
+    foreach (['0.1.8', '0.1.7'] as $storedVersion) {
         $db = hub_test_reset_db();
         $fixture = hub_test_resident_vox_fixture($db, true);
         hub_update_service_settings($db, (int)$fixture['service']['id'], ['VOXCPM2_EXECUTION_MODE' => 'isolated']);
         $task = $fixture['task'];
-        if ($storedVersion !== '0.1.7') {
+        if ($storedVersion !== '0.1.8') {
             $db->prepare('UPDATE tasks SET pack_version = :pack_version WHERE id = :id')->execute([
                 ':pack_version' => $storedVersion,
                 ':id' => (int)$fixture['task_id'],
