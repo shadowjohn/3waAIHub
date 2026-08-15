@@ -157,51 +157,106 @@ function hub_pack_job_wait_without_gpu(PDO $db, int $taskId, array $run, string 
     }
     $runtime = hub_runtime_gpu_runtime_identity($run);
     $now = hub_now();
-    hub_sqlite_begin_immediate($db);
+    $actionStartedNs = hrtime(true);
+    $beginRequestedNs = hrtime(true);
+    $beginStats = [];
+    $txStartedNs = null;
+    $txBeginAt = null;
+    $ownsTransaction = false;
+    $emitAction = false;
+    $outcome = 'failed';
+    $result = false;
+    $error = null;
     try {
+        hub_sqlite_begin_immediate($db, $beginStats);
+        $ownsTransaction = true;
+        $txStartedNs = hrtime(true);
+        $txBeginAt = hub_runtime_telemetry_timestamp();
         if (!hub_runtime_gpu_runtime_fence_in_transaction($db, $run, $taskId)) {
             $db->exec('ROLLBACK');
-            return false;
+            $ownsTransaction = false;
+            $emitAction = true;
+            $outcome = 'fence_lost';
+        } else {
+            $runStmt = $db->prepare(
+                "UPDATE runtime_runs
+                 SET state = 'waiting_gpu', lease_expires_at = NULL, heartbeat_at = :now, error_code = NULL
+                 WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
+                   AND task_id = :task_id AND state IN ('claimed', 'running')"
+            );
+            $runStmt->execute([
+                ':now' => $now,
+                ':run_id' => $runtime['run_id'],
+                ':worker_id' => $runtime['worker_id'],
+                ':lease_token' => $runtime['lease_token'],
+                ':task_id' => $taskId,
+            ]);
+            $taskStmt = $db->prepare(
+                "UPDATE tasks
+                 SET status = 'waiting_gpu', waiting_reason = :reason, next_attempt_at = :next_attempt_at,
+                     waiting_detail_json = :waiting_detail_json,
+                     lock_token = NULL, updated_at = :now
+                 WHERE id = :id AND task_type = 'pack_job' AND status = 'running'"
+            );
+            $taskStmt->execute([
+                ':reason' => $reason,
+                ':next_attempt_at' => hub_runtime_lease_until(max(1, $backoffSeconds)),
+                ':waiting_detail_json' => hub_task_waiting_detail_json($details),
+                ':now' => $now,
+                ':id' => $taskId,
+            ]);
+            if ($runStmt->rowCount() !== 1 || $taskStmt->rowCount() !== 1) {
+                $db->exec('ROLLBACK');
+                $ownsTransaction = false;
+                $emitAction = true;
+                $outcome = 'fence_lost';
+            } else {
+                $db->exec('COMMIT');
+                $ownsTransaction = false;
+                $emitAction = true;
+                $outcome = 'committed';
+                $result = true;
+            }
         }
-        $runStmt = $db->prepare(
-            "UPDATE runtime_runs
-             SET state = 'waiting_gpu', lease_expires_at = NULL, heartbeat_at = :now, error_code = NULL
-             WHERE run_id = :run_id AND worker_id = :worker_id AND lease_token = :lease_token
-               AND task_id = :task_id AND state IN ('claimed', 'running')"
-        );
-        $runStmt->execute([
-            ':now' => $now,
-            ':run_id' => $runtime['run_id'],
-            ':worker_id' => $runtime['worker_id'],
-            ':lease_token' => $runtime['lease_token'],
-            ':task_id' => $taskId,
-        ]);
-        $taskStmt = $db->prepare(
-            "UPDATE tasks
-             SET status = 'waiting_gpu', waiting_reason = :reason, next_attempt_at = :next_attempt_at,
-                 waiting_detail_json = :waiting_detail_json,
-                 lock_token = NULL, updated_at = :now
-             WHERE id = :id AND task_type = 'pack_job' AND status = 'running'"
-        );
-        $taskStmt->execute([
-            ':reason' => $reason,
-            ':next_attempt_at' => hub_runtime_lease_until(max(1, $backoffSeconds)),
-            ':waiting_detail_json' => hub_task_waiting_detail_json($details),
-            ':now' => $now,
-            ':id' => $taskId,
-        ]);
-        if ($runStmt->rowCount() !== 1 || $taskStmt->rowCount() !== 1) {
-            $db->exec('ROLLBACK');
-            return false;
-        }
-        $db->exec('COMMIT');
-        return true;
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        if ($ownsTransaction) {
+            try {
+                $db->exec('ROLLBACK');
+                $ownsTransaction = false;
+                $emitAction = true;
+            } catch (Throwable) {
+            }
         }
-        throw $e;
+        $outcome = !empty($beginStats['lock_exhausted']) ? 'lock_exhausted' : 'failed';
+        $emitAction = $emitAction || !empty($beginStats['lock_exhausted']);
+        $error = $e;
     }
+    $txEndedNs = hrtime(true);
+    $txCommitAt = hub_runtime_telemetry_timestamp();
+    if ($emitAction) {
+        $emitStartedNs = hrtime(true);
+        hub_runtime_telemetry_emit([
+            'action' => 'wait',
+            'variant' => 'gpu',
+            'outcome' => $outcome,
+            'tx_mode' => 'immediate',
+            'tx_begin_at' => $txBeginAt,
+            'tx_commit_at' => $txCommitAt,
+            'pre_tx_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $beginRequestedNs),
+            'lock_wait_ms' => (float)($beginStats['lock_wait_ms'] ?? 0.0),
+            'lock_wait_kind' => 'begin_immediate',
+            'tx_ms' => $txStartedNs === null ? 0.0 : hub_runtime_telemetry_elapsed_ms($txStartedNs, $txEndedNs),
+            'post_tx_ms' => hub_runtime_telemetry_elapsed_ms($txEndedNs, $emitStartedNs),
+            'total_ms' => hub_runtime_telemetry_elapsed_ms($actionStartedNs, $emitStartedNs),
+            'retry_count' => (int)($beginStats['retry_count'] ?? 0),
+            'skipped_ticks' => 0,
+        ]);
+    }
+    if ($error !== null) {
+        throw $error;
+    }
+
+    return $result;
 }
 
 function hub_pack_job_no_work_cleanup(): array
@@ -467,7 +522,7 @@ function hub_pack_job_resident_request(array $residentPlan, string $method, stri
     );
 }
 
-function hub_pack_job_resident_status(array $residentPlan, string $residentRunId, ?callable $transport = null, ?callable $progress = null, float $timeoutSeconds = 15.0): ?string
+function hub_pack_job_resident_status_payload(array $residentPlan, string $residentRunId, ?callable $transport = null, ?callable $progress = null, float $timeoutSeconds = 15.0): ?array
 {
     if (preg_match('/^[a-z0-9][a-z0-9_.-]{0,95}$/', $residentRunId) !== 1) {
         return null;
@@ -485,7 +540,22 @@ function hub_pack_job_resident_status(array $residentPlan, string $residentRunId
         return null;
     }
 
-    return $json['state'];
+    $result = ['state' => (string)$json['state']];
+    if ($json['state'] === 'failed' && array_key_exists('error_code', $json)) {
+        if (!is_string($json['error_code']) || preg_match('/\A[a-z][a-z0-9_]{0,79}\z/D', $json['error_code']) !== 1) {
+            return null;
+        }
+        $result['error_code'] = $json['error_code'];
+    }
+
+    return $result;
+}
+
+function hub_pack_job_resident_status(array $residentPlan, string $residentRunId, ?callable $transport = null, ?callable $progress = null, float $timeoutSeconds = 15.0): ?string
+{
+    $payload = hub_pack_job_resident_status_payload($residentPlan, $residentRunId, $transport, $progress, $timeoutSeconds);
+
+    return is_array($payload) ? (string)$payload['state'] : null;
 }
 
 function hub_pack_job_resident_capacity(array $residentPlan, ?callable $transport = null, ?callable $progress = null): ?string
@@ -534,9 +604,10 @@ function hub_pack_job_resident_confirm_terminal(array $context, string $resident
         if ($remaining <= 0) {
             break;
         }
-        $state = hub_pack_job_resident_status($residentPlan, $residentRunId, $transport, $progress, min(15.0, $remaining));
+        $status = hub_pack_job_resident_status_payload($residentPlan, $residentRunId, $transport, $progress, min(15.0, $remaining));
+        $state = is_array($status) ? ($status['state'] ?? null) : null;
         if (in_array($state, ['succeeded', 'failed', 'cancelled'], true)) {
-            return ['state' => $state];
+            return ['state' => $state] + (isset($status['error_code']) ? ['error_code' => $status['error_code']] : []);
         }
         $remaining = $deadline - $clock();
         if ($remaining <= 0) {
@@ -898,30 +969,48 @@ function hub_pack_job_resident_record(PDO $db, array $run, array $task, array $s
         throw new InvalidArgumentException('resident_lifecycle_invalid');
     }
     $now = hub_now();
-    $stmt = $db->prepare(
-        'INSERT INTO resident_job_runs
-            (runtime_run_id, task_id, service_id, resident_run_id, lifecycle, dispatched_at, cancel_requested_at, unconfirmed_at, reconciled_at, updated_at)
-         VALUES
-            (:runtime_run_id, :task_id, :service_id, :resident_run_id, :lifecycle, :dispatched_at, :cancel_requested_at, :unconfirmed_at, :reconciled_at, :updated_at)
-         ON CONFLICT(runtime_run_id) DO UPDATE SET lifecycle = excluded.lifecycle,
-            cancel_requested_at = COALESCE(excluded.cancel_requested_at, resident_job_runs.cancel_requested_at),
-            unconfirmed_at = COALESCE(excluded.unconfirmed_at, resident_job_runs.unconfirmed_at),
-            reconciled_at = COALESCE(excluded.reconciled_at, resident_job_runs.reconciled_at), updated_at = excluded.updated_at'
-    );
-    $stmt->execute([
-        ':runtime_run_id' => (string)$run['run_id'],
-        ':task_id' => (int)$task['id'],
-        ':service_id' => (int)$service['id'],
-        ':resident_run_id' => $residentRunId,
-        ':lifecycle' => $lifecycle,
-        ':dispatched_at' => $now,
-        ':cancel_requested_at' => $lifecycle === 'cancel_requested' ? $now : null,
-        ':unconfirmed_at' => $lifecycle === 'unconfirmed' ? $now : null,
-        ':reconciled_at' => $lifecycle === 'reconciled' ? $now : null,
-        ':updated_at' => $now,
-    ]);
+    $write = static function () use ($db, $run, $task, $service, $residentRunId, $lifecycle, $now): void {
+        $stmt = $db->prepare(
+            'INSERT INTO resident_job_runs
+                (runtime_run_id, task_id, service_id, resident_run_id, lifecycle, dispatched_at, cancel_requested_at, unconfirmed_at, reconciled_at, updated_at)
+             VALUES
+                (:runtime_run_id, :task_id, :service_id, :resident_run_id, :lifecycle, :dispatched_at, :cancel_requested_at, :unconfirmed_at, :reconciled_at, :updated_at)
+             ON CONFLICT(runtime_run_id) DO UPDATE SET lifecycle = excluded.lifecycle,
+                cancel_requested_at = COALESCE(excluded.cancel_requested_at, resident_job_runs.cancel_requested_at),
+                unconfirmed_at = COALESCE(excluded.unconfirmed_at, resident_job_runs.unconfirmed_at),
+                reconciled_at = COALESCE(excluded.reconciled_at, resident_job_runs.reconciled_at), updated_at = excluded.updated_at'
+        );
+        $stmt->execute([
+            ':runtime_run_id' => (string)$run['run_id'],
+            ':task_id' => (int)$task['id'],
+            ':service_id' => (int)$service['id'],
+            ':resident_run_id' => $residentRunId,
+            ':lifecycle' => $lifecycle,
+            ':dispatched_at' => $now,
+            ':cancel_requested_at' => $lifecycle === 'cancel_requested' ? $now : null,
+            ':unconfirmed_at' => $lifecycle === 'unconfirmed' ? $now : null,
+            ':reconciled_at' => $lifecycle === 'reconciled' ? $now : null,
+            ':updated_at' => $now,
+        ]);
+    };
+    if ($db->inTransaction()) {
+        $write();
 
-    return true;
+        return true;
+    }
+    hub_sqlite_begin_immediate($db);
+    try {
+        $write();
+        $db->exec('COMMIT');
+
+        return true;
+    } catch (Throwable $e) {
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
+        }
+        throw $e;
+    }
 }
 
 function hub_pack_job_resident_existing(PDO $db, array $run): ?array
@@ -933,7 +1022,7 @@ function hub_pack_job_resident_existing(PDO $db, array $run): ?array
     return is_array($row) ? $row : null;
 }
 
-function hub_pack_job_resident_terminal_result(PDO $db, array $context, string $residentRunId, string $stage, string $state): array
+function hub_pack_job_resident_terminal_result(PDO $db, array $context, string $residentRunId, string $stage, string $state, ?string $errorCode = null): array
 {
     $residentPlan = (array)$context['resident_plan'];
     hub_pack_job_resident_copy_output($stage, (string)$context['workspace'], (array)$context['contract']['artifact_contract'], (array)$residentPlan['service']);
@@ -945,7 +1034,7 @@ function hub_pack_job_resident_terminal_result(PDO $db, array $context, string $
 
     return [
         'exit_code' => 1,
-        'error_code' => $state === 'cancelled' ? 'cancelled' : 'resident_job_failed',
+        'error_code' => $state === 'cancelled' ? 'cancelled' : (is_string($errorCode) && preg_match('/\A[a-z][a-z0-9_]{0,79}\z/D', $errorCode) === 1 ? $errorCode : 'resident_job_failed'),
         'completed_no_process_evidence' => true,
         'cleanup' => hub_pack_job_no_work_cleanup(),
         'resident_terminal' => true,
@@ -995,7 +1084,7 @@ function hub_pack_job_resident_executor(array $context, ?callable $transport = n
             $intent = hub_pack_job_resident_transport_intent($error);
         }
         if (isset($confirmed['state'])) {
-            return hub_pack_job_resident_terminal_result($db, $context, $residentRunId, $stage, (string)$confirmed['state']);
+            return hub_pack_job_resident_terminal_result($db, $context, $residentRunId, $stage, (string)$confirmed['state'], isset($confirmed['error_code']) ? (string)$confirmed['error_code'] : null);
         }
         $intent ??= $confirmed['intent'] ?? null;
     }

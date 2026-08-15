@@ -51,6 +51,7 @@ function hub_runtime_telemetry_event_is_valid(array $event): bool
     $variant = $event['variant'];
     $variants = [
         'claim' => ['task', 'runtime', 'gpu'],
+        'wait' => ['gpu'],
         'heartbeat' => ['cpu', 'gpu'],
         'finish' => ['success', 'failure'],
         'recovery' => ['runtime', 'gpu'],

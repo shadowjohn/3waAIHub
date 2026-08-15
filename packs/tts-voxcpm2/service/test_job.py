@@ -99,7 +99,8 @@ class UltimateCloneJobTests(unittest.TestCase):
                 loads.append((args, kwargs))
                 return loaded_model
 
-        def write_real_wav(path, request, seed):
+        def write_real_wav(path, request, seed, trusted_reference_paths=False):
+            captured[-1]["trusted_reference_paths"] = trusted_reference_paths
             job.write_pcm(path, 48000, [100, -100] * 240)
 
         fake_app = types.SimpleNamespace(TtsRequest=TtsRequest, write_real_wav=write_real_wav, _MODEL=None)
@@ -118,6 +119,7 @@ class UltimateCloneJobTests(unittest.TestCase):
             self.assertEqual("/data/voice_profiles/reference.wav", request["reference_wav_path"])
             self.assertEqual("/data/voice_profiles/reference.wav", request["prompt_wav_path"])
             self.assertEqual(self.prompt_text, request["prompt_text"])
+            self.assertTrue(request["trusted_reference_paths"])
         self.assertEqual({"type": "cuda", "real_inference": True}, metadata["device"])
         checkpoint = json.loads(next((self.workspace / "checkpoints" / "chunks").glob("*.json")).read_text(encoding="utf-8"))
         self.assertEqual("cuda", checkpoint["context"]["device"])
@@ -144,7 +146,7 @@ class UltimateCloneJobTests(unittest.TestCase):
                 loads.append((args, kwargs))
                 return loaded_model
 
-        def write_real_wav(path, request, seed):
+        def write_real_wav(path, request, seed, trusted_reference_paths=False):
             writes.append(seed)
             job.write_pcm(path, 48000, [100, -100] * 240)
 
@@ -175,7 +177,7 @@ class UltimateCloneJobTests(unittest.TestCase):
             def from_pretrained(cls, *args, **kwargs):
                 return loaded_model
 
-        def write_real_wav(path, request, seed):
+        def write_real_wav(path, request, seed, trusted_reference_paths=False):
             writes.append(seed)
             job.write_pcm(path, 48000, [100, -100] * 240)
             loaded_model.tts_model.device = "cpu"

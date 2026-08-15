@@ -772,6 +772,33 @@ hub_test('GPU claim lock exhaustion emits zero transaction duration', function (
         && (float)($events[0]['tx_ms'] ?? -1) === 0.0, 'GPU lock exhaustion must report zero transaction duration');
 });
 
+hub_test('pack GPU wait lock exhaustion emits wait telemetry', function (): void {
+    $db = hub_test_reset_db();
+    hub_test_runtime_telemetry_enqueue_pack_job($db, 'gpu');
+    $task = hub_claim_next_task($db, ['pack_job']);
+    if (!is_array($task)) {
+        throw new RuntimeException('GPU wait lock exhaustion fixture must claim a task.');
+    }
+    $run = hub_pack_job_claim_runtime($db, $task, 'telemetry-gpu-wait-worker', 60);
+    if (!is_array($run)) {
+        throw new RuntimeException('GPU wait lock exhaustion fixture must claim a runtime.');
+    }
+    $before = count(hub_test_runtime_telemetry_events());
+    hub_test_runtime_telemetry_with_sqlite_writer_lock(700000, static function (string $attemptPath) use ($task, $run): void {
+        $lockedDb = hub_test_runtime_telemetry_locking_pdo($attemptPath);
+        hub_test_assert(hub_test_throws(static function () use ($lockedDb, $task, $run): void {
+            hub_pack_job_wait_without_gpu($lockedDb, (int)$task['id'], $run, 'resident_service_unavailable', 30);
+        }), 'GPU wait must throw when BEGIN IMMEDIATE exhausts');
+    });
+    $events = array_values(array_filter(
+        array_slice(hub_test_runtime_telemetry_events(), $before),
+        static fn (array $event): bool => ($event['action'] ?? null) === 'wait' && ($event['variant'] ?? null) === 'gpu'
+    ));
+    hub_test_assert(count($events) === 1 && ($events[0]['outcome'] ?? null) === 'lock_exhausted'
+        && ($events[0]['retry_count'] ?? -1) === 6 && (float)($events[0]['tx_ms'] ?? -1) === 0.0,
+        'GPU wait lock exhaustion must report retry exhaustion without a transaction');
+});
+
 $validRuntimeTelemetryEvent = [
     'action' => 'heartbeat',
     'variant' => 'cpu',
