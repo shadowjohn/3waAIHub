@@ -3397,6 +3397,60 @@ function hub_pack_job_handoff_scope(?array $run, ?array $gpuLease): ?string
     return substr(hash('sha256', implode("\0", [$runtime['run_id'], (string)$attempt, $gpu['worker_id'], $gpu['lease_token']])), 0, 32);
 }
 
+/** @return array{uid:int,gid:int}|null */
+function hub_pack_job_web_worker_identity(): ?array
+{
+    if (PHP_OS_FAMILY === 'Windows' || !function_exists('posix_getpwnam')) {
+        return null;
+    }
+    $worker = posix_getpwnam('www-data');
+    if (!is_array($worker) || !is_int($worker['uid'] ?? null) || !is_int($worker['gid'] ?? null)) {
+        return null;
+    }
+
+    return ['uid' => (int)$worker['uid'], 'gid' => (int)$worker['gid']];
+}
+
+function hub_pack_job_root_worker(): bool
+{
+    return PHP_OS_FAMILY !== 'Windows' && function_exists('posix_geteuid') && posix_geteuid() === 0;
+}
+
+function hub_pack_job_expose_published_artifact_dir(string $path): void
+{
+    $worker = hub_pack_job_root_worker() ? hub_pack_job_web_worker_identity() : null;
+    if ($worker === null) {
+        return;
+    }
+    clearstatcache(true, $path);
+    $stat = is_link($path) ? false : lstat($path);
+    if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0040000)) {
+        hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
+    }
+    if ((int)$stat['gid'] !== $worker['gid'] && !chgrp($path, $worker['gid'])) {
+        hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
+    }
+}
+
+function hub_pack_job_expose_published_artifact_file(string $path): void
+{
+    $worker = hub_pack_job_root_worker() ? hub_pack_job_web_worker_identity() : null;
+    if ($worker === null) {
+        return;
+    }
+    clearstatcache(true, $path);
+    $stat = is_link($path) ? false : lstat($path);
+    if (!is_array($stat) || (((int)$stat['mode'] & 0170000) !== 0100000)) {
+        hub_pack_job_output_contract_invalid('artifact_handoff_failed');
+    }
+    if ((int)$stat['uid'] !== $worker['uid'] && !chown($path, $worker['uid'])) {
+        hub_pack_job_output_contract_invalid('artifact_handoff_failed');
+    }
+    if ((int)$stat['gid'] !== $worker['gid'] && !chgrp($path, $worker['gid'])) {
+        hub_pack_job_output_contract_invalid('artifact_handoff_failed');
+    }
+}
+
 function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?string $handoffScope = null): string
 {
     if (preg_match('/^[a-f0-9]{32}$/', $handoffId) !== 1
@@ -3418,6 +3472,7 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
     if (!chmod($taskResultDir, 02710)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
+    hub_pack_job_expose_published_artifact_dir($taskResultDir);
     $artifactRoot = $taskResultDir . '/artifacts';
     clearstatcache(true, $artifactRoot);
     if (is_link($artifactRoot) || (!is_dir($artifactRoot) && !mkdir($artifactRoot, 02750, true))) {
@@ -3427,6 +3482,7 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
     if (is_link($artifactRoot) || !is_dir($artifactRoot) || !chmod($artifactRoot, 02750)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
+    hub_pack_job_expose_published_artifact_dir($artifactRoot);
     $artifactRoot = realpath($artifactRoot);
     if ($artifactRoot === false || !hub_storage_path_is_within($artifactRoot, $taskResultDir)
         || hub_storage_paths_equal($artifactRoot, $taskResultDir)) {
@@ -3442,6 +3498,7 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
         if (is_link($scopeDir) || !is_dir($scopeDir) || !chmod($scopeDir, 02750)) {
             hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
         }
+        hub_pack_job_expose_published_artifact_dir($scopeDir);
         $scopeDir = realpath($scopeDir);
         if ($scopeDir === false || !hub_storage_path_is_within($scopeDir, $artifactRoot)
             || hub_storage_paths_equal($scopeDir, $artifactRoot)) {
@@ -3458,6 +3515,7 @@ function hub_pack_job_published_artifact_dir(int $taskId, string $handoffId, ?st
     if (is_link($handoffDir) || !is_dir($handoffDir) || !chmod($handoffDir, 02750)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
+    hub_pack_job_expose_published_artifact_dir($handoffDir);
     $handoffDir = realpath($handoffDir);
     if ($handoffDir === false || !hub_storage_path_is_within($handoffDir, $artifactRoot)
         || hub_storage_paths_equal($handoffDir, $artifactRoot)) {
@@ -3564,6 +3622,7 @@ function hub_pack_job_published_artifact_path(string $handoffDir, string $name):
     if (is_link($parent) || !is_dir($parent) || !chmod($parent, 02750)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
     }
+    hub_pack_job_expose_published_artifact_dir($parent);
     $parent = realpath($parent);
     if ($parent === false || !hub_storage_path_is_within($parent, $handoffDir)) {
         hub_pack_job_output_contract_invalid('artifact_handoff_invalid');
@@ -3630,7 +3689,11 @@ function hub_pack_job_copy_to_published_artifact(string $source, string $destina
         $sourceHandle = null;
         // Published artifacts are readable by the web-service group only;
         // the artifact API still performs member/token authorization.
-        if (!chmod($temporary, 0640) || !rename($temporary, $destination)) {
+        if (!chmod($temporary, 0640)) {
+            hub_pack_job_output_contract_invalid('artifact_handoff_failed');
+        }
+        hub_pack_job_expose_published_artifact_file($temporary);
+        if (!rename($temporary, $destination)) {
             hub_pack_job_output_contract_invalid('artifact_handoff_failed');
         }
     } catch (HubPackOutputContractInvalid $e) {

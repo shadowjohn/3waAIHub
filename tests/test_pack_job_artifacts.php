@@ -854,6 +854,16 @@ hub_test('Pack job handoff keeps registered artifacts immutable after runner wor
         $handoffDir = $artifactRoot . ($handoffScope === '' ? '' : '/' . $handoffScope) . '/' . $handoffId;
         if (PHP_OS_FAMILY !== 'Windows') {
             hub_test_assert((fileperms($taskResultDir) & 07777) === 02710 && (fileperms($artifactRoot) & 07777) === 02750 && (fileperms($handoffDir) & 07777) === 02750 && (fileperms($publishedPath) & 0777) === 0640, 'published artifacts must preserve web-service-group inheritance without granting any access to other users');
+            $worker = function_exists('posix_getpwnam') ? posix_getpwnam('www-data') : false;
+            $publishedStat = lstat($publishedPath);
+            if (function_exists('posix_geteuid') && posix_geteuid() === 0 && is_array($worker)) {
+                foreach ([$taskResultDir, $artifactRoot, $handoffDir] as $directory) {
+                    $directoryStat = lstat($directory);
+                    hub_test_assert(is_array($directoryStat) && (int)$directoryStat['gid'] === (int)$worker['gid'], 'root-published artifact directories must be grouped for www-data');
+                }
+                hub_test_assert(is_array($publishedStat) && (int)$publishedStat['uid'] === (int)$worker['uid'], 'root-published artifacts must be owned by www-data');
+                hub_test_assert(is_array($publishedStat) && (int)$publishedStat['gid'] === (int)$worker['gid'], 'root-published artifacts must be grouped for www-data');
+            }
         }
 
         rename($workspace . '/output/transcript.json', $workspace . '/output/transcript.runner-old.json');
