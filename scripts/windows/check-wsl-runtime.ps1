@@ -155,6 +155,10 @@ $whisperProfile = if ($gpuName -ne '') { Get-WslWhisperRuntimeProfile -InstallRo
 if ($null -ne $whisperProfile) {
     Write-Check 'Whisper GPU profile' $true $whisperProfile.Id
 }
+$ocrProfile = if ($gpuName -ne '') { Get-WslOcrRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName } else { $null }
+if ($null -ne $ocrProfile) {
+    Write-Check 'PP-OCRv5 GPU profile' $true $ocrProfile.Id
+}
 
 $dataFs = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', "findmnt -n -o FSTYPE -T '$LinuxDataRoot' 2>/dev/null")
 $isExt4 = $dataFs.ExitCode -eq 0 -and $dataFs.Output -match 'ext4'

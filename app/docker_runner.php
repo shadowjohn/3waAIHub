@@ -556,10 +556,14 @@ function hub_service_image_tag(array $service): string
     return hub_pack_image_tag((string)($service['service_key'] ?? $service['mode']), (string)($service['pack_version'] ?? 'latest'));
 }
 
-function hub_service_runtime_image_tag(array $service): string
+function hub_service_runtime_image_tag(array $service, ?array $profile = null): string
 {
-    $whisper = hub_whisper_wsl_runtime_profile($service);
-    return $whisper === null ? hub_service_image_tag($service) : (string)$whisper['image'];
+    $whisper = hub_whisper_wsl_runtime_profile($service, $profile);
+    if ($whisper !== null) {
+        return (string)$whisper['image'];
+    }
+    $ocr = hub_ocr_wsl_runtime_profile($service, $profile);
+    return $ocr === null ? hub_service_image_tag($service) : (string)$ocr['image'];
 }
 
 function hub_internal_task_result(string $message): array
@@ -861,6 +865,48 @@ function hub_whisper_wsl_runtime_profile(array $service, ?array $profile = null)
     ];
 }
 
+function hub_ocr_wsl_runtime_profile(array $service, ?array $profile = null): ?array
+{
+    if ((string)($service['pack_id'] ?? '') !== 'ocr-ppocrv5') {
+        return null;
+    }
+    $resolution = hub_service_runtime_resolution($service, 'windows', $profile);
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $pack = hub_get_pack('ocr-ppocrv5');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null) || !is_array($resolution['profile'] ?? null)) {
+        return null;
+    }
+    $profiles = $pack['manifest']['wsl_runtime_profiles'] ?? null;
+    $profileId = (string)($resolution['profile']['pack_profiles']['ocr-ppocrv5'] ?? 'default');
+    $selected = is_array($profiles) ? ($profiles[$profileId] ?? null) : null;
+    $dockerfile = is_array($selected) ? (string)($selected['dockerfile'] ?? '') : '';
+    $image = is_array($selected) ? (string)($selected['image'] ?? '') : '';
+    if (
+        !is_array($selected)
+        || ($selected['id'] ?? null) !== $profileId
+        || preg_match('~^service/Dockerfile(?:\.[A-Za-z0-9._-]+)?$~', $dockerfile) !== 1
+        || preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
+    ) {
+        return null;
+    }
+    $modelsRoot = trim((string)($resolution['profile']['models_root'] ?? ''));
+    if ($modelsRoot === '') {
+        $modelsRoot = dirname((string)$runtime['runtime_root']) . '/models';
+    }
+    try {
+        $modelsRoot = hub_container_path($modelsRoot);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+
+    return $runtime + [
+        'profile_id' => $profileId,
+        'dockerfile' => $dockerfile,
+        'image' => $image,
+        'models_root' => $modelsRoot,
+    ];
+}
+
 /**
  * Pascal CKIP 僅能由明確宣告的 Windows WSL Runtime 執行；不能因 Docker 存在而放行
  * direct linux-docker，也不可把資產下載到 Windows Control Plane 的 cache。
@@ -1036,10 +1082,89 @@ function hub_whisper_wsl_service_compose_command(array $service, array $args, ?a
     return hub_wsl_script_command($runtime, $script);
 }
 
+function hub_ocr_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
+{
+    $runtime = hub_ocr_wsl_runtime_profile($service, $profile);
+    $pack = hub_get_pack('ocr-ppocrv5');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null)) {
+        throw new RuntimeException('WSL Runtime is not ready for PP-OCRv5.');
+    }
+    $serviceKey = (string)($service['service_key'] ?? '');
+    $port = (int)($service['local_port'] ?? 0);
+    if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1 || $port < 1 || $port > 65535) {
+        throw new RuntimeException('Invalid WSL PP-OCRv5 service configuration.');
+    }
+    $environment = [];
+    $sourceEnvironment = hub_compose_env($service);
+    foreach ((array)($pack['manifest']['env'] ?? []) as $item) {
+        $key = (string)($item['name'] ?? '');
+        $value = (string)($sourceEnvironment[$key] ?? $item['default'] ?? '');
+        if (preg_match('/^[A-Z][A-Z0-9_]*$/', $key) !== 1 || str_contains($value, "\0") || preg_match('/[\r\n]/', $value) === 1) {
+            throw new RuntimeException('Invalid WSL PP-OCRv5 service environment.');
+        }
+        $environment[$key] = $value;
+    }
+    $environment[hub_pack_port_env($pack['manifest'])] = (string)$port;
+
+    $runtimeRoot = (string)$runtime['runtime_root'];
+    $packRoot = $runtimeRoot . '/packs/ocr-ppocrv5';
+    $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
+    $serviceData = $serviceRoot . '/data';
+    $cacheRoot = $runtimeRoot . '/cache/ocr-ppocrv5';
+    $compose = "services:\n  adapter:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot, JSON_UNESCAPED_SLASHES) . "\n      dockerfile: " . json_encode((string)$runtime['dockerfile'], JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    environment:\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode((string)$runtime['models_root'] . '/paddleocr:/models/paddleocr', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/paddleocr', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
+    $env = '';
+    foreach ($environment as $key => $value) {
+        $env .= $key . '=' . $value . "\n";
+    }
+    $composeArgs = array_values($args);
+    if (($composeArgs[0] ?? '') === 'build') {
+        $dockerCommand = 'DOCKER_BUILDKIT=1 docker build --progress=plain --tag ' . hub_wsl_shell_literal((string)$runtime['image'])
+            . ' --file ' . hub_wsl_shell_literal($packRoot . '/' . (string)$runtime['dockerfile'])
+            . ' ' . hub_wsl_shell_literal($packRoot);
+    } else {
+        $dockerCommand = 'docker compose';
+        if (($progressIndex = array_search('--progress=plain', $composeArgs, true)) !== false) {
+            unset($composeArgs[$progressIndex]);
+            $composeArgs = array_values($composeArgs);
+            $dockerCommand .= ' --progress=plain';
+        }
+        $dockerCommand .= ' --env-file ' . hub_wsl_shell_literal($serviceRoot . '/' . HUB_RUNTIME_SETTINGS_FILENAME)
+            . ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
+        foreach ($composeArgs as $arg) {
+            $dockerCommand .= ' ' . hub_wsl_shell_literal((string)$arg);
+        }
+    }
+    $script = "set -eu\n"
+        . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
+        . 'models_root=' . hub_wsl_shell_literal((string)$runtime['models_root']) . "\n"
+        . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
+        . 'service_data=' . hub_wsl_shell_literal($serviceData) . "\n"
+        . 'env_payload=' . hub_wsl_shell_literal(base64_encode($env)) . "\n"
+        . 'env_sha256=' . hub_wsl_shell_literal(hash('sha256', $env)) . "\n"
+        . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
+        . 'if [ ! -f "$pack_root/' . (string)$runtime['dockerfile'] . '" ]; then echo "WSL PP-OCRv5 source unavailable. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
+        . 'install -d -m 0775 "$service_root" "$models_root/paddleocr" "$cache_root" "$service_data"' . "\n"
+        . 'if ! command -v sha256sum >/dev/null 2>&1; then echo "WSL sha256sum is unavailable." >&2; exit 2; fi' . "\n"
+        . 'settings_tmp="$service_root/.' . HUB_RUNTIME_SETTINGS_FILENAME . '.$$"' . "\n"
+        . 'umask 077; printf %s "$env_payload" | base64 -d > "$settings_tmp"; chmod 0600 "$settings_tmp"' . "\n"
+        . 'actual_sha256="$(sha256sum "$settings_tmp" | awk \'{print $1}\')"' . "\n"
+        . 'if [ "$actual_sha256" != "$env_sha256" ]; then rm -f -- "$settings_tmp"; echo "Runtime settings SHA256 verification failed." >&2; exit 2; fi' . "\n"
+        . 'mv -f -- "$settings_tmp" "$service_root/' . HUB_RUNTIME_SETTINGS_FILENAME . '"' . "\n"
+        . 'if [ -e "$service_root/.env" ] || [ -L "$service_root/.env" ]; then if [ -L "$service_root/.env" ] || [ ! -f "$service_root/.env" ]; then echo "Unsafe legacy runtime env file." >&2; exit 2; fi; rm -- "$service_root/.env"; fi' . "\n"
+        . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
+        . $dockerCommand . "\n";
+
+    return hub_wsl_script_command($runtime, $script);
+}
+
 function hub_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
 {
     if ((string)($service['pack_id'] ?? '') === 'whisper-asr') {
         return hub_whisper_wsl_service_compose_command($service, $args, $profile);
+    }
+    if ((string)($service['pack_id'] ?? '') === 'ocr-ppocrv5') {
+        return hub_ocr_wsl_service_compose_command($service, $args, $profile);
     }
     $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
     $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
@@ -1303,7 +1428,13 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 
 function hub_service_build_timeout_sec(array $service): int
 {
-    return in_array((string)($service['pack_id'] ?? ''), ['image-tools', 'tts-voxcpm2'], true) ? 1800 : 900;
+    $packId = (string)($service['pack_id'] ?? '');
+    if ($packId === 'ocr-ppocrv5') {
+        // PP-OCRv5 Pascal profile needs to download CUDA wheels and export a multi-GB image through Docker Desktop/WSL.
+        return 2100;
+    }
+
+    return in_array($packId, ['image-tools', 'tts-voxcpm2'], true) ? 1800 : 900;
 }
 
 function hub_build_service(PDO $db, array $service, ?array $job = null): array

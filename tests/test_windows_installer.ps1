@@ -148,8 +148,11 @@ Assert-InstallerContract ($installWslSource -match "tr -d '\\015'") 'WSL install
 Assert-InstallerContract ($installWslSource -match 'edge-tts/service/\*\.py') 'WSL installer must normalize copied Edge TTS Python source to LF'
 Assert-InstallerContract ($installWslSource -match 'Get-WslYoloRuntimeProfile') 'WSL installer must select the YOLO runtime profile from Pack metadata'
 Assert-InstallerContract ($installWslSource -match 'Get-WslWhisperRuntimeProfile') 'WSL installer must select the Whisper runtime profile from Pack metadata'
+Assert-InstallerContract ($installWslSource -match 'Get-WslOcrRuntimeProfile') 'WSL installer must select the PP-OCRv5 runtime profile from Pack metadata'
 Assert-InstallerContract ($installWslSource -match 'packs/whisper-asr') 'WSL installer must synchronize Whisper Pack source to ext4 runtime storage'
+Assert-InstallerContract ($installWslSource -match 'packs/ocr-ppocrv5') 'WSL installer must synchronize PP-OCRv5 Pack source to ext4 runtime storage'
 Assert-InstallerContract ($checkWslSource -match 'Get-WslWhisperRuntimeProfile') 'WSL readiness check must report the Whisper GPU profile from Pack metadata'
+Assert-InstallerContract ($checkWslSource -match 'Get-WslOcrRuntimeProfile') 'WSL readiness check must report the PP-OCRv5 GPU profile from Pack metadata'
 Assert-InstallerContract ($installWslSource -match '\$wslCommand = if') 'WSL installer must resolve its executable before passing it to Get-Command'
 Assert-InstallerContract ($installWslSource -match 'function Test-WslCommand') 'WSL installer must treat missing prerequisites as a probe result before attempting repair'
 Assert-InstallerContract ($installWslSource -match 'function Invoke-WslScript') 'WSL installer must send multi-line sync commands through a single WSL-safe payload'
@@ -167,6 +170,8 @@ if (Test-Path -LiteralPath $wslProfileScript) {
     Assert-InstallerContract ($pascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the Pascal CUDA 11.8 profile'
     $whisperPascalProfile = Get-WslWhisperRuntimeProfile -InstallRoot $repo -GpuName 'NVIDIA GeForce GTX 1080'
     Assert-InstallerContract ($whisperPascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the Whisper Pascal CUDA 11.8 profile'
+    $ocrPascalProfile = Get-WslOcrRuntimeProfile -InstallRoot $repo -GpuName 'NVIDIA GeForce GTX 1080'
+    Assert-InstallerContract ($ocrPascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the PP-OCRv5 Pascal CUDA 11.8 profile'
 }
 Assert-InstallerContract ($source -notmatch 'Docker\.DockerDesktop') 'Core installer must not install Docker Desktop'
 Assert-InstallerContract (($checkCoreSource + $checkWslSource) -notmatch 'Docker\.DockerDesktop|Enable-WindowsOptionalFeature|Install-WindowsFeature|dism\.exe') 'installer checks must not mutate Windows features or install Docker Desktop'
@@ -256,11 +261,12 @@ try {
     $readyProfile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InstallerContract ($readyProfile.runtime_targets.'windows-wsl2-linux-docker'.supported) 'WSL target may be supported after readiness passes'
 
-    & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' -WslReady -YoloRuntimeProfile 'pascal-cu118' -WhisperRuntimeProfile 'pascal-cu118' 6>&1 2>&1 | Out-Null
+    & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' -WslReady -YoloRuntimeProfile 'pascal-cu118' -WhisperRuntimeProfile 'pascal-cu118' -OcrRuntimeProfile 'pascal-cu118' 6>&1 2>&1 | Out-Null
     Assert-InstallerContract ($?) 'Pascal WSL runtime profile writer must succeed'
     $pascalRuntimeProfile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.yolo -eq 'pascal-cu118') 'runtime profile must persist the selected YOLO Pascal profile'
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'whisper-asr' -eq 'pascal-cu118') 'runtime profile must persist the selected Whisper Pascal profile'
+    Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'ocr-ppocrv5' -eq 'pascal-cu118') 'runtime profile must persist the selected PP-OCRv5 Pascal profile'
 } finally {
     if (Test-Path -LiteralPath $profileRoot) {
         Remove-Item -LiteralPath $profileRoot -Recurse -Force

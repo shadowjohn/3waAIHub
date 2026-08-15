@@ -91,6 +91,7 @@ if ($gpuName -eq '') {
 }
 $profile = Get-WslYoloRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName
 $whisperProfile = Get-WslWhisperRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName
+$ocrProfile = Get-WslOcrRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName
 $runtimeRoot = "$LinuxDataRoot/3waAIHub-runtime"
 $runtimeLiteral = ConvertTo-LinuxShellLiteral $runtimeRoot
 $sourceLiteral = ConvertTo-LinuxShellLiteral $sourceRoot
@@ -99,7 +100,7 @@ $syncCommand = @'
 set -eu
 runtime_root=__RUNTIME_ROOT__
 source_root=__SOURCE_ROOT__
-install -d -m 0775 "$runtime_root/app" "$runtime_root/bin" "$runtime_root/packs/hello" "$runtime_root/packs/yolo" "$runtime_root/packs/taiwan-address" "$runtime_root/packs/web-screenshot" "$runtime_root/packs/edge-tts" "$runtime_root/packs/whisper-asr" "$runtime_root/scripts"
+install -d -m 0775 "$runtime_root/app" "$runtime_root/bin" "$runtime_root/packs/hello" "$runtime_root/packs/yolo" "$runtime_root/packs/taiwan-address" "$runtime_root/packs/web-screenshot" "$runtime_root/packs/edge-tts" "$runtime_root/packs/whisper-asr" "$runtime_root/packs/ocr-ppocrv5" "$runtime_root/scripts"
 cp -a "$source_root/app/." "$runtime_root/app/"
 cp -a "$source_root/bin/aihub-run" "$runtime_root/bin/aihub-run"
 cp -a "$source_root/scripts/init_db.php" "$runtime_root/scripts/init_db.php"
@@ -110,7 +111,8 @@ cp -a "$source_root/packs/taiwan-address/." "$runtime_root/packs/taiwan-address/
 cp -a "$source_root/packs/web-screenshot/." "$runtime_root/packs/web-screenshot/"
 cp -a "$source_root/packs/edge-tts/." "$runtime_root/packs/edge-tts/"
 cp -a "$source_root/packs/whisper-asr/." "$runtime_root/packs/whisper-asr/"
-for script in "$runtime_root"/packs/yolo/jobs/*.sh "$runtime_root"/packs/edge-tts/service/*.sh "$runtime_root"/packs/edge-tts/service/*.py "$runtime_root"/packs/whisper-asr/jobs/*.sh "$runtime_root"/packs/whisper-asr/service/*.py; do
+cp -a "$source_root/packs/ocr-ppocrv5/." "$runtime_root/packs/ocr-ppocrv5/"
+for script in "$runtime_root"/packs/yolo/jobs/*.sh "$runtime_root"/packs/edge-tts/service/*.sh "$runtime_root"/packs/edge-tts/service/*.py "$runtime_root"/packs/whisper-asr/jobs/*.sh "$runtime_root"/packs/whisper-asr/service/*.py "$runtime_root"/packs/ocr-ppocrv5/service/*.py; do
   [ -f "$script" ] || continue
   tr -d '\015' < "$script" > "$script.3waaihub-lf"
   mv "$script.3waaihub-lf" "$script"
@@ -139,7 +141,7 @@ $initScript = 'php ' + (ConvertTo-LinuxShellLiteral "$runtimeRoot/scripts/init_d
 Invoke-WslScript -Wsl $wsl.Source -Distro $WslDistro -Script $initScript | Out-Null
 
 $profileWriter = Join-Path $PSScriptRoot 'write-runtime-profile.ps1'
-& $profileWriter -InstallRoot $InstallRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot -WslReady -YoloRuntimeProfile ([string]$profile.id) -WhisperRuntimeProfile ([string]$whisperProfile.id)
+& $profileWriter -InstallRoot $InstallRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot -WslReady -YoloRuntimeProfile ([string]$profile.id) -WhisperRuntimeProfile ([string]$whisperProfile.id) -OcrRuntimeProfile ([string]$ocrProfile.id)
 if (-not $?) { throw 'Failed to write the WSL runtime profile.' }
 
 $agentInstaller = Join-Path $PSScriptRoot 'install-wsl-task-agent.ps1'
@@ -150,5 +152,6 @@ Write-Host "WSL runtime installed: $runtimeRoot"
 Write-Host "YOLO profile: $($profile.id) ($gpuName)"
 Write-Host "YOLO image: $image"
 Write-Host "Whisper profile: $($whisperProfile.id) ($gpuName)"
+Write-Host "PP-OCRv5 profile: $($ocrProfile.id) ($gpuName)"
 Write-Host 'WSL service jobs: aihub-wsl-worker.service is active; the Windows task only starts it at user logon.'
 exit 0

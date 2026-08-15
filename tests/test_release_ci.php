@@ -46,6 +46,11 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     hub_test_assert(str_contains($dockerfile, 'PADDLE_PDX_ENABLE_MKLDNN_BYDEFAULT=0'), 'Dockerfile must disable PaddleX MKLDNN CPU path');
     hub_test_assert(!str_contains($dockerfile, 'RUN python3 model_smoke.py'), 'model_smoke.py must not run during Docker build');
 
+    $pascalRequirements = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/requirements.pascal-cu118.txt');
+    hub_test_assert(str_contains($pascalRequirements, 'paddleocr==3.0.3'), 'Pascal OCR profile must pin the PaddleOCR release validated with CUDA 11.8');
+    hub_test_assert(str_contains($pascalRequirements, 'paddlex[ocr]==3.0.3'), 'Pascal OCR profile must pin PaddleX to the compatible PaddleOCR 3.0.3 release');
+    hub_test_assert(str_contains($pascalRequirements, 'langchain==0.3.30'), 'Pascal OCR profile must include the PaddleX 3.0 import dependency');
+
     $smoke = (string)file_get_contents(HUB_ROOT . '/packs/ocr-ppocrv5/service/smoke.py');
     hub_test_assert(str_contains($smoke, 'paddleocr'), 'smoke.py must import paddleocr');
     foreach (['PaddleOCR(', '.ocr(', 'download', 'from paddleocr import PaddleOCR'] as $needle) {

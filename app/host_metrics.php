@@ -630,7 +630,7 @@ function hub_wsl_runtime_preflight_check(?array $target, string $check): ?array
         ||
         ($target['target'] ?? '') !== 'windows-wsl2-linux-docker'
         || empty($target['supported'])
-        || !in_array($check, ['docker', 'docker_compose'], true)
+        || !in_array($check, ['docker', 'docker_compose', 'nvidia_smi', 'docker_gpus'], true)
     ) {
         return null;
     }

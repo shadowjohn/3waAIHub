@@ -119,5 +119,7 @@ hub_test('explicit WSL Pack readiness supplies Docker checks without enabling di
     ];
     hub_test_assert((hub_wsl_runtime_preflight_check($target, 'docker')['status'] ?? '') === 'pass', 'WSL readiness must satisfy Docker preflight for an explicit WSL Pack');
     hub_test_assert((hub_wsl_runtime_preflight_check($target, 'docker_compose')['status'] ?? '') === 'pass', 'WSL readiness must satisfy Compose preflight for an explicit WSL Pack');
+    hub_test_assert((hub_wsl_runtime_preflight_check($target, 'nvidia_smi')['status'] ?? '') === 'pass', 'WSL readiness must satisfy NVIDIA SMI preflight for an explicit GPU WSL Pack');
+    hub_test_assert((hub_wsl_runtime_preflight_check($target, 'docker_gpus')['status'] ?? '') === 'pass', 'WSL readiness must satisfy Docker GPU preflight for an explicit GPU WSL Pack');
     hub_test_assert(hub_wsl_runtime_preflight_check(['target' => 'linux-docker', 'supported' => true], 'docker') === null, 'native target must retain its ordinary Docker probe');
 });

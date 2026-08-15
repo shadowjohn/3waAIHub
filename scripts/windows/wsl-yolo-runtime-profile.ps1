@@ -54,3 +54,14 @@ function Get-WslWhisperRuntimeProfile {
 
     return Get-WslPackRuntimeProfile -InstallRoot $InstallRoot -PackId 'whisper-asr' -GpuName $GpuName
 }
+
+function Get-WslOcrRuntimeProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$GpuName
+    )
+
+    return Get-WslPackRuntimeProfile -InstallRoot $InstallRoot -PackId 'ocr-ppocrv5' -GpuName $GpuName
+}

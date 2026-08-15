@@ -8,6 +8,8 @@ param(
     [string]$YoloRuntimeProfile = 'default',
     [ValidateSet('default', 'pascal-cu118')]
     [string]$WhisperRuntimeProfile = 'default',
+    [ValidateSet('default', 'pascal-cu118')]
+    [string]$OcrRuntimeProfile = 'default',
     [switch]$WslReady
 )
 
@@ -38,6 +40,7 @@ $profile = [ordered]@{
             pack_profiles = [ordered]@{
                 yolo = $YoloRuntimeProfile
                 'whisper-asr' = $WhisperRuntimeProfile
+                'ocr-ppocrv5' = $OcrRuntimeProfile
             }
             reason = if ($WslReady) { $null } else { 'WSL Runtime readiness has not passed' }
         }

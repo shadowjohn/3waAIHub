@@ -445,6 +445,47 @@ hub_test('Whisper WSL Pascal service uses the explicit CUDA 11.8 compose profile
         && !str_contains($compose, hub_test_host_root_child_needle()), 'Whisper WSL compose must use only the Pascal image and ext4 runtime roots');
 });
 
+hub_test('PP-OCRv5 WSL Pascal service uses an explicit CUDA 11.8 GPU compose profile', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'ocr-ppocrv5', [
+        'service_key' => 'ocr-pascal',
+        'name' => 'PP-OCRv5 Pascal',
+        'mode' => 'ocr_pascal',
+        'port_mode' => 'auto',
+        'environment' => 'production',
+    ])['service'];
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['ocr-ppocrv5' => 'pascal-cu118'],
+    ]]];
+
+    $pack = hub_get_pack('ocr-ppocrv5');
+    hub_test_assert(is_array($pack), 'PP-OCRv5 Pack must be available');
+    $resolution = hub_pack_runtime_target_resolution($pack['manifest'], 'windows', $profile);
+    hub_test_assert($resolution['target'] === 'windows-wsl2-linux-docker' && $resolution['supported'] === true, 'PP-OCRv5 must select its explicit WSL target on Windows');
+
+    $runtime = hub_ocr_wsl_runtime_profile($service, $profile);
+    hub_test_assert(hub_service_runtime_image_tag($service, $profile) === '3waaihub/ocr-ppocrv5:0.1.0-pascal-cu118', 'PP-OCRv5 WSL runtime image tag must use the selected Pascal profile');
+    hub_test_assert(hub_service_build_timeout_sec($service) === 2100, 'PP-OCRv5 Pascal image build must allow its CUDA wheel and layer export time');
+    $command = hub_wsl_service_compose_command($service, ['build', '--progress=plain'], $profile);
+    $script = hub_test_wsl_script_payload($command);
+    $compose = hub_test_wsl_compose_payload($script);
+    hub_test_assert(($runtime['profile_id'] ?? '') === 'pascal-cu118'
+        && str_contains($compose, 'service/Dockerfile.pascal-cu118')
+        && str_contains($compose, '3waaihub/ocr-ppocrv5:0.1.0-pascal-cu118')
+        && str_contains($compose, 'gpus: all')
+        && str_contains($compose, '/DATA/models/paddleocr:/models/paddleocr')
+        && str_contains($compose, '/DATA/3waAIHub-runtime/cache/ocr-ppocrv5:/cache/paddleocr')
+        && str_contains($compose, '/DATA/3waAIHub-runtime/services/ocr-pascal/data:/data/service')
+        && str_contains($script, "DOCKER_BUILDKIT=1 docker build --progress=plain --tag '3waaihub/ocr-ppocrv5:0.1.0-pascal-cu118'")
+        && str_contains($script, "--file '/DATA/3waAIHub-runtime/packs/ocr-ppocrv5/service/Dockerfile.pascal-cu118'")
+        && !str_contains($script, hub_test_host_root_child_needle())
+        && !str_contains($compose, hub_test_host_root_child_needle()), 'PP-OCRv5 WSL compose must use only the Pascal image and ext4 runtime roots');
+});
+
 hub_test('Whisper Pascal CKIP provisioning is an explicit WSL-only operation', function (): void {
     $db = hub_test_reset_db();
     $service = hub_install_pack($db, 'whisper-asr', ['idempotent' => true, 'provision_runner' => false])['service'];

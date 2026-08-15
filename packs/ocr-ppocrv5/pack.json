@@ -14,7 +14,28 @@
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
-    "default_internal_port": 8000
+    "default_internal_port": 8000,
+    "windows_wsl_compose": true
+  },
+  "platform_targets": {
+    "linux-docker": true,
+    "windows-wsl2-linux-docker": true
+  },
+  "wsl_runtime_profiles": {
+    "default": {
+      "id": "default",
+      "dockerfile": "service/Dockerfile",
+      "image": "3waaihub/ocr-ppocrv5:0.1.0",
+      "min_compute_capability": "8.0",
+      "gpu_name_patterns": []
+    },
+    "pascal-cu118": {
+      "id": "pascal-cu118",
+      "dockerfile": "service/Dockerfile.pascal-cu118",
+      "image": "3waaihub/ocr-ppocrv5:0.1.0-pascal-cu118",
+      "min_compute_capability": "6.1",
+      "gpu_name_patterns": ["GTX 1050", "GTX 1080"]
+    }
   },
   "gateway": {
     "health_path": "/health",
@@ -97,7 +118,7 @@
     "gpu_required": false,
     "gpu_supported": true,
     "min_vram_mb": 0,
-    "min_compute_capability": "8.0"
+    "min_compute_capability": "6.1"
   },
   "queue": {
     "supported": true,
