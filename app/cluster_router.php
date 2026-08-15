@@ -5285,6 +5285,20 @@ function hub_cluster_station_inventory(array $station): array
 {
     $status = json_decode((string)($station['status_json'] ?? ''), true);
     $status = is_array($status) ? $status : [];
+    $manifest = json_decode((string)($station['manifest_json'] ?? ''), true);
+    $manifestModeList = is_array($manifest['modes'] ?? null) ? $manifest['modes'] : [];
+    if ($manifestModeList === [] && is_array($manifest['services'] ?? null)) {
+        foreach ($manifest['services'] as $service) {
+            if (is_array($service) && is_string($service['mode'] ?? null)) {
+                $manifestModeList[] = $service['mode'];
+            }
+        }
+    }
+    $manifestModes = array_fill_keys($manifestModeList, true);
+    $modes = array_values(array_filter(
+        is_array($status['modes'] ?? null) ? $status['modes'] : [],
+        static fn (mixed $mode): bool => is_string($mode) && isset($manifestModes[$mode])
+    ));
 
     return [
         'id' => (int)($station['id'] ?? 0),
@@ -5293,7 +5307,7 @@ function hub_cluster_station_inventory(array $station): array
         'enabled' => !empty($station['enabled']),
         'fresh' => hub_cluster_station_is_fresh($station),
         'last_error' => (string)($station['last_error'] ?? ''),
-        'modes' => is_array($status['modes'] ?? null) ? $status['modes'] : [],
+        'modes' => $modes,
         'gpu_free_vram_mb' => (int)($status['gpu']['memory_free_mb'] ?? 0),
         'active_gpu_leases' => (int)($status['active_gpu_leases'] ?? 0),
         'queued_jobs' => (int)($status['queued_jobs'] ?? 0),

@@ -963,6 +963,21 @@ hub_test('cluster station inventory preserves configured routing priority', func
     hub_test_assert(($inventory['priority'] ?? null) === 42, 'refreshed station inventory must retain the configured routing priority');
 });
 
+hub_test('cluster station inventory ignores status-only modes without manifest contracts', function (): void {
+    $inventory = hub_cluster_station_inventory([
+        'id' => 17,
+        'station_key' => 'contract_station',
+        'priority' => 0,
+        'enabled' => 1,
+        'manifest_json' => json_encode(['modes' => ['speech_transcribe']], JSON_THROW_ON_ERROR),
+        'status_json' => json_encode(['modes' => ['speech_transcribe', 'ocr']], JSON_THROW_ON_ERROR),
+        'status_fetched_at' => hub_now(),
+        'last_error' => '',
+    ]);
+
+    hub_test_assert($inventory['modes'] === ['speech_transcribe'], 'status-only modes must not be eligible for Router dispatch');
+});
+
 hub_test('cluster refresh worker output preserves only the declared station and error contracts', function (): void {
     hub_test_assert(
         hub_cluster_refresh_worker_output_line(['station_key' => 'taipei_gpu_1', 'fresh' => true, 'last_error' => 'status_http_403']) === 'taipei_gpu_1 1 status_http_403',
