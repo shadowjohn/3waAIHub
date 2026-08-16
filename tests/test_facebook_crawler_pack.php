@@ -169,10 +169,13 @@ hub_test('Facebook crawler bootstrap rejects a symlinked private parent', functi
         clearstatcache(true, $marker);
         hub_test_assert(lstat($marker) === $before && file_get_contents($marker) === 'bootstrap-outside', 'bootstrap must not mutate the symlink target');
     } finally {
-        @unlink($parent);
+        if (is_link($parent) && !@rmdir($parent)) {
+            @unlink($parent);
+        }
         @rename($backup, $parent);
         hub_test_remove_data_tree($outside);
     }
+    hub_test_assert(!is_link($parent) && is_dir($parent), 'bootstrap parent symlink fixture must restore its managed directory');
 });
 
 hub_test('Facebook crawler profile repository caps owners and fails closed on active login metadata', function (): void {
@@ -247,10 +250,13 @@ hub_test('Facebook crawler profile deletion rejects symlinks and hardlinks', fun
         file_put_contents($symlinkPath, "{}\n");
         @chmod($symlinkPath, 0600);
         @unlink($hardlinkAlias);
-        @unlink($directoryPath);
+        if (is_link($directoryPath) && !@rmdir($directoryPath)) {
+            @unlink($directoryPath);
+        }
         @rename($movedDirectory, $directoryPath);
         @unlink($outside);
     }
+    hub_test_assert(!is_link($directoryPath) && is_dir($directoryPath), 'profile directory symlink fixture must restore its managed directory');
 
     hub_facebook_profile_delete($db, $symlinkProfile['profile_id'], $memberId);
     hub_facebook_profile_delete($db, $hardlinkProfile['profile_id'], $memberId);

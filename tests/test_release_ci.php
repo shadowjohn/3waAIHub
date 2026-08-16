@@ -103,7 +103,7 @@ hub_test('release banner docs ci and OCR L5 benchmark ready files exist', functi
     $workflow = HUB_ROOT . '/.github/workflows/ci.yml';
     hub_test_assert(is_file($workflow), 'GitHub Actions workflow missing');
     $ci = (string)file_get_contents($workflow);
-    foreach (['php scripts/run_tests.php', 'python3-numpy', 'zend.assertions=1', 'assert.exception=1', 'self_check.log', 'actions/upload-artifact@v4', 'git diff --check', 'bash -n'] as $needle) {
+    foreach (['php scripts/run_tests.php', 'python3-numpy', 'opencc', 'ffmpeg', 'nvidia-smi >/dev/null || sudo ln -s /usr/bin/true /usr/bin/nvidia-smi', 'php scripts/init_db.php', 'zend.assertions=1', 'assert.exception=1', 'self_check.log', 'actions/upload-artifact@v4', 'git diff --check', 'bash -n'] as $needle) {
         hub_test_assert(str_contains($ci, $needle), 'CI missing: ' . $needle);
     }
 
@@ -197,6 +197,7 @@ hub_test('test runner uses an explicit static control-plane suite manifest', fun
 hub_test('test runner isolates its default SQLite path for each invocation', function (): void {
     $runner = (string)file_get_contents(HUB_ROOT . '/scripts/run_tests.php');
 
+    hub_test_assert(str_contains($runner, '$testTempRoot = realpath(sys_get_temp_dir()) ?: sys_get_temp_dir();'), 'test runner must canonicalize its temporary root before exporting test paths');
     hub_test_assert(str_contains($runner, '$testRunId = bin2hex(random_bytes(16));'), 'test runner must create one identifier per invocation');
     hub_test_assert(str_contains($runner, "'/3waaihub_test_' . \$testRunId . '.sqlite'"), 'default SQLite path must include the invocation identifier');
     hub_test_assert(!str_contains($runner, "'/3waaihub_test.sqlite'"), 'test runner must not use one shared default SQLite path');
