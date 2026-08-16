@@ -207,9 +207,16 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     $normalizedRoot = $root;
     $normalizedPath = $path;
     if (PHP_OS_FAMILY === 'Windows') {
-        $normalizedRoot = str_replace('/', DIRECTORY_SEPARATOR, $normalizedRoot);
         $normalizedPath = str_replace('/', DIRECTORY_SEPARATOR, $normalizedPath);
-        if (!str_starts_with(strtolower($normalizedPath), strtolower($normalizedRoot . DIRECTORY_SEPARATOR))) {
+        $normalizedRoot = '';
+        foreach ([$storageDir, $root] as $candidateRoot) {
+            $candidateRoot = rtrim(str_replace('/', DIRECTORY_SEPARATOR, $candidateRoot), DIRECTORY_SEPARATOR);
+            if (str_starts_with(strtolower($normalizedPath), strtolower($candidateRoot . DIRECTORY_SEPARATOR))) {
+                $normalizedRoot = $candidateRoot;
+                break;
+            }
+        }
+        if ($normalizedRoot === '') {
             return null;
         }
     } elseif (!str_starts_with($normalizedPath, $normalizedRoot . DIRECTORY_SEPARATOR)) {
@@ -237,7 +244,8 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     $real = realpath($candidate);
     if (PHP_OS_FAMILY === 'Windows') {
         $normalizedReal = str_replace('/', DIRECTORY_SEPARATOR, $real ?: '');
-        return $real !== false && str_starts_with(strtolower($normalizedReal), strtolower($normalizedRoot . DIRECTORY_SEPARATOR))
+        $physicalRoot = str_replace('/', DIRECTORY_SEPARATOR, $root);
+        return $real !== false && str_starts_with(strtolower($normalizedReal), strtolower($physicalRoot . DIRECTORY_SEPARATOR))
             ? $real
             : null;
     }
