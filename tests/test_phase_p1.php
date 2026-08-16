@@ -920,7 +920,7 @@ hub_test('PhaseP-1 service removal rejects a symlinked runtime directory before 
     } finally {
         putenv($path === false ? 'PATH' : 'PATH=' . $path);
         if ($linked && is_link($runtimeDir)) {
-            unlink($runtimeDir);
+            hub_test_remove_symlink($runtimeDir);
         }
         if (is_dir($runtimeTarget) && !file_exists($runtimeDir)) {
             rename($runtimeTarget, $runtimeDir);
@@ -973,7 +973,7 @@ hub_test('PhaseP-1 service removal rejects a symlinked runtime base before Docke
     } finally {
         putenv($testDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $testDockerBin);
         if ($linked && is_link($runtimeBase)) {
-            unlink($runtimeBase);
+            hub_test_remove_symlink($runtimeBase);
         }
         if (is_dir($runtimeBaseTarget) && !file_exists($runtimeBase)) {
             rename($runtimeBaseTarget, $runtimeBase);

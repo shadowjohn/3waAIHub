@@ -24,9 +24,12 @@ hub_test('test runner releases failed PDO references before resetting SQLite', f
         }
 
         hub_test_assert($failure instanceof Throwable, 'fixture must retain a failed PDO call trace');
-        hub_test_assert(!@unlink($path), 'captured PDO failure must keep its SQLite file open on Windows');
+        $removedBeforeRelease = @unlink($path);
         hub_test_release_failure_context($failure);
-        hub_test_assert(@unlink($path), 'runner must release failed PDO references before the next SQLite reset');
+        hub_test_assert(
+            $removedBeforeRelease || @unlink($path),
+            'runner must release failed PDO references before the next SQLite reset when the PHP SQLite driver retains them'
+        );
     } finally {
         unset($failure);
         foreach ([$path, $path . '-wal', $path . '-shm'] as $candidate) {

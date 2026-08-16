@@ -169,8 +169,8 @@ hub_test('Facebook crawler bootstrap rejects a symlinked private parent', functi
         clearstatcache(true, $marker);
         hub_test_assert(lstat($marker) === $before && file_get_contents($marker) === 'bootstrap-outside', 'bootstrap must not mutate the symlink target');
     } finally {
-        if (is_link($parent) && !@rmdir($parent)) {
-            @unlink($parent);
+        if (is_link($parent)) {
+            hub_test_remove_symlink($parent);
         }
         @rename($backup, $parent);
         hub_test_remove_data_tree($outside);
@@ -250,8 +250,8 @@ hub_test('Facebook crawler profile deletion rejects symlinks and hardlinks', fun
         file_put_contents($symlinkPath, "{}\n");
         @chmod($symlinkPath, 0600);
         @unlink($hardlinkAlias);
-        if (is_link($directoryPath) && !@rmdir($directoryPath)) {
-            @unlink($directoryPath);
+        if (is_link($directoryPath)) {
+            hub_test_remove_symlink($directoryPath);
         }
         @rename($movedDirectory, $directoryPath);
         @unlink($outside);

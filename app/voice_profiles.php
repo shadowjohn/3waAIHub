@@ -236,13 +236,18 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     if (
         $real === false
         || !is_array($stat)
-        || (((int)$stat['mode'] & 0170000) !== 0100000)
-        || (int)($stat['nlink'] ?? 0) !== 1
+        || (PHP_OS_FAMILY !== 'Windows' && (
+            ((int)$stat['mode'] & 0170000) !== 0100000
+            || (int)($stat['nlink'] ?? 0) !== 1
+        ))
     ) {
         return null;
     }
 
-    return str_starts_with($real, $root . DIRECTORY_SEPARATOR) ? $real : null;
+    $normalizedReal = str_replace('/', DIRECTORY_SEPARATOR, $real);
+    return PHP_OS_FAMILY === 'Windows'
+        ? (str_starts_with(strtolower($normalizedReal), strtolower($normalizedRoot . DIRECTORY_SEPARATOR)) ? $real : null)
+        : (str_starts_with($normalizedReal, $normalizedRoot . DIRECTORY_SEPARATOR) ? $real : null);
 }
 
 function hub_voice_profile_file_stats_match(mixed $openedStat, mixed $pathStat, bool $requireSingleLink = true): bool

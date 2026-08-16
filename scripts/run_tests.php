@@ -242,6 +242,17 @@ function hub_test_data_root(): string
     return $dataRoot;
 }
 
+function hub_test_remove_symlink(string $path): bool
+{
+    if (!is_link($path)) {
+        return false;
+    }
+
+    return hub_platform_id() === 'windows' && is_dir($path)
+        ? @rmdir($path)
+        : @unlink($path);
+}
+
 function hub_test_remove_data_tree(string $dir): void
 {
     foreach (scandir($dir) ?: [] as $entry) {
@@ -251,7 +262,7 @@ function hub_test_remove_data_tree(string $dir): void
 
         $path = $dir . DIRECTORY_SEPARATOR . $entry;
         if (is_link($path)) {
-            if (!unlink($path)) {
+            if (!hub_test_remove_symlink($path)) {
                 throw new RuntimeException('Cannot remove isolated test symlink: ' . $path);
             }
             continue;
