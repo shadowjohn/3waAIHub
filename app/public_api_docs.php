@@ -631,6 +631,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
     if ($mode === 'voice_generate') {
         $contract['managed_voice_presets'] = [
             'discovery_operation' => 'voice_presets',
+            'management_operations' => ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete'],
             'synthesis_operation' => 'preset_synthesize',
             'request' => [
                 'voice_preset' => 'azhe',
@@ -676,6 +677,19 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
     ];
     if ($mode === 'voice_generate_gpt_sovits') {
         $contract['error_table'][] = ['code' => 'voice_profile_reprepare_required', 'http_status' => 409];
+    }
+    if ($mode === 'voice_generate') {
+        foreach ([
+            ['code' => 'voice_preset_required', 'http_status' => 400],
+            ['code' => 'voice_preset_not_found', 'http_status' => 404],
+            ['code' => 'voice_preset_unavailable', 'http_status' => 410],
+            ['code' => 'voice_preset_scene_invalid', 'http_status' => 400],
+            ['code' => 'voice_preset_candidate_count_invalid', 'http_status' => 400],
+            ['code' => 'voice_preset_forbidden_input', 'http_status' => 400],
+            ['code' => 'voice_preset_invalid', 'http_status' => 400],
+        ] as $error) {
+            $contract['error_table'][] = $error;
+        }
     }
     $contract['errors'] = array_values(array_unique(array_merge($contract['errors'], array_column($contract['error_table'], 'code'))));
     $contract['workflow_examples'] = hub_public_api_voice_generate_examples(false, $mode, $mode === 'voice_generate');
@@ -891,7 +905,7 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         'error_codes' => array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : [])),
         'task_api' => hub_public_api_task_api_refs(is_array($contract['task_api'] ?? null) ? $contract['task_api'] : []),
     ];
-    foreach (['operations', 'workflow', 'error_table', 'workflow_examples'] as $key) {
+    foreach (['operations', 'workflow', 'error_table', 'workflow_examples', 'managed_voice_presets'] as $key) {
         if (isset($contract[$key])) {
             $service[$key] = $contract[$key];
         }

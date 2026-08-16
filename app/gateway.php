@@ -2779,6 +2779,10 @@ function hub_gateway_cluster_child_artifact_index(PDO $db, array $task): array
 function hub_gateway_cluster_child_result_summary(array $task, array $artifacts): array
 {
     $result = $task['result'] ?? null;
+    $presetCandidates = hub_voice_preset_batch_result_candidates((array)($task['input'] ?? []), $result, array_column($artifacts, 'id'));
+    if ($presetCandidates !== null) {
+        return ['candidates' => $presetCandidates];
+    }
     if (($task['task_type'] ?? '') === 'voice_profile_prepare') {
         $keys = ['kind', 'transcription_status', 'transcript_confirmed', 'text_chars', 'prompt_text_sha256'];
         if (!is_array($result)

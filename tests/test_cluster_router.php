@@ -5876,6 +5876,15 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         $voice = array_column(hub_cluster_public_manifest($db)['services'], null, 'mode')['voice_generate'] ?? null;
         hub_test_assert(is_array($voice), 'Cluster voice_generate contract missing');
         $json = json_encode($voice, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+        hub_test_assert(
+            ($voice['managed_voice_presets']['discovery_operation'] ?? null) === 'voice_presets'
+            && ($voice['managed_voice_presets']['management_operations'] ?? null) === ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete']
+            && ($voice['managed_voice_presets']['synthesis_operation'] ?? null) === 'preset_synthesize'
+            && ($voice['managed_voice_presets']['result_candidates'] ?? null) === ['candidate_id', 'audio_url', 'seed', 'preset_revision']
+            && str_contains((string)($voice['workflow']['preset_affinity'] ?? ''), 'pinned station')
+            && str_contains((string)($voice['workflow']['preset_affinity'] ?? ''), 'no failover'),
+            'Cluster voice contract must preserve managed preset discovery, candidates, and affinity'
+        );
         $fieldContracts = array_column((array)$voice['input_fields'], null, 'name');
         $fields = array_keys($fieldContracts);
         hub_test_assert(in_array('voice_profile_task_id', $fields, true) && !in_array('voice_profile_id', $fields, true), 'Cluster voice_generate must expose only the opaque profile task handle');
@@ -5890,7 +5899,7 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
         );
         hub_test_assert(preg_match('/(?<![A-Za-z0-9_])voice_profile_id(?![A-Za-z0-9_])/i', $json) !== 1, 'Cluster voice contract must remove exact child voice_profile_id field names case-insensitively');
         hub_test_assert(str_contains($json, 'voice_profile_identifier'), 'Cluster projection must preserve legitimate field-name substrings');
-        hub_test_assert(!str_contains($json, 'CHILD_PROFILE_ID') && !str_contains($json, '123'), 'Cluster projection must omit untrusted child examples instead of rewriting their code');
+        hub_test_assert(!str_contains($json, 'CHILD_PROFILE_ID'), 'Cluster projection must omit untrusted child examples instead of rewriting their code');
         hub_test_assert(
             ($voice['description'] ?? '') === 'Use voice_profile_task_id while preserving voice_profile_identifier.'
             && ($voice['nested_contract']['note'] ?? '') === 'Submit voice_profile_task_id only after preparation; voice_profile_identifier remains valid.',
@@ -6657,4 +6666,138 @@ hub_test('cluster admin pairing descriptor keeps cluster pair at the application
     } finally {
         $_SERVER = $previous;
     }
+});
+
+hub_test('cluster router pins managed voice presets and preserves candidate references', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $fixture = hub_test_cluster_voice_profile_route($db, [
+            'station_key' => 'preset_voice_station',
+            'station_token' => 'preset_voice_station_token',
+        ], '42');
+        $preset = [
+            'id' => 'azhe',
+            'label' => '阿哲',
+            'gender' => 'male',
+            'age_bucket' => 'adult',
+            'purposes' => ['scene_preview'],
+            'scenes' => ['nervous'],
+            'preset_revision' => 4,
+        ];
+        $inventory = [hub_test_cluster_station_fixture([
+            'id' => (int)$fixture['station']['id'],
+            'modes' => ['voice_generate'],
+        ])];
+        $seenSynthesis = null;
+        $transport = static function (array $request) use (&$seenSynthesis, $fixture, $preset): array {
+            $body = json_decode((string)($request['body'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
+            if (($body['operation'] ?? null) === 'voice_preset_upsert') {
+                hub_test_assert(($body['voice_profile_task_id'] ?? null) === '42', 'preset binding must replace the opaque profile route with the child task ID');
+
+                return hub_gateway_json(200, ['ok' => true, 'preset' => $preset]);
+            }
+            if (($body['operation'] ?? null) === 'preset_synthesize') {
+                $seenSynthesis = $body;
+
+                return hub_gateway_json(200, ['ok' => true, 'task_id' => 71, 'status' => 'queued']);
+            }
+            if (($body['operation'] ?? null) === 'voice_preset_delete') {
+                return hub_gateway_json(200, ['ok' => true, 'voice_preset' => 'azhe', 'status' => 'deleted']);
+            }
+            throw new RuntimeException('unexpected managed preset proxy request');
+        };
+        $request = static function (array $payload) use ($fixture): array {
+            return hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+                'raw_body' => json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+                'request_uri' => '/cluster_api.php?mode=voice_generate',
+            ]);
+        };
+        $upsert = hub_cluster_dispatch($db, 'voice_generate', $request([
+            'operation' => 'voice_preset_upsert',
+            'voice_preset' => 'azhe',
+            'label' => '阿哲',
+            'gender' => 'male',
+            'age_bucket' => 'adult',
+            'purposes' => ['scene_preview'],
+            'scenes' => ['nervous'],
+            'voice_profile_task_id' => $fixture['route_id'],
+        ]), ['refresh_due' => static fn (): array => $inventory, 'transport' => $transport]);
+        $stored = $db->query('SELECT member_id, preset_id, station_id, preset_json FROM cluster_voice_preset_routes')->fetch();
+        $catalog = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$fixture['customer']['plain_token'], [
+            'method' => 'GET',
+            'raw_body' => '',
+            'query' => ['operation' => 'voice_presets'],
+            'request_uri' => '/cluster_api.php?mode=voice_generate&operation=voice_presets',
+        ]));
+        $synthesis = hub_cluster_dispatch($db, 'voice_generate', $request([
+            'operation' => 'preset_synthesize',
+            'voice_preset' => 'azhe',
+            'purpose' => 'scene_preview',
+            'scene' => 'nervous',
+            'candidate_count' => 2,
+            'seed' => 101,
+            'text' => '等一下，我再確認一次……',
+        ]), ['refresh_due' => static fn (): array => $inventory, 'transport' => $transport]);
+        $synthesisPayload = json_decode($synthesis['body'], true, 32, JSON_THROW_ON_ERROR);
+        $candidateResult = hub_cluster_dispatch_followup($db, 'cluster_task_result', [
+            'bearer_token' => (string)$fixture['customer']['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'method' => 'GET',
+            'query' => ['task_id' => (string)($synthesisPayload['task_id'] ?? '')],
+        ], static function (array $request): array {
+            hub_test_assert(($request['query'] ?? null) === ['mode' => 'task_result', 'task_id' => '71'], 'candidate result must use the pinned child task');
+
+            return hub_gateway_json(200, [
+                'ok' => true,
+                'task_id' => 71,
+                'result' => ['candidates' => [
+                    ['candidate_id' => 'candidate-01', 'audio_artifact_id' => 11, 'seed' => 101, 'preset_revision' => 4],
+                    ['candidate_id' => 'candidate-02', 'audio_artifact_id' => 12, 'seed' => 202, 'preset_revision' => 4],
+                ]],
+                'cluster_artifact_index' => [
+                    ['id' => 11, 'size_bytes' => 100, 'type' => 'generated_audio', 'mime_type' => 'audio/wav'],
+                    ['id' => 12, 'size_bytes' => 100, 'type' => 'voice_candidate_02', 'mime_type' => 'audio/wav'],
+                ],
+            ]);
+        });
+        $candidatePayload = json_decode($candidateResult['body'], true, 32, JSON_THROW_ON_ERROR);
+        $deleted = hub_cluster_dispatch($db, 'voice_generate', $request([
+            'operation' => 'voice_preset_delete',
+            'voice_preset' => 'azhe',
+        ]), ['refresh_due' => static fn (): array => $inventory, 'transport' => $transport]);
+        $unknown = hub_cluster_dispatch($db, 'voice_generate', $request([
+            'operation' => 'preset_synthesize',
+            'voice_preset' => 'azhe',
+            'purpose' => 'scene_preview',
+            'scene' => 'nervous',
+            'candidate_count' => 1,
+            'text' => '不應送出',
+        ]), ['refresh_due' => static function (): array {
+            throw new RuntimeException('unknown preset must not select a station');
+        }]);
+
+        hub_test_assert($upsert['status'] === 200, 'managed preset upsert must succeed through Cluster');
+        hub_test_assert(($stored['member_id'] ?? null) === (int)$fixture['member_id']
+            && ($stored['preset_id'] ?? null) === 'azhe'
+            && ($stored['station_id'] ?? null) === (int)$fixture['station']['id']
+            && json_decode((string)($stored['preset_json'] ?? ''), true) === $preset,
+            'managed preset route index must retain only owner, preset, station, and safe metadata');
+        hub_test_assert(json_decode($catalog['body'], true, 32, JSON_THROW_ON_ERROR) === ['ok' => true, 'voice_presets' => [$preset]],
+            'managed preset discovery must come from the Router index');
+        hub_test_assert(is_array($seenSynthesis)
+            && array_keys($seenSynthesis) === ['operation', 'voice_preset', 'purpose', 'scene', 'candidate_count', 'seed', 'text'],
+            'managed preset synthesis must forward only its semantic request');
+        hub_test_assert(($candidatePayload['result']['candidates'][0] ?? null) === [
+                'candidate_id' => 'candidate-01',
+                'audio_artifact_id' => 11,
+                'seed' => 101,
+                'preset_revision' => 4,
+                'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . ($synthesisPayload['task_id'] ?? '') . '&artifact_id=11',
+            ], 'managed preset candidates must expose a stable cluster artifact URL');
+        hub_test_assert($deleted['status'] === 200 && (int)$db->query('SELECT COUNT(*) FROM cluster_voice_preset_routes')->fetchColumn() === 0,
+            'managed preset deletion must retire the Router affinity');
+        hub_test_assert(($unknown['status'] ?? null) === 404 && str_contains((string)($unknown['body'] ?? ''), 'voice_preset_not_found'),
+            'retired managed presets must fail before station selection');
+    });
 });

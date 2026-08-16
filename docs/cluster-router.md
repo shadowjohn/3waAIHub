@@ -58,6 +58,21 @@ The production audio directory formally covers `speech_transcribe`, `speech_tran
 
 Router `task_id` is an opaque string. Store it exactly and never cast it to an integer. Native `api.php` task IDs are numeric and belong to a different namespace; a Router ID and a native station ID must never be substituted for each other.
 
+## Managed Voice Presets
+
+For `voice_generate`, an owner can use `voice_presets` to discover its managed
+catalog and `preset_synthesize` to send only a preset, purpose, scene, spoken
+text, candidate count, and optional seed. The Router records the safe catalog
+metadata with the selected station when the preset is bound. Later synthesis is
+on that pinned station with no failover; an unavailable station returns the
+normal stable availability error rather than moving the character voice.
+`voice_preset_delete` retires both the child preset and the Router affinity.
+
+Completed preset tasks return ordered candidates with `candidate_id`,
+`audio_url`, `seed`, and `preset_revision`. A scene without a dedicated anchor
+automatically uses the preset base voice. Callers do not choose an engine or a
+clone strategy.
+
 The asynchronous flow is submit, poll `cluster_task_status`, read `cluster_task_result`, download each managed artifact, then POST its ID through the returned ACK URL. Status clients may rely on `status`, integer `progress`, and a displayable `message`; a GPU wait can additionally include bounded scheduling diagnostics.
 
 Before creating a child task, the Router prefers a fresh eligible station without an active GPU lease or queued work. Station priority then breaks ties. This is the cross-node fallback boundary: after the child accepts a task, Router keeps it pinned to preserve task ownership, artifacts, ACK, and idempotency. It does not migrate an accepted task or evict a resident service. `retry_after_seconds` describes the next child scheduler check, not a promised completion time.

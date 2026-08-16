@@ -1026,6 +1026,18 @@ CREATE TABLE IF NOT EXISTS cluster_routes (
     FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS cluster_voice_preset_routes (
+    member_id INTEGER NOT NULL,
+    preset_id TEXT NOT NULL,
+    station_id INTEGER NOT NULL,
+    preset_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(member_id, preset_id),
+    FOREIGN KEY(member_id) REFERENCES api_members(id) ON DELETE CASCADE,
+    FOREIGN KEY(station_id) REFERENCES cluster_stations(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS cluster_route_accesses (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     route_id TEXT NOT NULL,
@@ -1401,6 +1413,7 @@ SQL);
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_gpu_metric_snapshots_sampled_at ON cluster_gpu_metric_snapshots(sampled_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_routes_station_state ON cluster_routes(station_id, state, updated_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_routes_member_token ON cluster_routes(member_id, token_id, created_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_voice_preset_routes_station ON cluster_voice_preset_routes(station_id, updated_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_route ON cluster_route_accesses(route_id, created_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_usage ON cluster_route_accesses(member_id, token_id, access_kind, created_at DESC)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_cluster_route_accesses_station_usage ON cluster_route_accesses(station_id, mode, member_id, token_id, created_at DESC)');
@@ -1662,6 +1675,7 @@ function hub_runtime_schema_missing(PDO $db): array
         'resident_job_runs' => ['runtime_run_id', 'task_id', 'service_id', 'resident_run_id', 'lifecycle', 'dispatched_at', 'cancel_requested_at', 'unconfirmed_at', 'reconciled_at', 'updated_at'],
         'cluster_gpu_metric_snapshots' => ['id', 'station_id', 'sampled_at', 'gpu_json'],
         'cluster_photo_assets' => ['id', 'image_id', 'station_id', 'remote_image_id', 'owner_member_id', 'owner_token_id', 'expires_at', 'last_accessed_at', 'created_at'],
+        'cluster_voice_preset_routes' => ['member_id', 'preset_id', 'station_id', 'preset_json', 'created_at', 'updated_at'],
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'waiting_detail_json', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
         'voice_profiles' => ['source_task_id', 'reference_contract', 'transcript_validation_json'],
         'voice_presets' => ['id', 'owner_member_id', 'preset_id', 'label', 'gender', 'age_bucket', 'purposes_json', 'scenes_json', 'base_voice_profile_id', 'revision', 'enabled', 'created_at', 'updated_at'],

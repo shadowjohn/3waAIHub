@@ -67,6 +67,60 @@ function hub_voice_preset_public(array $preset): array
     ];
 }
 
+function hub_voice_preset_public_value(mixed $value): ?array
+{
+    if (!is_array($value) || array_keys($value) !== ['id', 'label', 'gender', 'age_bucket', 'purposes', 'scenes', 'preset_revision']) {
+        return null;
+    }
+    $id = hub_voice_preset_slug($value['id'] ?? null);
+    $label = is_string($value['label'] ?? null) ? trim($value['label']) : '';
+    $gender = $value['gender'] ?? null;
+    $ageBucket = $value['age_bucket'] ?? null;
+    $purposes = hub_voice_preset_slug_list($value['purposes'] ?? null);
+    $scenes = hub_voice_preset_slug_list($value['scenes'] ?? null);
+    $revision = $value['preset_revision'] ?? null;
+    if ($id === null || $label === '' || strlen($label) > 120
+        || !in_array($gender, ['female', 'male', 'nonbinary', 'unspecified'], true)
+        || !in_array($ageBucket, ['child', 'teen', 'adult', 'senior', 'unspecified'], true)
+        || $purposes === null || $scenes === null || !is_int($revision) || $revision < 1) {
+        return null;
+    }
+
+    return [
+        'id' => $id,
+        'label' => $label,
+        'gender' => $gender,
+        'age_bucket' => $ageBucket,
+        'purposes' => $purposes,
+        'scenes' => $scenes,
+        'preset_revision' => $revision,
+    ];
+}
+
+function hub_voice_preset_batch_result_candidates(array $taskInput, mixed $result, array $artifactIds): ?array
+{
+    $batch = hub_voice_preset_batch_snapshot($taskInput['voice_preset_batch'] ?? null);
+    $candidates = is_array($result) ? ($result['candidates'] ?? null) : null;
+    if ($batch === null || !is_array($candidates) || !array_is_list($candidates) || count($candidates) !== count($batch['candidates'])) {
+        return null;
+    }
+    $available = array_fill_keys(array_map(static fn (mixed $id): int => (int)$id, $artifactIds), true);
+    foreach ($candidates as $index => $candidate) {
+        $expected = $batch['candidates'][$index];
+        if (!is_array($candidate)
+            || array_keys($candidate) !== ['candidate_id', 'audio_artifact_id', 'seed', 'preset_revision']
+            || $candidate['candidate_id'] !== $expected['candidate_id']
+            || $candidate['seed'] !== $expected['seed']
+            || $candidate['preset_revision'] !== $batch['preset_revision']
+            || !is_int($candidate['audio_artifact_id']) || $candidate['audio_artifact_id'] < 1
+            || !isset($available[$candidate['audio_artifact_id']])) {
+            return null;
+        }
+    }
+
+    return $candidates;
+}
+
 function hub_voice_preset_for_owner(PDO $db, int $memberId, string $presetId): ?array
 {
     $stmt = $db->prepare('SELECT * FROM voice_presets WHERE owner_member_id = :owner_member_id AND preset_id = :preset_id LIMIT 1');
@@ -185,6 +239,22 @@ function hub_voice_preset_list(PDO $db, array $auth): array
     $stmt->execute([':owner_member_id' => $memberId]);
 
     return ['ok' => true, 'voice_presets' => array_map('hub_voice_preset_public', $stmt->fetchAll())];
+}
+
+function hub_voice_preset_delete(PDO $db, array $auth, array $payload): array
+{
+    $memberId = hub_voice_preset_owner_id($auth);
+    $presetId = hub_voice_preset_slug($payload['voice_preset'] ?? null);
+    if ($memberId < 1 || $presetId === null || array_keys($payload) !== ['voice_preset']) {
+        throw new InvalidArgumentException('voice_preset_invalid');
+    }
+    $stmt = $db->prepare('DELETE FROM voice_presets WHERE owner_member_id = :owner_member_id AND preset_id = :preset_id');
+    $stmt->execute([':owner_member_id' => $memberId, ':preset_id' => $presetId]);
+    if ($stmt->rowCount() !== 1) {
+        throw new InvalidArgumentException('voice_preset_not_found');
+    }
+
+    return ['ok' => true, 'voice_preset' => $presetId, 'status' => 'deleted'];
 }
 
 function hub_voice_preset_batch_snapshot(mixed $value): ?array
@@ -359,7 +429,7 @@ function hub_voice_preset_api_synthesize(PDO $db, array $route, array $auth, arr
 function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array $payload): ?array
 {
     $operation = $payload['operation'] ?? null;
-    if (!is_string($operation) || !in_array($operation, ['voice_presets', 'voice_preset_upsert', 'voice_preset_anchor_upsert', 'preset_synthesize'], true)) {
+    if (!is_string($operation) || !in_array($operation, ['voice_presets', 'voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete', 'preset_synthesize'], true)) {
         return null;
     }
     $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
@@ -378,6 +448,7 @@ function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array
         $result = match ($operation) {
             'voice_preset_upsert' => hub_voice_preset_upsert($db, $auth, $payload),
             'voice_preset_anchor_upsert' => hub_voice_preset_anchor_upsert($db, $auth, $payload),
+            'voice_preset_delete' => hub_voice_preset_delete($db, $auth, $payload),
             'preset_synthesize' => hub_voice_preset_api_synthesize($db, $route, $auth, $payload),
         };
     } catch (InvalidArgumentException $error) {
@@ -391,7 +462,13 @@ function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array
             'voice_preset_invalid',
         ], true) ? $error->getMessage() : 'voice_preset_invalid';
 
-        return hub_gateway_error(400, $code, 'voice preset request is invalid');
+        $status = match ($code) {
+            'voice_preset_not_found' => 404,
+            'voice_preset_unavailable' => 410,
+            default => 400,
+        };
+
+        return hub_gateway_error($status, $code, 'voice preset request is invalid');
     }
 
     return hub_gateway_json(200, $result);

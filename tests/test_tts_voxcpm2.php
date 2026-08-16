@@ -119,7 +119,18 @@ hub_test('Managed voice presets are owner-scoped and disclose only catalog metad
             ]);
             $catalog = hub_voice_preset_list($db, ['member_id' => $owner]);
             $otherCatalog = hub_voice_preset_list($db, ['member_id' => $other]);
-            $json = json_encode([$created, $anchored, $catalog, $otherCatalog], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            $server = $_SERVER;
+            $get = $_GET;
+            $_SERVER['REQUEST_METHOD'] = 'GET';
+            $_GET = ['mode' => 'voice_generate', 'operation' => 'voice_presets'];
+            try {
+                $directCatalog = hub_voice_profile_api_dispatch($db, [], ['member_id' => $owner]);
+            } finally {
+                $_SERVER = $server;
+                $_GET = $get;
+            }
+            $directPayload = json_decode((string)($directCatalog['body'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
+            $json = json_encode([$created, $anchored, $catalog, $otherCatalog, $directPayload], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
 
             hub_test_assert(
                 ($created['preset']['id'] ?? null) === 'azhe'
@@ -133,8 +144,15 @@ hub_test('Managed voice presets are owner-scoped and disclose only catalog metad
                     'scenes' => ['nervous', 'calm'],
                     'preset_revision' => 2,
                 ]]
-                && ($otherCatalog['voice_presets'] ?? null) === [],
+                && ($otherCatalog['voice_presets'] ?? null) === []
+                && $directPayload === $catalog,
                 'managed voice preset catalog must be owner-scoped and have its fixed safe shape'
+            );
+            $deleted = hub_voice_preset_delete($db, ['member_id' => $owner], ['voice_preset' => 'azhe']);
+            hub_test_assert(
+                $deleted === ['ok' => true, 'voice_preset' => 'azhe', 'status' => 'deleted']
+                && hub_voice_preset_list($db, ['member_id' => $owner]) === ['ok' => true, 'voice_presets' => []],
+                'managed preset owners must be able to retire their catalog entry'
             );
             foreach (['reference_audio_path', 'voice_profile_id', 'VoxCPM2', '/data/'] as $private) {
                 hub_test_assert(!str_contains($json, $private), 'managed preset catalog must not disclose ' . $private);

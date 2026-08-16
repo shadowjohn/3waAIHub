@@ -408,6 +408,18 @@ hub_test('Public API publishes installed stopped async Pack routes from canonica
     hub_test_assert($available === $sorted && in_array('voice_generate', $available, true), 'installed stopped VoxCPM2 must publish sorted voice_generate inventory');
     hub_test_assert(isset($services['hello_live']), 'healthy sync services must remain documented');
     hub_test_assert(is_array($voice) && ($voice['pack_id'] ?? '') === 'tts-voxcpm2', 'stopped sync TTS row must publish the canonical async voice_generate contract');
+    hub_test_assert(
+        ($voice['managed_voice_presets']['discovery_operation'] ?? null) === 'voice_presets'
+        && ($voice['managed_voice_presets']['management_operations'] ?? null) === ['voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete']
+        && ($voice['managed_voice_presets']['synthesis_operation'] ?? null) === 'preset_synthesize'
+        && ($voice['managed_voice_presets']['result_candidates'] ?? null) === ['candidate_id', 'audio_url', 'seed', 'preset_revision']
+        && str_contains((string)($voice['managed_voice_presets']['anchor_fallback'] ?? ''), 'automatically uses the preset base voice'),
+        'voice_generate must publish its managed preset contract without engine controls'
+    );
+    $voiceErrors = array_column((array)$voice['error_table'], null, 'code');
+    foreach (['voice_preset_required' => 400, 'voice_preset_not_found' => 404, 'voice_preset_unavailable' => 410, 'voice_preset_scene_invalid' => 400, 'voice_preset_candidate_count_invalid' => 400, 'voice_preset_forbidden_input' => 400, 'voice_preset_invalid' => 400] as $code => $status) {
+        hub_test_assert(($voiceErrors[$code]['http_status'] ?? null) === $status, 'managed preset error status mismatch: ' . $code);
+    }
     hub_test_assert(array_column((array)$voice['operations'], 'operation') === [
         'profile_prepare', 'profile_status', 'profile_confirm', 'profile_delete', 'synthesize',
     ], 'voice_generate must document all profile and synthesis operations in stable order');
@@ -1619,6 +1631,21 @@ hub_test('VoxCPM2 readmes document the safe native and Cluster profile lifecycle
         ),
         'Pack README Cluster flow must include cluster_task_result between synthesis and artifact retrieval'
     );
+});
+
+hub_test('Managed voice preset docs describe candidate persistence and Cluster affinity', function (): void {
+    $operation = (string)file_get_contents(HUB_ROOT . '/docs/operations/managed-voice-presets.md');
+    $cluster = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
+
+    foreach (['candidate_id', 'seed', 'preset_revision', 'audio_url', 'automatically falls back'] as $needle) {
+        hub_test_assert(str_contains($operation, $needle), 'managed preset operation docs missing: ' . $needle);
+    }
+    foreach (['voice_presets', 'preset_synthesize', 'pinned station', 'no failover', 'candidate_id'] as $needle) {
+        hub_test_assert(str_contains($cluster, $needle), 'Cluster docs missing managed preset behavior: ' . $needle);
+    }
+    foreach (['voice_profile_id', 'reference_audio_path', 'VoxCPM2'] as $forbidden) {
+        hub_test_assert(!str_contains($operation, $forbidden), 'managed preset operation docs expose internal detail: ' . $forbidden);
+    }
 });
 
 hub_test('PhaseDX-3.1 old public docs defaults migrate once only', function (): void {

@@ -75,7 +75,7 @@ VoxCPM2 可在服務設定切為 `resident` 後重啟：首次 `voice_generate` 
 
 `tts-gpt-sovits` 另以 `voice_generate_gpt_sovits` 提供 `clone`、`ultimate_clone`，不混入 VoxCPM2 的 `design` contract。它預設一次性容器，也可由管理員切成 `resident`；idle 預設同樣為 `0`。16 GB 主機在兩種服務無法同時滿足 VRAM 餘裕時，由管理員明確停止其中一個，Pack 不會自動驅逐其他常駐模型。
 
-`voice_generate` 亦提供 owner-managed `voice_presets` / `preset_synthesize`：呼叫端只送角色 preset、用途、情境、台詞與 1–3 個候選；Hub 封存受管聲線、策略與 seed，完成結果回傳穩定 `candidate_id`、`audio_url`、`seed`、`preset_revision`。情境錨點未配置時自動使用基礎聲線，不會把控制描述念進台詞。操作契約見 [`docs/operations/managed-voice-presets.md`](docs/operations/managed-voice-presets.md)。
+`voice_generate` 亦提供 owner-managed `voice_presets` / `preset_synthesize`：呼叫端只送角色 preset、用途、情境、台詞與 1–3 個候選；Hub 封存受管聲線、策略與 seed，完成結果回傳穩定 `candidate_id`、`audio_url`、`seed`、`preset_revision`。情境錨點未配置時自動使用基礎聲線，不會把控制描述念進台詞；經 Router 建立的 preset 與後續合成固定在同一站。操作契約見 [`docs/operations/managed-voice-presets.md`](docs/operations/managed-voice-presets.md)。
 
 ## 平台能力矩陣
 

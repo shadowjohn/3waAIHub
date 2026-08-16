@@ -896,7 +896,106 @@ function hub_cluster_voice_generate_relay_errors(): array
         'voice_profile_unavailable' => ['public_code' => 'voice_profile_unavailable', 'http_status' => 410, 'message' => 'voice profile is unavailable'],
         'artifact_purged' => ['public_code' => 'artifact_purged', 'http_status' => 410, 'message' => 'artifact is no longer available'],
         'pack_runtime_not_ready' => ['public_code' => 'pack_runtime_not_ready', 'http_status' => 503, 'message' => 'voice generation runtime is not ready'],
+        'voice_preset_required' => ['public_code' => 'voice_preset_required', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
+        'voice_preset_not_found' => ['public_code' => 'voice_preset_not_found', 'http_status' => 404, 'message' => 'voice preset request is invalid'],
+        'voice_preset_unavailable' => ['public_code' => 'voice_preset_unavailable', 'http_status' => 410, 'message' => 'voice preset request is invalid'],
+        'voice_preset_scene_invalid' => ['public_code' => 'voice_preset_scene_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
+        'voice_preset_candidate_count_invalid' => ['public_code' => 'voice_preset_candidate_count_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
+        'voice_preset_forbidden_input' => ['public_code' => 'voice_preset_forbidden_input', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
+        'voice_preset_invalid' => ['public_code' => 'voice_preset_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
     ];
+}
+
+function hub_cluster_voice_preset_operation(?array $payload): ?string
+{
+    $operation = $payload['operation'] ?? null;
+
+    return is_string($operation) && in_array($operation, [
+        'voice_presets',
+        'voice_preset_upsert',
+        'voice_preset_anchor_upsert',
+        'voice_preset_delete',
+        'preset_synthesize',
+    ], true) ? $operation : null;
+}
+
+function hub_cluster_voice_preset_route_for_member(PDO $db, array $auth, string $presetId): ?array
+{
+    $memberId = (int)($auth['member_id'] ?? 0);
+    if ($memberId < 1 || hub_voice_preset_slug($presetId) === null) {
+        return null;
+    }
+    $stmt = $db->prepare(
+        'SELECT member_id, preset_id, station_id, preset_json FROM cluster_voice_preset_routes
+         WHERE member_id = :member_id AND preset_id = :preset_id LIMIT 1'
+    );
+    $stmt->execute([':member_id' => $memberId, ':preset_id' => $presetId]);
+    $route = $stmt->fetch();
+
+    return $route === false ? null : $route;
+}
+
+function hub_cluster_voice_preset_list(PDO $db, array $auth): array
+{
+    $memberId = (int)($auth['member_id'] ?? 0);
+    if ($memberId < 1) {
+        return ['ok' => true, 'voice_presets' => []];
+    }
+    $stmt = $db->prepare(
+        'SELECT preset_json FROM cluster_voice_preset_routes
+         WHERE member_id = :member_id ORDER BY preset_id ASC'
+    );
+    $stmt->execute([':member_id' => $memberId]);
+    $presets = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_COLUMN) as $json) {
+        $preset = hub_voice_preset_public_value(json_decode((string)$json, true));
+        if ($preset === null) {
+            throw new RuntimeException('cluster_voice_preset_invalid');
+        }
+        $presets[] = $preset;
+    }
+
+    return ['ok' => true, 'voice_presets' => $presets];
+}
+
+function hub_cluster_voice_preset_store(PDO $db, array $auth, int $stationId, mixed $value): array
+{
+    $memberId = (int)($auth['member_id'] ?? 0);
+    $preset = hub_voice_preset_public_value($value);
+    if ($memberId < 1 || $stationId < 1 || $preset === null) {
+        throw new RuntimeException('cluster_voice_preset_invalid');
+    }
+    $now = hub_now();
+    $db->prepare(
+        'INSERT INTO cluster_voice_preset_routes
+            (member_id, preset_id, station_id, preset_json, created_at, updated_at)
+         VALUES
+            (:member_id, :preset_id, :station_id, :preset_json, :created_at, :updated_at)
+         ON CONFLICT(member_id, preset_id) DO UPDATE SET
+            station_id = excluded.station_id, preset_json = excluded.preset_json, updated_at = excluded.updated_at'
+    )->execute([
+        ':member_id' => $memberId,
+        ':preset_id' => $preset['id'],
+        ':station_id' => $stationId,
+        ':preset_json' => json_encode($preset, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+        ':created_at' => $now,
+        ':updated_at' => $now,
+    ]);
+
+    return $preset;
+}
+
+function hub_cluster_voice_preset_delete(PDO $db, array $auth, string $presetId): void
+{
+    $memberId = (int)($auth['member_id'] ?? 0);
+    if ($memberId < 1 || hub_voice_preset_slug($presetId) === null) {
+        throw new RuntimeException('cluster_voice_preset_invalid');
+    }
+    $stmt = $db->prepare('DELETE FROM cluster_voice_preset_routes WHERE member_id = :member_id AND preset_id = :preset_id');
+    $stmt->execute([':member_id' => $memberId, ':preset_id' => $presetId]);
+    if ($stmt->rowCount() !== 1) {
+        throw new RuntimeException('cluster_voice_preset_missing');
+    }
 }
 
 function hub_cluster_voice_generate_error_table(): array
@@ -1067,6 +1166,7 @@ function hub_cluster_rewrite_voice_generate_contract(array $service, string $mod
     $service['workflow'] = [
         'client_state' => 'MyAI stores only voice_profile_task_id returned by profile_prepare.',
         'profile_affinity' => 'Profile followups and clone synthesis stay on the pinned station; there is no failover.',
+        'preset_affinity' => 'Managed preset discovery uses Router-owned safe catalog metadata. A bound preset and its candidate synthesis stay on the pinned station; there is no failover.',
         'profile_ownership' => 'After profile_prepare succeeds, the Profile handle belongs to the API member and may be used by any currently valid Token for that member with ' . $mode . ' permission. Task and artifact followups remain bound to the submitting Token.',
         'operation_default' => 'Omitting operation means synthesize.',
         'spoken_text_boundary' => hub_public_api_voice_generate_spoken_text_boundary(),
@@ -1487,8 +1587,22 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
     if (hub_is_voice_profile_mode($mode)) {
         try {
             $profilePayload = hub_cluster_router_voice_profile_payload($normalized);
+            if (($normalized['method'] ?? '') === 'GET') {
+                unset($profilePayload['mode']);
+            }
         } catch (Throwable) {
             return $finish(hub_gateway_error(400, 'invalid_request', 'invalid request'));
+        }
+    }
+    $presetOperation = hub_cluster_voice_preset_operation($profilePayload);
+    if ($presetOperation === 'voice_presets') {
+        if (($normalized['method'] ?? '') !== 'GET' || array_keys((array)$profilePayload) !== ['operation']) {
+            return $finish(hub_gateway_error(400, 'voice_preset_invalid', 'voice preset request is invalid'));
+        }
+        try {
+            return $finish(hub_gateway_json(200, hub_cluster_voice_preset_list($db, (array)$auth['context'])));
+        } catch (Throwable) {
+            return $finish(hub_gateway_error(502, 'router_response_invalid', 'cluster preset catalog is invalid'));
         }
     }
     $profileOperation = is_array($profilePayload) && is_string($profilePayload['operation'] ?? null)
@@ -1504,7 +1618,24 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         && ($profileRoute !== null || in_array($profileOperation, ['profile_prepare', 'profile_status', 'profile_confirm', 'profile_delete', 'synthesize'], true));
     $profileSensitive = hub_is_voice_profile_mode($mode)
         && ($profileRoute !== null || $profileOperation === 'profile_prepare');
-    $pinnedStation = $profileRoute !== null || $photoAsset !== null;
+    $presetRoute = null;
+    if (in_array($presetOperation, ['voice_preset_anchor_upsert', 'voice_preset_delete', 'preset_synthesize'], true)) {
+        $presetId = hub_voice_preset_slug($profilePayload['voice_preset'] ?? null);
+        if ($presetId === null) {
+            return $finish(hub_gateway_error(400, 'voice_preset_required', 'voice preset request is invalid'));
+        }
+        $presetRoute = hub_cluster_voice_preset_route_for_member($db, (array)$auth['context'], $presetId);
+        if ($presetRoute === null) {
+            return $finish(hub_gateway_error(404, 'voice_preset_not_found', 'voice preset was not found'));
+        }
+        if ($profileRoute !== null && (int)$profileRoute['station_id'] !== (int)$presetRoute['station_id']) {
+            return $finish(hub_gateway_error(409, 'voice_preset_station_mismatch', 'voice preset profile is on a different station'));
+        }
+    }
+    if ($presetOperation === 'voice_preset_upsert' && $profileRoute === null) {
+        return $finish(hub_gateway_error(400, 'voice_preset_invalid', 'voice preset request is invalid'));
+    }
+    $pinnedStation = $profileRoute !== null || $photoAsset !== null || $presetRoute !== null;
 
     $refreshDue = is_callable($seams['refresh_due'] ?? null)
         ? $seams['refresh_due']
@@ -1518,9 +1649,9 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
         return $finish(hub_gateway_error(503, 'router_unavailable', 'cluster inventory is unavailable'));
     }
     if ($pinnedStation) {
-        $pinnedStationId = $profileRoute !== null
-            ? (int)$profileRoute['station_id']
-            : (int)$photoAsset['station_id'];
+        $pinnedStationId = $presetRoute !== null
+            ? (int)$presetRoute['station_id']
+            : ($profileRoute !== null ? (int)$profileRoute['station_id'] : (int)$photoAsset['station_id']);
         $selectedInventory = null;
         foreach ($inventory as $candidate) {
             if (is_array($candidate) && (int)($candidate['id'] ?? 0) === $pinnedStationId) {
@@ -1640,6 +1771,44 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
                 } else {
                     $payload['image_id'] = (string)$photoAsset['image_id'];
                     $response = hub_cluster_router_with_json_payload($response, $payload, true);
+                }
+            } elseif (in_array($presetOperation, ['voice_preset_upsert', 'voice_preset_anchor_upsert'], true)) {
+                try {
+                    if (!is_array($payload) || array_keys($payload) !== ['ok', 'preset'] || ($payload['ok'] ?? null) !== true) {
+                        throw new UnexpectedValueException('invalid voice preset response');
+                    }
+                    $preset = hub_cluster_voice_preset_store($db, (array)$auth['context'], (int)$station['id'], $payload['preset'] ?? null);
+                    if (!hash_equals((string)($profilePayload['voice_preset'] ?? ''), $preset['id'])) {
+                        throw new UnexpectedValueException('voice preset response mismatch');
+                    }
+                    $response = hub_cluster_router_with_json_payload($response, ['ok' => true, 'preset' => $preset], true);
+                } catch (Throwable) {
+                    $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+                }
+            } elseif ($presetOperation === 'voice_preset_delete') {
+                try {
+                    if (!is_array($payload)
+                        || $payload !== ['ok' => true, 'voice_preset' => (string)($profilePayload['voice_preset'] ?? ''), 'status' => 'deleted']) {
+                        throw new UnexpectedValueException('invalid voice preset delete response');
+                    }
+                    hub_cluster_voice_preset_delete($db, (array)$auth['context'], (string)$payload['voice_preset']);
+                    $response = hub_cluster_router_with_json_payload($response, $payload, true);
+                } catch (Throwable) {
+                    $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+                }
+            } elseif ($presetOperation === 'preset_synthesize') {
+                try {
+                    if (!is_array($payload)) {
+                        throw new UnexpectedValueException('invalid voice preset task response');
+                    }
+                    hub_cluster_router_voice_profile_async_task_id($payload);
+                    $payload = hub_cluster_rewrite_async_response($db, [
+                        'route_id' => $routeId,
+                        'station_id' => (int)$station['id'],
+                    ], $payload, hub_cluster_router_api_base_url());
+                    $response = hub_cluster_router_with_json_payload($response, $payload, false);
+                } catch (Throwable) {
+                    $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
                 }
             } elseif ($isProfileRequest && !is_array($payload)) {
                 $response = hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
@@ -2039,6 +2208,9 @@ function hub_cluster_voice_profile_reference(array $normalized): ?string
     if ($queryReference !== null) {
         $references[] = $queryReference['value'];
     }
+    if (($normalized['method'] ?? '') === 'GET') {
+        return $references[0] ?? null;
+    }
 
     if (array_key_exists('form', $normalized)) {
         $form = $normalized['form'];
@@ -2424,6 +2596,13 @@ function hub_cluster_router_rewrite_task_payload(PDO $db, array $route, array $p
             $payload,
             hub_cluster_router_rich_artifact_mode((string)($route['mode'] ?? ''))
         );
+        if (is_array($response['result']['candidates'] ?? null)) {
+            $template = hub_cluster_router_task_links($routeId, $routerBase, (string)($route['mode'] ?? ''))['artifact_url_template'];
+            foreach ($response['result']['candidates'] as &$candidate) {
+                $candidate['audio_url'] = str_replace('{artifact_id}', rawurlencode((string)$candidate['audio_artifact_id']), $template);
+            }
+            unset($candidate);
+        }
     } elseif ($kind === 'log') {
         $logs = hub_cluster_router_public_task_logs($db, $route, $payload, $remoteTaskId);
         if ($logs === null) {
@@ -2557,6 +2736,31 @@ function hub_cluster_router_safe_artifact_id(mixed $id): ?array
     return ['key' => $value, 'value' => is_int($id) ? $id : $value];
 }
 
+function hub_cluster_router_public_voice_preset_candidates(mixed $value, array $artifacts): ?array
+{
+    if (!is_array($value) || !array_is_list($value) || count($value) < 1 || count($value) > 3) {
+        return null;
+    }
+    $known = array_fill_keys(array_map(static fn (array $artifact): string => (string)$artifact['id'], $artifacts), true);
+    $revision = null;
+    foreach ($value as $index => $candidate) {
+        $artifact = is_array($candidate) ? hub_cluster_router_safe_artifact_id($candidate['audio_artifact_id'] ?? null) : null;
+        if (!is_array($candidate)
+            || array_keys($candidate) !== ['candidate_id', 'audio_artifact_id', 'seed', 'preset_revision']
+            || ($candidate['candidate_id'] ?? null) !== 'candidate-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT)
+            || $artifact === null || !isset($known[$artifact['key']])
+            || !is_int($candidate['seed'] ?? null) || $candidate['seed'] < 0 || $candidate['seed'] > 2147483647
+            || !is_int($candidate['preset_revision'] ?? null) || $candidate['preset_revision'] < 1
+            || ($revision !== null && $candidate['preset_revision'] !== $revision)) {
+            return null;
+        }
+        $revision = $candidate['preset_revision'];
+        $value[$index]['audio_artifact_id'] = $artifact['value'];
+    }
+
+    return $value;
+}
+
 function hub_cluster_router_public_task_result(array $payload, bool $includeMetadata = false): array
 {
     $artifacts = hub_cluster_router_result_artifacts($payload, $includeMetadata);
@@ -2564,6 +2768,16 @@ function hub_cluster_router_public_task_result(array $payload, bool $includeMeta
         throw new UnexpectedValueException('invalid child artifact index');
     }
     $result = $payload['result'] ?? null;
+    if (is_array($result) && array_key_exists('candidates', $result)) {
+        $candidates = array_keys($result) === ['candidates']
+            ? hub_cluster_router_public_voice_preset_candidates($result['candidates'], $artifacts)
+            : null;
+        if ($candidates === null) {
+            throw new UnexpectedValueException('invalid voice preset candidate result');
+        }
+
+        return ['candidates' => $candidates];
+    }
     if (is_array($result) && array_key_exists('kind', $result)) {
         $keys = ['kind', 'transcription_status', 'transcript_confirmed', 'text_chars', 'prompt_text_sha256'];
         if (($result['kind'] ?? null) !== 'voice_profile_prepare'
