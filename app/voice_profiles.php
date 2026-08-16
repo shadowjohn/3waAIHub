@@ -195,6 +195,9 @@ function hub_normalize_voice_profile_ref(string|int $value): int
 
 function hub_voice_profile_safe_host_path(string $path): ?string
 {
+    if (PHP_OS_FAMILY === 'Windows') {
+        clearstatcache();
+    }
     $storageDir = hub_voice_profile_storage_dir();
     $root = realpath($storageDir);
     if ($root === false || !is_dir($root) || is_link($storageDir) || $path === '') {
@@ -204,9 +207,16 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     $normalizedRoot = $root;
     $normalizedPath = $path;
     if (PHP_OS_FAMILY === 'Windows') {
-        $normalizedRoot = str_replace('/', DIRECTORY_SEPARATOR, $normalizedRoot);
         $normalizedPath = str_replace('/', DIRECTORY_SEPARATOR, $normalizedPath);
-        if (!str_starts_with(strtolower($normalizedPath), strtolower($normalizedRoot . DIRECTORY_SEPARATOR))) {
+        $normalizedRoot = '';
+        foreach ([$storageDir, $root] as $candidateRoot) {
+            $candidateRoot = rtrim(str_replace('/', DIRECTORY_SEPARATOR, $candidateRoot), DIRECTORY_SEPARATOR);
+            if (str_starts_with(strtolower($normalizedPath), strtolower($candidateRoot . DIRECTORY_SEPARATOR))) {
+                $normalizedRoot = $candidateRoot;
+                break;
+            }
+        }
+        if ($normalizedRoot === '') {
             return null;
         }
     } elseif (!str_starts_with($normalizedPath, $normalizedRoot . DIRECTORY_SEPARATOR)) {
@@ -231,18 +241,27 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     if (!is_file($candidate)) {
         return null;
     }
-    $stat = lstat($candidate);
     $real = realpath($candidate);
+    if (PHP_OS_FAMILY === 'Windows') {
+        $normalizedReal = str_replace('/', DIRECTORY_SEPARATOR, $real ?: '');
+        $physicalRoot = str_replace('/', DIRECTORY_SEPARATOR, $root);
+        return $real !== false && str_starts_with(strtolower($normalizedReal), strtolower($physicalRoot . DIRECTORY_SEPARATOR))
+            ? $real
+            : null;
+    }
+
+    $stat = lstat($candidate);
     if (
         $real === false
         || !is_array($stat)
-        || (((int)$stat['mode'] & 0170000) !== 0100000)
+        || ((int)$stat['mode'] & 0170000) !== 0100000
         || (int)($stat['nlink'] ?? 0) !== 1
     ) {
         return null;
     }
 
-    return str_starts_with($real, $root . DIRECTORY_SEPARATOR) ? $real : null;
+    $normalizedReal = str_replace('/', DIRECTORY_SEPARATOR, $real);
+    return str_starts_with($normalizedReal, $normalizedRoot . DIRECTORY_SEPARATOR) ? $real : null;
 }
 
 function hub_voice_profile_file_stats_match(mixed $openedStat, mixed $pathStat, bool $requireSingleLink = true): bool

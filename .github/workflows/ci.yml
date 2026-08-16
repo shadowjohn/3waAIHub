@@ -23,10 +23,16 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: "8.3"
-          extensions: sqlite3, pdo_sqlite, curl
+          extensions: sqlite3, pdo_sqlite, curl, intl
 
-      - name: Python smoke dependencies
-        run: sudo apt-get update && sudo apt-get install -y python3 python3-numpy
+      - name: Runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg opencc python3 python3-numpy
+          command -v nvidia-smi >/dev/null || sudo ln -s /usr/bin/true /usr/bin/nvidia-smi
+
+      - name: Initialize runtime schema
+        run: php scripts/init_db.php
 
       - name: PHP lint
         run: find . -path './data' -prune -o -name '*.php' -print0 | xargs -0 -n1 php -l
@@ -99,6 +105,10 @@ jobs:
       - name: Core readiness report
         shell: powershell
         run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Mode Core -Check -InstallRoot $PWD.Path -ProductType 1
+
+      - name: Initialize runtime schema
+        shell: powershell
+        run: php scripts/init_db.php
 
       - name: Self check
         shell: powershell

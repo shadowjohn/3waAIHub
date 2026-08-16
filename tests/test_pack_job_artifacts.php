@@ -899,7 +899,7 @@ hub_test('Pack job handoff failure terminalizes without a partial artifact regis
         hub_test_assert((int)$db->query('SELECT COUNT(*) FROM task_artifacts WHERE task_id = ' . $fixture['task_id'])->fetchColumn() === 0, 'handoff setup failure must not register a partial artifact set');
     } finally {
         if (is_link($artifactRoot)) {
-            unlink($artifactRoot);
+            hub_test_remove_symlink($artifactRoot);
         }
         hub_test_pack_job_rm($workspace);
     }

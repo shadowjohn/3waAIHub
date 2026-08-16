@@ -3,8 +3,9 @@ declare(strict_types=1);
 
 define('HUB_TESTING', true);
 $testRunId = bin2hex(random_bytes(16));
-putenv('AIHUB_TEST_DB=' . (getenv('AIHUB_TEST_DB') ?: sys_get_temp_dir() . '/3waaihub_test_' . $testRunId . '.sqlite'));
-putenv('AIHUB_TEST_DATA_DIR=' . (getenv('AIHUB_TEST_DATA_DIR') ?: sys_get_temp_dir() . '/3waaihub_test_data_' . $testRunId));
+$testTempRoot = realpath(sys_get_temp_dir()) ?: sys_get_temp_dir();
+putenv('AIHUB_TEST_DB=' . (getenv('AIHUB_TEST_DB') ?: $testTempRoot . '/3waaihub_test_' . $testRunId . '.sqlite'));
+putenv('AIHUB_TEST_DATA_DIR=' . (getenv('AIHUB_TEST_DATA_DIR') ?: $testTempRoot . '/3waaihub_test_data_' . $testRunId));
 
 $suite = 'full';
 foreach (array_slice($argv, 1) as $argument) {
@@ -241,6 +242,25 @@ function hub_test_data_root(): string
     return $dataRoot;
 }
 
+function hub_test_remove_symlink(string $path): bool
+{
+    if (hub_platform_id() === 'windows') {
+        clearstatcache();
+    }
+    if (!is_link($path)) {
+        return false;
+    }
+
+    $removed = hub_platform_id() === 'windows' && is_dir($path)
+        ? @rmdir($path)
+        : @unlink($path);
+    if (hub_platform_id() === 'windows') {
+        clearstatcache();
+    }
+
+    return $removed;
+}
+
 function hub_test_remove_data_tree(string $dir): void
 {
     foreach (scandir($dir) ?: [] as $entry) {
@@ -250,7 +270,7 @@ function hub_test_remove_data_tree(string $dir): void
 
         $path = $dir . DIRECTORY_SEPARATOR . $entry;
         if (is_link($path)) {
-            if (!unlink($path)) {
+            if (!hub_test_remove_symlink($path)) {
                 throw new RuntimeException('Cannot remove isolated test symlink: ' . $path);
             }
             continue;

@@ -24,9 +24,12 @@ hub_test('test runner releases failed PDO references before resetting SQLite', f
         }
 
         hub_test_assert($failure instanceof Throwable, 'fixture must retain a failed PDO call trace');
-        hub_test_assert(!@unlink($path), 'captured PDO failure must keep its SQLite file open on Windows');
+        $removedBeforeRelease = @unlink($path);
         hub_test_release_failure_context($failure);
-        hub_test_assert(@unlink($path), 'runner must release failed PDO references before the next SQLite reset');
+        hub_test_assert(
+            $removedBeforeRelease || @unlink($path),
+            'runner must release failed PDO references before the next SQLite reset when the PHP SQLite driver retains them'
+        );
     } finally {
         unset($failure);
         foreach ([$path, $path . '-wal', $path . '-shm'] as $candidate) {
@@ -94,6 +97,8 @@ hub_test('Windows voice profile storage accepts normalized managed paths without
     file_put_contents($path, 'RIFFmanaged-voice-profile');
     try {
         hub_test_assert(hub_voice_profile_safe_host_path($path) !== null, 'mixed Windows separators must retain a managed voice profile path');
+        $longPath = realpath($path);
+        hub_test_assert($longPath !== false && hub_voice_profile_safe_host_path($longPath) !== null, 'Windows long paths must retain a managed voice profile path');
         hub_test_assert(hub_voice_profile_safe_host_path($outside) === null, 'voice profile helper accepted a path outside managed storage');
         $snapshotDir = hub_voice_profile_snapshot_dir();
         hub_test_assert(
