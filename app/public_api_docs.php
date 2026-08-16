@@ -628,6 +628,24 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
             'profile_delete',
         ],
     ];
+    if ($mode === 'voice_generate') {
+        $contract['managed_voice_presets'] = [
+            'discovery_operation' => 'voice_presets',
+            'synthesis_operation' => 'preset_synthesize',
+            'request' => [
+                'voice_preset' => 'azhe',
+                'purpose' => 'scene_preview',
+                'scene' => 'nervous',
+                'candidate_count' => 3,
+                'text' => '等一下，我再確認一次……',
+                'seed' => 12345,
+            ],
+            'response' => ['task_id', 'status_url', 'result_url'],
+            'result_candidates' => ['candidate_id', 'audio_url', 'seed', 'preset_revision'],
+            'anchor_fallback' => 'A declared scene without an anchor automatically uses the preset base voice; callers do not select clone mode.',
+            'boundary' => 'preset_synthesize rejects model, mode, Voice Profile IDs, paths, voice_prompt, and control. text remains the only spoken content.',
+        ];
+    }
     if ($mode === 'voice_generate_gpt_sovits') {
         $prepareFields = &$contract['operations'][0]['input_fields'];
         $prepareFields = array_values(array_filter(
