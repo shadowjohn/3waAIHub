@@ -96,7 +96,19 @@ hub_test('Windows voice profile storage accepts normalized managed paths without
     }
     file_put_contents($path, 'RIFFmanaged-voice-profile');
     try {
-        hub_test_assert(hub_voice_profile_safe_host_path($path) !== null, 'mixed Windows separators must retain a managed voice profile path');
+        $managed = hub_voice_profile_safe_host_path($path);
+        hub_test_assert(
+            $managed !== null,
+            'mixed Windows separators must retain a managed voice profile path: ' . json_encode([
+                'root' => $root,
+                'path' => $path,
+                'root_real' => realpath($root),
+                'path_real' => realpath($path),
+                'root_is_link' => is_link($root),
+                'path_is_link' => is_link($path),
+                'path_is_file' => is_file($path),
+            ], JSON_UNESCAPED_SLASHES)
+        );
         hub_test_assert(hub_voice_profile_safe_host_path($outside) === null, 'voice profile helper accepted a path outside managed storage');
         $snapshotDir = hub_voice_profile_snapshot_dir();
         hub_test_assert(
