@@ -1441,6 +1441,13 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract, ?
     if (isset($input['voice_context'])) {
         $request['voice_context'] = $input['voice_context'];
     }
+    if (array_key_exists('voice_preset_batch', $input)) {
+        $batch = hub_voice_preset_batch_snapshot($input['voice_preset_batch']);
+        if ($batch === null) {
+            throw new RuntimeException('voice_preset_unavailable');
+        }
+        $request['preset_candidates'] = $batch['candidates'];
+    }
     $hasPrivatePrompt = false;
     if (isset($voiceProfileMount['prompt_text'])) {
         if (($request['voice_context']['mode'] ?? null) !== 'ultimate_clone'

@@ -187,10 +187,128 @@ function hub_voice_preset_list(PDO $db, array $auth): array
     return ['ok' => true, 'voice_presets' => array_map('hub_voice_preset_public', $stmt->fetchAll())];
 }
 
+function hub_voice_preset_batch_snapshot(mixed $value): ?array
+{
+    if (!is_array($value) || array_keys($value) !== ['preset_id', 'preset_revision', 'candidates']
+        || hub_voice_preset_slug($value['preset_id'] ?? null) === null
+        || !is_int($value['preset_revision'] ?? null) || (int)$value['preset_revision'] < 1
+        || !is_array($value['candidates'] ?? null) || !array_is_list($value['candidates'])) {
+        return null;
+    }
+    $candidates = $value['candidates'];
+    if (count($candidates) < 1 || count($candidates) > 3) {
+        return null;
+    }
+    foreach ($candidates as $index => $candidate) {
+        if (!is_array($candidate)
+            || $candidate !== ['candidate_id' => 'candidate-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT), 'seed' => $candidate['seed'] ?? null]
+            || !is_int($candidate['seed'] ?? null)
+            || $candidate['seed'] < 0 || $candidate['seed'] > 2147483647) {
+            return null;
+        }
+    }
+
+    return $value;
+}
+
+function hub_voice_preset_seed(array $payload, int $index): int
+{
+    if ($index === 1 && array_key_exists('seed', $payload)) {
+        return (int)$payload['seed'];
+    }
+    $source = implode("\n", [
+        (string)$payload['voice_preset'],
+        (string)$payload['preset_revision'],
+        (string)$payload['purpose'],
+        (string)$payload['scene'],
+        (string)$payload['text'],
+        (string)($payload['seed'] ?? ''),
+        (string)$index,
+    ]);
+
+    return (int)(hexdec(substr(hash('sha256', $source), 0, 8)) & 0x7fffffff);
+}
+
+function hub_voice_preset_api_synthesize(PDO $db, array $route, array $auth, array $payload): array
+{
+    $allowed = ['voice_preset' => true, 'purpose' => true, 'scene' => true, 'candidate_count' => true, 'text' => true, 'seed' => true];
+    if (array_diff_key($payload, $allowed) !== []) {
+        throw new InvalidArgumentException('voice_preset_forbidden_input');
+    }
+    $memberId = hub_voice_preset_owner_id($auth);
+    $presetId = hub_voice_preset_slug($payload['voice_preset'] ?? null);
+    if ($presetId === null) {
+        throw new InvalidArgumentException('voice_preset_required');
+    }
+    $purpose = hub_voice_preset_slug($payload['purpose'] ?? null);
+    $scene = hub_voice_preset_slug($payload['scene'] ?? null);
+    $candidateCount = $payload['candidate_count'] ?? null;
+    $text = $payload['text'] ?? null;
+    $seed = $payload['seed'] ?? null;
+    if ($purpose === null || $scene === null || !is_int($candidateCount) || $candidateCount < 1 || $candidateCount > 3
+        || !is_string($text) || trim($text) === '' || strlen($text) > 4096
+        || ($seed !== null && (!is_int($seed) || $seed < 0 || $seed > 2147483647))) {
+        throw new InvalidArgumentException(
+            !is_int($candidateCount) || $candidateCount < 1 || $candidateCount > 3
+                ? 'voice_preset_candidate_count_invalid'
+                : 'voice_preset_invalid'
+        );
+    }
+    $preset = $memberId > 0 ? hub_voice_preset_for_owner($db, $memberId, $presetId) : null;
+    if ($preset === null) {
+        throw new InvalidArgumentException('voice_preset_not_found');
+    }
+    if ((int)($preset['enabled'] ?? 0) !== 1) {
+        throw new InvalidArgumentException('voice_preset_unavailable');
+    }
+    $purposes = json_decode((string)($preset['purposes_json'] ?? ''), true);
+    $scenes = json_decode((string)($preset['scenes_json'] ?? ''), true);
+    if (!is_array($purposes) || !in_array($purpose, $purposes, true)) {
+        throw new InvalidArgumentException('voice_preset_invalid');
+    }
+    if (!is_array($scenes) || !in_array($scene, $scenes, true)) {
+        throw new InvalidArgumentException('voice_preset_scene_invalid');
+    }
+    $anchor = $db->prepare('SELECT voice_profile_id FROM voice_preset_scene_anchors WHERE voice_preset_id = :voice_preset_id AND scene = :scene LIMIT 1');
+    $anchor->execute([':voice_preset_id' => (int)$preset['id'], ':scene' => $scene]);
+    $anchorProfileId = (int)$anchor->fetchColumn();
+    $mode = $anchorProfileId > 0 ? 'ultimate_clone' : 'clone';
+    $profileId = $anchorProfileId > 0 ? $anchorProfileId : (int)$preset['base_voice_profile_id'];
+    $firstSeedPayload = $payload + ['preset_revision' => (int)$preset['revision']];
+    $candidates = [];
+    for ($index = 1; $index <= $candidateCount; $index++) {
+        $candidates[] = [
+            'candidate_id' => 'candidate-' . str_pad((string)$index, 2, '0', STR_PAD_LEFT),
+            'seed' => hub_voice_preset_seed($firstSeedPayload, $index),
+        ];
+    }
+    $input = hub_pack_job_task_input([
+        'text' => $text,
+        'mode' => $mode,
+        'voice_profile_id' => $profileId,
+        'seed' => $candidates[0]['seed'],
+    ], $route);
+    $input = hub_pack_job_task_resolve_voice_context($db, $input, $route, $memberId, (int)($auth['token_id'] ?? 0));
+    $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $memberId, (int)($auth['token_id'] ?? 0) ?: null, hub_get_client_ip());
+    $task = hub_get_task($db, $taskId);
+    if ($task === null) {
+        throw new RuntimeException('voice_preset_task_store_failed');
+    }
+    $taskInput = (array)$task['input'];
+    $taskInput['voice_preset_batch'] = [
+        'preset_id' => $presetId,
+        'preset_revision' => (int)$preset['revision'],
+        'candidates' => $candidates,
+    ];
+    hub_update_task_input($db, $taskId, $taskInput);
+
+    return hub_task_submit_response($taskId);
+}
+
 function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array $payload): ?array
 {
     $operation = $payload['operation'] ?? null;
-    if (!is_string($operation) || !in_array($operation, ['voice_presets', 'voice_preset_upsert', 'voice_preset_anchor_upsert'], true)) {
+    if (!is_string($operation) || !in_array($operation, ['voice_presets', 'voice_preset_upsert', 'voice_preset_anchor_upsert', 'preset_synthesize'], true)) {
         return null;
     }
     $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
@@ -205,11 +323,24 @@ function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array
         return hub_gateway_error(405, 'method_not_allowed', 'voice preset request requires POST');
     }
     try {
-        $result = $operation === 'voice_preset_upsert'
-            ? hub_voice_preset_upsert($db, $auth, $payload)
-            : hub_voice_preset_anchor_upsert($db, $auth, $payload);
-    } catch (InvalidArgumentException) {
-        return hub_gateway_error(400, 'voice_preset_invalid', 'voice preset request is invalid');
+        unset($payload['operation']);
+        $result = match ($operation) {
+            'voice_preset_upsert' => hub_voice_preset_upsert($db, $auth, $payload),
+            'voice_preset_anchor_upsert' => hub_voice_preset_anchor_upsert($db, $auth, $payload),
+            'preset_synthesize' => hub_voice_preset_api_synthesize($db, $route, $auth, $payload),
+        };
+    } catch (InvalidArgumentException $error) {
+        $code = in_array($error->getMessage(), [
+            'voice_preset_required',
+            'voice_preset_not_found',
+            'voice_preset_unavailable',
+            'voice_preset_scene_invalid',
+            'voice_preset_candidate_count_invalid',
+            'voice_preset_forbidden_input',
+            'voice_preset_invalid',
+        ], true) ? $error->getMessage() : 'voice_preset_invalid';
+
+        return hub_gateway_error(400, $code, 'voice preset request is invalid');
     }
 
     return hub_gateway_json(200, $result);

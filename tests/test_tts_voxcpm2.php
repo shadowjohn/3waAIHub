@@ -149,6 +149,110 @@ hub_test('Managed voice presets are owner-scoped and disclose only catalog metad
     });
 });
 
+hub_test('Managed voice preset synthesis seals strategy, fallback, and candidate seeds', function (): void {
+    if (!function_exists('hub_voice_preset_api_synthesize')) {
+        hub_test_assert(false, 'managed voice preset synthesis API is missing');
+        return;
+    }
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $owner = hub_create_api_member($db, 'Preset Synthesis Owner');
+        $token = hub_create_api_token($db, $owner, 'preset synthesis token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        $paths = [];
+        $createProfileTask = static function (string $name, bool $confirmed) use ($db, $owner, &$paths): int {
+            $path = hub_voice_profile_storage_dir() . '/preset-synthesis-' . bin2hex(random_bytes(6)) . '.wav';
+            file_put_contents($path, 'RIFF' . $name);
+            $paths[] = $path;
+            $profileId = hub_create_voice_profile($db, $owner, [
+                'name' => $name,
+                'reference_audio_path' => $path,
+                'consent_type' => 'self_recorded',
+                'prompt_text' => $confirmed ? '緊張情境樣本' : null,
+            ]);
+            if ($confirmed) {
+                hub_confirm_voice_profile_prompt($db, $profileId, $owner, '緊張情境樣本');
+            }
+            $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '203.0.113.92', [
+                'owner_member_id' => $owner,
+                'requested_mode' => 'voice_generate',
+            ]);
+            $db->prepare('UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id')
+                ->execute([':task_id' => $taskId, ':id' => $profileId]);
+            $db->prepare("UPDATE tasks SET status = 'success', progress = 100, finished_at = :now, updated_at = :now WHERE id = :id")
+                ->execute([':now' => hub_now(), ':id' => $taskId]);
+
+            return $taskId;
+        };
+        try {
+            $baseTaskId = $createProfileTask('Preset base', false);
+            $anchorTaskId = $createProfileTask('Preset nervous', true);
+            hub_voice_preset_upsert($db, ['member_id' => $owner], [
+                'voice_preset' => 'azhe',
+                'label' => '阿哲',
+                'gender' => 'male',
+                'age_bucket' => 'adult',
+                'purposes' => ['scene_preview'],
+                'scenes' => ['nervous', 'calm'],
+                'voice_profile_task_id' => (string)$baseTaskId,
+            ]);
+            hub_voice_preset_anchor_upsert($db, ['member_id' => $owner], [
+                'voice_preset' => 'azhe',
+                'scene' => 'nervous',
+                'voice_profile_task_id' => (string)$anchorTaskId,
+            ]);
+            $route = hub_resolve_audio_async_route($db, 'voice_generate');
+            $auth = ['member_id' => $owner, 'token_id' => (int)$token['token_id']];
+            $request = [
+                'voice_preset' => 'azhe',
+                'purpose' => 'scene_preview',
+                'scene' => 'nervous',
+                'candidate_count' => 3,
+                'seed' => 77,
+                'text' => '等一下，我再確認一次……',
+            ];
+            $accepted = hub_voice_preset_api_synthesize($db, $route, $auth, $request);
+            $task = hub_get_task($db, (int)($accepted['task_id'] ?? 0));
+            $fallback = hub_voice_preset_api_synthesize($db, $route, $auth, array_replace($request, ['scene' => 'calm']));
+            $fallbackTask = hub_get_task($db, (int)($fallback['task_id'] ?? 0));
+            $rejected = null;
+            try {
+                hub_voice_preset_api_synthesize($db, $route, $auth, $request + ['voice_prompt' => 'must not be accepted']);
+            } catch (InvalidArgumentException $error) {
+                $rejected = $error->getMessage();
+            }
+
+            hub_test_assert(
+                ($accepted['status'] ?? null) === 'queued'
+                && ($task['task_type'] ?? null) === 'pack_job'
+                && ($task['input']['text'] ?? null) === '等一下，我再確認一次……'
+                && ($task['input']['mode'] ?? null) === 'ultimate_clone'
+                && !array_key_exists('voice_prompt', (array)($task['input'] ?? []))
+                && !array_key_exists('control', (array)($task['input'] ?? []))
+                && ($task['input']['voice_preset_batch'] ?? null) === [
+                    'preset_id' => 'azhe',
+                    'preset_revision' => 2,
+                    'candidates' => [
+                        ['candidate_id' => 'candidate-01', 'seed' => 77],
+                        ['candidate_id' => 'candidate-02', 'seed' => $task['input']['voice_preset_batch']['candidates'][1]['seed'] ?? null],
+                        ['candidate_id' => 'candidate-03', 'seed' => $task['input']['voice_preset_batch']['candidates'][2]['seed'] ?? null],
+                    ],
+                ]
+                && ($fallbackTask['input']['mode'] ?? null) === 'clone'
+                && $rejected === 'voice_preset_forbidden_input',
+                'preset synthesis must lock model strategy internally, retain exact spoken text, and use a bounded seeded batch'
+            );
+        } finally {
+            foreach ($paths as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+        }
+    });
+});
+
 hub_test('VoxCPM2 profile_prepare stores raw Whisper text and validation without confirming', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
