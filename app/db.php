@@ -709,6 +709,37 @@ CREATE TABLE IF NOT EXISTS voice_profile_audit_logs (
     FOREIGN KEY(token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS voice_presets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_member_id INTEGER NOT NULL,
+    preset_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    gender TEXT NOT NULL,
+    age_bucket TEXT NOT NULL,
+    purposes_json TEXT NOT NULL,
+    scenes_json TEXT NOT NULL,
+    base_voice_profile_id INTEGER NOT NULL,
+    revision INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(owner_member_id, preset_id),
+    FOREIGN KEY(owner_member_id) REFERENCES api_members(id) ON DELETE CASCADE,
+    FOREIGN KEY(base_voice_profile_id) REFERENCES voice_profiles(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS voice_preset_scene_anchors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    voice_preset_id INTEGER NOT NULL,
+    scene TEXT NOT NULL,
+    voice_profile_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(voice_preset_id, scene),
+    FOREIGN KEY(voice_preset_id) REFERENCES voice_presets(id) ON DELETE CASCADE,
+    FOREIGN KEY(voice_profile_id) REFERENCES voice_profiles(id) ON DELETE RESTRICT
+);
+
 CREATE TABLE IF NOT EXISTS playground_tts_artifacts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     filename TEXT NOT NULL,
@@ -1301,6 +1332,8 @@ SQL);
     }
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_profile ON voice_profile_audit_logs(voice_profile_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_profile_audit_owner ON voice_profile_audit_logs(owner_member_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_presets_owner ON voice_presets(owner_member_id, preset_id)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_voice_preset_anchors_preset ON voice_preset_scene_anchors(voice_preset_id, scene)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_playground_tts_artifacts_owner ON playground_tts_artifacts(owner_member_id, service_id)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_expires_at ON photo_assets(expires_at)');
     $db->exec('CREATE INDEX IF NOT EXISTS idx_photo_assets_sha256 ON photo_assets(sha256)');
@@ -1631,6 +1664,8 @@ function hub_runtime_schema_missing(PDO $db): array
         'cluster_photo_assets' => ['id', 'image_id', 'station_id', 'remote_image_id', 'owner_member_id', 'owner_token_id', 'expires_at', 'last_accessed_at', 'created_at'],
         'tasks' => ['owner_member_id', 'owner_token_id', 'requested_mode', 'pack_id', 'pack_version', 'job', 'job_contract_json', 'job_contract_digest', 'runtime_mode', 'accelerator', 'route_resolved_at', 'source_artifact_id', 'source_task_id', 'retry_of_task_id', 'callback_target_id', 'waiting_reason', 'next_attempt_at', 'waiting_detail_json', 'error_code', 'source_expires_at', 'workspace_expires_at', 'source_state', 'workspace_state', 'retention_state', 'purged_at', 'freed_bytes', 'purge_claim_token', 'purge_claimed_at', 'purge_error', 'metadata_purge_claim_token', 'metadata_purge_claimed_at', 'partial_purge_error', 'partial_purge_retry_at'],
         'voice_profiles' => ['source_task_id', 'reference_contract', 'transcript_validation_json'],
+        'voice_presets' => ['id', 'owner_member_id', 'preset_id', 'label', 'gender', 'age_bucket', 'purposes_json', 'scenes_json', 'base_voice_profile_id', 'revision', 'enabled', 'created_at', 'updated_at'],
+        'voice_preset_scene_anchors' => ['id', 'voice_preset_id', 'scene', 'voice_profile_id', 'created_at', 'updated_at'],
         'facebook_crawler_profiles' => ['id', 'profile_id', 'owner_member_id', 'node_name', 'display_name', 'state', 'last_verified_at', 'active_task_id', 'login_secret_hash', 'login_container_name', 'login_port', 'login_expires_at', 'deleted_at', 'created_at', 'updated_at'],
         'sam3_sources' => ['id', 'source_id', 'service_id', 'display_name', 'protocol', 'source_url', 'clip_seconds', 'monitor_enabled', 'monitor_interval_seconds', 'last_error_code', 'last_seen_at', 'enabled', 'created_by', 'created_at', 'updated_at'],
         'sam3_monitor_runs' => ['id', 'source_id', 'service_id', 'task_id', 'runtime_run_id', 'state', 'last_heartbeat_at', 'started_at', 'stopped_at', 'last_safe_error_code'],

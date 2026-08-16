@@ -64,6 +64,91 @@ hub_test('Voice profile transcript validation normalizes UTF-8 text and reports 
     hub_test_assert(array_key_exists('cer', $unverified['validation']) && $unverified['validation']['cer'] === null && ($unverified['validation']['status'] ?? '') === 'unverified' && ($unverified['validation']['needs_confirmation'] ?? false), 'missing expected text must remain unverified');
 });
 
+hub_test('Managed voice presets are owner-scoped and disclose only catalog metadata', function (): void {
+    if (!function_exists('hub_voice_preset_upsert')) {
+        hub_test_assert(false, 'managed voice preset API is missing');
+        return;
+    }
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        $owner = hub_create_api_member($db, 'Preset Owner');
+        $other = hub_create_api_member($db, 'Preset Other');
+        $paths = [];
+        $createProfileTask = static function (int $memberId, string $name, bool $confirmed) use ($db, &$paths): int {
+            $path = hub_voice_profile_storage_dir() . '/managed-preset-' . bin2hex(random_bytes(6)) . '.wav';
+            file_put_contents($path, 'RIFF' . $name);
+            $paths[] = $path;
+            $profileId = hub_create_voice_profile($db, $memberId, [
+                'name' => $name,
+                'reference_audio_path' => $path,
+                'consent_type' => 'self_recorded',
+                'prompt_text' => $confirmed ? '已確認的情境台詞' : null,
+            ]);
+            if ($confirmed) {
+                hub_confirm_voice_profile_prompt($db, $profileId, $memberId, '已確認的情境台詞');
+            }
+            $taskId = hub_enqueue_task($db, 'voice_profile_prepare', 'default', 0, ['voice_profile_id' => $profileId], null, '203.0.113.91', [
+                'owner_member_id' => $memberId,
+                'requested_mode' => 'voice_generate',
+            ]);
+            $db->prepare("UPDATE voice_profiles SET source_task_id = :task_id WHERE id = :id")
+                ->execute([':task_id' => $taskId, ':id' => $profileId]);
+            $db->prepare("UPDATE tasks SET status = 'success', progress = 100, finished_at = :now, updated_at = :now WHERE id = :id")
+                ->execute([':now' => hub_now(), ':id' => $taskId]);
+
+            return $taskId;
+        };
+        try {
+            $baseTaskId = $createProfileTask($owner, 'Preset base voice', false);
+            $anchorTaskId = $createProfileTask($owner, 'Preset nervous voice', true);
+            $baseProfile = hub_voice_preset_profile_for_task($db, $owner, (string)$baseTaskId);
+            hub_test_assert($baseProfile !== null, 'preset base profile task must be active and successful before binding');
+            $created = hub_voice_preset_upsert($db, ['member_id' => $owner], [
+                'voice_preset' => 'azhe',
+                'label' => '阿哲',
+                'gender' => 'male',
+                'age_bucket' => 'adult',
+                'purposes' => ['scene_preview'],
+                'scenes' => ['nervous', 'calm'],
+                'voice_profile_task_id' => (string)$baseTaskId,
+            ]);
+            $anchored = hub_voice_preset_anchor_upsert($db, ['member_id' => $owner], [
+                'voice_preset' => 'azhe',
+                'scene' => 'nervous',
+                'voice_profile_task_id' => (string)$anchorTaskId,
+            ]);
+            $catalog = hub_voice_preset_list($db, ['member_id' => $owner]);
+            $otherCatalog = hub_voice_preset_list($db, ['member_id' => $other]);
+            $json = json_encode([$created, $anchored, $catalog, $otherCatalog], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+            hub_test_assert(
+                ($created['preset']['id'] ?? null) === 'azhe'
+                && ($anchored['preset']['preset_revision'] ?? null) === 2
+                && ($catalog['voice_presets'] ?? null) === [[
+                    'id' => 'azhe',
+                    'label' => '阿哲',
+                    'gender' => 'male',
+                    'age_bucket' => 'adult',
+                    'purposes' => ['scene_preview'],
+                    'scenes' => ['nervous', 'calm'],
+                    'preset_revision' => 2,
+                ]]
+                && ($otherCatalog['voice_presets'] ?? null) === [],
+                'managed voice preset catalog must be owner-scoped and have its fixed safe shape'
+            );
+            foreach (['reference_audio_path', 'voice_profile_id', 'VoxCPM2', '/data/'] as $private) {
+                hub_test_assert(!str_contains($json, $private), 'managed preset catalog must not disclose ' . $private);
+            }
+        } finally {
+            foreach ($paths as $path) {
+                if (is_file($path)) {
+                    unlink($path);
+                }
+            }
+        }
+    });
+});
+
 hub_test('VoxCPM2 profile_prepare stores raw Whisper text and validation without confirming', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();

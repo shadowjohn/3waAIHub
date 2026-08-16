@@ -41,6 +41,11 @@ function hub_voice_profile_api_dispatch(PDO $db, array $route, array $authContex
         return null;
     }
 
+    $presetResponse = hub_voice_preset_api_dispatch($db, $route, $authContext, $payload);
+    if ($presetResponse !== null) {
+        return $presetResponse;
+    }
+
     return match ($operation) {
         'profile_prepare' => hub_voice_profile_api_prepare($db, $route, $authContext, $payload),
         'profile_status' => hub_voice_profile_api_status($db, $authContext, $payload),
