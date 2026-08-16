@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 from long_form import BOUNDARY_ACTIONS, assemble, canonical_json, fake_synthesize, global_loudness_pass, make_plan, peak_guard, read_pcm, sha256_text, write_pcm
 
-ALLOWED_REQUEST = {"text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "prompt_text", "waveform_preview", "voice_context"}
+ALLOWED_REQUEST = {"text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "prompt_text", "waveform_preview", "voice_context", "preset_candidates"}
 DEFAULTS = {"mode": "design", "seed": 42, "seed_policy": "derived_per_chunk", "model": "voxcpm2", "waveform_preview": False}
 DEFAULT_DESIGN_PROMPT = "沉穩的台灣男性技師，語速稍慢，清楚自然"
 NON_RETRYABLE_SYNTHESIS_ERRORS = {"gpu_unavailable", "model_load_failed", "runtime_dependency_missing", "sample_rate_mismatch", "job_cancelled"}
@@ -85,6 +85,15 @@ def validate_request(value: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError("ultimate_clone_prompt_text_required")
         elif prompt_text is not None:
             raise RuntimeError("voice_profile_forbidden")
+    candidates = value.get("preset_candidates")
+    if candidates is not None:
+        if not isinstance(candidates, list) or not 1 <= len(candidates) <= 3:
+            raise RuntimeError("request_invalid")
+        for index, candidate in enumerate(candidates, 1):
+            if candidate != {"candidate_id": f"candidate-{index:02d}", "seed": candidate.get("seed") if isinstance(candidate, dict) else None}:
+                raise RuntimeError("request_invalid")
+            if isinstance(candidate["seed"], bool) or not isinstance(candidate["seed"], int) or not 0 <= candidate["seed"] <= 2_147_483_647:
+                raise RuntimeError("request_invalid")
     return value
 
 
@@ -303,7 +312,7 @@ def waveform(samples: list[int], sample_rate: int) -> dict[str, Any]:
 
 def clean_output(output: Path, preview: bool) -> None:
     output.mkdir(parents=True, exist_ok=True)
-    for name in ("generated_audio.wav", "synthesis_metadata.json", "waveform_preview.json"):
+    for name in ("generated_audio.wav", "candidate-02.wav", "candidate-03.wav", "synthesis_metadata.json", "waveform_preview.json"):
         path = output / name
         if path.exists() and (path.is_symlink() or not path.is_file()):
             raise RuntimeError("output_invalid")
@@ -329,30 +338,38 @@ def run_job(workspace: Path, input_dir: Path, output: Path, runner_config_path: 
     voice = voice_context(request, managed_reference_path)
     if request["mode"] in {"clone", "ultimate_clone"}:
         source = managed_reference_path or Path(voice["container_path"])
-    plan = make_plan(request["text"], request["seed"], request["seed_policy"], 240)
-    plan_path = workspace / "checkpoints" / "plan" / "chunks.json"
-    write_immutable_json(plan_path, plan, "checkpoint_plan_mismatch")
-    context = checkpoint_context(plan, model, voice, request.get("voice_prompt"))
-    chunks = []
-    for chunk in plan["chunks"]:
-        if cancelled and cancelled():
-            raise RuntimeError("job_cancelled")
-        chunks.append(create_chunk(chunk, workspace / "checkpoints" / "chunks", context, voice, source, model, prompt_text=request.get("prompt_text"), voice_prompt=request.get("voice_prompt"), cancelled=cancelled))
-    final, timeline = assemble(chunks, model["sample_rate"])
-    final, loudness = global_loudness_pass(final)
     clean_output(output, request["waveform_preview"])
-    write_pcm(output / "generated_audio.wav", model["sample_rate"], final)
-    chunk_metadata = []
-    for chunk in chunks:
-        boundary = chunk["boundary"]
-        if boundary["action"] not in BOUNDARY_ACTIONS:
-            raise RuntimeError("boundary_action_invalid")
-        chunk_metadata.append({
-            "id": chunk["id"], "seed": chunk["seed"], "seed_sha256": chunk["seed_sha256"], "attempts": chunk["attempts"], "duration_frames": len(chunk["samples"]), "duration_seconds": len(chunk["samples"]) / model["sample_rate"], "peak_gain": chunk["peak_gain"], "reused_checkpoint": chunk["reused"], "action": boundary["action"], "trim_frames": boundary["trim_frames"], "pause_frames": boundary["pause_frames"], "crossfade_frames": boundary["crossfade_frames"],
-        })
-    metadata = {
-        "normalized_input": plan["normalized_input"], "plan": plan, "model": {key: value for key, value in model.items() if key != "model"}, "voice_context": {key: value for key, value in voice.items() if key != "container_path"}, "controls": {"mode": request["mode"], "seed_policy": request["seed_policy"], "task_seed": request["seed"]}, "chunks": chunk_metadata, "final_format": {"mime_type": "audio/wav", "sample_rate": model["sample_rate"], "channels": 1, "frames": len(final)}, "loudness": loudness, "timeline": timeline, "device": {"type": "fake", "real_inference": False} if fake_enabled() else {"type": "cuda", "real_inference": True},
-    }
+    preset_candidates = request.pop("preset_candidates", None)
+    candidates = preset_candidates or [{"candidate_id": "candidate-01", "seed": request["seed"]}]
+    metadata = None
+    for index, candidate in enumerate(candidates, 1):
+        candidate_request = request | {"seed": candidate["seed"]}
+        checkpoint_root = workspace / "checkpoints" / candidate["candidate_id"] if preset_candidates else workspace / "checkpoints"
+        plan = make_plan(candidate_request["text"], candidate_request["seed"], candidate_request["seed_policy"], 240)
+        write_immutable_json(checkpoint_root / "plan" / "chunks.json", plan, "checkpoint_plan_mismatch")
+        context = checkpoint_context(plan, model, voice, candidate_request.get("voice_prompt"))
+        chunks = []
+        for chunk in plan["chunks"]:
+            if cancelled and cancelled():
+                raise RuntimeError("job_cancelled")
+            chunks.append(create_chunk(chunk, checkpoint_root / "chunks", context, voice, source, model, prompt_text=candidate_request.get("prompt_text"), voice_prompt=candidate_request.get("voice_prompt"), cancelled=cancelled))
+        final, timeline = assemble(chunks, model["sample_rate"])
+        final, loudness = global_loudness_pass(final)
+        write_pcm(output / ("generated_audio.wav" if index == 1 else f"candidate-{index:02d}.wav"), model["sample_rate"], final)
+        if index == 1:
+            chunk_metadata = []
+            for chunk in chunks:
+                boundary = chunk["boundary"]
+                if boundary["action"] not in BOUNDARY_ACTIONS:
+                    raise RuntimeError("boundary_action_invalid")
+                chunk_metadata.append({
+                    "id": chunk["id"], "seed": chunk["seed"], "seed_sha256": chunk["seed_sha256"], "attempts": chunk["attempts"], "duration_frames": len(chunk["samples"]), "duration_seconds": len(chunk["samples"]) / model["sample_rate"], "peak_gain": chunk["peak_gain"], "reused_checkpoint": chunk["reused"], "action": boundary["action"], "trim_frames": boundary["trim_frames"], "pause_frames": boundary["pause_frames"], "crossfade_frames": boundary["crossfade_frames"],
+                })
+            metadata = {
+                "normalized_input": plan["normalized_input"], "plan": plan, "model": {key: value for key, value in model.items() if key != "model"}, "voice_context": {key: value for key, value in voice.items() if key != "container_path"}, "controls": {"mode": request["mode"], "seed_policy": request["seed_policy"], "task_seed": candidate_request["seed"]}, "chunks": chunk_metadata, "final_format": {"mime_type": "audio/wav", "sample_rate": model["sample_rate"], "channels": 1, "frames": len(final)}, "loudness": loudness, "timeline": timeline, "device": {"type": "fake", "real_inference": False} if fake_enabled() else {"type": "cuda", "real_inference": True},
+            }
+    if metadata is None:
+        raise RuntimeError("request_invalid")
     write_json(output / "synthesis_metadata.json", metadata)
     if request["waveform_preview"]:
         write_json(output / "waveform_preview.json", waveform(final, model["sample_rate"]))

@@ -3219,6 +3219,9 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
             $expected[$definition['path']] = $definition;
         }
     }
+    foreach (hub_voice_preset_candidate_artifact_definitions($taskInput, $expected['generated_audio.wav'] ?? null) as $definition) {
+        $expected[$definition['path']] = $definition;
+    }
     if ($expected === []) {
         hub_pack_job_output_contract_invalid('artifact_set_invalid');
     }
@@ -4965,24 +4968,27 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
             $lockWaitMs = hub_runtime_telemetry_elapsed_ms($firstWriteTiming['started_ns'], $firstWriteTiming['ended_ns']);
         }
         $resultArtifacts = [];
+        $registeredArtifacts = [];
         foreach ($publishedArtifacts as $artifact) {
+            $artifactId = hub_register_validated_pack_job_artifact(
+                $db,
+                $taskId,
+                $artifact,
+                $audioProbe
+            );
             $resultArtifacts[] = [
-                'id' => hub_register_validated_pack_job_artifact(
-                    $db,
-                    $taskId,
-                    $artifact,
-                    $audioProbe
-                ),
+                'id' => $artifactId,
                 'type' => $artifact['artifact_type'] ?? null,
                 'mime_type' => $artifact['mime_type'] ?? null,
                 'size_bytes' => $artifact['size_bytes'] ?? null,
                 'sha256' => $artifact['sha256'] ?? null,
             ];
+            $registeredArtifacts[] = ['name' => $artifact['name'] ?? null, 'id' => $artifactId];
         }
         if ($resultArtifacts === []) {
             throw new InvalidArgumentException('validated_artifacts_required');
         }
-        hub_pack_job_mark_task_terminal($db, $taskId, 'success', null, '', ['artifacts' => $resultArtifacts]);
+        hub_pack_job_mark_task_terminal($db, $taskId, 'success', null, '', ['artifacts' => $resultArtifacts] + hub_voice_preset_batch_task_result($db, $taskId, $registeredArtifacts));
         hub_release_task_artifact_holds($db, $taskId);
         hub_enqueue_task_callback_delivery($db, $taskId);
         $commitAttempted = true;

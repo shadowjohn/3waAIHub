@@ -238,6 +238,29 @@ class UltimateCloneJobTests(unittest.TestCase):
         checkpoint = json.loads(next((self.workspace / "checkpoints" / "chunks").glob("*.json")).read_text(encoding="utf-8"))
         self.assertEqual("fake", checkpoint["context"]["device"])
 
+    def test_preset_candidates_write_one_bounded_wav_per_seed(self):
+        request = self.request(mode="clone", prompt_text=None)
+        request["voice_context"] = {
+            "mode": "clone",
+            "voice_profile_id": 37,
+            "reference_audio_sha256": self.reference_sha256,
+            "container_path": "/data/voice_profiles/reference.wav",
+        }
+        request["preset_candidates"] = [
+            {"candidate_id": "candidate-01", "seed": 101},
+            {"candidate_id": "candidate-02", "seed": 202},
+            {"candidate_id": "candidate-03", "seed": 303},
+        ]
+        self.write_input(request)
+        managed, wav_bytes = self.managed_wav()
+        with managed, wav_bytes, patch.dict(os.environ, {"VOXCPM2_JOB_FAKE_SYNTHESIS": "1"}):
+            self.run_job()
+
+        self.assertTrue((self.workspace / "output" / "generated_audio.wav").is_file())
+        self.assertTrue((self.workspace / "output" / "candidate-02.wav").is_file())
+        self.assertTrue((self.workspace / "output" / "candidate-03.wav").is_file())
+        self.assertFalse((self.workspace / "output" / "candidate-04.wav").exists())
+
     def test_design_prompt_stays_private_but_separates_checkpoints(self):
         prompt = "private design prompt"
         self.write_input({

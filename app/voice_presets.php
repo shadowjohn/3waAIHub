@@ -211,6 +211,57 @@ function hub_voice_preset_batch_snapshot(mixed $value): ?array
     return $value;
 }
 
+function hub_voice_preset_candidate_artifact_definitions(array $taskInput, ?array $primary): array
+{
+    $batch = hub_voice_preset_batch_snapshot($taskInput['voice_preset_batch'] ?? null);
+    if ($batch === null) {
+        return [];
+    }
+    if ($primary === null || ($primary['path'] ?? null) !== 'generated_audio.wav') {
+        throw new InvalidArgumentException('voice_preset_output_invalid');
+    }
+    $definitions = [];
+    foreach (array_slice($batch['candidates'], 1) as $index => $candidate) {
+        $number = $index + 2;
+        $definitions[] = array_replace($primary, [
+            'type' => 'voice_candidate_' . str_pad((string)$number, 2, '0', STR_PAD_LEFT),
+            'path' => 'candidate-' . str_pad((string)$number, 2, '0', STR_PAD_LEFT) . '.wav',
+        ]);
+    }
+
+    return $definitions;
+}
+
+function hub_voice_preset_batch_task_result(PDO $db, int $taskId, array $registered): array
+{
+    $task = hub_get_task($db, $taskId);
+    $batch = is_array($task['input'] ?? null) ? hub_voice_preset_batch_snapshot($task['input']['voice_preset_batch'] ?? null) : null;
+    if ($batch === null) {
+        return [];
+    }
+    $byName = [];
+    foreach ($registered as $artifact) {
+        if (is_string($artifact['name'] ?? null) && is_int($artifact['id'] ?? null)) {
+            $byName[$artifact['name']] = $artifact['id'];
+        }
+    }
+    $candidates = [];
+    foreach ($batch['candidates'] as $index => $candidate) {
+        $name = $index === 0 ? 'generated_audio.wav' : 'candidate-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT) . '.wav';
+        if (!isset($byName[$name])) {
+            throw new InvalidArgumentException('voice_preset_output_invalid');
+        }
+        $candidates[] = [
+            'candidate_id' => $candidate['candidate_id'],
+            'audio_artifact_id' => $byName[$name],
+            'seed' => $candidate['seed'],
+            'preset_revision' => $batch['preset_revision'],
+        ];
+    }
+
+    return ['candidates' => $candidates];
+}
+
 function hub_voice_preset_seed(array $payload, int $index): int
 {
     if ($index === 1 && array_key_exists('seed', $payload)) {

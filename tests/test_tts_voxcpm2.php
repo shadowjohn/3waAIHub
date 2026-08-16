@@ -253,6 +253,32 @@ hub_test('Managed voice preset synthesis seals strategy, fallback, and candidate
     });
 });
 
+hub_test('Managed voice preset batches expose only fixed candidate artifact URLs', function (): void {
+    if (!function_exists('hub_voice_preset_candidate_artifact_definitions')) {
+        hub_test_assert(false, 'managed voice preset candidate artifact definitions are missing');
+        return;
+    }
+    $definitions = hub_voice_preset_candidate_artifact_definitions([
+        'voice_preset_batch' => [
+            'preset_id' => 'azhe',
+            'preset_revision' => 2,
+            'candidates' => [
+                ['candidate_id' => 'candidate-01', 'seed' => 101],
+                ['candidate_id' => 'candidate-02', 'seed' => 202],
+                ['candidate_id' => 'candidate-03', 'seed' => 303],
+            ],
+        ],
+    ], ['type' => 'generated_audio', 'path' => 'generated_audio.wav', 'mime_types' => ['audio/wav'], 'max_bytes' => 1024]);
+    $public = hub_task_result_publicize_value(['audio_artifact_id' => 42], [42 => 'https://hub.example/api.php?mode=artifact&artifact_id=42']);
+
+    hub_test_assert(
+        array_column($definitions, 'path') === ['candidate-02.wav', 'candidate-03.wav']
+        && ($public['audio_url'] ?? null) === 'https://hub.example/api.php?mode=artifact&artifact_id=42'
+        && !array_key_exists('path', $public),
+        'preset candidates must use only fixed output filenames and authenticated artifact URLs'
+    );
+});
+
 hub_test('VoxCPM2 profile_prepare stores raw Whisper text and validation without confirming', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();

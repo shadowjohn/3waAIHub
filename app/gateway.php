@@ -2480,6 +2480,10 @@ function hub_task_result_publicize_value(mixed $value, array $artifactUrls): mix
     if ($artifactId > 0 && isset($artifactUrls[$artifactId])) {
         $public['artifact_url'] = $artifactUrls[$artifactId];
     }
+    $audioArtifactId = (int)($public['audio_artifact_id'] ?? 0);
+    if ($audioArtifactId > 0 && isset($artifactUrls[$audioArtifactId])) {
+        $public['audio_url'] = $artifactUrls[$audioArtifactId];
+    }
 
     return $public;
 }
