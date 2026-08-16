@@ -235,9 +235,9 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     $real = realpath($candidate);
     if (
         $real === false
-        || !is_array($stat)
         || (PHP_OS_FAMILY !== 'Windows' && (
-            ((int)$stat['mode'] & 0170000) !== 0100000
+            !is_array($stat)
+            || ((int)$stat['mode'] & 0170000) !== 0100000
             || (int)($stat['nlink'] ?? 0) !== 1
         ))
     ) {

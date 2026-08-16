@@ -244,13 +244,21 @@ function hub_test_data_root(): string
 
 function hub_test_remove_symlink(string $path): bool
 {
+    if (hub_platform_id() === 'windows') {
+        clearstatcache();
+    }
     if (!is_link($path)) {
         return false;
     }
 
-    return hub_platform_id() === 'windows' && is_dir($path)
+    $removed = hub_platform_id() === 'windows' && is_dir($path)
         ? @rmdir($path)
         : @unlink($path);
+    if (hub_platform_id() === 'windows') {
+        clearstatcache();
+    }
+
+    return $removed;
 }
 
 function hub_test_remove_data_tree(string $dir): void
