@@ -195,6 +195,9 @@ function hub_normalize_voice_profile_ref(string|int $value): int
 
 function hub_voice_profile_safe_host_path(string $path): ?string
 {
+    if (PHP_OS_FAMILY === 'Windows') {
+        clearstatcache();
+    }
     $storageDir = hub_voice_profile_storage_dir();
     $root = realpath($storageDir);
     if ($root === false || !is_dir($root) || is_link($storageDir) || $path === '') {
@@ -231,23 +234,26 @@ function hub_voice_profile_safe_host_path(string $path): ?string
     if (!is_file($candidate)) {
         return null;
     }
-    $stat = lstat($candidate);
     $real = realpath($candidate);
+    if (PHP_OS_FAMILY === 'Windows') {
+        $normalizedReal = str_replace('/', DIRECTORY_SEPARATOR, $real ?: '');
+        return $real !== false && str_starts_with(strtolower($normalizedReal), strtolower($normalizedRoot . DIRECTORY_SEPARATOR))
+            ? $real
+            : null;
+    }
+
+    $stat = lstat($candidate);
     if (
         $real === false
-        || (PHP_OS_FAMILY !== 'Windows' && (
-            !is_array($stat)
-            || ((int)$stat['mode'] & 0170000) !== 0100000
-            || (int)($stat['nlink'] ?? 0) !== 1
-        ))
+        || !is_array($stat)
+        || ((int)$stat['mode'] & 0170000) !== 0100000
+        || (int)($stat['nlink'] ?? 0) !== 1
     ) {
         return null;
     }
 
     $normalizedReal = str_replace('/', DIRECTORY_SEPARATOR, $real);
-    return PHP_OS_FAMILY === 'Windows'
-        ? (str_starts_with(strtolower($normalizedReal), strtolower($normalizedRoot . DIRECTORY_SEPARATOR)) ? $real : null)
-        : (str_starts_with($normalizedReal, $normalizedRoot . DIRECTORY_SEPARATOR) ? $real : null);
+    return str_starts_with($normalizedReal, $normalizedRoot . DIRECTORY_SEPARATOR) ? $real : null;
 }
 
 function hub_voice_profile_file_stats_match(mixed $openedStat, mixed $pathStat, bool $requireSingleLink = true): bool
