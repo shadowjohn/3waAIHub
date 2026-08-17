@@ -337,10 +337,10 @@ def photo(request: PhotoRequest) -> JSONResponse:
         })
 
     prompt = (
-        "請使用正體中文回答。請根據圖片與使用者問題輸出 JSON："
-        "{\"answer\":\"針對問題的完整回答\",\"caption\":\"一句客觀圖片描述\",\"tags\":[\"最多八個短標籤\"]}"
-        "不得猜測圖片中不可見的資訊。無法確認時必須明確說明不確定。"
-        f"\n使用者問題：{question}"
+        "請使用正體中文。只輸出 JSON object，不得用 Markdown 或任何前言。"
+        "格式必須是 {\"answer\":\"80字內的客觀回答\",\"caption\":\"40字內圖片描述\",\"tags\":[\"最多5個短標籤\"]}。"
+        "不得猜測圖片中不可見的資訊；無法確認時必須明確說明不確定。"
+        f"\n問題：{question}"
     )
     try:
         image_url = image_data_url(path)
@@ -361,6 +361,9 @@ def photo(request: PhotoRequest) -> JSONResponse:
         "stream": False,
         "chat_template_kwargs": {
             "enable_thinking": False,
+        },
+        "response_format": {
+            "type": "json_object",
         },
     }
     try:

@@ -114,6 +114,33 @@ hub_test('release builder creates a hash-verified private deployment artifact', 
         );
         hub_test_assert(!file_exists($output . '/data'), 'release bootstrap must not create runtime data inside the artifact');
 
+        $runtimeServiceProbe = hub_run_command([
+            PHP_BINARY,
+            '-r',
+            'require ' . var_export($output . '/public/_bootstrap.php', true) . '; '
+            . 'hub_cli_only(); hub_ensure_runtime_dirs(); $db = hub_db(); hub_migrate($db); '
+            . '$service = hub_install_pack($db, "hello", ["service_key" => "release-runtime-compose", "mode" => "release_runtime_compose"])["service"]; '
+            . '$settings = hub_write_service_runtime_settings($db, $service); '
+            . '$compose = hub_write_service_compose($db, $service); '
+            . 'echo json_encode(["settings" => $settings, "compose" => $compose, "contents" => file_get_contents($settings)]);',
+        ], 60, [
+            'AIHUB_TEST_DB' => '',
+            'AIHUB_TEST_DATA_DIR' => '',
+        ]);
+        hub_test_assert((int)$runtimeServiceProbe['exit_code'] === 0, 'release runtime service probe failed: ' . trim((string)$runtimeServiceProbe['stderr']));
+        $runtimeService = json_decode(trim((string)$runtimeServiceProbe['stdout']), true);
+        $expectedRuntimeDir = $runtimeDataRoot . '/services/release-runtime-compose';
+        hub_test_assert(is_array($runtimeService), 'release runtime service probe must return JSON');
+        hub_test_assert(
+            hub_storage_paths_equal(dirname((string)($runtimeService['settings'] ?? '')), $expectedRuntimeDir)
+            && hub_storage_paths_equal(dirname((string)($runtimeService['compose'] ?? '')), $expectedRuntimeDir),
+            'release runtime files must be generated beneath the external data root',
+        );
+        hub_test_assert(
+            str_contains((string)($runtimeService['contents'] ?? ''), 'SERVICE_DATA_DIR=' . $expectedRuntimeDir . PHP_EOL),
+            'release runtime settings must not resolve SERVICE_DATA_DIR beneath the artifact',
+        );
+
         hub_test_assert(file_put_contents($output . '/unexpected.txt', 'not-manifested', LOCK_EX) !== false, 'cannot create release tamper fixture');
         $tamperCheck = hub_run_command([PHP_BINARY, HUB_ROOT . '/scripts/build_release.php', '--output=' . $output, '--check'], 60);
         hub_test_assert((int)$tamperCheck['exit_code'] !== 0, 'release check must reject files missing from the manifest');

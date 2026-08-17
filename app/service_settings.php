@@ -289,7 +289,7 @@ function hub_update_service_settings(PDO $db, int $serviceId, array $values): ar
     if (!$service) {
         throw new InvalidArgumentException('Service not found.');
     }
-    $runtimeDir = dirname(hub_path((string)$service['compose_file']));
+    $runtimeDir = hub_service_runtime_directory($db, $service);
     if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0775, true) && !is_dir($runtimeDir)) {
         throw new RuntimeException('Cannot create service runtime directory.');
     }
@@ -543,7 +543,7 @@ function hub_generate_service_runtime_settings_for_instance(PDO $db, array $serv
     }
     $manifest = $pack['manifest'];
     $storage = hub_get_storage_paths($db);
-    $runtimeDir = dirname(hub_path((string)$service['compose_file']));
+    $runtimeDir = hub_service_runtime_directory($db, $service);
     $portEnv = hub_pack_port_env($manifest);
     $values = array_merge([
         'AIHUB_MODELS_DIR' => $storage['AIHUB_MODELS_DIR'],
@@ -689,7 +689,6 @@ function hub_write_service_compose(PDO $db, array $service): string
     if (
         basename($composePath) !== 'docker-compose.generated.yml'
         || !hub_storage_paths_equal(dirname($composePath), $runtimeDir)
-        || !hub_storage_paths_equal(dirname(hub_path((string)$service['compose_file'])), $runtimeDir)
     ) {
         throw new RuntimeException('Service compose path escapes its runtime directory.');
     }
