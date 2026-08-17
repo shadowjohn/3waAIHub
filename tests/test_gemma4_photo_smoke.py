@@ -141,8 +141,10 @@ class Gemma4PhotoSmokeTest(unittest.TestCase):
         payload = captured["json"]
         self.assertFalse(payload["stream"])
         self.assertEqual({"enable_thinking": False}, payload["chat_template_kwargs"])
+        self.assertEqual({"type": "json_object"}, payload["response_format"])
         content = payload["messages"][0]["content"]
         self.assertEqual("text", content[0]["type"])
+        self.assertIn("只輸出 JSON object", content[0]["text"])
         self.assertEqual("image_url", content[1]["type"])
         self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
 

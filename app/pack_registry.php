@@ -1931,7 +1931,6 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         $localPort,
         $runtimeDir,
         $storage,
-        $composeFile,
         $isInternalTask,
         $pack,
         $serviceKey,
@@ -1957,7 +1956,6 @@ function hub_install_pack(PDO $db, string $packId, array|string|null $options = 
         if (
             basename($composePath) !== 'docker-compose.generated.yml'
             || !hub_storage_paths_equal(dirname($composePath), $runtimeDir)
-            || !hub_storage_paths_equal(dirname(hub_path($composeFile)), $runtimeDir)
         ) {
             throw new RuntimeException('Generated compose path escapes its service runtime.');
         }
