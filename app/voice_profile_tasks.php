@@ -27,7 +27,9 @@ function hub_voice_profile_api_dispatch(PDO $db, array $route, array $authContex
         $_POST = $payload;
     } else {
         $payload = $method === 'GET' ? $_GET : $_POST;
-        unset($payload['mode']);
+        if ($method === 'GET') {
+            unset($payload['mode']);
+        }
     }
     $operation = $payload['operation'] ?? null;
     if ($operation === null) {

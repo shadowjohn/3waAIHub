@@ -3762,6 +3762,18 @@ hub_test('cluster router relays only the bounded native profile transcription er
         && ($safeDraft['expected_text'] ?? null) === ['raw' => 'expected', 'normalized' => 'expected'],
         'profile draft nested objects must project only their exact public fields'
     );
+    $aboveOne = $draft;
+    $aboveOne['validation'] = [
+        'cer' => 1.7,
+        'status' => 'review_required',
+        'needs_confirmation' => true,
+        'normalizer' => 'opencc-s2twp-v1',
+    ];
+    $safeAboveOne = hub_cluster_router_public_voice_profile_response($aboveOne, true);
+    hub_test_assert(
+        ($safeAboveOne['validation']['cer'] ?? null) === 1.7,
+        'profile status must preserve an authoritative CER above one'
+    );
     $transcriptExtra = $draft;
     $transcriptExtra['transcript']['token'] = 'nested-transcript-secret';
     $expectedExtra = $draft;

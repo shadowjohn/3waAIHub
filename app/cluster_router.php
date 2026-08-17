@@ -2923,7 +2923,7 @@ function hub_cluster_router_public_voice_profile_response(array $payload, bool $
         if (!is_array($validation)
             || array_diff($validationKeys, array_keys($validation)) !== []
             || array_diff(array_keys($validation), $validationKeys) !== []
-            || ($validation['cer'] !== null && (!is_int($validation['cer']) && !is_float($validation['cer']) || $validation['cer'] < 0 || $validation['cer'] > 1))
+            || ($validation['cer'] !== null && (!is_int($validation['cer']) && !is_float($validation['cer']) || $validation['cer'] < 0 || !is_finite((float)$validation['cer'])))
             || !is_string($validation['status'])
             || !in_array($validation['status'], ['clean', 'pass', 'review_required', 'unverified', 'error'], true)
             || !is_bool($validation['needs_confirmation'])

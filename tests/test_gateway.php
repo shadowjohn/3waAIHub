@@ -185,6 +185,28 @@ hub_test('test database reset clears stale request input', function (): void {
     }
 });
 
+hub_test('voice profile form synthesis preserves its clone mode for Pack admission', function (): void {
+    $db = hub_db();
+    $server = $_SERVER;
+    $post = $_POST;
+    try {
+        $_SERVER['REQUEST_METHOD'] = 'POST';
+        $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+        $_POST = [
+            'operation' => 'synthesize',
+            'mode' => 'ultimate_clone',
+            'text' => 'voice contract smoke',
+            'voice_profile_task_id' => '42',
+        ];
+
+        hub_test_assert(hub_voice_profile_api_dispatch($db, [], []) === null, 'synthesis must continue to Pack admission');
+        hub_test_assert(($_POST['mode'] ?? null) === 'ultimate_clone', 'form synthesis must retain its explicit clone mode');
+    } finally {
+        $_SERVER = $server;
+        $_POST = $post;
+    }
+});
+
 hub_test('hello gateway and unknown mode keep expected contract', function (): void {
     $db = hub_test_reset_db();
     hub_set_service_enabled($db, 'hello', true);
