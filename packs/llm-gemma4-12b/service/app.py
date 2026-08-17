@@ -120,11 +120,26 @@ def parse_model_json(text: str) -> dict[str, Any] | None:
     match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", stripped, re.S)
     if match:
         stripped = match.group(1)
+    decoder = json.JSONDecoder()
     try:
-        value = json.loads(stripped)
+        value = decoder.decode(stripped)
     except json.JSONDecodeError:
-        return None
-    return value if isinstance(value, dict) else None
+        pass
+    else:
+        if isinstance(value, dict):
+            return value
+
+    for index, character in enumerate(stripped):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(stripped[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+
+    return None
 
 
 def validate_wav_bytes(data: bytes) -> dict[str, Any]:
@@ -344,6 +359,9 @@ def photo(request: PhotoRequest) -> JSONResponse:
         "temperature": 0.1,
         "max_tokens": request.max_tokens,
         "stream": False,
+        "chat_template_kwargs": {
+            "enable_thinking": False,
+        },
     }
     try:
         response = requests.post(

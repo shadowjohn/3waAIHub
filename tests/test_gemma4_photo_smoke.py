@@ -38,8 +38,23 @@ def Field(default=None, **kwargs):
     return default
 
 
+def File(default=None, **kwargs):
+    return default
+
+
+def Form(default=None, **kwargs):
+    return default
+
+
+class UploadFile:
+    pass
+
+
 fastapi = types.ModuleType("fastapi")
 fastapi.FastAPI = FastAPI
+fastapi.File = File
+fastapi.Form = Form
+fastapi.UploadFile = UploadFile
 responses = types.ModuleType("fastapi.responses")
 responses.JSONResponse = JSONResponse
 pydantic = types.ModuleType("pydantic")
@@ -125,10 +140,39 @@ class Gemma4PhotoSmokeTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         payload = captured["json"]
         self.assertFalse(payload["stream"])
+        self.assertEqual({"enable_thinking": False}, payload["chat_template_kwargs"])
         content = payload["messages"][0]["content"]
         self.assertEqual("text", content[0]["type"])
         self.assertEqual("image_url", content[1]["type"])
         self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
+    def test_real_photo_accepts_json_after_model_preamble(self):
+        class FakeResponse:
+            status_code = 200
+            text = ""
+
+            def json(self):
+                return {
+                    "choices": [{"message": {"content": "先確認圖片內容。\n{\"answer\":\"可見\",\"caption\":\"圖片\",\"tags\":[\"測試\"]}"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+                }
+
+        with tempfile.TemporaryDirectory() as root:
+            app.PHOTO_ROOT = Path(root).resolve()
+            image = app.PHOTO_ROOT / "img_0123456789abcdefghij" / "original"
+            image.parent.mkdir()
+            image.write_bytes(b"\xff\xd8jpeg")
+
+            with patch.object(app.requests, "post", return_value=FakeResponse()):
+                response = app.photo(app.PhotoRequest(
+                    image_id="img_0123456789abcdefghij",
+                    image_internal_path=str(image),
+                    text="describe",
+                    real_inference=True,
+                ))
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("可見", body(response)["answer"])
 
 
 if __name__ == "__main__":
