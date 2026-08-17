@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -33,6 +34,7 @@ from sam31 import (
 )
 
 app = FastAPI(title="3waAIHub SAM3")
+LOGGER = logging.getLogger("sam3")
 _SAM_LOCK = threading.Lock()  # ponytail: one GPU request per service; use job scheduling only if throughput requires it.
 _MODEL_CACHE: dict[str, Any] = {}
 _MODEL_WORK_LOCK = threading.RLock()
@@ -363,12 +365,16 @@ def resident_sam3_model(kind: str, loader: Any) -> Any:
         return predictor
 
     if _MODEL_CACHE:
-        _POINT_SESSION_CACHE.clear()
-        _MODEL_CACHE.clear()
-        release_cuda_cache()
+        clear_resident_sam3_state()
     predictor = loader(checkpoint, effective_device())
     _MODEL_CACHE[key] = predictor
     return predictor
+
+
+def clear_resident_sam3_state() -> None:
+    _POINT_SESSION_CACHE.clear()
+    _MODEL_CACHE.clear()
+    release_cuda_cache()
 
 
 def effective_device() -> str:
@@ -626,12 +632,16 @@ def run_sam3(data: bytes, width: int, height: int, prompt_type: str, points_json
     except TimeoutError as exc:
         raise Sam3Error("inference_timeout", "SAM3 inference timed out.", 504) from exc
     except Sam31Error as exc:
+        LOGGER.exception("SAM3 inference failed prompt_type=%s exception=%s", prompt_type, exc.code)
         if exc.code == "invalid_prompt":
             raise Sam3Error("invalid_prompt", "SAM3 prompt is invalid.", 400) from exc
+        clear_resident_sam3_state()
         raise Sam3Error("inference_failed", "SAM3 inference failed.", 502) from exc
     except Sam3Error:
         raise
     except Exception as exc:
+        LOGGER.exception("SAM3 inference failed prompt_type=%s exception=%s", prompt_type, type(exc).__name__)
+        clear_resident_sam3_state()
         raise Sam3Error("inference_failed", safe_message(exc), 502) from exc
     if output_format == "png":
         return {
