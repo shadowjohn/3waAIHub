@@ -137,6 +137,21 @@ function hub_windows_nvidia_smi_path(string $systemRoot, string $programFiles, ?
     return $systemPath;
 }
 
+/**
+ * Windows 的媒體驗證工具放在安裝器鎖定 ACL 的共用資料目錄，不能從 PATH 或
+ * 可由網站工作目錄覆寫的位置解析，避免工作產物驗證執行到非預期程式。
+ */
+function hub_windows_ffprobe_path(?string $programData = null): string
+{
+    $programData ??= (string)getenv('ProgramData');
+    $programData = rtrim(trim($programData), '\\/');
+    if (preg_match('/\A[A-Za-z]:[\\\\\/]/D', $programData) !== 1 || str_contains(str_replace('\\', '/', $programData), '/../')) {
+        $programData = 'C:\\ProgramData';
+    }
+
+    return $programData . '\\3waAIHub\\tools\\ffmpeg\\ffprobe.exe';
+}
+
 function hub_trusted_command_path(string $executable, ?string $platform = null): string
 {
     $platform ??= PHP_OS_FAMILY;
@@ -174,6 +189,7 @@ function hub_trusted_command_path(string $executable, ?string $platform = null):
             'wsl.exe' => $systemRoot . '\\System32\\wsl.exe',
             'curl' => $systemRoot . '\\System32\\curl.exe',
             'docker' => $programFiles . '\\Docker\\Docker\\resources\\bin\\docker.exe',
+            'ffprobe' => hub_windows_ffprobe_path(),
             'git' => $programFiles . '\\Git\\cmd\\git.exe',
             'nvidia-smi' => hub_windows_nvidia_smi_path($systemRoot, $programFiles),
         ];

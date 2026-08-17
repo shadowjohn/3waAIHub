@@ -949,6 +949,15 @@ hub_test('cluster router selects the highest-priority healthy station', function
     hub_test_assert((int)($selected['id'] ?? 0) === 1, 'highest-priority healthy station must win');
 });
 
+hub_test('cluster router does not use GPU VRAM to rank declared CPU modes', function (): void {
+    $selected = hub_cluster_select_station('edge_tts', [
+        hub_test_cluster_station_fixture(['id' => 20, 'gpu_free_vram_mb' => 8192, 'modes' => ['edge_tts']]),
+        hub_test_cluster_station_fixture(['id' => 10, 'gpu_free_vram_mb' => 1024, 'modes' => ['edge_tts']]),
+    ]);
+
+    hub_test_assert((int)($selected['id'] ?? 0) === 10, 'CPU mode selection must not prefer a station only because it has more free VRAM');
+});
+
 hub_test('cluster station inventory preserves configured routing priority', function (): void {
     $inventory = hub_cluster_station_inventory([
         'id' => 17,

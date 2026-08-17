@@ -137,7 +137,10 @@ hub_test('release builder creates a hash-verified private deployment artifact', 
             'release runtime files must be generated beneath the external data root',
         );
         hub_test_assert(
-            str_contains((string)($runtimeService['contents'] ?? ''), 'SERVICE_DATA_DIR=' . $expectedRuntimeDir . PHP_EOL),
+            str_contains(
+                str_replace('\\', '/', (string)($runtimeService['contents'] ?? '')),
+                'SERVICE_DATA_DIR=' . str_replace('\\', '/', $expectedRuntimeDir) . PHP_EOL,
+            ),
             'release runtime settings must not resolve SERVICE_DATA_DIR beneath the artifact',
         );
 

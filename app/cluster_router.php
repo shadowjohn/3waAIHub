@@ -710,6 +710,14 @@ function hub_cluster_station_token(array $station): string
     return hub_cluster_decrypt_station_token($station);
 }
 
+function hub_cluster_mode_uses_gpu(string $mode): bool
+{
+    $definition = hub_pack_job_async_routes()[$mode] ?? null;
+
+    // 未宣告的舊 mode 保留原本 GPU 優先行為，避免改變既有 GPU Pack 的路由語意。
+    return !is_array($definition) || ($definition['accelerator'] ?? null) !== 'cpu';
+}
+
 function hub_cluster_select_station(string $mode, array $stations): ?array
 {
     $eligible = array_values(array_filter($stations, static function (array $station) use ($mode): bool {
@@ -723,18 +731,27 @@ function hub_cluster_select_station(string $mode, array $stations): ?array
         return null;
     }
 
-    $unpressured = array_values(array_filter($eligible, static fn (array $station): bool => (int)($station['gpu_free_vram_mb'] ?? 0) > 0
-        && (int)($station['active_gpu_leases'] ?? 0) === 0
-        && (int)($station['queued_jobs'] ?? 0) === 0));
+    $usesGpu = hub_cluster_mode_uses_gpu($mode);
+    $unpressured = array_values(array_filter($eligible, static function (array $station) use ($usesGpu): bool {
+        if ((int)($station['queued_jobs'] ?? 0) !== 0) {
+            return false;
+        }
+
+        return !$usesGpu || ((int)($station['gpu_free_vram_mb'] ?? 0) > 0
+            && (int)($station['active_gpu_leases'] ?? 0) === 0);
+    }));
     $candidates = $unpressured !== [] ? $unpressured : $eligible;
-    usort($candidates, static function (array $left, array $right): int {
-        foreach ([
+    usort($candidates, static function (array $left, array $right) use ($usesGpu): int {
+        $comparisons = [
             [(int)($right['priority'] ?? 0), (int)($left['priority'] ?? 0)],
-            [(int)($right['gpu_free_vram_mb'] ?? 0), (int)($left['gpu_free_vram_mb'] ?? 0)],
-            [(int)($left['active_gpu_leases'] ?? 0), (int)($right['active_gpu_leases'] ?? 0)],
-            [(int)($left['queued_jobs'] ?? 0), (int)($right['queued_jobs'] ?? 0)],
-            [(int)($left['id'] ?? 0), (int)($right['id'] ?? 0)],
-        ] as [$first, $second]) {
+        ];
+        if ($usesGpu) {
+            $comparisons[] = [(int)($right['gpu_free_vram_mb'] ?? 0), (int)($left['gpu_free_vram_mb'] ?? 0)];
+            $comparisons[] = [(int)($left['active_gpu_leases'] ?? 0), (int)($right['active_gpu_leases'] ?? 0)];
+        }
+        $comparisons[] = [(int)($left['queued_jobs'] ?? 0), (int)($right['queued_jobs'] ?? 0)];
+        $comparisons[] = [(int)($left['id'] ?? 0), (int)($right['id'] ?? 0)];
+        foreach ($comparisons as [$first, $second]) {
             $comparison = $first <=> $second;
             if ($comparison !== 0) {
                 return $comparison;

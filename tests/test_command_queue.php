@@ -67,6 +67,20 @@ hub_test('Windows NVIDIA command resolves either supported driver installation l
     );
 });
 
+hub_test('Windows FFprobe command resolves to the managed ProgramData location', function (): void {
+    $programData = 'C:\\ProgramData';
+    $expected = 'C:\\ProgramData\\3waAIHub\\tools\\ffmpeg\\ffprobe.exe';
+
+    hub_test_assert(
+        hub_windows_ffprobe_path($programData) === $expected,
+        'Windows FFprobe must use the fixed managed media-tool location',
+    );
+    hub_test_assert(
+        hub_trusted_command_path('ffprobe', 'Windows') === hub_windows_ffprobe_path((string)getenv('ProgramData')),
+        'Windows FFprobe must not fall back to PATH lookup',
+    );
+});
+
 hub_test('command runner rejects an untrusted absolute executable path', function (): void {
     hub_test_assert(
         hub_test_throws(static fn (): array => hub_safe_argv(['C:\\untrusted\\docker', 'version'])),
