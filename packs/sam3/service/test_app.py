@@ -173,6 +173,39 @@ class Sam3ResidentModelTests(unittest.TestCase):
         finally:
             cache.clear()
 
+    def test_unexpected_inference_failure_is_logged_without_exposing_detail(self) -> None:
+        with patch.object(sam3_app, "current_checkpoint", return_value=Path("/models/sam3/sam3.1_multiplex.pt")), \
+            patch.object(sam3_app, "decoded_image", return_value=Image.new("RGB", (1, 1))), \
+            patch.object(sam3_app, "resident_sam3_image_loader", return_value=object()), \
+            patch.object(sam3_app, "segment_single_image_text", side_effect=RuntimeError("adapter diagnosis")), \
+            self.assertLogs("sam3", level="ERROR") as logs:
+            with self.assertRaisesRegex(sam3_app.Sam3Error, "SAM3 inference failed\\."):
+                sam3_app.run_sam3(b"fixture", 1, 1, "text", "", "", "bird", "metadata")
+
+        self.assertIn("RuntimeError", "\n".join(logs.output))
+
+    def test_unexpected_inference_failure_evicts_resident_state(self) -> None:
+        cache = sam3_app._MODEL_CACHE
+        cache.clear()
+        cache["image:/models/sam3/sam3.1_multiplex.pt"] = object()
+        point_cache = MagicMock()
+        try:
+            with patch.object(sam3_app, "current_checkpoint", return_value=Path("/models/sam3/sam3.1_multiplex.pt")), \
+                patch.object(sam3_app, "decoded_image", return_value=Image.new("RGB", (1, 1))), \
+                patch.object(sam3_app, "resident_sam3_image_loader", return_value=object()), \
+                patch.object(sam3_app, "segment_single_image_text", side_effect=RuntimeError("adapter diagnosis")), \
+                patch.object(sam3_app, "_POINT_SESSION_CACHE", point_cache), \
+                patch.object(sam3_app.LOGGER, "exception"), \
+                patch.object(sam3_app, "release_cuda_cache") as release:
+                with self.assertRaisesRegex(sam3_app.Sam3Error, "SAM3 inference failed\\."):
+                    sam3_app.run_sam3(b"fixture", 1, 1, "text", "", "", "bird", "metadata")
+
+            self.assertEqual({}, cache)
+            point_cache.clear.assert_called_once_with()
+            release.assert_called_once_with()
+        finally:
+            cache.clear()
+
 
 if __name__ == "__main__":
     unittest.main()
