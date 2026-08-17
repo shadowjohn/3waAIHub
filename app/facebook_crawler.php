@@ -222,7 +222,6 @@ function hub_facebook_crawl_target_url(string $url): string
         || isset($parts['user'])
         || isset($parts['pass'])
         || isset($parts['fragment'])
-        || isset($parts['query'])
         || (isset($parts['port']) && (int)$parts['port'] !== 443)
     ) {
         throw new InvalidArgumentException('facebook_targets_invalid');

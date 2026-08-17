@@ -343,6 +343,13 @@ function hub_test_facebook_wsl_payload(array $command): string
     return $payload;
 }
 
+hub_test('Facebook crawl accepts a canonical page URL with a sharing query', function (): void {
+    hub_test_assert(
+        hub_facebook_crawl_target_url('https://www.facebook.com/NTPC119/?locale=zh_TW') === 'https://www.facebook.com/NTPC119',
+        'sharing query parameters must be removed from canonical Facebook page URLs'
+    );
+});
+
 hub_test('Facebook crawl admission stores only normalized managed input', function (): void {
     $db = hub_test_reset_db();
     $memberId = hub_create_api_member($db, 'Crawler admission owner');
