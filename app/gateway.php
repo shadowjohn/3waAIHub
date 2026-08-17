@@ -3059,8 +3059,10 @@ function hub_gateway_safe_content_type(string $value): ?string
         'application/octet-stream',
         'application/pdf',
         'application/zip',
+        'application/x-subrip',
         'text/plain',
         'text/csv',
+        'text/vtt',
         'image/png',
         'image/jpeg',
         'image/webp',
@@ -3218,6 +3220,9 @@ function hub_gateway_public_success_body(array $response): string
     }
 
     $body = $response['body'];
+    if (!empty($response['preserve_body'])) {
+        return $body;
+    }
     $mimeType = strtolower((string)strtok($contentType, ';'));
     if (!in_array($mimeType, ['application/json', 'application/geo+json', 'application/problem+json'], true)) {
         return $body;

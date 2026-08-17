@@ -3680,6 +3680,7 @@ function hub_cluster_dispatch_followup(PDO $db, string $routerMode, array $reque
         if ($selfStation && $profileSensitiveArtifact) {
             $response = hub_cluster_router_rebuild_profile_artifact_response($response);
         }
+        $response['preserve_body'] = true;
         return $complete($response, null, $selfStation);
     }
     if (!is_array($payload) || !hub_cluster_router_followup_task_matches($route, $payload)) {

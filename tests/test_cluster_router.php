@@ -4680,6 +4680,56 @@ hub_test('cluster router result maps artifacts and proxies only mapped artifacts
     });
 });
 
+hub_test('cluster artifact relay preserves exact bytes and subtitle content types', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_cluster_router_async_route($db, ['station_token' => 'artifact_relay_station_token']);
+        $insert = $db->prepare(
+            'INSERT INTO cluster_route_artifacts (route_id, remote_artifact_id, created_at) VALUES (:route_id, :artifact_id, :created_at)'
+        );
+        foreach (['metadata', 'vtt', 'srt'] as $artifactId) {
+            $insert->execute([
+                ':route_id' => $fixture['route_id'],
+                ':artifact_id' => $artifactId,
+                ':created_at' => hub_now(),
+            ]);
+        }
+
+        $artifacts = [
+            'metadata' => [
+                'content_type' => 'application/json',
+                'body' => "{\n  \"elapsed_seconds\": 0.6141950099845417\n}\n",
+            ],
+            'vtt' => [
+                'content_type' => 'text/vtt',
+                'body' => "WEBVTT\n\n00:00.000 --> 00:01.000\n測試\n",
+            ],
+            'srt' => [
+                'content_type' => 'application/x-subrip',
+                'body' => "1\n00:00:00,000 --> 00:00:01,000\n測試\n",
+            ],
+        ];
+        foreach ($artifacts as $artifactId => $expected) {
+            $response = hub_cluster_dispatch_followup($db, 'cluster_artifact', [
+                'bearer_token' => (string)$fixture['customer']['plain_token'],
+                'client_ip' => '203.0.113.10',
+                'query' => ['task_id' => $fixture['route_id'], 'artifact_id' => $artifactId],
+            ], static function () use ($expected): array {
+                return [
+                    'status' => 200,
+                    'raw_headers' => "HTTP/1.1 200 OK\r\nContent-Type: " . $expected['content_type'] . "\r\n",
+                    'body' => $expected['body'],
+                ];
+            });
+
+            hub_test_assert($response['status'] === 200
+                && in_array('Content-Type: ' . $expected['content_type'], $response['headers'] ?? [], true)
+                && hub_gateway_public_success_body($response) === $expected['body'],
+                'artifact relay must preserve exact ' . $artifactId . ' bytes and content type');
+        }
+    });
+});
+
 hub_test('cluster router rebuilds profile-sensitive artifact headers without child metadata', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();
