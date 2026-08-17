@@ -189,6 +189,30 @@ class Sam31ImageAdapterTests(unittest.TestCase):
         self.assertEqual(1, len(results))
         self.assertEqual((1, 1), results[0]["mask"].shape)
 
+    def test_image_result_masks_are_remapped_to_the_source_image_size(self) -> None:
+        result_items = getattr(sam31, "_image_result_items", None)
+        self.assertTrue(callable(result_items), "image result normalization is required")
+        assert callable(result_items)
+
+        results = result_items(
+            {"masks": np.array([[[False, True, False], [True, True, False]]]), "scores": [0.9]},
+            image_size=(6, 4),
+        )
+
+        self.assertEqual((4, 6), results[0]["mask"].shape)
+        self.assertTrue(results[0]["mask"][0, 2])
+        self.assertTrue(results[0]["mask"][3, 0])
+
+    def test_semantic_image_is_normalized_before_it_reaches_cuda(self) -> None:
+        normalizer = getattr(sam31, "normalize_image_for_processor", None)
+        self.assertTrue(callable(normalizer), "semantic image normalizer is required")
+        assert callable(normalizer)
+
+        image = normalizer(Image.new("RGB", (4096, 2731), "white"))
+
+        self.assertEqual("RGB", image.mode)
+        self.assertEqual((1008, 1008), image.size)
+
     def test_invalid_mixed_or_out_of_bounds_prompt_is_rejected_before_session(self) -> None:
         predictor = FakePredictor()
         with self.assertRaisesRegex(Sam31Error, "invalid_prompt"):

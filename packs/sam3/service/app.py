@@ -45,6 +45,9 @@ RUN_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,95}$")
 TERMINAL_RESIDENT_STATES = {"succeeded", "failed", "cancelled"}
 OUTPUT_FORMATS = {"metadata", "polygon", "rle", "both", "png"}
 PROMPT_TYPES = {"auto", "points", "boxes", "text", "guidance_mask"}
+SAM3_MAX_UPLOAD_MB_HARD = 32
+SAM3_MAX_IMAGE_AXIS_PX = 4096
+SAM3_MAX_IMAGE_PIXELS = 16_000_000
 
 
 class PointSessionCache:
@@ -388,6 +391,31 @@ def effective_device() -> str:
     raise Sam3Error("gpu_unavailable", "SAM3 GPU runtime is not available.", 503)
 
 
+def sam3_max_upload_bytes() -> int:
+    try:
+        megabytes = int(os.getenv("SAM3_MAX_UPLOAD_MB", str(SAM3_MAX_UPLOAD_MB_HARD)))
+    except ValueError:
+        megabytes = SAM3_MAX_UPLOAD_MB_HARD
+    return min(SAM3_MAX_UPLOAD_MB_HARD, max(1, megabytes)) * 1024 * 1024
+
+
+async def bounded_image_upload(upload: UploadFile, limit: int) -> bytes:
+    data = await upload.read(limit + 1)
+    if len(data) > limit:
+        raise Sam3Error("image_too_large", "image exceeds the SAM3 input limit.", 413)
+    return data
+
+
+def validate_image_limits(byte_size: int, width: int, height: int) -> None:
+    if (
+        byte_size > sam3_max_upload_bytes()
+        or width > SAM3_MAX_IMAGE_AXIS_PX
+        or height > SAM3_MAX_IMAGE_AXIS_PX
+        or width * height > SAM3_MAX_IMAGE_PIXELS
+    ):
+        raise Sam3Error("image_too_large", "image exceeds the SAM3 input limit.", 413)
+
+
 def image_info(data: bytes) -> tuple[int, int]:
     try:
         with Image.open(BytesIO(data)) as image:
@@ -679,20 +707,22 @@ async def segment_image(
     output_format: str = Form("metadata"),
     real_inference: str = Form("0"),
 ) -> JSONResponse:
-    data = await image.read()
-    if not data:
-        return error_response(400, "bad_image", "image is required")
     try:
+        data = await bounded_image_upload(image, sam3_max_upload_bytes())
+        if not data:
+            return error_response(400, "bad_image", "image is required")
+        width, height = image_info(data)
+        validate_image_limits(len(data), width, height)
         normalized_output_format = normalize_output_format(output_format)
     except Sam3Error as exc:
         return error_response(exc.status_code, exc.code, exc.message)
 
     if env_enabled(real_inference) or env_enabled(os.getenv("SAM3_REAL_INFERENCE")):
         try:
-            width, height = image_info(data)
             guidance_bitmap = None
             if (prompt_type or "auto") == "guidance_mask":
-                guidance_bitmap = parse_guidance_mask(await guidance_mask.read() if guidance_mask is not None else b"", width, height)
+                guidance_data = await bounded_image_upload(guidance_mask, sam3_max_upload_bytes()) if guidance_mask is not None else b""
+                guidance_bitmap = parse_guidance_mask(guidance_data, width, height)
             semantic_text = text_prompt or text
             payload = run_sam3(data, width, height, prompt_type or "auto", points_json, boxes_json, semantic_text, normalized_output_format, guidance_bitmap)
             if isinstance(payload.get("png"), bytes):
@@ -714,8 +744,8 @@ async def segment_image(
             return error_response(exc.status_code, exc.code, exc.message)
     if normalized_prompt_type == "guidance_mask":
         try:
-            width, height = image_info(data)
-            mock_guidance = parse_guidance_mask(await guidance_mask.read() if guidance_mask is not None else b"", width, height)
+            guidance_data = await bounded_image_upload(guidance_mask, sam3_max_upload_bytes()) if guidance_mask is not None else b""
+            mock_guidance = parse_guidance_mask(guidance_data, width, height)
         except Sam3Error as exc:
             return error_response(exc.status_code, exc.code, exc.message)
     if normalized_prompt_type == "text":
@@ -724,10 +754,6 @@ async def segment_image(
         except Sam3Error as exc:
             return error_response(exc.status_code, exc.code, exc.message)
     if normalized_output_format == "png":
-        try:
-            width, height = image_info(data)
-        except Sam3Error as exc:
-            return error_response(exc.status_code, exc.code, exc.message)
         if mock_guidance is not None:
             return Response(content=mask_png(mock_guidance, width, height), media_type="image/png", headers={"X-SAM3-Output-Format": "png"})
         return Response(content=merged_mask_png([], width, height), media_type="image/png", headers={"X-SAM3-Output-Format": "png"})

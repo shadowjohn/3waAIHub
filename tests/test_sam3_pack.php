@@ -6,7 +6,14 @@ hub_test('SAM3 Pack declares the fixed SAM 3.1 runtime and job contracts', funct
     hub_test_assert(($manifest['version'] ?? '') === '0.2.0', 'SAM3 Pack must be version 0.2.0');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'sam3', 'SAM3 must retain its public mode');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/segment/image', 'SAM3 must retain its legacy image gateway');
-    hub_test_assert(($manifest['gateway']['max_upload_mb'] ?? 0) === 512, 'SAM3 task uploads must allow the bounded 512 MB video source');
+    hub_test_assert(($manifest['gateway']['max_upload_mb'] ?? 0) === 32, 'SAM3 image gateway must reject payloads over 32 MiB');
+    $settings = [];
+    foreach (($manifest['settings_schema'] ?? []) as $setting) {
+        if (is_array($setting) && isset($setting['key'])) {
+            $settings[(string)$setting['key']] = $setting;
+        }
+    }
+    hub_test_assert(($settings['SAM3_MAX_UPLOAD_MB']['restart_required'] ?? false) === true, 'SAM3 upload limit changes must recreate the container');
 
     $jobs = $manifest['async_jobs'] ?? [];
     hub_test_assert(array_column($jobs, 'job') === ['segment_image', 'track_video', 'monitor'], 'SAM3 must declare only its fixed jobs');
@@ -16,6 +23,8 @@ hub_test('SAM3 Pack declares the fixed SAM 3.1 runtime and job contracts', funct
         hub_test_assert(in_array('sam3.1_multiplex.pt', $assetMount['required_paths'] ?? [], true), 'SAM3.1 checkpoint must be required');
         hub_test_assert(($job['runner']['required_vram_mb'] ?? 0) === 8192, 'SAM3.1 cold starts must fit the available GPU headroom');
     }
+    hub_test_assert(($jobs[0]['max_upload_bytes'] ?? 0) === 33554432, 'SAM3 image task uploads must be limited to 32 MiB');
+    hub_test_assert(($jobs[1]['max_upload_bytes'] ?? 0) === 536870912, 'SAM3 video task uploads must retain the 512 MiB limit');
     hub_test_assert(($manifest['hardware']['min_vram_mb'] ?? 0) === 8192, 'SAM3 service admission must allow the measured cold-start footprint');
     $imagePromptEnum = $jobs[0]['input']['request_schema']['prompt_type']['enum'] ?? [];
     hub_test_assert($imagePromptEnum === ['auto', 'points', 'boxes', 'text'], 'Async image jobs must not advertise a guidance upload they cannot receive');

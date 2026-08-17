@@ -34,12 +34,20 @@ class Sam31ImagePredictor:
         import torch
 
         with torch.inference_mode(), torch.autocast(device_type=self.device, dtype=torch.bfloat16):
-            state = self.processor.set_image(image)
+            state = self.processor.set_image(normalize_image_for_processor(image))
             state = self.processor.set_text_prompt(text, state)
-        return _image_result_items(state)
+        return _image_result_items(state, image_size=image.size)
 
 
-def _image_result_items(state: object) -> list[dict[str, Any]]:
+def normalize_image_for_processor(image: Image.Image) -> Image.Image:
+    # SAM's processor otherwise moves the original image to CUDA before resizing it.
+    image = image.convert("RGB")
+    if image.size == (1008, 1008):
+        return image
+    return image.resize((1008, 1008), Image.Resampling.BILINEAR)
+
+
+def _image_result_items(state: object, image_size: tuple[int, int] | None = None) -> list[dict[str, Any]]:
     masks = state.get("masks") if isinstance(state, dict) else None
     if masks is None:
         return []
@@ -60,6 +68,11 @@ def _image_result_items(state: object) -> list[dict[str, Any]]:
             bitmap = bitmap[0]
         if bitmap.ndim != 2 or not bool(bitmap.any()):
             continue
+        if image_size is not None and bitmap.shape != (image_size[1], image_size[0]):
+            bitmap = np.asarray(
+                Image.fromarray(bitmap.astype("uint8")).resize(image_size, Image.Resampling.NEAREST),
+                dtype=bool,
+            )
         items.append({
             "id": index + 1,
             "score": _score(scores[index]) if index < len(scores) else 1.0,

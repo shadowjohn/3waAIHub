@@ -26,7 +26,7 @@
     "invoke_path": "/segment/image",
     "methods": ["POST"],
     "timeout_sec": 180,
-    "max_upload_mb": 512
+    "max_upload_mb": 32
   },
   "l5_contract": {
     "endpoint": "/segment/image",
@@ -38,7 +38,7 @@
           "name": "image",
           "type": "file",
           "required": true,
-          "max_mb": 50
+          "max_mb": 32
         },
         {
           "name": "guidance_mask",
@@ -105,6 +105,7 @@
       "model_load_failed",
       "runtime_dependency_missing",
       "bad_image",
+      "image_too_large",
       "invalid_prompt",
       "invalid_output_format",
       "invalid_guidance_mask",
@@ -130,7 +131,7 @@
     ],
     "limits": {
       "timeout_sec": 180,
-      "max_upload_mb": 50,
+      "max_upload_mb": 32,
       "max_concurrency": 1
     },
     "benchmark": {
@@ -195,6 +196,7 @@
   "async_jobs": [
     {
       "job": "segment_image",
+      "max_upload_bytes": 33554432,
       "input": {
         "fields": ["prompt_type", "points_json", "boxes_json", "text", "text_prompt", "output_format", "include_mask_png"],
         "source_artifact_types": ["image"],
@@ -232,6 +234,7 @@
     },
     {
       "job": "track_video",
+      "max_upload_bytes": 536870912,
       "input": {
         "fields": ["prompts_json", "clip_seconds", "include_overlay"],
         "source_artifact_types": ["video"],
@@ -309,6 +312,7 @@
     "model_load_failed",
     "runtime_dependency_missing",
     "bad_image",
+    "image_too_large",
     "invalid_prompt",
     "invalid_output_format",
     "invalid_guidance_mask",
@@ -381,11 +385,11 @@
       "key": "SAM3_MAX_UPLOAD_MB",
       "label": "Max upload MB",
       "type": "integer",
-      "default": "512",
+      "default": "32",
       "min": 1,
-      "max": 512,
+      "max": 32,
       "required": true,
-      "restart_required": false
+      "restart_required": true
     },
     {
       "key": "SAM3_REAL_INFERENCE",
@@ -458,7 +462,7 @@
     },
     {
       "name": "SAM3_MAX_UPLOAD_MB",
-      "default": "512",
+      "default": "32",
       "required": true
     },
     {

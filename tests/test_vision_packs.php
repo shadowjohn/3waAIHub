@@ -216,7 +216,7 @@ hub_test('YOLO and SAM3 service instances generate GPU model mounts', function (
                 'SAM3_CACHE_DIR=/cache/sam3',
                 'SAM3_SERVICE_DATA_DIR=/data/service',
                 'SAM3_REAL_INFERENCE=0',
-                'SAM3_MAX_UPLOAD_MB=512',
+                'SAM3_MAX_UPLOAD_MB=32',
                 'SAM3_DEVICE=cuda',
                 'SAM3_EXECUTION_MODE=resident',
                 'SAM3_RESIDENT_MIN_FREE_VRAM_MB=4096',

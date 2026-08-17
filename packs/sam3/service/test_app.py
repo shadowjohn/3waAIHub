@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import threading
 import os
 import tempfile
@@ -205,6 +207,49 @@ class Sam3ResidentModelTests(unittest.TestCase):
             release.assert_called_once_with()
         finally:
             cache.clear()
+
+    def test_sam3_upload_limit_is_hard_capped_at_32_mib(self) -> None:
+        limit = getattr(sam3_app, "sam3_max_upload_bytes", None)
+        self.assertTrue(callable(limit), "SAM3 upload limit helper is required")
+        assert callable(limit)
+
+        with patch.dict(os.environ, {"SAM3_MAX_UPLOAD_MB": "512"}):
+            self.assertEqual(32 * 1024 * 1024, limit())
+        with patch.dict(os.environ, {"SAM3_MAX_UPLOAD_MB": "8"}):
+            self.assertEqual(8 * 1024 * 1024, limit())
+
+    def test_sam3_image_limits_reject_oversized_bytes_axis_and_pixels(self) -> None:
+        validate = getattr(sam3_app, "validate_image_limits", None)
+        self.assertTrue(callable(validate), "SAM3 image limit validator is required")
+        assert callable(validate)
+
+        for byte_size, width, height in [
+            (32 * 1024 * 1024 + 1, 1280, 720),
+            (1024, 4097, 100),
+            (1024, 4000, 4001),
+        ]:
+            with self.subTest(byte_size=byte_size, width=width, height=height):
+                with self.assertRaises(sam3_app.Sam3Error) as error:
+                    validate(byte_size, width, height)
+                self.assertEqual("image_too_large", error.exception.code)
+                self.assertEqual(413, error.exception.status_code)
+
+    def test_segment_image_returns_413_before_reading_an_oversized_upload(self) -> None:
+        class OversizedUpload:
+            def __init__(self) -> None:
+                self.read_limit: int | None = None
+
+            async def read(self, size: int = -1) -> bytes:
+                self.read_limit = size
+                return b"x" * size
+
+        upload = OversizedUpload()
+        with patch.dict(os.environ, {"SAM3_MAX_UPLOAD_MB": "32"}):
+            response = asyncio.run(sam3_app.segment_image(image=upload, real_inference="0"))
+
+        self.assertEqual(413, response.status_code)
+        self.assertEqual(32 * 1024 * 1024 + 1, upload.read_limit)
+        self.assertEqual("image_too_large", json.loads(response.body)["error"])
 
 
 if __name__ == "__main__":
