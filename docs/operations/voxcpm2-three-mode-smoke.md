@@ -221,7 +221,38 @@ The second task must reuse the resident model and avoid a one-shot container boo
 
 Basic and Ultimate clone fields follow the [official VoxCPM2 model card](https://huggingface.co/openbmb/VoxCPM2). Whisper CUDA requirements follow the [official faster-whisper CUDA 12/cuDNN 9 notes](https://github.com/SYSTRAN/faster-whisper/blob/master/README.md).
 
-## 5. Failure Evidence And Cleanup
+## 5. Generic exploration checks
+
+Run these repository checks before deployment. They cover the native and
+Cluster contracts, the generic two-candidate acceptance seam, and the VoxCPM2
+service routes:
+
+```bash
+AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=voice-cluster
+python3 -m unittest -v packs/tts-voxcpm2/service/test_app.py packs/tts-voxcpm2/service/test_job.py packs/tts-voxcpm2/service/test_http_routes.py
+```
+
+For a deployed Router, run the real acceptance separately:
+
+```bash
+php scripts/voxcpm2_cluster_acceptance.php
+```
+
+It requires the existing deployment environment variables
+`AIHUB_VOXCPM2_CLUSTER_BASE_URL`, `AIHUB_VOXCPM2_CLUSTER_TOKEN`,
+`AIHUB_VOXCPM2_CLUSTER_REFERENCE_WAV`, `AIHUB_VOXCPM2_CLUSTER_PROMPT_TEXT`,
+and `AIHUB_VOXCPM2_CLUSTER_TARGET_TEXT`. Set them through the deployment's
+secret mechanism or an interactive protected shell; do not paste a Token or
+other secret into shell history, scripts, screenshots, logs, or this document.
+The acceptance first proves the existing Profile/Ultimate Clone path, then
+submits `generic_synthesize` with two generic candidates, validates and ACKs
+both WAVs, and emits `generic_exploration:true` only after both ACKs succeed.
+
+Adding this operation alone does not require a model restart. Restart the
+existing resident VoxCPM2 service only when one of its persisted settings or
+runtime configuration has changed.
+
+## 6. Failure Evidence And Cleanup
 
 Keep evidence local and redact private audio, transcripts, and tokens before sharing it.
 

@@ -6,7 +6,7 @@ not require that sync runtime to stay running.
 
 ## Public Contract
 
-`voice_generate` supports five operations:
+`voice_generate` supports six operations:
 
 | operation | purpose |
 | --- | --- |
@@ -15,6 +15,7 @@ not require that sync runtime to stay running.
 | `profile_confirm` | Explicitly confirm the transcript. |
 | `profile_delete` | Delete the managed profile and reference audio. |
 | `synthesize` | Queue `design`, `clone`, or `ultimate_clone` synthesis. |
+| `generic_synthesize` | Explore 1–3 new generic `design` candidates without a Profile or preset. |
 
 Omitting `operation` means `synthesize`.
 
@@ -24,6 +25,20 @@ For Native and Cluster synthesis, `text` contains only intended spoken text.
 `voice_prompt`, `control`, role/scenario descriptions, and defaults are never concatenated
 into `text`. Until VoxCPM2 provides dedicated style parameters,
 that metadata is kept separate and not passed to VoxCPM2.
+
+## Generic exploration
+
+`generic_synthesize` accepts only `text`, `gender`, `age_bucket`, `role_note`,
+and `candidate_count` (1–3). The node receives generic `design` work with the
+Hub-owned internal `preset_candidates` list; gender, age, and role note do not
+enter `text` and current VoxCPM2 does not claim them as applied controls. The
+result supplies candidate ID, opaque audio URL, seed, design revision, and
+`style_status=unverified` only. It creates no Voice Profile and does not use
+`clone` or `ultimate_clone`.
+
+This operation needs no new service setting, container path, model selection,
+or restart. Apply the existing resident-service restart rule only when its
+actual persisted configuration changes.
 
 ## Native Flow
 

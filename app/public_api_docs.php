@@ -646,6 +646,13 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
             'anchor_fallback' => 'A declared scene without an anchor automatically uses the preset base voice; callers do not select clone mode.',
             'boundary' => 'preset_synthesize rejects model, mode, Voice Profile IDs, paths, voice_prompt, and control. text remains the only spoken content.',
         ];
+        $contract['generic_voice_exploration'] = [
+            'synthesis_operation' => 'generic_synthesize',
+            'request_fields' => ['text', 'gender', 'age_bucket', 'role_note', 'candidate_count'],
+            'result_candidates' => ['candidate_id', 'audio_url', 'seed', 'voice_design_revision', 'style_status'],
+            'strategy' => 'VoxCPM2 design only; no Voice Profile is created or selected.',
+            'style_status' => 'unverified until an engine has official independent controls.',
+        ];
     }
     if ($mode === 'voice_generate_gpt_sovits') {
         $prepareFields = &$contract['operations'][0]['input_fields'];
@@ -687,6 +694,9 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
             ['code' => 'voice_preset_candidate_count_invalid', 'http_status' => 400],
             ['code' => 'voice_preset_forbidden_input', 'http_status' => 400],
             ['code' => 'voice_preset_invalid', 'http_status' => 400],
+            ['code' => 'generic_voice_invalid', 'http_status' => 400],
+            ['code' => 'generic_voice_candidate_count_invalid', 'http_status' => 400],
+            ['code' => 'generic_voice_forbidden_input', 'http_status' => 400],
         ] as $error) {
             $contract['error_table'][] = $error;
         }
@@ -905,7 +915,7 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
         'error_codes' => array_values(array_map('strval', is_array($contract['errors'] ?? null) ? $contract['errors'] : [])),
         'task_api' => hub_public_api_task_api_refs(is_array($contract['task_api'] ?? null) ? $contract['task_api'] : []),
     ];
-    foreach (['operations', 'workflow', 'error_table', 'workflow_examples', 'managed_voice_presets'] as $key) {
+    foreach (['operations', 'workflow', 'error_table', 'workflow_examples', 'managed_voice_presets', 'generic_voice_exploration'] as $key) {
         if (isset($contract[$key])) {
             $service[$key] = $contract[$key];
         }
@@ -1624,6 +1634,10 @@ function hub_public_api_docs_html(PDO $db, ?array $user = null, ?callable $healt
                 <?php if (($service['workflow'] ?? []) !== []): ?>
                     <h3><?= $t('Workflow') ?></h3>
                     <pre><?= hub_h(json_encode($service['workflow'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
+                <?php endif; ?>
+                <?php if (($service['generic_voice_exploration'] ?? []) !== []): ?>
+                    <h3>Generic voice exploration</h3>
+                    <pre><?= hub_h(json_encode($service['generic_voice_exploration'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                 <?php endif; ?>
                 <?php if (($service['response_headers'] ?? []) !== []): ?>
                     <h3><?= $t('Response headers') ?></h3>

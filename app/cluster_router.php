@@ -1464,6 +1464,9 @@ function hub_cluster_public_api_docs_html(PDO $db): string
                     <?php if (($service['workflow'] ?? []) !== []): ?>
                         <div class="contract-block"><h3>Workflow</h3><pre><?= hub_h($json($service['workflow'])) ?></pre></div>
                     <?php endif; ?>
+                    <?php if (($service['generic_voice_exploration'] ?? []) !== []): ?>
+                        <div class="contract-block"><h3>Generic voice exploration</h3><pre><?= hub_h($json($service['generic_voice_exploration'])) ?></pre></div>
+                    <?php endif; ?>
                     <div class="contract-block"><h3>Error codes</h3><pre><?= hub_h($json($service['error_codes'] ?? [])) ?></pre></div>
                     <?php if (($service['error_table'] ?? []) !== []): ?>
                         <div class="contract-block"><h3>Error status table</h3><pre><?= hub_h($json($service['error_table'])) ?></pre></div>

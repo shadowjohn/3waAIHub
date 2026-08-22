@@ -77,6 +77,8 @@ VoxCPM2 可在服務設定切為 `resident` 後重啟：首次 `voice_generate` 
 
 `voice_generate` 亦提供 owner-managed `voice_presets` / `preset_synthesize`：呼叫端只送角色 preset、用途、情境、台詞與 1–3 個候選；Hub 封存受管聲線、策略與 seed，完成結果回傳穩定 `candidate_id`、`audio_url`、`seed`、`preset_revision`。情境錨點未配置時自動使用基礎聲線，不會把控制描述念進台詞；經 Router 建立的 preset 與後續合成固定在同一站。操作契約見 [`docs/operations/managed-voice-presets.md`](docs/operations/managed-voice-presets.md)。
 
+`generic_synthesize` 是另一條不建立 Voice Profile 或 preset 的聲音探索路徑。它只接受 `text`、`gender`、`age_bucket`、`role_note` 與 1–3 個候選；`text` 仍是唯一朗讀內容。Hub 以內部 `design` 候選回傳 `candidate_id`、不透明 `audio_url`、`seed`、`voice_design_revision` 與 `style_status=unverified`。性別、年齡與角色備註目前僅保留為私有配方偏好，不保證音色，也不會被拼入台詞；WAV 加配方可供追溯，但 runtime 版本變更後不保證相同位元輸出。Router 在送出時按一般可用站台選擇，子工作被接受後才固定在該站；不會讀取或建立受管 Profile。
+
 ## 平台能力矩陣
 
 | 能力 | 狀態 |

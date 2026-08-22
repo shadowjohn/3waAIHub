@@ -6298,6 +6298,7 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
 ): callable {
     $profileTaskId = 'route_' . str_repeat('a', 34);
     $synthesisTaskId = 'route_' . str_repeat('b', 34);
+    $genericTaskId = 'route_' . str_repeat('c', 34);
     $audio = "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 48000, 96000, 2, 16) . "data" . pack('V', 0);
     $referenceSha256 = null;
     $promptSha256 = null;
@@ -6312,6 +6313,7 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
         &$requests,
         $profileTaskId,
         $synthesisTaskId,
+        $genericTaskId,
         $audio,
         &$referenceSha256,
         &$promptSha256,
@@ -6363,6 +6365,20 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
                     ? $json(hub_test_voxcpm2_cluster_acceptance_profile((string)$referenceSha256, 'deleted'))
                     : $json(['ok' => false], 500);
             }
+            if (($body['operation'] ?? '') === 'generic_synthesize') {
+                hub_test_assert(
+                    array_keys($body) === ['operation', 'text', 'gender', 'age_bucket', 'role_note', 'candidate_count']
+                    && ($body['text'] ?? '') === 'Generate this private target text.'
+                    && ($body['gender'] ?? '') === 'unspecified'
+                    && ($body['age_bucket'] ?? '') === 'young_adult'
+                    && ($body['role_note'] ?? '') === '聲音探索驗收，不屬於既有角色。'
+                    && ($body['candidate_count'] ?? null) === 2
+                    && !array_key_exists('voice_profile_task_id', $body)
+                    && !array_key_exists('mode', $body),
+                    'generic acceptance must submit only the fixed semantic exploration request'
+                );
+                return $json(['ok' => true, 'task_id' => $genericTaskId] + hub_test_voxcpm2_cluster_acceptance_links($genericTaskId, true));
+            }
             hub_test_assert(
                 !array_key_exists('operation', $body)
                 && ($body['mode'] ?? '') === 'ultimate_clone'
@@ -6389,6 +6405,30 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
                         'text_chars' => 30,
                         'prompt_text_sha256' => $promptSha256,
                     ],
+                ]);
+            }
+            if (($query['task_id'] ?? '') === $genericTaskId) {
+                return $json([
+                    'ok' => true,
+                    'task_id' => $genericTaskId,
+                    'result' => ['candidates' => [
+                        [
+                            'candidate_id' => 'candidate-01',
+                            'audio_artifact_id' => 19,
+                            'seed' => 401,
+                            'voice_design_revision' => 1,
+                            'style_status' => 'unverified',
+                            'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . $genericTaskId . '&artifact_id=19',
+                        ],
+                        [
+                            'candidate_id' => 'candidate-02',
+                            'audio_artifact_id' => 20,
+                            'seed' => 402,
+                            'voice_design_revision' => 1,
+                            'style_status' => 'unverified',
+                            'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . $genericTaskId . '&artifact_id=20',
+                        ],
+                    ]],
                 ]);
             }
             $metadata = json_encode(hub_test_voxcpm2_cluster_runner_metadata(
@@ -6418,6 +6458,9 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
             ]);
         }
         if (($query['mode'] ?? '') === 'cluster_artifact') {
+            if (($query['task_id'] ?? '') === $genericTaskId) {
+                return ['status' => 200, 'headers' => ['Content-Type' => 'audio/wav'], 'body' => $audio];
+            }
             $metadata = json_encode(hub_test_voxcpm2_cluster_runner_metadata(
                 (string)$referenceSha256,
                 (string)$promptSha256,
@@ -6429,7 +6472,7 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
         }
         if (($query['mode'] ?? '') === 'cluster_task_artifacts_ack') {
             hub_test_assert(($request['method'] ?? '') === 'POST' && ($request['body'] ?? null) === '', 'artifact ACK must use the returned standard POST link');
-            return $json(['ok' => true, 'task_id' => $synthesisTaskId]);
+            return $json(['ok' => true, 'task_id' => (string)($query['task_id'] ?? '')]);
         }
 
         throw new RuntimeException('Unexpected offline VoxCPM2 Cluster acceptance request.');
@@ -6495,7 +6538,7 @@ hub_test('VoxCPM2 Cluster acceptance CLI statically keeps a bounded non-leaking 
         'finally',
         'pcntl_signal',
         'hub_voxcpm2_cluster_acceptance_remove_tree',
-        '{"ok":true,"profile_prepared":true,"ultimate_clone":true,"audio_valid":true,"gpu":true,"artifacts_acknowledged":true}',
+        '{"ok":true,"profile_prepared":true,"ultimate_clone":true,"generic_exploration":true,"audio_valid":true,"gpu":true,"artifacts_acknowledged":true}',
     ] as $needle) {
         hub_test_assert(str_contains($source, $needle), 'Cluster acceptance safety contract missing ' . $needle);
     }
@@ -6884,16 +6927,17 @@ hub_test('VoxCPM2 Cluster acceptance completes its full offline flow and removes
     hub_test_assert($result === [
         'profile_prepared' => true,
         'ultimate_clone' => true,
+        'generic_exploration' => true,
         'audio_valid' => true,
         'gpu' => true,
         'artifacts_acknowledged' => true,
     ], 'offline Cluster acceptance result must contain only the safe success facts');
+    hub_test_assert(count($requests) === 19, 'generic acceptance must use the expected bounded request count');
+    hub_test_assert(count($probes) === 3, 'generic acceptance must ffprobe both WAV candidates');
+    hub_test_assert($before === $after, 'generic acceptance must remove its temporary files');
+    hub_test_assert(count(array_filter($requests, static fn (array $request): bool => ($request['operation'] ?? null) === 'profile_delete')) === 1, 'generic acceptance must retain one profile cleanup');
     hub_test_assert(
-        count($requests) === 12
-        && count($probes) === 1
-        && $before === $after
-        && count(array_filter($requests, static fn (array $request): bool => ($request['operation'] ?? null) === 'profile_delete')) === 1
-        && $modes === [
+        $modes === [
             'voice_generate',
             'cluster_task_status',
             'cluster_task_result',
@@ -6904,11 +6948,55 @@ hub_test('VoxCPM2 Cluster acceptance completes its full offline flow and removes
             'cluster_artifact',
             'cluster_artifact',
             'cluster_task_artifacts_ack',
+            'cluster_task_artifacts_ack',
+            'voice_generate',
+            'cluster_task_status',
+            'cluster_task_result',
+            'cluster_artifact',
+            'cluster_task_artifacts_ack',
+            'cluster_artifact',
             'cluster_task_artifacts_ack',
             'voice_generate',
         ],
-        'offline flow must use only ordered Router links, ACK both artifacts, delete its profile, and leave no temp residue'
+        'offline flow must validate and ACK two generic candidates after the profile flow'
     );
+});
+
+hub_test('VoxCPM2 Cluster acceptance rejects malformed or leaky generic candidates', function (): void {
+    $wav = hub_test_voxcpm2_cluster_acceptance_wav();
+    try {
+        $config = hub_voxcpm2_cluster_acceptance_config(hub_test_voxcpm2_cluster_acceptance_env($wav));
+        $taskId = 'route_' . str_repeat('c', 34);
+        $candidate = static fn (int $number, int $artifactId): array => [
+            'candidate_id' => 'candidate-' . str_pad((string)$number, 2, '0', STR_PAD_LEFT),
+            'audio_artifact_id' => $artifactId,
+            'seed' => 400 + $number,
+            'voice_design_revision' => 1,
+            'style_status' => 'unverified',
+            'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=' . $artifactId,
+        ];
+        $valid = [
+            'ok' => true,
+            'task_id' => $taskId,
+            'result' => ['candidates' => [$candidate(1, 19), $candidate(2, 20)]],
+        ];
+        $malformed = $valid;
+        unset($malformed['result']['candidates'][1]['style_status']);
+        $leaky = $valid;
+        $leaky['result']['candidates'][0]['voice_profile_task_id'] = 'route_' . str_repeat('a', 34);
+
+        hub_test_assert(
+            hub_voxcpm2_cluster_acceptance_generic_candidates($config, $valid, $taskId) === [
+                ['id' => '19', 'url' => 'https://router.example/3waAIHub/cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=19'],
+                ['id' => '20', 'url' => 'https://router.example/3waAIHub/cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=20'],
+            ]
+            && hub_test_throws(static fn (): array => hub_voxcpm2_cluster_acceptance_generic_candidates($config, $malformed, $taskId))
+            && hub_test_throws(static fn (): array => hub_voxcpm2_cluster_acceptance_generic_candidates($config, $leaky, $taskId)),
+            'generic acceptance must require exactly two safe candidate descriptors and same-task artifact URLs'
+        );
+    } finally {
+        @unlink($wav);
+    }
 });
 
 hub_test('VoxCPM2 Cluster acceptance cleanup preserves the primary failure', function (): void {
@@ -6990,7 +7078,7 @@ hub_test('VoxCPM2 Cluster acceptance refuses the ordinary test runner and expose
     );
     hub_test_assert(
         hub_voxcpm2_cluster_acceptance_success_line()
-            === "{\"ok\":true,\"profile_prepared\":true,\"ultimate_clone\":true,\"audio_valid\":true,\"gpu\":true,\"artifacts_acknowledged\":true}\n",
+            === "{\"ok\":true,\"profile_prepared\":true,\"ultimate_clone\":true,\"generic_exploration\":true,\"audio_valid\":true,\"gpu\":true,\"artifacts_acknowledged\":true}\n",
         'successful CLI output must be exactly one fixed safe JSON line'
     );
     $failure = hub_voxcpm2_cluster_acceptance_failure_line('request_failed');
