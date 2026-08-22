@@ -229,8 +229,17 @@ service routes:
 
 ```bash
 AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=voice-cluster
-python3 -m unittest -v packs/tts-voxcpm2/service/test_app.py packs/tts-voxcpm2/service/test_job.py packs/tts-voxcpm2/service/test_http_routes.py
+"${TTS_COMPOSE_CMD[@]}" exec -T "$TTS_SERVICE_KEY" \
+    python3 -m unittest -v test_app.py test_job.py test_http_routes.py
 ```
+
+The Python command runs inside the already-built, running TTS service from
+`/app`, which is its Dockerfile `WORKDIR`; that image supplies the Pack's
+FastAPI and other pinned runtime dependencies. Do not run those test file paths
+from an arbitrary host checkout: that changes Python's import root and may lack
+the service dependencies. For a limited host-only check where the local Python
+environment is known to have the required dependencies, run it from
+`packs/tts-voxcpm2/service` as `python3 -m unittest -v test_app.py test_job.py`.
 
 For a deployed Router, run the real acceptance separately:
 

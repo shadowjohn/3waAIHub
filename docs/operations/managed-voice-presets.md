@@ -30,6 +30,10 @@ Stable request errors are `voice_preset_required`, `voice_preset_not_found`,
 `voice_preset_candidate_count_invalid`, `voice_preset_forbidden_input`, and
 `voice_preset_invalid`.
 
+For a managed preset, the seed makes a selected candidate reproducible within
+the same preset and engine revision. It does not promise byte-identical output
+after a revision, engine, or inference-environment change.
+
 ## Generic voice exploration
 
 `generic_synthesize` is separate from managed presets. It creates neither a
@@ -45,16 +49,14 @@ seed, `voice_design_revision`, and `style_status=unverified`. Gender, age,
 and role note remain owner-private exploration preferences until an engine
 supports independent controls; they are not promised acoustic traits and are
 never concatenated to speech. Save the WAV with task ID, candidate ID, seed,
-and revision for provenance. The recipe helps compare or retry one runtime
-revision, but cannot promise byte-identical output after runtime changes.
+and revision for provenance. Generic exploration has no preset: its recipe
+only supports comparison or retry within the same design and runtime revision,
+and cannot promise byte-identical output after a model, runtime, or
+inference-environment change.
 
 Stable request errors are `generic_voice_invalid`,
 `generic_voice_candidate_count_invalid`, and
 `generic_voice_forbidden_input`.
-
-The seed makes a selected candidate reproducible within the same preset and
-engine revision. It does not promise byte-identical output after a revision or
-engine change.
 
 ## Cluster Router
 
