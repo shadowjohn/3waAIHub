@@ -87,9 +87,12 @@ seed, prompt/control value, or node detail. `text` is the only spoken field.
 At submit time the Router uses ordinary eligible-station selection. Only after
 the selected child accepts does the opaque Router task become pinned for
 status, candidate artifact, and ACK follow-ups. The completed result exposes
-only the stable candidate ID, opaque audio URL, seed, design revision, and
-`style_status=unverified`; it does not read, create, or publish a managed
-preset/Profile, raw role note, child model, or path.
+only the stable candidate ID, opaque `audio_artifact_id`, opaque audio URL,
+seed, design revision, and `style_status=unverified`; use that ID with the
+returned `ack_url_template`. A generic completion also carries a candidate-only
+`cluster_artifact_index` of opaque ID/type/MIME/size/SHA-256 descriptors for
+integrity validation before ACK. It does not read, create, or publish a managed
+preset/Profile, raw role note, child task, child model, node, or path.
 
 ## Station Status Contract
 

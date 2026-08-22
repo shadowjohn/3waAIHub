@@ -6051,7 +6051,12 @@ hub_test('cluster voice docs expose only opaque profile task workflow fields', f
             $nativeGeneric === [
                 'synthesis_operation' => 'generic_synthesize',
                 'request_fields' => ['text', 'gender', 'age_bucket', 'role_note', 'candidate_count'],
-                'result_candidates' => ['candidate_id', 'audio_url', 'seed', 'voice_design_revision', 'style_status'],
+                'result_candidates' => ['candidate_id', 'audio_artifact_id', 'audio_url', 'seed', 'voice_design_revision', 'style_status'],
+                'artifact_index' => [
+                    'field' => 'cluster_artifact_index',
+                    'descriptor_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+                    'boundary' => 'Descriptors contain only opaque candidate artifact IDs and integrity metadata; no child task, Profile, node, or path is exposed.',
+                ],
                 'strategy' => 'VoxCPM2 design only; no Voice Profile is created or selected.',
                 'style_status' => 'unverified until an engine has official independent controls.',
             ]
@@ -7045,8 +7050,8 @@ hub_test('cluster router projects generic voice candidates without preset metada
                     ['candidate_id' => 'candidate-02', 'audio_artifact_id' => 22, 'seed' => 402, 'voice_design_revision' => 1, 'style_status' => 'unverified'],
                 ]],
                 'cluster_artifact_index' => [
-                    ['id' => 21, 'size_bytes' => 100, 'type' => 'generated_audio', 'mime_type' => 'audio/wav'],
-                    ['id' => 22, 'size_bytes' => 100, 'type' => 'voice_candidate_02', 'mime_type' => 'audio/wav'],
+                    ['id' => 21, 'size_bytes' => 100, 'type' => 'generated_audio', 'mime_type' => 'audio/wav', 'sha256' => str_repeat('a', 64)],
+                    ['id' => 22, 'size_bytes' => 100, 'type' => 'voice_candidate_02', 'mime_type' => 'audio/wav', 'sha256' => str_repeat('b', 64)],
                 ],
             ]);
         });
@@ -7084,6 +7089,10 @@ hub_test('cluster router projects generic voice candidates without preset metada
                     'style_status' => 'unverified',
                     'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . ($submittedPayload['task_id'] ?? '') . '&artifact_id=22',
                 ],
+            ]
+            && ($validPayload['cluster_artifact_index'] ?? null) === [
+                ['id' => 21, 'size_bytes' => 100, 'type' => 'generated_audio', 'mime_type' => 'audio/wav', 'sha256' => str_repeat('a', 64)],
+                ['id' => 22, 'size_bytes' => 100, 'type' => 'voice_candidate_02', 'mime_type' => 'audio/wav', 'sha256' => str_repeat('b', 64)],
             ]
             && $malformed['status'] === 502
             && str_contains((string)$malformed['body'], 'router_response_invalid'),

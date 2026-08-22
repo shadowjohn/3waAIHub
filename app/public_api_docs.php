@@ -649,7 +649,12 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
         $contract['generic_voice_exploration'] = [
             'synthesis_operation' => 'generic_synthesize',
             'request_fields' => ['text', 'gender', 'age_bucket', 'role_note', 'candidate_count'],
-            'result_candidates' => ['candidate_id', 'audio_url', 'seed', 'voice_design_revision', 'style_status'],
+            'result_candidates' => ['candidate_id', 'audio_artifact_id', 'audio_url', 'seed', 'voice_design_revision', 'style_status'],
+            'artifact_index' => [
+                'field' => 'cluster_artifact_index',
+                'descriptor_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+                'boundary' => 'Descriptors contain only opaque candidate artifact IDs and integrity metadata; no child task, Profile, node, or path is exposed.',
+            ],
             'strategy' => 'VoxCPM2 design only; no Voice Profile is created or selected.',
             'style_status' => 'unverified until an engine has official independent controls.',
         ];

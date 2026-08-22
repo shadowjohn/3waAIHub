@@ -61,7 +61,7 @@ eval "$RUNTIME_VARS"
 
 [ "$ASR_USE_GPU" = '1' ] || { echo 'Whisper USE_GPU must be persisted as 1.' >&2; exit 1; }
 [ "$TTS_REAL_INFERENCE" = '1' ] || { echo "Set VOXCPM2_REAL_INFERENCE=1 for service $TTS_SERVICE_ID first." >&2; exit 1; }
-test -f "$ASR_COMPOSE" && test -f "$ASR_ENV" && test -f "$TTS_COMPOSE" && test -f "$TTS_ENV"
+test -f "$ASR_COMPOSE" && test -f "$ASR_RUNTIME_SETTINGS" && test -f "$TTS_COMPOSE" && test -f "$TTS_RUNTIME_SETTINGS"
 ```
 
 The document deliberately derives compose files, projects, and loopback health URLs from `app/bootstrap.php` and the database. Do not replace them with a host-specific path or public URL.
@@ -78,8 +78,8 @@ docker run --rm --gpus all nvidia/cuda:12.9.0-base-ubuntu24.04 nvidia-smi -L
 
 grep -Eq '^[[:space:]]*gpus:[[:space:]]+all[[:space:]]*$' "$ASR_COMPOSE"
 grep -Eq '^[[:space:]]*gpus:[[:space:]]+all[[:space:]]*$' "$TTS_COMPOSE"
-ASR_COMPOSE_CMD=(docker compose --env-file "$ASR_ENV" -p "$ASR_COMPOSE_PROJECT" -f "$ASR_COMPOSE")
-TTS_COMPOSE_CMD=(docker compose --env-file "$TTS_ENV" -p "$TTS_COMPOSE_PROJECT" -f "$TTS_COMPOSE")
+ASR_COMPOSE_CMD=(docker compose --env-file "$ASR_RUNTIME_SETTINGS" -p "$ASR_COMPOSE_PROJECT" -f "$ASR_COMPOSE")
+TTS_COMPOSE_CMD=(docker compose --env-file "$TTS_RUNTIME_SETTINGS" -p "$TTS_COMPOSE_PROJECT" -f "$TTS_COMPOSE")
 "${ASR_COMPOSE_CMD[@]}" config -q
 "${TTS_COMPOSE_CMD[@]}" config -q
 ```

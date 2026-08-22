@@ -2625,6 +2625,16 @@ function hub_cluster_router_rewrite_task_payload(PDO $db, array $route, array $p
                 $candidate['audio_url'] = str_replace('{artifact_id}', rawurlencode((string)$candidate['audio_artifact_id']), $template);
             }
             unset($candidate);
+            $genericArtifacts = hub_cluster_router_generic_voice_candidate_artifact_index(
+                $response['result']['candidates'],
+                hub_cluster_router_result_artifacts($payload, true) ?? []
+            );
+            if ($genericArtifacts === null) {
+                throw new UnexpectedValueException('invalid generic voice candidate artifacts');
+            }
+            if ($genericArtifacts !== []) {
+                $response['cluster_artifact_index'] = $genericArtifacts;
+            }
         }
     } elseif ($kind === 'log') {
         $logs = hub_cluster_router_public_task_logs($db, $route, $payload, $remoteTaskId);
@@ -2807,6 +2817,42 @@ function hub_cluster_router_public_generic_voice_candidates(mixed $value, array 
     }
 
     return $value;
+}
+
+function hub_cluster_router_generic_voice_candidate_artifact_index(array $candidates, array $artifacts): ?array
+{
+    if ($candidates === [] || !array_key_exists('voice_design_revision', $candidates[0])) {
+        return [];
+    }
+    $byId = [];
+    foreach ($artifacts as $artifact) {
+        $id = is_array($artifact) ? hub_cluster_router_safe_artifact_id($artifact['id'] ?? null) : null;
+        if ($id === null || isset($byId[$id['key']])) {
+            return null;
+        }
+        $byId[$id['key']] = $artifact;
+    }
+    $safe = [];
+    foreach ($candidates as $index => $candidate) {
+        $id = is_array($candidate) ? hub_cluster_router_safe_artifact_id($candidate['audio_artifact_id'] ?? null) : null;
+        $expectedType = $index === 0
+            ? 'generated_audio'
+            : 'voice_candidate_' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT);
+        $artifact = $id === null ? null : ($byId[$id['key']] ?? null);
+        if (!is_array($artifact)
+            || array_keys($artifact) !== ['id', 'size_bytes', 'type', 'mime_type', 'sha256']
+            || (string)$artifact['id'] !== $id['key']
+            || ($artifact['type'] ?? null) !== $expectedType
+            || !in_array($artifact['mime_type'] ?? null, ['audio/wav', 'audio/x-wav'], true)
+            || !is_int($artifact['size_bytes'] ?? null) || $artifact['size_bytes'] < 1
+            || !is_string($artifact['sha256'] ?? null) || preg_match('/\A[a-f0-9]{64}\z/', $artifact['sha256']) !== 1
+        ) {
+            return null;
+        }
+        $safe[] = $artifact;
+    }
+
+    return $safe;
 }
 
 function hub_cluster_router_public_task_result(array $payload, bool $includeMetadata = false): array

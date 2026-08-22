@@ -5023,6 +5023,13 @@ hub_test('VoxCPM2 three-mode smoke runbook keeps the safe operator contract', fu
     foreach (['/DATA/models', 'Authorization: Bearer', 'reference_audio_path', 'prompt_wav_path', 'request_id'] as $forbidden) {
         hub_test_assert(!str_contains($doc, $forbidden), 'three-mode smoke runbook must not include ' . $forbidden);
     }
+    hub_test_assert(
+        !str_contains($doc, '$ASR_ENV')
+        && !str_contains($doc, '$TTS_ENV')
+        && str_contains($doc, '--env-file "$ASR_RUNTIME_SETTINGS"')
+        && str_contains($doc, '--env-file "$TTS_RUNTIME_SETTINGS"'),
+        'three-mode smoke runbook must use only the resolved runtime-settings paths under set -u'
+    );
 });
 
 $hubVoxCpm2ClusterAcceptance = HUB_ROOT . '/scripts/voxcpm2_cluster_acceptance.php';
@@ -6295,11 +6302,15 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
     array &$requests,
     bool $validMetadata = true,
     bool $deleteSucceeds = true,
+    bool $genericArtifactSwapped = false,
 ): callable {
     $profileTaskId = 'route_' . str_repeat('a', 34);
     $synthesisTaskId = 'route_' . str_repeat('b', 34);
     $genericTaskId = 'route_' . str_repeat('c', 34);
     $audio = "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 48000, 96000, 2, 16) . "data" . pack('V', 0);
+    $genericArtifactBody = $genericArtifactSwapped
+        ? "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 44100, 88200, 2, 16) . "data" . pack('V', 0)
+        : $audio;
     $referenceSha256 = null;
     $promptSha256 = null;
     $targetText = null;
@@ -6315,6 +6326,7 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
         $synthesisTaskId,
         $genericTaskId,
         $audio,
+        $genericArtifactBody,
         &$referenceSha256,
         &$promptSha256,
         &$targetText,
@@ -6429,6 +6441,22 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
                             'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . $genericTaskId . '&artifact_id=20',
                         ],
                     ]],
+                    'cluster_artifact_index' => [
+                        [
+                            'id' => 19,
+                            'type' => 'generated_audio',
+                            'mime_type' => 'audio/wav',
+                            'size_bytes' => strlen($audio),
+                            'sha256' => hash('sha256', $audio),
+                        ],
+                        [
+                            'id' => 20,
+                            'type' => 'voice_candidate_02',
+                            'mime_type' => 'audio/wav',
+                            'size_bytes' => strlen($audio),
+                            'sha256' => hash('sha256', $audio),
+                        ],
+                    ],
                 ]);
             }
             $metadata = json_encode(hub_test_voxcpm2_cluster_runner_metadata(
@@ -6459,7 +6487,7 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
         }
         if (($query['mode'] ?? '') === 'cluster_artifact') {
             if (($query['task_id'] ?? '') === $genericTaskId) {
-                return ['status' => 200, 'headers' => ['Content-Type' => 'audio/wav'], 'body' => $audio];
+                return ['status' => 200, 'headers' => ['Content-Type' => 'audio/wav'], 'body' => $genericArtifactBody];
             }
             $metadata = json_encode(hub_test_voxcpm2_cluster_runner_metadata(
                 (string)$referenceSha256,
@@ -6962,6 +6990,43 @@ hub_test('VoxCPM2 Cluster acceptance completes its full offline flow and removes
     );
 });
 
+hub_test('VoxCPM2 Cluster acceptance rejects generic WAV bytes that differ from the Router descriptor', function (): void {
+    $wav = hub_test_voxcpm2_cluster_acceptance_wav();
+    $requests = [];
+    $code = null;
+    $accepted = null;
+    try {
+        $config = hub_voxcpm2_cluster_acceptance_config(hub_test_voxcpm2_cluster_acceptance_env($wav));
+        $accepted = hub_voxcpm2_cluster_acceptance_execute(
+            $config,
+            hub_test_voxcpm2_cluster_acceptance_transport($requests, true, true, true),
+            static function (string $path): bool {
+                $header = (string)file_get_contents($path, false, null, 0, 12);
+                return substr($header, 0, 4) === 'RIFF' && substr($header, 8, 4) === 'WAVE';
+            },
+            static function (): void {
+                throw new RuntimeException('Immediate terminal fixtures must not sleep.');
+            }
+        );
+    } catch (HubVoxCpm2ClusterAcceptanceFailure $error) {
+        $code = $error->stableCode();
+    } finally {
+        @unlink($wav);
+    }
+    $genericAcks = array_filter($requests, static function (array $request): bool {
+        parse_str((string)(parse_url((string)$request['url'], PHP_URL_QUERY) ?? ''), $query);
+        return ($query['mode'] ?? '') === 'cluster_task_artifacts_ack'
+            && ($query['task_id'] ?? '') === 'route_' . str_repeat('c', 34);
+    });
+
+    hub_test_assert(
+        $accepted === null
+        && $code === 'artifact_invalid'
+        && $genericAcks === [],
+        'generic acceptance must reject swapped WAV bytes before a generic ACK or success result'
+    );
+});
+
 hub_test('VoxCPM2 Cluster acceptance rejects malformed or leaky generic candidates', function (): void {
     $wav = hub_test_voxcpm2_cluster_acceptance_wav();
     try {
@@ -6979,6 +7044,10 @@ hub_test('VoxCPM2 Cluster acceptance rejects malformed or leaky generic candidat
             'ok' => true,
             'task_id' => $taskId,
             'result' => ['candidates' => [$candidate(1, 19), $candidate(2, 20)]],
+            'cluster_artifact_index' => [
+                ['id' => 19, 'size_bytes' => 44, 'type' => 'generated_audio', 'mime_type' => 'audio/wav', 'sha256' => str_repeat('a', 64)],
+                ['id' => 20, 'size_bytes' => 44, 'type' => 'voice_candidate_02', 'mime_type' => 'audio/wav', 'sha256' => str_repeat('b', 64)],
+            ],
         ];
         $malformed = $valid;
         unset($malformed['result']['candidates'][1]['style_status']);
@@ -6987,8 +7056,8 @@ hub_test('VoxCPM2 Cluster acceptance rejects malformed or leaky generic candidat
 
         hub_test_assert(
             hub_voxcpm2_cluster_acceptance_generic_candidates($config, $valid, $taskId) === [
-                ['id' => '19', 'url' => 'https://router.example/3waAIHub/cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=19'],
-                ['id' => '20', 'url' => 'https://router.example/3waAIHub/cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=20'],
+                ['id' => '19', 'url' => 'https://router.example/3waAIHub/cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=19', 'mime_type' => 'audio/wav', 'size_bytes' => 44, 'sha256' => str_repeat('a', 64)],
+                ['id' => '20', 'url' => 'https://router.example/3waAIHub/cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=20', 'mime_type' => 'audio/wav', 'size_bytes' => 44, 'sha256' => str_repeat('b', 64)],
             ]
             && hub_test_throws(static fn (): array => hub_voxcpm2_cluster_acceptance_generic_candidates($config, $malformed, $taskId))
             && hub_test_throws(static fn (): array => hub_voxcpm2_cluster_acceptance_generic_candidates($config, $leaky, $taskId)),
