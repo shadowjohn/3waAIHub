@@ -77,6 +77,23 @@ The asynchronous flow is submit, poll `cluster_task_status`, read `cluster_task_
 
 Before creating a child task, the Router prefers a fresh eligible station without an active GPU lease or queued work. Station priority then breaks ties. This is the cross-node fallback boundary: after the child accepts a task, Router keeps it pinned to preserve task ownership, artifacts, ACK, and idempotency. It does not migrate an accepted task or evict a resident service. `retry_after_seconds` describes the next child scheduler check, not a promised completion time.
 
+## Generic voice exploration
+
+`operation=generic_synthesize` is not a managed-preset or Profile operation.
+The request contains only `text`, `gender`, `age_bucket`, `role_note`, and a
+1–3 `candidate_count`; it cannot select a model, clone mode, Voice Profile,
+seed, prompt/control value, or node detail. `text` is the only spoken field.
+
+At submit time the Router uses ordinary eligible-station selection. Only after
+the selected child accepts does the opaque Router task become pinned for
+status, candidate artifact, and ACK follow-ups. The completed result exposes
+only the stable candidate ID, opaque `audio_artifact_id`, opaque audio URL,
+seed, design revision, and `style_status=unverified`; use that ID with the
+returned `ack_url_template`. A generic completion also carries a candidate-only
+`cluster_artifact_index` of opaque ID/type/MIME/size/SHA-256 descriptors for
+integrity validation before ACK. It does not read, create, or publish a managed
+preset/Profile, raw role note, child task, child model, node, or path.
+
 ## Station Status Contract
 
 Cron invokes `scripts/cluster_refresh.php` once per minute. Router request

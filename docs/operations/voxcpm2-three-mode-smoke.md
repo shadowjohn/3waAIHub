@@ -61,7 +61,7 @@ eval "$RUNTIME_VARS"
 
 [ "$ASR_USE_GPU" = '1' ] || { echo 'Whisper USE_GPU must be persisted as 1.' >&2; exit 1; }
 [ "$TTS_REAL_INFERENCE" = '1' ] || { echo "Set VOXCPM2_REAL_INFERENCE=1 for service $TTS_SERVICE_ID first." >&2; exit 1; }
-test -f "$ASR_COMPOSE" && test -f "$ASR_ENV" && test -f "$TTS_COMPOSE" && test -f "$TTS_ENV"
+test -f "$ASR_COMPOSE" && test -f "$ASR_RUNTIME_SETTINGS" && test -f "$TTS_COMPOSE" && test -f "$TTS_RUNTIME_SETTINGS"
 ```
 
 The document deliberately derives compose files, projects, and loopback health URLs from `app/bootstrap.php` and the database. Do not replace them with a host-specific path or public URL.
@@ -78,8 +78,8 @@ docker run --rm --gpus all nvidia/cuda:12.9.0-base-ubuntu24.04 nvidia-smi -L
 
 grep -Eq '^[[:space:]]*gpus:[[:space:]]+all[[:space:]]*$' "$ASR_COMPOSE"
 grep -Eq '^[[:space:]]*gpus:[[:space:]]+all[[:space:]]*$' "$TTS_COMPOSE"
-ASR_COMPOSE_CMD=(docker compose --env-file "$ASR_ENV" -p "$ASR_COMPOSE_PROJECT" -f "$ASR_COMPOSE")
-TTS_COMPOSE_CMD=(docker compose --env-file "$TTS_ENV" -p "$TTS_COMPOSE_PROJECT" -f "$TTS_COMPOSE")
+ASR_COMPOSE_CMD=(docker compose --env-file "$ASR_RUNTIME_SETTINGS" -p "$ASR_COMPOSE_PROJECT" -f "$ASR_COMPOSE")
+TTS_COMPOSE_CMD=(docker compose --env-file "$TTS_RUNTIME_SETTINGS" -p "$TTS_COMPOSE_PROJECT" -f "$TTS_COMPOSE")
 "${ASR_COMPOSE_CMD[@]}" config -q
 "${TTS_COMPOSE_CMD[@]}" config -q
 ```
@@ -221,7 +221,47 @@ The second task must reuse the resident model and avoid a one-shot container boo
 
 Basic and Ultimate clone fields follow the [official VoxCPM2 model card](https://huggingface.co/openbmb/VoxCPM2). Whisper CUDA requirements follow the [official faster-whisper CUDA 12/cuDNN 9 notes](https://github.com/SYSTRAN/faster-whisper/blob/master/README.md).
 
-## 5. Failure Evidence And Cleanup
+## 5. Generic exploration checks
+
+Run these repository checks before deployment. They cover the native and
+Cluster contracts, the generic two-candidate acceptance seam, and the VoxCPM2
+service routes:
+
+```bash
+AIHUB_TEST_QUIET=1 php scripts/run_tests.php --suite=voice-cluster
+"${TTS_COMPOSE_CMD[@]}" exec -T "$TTS_SERVICE_KEY" \
+    python3 -m unittest -v test_app.py test_job.py test_http_routes.py
+```
+
+The Python command runs inside the already-built, running TTS service from
+`/app`, which is its Dockerfile `WORKDIR`; that image supplies the Pack's
+FastAPI and other pinned runtime dependencies. Do not run those test file paths
+from an arbitrary host checkout: that changes Python's import root and may lack
+the service dependencies. For a limited host-only check where the local Python
+environment is known to have the required dependencies, run it from
+`packs/tts-voxcpm2/service` as `python3 -m unittest -v test_app.py test_job.py`.
+
+For a deployed Router, run the real acceptance separately:
+
+```bash
+php scripts/voxcpm2_cluster_acceptance.php
+```
+
+It requires the existing deployment environment variables
+`AIHUB_VOXCPM2_CLUSTER_BASE_URL`, `AIHUB_VOXCPM2_CLUSTER_TOKEN`,
+`AIHUB_VOXCPM2_CLUSTER_REFERENCE_WAV`, `AIHUB_VOXCPM2_CLUSTER_PROMPT_TEXT`,
+and `AIHUB_VOXCPM2_CLUSTER_TARGET_TEXT`. Set them through the deployment's
+secret mechanism or an interactive protected shell; do not paste a Token or
+other secret into shell history, scripts, screenshots, logs, or this document.
+The acceptance first proves the existing Profile/Ultimate Clone path, then
+submits `generic_synthesize` with two generic candidates, validates and ACKs
+both WAVs, and emits `generic_exploration:true` only after both ACKs succeed.
+
+Adding this operation alone does not require a model restart. Restart the
+existing resident VoxCPM2 service only when one of its persisted settings or
+runtime configuration has changed.
+
+## 6. Failure Evidence And Cleanup
 
 Keep evidence local and redact private audio, transcripts, and tokens before sharing it.
 

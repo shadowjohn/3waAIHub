@@ -297,6 +297,177 @@ hub_test('Managed voice preset batches expose only fixed candidate artifact URLs
     );
 });
 
+hub_test('Generic voice exploration keeps preferences private and queues design candidates', function (): void {
+    if (!function_exists('hub_voice_generic_api_synthesize')) {
+        hub_test_assert(false, 'generic voice exploration API is missing');
+        return;
+    }
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $owner = hub_create_api_member($db, 'Generic Voice Owner');
+        $token = hub_create_api_token($db, $owner, 'generic voice token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        $route = hub_resolve_audio_async_route($db, 'voice_generate');
+        $auth = ['member_id' => $owner, 'token_id' => (int)$token['token_id']];
+        $request = [
+            'text' => 'generic-stage-visibility',
+            'gender' => 'female',
+            'age_bucket' => 'young_adult',
+            'role_note' => '活潑有節奏的活動主持人，聲音明亮而有感染力。',
+            'candidate_count' => 3,
+        ];
+        $db->exec("CREATE TRIGGER generic_voice_must_stage
+            BEFORE INSERT ON tasks
+            WHEN NEW.task_type = 'pack_job'
+              AND NEW.input_json LIKE '%generic-stage-visibility%'
+              AND NEW.status <> 'staging'
+            BEGIN
+                SELECT RAISE(ABORT, 'generic_voice_task_must_stage');
+            END");
+        $db->exec("CREATE TRIGGER generic_voice_recipe_before_publish
+            BEFORE UPDATE OF status ON tasks
+            WHEN OLD.task_type = 'pack_job'
+              AND OLD.status = 'staging' AND NEW.status = 'queued'
+              AND OLD.input_json LIKE '%generic-stage-visibility%'
+              AND (instr(OLD.input_json, '\"generic_voice_batch\"') = 0
+                   OR instr(OLD.input_json, '\"voice_design_revision\":1') = 0)
+            BEGIN
+                SELECT RAISE(ABORT, 'generic_voice_recipe_before_publish');
+            END");
+        $accepted = hub_voice_generic_api_synthesize($db, $route, $auth, $request);
+        $task = hub_get_task($db, (int)($accepted['task_id'] ?? 0));
+        $taskInput = (array)($task['input'] ?? []);
+        $recipe = $taskInput['generic_voice_batch'] ?? null;
+        $contract = json_decode((string)($task['job_contract_json'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
+        $workspace = hub_pack_job_prepare_workspace($db, $task ?? [], $contract);
+        $runnerRequest = json_decode((string)file_get_contents($workspace . '/input/request.json'), true, 32, JSON_THROW_ON_ERROR);
+        $runnerJson = json_encode($runnerRequest, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+        $errors = [];
+        foreach ([
+            $request + ['voice_prompt' => 'must not be accepted'],
+            $request + ['control' => 'must not be accepted'],
+            $request + ['mode' => 'clone'],
+            $request + ['model' => 'voxcpm2'],
+            $request + ['voice_profile_id' => 1],
+            $request + ['seed' => 1],
+            $request + ['unexpected' => true],
+            array_replace($request, ['age_bucket' => 'adult']),
+            array_replace($request, ['candidate_count' => 0]),
+            array_replace($request, ['candidate_count' => 4]),
+        ] as $invalid) {
+            try {
+                hub_voice_generic_api_synthesize($db, $route, $auth, $invalid);
+            } catch (InvalidArgumentException $error) {
+                $errors[] = $error->getMessage();
+            }
+        }
+
+        hub_test_assert(
+            ($accepted['status'] ?? null) === 'queued'
+            && ($task['task_type'] ?? null) === 'pack_job'
+            && ($taskInput['text'] ?? null) === $request['text']
+            && ($taskInput['mode'] ?? null) === 'design'
+            && !array_key_exists('voice_profile_id', $taskInput)
+            && !array_key_exists('voice_context', $taskInput)
+            && $recipe === [
+                'gender' => 'female',
+                'age_bucket' => 'young_adult',
+                'role_note' => $request['role_note'],
+                'voice_design_revision' => 1,
+                'style_status' => 'unverified',
+                'candidates' => [
+                    ['candidate_id' => 'candidate-01', 'seed' => $recipe['candidates'][0]['seed'] ?? null],
+                    ['candidate_id' => 'candidate-02', 'seed' => $recipe['candidates'][1]['seed'] ?? null],
+                    ['candidate_id' => 'candidate-03', 'seed' => $recipe['candidates'][2]['seed'] ?? null],
+                ],
+            ]
+            && array_key_exists('preset_candidates', $runnerRequest)
+            && !array_key_exists('gender', $runnerRequest)
+            && !array_key_exists('age_bucket', $runnerRequest)
+            && !array_key_exists('role_note', $runnerRequest)
+            && !str_contains($runnerJson, $request['role_note'])
+            && $errors === [
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_invalid',
+                'generic_voice_candidate_count_invalid',
+                'generic_voice_candidate_count_invalid',
+            ],
+            'generic exploration must queue only design input and retain its private preference recipe'
+        );
+    });
+});
+
+hub_test('Generic voice exploration validates fixed artifacts and candidate results', function (): void {
+    if (!function_exists('hub_voice_generic_candidate_artifact_definitions')
+        || !function_exists('hub_voice_generic_batch_task_result')
+        || !function_exists('hub_voice_generic_batch_result_candidates')) {
+        hub_test_assert(false, 'generic voice exploration result helpers are missing');
+        return;
+    }
+    $db = hub_test_reset_db();
+    $taskInput = [
+        'generic_voice_batch' => [
+            'gender' => 'male',
+            'age_bucket' => 'mature',
+            'role_note' => '沉穩可靠的企業旁白。',
+            'voice_design_revision' => 1,
+            'style_status' => 'unverified',
+            'candidates' => [
+                ['candidate_id' => 'candidate-01', 'seed' => 101],
+                ['candidate_id' => 'candidate-02', 'seed' => 202],
+                ['candidate_id' => 'candidate-03', 'seed' => 303],
+            ],
+        ],
+    ];
+    $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, $taskInput, null, '203.0.113.93');
+    $registered = [
+        ['name' => 'generated_audio.wav', 'id' => 11],
+        ['name' => 'candidate-02.wav', 'id' => 12],
+        ['name' => 'candidate-03.wav', 'id' => 13],
+    ];
+    $result = hub_voice_generic_batch_task_result($db, $taskId, $registered);
+    $definitions = hub_voice_generic_candidate_artifact_definitions($taskInput, [
+        'type' => 'generated_audio',
+        'path' => 'generated_audio.wav',
+        'mime_types' => ['audio/wav'],
+        'max_bytes' => 1024,
+    ]);
+    $candidates = $result['candidates'] ?? null;
+    $malformedId = is_array($candidates) ? $candidates : [];
+    $malformedRevision = is_array($candidates) ? $candidates : [];
+    $malformedStatus = is_array($candidates) ? $candidates : [];
+    $malformedId[1]['candidate_id'] = 'candidate-99';
+    $malformedRevision[1]['voice_design_revision'] = 2;
+    $malformedStatus[1]['style_status'] = 'applied';
+    $public = hub_task_result_publicize_value($result, [
+        11 => 'https://hub.example/api.php?mode=artifact&artifact_id=11',
+        12 => 'https://hub.example/api.php?mode=artifact&artifact_id=12',
+        13 => 'https://hub.example/api.php?mode=artifact&artifact_id=13',
+    ]);
+
+    hub_test_assert(
+        array_column($definitions, 'path') === ['candidate-02.wav', 'candidate-03.wav']
+        && is_array($candidates)
+        && array_keys($candidates[0]) === ['candidate_id', 'audio_artifact_id', 'seed', 'voice_design_revision', 'style_status']
+        && hub_voice_generic_batch_result_candidates($taskInput, $result, [11, 12, 13]) === $candidates
+        && hub_voice_generic_batch_result_candidates($taskInput, ['candidates' => $malformedId], [11, 12, 13]) === null
+        && hub_voice_generic_batch_result_candidates($taskInput, ['candidates' => $malformedRevision], [11, 12, 13]) === null
+        && hub_voice_generic_batch_result_candidates($taskInput, ['candidates' => $malformedStatus], [11, 12, 13]) === null
+        && hub_voice_generic_batch_result_candidates($taskInput, $result, [11, 12]) === null
+        && ($public['candidates'][2]['audio_url'] ?? null) === 'https://hub.example/api.php?mode=artifact&artifact_id=13'
+        && !str_contains((string)json_encode($public, JSON_UNESCAPED_UNICODE), '沉穩可靠'),
+        'generic exploration candidates must use fixed WAV artifacts and safe immutable recipe metadata'
+    );
+});
+
 hub_test('VoxCPM2 profile_prepare stores raw Whisper text and validation without confirming', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
@@ -4852,6 +5023,24 @@ hub_test('VoxCPM2 three-mode smoke runbook keeps the safe operator contract', fu
     foreach (['/DATA/models', 'Authorization: Bearer', 'reference_audio_path', 'prompt_wav_path', 'request_id'] as $forbidden) {
         hub_test_assert(!str_contains($doc, $forbidden), 'three-mode smoke runbook must not include ' . $forbidden);
     }
+    hub_test_assert(
+        !str_contains($doc, '$ASR_ENV')
+        && !str_contains($doc, '$TTS_ENV')
+        && str_contains($doc, '--env-file "$ASR_RUNTIME_SETTINGS"')
+        && str_contains($doc, '--env-file "$TTS_RUNTIME_SETTINGS"'),
+        'three-mode smoke runbook must use only the resolved runtime-settings paths under set -u'
+    );
+});
+
+hub_test('VoxCPM2 Pack docs keep generic candidate IDs and ACKs Router-only', function (): void {
+    $doc = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/README.md');
+
+    hub_test_assert(
+        str_contains($doc, 'opaque `audio_artifact_id`')
+        && str_contains($doc, 'Router only')
+        && str_contains($doc, '`ack_url_template`'),
+        'VoxCPM2 Pack docs must explain opaque generic candidate IDs and Router-only ACK use'
+    );
 });
 
 $hubVoxCpm2ClusterAcceptance = HUB_ROOT . '/scripts/voxcpm2_cluster_acceptance.php';
@@ -6124,10 +6313,15 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
     array &$requests,
     bool $validMetadata = true,
     bool $deleteSucceeds = true,
+    bool $genericArtifactSwapped = false,
 ): callable {
     $profileTaskId = 'route_' . str_repeat('a', 34);
     $synthesisTaskId = 'route_' . str_repeat('b', 34);
+    $genericTaskId = 'route_' . str_repeat('c', 34);
     $audio = "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 48000, 96000, 2, 16) . "data" . pack('V', 0);
+    $genericArtifactBody = $genericArtifactSwapped
+        ? "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 44100, 88200, 2, 16) . "data" . pack('V', 0)
+        : $audio;
     $referenceSha256 = null;
     $promptSha256 = null;
     $targetText = null;
@@ -6141,7 +6335,9 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
         &$requests,
         $profileTaskId,
         $synthesisTaskId,
+        $genericTaskId,
         $audio,
+        $genericArtifactBody,
         &$referenceSha256,
         &$promptSha256,
         &$targetText,
@@ -6192,6 +6388,20 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
                     ? $json(hub_test_voxcpm2_cluster_acceptance_profile((string)$referenceSha256, 'deleted'))
                     : $json(['ok' => false], 500);
             }
+            if (($body['operation'] ?? '') === 'generic_synthesize') {
+                hub_test_assert(
+                    array_keys($body) === ['operation', 'text', 'gender', 'age_bucket', 'role_note', 'candidate_count']
+                    && ($body['text'] ?? '') === 'Generate this private target text.'
+                    && ($body['gender'] ?? '') === 'unspecified'
+                    && ($body['age_bucket'] ?? '') === 'young_adult'
+                    && ($body['role_note'] ?? '') === '聲音探索驗收，不屬於既有角色。'
+                    && ($body['candidate_count'] ?? null) === 2
+                    && !array_key_exists('voice_profile_task_id', $body)
+                    && !array_key_exists('mode', $body),
+                    'generic acceptance must submit only the fixed semantic exploration request'
+                );
+                return $json(['ok' => true, 'task_id' => $genericTaskId] + hub_test_voxcpm2_cluster_acceptance_links($genericTaskId, true));
+            }
             hub_test_assert(
                 !array_key_exists('operation', $body)
                 && ($body['mode'] ?? '') === 'ultimate_clone'
@@ -6217,6 +6427,46 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
                         'transcript_confirmed' => true,
                         'text_chars' => 30,
                         'prompt_text_sha256' => $promptSha256,
+                    ],
+                ]);
+            }
+            if (($query['task_id'] ?? '') === $genericTaskId) {
+                return $json([
+                    'ok' => true,
+                    'task_id' => $genericTaskId,
+                    'result' => ['candidates' => [
+                        [
+                            'candidate_id' => 'candidate-01',
+                            'audio_artifact_id' => 19,
+                            'seed' => 401,
+                            'voice_design_revision' => 1,
+                            'style_status' => 'unverified',
+                            'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . $genericTaskId . '&artifact_id=19',
+                        ],
+                        [
+                            'candidate_id' => 'candidate-02',
+                            'audio_artifact_id' => 20,
+                            'seed' => 402,
+                            'voice_design_revision' => 1,
+                            'style_status' => 'unverified',
+                            'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . $genericTaskId . '&artifact_id=20',
+                        ],
+                    ]],
+                    'cluster_artifact_index' => [
+                        [
+                            'id' => 19,
+                            'type' => 'generated_audio',
+                            'mime_type' => 'audio/wav',
+                            'size_bytes' => strlen($audio),
+                            'sha256' => hash('sha256', $audio),
+                        ],
+                        [
+                            'id' => 20,
+                            'type' => 'voice_candidate_02',
+                            'mime_type' => 'audio/wav',
+                            'size_bytes' => strlen($audio),
+                            'sha256' => hash('sha256', $audio),
+                        ],
                     ],
                 ]);
             }
@@ -6247,6 +6497,9 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
             ]);
         }
         if (($query['mode'] ?? '') === 'cluster_artifact') {
+            if (($query['task_id'] ?? '') === $genericTaskId) {
+                return ['status' => 200, 'headers' => ['Content-Type' => 'audio/wav'], 'body' => $genericArtifactBody];
+            }
             $metadata = json_encode(hub_test_voxcpm2_cluster_runner_metadata(
                 (string)$referenceSha256,
                 (string)$promptSha256,
@@ -6258,7 +6511,7 @@ function hub_test_voxcpm2_cluster_acceptance_transport(
         }
         if (($query['mode'] ?? '') === 'cluster_task_artifacts_ack') {
             hub_test_assert(($request['method'] ?? '') === 'POST' && ($request['body'] ?? null) === '', 'artifact ACK must use the returned standard POST link');
-            return $json(['ok' => true, 'task_id' => $synthesisTaskId]);
+            return $json(['ok' => true, 'task_id' => (string)($query['task_id'] ?? '')]);
         }
 
         throw new RuntimeException('Unexpected offline VoxCPM2 Cluster acceptance request.');
@@ -6324,7 +6577,7 @@ hub_test('VoxCPM2 Cluster acceptance CLI statically keeps a bounded non-leaking 
         'finally',
         'pcntl_signal',
         'hub_voxcpm2_cluster_acceptance_remove_tree',
-        '{"ok":true,"profile_prepared":true,"ultimate_clone":true,"audio_valid":true,"gpu":true,"artifacts_acknowledged":true}',
+        '{"ok":true,"profile_prepared":true,"ultimate_clone":true,"generic_exploration":true,"audio_valid":true,"gpu":true,"artifacts_acknowledged":true}',
     ] as $needle) {
         hub_test_assert(str_contains($source, $needle), 'Cluster acceptance safety contract missing ' . $needle);
     }
@@ -6713,16 +6966,17 @@ hub_test('VoxCPM2 Cluster acceptance completes its full offline flow and removes
     hub_test_assert($result === [
         'profile_prepared' => true,
         'ultimate_clone' => true,
+        'generic_exploration' => true,
         'audio_valid' => true,
         'gpu' => true,
         'artifacts_acknowledged' => true,
     ], 'offline Cluster acceptance result must contain only the safe success facts');
+    hub_test_assert(count($requests) === 19, 'generic acceptance must use the expected bounded request count');
+    hub_test_assert(count($probes) === 3, 'generic acceptance must ffprobe both WAV candidates');
+    hub_test_assert($before === $after, 'generic acceptance must remove its temporary files');
+    hub_test_assert(count(array_filter($requests, static fn (array $request): bool => ($request['operation'] ?? null) === 'profile_delete')) === 1, 'generic acceptance must retain one profile cleanup');
     hub_test_assert(
-        count($requests) === 12
-        && count($probes) === 1
-        && $before === $after
-        && count(array_filter($requests, static fn (array $request): bool => ($request['operation'] ?? null) === 'profile_delete')) === 1
-        && $modes === [
+        $modes === [
             'voice_generate',
             'cluster_task_status',
             'cluster_task_result',
@@ -6733,11 +6987,96 @@ hub_test('VoxCPM2 Cluster acceptance completes its full offline flow and removes
             'cluster_artifact',
             'cluster_artifact',
             'cluster_task_artifacts_ack',
+            'cluster_task_artifacts_ack',
+            'voice_generate',
+            'cluster_task_status',
+            'cluster_task_result',
+            'cluster_artifact',
+            'cluster_task_artifacts_ack',
+            'cluster_artifact',
             'cluster_task_artifacts_ack',
             'voice_generate',
         ],
-        'offline flow must use only ordered Router links, ACK both artifacts, delete its profile, and leave no temp residue'
+        'offline flow must validate and ACK two generic candidates after the profile flow'
     );
+});
+
+hub_test('VoxCPM2 Cluster acceptance rejects generic WAV bytes that differ from the Router descriptor', function (): void {
+    $wav = hub_test_voxcpm2_cluster_acceptance_wav();
+    $requests = [];
+    $code = null;
+    $accepted = null;
+    try {
+        $config = hub_voxcpm2_cluster_acceptance_config(hub_test_voxcpm2_cluster_acceptance_env($wav));
+        $accepted = hub_voxcpm2_cluster_acceptance_execute(
+            $config,
+            hub_test_voxcpm2_cluster_acceptance_transport($requests, true, true, true),
+            static function (string $path): bool {
+                $header = (string)file_get_contents($path, false, null, 0, 12);
+                return substr($header, 0, 4) === 'RIFF' && substr($header, 8, 4) === 'WAVE';
+            },
+            static function (): void {
+                throw new RuntimeException('Immediate terminal fixtures must not sleep.');
+            }
+        );
+    } catch (HubVoxCpm2ClusterAcceptanceFailure $error) {
+        $code = $error->stableCode();
+    } finally {
+        @unlink($wav);
+    }
+    $genericAcks = array_filter($requests, static function (array $request): bool {
+        parse_str((string)(parse_url((string)$request['url'], PHP_URL_QUERY) ?? ''), $query);
+        return ($query['mode'] ?? '') === 'cluster_task_artifacts_ack'
+            && ($query['task_id'] ?? '') === 'route_' . str_repeat('c', 34);
+    });
+
+    hub_test_assert(
+        $accepted === null
+        && $code === 'artifact_invalid'
+        && $genericAcks === [],
+        'generic acceptance must reject swapped WAV bytes before a generic ACK or success result'
+    );
+});
+
+hub_test('VoxCPM2 Cluster acceptance rejects malformed or leaky generic candidates', function (): void {
+    $wav = hub_test_voxcpm2_cluster_acceptance_wav();
+    try {
+        $config = hub_voxcpm2_cluster_acceptance_config(hub_test_voxcpm2_cluster_acceptance_env($wav));
+        $taskId = 'route_' . str_repeat('c', 34);
+        $candidate = static fn (int $number, int $artifactId): array => [
+            'candidate_id' => 'candidate-' . str_pad((string)$number, 2, '0', STR_PAD_LEFT),
+            'audio_artifact_id' => $artifactId,
+            'seed' => 400 + $number,
+            'voice_design_revision' => 1,
+            'style_status' => 'unverified',
+            'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=' . $artifactId,
+        ];
+        $valid = [
+            'ok' => true,
+            'task_id' => $taskId,
+            'result' => ['candidates' => [$candidate(1, 19), $candidate(2, 20)]],
+            'cluster_artifact_index' => [
+                ['id' => 19, 'size_bytes' => 44, 'type' => 'generated_audio', 'mime_type' => 'audio/wav', 'sha256' => str_repeat('a', 64)],
+                ['id' => 20, 'size_bytes' => 44, 'type' => 'voice_candidate_02', 'mime_type' => 'audio/wav', 'sha256' => str_repeat('b', 64)],
+            ],
+        ];
+        $malformed = $valid;
+        unset($malformed['result']['candidates'][1]['style_status']);
+        $leaky = $valid;
+        $leaky['result']['candidates'][0]['voice_profile_task_id'] = 'route_' . str_repeat('a', 34);
+
+        hub_test_assert(
+            hub_voxcpm2_cluster_acceptance_generic_candidates($config, $valid, $taskId) === [
+                ['id' => '19', 'url' => 'https://router.example/3waAIHub/cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=19', 'mime_type' => 'audio/wav', 'size_bytes' => 44, 'sha256' => str_repeat('a', 64)],
+                ['id' => '20', 'url' => 'https://router.example/3waAIHub/cluster_api.php?mode=cluster_artifact&task_id=' . $taskId . '&artifact_id=20', 'mime_type' => 'audio/wav', 'size_bytes' => 44, 'sha256' => str_repeat('b', 64)],
+            ]
+            && hub_test_throws(static fn (): array => hub_voxcpm2_cluster_acceptance_generic_candidates($config, $malformed, $taskId))
+            && hub_test_throws(static fn (): array => hub_voxcpm2_cluster_acceptance_generic_candidates($config, $leaky, $taskId)),
+            'generic acceptance must require exactly two safe candidate descriptors and same-task artifact URLs'
+        );
+    } finally {
+        @unlink($wav);
+    }
 });
 
 hub_test('VoxCPM2 Cluster acceptance cleanup preserves the primary failure', function (): void {
@@ -6819,7 +7158,7 @@ hub_test('VoxCPM2 Cluster acceptance refuses the ordinary test runner and expose
     );
     hub_test_assert(
         hub_voxcpm2_cluster_acceptance_success_line()
-            === "{\"ok\":true,\"profile_prepared\":true,\"ultimate_clone\":true,\"audio_valid\":true,\"gpu\":true,\"artifacts_acknowledged\":true}\n",
+            === "{\"ok\":true,\"profile_prepared\":true,\"ultimate_clone\":true,\"generic_exploration\":true,\"audio_valid\":true,\"gpu\":true,\"artifacts_acknowledged\":true}\n",
         'successful CLI output must be exactly one fixed safe JSON line'
     );
     $failure = hub_voxcpm2_cluster_acceptance_failure_line('request_failed');

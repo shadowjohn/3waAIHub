@@ -30,9 +30,39 @@ Stable request errors are `voice_preset_required`, `voice_preset_not_found`,
 `voice_preset_candidate_count_invalid`, `voice_preset_forbidden_input`, and
 `voice_preset_invalid`.
 
-The seed makes a selected candidate reproducible within the same preset and
-engine revision. It does not promise byte-identical output after a revision or
-engine change.
+For a managed preset, the seed makes a selected candidate reproducible within
+the same preset and engine revision. It does not promise byte-identical output
+after a revision, engine, or inference-environment change.
+
+## Generic voice exploration
+
+`generic_synthesize` is separate from managed presets. It creates neither a
+Voice Profile nor a preset, and it never reads an existing character voice.
+Native Hub and Cluster callers send only `text`, `gender`, `age_bucket`,
+`role_note`, and `candidate_count` (1–3). `text` is the only spoken content;
+model, mode, Profile identifiers, paths, `voice_prompt`, `control`, and
+caller-supplied seeds are rejected.
+
+The Hub runs internal generic `design` and returns the normal async links. A
+terminal result supplies ordered `candidate_id`, opaque `audio_artifact_id`,
+opaque `audio_url`, server seed, `voice_design_revision`, and
+`style_status=unverified`. It is not a child task, Profile, or path. Native
+Hub `task_result` has no `ack_url_template` or `cluster_artifact_index`.
+Through the Router only, use the candidate `audio_artifact_id` to expand the
+returned `ack_url_template`. A Router generic result also carries a candidate-only
+`cluster_artifact_index` with the opaque ID, type, MIME, size, and SHA-256 so
+an integrity-aware client can validate the downloaded audio before ACK.
+Gender, age, and role note remain owner-private exploration preferences until
+an engine supports independent controls; they are not promised acoustic traits
+and are never concatenated to speech. Save the WAV with task ID, candidate ID,
+seed, and revision for provenance. Generic exploration has no preset: its
+recipe only supports comparison or retry within the same design and runtime
+revision, and cannot promise byte-identical output after a model, runtime, or
+inference-environment change.
+
+Stable request errors are `generic_voice_invalid`,
+`generic_voice_candidate_count_invalid`, and
+`generic_voice_forbidden_input`.
 
 ## Cluster Router
 
@@ -42,3 +72,9 @@ from that Router-owned catalog; later `preset_synthesize` requests are pinned
 to that station with no failover. A completed candidate still has the same
 `candidate_id`, `seed`, and `preset_revision`; its `audio_url` is the normal
 authenticated Router artifact URL.
+
+Generic exploration has no preset affinity. The Router selects an ordinary
+eligible `voice_generate` station when `generic_synthesize` is submitted; once
+the child accepts it, the opaque task and artifact links are pinned to that
+station. Download each candidate through its opaque Router URL and ACK it with
+the returned task ACK template expanded with its opaque `audio_artifact_id`.

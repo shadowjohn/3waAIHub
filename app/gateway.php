@@ -2783,6 +2783,10 @@ function hub_gateway_cluster_child_result_summary(array $task, array $artifacts)
     if ($presetCandidates !== null) {
         return ['candidates' => $presetCandidates];
     }
+    $genericCandidates = hub_voice_generic_batch_result_candidates((array)($task['input'] ?? []), $result, array_column($artifacts, 'id'));
+    if ($genericCandidates !== null) {
+        return ['candidates' => $genericCandidates];
+    }
     if (($task['task_type'] ?? '') === 'voice_profile_prepare') {
         $keys = ['kind', 'transcription_status', 'transcript_confirmed', 'text_chars', 'prompt_text_sha256'];
         if (!is_array($result)

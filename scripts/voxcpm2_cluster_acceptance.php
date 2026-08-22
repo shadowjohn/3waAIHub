@@ -20,7 +20,8 @@ const HUB_VOXCPM2_CLUSTER_REFERENCE_MAX_BYTES = 104857600;
 const HUB_VOXCPM2_CLUSTER_PROCESS_OUTPUT_MAX_BYTES = 65536;
 const HUB_VOXCPM2_CLUSTER_HEADER_MAX_BYTES = 65536;
 const HUB_VOXCPM2_CLUSTER_HEADER_MAX_COUNT = 256;
-const HUB_VOXCPM2_CLUSTER_SUCCESS_LINE = '{"ok":true,"profile_prepared":true,"ultimate_clone":true,"audio_valid":true,"gpu":true,"artifacts_acknowledged":true}';
+const HUB_VOXCPM2_CLUSTER_SUCCESS_LINE = '{"ok":true,"profile_prepared":true,"ultimate_clone":true,"generic_exploration":true,"audio_valid":true,"gpu":true,"artifacts_acknowledged":true}';
+const HUB_VOXCPM2_CLUSTER_GENERIC_ROLE_NOTE = '聲音探索驗收，不屬於既有角色。';
 
 final class HubVoxCpm2ClusterAcceptanceFailure extends RuntimeException
 {
@@ -718,9 +719,98 @@ function hub_voxcpm2_cluster_acceptance_execute(
             }
         }
 
+        $genericSubmitted = hub_voxcpm2_cluster_acceptance_json_request(
+            $config,
+            $transport,
+            'POST',
+            (string)$config['api_url'] . '?mode=voice_generate',
+            hub_voxcpm2_cluster_acceptance_json_encode([
+                'operation' => 'generic_synthesize',
+                'text' => (string)$config['target_text'],
+                'gender' => 'unspecified',
+                'age_bucket' => 'young_adult',
+                'role_note' => HUB_VOXCPM2_CLUSTER_GENERIC_ROLE_NOTE,
+                'candidate_count' => 2,
+            ]),
+            $deadline,
+            true
+        );
+        $genericTaskId = hub_voxcpm2_cluster_acceptance_task_id($genericSubmitted['task_id'] ?? null);
+        if (($genericSubmitted['ok'] ?? null) !== true || $genericTaskId === null) {
+            hub_voxcpm2_cluster_acceptance_fail('response_invalid');
+        }
+        $genericLinks = hub_voxcpm2_cluster_acceptance_task_links($config, $genericSubmitted, $genericTaskId, true);
+        hub_voxcpm2_cluster_acceptance_poll(
+            $config,
+            $transport,
+            $genericTaskId,
+            $genericLinks['status_url'],
+            $deadline,
+            $sleeper
+        );
+        $genericResult = hub_voxcpm2_cluster_acceptance_json_request(
+            $config,
+            $transport,
+            'GET',
+            $genericLinks['result_url'],
+            '',
+            $deadline
+        );
+        foreach (hub_voxcpm2_cluster_acceptance_generic_candidates($config, $genericResult, $genericTaskId) as $index => $candidate) {
+            try {
+                $response = hub_voxcpm2_cluster_acceptance_request(
+                    $config,
+                    $transport,
+                    'GET',
+                    $candidate['url'],
+                    '',
+                    $deadline,
+                    $candidate['size_bytes']
+                );
+                if (!hub_voxcpm2_cluster_acceptance_mime_matches($response['headers'], [$candidate['mime_type']])) {
+                    hub_voxcpm2_cluster_acceptance_fail('artifact_invalid');
+                }
+                $path = $temporaryDirectory . '/generic-candidate-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT) . '.wav';
+                hub_voxcpm2_cluster_acceptance_write_file($path, $response['body']);
+                $size = filesize($path);
+                $sha256 = hash_file('sha256', $path);
+                if ($size !== $candidate['size_bytes'] || !is_string($sha256)
+                    || !hash_equals($candidate['sha256'], $sha256)
+                    || !hub_voxcpm2_cluster_acceptance_wave_header_valid($path) || !$probe($path)
+                ) {
+                    hub_voxcpm2_cluster_acceptance_fail('artifact_invalid');
+                }
+                $ack = hub_voxcpm2_cluster_acceptance_json_request(
+                    $config,
+                    $transport,
+                    'POST',
+                    hub_voxcpm2_cluster_acceptance_template_url(
+                        $config,
+                        $genericLinks['ack_url_template'],
+                        'cluster_task_artifacts_ack',
+                        $genericTaskId,
+                        $candidate['id']
+                    ),
+                    '',
+                    $deadline
+                );
+                if (!hub_voxcpm2_cluster_acceptance_task_matches($ack, $genericTaskId)) {
+                    hub_voxcpm2_cluster_acceptance_fail('ack_failed');
+                }
+            } catch (Throwable $error) {
+                if ($error instanceof HubVoxCpm2ClusterAcceptanceFailure
+                    && in_array($error->stableCode(), ['artifact_invalid', 'ack_failed'], true)
+                ) {
+                    throw $error;
+                }
+                hub_voxcpm2_cluster_acceptance_fail('artifact_invalid');
+            }
+        }
+
         $result = [
             'profile_prepared' => true,
             'ultimate_clone' => true,
+            'generic_exploration' => true,
             'audio_valid' => true,
             'gpu' => true,
             'artifacts_acknowledged' => true,
@@ -867,6 +957,79 @@ function hub_voxcpm2_cluster_acceptance_task_matches(array $payload, string $tas
     return ($payload['ok'] ?? null) === true
         && (is_string($returned) || is_int($returned))
         && hash_equals($taskId, (string)$returned);
+}
+
+function hub_voxcpm2_cluster_acceptance_generic_candidates(array $config, array $payload, string $taskId): array
+{
+    $result = $payload['result'] ?? null;
+    $artifactIndex = $payload['cluster_artifact_index'] ?? null;
+    if (!hub_voxcpm2_cluster_acceptance_task_matches($payload, $taskId)
+        || !is_array($result) || array_keys($result) !== ['candidates']
+        || !is_array($result['candidates']) || !array_is_list($result['candidates'])
+        || count($result['candidates']) !== 2
+        || !is_array($artifactIndex) || !array_is_list($artifactIndex) || count($artifactIndex) !== 2
+    ) {
+        hub_voxcpm2_cluster_acceptance_fail('response_invalid');
+    }
+    $artifacts = [];
+    foreach ($artifactIndex as $artifact) {
+        $artifactId = is_array($artifact) ? hub_voxcpm2_cluster_acceptance_artifact_id($artifact['id'] ?? null) : null;
+        $keys = is_array($artifact) ? array_keys($artifact) : [];
+        $mimeType = is_array($artifact) && is_string($artifact['mime_type'] ?? null)
+            ? strtolower($artifact['mime_type'])
+            : '';
+        if ($artifactId === null || isset($artifacts[$artifactId])
+            || count($keys) !== 5
+            || array_diff($keys, ['id', 'type', 'mime_type', 'size_bytes', 'sha256']) !== []
+            || !is_string($artifact['type'] ?? null)
+            || !in_array($mimeType, ['audio/wav', 'audio/x-wav'], true)
+            || !is_int($artifact['size_bytes'] ?? null) || $artifact['size_bytes'] < 1
+            || $artifact['size_bytes'] > HUB_VOXCPM2_CLUSTER_AUDIO_MAX_BYTES
+            || !is_string($artifact['sha256'] ?? null) || preg_match('/\A[a-f0-9]{64}\z/', $artifact['sha256']) !== 1
+        ) {
+            hub_voxcpm2_cluster_acceptance_fail('response_invalid');
+        }
+        $artifacts[$artifactId] = [
+            'type' => $artifact['type'],
+            'mime_type' => $mimeType,
+            'size_bytes' => $artifact['size_bytes'],
+            'sha256' => $artifact['sha256'],
+        ];
+    }
+    $safe = [];
+    foreach ($result['candidates'] as $index => $candidate) {
+        $artifactId = is_array($candidate) ? hub_voxcpm2_cluster_acceptance_artifact_id($candidate['audio_artifact_id'] ?? null) : null;
+        $expectedType = $index === 0
+            ? 'generated_audio'
+            : 'voice_candidate_' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT);
+        $artifact = $artifactId === null ? null : ($artifacts[$artifactId] ?? null);
+        if (!is_array($candidate)
+            || array_keys($candidate) !== ['candidate_id', 'audio_artifact_id', 'seed', 'voice_design_revision', 'style_status', 'audio_url']
+            || ($candidate['candidate_id'] ?? null) !== 'candidate-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT)
+            || $artifactId === null || isset($safe[$artifactId]) || $artifact === null
+            || $artifact['type'] !== $expectedType
+            || !is_int($candidate['seed'] ?? null) || $candidate['seed'] < 0 || $candidate['seed'] > 2147483647
+            || ($candidate['voice_design_revision'] ?? null) !== 1
+            || ($candidate['style_status'] ?? null) !== 'unverified'
+        ) {
+            hub_voxcpm2_cluster_acceptance_fail('response_invalid');
+        }
+        $safe[$artifactId] = [
+            'id' => $artifactId,
+            'url' => hub_voxcpm2_cluster_acceptance_followup_url(
+                $config,
+                $candidate['audio_url'] ?? null,
+                'cluster_artifact',
+                $taskId,
+                $artifactId
+            ),
+            'mime_type' => $artifact['mime_type'],
+            'size_bytes' => $artifact['size_bytes'],
+            'sha256' => $artifact['sha256'],
+        ];
+    }
+
+    return array_values($safe);
 }
 
 function hub_voxcpm2_cluster_acceptance_validate_artifacts(array $declared): array

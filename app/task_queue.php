@@ -3219,7 +3219,13 @@ function hub_validate_pack_job_artifacts(string $workspace, array $taskInput, ar
             $expected[$definition['path']] = $definition;
         }
     }
+    if (array_key_exists('voice_preset_batch', $taskInput) && array_key_exists('generic_voice_batch', $taskInput)) {
+        hub_pack_job_output_contract_invalid('artifact_set_invalid');
+    }
     foreach (hub_voice_preset_candidate_artifact_definitions($taskInput, $expected['generated_audio.wav'] ?? null) as $definition) {
+        $expected[$definition['path']] = $definition;
+    }
+    foreach (hub_voice_generic_candidate_artifact_definitions($taskInput, $expected['generated_audio.wav'] ?? null) as $definition) {
         $expected[$definition['path']] = $definition;
     }
     if ($expected === []) {
@@ -4988,7 +4994,11 @@ function hub_commit_published_pack_job_success(PDO $db, int $taskId, ?array $run
         if ($resultArtifacts === []) {
             throw new InvalidArgumentException('validated_artifacts_required');
         }
-        hub_pack_job_mark_task_terminal($db, $taskId, 'success', null, '', ['artifacts' => $resultArtifacts] + hub_voice_preset_batch_task_result($db, $taskId, $registeredArtifacts));
+        $batchResult = hub_voice_preset_batch_task_result($db, $taskId, $registeredArtifacts);
+        if ($batchResult === []) {
+            $batchResult = hub_voice_generic_batch_task_result($db, $taskId, $registeredArtifacts);
+        }
+        hub_pack_job_mark_task_terminal($db, $taskId, 'success', null, '', ['artifacts' => $resultArtifacts] + $batchResult);
         hub_release_task_artifact_holds($db, $taskId);
         hub_enqueue_task_callback_delivery($db, $taskId);
         $commitAttempted = true;

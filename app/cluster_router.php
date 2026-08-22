@@ -920,6 +920,9 @@ function hub_cluster_voice_generate_relay_errors(): array
         'voice_preset_candidate_count_invalid' => ['public_code' => 'voice_preset_candidate_count_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
         'voice_preset_forbidden_input' => ['public_code' => 'voice_preset_forbidden_input', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
         'voice_preset_invalid' => ['public_code' => 'voice_preset_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
+        'generic_voice_invalid' => ['public_code' => 'generic_voice_invalid', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
+        'generic_voice_candidate_count_invalid' => ['public_code' => 'generic_voice_candidate_count_invalid', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
+        'generic_voice_forbidden_input' => ['public_code' => 'generic_voice_forbidden_input', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
     ];
 }
 
@@ -1460,6 +1463,9 @@ function hub_cluster_public_api_docs_html(PDO $db): string
                     <?php endif; ?>
                     <?php if (($service['workflow'] ?? []) !== []): ?>
                         <div class="contract-block"><h3>Workflow</h3><pre><?= hub_h($json($service['workflow'])) ?></pre></div>
+                    <?php endif; ?>
+                    <?php if (($service['generic_voice_exploration'] ?? []) !== []): ?>
+                        <div class="contract-block"><h3>Generic voice exploration</h3><pre><?= hub_h($json($service['generic_voice_exploration'])) ?></pre></div>
                     <?php endif; ?>
                     <div class="contract-block"><h3>Error codes</h3><pre><?= hub_h($json($service['error_codes'] ?? [])) ?></pre></div>
                     <?php if (($service['error_table'] ?? []) !== []): ?>
@@ -2619,6 +2625,16 @@ function hub_cluster_router_rewrite_task_payload(PDO $db, array $route, array $p
                 $candidate['audio_url'] = str_replace('{artifact_id}', rawurlencode((string)$candidate['audio_artifact_id']), $template);
             }
             unset($candidate);
+            $genericArtifacts = hub_cluster_router_generic_voice_candidate_artifact_index(
+                $response['result']['candidates'],
+                hub_cluster_router_result_artifacts($payload, true) ?? []
+            );
+            if ($genericArtifacts === null) {
+                throw new UnexpectedValueException('invalid generic voice candidate artifacts');
+            }
+            if ($genericArtifacts !== []) {
+                $response['cluster_artifact_index'] = $genericArtifacts;
+            }
         }
     } elseif ($kind === 'log') {
         $logs = hub_cluster_router_public_task_logs($db, $route, $payload, $remoteTaskId);
@@ -2778,6 +2794,67 @@ function hub_cluster_router_public_voice_preset_candidates(mixed $value, array $
     return $value;
 }
 
+function hub_cluster_router_public_generic_voice_candidates(mixed $value, array $artifacts): ?array
+{
+    if (!is_array($value) || !array_is_list($value) || count($value) < 1 || count($value) > 3) {
+        return null;
+    }
+    $known = array_fill_keys(array_map(static fn (array $artifact): string => (string)$artifact['id'], $artifacts), true);
+    $seen = [];
+    foreach ($value as $index => $candidate) {
+        $artifact = is_array($candidate) ? hub_cluster_router_safe_artifact_id($candidate['audio_artifact_id'] ?? null) : null;
+        if (!is_array($candidate)
+            || array_keys($candidate) !== ['candidate_id', 'audio_artifact_id', 'seed', 'voice_design_revision', 'style_status']
+            || ($candidate['candidate_id'] ?? null) !== 'candidate-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT)
+            || $artifact === null || !isset($known[$artifact['key']]) || isset($seen[$artifact['key']])
+            || !is_int($candidate['seed'] ?? null) || $candidate['seed'] < 0 || $candidate['seed'] > 2147483647
+            || ($candidate['voice_design_revision'] ?? null) !== 1
+            || ($candidate['style_status'] ?? null) !== 'unverified') {
+            return null;
+        }
+        $seen[$artifact['key']] = true;
+        $value[$index]['audio_artifact_id'] = $artifact['value'];
+    }
+
+    return $value;
+}
+
+function hub_cluster_router_generic_voice_candidate_artifact_index(array $candidates, array $artifacts): ?array
+{
+    if ($candidates === [] || !array_key_exists('voice_design_revision', $candidates[0])) {
+        return [];
+    }
+    $byId = [];
+    foreach ($artifacts as $artifact) {
+        $id = is_array($artifact) ? hub_cluster_router_safe_artifact_id($artifact['id'] ?? null) : null;
+        if ($id === null || isset($byId[$id['key']])) {
+            return null;
+        }
+        $byId[$id['key']] = $artifact;
+    }
+    $safe = [];
+    foreach ($candidates as $index => $candidate) {
+        $id = is_array($candidate) ? hub_cluster_router_safe_artifact_id($candidate['audio_artifact_id'] ?? null) : null;
+        $expectedType = $index === 0
+            ? 'generated_audio'
+            : 'voice_candidate_' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT);
+        $artifact = $id === null ? null : ($byId[$id['key']] ?? null);
+        if (!is_array($artifact)
+            || array_keys($artifact) !== ['id', 'size_bytes', 'type', 'mime_type', 'sha256']
+            || (string)$artifact['id'] !== $id['key']
+            || ($artifact['type'] ?? null) !== $expectedType
+            || !in_array($artifact['mime_type'] ?? null, ['audio/wav', 'audio/x-wav'], true)
+            || !is_int($artifact['size_bytes'] ?? null) || $artifact['size_bytes'] < 1
+            || !is_string($artifact['sha256'] ?? null) || preg_match('/\A[a-f0-9]{64}\z/', $artifact['sha256']) !== 1
+        ) {
+            return null;
+        }
+        $safe[] = $artifact;
+    }
+
+    return $safe;
+}
+
 function hub_cluster_router_public_task_result(array $payload, bool $includeMetadata = false): array
 {
     $artifacts = hub_cluster_router_result_artifacts($payload, $includeMetadata);
@@ -2789,8 +2866,11 @@ function hub_cluster_router_public_task_result(array $payload, bool $includeMeta
         $candidates = array_keys($result) === ['candidates']
             ? hub_cluster_router_public_voice_preset_candidates($result['candidates'], $artifacts)
             : null;
+        $candidates ??= array_keys($result) === ['candidates']
+            ? hub_cluster_router_public_generic_voice_candidates($result['candidates'], $artifacts)
+            : null;
         if ($candidates === null) {
-            throw new UnexpectedValueException('invalid voice preset candidate result');
+            throw new UnexpectedValueException('invalid voice candidate result');
         }
 
         return ['candidates' => $candidates];
