@@ -920,6 +920,9 @@ function hub_cluster_voice_generate_relay_errors(): array
         'voice_preset_candidate_count_invalid' => ['public_code' => 'voice_preset_candidate_count_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
         'voice_preset_forbidden_input' => ['public_code' => 'voice_preset_forbidden_input', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
         'voice_preset_invalid' => ['public_code' => 'voice_preset_invalid', 'http_status' => 400, 'message' => 'voice preset request is invalid'],
+        'generic_voice_invalid' => ['public_code' => 'generic_voice_invalid', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
+        'generic_voice_candidate_count_invalid' => ['public_code' => 'generic_voice_candidate_count_invalid', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
+        'generic_voice_forbidden_input' => ['public_code' => 'generic_voice_forbidden_input', 'http_status' => 400, 'message' => 'generic voice request is invalid'],
     ];
 }
 

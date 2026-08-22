@@ -575,13 +575,7 @@ function hub_voice_generic_api_synthesize(PDO $db, array $route, array $auth, ar
         'mode' => 'design',
         'seed' => $candidates[0]['seed'],
     ], $route);
-    $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $memberId, (int)($auth['token_id'] ?? 0) ?: null, hub_get_client_ip());
-    $task = hub_get_task($db, $taskId);
-    if ($task === null) {
-        throw new RuntimeException('generic_voice_task_store_failed');
-    }
-    $taskInput = (array)$task['input'];
-    $taskInput['generic_voice_batch'] = [
+    $recipe = [
         'gender' => $gender,
         'age_bucket' => $ageBucket,
         'role_note' => $roleNote,
@@ -589,7 +583,21 @@ function hub_voice_generic_api_synthesize(PDO $db, array $route, array $auth, ar
         'style_status' => 'unverified',
         'candidates' => $candidates,
     ];
-    hub_update_task_input($db, $taskId, $taskInput);
+    $taskId = hub_stage_owned_pack_job($db, $route, $input, $memberId, (int)($auth['token_id'] ?? 0) ?: null, hub_get_client_ip());
+    try {
+        $task = hub_get_task($db, $taskId);
+        if ($task === null) {
+            throw new RuntimeException('generic_voice_task_store_failed');
+        }
+        $taskInput = (array)$task['input'];
+        $taskInput['generic_voice_batch'] = $recipe;
+        hub_update_task_input($db, $taskId, $taskInput);
+        hub_publish_staged_pack_job($db, $taskId);
+    } catch (Throwable $e) {
+        $db->prepare("DELETE FROM tasks WHERE id = :id AND task_type = 'pack_job' AND status = 'staging'")
+            ->execute([':id' => $taskId]);
+        throw $e;
+    }
 
     return hub_task_submit_response($taskId);
 }

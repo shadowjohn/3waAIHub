@@ -311,12 +311,30 @@ hub_test('Generic voice exploration keeps preferences private and queues design 
         $route = hub_resolve_audio_async_route($db, 'voice_generate');
         $auth = ['member_id' => $owner, 'token_id' => (int)$token['token_id']];
         $request = [
-            'text' => '等一下，我再確認一次……',
+            'text' => 'generic-stage-visibility',
             'gender' => 'female',
             'age_bucket' => 'young_adult',
             'role_note' => '活潑有節奏的活動主持人，聲音明亮而有感染力。',
             'candidate_count' => 3,
         ];
+        $db->exec("CREATE TRIGGER generic_voice_must_stage
+            BEFORE INSERT ON tasks
+            WHEN NEW.task_type = 'pack_job'
+              AND NEW.input_json LIKE '%generic-stage-visibility%'
+              AND NEW.status <> 'staging'
+            BEGIN
+                SELECT RAISE(ABORT, 'generic_voice_task_must_stage');
+            END");
+        $db->exec("CREATE TRIGGER generic_voice_recipe_before_publish
+            BEFORE UPDATE OF status ON tasks
+            WHEN OLD.task_type = 'pack_job'
+              AND OLD.status = 'staging' AND NEW.status = 'queued'
+              AND OLD.input_json LIKE '%generic-stage-visibility%'
+              AND (instr(OLD.input_json, '\"generic_voice_batch\"') = 0
+                   OR instr(OLD.input_json, '\"voice_design_revision\":1') = 0)
+            BEGIN
+                SELECT RAISE(ABORT, 'generic_voice_recipe_before_publish');
+            END");
         $accepted = hub_voice_generic_api_synthesize($db, $route, $auth, $request);
         $task = hub_get_task($db, (int)($accepted['task_id'] ?? 0));
         $taskInput = (array)($task['input'] ?? []);

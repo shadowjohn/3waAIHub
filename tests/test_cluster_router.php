@@ -6133,6 +6133,16 @@ hub_test('cluster voice dispatch safely relays only documented child error pairs
             'files' => [],
         ]);
         $documented = array_column(hub_cluster_voice_generate_error_table(), null, 'code');
+        foreach (['generic_voice_invalid', 'generic_voice_candidate_count_invalid', 'generic_voice_forbidden_input'] as $code) {
+            hub_test_assert(
+                (hub_cluster_voice_generate_relay_errors()[$code] ?? null) === [
+                    'public_code' => $code,
+                    'http_status' => 400,
+                    'message' => 'generic voice request is invalid',
+                ],
+                'generic voice child validation must have a stable Cluster relay rule: ' . $code
+            );
+        }
 
         foreach (hub_cluster_voice_generate_relay_errors() as $childCode => $rule) {
             $response = hub_cluster_dispatch($db, 'voice_generate', $request, [
