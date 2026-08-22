@@ -5032,6 +5032,17 @@ hub_test('VoxCPM2 three-mode smoke runbook keeps the safe operator contract', fu
     );
 });
 
+hub_test('VoxCPM2 Pack docs keep generic candidate IDs and ACKs Router-only', function (): void {
+    $doc = (string)file_get_contents(HUB_ROOT . '/packs/tts-voxcpm2/README.md');
+
+    hub_test_assert(
+        str_contains($doc, 'opaque `audio_artifact_id`')
+        && str_contains($doc, 'Router only')
+        && str_contains($doc, '`ack_url_template`'),
+        'VoxCPM2 Pack docs must explain opaque generic candidate IDs and Router-only ACK use'
+    );
+});
+
 $hubVoxCpm2ClusterAcceptance = HUB_ROOT . '/scripts/voxcpm2_cluster_acceptance.php';
 if (is_file($hubVoxCpm2ClusterAcceptance)) {
     require_once $hubVoxCpm2ClusterAcceptance;

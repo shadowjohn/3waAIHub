@@ -653,6 +653,7 @@ function hub_public_api_voice_generate_contract(array $contract, string $mode = 
             'artifact_index' => [
                 'field' => 'cluster_artifact_index',
                 'descriptor_fields' => ['id', 'type', 'mime_type', 'size_bytes', 'sha256'],
+                'availability' => 'Router completion only; native task_result does not include cluster_artifact_index.',
                 'boundary' => 'Descriptors contain only opaque candidate artifact IDs and integrity metadata; no child task, Profile, node, or path is exposed.',
             ],
             'strategy' => 'VoxCPM2 design only; no Voice Profile is created or selected.',

@@ -32,9 +32,12 @@ that metadata is kept separate and not passed to VoxCPM2.
 and `candidate_count` (1–3). The node receives generic `design` work with the
 Hub-owned internal `preset_candidates` list; gender, age, and role note do not
 enter `text` and current VoxCPM2 does not claim them as applied controls. The
-result supplies candidate ID, opaque audio URL, seed, design revision, and
-`style_status=unverified` only. It creates no Voice Profile and does not use
-`clone` or `ultimate_clone`.
+result supplies candidate ID, opaque `audio_artifact_id`, opaque audio URL,
+seed, design revision, and `style_status=unverified` only. Native `task_result`
+does not contain an ACK template or `cluster_artifact_index`. Router only:
+expand its returned `ack_url_template` with the candidate's opaque
+`audio_artifact_id` after download, then POST the ACK. It creates no Voice
+Profile and does not use `clone` or `ultimate_clone`.
 
 This operation needs no new service setting, container path, model selection,
 or restart. Apply the existing resident-service restart rule only when its

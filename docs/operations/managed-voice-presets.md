@@ -46,9 +46,10 @@ caller-supplied seeds are rejected.
 The Hub runs internal generic `design` and returns the normal async links. A
 terminal result supplies ordered `candidate_id`, opaque `audio_artifact_id`,
 opaque `audio_url`, server seed, `voice_design_revision`, and
-`style_status=unverified`. Use the candidate `audio_artifact_id` only to
-expand the returned `ack_url_template`; it is not a child task, Profile, or
-path. A Router generic result also carries a candidate-only
+`style_status=unverified`. It is not a child task, Profile, or path. Native
+Hub `task_result` has no `ack_url_template` or `cluster_artifact_index`.
+Through the Router only, use the candidate `audio_artifact_id` to expand the
+returned `ack_url_template`. A Router generic result also carries a candidate-only
 `cluster_artifact_index` with the opaque ID, type, MIME, size, and SHA-256 so
 an integrity-aware client can validate the downloaded audio before ACK.
 Gender, age, and role note remain owner-private exploration preferences until
