@@ -1441,12 +1441,25 @@ function hub_pack_job_prepare_workspace(PDO $db, array $task, array $contract, ?
     if (isset($input['voice_context'])) {
         $request['voice_context'] = $input['voice_context'];
     }
+    $candidateBatch = null;
     if (array_key_exists('voice_preset_batch', $input)) {
-        $batch = hub_voice_preset_batch_snapshot($input['voice_preset_batch']);
-        if ($batch === null) {
+        $candidateBatch = hub_voice_preset_batch_snapshot($input['voice_preset_batch']);
+        if ($candidateBatch === null) {
             throw new RuntimeException('voice_preset_unavailable');
         }
-        $request['preset_candidates'] = $batch['candidates'];
+    }
+    if (array_key_exists('generic_voice_batch', $input)) {
+        $genericBatch = hub_voice_generic_batch_snapshot($input['generic_voice_batch']);
+        if ($genericBatch === null) {
+            throw new RuntimeException('generic_voice_unavailable');
+        }
+        if ($candidateBatch !== null) {
+            throw new RuntimeException('voice_candidate_batch_invalid');
+        }
+        $candidateBatch = $genericBatch;
+    }
+    if ($candidateBatch !== null) {
+        $request['preset_candidates'] = $candidateBatch['candidates'];
     }
     $hasPrivatePrompt = false;
     if (isset($voiceProfileMount['prompt_text'])) {

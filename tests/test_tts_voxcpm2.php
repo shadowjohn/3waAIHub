@@ -297,6 +297,159 @@ hub_test('Managed voice preset batches expose only fixed candidate artifact URLs
     );
 });
 
+hub_test('Generic voice exploration keeps preferences private and queues design candidates', function (): void {
+    if (!function_exists('hub_voice_generic_api_synthesize')) {
+        hub_test_assert(false, 'generic voice exploration API is missing');
+        return;
+    }
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $owner = hub_create_api_member($db, 'Generic Voice Owner');
+        $token = hub_create_api_token($db, $owner, 'generic voice token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        $route = hub_resolve_audio_async_route($db, 'voice_generate');
+        $auth = ['member_id' => $owner, 'token_id' => (int)$token['token_id']];
+        $request = [
+            'text' => '等一下，我再確認一次……',
+            'gender' => 'female',
+            'age_bucket' => 'young_adult',
+            'role_note' => '活潑有節奏的活動主持人，聲音明亮而有感染力。',
+            'candidate_count' => 3,
+        ];
+        $accepted = hub_voice_generic_api_synthesize($db, $route, $auth, $request);
+        $task = hub_get_task($db, (int)($accepted['task_id'] ?? 0));
+        $taskInput = (array)($task['input'] ?? []);
+        $recipe = $taskInput['generic_voice_batch'] ?? null;
+        $contract = json_decode((string)($task['job_contract_json'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
+        $workspace = hub_pack_job_prepare_workspace($db, $task ?? [], $contract);
+        $runnerRequest = json_decode((string)file_get_contents($workspace . '/input/request.json'), true, 32, JSON_THROW_ON_ERROR);
+        $runnerJson = json_encode($runnerRequest, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+        $errors = [];
+        foreach ([
+            $request + ['voice_prompt' => 'must not be accepted'],
+            $request + ['control' => 'must not be accepted'],
+            $request + ['mode' => 'clone'],
+            $request + ['model' => 'voxcpm2'],
+            $request + ['voice_profile_id' => 1],
+            $request + ['seed' => 1],
+            $request + ['unexpected' => true],
+            array_replace($request, ['age_bucket' => 'adult']),
+            array_replace($request, ['candidate_count' => 0]),
+            array_replace($request, ['candidate_count' => 4]),
+        ] as $invalid) {
+            try {
+                hub_voice_generic_api_synthesize($db, $route, $auth, $invalid);
+            } catch (InvalidArgumentException $error) {
+                $errors[] = $error->getMessage();
+            }
+        }
+
+        hub_test_assert(
+            ($accepted['status'] ?? null) === 'queued'
+            && ($task['task_type'] ?? null) === 'pack_job'
+            && ($taskInput['text'] ?? null) === $request['text']
+            && ($taskInput['mode'] ?? null) === 'design'
+            && !array_key_exists('voice_profile_id', $taskInput)
+            && !array_key_exists('voice_context', $taskInput)
+            && $recipe === [
+                'gender' => 'female',
+                'age_bucket' => 'young_adult',
+                'role_note' => $request['role_note'],
+                'voice_design_revision' => 1,
+                'style_status' => 'unverified',
+                'candidates' => [
+                    ['candidate_id' => 'candidate-01', 'seed' => $recipe['candidates'][0]['seed'] ?? null],
+                    ['candidate_id' => 'candidate-02', 'seed' => $recipe['candidates'][1]['seed'] ?? null],
+                    ['candidate_id' => 'candidate-03', 'seed' => $recipe['candidates'][2]['seed'] ?? null],
+                ],
+            ]
+            && array_key_exists('preset_candidates', $runnerRequest)
+            && !array_key_exists('gender', $runnerRequest)
+            && !array_key_exists('age_bucket', $runnerRequest)
+            && !array_key_exists('role_note', $runnerRequest)
+            && !str_contains($runnerJson, $request['role_note'])
+            && $errors === [
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_forbidden_input',
+                'generic_voice_invalid',
+                'generic_voice_candidate_count_invalid',
+                'generic_voice_candidate_count_invalid',
+            ],
+            'generic exploration must queue only design input and retain its private preference recipe'
+        );
+    });
+});
+
+hub_test('Generic voice exploration validates fixed artifacts and candidate results', function (): void {
+    if (!function_exists('hub_voice_generic_candidate_artifact_definitions')
+        || !function_exists('hub_voice_generic_batch_task_result')
+        || !function_exists('hub_voice_generic_batch_result_candidates')) {
+        hub_test_assert(false, 'generic voice exploration result helpers are missing');
+        return;
+    }
+    $db = hub_test_reset_db();
+    $taskInput = [
+        'generic_voice_batch' => [
+            'gender' => 'male',
+            'age_bucket' => 'mature',
+            'role_note' => '沉穩可靠的企業旁白。',
+            'voice_design_revision' => 1,
+            'style_status' => 'unverified',
+            'candidates' => [
+                ['candidate_id' => 'candidate-01', 'seed' => 101],
+                ['candidate_id' => 'candidate-02', 'seed' => 202],
+                ['candidate_id' => 'candidate-03', 'seed' => 303],
+            ],
+        ],
+    ];
+    $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, $taskInput, null, '203.0.113.93');
+    $registered = [
+        ['name' => 'generated_audio.wav', 'id' => 11],
+        ['name' => 'candidate-02.wav', 'id' => 12],
+        ['name' => 'candidate-03.wav', 'id' => 13],
+    ];
+    $result = hub_voice_generic_batch_task_result($db, $taskId, $registered);
+    $definitions = hub_voice_generic_candidate_artifact_definitions($taskInput, [
+        'type' => 'generated_audio',
+        'path' => 'generated_audio.wav',
+        'mime_types' => ['audio/wav'],
+        'max_bytes' => 1024,
+    ]);
+    $candidates = $result['candidates'] ?? null;
+    $malformedId = is_array($candidates) ? $candidates : [];
+    $malformedRevision = is_array($candidates) ? $candidates : [];
+    $malformedStatus = is_array($candidates) ? $candidates : [];
+    $malformedId[1]['candidate_id'] = 'candidate-99';
+    $malformedRevision[1]['voice_design_revision'] = 2;
+    $malformedStatus[1]['style_status'] = 'applied';
+    $public = hub_task_result_publicize_value($result, [
+        11 => 'https://hub.example/api.php?mode=artifact&artifact_id=11',
+        12 => 'https://hub.example/api.php?mode=artifact&artifact_id=12',
+        13 => 'https://hub.example/api.php?mode=artifact&artifact_id=13',
+    ]);
+
+    hub_test_assert(
+        array_column($definitions, 'path') === ['candidate-02.wav', 'candidate-03.wav']
+        && is_array($candidates)
+        && array_keys($candidates[0]) === ['candidate_id', 'audio_artifact_id', 'seed', 'voice_design_revision', 'style_status']
+        && hub_voice_generic_batch_result_candidates($taskInput, $result, [11, 12, 13]) === $candidates
+        && hub_voice_generic_batch_result_candidates($taskInput, ['candidates' => $malformedId], [11, 12, 13]) === null
+        && hub_voice_generic_batch_result_candidates($taskInput, ['candidates' => $malformedRevision], [11, 12, 13]) === null
+        && hub_voice_generic_batch_result_candidates($taskInput, ['candidates' => $malformedStatus], [11, 12, 13]) === null
+        && hub_voice_generic_batch_result_candidates($taskInput, $result, [11, 12]) === null
+        && ($public['candidates'][2]['audio_url'] ?? null) === 'https://hub.example/api.php?mode=artifact&artifact_id=13'
+        && !str_contains((string)json_encode($public, JSON_UNESCAPED_UNICODE), '沉穩可靠'),
+        'generic exploration candidates must use fixed WAV artifacts and safe immutable recipe metadata'
+    );
+});
+
 hub_test('VoxCPM2 profile_prepare stores raw Whisper text and validation without confirming', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();

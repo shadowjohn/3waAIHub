@@ -121,6 +121,68 @@ function hub_voice_preset_batch_result_candidates(array $taskInput, mixed $resul
     return $candidates;
 }
 
+function hub_voice_generic_batch_snapshot(mixed $value): ?array
+{
+    if (!is_array($value) || array_keys($value) !== [
+        'gender',
+        'age_bucket',
+        'role_note',
+        'voice_design_revision',
+        'style_status',
+        'candidates',
+    ]) {
+        return null;
+    }
+    $roleNoteLength = hub_voxcpm2_metadata_utf8_length($value['role_note'] ?? null);
+    if (!in_array($value['gender'] ?? null, ['unspecified', 'male', 'female'], true)
+        || !in_array($value['age_bucket'] ?? null, ['child', 'teen', 'young_adult', 'mature', 'senior'], true)
+        || $roleNoteLength === null || $roleNoteLength > 300
+        || ($value['voice_design_revision'] ?? null) !== 1
+        || ($value['style_status'] ?? null) !== 'unverified'
+        || !is_array($value['candidates'] ?? null) || !array_is_list($value['candidates'])
+        || count($value['candidates']) < 1 || count($value['candidates']) > 3) {
+        return null;
+    }
+    foreach ($value['candidates'] as $index => $candidate) {
+        if (!is_array($candidate)
+            || $candidate !== ['candidate_id' => 'candidate-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT), 'seed' => $candidate['seed'] ?? null]
+            || !is_int($candidate['seed'] ?? null)
+            || $candidate['seed'] < 0 || $candidate['seed'] > 2147483647) {
+            return null;
+        }
+    }
+
+    return $value;
+}
+
+function hub_voice_generic_batch_result_candidates(array $taskInput, mixed $result, array $artifactIds): ?array
+{
+    $batch = hub_voice_generic_batch_snapshot($taskInput['generic_voice_batch'] ?? null);
+    $candidates = is_array($result) ? ($result['candidates'] ?? null) : null;
+    if ($batch === null || !is_array($candidates) || !array_is_list($candidates) || count($candidates) !== count($batch['candidates'])) {
+        return null;
+    }
+    $available = array_fill_keys(array_map(static fn (mixed $id): int => (int)$id, $artifactIds), true);
+    $seen = [];
+    foreach ($candidates as $index => $candidate) {
+        $expected = $batch['candidates'][$index];
+        if (!is_array($candidate)
+            || array_keys($candidate) !== ['candidate_id', 'audio_artifact_id', 'seed', 'voice_design_revision', 'style_status']
+            || $candidate['candidate_id'] !== $expected['candidate_id']
+            || $candidate['seed'] !== $expected['seed']
+            || $candidate['voice_design_revision'] !== 1
+            || $candidate['style_status'] !== 'unverified'
+            || !is_int($candidate['audio_artifact_id']) || $candidate['audio_artifact_id'] < 1
+            || !isset($available[$candidate['audio_artifact_id']])
+            || isset($seen[$candidate['audio_artifact_id']])) {
+            return null;
+        }
+        $seen[$candidate['audio_artifact_id']] = true;
+    }
+
+    return $candidates;
+}
+
 function hub_voice_preset_for_owner(PDO $db, int $memberId, string $presetId): ?array
 {
     $stmt = $db->prepare('SELECT * FROM voice_presets WHERE owner_member_id = :owner_member_id AND preset_id = :preset_id LIMIT 1');
@@ -302,6 +364,27 @@ function hub_voice_preset_candidate_artifact_definitions(array $taskInput, ?arra
     return $definitions;
 }
 
+function hub_voice_generic_candidate_artifact_definitions(array $taskInput, ?array $primary): array
+{
+    $batch = hub_voice_generic_batch_snapshot($taskInput['generic_voice_batch'] ?? null);
+    if ($batch === null) {
+        return [];
+    }
+    if ($primary === null || ($primary['path'] ?? null) !== 'generated_audio.wav') {
+        throw new InvalidArgumentException('generic_voice_output_invalid');
+    }
+    $definitions = [];
+    foreach (array_slice($batch['candidates'], 1) as $index => $candidate) {
+        $number = $index + 2;
+        $definitions[] = array_replace($primary, [
+            'type' => 'voice_candidate_' . str_pad((string)$number, 2, '0', STR_PAD_LEFT),
+            'path' => 'candidate-' . str_pad((string)$number, 2, '0', STR_PAD_LEFT) . '.wav',
+        ]);
+    }
+
+    return $definitions;
+}
+
 function hub_voice_preset_batch_task_result(PDO $db, int $taskId, array $registered): array
 {
     $task = hub_get_task($db, $taskId);
@@ -326,6 +409,37 @@ function hub_voice_preset_batch_task_result(PDO $db, int $taskId, array $registe
             'audio_artifact_id' => $byName[$name],
             'seed' => $candidate['seed'],
             'preset_revision' => $batch['preset_revision'],
+        ];
+    }
+
+    return ['candidates' => $candidates];
+}
+
+function hub_voice_generic_batch_task_result(PDO $db, int $taskId, array $registered): array
+{
+    $task = hub_get_task($db, $taskId);
+    $batch = is_array($task['input'] ?? null) ? hub_voice_generic_batch_snapshot($task['input']['generic_voice_batch'] ?? null) : null;
+    if ($batch === null) {
+        return [];
+    }
+    $byName = [];
+    foreach ($registered as $artifact) {
+        if (is_string($artifact['name'] ?? null) && is_int($artifact['id'] ?? null)) {
+            $byName[$artifact['name']] = $artifact['id'];
+        }
+    }
+    $candidates = [];
+    foreach ($batch['candidates'] as $index => $candidate) {
+        $name = $index === 0 ? 'generated_audio.wav' : 'candidate-' . str_pad((string)($index + 1), 2, '0', STR_PAD_LEFT) . '.wav';
+        if (!isset($byName[$name])) {
+            throw new InvalidArgumentException('generic_voice_output_invalid');
+        }
+        $candidates[] = [
+            'candidate_id' => $candidate['candidate_id'],
+            'audio_artifact_id' => $byName[$name],
+            'seed' => $candidate['seed'],
+            'voice_design_revision' => 1,
+            'style_status' => 'unverified',
         ];
     }
 
@@ -426,10 +540,64 @@ function hub_voice_preset_api_synthesize(PDO $db, array $route, array $auth, arr
     return hub_task_submit_response($taskId);
 }
 
+function hub_voice_generic_api_synthesize(PDO $db, array $route, array $auth, array $payload): array
+{
+    $allowed = ['text' => true, 'gender' => true, 'age_bucket' => true, 'role_note' => true, 'candidate_count' => true];
+    if (array_diff_key($payload, $allowed) !== []) {
+        throw new InvalidArgumentException('generic_voice_forbidden_input');
+    }
+    $memberId = hub_voice_preset_owner_id($auth);
+    $text = $payload['text'] ?? null;
+    $gender = $payload['gender'] ?? null;
+    $ageBucket = $payload['age_bucket'] ?? null;
+    $roleNote = $payload['role_note'] ?? '';
+    $candidateCount = $payload['candidate_count'] ?? null;
+    $roleNoteLength = hub_voxcpm2_metadata_utf8_length($roleNote);
+    if ($memberId < 1
+        || !is_string($text) || trim($text) === '' || strlen($text) > 4096 || hub_voxcpm2_metadata_utf8_length($text) === null
+        || !in_array($gender, ['unspecified', 'male', 'female'], true)
+        || !in_array($ageBucket, ['child', 'teen', 'young_adult', 'mature', 'senior'], true)
+        || $roleNoteLength === null || $roleNoteLength > 300) {
+        throw new InvalidArgumentException('generic_voice_invalid');
+    }
+    if (!is_int($candidateCount) || $candidateCount < 1 || $candidateCount > 3) {
+        throw new InvalidArgumentException('generic_voice_candidate_count_invalid');
+    }
+    $candidates = [];
+    for ($index = 1; $index <= $candidateCount; $index++) {
+        $candidates[] = [
+            'candidate_id' => 'candidate-' . str_pad((string)$index, 2, '0', STR_PAD_LEFT),
+            'seed' => random_int(0, 2147483647),
+        ];
+    }
+    $input = hub_pack_job_task_input([
+        'text' => $text,
+        'mode' => 'design',
+        'seed' => $candidates[0]['seed'],
+    ], $route);
+    $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $memberId, (int)($auth['token_id'] ?? 0) ?: null, hub_get_client_ip());
+    $task = hub_get_task($db, $taskId);
+    if ($task === null) {
+        throw new RuntimeException('generic_voice_task_store_failed');
+    }
+    $taskInput = (array)$task['input'];
+    $taskInput['generic_voice_batch'] = [
+        'gender' => $gender,
+        'age_bucket' => $ageBucket,
+        'role_note' => $roleNote,
+        'voice_design_revision' => 1,
+        'style_status' => 'unverified',
+        'candidates' => $candidates,
+    ];
+    hub_update_task_input($db, $taskId, $taskInput);
+
+    return hub_task_submit_response($taskId);
+}
+
 function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array $payload): ?array
 {
     $operation = $payload['operation'] ?? null;
-    if (!is_string($operation) || !in_array($operation, ['voice_presets', 'voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete', 'preset_synthesize'], true)) {
+    if (!is_string($operation) || !in_array($operation, ['voice_presets', 'voice_preset_upsert', 'voice_preset_anchor_upsert', 'voice_preset_delete', 'preset_synthesize', 'generic_synthesize'], true)) {
         return null;
     }
     $method = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET'));
@@ -450,6 +618,7 @@ function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array
             'voice_preset_anchor_upsert' => hub_voice_preset_anchor_upsert($db, $auth, $payload),
             'voice_preset_delete' => hub_voice_preset_delete($db, $auth, $payload),
             'preset_synthesize' => hub_voice_preset_api_synthesize($db, $route, $auth, $payload),
+            'generic_synthesize' => hub_voice_generic_api_synthesize($db, $route, $auth, $payload),
         };
     } catch (InvalidArgumentException $error) {
         $code = in_array($error->getMessage(), [
@@ -460,6 +629,9 @@ function hub_voice_preset_api_dispatch(PDO $db, array $route, array $auth, array
             'voice_preset_candidate_count_invalid',
             'voice_preset_forbidden_input',
             'voice_preset_invalid',
+            'generic_voice_invalid',
+            'generic_voice_candidate_count_invalid',
+            'generic_voice_forbidden_input',
         ], true) ? $error->getMessage() : 'voice_preset_invalid';
 
         $status = match ($code) {
