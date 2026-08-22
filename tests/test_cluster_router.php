@@ -6882,3 +6882,103 @@ hub_test('cluster router pins managed voice presets and preserves candidate refe
             'retired managed presets must fail before station selection');
     });
 });
+
+hub_test('cluster router projects generic voice candidates without preset metadata', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $station = hub_test_cluster_router_station($db, [
+            'station_key' => 'generic_voice_station',
+            'station_token' => 'generic_voice_station_token',
+            'modes' => ['voice_generate'],
+        ]);
+        $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        $inventory = [hub_test_cluster_station_fixture([
+            'id' => (int)$station['id'],
+            'station_key' => 'generic_voice_station',
+            'modes' => ['voice_generate'],
+        ])];
+        $request = hub_test_cluster_router_request((string)$customer['plain_token'], [
+            'raw_body' => json_encode([
+                'operation' => 'generic_synthesize',
+                'text' => '今天也一起把事情做好吧',
+                'gender' => 'male',
+                'age_bucket' => 'mature',
+                'role_note' => '沉穩可靠的企業旁白。',
+                'candidate_count' => 2,
+            ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            'request_uri' => '/cluster_api.php?mode=voice_generate',
+        ]);
+        $submitted = hub_cluster_dispatch($db, 'voice_generate', $request, [
+            'refresh_due' => static fn (): array => $inventory,
+            'transport' => static function (array $childRequest): array {
+                $body = json_decode((string)($childRequest['body'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
+                hub_test_assert(array_keys($body) === ['operation', 'text', 'gender', 'age_bucket', 'role_note', 'candidate_count'], 'generic synthesis must relay only its semantic request');
+
+                return hub_gateway_json(200, ['ok' => true, 'task_id' => 73, 'status' => 'queued']);
+            },
+        ]);
+        $submittedPayload = json_decode((string)$submitted['body'], true, 32, JSON_THROW_ON_ERROR);
+        $followup = [
+            'bearer_token' => (string)$customer['plain_token'],
+            'client_ip' => '203.0.113.10',
+            'method' => 'GET',
+            'query' => ['task_id' => (string)($submittedPayload['task_id'] ?? '')],
+        ];
+        $valid = hub_cluster_dispatch_followup($db, 'cluster_task_result', $followup, static function (array $childRequest): array {
+            hub_test_assert(($childRequest['query'] ?? null) === ['mode' => 'task_result', 'task_id' => '73'], 'generic candidate result must target the submitted child task');
+
+            return hub_gateway_json(200, [
+                'ok' => true,
+                'task_id' => 73,
+                'result' => ['candidates' => [
+                    ['candidate_id' => 'candidate-01', 'audio_artifact_id' => 21, 'seed' => 401, 'voice_design_revision' => 1, 'style_status' => 'unverified'],
+                    ['candidate_id' => 'candidate-02', 'audio_artifact_id' => 22, 'seed' => 402, 'voice_design_revision' => 1, 'style_status' => 'unverified'],
+                ]],
+                'cluster_artifact_index' => [
+                    ['id' => 21, 'size_bytes' => 100, 'type' => 'generated_audio', 'mime_type' => 'audio/wav'],
+                    ['id' => 22, 'size_bytes' => 100, 'type' => 'voice_candidate_02', 'mime_type' => 'audio/wav'],
+                ],
+            ]);
+        });
+        $validPayload = json_decode((string)$valid['body'], true, 32, JSON_THROW_ON_ERROR);
+        $malformed = hub_cluster_dispatch_followup($db, 'cluster_task_result', $followup, static function (): array {
+            return hub_gateway_json(200, [
+                'ok' => true,
+                'task_id' => 73,
+                'result' => ['candidates' => [
+                    ['candidate_id' => 'candidate-01', 'audio_artifact_id' => 21, 'seed' => 401, 'voice_design_revision' => 1, 'style_status' => 'applied'],
+                ]],
+                'cluster_artifact_index' => [
+                    ['id' => 21, 'size_bytes' => 100, 'type' => 'generated_audio', 'mime_type' => 'audio/wav'],
+                ],
+            ]);
+        });
+
+        hub_test_assert(
+            $submitted['status'] === 200
+            && $valid['status'] === 200
+            && ($validPayload['result']['candidates'] ?? null) === [
+                [
+                    'candidate_id' => 'candidate-01',
+                    'audio_artifact_id' => 21,
+                    'seed' => 401,
+                    'voice_design_revision' => 1,
+                    'style_status' => 'unverified',
+                    'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . ($submittedPayload['task_id'] ?? '') . '&artifact_id=21',
+                ],
+                [
+                    'candidate_id' => 'candidate-02',
+                    'audio_artifact_id' => 22,
+                    'seed' => 402,
+                    'voice_design_revision' => 1,
+                    'style_status' => 'unverified',
+                    'audio_url' => 'cluster_api.php?mode=cluster_artifact&task_id=' . ($submittedPayload['task_id'] ?? '') . '&artifact_id=22',
+                ],
+            ]
+            && $malformed['status'] === 502
+            && str_contains((string)$malformed['body'], 'router_response_invalid'),
+            'generic voice candidates must retain only their fixed recipe metadata and registered Cluster artifact URLs'
+        );
+    });
+});
