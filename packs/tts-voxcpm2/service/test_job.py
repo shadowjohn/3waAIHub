@@ -282,6 +282,47 @@ class UltimateCloneJobTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(prompt.encode()).hexdigest(), checkpoint["context"]["voice_prompt_sha256"])
         self.assertNotIn(prompt, json.dumps(checkpoint, ensure_ascii=False))
 
+    def test_legacy_character_profile_reaches_real_tts_and_is_attested(self):
+        captured = []
+        loaded_model = types.SimpleNamespace(tts_model=types.SimpleNamespace(device="cuda:0"))
+
+        class TtsRequest:
+            def __init__(self, **values):
+                captured.append(values)
+
+        class VoxCPM:
+            @classmethod
+            def from_pretrained(cls, *args, **kwargs):
+                return loaded_model
+
+        def write_real_wav(path, request, seed, trusted_reference_paths=False):
+            job.write_pcm(path, 48000, [100, -100] * 240)
+
+        self.write_input({
+            "text": "您好，今天的服務由我為您說明。",
+            "mode": "design",
+            "voice_prompt": "30歲職場女性，聲音甜美，說話清楚，有親和力。",
+            "generation_profile": "legacy_character_v1",
+            "legacy_speed": "fast",
+            "legacy_emotion": "happy",
+            "seed": 42,
+            "seed_policy": "fixed",
+            "model": "voxcpm2",
+            "waveform_preview": False,
+        })
+        fake_app = types.SimpleNamespace(TtsRequest=TtsRequest, write_real_wav=write_real_wav, _MODEL=None)
+        fake_torch = types.SimpleNamespace(cuda=types.SimpleNamespace(is_available=lambda: True))
+        fake_voxcpm = types.SimpleNamespace(VoxCPM=VoxCPM)
+        with patch.dict(sys.modules, {"app": fake_app, "torch": fake_torch, "voxcpm": fake_voxcpm}), patch.dict(os.environ, {"VOXCPM2_JOB_FAKE_SYNTHESIS": ""}):
+            metadata = self.run_job()
+
+        self.assertEqual(1, len(captured))
+        self.assertEqual("legacy_character_v1", captured[0]["generation_profile"])
+        self.assertEqual("fast", captured[0]["legacy_speed"])
+        self.assertEqual("happy", captured[0]["legacy_emotion"])
+        self.assertEqual("legacy_character_v1", metadata["controls"]["generation_profile"])
+        self.assertNotIn("30歲職場女性", json.dumps(metadata, ensure_ascii=False))
+
     def test_cancellation_stops_immediately_after_synthesis(self):
         cancelled = {"value": False}
         self.write_input({

@@ -159,6 +159,24 @@ class UltimateCloneTests(unittest.TestCase):
 
         self.assertEqual(spoken_text, self.model.kwargs["text"])
 
+    def test_legacy_character_profile_prefixes_model_text(self):
+        spoken_text = "您好，今天的服務由我為您說明。"
+        request = app.TtsRequest(
+            text=spoken_text,
+            mode="design",
+            voice_prompt="30歲職場女性，聲音甜美，說話清楚，有親和力。",
+            generation_profile="legacy_character_v1",
+            legacy_speed="fast",
+            legacy_emotion="happy",
+        )
+
+        app.write_real_wav(Path(self.temp_dir.name) / "legacy.wav", request, 42)
+
+        self.assertEqual(
+            "(30歲職場女性，聲音甜美，說話清楚，有親和力。 cheerful tone speaks slightly faster)" + spoken_text,
+            self.model.kwargs["text"],
+        )
+
     def test_trusted_resident_reference_can_live_in_job_workspace(self):
         source = Path(self.temp_dir.name) / "resident_jobs" / "run-1" / "input" / "source"
         source.parent.mkdir(parents=True)

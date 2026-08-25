@@ -12,8 +12,8 @@ from typing import Any, Callable
 
 from long_form import BOUNDARY_ACTIONS, assemble, canonical_json, fake_synthesize, global_loudness_pass, make_plan, peak_guard, read_pcm, sha256_text, write_pcm
 
-ALLOWED_REQUEST = {"text", "mode", "voice_prompt", "control", "seed", "seed_policy", "model", "voice_profile_id", "prompt_text", "waveform_preview", "voice_context", "preset_candidates"}
-DEFAULTS = {"mode": "design", "seed": 42, "seed_policy": "derived_per_chunk", "model": "voxcpm2", "waveform_preview": False}
+ALLOWED_REQUEST = {"text", "mode", "voice_prompt", "control", "generation_profile", "legacy_speed", "legacy_emotion", "seed", "seed_policy", "model", "voice_profile_id", "prompt_text", "waveform_preview", "voice_context", "preset_candidates"}
+DEFAULTS = {"mode": "design", "generation_profile": "standard", "seed": 42, "seed_policy": "derived_per_chunk", "model": "voxcpm2", "waveform_preview": False}
 DEFAULT_DESIGN_PROMPT = "沉穩的台灣男性技師，語速稍慢，清楚自然"
 NON_RETRYABLE_SYNTHESIS_ERRORS = {"gpu_unavailable", "model_load_failed", "runtime_dependency_missing", "sample_rate_mismatch", "job_cancelled"}
 STABLE_ERROR_CODE = re.compile(r"^[a-z0-9_]{1,120}$")
@@ -61,9 +61,12 @@ def validate_request(value: dict[str, Any]) -> dict[str, Any]:
     policy = value.get("seed_policy")
     model = value.get("model")
     preview = value.get("waveform_preview")
+    generation_profile = value.get("generation_profile")
     if not isinstance(text, str) or not text.strip() or len(text) > 50000 or mode not in {"design", "clone", "ultimate_clone"}:
         raise RuntimeError("request_invalid")
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0 or seed > 2_147_483_647 or policy not in {"fixed", "derived_per_chunk"} or model != "voxcpm2" or not isinstance(preview, bool):
+        raise RuntimeError("request_invalid")
+    if generation_profile not in {"standard", "legacy_character_v1"}:
         raise RuntimeError("request_invalid")
     for field in ("voice_prompt", "control"):
         if field in value and (not isinstance(value[field], str) or not value[field].strip() or len(value[field]) > 1024):
@@ -74,8 +77,13 @@ def validate_request(value: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError("voice_profile_forbidden")
         if not isinstance(value.get("voice_prompt"), str):
             raise RuntimeError("voice_prompt_required")
+        if generation_profile == "legacy_character_v1":
+            if value.get("legacy_speed", "normal") not in {"slow", "normal", "fast"} or value.get("legacy_emotion", "neutral") not in {"neutral", "happy", "sad", "angry", "excited", "calm"}:
+                raise RuntimeError("request_invalid")
+        elif "legacy_speed" in value or "legacy_emotion" in value:
+            raise RuntimeError("request_invalid")
     else:
-        if isinstance(profile, bool) or not isinstance(profile, int) or profile < 1:
+        if generation_profile != "standard" or "legacy_speed" in value or "legacy_emotion" in value or isinstance(profile, bool) or not isinstance(profile, int) or profile < 1:
             raise RuntimeError("voice_profile_required")
         if "voice_prompt" in value:
             raise RuntimeError("voice_profile_forbidden")
@@ -115,6 +123,12 @@ def voice_context(request: dict[str, Any], managed_reference_path: Path | None =
         if trusted is not None and trusted != expected:
             raise RuntimeError("voice_context_invalid")
         context = {"mode": "design", "control": request.get("control", "")}
+        if request["generation_profile"] == "legacy_character_v1":
+            context |= {
+                "generation_profile": "legacy_character_v1",
+                "legacy_speed": request.get("legacy_speed", "normal"),
+                "legacy_emotion": request.get("legacy_emotion", "neutral"),
+            }
     elif request["mode"] == "clone":
         expected = {
             "mode": "clone",
@@ -195,7 +209,7 @@ def ensure_cuda_model(tts_app: Any, model_path: str, torch_module: Any) -> Any:
     return loaded
 
 
-def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path, model: dict[str, Any], checkpoints: Path, prompt_text: str | None = None, voice_prompt: str | None = None, cancelled: Callable[[], bool] | None = None) -> list[int]:
+def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path, model: dict[str, Any], checkpoints: Path, prompt_text: str | None = None, voice_prompt: str | None = None, generation_profile: str = "standard", legacy_speed: str = "normal", legacy_emotion: str = "neutral", cancelled: Callable[[], bool] | None = None) -> list[int]:
     if fake_enabled():
         private_voice = voice["sha256"] if voice_prompt is None else sha256_text(canonical_json({"voice_context_sha256": voice["sha256"], "voice_prompt": voice_prompt}))
         samples = fake_synthesize(chunk["text"], chunk["seed"], private_voice, model["sample_rate"])
@@ -214,6 +228,9 @@ def synthesize_chunk(chunk: dict[str, Any], voice: dict[str, Any], source: Path,
         mode=voice["mode"],
         voice_prompt=voice_prompt,
         control=voice.get("control"),
+        generation_profile=generation_profile,
+        legacy_speed=legacy_speed,
+        legacy_emotion=legacy_emotion,
         reference_wav_path=str(source) if voice["mode"] in {"clone", "ultimate_clone"} else None,
     )
     if voice["mode"] == "ultimate_clone":
@@ -262,7 +279,7 @@ def cached_chunk(path: Path, metadata_path: Path, expected: dict[str, Any], samp
     return samples, metadata
 
 
-def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, str], voice: dict[str, Any], source: Path, model: dict[str, Any], prompt_text: str | None = None, voice_prompt: str | None = None, cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
+def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, str], voice: dict[str, Any], source: Path, model: dict[str, Any], prompt_text: str | None = None, voice_prompt: str | None = None, generation_profile: str = "standard", legacy_speed: str = "normal", legacy_emotion: str = "neutral", cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
     sample_rate = model["sample_rate"]
     wav_path = checkpoints / (chunk["id"] + ".wav")
     metadata_path = checkpoints / (chunk["id"] + ".json")
@@ -289,7 +306,7 @@ def create_chunk(chunk: dict[str, Any], checkpoints: Path, context: dict[str, st
         try:
             if cancelled and cancelled():
                 raise RuntimeError("job_cancelled")
-            samples, gain = peak_guard(synthesize_chunk(chunk, voice, source, model, checkpoints, prompt_text=prompt_text, voice_prompt=voice_prompt, cancelled=cancelled))
+            samples, gain = peak_guard(synthesize_chunk(chunk, voice, source, model, checkpoints, prompt_text=prompt_text, voice_prompt=voice_prompt, generation_profile=generation_profile, legacy_speed=legacy_speed, legacy_emotion=legacy_emotion, cancelled=cancelled))
             expected |= {"duration_frames": len(samples), "attempts": attempt, "peak_gain": gain}
             checkpoints.mkdir(parents=True, exist_ok=True)
             write_pcm(wav_path, sample_rate, samples)
@@ -352,7 +369,7 @@ def run_job(workspace: Path, input_dir: Path, output: Path, runner_config_path: 
         for chunk in plan["chunks"]:
             if cancelled and cancelled():
                 raise RuntimeError("job_cancelled")
-            chunks.append(create_chunk(chunk, checkpoint_root / "chunks", context, voice, source, model, prompt_text=candidate_request.get("prompt_text"), voice_prompt=candidate_request.get("voice_prompt"), cancelled=cancelled))
+            chunks.append(create_chunk(chunk, checkpoint_root / "chunks", context, voice, source, model, prompt_text=candidate_request.get("prompt_text"), voice_prompt=candidate_request.get("voice_prompt"), generation_profile=candidate_request["generation_profile"], legacy_speed=candidate_request.get("legacy_speed", "normal"), legacy_emotion=candidate_request.get("legacy_emotion", "neutral"), cancelled=cancelled))
         final, timeline = assemble(chunks, model["sample_rate"])
         final, loudness = global_loudness_pass(final)
         write_pcm(output / ("generated_audio.wav" if index == 1 else f"candidate-{index:02d}.wav"), model["sample_rate"], final)
@@ -366,7 +383,7 @@ def run_job(workspace: Path, input_dir: Path, output: Path, runner_config_path: 
                     "id": chunk["id"], "seed": chunk["seed"], "seed_sha256": chunk["seed_sha256"], "attempts": chunk["attempts"], "duration_frames": len(chunk["samples"]), "duration_seconds": len(chunk["samples"]) / model["sample_rate"], "peak_gain": chunk["peak_gain"], "reused_checkpoint": chunk["reused"], "action": boundary["action"], "trim_frames": boundary["trim_frames"], "pause_frames": boundary["pause_frames"], "crossfade_frames": boundary["crossfade_frames"],
                 })
             metadata = {
-                "normalized_input": plan["normalized_input"], "plan": plan, "model": {key: value for key, value in model.items() if key != "model"}, "voice_context": {key: value for key, value in voice.items() if key != "container_path"}, "controls": {"mode": request["mode"], "seed_policy": request["seed_policy"], "task_seed": candidate_request["seed"]}, "chunks": chunk_metadata, "final_format": {"mime_type": "audio/wav", "sample_rate": model["sample_rate"], "channels": 1, "frames": len(final)}, "loudness": loudness, "timeline": timeline, "device": {"type": "fake", "real_inference": False} if fake_enabled() else {"type": "cuda", "real_inference": True},
+                "normalized_input": plan["normalized_input"], "plan": plan, "model": {key: value for key, value in model.items() if key != "model"}, "voice_context": {key: value for key, value in voice.items() if key != "container_path"}, "controls": {"mode": request["mode"], "generation_profile": candidate_request["generation_profile"], "seed_policy": request["seed_policy"], "task_seed": candidate_request["seed"]}, "chunks": chunk_metadata, "final_format": {"mime_type": "audio/wav", "sample_rate": model["sample_rate"], "channels": 1, "frames": len(final)}, "loudness": loudness, "timeline": timeline, "device": {"type": "fake", "real_inference": False} if fake_enabled() else {"type": "cuda", "real_inference": True},
             }
     if metadata is None:
         raise RuntimeError("request_invalid")

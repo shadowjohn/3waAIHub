@@ -284,7 +284,6 @@ function hub_test_cluster_voxcpm2_runner_metadata(
         'control' => '',
         'reference_audio_sha256' => $referenceSha256,
         'prompt_text_sha256' => $promptSha256,
-        'container_path' => '/data/voice_profiles/reference.wav',
     ];
 
     return [
@@ -293,7 +292,6 @@ function hub_test_cluster_voxcpm2_runner_metadata(
             'plan_sha256' => hash('sha256', hub_test_cluster_voxcpm2_canonical_json($planCore)),
         ],
         'model' => [
-            'model' => '/models/voxcpm2/model',
             'label' => 'VoxCPM2',
             'version' => '2.0.3',
             'sample_rate' => 48000,
@@ -303,6 +301,7 @@ function hub_test_cluster_voxcpm2_runner_metadata(
         ],
         'controls' => [
             'mode' => 'ultimate_clone',
+            'generation_profile' => 'standard',
             'seed_policy' => 'derived_per_chunk',
             'task_seed' => 42,
         ],
@@ -2327,6 +2326,13 @@ hub_test('cluster router applies bounded native limits to voice multipart fields
         'expected_text' => $validExpectedText,
     ]);
     $text = $normalize(['text' => str_repeat('t', 4096), 'voice_prompt' => str_repeat('v', 1024)]);
+    $legacy = $normalize([
+        'text' => 'legacy character synthesis',
+        'voice_prompt' => '清楚自然的角色聲音',
+        'generation_profile' => 'legacy_character_v1',
+        'legacy_speed' => 'fast',
+        'legacy_emotion' => 'happy',
+    ]);
     $invalid = [
         $normalize([
             'operation' => 'profile_prepare',
@@ -2351,8 +2357,11 @@ hub_test('cluster router applies bounded native limits to voice multipart fields
         !isset($profile['response'])
         && ($profile['form']['post']['prompt_text'] ?? null) === $validPrompt
         && ($profile['form']['post']['expected_text'] ?? null) === $validExpectedText
-        && !isset($text['response']),
-        'profile_prepare prompts and expected text through 20000 bytes and synthesis text through 4096 bytes must reach the native contract'
+        && !isset($text['response'])
+        && ($legacy['form']['post']['generation_profile'] ?? null) === 'legacy_character_v1'
+        && ($legacy['form']['post']['legacy_speed'] ?? null) === 'fast'
+        && ($legacy['form']['post']['legacy_emotion'] ?? null) === 'happy',
+        'profile_prepare prompts and expected text through 20000 bytes, bounded synthesis text, and legacy character controls must reach the native contract'
     );
     hub_test_assert(
         array_filter($invalid, static fn (array $result): bool => ($result['response']['status'] ?? 0) !== 400) === [],
@@ -4910,18 +4919,6 @@ hub_test('VoxCPM2 child and Router artifact contract drives the acceptance CLI o
             'station_key' => 'voxcpm2_acceptance_station',
             'station_token' => 'voxcpm2_acceptance_station_token',
         ], '42');
-        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [], null, '203.0.113.44', [
-            'owner_member_id' => (int)$fixture['member_id'],
-            'owner_token_id' => (int)$fixture['customer']['token_id'],
-            'requested_mode' => 'voice_generate',
-            'pack_id' => 'tts-voxcpm2',
-            'pack_version' => '0.1.5',
-            'job' => 'synthesize',
-        ]);
-        $resultDir = hub_task_result_dir($taskId) . '/published';
-        if (!is_dir($resultDir) && !mkdir($resultDir, 0700, true) && !is_dir($resultDir)) {
-            throw new RuntimeException('Cannot create offline Cluster artifact fixture.');
-        }
         $audio = "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 48000, 96000, 2, 16) . "data" . pack('V', 0);
         $promptText = 'Confirmed private prompt text.';
         $targetText = 'Generate this private target text.';
@@ -4939,6 +4936,31 @@ hub_test('VoxCPM2 child and Router artifact contract drives the acceptance CLI o
             'text_chars' => 30,
             'prompt_text_sha256' => $promptSha256,
         ]);
+        $taskId = hub_enqueue_task($db, 'pack_job', 'gpu', 0, [
+            'mode' => 'ultimate_clone',
+            'voice_profile_id' => $profileNativeTaskId,
+            'voice_context' => [
+                'mode' => 'ultimate_clone',
+                'voice_profile_id' => $profileNativeTaskId,
+                'reference_audio_sha256' => $referenceSha256,
+                'prompt_text_sha256' => $promptSha256,
+                'prompt_text_confirmed_at' => '2026-07-31 12:00:00',
+                'container_path' => '/data/voice_profiles/reference.wav',
+            ],
+            'text' => $targetText,
+            'generation_profile' => 'standard',
+        ], null, '203.0.113.44', [
+            'owner_member_id' => (int)$fixture['member_id'],
+            'owner_token_id' => (int)$fixture['customer']['token_id'],
+            'requested_mode' => 'voice_generate',
+            'pack_id' => 'tts-voxcpm2',
+            'pack_version' => '0.1.9',
+            'job' => 'synthesize',
+        ]);
+        $resultDir = hub_task_result_dir($taskId) . '/published';
+        if (!is_dir($resultDir) && !mkdir($resultDir, 0700, true) && !is_dir($resultDir)) {
+            throw new RuntimeException('Cannot create offline Cluster artifact fixture.');
+        }
         $profileRouteId = hub_cluster_router_admit_route($db, $fixture['station'], [
             'member_id' => (int)$fixture['member_id'],
             'token_id' => (int)$fixture['customer']['token_id'],
@@ -4954,6 +4976,12 @@ hub_test('VoxCPM2 child and Router artifact contract drives the acceptance CLI o
             hub_test_cluster_voxcpm2_runner_metadata($referenceSha256, $promptSha256, $targetText),
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
         );
+        $audioProbe = [
+            'duration_seconds' => 0.25,
+            'sample_rate' => 48000,
+            'channels' => 1,
+            'frames' => 12000,
+        ];
         $audioPath = $resultDir . '/private_child_audio.wav';
         $metadataPath = $resultDir . '/private_child_metadata.json';
         file_put_contents($audioPath, $audio, LOCK_EX);
@@ -4973,7 +5001,7 @@ hub_test('VoxCPM2 child and Router artifact contract drives the acceptance CLI o
             'mime_type' => 'application/json',
             'size_bytes' => strlen($metadata),
             'sha256' => hash('sha256', $metadata),
-        ]);
+        ], $audioProbe);
         $publicMetadataArtifact = hub_get_task_artifact($db, $metadataId);
         hub_finish_task_success($db, hub_get_task($db, $taskId) ?? [], []);
         $db->prepare('UPDATE cluster_routes SET remote_task_id = :task_id WHERE route_id = :route_id')

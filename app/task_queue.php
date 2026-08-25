@@ -4279,6 +4279,8 @@ function hub_voxcpm2_metadata_task_contract(array $input): ?array
     $normalizedInput = hub_voxcpm2_metadata_normalized_input($input['text'] ?? null);
     $mode = $input['mode'] ?? 'design';
     $control = $input['control'] ?? '';
+    $generationProfile = $input['generation_profile'] ?? 'standard';
+    $generationProfileExplicit = array_key_exists('generation_profile', $input);
     $taskSeed = $input['seed'] ?? 42;
     $seedPolicy = $input['seed_policy'] ?? 'derived_per_chunk';
     $controlLength = hub_voxcpm2_metadata_utf8_length($control);
@@ -4288,6 +4290,7 @@ function hub_voxcpm2_metadata_task_contract(array $input): ?array
         || $controlLength === null
         || $controlLength > 1024
         || (array_key_exists('control', $input) && trim($control) === '')
+        || !in_array($generationProfile, ['standard', 'legacy_character_v1'], true)
         || !is_int($taskSeed)
         || $taskSeed < 0
         || $taskSeed > 2147483647
@@ -4296,11 +4299,30 @@ function hub_voxcpm2_metadata_task_contract(array $input): ?array
         return null;
     }
 
+    $legacySpeed = $input['legacy_speed'] ?? 'normal';
+    $legacyEmotion = $input['legacy_emotion'] ?? 'neutral';
+    if ($generationProfile === 'legacy_character_v1') {
+        if ($mode !== 'design'
+            || !in_array($legacySpeed, ['slow', 'normal', 'fast'], true)
+            || !in_array($legacyEmotion, ['neutral', 'happy', 'sad', 'angry', 'excited', 'calm'], true)) {
+            return null;
+        }
+    } elseif (array_key_exists('legacy_speed', $input) || array_key_exists('legacy_emotion', $input)) {
+        return null;
+    }
+
     $voice = ['mode' => $mode, 'control' => $control];
     if ($mode === 'design') {
         if (array_key_exists('voice_context', $input)
             || array_key_exists('voice_profile_id', $input)) {
             return null;
+        }
+        if ($generationProfile === 'legacy_character_v1') {
+            $voice += [
+                'generation_profile' => 'legacy_character_v1',
+                'legacy_speed' => $legacySpeed,
+                'legacy_emotion' => $legacyEmotion,
+            ];
         }
     } else {
         $context = $input['voice_context'] ?? null;
@@ -4335,6 +4357,15 @@ function hub_voxcpm2_metadata_task_contract(array $input): ?array
         }
     }
 
+    $controls = [
+        'mode' => $mode,
+        'seed_policy' => $seedPolicy,
+        'task_seed' => $taskSeed,
+    ];
+    if ($generationProfileExplicit) {
+        $controls['generation_profile'] = $generationProfile;
+    }
+
     return [
         'normalized_input' => $normalizedInput,
         'mode' => $mode,
@@ -4342,6 +4373,7 @@ function hub_voxcpm2_metadata_task_contract(array $input): ?array
         'task_seed' => $taskSeed,
         'seed_policy' => $seedPolicy,
         'voice' => $voice,
+        'controls' => $controls,
     ];
 }
 
@@ -4630,11 +4662,7 @@ function hub_voxcpm2_public_metadata_schema_valid(
             array_diff_key($metadata['voice_context'], ['sha256' => true]),
             $expected['voice']
         )
-        || !hub_voxcpm2_metadata_exact_value($metadata['controls'] ?? null, [
-            'mode' => $expected['mode'],
-            'seed_policy' => $expected['seed_policy'],
-            'task_seed' => $expected['task_seed'],
-        ])
+        || !hub_voxcpm2_metadata_exact_value($metadata['controls'] ?? null, $expected['controls'])
         || (!hub_voxcpm2_metadata_exact_value(
             $metadata['device'] ?? null,
             ['type' => 'fake', 'real_inference' => false]
@@ -4665,7 +4693,7 @@ function hub_voxcpm2_public_metadata_artifact(
     $task = $stmt->fetch();
     if (!$task
         || ($task['pack_id'] ?? null) !== 'tts-voxcpm2'
-        || !in_array($task['pack_version'] ?? null, ['0.1.4', '0.1.5', '0.1.6', '0.1.7', '0.1.8'], true)
+        || !in_array($task['pack_version'] ?? null, ['0.1.4', '0.1.5', '0.1.6', '0.1.7', '0.1.8', '0.1.9'], true)
         || ($task['job'] ?? null) !== 'synthesize') {
         return $artifact;
     }
@@ -4699,7 +4727,7 @@ function hub_voxcpm2_public_metadata_artifact(
     $changed = false;
     $model = $metadata['model'] ?? null;
     $voice = $metadata['voice_context'] ?? null;
-    if (in_array($task['pack_version'] ?? null, ['0.1.6', '0.1.7', '0.1.8'], true)) {
+    if (in_array($task['pack_version'] ?? null, ['0.1.6', '0.1.7', '0.1.8', '0.1.9'], true)) {
         try {
             $taskInput = json_decode((string)($task['input_json'] ?? ''), true, 64, JSON_THROW_ON_ERROR);
         } catch (JsonException) {

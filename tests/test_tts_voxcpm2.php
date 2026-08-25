@@ -566,12 +566,46 @@ hub_test('VoxCPM2 profile_prepare accepts optional expected_text without putting
     });
 });
 
+hub_test('VoxCPM2 admits the bounded legacy character profile for design synthesis', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Legacy Character Owner');
+        $token = hub_create_api_token($db, $memberId, 'legacy character token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+        $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+            'text' => '您好，今天的服務由我為您說明。',
+            'mode' => 'design',
+            'model' => 'voxcpm2',
+            'voice_prompt' => '30歲職場女性，聲音甜美，說話清楚，有親和力。',
+            'generation_profile' => 'legacy_character_v1',
+            'legacy_speed' => 'fast',
+            'legacy_emotion' => 'happy',
+        ]);
+        $taskId = (int)(hub_test_audio_payload($response)['task_id'] ?? 0);
+        $task = hub_get_task($db, $taskId) ?? [];
+
+        hub_test_assert(
+            $response['status'] === 200
+            && $taskId > 0
+            && ($task['input']['generation_profile'] ?? null) === 'legacy_character_v1'
+            && ($task['input']['legacy_speed'] ?? null) === 'fast'
+            && ($task['input']['legacy_emotion'] ?? null) === 'happy'
+            && ($task['input']['voice_prompt'] ?? null) === '30歲職場女性，聲音甜美，說話清楚，有親和力。',
+            'legacy character values must be admitted as a bounded design Pack request'
+        );
+    });
+});
+
 hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', function (): void {
     $pack = hub_get_pack('tts-voxcpm2');
     hub_test_assert($pack !== null && $pack['status'] === 'ok', 'tts-voxcpm2 pack must be valid');
     $manifest = $pack['manifest'];
 
-    hub_test_assert(($manifest['version'] ?? '') === '0.1.8', 'VoxCPM2 Pack version mismatch');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.9', 'VoxCPM2 Pack version mismatch');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'tts', 'VoxCPM2 default mode mismatch');
     hub_test_assert(($manifest['capability'] ?? '') === 'text_to_speech', 'VoxCPM2 capability mismatch');
     hub_test_assert(($manifest['model'] ?? '') === 'openbmb/VoxCPM2', 'VoxCPM2 model id mismatch');
@@ -586,8 +620,8 @@ hub_test('VoxCPM2 experimental TTS pack manifest and service files exist', funct
     hub_test_assert(($manifest['lifecycle']['lifecycle'] ?? '') === 'on_demand', 'VoxCPM2 lifecycle mismatch');
     hub_test_assert(($manifest['lifecycle']['gpu_policy'] ?? '') === 'exclusive_gpu', 'VoxCPM2 GPU policy mismatch');
     hub_test_assert((int)($manifest['lifecycle']['idle_unload_seconds'] ?? 0) === 0, 'VoxCPM2 idle unload mismatch');
-    hub_test_assert(($manifest['runner_build']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.8', 'VoxCPM2 runner build image mismatch');
-    hub_test_assert(($manifest['async_jobs'][0]['runner']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.8', 'VoxCPM2 runner image mismatch');
+    hub_test_assert(($manifest['runner_build']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.9', 'VoxCPM2 runner build image mismatch');
+    hub_test_assert(($manifest['async_jobs'][0]['runner']['image'] ?? '') === '3waaihub/tts-voxcpm2:0.1.9', 'VoxCPM2 runner image mismatch');
     $settings = hub_get_pack_settings_schema('tts-voxcpm2');
     hub_test_assert(($settings['VOXCPM2_EXECUTION_MODE']['default'] ?? '') === 'isolated', 'VoxCPM2 execution mode must default to isolated');
     hub_test_assert(($settings['VOXCPM2_RESIDENT_MIN_FREE_VRAM_MB']['default'] ?? '') === '1024', 'VoxCPM2 resident VRAM default mismatch');
@@ -4042,8 +4076,8 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
     $manifest = $pack['manifest'];
     $job = hub_pack_async_job_contract($manifest, 'synthesize');
     hub_test_assert(is_array($job), 'VoxCPM2 synthesize job contract missing');
-    hub_test_assert(($job['input_fields'] ?? []) === ['text', 'mode', 'voice_prompt', 'control', 'seed', 'seed_policy', 'model', 'voice_profile_id', 'voice_profile_task_id', 'waveform_preview'], 'long-form input must be a closed Pack allowlist');
-    hub_test_assert(($manifest['version'] ?? '') === '0.1.8', 'resident execution changes must bump the Pack patch version');
+    hub_test_assert(($job['input_fields'] ?? []) === ['text', 'mode', 'voice_prompt', 'control', 'generation_profile', 'legacy_speed', 'legacy_emotion', 'seed', 'seed_policy', 'model', 'voice_profile_id', 'voice_profile_task_id', 'waveform_preview'], 'long-form input must be a closed Pack allowlist');
+    hub_test_assert(($manifest['version'] ?? '') === '0.1.9', 'legacy character compatibility must bump the Pack patch version');
     hub_test_assert(($job['request_schema']['mode'] ?? []) === ['type' => 'string', 'required' => false, 'enum' => ['design', 'clone', 'ultimate_clone'], 'max_length' => 16, 'default' => 'design'], 'async synthesis mode must default to design and declare all three modes');
     hub_test_assert(($job['request_schema']['voice_profile_id'] ?? []) === ['type' => 'integer', 'required' => false, 'min' => 1, 'max' => 2147483647], 'managed profile IDs must retain exact integer bounds');
     hub_test_assert(($job['request_schema']['voice_profile_task_id'] ?? []) === ['type' => 'string', 'required' => false, 'max_length' => 64], 'native profile task handles must be bounded strings');
@@ -4059,7 +4093,7 @@ hub_test('VoxCPM2 long-form job is a fixed GPU container Pack contract with safe
     ], 'Voice Context must expose the exact Ultimate Clone contract');
     hub_test_assert(($job['source_required'] ?? true) === false && ($job['source_artifact_types'] ?? null) === [], 'long-form synthesis must receive text and managed voice context, never an external audio source');
     hub_test_assert(($job['runner'] ?? []) === [
-        'image' => '3waaihub/tts-voxcpm2:0.1.8',
+        'image' => '3waaihub/tts-voxcpm2:0.1.9',
         'entrypoint' => ['/app/voice-generate'],
         'args' => ['--workspace', '{workspace}', '--input', '{input_dir}', '--output', '{output_dir}', '--runner-config', '{input_dir}/runner_config.json'],
         'output_dir' => 'output',
@@ -4105,8 +4139,9 @@ hub_test('VoxCPM2 six-key modern Voice Context accepts an omitted default design
     $pack = hub_get_pack('tts-voxcpm2');
     $job = hub_pack_async_job_contract((array)($pack['manifest'] ?? []), 'synthesize');
     $modern = $job;
-    $modern['input_fields'] = array_values(array_diff($modern['input_fields'], ['voice_profile_task_id']));
+    $modern['input_fields'] = array_values(array_diff($modern['input_fields'], ['generation_profile', 'legacy_speed', 'legacy_emotion', 'voice_profile_task_id']));
     $modern['request_schema']['mode']['enum'] = ['design', 'clone'];
+    unset($modern['request_schema']['generation_profile'], $modern['request_schema']['legacy_speed'], $modern['request_schema']['legacy_emotion']);
     unset($modern['request_schema']['voice_profile_task_id']);
     $modern['voice_context'] = [
         'mode_input' => 'mode',
@@ -4418,7 +4453,7 @@ hub_test('VoxCPM2 async clone admission distinguishes unavailable profiles from 
     });
 });
 
-hub_test('VoxCPM2 executes immutable 0.1.4 through 0.1.7 queued tasks after the 0.1.8 Pack bump', function (): void {
+hub_test('VoxCPM2 executes immutable 0.1.4 through 0.1.8 queued tasks after the 0.1.9 Pack bump', function (): void {
     hub_test_audio_isolate(static function (): void {
         $db = hub_test_reset_db();
         hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
@@ -4552,7 +4587,7 @@ hub_test('VoxCPM2 executes immutable 0.1.4 through 0.1.7 queued tasks after the 
             && ($previousOutcome['error_code'] ?? '') === 'synthetic_legacy_exit',
             'queued 0.1.5 task must execute through its immutable stored contract'
         );
-        foreach (['0.1.6', '0.1.7'] as $preResidentVersion) {
+        foreach (['0.1.6', '0.1.7', '0.1.8'] as $preResidentVersion) {
             $preResident = $route;
             $preResident['runner']['image'] = '3waaihub/tts-voxcpm2:' . $preResidentVersion;
             $preResidentSnapshot = hub_pack_job_contract_snapshot($preResident, true);
@@ -4592,7 +4627,7 @@ hub_test('VoxCPM2 executes immutable 0.1.4 through 0.1.7 queued tasks after the 
                 'queued ' . $preResidentVersion . ' task must execute through its immutable stored contract'
             );
         }
-        hub_test_assert((string)$db->query("SELECT pack_version FROM services WHERE pack_id = 'tts-voxcpm2'")->fetchColumn() === '0.1.8', 'compatibility must run against the upgraded installed Pack');
+        hub_test_assert((string)$db->query("SELECT pack_version FROM services WHERE pack_id = 'tts-voxcpm2'")->fetchColumn() === '0.1.9', 'compatibility must run against the upgraded installed Pack');
         $unsupported = hub_get_task($db, $designTaskId) ?? [];
         $unsupported['pack_version'] = '0.1.3';
         hub_test_assert(hub_test_throws(static fn (): array => hub_resolve_stored_pack_job($db, $unsupported)), 'the stored-version exception must reject every other VoxCPM2 version');
@@ -4784,19 +4819,22 @@ hub_test('VoxCPM2 long-form admission freezes only manifest controls and rejects
         'text' => 'RC Valve 8,500 rpm',
         'voice_prompt' => '沉穩的台灣男性技師',
         'control' => '清楚、稍慢',
-    ], 'omitted design mode must remain omitted from normalized legacy task input');
+        'generation_profile' => 'standard',
+    ], 'omitted design mode must retain the standard generation profile without persisting an implicit mode');
     hub_test_assert(hub_pack_job_normalize_request_input([
         'text' => 'explicit design',
         'mode' => 'design',
+        'generation_profile' => 'standard',
     ], $route) === [
         'text' => 'explicit design',
         'mode' => 'design',
+        'generation_profile' => 'standard',
     ], 'explicit design mode must remain explicit');
 
     $memberId = hub_create_api_member($db, 'VoxCPM2 Legacy Design Owner');
     $token = hub_create_api_token($db, $memberId, 'VoxCPM2 legacy design token', null, null);
     $taskId = hub_enqueue_owned_pack_job($db, $route, ['text' => 'legacy text only'], $memberId, (int)$token['token_id'], '203.0.113.51');
-    hub_test_assert((hub_get_task($db, $taskId)['input'] ?? null) === ['text' => 'legacy text only'], 'queued text-only tasks must not persist an implicit design mode');
+    hub_test_assert((hub_get_task($db, $taskId)['input'] ?? null) === ['text' => 'legacy text only', 'generation_profile' => 'standard'], 'queued text-only tasks must retain the standard profile without persisting an implicit design mode');
 
     hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input(['text' => 'x', 'voice_prompt' => 'voice', 'voice_profile_id' => 1], $route)), 'design must reject clone profile IDs at Pack admission');
     hub_test_assert(hub_test_throws(static fn (): array => hub_pack_job_normalize_request_input(['text' => 'x', 'voice_prompt' => 'voice', 'reference_wav_path' => '/host.wav'], $route)), 'async tasks must reject external reference paths');
@@ -4825,11 +4863,11 @@ hub_test('VoxCPM2 upgrade builds the versioned runner when only the old image ex
         },
     ]);
     hub_test_assert($commands === [
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.8'],
-        ['docker', 'build', '--tag', '3waaihub/tts-voxcpm2:0.1.8', '--file', HUB_ROOT . '/packs/tts-voxcpm2/service/Dockerfile', HUB_ROOT . '/packs/tts-voxcpm2'],
-        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.8'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.9'],
+        ['docker', 'build', '--tag', '3waaihub/tts-voxcpm2:0.1.9', '--file', HUB_ROOT . '/packs/tts-voxcpm2/service/Dockerfile', HUB_ROOT . '/packs/tts-voxcpm2'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/tts-voxcpm2:0.1.9'],
     ] && ($images['3waaihub/tts-voxcpm2:0.1.0'] ?? '') === 'sha256:old-voxcpm2'
-        && ($images['3waaihub/tts-voxcpm2:0.1.8'] ?? '') === 'sha256:new-voxcpm2'
+        && ($images['3waaihub/tts-voxcpm2:0.1.9'] ?? '') === 'sha256:new-voxcpm2'
         && ($installed['service']['install_status'] ?? '') === 'installed',
         'an existing old image must not suppress building and verifying the new Pack-versioned runner');
 });
@@ -5122,6 +5160,9 @@ function hub_test_voxcpm2_cluster_runner_metadata(
     int $taskSeed = 42,
     string $seedPolicy = 'derived_per_chunk',
     array $device = ['type' => 'cuda', 'real_inference' => true],
+    string $generationProfile = 'standard',
+    string $legacySpeed = 'normal',
+    string $legacyEmotion = 'neutral',
 ): array {
     $normalized = preg_replace('/(*UCP)\s+/u', ' ', $targetText);
     $normalized = is_string($normalized) ? trim($normalized, ' ') : null;
@@ -5164,6 +5205,13 @@ function hub_test_voxcpm2_cluster_runner_metadata(
     if ($mode === 'ultimate_clone') {
         $voiceCore['prompt_text_sha256'] = $promptSha256;
     }
+    if ($generationProfile === 'legacy_character_v1') {
+        $voiceCore += [
+            'generation_profile' => 'legacy_character_v1',
+            'legacy_speed' => $legacySpeed,
+            'legacy_emotion' => $legacyEmotion,
+        ];
+    }
 
     return [
         'normalized_input' => $normalized,
@@ -5180,6 +5228,7 @@ function hub_test_voxcpm2_cluster_runner_metadata(
         ],
         'controls' => [
             'mode' => $mode,
+            'generation_profile' => $generationProfile,
             'seed_policy' => $seedPolicy,
             'task_seed' => $taskSeed,
         ],
@@ -5226,6 +5275,9 @@ function hub_test_voxcpm2_cluster_runner_input(
     string $control = '',
     int $taskSeed = 42,
     string $seedPolicy = 'derived_per_chunk',
+    string $generationProfile = 'standard',
+    string $legacySpeed = 'normal',
+    string $legacyEmotion = 'neutral',
 ): array {
     $input = [
         'text' => $targetText,
@@ -5233,11 +5285,16 @@ function hub_test_voxcpm2_cluster_runner_input(
         'seed' => $taskSeed,
         'seed_policy' => $seedPolicy,
         'model' => 'voxcpm2',
+        'generation_profile' => $generationProfile,
     ];
     if ($control !== '') {
         $input['control'] = $control;
     }
     if ($mode === 'design') {
+        if ($generationProfile === 'legacy_character_v1') {
+            $input['legacy_speed'] = $legacySpeed;
+            $input['legacy_emotion'] = $legacyEmotion;
+        }
         return $input;
     }
     $input['voice_profile_id'] = 17;
@@ -5402,7 +5459,7 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
         );
         [$currentTaskId, $currentArtifact] = $makeArtifact(
-            '0.1.8',
+            '0.1.9',
             'current-' . $mode . '-metadata.json',
             $currentJson,
             hub_test_voxcpm2_cluster_runner_input(
@@ -5422,9 +5479,45 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
                 $currentArtifact,
                 $audioProbe
             ) === $currentArtifact,
-            '0.1.8 must accept canonical ' . $mode . ' metadata without rewriting it'
+            '0.1.9 must accept canonical ' . $mode . ' metadata without rewriting it'
         );
     }
+
+    $legacyMetadata = hub_test_voxcpm2_cluster_runner_metadata(
+        str_repeat('a', 64),
+        str_repeat('b', 64),
+        'Legacy character metadata.',
+        'design',
+        '',
+        42,
+        'derived_per_chunk',
+        ['type' => 'cuda', 'real_inference' => true],
+        'legacy_character_v1',
+        'fast',
+        'happy'
+    );
+    $legacyCharacterJson = json_encode($legacyMetadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+    [$legacyTaskId, $legacyArtifact] = $makeArtifact(
+        '0.1.9',
+        'legacy-character-metadata.json',
+        $legacyCharacterJson,
+        hub_test_voxcpm2_cluster_runner_input(
+            str_repeat('a', 64),
+            str_repeat('b', 64),
+            'Legacy character metadata.',
+            'design',
+            '',
+            42,
+            'derived_per_chunk',
+            'legacy_character_v1',
+            'fast',
+            'happy'
+        )
+    );
+    hub_test_assert(
+        hub_voxcpm2_public_metadata_artifact($db, $legacyTaskId, $legacyArtifact, $audioProbe) === $legacyArtifact,
+        '0.1.9 must attest legacy character metadata without retaining the raw prompt'
+    );
 
     foreach (['0.1.4', '0.1.5'] as $legacyVersion) {
         [$legacyTaskId, $legacyArtifact] = $makeArtifact(
@@ -5670,7 +5763,7 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
             JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR
         );
         [$currentTaskId, $currentArtifact] = $makeArtifact(
-            '0.1.8',
+            '0.1.9',
             'current-' . $case . '-metadata.json',
             $currentJson,
             $currentInput
@@ -5688,7 +5781,7 @@ hub_test('VoxCPM2 public metadata enforces the current schema and only normalize
         }
         hub_test_assert(
             $rejected === 'validated_artifact_invalid',
-            '0.1.8 must reject metadata with ' . $case
+            '0.1.9 must reject metadata with ' . $case
         );
     }
 

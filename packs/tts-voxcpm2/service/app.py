@@ -284,6 +284,9 @@ def split_text(text: str, chunk_chars: int | None = None) -> list[str]:
 class TtsRequest(BaseModel):
     text: str = Field(min_length=1)
     mode: str = "design"
+    generation_profile: str = "standard"
+    legacy_speed: str = "normal"
+    legacy_emotion: str = "neutral"
     real_inference: bool | int | str | None = None
     voice_prompt: str | None = None
     control: str | None = None
@@ -311,7 +314,38 @@ async def request_validation_error(_: Any, __: RequestValidationError) -> JSONRe
 
 
 def tts_text(request: TtsRequest) -> str:
-    return request.text
+    if request.generation_profile != "legacy_character_v1":
+        return request.text
+    if request.mode != "design" or not isinstance(request.voice_prompt, str) or not request.voice_prompt.strip():
+        raise ValueError("legacy_character_invalid")
+    emotion = {
+        "happy": "cheerful tone",
+        "sad": "sad tone",
+        "angry": "angry tone",
+        "excited": "excited tone",
+        "neutral": "",
+        "calm": "calm tone",
+    }.get(request.legacy_emotion)
+    speed = {
+        "slow": "speaks slowly",
+        "normal": "",
+        "fast": "speaks slightly faster",
+    }.get(request.legacy_speed)
+    if emotion is None or speed is None:
+        raise ValueError("legacy_character_invalid")
+    prefix = " ".join(value for value in [request.voice_prompt.strip(), emotion, speed] if value)
+    return f"({prefix}){request.text}"
+
+
+def legacy_character_request_valid(request: TtsRequest) -> bool:
+    return request.generation_profile == "standard" or (
+        request.generation_profile == "legacy_character_v1"
+        and request.mode == "design"
+        and isinstance(request.voice_prompt, str)
+        and bool(request.voice_prompt.strip())
+        and request.legacy_speed in {"slow", "normal", "fast"}
+        and request.legacy_emotion in {"neutral", "happy", "sad", "angry", "excited", "calm"}
+    )
 
 
 def artifact_dir() -> Path:
@@ -640,6 +674,8 @@ def tts(request: TtsRequest) -> JSONResponse:
         return response_error(400, "format_not_supported", "Only wav output is supported in this phase.")
     if request.mode not in {"design", "clone", "ultimate_clone"}:
         return response_error(400, "bad_request", "mode must be design, clone, or ultimate_clone.")
+    if not legacy_character_request_valid(request):
+        return response_error(400, "bad_request", "Legacy character generation requires a design prompt and supported style values.")
     if len(request.text) > env_int("VOXCPM2_MAX_INPUT_CHARS", 6000):
         return response_error(413, "input_too_long", "Input text is too long.")
     if request.mode in {"clone", "ultimate_clone"}:

@@ -1132,6 +1132,7 @@ function hub_voxcpm2_cluster_acceptance_metadata_valid(string $path, array $conf
         || !$modelValid
         || !hub_voxcpm2_cluster_acceptance_exact_value($metadata['controls'] ?? null, [
             'mode' => 'ultimate_clone',
+            'generation_profile' => 'standard',
             'seed_policy' => 'derived_per_chunk',
             'task_seed' => 42,
         ])
