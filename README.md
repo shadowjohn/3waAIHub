@@ -408,6 +408,10 @@ curl http://localhost/3waAIHub/api.php?mode=hello
 A system administrator maintains exact target hosts at **設定 → API 與安全** under
 `AIHUB_WEB_CAPTURE_ALLOWED_HOSTS`; add one hostname per line.
 
+`AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES` defaults to `0`. Set it to `1` only when
+an allowed page must render iframe documents from another exact host in that same
+allowlist; primary-page redirects and popups remain blocked.
+
 The Pack follows redirects only on the initial exact hostname. CDN resources
 remain subject to public-IP checks. Treat every allowed hostname as trusted:
 this mode is not a general arbitrary-URL screenshot service.

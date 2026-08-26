@@ -89,6 +89,9 @@ function hub_test_web_capture_isolate(callable $fn): void
 
 hub_test('web capture allowlist is normalized, bounded, and audited', function (): void {
     $db = hub_test_reset_db();
+    hub_test_assert(hub_get_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES') === '0', 'cross-host iframe documents must be disabled by default');
+    hub_test_assert(hub_web_capture_save_allowlisted_iframes($db, 'admin', '1') === true, 'iframe switch must accept the explicit enabled value');
+    hub_test_assert($db->query("SELECT details FROM audit_logs WHERE action = 'web_capture_allowlisted_iframes_updated' ORDER BY id DESC LIMIT 1")->fetchColumn() === 'enabled=1', 'iframe switch changes must be audited');
     hub_test_assert(hub_get_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS') === implode("\n", [
         '3wa.tw', 'fmg.wra.gov.tw', 'fmgb.wra.gov.tw', 'focusit.tw',
         'focusit.com.tw', 'gis.tw', 'wmts.nlsc.gov.tw', 'maps.nlsc.gov.tw',
@@ -122,7 +125,9 @@ hub_test('web capture allowlist is normalized, bounded, and audited', function (
         hub_test_assert(hub_web_capture_parse_allowed_hosts($case['input']) === [$case['output']], 'fixture canonical host must normalize');
     }
     $settingsSource = (string)file_get_contents(HUB_ROOT . '/admin/settings.php');
-    hub_test_assert(str_contains($settingsSource, '<textarea name="AIHUB_WEB_CAPTURE_ALLOWED_HOSTS"') && str_contains($settingsSource, 'hub_web_capture_save_allowed_hosts('), 'API settings must save the web capture allowlist textarea');
+    hub_test_assert(str_contains($settingsSource, '<textarea name="AIHUB_WEB_CAPTURE_ALLOWED_HOSTS"')
+        && str_contains($settingsSource, 'hub_web_capture_save_allowed_hosts(')
+        && str_contains($settingsSource, 'AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES'), 'API settings must save the web capture allowlist and iframe switch');
 });
 
 hub_test('web capture route is immutable and CPU backed', function (): void {
@@ -180,6 +185,18 @@ hub_test('web capture Pack and README publish the allowlist bridge contract', fu
     hub_test_assert(str_contains($dockerfile, 'sed -i \'s/\\r$//\' capture.js'), 'Web Screenshot image must normalize the executable Node entrypoint for WSL source sync');
 });
 
+hub_test('web capture injects the allowlisted iframe switch only from Hub settings', function (): void {
+    $db = hub_test_reset_db();
+    hub_set_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS', "3wa.tw\nfmg.wra.gov.tw\nfmgb.wra.gov.tw");
+    $request = hub_web_capture_prepare_runner_request($db, ['url' => 'https://3wa.tw/map']);
+    hub_test_assert(($request['allowlisted_iframes'] ?? null) === false, 'iframe switch must default to disabled');
+
+    hub_set_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES', '1');
+    $enabled = hub_web_capture_prepare_runner_request($db, ['url' => 'https://3wa.tw/map']);
+    hub_test_assert(($enabled['allowlisted_iframes'] ?? null) === true
+        && ($enabled['allowed_hosts'] ?? []) === ['3wa.tw', 'fmg.wra.gov.tw', 'fmgb.wra.gov.tw'], 'only Hub settings may enable allowlisted cross-host iframe documents');
+});
+
 hub_test('Web Screenshot runner image provisioning uses the declared WSL source only', function (): void {
     $db = hub_test_reset_db();
     $installed = hub_install_pack($db, 'web-screenshot', ['idempotent' => true]);
@@ -205,6 +222,25 @@ hub_test('Web Screenshot runner image provisioning uses the declared WSL source 
         && str_contains($buildPayload, '--file "$service_root/Dockerfile" "$service_root"')
         && !str_contains($buildPayload, str_replace('\\', '/', HUB_ROOT)), 'Web Screenshot image build must use WSL source, never the Windows checkout');
     hub_test_assert(hub_test_throws(static fn (): array => hub_web_screenshot_wsl_runner_build_command($service, ['docker', 'pull', $image], $profile)), 'Web Screenshot WSL builder must reject undeclared Docker commands');
+});
+
+hub_test('Web Screenshot rebuild replaces an existing declared runner image', function (): void {
+    $pack = hub_get_pack('web-screenshot');
+    hub_test_assert(is_array($pack), 'Web Screenshot Pack must exist for runner rebuild');
+    $service = [
+        'pack_id' => 'web-screenshot',
+        'service_key' => 'web-screenshot-main',
+    ];
+    $commands = [];
+    $image = hub_rebuild_internal_task_runner_image($service, static function (array $command, int $timeoutSeconds) use (&$commands): array {
+        $commands[] = $command;
+        return ['exit_code' => 0, 'stdout' => 'sha256:web-screenshot', 'stderr' => ''];
+    });
+
+    hub_test_assert($image === '3waaihub/web-screenshot:0.1.2' && $commands === [
+        ['docker', 'build', '--tag', '3waaihub/web-screenshot:0.1.2', '--file', HUB_ROOT . '/packs/web-screenshot/service/Dockerfile', HUB_ROOT . '/packs/web-screenshot/service'],
+        ['docker', 'image', 'inspect', '--format', '{{.Id}}', '3waaihub/web-screenshot:0.1.2'],
+    ], 'rebuild must build the declared runner even when its image already exists');
 });
 
 hub_test('Web Screenshot WSL execution keeps the Playwright firewall and declared artifact boundary', function (): void {

@@ -195,9 +195,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } elseif ($formType === 'api') {
         $keys = ['AIHUB_REQUIRE_API_TOKEN', 'AIHUB_LOCALHOST_BYPASS_TOKEN', 'AIHUB_ALLOW_LEGACY_SERVICE_IP_WHITELIST', 'AIHUB_TOKEN_DEFAULT_VALID_DAYS', 'AIHUB_PUBLIC_API_DOCS', 'AIHUB_PUBLIC_API_MANIFEST', 'AIHUB_PUBLIC_API_LOCAL_ONLY'];
         $rawAllowedHosts = (string)($_POST['AIHUB_WEB_CAPTURE_ALLOWED_HOSTS'] ?? '');
+        $rawAllowlistedIframes = trim((string)($_POST['AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES'] ?? ''));
         $rawSam3HlsHosts = (string)($_POST['AIHUB_SAM3_HLS_ALLOWED_HOSTS'] ?? '');
         try {
             hub_web_capture_parse_allowed_hosts($rawAllowedHosts);
+            hub_web_capture_parse_allowlisted_iframes($rawAllowlistedIframes);
             hub_sam3_parse_hls_allowed_hosts($rawSam3HlsHosts);
         } catch (InvalidArgumentException $e) {
             $error = $e->getMessage() === 'hls_allowlist_invalid'
@@ -215,6 +217,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($error === '') {
             try {
                 hub_web_capture_save_allowed_hosts($db, (string)$user['username'], $rawAllowedHosts);
+                hub_web_capture_save_allowlisted_iframes($db, (string)$user['username'], $rawAllowlistedIframes);
                 hub_sam3_save_hls_allowed_hosts($db, (string)$user['username'], $rawSam3HlsHosts);
                 foreach ($keys as $key) {
                     hub_set_storage_setting($db, $key, $input[$key]);
@@ -489,6 +492,12 @@ hub_admin_header('系統設定', $user);
             <p class="form-help"><?= hub_settings_t('0 代表建立 token 時不自動設定') ?> <code>valid_until</code>。</p>
         <label>Web Screenshot 允許主機 / <code>AIHUB_WEB_CAPTURE_ALLOWED_HOSTS</code></label>
         <textarea name="AIHUB_WEB_CAPTURE_ALLOWED_HOSTS" rows="8" spellcheck="false"><?= hub_h($settings['AIHUB_WEB_CAPTURE_ALLOWED_HOSTS']) ?></textarea>
+        <label>Web Screenshot 允許白名單跨主機 iframe 文件 / <code>AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES</code></label>
+        <select name="AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES">
+            <option value="0"<?= $settings['AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES'] === '0' ? ' selected' : '' ?>>停用</option>
+            <option value="1"<?= $settings['AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES'] === '1' ? ' selected' : '' ?>>啟用</option>
+        </select>
+        <p class="form-help">僅允許此頁面的 iframe 文件載入上方精確主機；主頁重新導向與 popup 仍會封鎖。</p>
         <label>SAM3 HLS 允許主機 / <code>AIHUB_SAM3_HLS_ALLOWED_HOSTS</code></label>
         <textarea name="AIHUB_SAM3_HLS_ALLOWED_HOSTS" rows="5" spellcheck="false"><?= hub_h($settings['AIHUB_SAM3_HLS_ALLOWED_HOSTS']) ?></textarea>
         <p class="form-help">每行一個精確主機名；空白清單會停用新的 web_capture 任務。</p>

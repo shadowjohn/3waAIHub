@@ -7,6 +7,7 @@ const { chromium } = require('playwright');
 const sharp = require('sharp');
 const {
   validateAllowedHosts,
+  validateAllowlistedIframeNavigation,
   validateDocumentNavigation,
   validatePublicHttpUrl,
 } = require('./url_policy');
@@ -41,11 +42,14 @@ function parseCaptureRequest(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw runnerError('invalid_request');
   }
-  const allowedKeys = new Set(['url', 'width', 'height', 'delay_seconds', 'timeout_seconds', 'javascript', 'crop_x', 'crop_y', 'crop_width', 'crop_height', 'allowed_hosts']);
+  const allowedKeys = new Set(['url', 'width', 'height', 'delay_seconds', 'timeout_seconds', 'javascript', 'crop_x', 'crop_y', 'crop_width', 'crop_height', 'allowed_hosts', 'allowlisted_iframes']);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
     throw runnerError('invalid_request');
   }
   if (typeof value.url !== 'string' || Buffer.byteLength(value.url) > 2048) {
+    throw runnerError('invalid_request');
+  }
+  if (value.allowlisted_iframes !== undefined && typeof value.allowlisted_iframes !== 'boolean') {
     throw runnerError('invalid_request');
   }
   const request = {
@@ -56,6 +60,7 @@ function parseCaptureRequest(value) {
     timeoutSeconds: integer(value.timeout_seconds, 60, 10, 120),
     javascript: value.javascript,
     allowedHosts: validateAllowedHosts(value.allowed_hosts),
+    allowlistedIframes: value.allowlisted_iframes === true,
   };
   if (request.timeoutSeconds <= request.delaySeconds
     || (request.javascript !== undefined && (typeof request.javascript !== 'string' || Buffer.byteLength(request.javascript) > 16384))) {
@@ -75,7 +80,7 @@ function parseCaptureRequest(value) {
   return request;
 }
 
-async function captureNavigationDecision(kind, pageIsPrimary, isMainFrame, url, initialHost, allowedHosts, resolve) {
+async function captureNavigationDecision(kind, pageIsPrimary, isMainFrame, url, initialHost, allowedHosts, resolve, allowlistedIframes = false) {
   if (kind !== 'document') {
     await validatePublicHttpUrl(url, resolve);
     return { action: 'continue' };
@@ -84,7 +89,11 @@ async function captureNavigationDecision(kind, pageIsPrimary, isMainFrame, url, 
     return { action: 'abort', mainBlocked: false, warning: true };
   }
   try {
-    await validateDocumentNavigation(url, initialHost, allowedHosts, resolve);
+    if (!isMainFrame && allowlistedIframes) {
+      await validateAllowlistedIframeNavigation(url, allowedHosts, resolve);
+    } else {
+      await validateDocumentNavigation(url, initialHost, allowedHosts, resolve);
+    }
     return { action: 'continue' };
   } catch {
     return { action: 'abort', mainBlocked: isMainFrame, warning: !isMainFrame };
@@ -303,7 +312,9 @@ async function runCapture() {
             frame === page.mainFrame(),
             routeRequest.url(),
             initialHost,
-            request.allowedHosts
+            request.allowedHosts,
+            undefined,
+            request.allowlistedIframes
           );
         } catch {
           decision = { action: 'abort', mainBlocked: isPrimaryMainDocument, warning: !isPrimaryMainDocument };

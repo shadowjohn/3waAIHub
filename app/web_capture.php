@@ -49,6 +49,41 @@ function hub_web_capture_allowed_hosts(PDO $db): array
     return hub_web_capture_parse_allowed_hosts(hub_get_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS'));
 }
 
+function hub_web_capture_parse_allowlisted_iframes(string $value): bool
+{
+    return match ($value) {
+        '0' => false,
+        '1' => true,
+        default => throw new InvalidArgumentException('web_capture_allowlisted_iframes_invalid'),
+    };
+}
+
+function hub_web_capture_allowlisted_iframes_enabled(PDO $db): bool
+{
+    return hub_get_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES') === '1';
+}
+
+function hub_web_capture_save_allowlisted_iframes(PDO $db, string $username, string $raw): bool
+{
+    $enabled = hub_web_capture_parse_allowlisted_iframes($raw);
+    if (hub_web_capture_allowlisted_iframes_enabled($db) === $enabled) {
+        return $enabled;
+    }
+    $db->beginTransaction();
+    try {
+        hub_set_storage_setting($db, 'AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES', $enabled ? '1' : '0');
+        hub_audit($db, $username, 'web_capture_allowlisted_iframes_updated', 'enabled=' . ($enabled ? '1' : '0'));
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+
+    return $enabled;
+}
+
 function hub_web_capture_save_allowed_hosts(PDO $db, string $username, string $raw): array
 {
     $hosts = hub_web_capture_parse_allowed_hosts($raw);
@@ -133,5 +168,8 @@ function hub_web_capture_prepare_runner_request(PDO $db, array $request): array
         throw new RuntimeException('url_not_allowed');
     }
 
-    return $request + ['allowed_hosts' => $hosts];
+    $request['allowed_hosts'] = $hosts;
+    $request['allowlisted_iframes'] = hub_web_capture_allowlisted_iframes_enabled($db);
+
+    return $request;
 }

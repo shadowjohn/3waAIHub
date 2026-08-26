@@ -1453,6 +1453,19 @@ function hub_service_build_timeout_sec(array $service): int
     return in_array($packId, ['image-tools', 'tts-voxcpm2'], true) ? 1800 : 900;
 }
 
+function hub_rebuild_internal_task_runner_image(array $service, callable $commandRunner): ?string
+{
+    $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
+    $build = is_array($pack) ? hub_pack_container_runner_build_contract((array)$pack['manifest'], (string)$pack['dir']) : null;
+    if ($build === null) {
+        return null;
+    }
+
+    hub_pack_provision_container_runner_image($pack, $commandRunner, true);
+
+    return (string)$build['image'];
+}
+
 function hub_build_service(PDO $db, array $service, ?array $job = null): array
 {
     if (!hub_service_is_internal_task($service) || hub_service_requires_wsl_job_runtime($service)) {
@@ -1465,10 +1478,44 @@ function hub_build_service(PDO $db, array $service, ?array $job = null): array
     hub_job_progress($db, $job, 'prepare_service_dir', 5, 'Preparing service runtime.');
     $service = hub_refresh_service_runtime_files($db, $service, false);
     if (hub_service_is_internal_task($service)) {
-        $message = hub_service_requires_wsl_job_runtime($service) ? 'WSL runner image verified.' : 'internal_task build no-op';
-        $result = hub_internal_task_result($message);
-        hub_add_service_log($db, (int)$service['id'], 'build', $result['output'], 0);
-        hub_job_progress($db, $job, 'docker_build', 70, $message);
+        $lastResult = null;
+        $usesWsl = hub_service_requires_wsl_job_runtime($service);
+        try {
+            $image = hub_rebuild_internal_task_runner_image($service, static function (array $command, int $timeoutSeconds) use ($db, $job, $service, $usesWsl, &$lastResult): array {
+                $command = $usesWsl ? hub_wsl_job_runner_build_command($service, $command) : $command;
+                $lastResult = hub_run_service_command(
+                    $db,
+                    $job,
+                    $command,
+                    $timeoutSeconds,
+                    hub_docker_command_environment(),
+                    'docker_build',
+                    20,
+                    70,
+                    !$usesWsl
+                );
+
+                return $lastResult;
+            });
+        } catch (Throwable $error) {
+            $result = is_array($lastResult) ? $lastResult : ['exit_code' => 1, 'stdout' => '', 'stderr' => ''];
+            $result['exit_code'] = (int)($result['exit_code'] ?? 1) ?: 1;
+            $result['stderr'] = trim((string)($result['stderr'] ?? '') . "\n" . $error->getMessage());
+            $result['output'] = trim((string)($result['stdout'] ?? '') . "\n" . (string)$result['stderr']);
+            hub_add_service_log($db, (int)$service['id'], 'build', substr(hub_command_error_summary($result), 0, 1000), (int)$result['exit_code']);
+            return $result;
+        }
+        if ($image === null) {
+            $result = hub_internal_task_result('internal_task build no-op');
+            hub_add_service_log($db, (int)$service['id'], 'build', $result['output'], 0);
+            hub_job_progress($db, $job, 'docker_build', 70, $result['output']);
+            return $result;
+        }
+
+        $result = is_array($lastResult) ? $lastResult : hub_internal_task_result('Runner image build completed: ' . $image);
+        $summary = 'Runner image build completed: ' . $image;
+        hub_add_service_log($db, (int)$service['id'], 'build', $summary, (int)($result['exit_code'] ?? 1));
+        hub_job_progress($db, $job, 'docker_build', 70, $summary);
         return $result;
     }
     hub_job_progress($db, $job, 'docker_build', 20, 'Building image: ' . hub_service_runtime_image_tag($service));

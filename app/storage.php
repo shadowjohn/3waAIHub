@@ -47,6 +47,7 @@ function hub_default_storage_settings(): array
         'AIHUB_PUBLIC_API_MANIFEST' => '1',
         'AIHUB_PUBLIC_API_LOCAL_ONLY' => '0',
         'AIHUB_WEB_CAPTURE_ALLOWED_HOSTS' => "3wa.tw\nfmg.wra.gov.tw\nfmgb.wra.gov.tw\nfocusit.tw\nfocusit.com.tw\ngis.tw\nwmts.nlsc.gov.tw\nmaps.nlsc.gov.tw\nmts1.google.com\napi.maptiler.com\ntile.openstreetmap.org",
+        'AIHUB_WEB_CAPTURE_ALLOWLISTED_IFRAMES' => '0',
         'AIHUB_SAM3_HLS_ALLOWED_HOSTS' => '',
         'AIHUB_CLUSTER_ROUTER_SELF_STATION_KEY' => '',
         'AIHUB_LOGIN_MAX_FAILED_ATTEMPTS' => '3',

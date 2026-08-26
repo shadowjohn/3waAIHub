@@ -20,7 +20,7 @@ const {
 
 async function test() {
   const resolve = () => [{ address: '93.184.216.34', family: 4 }];
-  const allowedHosts = ['3wa.tw', 'tile.openstreetmap.org'];
+  const allowedHosts = ['3wa.tw', 'fmg.wra.gov.tw', 'fmgb.wra.gov.tw'];
 
   assert.equal(
     FIXED_USER_AGENT,
@@ -68,7 +68,7 @@ async function test() {
     { action: 'continue' }
   );
   assert.deepEqual(
-    await captureNavigationDecision('document', true, true, 'https://tile.openstreetmap.org/redirect', '3wa.tw', allowedHosts, resolve),
+    await captureNavigationDecision('document', true, true, 'https://fmg.wra.gov.tw/redirect', '3wa.tw', allowedHosts, resolve),
     { action: 'abort', mainBlocked: true, warning: false }
   );
   assert.deepEqual(
@@ -76,15 +76,31 @@ async function test() {
     { action: 'continue' }
   );
   assert.deepEqual(
-    await captureNavigationDecision('document', true, false, 'https://tile.openstreetmap.org/frame', '3wa.tw', allowedHosts, resolve),
+    await captureNavigationDecision('document', true, false, 'https://fmg.wra.gov.tw/frame', '3wa.tw', allowedHosts, resolve),
     { action: 'abort', mainBlocked: false, warning: true }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', true, false, 'https://fmg.wra.gov.tw/frame', '3wa.tw', allowedHosts, resolve, true),
+    { action: 'continue' }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', true, false, 'https://fmgb.wra.gov.tw/frame', '3wa.tw', allowedHosts, resolve, true),
+    { action: 'continue' }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', true, false, 'https://unlisted.example/frame', '3wa.tw', allowedHosts, resolve, true),
+    { action: 'abort', mainBlocked: false, warning: true }
+  );
+  assert.deepEqual(
+    await captureNavigationDecision('document', true, true, 'https://fmg.wra.gov.tw/redirect', '3wa.tw', allowedHosts, resolve, true),
+    { action: 'abort', mainBlocked: true, warning: false }
   );
   assert.deepEqual(
     await captureNavigationDecision('document', false, true, 'https://3wa.tw/popup', '3wa.tw', allowedHosts, resolve),
     { action: 'abort', mainBlocked: false, warning: true }
   );
   assert.deepEqual(
-    await captureNavigationDecision('document', false, true, 'https://tile.openstreetmap.org/popup', '3wa.tw', allowedHosts, resolve),
+    await captureNavigationDecision('document', false, true, 'https://fmg.wra.gov.tw/popup', '3wa.tw', allowedHosts, resolve, true),
     { action: 'abort', mainBlocked: false, warning: true }
   );
   let popupClosed = 0;

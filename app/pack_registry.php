@@ -1636,7 +1636,7 @@ function hub_pack_internal_runner_build_contract(array $manifest, string $packDi
     return hub_pack_container_runner_build_contract($manifest, $packDir);
 }
 
-function hub_pack_provision_container_runner_image(array $pack, ?callable $commandRunner = null): void
+function hub_pack_provision_container_runner_image(array $pack, ?callable $commandRunner = null, bool $force = false): void
 {
     $build = hub_pack_container_runner_build_contract((array)($pack['manifest'] ?? []), (string)($pack['dir'] ?? ''));
     if ($build === null) {
@@ -1652,7 +1652,7 @@ function hub_pack_provision_container_runner_image(array $pack, ?callable $comma
 
         return is_array($result) && (int)($result['exit_code'] ?? 1) === 0 && trim((string)($result['stdout'] ?? '')) !== '';
     };
-    if ($available()) {
+    if (!$force && $available()) {
         return;
     }
     try {

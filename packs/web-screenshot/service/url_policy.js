@@ -135,11 +135,20 @@ async function validateDocumentNavigation(value, initialHost, allowedHosts, reso
   return href;
 }
 
+async function validateAllowlistedIframeNavigation(value, allowedHosts, resolve = resolvePublicHost) {
+  const href = await validatePublicHttpUrl(value, resolve);
+  if (!Array.isArray(allowedHosts) || !allowedHosts.includes(canonicalHostname(new URL(href).hostname))) {
+    throw policyError();
+  }
+  return href;
+}
+
 module.exports = {
   isPublicIp,
   policyError,
   resolvePublicHost,
   validateAllowedHosts,
+  validateAllowlistedIframeNavigation,
   validateDocumentNavigation,
   validatePublicHttpUrl,
 };
