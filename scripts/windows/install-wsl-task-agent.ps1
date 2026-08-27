@@ -102,7 +102,8 @@ systemctl daemon-reload
 systemctl enable --now aihub-wsl-worker.service
 systemctl is-active --quiet aihub-wsl-worker.service
 "@
-Invoke-WslShell -Wsl $wsl.Source -Distro $WslDistro -AsRoot -Command $installCommand | Out-Null
+# Windows checkout 的 CRLF 不能直接交給 Linux shell，否則 `set -eu` 會被解析成非法選項。
+Invoke-WslShell -Wsl $wsl.Source -Distro $WslDistro -AsRoot -Command ('printf %s ' + (ConvertTo-LinuxShellLiteral (ConvertTo-Base64Utf8 -Value $installCommand)) + ' | base64 -d | bash') | Out-Null
 
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $powershell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
@@ -110,7 +111,7 @@ $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$st
 $taskXml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Author>3waAIHub</Author><Description>登入時啟動 3waAIHub WSL Runtime Agent；不保存使用者密碼。</Description></RegistrationInfo>
+  <RegistrationInfo><Author>3waAIHub</Author><Description>3waAIHub WSL Runtime Agent starts at user logon without storing a password.</Description></RegistrationInfo>
   <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>$sid</UserId></LogonTrigger></Triggers>
   <Principals><Principal id="Author"><UserId>$sid</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><ExecutionTimeLimit>PT5M</ExecutionTimeLimit></Settings>

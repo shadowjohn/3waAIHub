@@ -414,6 +414,22 @@ hub_test('WSL Runtime Agent is a systemd service, not a minute-by-minute Windows
     );
 });
 
+hub_test('WSL Runtime Agent transports multiline root commands with LF-safe script payloads', function (): void {
+    $installer = (string)file_get_contents(HUB_ROOT . '/scripts/windows/install-wsl-task-agent.ps1');
+
+    hub_test_assert(
+        !str_contains($installer, 'function Invoke-WslAgentScript')
+        && str_contains($installer, 'ConvertTo-LinuxShellLiteral (ConvertTo-Base64Utf8 -Value $installCommand)')
+        && str_contains($installer, ' | base64 -d | bash')
+        && preg_match('/Invoke-WslShell\s+-Wsl\s+\$wsl\.Source\s+-Distro\s+\$WslDistro\s+-AsRoot\s+-Command\s+\(.+\$installCommand.+\)/', $installer) === 1,
+        'WSL Runtime Agent installer must send multiline root commands through the LF-safe script transport'
+    );
+    hub_test_assert(
+        str_contains($installer, '<Description>3waAIHub WSL Runtime Agent starts at user logon without storing a password.</Description>'),
+        'WSL Runtime Agent scheduled-task XML metadata must remain ASCII for Windows PowerShell compatibility'
+    );
+});
+
 hub_test('Whisper WSL Pascal service uses the explicit CUDA 11.8 compose profile', function (): void {
     $db = hub_test_reset_db();
     $service = hub_install_pack($db, 'whisper-asr', ['idempotent' => true, 'provision_runner' => false])['service'];
