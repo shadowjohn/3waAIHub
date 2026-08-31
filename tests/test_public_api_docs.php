@@ -1111,7 +1111,7 @@ hub_test('Public API Gemma derived contracts require gemma4-main', function (): 
 hub_test('Public API YOLO derived contracts require yolo-cpu', function (): void {
     require_once HUB_ROOT . '/app/public_api_docs.php';
     $healthy = static fn (array $service): bool => true;
-    $derivedModes = ['yolo_model_register', 'yolo_model_status', 'yolo_model_assign_gpu', 'yolo_model_unassign_gpu'];
+    $derivedModes = ['yolo_model_register', 'yolo_model_status', 'yolo_model_prewarm_cpu', 'yolo_model_unload_cpu', 'yolo_model_assign_gpu', 'yolo_model_unassign_gpu'];
 
     $customDb = hub_test_reset_db();
     hub_test_make_documentable_pack($customDb, 'yolo-serving', ['service_key' => 'yolo-custom']);

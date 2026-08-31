@@ -21,11 +21,13 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
 $enabledModes = array_column(hub_list_api_token_permissions($db, (int)$token['id']), 'mode');
 $services = hub_list_services($db);
 $taskModes = hub_task_api_modes();
+$yoloModelModes = hub_yolo_model_api_modes();
 $photoModes = hub_photo_modes();
 $audioModes = hub_audio_modes();
 $shownModes = array_fill_keys(array_merge(
     array_column($services, 'mode'),
     array_keys($taskModes),
+    array_keys($yoloModelModes),
     array_keys($photoModes),
     array_keys($audioModes),
 ), true);
@@ -54,6 +56,10 @@ hub_admin_header('Token Mode 權限', $user);
         <?php endforeach; ?>
         <h2>系統任務 Mode</h2>
         <?php foreach ($taskModes as $mode => $label): ?>
+            <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
+        <?php endforeach; ?>
+        <h2>YOLO Model Mode</h2>
+        <?php foreach ($yoloModelModes as $mode => $label): ?>
             <label><input type="checkbox" name="modes[]" value="<?= hub_h($mode) ?>"<?= in_array($mode, $enabledModes, true) ? ' checked' : '' ?>> <code><?= hub_h($mode) ?></code> <?= hub_h($label) ?></label>
         <?php endforeach; ?>
         <h2>Photo Vision Mode（圖片理解）</h2>

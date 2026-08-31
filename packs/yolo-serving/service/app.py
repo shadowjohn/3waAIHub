@@ -14,6 +14,13 @@ from fastapi.responses import JSONResponse
 app = FastAPI(title="3waAIHub YOLO Serving")
 _MODEL: Any | None = None
 _MODEL_PATH = ""
+_CPU_MODEL_REF = ""
+_CPU_MODEL_VERSION_ID = 0
+_CPU_MODEL_SHA = ""
+_CPU_LOADED_AT = ""
+_CPU_LAST_USED_AT: str | None = None
+_CPU_LOAD_DURATION_MS: int | None = None
+_CPU_WARM_INFERENCE_MS: int | None = None
 _GPU_LOCK = threading.Lock()
 _GPU_MODELS: dict[int, dict[str, Any]] = {}
 
@@ -30,8 +37,12 @@ def service_device() -> str:
     return os.getenv("YOLO_SERVING_DEVICE", "cpu").strip() or "cpu"
 
 
+def is_gpu_service() -> bool:
+    return service_device().startswith("cuda")
+
+
 def service_key() -> str:
-    return "yolo-gpu0" if service_device().startswith("cuda") else "yolo-cpu"
+    return "yolo-gpu0" if is_gpu_service() else "yolo-cpu"
 
 
 def gpu_slot_count() -> int:
@@ -84,6 +95,30 @@ def yolo_model(path: Path) -> tuple[Any, bool]:
     _MODEL = YOLO(key)
     _MODEL_PATH = key
     return _MODEL, True
+
+
+def set_cpu_model_state(model_ref: str, model_version_id: int, sha256: str, load_ms: int, warm_ms: int) -> None:
+    global _CPU_MODEL_REF, _CPU_MODEL_VERSION_ID, _CPU_MODEL_SHA, _CPU_LOADED_AT, _CPU_LAST_USED_AT, _CPU_LOAD_DURATION_MS, _CPU_WARM_INFERENCE_MS
+    _CPU_MODEL_REF = model_ref
+    _CPU_MODEL_VERSION_ID = model_version_id
+    _CPU_MODEL_SHA = sha256
+    _CPU_LOADED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
+    _CPU_LAST_USED_AT = None
+    _CPU_LOAD_DURATION_MS = load_ms
+    _CPU_WARM_INFERENCE_MS = warm_ms
+
+
+def clear_cpu_model_state() -> None:
+    global _MODEL, _MODEL_PATH, _CPU_MODEL_REF, _CPU_MODEL_VERSION_ID, _CPU_MODEL_SHA, _CPU_LOADED_AT, _CPU_LAST_USED_AT, _CPU_LOAD_DURATION_MS, _CPU_WARM_INFERENCE_MS
+    _MODEL = None
+    _MODEL_PATH = ""
+    _CPU_MODEL_REF = ""
+    _CPU_MODEL_VERSION_ID = 0
+    _CPU_MODEL_SHA = ""
+    _CPU_LOADED_AT = ""
+    _CPU_LAST_USED_AT = None
+    _CPU_LOAD_DURATION_MS = None
+    _CPU_WARM_INFERENCE_MS = None
 
 
 def load_yolo_model(path: Path, device: str) -> Any:
@@ -172,11 +207,45 @@ def gpu_memory_bytes() -> int | None:
     return None
 
 
+def run_warm_predict(model: Any, device: str) -> int:
+    warm_start = time.perf_counter()
+    try:
+        import numpy as np
+
+        dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+        model.predict(source=dummy, imgsz=64, device=device, verbose=False)
+    except ImportError:
+        with tempfile.NamedTemporaryFile(prefix="yolo-warm-", suffix=".jpg", delete=False) as handle:
+            handle.write(b"\xff\xd8\xff\xd9")
+            dummy_path = Path(handle.name)
+        try:
+            model.predict(source=str(dummy_path), imgsz=64, device=device, verbose=False)
+        finally:
+            dummy_path.unlink(missing_ok=True)
+
+    return int(round((time.perf_counter() - warm_start) * 1000))
+
+
 def yolo_error(status: int, error: str, message: str | None = None) -> JSONResponse:
     return JSONResponse(status_code=status, content={"ok": False, "error": error, "message": message or error})
 
 
 def slot_status(slot_no: int) -> dict[str, Any]:
+    if not is_gpu_service():
+        if slot_no != 1 or _MODEL is None:
+            return {"slot_no": slot_no, "actual_state": "cold", "model_ref": None, "model_version_id": None}
+        return {
+            "slot_no": 1,
+            "actual_state": "hot",
+            "model_ref": _CPU_MODEL_REF or None,
+            "model_version_id": _CPU_MODEL_VERSION_ID or None,
+            "sha256": _CPU_MODEL_SHA or None,
+            "loaded_at": _CPU_LOADED_AT,
+            "last_used_at": _CPU_LAST_USED_AT,
+            "vram_bytes": None,
+            "load_duration_ms": _CPU_LOAD_DURATION_MS,
+            "warm_inference_ms": _CPU_WARM_INFERENCE_MS,
+        }
     with _GPU_LOCK:
         entry = _GPU_MODELS.get(slot_no)
         if not entry:
@@ -212,12 +281,13 @@ def health() -> dict[str, Any]:
 
 @app.get("/models")
 def models() -> dict[str, Any]:
+    slot_count = gpu_slot_count() if is_gpu_service() else 1
     return {
         "ok": True,
         "service": "yolo-serving",
         "service_key": service_key(),
         "device": service_device(),
-        "slots": [slot_status(slot_no) for slot_no in range(1, max(2, gpu_slot_count()) + 1)],
+        "slots": [slot_status(slot_no) for slot_no in range(1, max(1, slot_count) + 1)],
     }
 
 
@@ -232,15 +302,46 @@ async def warm_model(request: Request) -> dict[str, Any] | JSONResponse:
     started = time.perf_counter()
     payload = await request.json()
     slot_no = parse_slot_no(payload.get("slot_no"))
-    if slot_no > max(0, gpu_slot_count()) or not service_device().startswith("cuda"):
-        return yolo_error(409, "gpu_not_ready", "GPU slot is not enabled for this service")
-
     model_ref = str(payload.get("model_ref") or "").strip()
     model_version_id = int(payload.get("model_version_id") or 0)
     model_path = str(payload.get("model_path") or "")
     expected_sha = str(payload.get("sha256") or "").lower().strip()
     if not model_ref or not model_version_id:
         return yolo_error(400, "bad_request", "model_ref and model_version_id are required")
+
+    path = safe_model_path(model_path)
+    if expected_sha and sha256_file(path) != expected_sha:
+        return yolo_error(409, "model_checksum_mismatch", "registered model checksum mismatch")
+
+    if not is_gpu_service():
+        if slot_no != 1:
+            return yolo_error(400, "cpu_slot_invalid", "CPU serving supports only slot 1")
+        try:
+            load_start = time.perf_counter()
+            model, _cold_load = yolo_model(path)
+            load_ms = int(round((time.perf_counter() - load_start) * 1000))
+            warm_ms = run_warm_predict(model, "cpu")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            return yolo_error(503, "cpu_warm_failed", str(exc).splitlines()[0][:300])
+
+        set_cpu_model_state(model_ref, model_version_id, expected_sha, load_ms, warm_ms)
+
+        return {
+            "ok": True,
+            "state": "hot",
+            "slot_no": 1,
+            "model_ref": model_ref,
+            "model_version_id": model_version_id,
+            "vram_bytes": None,
+            "load_duration_ms": load_ms,
+            "warm_inference_ms": warm_ms,
+            "elapsed_ms": int(round((time.perf_counter() - started) * 1000)),
+        }
+
+    if slot_no > max(0, gpu_slot_count()):
+        return yolo_error(409, "gpu_not_ready", "GPU slot is not enabled for this service")
 
     try:
         import torch
@@ -249,10 +350,6 @@ async def warm_model(request: Request) -> dict[str, Any] | JSONResponse:
             return yolo_error(503, "gpu_not_ready", "CUDA is not available")
     except Exception as exc:
         return yolo_error(503, "gpu_not_ready", str(exc).splitlines()[0][:200])
-
-    path = safe_model_path(model_path)
-    if expected_sha and sha256_file(path) != expected_sha:
-        return yolo_error(409, "model_checksum_mismatch", "registered model checksum mismatch")
 
     with _GPU_LOCK:
         existing = _GPU_MODELS.get(slot_no)
@@ -263,21 +360,7 @@ async def warm_model(request: Request) -> dict[str, Any] | JSONResponse:
         load_start = time.perf_counter()
         model = load_yolo_model(path, service_device())
         load_ms = int(round((time.perf_counter() - load_start) * 1000))
-        warm_start = time.perf_counter()
-        try:
-            import numpy as np
-
-            dummy = np.zeros((64, 64, 3), dtype=np.uint8)
-            model.predict(source=dummy, imgsz=64, device=service_device(), verbose=False)
-        except ImportError:
-            with tempfile.NamedTemporaryFile(prefix="yolo-warm-", suffix=".jpg", delete=False) as handle:
-                handle.write(b"\xff\xd8\xff\xd9")
-                dummy_path = Path(handle.name)
-            try:
-                model.predict(source=str(dummy_path), imgsz=64, device=service_device(), verbose=False)
-            finally:
-                dummy_path.unlink(missing_ok=True)
-        warm_ms = int(round((time.perf_counter() - warm_start) * 1000))
+        warm_ms = run_warm_predict(model, service_device())
     except HTTPException:
         raise
     except Exception as exc:
@@ -319,6 +402,15 @@ async def unload_model(request: Request) -> dict[str, Any] | JSONResponse:
     payload = await request.json()
     slot_no = parse_slot_no(payload.get("slot_no"))
     model_ref = str(payload.get("model_ref") or "").strip()
+    if not is_gpu_service():
+        if slot_no != 1:
+            return yolo_error(400, "cpu_slot_invalid", "CPU serving supports only slot 1")
+        if model_ref and _CPU_MODEL_REF and _CPU_MODEL_REF != model_ref:
+            return yolo_error(409, "cpu_model_slot_mismatch", "CPU slot has a different model")
+        clear_cpu_model_state()
+
+        return {"ok": True, "slot_no": 1, "model_ref": model_ref or None, "state": "cold"}
+
     with _GPU_LOCK:
         entry = _GPU_MODELS.get(slot_no)
         if entry and model_ref and entry["model_ref"] != model_ref:
@@ -352,6 +444,7 @@ async def detect_image(
     imgsz: str | None = Form(None),
     max_det: str | None = Form(None),
 ) -> dict[str, Any] | JSONResponse:
+    global _CPU_LAST_USED_AT
     started = time.perf_counter()
     data = await image.read()
     if not data:
@@ -363,6 +456,10 @@ async def detect_image(
     if not env_enabled(os.getenv("YOLO_SERVING_REAL_INFERENCE", "1")):
         version_id = int(model_version_id or 0)
         gpu_slot = parse_slot_no(slot_no) if device.startswith("cuda") else None
+        cpu_hot = not device.startswith("cuda") and _CPU_MODEL_REF == model_ref and _CPU_MODEL_VERSION_ID == version_id
+        if cpu_hot:
+            _CPU_LAST_USED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
+        cpu_warm_state = "hot" if cpu_hot else ("hot" if gpu_slot else "cold")
         return {
             "ok": True,
             "mock": True,
@@ -370,11 +467,11 @@ async def detect_image(
             "version_id": version_id,
             "model_version_id": version_id,
             "device_used": device if device.startswith("cuda") else "cpu",
-            "slot_no": gpu_slot,
+            "slot_no": 1 if cpu_hot else gpu_slot,
             "fallback": bool(fallback_reason),
             "fallback_reason": fallback_reason or None,
             "model": {"model_ref": model_ref, "model_version_id": version_id, "task_type": "detect"},
-            "runtime": {"service_key": service_key(), "device_requested": device, "device_used": device if device.startswith("cuda") else "cpu", "gpu_slot": gpu_slot, "warm_state": "hot" if gpu_slot else "cold", "fallback": bool(fallback_reason), "fallback_reason": fallback_reason or None, "cold_load": False},
+            "runtime": {"service_key": service_key(), "device_requested": device, "device_used": device if device.startswith("cuda") else "cpu", "cpu_slot": 1 if cpu_hot else None, "gpu_slot": gpu_slot, "warm_state": cpu_warm_state, "fallback": bool(fallback_reason), "fallback_reason": fallback_reason or None, "cold_load": False},
             "timing": {"total_ms": int(round((time.perf_counter() - started) * 1000))},
             "detections": [],
         }
@@ -385,6 +482,7 @@ async def detect_image(
             handle.write(data)
             image_path = Path(handle.name)
         gpu_slot = None
+        cpu_hot = False
         cold_load = False
         inference_device = "cpu"
         if device.startswith("cuda"):
@@ -401,6 +499,9 @@ async def detect_image(
             inference_device = device
         else:
             model, cold_load = yolo_model(path)
+            if _CPU_MODEL_REF == model_ref and _CPU_MODEL_VERSION_ID == version_id_int(model_version_id):
+                cpu_hot = True
+                _CPU_LAST_USED_AT = time.strftime("%Y-%m-%d %H:%M:%S")
         infer_start = time.perf_counter()
         results = model.predict(
             source=str(image_path),
@@ -427,6 +528,7 @@ async def detect_image(
             image_path.unlink(missing_ok=True)
 
     version_id = int(model_version_id or 0)
+    cpu_warm_state = "hot" if cpu_hot else ("hot" if gpu_slot else "cold")
     return {
         "ok": True,
         "mock": False,
@@ -434,11 +536,11 @@ async def detect_image(
         "version_id": version_id,
         "model_version_id": version_id,
         "device_used": inference_device,
-        "slot_no": gpu_slot,
+        "slot_no": 1 if cpu_hot else gpu_slot,
         "fallback": bool(fallback_reason),
         "fallback_reason": fallback_reason or None,
         "model": {"model_ref": model_ref, "model_version_id": version_id, "task_type": "detect", "sha256": sha256},
-        "runtime": {"service_key": service_key(), "device_requested": device, "device_used": inference_device, "gpu_slot": gpu_slot, "warm_state": "hot" if gpu_slot else "cold", "fallback": bool(fallback_reason), "fallback_reason": fallback_reason or None, "cold_load": cold_load},
+        "runtime": {"service_key": service_key(), "device_requested": device, "device_used": inference_device, "cpu_slot": 1 if cpu_hot else None, "gpu_slot": gpu_slot, "warm_state": cpu_warm_state, "fallback": bool(fallback_reason), "fallback_reason": fallback_reason or None, "cold_load": cold_load},
         "timing": {"inference_ms": int(round((time.perf_counter() - infer_start) * 1000)), "total_ms": int(round((time.perf_counter() - started) * 1000))},
         "detections": detections,
     }

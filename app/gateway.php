@@ -1093,7 +1093,19 @@ function hub_is_audio_api_mode(string $mode): bool
 
 function hub_is_yolo_model_api_mode(string $mode): bool
 {
-    return in_array($mode, ['yolo_model_register', 'yolo_model_status', 'yolo_model_assign_gpu', 'yolo_model_unassign_gpu'], true);
+    return array_key_exists($mode, hub_yolo_model_api_modes());
+}
+
+function hub_yolo_model_api_modes(): array
+{
+    return [
+        'yolo_model_register' => 'YOLO Model Register',
+        'yolo_model_status' => 'YOLO Model Status',
+        'yolo_model_prewarm_cpu' => 'YOLO CPU Prewarm',
+        'yolo_model_unload_cpu' => 'YOLO CPU Unload',
+        'yolo_model_assign_gpu' => 'YOLO GPU Assign Slot',
+        'yolo_model_unassign_gpu' => 'YOLO GPU Unassign Slot',
+    ];
 }
 
 function hub_task_api_modes(): array
@@ -1116,6 +1128,8 @@ function hub_yolo_model_api_dispatch(PDO $db, string $mode): array
     return match ($mode) {
         'yolo_model_register' => hub_api_yolo_model_register($db),
         'yolo_model_status' => hub_api_yolo_model_status($db),
+        'yolo_model_prewarm_cpu' => hub_api_yolo_model_prewarm_cpu($db),
+        'yolo_model_unload_cpu' => hub_api_yolo_model_unload_cpu($db),
         'yolo_model_assign_gpu' => hub_api_yolo_model_assign_gpu($db),
         'yolo_model_unassign_gpu' => hub_api_yolo_model_unassign_gpu($db),
         default => hub_gateway_json(404, ['ok' => false, 'error' => 'unknown_mode']),
@@ -1206,7 +1220,12 @@ function hub_api_yolo_model_status(PDO $db): array
 
     $hostPath = hub_yolo_model_version_host_path($db, $model);
     $registered = is_file($hostPath);
+    $cpu = hub_yolo_model_cpu_status($db, $model);
     $gpu = hub_yolo_model_gpu_status($db, $model);
+    $warmState = 'cold';
+    if (($gpu['warm_state'] ?? '') === 'hot' || ($cpu['warm_state'] ?? '') === 'hot') {
+        $warmState = 'hot';
+    }
 
     return hub_gateway_json(200, [
         'ok' => true,
@@ -1215,11 +1234,85 @@ function hub_api_yolo_model_status(PDO $db): array
         'model_version_id' => (int)$model['id'],
         'state' => $registered ? 'registered' : 'error',
         'cpu_available' => $registered,
-        'warm_state' => $gpu['warm_state'] ?? 'cold',
+        'warm_state' => $warmState,
+        'cpu' => $cpu,
         'gpu' => $gpu,
         'task_type' => (string)$model['task_type'],
         'sha256' => (string)$model['sha256'],
         'error' => $registered ? null : 'model_artifact_missing',
+    ]);
+}
+
+function hub_api_yolo_model_prewarm_cpu(PDO $db): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'yolo_model_prewarm_cpu requires POST');
+    }
+    $payload = $_POST;
+    if ($payload === [] && str_starts_with((string)($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')) {
+        $decoded = json_decode((string)file_get_contents('php://input'), true);
+        $payload = is_array($decoded) ? $decoded : [];
+    }
+
+    try {
+        $prewarmed = hub_yolo_prewarm_cpu($db, (string)($payload['model_ref'] ?? ''));
+    } catch (Throwable $e) {
+        $errorCode = $e instanceof RuntimeException || $e instanceof InvalidArgumentException
+            ? (string)$e->getMessage()
+            : 'cpu_warm_failed';
+        if ($errorCode === '' || str_contains($errorCode, ' ')) {
+            $errorCode = 'cpu_warm_failed';
+        }
+
+        return hub_gateway_error(hub_yolo_model_error_status($errorCode), $errorCode, $errorCode);
+    }
+
+    $deployment = $prewarmed['deployment'] ?? [];
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'model_ref' => (string)($prewarmed['model']['model_ref'] ?? ''),
+        'version_id' => (int)($prewarmed['model']['id'] ?? 0),
+        'model_version_id' => (int)($prewarmed['model']['id'] ?? 0),
+        'service_key' => hub_yolo_cpu_service_key(),
+        'slot_no' => hub_yolo_cpu_slot_no(),
+        'warm_state' => (string)($deployment['actual_state'] ?? 'queued'),
+        'run_id' => (string)($prewarmed['run_id'] ?? ''),
+    ]);
+}
+
+function hub_api_yolo_model_unload_cpu(PDO $db): array
+{
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
+        return hub_gateway_error(405, 'method_not_allowed', 'yolo_model_unload_cpu requires POST');
+    }
+    $payload = $_POST;
+    if ($payload === [] && str_starts_with((string)($_SERVER['CONTENT_TYPE'] ?? ''), 'application/json')) {
+        $decoded = json_decode((string)file_get_contents('php://input'), true);
+        $payload = is_array($decoded) ? $decoded : [];
+    }
+
+    try {
+        $removed = hub_yolo_unload_cpu($db, (string)($payload['model_ref'] ?? ''));
+    } catch (Throwable $e) {
+        $errorCode = $e instanceof RuntimeException || $e instanceof InvalidArgumentException
+            ? (string)$e->getMessage()
+            : 'cpu_unload_failed';
+        if ($errorCode === '' || str_contains($errorCode, ' ')) {
+            $errorCode = 'cpu_unload_failed';
+        }
+
+        return hub_gateway_error(hub_yolo_model_error_status($errorCode), $errorCode, $errorCode);
+    }
+
+    return hub_gateway_json(200, [
+        'ok' => true,
+        'model_ref' => (string)($removed['model']['model_ref'] ?? ''),
+        'version_id' => (int)($removed['model']['id'] ?? 0),
+        'model_version_id' => (int)($removed['model']['id'] ?? 0),
+        'service_key' => hub_yolo_cpu_service_key(),
+        'slot_no' => hub_yolo_cpu_slot_no(),
+        'run_id' => (string)($removed['run_id'] ?? ''),
     ]);
 }
 
@@ -1300,9 +1393,10 @@ function hub_yolo_model_error_status(string $errorCode): int
     return match ($errorCode) {
         'model_artifact_missing', 'model_not_found' => 404,
         'model_import_path_not_allowed', 'model_checksum_mismatch', 'model_task_unsupported',
-        'model_ref_required', 'model_path_forbidden', 'gpu_slot_invalid', 'bad_request' => 400,
-        'gpu_slot_occupied', 'gpu_model_already_assigned', 'gpu_not_ready', 'gpu_model_slot_mismatch' => 409,
-        'gpu_service_unavailable', 'gpu_warm_failed', 'gpu_out_of_memory', 'gpu_unload_failed' => 503,
+        'model_ref_required', 'model_path_forbidden', 'cpu_slot_invalid', 'gpu_slot_invalid', 'bad_request' => 400,
+        'cpu_slot_occupied', 'cpu_not_ready', 'cpu_model_slot_mismatch', 'gpu_slot_occupied',
+        'gpu_model_already_assigned', 'gpu_not_ready', 'gpu_model_slot_mismatch' => 409,
+        'cpu_service_unavailable', 'cpu_warm_failed', 'cpu_unload_failed', 'gpu_service_unavailable', 'gpu_warm_failed', 'gpu_out_of_memory', 'gpu_unload_failed' => 503,
         default => 500,
     };
 }

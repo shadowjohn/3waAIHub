@@ -37,7 +37,7 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 - 服務狀態拆分：啟用 / 容器 / 健康 / 設定 / 最後工作
 - 依 Cluster 角色顯示的 Dashboard：本機節點摘要或按站台標題切換的 Router 節點資訊
 - Runtime Runs 執行歷程、Resource Sampling、Local Job workspace contract
-- YOLO Model Registry 1B：allowlisted host `.pt` 匯入、`model_ref` idempotent registry、CPU serving predict route、固定 `yolo-gpu0` 雙槽 warm pool
+- YOLO Model Registry 1B：allowlisted host `.pt` 匯入、`model_ref` idempotent registry、`yolo-cpu` 單模型 prewarm、固定 `yolo-gpu0` 雙槽 warm pool
 - 記錄中心：執行歷程、API 記錄、背景工作、服務記錄、系統記錄五頁籤
 - 環境診斷與修正建議
 - 唯讀版本識別與更新狀態：顯示 commit、dirty/tag、Pack inventory、Runner digest 與 Cluster 節點相容性
@@ -1025,11 +1025,14 @@ Runner 也會寫入 SQLite `runtime_runs` 與 `runtime_resource_samples`。這�
 - YOLO detect `.pt`
 - `yolo_model_register`
 - `yolo_model_status`
+- `yolo_model_prewarm_cpu`
+- `yolo_model_unload_cpu`
 - `yolo_model_assign_gpu`
 - `yolo_model_unassign_gpu`
 - `yolo_predict` CPU serving / GPU hot slot serving
 - idempotent `external_model_key + sha256`
 - registry artifact 複製到 `${AIHUB_MODELS_DIR}/yolo/registry/...`
+- 固定 `yolo-cpu` 單一 resident slot
 - 固定 `yolo-gpu0` slot 1 / 2
 
 暫不支援：
@@ -1098,7 +1101,23 @@ curl "http://localhost/3waAIHub/api.php?mode=yolo_model_status&model_ref=yolo:na
   -H "Authorization: Bearer <TOKEN>"
 ```
 
-`warm_state` 代表目前可用狀態；若 DB slot 仍是 hot 但 `yolo-gpu0` 服務已停止，top-level `warm_state` 會回 `cold`，並在 `gpu.actual_state=hot`、`gpu.service.runtime_status=stopped`、`gpu.blocked_reason=gpu_service_unavailable` 說明原因。Client 要判斷 GPU Ready 請看 `gpu.service_available=true && warm_state=hot`。
+`warm_state` 代表目前可用狀態；CPU 與 GPU 狀態會分別放在 `cpu` / `gpu`。CPU 目前只有 `yolo-cpu` 單一 resident slot；GPU 則是 `yolo-gpu0` slot 1 / 2。若 DB slot 仍是 hot 但服務已停止，top-level `warm_state` 會回 `cold`，並在 `cpu.blocked_reason=cpu_service_unavailable` 或 `gpu.blocked_reason=gpu_service_unavailable` 說明原因。Client 要判斷 GPU Ready 請看 `gpu.service_available=true && gpu.warm_state=hot`。
+
+CPU prewarm 單一 resident model：
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_model_prewarm_cpu" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1"
+```
+
+解除 CPU resident model：
+
+```bash
+curl -X POST "http://localhost/3waAIHub/api.php?mode=yolo_model_unload_cpu" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "model_ref=yolo:natureweb:training-result-47:v1"
+```
 
 把模型指定到 GPU warm slot：
 

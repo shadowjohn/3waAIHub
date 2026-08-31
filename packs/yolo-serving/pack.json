@@ -23,11 +23,12 @@
     "http_service": true,
     "yolo_model_register": true,
     "yolo_predict": true,
+    "cpu_prewarm": true,
     "gpu_warm_pool": true
   },
   "runtime_ready": true,
   "default_mode": "yolo_predict",
-  "description": "YOLO Detect .pt serving runtime for Hub-managed model_ref prediction. Phase 1B supports CPU serving and a fixed GPU warm pool.",
+  "description": "YOLO Detect .pt serving runtime for Hub-managed model_ref prediction. Supports one CPU resident model and a fixed GPU warm pool.",
   "install": {
     "default_service_key": "yolo-cpu"
   },

@@ -140,6 +140,80 @@ hub_test('YOLO GPU pool assigns fixed slots and records warm/unload runs', funct
     }
 });
 
+hub_test('YOLO CPU prewarm keeps one resident model and unloads without deleting registry version', function (): void {
+    hub_test_assert(function_exists('hub_yolo_prewarm_cpu'), 'YOLO CPU prewarm helper missing.');
+    hub_test_assert(function_exists('hub_yolo_unload_cpu'), 'YOLO CPU unload helper missing.');
+
+    $db = hub_test_reset_db();
+    $sourceRoot = sys_get_temp_dir() . '/hub-yolo-cpu-source-' . bin2hex(random_bytes(4));
+    hub_set_storage_setting($db, 'AIHUB_MODEL_IMPORT_ROOTS', $sourceRoot);
+    hub_set_storage_setting($db, 'AIHUB_YOLO_MODEL_REGISTRY_DIR', sys_get_temp_dir() . '/hub-yolo-cpu-registry-' . bin2hex(random_bytes(4)));
+
+    $m1 = hub_test_yolo_gpu_register($db, $sourceRoot, 'training_result:cpu101', 'cpu-model-a');
+    $m2 = hub_test_yolo_gpu_register($db, $sourceRoot, 'training_result:cpu102', 'cpu-model-b');
+
+    hub_install_pack($db, 'yolo-serving', [
+        'service_key' => 'yolo-cpu',
+        'name' => 'YOLO CPU Serving',
+        'mode' => 'yolo_predict',
+        'port_mode' => 'manual',
+        'local_port' => 18340,
+        'environment' => 'production',
+    ]);
+    $cpuService = hub_get_service_by_key($db, 'yolo-cpu');
+    hub_set_service_enabled($db, 'yolo_predict', true);
+    hub_update_service_status($db, (int)$cpuService['id'], 'running');
+
+    $warmCalls = [];
+    $warm = static function (string $action, array $deployment, array $model) use (&$warmCalls): array {
+        $warmCalls[] = [$action, (string)$deployment['service_key'], (int)$deployment['slot_no'], (string)$model['model_ref']];
+        hub_test_assert($action === 'warm', 'CPU prewarm should call warm action.');
+        hub_test_assert((string)$deployment['service_key'] === 'yolo-cpu', 'CPU prewarm must target yolo-cpu service.');
+        hub_test_assert((int)$deployment['slot_no'] === 1, 'CPU prewarm must use the single CPU slot.');
+
+        return [
+            'ok' => true,
+            'state' => 'hot',
+            'load_duration_ms' => 111,
+            'warm_inference_ms' => 22,
+        ];
+    };
+
+    $prewarmed = hub_yolo_prewarm_cpu($db, (string)$m1['model_ref'], $warm);
+    hub_test_assert($prewarmed['ok'] === true, 'CPU prewarm should succeed.');
+    hub_test_assert((string)$prewarmed['deployment']['service_key'] === 'yolo-cpu', 'CPU deployment service key mismatch.');
+    hub_test_assert((int)$prewarmed['deployment']['slot_no'] === 1, 'CPU deployment slot mismatch.');
+    hub_test_assert((string)$prewarmed['deployment']['actual_state'] === 'hot', 'CPU deployment should become hot.');
+    hub_test_assert($warmCalls === [['warm', 'yolo-cpu', 1, (string)$m1['model_ref']]], 'CPU prewarm runtime call mismatch.');
+
+    $status = hub_yolo_model_cpu_status($db, $m1);
+    hub_test_assert(($status['assigned'] ?? false) === true, 'CPU status should show assigned model.');
+    hub_test_assert(($status['warm_state'] ?? '') === 'hot', 'CPU status should show hot warm_state.');
+    hub_test_assert(($status['model_ref'] ?? '') === (string)$m1['model_ref'], 'CPU status model_ref mismatch.');
+
+    $occupied = hub_test_yolo_gpu_error_code(static fn () => hub_yolo_prewarm_cpu($db, (string)$m2['model_ref'], $warm));
+    hub_test_assert($occupied === 'cpu_slot_occupied', 'CPU prewarm must reject a second resident model.');
+
+    $unloadCalls = [];
+    $unload = static function (string $action, array $deployment, array $model) use (&$unloadCalls): array {
+        $unloadCalls[] = [$action, (string)$deployment['service_key'], (int)$deployment['slot_no'], (string)$model['model_ref']];
+        hub_test_assert($action === 'unload', 'CPU unload should call unload action.');
+
+        return ['ok' => true];
+    };
+    $removed = hub_yolo_unload_cpu($db, (string)$m1['model_ref'], $unload);
+    hub_test_assert($removed['ok'] === true, 'CPU unload should succeed.');
+    hub_test_assert($unloadCalls === [['unload', 'yolo-cpu', 1, (string)$m1['model_ref']]], 'CPU unload runtime call mismatch.');
+
+    $deploymentCount = $db->prepare("SELECT COUNT(*) FROM yolo_model_deployments WHERE service_key = 'yolo-cpu'");
+    $deploymentCount->execute();
+    hub_test_assert((int)$deploymentCount->fetchColumn() === 0, 'CPU unload should remove only the CPU deployment row.');
+
+    $modelStillExists = $db->prepare('SELECT COUNT(*) FROM yolo_model_versions WHERE id = ?');
+    $modelStillExists->execute([(int)$m1['id']]);
+    hub_test_assert((int)$modelStillExists->fetchColumn() === 1, 'CPU unload must not delete registry model version.');
+});
+
 hub_test('YOLO serving GPU service compose uses CUDA runtime without changing CPU service', function (): void {
     $db = hub_test_reset_db();
 
@@ -367,12 +441,16 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
     $healthy = static fn (array $service): bool => true;
 
     $html = hub_public_api_docs_html($db, null, $healthy);
+    hub_test_assert(str_contains($html, 'yolo_model_prewarm_cpu'), 'Public docs should mention CPU prewarm mode.');
+    hub_test_assert(str_contains($html, 'yolo_model_unload_cpu'), 'Public docs should mention CPU unload mode.');
     hub_test_assert(str_contains($html, 'yolo_model_assign_gpu'), 'Public docs should mention GPU assign mode.');
     hub_test_assert(str_contains($html, 'yolo_model_unassign_gpu'), 'Public docs should mention GPU unassign mode.');
     hub_test_assert(str_contains($html, '?mode=yolo_model_status&amp;model_ref='), 'Public docs should show yolo_model_status as GET query.');
 
     $manifest = hub_public_api_manifest($db, $healthy);
     $modes = array_column($manifest['services'], 'mode');
+    hub_test_assert(in_array('yolo_model_prewarm_cpu', $modes, true), 'Agent manifest should include CPU prewarm mode.');
+    hub_test_assert(in_array('yolo_model_unload_cpu', $modes, true), 'Agent manifest should include CPU unload mode.');
     hub_test_assert(in_array('yolo_model_assign_gpu', $modes, true), 'Agent manifest should include GPU assign mode.');
     hub_test_assert(in_array('yolo_model_unassign_gpu', $modes, true), 'Agent manifest should include GPU unassign mode.');
     $statusService = null;
@@ -390,6 +468,9 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
     foreach (['@app.get("/models")', '@app.get("/models/{slot_no}/status")', '@app.post("/models/warm"', '@app.post("/models/unload"', 'def parse_int(', 'imgsz: str | None = Form(None)', 'max_det: str | None = Form(None)', 'imgsz=parse_int(imgsz, 640, "imgsz")', 'max_det=parse_int(max_det, 300, "max_det")'] as $needle) {
         hub_test_assert(str_contains($source, $needle), 'YOLO serving runtime missing ' . $needle);
     }
+    foreach (['cpu_warm_state = "hot"', '"slot_no": 1 if cpu_hot else gpu_slot', '"warm_state": cpu_warm_state'] as $needle) {
+        hub_test_assert(str_contains($source, $needle), 'YOLO serving runtime must expose CPU resident predict state: ' . $needle);
+    }
     hub_test_assert(substr_count($source, '"fallback": bool(fallback_reason)') >= 2, 'YOLO predict response should expose top-level fallback flag.');
 
     $job = (string)file_get_contents(HUB_ROOT . '/packs/yolo/jobs/yolo_predict.sh');
@@ -404,4 +485,15 @@ hub_test('YOLO GPU warm pool docs and runtime endpoints are exposed', function (
     $fixPermissions = (string)file_get_contents(HUB_ROOT . '/scripts/fix_permissions.sh');
     hub_test_assert(str_contains($fixPermissions, '/DATA/models/yolo/registry'), 'fix_permissions should prepare YOLO registry directory.');
     hub_test_assert(str_contains($fixPermissions, 'setfacl'), 'fix_permissions should apply ACL when available.');
+});
+
+hub_test('YOLO model operator modes are selectable on admin token permission page', function (): void {
+    $source = (string)file_get_contents(HUB_ROOT . '/admin/api_token_permissions.php');
+
+    hub_test_assert(str_contains($source, 'hub_yolo_model_api_modes()'), 'token permission page must load YOLO model operator modes.');
+    hub_test_assert(str_contains($source, 'YOLO Model Mode'), 'token permission page must render YOLO model mode section.');
+    hub_test_assert(function_exists('hub_yolo_model_api_modes'), 'YOLO model mode label helper missing.');
+    foreach (['yolo_model_register', 'yolo_model_status', 'yolo_model_prewarm_cpu', 'yolo_model_unload_cpu', 'yolo_model_assign_gpu', 'yolo_model_unassign_gpu'] as $mode) {
+        hub_test_assert(array_key_exists($mode, hub_yolo_model_api_modes()), 'YOLO model mode helper missing ' . $mode);
+    }
 });

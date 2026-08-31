@@ -1,5 +1,9 @@
 # 3waAIHub History
 
+## PhaseM-2B Serving Prewarm
+
+Added YOLO CPU/GPU prewarm controls. GPU prewarm remains the existing `yolo_model_assign_gpu` / `yolo_model_unassign_gpu` flow with fixed `yolo-gpu0` slot 1/2. CPU prewarm adds `yolo_model_prewarm_cpu` / `yolo_model_unload_cpu` for one `yolo-cpu` resident model, records the deployment in `yolo_model_deployments`, exposes CPU warm status through `yolo_model_status`, and keeps `yolo_predict` as the only permission needed for ordinary inference tokens.
+
 ## Runtime Settings File Hardening
 
 Replaced implicit service runtime `.env` loading with `runtime-settings.conf`. Native and WSL Compose invocations now pass the file explicitly; generated and static Pack Compose files use the same name. Added `scripts/migrate_runtime_settings.php` for check/apply migration with SHA-256 verification and legacy symlink refusal, and extended IIS, Apache, and Nginx protection guidance to block the new configuration file.
