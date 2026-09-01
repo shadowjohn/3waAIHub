@@ -1136,7 +1136,6 @@ function hub_cluster_manual_vision_error_rules(): array
         'model_not_provisioned' => 503,
         'model_manifest_invalid' => 500,
         'runtime_not_ready' => 503,
-        'model_load_failed' => 503,
         'inference_failed' => 502,
         'gpu_unavailable' => 503,
         'gateway_timeout' => 504,

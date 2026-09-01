@@ -6670,7 +6670,6 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
             'model_not_provisioned' => 503,
             'model_manifest_invalid' => 500,
             'runtime_not_ready' => 503,
-            'model_load_failed' => 503,
             'inference_failed' => 502,
             'gpu_unavailable' => 503,
             'gateway_timeout' => 504,
