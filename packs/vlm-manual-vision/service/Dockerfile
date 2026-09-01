@@ -19,7 +19,8 @@ RUN python3 -m pip install --upgrade pip setuptools wheel \
 
 COPY app.py .
 COPY tests/test_app.py tests/test_app.py
-RUN python3 -m unittest -v tests/test_app.py \
+COPY tests/test_endpoint.py tests/test_endpoint.py
+RUN python3 -m unittest discover -v tests \
     && useradd --create-home --uid 10001 appuser \
     && mkdir -p /cache/manual-vision /data/service \
     && chown -R appuser:appuser /cache/manual-vision /data/service

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -16,8 +17,6 @@ from PIL import Image
 
 
 ALLOWED_FIELDS = {"operation", "image", "question"}
-MAX_UPLOAD_BYTES = 50 * 1024 * 1024
-SERVER_MAX_NEW_TOKENS = 64
 
 
 class ServiceError(RuntimeError):
@@ -31,15 +30,23 @@ class DocVQARequest:
     question: str
 
 
+@dataclass(frozen=True)
+class VerifiedSnapshot:
+    path: Path
+    manifest_sha256: str
+
+
 def parse_request(values: Mapping[str, Any]) -> DocVQARequest:
     if set(values) != {"operation", "question"}:
+        raise ServiceError("bad_request")
+    if not isinstance(values["operation"], str):
         raise ServiceError("bad_request")
     if values["operation"] != "docvqa":
         raise ServiceError("unsupported_operation")
     question = values["question"]
     if not isinstance(question, str):
         raise ServiceError("bad_request")
-    question = question.strip()
+    question = question.strip(" \t\r\n\f\v")
     encoded = question.encode("ascii", "ignore")
     if (
         encoded.decode("ascii") != question
@@ -102,19 +109,81 @@ def model_root() -> Path:
     return Path(os.getenv("MANUAL_VISION_MODEL_DIR", "/models/manual-vision"))
 
 
-def verified_snapshot() -> Path | None:
-    """Task 3 replaces this existence hook with verified manifest validation."""
-    snapshot = model_root() / "snapshot"
-    return snapshot if snapshot.is_dir() else None
+def service_data_root() -> Path:
+    return Path(os.getenv("MANUAL_VISION_SERVICE_DATA_DIR", "/data/service"))
 
 
-def runtime_accepted() -> bool:
-    """Task 3 replaces this acceptance hook with the signed readiness record."""
+def _hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_files(snapshot: Path) -> set[str]:
+    files: set[str] = set()
+    for current, directories, names in os.walk(snapshot):
+        directories.sort()
+        for name in sorted(names):
+            candidate = Path(current) / name
+            if candidate.is_symlink() or not candidate.is_file():
+                raise ServiceError("model_manifest_invalid")
+            files.add(candidate.relative_to(snapshot).as_posix())
+    return files
+
+
+def verified_snapshot() -> VerifiedSnapshot:
+    """Small fail-closed verifier; Task 3 may strengthen this manifest format."""
+    root = model_root()
+    snapshot = root / "snapshot"
+    manifest_path = root / "verified-snapshot.json"
+    if not snapshot.is_dir() or not manifest_path.is_file():
+        raise ServiceError("model_not_provisioned")
     try:
-        payload = json.loads((model_root() / "acceptance.json").read_text(encoding="utf-8"))
+        raw = manifest_path.read_bytes()
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or set(payload) != {"snapshot", "files"} or payload["snapshot"] != "snapshot" or not isinstance(payload["files"], list):
+            raise ValueError("invalid manifest")
+        snapshot_root = snapshot.resolve(strict=True)
+        listed: set[str] = set()
+        for row in payload["files"]:
+            if not isinstance(row, dict) or set(row) != {"path", "sha256"}:
+                raise ValueError("invalid manifest file")
+            relative, checksum = row["path"], row["sha256"]
+            if (
+                not isinstance(relative, str)
+                or not relative
+                or relative.startswith("/")
+                or "\\" in relative
+                or ".." in Path(relative).parts
+                or relative in listed
+                or not isinstance(checksum, str)
+                or re.fullmatch(r"[a-f0-9]{64}", checksum) is None
+            ):
+                raise ValueError("invalid manifest file")
+            candidate = snapshot / relative
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(snapshot_root)
+            if not resolved.is_file() or _hash_file(resolved) != checksum:
+                raise ValueError("manifest mismatch")
+            listed.add(relative)
+        if not listed or "config.json" not in listed or not any(name.endswith(".safetensors") for name in listed) or listed != _snapshot_files(snapshot):
+            raise ValueError("incomplete manifest")
+        return VerifiedSnapshot(snapshot, hashlib.sha256(raw).hexdigest())
+    except ServiceError:
+        raise
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ServiceError("model_manifest_invalid") from exc
+
+
+def runtime_accepted(snapshot: VerifiedSnapshot) -> bool:
+    """Task 3 may replace this bound acceptance record with a signed verifier."""
+    try:
+        payload = json.loads((service_data_root() / "manual-vision-acceptance.json").read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return False
-    return payload == {"accepted": True}
+    return payload == {"accepted": True, "manifest_sha256": snapshot.manifest_sha256}
 
 
 _RUNTIME: tuple[Any, Any] | None = None
@@ -124,9 +193,7 @@ def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
     global _RUNTIME
     configured_max_new_tokens()
     snapshot = verified_snapshot()
-    if snapshot is None:
-        raise ServiceError("model_not_provisioned")
-    if not runtime_accepted():
+    if not runtime_accepted(snapshot):
         raise ServiceError("runtime_not_ready")
     if torch_module is None:
         import torch as torch_module
@@ -137,9 +204,9 @@ def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
     try:
         from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor
 
-        processor = PaliGemmaProcessor.from_pretrained(str(snapshot), local_files_only=True)
+        processor = PaliGemmaProcessor.from_pretrained(str(snapshot.path), local_files_only=True)
         model = PaliGemmaForConditionalGeneration.from_pretrained(
-            str(snapshot), torch_dtype=torch_module.float16, local_files_only=True,
+            str(snapshot.path), torch_dtype=torch_module.float16, local_files_only=True,
         ).to("cuda")
         model.eval()
         _RUNTIME = (processor, model)
@@ -159,12 +226,22 @@ def run_docvqa(
     configured_max_new_tokens()
     try:
         prompt = format_docvqa_prompt(question)
-        inputs = processor(text=prompt, images=image, return_tensors="pt").to("cuda")
-        no_grad = getattr(torch_module, "no_grad", None) if torch_module is not None else None
+        inputs = processor(text=prompt, images=image, return_tensors="pt")
+        for name, value in inputs.items():
+            move = getattr(value, "to", None)
+            if callable(move):
+                kwargs: dict[str, Any] = {"device": "cuda"}
+                is_floating = getattr(value, "is_floating_point", None)
+                if callable(is_floating) and is_floating():
+                    kwargs["dtype"] = model.dtype
+                inputs[name] = move(**kwargs)
+        if torch_module is None:
+            import torch as torch_module
+        no_grad = getattr(torch_module, "no_grad", None)
         with no_grad() if callable(no_grad) else nullcontext():
-            generated = model.generate(**inputs, max_new_tokens=SERVER_MAX_NEW_TOKENS)
-        decoded = processor.decode(generated[0], skip_special_tokens=True).strip()
-        answer = decoded[len(prompt):].strip() if decoded.startswith(prompt) else decoded
+            generated = model.generate(**inputs, max_new_tokens=configured_max_new_tokens())
+        continuation = generated[:, inputs["input_ids"].shape[-1]:]
+        answer = processor.decode(continuation[0], skip_special_tokens=True).strip()
         if not answer:
             raise ValueError("empty answer")
         return answer
@@ -187,12 +264,14 @@ def success_response(answer: str, elapsed_ms: int, request_id: str) -> dict[str,
 
 def create_app() -> Any | None:
     try:
-        from fastapi import FastAPI, Request, UploadFile
+        from fastapi import FastAPI, Request
         from fastapi.responses import JSONResponse
+        from starlette.datastructures import UploadFile
     except ImportError:
         return None
 
-    app = FastAPI(title="3waAIHub Manual Vision")
+    globals()["Request"] = Request
+    app = FastAPI(title="3waAIHub Manual Vision", docs_url=None, redoc_url=None, openapi_url=None)
     inference_lock = asyncio.Lock()
 
     def error_response(error: ServiceError) -> JSONResponse:
@@ -211,15 +290,23 @@ def create_app() -> Any | None:
 
     @app.get("/health")
     async def health() -> dict[str, bool]:
-        ready = verified_snapshot() is not None and runtime_accepted()
+        try:
+            snapshot = verified_snapshot()
+            ready = runtime_accepted(snapshot)
+        except ServiceError:
+            ready = False
         return {"ok": ready, "ready": ready}
 
     @app.post("/vision/docvqa")
     async def docvqa(request: Request) -> JSONResponse:
         started = time.perf_counter()
-        request_id = uuid.uuid4().hex
+        request_id = f"req_{uuid.uuid4().hex}"
+        form: Any | None = None
         try:
-            form = await request.form()
+            try:
+                form = await request.form()
+            except Exception as exc:
+                raise ServiceError("bad_request") from exc
             items = list(form.multi_items())
             validate_form_keys(key for key, _value in items)
             values = {key: value for key, value in items}
@@ -239,6 +326,9 @@ def create_app() -> Any | None:
             return JSONResponse(content=success_response(answer, elapsed_ms, request_id))
         except ServiceError as exc:
             return error_response(exc)
+        finally:
+            if form is not None:
+                await form.close()
 
     return app
 
