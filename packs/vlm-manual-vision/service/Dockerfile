@@ -17,8 +17,9 @@ RUN python3 -m pip install --upgrade pip setuptools wheel \
     && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 
-COPY app.py entrypoint.sh .
+COPY app.py entrypoint.sh provision.py acceptance.py gpu_smoke.py .
 COPY tests/test_app.py tests/test_app.py
+COPY tests/test_dockerfile.py tests/test_dockerfile.py
 COPY tests/test_endpoint.py tests/test_endpoint.py
 COPY tests/test_entrypoint.py tests/test_entrypoint.py
 RUN useradd --create-home --uid 10001 appuser \

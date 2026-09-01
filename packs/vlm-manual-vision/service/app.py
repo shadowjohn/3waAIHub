@@ -228,7 +228,11 @@ def runtime_accepted(snapshot: VerifiedSnapshot) -> bool:
         raise
     except (OSError, ValueError, TypeError):
         return False
-    return payload == {"accepted": True, "manifest_sha256": snapshot.manifest_sha256}
+    return (
+        isinstance(payload, dict)
+        and payload.get("accepted") is True
+        and payload.get("manifest_sha256") == snapshot.manifest_sha256
+    )
 
 
 _RUNTIME: tuple[str, Any, Any] | None = None
@@ -281,11 +285,11 @@ def process_verified_snapshot() -> VerifiedSnapshot:
         return identity
 
 
-def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
+def load_runtime(*, torch_module: Any | None = None, require_acceptance: bool = True) -> tuple[Any, Any]:
     global _RUNTIME
     configured_max_new_tokens()
     snapshot = process_verified_snapshot()
-    if not runtime_accepted(snapshot):
+    if require_acceptance and not runtime_accepted(snapshot):
         raise ServiceError("runtime_not_ready")
     if _RUNTIME is not None:
         if _RUNTIME[0] != snapshot.manifest_sha256:

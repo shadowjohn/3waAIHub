@@ -282,6 +282,23 @@ class ManualVisionTests(unittest.TestCase):
                 vision._RUNTIME = None
                 vision._VERIFIED_IDENTITY = None
 
+    def test_acceptance_loader_can_use_a_verified_snapshot_before_acceptance_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            data = Path(temporary) / "service"
+            data.mkdir()
+            snapshot = write_verified_snapshot(root)
+            vision._RUNTIME = (snapshot.manifest_sha256, object(), object())
+            vision._VERIFIED_IDENTITY = snapshot.manifest_sha256
+            try:
+                with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
+                    with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
+                        vision.load_runtime(torch_module=FakeTorch())
+                    self.assertEqual(vision._RUNTIME[1:], vision.load_runtime(torch_module=FakeTorch(), require_acceptance=False))
+            finally:
+                vision._RUNTIME = None
+                vision._VERIFIED_IDENTITY = None
+
     def test_process_verification_hashes_once_and_rejects_unverified_or_changed_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "models"
