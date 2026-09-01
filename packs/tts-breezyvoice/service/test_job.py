@@ -143,6 +143,45 @@ def test_provision_uses_injected_downloader_and_writes_canonical_manifest(tmp_pa
     assert json.loads((model_dir / "model-manifest.json").read_text(encoding="utf-8")) == manifest
 
 
+@pytest.mark.parametrize("revision", ["main", "a" * 39, "g" * 40])
+def test_provision_rejects_mutable_or_non_sha_revisions_without_downloading(tmp_path: Path, revision: str) -> None:
+    calls: list[tuple[str, str, Path]] = []
+
+    def downloader(model_id: str, requested_revision: str, destination: Path) -> None:
+        calls.append((model_id, requested_revision, destination))
+
+    with pytest.raises(RuntimeError, match="^model_revision_invalid$"):
+        provision.provision_models(tmp_path / "model", MODEL_ID, revision, downloader=downloader)
+    assert calls == []
+
+
+@pytest.mark.parametrize("layout", ["staged", "destination"])
+def test_provision_refuses_symlinked_staged_or_destination_layout(tmp_path: Path, layout: str) -> None:
+    model_dir = tmp_path / "model"
+    target = tmp_path / "target"
+    target.mkdir()
+    probe = tmp_path / "symlink-probe"
+    try:
+        probe.symlink_to(target, target_is_directory=True)
+        probe.unlink()
+        if layout == "destination":
+            model_dir.symlink_to(target, target_is_directory=True)
+
+            def downloader(model_id: str, revision: str, destination: Path) -> None:
+                raise AssertionError("symlinked destination must be rejected before downloading")
+        else:
+            outside = tmp_path / "outside.bin"
+            outside.write_bytes(b"outside")
+
+            def downloader(model_id: str, revision: str, destination: Path) -> None:
+                (destination / "weights.bin").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this host")
+
+    with pytest.raises(RuntimeError, match="^(model_dir_invalid|model_layout_invalid)$"):
+        provision.provision_models(model_dir, MODEL_ID, MODEL_REVISION, downloader=downloader)
+
+
 def test_rejects_symlink_reference_audio(tmp_path: Path) -> None:
     fixture = make_job_fixture(tmp_path)
     symlink = tmp_path / "reference-link.wav"

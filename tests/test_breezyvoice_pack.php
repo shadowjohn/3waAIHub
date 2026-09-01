@@ -93,8 +93,8 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
             'gpu_name_patterns' => ['GTX 1050', 'GTX 1060', 'GTX 1070', 'GTX 1080', 'GTX 1080 Ti'],
         ]
         && ($job['runner']['image'] ?? '') === '3waaihub/tts-breezyvoice:0.1.0-pascal-cu118'
-        && ($job['runner']['entrypoint'] ?? null) === ['/app/breezyvoice-synthesize']
-        && ($job['runner']['args'] ?? null) === ['--workspace', '{workspace}', '--input', '{input_dir}', '--output', '{output_dir}', '--runner-config', '{input_dir}/runner_config.json']
+        && ($job['runner']['entrypoint'] ?? null) === ['/app/voice_generate.sh']
+        && ($job['runner']['args'] ?? null) === ['{workspace}', '{input_dir}', '{output_dir}', '{input_dir}/runner_config.json']
         && ($job['runner']['accelerator'] ?? '') === 'gpu'
         && ($job['runner']['required_vram_mb'] ?? 0) === 4096,
         'BreezyVoice must pin its Pascal isolated-GPU runner without a shell'
