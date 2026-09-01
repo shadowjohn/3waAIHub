@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -13,6 +16,7 @@ from PIL import Image
 SERVICE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVICE_DIR))
 import acceptance  # noqa: E402
+import app as vision  # noqa: E402
 
 
 class FakeCuda:
@@ -100,6 +104,40 @@ class AcceptanceTests(unittest.TestCase):
                 )
                 self.assertFalse(accepted)
                 self.assertFalse(json.loads((data_root / acceptance.RECORD_NAME).read_text(encoding="utf-8"))["accepted"])
+
+    def test_local_acceptance_invalidates_old_success_before_invalid_settings_or_runtime_load(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary)
+            record_path = data_root / acceptance.RECORD_NAME
+            record_path.write_text(json.dumps({"accepted": True, "manifest_sha256": "a" * 64}), encoding="utf-8")
+            with patch.dict(os.environ, {"MANUAL_VISION_SERVICE_DATA_DIR": str(data_root)}, clear=True):
+                self.assertFalse(acceptance.run_local_acceptance())
+            self.assertFalse(json.loads(record_path.read_text(encoding="utf-8"))["accepted"])
+
+    def test_local_acceptance_is_token_free_and_binds_the_runtime_loaded_manifest_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary)
+            expected = {case["question"]: case["answer"] for case in acceptance.load_cases(self.cases_path)}
+            record_path = data_root / acceptance.RECORD_NAME
+            record_path.write_text(json.dumps({"accepted": True, "manifest_sha256": "a" * 64}), encoding="utf-8")
+            loaded = vision.VerifiedSnapshot(Path(temporary) / "snapshot", "b" * 64)
+            environment = {
+                "MANUAL_VISION_MODEL": "google/paligemma-3b-ft-docvqa-448",
+                "MANUAL_VISION_MODEL_REVISION": "c" * 40,
+                "MANUAL_VISION_TORCH_DTYPE": "float16",
+                "MANUAL_VISION_DEVICE": "cuda",
+                "MANUAL_VISION_SERVICE_DATA_DIR": str(data_root),
+            }
+            with patch.dict(os.environ, environment, clear=True), \
+                 patch.object(vision, "load_runtime", return_value=(object(), object(), loaded)) as load_runtime, \
+                 patch.object(vision, "run_docvqa", side_effect=lambda _image, question, **_kwargs: expected[question]), \
+                 patch.dict(sys.modules, {"torch": types.SimpleNamespace(cuda=FakeCuda())}):
+                self.assertTrue(acceptance.run_local_acceptance())
+            self.assertEqual(False, load_runtime.call_args.kwargs["require_acceptance"])
+            self.assertTrue(load_runtime.call_args.kwargs["return_identity"])
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            self.assertTrue(record["accepted"])
+            self.assertEqual("b" * 64, record["manifest_sha256"])
 
 
 if __name__ == "__main__":

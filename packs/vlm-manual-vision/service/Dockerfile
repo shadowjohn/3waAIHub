@@ -17,6 +17,7 @@ RUN python3 -m pip install --upgrade pip setuptools wheel \
     && python3 -m pip install -r requirements.txt \
     && python3 -m pip check
 
+COPY Dockerfile Dockerfile
 COPY app.py entrypoint.sh provision.py acceptance.py gpu_smoke.py .
 COPY tests/test_app.py tests/test_app.py
 COPY tests/test_dockerfile.py tests/test_dockerfile.py

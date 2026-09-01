@@ -299,6 +299,31 @@ class ManualVisionTests(unittest.TestCase):
                 vision._RUNTIME = None
                 vision._VERIFIED_IDENTITY = None
 
+    def test_loader_rechecks_snapshot_identity_after_loading_before_acceptance_can_bind_it(self) -> None:
+        class LoaderTorch(FakeTorch):
+            float16 = "float16"
+
+        class LoaderModel:
+            def to(self, _device: str) -> "LoaderModel":
+                return self
+
+            def eval(self) -> None:
+                pass
+
+        class LoaderProcessor:
+            pass
+
+        first = vision.VerifiedSnapshot(Path("/snapshot-a"), "a" * 64)
+        second = vision.VerifiedSnapshot(Path("/snapshot-b"), "b" * 64)
+        transformers = types.SimpleNamespace(
+            PaliGemmaForConditionalGeneration=types.SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: LoaderModel()),
+            PaliGemmaProcessor=types.SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: LoaderProcessor()),
+        )
+        with patch.object(vision, "process_verified_snapshot", side_effect=[first, second]), \
+             patch.dict(sys.modules, {"transformers": transformers}):
+            with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
+                vision.load_runtime(torch_module=LoaderTorch(), require_acceptance=False, return_identity=True)
+
     def test_process_verification_hashes_once_and_rejects_unverified_or_changed_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "models"

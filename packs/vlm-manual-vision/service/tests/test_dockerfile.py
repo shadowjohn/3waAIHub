@@ -14,6 +14,7 @@ class DockerfileTests(unittest.TestCase):
         self.assertIn("provision.py", source)
         self.assertIn("acceptance.py", source)
         self.assertIn("gpu_smoke.py", source)
+        self.assertIn("COPY Dockerfile Dockerfile", source)
         self.assertNotIn("demo/", source)
         self.assertNotIn("*.safetensors", source)
 

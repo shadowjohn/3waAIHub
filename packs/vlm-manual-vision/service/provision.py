@@ -16,6 +16,17 @@ from typing import Callable, Mapping
 MODEL_ID = "google/paligemma-3b-ft-docvqa-448"
 MARKER_NAME = "verified-snapshot.json"
 ALLOW_PATTERNS = ("*.json", "*.model", "*.safetensors", "*.txt")
+RUNTIME_FILES = frozenset({
+    "added_tokens.json",
+    "config.json",
+    "generation_config.json",
+    "model.safetensors.index.json",
+    "preprocessor_config.json",
+    "special_tokens_map.json",
+    "tokenizer.json",
+    "tokenizer.model",
+    "tokenizer_config.json",
+})
 
 
 @dataclass(frozen=True)
@@ -41,10 +52,14 @@ def settings_from_environment(environment: Mapping[str, str] | None = None) -> P
         or re.fullmatch(r"[a-f0-9]{40}", settings.revision) is None
         or settings.dtype != "float16"
         or settings.device != "cuda"
-        or not settings.token
     ):
         raise ValueError("invalid private provisioning settings")
     return settings
+
+
+def _require_provision_token(settings: ProvisionSettings) -> None:
+    if not settings.token:
+        raise ValueError("missing private provisioning token")
 
 
 def _hash_file(path: Path) -> str:
@@ -69,8 +84,32 @@ def _snapshot_files(snapshot: Path) -> set[str]:
             if candidate.is_symlink() or not stat.S_ISREG(info.st_mode):
                 raise ValueError("snapshot file")
             names.add(candidate.relative_to(snapshot).as_posix())
-    if not names or "config.json" not in names or not any(name.endswith(".safetensors") for name in names):
+    if not RUNTIME_FILES.issubset(names):
         raise ValueError("incomplete snapshot")
+    try:
+        index = json.loads((snapshot / "model.safetensors.index.json").read_text(encoding="utf-8"))
+        weights = index["weight_map"]
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid safetensors index") from exc
+    if not isinstance(weights, dict) or not weights:
+        raise ValueError("invalid safetensors index")
+    shards: set[str] = set()
+    for parameter, shard in weights.items():
+        if (
+            not isinstance(parameter, str)
+            or not parameter
+            or not isinstance(shard, str)
+            or not shard
+            or shard.startswith("/")
+            or "\\" in shard
+            or "/" in shard
+            or ".." in Path(shard).parts
+            or not shard.endswith(".safetensors")
+        ):
+            raise ValueError("invalid safetensors index")
+        shards.add(shard)
+    if shards != {name for name in names if name.endswith(".safetensors")}:
+        raise ValueError("incomplete safetensors shards")
     return names
 
 
@@ -171,6 +210,7 @@ def provision_snapshot(
     snapshot_download: Callable[..., object] | None = None,
 ) -> Path:
     settings = settings_from_environment(environment)
+    _require_provision_token(settings)
     values = os.environ if environment is None else environment
     root = Path(values.get("MANUAL_VISION_MODEL_DIR", "/models/manual-vision"))
     if root.is_symlink():

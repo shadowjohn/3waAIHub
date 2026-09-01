@@ -16,7 +16,22 @@ import provision  # noqa: E402
 def write_snapshot(root: Path, *, marker: bool = True) -> Path:
     snapshot = root / "snapshot"
     snapshot.mkdir(parents=True)
-    files = {"config.json": b"{}", "model.safetensors": b"weights"}
+    files = {
+        "added_tokens.json": b"{}",
+        "config.json": b"{}",
+        "generation_config.json": b"{}",
+        "model-00001-of-00002.safetensors": b"weights-one",
+        "model-00002-of-00002.safetensors": b"weights-two",
+        "model.safetensors.index.json": json.dumps({"weight_map": {
+            "language_model.embed_tokens.weight": "model-00001-of-00002.safetensors",
+            "vision_tower.embeddings.patch_embedding.weight": "model-00002-of-00002.safetensors",
+        }}).encode(),
+        "preprocessor_config.json": b"{}",
+        "special_tokens_map.json": b"{}",
+        "tokenizer.json": b"{}",
+        "tokenizer.model": b"tokenizer",
+        "tokenizer_config.json": b"{}",
+    }
     for name, data in files.items():
         (snapshot / name).write_bytes(data)
     if marker:
@@ -28,13 +43,12 @@ def write_snapshot(root: Path, *, marker: bool = True) -> Path:
 
 
 class ProvisionTests(unittest.TestCase):
-    def test_settings_require_the_pinned_model_immutable_revision_float16_cuda_and_token(self) -> None:
+    def test_settings_require_the_pinned_model_immutable_revision_float16_cuda_but_not_runtime_token(self) -> None:
         environment = {
             "MANUAL_VISION_MODEL": provision.MODEL_ID,
             "MANUAL_VISION_MODEL_REVISION": "a" * 40,
             "MANUAL_VISION_TORCH_DTYPE": "float16",
             "MANUAL_VISION_DEVICE": "cuda",
-            "HF_TOKEN": "secret",
         }
         self.assertEqual("a" * 40, provision.settings_from_environment(environment).revision)
         for key, value in (
@@ -47,6 +61,8 @@ class ProvisionTests(unittest.TestCase):
                 invalid = dict(environment, **{key: value})
                 with self.assertRaises(ValueError):
                     provision.settings_from_environment(invalid)
+        with self.assertRaises(ValueError):
+            provision.provision_snapshot(environment, snapshot_download=lambda **_kwargs: None)
 
     def test_verifier_rejects_missing_marker_symlink_and_altered_listed_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -64,9 +80,41 @@ class ProvisionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 provision.verify_published_snapshot(complete)
             (complete / "snapshot" / "linked.json").unlink()
-            (complete / "snapshot" / "model.safetensors").write_bytes(b"altered")
+            (complete / "snapshot" / "model-00001-of-00002.safetensors").write_bytes(b"altered")
             with self.assertRaises(ValueError):
                 provision.verify_published_snapshot(complete)
+
+    def test_verifier_requires_processor_tokenizer_and_every_indexed_safetensors_shard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "model"
+            snapshot = write_snapshot(root)
+            (snapshot / "tokenizer.model").unlink()
+            with self.assertRaises(ValueError):
+                provision.verify_published_snapshot(root)
+            write_snapshot(root / "complete")
+            complete = root / "complete"
+            (complete / "snapshot" / "preprocessor_config.json").unlink()
+            with self.assertRaises(ValueError):
+                provision.verify_published_snapshot(complete)
+            write_snapshot(root / "shards")
+            shards = root / "shards"
+            (shards / "snapshot" / "model-00002-of-00002.safetensors").unlink()
+            with self.assertRaises(ValueError):
+                provision.verify_published_snapshot(shards)
+
+    def test_verifier_rejects_traversal_or_extra_unindexed_safetensors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "model"
+            snapshot = write_snapshot(root)
+            index = snapshot / "model.safetensors.index.json"
+            index.write_text(json.dumps({"weight_map": {"x": "../escape.safetensors"}}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                provision.manifest_for_snapshot(snapshot)
+            write_snapshot(root / "extra")
+            extra = root / "extra"
+            (extra / "snapshot" / "unindexed.safetensors").write_bytes(b"extra")
+            with self.assertRaises(ValueError):
+                provision.manifest_for_snapshot(extra / "snapshot")
 
     def test_publish_writes_marker_only_after_every_staged_file_hash_validates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

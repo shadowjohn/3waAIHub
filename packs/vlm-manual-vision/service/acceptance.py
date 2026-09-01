@@ -60,6 +60,14 @@ def _write_record(data_root: Path, record: dict[str, Any]) -> None:
             os.unlink(temporary)
 
 
+def _invalidate_record(data_root: Path, timestamp: str) -> bool:
+    try:
+        _write_record(data_root, {"accepted": False, "timestamp": timestamp})
+    except Exception:
+        return False
+    return True
+
+
 def _measure(infer: Callable[[Image.Image, str], str], image_path: Path, question: str, cuda: Any) -> tuple[str, int, int, int]:
     cuda.reset_peak_memory_stats()
     with Image.open(image_path) as source:
@@ -87,6 +95,8 @@ def run_acceptance(
     timestamp: str | None = None,
 ) -> bool:
     timestamp = timestamp or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if not _invalidate_record(data_root, timestamp):
+        return False
     try:
         if not re.fullmatch(r"[a-f0-9]{64}", manifest_sha256) or not re.fullmatch(r"[a-f0-9]{40}", model_revision) or dtype != "float16":
             raise ValueError("invalid acceptance identity")
@@ -117,28 +127,38 @@ def run_acceptance(
         })
         return True
     except Exception:
-        _write_record(data_root, {"accepted": False, "manifest_sha256": manifest_sha256, "timestamp": timestamp})
+        _invalidate_record(data_root, timestamp)
         return False
 
 
 def run_local_acceptance() -> bool:
-    from app import load_runtime, verified_snapshot
-    from provision import settings_from_environment
-    import torch
+    data_root = Path(os.getenv("MANUAL_VISION_SERVICE_DATA_DIR", "/data/service"))
+    timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if not _invalidate_record(data_root, timestamp):
+        return False
+    try:
+        from app import load_runtime, run_docvqa
+        from provision import settings_from_environment
+        import torch
 
-    settings = settings_from_environment()
-    snapshot = verified_snapshot()
-    processor, model = load_runtime(torch_module=torch, require_acceptance=False)
-    from app import run_docvqa
-
-    return run_acceptance(
-        infer=lambda image, question: run_docvqa(image, question, processor=processor, model=model, torch_module=torch),
-        manifest_sha256=snapshot.manifest_sha256,
-        model_revision=settings.revision,
-        dtype=settings.dtype,
-        data_root=Path(os.getenv("MANUAL_VISION_SERVICE_DATA_DIR", "/data/service")),
-        cuda=torch.cuda,
-    )
+        settings = settings_from_environment()
+        processor, model, snapshot = load_runtime(
+            torch_module=torch,
+            require_acceptance=False,
+            return_identity=True,
+        )
+        return run_acceptance(
+            infer=lambda image, question: run_docvqa(image, question, processor=processor, model=model, torch_module=torch),
+            manifest_sha256=snapshot.manifest_sha256,
+            model_revision=settings.revision,
+            dtype=settings.dtype,
+            data_root=data_root,
+            cuda=torch.cuda,
+            timestamp=timestamp,
+        )
+    except Exception:
+        _invalidate_record(data_root, timestamp)
+        return False
 
 
 if __name__ == "__main__":

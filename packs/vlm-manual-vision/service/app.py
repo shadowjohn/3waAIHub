@@ -285,7 +285,12 @@ def process_verified_snapshot() -> VerifiedSnapshot:
         return identity
 
 
-def load_runtime(*, torch_module: Any | None = None, require_acceptance: bool = True) -> tuple[Any, Any]:
+def load_runtime(
+    *,
+    torch_module: Any | None = None,
+    require_acceptance: bool = True,
+    return_identity: bool = False,
+) -> tuple[Any, ...]:
     global _RUNTIME
     configured_max_new_tokens()
     snapshot = process_verified_snapshot()
@@ -299,7 +304,10 @@ def load_runtime(*, torch_module: Any | None = None, require_acceptance: bool = 
     if not bool(torch_module.cuda.is_available()):
         raise ServiceError("gpu_unavailable")
     if _RUNTIME is not None:
-        return _RUNTIME[1:]
+        verified = process_verified_snapshot()
+        if verified.manifest_sha256 != snapshot.manifest_sha256:
+            raise ServiceError("runtime_not_ready")
+        return (*_RUNTIME[1:], verified) if return_identity else _RUNTIME[1:]
     try:
         from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor
 
@@ -308,8 +316,13 @@ def load_runtime(*, torch_module: Any | None = None, require_acceptance: bool = 
             str(snapshot.path), torch_dtype=torch_module.float16, local_files_only=True,
         ).to("cuda")
         model.eval()
-        _RUNTIME = (snapshot.manifest_sha256, processor, model)
-        return processor, model
+        verified = process_verified_snapshot()
+        if verified.manifest_sha256 != snapshot.manifest_sha256:
+            raise ServiceError("runtime_not_ready")
+        _RUNTIME = (verified.manifest_sha256, processor, model)
+        return (processor, model, verified) if return_identity else (processor, model)
+    except ServiceError:
+        raise
     except Exception as exc:
         raise ServiceError("inference_failed") from exc
 
