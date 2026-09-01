@@ -1126,26 +1126,74 @@ function hub_cluster_pack_validation_error_response(array $response, mixed $payl
     ]);
 }
 
+function hub_cluster_manual_vision_error_rules(): array
+{
+    return [
+        'bad_request' => 400,
+        'unsupported_operation' => 400,
+        'bad_image' => 400,
+        'file_too_large' => 413,
+        'model_not_provisioned' => 503,
+        'model_manifest_invalid' => 500,
+        'runtime_not_ready' => 503,
+        'model_load_failed' => 503,
+        'inference_failed' => 502,
+        'gpu_unavailable' => 503,
+        'gateway_timeout' => 504,
+    ];
+}
+
 function hub_cluster_manual_vision_relay_response(array $response, mixed $payload): ?array
 {
-    if ((int)($response['status'] ?? 0) !== 400
-        || !is_array($payload)
-        || ($payload['ok'] ?? null) !== false
-        || !is_string($payload['error'] ?? null)
-        || !in_array($payload['error'], ['bad_request', 'unsupported_operation'], true)
-    ) {
+    if (!is_array($payload) || !is_string($payload['error'] ?? null)) {
+        return null;
+    }
+    $status = hub_cluster_manual_vision_error_rules()[$payload['error']] ?? null;
+    if ($status === null) {
         return null;
     }
     foreach (array_keys($payload) as $key) {
         if (!is_string($key) || !in_array($key, ['ok', 'error', 'request_id'], true)) {
-            return null;
+            return hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
         }
     }
-    if (isset($payload['request_id']) && (!is_string($payload['request_id']) || strlen($payload['request_id']) > 128)) {
+    if (array_key_exists('request_id', $payload) && (!is_string($payload['request_id']) || strlen($payload['request_id']) > 128)) {
+        return hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+    }
+    if (($payload['ok'] ?? null) !== false || (int)($response['status'] ?? 0) !== $status) {
+        return hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+    }
+
+    return hub_gateway_error($status, $payload['error'], 'Manual Vision request failed');
+}
+
+function hub_cluster_manual_vision_success_response(array $response, mixed $payload): ?array
+{
+    $keys = ['ok', 'mode', 'operation', 'answer', 'answer_language', 'contract_revision', 'elapsed_ms', 'request_id'];
+    if ((int)($response['status'] ?? 0) !== 200
+        || !is_array($payload)
+        || count($payload) !== count($keys)
+        || array_diff(array_keys($payload), $keys) !== []
+        || ($payload['ok'] ?? null) !== true
+        || ($payload['mode'] ?? null) !== 'manual_vision'
+        || ($payload['operation'] ?? null) !== 'docvqa'
+        || !is_string($payload['answer'] ?? null)
+        || $payload['answer'] === ''
+        || strlen($payload['answer']) > 4096
+        || preg_match('//u', $payload['answer']) !== 1
+        || str_contains($payload['answer'], "\0")
+        || ($payload['answer_language'] ?? null) !== 'en'
+        || ($payload['contract_revision'] ?? null) !== 1
+        || !is_int($payload['elapsed_ms'] ?? null)
+        || $payload['elapsed_ms'] < 0
+        || $payload['elapsed_ms'] > 120000
+        || !is_string($payload['request_id'] ?? null)
+        || preg_match('/\Areq_[a-f0-9]{32}\z/', $payload['request_id']) !== 1
+    ) {
         return null;
     }
 
-    return hub_gateway_error(400, $payload['error'], 'Manual Vision request is invalid');
+    return hub_gateway_json(200, array_intersect_key($payload, array_flip($keys)));
 }
 
 function hub_cluster_rewrite_voice_generate_contract(array $service, string $mode = 'voice_generate'): array
@@ -1886,7 +1934,11 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $response = hub_cluster_router_proxy_response($transport($proxyRequest), $stationToken);
         }
         $payload = hub_cluster_router_json_payload($response);
-        if ($pinnedStation && !$selfStation && hub_cluster_router_is_local_proxy_error($response)) {
+        if ($mode === 'manual_vision'
+            && hub_cluster_router_is_local_proxy_error($response)
+            && (($payload['error'] ?? null) === 'router_timeout')) {
+            $response = hub_gateway_error(504, 'gateway_timeout', 'Manual Vision request timed out');
+        } elseif ($pinnedStation && !$selfStation && hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable');
         } elseif ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_cluster_pack_validation_error_response($response, $payload)
@@ -1894,7 +1946,10 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
                 ?? (hub_is_voice_profile_mode($mode) ? hub_cluster_voice_generate_relay_response($response, $payload) : null);
             $response ??= hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
         } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300) {
-            if ($mode === 'photo_upload') {
+            if ($mode === 'manual_vision') {
+                $response = hub_cluster_manual_vision_success_response($response, $payload)
+                    ?? hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
+            } elseif ($mode === 'photo_upload') {
                 try {
                     if (!is_array($payload)) {
                         throw new UnexpectedValueException('invalid photo upload response');

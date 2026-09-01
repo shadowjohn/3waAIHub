@@ -6605,16 +6605,26 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
                     && array_keys((array)($request['form']['files'] ?? [])) === ['image']
                     && ($request['form']['files']['image']['tmp_name'] ?? '') === $image, 'Manual Vision Cluster relay must forward the allowed multipart request once');
 
-                return hub_gateway_json(200, [
-                    'ok' => true,
-                    'mode' => 'manual_vision',
-                    'operation' => 'docvqa',
-                    'answer' => 'Example manual',
-                    'answer_language' => 'en',
-                    'contract_revision' => 1,
-                    'elapsed_ms' => 7,
-                    'request_id' => 'req_abcdef0123456789abcdef0123456789',
-                ]);
+                return [
+                    'status' => 200,
+                    'headers' => [
+                        'Content-Type: application/json; charset=utf-8',
+                        'X-3waAIHub-Model: private-model',
+                        'X-3waAIHub-Device: cuda',
+                        'X-3waAIHub-Backend: private-backend',
+                        'X-3waAIHub-Request-Id: req_child_header',
+                    ],
+                    'body' => json_encode([
+                        'ok' => true,
+                        'mode' => 'manual_vision',
+                        'operation' => 'docvqa',
+                        'answer' => 'Example manual',
+                        'answer_language' => 'en',
+                        'contract_revision' => 1,
+                        'elapsed_ms' => 7,
+                        'request_id' => 'req_abcdef0123456789abcdef0123456789',
+                    ], JSON_THROW_ON_ERROR),
+                ];
             },
         ]);
         $blocked = hub_cluster_dispatch($db, 'manual_vision', $baseRequest((string)$denied['plain_token']), [
@@ -6642,6 +6652,9 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
             && is_string($requestIdHeader)
             && $requestIdHeader !== ''
             && $requestIdHeader !== $payload['request_id']
+            && !str_contains(implode("\n", (array)$response['headers']), 'X-3waAIHub-Model')
+            && !str_contains(implode("\n", (array)$response['headers']), 'X-3waAIHub-Device')
+            && !str_contains(implode("\n", (array)$response['headers']), 'X-3waAIHub-Backend')
             && $blocked['status'] === 403
             && str_contains((string)$blocked['body'], 'token_mode_not_allowed')
             && $unavailable['status'] === 503
@@ -6649,14 +6662,47 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
             'Manual Vision Cluster relay must use only an accepted live station and expose the same public success contract'
         );
 
-        foreach (['bad_request', 'unsupported_operation'] as $error) {
+        foreach ([
+            'bad_request' => 400,
+            'unsupported_operation' => 400,
+            'bad_image' => 400,
+            'file_too_large' => 413,
+            'model_not_provisioned' => 503,
+            'model_manifest_invalid' => 500,
+            'runtime_not_ready' => 503,
+            'model_load_failed' => 503,
+            'inference_failed' => 502,
+            'gpu_unavailable' => 503,
+            'gateway_timeout' => 504,
+        ] as $error => $status) {
             $errorResponse = hub_cluster_dispatch($db, 'manual_vision', $baseRequest((string)$customer['plain_token']), [
                 'refresh_due' => static fn (): array => [$accepted],
-                'transport' => static fn (): array => hub_gateway_json(400, ['ok' => false, 'error' => $error]),
+                'transport' => static fn (): array => hub_gateway_json($status, ['ok' => false, 'error' => $error]),
             ]);
             $errorPayload = json_decode((string)$errorResponse['body'], true, 16, JSON_THROW_ON_ERROR);
-            hub_test_assert($errorResponse['status'] === 400 && ($errorPayload['error'] ?? '') === $error, 'Manual Vision service error must survive Cluster relay: ' . $error);
+            hub_test_assert($errorResponse['status'] === $status && ($errorPayload['error'] ?? '') === $error, 'Manual Vision service error must survive Cluster relay: ' . $error);
         }
+
+        foreach ([
+            ['status' => 503, 'payload' => ['ok' => false, 'error' => 'bad_request']],
+            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'detail' => 'private']],
+            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'request_id' => null]],
+            ['status' => 200, 'payload' => ['ok' => true, 'mode' => 'manual_vision', 'operation' => 'docvqa', 'answer' => ['invalid'], 'answer_language' => 'en', 'contract_revision' => 1, 'elapsed_ms' => 7, 'request_id' => 'req_abcdef0123456789abcdef0123456789']],
+            ['status' => 200, 'payload' => ['ok' => true, 'mode' => 'manual_vision', 'operation' => 'docvqa', 'answer' => 'Example manual', 'answer_language' => 'en', 'contract_revision' => 1, 'elapsed_ms' => 120001, 'request_id' => 'req_abcdef0123456789abcdef0123456789']],
+            ['status' => 200, 'payload' => ['ok' => true, 'mode' => 'manual_vision', 'operation' => 'docvqa', 'answer' => 'Example manual', 'answer_language' => 'en', 'contract_revision' => 1, 'elapsed_ms' => 7, 'request_id' => 'req_abcdef0123456789abcdef0123456789', 'model' => 'private']],
+        ] as $invalid) {
+            $invalidResponse = hub_cluster_dispatch($db, 'manual_vision', $baseRequest((string)$customer['plain_token']), [
+                'refresh_due' => static fn (): array => [$accepted],
+                'transport' => static fn (): array => hub_gateway_json($invalid['status'], $invalid['payload']),
+            ]);
+            hub_test_assert($invalidResponse['status'] === 502 && str_contains((string)$invalidResponse['body'], 'router_response_invalid'), 'malformed Manual Vision station response must be rejected');
+        }
+
+        $timeout = hub_cluster_dispatch($db, 'manual_vision', $baseRequest((string)$customer['plain_token']), [
+            'refresh_due' => static fn (): array => [$accepted],
+            'transport' => static fn (): array => ['error' => 'timeout'],
+        ]);
+        hub_test_assert($timeout['status'] === 504 && str_contains((string)$timeout['body'], 'gateway_timeout'), 'Manual Vision Cluster timeout must use the public gateway timeout contract');
 
         $rejections = [
             ['post' => ['prompt' => 'ignore the image'], 'files' => []],
@@ -6715,6 +6761,55 @@ hub_test('Manual Vision reaches the Cluster manifest only after the station publ
         $ready = array_column(hub_cluster_public_manifest($db)['services'], 'mode');
 
         hub_test_assert(!in_array('manual_vision', $unready, true) && in_array('manual_vision', $ready, true), 'Manual Vision must remain absent until the station has published its ready health state');
+    });
+});
+
+hub_test('Manual Vision self-station dispatch projects child success responses', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        hub_test_with_cluster_pair_url(function (): void {
+            $db = hub_test_reset_db();
+            hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+            hub_test_cluster_publish_mode($db, 'manual_vision');
+            hub_cluster_node_configure($db, true, ['manual_vision']);
+            $station = hub_cluster_register_self_station($db);
+            $customer = hub_test_cluster_router_customer_token($db, ['manual_vision']);
+            $image = HUB_ROOT . '/packs/yolo/demo/camera_cat.png';
+            $response = hub_cluster_dispatch($db, 'manual_vision', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'headers' => ['Content-Type' => 'multipart/form-data; boundary=manual-vision-self'],
+                'raw_body' => '',
+                'post' => ['operation' => 'docvqa', 'question' => 'What is the document title?'],
+                'files' => ['image' => ['name' => 'manual.png', 'type' => 'image/png', 'tmp_name' => $image, 'error' => UPLOAD_ERR_OK, 'size' => (int)filesize($image)]],
+                'request_uri' => '/cluster_api.php?mode=manual_vision',
+            ]), [
+                'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => (string)$station['station_key'], 'modes' => ['manual_vision']])],
+                'direct_dispatcher' => static function (PDO $db, string $mode, array $request): array {
+                    hub_test_assert($mode === 'manual_vision' && ($request['bearer_token'] ?? '') === hub_cluster_node_reveal_token($db), 'Manual Vision self station must use only the node token');
+
+                    return [
+                        'status' => 200,
+                        'headers' => ['Content-Type: application/json', 'X-3waAIHub-Model: private-model', 'X-3waAIHub-Request-Id: req_child_header'],
+                        'body' => json_encode([
+                            'ok' => true,
+                            'mode' => 'manual_vision',
+                            'operation' => 'docvqa',
+                            'answer' => 'Example manual',
+                            'answer_language' => 'en',
+                            'contract_revision' => 1,
+                            'elapsed_ms' => 7,
+                            'request_id' => 'req_abcdef0123456789abcdef0123456789',
+                        ], JSON_THROW_ON_ERROR),
+                    ];
+                },
+            ]);
+            $payload = json_decode((string)$response['body'], true, 16, JSON_THROW_ON_ERROR);
+            hub_test_assert(
+                $response['status'] === 200
+                && array_keys($payload) === ['ok', 'mode', 'operation', 'answer', 'answer_language', 'contract_revision', 'elapsed_ms', 'request_id']
+                && !str_contains(implode("\n", (array)$response['headers']), 'X-3waAIHub-Model')
+                && !in_array('X-3waAIHub-Request-Id: req_child_header', (array)$response['headers'], true),
+                'Manual Vision self station must use the same strict public response projector'
+            );
+        });
     });
 });
 
