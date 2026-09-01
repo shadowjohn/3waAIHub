@@ -223,6 +223,29 @@ hub_test('hello gateway and unknown mode keep expected contract', function (): v
     hub_test_assert($unknown['status'] === 404, 'unknown mode did not return 404');
 });
 
+hub_test('authorized bearer tokens cannot invoke the BreezyVoice direct mode', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true])['service'];
+    $memberId = hub_create_api_member($db, 'BreezyVoice direct-mode client');
+    $token = hub_create_api_token($db, $memberId, 'BreezyVoice direct-mode token', null, null);
+    hub_add_api_token_mode_permission($db, (int)$token['token_id'], 'voice_generate_breezy', (int)$service['id']);
+    hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+    hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+
+    $response = hub_gateway_dispatch($db, 'voice_generate_breezy', null, [
+        'bearer_token' => (string)$token['plain_token'],
+        'client_ip' => '203.0.113.77',
+        'method' => 'POST',
+        'raw_body' => '{"text":"private profile request"}',
+    ]);
+    $payload = json_decode((string)$response['body'], true);
+
+    hub_test_assert(
+        $response['status'] === 404 && ($payload['error'] ?? null) === 'unknown_mode',
+        'BreezyVoice direct mode must remain indistinguishable from an unregistered mode'
+    );
+});
+
 hub_test('gateway JSON responses neutralize HTML delimiters and disable MIME sniffing', function (): void {
     $response = hub_gateway_json(200, ['message' => '</script><script>alert(1)</script>']);
 

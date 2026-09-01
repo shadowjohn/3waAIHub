@@ -1,0 +1,15 @@
+services:
+  breezyvoice:
+    image: 3waaihub/tts-breezyvoice:0.1.0-pascal-cu118
+    env_file:
+      - runtime-settings.conf
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    ports:
+      - "127.0.0.1:18111:8000"
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/breezyvoice:/models/breezyvoice"
+      - "${AIHUB_CACHE_DIR:-/DATA/3waAIHub/data/cache}/breezyvoice:/cache/breezyvoice"
+      - "${SERVICE_DATA_DIR:-/DATA/3waAIHub/data/services/tts-breezyvoice-main}:/data/service"

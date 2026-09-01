@@ -22,6 +22,9 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if ($mode === 'yolo_gpu_internal') {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
     }
+    if ($mode === 'voice_generate_breezy') {
+        return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
+    }
     if (in_array($mode, ['facebook_profile_frame', 'facebook_profile_input', 'facebook_profile_login_status', 'facebook_profile_close'], true)) {
         $relay = hub_facebook_login_relay_dispatch(
             $db,

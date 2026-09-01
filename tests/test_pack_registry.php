@@ -281,3 +281,71 @@ hub_test('pack storage mount contract rejects traversal and executable container
         hub_test_assert(hub_pack_storage_mounts_contract([$invalid]) === null, 'unsafe storage mount was accepted');
     }
 });
+
+hub_test('ultimate-only Voice Profile contexts reject omitted transcript confirmation handles', function (): void {
+    $fields = ['text', 'mode', 'voice_profile_id', 'voice_profile_task_id'];
+    $schema = [
+        'text' => ['type' => 'string', 'required' => true, 'max_length' => 2000],
+        'mode' => ['type' => 'string', 'required' => true, 'enum' => ['ultimate_clone'], 'max_length' => 32],
+        'voice_profile_id' => ['type' => 'integer', 'required' => false, 'min' => 1, 'max' => 2147483647],
+        'voice_profile_task_id' => ['type' => 'string', 'required' => false, 'max_length' => 64],
+    ];
+    $context = [
+        'mode_input' => 'mode',
+        'ultimate_value' => 'ultimate_clone',
+        'profile_input' => 'voice_profile_id',
+        'profile_task_input' => 'voice_profile_task_id',
+        'container_path' => '/data/voice_profiles/reference.wav',
+    ];
+
+    hub_test_assert(
+        hub_pack_async_job_voice_context_contract($context, $fields, $schema) === $context,
+        'an ultimate-only context must preserve its transcript-confirmed Profile handles'
+    );
+
+    $missingTaskHandle = $context;
+    unset($missingTaskHandle['profile_task_input']);
+    hub_test_assert(
+        hub_pack_async_job_voice_context_contract($missingTaskHandle, $fields, $schema) === null,
+        'an ultimate-only context must reject an omitted transcript confirmation handle'
+    );
+
+    $wrongMode = $context;
+    $wrongMode['ultimate_value'] = 'clone';
+    hub_test_assert(
+        hub_pack_async_job_voice_context_contract($wrongMode, $fields, $schema) === null,
+        'an ultimate-only context must reject a mode outside its declared enum'
+    );
+});
+
+hub_test('existing Voice Profile context shapes remain valid beside the ultimate-only contract', function (): void {
+    $fields = ['mode', 'voice_profile_id', 'voice_profile_task_id', 'voice_prompt'];
+    $schema = [
+        'mode' => ['type' => 'string', 'required' => true, 'enum' => ['design', 'clone', 'ultimate_clone'], 'max_length' => 32],
+        'voice_profile_id' => ['type' => 'integer', 'required' => false, 'min' => 1, 'max' => 2147483647],
+        'voice_profile_task_id' => ['type' => 'string', 'required' => false, 'max_length' => 64],
+        'voice_prompt' => ['type' => 'string', 'required' => false, 'max_length' => 1024],
+    ];
+    $cloneOnly = [
+        'mode_input' => 'mode',
+        'clone_value' => 'clone',
+        'ultimate_value' => 'ultimate_clone',
+        'profile_input' => 'voice_profile_id',
+        'profile_task_input' => 'voice_profile_task_id',
+        'container_path' => '/data/voice_profiles/reference.wav',
+    ];
+    $designClone = [
+        'mode_input' => 'mode',
+        'design_value' => 'design',
+        'clone_value' => 'clone',
+        'profile_input' => 'voice_profile_id',
+        'design_prompt_input' => 'voice_prompt',
+        'container_path' => '/data/voice_profiles/reference.wav',
+    ];
+
+    hub_test_assert(
+        hub_pack_async_job_voice_context_contract($cloneOnly, $fields, $schema) === $cloneOnly
+        && hub_pack_async_job_voice_context_contract($designClone, $fields, $schema) === $designClone,
+        'the ultimate-only extension must not narrow existing Voice Profile contexts'
+    );
+});

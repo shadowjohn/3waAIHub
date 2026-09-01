@@ -1,0 +1,161 @@
+{
+  "schema_version": "0.1",
+  "id": "tts-breezyvoice",
+  "name": "BreezyVoice Taiwan Mandarin Clone",
+  "version": "0.1.0",
+  "category": "audio",
+  "type": "api_service",
+  "execution_type": "async_task",
+  "runtime_level": "L2-deps-import",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": false,
+  "default_mode": "voice_generate_breezy",
+  "capability": "taiwan_mandarin_voice_clone",
+  "tts_modes": ["ultimate_clone"],
+  "description": "Metadata-only BreezyVoice Taiwan Mandarin clone Pack for authorized, transcript-confirmed private Voice Profiles. Runtime inference and model acceptance are not ready.",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000,
+    "windows_wsl_compose": true
+  },
+  "platform_targets": {
+    "linux-docker": {"supported": true},
+    "windows-wsl2-linux-docker": {"supported": true}
+  },
+  "wsl_runtime_profiles": {
+    "pascal-cu118": {
+      "id": "pascal-cu118",
+      "dockerfile": "service/Dockerfile.pascal-cu118",
+      "image": "3waaihub/tts-breezyvoice:0.1.0-pascal-cu118",
+      "min_compute_capability": "6.1",
+      "gpu_name_patterns": ["GTX 1050", "GTX 1060", "GTX 1070", "GTX 1080", "GTX 1080 Ti"]
+    }
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "task_submit:pack_job",
+    "methods": ["POST"],
+    "timeout_sec": 7200,
+    "max_upload_mb": 2,
+    "require_service_enabled": true
+  },
+  "model_allowlist": {
+    "breezyvoice_seed_policy": {
+      "aliases": {
+        "best_effort": {
+          "model": "MediaTek-Research/BreezyVoice",
+          "model_revision": "main",
+          "seed_applied": false,
+          "reproducibility": "best_effort"
+        }
+      }
+    }
+  },
+  "async_jobs": [
+    {
+      "job": "synthesize",
+      "input": {
+        "fields": ["text", "mode", "voice_profile_id", "voice_profile_task_id", "seed", "seed_policy"],
+        "source_artifact_types": [],
+        "source_required": false,
+        "request_schema": {
+          "text": {"type": "string", "required": true, "max_length": 2000},
+          "mode": {"type": "string", "required": true, "enum": ["ultimate_clone"], "max_length": 32},
+          "voice_profile_id": {"type": "integer", "required": false, "min": 1, "max": 2147483647},
+          "voice_profile_task_id": {"type": "string", "required": false, "max_length": 64},
+          "seed": {"type": "integer", "required": false, "min": 0, "max": 2147483647},
+          "seed_policy": {"type": "string", "required": false, "enum": ["best_effort"], "default": "best_effort", "max_length": 32}
+        },
+        "voice_context": {
+          "mode_input": "mode",
+          "ultimate_value": "ultimate_clone",
+          "profile_input": "voice_profile_id",
+          "profile_task_input": "voice_profile_task_id",
+          "container_path": "/data/voice_profiles/reference.wav"
+        }
+      },
+      "runner": {
+        "image": "3waaihub/tts-breezyvoice:0.1.0-pascal-cu118",
+        "entrypoint": ["/app/breezyvoice-synthesize"],
+        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
+        "output_dir": "output",
+        "accelerator": "gpu",
+        "required_vram_mb": 4096,
+        "timeout_seconds": 7200,
+        "network_profile": "isolated",
+        "executor": "container"
+      },
+      "runner_config": {
+        "alias_input": "seed_policy",
+        "model_allowlist": "breezyvoice_seed_policy",
+        "default_alias": "best_effort"
+      },
+      "output": {
+        "artifacts": [
+          {
+            "type": "generated_audio",
+            "path": "generated_audio.wav",
+            "mime_types": ["audio/wav", "audio/x-wav"],
+            "max_bytes": 67108864,
+            "audio": {}
+          },
+          {
+            "type": "synthesis_metadata",
+            "path": "synthesis_metadata.json",
+            "mime_types": ["application/json"],
+            "max_bytes": 1048576,
+            "json": {
+              "required_keys": ["model", "model_revision", "upstream_revision", "reference_audio_sha256", "transcript_sha256", "seed", "seed_applied", "reproducibility", "device", "final_format"]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "cpu_fallback": false,
+    "min_vram_mb": 4096,
+    "min_compute_capability": "6.1"
+  },
+  "lifecycle": {
+    "lifecycle": "on_demand",
+    "gpu_policy": "exclusive_gpu",
+    "idle_unload_seconds": 0
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {"type": "models", "host_subdir": "breezyvoice", "container_path": "/models/breezyvoice", "read_only": true},
+      {"type": "cache", "host_subdir": "breezyvoice", "container_path": "/cache/breezyvoice", "read_only": false},
+      {"type": "service_data", "host_subdir": "", "container_path": "/data/service", "read_only": false}
+    ]
+  },
+  "env": [
+    {"name": "BREEZYVOICE_MODEL_ID", "default": "MediaTek-Research/BreezyVoice", "required": true},
+    {"name": "BREEZYVOICE_MODEL_REVISION", "default": "main", "required": true},
+    {"name": "BREEZYVOICE_UPSTREAM_REPOSITORY", "default": "https://github.com/mtkresearch/BreezyVoice.git", "required": true},
+    {"name": "BREEZYVOICE_UPSTREAM_REVISION", "default": "", "required": false},
+    {"name": "BREEZYVOICE_REAL_INFERENCE", "default": "0", "required": true},
+    {"name": "BREEZYVOICE_DEVICE", "default": "cuda", "required": true},
+    {"name": "BREEZYVOICE_SAMPLE_RATE", "default": "24000", "required": true},
+    {"name": "BREEZYVOICE_MAX_INPUT_CHARS", "default": "2000", "required": true},
+    {"name": "GPU_VISIBLE_DEVICES", "default": "all", "required": true}
+  ],
+  "preflight": {
+    "checks": ["docker", "docker_compose", "nvidia_smi", "docker_gpus", "vram", "compute_capability", "storage"]
+  },
+  "service": {
+    "default_local_port": 18111
+  },
+  "install": {
+    "default_service_key": "tts-breezyvoice-main",
+    "compose_project": "3waaihub_tts_breezyvoice_main"
+  }
+}

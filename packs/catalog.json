@@ -119,6 +119,15 @@
       "featured": true
     },
     {
+      "id": "tts-breezyvoice",
+      "name": "BreezyVoice Taiwan Mandarin Clone",
+      "version": "0.1.0",
+      "category": "audio",
+      "description": "Metadata-only Taiwan Mandarin private Voice Profile clone contract; runtime acceptance is pending.",
+      "path": "packs/tts-breezyvoice",
+      "featured": true
+    },
+    {
       "id": "edge-tts",
       "name": "Edge TTS External Service",
       "version": "0.2.0",

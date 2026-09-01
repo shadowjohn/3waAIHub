@@ -1130,7 +1130,31 @@ function hub_pack_async_job_voice_context_contract(mixed $definition, array $fie
     $modernKeys = ['mode_input', 'design_value', 'clone_value', 'profile_input', 'design_prompt_input', 'container_path'];
     $legacyKeys = ['mode_input', 'design_value', 'clone_value', 'profile_input', 'container_path'];
     $cloneOnlyKeys = ['mode_input', 'clone_value', 'ultimate_value', 'profile_input', 'profile_task_input', 'container_path'];
+    $ultimateOnlyKeys = ['mode_input', 'ultimate_value', 'profile_input', 'profile_task_input', 'container_path'];
     $keys = is_array($definition) ? array_keys($definition) : [];
+    if ($keys === $ultimateOnlyKeys) {
+        $modeInput = $definition['mode_input'] ?? null;
+        $ultimateValue = $definition['ultimate_value'] ?? null;
+        $profileInput = $definition['profile_input'] ?? null;
+        $profileTaskInput = $definition['profile_task_input'] ?? null;
+        $containerPath = $definition['container_path'] ?? null;
+        if (!is_string($modeInput) || !is_string($ultimateValue) || !is_string($profileInput)
+            || !is_string($profileTaskInput) || !is_string($containerPath) || $ultimateValue === ''
+            || !in_array($modeInput, $fields, true) || !in_array($profileInput, $fields, true) || !in_array($profileTaskInput, $fields, true)
+            || ($requestSchema[$modeInput]['type'] ?? null) !== 'string' || !in_array($ultimateValue, (array)($requestSchema[$modeInput]['enum'] ?? []), true)
+            || ($requestSchema[$profileInput]['type'] ?? null) !== 'integer' || ($requestSchema[$profileTaskInput]['type'] ?? null) !== 'string'
+            || $containerPath !== '/data/voice_profiles/reference.wav') {
+            return null;
+        }
+
+        return [
+            'mode_input' => $modeInput,
+            'ultimate_value' => $ultimateValue,
+            'profile_input' => $profileInput,
+            'profile_task_input' => $profileTaskInput,
+            'container_path' => $containerPath,
+        ];
+    }
     if ($keys === $cloneOnlyKeys) {
         $modeInput = $definition['mode_input'] ?? null;
         $cloneValue = $definition['clone_value'] ?? null;
