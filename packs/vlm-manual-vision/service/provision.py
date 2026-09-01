@@ -65,6 +65,11 @@ def _require_provision_token(settings: ProvisionSettings) -> None:
         raise ValueError("missing private provisioning token")
 
 
+def _require_root_one_shot() -> None:
+    if os.geteuid() != 0:
+        raise PermissionError("manual vision provision requires a root one-shot")
+
+
 def _hash_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -189,9 +194,18 @@ def _write_marker(root: Path, manifest: Mapping[str, object]) -> None:
             os.fsync(handle.fileno())
         os.chmod(temporary, 0o644)
         os.replace(temporary, root / MARKER_NAME)
+        _fsync_directory(root)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def write_verified_marker(root: Path, manifest: Mapping[str, object]) -> None:
@@ -236,13 +250,17 @@ def publisher_lock(root: Path):
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _make_runtime_readable(revision: Path) -> None:
+def _make_runtime_directory(path: Path, owner_uid: int, owner_gid: int) -> None:
+    if path.is_symlink():
+        raise ValueError("snapshot symlink")
+    os.chown(path, owner_uid, owner_gid)
+    os.chmod(path, 0o550)
+
+
+def _make_runtime_readable(revision: Path, owner_uid: int = 10001, owner_gid: int = 10001) -> None:
     for current, directories, files in os.walk(revision):
         directory = Path(current)
-        if directory.is_symlink():
-            raise ValueError("snapshot symlink")
-        os.chown(directory, 10001, 10001)
-        os.chmod(directory, 0o755)
+        _make_runtime_directory(directory, owner_uid, owner_gid)
         for name in directories:
             if (directory / name).is_symlink():
                 raise ValueError("snapshot symlink")
@@ -250,8 +268,24 @@ def _make_runtime_readable(revision: Path) -> None:
             candidate = directory / name
             if candidate.is_symlink() or not candidate.is_file():
                 raise ValueError("snapshot file")
-            os.chown(candidate, 10001, 10001)
-            os.chmod(candidate, 0o644)
+            os.chown(candidate, owner_uid, owner_gid)
+            os.chmod(candidate, 0o440)
+
+
+def _marker_revision(root: Path) -> str | None:
+    marker = root / MARKER_NAME
+    if marker.is_symlink():
+        raise ValueError("verified marker symlink")
+    if not marker.exists():
+        return None
+    try:
+        snapshot = json.loads(marker.read_text(encoding="utf-8"))["snapshot"]
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid verified marker") from exc
+    match = re.fullmatch(r"revisions/([a-f0-9]{40})/snapshot", snapshot) if isinstance(snapshot, str) else None
+    if match is None:
+        raise ValueError("invalid verified marker")
+    return match.group(1)
 
 
 def provision_snapshot(
@@ -259,6 +293,7 @@ def provision_snapshot(
     *,
     snapshot_download: Callable[..., object] | None = None,
 ) -> Path:
+    _require_root_one_shot()
     settings = settings_from_environment(environment)
     _require_provision_token(settings)
     values = os.environ if environment is None else environment
@@ -266,16 +301,21 @@ def provision_snapshot(
     if root.is_symlink():
         raise ValueError("model root symlink")
     root.mkdir(parents=True, exist_ok=True)
+    _make_runtime_directory(root, 10001, 10001)
     with publisher_lock(root):
         revisions = root / REVISIONS_DIR
         revisions.mkdir(mode=0o755, exist_ok=True)
         if revisions.is_symlink():
             raise ValueError("revisions symlink")
+        _make_runtime_directory(revisions, 10001, 10001)
         target = revisions / settings.revision
         if target.exists() or target.is_symlink():
-            raise ValueError("revision already published")
+            if target.is_symlink() or not target.is_dir():
+                raise ValueError("revision path invalid")
+            if _marker_revision(root) == settings.revision:
+                raise ValueError("revision already published")
+            shutil.rmtree(target)
         stage = Path(tempfile.mkdtemp(prefix=".stage-", dir=revisions))
-        published = False
         try:
             if snapshot_download is None:
                 from huggingface_hub import snapshot_download as hub_snapshot_download
@@ -293,13 +333,9 @@ def provision_snapshot(
             manifest = manifest_for_snapshot(stage / "snapshot", relative)
             _make_runtime_readable(stage)
             stage.rename(target)
-            published = True
+            _fsync_directory(revisions)
             write_verified_marker(root, manifest)
             return target / "snapshot"
-        except Exception:
-            if published and target.exists() and not target.is_symlink():
-                shutil.rmtree(target)
-            raise
         finally:
             if stage.exists():
                 shutil.rmtree(stage)

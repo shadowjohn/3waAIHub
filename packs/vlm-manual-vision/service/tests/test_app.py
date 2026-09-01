@@ -257,19 +257,19 @@ class ManualVisionTests(unittest.TestCase):
             second_manifest["snapshot"] = f"revisions/{second_revision}/snapshot"
             replacement = root / ".replacement-marker"
             replacement.write_text(json.dumps(second_manifest), encoding="utf-8")
-            original_read_text = Path.read_text
+            second_raw = replacement.read_bytes()
+            original_read_bytes = Path.read_bytes
 
-            def replace_after_legacy_read(path: Path, *args: object, **kwargs: object) -> str:
-                result = original_read_text(path, *args, **kwargs)
+            def replace_before_marker_read(path: Path, *args: object, **kwargs: object) -> bytes:
                 if path == marker:
                     os.replace(replacement, marker)
-                return result
+                return original_read_bytes(path, *args, **kwargs)
 
-            with patch.object(Path, "read_text", replace_after_legacy_read), \
+            with patch.object(Path, "read_bytes", replace_before_marker_read), \
                  patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
                 identity = vision.verified_snapshot()
-            self.assertEqual(first.path, identity.path)
-            self.assertEqual(hashlib.sha256(first_raw).hexdigest(), identity.manifest_sha256)
+            self.assertEqual(second_snapshot, identity.path)
+            self.assertEqual(hashlib.sha256(second_raw).hexdigest(), identity.manifest_sha256)
 
     def test_direct_model_and_acceptance_symlinks_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

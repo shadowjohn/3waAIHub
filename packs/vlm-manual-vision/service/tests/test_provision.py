@@ -70,6 +70,26 @@ def write_current_marker(root: Path, revision: str) -> None:
 
 
 class ProvisionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root_user = patch.object(provision.os, "geteuid", return_value=0)
+        self.root_user.start()
+
+    def tearDown(self) -> None:
+        self.root_user.stop()
+
+    def test_unprivileged_provision_fails_before_creating_the_model_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            environment = {
+                "MANUAL_VISION_MODEL": provision.MODEL_ID, "MANUAL_VISION_MODEL_REVISION": "a" * 40,
+                "MANUAL_VISION_TORCH_DTYPE": "float16", "MANUAL_VISION_DEVICE": "cuda", "HF_TOKEN": "secret",
+                "MANUAL_VISION_MODEL_DIR": str(root),
+            }
+            with patch.object(provision.os, "geteuid", return_value=10001), \
+                 self.assertRaisesRegex(PermissionError, "root one-shot"):
+                provision.provision_snapshot(environment, snapshot_download=lambda **_kwargs: self.fail("download must not start"))
+            self.assertFalse(root.exists())
+
     def test_settings_require_the_pinned_model_immutable_revision_float16_cuda_but_not_runtime_token(self) -> None:
         environment = {
             "MANUAL_VISION_MODEL": provision.MODEL_ID,
@@ -189,7 +209,7 @@ class ProvisionTests(unittest.TestCase):
                 "MANUAL_VISION_TORCH_DTYPE": "float16", "MANUAL_VISION_DEVICE": "cuda", "HF_TOKEN": "secret",
                 "MANUAL_VISION_MODEL_DIR": str(root),
             }
-            with self.assertRaises(RuntimeError):
+            with patch.object(provision.os, "chown"), patch.object(provision.os, "chmod"), self.assertRaises(RuntimeError):
                 provision.provision_snapshot(environment, snapshot_download=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("download failed")))
             self.assertEqual(old_marker, (root / "verified-snapshot.json").read_bytes())
             self.assertTrue((root / "revisions" / old_revision / "snapshot" / "config.json").is_file())
@@ -197,7 +217,7 @@ class ProvisionTests(unittest.TestCase):
             def download(**kwargs: object) -> None:
                 write_downloaded_snapshot(Path(str(kwargs["local_dir"])))
 
-            with patch.object(provision.os, "chown"):
+            with patch.object(provision.os, "chown"), patch.object(provision.os, "chmod"):
                 provision.provision_snapshot(environment, snapshot_download=download)
             marker = json.loads((root / "verified-snapshot.json").read_text(encoding="utf-8"))
             self.assertEqual(f"revisions/{new_revision}/snapshot", marker["snapshot"])
@@ -228,12 +248,28 @@ class ProvisionTests(unittest.TestCase):
                 "MANUAL_VISION_MODEL_DIR": str(root),
             }
             owners: list[tuple[str, int, int]] = []
-            with patch.object(provision.os, "chown", side_effect=lambda path, uid, gid: owners.append((str(path), uid, gid))):
+            modes: list[tuple[str, int]] = []
+            with patch.object(provision.os, "chown", side_effect=lambda path, uid, gid: owners.append((str(path), uid, gid))), \
+                 patch.object(provision.os, "chmod", side_effect=lambda path, mode: modes.append((str(path), mode))):
                 provision.provision_snapshot(environment, snapshot_download=lambda **kwargs: write_downloaded_snapshot(Path(str(kwargs["local_dir"]))))
-            published = root / "revisions" / revision
             self.assertTrue(owners and all((uid, gid) == (10001, 10001) for _path, uid, gid in owners))
-            self.assertEqual(0o755, stat.S_IMODE(published.stat().st_mode))
-            self.assertEqual(0o644, stat.S_IMODE((published / "snapshot" / "config.json").stat().st_mode))
+            self.assertIn(0o550, [mode for _path, mode in modes])
+            self.assertIn(0o440, [mode for _path, mode in modes])
+
+    def test_runtime_modes_are_traversable_readable_and_never_world_writable_without_mocking_chown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            file_path = root / "revisions" / ("e" * 40) / "snapshot" / "config.json"
+            file_path.parent.mkdir(parents=True)
+            file_path.write_text("{}", encoding="utf-8")
+            provision._make_runtime_readable(root, owner_uid=os.getuid(), owner_gid=os.getgid())
+            for directory in (root, root / "revisions", file_path.parents[1], file_path.parent):
+                info = directory.stat()
+                self.assertEqual((os.getuid(), os.getgid()), (info.st_uid, info.st_gid))
+                self.assertEqual(0o550, stat.S_IMODE(info.st_mode))
+            info = file_path.stat()
+            self.assertEqual((os.getuid(), os.getgid()), (info.st_uid, info.st_gid))
+            self.assertEqual(0o440, stat.S_IMODE(info.st_mode))
 
     def test_post_publish_verification_failure_cannot_remove_the_marker_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -244,7 +280,7 @@ class ProvisionTests(unittest.TestCase):
                 "MANUAL_VISION_TORCH_DTYPE": "float16", "MANUAL_VISION_DEVICE": "cuda", "HF_TOKEN": "secret",
                 "MANUAL_VISION_MODEL_DIR": str(root),
             }
-            with patch.object(provision.os, "chown"), \
+            with patch.object(provision.os, "chown"), patch.object(provision.os, "chmod"), \
                  patch.object(provision, "verify_published_snapshot", side_effect=AssertionError("no post-publish reverify")):
                 published = provision.provision_snapshot(
                     environment,
@@ -254,6 +290,41 @@ class ProvisionTests(unittest.TestCase):
             marker = json.loads((root / "verified-snapshot.json").read_text(encoding="utf-8"))
             self.assertEqual(f"revisions/{revision}/snapshot", marker["snapshot"])
             self.assertTrue((root / marker["snapshot"] / "config.json").is_file())
+
+    def test_orphaned_final_revision_is_recovered_without_deleting_a_live_marker_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            revision = "e" * 40
+            write_downloaded_snapshot(root / "revisions" / revision / "snapshot")
+            environment = {
+                "MANUAL_VISION_MODEL": provision.MODEL_ID, "MANUAL_VISION_MODEL_REVISION": revision,
+                "MANUAL_VISION_TORCH_DTYPE": "float16", "MANUAL_VISION_DEVICE": "cuda", "HF_TOKEN": "secret",
+                "MANUAL_VISION_MODEL_DIR": str(root),
+            }
+            with patch.object(provision.os, "chown"), patch.object(provision.os, "chmod"):
+                provision.provision_snapshot(
+                    environment,
+                    snapshot_download=lambda **kwargs: write_downloaded_snapshot(Path(str(kwargs["local_dir"]))),
+                )
+            marker = json.loads((root / "verified-snapshot.json").read_text(encoding="utf-8"))
+            self.assertEqual(f"revisions/{revision}/snapshot", marker["snapshot"])
+            self.assertTrue((root / marker["snapshot"] / "config.json").is_file())
+
+    def test_published_final_revision_is_retained_on_same_revision_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            revision = "f" * 40
+            write_downloaded_snapshot(root / "revisions" / revision / "snapshot")
+            write_current_marker(root, revision)
+            environment = {
+                "MANUAL_VISION_MODEL": provision.MODEL_ID, "MANUAL_VISION_MODEL_REVISION": revision,
+                "MANUAL_VISION_TORCH_DTYPE": "float16", "MANUAL_VISION_DEVICE": "cuda", "HF_TOKEN": "secret",
+                "MANUAL_VISION_MODEL_DIR": str(root),
+            }
+            with patch.object(provision.os, "chown"), patch.object(provision.os, "chmod"), \
+                 self.assertRaisesRegex(ValueError, "already published"):
+                provision.provision_snapshot(environment, snapshot_download=lambda **_kwargs: self.fail("download must not start"))
+            self.assertTrue((root / "revisions" / revision / "snapshot" / "config.json").is_file())
 
 
 if __name__ == "__main__":

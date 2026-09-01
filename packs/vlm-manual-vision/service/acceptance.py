@@ -57,9 +57,18 @@ def _write_record(data_root: Path, record: dict[str, Any]) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, data_root / RECORD_NAME)
+        _fsync_directory(data_root)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _invalidate_record(data_root: Path, timestamp: str) -> bool:
@@ -73,6 +82,7 @@ def _invalidate_record(data_root: Path, timestamp: str) -> bool:
             raise OSError("acceptance record is a symlink")
         if record.exists():
             os.replace(record, tombstone)
+            _fsync_directory(data_root)
         _write_record(data_root, {"accepted": False, "timestamp": timestamp})
         tombstone.unlink(missing_ok=True)
     except Exception:
