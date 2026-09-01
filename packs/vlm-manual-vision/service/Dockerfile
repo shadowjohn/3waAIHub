@@ -21,11 +21,13 @@ COPY app.py entrypoint.sh .
 COPY tests/test_app.py tests/test_app.py
 COPY tests/test_endpoint.py tests/test_endpoint.py
 COPY tests/test_entrypoint.py tests/test_entrypoint.py
-RUN python3 -m unittest discover -v tests \
-    && useradd --create-home --uid 10001 appuser \
+RUN useradd --create-home --uid 10001 appuser \
     && chmod 0755 /app/entrypoint.sh \
     && mkdir -p /cache/manual-vision /data/service \
-    && chown -R appuser:appuser /cache/manual-vision /data/service
+    && mkdir -p /models/manual-vision \
+    && chmod 0555 /models/manual-vision \
+    && python3 -m unittest discover -v tests \
+    && /app/entrypoint.sh /bin/sh -ec 'test "$(id -u)" = 10001; test "$(id -g)" = 10001; test -w /cache/manual-vision; test -w /data/service; ! test -w /models/manual-vision'
 
 EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]

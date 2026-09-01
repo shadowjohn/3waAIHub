@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import io
+import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -21,6 +25,17 @@ def png_bytes() -> bytes:
     output = io.BytesIO()
     Image.new("RGB", (2, 2), "white").save(output, format="PNG")
     return output.getvalue()
+
+
+def write_snapshot(root: Path, weight: bytes = b"weights") -> str:
+    snapshot = root / "snapshot"
+    snapshot.mkdir(parents=True, exist_ok=True)
+    files = {"config.json": b"{}", "model.safetensors": weight}
+    for name, content in files.items():
+        (snapshot / name).write_bytes(content)
+    raw = json.dumps({"snapshot": "snapshot", "files": [{"path": name, "sha256": hashlib.sha256(content).hexdigest()} for name, content in sorted(files.items())]}).encode()
+    (root / "verified-snapshot.json").write_bytes(raw)
+    return hashlib.sha256(raw).hexdigest()
 
 
 class Tensor:
@@ -139,22 +154,58 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
 
     def test_inference_lock_serializes_concurrent_fake_model_work(self) -> None:
-        active = 0
-        peak = 0
+        class TrackingLock:
+            entered = 0
 
-        async def fake_model() -> None:
-            nonlocal active, peak
-            async with vision.app.state.inference_lock:
-                active += 1
-                peak = max(peak, active)
-                await asyncio.sleep(0)
-                active -= 1
+            async def __aenter__(self) -> None:
+                self.entered += 1
 
-        async def run() -> None:
-            await asyncio.gather(fake_model(), fake_model())
+            async def __aexit__(self, *_args: object) -> None:
+                return None
 
-        asyncio.run(run())
-        self.assertEqual(1, peak)
+        lock = TrackingLock()
+        with patch.object(vision, "load_runtime", return_value=(Processor(), Model())), patch.object(vision.app.state, "inference_lock", lock):
+            response = self.client.post(
+                "/vision/docvqa",
+                data={"operation": "docvqa", "question": "What is this?"},
+                files={"image": ("manual.png", png_bytes(), "image/png")},
+            )
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(1, lock.entered)
+
+    def test_chunked_style_oversize_rejects_after_form_parse(self) -> None:
+        with patch.object(vision, "max_upload_bytes", return_value=10):
+            request = self.client.build_request(
+                "POST",
+                "/vision/docvqa",
+                data={"operation": "docvqa", "question": "What is this?"},
+                files={"image": ("manual.png", png_bytes(), "image/png")},
+            )
+            del request.headers["content-length"]
+            response = self.client.send(request)
+        self.assertEqual((413, "file_too_large"), (response.status_code, response.json()["error"]))
+
+    def test_health_full_verifies_once_then_fails_closed_on_identity_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            data = Path(temporary) / "service"
+            data.mkdir()
+            digest = write_snapshot(root)
+            (root / "snapshot" / "model.safetensors").write_bytes(b"tampered")
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
+                vision._VERIFIED_IDENTITY = None
+                try:
+                    self.assertFalse(self.client.get("/health").json()["ready"])
+                    digest = write_snapshot(root)
+                    (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": digest}), encoding="utf-8")
+                    self.assertTrue(self.client.get("/health").json()["ready"])
+                    with patch.object(vision, "_hash_file", side_effect=AssertionError("health must not rehash")):
+                        self.assertTrue(self.client.get("/health").json()["ready"])
+                    digest = write_snapshot(root, b"changed")
+                    (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": digest}), encoding="utf-8")
+                    self.assertFalse(self.client.get("/health").json()["ready"])
+                finally:
+                    vision._VERIFIED_IDENTITY = None
 
 
 if __name__ == "__main__":

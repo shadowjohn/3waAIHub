@@ -123,6 +123,14 @@ def write_verified_snapshot(root: Path, weight: bytes = b"weights") -> vision.Ve
 
 
 class ManualVisionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        vision._RUNTIME = None
+        vision._VERIFIED_IDENTITY = None
+
+    def tearDown(self) -> None:
+        vision._RUNTIME = None
+        vision._VERIFIED_IDENTITY = None
+
     def test_parse_request_trims_ascii_whitespace_and_formats_exact_paligemma1_prompt(self) -> None:
         request = vision.parse_request({"operation": "docvqa", "question": " \tWhat is the rated capacity?\r\n"})
         self.assertEqual(request.question, "What is the rated capacity?")
@@ -263,12 +271,48 @@ class ManualVisionTests(unittest.TestCase):
             snapshot = write_verified_snapshot(root)
             (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
             vision._RUNTIME = (snapshot.manifest_sha256, object(), object())
+            vision._VERIFIED_IDENTITY = snapshot.manifest_sha256
             try:
                 with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False), \
                      patch.object(vision, "_hash_file", side_effect=AssertionError("cache must not rehash")):
                     self.assertEqual(vision._RUNTIME[1:], vision.load_runtime(torch_module=FakeTorch()))
             finally:
                 vision._RUNTIME = None
+                vision._VERIFIED_IDENTITY = None
+
+    def test_process_verification_hashes_once_and_rejects_unverified_or_changed_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            data = Path(temporary) / "service"
+            data.mkdir()
+            snapshot = write_verified_snapshot(root)
+            (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
+                vision._VERIFIED_IDENTITY = None
+                try:
+                    (root / "snapshot" / "model.safetensors").write_bytes(b"tampered")
+                    with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
+                        vision.process_verified_snapshot()
+                    write_verified_snapshot(root)
+                    calls = 0
+                    original_hash = vision._hash_file
+
+                    def counted(path: Path) -> str:
+                        nonlocal calls
+                        calls += 1
+                        return original_hash(path)
+
+                    with patch.object(vision, "_hash_file", side_effect=counted):
+                        first = vision.process_verified_snapshot()
+                        first_calls = calls
+                        self.assertEqual(first, vision.process_verified_snapshot())
+                    self.assertGreater(first_calls, 0)
+                    self.assertEqual(first_calls, calls)
+                    write_verified_snapshot(root, b"changed")
+                    with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
+                        vision.process_verified_snapshot()
+                finally:
+                    vision._VERIFIED_IDENTITY = None
 
     def test_snapshot_verifier_rejects_symlinked_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -338,13 +382,13 @@ class ManualVisionTests(unittest.TestCase):
 
     def test_runtime_guards_and_decode_failure_use_approved_errors(self) -> None:
         snapshot = vision.VerifiedSnapshot(Path("/models/manual-vision/snapshot"), "a" * 64)
-        with patch.object(vision, "verified_snapshot", side_effect=vision.ServiceError("model_not_provisioned")):
+        with patch.object(vision, "process_verified_snapshot", side_effect=vision.ServiceError("model_not_provisioned")):
             with self.assertRaisesRegex(vision.ServiceError, "model_not_provisioned"):
                 vision.load_runtime(torch_module=FakeTorch())
-        with patch.object(vision, "verified_snapshot", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=False):
+        with patch.object(vision, "process_verified_snapshot", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=False):
             with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
                 vision.load_runtime(torch_module=FakeTorch())
-        with patch.object(vision, "verified_snapshot", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=True):
+        with patch.object(vision, "process_verified_snapshot", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=True):
             with self.assertRaisesRegex(vision.ServiceError, "gpu_unavailable"):
                 vision.load_runtime(torch_module=FakeTorch(False))
         with self.assertRaisesRegex(vision.ServiceError, "inference_failed"):
@@ -354,7 +398,7 @@ class ManualVisionTests(unittest.TestCase):
         snapshot = vision.VerifiedSnapshot(Path("/models/manual-vision/snapshot"), "b" * 64)
         vision._RUNTIME = (snapshot.manifest_sha256, object(), object())
         try:
-            with patch.object(vision, "published_snapshot_identity", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=True):
+            with patch.object(vision, "process_verified_snapshot", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=True):
                 with self.assertRaisesRegex(vision.ServiceError, "gpu_unavailable"):
                     vision.load_runtime(torch_module=FakeTorch(False))
         finally:

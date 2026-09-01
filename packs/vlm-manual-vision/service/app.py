@@ -8,6 +8,7 @@ import re
 import time
 import uuid
 import warnings
+from threading import Lock
 from contextlib import nullcontext
 from dataclasses import dataclass
 from io import BytesIO
@@ -21,6 +22,7 @@ ALLOWED_FIELDS = {"operation", "image", "question"}
 MAX_IMAGE_WIDTH = 10_000
 MAX_IMAGE_HEIGHT = 10_000
 MAX_DECODED_PIXELS = 40_000_000
+MAX_MULTIPART_OVERHEAD = 1024 * 1024
 
 
 class ServiceError(RuntimeError):
@@ -155,44 +157,15 @@ def _snapshot_paths() -> tuple[Path, Path]:
     return snapshot, manifest_path
 
 
-def published_snapshot_identity() -> VerifiedSnapshot:
+def _read_snapshot_manifest() -> tuple[VerifiedSnapshot, list[tuple[str, str]]]:
     snapshot, manifest_path = _snapshot_paths()
     try:
         raw = manifest_path.read_bytes()
         payload = json.loads(raw)
         if not isinstance(payload, dict) or set(payload) != {"snapshot", "files"} or payload["snapshot"] != "snapshot" or not isinstance(payload["files"], list):
             raise ValueError("invalid manifest")
-        for row in payload["files"]:
-            if not isinstance(row, dict) or set(row) != {"path", "sha256"}:
-                raise ValueError("invalid manifest file")
-            relative, checksum = row["path"], row["sha256"]
-            if (
-                not isinstance(relative, str)
-                or not relative
-                or relative.startswith("/")
-                or "\\" in relative
-                or ".." in Path(relative).parts
-                or not isinstance(checksum, str)
-                or re.fullmatch(r"[a-f0-9]{64}", checksum) is None
-            ):
-                raise ValueError("invalid manifest file")
-        return VerifiedSnapshot(snapshot, hashlib.sha256(raw).hexdigest())
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        raise ServiceError("model_manifest_invalid") from exc
-
-
-def verified_snapshot() -> VerifiedSnapshot:
-    """Small fail-closed verifier; Task 3 may strengthen this manifest format."""
-    identity = published_snapshot_identity()
-    snapshot = identity.path
-    manifest_path = model_root() / "verified-snapshot.json"
-    try:
-        raw = manifest_path.read_bytes()
-        payload = json.loads(raw)
-        if not isinstance(payload, dict) or set(payload) != {"snapshot", "files"} or payload["snapshot"] != "snapshot" or not isinstance(payload["files"], list):
-            raise ValueError("invalid manifest")
-        snapshot_root = snapshot.resolve(strict=True)
         listed: set[str] = set()
+        rows: list[tuple[str, str]] = []
         for row in payload["files"]:
             if not isinstance(row, dict) or set(row) != {"path", "sha256"}:
                 raise ValueError("invalid manifest file")
@@ -208,6 +181,25 @@ def verified_snapshot() -> VerifiedSnapshot:
                 or re.fullmatch(r"[a-f0-9]{64}", checksum) is None
             ):
                 raise ValueError("invalid manifest file")
+            listed.add(relative)
+            rows.append((relative, checksum))
+        return VerifiedSnapshot(snapshot, hashlib.sha256(raw).hexdigest()), rows
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ServiceError("model_manifest_invalid") from exc
+
+
+def published_snapshot_identity() -> VerifiedSnapshot:
+    return _read_snapshot_manifest()[0]
+
+
+def verified_snapshot() -> VerifiedSnapshot:
+    """Small fail-closed verifier; Task 3 may strengthen this manifest format."""
+    identity, rows = _read_snapshot_manifest()
+    snapshot = identity.path
+    try:
+        snapshot_root = snapshot.resolve(strict=True)
+        listed: set[str] = set()
+        for relative, checksum in rows:
             candidate = snapshot / relative
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(snapshot_root)
@@ -239,12 +231,27 @@ def runtime_accepted(snapshot: VerifiedSnapshot) -> bool:
 
 
 _RUNTIME: tuple[str, Any, Any] | None = None
+_VERIFIED_IDENTITY: str | None = None
+_VERIFICATION_LOCK = Lock()
+
+
+def process_verified_snapshot() -> VerifiedSnapshot:
+    global _VERIFIED_IDENTITY
+    with _VERIFICATION_LOCK:
+        identity = published_snapshot_identity()
+        if _VERIFIED_IDENTITY is None:
+            verified = verified_snapshot()
+            _VERIFIED_IDENTITY = verified.manifest_sha256
+            return verified
+        if identity.manifest_sha256 != _VERIFIED_IDENTITY:
+            raise ServiceError("runtime_not_ready")
+        return identity
 
 
 def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
     global _RUNTIME
     configured_max_new_tokens()
-    snapshot = published_snapshot_identity() if _RUNTIME is not None else verified_snapshot()
+    snapshot = process_verified_snapshot()
     if not runtime_accepted(snapshot):
         raise ServiceError("runtime_not_ready")
     if _RUNTIME is not None:
@@ -347,7 +354,7 @@ def create_app() -> Any | None:
     @app.get("/health")
     async def health() -> dict[str, bool]:
         try:
-            snapshot = published_snapshot_identity()
+            snapshot = process_verified_snapshot()
             ready = runtime_accepted(snapshot)
         except ServiceError:
             ready = False
@@ -364,7 +371,7 @@ def create_app() -> Any | None:
                 content_length = int(request.headers.get("content-length", "0"))
             except ValueError as exc:
                 raise ServiceError("bad_request") from exc
-            if content_length > limit:
+            if content_length > limit + MAX_MULTIPART_OVERHEAD:
                 raise ServiceError("file_too_large")
             try:
                 try:
@@ -387,7 +394,7 @@ def create_app() -> Any | None:
             if len(data) > limit:
                 raise ServiceError("file_too_large")
             image = decode_image(data)
-            async with inference_lock:
+            async with app.state.inference_lock:
                 processor, model = load_runtime()
                 answer = run_docvqa(image, parsed.question, processor=processor, model=model)
             elapsed_ms = int((time.perf_counter() - started) * 1000)
