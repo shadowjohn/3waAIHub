@@ -615,6 +615,29 @@ function hub_service_runtime_resolution(array $service, ?string $platform = null
     return hub_pack_runtime_target_resolution($pack['manifest'], $platform, $profile);
 }
 
+function hub_service_pack_runtime_not_ready_result(array $service): ?array
+{
+    $packId = trim((string)($service['pack_id'] ?? ''));
+    if ($packId === '') {
+        return null;
+    }
+    $pack = hub_get_pack($packId);
+    if (!is_array($pack['manifest'] ?? null) || ($pack['manifest']['runtime_ready'] ?? null) === true) {
+        return null;
+    }
+
+    $message = 'Pack runtime is not ready.';
+    return [
+        'exit_code' => 2,
+        'error_code' => 'pack_runtime_not_ready',
+        'message' => $message,
+        'retryable' => false,
+        'stdout' => '',
+        'stderr' => $message,
+        'output' => $message,
+    ];
+}
+
 function hub_service_uses_wsl_runtime(array $service, ?string $platform = null, ?array $profile = null): bool
 {
     $resolution = hub_service_runtime_resolution($service, $platform, $profile);
@@ -1639,6 +1662,10 @@ function hub_start_service(PDO $db, array $service): array
 
 function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 {
+    $notReady = hub_service_pack_runtime_not_ready_result($service);
+    if ($notReady !== null) {
+        return $notReady;
+    }
     if (!hub_service_is_internal_task($service) || hub_service_requires_wsl_job_runtime($service)) {
         $unsupported = hub_service_runtime_unsupported_result($service);
         if ($unsupported !== null) {
@@ -1728,6 +1755,10 @@ function hub_rebuild_internal_task_runner_image(array $service, callable $comman
 
 function hub_build_service(PDO $db, array $service, ?array $job = null): array
 {
+    $notReady = hub_service_pack_runtime_not_ready_result($service);
+    if ($notReady !== null) {
+        return $notReady;
+    }
     if (!hub_service_is_internal_task($service) || hub_service_requires_wsl_job_runtime($service)) {
         $unsupported = hub_service_runtime_unsupported_result($service);
         if ($unsupported !== null) {
