@@ -6,11 +6,24 @@ function hub_test_make_documentable_pack(PDO $db, string $packId, array $state =
     $pack = hub_get_pack($packId);
     hub_test_assert($pack !== null && ($pack['status'] ?? '') === 'ok', 'test Pack unavailable: ' . $packId);
     $manifest = $pack['manifest'];
-    $installed = hub_install_pack($db, $packId, [
-        'service_key' => (string)($state['service_key'] ?? $manifest['install']['default_service_key'] ?? ($packId . '-main')),
-        'idempotent' => true,
-    ]);
-    $service = $installed['service'];
+    if (($manifest['runtime_ready'] ?? null) !== true) {
+        $service = hub_get_service_by_mode($db, 'hello');
+        hub_test_assert(is_array($service), 'contract-only docs fixture requires seeded hello service');
+        $db->prepare('UPDATE services SET pack_id = :pack_id, pack_version = :pack_version, service_key = :service_key WHERE id = :id')
+            ->execute([
+                ':pack_id' => $packId,
+                ':pack_version' => (string)$manifest['version'],
+                ':service_key' => (string)($state['service_key'] ?? $manifest['install']['default_service_key'] ?? ($packId . '-main')),
+                ':id' => (int)$service['id'],
+            ]);
+        $service = hub_get_service($db, (int)$service['id']) ?: [];
+    } else {
+        $installed = hub_install_pack($db, $packId, [
+            'service_key' => (string)($state['service_key'] ?? $manifest['install']['default_service_key'] ?? ($packId . '-main')),
+            'idempotent' => true,
+        ]);
+        $service = $installed['service'];
+    }
     $stmt = $db->prepare(
         'UPDATE services SET mode = :mode, health_url = :health_url, install_status = :install_status,
             enabled = :enabled, runtime_status = :runtime_status, status = :status WHERE id = :id'
@@ -40,6 +53,7 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
         'bad_request', 'unsupported_operation', 'bad_image', 'file_too_large', 'missing_token', 'token_mode_not_allowed',
         'gpu_unavailable', 'model_not_provisioned', 'model_manifest_invalid', 'runtime_not_ready', 'inference_failed', 'gateway_timeout',
     ], 'native Manual Vision error table mismatch');
+    hub_test_assert(!array_key_exists('gpu_required', $native) && !str_contains(json_encode($native, JSON_THROW_ON_ERROR), 'gpu_required'), 'native Manual Vision contract must not disclose GPU requirements');
 
     $previous = getenv('AIHUB_CLUSTER_SECRET_KEY');
     putenv('AIHUB_CLUSTER_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
@@ -58,7 +72,7 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
         $now = hub_now();
         $db->prepare('UPDATE cluster_stations SET manifest_json = :manifest, manifest_fetched_at = :now, status_json = :status, status_fetched_at = :now WHERE id = :id')
             ->execute([
-                ':manifest' => json_encode(['services' => [$native]], JSON_THROW_ON_ERROR),
+                ':manifest' => json_encode(['services' => [array_replace($native, ['gpu_required' => true])]], JSON_THROW_ON_ERROR),
                 ':status' => json_encode(['modes' => ['manual_vision']], JSON_THROW_ON_ERROR),
                 ':now' => $now,
                 ':id' => $stationId,
@@ -66,6 +80,7 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
         $cluster = array_column(hub_cluster_public_manifest($db)['services'], null, 'mode')['manual_vision'] ?? null;
         hub_test_assert(is_array($cluster) && ($cluster['name'] ?? '') === 'English DocVQA', 'Cluster Manual Vision contract name missing');
         hub_test_assert(array_column($cluster['operations'] ?? [], 'operation') === ['docvqa'] && ($cluster['error_codes'] ?? []) === ($native['error_codes'] ?? []), 'Cluster Manual Vision operation/error table mismatch');
+        hub_test_assert(!array_key_exists('gpu_required', $cluster) && !str_contains(json_encode($cluster, JSON_THROW_ON_ERROR), 'gpu_required'), 'Cluster Manual Vision contract must not disclose GPU requirements');
 
         foreach ([hub_public_api_docs_html($db, null, static fn (array $service): bool => true), hub_cluster_public_api_docs_html($db)] as $docs) {
             foreach (['manual_vision', 'English DocVQA', 'docvqa', 'model_not_provisioned', 'gateway_timeout'] as $needle) {
@@ -82,6 +97,34 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
             putenv('AIHUB_CLUSTER_SECRET_KEY=' . $previous);
         }
     }
+});
+
+hub_test('Manual Vision runtime gate blocks installation without affecting ready API Packs', function (): void {
+    $db = hub_test_reset_db();
+
+    hub_test_assert(hub_test_throws(static fn () => hub_install_pack($db, 'vlm-manual-vision')), 'contract-only Manual Vision Pack must not install');
+    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM services WHERE pack_id = 'vlm-manual-vision'")->fetchColumn() === 0, 'blocked Manual Vision install must not create a service or queued install target');
+
+    $fixture = hub_get_service_by_mode($db, 'hello');
+    $pack = hub_get_pack('vlm-manual-vision');
+    hub_test_assert(is_array($fixture) && is_array($pack), 'Manual Vision start gate fixture missing');
+    $db->prepare('UPDATE services SET pack_id = :pack_id, pack_version = :pack_version, mode = :mode WHERE id = :id')
+        ->execute([
+            ':pack_id' => 'vlm-manual-vision',
+            ':pack_version' => (string)$pack['manifest']['version'],
+            ':mode' => 'manual_vision',
+            ':id' => (int)$fixture['id'],
+        ]);
+    $fixture = hub_get_service($db, (int)$fixture['id']) ?: [];
+    try {
+        hub_start_service($db, $fixture);
+        hub_test_assert(false, 'contract-only Manual Vision Pack must not start');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'Manual Vision start must use the runtime-ready gate');
+    }
+
+    $ready = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-ready-gate', 'idempotent' => true]);
+    hub_test_assert(($ready['service']['pack_id'] ?? '') === 'hello', 'runtime gate must not block ready API Packs');
 });
 
 function hub_test_public_api_free_port(): int

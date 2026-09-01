@@ -1278,6 +1278,9 @@ function hub_cluster_public_manifest(PDO $db): array
         }
         $station = $stations[$stationId];
         $service = $contracts[$stationId][$mode];
+        if ($mode === 'manual_vision') {
+            unset($service['gpu_required']);
+        }
         if (hub_is_voice_profile_mode($mode)) {
             $service = hub_cluster_rewrite_voice_generate_contract($service, $mode);
         }
@@ -5294,6 +5297,9 @@ function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
             'result_artifact_fields', 'artifact_delivery_note', 'workflow', 'error_table',
             'examples', 'workflow_examples',
         ]));
+        if ($mode === 'manual_vision') {
+            unset($services[$mode]['gpu_required']);
+        }
     }
 
     return ['modes' => array_keys($modes), 'services' => array_values($services)];
