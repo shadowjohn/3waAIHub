@@ -33,13 +33,17 @@ function hub_voice_preset_engine_binding_for_preset(PDO $db, array $preset): arr
         throw new InvalidArgumentException('voice_preset_not_found');
     }
     $stmt = $db->prepare(
-        'SELECT pack_id, compatibility_state
-         FROM voice_preset_engine_bindings
-         WHERE voice_preset_id = :voice_preset_id'
+        'SELECT binding.pack_id, binding.compatibility_state
+         FROM voice_presets AS preset
+         LEFT JOIN voice_preset_engine_bindings AS binding ON binding.voice_preset_id = preset.id
+         WHERE preset.id = :voice_preset_id'
     );
     $stmt->execute([':voice_preset_id' => $presetId]);
     $binding = $stmt->fetch();
     if ($binding === false) {
+        throw new InvalidArgumentException('voice_preset_not_found');
+    }
+    if (($binding['pack_id'] ?? null) === null) {
         return ['pack_id' => HUB_VOICE_PRESET_DEFAULT_PACK_ID, 'explicit' => false];
     }
 
@@ -69,18 +73,23 @@ function hub_voice_preset_breezy_profile_is_compatible(array $profile, int $memb
 {
     $language = $profile['language'] ?? null;
     $expiresAt = trim((string)($profile['expires_at'] ?? ''));
+    if ($expiresAt !== '') {
+        $expiresAtTimestamp = strtotime($expiresAt);
+        if ($expiresAtTimestamp === false || $expiresAtTimestamp <= time()) {
+            return false;
+        }
+    }
 
     return $memberId > 0
         && (int)($profile['owner_member_id'] ?? 0) === $memberId
         && (string)($profile['visibility'] ?? '') === 'private'
         && (string)($profile['usage_scope'] ?? '') === 'private'
         && trim((string)($profile['consent_type'] ?? '')) !== ''
-        && (string)($profile['transcription_status'] ?? '') === 'confirmed'
+        && in_array((string)($profile['transcription_status'] ?? ''), ['ready', 'confirmed'], true)
         && trim((string)($profile['prompt_text'] ?? '')) !== ''
         && trim((string)($profile['prompt_text_confirmed_at'] ?? '')) !== ''
         && ($language === null || $language === '' || $language === 'zh-TW')
-        && trim((string)($profile['deleted_at'] ?? '')) === ''
-        && $expiresAt === '';
+        && trim((string)($profile['deleted_at'] ?? '')) === '';
 }
 
 function hub_voice_preset_engine_base_profile(PDO $db, array $preset): ?array

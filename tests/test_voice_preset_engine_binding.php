@@ -21,7 +21,7 @@ function hub_test_breezy_write_pcm_wav(string $path, int $sampleRate, array $sam
     }
 }
 
-function hub_test_breezy_confirmed_profile(PDO $db, int $memberId): int
+function hub_test_breezy_confirmed_profile(PDO $db, int $memberId, ?string $expiresAt = null): int
 {
     $dir = hub_voice_profile_storage_dir();
     $path = $dir . '/breezy_reference.wav';
@@ -40,10 +40,11 @@ function hub_test_breezy_confirmed_profile(PDO $db, int $memberId): int
         'consent_type' => 'self_recorded',
         'usage_scope' => 'private',
         'visibility' => 'private',
+        'expires_at' => $expiresAt,
     ]);
     $db->prepare(
         "UPDATE voice_profiles
-         SET transcription_status = 'confirmed', prompt_text_confirmed_at = :confirmed_at
+         SET transcription_status = 'ready', prompt_text_confirmed_at = :confirmed_at
          WHERE id = :id"
     )->execute([':confirmed_at' => hub_now(), ':id' => $id]);
 
@@ -109,7 +110,7 @@ hub_test('Breezy preset binding keeps VoxCPM2 default private and makes Breezy e
     hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
     $member = hub_create_api_member($db, 'Breezy Owner');
     $token = hub_create_api_token($db, $member, 'Breezy binding token', null, null);
-    $profile = hub_test_breezy_confirmed_profile($db, $member);
+    $profile = hub_test_breezy_confirmed_profile($db, $member, '2099-01-01 00:00:00');
     hub_test_breezy_preset($db, $member, $profile);
 
     hub_test_assert(
@@ -175,27 +176,36 @@ hub_test('Breezy preset binding refuses incompatible base profiles without a fal
         'voice_preset' => 'mechanic-dad',
         'engine' => 'breezyvoice',
     ]));
-    $db->prepare("UPDATE voice_profiles SET transcription_status = 'confirmed', prompt_text = NULL, prompt_text_confirmed_at = :confirmed_at WHERE id = :id")
+    $db->prepare("UPDATE voice_profiles SET transcription_status = 'ready', prompt_text = NULL, prompt_text_confirmed_at = :confirmed_at WHERE id = :id")
         ->execute([':confirmed_at' => hub_now(), ':id' => $profileId]);
     $missingTranscript = hub_test_breezy_binding_error(static fn (): array => hub_voice_preset_engine_bind($db, ['member_id' => $member], [
         'voice_preset' => 'mechanic-dad',
         'engine' => 'breezyvoice',
     ]));
+    $expiredProfileId = hub_test_breezy_confirmed_profile($db, $member, '2000-01-01 00:00:00');
+    hub_test_breezy_preset($db, $member, $expiredProfileId, 'expired-profile');
+    $expiredProfile = hub_test_breezy_binding_error(static fn (): array => hub_voice_preset_engine_bind($db, ['member_id' => $member], [
+        'voice_preset' => 'expired-profile',
+        'engine' => 'breezyvoice',
+    ]));
     $preset = hub_voice_preset_for_owner($db, $member, 'mechanic-dad');
+    $expiredPreset = hub_voice_preset_for_owner($db, $member, 'expired-profile');
     $bindingCount = (int)$db->query('SELECT COUNT(*) FROM voice_preset_engine_bindings')->fetchColumn();
     $auditCount = (int)$db->query("SELECT COUNT(*) FROM voice_profile_audit_logs WHERE action = 'preset_engine_bind'")->fetchColumn();
 
     hub_test_assert(
         $error === 'voice_preset_engine_incompatible'
         && $missingTranscript === 'voice_preset_engine_incompatible'
+        && $expiredProfile === 'voice_preset_engine_incompatible'
         && (int)($preset['revision'] ?? 0) === 1
+        && (int)($expiredPreset['revision'] ?? 0) === 1
         && $bindingCount === 0
         && $auditCount === 0,
         'unconfirmed profile must reject Breezy without binding, revision, audit, or VoxCPM2 fallback'
     );
 });
 
-hub_test('Breezy profile compatibility requires owner private consented confirmed permanent zh-TW data', function (): void {
+hub_test('Breezy profile compatibility requires owner private consented transcript-confirmed active zh-TW data', function (): void {
     $now = hub_now();
     $profile = [
         'id' => 1,
@@ -203,7 +213,7 @@ hub_test('Breezy profile compatibility requires owner private consented confirme
         'visibility' => 'private',
         'usage_scope' => 'private',
         'consent_type' => 'self_recorded',
-        'transcription_status' => 'confirmed',
+        'transcription_status' => 'ready',
         'prompt_text' => 'confirmed transcript fixture',
         'prompt_text_confirmed_at' => $now,
         'language' => 'zh-TW',
@@ -215,15 +225,21 @@ hub_test('Breezy profile compatibility requires owner private consented confirme
         ['visibility' => 'shared'],
         ['usage_scope' => 'licensed'],
         ['consent_type' => ''],
-        ['transcription_status' => 'ready'],
+        ['transcription_status' => 'pending'],
         ['prompt_text' => ''],
         ['prompt_text_confirmed_at' => ''],
         ['language' => 'en'],
         ['deleted_at' => $now],
-        ['expires_at' => '2099-01-01 00:00:00'],
+        ['expires_at' => '2000-01-01 00:00:00'],
+        ['expires_at' => 'not-a-datetime'],
     ];
 
-    hub_test_assert(hub_voice_preset_breezy_profile_is_compatible($profile, 71), 'complete private confirmed zh-TW base profile must be compatible');
+    hub_test_assert(
+        hub_voice_preset_breezy_profile_is_compatible($profile, 71)
+        && hub_voice_preset_breezy_profile_is_compatible(array_replace($profile, ['transcription_status' => 'confirmed']), 71)
+        && hub_voice_preset_breezy_profile_is_compatible(array_replace($profile, ['expires_at' => '2099-01-01 00:00:00']), 71),
+        'confirmed transcript evidence must accept the production ready state, safe legacy confirmed state, and a valid future expiry'
+    );
     foreach ($invalid as $changes) {
         hub_test_assert(!hub_voice_preset_breezy_profile_is_compatible(array_replace($profile, $changes), 71), 'each privacy, ownership, transcript, expiry, and language guard must reject');
     }
@@ -255,10 +271,13 @@ hub_test('Breezy preset binding lookup rejects unknown or non-ready persisted ro
          WHERE voice_preset_id = :voice_preset_id"
     )->execute([':voice_preset_id' => (int)$preset['id']]);
     $nonReady = hub_test_breezy_binding_error(static fn (): array => hub_voice_preset_engine_binding_for_preset($db, $preset));
+    $missingPreset = hub_test_breezy_binding_error(static fn (): array => hub_voice_preset_engine_binding_for_preset($db, ['id' => 987654321]));
 
     hub_test_assert(
-        $unknownPack === 'voice_preset_engine_incompatible' && $nonReady === 'voice_preset_engine_incompatible',
-        'persisted bindings must accept only known ready packs'
+        $unknownPack === 'voice_preset_engine_incompatible'
+        && $nonReady === 'voice_preset_engine_incompatible'
+        && $missingPreset === 'voice_preset_not_found',
+        'persisted bindings must accept only known ready packs and never default an unknown preset'
     );
 });
 
