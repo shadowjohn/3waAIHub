@@ -1810,6 +1810,42 @@ hub_test('Managed voice preset docs describe candidate persistence and Cluster a
     }
 });
 
+hub_test('Manual Vision caller and operator docs preserve the narrow contract', function (): void {
+    $root = (string)file_get_contents(HUB_ROOT . '/README.md');
+    $examples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
+    $cluster = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
+    $operations = (string)file_get_contents(HUB_ROOT . '/docs/operations/manual-vision-docvqa.md');
+
+    foreach ([$root, $examples, $cluster, $operations] as $document) {
+        foreach (['manual_vision', 'docvqa', 'English DocVQA'] as $needle) {
+            hub_test_assert(str_contains($document, $needle), 'Manual Vision documentation missing: ' . $needle);
+        }
+    }
+    $section = static function (string $document): string {
+        $start = strpos($document, '## Manual Vision DocVQA');
+        hub_test_assert($start !== false, 'Manual Vision section missing');
+        $tail = substr($document, $start);
+        $end = strpos($tail, "\n## ", 4);
+        return $end === false ? $tail : substr($tail, 0, $end);
+    };
+    foreach ([$section($examples), $section($cluster)] as $document) {
+        hub_test_assert(
+            substr_count($document, '-F "') === 3
+            && str_contains($document, '-F "operation=docvqa"')
+            && str_contains($document, '-F "image=@')
+            && str_contains($document, '-F "question='),
+            'Manual Vision curl example must use only the three strict multipart fields',
+        );
+        hub_test_assert(str_contains($document, '50 MiB'), 'Manual Vision public docs must state the image limit');
+        foreach (['model=', 'profile=', 'path=', 'prompt=', 'max_tokens='] as $forbidden) {
+            hub_test_assert(!str_contains($document, $forbidden), 'Manual Vision public example exposes private control: ' . $forbidden);
+        }
+    }
+    foreach (['answer en {question}', 'not literal OCR', 'PaliGemma2', 'PP-OCRv5', 'pdf2html', '50 MiB', '64', 'manual_vision_provision', 'manual_vision_acceptance', 'HF_TOKEN', '--network none', 'cold', 'warm', 'peak VRAM', '512 MiB', 'CSRF', 'must never enter Git', 'does not perform those deployment actions'] as $needle) {
+        hub_test_assert(str_contains($operations, $needle), 'Manual Vision runbook missing: ' . $needle);
+    }
+});
+
 hub_test('PhaseDX-3.1 old public docs defaults migrate once only', function (): void {
     $db = hub_test_reset_db();
     hub_set_storage_setting($db, 'AIHUB_PUBLIC_API_DOCS', '0');

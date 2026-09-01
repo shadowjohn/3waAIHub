@@ -66,6 +66,7 @@ Current: `20260729001` (`2026.07.29.001`) / 8/7 Admin Market + Cluster Dashboard
 | `speech_transcribe` / `asr` | 主要 GPU 語音辨識 | Router relay 回傳非 mock 中文辨識，faster-whisper 使用 CUDA `float16`。 |
 | `background_remove` | 可展示的影像能力 | BiRefNet 經 Router 回傳透明 PNG，已確認 CUDA 與 alpha 通道。 |
 | `ocr` | 可用的影像文字能力 | PP-OCRv5 經 Router 完成非 mock GPU 推論。 |
+| `manual_vision` | English DocVQA 文件圖片問答 | 獨立 Pack；通過節點實機驗收後才會出現在 Router inventory。 |
 | `photo_upload` / `photo` | Gemma 4 圖片問答 | Router 回傳 owner-scoped opaque image handle，後續問答固定回原本執行 GPU 節點。 |
 | `rag` | 已完成本機 NIM 驗證，尚未公開 | Embed 與 Rerank 都已跑過真實 GPU 推論；未納入長期 GPU 排程前，不會列入 Router inventory。 |
 
@@ -78,6 +79,8 @@ VoxCPM2 可在服務設定切為 `resident` 後重啟：首次 `voice_generate` 
 `voice_generate` 亦提供 owner-managed `voice_presets` / `preset_synthesize`：呼叫端只送角色 preset、用途、情境、台詞與 1–3 個候選；Hub 封存受管聲線、策略與 seed，完成結果回傳穩定 `candidate_id`、`audio_url`、`seed`、`preset_revision`。情境錨點未配置時自動使用基礎聲線，不會把控制描述念進台詞；經 Router 建立的 preset 與後續合成固定在同一站。操作契約見 [`docs/operations/managed-voice-presets.md`](docs/operations/managed-voice-presets.md)。
 
 `generic_synthesize` 是另一條不建立 Voice Profile 或 preset 的聲音探索路徑。它只接受 `text`、`gender`、`age_bucket`、`role_note` 與 1–3 個候選；`text` 仍是唯一朗讀內容。Hub 以內部 `design` 候選回傳 `candidate_id`、不透明 `audio_artifact_id`／`audio_url`、`seed`、`voice_design_revision` 與 `style_status=unverified`；用候選的 opaque `audio_artifact_id` 展開回傳的 `ack_url_template` 後 ACK。Router 的 generic 完成結果另有同樣不透明 ID 的 `cluster_artifact_index`，僅含 type、MIME、size 與 SHA-256 完整性描述，不含 child task、Profile、節點或路徑。性別、年齡與角色備註目前僅保留為私有配方偏好，不保證音色，也不會被拼入台詞；WAV 加配方可供追溯，但 runtime 版本變更後不保證相同位元輸出。Router 在送出時按一般可用站台選擇，子工作被接受後才固定在該站；不會讀取或建立受管 Profile。
+
+`manual_vision` 是窄介面的 English DocVQA：一張 PNG/JPEG 加一個英文問題，回傳英文答案；它不是逐字 OCR，也不取代既有 PaliGemma2、PP-OCRv5 或 `pdf2html`。呼叫範例見 [`docs/api_examples.md`](docs/api_examples.md#manual-vision-docvqa)，節點準備、WSL、驗收與 Cluster 發布流程見 [`docs/operations/manual-vision-docvqa.md`](docs/operations/manual-vision-docvqa.md)。
 
 ## 平台能力矩陣
 

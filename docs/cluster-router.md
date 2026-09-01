@@ -51,6 +51,20 @@ This first contract is deliberately narrow: it is not OCR, DocVQA, object
 detection, translation, streaming, or a general asynchronous Vision job. Each
 of those needs its own Pack contract and acceptance before it can be published.
 
+## Manual Vision DocVQA
+
+`manual_vision` provides English DocVQA, not literal OCR. It appears in the live Router manifest only after a child has a verified model snapshot, a successful hardware acceptance record, and ready health. The caller sends exactly `operation`, one PNG/JPEG `image` up to 50 MiB, and one printable-ASCII English `question`; it cannot choose a model, revision, Profile, path, prompt, device, or generation setting. The fixed internal instruction is `answer en {question}` and the server currently owns the 64-token answer budget. PaliGemma2, PP-OCRv5, and `pdf2html` remain separate capabilities.
+
+```bash
+curl -fsS -X POST "<ROUTER_BASE_URL>/cluster_api.php?mode=manual_vision" \
+  -H "Authorization: Bearer <CUSTOMER_TOKEN>" \
+  -F "operation=docvqa" \
+  -F "image=@manual-page.jpg;type=image/jpeg" \
+  -F "question=What component is marked A?"
+```
+
+The success body has exactly `ok`, `mode`, `operation`, `answer`, `answer_language`, `contract_revision`, `elapsed_ms`, and `request_id`. The body `request_id` belongs to the answering service; `X-3waAIHub-Request-Id` identifies the outer Router request and is intentionally distinct. The service error codes listed in the public contract retain their HTTP status through the Router; no accepted live station returns `router_unavailable`, and a malformed station response returns `router_response_invalid`. Router responses never reveal station credentials, model identity, revision, GPU detail, or filesystem paths.
+
 # Operator Setup and Recovery
 
 The Hub creates its own `data/cluster.key` the first time a Cluster role needs it. Do not put this key in a table, environment variable, ticket, chat, or log. A legacy `AIHUB_CLUSTER_SECRET_KEY` is migrated into the local key file once, then is no longer required. Move `data/` together with the Hub when preserving an installation; for a new host identity, start with a new key and pair the child nodes again.

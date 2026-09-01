@@ -717,6 +717,7 @@ hub_admin_header(hub_i18n_text('HubPack 套件'), $user);
                                 <?php if ($paligemmaProvisionPlan !== null): ?>
                                     <button name="action" value="provision_paligemma2" type="submit"><?= hub_h(hub_i18n_text('準備 PaliGemma 2 模型')) ?></button>
                                     <button name="action" value="accept_paligemma2" type="submit"><?= hub_h(hub_i18n_text('執行 PaliGemma 2 CUDA 驗收')) ?></button>
+                                <?php endif; ?>
                                 <?php if ($manualVision): ?>
                                     <button name="action" value="provision_manual_vision" type="submit"><?= hub_h(hub_i18n_text('準備 Manual Vision 模型')) ?></button>
                                     <button name="action" value="accept_manual_vision" type="submit"><?= hub_h(hub_i18n_text('執行 Manual Vision 驗收')) ?></button>

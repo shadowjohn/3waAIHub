@@ -86,3 +86,13 @@ hub_test('Manual Vision health publishes only verified ready state', function ()
         && str_contains($source, 'ready = runtime_accepted(snapshot)')
         && str_contains($source, 'return {"ok": ready, "ready": ready}'), 'Manual Vision health must publish only verified readiness');
 });
+
+hub_test('Manual Vision Pack README separates DocVQA from OCR and private runtime controls', function (): void {
+    $readme = (string)file_get_contents(HUB_ROOT . '/packs/vlm-manual-vision/README.md');
+    foreach (['English DocVQA', 'not literal OCR', 'answer en {question}', '`operation`', '`image`', '`question`', '50 MiB', 'PaliGemma2', 'PP-OCRv5', '`pdf2html`', '64'] as $needle) {
+        hub_test_assert(str_contains($readme, $needle), 'Manual Vision Pack README missing: ' . $needle);
+    }
+    foreach (['model=', 'profile=', 'path=', 'prompt=', 'max_tokens='] as $forbidden) {
+        hub_test_assert(!str_contains($readme, $forbidden), 'Manual Vision Pack README exposes caller control: ' . $forbidden);
+    }
+});

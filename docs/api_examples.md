@@ -170,6 +170,37 @@ Discover availability from `cluster_manifest.json.php` before choosing the
 mode. A missing `paligemma2` entry means no eligible accepted station is
 currently published; it does not reveal which node is unavailable.
 
+## Manual Vision DocVQA
+
+`manual_vision` 是 English DocVQA 問答能力，不是 literal OCR。它只接受 `operation`、`image`、`question` 三個 multipart 欄位；圖片必須是 PNG/JPEG、最大 50 MiB，問題必須是 1–400 bytes 的 printable ASCII，且至少含一個英文字母。呼叫端不能指定模型、revision、Profile、路徑、prompt、裝置或生成參數。Hub 會在內部固定使用 `answer en {question}`，答案上限由伺服器管理（目前 64 tokens）。需要逐字文字、表格數字與座標時仍用 PP-OCRv5；PaliGemma2 與 `pdf2html` 是獨立能力。
+
+Native Hub：
+
+```bash
+curl -fsS -X POST "<HUB_BASE_URL>/api.php?mode=manual_vision" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "operation=docvqa" \
+  -F "image=@manual-page.png;type=image/png" \
+  -F "question=What is the shutdown temperature?"
+```
+
+成功回應只有八個欄位：
+
+```json
+{
+  "ok": true,
+  "mode": "manual_vision",
+  "operation": "docvqa",
+  "answer": "85 °C",
+  "answer_language": "en",
+  "contract_revision": 1,
+  "elapsed_ms": 412,
+  "request_id": "req_0123456789abcdef0123456789abcdef"
+}
+```
+
+`request_id` 是服務回應識別碼；HTTP `X-3waAIHub-Request-Id` 是這次 Native Gateway 請求的識別碼，兩者應分開保存。穩定錯誤碼為 `bad_request`、`unsupported_operation`、`bad_image`、`file_too_large`、`missing_token`、`token_mode_not_allowed`、`gpu_unavailable`、`model_not_provisioned`、`model_manifest_invalid`、`runtime_not_ready`、`inference_failed`、`gateway_timeout`。
+
 ## POST Translate
 
 Status: L5 benchmark ready. The adapter uses an internal Ollama sidecar, returns mock translation by default, and runs real translation when `real_inference=1`.
