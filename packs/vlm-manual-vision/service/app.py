@@ -134,27 +134,35 @@ def _hash_file(path: Path) -> str:
 
 
 def _snapshot_files(snapshot: Path) -> set[str]:
-    files: set[str] = set()
-    for current, directories, names in os.walk(snapshot):
-        directories.sort()
-        if any((Path(current) / name).is_symlink() for name in directories):
-            raise ServiceError("model_manifest_invalid")
-        for name in sorted(names):
-            candidate = Path(current) / name
-            if candidate.is_symlink() or not candidate.is_file():
-                raise ServiceError("model_manifest_invalid")
-            files.add(candidate.relative_to(snapshot).as_posix())
-    return files
+    try:
+        from provision import _snapshot_files as complete_snapshot_files
+
+        return complete_snapshot_files(snapshot)
+    except (ImportError, OSError, ValueError) as exc:
+        raise ServiceError("model_manifest_invalid") from exc
 
 
 def _snapshot_paths() -> tuple[Path, Path]:
     root = model_root()
-    snapshot = root / "snapshot"
     manifest_path = root / "verified-snapshot.json"
-    if root.is_symlink() or snapshot.is_symlink() or manifest_path.is_symlink():
+    if root.is_symlink() or manifest_path.is_symlink():
         raise ServiceError("model_manifest_invalid")
-    if not root.is_dir() or not snapshot.is_dir() or not manifest_path.is_file():
+    if not root.is_dir() or not manifest_path.is_file():
         raise ServiceError("model_not_provisioned")
+    try:
+        marker = json.loads(manifest_path.read_text(encoding="utf-8"))
+        relative = marker["snapshot"]
+        if not isinstance(relative, str) or re.fullmatch(r"revisions/[a-f0-9]{40}/snapshot", relative) is None:
+            raise ValueError("invalid snapshot")
+        snapshot = root / relative
+        if any(path.is_symlink() for path in (root / "revisions", snapshot.parent, snapshot)):
+            raise ValueError("snapshot symlink")
+        if not snapshot.is_dir():
+            raise FileNotFoundError("snapshot missing")
+    except FileNotFoundError as exc:
+        raise ServiceError("model_not_provisioned") from exc
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise ServiceError("model_manifest_invalid") from exc
     return snapshot, manifest_path
 
 
@@ -163,7 +171,13 @@ def _read_snapshot_manifest() -> tuple[VerifiedSnapshot, list[tuple[str, str]]]:
     try:
         raw = manifest_path.read_bytes()
         payload = json.loads(raw)
-        if not isinstance(payload, dict) or set(payload) != {"snapshot", "files"} or payload["snapshot"] != "snapshot" or not isinstance(payload["files"], list):
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"snapshot", "files"}
+            or not isinstance(payload["snapshot"], str)
+            or re.fullmatch(r"revisions/[a-f0-9]{40}/snapshot", payload["snapshot"]) is None
+            or not isinstance(payload["files"], list)
+        ):
             raise ValueError("invalid manifest")
         listed: set[str] = set()
         rows: list[tuple[str, str]] = []

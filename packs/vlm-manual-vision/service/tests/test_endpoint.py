@@ -28,12 +28,19 @@ def png_bytes() -> bytes:
 
 
 def write_snapshot(root: Path, weight: bytes = b"weights") -> str:
-    snapshot = root / "snapshot"
+    revision = "a" * 40
+    snapshot = root / "revisions" / revision / "snapshot"
     snapshot.mkdir(parents=True, exist_ok=True)
-    files = {"config.json": b"{}", "model.safetensors": weight}
+    files = {
+        "added_tokens.json": b"{}", "config.json": b"{}", "generation_config.json": b"{}",
+        "model-00001-of-00002.safetensors": weight, "model-00002-of-00002.safetensors": b"weights-two",
+        "model.safetensors.index.json": json.dumps({"weight_map": {"one": "model-00001-of-00002.safetensors", "two": "model-00002-of-00002.safetensors"}}).encode(),
+        "preprocessor_config.json": b"{}", "special_tokens_map.json": b"{}", "tokenizer.json": b"{}",
+        "tokenizer.model": b"tokenizer", "tokenizer_config.json": b"{}",
+    }
     for name, content in files.items():
         (snapshot / name).write_bytes(content)
-    raw = json.dumps({"snapshot": "snapshot", "files": [{"path": name, "sha256": hashlib.sha256(content).hexdigest()} for name, content in sorted(files.items())]}).encode()
+    raw = json.dumps({"snapshot": f"revisions/{revision}/snapshot", "files": [{"path": name, "sha256": hashlib.sha256(content).hexdigest()} for name, content in sorted(files.items())]}).encode()
     (root / "verified-snapshot.json").write_bytes(raw)
     return hashlib.sha256(raw).hexdigest()
 
@@ -191,7 +198,7 @@ class EndpointTests(unittest.TestCase):
             data = Path(temporary) / "service"
             data.mkdir()
             digest = write_snapshot(root)
-            (root / "snapshot" / "model.safetensors").write_bytes(b"tampered")
+            (root / "revisions" / ("a" * 40) / "snapshot" / "model-00001-of-00002.safetensors").write_bytes(b"tampered")
             with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
                 vision._VERIFIED_IDENTITY = None
                 vision._TRUSTED_FILES = ()
@@ -202,7 +209,7 @@ class EndpointTests(unittest.TestCase):
                     self.assertTrue(self.client.get("/health").json()["ready"])
                     with patch.object(vision, "_hash_file", side_effect=AssertionError("health must not rehash")):
                         self.assertTrue(self.client.get("/health").json()["ready"])
-                    (root / "snapshot" / "model.safetensors").unlink()
+                    (root / "revisions" / ("a" * 40) / "snapshot" / "model-00001-of-00002.safetensors").unlink()
                     self.assertFalse(self.client.get("/health").json()["ready"])
                     write_snapshot(root)
                     digest = write_snapshot(root, b"changed")

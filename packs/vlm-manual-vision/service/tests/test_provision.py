@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SERVICE_DIR = Path(__file__).resolve().parents[1]
@@ -13,8 +17,11 @@ sys.path.insert(0, str(SERVICE_DIR))
 import provision  # noqa: E402
 
 
+TEST_REVISION = "f" * 40
+
+
 def write_snapshot(root: Path, *, marker: bool = True) -> Path:
-    snapshot = root / "snapshot"
+    snapshot = root / "revisions" / TEST_REVISION / "snapshot"
     snapshot.mkdir(parents=True)
     files = {
         "added_tokens.json": b"{}",
@@ -36,10 +43,30 @@ def write_snapshot(root: Path, *, marker: bool = True) -> Path:
         (snapshot / name).write_bytes(data)
     if marker:
         (root / "verified-snapshot.json").write_text(json.dumps({
-            "snapshot": "snapshot",
+            "snapshot": f"revisions/{TEST_REVISION}/snapshot",
             "files": [{"path": name, "sha256": hashlib.sha256(data).hexdigest()} for name, data in sorted(files.items())],
         }), encoding="utf-8")
     return snapshot
+
+
+def write_downloaded_snapshot(snapshot: Path) -> None:
+    snapshot.mkdir(parents=True, exist_ok=True)
+    files = {
+        "added_tokens.json": b"{}", "config.json": b"{}", "generation_config.json": b"{}",
+        "model-00001-of-00002.safetensors": b"weights-one", "model-00002-of-00002.safetensors": b"weights-two",
+        "model.safetensors.index.json": json.dumps({"weight_map": {"one": "model-00001-of-00002.safetensors", "two": "model-00002-of-00002.safetensors"}}).encode(),
+        "preprocessor_config.json": b"{}", "special_tokens_map.json": b"{}", "tokenizer.json": b"{}",
+        "tokenizer.model": b"tokenizer", "tokenizer_config.json": b"{}",
+    }
+    for name, data in files.items():
+        (snapshot / name).write_bytes(data)
+
+
+def write_current_marker(root: Path, revision: str) -> None:
+    snapshot = root / "revisions" / revision / "snapshot"
+    manifest = provision.manifest_for_snapshot(snapshot)
+    manifest["snapshot"] = f"revisions/{revision}/snapshot"
+    (root / "verified-snapshot.json").write_text(json.dumps(manifest), encoding="utf-8")
 
 
 class ProvisionTests(unittest.TestCase):
@@ -72,15 +99,15 @@ class ProvisionTests(unittest.TestCase):
                 provision.verify_published_snapshot(root)
             write_snapshot(root / "complete")
             complete = root / "complete"
-            self.assertEqual(complete / "snapshot", provision.verify_published_snapshot(complete))
+            self.assertEqual(complete / "revisions" / TEST_REVISION / "snapshot", provision.verify_published_snapshot(complete))
             try:
-                (complete / "snapshot" / "linked.json").symlink_to(complete / "snapshot" / "config.json")
+                (complete / "revisions" / TEST_REVISION / "snapshot" / "linked.json").symlink_to(complete / "revisions" / TEST_REVISION / "snapshot" / "config.json")
             except OSError as exc:
                 self.skipTest(f"symlinks unavailable: {exc}")
             with self.assertRaises(ValueError):
                 provision.verify_published_snapshot(complete)
-            (complete / "snapshot" / "linked.json").unlink()
-            (complete / "snapshot" / "model-00001-of-00002.safetensors").write_bytes(b"altered")
+            (complete / "revisions" / TEST_REVISION / "snapshot" / "linked.json").unlink()
+            (complete / "revisions" / TEST_REVISION / "snapshot" / "model-00001-of-00002.safetensors").write_bytes(b"altered")
             with self.assertRaises(ValueError):
                 provision.verify_published_snapshot(complete)
 
@@ -93,12 +120,12 @@ class ProvisionTests(unittest.TestCase):
                 provision.verify_published_snapshot(root)
             write_snapshot(root / "complete")
             complete = root / "complete"
-            (complete / "snapshot" / "preprocessor_config.json").unlink()
+            (complete / "revisions" / TEST_REVISION / "snapshot" / "preprocessor_config.json").unlink()
             with self.assertRaises(ValueError):
                 provision.verify_published_snapshot(complete)
             write_snapshot(root / "shards")
             shards = root / "shards"
-            (shards / "snapshot" / "model-00002-of-00002.safetensors").unlink()
+            (shards / "revisions" / TEST_REVISION / "snapshot" / "model-00002-of-00002.safetensors").unlink()
             with self.assertRaises(ValueError):
                 provision.verify_published_snapshot(shards)
 
@@ -112,19 +139,19 @@ class ProvisionTests(unittest.TestCase):
                 provision.manifest_for_snapshot(snapshot)
             write_snapshot(root / "extra")
             extra = root / "extra"
-            (extra / "snapshot" / "unindexed.safetensors").write_bytes(b"extra")
+            (extra / "revisions" / TEST_REVISION / "snapshot" / "unindexed.safetensors").write_bytes(b"extra")
             with self.assertRaises(ValueError):
-                provision.manifest_for_snapshot(extra / "snapshot")
+                provision.manifest_for_snapshot(extra / "revisions" / TEST_REVISION / "snapshot")
 
     def test_publish_writes_marker_only_after_every_staged_file_hash_validates(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             staging = Path(temporary) / "staging"
             snapshot = write_snapshot(staging, marker=False)
-            manifest = provision.manifest_for_snapshot(snapshot)
+            manifest = provision.manifest_for_snapshot(snapshot, f"revisions/{TEST_REVISION}/snapshot")
             self.assertFalse((staging / "verified-snapshot.json").exists())
             provision.write_verified_marker(staging, manifest)
             self.assertEqual(snapshot, provision.verify_published_snapshot(staging))
-            (snapshot / "model.safetensors").write_bytes(b"changed")
+            (snapshot / "model-00001-of-00002.safetensors").write_bytes(b"changed")
             with self.assertRaises(ValueError):
                 provision.write_verified_marker(staging, manifest)
 
@@ -149,6 +176,64 @@ class ProvisionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 provision.provision_snapshot(environment, snapshot_download=lambda **_kwargs: None)
             self.assertTrue((target / "verified-snapshot.json").exists())
+
+    def test_candidate_failure_preserves_old_revision_and_marker_while_success_publishes_only_current_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            old_revision, new_revision = "a" * 40, "b" * 40
+            write_downloaded_snapshot(root / "revisions" / old_revision / "snapshot")
+            write_current_marker(root, old_revision)
+            old_marker = (root / "verified-snapshot.json").read_bytes()
+            environment = {
+                "MANUAL_VISION_MODEL": provision.MODEL_ID, "MANUAL_VISION_MODEL_REVISION": new_revision,
+                "MANUAL_VISION_TORCH_DTYPE": "float16", "MANUAL_VISION_DEVICE": "cuda", "HF_TOKEN": "secret",
+                "MANUAL_VISION_MODEL_DIR": str(root),
+            }
+            with self.assertRaises(RuntimeError):
+                provision.provision_snapshot(environment, snapshot_download=lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("download failed")))
+            self.assertEqual(old_marker, (root / "verified-snapshot.json").read_bytes())
+            self.assertTrue((root / "revisions" / old_revision / "snapshot" / "config.json").is_file())
+
+            def download(**kwargs: object) -> None:
+                write_downloaded_snapshot(Path(str(kwargs["local_dir"])))
+
+            with patch.object(provision.os, "chown"):
+                provision.provision_snapshot(environment, snapshot_download=download)
+            marker = json.loads((root / "verified-snapshot.json").read_text(encoding="utf-8"))
+            self.assertEqual(f"revisions/{new_revision}/snapshot", marker["snapshot"])
+            self.assertTrue((root / "revisions" / old_revision / "snapshot").is_dir())
+            self.assertTrue((root / "revisions" / new_revision / "snapshot").is_dir())
+
+    def test_publisher_serializes_and_makes_published_revision_readable_by_runtime_user(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            root.mkdir()
+            entered = threading.Event()
+
+            def contender() -> None:
+                with provision.publisher_lock(root):
+                    entered.set()
+
+            with provision.publisher_lock(root):
+                thread = threading.Thread(target=contender)
+                thread.start()
+                self.assertFalse(entered.wait(0.1))
+            thread.join(timeout=1)
+            self.assertTrue(entered.is_set())
+
+            revision = "c" * 40
+            environment = {
+                "MANUAL_VISION_MODEL": provision.MODEL_ID, "MANUAL_VISION_MODEL_REVISION": revision,
+                "MANUAL_VISION_TORCH_DTYPE": "float16", "MANUAL_VISION_DEVICE": "cuda", "HF_TOKEN": "secret",
+                "MANUAL_VISION_MODEL_DIR": str(root),
+            }
+            owners: list[tuple[str, int, int]] = []
+            with patch.object(provision.os, "chown", side_effect=lambda path, uid, gid: owners.append((str(path), uid, gid))):
+                provision.provision_snapshot(environment, snapshot_download=lambda **kwargs: write_downloaded_snapshot(Path(str(kwargs["local_dir"]))))
+            published = root / "revisions" / revision
+            self.assertTrue(owners and all((uid, gid) == (10001, 10001) for _path, uid, gid in owners))
+            self.assertEqual(0o755, stat.S_IMODE(published.stat().st_mode))
+            self.assertEqual(0o644, stat.S_IMODE((published / "snapshot" / "config.json").stat().st_mode))
 
 
 if __name__ == "__main__":

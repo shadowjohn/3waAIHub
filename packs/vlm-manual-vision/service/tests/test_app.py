@@ -105,13 +105,20 @@ class FakeTorch:
 
 
 def write_verified_snapshot(root: Path, weight: bytes = b"weights") -> vision.VerifiedSnapshot:
-    snapshot = root / "snapshot"
+    revision = "a" * 40
+    snapshot = root / "revisions" / revision / "snapshot"
     snapshot.mkdir(parents=True, exist_ok=True)
-    files = {"config.json": b"{}", "model.safetensors": weight}
+    files = {
+        "added_tokens.json": b"{}", "config.json": b"{}", "generation_config.json": b"{}",
+        "model-00001-of-00002.safetensors": weight, "model-00002-of-00002.safetensors": b"weights-two",
+        "model.safetensors.index.json": json.dumps({"weight_map": {"one": "model-00001-of-00002.safetensors", "two": "model-00002-of-00002.safetensors"}}).encode(),
+        "preprocessor_config.json": b"{}", "special_tokens_map.json": b"{}", "tokenizer.json": b"{}",
+        "tokenizer.model": b"tokenizer", "tokenizer_config.json": b"{}",
+    }
     for name, data in files.items():
         (snapshot / name).write_bytes(data)
     manifest = {
-        "snapshot": "snapshot",
+        "snapshot": f"revisions/{revision}/snapshot",
         "files": [
             {"path": name, "sha256": hashlib.sha256(data).hexdigest()}
             for name, data in sorted(files.items())
@@ -203,7 +210,7 @@ class ManualVisionTests(unittest.TestCase):
             with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
                 with self.assertRaisesRegex(vision.ServiceError, "model_not_provisioned"):
                     vision.verified_snapshot()
-                (root / "snapshot").mkdir(parents=True)
+                (root / "revisions" / ("a" * 40) / "snapshot").mkdir(parents=True)
                 with self.assertRaisesRegex(vision.ServiceError, "model_not_provisioned"):
                     vision.verified_snapshot()
                 (root / "verified-snapshot.json").write_text("{}", encoding="utf-8")
@@ -217,6 +224,23 @@ class ManualVisionTests(unittest.TestCase):
                 self.assertFalse(vision.runtime_accepted(snapshot))
                 (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
                 self.assertTrue(vision.runtime_accepted(snapshot))
+
+    def test_reader_rejects_nonrevision_marker_paths_and_incomplete_runtime_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            snapshot = write_verified_snapshot(root)
+            marker = root / "verified-snapshot.json"
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            payload["snapshot"] = "revisions/../escape/snapshot"
+            marker.write_text(json.dumps(payload), encoding="utf-8")
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
+                with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
+                    vision.verified_snapshot()
+            write_verified_snapshot(root)
+            snapshot.path.joinpath("tokenizer.model").unlink()
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
+                with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
+                    vision.verified_snapshot()
 
     def test_direct_model_and_acceptance_symlinks_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -235,14 +259,14 @@ class ManualVisionTests(unittest.TestCase):
 
             root.unlink()
             snapshot = write_verified_snapshot(root)
-            actual_snapshot = root / "snapshot"
-            actual_snapshot.rename(root / "snapshot-real")
-            actual_snapshot.symlink_to(root / "snapshot-real", target_is_directory=True)
+            actual_snapshot = root / "revisions" / ("a" * 40) / "snapshot"
+            actual_snapshot.rename(root / "revisions" / ("a" * 40) / "snapshot-real")
+            actual_snapshot.symlink_to(root / "revisions" / ("a" * 40) / "snapshot-real", target_is_directory=True)
             with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
                 with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
                     vision.verified_snapshot()
             actual_snapshot.unlink()
-            (root / "snapshot-real").rename(actual_snapshot)
+            (root / "revisions" / ("a" * 40) / "snapshot-real").rename(actual_snapshot)
             manifest = root / "verified-snapshot.json"
             manifest.rename(root / "manifest-real.json")
             manifest.symlink_to(root / "manifest-real.json")
@@ -334,7 +358,7 @@ class ManualVisionTests(unittest.TestCase):
             with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
                 vision._VERIFIED_IDENTITY = None
                 try:
-                    (root / "snapshot" / "model.safetensors").write_bytes(b"tampered")
+                    (root / "revisions" / ("a" * 40) / "snapshot" / "model-00001-of-00002.safetensors").write_bytes(b"tampered")
                     with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
                         vision.process_verified_snapshot()
                     write_verified_snapshot(root)
@@ -352,14 +376,14 @@ class ManualVisionTests(unittest.TestCase):
                         self.assertEqual(first, vision.process_verified_snapshot())
                     self.assertGreater(first_calls, 0)
                     self.assertEqual(first_calls, calls)
-                    (root / "snapshot" / "model.safetensors").unlink()
+                    (root / "revisions" / ("a" * 40) / "snapshot" / "model-00001-of-00002.safetensors").unlink()
                     with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
                         vision.process_verified_snapshot()
                     vision._VERIFIED_IDENTITY = None
                     vision._TRUSTED_FILES = ()
                     write_verified_snapshot(root)
                     vision.process_verified_snapshot()
-                    (root / "snapshot" / "model.safetensors").write_bytes(b"replaced")
+                    (root / "revisions" / ("a" * 40) / "snapshot" / "model-00001-of-00002.safetensors").write_bytes(b"replaced")
                     with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
                         vision.process_verified_snapshot()
                     write_verified_snapshot(root, b"changed")
@@ -376,7 +400,7 @@ class ManualVisionTests(unittest.TestCase):
                 try:
                     outside = Path(temporary) / "outside"
                     outside.mkdir()
-                    (root / "snapshot" / "linked").symlink_to(outside, target_is_directory=True)
+                    (root / "revisions" / ("a" * 40) / "snapshot" / "linked").symlink_to(outside, target_is_directory=True)
                 except OSError as exc:
                     self.skipTest(f"symlinks unavailable: {exc}")
                 with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):

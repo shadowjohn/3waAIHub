@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from PIL import Image
 
 
 RECORD_NAME = "manual-vision-acceptance.json"
+TOMBSTONE_NAME = ".manual-vision-acceptance.tombstone"
 MIN_REMAINING_VRAM_BYTES = 512 * 1024 * 1024
 DEMO_DIR = Path(__file__).resolve().parents[1] / "demo"
 CASES_PATH = DEMO_DIR / "acceptance_cases.json"
@@ -62,8 +64,19 @@ def _write_record(data_root: Path, record: dict[str, Any]) -> None:
 
 def _invalidate_record(data_root: Path, timestamp: str) -> bool:
     try:
+        if data_root.is_symlink():
+            raise OSError("service data root is a symlink")
+        data_root.mkdir(parents=True, exist_ok=True)
+        record = data_root / RECORD_NAME
+        tombstone = data_root / TOMBSTONE_NAME
+        if record.is_symlink() or tombstone.is_symlink():
+            raise OSError("acceptance record is a symlink")
+        if record.exists():
+            os.replace(record, tombstone)
         _write_record(data_root, {"accepted": False, "timestamp": timestamp})
+        tombstone.unlink(missing_ok=True)
     except Exception:
+        print("manual vision acceptance invalidation failed", file=sys.stderr)
         return False
     return True
 

@@ -139,6 +139,21 @@ class AcceptanceTests(unittest.TestCase):
             self.assertTrue(record["accepted"])
             self.assertEqual("b" * 64, record["manifest_sha256"])
 
+    def test_failed_nonaccepted_write_cannot_leave_a_seeded_success_runtime_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary)
+            snapshot = vision.VerifiedSnapshot(Path("/private/snapshot"), "d" * 64)
+            record_path = data_root / acceptance.RECORD_NAME
+            record_path.write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
+            with patch.object(acceptance, "_write_record", side_effect=OSError("disk full")), \
+                 patch.dict(os.environ, {"MANUAL_VISION_SERVICE_DATA_DIR": str(data_root)}, clear=False):
+                self.assertFalse(acceptance.run_acceptance(
+                    infer=lambda _image, _question: "unused", manifest_sha256=snapshot.manifest_sha256,
+                    model_revision="a" * 40, dtype="float16", data_root=data_root, cuda=FakeCuda(),
+                ))
+                self.assertFalse(vision.runtime_accepted(snapshot))
+            self.assertFalse(record_path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
