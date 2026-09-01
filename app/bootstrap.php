@@ -72,6 +72,7 @@ require_once __DIR__ . '/docparser.php';
 require_once __DIR__ . '/api_access.php';
 require_once __DIR__ . '/api_tokens.php';
 require_once __DIR__ . '/voice_profiles.php';
+require_once __DIR__ . '/voice_preset_engines.php';
 require_once __DIR__ . '/voice_profile_tasks.php';
 require_once __DIR__ . '/voice_presets.php';
 require_once __DIR__ . '/photo_assets.php';
