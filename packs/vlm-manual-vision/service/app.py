@@ -207,6 +207,17 @@ def published_snapshot_identity() -> VerifiedSnapshot:
     return _read_snapshot_manifest()[0]
 
 
+def snapshot_revision(snapshot: VerifiedSnapshot) -> str:
+    try:
+        relative = snapshot.path.relative_to(model_root()).as_posix()
+    except ValueError as exc:
+        raise ServiceError("model_manifest_invalid") from exc
+    match = re.fullmatch(r"revisions/([a-f0-9]{40})/snapshot", relative)
+    if match is None:
+        raise ServiceError("model_manifest_invalid")
+    return match.group(1)
+
+
 def verified_snapshot() -> VerifiedSnapshot:
     """Small fail-closed verifier; Task 3 may strengthen this manifest format."""
     identity, rows = _read_snapshot_manifest()
@@ -242,10 +253,15 @@ def runtime_accepted(snapshot: VerifiedSnapshot) -> bool:
         raise
     except (OSError, ValueError, TypeError):
         return False
+    configured_revision = os.getenv("MANUAL_VISION_MODEL_REVISION", "")
+    if re.fullmatch(r"[a-f0-9]{40}", configured_revision) is None:
+        return False
     return (
         isinstance(payload, dict)
         and payload.get("accepted") is True
         and payload.get("manifest_sha256") == snapshot.manifest_sha256
+        and payload.get("model_revision") == snapshot_revision(snapshot)
+        and payload.get("model_revision") == configured_revision
     )
 
 

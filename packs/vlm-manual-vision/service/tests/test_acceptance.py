@@ -120,12 +120,14 @@ class AcceptanceTests(unittest.TestCase):
             expected = {case["question"]: case["answer"] for case in acceptance.load_cases(self.cases_path)}
             record_path = data_root / acceptance.RECORD_NAME
             record_path.write_text(json.dumps({"accepted": True, "manifest_sha256": "a" * 64}), encoding="utf-8")
-            loaded = vision.VerifiedSnapshot(Path(temporary) / "snapshot", "b" * 64)
+            model_root = Path(temporary) / "models"
+            loaded = vision.VerifiedSnapshot(model_root / "revisions" / ("c" * 40) / "snapshot", "b" * 64)
             environment = {
                 "MANUAL_VISION_MODEL": "google/paligemma-3b-ft-docvqa-448",
                 "MANUAL_VISION_MODEL_REVISION": "c" * 40,
                 "MANUAL_VISION_TORCH_DTYPE": "float16",
                 "MANUAL_VISION_DEVICE": "cuda",
+                "MANUAL_VISION_MODEL_DIR": str(model_root),
                 "MANUAL_VISION_SERVICE_DATA_DIR": str(data_root),
             }
             with patch.dict(os.environ, environment, clear=True), \
@@ -138,6 +140,26 @@ class AcceptanceTests(unittest.TestCase):
             record = json.loads(record_path.read_text(encoding="utf-8"))
             self.assertTrue(record["accepted"])
             self.assertEqual("b" * 64, record["manifest_sha256"])
+
+    def test_local_acceptance_rejects_a_configured_revision_without_a_matching_reprovision(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            data_root = Path(temporary) / "service"
+            model_root = Path(temporary) / "models"
+            data_root.mkdir()
+            record_path = data_root / acceptance.RECORD_NAME
+            record_path.write_text(json.dumps({"accepted": True, "manifest_sha256": "a" * 64, "model_revision": "a" * 40}), encoding="utf-8")
+            loaded = vision.VerifiedSnapshot(model_root / "revisions" / ("a" * 40) / "snapshot", "b" * 64)
+            environment = {
+                "MANUAL_VISION_MODEL": "google/paligemma-3b-ft-docvqa-448",
+                "MANUAL_VISION_MODEL_REVISION": "b" * 40,
+                "MANUAL_VISION_TORCH_DTYPE": "float16",
+                "MANUAL_VISION_DEVICE": "cuda",
+                "MANUAL_VISION_MODEL_DIR": str(model_root),
+                "MANUAL_VISION_SERVICE_DATA_DIR": str(data_root),
+            }
+            with patch.dict(os.environ, environment, clear=True), patch.object(vision, "load_runtime", return_value=(object(), object(), loaded)):
+                self.assertFalse(acceptance.run_local_acceptance())
+            self.assertFalse(json.loads(record_path.read_text(encoding="utf-8"))["accepted"])
 
     def test_failed_nonaccepted_write_cannot_leave_a_seeded_success_runtime_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

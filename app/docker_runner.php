@@ -1123,8 +1123,8 @@ function hub_manual_vision_native_plan(PDO $db, array $service, bool $acceptance
         }
         $command = array_merge($command, [hub_service_image_tag($service), '/app/provision.py']);
     } else {
-        $command = array_merge($command, ['--network', 'none', '--entrypoint', '/app/entrypoint.sh', '--env', 'HF_HUB_OFFLINE=1', '--env', 'TRANSFORMERS_OFFLINE=1', '--env', 'MANUAL_VISION_MODEL_DIR=/models/manual-vision', '--env', 'MANUAL_VISION_CACHE_DIR=/cache/manual-vision', '--env', 'MANUAL_VISION_SERVICE_DATA_DIR=/data/service']);
-        foreach ([$models . ':/models/manual-vision:ro', $cache . ':/cache/manual-vision', $data . ':/data/service', (string)$pack['dir'] . '/demo:/demo:ro', (string)$pack['dir'] . '/demo:/app/demo:ro'] as $mount) {
+        $command = array_merge($command, ['--network', 'none', '--entrypoint', '/app/entrypoint.sh', '--env', 'HF_HUB_OFFLINE=1', '--env', 'TRANSFORMERS_OFFLINE=1', '--env', 'MANUAL_VISION_MODEL_DIR=/models/manual-vision', '--env', 'MANUAL_VISION_CACHE_DIR=/cache/manual-vision', '--env', 'MANUAL_VISION_SERVICE_DATA_DIR=/data/service', '--env', 'MANUAL_VISION_DEMO_DIR=/demo']);
+        foreach ([$models . ':/models/manual-vision:ro', $cache . ':/cache/manual-vision', $data . ':/data/service', (string)$pack['dir'] . '/demo:/demo:ro'] as $mount) {
             array_push($command, '--volume', $mount);
         }
         $command = array_merge($command, [hub_service_image_tag($service), '/usr/bin/python3', '/app/acceptance.py']);
@@ -1167,7 +1167,7 @@ function hub_manual_vision_provisioning_plan(PDO $db, array $service, ?array $pr
         . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
         . 'service_data=' . hub_wsl_shell_literal($serviceData) . "\n"
         . 'test -f "$pack_root/' . (string)$runtime['dockerfile'] . '"' . "\n"
-        . 'install -d -m 0775 "$models_root" "$cache_root" "$service_data"' . "\n"
+        . 'mkdir -p "$models_root" "$cache_root" "$service_data"' . "\n"
         . 'test -n "${HF_TOKEN:-}"' . "\n"
         . 'exec ' . $docker . "\n";
 
@@ -1191,7 +1191,6 @@ function hub_manual_vision_acceptance_args(PDO $db, array $service, ?array $prof
     $runtimeRoot = (string)$runtime['runtime_root'];
     $packRoot = $runtimeRoot . '/packs/vlm-manual-vision';
     $serviceRoot = $runtimeRoot . '/services/' . (string)$service['service_key'];
-    $modelsRoot = (string)$runtime['models_root'] . '/manual-vision';
     $cacheRoot = $runtimeRoot . '/cache/manual-vision';
     $demoRoot = $packRoot . '/demo';
     // The resident entrypoint prepares writable mounts then drops to UID/GID 10001; models remain read-only.
@@ -1200,22 +1199,20 @@ function hub_manual_vision_acceptance_args(PDO $db, array $service, ?array $prof
         $docker .= ' --env ' . hub_wsl_shell_literal($key . '=' . $value);
     }
     $docker .= ' --env HF_HUB_OFFLINE=1 --env TRANSFORMERS_OFFLINE=1'
-        . ' --env MANUAL_VISION_MODEL_DIR=/models/manual-vision --env MANUAL_VISION_CACHE_DIR=/cache/manual-vision --env MANUAL_VISION_SERVICE_DATA_DIR=/data/service'
-        . ' --volume ' . hub_wsl_shell_literal($modelsRoot . ':/models/manual-vision:ro')
+        . ' --env MANUAL_VISION_MODEL_DIR=/models/manual-vision --env MANUAL_VISION_CACHE_DIR=/cache/manual-vision --env MANUAL_VISION_SERVICE_DATA_DIR=/data/service --env MANUAL_VISION_DEMO_DIR=/demo'
+        . ' --volume ' . hub_wsl_shell_literal((string)$runtime['models_root'] . '/manual-vision:/models/manual-vision:ro')
         . ' --volume ' . hub_wsl_shell_literal($cacheRoot . ':/cache/manual-vision')
         . ' --volume ' . hub_wsl_shell_literal($serviceRoot . '/data:/data/service')
         . ' --volume ' . hub_wsl_shell_literal($demoRoot . ':/demo:ro')
-        . ' --volume ' . hub_wsl_shell_literal($demoRoot . ':/app/demo:ro')
         . ' ' . hub_wsl_shell_literal((string)$runtime['image']) . ' /usr/bin/python3 /app/acceptance.py';
     $script = "set -eu\n"
         . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
-        . 'models_root=' . hub_wsl_shell_literal($modelsRoot) . "\n"
         . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
         . 'service_data=' . hub_wsl_shell_literal($serviceRoot . '/data') . "\n"
         . 'demo_root=' . hub_wsl_shell_literal($demoRoot) . "\n"
         . 'test -f "$pack_root/' . (string)$runtime['dockerfile'] . '"' . "\n"
         . 'test -f "$demo_root/acceptance_cases.json"' . "\n"
-        . 'install -d -m 0775 "$cache_root" "$service_data"' . "\n"
+        . 'mkdir -p "$cache_root" "$service_data"' . "\n"
         . 'exec ' . $docker . "\n";
 
     return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script)];

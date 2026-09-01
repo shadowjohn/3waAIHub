@@ -199,13 +199,13 @@ class EndpointTests(unittest.TestCase):
             data.mkdir()
             digest = write_snapshot(root)
             (root / "revisions" / ("a" * 40) / "snapshot" / "model-00001-of-00002.safetensors").write_bytes(b"tampered")
-            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data), "MANUAL_VISION_MODEL_REVISION": "a" * 40}, clear=False):
                 vision._VERIFIED_IDENTITY = None
                 vision._TRUSTED_FILES = ()
                 try:
                     self.assertFalse(self.client.get("/health").json()["ready"])
                     digest = write_snapshot(root)
-                    (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": digest}), encoding="utf-8")
+                    (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": digest, "model_revision": "a" * 40}), encoding="utf-8")
                     self.assertTrue(self.client.get("/health").json()["ready"])
                     with patch.object(vision, "_hash_file", side_effect=AssertionError("health must not rehash")):
                         self.assertTrue(self.client.get("/health").json()["ready"])
@@ -213,7 +213,7 @@ class EndpointTests(unittest.TestCase):
                     self.assertFalse(self.client.get("/health").json()["ready"])
                     write_snapshot(root)
                     digest = write_snapshot(root, b"changed")
-                    (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": digest}), encoding="utf-8")
+                    (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": digest, "model_revision": "a" * 40}), encoding="utf-8")
                     self.assertFalse(self.client.get("/health").json()["ready"])
                 finally:
                     vision._VERIFIED_IDENTITY = None

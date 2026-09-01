@@ -17,7 +17,7 @@ from PIL import Image
 RECORD_NAME = "manual-vision-acceptance.json"
 TOMBSTONE_NAME = ".manual-vision-acceptance.tombstone"
 MIN_REMAINING_VRAM_BYTES = 512 * 1024 * 1024
-DEMO_DIR = Path(__file__).resolve().parents[1] / "demo"
+DEMO_DIR = Path(os.getenv("MANUAL_VISION_DEMO_DIR", str(Path(__file__).resolve().parents[1] / "demo")))
 CASES_PATH = DEMO_DIR / "acceptance_cases.json"
 _EXPECTED_CASES = [
     {"id": "manual-text", "image": "manual_text_page.png", "question": "What is the shutdown temperature?", "answer": "85 °C"},
@@ -160,7 +160,7 @@ def run_local_acceptance() -> bool:
     if not _invalidate_record(data_root, timestamp):
         return False
     try:
-        from app import load_runtime, run_docvqa
+        from app import load_runtime, run_docvqa, snapshot_revision
         from provision import settings_from_environment
         import torch
 
@@ -170,6 +170,8 @@ def run_local_acceptance() -> bool:
             require_acceptance=False,
             return_identity=True,
         )
+        if settings.revision != snapshot_revision(snapshot):
+            raise ValueError("configured revision does not match verified snapshot")
         return run_acceptance(
             infer=lambda image, question: run_docvqa(image, question, processor=processor, model=model, torch_module=torch),
             manifest_sha256=snapshot.manifest_sha256,

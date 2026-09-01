@@ -220,10 +220,14 @@ class ManualVisionTests(unittest.TestCase):
                 self.assertEqual(snapshot, vision.verified_snapshot())
                 (root / "acceptance.json").write_text('{"accepted": true}', encoding="utf-8")
                 self.assertFalse(vision.runtime_accepted(snapshot))
-                (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": False, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
+                environment = {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data), "MANUAL_VISION_MODEL_REVISION": "a" * 40}
+                (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": False, "manifest_sha256": snapshot.manifest_sha256, "model_revision": "a" * 40}), encoding="utf-8")
                 self.assertFalse(vision.runtime_accepted(snapshot))
-                (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
-                self.assertTrue(vision.runtime_accepted(snapshot))
+                (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256, "model_revision": "a" * 40}), encoding="utf-8")
+                with patch.dict(os.environ, environment, clear=False):
+                    self.assertTrue(vision.runtime_accepted(snapshot))
+                    with patch.dict(os.environ, {**environment, "MANUAL_VISION_MODEL_REVISION": "b" * 40}, clear=False):
+                        self.assertFalse(vision.runtime_accepted(snapshot))
 
     def test_reader_rejects_nonrevision_marker_paths_and_incomplete_runtime_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -324,11 +328,11 @@ class ManualVisionTests(unittest.TestCase):
             data = Path(temporary) / "service"
             data.mkdir()
             snapshot = write_verified_snapshot(root)
-            (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
+            (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256, "model_revision": "a" * 40}), encoding="utf-8")
             vision._RUNTIME = (snapshot.manifest_sha256, object(), object())
             vision._VERIFIED_IDENTITY = snapshot.manifest_sha256
             try:
-                with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False), \
+                with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data), "MANUAL_VISION_MODEL_REVISION": "a" * 40}, clear=False), \
                      patch.object(vision, "_hash_file", side_effect=AssertionError("cache must not rehash")):
                     self.assertEqual(vision._RUNTIME[1:], vision.load_runtime(torch_module=FakeTorch()))
             finally:
@@ -469,15 +473,15 @@ class ManualVisionTests(unittest.TestCase):
             root = Path(temporary) / "models"
             data = Path(temporary) / "service"
             data.mkdir()
-            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False), \
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data), "MANUAL_VISION_MODEL_REVISION": "a" * 40}, clear=False), \
                  patch.dict(sys.modules, {"transformers": types.SimpleNamespace(PaliGemmaProcessor=Loader, PaliGemmaForConditionalGeneration=Loader)}):
                 first_snapshot = write_verified_snapshot(root, b"first")
-                (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": first_snapshot.manifest_sha256}), encoding="utf-8")
+                (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": first_snapshot.manifest_sha256, "model_revision": "a" * 40}), encoding="utf-8")
                 vision._RUNTIME = None
                 try:
                     first = vision.load_runtime(torch_module=torch)
                     second_snapshot = write_verified_snapshot(root, b"second")
-                    (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": second_snapshot.manifest_sha256}), encoding="utf-8")
+                    (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": second_snapshot.manifest_sha256, "model_revision": "a" * 40}), encoding="utf-8")
                     with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
                         vision.load_runtime(torch_module=torch)
                 finally:

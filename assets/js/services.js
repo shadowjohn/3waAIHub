@@ -28,7 +28,9 @@
             service_remove: t('action_service_remove', '移除服務'),
             service_health_check: t('action_service_health_check', '健康檢查'),
             service_install: t('action_service_install', '安裝服務'),
-            whisper_pascal_ckip_provision: t('action_whisper_pascal_ckip_provision', '準備 CKIP 字幕資產')
+            whisper_pascal_ckip_provision: t('action_whisper_pascal_ckip_provision', '準備 CKIP 字幕資產'),
+            manual_vision_provision: t('action_manual_vision_provision', '準備 Manual Vision 模型'),
+            manual_vision_acceptance: t('action_manual_vision_acceptance', '執行 Manual Vision 驗收')
         };
         return labels[action] || action || '';
     }
