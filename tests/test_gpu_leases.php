@@ -48,6 +48,233 @@ function hub_test_gpu_lease_expire(PDO $db, array $lease): void
     ]);
 }
 
+function hub_test_gpu_breezy_wav(): string
+{
+    $samples = pack('v*', 0, 800, 0xfce0, 0, 400, 0xfe70, 0);
+
+    return 'RIFF' . pack('V', 36 + strlen($samples)) . 'WAVEfmt '
+        . pack('VvvVVvv', 16, 1, 1, 24000, 48000, 2, 16)
+        . 'data' . pack('V', strlen($samples)) . $samples;
+}
+
+function hub_test_gpu_breezy_model_fixture(): string
+{
+    $dir = hub_test_models_dir() . '/breezyvoice';
+    if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
+        throw new RuntimeException('Cannot create BreezyVoice model fixture.');
+    }
+    $manifest = [
+        'model' => 'MediaTek-Research/BreezyVoice',
+        'model_revision' => str_repeat('a', 40),
+        'upstream_revision' => str_repeat('b', 40),
+    ];
+    if (file_put_contents($dir . '/model-manifest.json', json_encode($manifest, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n", LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write BreezyVoice model fixture.');
+    }
+
+    return realpath($dir) ?: throw new RuntimeException('Cannot resolve BreezyVoice model fixture.');
+}
+
+function hub_test_gpu_breezy_task(PDO $db): array
+{
+    hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
+    $modelDir = hub_test_gpu_breezy_model_fixture();
+    $memberId = hub_create_api_member($db, 'Breezy GPU fixture ' . bin2hex(random_bytes(4)));
+    $referencePath = hub_voice_profile_storage_dir() . '/gpu-breezy-' . bin2hex(random_bytes(6)) . '.wav';
+    if (file_put_contents($referencePath, hub_test_gpu_breezy_wav(), LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write BreezyVoice reference fixture.');
+    }
+    $confirmedAt = '2026-09-02 12:34:56';
+    $promptText = '這是已確認的 Breeze GPU 測試逐字稿。';
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Breezy GPU fixture',
+        'reference_audio_path' => $referencePath,
+        'reference_audio_sha256' => hash_file('sha256', $referencePath),
+        'reference_contract' => 'generic',
+        'prompt_text' => $promptText,
+        'prompt_text_confirmed_at' => $confirmedAt,
+        'language' => 'zh-TW',
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $contract = hub_pack_async_job_contract((array)(hub_get_pack('tts-breezyvoice')['manifest'] ?? []), 'synthesize');
+    if (!is_array($contract)) {
+        throw new RuntimeException('BreezyVoice contract fixture is unavailable.');
+    }
+    $snapshot = hub_pack_job_contract_snapshot($contract);
+    $route = [
+        'requested_mode' => 'voice_generate_breezy',
+        'pack_id' => 'tts-breezyvoice',
+        'pack_version' => '0.1.0',
+        'job' => 'synthesize',
+        'job_contract_json' => $snapshot['json'],
+        'job_contract_digest' => $snapshot['digest'],
+        'runtime_mode' => 'job',
+        'accelerator' => 'gpu',
+        'route_resolved_at' => hub_now(),
+    ];
+    $input = [
+        'text' => '請朗讀這段受確認的測試文字。',
+        'mode' => 'ultimate_clone',
+        'voice_profile_id' => $profileId,
+        'seed' => 4242,
+        'seed_policy' => 'best_effort',
+        'voice_context' => [
+            'mode' => 'ultimate_clone',
+            'voice_profile_id' => $profileId,
+            'reference_audio_sha256' => hash_file('sha256', $referencePath),
+            'prompt_text_sha256' => hash('sha256', $promptText),
+            'prompt_text_confirmed_at' => $confirmedAt,
+            'container_path' => '/data/voice_profiles/reference.wav',
+        ],
+    ];
+    $taskId = hub_enqueue_owned_pack_job($db, $route, $input, $memberId, null, '127.0.0.1');
+    $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+    if (!is_array($task) || (int)$task['id'] !== $taskId) {
+        throw new RuntimeException('BreezyVoice task fixture was not claimed.');
+    }
+
+    return [
+        'task' => $task,
+        'task_id' => $taskId,
+        'profile_id' => $profileId,
+        'reference_path' => $referencePath,
+        'model_dir' => $modelDir,
+    ];
+}
+
+function hub_test_gpu_breezy_metadata(array $config, string $audio, bool $mismatch = false): array
+{
+    $model = is_array($config['model'] ?? null) ? $config['model'] : $config;
+    $modelName = is_string($config['model'] ?? null)
+        ? $config['model']
+        : (string)($model['model'] ?? 'MediaTek-Research/BreezyVoice');
+    $metadata = [
+        'model' => $modelName,
+        'model_revision' => (string)($config['model_revision'] ?? $model['model_revision'] ?? ''),
+        'upstream_revision' => (string)($config['upstream_revision'] ?? $model['upstream_revision'] ?? ''),
+        'reference_audio_sha256' => (string)($config['reference_audio_sha256'] ?? ''),
+        'transcript_sha256' => (string)($config['transcript_sha256'] ?? ''),
+        'seed' => $config['seed'] ?? 4242,
+        'seed_applied' => $config['seed_applied'] ?? false,
+        'reproducibility' => $config['reproducibility'] ?? 'best_effort',
+        'device' => $config['device'] ?? 'cuda',
+        'final_format' => [
+            'mime_type' => 'audio/wav',
+            'sample_rate' => 24000,
+            'channels' => 1,
+            'sample_format' => 'pcm_s16le',
+        ],
+        'audio_sha256' => hash('sha256', $audio),
+        'audio_size_bytes' => strlen($audio),
+    ];
+    if ($mismatch) {
+        $metadata['audio_sha256'] = str_repeat('0', 64);
+    }
+
+    return $metadata;
+}
+
+hub_test('BreezyVoice rejects a changed transcript before it plans any Docker command', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_gpu_breezy_task($db);
+    $db->prepare('UPDATE voice_profiles SET prompt_text_confirmed_at = NULL WHERE id = :id')
+        ->execute([':id' => $fixture['profile_id']]);
+    $planned = 0;
+    $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+        'worker_id' => 'breezy-profile-guard',
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
+        'pid_inspector' => static fn (): array => [],
+        'executor' => static function () use (&$planned): array {
+            $planned++;
+            throw new RuntimeException('BreezyVoice must resolve the confirmed profile before Docker planning.');
+        },
+    ]);
+    $task = hub_get_task($db, $fixture['task_id']) ?: [];
+    $runtime = $db->query('SELECT container_id FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetch();
+    $workspace = hub_task_result_dir($fixture['task_id']) . '/workspace';
+
+    hub_test_assert(
+        ($outcome['status'] ?? '') === 'failed'
+        && ($task['error_code'] ?? '') === 'voice_profile_changed'
+        && $planned === 0
+        && !is_dir($workspace)
+        && ($runtime['container_id'] ?? null) === null,
+        'a stale Breezy transcript must fail before it creates a workspace, container, or Docker plan'
+    );
+});
+
+hub_test('BreezyVoice waits on an occupied GPU then plans only its immutable model and reference mounts', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_gpu_breezy_task($db);
+    $holder = hub_test_gpu_lease_run($db, 'breezy-gpu-holder', 'breezy-holder');
+    $holderLease = hub_runtime_gpu_acquire($db, $holder, 60);
+    if (!is_array($holderLease)) {
+        throw new RuntimeException('BreezyVoice GPU holder fixture could not acquire gpu:0.');
+    }
+    $executorCalls = 0;
+    $waiting = hub_run_pack_job_task($db, $fixture['task'], [
+        'worker_id' => 'breezy-wait-worker',
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
+        'executor' => static function () use (&$executorCalls): array {
+            $executorCalls++;
+            throw new RuntimeException('BreezyVoice must not create a runner while gpu:0 is leased.');
+        },
+        'gpu_backoff_seconds' => 1,
+    ]);
+    $waitingTask = hub_get_task($db, $fixture['task_id']) ?: [];
+    $waitingRun = $db->query('SELECT state, container_id FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetch();
+    $workspace = hub_task_result_dir($fixture['task_id']) . '/workspace';
+    hub_test_assert(hub_runtime_gpu_release($db, $holder, $holderLease), 'BreezyVoice holder must release gpu:0 for retry planning.');
+    $db->prepare('UPDATE tasks SET next_attempt_at = :next_attempt_at WHERE id = :id')
+        ->execute([':next_attempt_at' => date('Y-m-d H:i:s', time() - 1), ':id' => $fixture['task_id']]);
+    hub_test_assert(hub_promote_due_waiting_gpu_task($db), 'released BreezyVoice task must become claimable once its GPU backoff is due.');
+    $retry = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+    if (!is_array($retry) || (int)$retry['id'] !== $fixture['task_id']) {
+        throw new RuntimeException('BreezyVoice GPU retry was not claimed.');
+    }
+    $plans = [];
+    $outcome = hub_run_pack_job_task($db, $retry, [
+        'worker_id' => 'breezy-plan-worker',
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
+        'pid_inspector' => static fn (): array => [],
+        'audio_probe' => static fn (): array => ['duration_seconds' => 0.001, 'sample_rate' => 24000, 'channels' => 1, 'frames' => 7],
+        'executor' => static function (array $context) use (&$plans): array {
+            $plans[] = hub_pack_job_default_runner_command($context);
+            $audio = hub_test_gpu_breezy_wav();
+            file_put_contents($context['workspace'] . '/output/generated_audio.wav', $audio, LOCK_EX);
+            file_put_contents(
+                $context['workspace'] . '/output/synthesis_metadata.json',
+                json_encode(hub_test_gpu_breezy_metadata((array)$context['runner']['config'], $audio), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n",
+                LOCK_EX,
+            );
+
+            return ['exit_code' => 0, 'completed_no_process_evidence' => true, 'cleanup' => hub_pack_job_no_work_cleanup()];
+        },
+    ]);
+    $command = $plans[0]['command'] ?? [];
+    $modelMount = 'type=bind,src=' . $fixture['model_dir'] . ',dst=/models/breezyvoice,readonly';
+    $referenceMount = 'type=bind,src=' . realpath($fixture['reference_path']) . ',dst=/data/voice_profiles/reference.wav,readonly';
+    $plannedText = strtolower(implode("\n", array_map('strval', $command)));
+
+    hub_test_assert(
+        ($waiting['status'] ?? '') === 'waiting_gpu'
+        && $executorCalls === 0
+        && ($waitingTask['status'] ?? '') === 'waiting_gpu'
+        && !is_dir($workspace)
+        && ($waitingRun['state'] ?? '') === 'waiting_gpu'
+        && ($waitingRun['container_id'] ?? null) === null
+        && ($outcome['status'] ?? '') === 'success'
+        && ($command[0] ?? null) === 'docker'
+        && in_array('3waaihub/tts-breezyvoice:0.1.0-pascal-cu118', $command, true)
+        && in_array($modelMount, $command, true)
+        && in_array($referenceMount, $command, true)
+        && !str_contains($plannedText, 'paligemma'),
+        'BreezyVoice must wait without a workspace then plan only its own image, immutable model, and read-only reference mount'
+    );
+});
+
 function hub_test_resident_vox_fixture(PDO $db, bool $clone = false): array
 {
     hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);

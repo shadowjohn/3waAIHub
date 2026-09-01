@@ -45,9 +45,16 @@
       "aliases": {
         "best_effort": {
           "model": "MediaTek-Research/BreezyVoice",
-          "model_revision": "main",
+          "model_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "upstream_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "model_dir": "/models/breezyvoice",
           "seed_applied": false,
-          "reproducibility": "best_effort"
+          "reproducibility": "best_effort",
+          "device": "cuda",
+          "sample_rate": 24000,
+          "channels": 1,
+          "sample_format": "pcm_s16le",
+          "max_input_chars": 2000
         }
       }
     }
@@ -84,12 +91,31 @@
         "required_vram_mb": 4096,
         "timeout_seconds": 7200,
         "network_profile": "isolated",
-        "executor": "container"
+        "executor": "container",
+        "asset_mounts": [
+          {
+            "id": "breezyvoice_model",
+            "storage": "models",
+            "host_subdir": "breezyvoice",
+            "container_path": "/models/breezyvoice",
+            "required_paths": ["model-manifest.json"],
+            "marker_json": {
+              "path": "model-manifest.json",
+              "required_strings": {
+                "model": "MediaTek-Research/BreezyVoice",
+                "model_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "upstream_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "exact_keys": ["model", "model_revision", "upstream_revision"]
+            }
+          }
+        ]
       },
       "runner_config": {
         "alias_input": "seed_policy",
         "model_allowlist": "breezyvoice_seed_policy",
-        "default_alias": "best_effort"
+        "default_alias": "best_effort",
+        "materializer": "breezyvoice_ultimate_v1"
       },
       "output": {
         "artifacts": [
@@ -106,7 +132,21 @@
             "mime_types": ["application/json"],
             "max_bytes": 1048576,
             "json": {
-              "required_keys": ["model", "model_revision", "upstream_revision", "reference_audio_sha256", "transcript_sha256", "seed", "seed_applied", "reproducibility", "device", "final_format"]
+              "required_keys": ["model", "model_revision", "upstream_revision", "reference_audio_sha256", "transcript_sha256", "seed", "seed_applied", "reproducibility", "device", "final_format", "audio_sha256", "audio_size_bytes"],
+              "semantic": {
+                "field_types": {
+                  "audio_sha256": "nonempty_string",
+                  "audio_size_bytes": "positive_integer"
+                },
+                "object_properties": {
+                  "final_format": {
+                    "mime_type": "nonempty_string",
+                    "sample_rate": "positive_integer",
+                    "channels": "positive_integer",
+                    "sample_format": "nonempty_string"
+                  }
+                }
+              }
             }
           }
         ]

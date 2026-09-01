@@ -1653,6 +1653,9 @@ function hub_pack_job_runner_config_for_task(array $contract, array $input): ?ar
         return null;
     }
     $config = $contract['runner_config'];
+    if (($config['materializer'] ?? null) === 'breezyvoice_ultimate_v1') {
+        return hub_pack_job_breezyvoice_runner_config_for_task($contract, $input);
+    }
     $alias = $input[$config['alias_input'] ?? ''] ?? ($config['default_alias'] ?? null);
     if (!is_string($alias) || !isset($config['aliases'][$alias])) {
         throw new RuntimeException('job_contract_unavailable');
@@ -1665,9 +1668,129 @@ function hub_pack_job_runner_config_for_task(array $contract, array $input): ?ar
     ];
 }
 
+function hub_pack_job_breezyvoice_runner_config_for_task(array $contract, array $input): array
+{
+    $definition = $contract['voice_context'] ?? null;
+    $runnerConfig = $contract['runner_config'] ?? null;
+    $model = is_array($runnerConfig) ? ($runnerConfig['aliases']['best_effort'] ?? null) : null;
+    if (($runnerConfig['materializer'] ?? null) !== 'breezyvoice_ultimate_v1'
+        || !is_array($definition) || !hub_pack_async_job_breezyvoice_runner_config_model($model)) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+    try {
+        $snapshot = hub_pack_job_voice_context_snapshot($definition, $input, $input['voice_context'] ?? null);
+    } catch (Throwable) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+    $seed = $input['seed'] ?? null;
+    if ($seed !== null && (!is_int($seed) || $seed < 0 || $seed > 2147483647)) {
+        throw new RuntimeException('job_contract_unavailable');
+    }
+
+    return [
+        'schema_version' => 'breezyvoice_runner_config_v1',
+        'model' => $model['model'],
+        'model_revision' => $model['model_revision'],
+        'upstream_revision' => $model['upstream_revision'],
+        'model_dir' => '/models/breezyvoice',
+        'voice_profile_id' => $snapshot['voice_profile_id'],
+        'reference_audio_sha256' => $snapshot['reference_audio_sha256'],
+        'transcript_sha256' => $snapshot['prompt_text_sha256'],
+        'prompt_text_confirmed_at' => $snapshot['prompt_text_confirmed_at'],
+        'prompt_transcript_confirmed' => true,
+        'seed' => $seed,
+        'seed_applied' => $model['seed_applied'],
+        'reproducibility' => $model['reproducibility'],
+        'device' => $model['device'],
+        'sample_rate' => $model['sample_rate'],
+        'channels' => $model['channels'],
+        'sample_format' => $model['sample_format'],
+        'max_input_chars' => $model['max_input_chars'],
+    ];
+}
+
+function hub_pack_job_breezyvoice_runner_config_valid(array $config): bool
+{
+    if (array_keys($config) !== [
+        'schema_version', 'model', 'model_revision', 'upstream_revision', 'model_dir', 'voice_profile_id',
+        'reference_audio_sha256', 'transcript_sha256', 'prompt_text_confirmed_at', 'prompt_transcript_confirmed',
+        'seed', 'seed_applied', 'reproducibility', 'device', 'sample_rate', 'channels', 'sample_format', 'max_input_chars',
+    ]) {
+        return false;
+    }
+
+    return $config['schema_version'] === 'breezyvoice_runner_config_v1'
+        && $config['model'] === 'MediaTek-Research/BreezyVoice'
+        && is_string($config['model_revision']) && preg_match('/^[a-f0-9]{40}$/', $config['model_revision']) === 1
+        && is_string($config['upstream_revision']) && preg_match('/^[a-f0-9]{40}$/', $config['upstream_revision']) === 1
+        && $config['model_dir'] === '/models/breezyvoice'
+        && is_int($config['voice_profile_id']) && $config['voice_profile_id'] > 0
+        && is_string($config['reference_audio_sha256']) && preg_match('/^[a-f0-9]{64}$/', $config['reference_audio_sha256']) === 1
+        && is_string($config['transcript_sha256']) && preg_match('/^[a-f0-9]{64}$/', $config['transcript_sha256']) === 1
+        && is_string($config['prompt_text_confirmed_at']) && preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $config['prompt_text_confirmed_at']) === 1
+        && $config['prompt_transcript_confirmed'] === true
+        && ($config['seed'] === null || (is_int($config['seed']) && $config['seed'] >= 0 && $config['seed'] <= 2147483647))
+        && $config['seed_applied'] === false && $config['reproducibility'] === 'best_effort'
+        && $config['device'] === 'cuda' && $config['sample_rate'] === 24000
+        && $config['channels'] === 1 && $config['sample_format'] === 'pcm_s16le'
+        && $config['max_input_chars'] === 2000;
+}
+
+function hub_pack_job_breezyvoice_artifact_contract_valid(string $workspace, array $config): bool
+{
+    if (!hub_pack_job_breezyvoice_runner_config_valid($config)) {
+        return false;
+    }
+    $workspace = realpath($workspace);
+    $output = $workspace === false ? false : realpath($workspace . '/output');
+    if ($workspace === false || $output === false || !hub_storage_paths_equal($output, $workspace . '/output')) {
+        return false;
+    }
+    $audioPath = $output . '/generated_audio.wav';
+    $metadataPath = $output . '/synthesis_metadata.json';
+    if (is_link($audioPath) || is_link($metadataPath) || !is_file($audioPath) || !is_file($metadataPath)) {
+        return false;
+    }
+    $audioSize = filesize($audioPath);
+    $metadataSize = filesize($metadataPath);
+    $audioSha256 = hash_file('sha256', $audioPath);
+    if (!is_int($audioSize) || $audioSize < 1 || !is_int($metadataSize) || $metadataSize < 1 || $metadataSize > 1048576
+        || !is_string($audioSha256) || preg_match('/^[a-f0-9]{64}$/', $audioSha256) !== 1) {
+        return false;
+    }
+    try {
+        $metadata = json_decode((string)file_get_contents($metadataPath), true, 32, JSON_THROW_ON_ERROR);
+    } catch (Throwable) {
+        return false;
+    }
+    if (!is_array($metadata) || array_is_list($metadata)) {
+        return false;
+    }
+    foreach ([
+        'model', 'model_revision', 'upstream_revision', 'reference_audio_sha256', 'transcript_sha256',
+        'seed', 'seed_applied', 'reproducibility', 'device',
+    ] as $field) {
+        if (!array_key_exists($field, $metadata) || $metadata[$field] !== $config[$field]) {
+            return false;
+        }
+    }
+    if (($metadata['audio_sha256'] ?? null) !== $audioSha256 || ($metadata['audio_size_bytes'] ?? null) !== $audioSize
+        || ($metadata['final_format'] ?? null) !== [
+            'mime_type' => 'audio/wav',
+            'sample_rate' => $config['sample_rate'],
+            'channels' => $config['channels'],
+            'sample_format' => $config['sample_format'],
+        ]) {
+        return false;
+    }
+
+    return true;
+}
+
 function hub_pack_job_runner_required_vram(array $runner, ?array $config): int
 {
-    $value = $config['model']['required_vram_mb'] ?? ($runner['required_vram_mb'] ?? null);
+    $model = is_array($config) && is_array($config['model'] ?? null) ? $config['model'] : [];
+    $value = $model['required_vram_mb'] ?? ($runner['required_vram_mb'] ?? null);
     if (!is_int($value) || $value < 0 || $value > 1048576) {
         throw new RuntimeException('job_contract_unavailable');
     }
@@ -3639,6 +3762,20 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             }
             $terminalErrorCode = $code;
             return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Pack job exited unsuccessfully', $cleanup, $gpuLease, $heartbeatState);
+        }
+        if ((string)($task['pack_id'] ?? '') === 'tts-breezyvoice'
+            && (string)($task['job'] ?? '') === 'synthesize'
+            && !hub_pack_job_breezyvoice_artifact_contract_valid($workspace, $runnerConfig ?? [])) {
+            return hub_pack_job_adapter_failure(
+                $db,
+                $taskId,
+                $run,
+                'artifact_contract_rejected',
+                'BreezyVoice artifact contract validation failed',
+                $cleanup,
+                $gpuLease,
+                $heartbeatState,
+            );
         }
         $final = hub_finalize_pack_job_success($db, $taskId, $run, $workspace, (array)($task['input'] ?? []), $contract['artifact_contract'], $cleanup, $audioProbe, $gpuLease, $contract['runner_config'] ?? null, $sourceAudioAttestation, $heartbeatState);
         $latest = hub_get_task($db, $taskId);

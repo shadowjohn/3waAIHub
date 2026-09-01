@@ -931,13 +931,14 @@ function hub_pack_async_job_runner_config_value(mixed $value, int $depth = 0): b
 
 function hub_pack_async_job_runner_config(mixed $config, array $fields, array $requestSchema): ?array
 {
-    if (!is_array($config) || array_diff(array_keys($config), ['alias_input', 'model_allowlist', 'aliases', 'default_alias']) !== []) {
+    if (!is_array($config) || array_diff(array_keys($config), ['alias_input', 'model_allowlist', 'aliases', 'default_alias', 'materializer']) !== []) {
         return null;
     }
     $aliasInput = (string)($config['alias_input'] ?? '');
     $allowlist = (string)($config['model_allowlist'] ?? '');
     $aliases = $config['aliases'] ?? null;
     $defaultAlias = $config['default_alias'] ?? null;
+    $materializer = $config['materializer'] ?? null;
     if (!in_array($aliasInput, $fields, true) || preg_match('/^[a-z][a-z0-9_]{0,63}$/', $allowlist) !== 1
         || !is_array($aliases) || $aliases === [] || array_is_list($aliases)
         || !isset($requestSchema[$aliasInput]['enum']) || array_keys($aliases) !== $requestSchema[$aliasInput]['enum']
@@ -950,14 +951,46 @@ function hub_pack_async_job_runner_config(mixed $config, array $fields, array $r
             return null;
         }
     }
+    if ($materializer !== null && $materializer !== 'breezyvoice_ultimate_v1') {
+        return null;
+    }
+    if ($materializer === 'breezyvoice_ultimate_v1'
+        && ($aliasInput !== 'seed_policy' || $allowlist !== 'breezyvoice_seed_policy' || $defaultAlias !== 'best_effort'
+            || array_keys($aliases) !== ['best_effort'] || !hub_pack_async_job_breezyvoice_runner_config_model($aliases['best_effort'] ?? null))) {
+        return null;
+    }
 
     return ['alias_input' => $aliasInput, 'model_allowlist' => $allowlist, 'aliases' => $aliases]
-        + ($defaultAlias === null ? [] : ['default_alias' => $defaultAlias]);
+        + ($defaultAlias === null ? [] : ['default_alias' => $defaultAlias])
+        + ($materializer === null ? [] : ['materializer' => $materializer]);
+}
+
+function hub_pack_async_job_breezyvoice_runner_config_model(mixed $model): bool
+{
+    if (!is_array($model) || array_keys($model) !== [
+        'model', 'model_revision', 'upstream_revision', 'model_dir', 'seed_applied', 'reproducibility',
+        'device', 'sample_rate', 'channels', 'sample_format', 'max_input_chars',
+    ]) {
+        return false;
+    }
+
+    return $model['model'] === 'MediaTek-Research/BreezyVoice'
+        && is_string($model['model_revision']) && preg_match('/^[a-f0-9]{40}$/', $model['model_revision']) === 1
+        && is_string($model['upstream_revision']) && preg_match('/^[a-f0-9]{40}$/', $model['upstream_revision']) === 1
+        && $model['model_dir'] === '/models/breezyvoice'
+        && $model['seed_applied'] === false && $model['reproducibility'] === 'best_effort'
+        && $model['device'] === 'cuda' && $model['sample_rate'] === 24000
+        && $model['channels'] === 1 && $model['sample_format'] === 'pcm_s16le'
+        && $model['max_input_chars'] === 2000;
 }
 
 function hub_pack_async_job_runner_config_from_manifest(mixed $definition, array $manifest, array $fields, array $requestSchema): ?array
 {
-    if (!is_array($definition) || array_diff(array_keys($definition), ['alias_input', 'model_allowlist', 'default_alias']) !== []) {
+    if (!is_array($definition) || array_diff(array_keys($definition), ['alias_input', 'model_allowlist', 'default_alias', 'materializer']) !== []) {
+        return null;
+    }
+    if (($definition['materializer'] ?? null) === 'breezyvoice_ultimate_v1'
+        && ($manifest['id'] ?? null) !== 'tts-breezyvoice') {
         return null;
     }
     $allowlist = (string)($definition['model_allowlist'] ?? '');
@@ -967,7 +1000,8 @@ function hub_pack_async_job_runner_config_from_manifest(mixed $definition, array
         'alias_input' => $definition['alias_input'] ?? null,
         'model_allowlist' => $allowlist,
         'aliases' => $aliases,
-    ] + (array_key_exists('default_alias', $definition) ? ['default_alias' => $definition['default_alias']] : []), $fields, $requestSchema);
+    ] + (array_key_exists('default_alias', $definition) ? ['default_alias' => $definition['default_alias']] : [])
+        + (array_key_exists('materializer', $definition) ? ['materializer' => $definition['materializer']] : []), $fields, $requestSchema);
 }
 
 function hub_pack_async_job_request_schema_scalar_valid(mixed $value, array $definition): bool

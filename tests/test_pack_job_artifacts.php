@@ -198,6 +198,156 @@ function hub_test_pack_job_audio_probe(string $path): array
     return ['duration_seconds' => 1.25, 'sample_rate' => 48000, 'channels' => 2];
 }
 
+function hub_test_artifact_breezy_wav(): string
+{
+    $samples = pack('v*', 0, 600, 0xfda8, 0, 300, 0xfed4, 0);
+
+    return 'RIFF' . pack('V', 36 + strlen($samples)) . 'WAVEfmt '
+        . pack('VvvVVvv', 16, 1, 1, 24000, 48000, 2, 16)
+        . 'data' . pack('V', strlen($samples)) . $samples;
+}
+
+function hub_test_artifact_breezy_fixture(PDO $db): array
+{
+    hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true]);
+    $modelDir = hub_test_models_dir() . '/breezyvoice';
+    if (!is_dir($modelDir) && !mkdir($modelDir, 0700, true) && !is_dir($modelDir)) {
+        throw new RuntimeException('Cannot create BreezyVoice artifact model fixture.');
+    }
+    file_put_contents($modelDir . '/model-manifest.json', json_encode([
+        'model' => 'MediaTek-Research/BreezyVoice',
+        'model_revision' => str_repeat('a', 40),
+        'upstream_revision' => str_repeat('b', 40),
+    ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n", LOCK_EX);
+    $memberId = hub_create_api_member($db, 'Breezy artifact owner ' . bin2hex(random_bytes(4)));
+    $reference = hub_voice_profile_storage_dir() . '/breezy-artifact-' . bin2hex(random_bytes(6)) . '.wav';
+    if (file_put_contents($reference, hub_test_artifact_breezy_wav(), LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write BreezyVoice artifact reference fixture.');
+    }
+    $confirmedAt = '2026-09-02 13:45:56';
+    $prompt = '這是 BreezyVoice artifact 合約測試逐字稿。';
+    $profileId = hub_create_voice_profile($db, $memberId, [
+        'name' => 'Breezy artifact fixture',
+        'reference_audio_path' => $reference,
+        'reference_audio_sha256' => hash_file('sha256', $reference),
+        'reference_contract' => 'generic',
+        'prompt_text' => $prompt,
+        'prompt_text_confirmed_at' => $confirmedAt,
+        'language' => 'zh-TW',
+        'consent_type' => 'self_recorded',
+        'usage_scope' => 'private',
+        'visibility' => 'private',
+    ]);
+    $contract = hub_pack_async_job_contract((array)(hub_get_pack('tts-breezyvoice')['manifest'] ?? []), 'synthesize');
+    if (!is_array($contract)) {
+        throw new RuntimeException('BreezyVoice artifact contract is unavailable.');
+    }
+    $snapshot = hub_pack_job_contract_snapshot($contract);
+    $taskId = hub_enqueue_owned_pack_job($db, [
+        'requested_mode' => 'voice_generate_breezy',
+        'pack_id' => 'tts-breezyvoice',
+        'pack_version' => '0.1.0',
+        'job' => 'synthesize',
+        'job_contract_json' => $snapshot['json'],
+        'job_contract_digest' => $snapshot['digest'],
+        'runtime_mode' => 'job',
+        'accelerator' => 'gpu',
+        'route_resolved_at' => hub_now(),
+    ], [
+        'text' => '請產生二十四 kHz 單聲道 PCM16 測試音訊。',
+        'mode' => 'ultimate_clone',
+        'voice_profile_id' => $profileId,
+        'seed' => 8181,
+        'seed_policy' => 'best_effort',
+        'voice_context' => [
+            'mode' => 'ultimate_clone',
+            'voice_profile_id' => $profileId,
+            'reference_audio_sha256' => hash_file('sha256', $reference),
+            'prompt_text_sha256' => hash('sha256', $prompt),
+            'prompt_text_confirmed_at' => $confirmedAt,
+            'container_path' => '/data/voice_profiles/reference.wav',
+        ],
+    ], $memberId, null, '127.0.0.1');
+    $task = hub_claim_next_task($db, hub_pack_job_worker_task_types());
+    if (!is_array($task) || (int)$task['id'] !== $taskId) {
+        throw new RuntimeException('BreezyVoice artifact task was not claimed.');
+    }
+
+    return ['task' => $task, 'task_id' => $taskId];
+}
+
+function hub_test_artifact_breezy_metadata(array $config, string $audio, bool $mismatch): array
+{
+    $model = is_array($config['model'] ?? null) ? $config['model'] : $config;
+    $metadata = [
+        'model' => is_string($config['model'] ?? null) ? $config['model'] : (string)($model['model'] ?? 'MediaTek-Research/BreezyVoice'),
+        'model_revision' => (string)($config['model_revision'] ?? $model['model_revision'] ?? ''),
+        'upstream_revision' => (string)($config['upstream_revision'] ?? $model['upstream_revision'] ?? ''),
+        'reference_audio_sha256' => (string)($config['reference_audio_sha256'] ?? ''),
+        'transcript_sha256' => (string)($config['transcript_sha256'] ?? ''),
+        'seed' => $config['seed'] ?? 8181,
+        'seed_applied' => $config['seed_applied'] ?? false,
+        'reproducibility' => $config['reproducibility'] ?? 'best_effort',
+        'device' => $config['device'] ?? 'cuda',
+        'final_format' => ['mime_type' => 'audio/wav', 'sample_rate' => 24000, 'channels' => 1, 'sample_format' => 'pcm_s16le'],
+        'audio_sha256' => $mismatch ? str_repeat('0', 64) : hash('sha256', $audio),
+        'audio_size_bytes' => strlen($audio),
+    ];
+
+    return $metadata;
+}
+
+hub_test('BreezyVoice artifact seam registers exact generated WAV bytes and rejects mismatched metadata', function (): void {
+    foreach ([false, true] as $mismatch) {
+        $db = hub_test_reset_db();
+        $fixture = hub_test_artifact_breezy_fixture($db);
+        $audio = hub_test_artifact_breezy_wav();
+        $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+            'worker_id' => 'breezy-artifact-worker',
+            'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
+            'pid_inspector' => static fn (): array => [],
+            'audio_probe' => static fn (): array => ['duration_seconds' => 0.001, 'sample_rate' => 24000, 'channels' => 1, 'frames' => 7],
+            'executor' => static function (array $context) use ($audio, $mismatch): array {
+                file_put_contents($context['workspace'] . '/output/generated_audio.wav', $audio, LOCK_EX);
+                file_put_contents(
+                    $context['workspace'] . '/output/synthesis_metadata.json',
+                    json_encode(hub_test_artifact_breezy_metadata((array)$context['runner']['config'], $audio, $mismatch), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n",
+                    LOCK_EX,
+                );
+
+                return ['exit_code' => 0, 'completed_no_process_evidence' => true, 'cleanup' => hub_pack_job_no_work_cleanup()];
+            },
+        ]);
+        $task = hub_get_task($db, $fixture['task_id']) ?: [];
+        $artifacts = hub_get_task_artifacts($db, $fixture['task_id']);
+        $audioArtifact = null;
+        foreach ($artifacts as $artifact) {
+            if (($artifact['artifact_type'] ?? '') === 'generated_audio') {
+                $audioArtifact = $artifact;
+                break;
+            }
+        }
+        if (!$mismatch) {
+            hub_test_assert(
+                ($outcome['status'] ?? '') === 'success'
+                && ($task['status'] ?? '') === 'success'
+                && is_array($audioArtifact)
+                && ($audioArtifact['sha256'] ?? '') === hash('sha256', $audio)
+                && (int)($audioArtifact['size_bytes'] ?? -1) === strlen($audio),
+                'BreezyVoice must register the exact generated 24 kHz mono PCM16 WAV bytes'
+            );
+            continue;
+        }
+        hub_test_assert(
+            ($outcome['status'] ?? '') === 'failed'
+            && ($task['status'] ?? '') === 'failed'
+            && ($task['error_code'] ?? '') === 'artifact_contract_rejected'
+            && $artifacts === [],
+            'BreezyVoice metadata mismatch must reject the artifact contract without publishing success'
+        );
+    }
+});
+
 function hub_test_pack_job_create_terminal_fixture(PDO $db, ?int $callbackTargetId = null): array
 {
     $memberId = hub_create_api_member($db, 'Pack Job Terminal Owner ' . bin2hex(random_bytes(3)));

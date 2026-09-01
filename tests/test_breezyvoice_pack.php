@@ -79,7 +79,7 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
         && ($artifacts[1]['mime_types'] ?? null) === ['application/json']
         && ($artifacts[1]['json']['required_keys'] ?? null) === [
             'model', 'model_revision', 'upstream_revision', 'reference_audio_sha256', 'transcript_sha256',
-            'seed', 'seed_applied', 'reproducibility', 'device', 'final_format',
+            'seed', 'seed_applied', 'reproducibility', 'device', 'final_format', 'audio_sha256', 'audio_size_bytes',
         ],
         'BreezyVoice must emit its fixed audio and synthesis metadata artifacts'
     );
@@ -98,6 +98,34 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
         && ($job['runner']['accelerator'] ?? '') === 'gpu'
         && ($job['runner']['required_vram_mb'] ?? 0) === 4096,
         'BreezyVoice must pin its Pascal isolated-GPU runner without a shell'
+    );
+    $breezyAssetMount = $job['runner']['asset_mounts'] ?? null;
+    $breezyTrustedModel = $job['runner_config']['aliases']['best_effort'] ?? null;
+    hub_test_assert(
+        $breezyAssetMount === [[
+            'id' => 'breezyvoice_model',
+            'storage' => 'models',
+            'host_subdir' => 'breezyvoice',
+            'container_path' => '/models/breezyvoice',
+            'required_paths' => ['model-manifest.json'],
+            'marker_json' => [
+                'path' => 'model-manifest.json',
+                'required_strings' => [
+                    'model' => 'MediaTek-Research/BreezyVoice',
+                    'model_revision' => str_repeat('a', 40),
+                    'upstream_revision' => str_repeat('b', 40),
+                ],
+                'exact_keys' => ['model', 'model_revision', 'upstream_revision'],
+            ],
+        ]]
+        && ($job['runner_config']['materializer'] ?? null) === 'breezyvoice_ultimate_v1'
+        && is_array($breezyTrustedModel)
+        && ($breezyTrustedModel['model_dir'] ?? null) === '/models/breezyvoice'
+        && preg_match('/^[a-f0-9]{40}$/', (string)($breezyTrustedModel['model_revision'] ?? '')) === 1
+        && preg_match('/^[a-f0-9]{40}$/', (string)($breezyTrustedModel['upstream_revision'] ?? '')) === 1
+        && !in_array((string)($breezyTrustedModel['model_revision'] ?? ''), ['', 'main'], true)
+        && !in_array((string)($breezyTrustedModel['upstream_revision'] ?? ''), ['', 'main'], true),
+        'BreezyVoice runner must mount only the immutable offline model manifest read-only'
     );
 
     $compose = (string)file_get_contents(HUB_ROOT . '/packs/tts-breezyvoice/docker-compose.yml');
@@ -124,6 +152,94 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
             . "BREEZYVOICE_MAX_INPUT_CHARS=2000\n"
             . "GPU_VISIBLE_DEVICES=all\n",
         'BreezyVoice example settings must keep the unpinned runtime non-ready'
+    );
+});
+
+hub_test('BreezyVoice materializes a closed trusted runner config from the confirmed ultimate snapshot', function (): void {
+    $pack = hub_get_pack('tts-breezyvoice');
+    $manifest = is_array($pack['manifest'] ?? null) ? $pack['manifest'] : [];
+    $contract = hub_pack_async_job_contract($manifest, 'synthesize');
+    if (!is_array($contract)) {
+        throw new RuntimeException('BreezyVoice job contract fixture is unavailable.');
+    }
+    $referenceSha256 = hash('sha256', 'breezy trusted reference');
+    $transcriptSha256 = hash('sha256', 'breezy confirmed transcript');
+    $input = [
+        'text' => '請以確認的聲音朗讀這句話。',
+        'mode' => 'ultimate_clone',
+        'voice_profile_id' => 41,
+        'seed' => 12345,
+        'seed_policy' => 'best_effort',
+        'model' => 'caller-must-not-control-model',
+        'model_revision' => 'main',
+        'model_dir' => '/private/caller-model',
+        'voice_context' => [
+            'mode' => 'ultimate_clone',
+            'voice_profile_id' => 41,
+            'reference_audio_sha256' => $referenceSha256,
+            'prompt_text_sha256' => $transcriptSha256,
+            'prompt_text_confirmed_at' => '2026-09-02 11:22:33',
+            'container_path' => '/data/voice_profiles/reference.wav',
+        ],
+    ];
+    $config = hub_pack_job_runner_config_for_task($contract, $input);
+    $expected = [
+        'schema_version' => 'breezyvoice_runner_config_v1',
+        'model' => 'MediaTek-Research/BreezyVoice',
+        'model_revision' => str_repeat('a', 40),
+        'upstream_revision' => str_repeat('b', 40),
+        'model_dir' => '/models/breezyvoice',
+        'voice_profile_id' => 41,
+        'reference_audio_sha256' => $referenceSha256,
+        'transcript_sha256' => $transcriptSha256,
+        'prompt_text_confirmed_at' => '2026-09-02 11:22:33',
+        'prompt_transcript_confirmed' => true,
+        'seed' => 12345,
+        'seed_applied' => false,
+        'reproducibility' => 'best_effort',
+        'device' => 'cuda',
+        'sample_rate' => 24000,
+        'channels' => 1,
+        'sample_format' => 'pcm_s16le',
+        'max_input_chars' => 2000,
+    ];
+    $localRunnerSchemaAccepts = static function (mixed $candidate): bool {
+        if (!is_array($candidate) || array_keys($candidate) !== [
+            'schema_version', 'model', 'model_revision', 'upstream_revision', 'model_dir', 'voice_profile_id',
+            'reference_audio_sha256', 'transcript_sha256', 'prompt_text_confirmed_at', 'prompt_transcript_confirmed',
+            'seed', 'seed_applied', 'reproducibility', 'device', 'sample_rate', 'channels', 'sample_format', 'max_input_chars',
+        ]) {
+            return false;
+        }
+
+        return $candidate['schema_version'] === 'breezyvoice_runner_config_v1'
+            && $candidate['model'] === 'MediaTek-Research/BreezyVoice'
+            && preg_match('/^[a-f0-9]{40}$/', $candidate['model_revision']) === 1
+            && preg_match('/^[a-f0-9]{40}$/', $candidate['upstream_revision']) === 1
+            && $candidate['model_dir'] === '/models/breezyvoice'
+            && is_int($candidate['voice_profile_id']) && $candidate['voice_profile_id'] > 0
+            && preg_match('/^[a-f0-9]{64}$/', $candidate['reference_audio_sha256']) === 1
+            && preg_match('/^[a-f0-9]{64}$/', $candidate['transcript_sha256']) === 1
+            && preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $candidate['prompt_text_confirmed_at']) === 1
+            && $candidate['prompt_transcript_confirmed'] === true
+            && is_int($candidate['seed']) && $candidate['seed'] >= 0
+            && $candidate['seed_applied'] === false && $candidate['reproducibility'] === 'best_effort'
+            && $candidate['device'] === 'cuda' && $candidate['sample_rate'] === 24000
+            && $candidate['channels'] === 1 && $candidate['sample_format'] === 'pcm_s16le'
+            && $candidate['max_input_chars'] === 2000;
+    };
+    $badRevision = $contract;
+    $badRevision['runner_config']['aliases']['best_effort']['model_revision'] = 'main';
+    $blankRevision = $contract;
+    $blankRevision['runner_config']['aliases']['best_effort']['upstream_revision'] = '';
+
+    hub_test_assert(
+        $config === $expected
+        && $localRunnerSchemaAccepts($config)
+        && !str_contains((string)json_encode($config, JSON_THROW_ON_ERROR), '/private/')
+        && hub_test_throws(static fn (): ?array => hub_pack_job_runner_config_for_task($badRevision, $input))
+        && hub_test_throws(static fn (): ?array => hub_pack_job_runner_config_for_task($blankRevision, $input)),
+        'BreezyVoice must emit only trusted immutable model and confirmed-profile schema fields'
     );
 });
 
