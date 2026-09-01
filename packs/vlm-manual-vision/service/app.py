@@ -197,14 +197,15 @@ def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
     snapshot = verified_snapshot()
     if not runtime_accepted(snapshot):
         raise ServiceError("runtime_not_ready")
-    if _RUNTIME is not None and _RUNTIME[0] == snapshot.manifest_sha256:
-        return _RUNTIME[1:]
     if _RUNTIME is not None:
-        raise ServiceError("runtime_not_ready")
+        if _RUNTIME[0] != snapshot.manifest_sha256:
+            raise ServiceError("runtime_not_ready")
     if torch_module is None:
         import torch as torch_module
     if not bool(torch_module.cuda.is_available()):
         raise ServiceError("gpu_unavailable")
+    if _RUNTIME is not None:
+        return _RUNTIME[1:]
     try:
         from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor
 

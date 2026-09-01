@@ -270,6 +270,16 @@ class ManualVisionTests(unittest.TestCase):
         with self.assertRaisesRegex(vision.ServiceError, "inference_failed"):
             vision.run_docvqa(Image.open(io.BytesIO(png_bytes())), "What is this?", processor=FakeProcessor(), model=FakeModel(RuntimeError("decode failed")))
 
+    def test_cached_runtime_still_requires_cuda(self) -> None:
+        snapshot = vision.VerifiedSnapshot(Path("/models/manual-vision/snapshot"), "b" * 64)
+        vision._RUNTIME = (snapshot.manifest_sha256, object(), object())
+        try:
+            with patch.object(vision, "verified_snapshot", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=True):
+                with self.assertRaisesRegex(vision.ServiceError, "gpu_unavailable"):
+                    vision.load_runtime(torch_module=FakeTorch(False))
+        finally:
+            vision._RUNTIME = None
+
     def test_image_requires_png_or_jpeg_signature_and_decode(self) -> None:
         self.assertEqual((2, 2), vision.decode_image(png_bytes()).size)
         for data in (b"not an image", b"GIF89a"):
