@@ -1816,6 +1816,12 @@ hub_test('Manual Vision caller and operator docs preserve the narrow contract', 
     $cluster = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
     $operations = (string)file_get_contents(HUB_ROOT . '/docs/operations/manual-vision-docvqa.md');
 
+    hub_test_assert(
+        !str_contains($root, '| `manual_vision` | English DocVQA 文件圖片問答 |')
+        && str_contains($root, '尚未執行真實模型/GPU 驗收'),
+        'root README must not present Manual Vision as already hardware-accepted',
+    );
+
     foreach ([$root, $examples, $cluster, $operations] as $document) {
         foreach (['manual_vision', 'docvqa', 'English DocVQA'] as $needle) {
             hub_test_assert(str_contains($document, $needle), 'Manual Vision documentation missing: ' . $needle);
@@ -1841,7 +1847,7 @@ hub_test('Manual Vision caller and operator docs preserve the narrow contract', 
             hub_test_assert(!str_contains($document, $forbidden), 'Manual Vision public example exposes private control: ' . $forbidden);
         }
     }
-    foreach (['answer en {question}', 'not literal OCR', 'PaliGemma2', 'PP-OCRv5', 'pdf2html', '50 MiB', '64', 'manual_vision_provision', 'manual_vision_acceptance', 'HF_TOKEN', '--network none', 'cold', 'warm', 'peak VRAM', '512 MiB', 'CSRF', 'must never enter Git', 'does not perform those deployment actions'] as $needle) {
+    foreach (['answer en {question}', 'not literal OCR', 'PaliGemma2', 'PP-OCRv5', 'pdf2html', '50 MiB', '64', 'manual_vision_provision', 'manual_vision_acceptance', 'HF_TOKEN', '--network none', 'cold', 'warm', 'peak VRAM', '512 MiB', 'CSRF', '3waaihub-manual-vision-main:0.1.0', '3waaihub/vlm-manual-vision:0.1.0', 'raw acceptance JSON', 'sanitized acceptance summary', 'redacted evidence', 'must never enter Git', 'FastAPI endpoint tests were not run', 'Real Docker runtime', 'CUDA/model acceptance', 'does not perform those deployment actions'] as $needle) {
         hub_test_assert(str_contains($operations, $needle), 'Manual Vision runbook missing: ' . $needle);
     }
 });
