@@ -1196,3 +1196,72 @@ hub_test('artifact Pack enqueue rolls back when its source hold cannot persist',
     hub_test_assert((int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job' AND status = 'queued'")->fetchColumn() === 0, 'failed source hold must not leave a runnable Pack job');
     hub_test_assert(hub_claim_next_task($db) === null, 'failed source hold must not leave any claimable task');
 });
+
+hub_test('Breezy preset synthesis rejects multiple candidates before it creates a task', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Breezy candidate owner');
+        $token = hub_create_api_token($db, $memberId, 'Breezy candidate token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $profileId = hub_test_breezy_confirmed_profile($db, $memberId);
+        hub_test_breezy_preset($db, $memberId, $profileId);
+
+        $bound = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+            'operation' => 'voice_preset_engine_bind',
+            'voice_preset' => 'mechanic-dad',
+            'engine' => 'breezyvoice',
+        ]);
+        $before = (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn();
+        $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+            'operation' => 'preset_synthesize',
+            'voice_preset' => 'mechanic-dad',
+            'purpose' => 'service_reply',
+            'scene' => 'default',
+            'candidate_count' => 2,
+            'text' => '請先檢查機油與火星塞。',
+        ]);
+        $payload = hub_test_audio_payload($response);
+
+        hub_test_assert(
+            $bound['status'] === 200
+            && $response['status'] === 400
+            && ($payload['error'] ?? '') === 'voice_preset_candidate_count_unsupported'
+            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn() === $before,
+            'Breezy must reject multi-candidate requests without a VoxCPM2 fallback task'
+        );
+    });
+});
+
+hub_test('Breezy preset binding rejects an unconfirmed source profile without a fallback task', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-voxcpm2', ['idempotent' => true]);
+        $memberId = hub_create_api_member($db, 'Breezy incompatible owner');
+        $token = hub_create_api_token($db, $memberId, 'Breezy incompatible token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $profileId = hub_test_breezy_confirmed_profile($db, $memberId);
+        $db->prepare('UPDATE voice_profiles SET prompt_text_confirmed_at = NULL WHERE id = :id')
+            ->execute([':id' => $profileId]);
+        hub_test_breezy_preset($db, $memberId, $profileId);
+
+        $before = (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn();
+        $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
+            'operation' => 'voice_preset_engine_bind',
+            'voice_preset' => 'mechanic-dad',
+            'engine' => 'breezyvoice',
+        ]);
+        $payload = hub_test_audio_payload($response);
+
+        hub_test_assert(
+            $response['status'] === 409
+            && ($payload['error'] ?? '') === 'voice_preset_engine_incompatible'
+            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn() === $before,
+            'an unconfirmed Breezy source must fail without a VoxCPM2 fallback task'
+        );
+    });
+});

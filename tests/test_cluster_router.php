@@ -7026,6 +7026,81 @@ hub_test('cluster router pins managed voice presets and preserves candidate refe
     });
 });
 
+hub_test('cluster router pins Breezy preset binding and projects only public metadata', function (): void {
+    hub_test_with_cluster_secret(function (): void {
+        $db = hub_test_reset_db();
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $stationA = hub_test_cluster_router_station($db, [
+            'station_key' => 'breezy_preset_station_a',
+            'station_token' => 'breezy_preset_station_a_token',
+            'modes' => ['voice_generate'],
+        ]);
+        $stationB = hub_test_cluster_router_station($db, [
+            'station_key' => 'breezy_preset_station_b',
+            'station_token' => 'breezy_preset_station_b_token',
+            'modes' => ['voice_generate'],
+        ]);
+        $stationAToken = hub_cluster_station_token($stationA);
+        $customer = hub_test_cluster_router_customer_token($db, ['voice_generate']);
+        $memberId = (int)$db->query('SELECT member_id FROM api_tokens WHERE id = ' . (int)$customer['token_id'])->fetchColumn();
+        $preset = [
+            'id' => 'mechanic-dad',
+            'label' => '測試技師',
+            'gender' => 'male',
+            'age_bucket' => 'adult',
+            'purposes' => ['service_reply'],
+            'scenes' => ['default'],
+            'preset_revision' => 2,
+        ];
+        hub_cluster_voice_preset_store($db, ['member_id' => $memberId], (int)$stationA['id'], $preset);
+        $inventory = [
+            hub_test_cluster_station_fixture(['id' => (int)$stationA['id'], 'modes' => ['voice_generate']]),
+            hub_test_cluster_station_fixture(['id' => (int)$stationB['id'], 'modes' => ['voice_generate']]),
+        ];
+        $requests = [];
+        $response = hub_cluster_dispatch($db, 'voice_generate', hub_test_cluster_router_request((string)$customer['plain_token'], [
+            'raw_body' => json_encode([
+                'operation' => 'voice_preset_engine_bind',
+                'voice_preset' => 'mechanic-dad',
+                'engine' => 'breezyvoice',
+            ], JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
+            'request_uri' => '/cluster_api.php?mode=voice_generate',
+        ]), [
+            'refresh_due' => static fn (): array => $inventory,
+            'transport' => static function (array $request) use (&$requests, $stationA, $stationAToken, $preset): array {
+                $requests[] = $request;
+                $body = json_decode((string)($request['body'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
+                hub_test_assert(
+                    ($request['url'] ?? '') === hub_cluster_station_request_base_url($stationA) . 'api.php'
+                    && ($request['headers']['Authorization'] ?? '') === 'Bearer ' . $stationAToken
+                    && $body === [
+                        'operation' => 'voice_preset_engine_bind',
+                        'voice_preset' => 'mechanic-dad',
+                        'engine' => 'breezyvoice',
+                    ],
+                    'Breezy binding must relay only to its existing station A route'
+                );
+
+                return hub_gateway_json(200, ['ok' => true, 'preset' => $preset]);
+            },
+        ]);
+        $payload = json_decode((string)$response['body'], true, 32, JSON_THROW_ON_ERROR);
+        $stored = hub_cluster_voice_preset_route_for_member($db, ['member_id' => $memberId], 'mechanic-dad');
+        $publicJson = (string)$response['body'];
+
+        hub_test_assert(
+            $response['status'] === 200
+            && $payload === ['ok' => true, 'preset' => $preset]
+            && count($requests) === 1
+            && (int)($stored['station_id'] ?? 0) === (int)$stationA['id'],
+            'Breezy binding must preserve its Router preset route and return only public preset metadata'
+        );
+        foreach (['pack_id', 'voice_profile_id', 'reference_audio_sha256', 'transcript', 'path'] as $privateField) {
+            hub_test_assert(!str_contains($publicJson, $privateField), 'Breezy public preset response must not expose ' . $privateField);
+        }
+    });
+});
+
 hub_test('cluster router projects generic voice candidates without preset metadata', function (): void {
     hub_test_with_cluster_secret(function (): void {
         $db = hub_test_reset_db();

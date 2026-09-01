@@ -6,6 +6,8 @@ return [
     __DIR__ . '/../test_retention.php',
     __DIR__ . '/../test_tts_voxcpm2.php',
     __DIR__ . '/../test_tts_gpt_sovits.php',
+    __DIR__ . '/../test_voice_preset_engine_binding.php',
+    __DIR__ . '/../test_breezyvoice_pack.php',
     __DIR__ . '/../test_cluster_router.php',
     __DIR__ . '/../test_tts_gpt_sovits_cluster.php',
     __DIR__ . '/../test_speech_fast_zh_pack.php',
