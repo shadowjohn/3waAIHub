@@ -1,0 +1,20 @@
+services:
+  vlm-manual-vision:
+    build:
+      context: ./service
+    ports:
+      - "127.0.0.1:${MANUAL_VISION_LOCAL_PORT:-18112}:8000"
+    gpus: all
+    restart: unless-stopped
+    environment:
+      MANUAL_VISION_MODEL_DIR: /models/manual-vision
+      MANUAL_VISION_MAX_NEW_TOKENS: "${MANUAL_VISION_MAX_NEW_TOKENS:-64}"
+      MANUAL_VISION_MAX_UPLOAD_MB: "${MANUAL_VISION_MAX_UPLOAD_MB:-50}"
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/manual-vision:/models/manual-vision:ro"
+      - "${AIHUB_CACHE_DIR:-/DATA/3waAIHub/data/cache}/manual-vision:/cache/manual-vision"
+      - "${SERVICE_DATA_DIR:-/DATA/3waAIHub/data/services/manual-vision-main}:/data/service"
