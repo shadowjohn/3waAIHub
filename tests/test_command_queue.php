@@ -134,6 +134,30 @@ hub_test('streamed command validation records its error in the managed stderr lo
     );
 });
 
+hub_test('quiet streamed command reports ongoing liveness before output arrives', function (): void {
+    $db = hub_test_reset_db();
+    $jobId = hub_enqueue_command_job($db, 'docker_prune_check', null, [], null, '127.0.0.1');
+    $job = hub_prepare_command_job_logs($db, hub_get_command_job($db, $jobId));
+    $heartbeats = [];
+
+    $result = hub_run_command_streamed(
+        [PHP_BINARY, '-r', 'usleep(2200000);'],
+        5,
+        [],
+        (string)$job['stdout_path'],
+        (string)$job['stderr_path'],
+        null,
+        static function (int $elapsedSeconds) use (&$heartbeats): void {
+            $heartbeats[] = $elapsedSeconds;
+        },
+        1,
+    );
+
+    hub_test_assert((int)$result['exit_code'] === 0, 'quiet streamed command must complete normally');
+    hub_test_assert($heartbeats !== [] && $heartbeats[0] === 0, 'quiet streamed command must report initial liveness before output arrives');
+    hub_test_assert(max($heartbeats) >= 1, 'quiet streamed command must report ongoing liveness while it is still running');
+});
+
 hub_test('resident reconciliation uses a prepared read before building runtime commands', function (): void {
     $source = (string)file_get_contents(HUB_ROOT . '/app/pack_job_runner.php');
     $start = strpos($source, 'function hub_reconcile_resident_job_runs');

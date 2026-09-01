@@ -16,6 +16,7 @@ function hub_playground_profiles(): array
         'yolo' => ['label' => 'YOLO', 'method' => 'POST', 'kind' => 'image'],
         'sam3' => ['label' => 'SAM3', 'method' => 'POST', 'kind' => 'sam3'],
         'bioclip' => ['label' => 'BioCLIP', 'method' => 'POST', 'kind' => 'bioclip'],
+        'paligemma2' => ['label' => 'PaliGemma 2', 'method' => 'POST', 'kind' => 'image'],
         'tts' => ['label' => 'TTS', 'method' => 'POST', 'kind' => 'json'],
         'edge_tts' => ['label' => 'Edge TTS', 'method' => 'POST', 'kind' => 'form'],
         'structure' => ['label' => 'Structure', 'method' => 'POST', 'kind' => 'document'],
@@ -195,6 +196,14 @@ function hub_playground_request_payload(string $mode): array
     if ($mode === 'bioclip') {
         return [
             'candidate_labels' => trim((string)($_POST['candidate_labels'] ?? 'plant,insect,bird,mammal,cat,dog')),
+            'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
+        ];
+    }
+    if ($mode === 'paligemma2') {
+        return [
+            'prompt' => trim((string)($_POST['paligemma2_prompt'] ?? '文件內容是什麼？')),
+            'task' => trim((string)($_POST['paligemma2_task'] ?? 'docvqa')) ?: 'docvqa',
+            'max_tokens' => (int)($_POST['max_tokens'] ?? 256),
             'real_inference' => !empty($_POST['real_inference']) ? 1 : 0,
         ];
     }
@@ -1267,7 +1276,7 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
     <h1><?= hub_h(hub_i18n_text('API 測試場')) ?></h1>
     <p class="muted"><?= hub_h(hub_i18n_text('後台 server side 呼叫本機')) ?> <code>api.php</code>。<?= hub_h(hub_i18n_text('Bearer token 只用於本次測試，不保存；範例固定使用')) ?> <code>&lt;TOKEN&gt;</code>。</p>
     <p><strong><?= hub_h(hub_i18n_text('需要 Bearer Token')) ?></strong>。<?= hub_h(hub_i18n_text('還沒有 token 時，請先')) ?> <a href="<?= $isAdminUser ? 'api_members.php' : 'my_tokens.php' ?>"><?= hub_h(hub_i18n_text('前往 API 金鑰建立')) ?></a>。</p>
-    <p class="muted"><?= hub_h(hub_i18n_text('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=image-tools</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code>、<code>api.php?mode=facebook_crawl</code></p>
+    <p class="muted"><?= hub_h(hub_i18n_text('支援範例：')) ?><code>api.php?mode=hello</code>、<code>api.php?mode=translate</code>、<code>api.php?mode=ocr</code>、<code>api.php?mode=yolo</code>、<code>api.php?mode=sam3</code>、<code>api.php?mode=bioclip</code>、<code>api.php?mode=paligemma2</code>、<code>api.php?mode=tts</code>、<code>api.php?mode=structure</code>、<code>api.php?mode=chat</code>、<code>api.php?mode=photo_upload</code>、<code>api.php?mode=photo</code>、<code>api.php?mode=audio</code>、<code>api.php?mode=speech_transcribe</code>、<code>api.php?mode=speech_transcribe_fast_zh</code>、<code>api.php?mode=background_remove</code>、<code>api.php?mode=image-tools</code>、<code>api.php?mode=taiwan_address</code>、<code>api.php?mode=web_capture</code>、<code>api.php?mode=facebook_crawl</code></p>
 </section>
 
 <div class="hub-card-grid">
@@ -1512,6 +1521,24 @@ hub_admin_header(hub_i18n_text('API 測試場'), $user);
                 <textarea name="candidate_labels" rows="3">plant,insect,bird,mammal,cat,dog</textarea>
                 <p class="muted"><?= hub_h(hub_i18n_text('可填逗號分隔標籤，或 JSON array；BioCLIP 會依候選標籤做 zero-shot 分類。')) ?></p>
                 <label><input name="real_inference" type="checkbox" value="1" checked> <?= hub_h(hub_i18n_text('真實物種辨識')) ?></label>
+            <?php elseif ($selectedMode === 'paligemma2'): ?>
+                <label><?= hub_h(hub_i18n_text('圖片')) ?></label>
+                <input name="image" type="file" accept="image/jpeg,image/png,image/webp" required>
+                <label><?= hub_h(hub_i18n_text('問題／提示')) ?> prompt</label>
+                <textarea name="paligemma2_prompt" rows="3">文件內容是什麼？</textarea>
+                <label><?= hub_h(hub_i18n_text('任務')) ?> task</label>
+                <select name="paligemma2_task">
+                    <option value="docvqa">docvqa</option>
+                    <option value="ocr">ocr</option>
+                    <option value="detect">detect</option>
+                    <option value="caption">caption</option>
+                    <option value="translate_zh">translate_zh</option>
+                    <option value="general">general</option>
+                </select>
+                <label><?= hub_h(hub_i18n_text('最大輸出 token 數')) ?> max_tokens</label>
+                <input name="max_tokens" type="number" min="16" max="2048" value="256">
+                <label><input name="real_inference" type="checkbox" value="1"> <?= hub_h(hub_i18n_text('真實推論（完成模型 acceptance 後才可啟用）')) ?></label>
+                <p class="muted"><?= hub_h(hub_i18n_text('目前為 L2 依賴驗證階段；服務健康狀態必須通過真實 CUDA 模型驗收後，才會標示 ready。')) ?></p>
             <?php elseif (in_array($selectedMode, ['ocr', 'yolo'], true)): ?>
                 <label><?= hub_h(hub_i18n_text('圖片')) ?></label>
                 <input name="image" type="file" accept="image/*">

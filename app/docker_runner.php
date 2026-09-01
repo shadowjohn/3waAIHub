@@ -352,7 +352,7 @@ function hub_run_linux_docker_command(array $command, int $timeoutSeconds = 60, 
     return hub_linux_docker_unsupported_result($platform) ?? hub_run_command($command, $timeoutSeconds, $env);
 }
 
-function hub_run_command_streamed(array $command, int $timeoutSeconds, array $env, string $stdoutPath, string $stderrPath, ?callable $onOutput = null): array
+function hub_run_command_streamed(array $command, int $timeoutSeconds, array $env, string $stdoutPath, string $stderrPath, ?callable $onOutput = null, ?callable $onHeartbeat = null, int $heartbeatSeconds = 15): array
 {
     hub_cli_only();
 
@@ -370,49 +370,68 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Invalid command.', 'output' => 'Invalid command.'];
     }
 
+    // Windows 的 proc_open pipe 可能直到子程序結束才回傳資料；WSL/Docker 長工作會因此
+    // 阻塞 stream_get_contents，讓 worker 既無心跳也無法回收。直接導向受控 job log，
+    // 再由父程序增量讀取，才能同時保有 live progress 與可靠的 process polling。
     $descriptor = [
-        1 => ['pipe', 'w'],
-        2 => ['pipe', 'w'],
+        1 => ['file', $stdoutPath, 'ab'],
+        2 => ['file', $stderrPath, 'ab'],
     ];
+    $stdoutOffset = is_file($stdoutPath) ? (int)(filesize($stdoutPath) ?: 0) : 0;
+    $stderrOffset = is_file($stderrPath) ? (int)(filesize($stderrPath) ?: 0) : 0;
     $processEnv = hub_process_environment($env);
+    $pipes = [];
     $process = @proc_open($command, $descriptor, $pipes, HUB_ROOT, $processEnv, hub_process_execution_options());
     if (!is_resource($process)) {
         file_put_contents($stderrPath, "Cannot start process.\n", FILE_APPEND);
         return ['exit_code' => 127, 'stdout' => '', 'stderr' => 'Cannot start process.', 'output' => 'Cannot start process.'];
     }
 
-    foreach ($pipes as $pipe) {
-        stream_set_blocking($pipe, false);
-    }
-
     $stdout = '';
     $stderr = '';
+    $consumeLog = static function (string $path, int &$offset, string $stream) use (&$stdout, &$stderr, $onOutput): void {
+        clearstatcache(true, $path);
+        $size = is_file($path) ? filesize($path) : false;
+        if ($size === false || $size <= $offset) {
+            return;
+        }
+        $chunk = file_get_contents($path, false, null, $offset, $size - $offset);
+        $offset = (int)$size;
+        if ($chunk === false || $chunk === '') {
+            return;
+        }
+        if ($stream === 'stdout') {
+            $stdout = hub_output_tail($stdout . $chunk);
+        } else {
+            $stderr = hub_output_tail($stderr . $chunk);
+        }
+        if ($onOutput !== null) {
+            $onOutput($stream, $chunk);
+        }
+    };
     $startedAt = time();
+    $lastHeartbeatAt = $startedAt;
+    $heartbeatSeconds = max(1, min(60, $heartbeatSeconds));
+    // Windows pipe 偶爾會直到子程序結束才交付輸出；先回報已啟動，避免 UI 顯示假靜止。
+    if ($onHeartbeat !== null) {
+        $onHeartbeat(0);
+    }
     $observedExitCode = null;
     do {
-        foreach ([1 => 'stdout', 2 => 'stderr'] as $idx => $stream) {
-            $chunk = stream_get_contents($pipes[$idx]);
-            if ($chunk === false || $chunk === '') {
-                continue;
-            }
-            if ($stream === 'stdout') {
-                $stdout = hub_output_tail($stdout . $chunk);
-                file_put_contents($stdoutPath, $chunk, FILE_APPEND);
-            } else {
-                $stderr = hub_output_tail($stderr . $chunk);
-                file_put_contents($stderrPath, $chunk, FILE_APPEND);
-            }
-            if ($onOutput) {
-                $onOutput($stream, $chunk);
-            }
-        }
+        $consumeLog($stdoutPath, $stdoutOffset, 'stdout');
+        $consumeLog($stderrPath, $stderrOffset, 'stderr');
 
         $status = proc_get_status($process);
         if (!$status['running']) {
             $observedExitCode = hub_observed_process_exit_code($status) ?? $observedExitCode;
             break;
         }
-        if (time() - $startedAt > $timeoutSeconds) {
+        $now = time();
+        if ($onHeartbeat !== null && $now - $lastHeartbeatAt >= $heartbeatSeconds) {
+            $onHeartbeat($now - $startedAt);
+            $lastHeartbeatAt = $now;
+        }
+        if ($now - $startedAt > $timeoutSeconds) {
             proc_terminate($process);
             $stderr .= "\nCommand timed out.";
             file_put_contents($stderrPath, "\nCommand timed out.", FILE_APPEND);
@@ -421,24 +440,9 @@ function hub_run_command_streamed(array $command, int $timeoutSeconds, array $en
         usleep(100000);
     } while (true);
 
-    foreach ([1 => 'stdout', 2 => 'stderr'] as $idx => $stream) {
-        $chunk = stream_get_contents($pipes[$idx]);
-        if ($chunk !== false && $chunk !== '') {
-            if ($stream === 'stdout') {
-                $stdout = hub_output_tail($stdout . $chunk);
-                file_put_contents($stdoutPath, $chunk, FILE_APPEND);
-            } else {
-                $stderr = hub_output_tail($stderr . $chunk);
-                file_put_contents($stderrPath, $chunk, FILE_APPEND);
-            }
-            if ($onOutput) {
-                $onOutput($stream, $chunk);
-            }
-        }
-        fclose($pipes[$idx]);
-    }
-
     $exitCode = hub_process_exit_code(proc_close($process), $observedExitCode);
+    $consumeLog($stdoutPath, $stdoutOffset, 'stdout');
+    $consumeLog($stderrPath, $stderrOffset, 'stderr');
     $output = trim($stdout . ($stderr !== '' ? "\n" . $stderr : ''));
 
     return ['exit_code' => $exitCode, 'stdout' => trim($stdout), 'stderr' => trim($stderr), 'output' => $output];
@@ -579,7 +583,11 @@ function hub_service_runtime_image_tag(array $service, ?array $profile = null): 
         return (string)$whisper['image'];
     }
     $ocr = hub_ocr_wsl_runtime_profile($service, $profile);
-    return $ocr === null ? hub_service_image_tag($service) : (string)$ocr['image'];
+    if ($ocr !== null) {
+        return (string)$ocr['image'];
+    }
+    $paligemma2 = hub_paligemma2_wsl_runtime_profile($service, $profile);
+    return $paligemma2 === null ? hub_service_image_tag($service) : (string)$paligemma2['image'];
 }
 
 function hub_internal_task_result(string $message): array
@@ -924,6 +932,52 @@ function hub_ocr_wsl_runtime_profile(array $service, ?array $profile = null): ?a
 }
 
 /**
+ * PaliGemma 2 是目前第三個需要 CUDA profile 選擇的 WSL service。
+ * 先維持明確垂直 slice，避免尚未成熟的 Pack 變成通用 runtime abstraction。
+ */
+function hub_paligemma2_wsl_runtime_profile(array $service, ?array $profile = null): ?array
+{
+    if ((string)($service['pack_id'] ?? '') !== 'vlm-paligemma2') {
+        return null;
+    }
+    $resolution = hub_service_runtime_resolution($service, 'windows', $profile);
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $pack = hub_get_pack('vlm-paligemma2');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null) || !is_array($resolution['profile'] ?? null)) {
+        return null;
+    }
+    $profiles = $pack['manifest']['wsl_runtime_profiles'] ?? null;
+    $profileId = (string)($resolution['profile']['pack_profiles']['vlm-paligemma2'] ?? 'default');
+    $selected = is_array($profiles) ? ($profiles[$profileId] ?? null) : null;
+    $dockerfile = is_array($selected) ? (string)($selected['dockerfile'] ?? '') : '';
+    $image = is_array($selected) ? (string)($selected['image'] ?? '') : '';
+    if (
+        !is_array($selected)
+        || ($selected['id'] ?? null) !== $profileId
+        || preg_match('~^service/Dockerfile(?:\.[A-Za-z0-9._-]+)?$~', $dockerfile) !== 1
+        || preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
+    ) {
+        return null;
+    }
+    $modelsRoot = trim((string)($resolution['profile']['models_root'] ?? ''));
+    if ($modelsRoot === '') {
+        $modelsRoot = dirname((string)$runtime['runtime_root']) . '/models';
+    }
+    try {
+        $modelsRoot = hub_container_path($modelsRoot);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+
+    return $runtime + [
+        'profile_id' => $profileId,
+        'dockerfile' => $dockerfile,
+        'image' => $image,
+        'models_root' => $modelsRoot,
+    ];
+}
+
+/**
  * Pascal CKIP 僅能由明確宣告的 Windows WSL Runtime 執行；不能因 Docker 存在而放行
  * direct linux-docker，也不可把資產下載到 Windows Control Plane 的 cache。
  *
@@ -1016,6 +1070,123 @@ function hub_run_whisper_pascal_ckip_provision_job(PDO $db, ?array $service, arr
         (int)($result['exit_code'] ?? 1)
     );
 
+    return $result;
+}
+
+/**
+ * PaliGemma 2 權重是 gated artifact：僅容許由 Hub 產生的 Compose runtime 明確下載。
+ * Windows 必須是已準備好的 WSL target；原生 Linux 則沿用既有 Linux Docker Compose 路徑。
+ *
+ * @return array{target: string}|null
+ */
+function hub_paligemma2_provisioning_plan(array $service, ?array $profile = null, ?string $platform = null): ?array
+{
+    if ((string)($service['pack_id'] ?? '') !== 'vlm-paligemma2') {
+        return null;
+    }
+    $platformId = hub_platform_id($platform);
+    if ($platformId === 'windows') {
+        $runtime = hub_paligemma2_wsl_runtime_profile($service, $profile);
+        if ($runtime === null || trim((string)($runtime['runtime_root'] ?? '')) === '') {
+            return null;
+        }
+        return ['target' => 'windows-wsl2-linux-docker'];
+    }
+
+    $resolution = hub_service_runtime_resolution($service, $platform, $profile);
+    if (!empty($resolution['supported']) && ($resolution['target'] ?? '') === 'linux-docker') {
+        return ['target' => 'linux-docker'];
+    }
+    return null;
+}
+
+function hub_run_paligemma2_provision_job(PDO $db, ?array $service, array $job): array
+{
+    if ($service === null) {
+        return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service id is required.'];
+    }
+    $plan = hub_paligemma2_provisioning_plan($service);
+    if ($plan === null) {
+        return hub_unsupported_runtime_result(
+            'windows-wsl2-linux-docker',
+            'PaliGemma 2 provisioning requires a ready WSL Runtime on Windows or a native Linux Docker runtime.'
+        );
+    }
+
+    hub_job_progress($db, $job, 'checking_model_access', 5, 'Checking PaliGemma 2 gated-model runtime settings.');
+    hub_job_progress($db, $job, 'provisioning_model', 12, 'Provisioning the pinned PaliGemma 2 model snapshot.');
+    $result = hub_run_service_compose_command(
+        $db,
+        $job,
+        $service,
+        ['run', '--rm', '--no-deps', 'adapter', 'python3', '/app/provision.py'],
+        7200,
+        'provisioning_model',
+        12,
+        95
+    );
+    if ((int)($result['exit_code'] ?? 1) === 0) {
+        hub_job_progress($db, $job, 'model_snapshot_ready', 98, 'Pinned PaliGemma 2 model snapshot verified.');
+    }
+    hub_add_service_log(
+        $db,
+        (int)$service['id'],
+        'paligemma2_provision',
+        trim((string)($result['stdout'] ?? '') . "\n" . (string)($result['stderr'] ?? '')),
+        (int)($result['exit_code'] ?? 1)
+    );
+    return $result;
+}
+
+/** @return list<string>|null */
+function hub_paligemma2_acceptance_args(array $service, ?array $profile = null, ?string $platform = null): ?array
+{
+    if (hub_paligemma2_provisioning_plan($service, $profile, $platform) === null) {
+        return null;
+    }
+    $fixture = HUB_ROOT . '/packs/vlm-paligemma2/demo/sample.png';
+    if (hub_platform_id($platform) === 'windows') {
+        $runtime = hub_paligemma2_wsl_runtime_profile($service, $profile);
+        if ($runtime === null) {
+            return null;
+        }
+        $fixture = (string)$runtime['runtime_root'] . '/packs/vlm-paligemma2/demo/sample.png';
+    }
+    if (!is_file(HUB_ROOT . '/packs/vlm-paligemma2/demo/sample.png')) {
+        return null;
+    }
+    return [
+        'run', '--rm', '-v', $fixture . ':/fixture/sample.png:ro', 'adapter',
+        'python3', '/app/acceptance.py', '--image', '/fixture/sample.png', '--prompt', 'caption en',
+    ];
+}
+
+function hub_run_paligemma2_acceptance_job(PDO $db, ?array $service, array $job): array
+{
+    if ($service === null) {
+        return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'Service id is required.'];
+    }
+    $args = hub_paligemma2_acceptance_args($service);
+    if ($args === null) {
+        return hub_unsupported_runtime_result(
+            'windows-wsl2-linux-docker',
+            'PaliGemma 2 CUDA acceptance requires a ready WSL Runtime on Windows or a native Linux Docker runtime.'
+        );
+    }
+
+    hub_job_progress($db, $job, 'checking_model_snapshot', 5, 'Checking the pinned PaliGemma 2 model snapshot.');
+    hub_job_progress($db, $job, 'real_cuda_inference', 15, 'Running fixed-image PaliGemma 2 CUDA inference acceptance.');
+    $result = hub_run_service_compose_command($db, $job, $service, $args, 600, 'real_cuda_inference', 15, 95);
+    if ((int)($result['exit_code'] ?? 1) === 0) {
+        hub_job_progress($db, $job, 'acceptance_passed', 98, 'PaliGemma 2 CUDA acceptance returned a verified real inference result.');
+    }
+    hub_add_service_log(
+        $db,
+        (int)$service['id'],
+        'paligemma2_acceptance',
+        trim((string)($result['stdout'] ?? '') . "\n" . (string)($result['stderr'] ?? '')),
+        (int)($result['exit_code'] ?? 1)
+    );
     return $result;
 }
 
@@ -1174,6 +1345,91 @@ function hub_ocr_wsl_service_compose_command(array $service, array $args, ?array
     return hub_wsl_script_command($runtime, $script);
 }
 
+function hub_paligemma2_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
+{
+    $runtime = hub_paligemma2_wsl_runtime_profile($service, $profile);
+    $pack = hub_get_pack('vlm-paligemma2');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null)) {
+        throw new RuntimeException('WSL Runtime is not ready for PaliGemma 2.');
+    }
+    $serviceKey = (string)($service['service_key'] ?? '');
+    $port = (int)($service['local_port'] ?? 0);
+    if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1 || $port < 1 || $port > 65535) {
+        throw new RuntimeException('Invalid WSL PaliGemma 2 service configuration.');
+    }
+
+    $environment = [];
+    $sourceEnvironment = hub_compose_env($service);
+    foreach ((array)($pack['manifest']['env'] ?? []) as $item) {
+        $key = (string)($item['name'] ?? '');
+        $value = (string)($sourceEnvironment[$key] ?? $item['default'] ?? '');
+        if (preg_match('/^[A-Z][A-Z0-9_]*$/', $key) !== 1 || str_contains($value, "\0") || preg_match('/[\r\n]/', $value) === 1) {
+            throw new RuntimeException('Invalid WSL PaliGemma 2 service environment.');
+        }
+        $environment[$key] = $value;
+    }
+    // 此 Pack 不允許因主機設定錯誤而悄悄回落 CPU；Pascal 亦不能使用 bfloat16。
+    $environment['PALIGEMMA2_DEVICE'] = 'cuda';
+    if (($runtime['profile_id'] ?? '') === 'pascal-cu118') {
+        $environment['PALIGEMMA2_TORCH_DTYPE'] = 'float16';
+    }
+    $environment[hub_pack_port_env($pack['manifest'])] = (string)$port;
+
+    $runtimeRoot = (string)$runtime['runtime_root'];
+    $packRoot = $runtimeRoot . '/packs/vlm-paligemma2';
+    $packServiceRoot = $packRoot . '/service';
+    $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
+    $serviceData = $serviceRoot . '/data';
+    $cacheRoot = $runtimeRoot . '/cache/paligemma2';
+    $compose = "services:\n  adapter:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packServiceRoot, JSON_UNESCAPED_SLASHES) . "\n      dockerfile: " . json_encode(basename((string)$runtime['dockerfile']), JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    environment:\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode((string)$runtime['models_root'] . '/paligemma2:/models/paligemma2', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/paligemma2', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
+    $env = '';
+    foreach ($environment as $key => $value) {
+        $env .= $key . '=' . $value . "\n";
+    }
+
+    $composeArgs = array_values($args);
+    if (($composeArgs[0] ?? '') === 'build') {
+        $dockerCommand = 'DOCKER_BUILDKIT=1 docker build --progress=plain --tag ' . hub_wsl_shell_literal((string)$runtime['image'])
+            . ' --file ' . hub_wsl_shell_literal($packRoot . '/' . (string)$runtime['dockerfile'])
+            . ' ' . hub_wsl_shell_literal($packServiceRoot);
+    } else {
+        $dockerCommand = 'docker compose';
+        if (($progressIndex = array_search('--progress=plain', $composeArgs, true)) !== false) {
+            unset($composeArgs[$progressIndex]);
+            $composeArgs = array_values($composeArgs);
+            $dockerCommand .= ' --progress=plain';
+        }
+        $dockerCommand .= ' --env-file ' . hub_wsl_shell_literal($serviceRoot . '/' . HUB_RUNTIME_SETTINGS_FILENAME)
+            . ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
+        foreach ($composeArgs as $arg) {
+            $dockerCommand .= ' ' . hub_wsl_shell_literal((string)$arg);
+        }
+    }
+    $script = "set -eu\n"
+        . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+        . 'pack_service_root=' . hub_wsl_shell_literal($packServiceRoot) . "\n"
+        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
+        . 'models_root=' . hub_wsl_shell_literal((string)$runtime['models_root']) . "\n"
+        . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
+        . 'service_data=' . hub_wsl_shell_literal($serviceData) . "\n"
+        . 'env_payload=' . hub_wsl_shell_literal(base64_encode($env)) . "\n"
+        . 'env_sha256=' . hub_wsl_shell_literal(hash('sha256', $env)) . "\n"
+        . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
+        . 'if [ ! -f "$pack_service_root/' . basename((string)$runtime['dockerfile']) . '" ]; then echo "WSL PaliGemma 2 source unavailable. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
+        . 'install -d -m 0775 "$service_root" "$models_root/paligemma2" "$cache_root" "$service_data"' . "\n"
+        . 'if ! command -v sha256sum >/dev/null 2>&1; then echo "WSL sha256sum is unavailable." >&2; exit 2; fi' . "\n"
+        . 'settings_tmp="$service_root/.' . HUB_RUNTIME_SETTINGS_FILENAME . '.$$"' . "\n"
+        . 'umask 077; printf %s "$env_payload" | base64 -d > "$settings_tmp"; chmod 0600 "$settings_tmp"' . "\n"
+        . 'actual_sha256="$(sha256sum "$settings_tmp" | awk \'{print $1}\')"' . "\n"
+        . 'if [ "$actual_sha256" != "$env_sha256" ]; then rm -f -- "$settings_tmp"; echo "Runtime settings SHA256 verification failed." >&2; exit 2; fi' . "\n"
+        . 'mv -f -- "$settings_tmp" "$service_root/' . HUB_RUNTIME_SETTINGS_FILENAME . '"' . "\n"
+        . 'if [ -e "$service_root/.env" ] || [ -L "$service_root/.env" ]; then if [ -L "$service_root/.env" ] || [ ! -f "$service_root/.env" ]; then echo "Unsafe legacy runtime env file." >&2; exit 2; fi; rm -- "$service_root/.env"; fi' . "\n"
+        . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
+        . $dockerCommand . "\n";
+
+    return hub_wsl_script_command($runtime, $script);
+}
+
 function hub_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
 {
     if ((string)($service['pack_id'] ?? '') === 'whisper-asr') {
@@ -1181,6 +1437,9 @@ function hub_wsl_service_compose_command(array $service, array $args, ?array $pr
     }
     if ((string)($service['pack_id'] ?? '') === 'ocr-ppocrv5') {
         return hub_ocr_wsl_service_compose_command($service, $args, $profile);
+    }
+    if ((string)($service['pack_id'] ?? '') === 'vlm-paligemma2') {
+        return hub_paligemma2_wsl_service_compose_command($service, $args, $profile);
     }
     $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
     $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
@@ -1445,7 +1704,7 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 function hub_service_build_timeout_sec(array $service): int
 {
     $packId = (string)($service['pack_id'] ?? '');
-    if ($packId === 'ocr-ppocrv5') {
+    if (in_array($packId, ['ocr-ppocrv5', 'vlm-paligemma2'], true)) {
         // PP-OCRv5 Pascal profile needs to download CUDA wheels and export a multi-GB image through Docker Desktop/WSL.
         return 2100;
     }
@@ -2034,6 +2293,7 @@ function hub_run_service_command(PDO $db, ?array $job, array $command, int $time
     $job = hub_prepare_command_job_logs($db, $job);
     $progress = $minProgress;
     $lastUpdate = 0;
+    $lastHeartbeat = 0;
 
     return hub_run_command_streamed(
         $command,
@@ -2052,7 +2312,21 @@ function hub_run_service_command(PDO $db, ?array $job, array $command, int $time
             $lastUpdate = time();
             $progress = min($maxProgress, $progress + 1);
             hub_update_command_job_progress($db, (int)$job['id'], $stage, $progress, $line);
-        }
+        },
+        static function (int $elapsedSeconds) use ($db, $job, $stage, &$progress, &$lastHeartbeat): void {
+            $now = time();
+            if ($now === $lastHeartbeat) {
+                return;
+            }
+            $lastHeartbeat = $now;
+            hub_update_command_job_progress(
+                $db,
+                (int)$job['id'],
+                $stage,
+                $progress,
+                'Still running: waiting for WSL/Docker output (' . $elapsedSeconds . 's).',
+            );
+        },
     );
 }
 

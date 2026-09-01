@@ -1,0 +1,347 @@
+{
+  "schema_version": "0.1",
+  "id": "vlm-paligemma2",
+  "name": "PaliGemma 2 Multimodal VLM Service",
+  "version": "0.1.0",
+  "category": "vision",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L2-deps-import",
+  "target_level": "L5-benchmark-ready",
+  "runtime_ready": false,
+  "default_mode": "paligemma2",
+  "description": "Google PaliGemma 2 3B visual-language service. The first CUDA acceptance is intentionally limited to single-image caption inference from a locally provisioned, revision-pinned snapshot.",
+  "capabilities": ["vision", "captioning"],
+  "provider": "google-paligemma2",
+  "runtime": {
+    "kind": "docker",
+    "compose_file": "docker-compose.yml",
+    "default_internal_port": 8000,
+    "windows_wsl_compose": true
+  },
+  "platform_targets": {
+    "linux-docker": true,
+    "windows-wsl2-linux-docker": true
+  },
+  "wsl_runtime_profiles": {
+    "default": {
+      "id": "default",
+      "dockerfile": "service/Dockerfile",
+      "image": "3waaihub/vlm-paligemma2:0.1.0",
+      "min_compute_capability": "8.0",
+      "gpu_name_patterns": ["RTX 30", "RTX 40", "RTX 50", "A100", "L40"]
+    },
+    "pascal-cu118": {
+      "id": "pascal-cu118",
+      "dockerfile": "service/Dockerfile.pascal-cu118",
+      "image": "3waaihub/vlm-paligemma2:0.1.0-pascal-cu118",
+      "min_compute_capability": "6.1",
+      "gpu_name_patterns": ["GTX 1050", "GTX 1060", "GTX 1070", "GTX 1080", "GTX 1080 Ti"]
+    }
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/vision/image",
+    "methods": ["POST"],
+    "timeout_sec": 180,
+    "max_upload_mb": 50
+  },
+  "l5_contract": {
+    "endpoint": "/vision/image",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {
+          "name": "image",
+          "type": "file",
+          "required": true,
+          "max_mb": 50,
+          "description": "Image file to analyze."
+        },
+        {
+          "name": "file",
+          "type": "file",
+          "required": false,
+          "max_mb": 50,
+          "description": "Legacy alias for image callers."
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": false,
+          "default": "caption",
+          "description": "Visual instruction prompt."
+        },
+        {
+          "name": "task",
+          "type": "string",
+          "required": false,
+          "default": "caption",
+          "enum": ["caption", "general"],
+          "description": "Accepted task. OCR, DocVQA, detection and translation remain unavailable until each has a separately accepted model contract."
+        },
+        {
+          "name": "max_tokens",
+          "type": "integer",
+          "required": false,
+          "default": 64,
+          "description": "Maximum generated tokens."
+        },
+        {
+          "name": "temperature",
+          "type": "number",
+          "required": false,
+          "default": 0.1,
+          "description": "Sampling temperature."
+        },
+        {
+          "name": "real_inference",
+          "type": "boolean",
+          "required": false,
+          "default": "0",
+          "description": "Set to 1 to run real inference."
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mock", "runtime_level", "model", "text", "answer", "elapsed_ms", "device"]
+    },
+    "errors": [
+      "bad_request",
+      "bad_image",
+      "file_too_large",
+      "gpu_unavailable",
+      "model_not_provisioned",
+      "model_manifest_invalid",
+      "model_load_failed",
+      "inference_failed",
+      "runtime_not_ready",
+      "unsupported_task"
+    ],
+    "limits": {
+      "timeout_sec": 300,
+      "max_upload_mb": 50,
+      "max_concurrency": 1
+    },
+    "benchmark": {
+      "supported": false,
+      "reason": "Real model provisioning and CUDA inference acceptance have not completed on this host.",
+      "cases": [
+        {
+          "id": "paligemma2_mock_vision",
+          "name": "PaliGemma 2 mock vision smoke",
+          "type": "api",
+          "mode": "paligemma2",
+          "method": "POST",
+          "fixture": "packs/vlm-paligemma2/demo/sample.png",
+          "fields": {
+            "prompt": "caption",
+            "task": "caption",
+            "real_inference": "0"
+          },
+          "expected_keys": ["ok", "mock", "runtime_level", "model", "text", "answer", "elapsed_ms", "device"],
+          "expected_mock": true
+        }
+      ]
+    }
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "cpu_fallback": false,
+    "min_vram_mb": 8192,
+    "min_compute_capability": "6.1"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "vision",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {
+        "type": "models",
+        "host_subdir": "paligemma2",
+        "container_path": "/models/paligemma2",
+        "read_only": false
+      },
+      {
+        "type": "cache",
+        "host_subdir": "paligemma2",
+        "container_path": "/cache/paligemma2",
+        "read_only": false
+      },
+      {
+        "type": "service_data",
+        "host_subdir": "",
+        "container_path": "/data/service",
+        "read_only": false
+      }
+    ]
+  },
+  "settings_schema": [
+    {
+      "key": "PALIGEMMA2_MODEL",
+      "label": "PaliGemma 2 model",
+      "type": "text",
+      "default": "google/paligemma2-3b-pt-224",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "PALIGEMMA2_MODEL_REVISION",
+      "label": "PaliGemma 2 model revision",
+      "type": "text",
+      "default": "96eeb174da13ca1a2b247e4d0867436296c36420",
+      "required": true,
+      "restart_required": true,
+      "help": "固定 Hugging Face commit；provision 完成後不可改成浮動 branch。"
+    },
+    {
+      "key": "HF_TOKEN",
+      "label": "Hugging Face access token",
+      "type": "secret",
+      "secret": true,
+      "default": "",
+      "required": true,
+      "restart_required": false,
+      "help": "僅供明確的模型 provision 工作使用；請先在 Hugging Face 接受 Gemma 授權，token 不會顯示或寫入 .env。"
+    },
+    {
+      "key": "PALIGEMMA2_DEVICE",
+      "label": "Device",
+      "type": "select",
+      "default": "cuda",
+      "options": ["cuda"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "PALIGEMMA2_TORCH_DTYPE",
+      "label": "Torch dtype",
+      "type": "select",
+      "default": "float16",
+      "options": ["float16"],
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "PALIGEMMA2_REAL_INFERENCE",
+      "label": "Enable real inference after acceptance",
+      "type": "boolean",
+      "default": "0",
+      "required": true,
+      "restart_required": true
+    },
+    {
+      "key": "PALIGEMMA2_MAX_NEW_TOKENS",
+      "label": "Maximum generated tokens",
+      "type": "integer",
+      "default": "64",
+      "min": 16,
+      "max": 128,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "PALIGEMMA2_MAX_UPLOAD_MB",
+      "label": "Max upload MB",
+      "type": "integer",
+      "default": "50",
+      "min": 1,
+      "max": 50,
+      "required": true,
+      "restart_required": false
+    },
+    {
+      "key": "GPU_VISIBLE_DEVICES",
+      "label": "GPU visible devices",
+      "type": "text",
+      "default": "all",
+      "required": true,
+      "restart_required": true
+    }
+  ],
+  "env": [
+    {
+      "name": "PALIGEMMA2_MODEL",
+      "default": "google/paligemma2-3b-pt-224",
+      "required": true
+    },
+    {
+      "name": "PALIGEMMA2_MODEL_REVISION",
+      "default": "96eeb174da13ca1a2b247e4d0867436296c36420",
+      "required": true
+    },
+    {
+      "name": "HF_TOKEN",
+      "default": "",
+      "required": false,
+      "secret": true
+    },
+    {
+      "name": "PALIGEMMA2_MAX_NEW_TOKENS",
+      "default": "64",
+      "required": true
+    },
+    {
+      "name": "PALIGEMMA2_DEVICE",
+      "default": "cuda",
+      "required": true
+    },
+    {
+      "name": "PALIGEMMA2_TORCH_DTYPE",
+      "default": "float16",
+      "required": true
+    },
+    {
+      "name": "PALIGEMMA2_REAL_INFERENCE",
+      "default": "0",
+      "required": true
+    },
+    {
+      "name": "PALIGEMMA2_MODEL_DIR",
+      "default": "/models/paligemma2",
+      "required": true
+    },
+    {
+      "name": "PALIGEMMA2_CACHE_DIR",
+      "default": "/cache/paligemma2",
+      "required": true
+    },
+    {
+      "name": "PALIGEMMA2_SERVICE_DATA_DIR",
+      "default": "/data/service",
+      "required": true
+    },
+    {
+      "name": "PALIGEMMA2_MAX_UPLOAD_MB",
+      "default": "50",
+      "required": true
+    },
+    {
+      "name": "GPU_VISIBLE_DEVICES",
+      "default": "all",
+      "required": false
+    }
+  ],
+  "preflight": {
+    "checks": [
+      "docker",
+      "docker_compose",
+      "nvidia_smi",
+      "docker_gpus",
+      "compute_capability",
+      "storage"
+    ]
+  },
+  "service": {
+    "default_local_port": 18105,
+    "local_port_env": "PALIGEMMA2_LOCAL_PORT"
+  },
+  "install": {
+    "default_service_key": "vlm-paligemma2-main",
+    "compose_project": "3waaihub_vlm_paligemma2"
+  }
+}

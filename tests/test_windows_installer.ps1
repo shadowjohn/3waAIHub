@@ -145,22 +145,21 @@ Assert-InstallerContract ($checkWslSource -match 'PDO SQLite in distro') 'WSL re
 Assert-InstallerContract ($installWslSource -match 'apt-get install -y php-cli') 'WSL installer must install PHP CLI through the distro package manager'
 Assert-InstallerContract ($installWslSource -match 'php-sqlite3') 'WSL installer must install PHP SQLite support through the distro package manager'
 Assert-InstallerContract ($installWslSource -match "tr -d '\\015'") 'WSL installer must normalize copied executable source to LF'
-Assert-InstallerContract ($installWslSource -match 'edge-tts/service/\*\.py') 'WSL installer must normalize copied Edge TTS Python source to LF'
+Assert-InstallerContract ($installWslSource -match 'find "\$runtime_root/packs" -type f') 'WSL installer must normalize every copied Pack executable source to LF'
 Assert-InstallerContract ($installWslSource -match 'Get-WslYoloRuntimeProfile') 'WSL installer must select the YOLO runtime profile from Pack metadata'
 Assert-InstallerContract ($installWslSource -match 'Get-WslWhisperRuntimeProfile') 'WSL installer must select the Whisper runtime profile from Pack metadata'
 Assert-InstallerContract ($installWslSource -match 'Get-WslOcrRuntimeProfile') 'WSL installer must select the PP-OCRv5 runtime profile from Pack metadata'
-Assert-InstallerContract ($installWslSource -match 'packs/whisper-asr') 'WSL installer must synchronize Whisper Pack source to ext4 runtime storage'
-Assert-InstallerContract ($installWslSource -match 'packs/ocr-ppocrv5') 'WSL installer must synchronize PP-OCRv5 Pack source to ext4 runtime storage'
+Assert-InstallerContract ($installWslSource -match 'cp -a "\$source_root/packs/\." "\$runtime_root/packs/"') 'WSL installer must synchronize the Pack tree to ext4 runtime storage'
 Assert-InstallerContract ($checkWslSource -match 'Get-WslWhisperRuntimeProfile') 'WSL readiness check must report the Whisper GPU profile from Pack metadata'
 Assert-InstallerContract ($checkWslSource -match 'Get-WslOcrRuntimeProfile') 'WSL readiness check must report the PP-OCRv5 GPU profile from Pack metadata'
 Assert-InstallerContract ($installWslSource -match '\$wslCommand = if') 'WSL installer must resolve its executable before passing it to Get-Command'
 Assert-InstallerContract ($installWslSource -match 'function Test-WslCommand') 'WSL installer must treat missing prerequisites as a probe result before attempting repair'
 Assert-InstallerContract ($installWslSource -match 'function Invoke-WslScript') 'WSL installer must send multi-line sync commands through a single WSL-safe payload'
-Assert-InstallerContract ($installWslSource -match 'packs/hello') 'WSL runtime must include the hello Pack required by database seeding'
-Assert-InstallerContract ($installWslSource -match 'packs/web-screenshot') 'WSL runtime must sync the Web Screenshot Pack source'
-Assert-InstallerContract ($installWslSource -match 'packs/edge-tts') 'WSL runtime must sync the Edge TTS Pack source'
+Assert-InstallerContract ($installWslSource -match 'cp -a "\$source_root/packs/\." "\$runtime_root/packs/"') 'WSL runtime must include the current Pack tree required by the runtime database'
 Assert-InstallerContract ($profileWriterSource -notmatch '(?m)^exit 0\s*$') 'runtime profile writer must return to the WSL installer after writing'
 Assert-InstallerContract ($installWslSource -match 'com\.3waaihub\.yolo\.runtime_profile') 'WSL installer must verify the existing YOLO image profile before reuse'
+Assert-InstallerContract ($installWslSource -match 'Get-WslPaliGemma2RuntimeProfile') 'WSL installer must select a PaliGemma 2 runtime profile'
+Assert-InstallerContract ($installWslSource -match 'find "\$runtime_root/packs" -type f.*-print0' -and $installWslSource -match 'IFS= read -r -d') 'WSL pack source sync must preserve filenames without word splitting'
 Assert-InstallerContract ($yoloDefaultDockerfile -match 'runtime_profile="default"') 'default YOLO image must declare its runtime profile'
 Assert-InstallerContract ($yoloPascalDockerfile -match 'runtime_profile="pascal-cu118"') 'Pascal YOLO image must declare its runtime profile'
 Assert-InstallerContract (Test-Path -LiteralPath $wslProfileScript) 'WSL YOLO runtime profile helper must exist'
@@ -172,6 +171,8 @@ if (Test-Path -LiteralPath $wslProfileScript) {
     Assert-InstallerContract ($whisperPascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the Whisper Pascal CUDA 11.8 profile'
     $ocrPascalProfile = Get-WslOcrRuntimeProfile -InstallRoot $repo -GpuName 'NVIDIA GeForce GTX 1080'
     Assert-InstallerContract ($ocrPascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the PP-OCRv5 Pascal CUDA 11.8 profile'
+    $paligemmaPascalProfile = Get-WslPaliGemma2RuntimeProfile -InstallRoot $repo -GpuName 'NVIDIA GeForce GTX 1080'
+    Assert-InstallerContract ($paligemmaPascalProfile.Id -eq 'pascal-cu118') 'GTX 1080 must select the PaliGemma 2 Pascal CUDA 11.8 profile'
 }
 Assert-InstallerContract ($source -notmatch 'Docker\.DockerDesktop') 'Core installer must not install Docker Desktop'
 Assert-InstallerContract (($checkCoreSource + $checkWslSource) -notmatch 'Docker\.DockerDesktop|Enable-WindowsOptionalFeature|Install-WindowsFeature|dism\.exe') 'installer checks must not mutate Windows features or install Docker Desktop'
@@ -261,12 +262,13 @@ try {
     $readyProfile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InstallerContract ($readyProfile.runtime_targets.'windows-wsl2-linux-docker'.supported) 'WSL target may be supported after readiness passes'
 
-    & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' -WslReady -YoloRuntimeProfile 'pascal-cu118' -WhisperRuntimeProfile 'pascal-cu118' -OcrRuntimeProfile 'pascal-cu118' 6>&1 2>&1 | Out-Null
+    & $profileWriter -InstallRoot $profileRoot -WslDistro 'Ubuntu-24.04' -LinuxDataRoot '/DATA' -WslReady -YoloRuntimeProfile 'pascal-cu118' -WhisperRuntimeProfile 'pascal-cu118' -OcrRuntimeProfile 'pascal-cu118' -PaliGemma2RuntimeProfile 'pascal-cu118' 6>&1 2>&1 | Out-Null
     Assert-InstallerContract ($?) 'Pascal WSL runtime profile writer must succeed'
     $pascalRuntimeProfile = Get-Content -LiteralPath $profilePath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.yolo -eq 'pascal-cu118') 'runtime profile must persist the selected YOLO Pascal profile'
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'whisper-asr' -eq 'pascal-cu118') 'runtime profile must persist the selected Whisper Pascal profile'
     Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'ocr-ppocrv5' -eq 'pascal-cu118') 'runtime profile must persist the selected PP-OCRv5 Pascal profile'
+    Assert-InstallerContract ($pascalRuntimeProfile.runtime_targets.'windows-wsl2-linux-docker'.pack_profiles.'vlm-paligemma2' -eq 'pascal-cu118') 'runtime profile must persist the selected PaliGemma 2 Pascal profile'
 } finally {
     if (Test-Path -LiteralPath $profileRoot) {
         Remove-Item -LiteralPath $profileRoot -Recurse -Force

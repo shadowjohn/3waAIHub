@@ -10,6 +10,8 @@ param(
     [string]$WhisperRuntimeProfile = 'default',
     [ValidateSet('default', 'pascal-cu118')]
     [string]$OcrRuntimeProfile = 'default',
+    [ValidateSet('default', 'pascal-cu118')]
+    [string]$PaliGemma2RuntimeProfile = 'default',
     [switch]$WslReady
 )
 
@@ -41,6 +43,7 @@ $profile = [ordered]@{
                 yolo = $YoloRuntimeProfile
                 'whisper-asr' = $WhisperRuntimeProfile
                 'ocr-ppocrv5' = $OcrRuntimeProfile
+                'vlm-paligemma2' = $PaliGemma2RuntimeProfile
             }
             reason = if ($WslReady) { $null } else { 'WSL Runtime readiness has not passed' }
         }

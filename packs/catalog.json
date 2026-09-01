@@ -47,6 +47,15 @@
       "featured": true
     },
     {
+      "id": "vlm-paligemma2",
+      "name": "PaliGemma 2 Multimodal VLM Service",
+      "version": "0.1.0",
+      "category": "vision",
+      "description": "Local multimodal vision-language service powered by Google PaliGemma 2.",
+      "path": "packs/vlm-paligemma2",
+      "featured": true
+    },
+    {
       "id": "image-birefnet",
       "name": "BiRefNet Background Removal Service",
       "version": "0.1.0",

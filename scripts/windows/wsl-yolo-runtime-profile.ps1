@@ -65,3 +65,14 @@ function Get-WslOcrRuntimeProfile {
 
     return Get-WslPackRuntimeProfile -InstallRoot $InstallRoot -PackId 'ocr-ppocrv5' -GpuName $GpuName
 }
+
+function Get-WslPaliGemma2RuntimeProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$GpuName
+    )
+
+    return Get-WslPackRuntimeProfile -InstallRoot $InstallRoot -PackId 'vlm-paligemma2' -GpuName $GpuName
+}

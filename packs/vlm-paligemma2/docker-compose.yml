@@ -1,0 +1,25 @@
+services:
+  paligemma2-api:
+    image: "3waaihub/vlm-paligemma2:0.1.0"
+    build:
+      context: service
+      dockerfile: Dockerfile
+    env_file:
+      - runtime-settings.conf
+    environment:
+      PALIGEMMA2_MODEL: "${PALIGEMMA2_MODEL:-google/paligemma2-3b-pt-224}"
+      PALIGEMMA2_MODEL_REVISION: "${PALIGEMMA2_MODEL_REVISION:-96eeb174da13ca1a2b247e4d0867436296c36420}"
+      PALIGEMMA2_DEVICE: "${PALIGEMMA2_DEVICE:-cuda}"
+      PALIGEMMA2_TORCH_DTYPE: "${PALIGEMMA2_TORCH_DTYPE:-float16}"
+      PALIGEMMA2_REAL_INFERENCE: "${PALIGEMMA2_REAL_INFERENCE:-0}"
+      PALIGEMMA2_MAX_NEW_TOKENS: "${PALIGEMMA2_MAX_NEW_TOKENS:-64}"
+      NVIDIA_VISIBLE_DEVICES: "${GPU_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    gpus: all
+    ports:
+      - "127.0.0.1:${PALIGEMMA2_LOCAL_PORT:-18105}:8000"
+    restart: unless-stopped
+    volumes:
+      - "${AIHUB_MODELS_DIR:-/DATA/models}/paligemma2:/models/paligemma2"
+      - "${AIHUB_CACHE_DIR:-/DATA/3waAIHub/data/cache}/paligemma2:/cache/paligemma2"
+      - "${SERVICE_DATA_DIR:-/DATA/3waAIHub/data/services/vlm-paligemma2}:/data/service"

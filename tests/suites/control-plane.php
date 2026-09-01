@@ -23,6 +23,7 @@ return [
     __DIR__ . '/../test_phase_ui4.php',
     __DIR__ . '/../test_phase_ui5.php',
     __DIR__ . '/../test_pack_job_artifacts.php',
+    __DIR__ . '/../test_paligemma2_pack.php',
     __DIR__ . '/../test_gpu_leases.php',
     __DIR__ . '/../test_release_ci.php',
     __DIR__ . '/../test_release_artifact.php',

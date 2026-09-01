@@ -130,6 +130,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'remove' => 'service_remove',
             'refresh' => 'service_health_check',
             'provision_pascal_ckip' => 'whisper_pascal_ckip_provision',
+            'provision_paligemma2' => 'paligemma2_provision',
+            'accept_paligemma2' => 'paligemma2_acceptance',
         ];
         $serviceIdValue = (string)($_POST['service_id'] ?? '');
         $serviceId = preg_match('/^[1-9][0-9]*$/D', $serviceIdValue) === 1 ? (int)$serviceIdValue : 0;
@@ -139,6 +141,8 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             !$service
             || !isset($actionMap[$action])
             || ($action === 'provision_pascal_ckip' && hub_whisper_pascal_ckip_provisioning_plan($service) === null)
+            || ($action === 'provision_paligemma2' && hub_paligemma2_provisioning_plan($service) === null)
+            || ($action === 'accept_paligemma2' && hub_paligemma2_provisioning_plan($service) === null)
         ) {
             $error = hub_i18n_text('無效的服務操作。');
             if ($isAjax) {
@@ -268,6 +272,8 @@ $dictionary = [
     'action_service_health_check' => hub_i18n_text('健康檢查'),
     'action_service_install' => hub_i18n_text('安裝服務'),
     'action_whisper_pascal_ckip_provision' => hub_i18n_text('準備 CKIP 字幕資產'),
+    'action_paligemma2_provision' => hub_i18n_text('準備 PaliGemma 2 模型'),
+    'action_paligemma2_acceptance' => hub_i18n_text('執行 PaliGemma 2 CUDA 驗收'),
     'remove_confirm' => hub_i18n_text('確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。'),
     'job_status_queued' => hub_i18n_text('排隊中'),
     'job_status_running' => hub_i18n_text('執行中'),
@@ -637,6 +643,7 @@ hub_admin_header(hub_i18n_text('HubPack 套件'), $user);
                     }
                     $runtimeLevel = hub_marketplace_service_runtime_level($service);
                     $pascalCkipPlan = hub_whisper_pascal_ckip_provisioning_plan($service);
+                    $paligemmaProvisionPlan = hub_paligemma2_provisioning_plan($service);
                     $endpoint = hub_marketplace_service_endpoint($service);
                     $apiUrl = '../api.php?mode=' . rawurlencode((string)$service['mode']);
                     $lastError = $lastJob && (string)$lastJob['status'] === 'failed'
@@ -699,6 +706,10 @@ hub_admin_header(hub_i18n_text('HubPack 套件'), $user);
                                 <button name="action" value="refresh" type="submit"><?= hub_h(hub_i18n_text('健康檢查')) ?></button>
                                 <?php if ($pascalCkipPlan !== null): ?>
                                     <button name="action" value="provision_pascal_ckip" type="submit"><?= hub_h(hub_i18n_text('準備 CKIP 字幕資產')) ?></button>
+                                <?php endif; ?>
+                                <?php if ($paligemmaProvisionPlan !== null): ?>
+                                    <button name="action" value="provision_paligemma2" type="submit"><?= hub_h(hub_i18n_text('準備 PaliGemma 2 模型')) ?></button>
+                                    <button name="action" value="accept_paligemma2" type="submit"><?= hub_h(hub_i18n_text('執行 PaliGemma 2 CUDA 驗收')) ?></button>
                                 <?php endif; ?>
                                 <?php if ($actualState === 'stopped' && !$serviceHasActiveJob): ?>
                                     <button class="danger" name="action" value="remove" type="submit"><?= hub_h(hub_i18n_text('移除')) ?></button>
