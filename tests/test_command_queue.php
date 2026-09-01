@@ -239,8 +239,12 @@ hub_test('Manual Vision runtime actions use isolated WSL one-shots and a credent
 
     if (PHP_OS_FAMILY !== 'Windows' && function_exists('posix_geteuid') && posix_geteuid() === 0) {
         $mountRoot = sys_get_temp_dir() . '/3waaihub_manual_vision_mounts_' . bin2hex(random_bytes(8));
+        $serviceRoot = $mountRoot . '/service';
         $mounts = [$mountRoot . '/models', $mountRoot . '/cache', $mountRoot . '/data'];
         mkdir($mountRoot, 0755);
+        mkdir($serviceRoot, 0700);
+        chown($serviceRoot, 10002);
+        chgrp($serviceRoot, 10002);
         foreach ($mounts as $mount) {
             mkdir($mount, 0700);
             chown($mount, 10001);
@@ -249,13 +253,17 @@ hub_test('Manual Vision runtime actions use isolated WSL one-shots and a credent
         }
         try {
             $quoted = implode(' ', array_map('escapeshellarg', $mounts));
-            $replay = hub_run_command(['bash', '-lc', 'set -eu; setpriv --reuid=10001 --regid=10001 --clear-groups -- bash -c ' . escapeshellarg('mkdir -p ' . $quoted)], 10);
-            hub_test_assert($replay['exit_code'] === 0, 'ordinary runtime user must construct existing Manual Vision mount dirs without ownership repair: ' . $replay['output']);
+            $residentRoot = escapeshellarg($serviceRoot);
+            $replay = hub_run_command(['bash', '-lc', 'set -eu; setpriv --reuid=10002 --regid=10002 --clear-groups -- bash -c ' . escapeshellarg('mkdir -p ' . $residentRoot . ' ' . $quoted . '; : > ' . $residentRoot . '/settings')], 10);
+            hub_test_assert($replay['exit_code'] === 0, 'ordinary WSL worker must retain its service root while safely reusing post-container Manual Vision mounts: ' . $replay['output']);
             foreach ($mounts as $mount) {
-                hub_test_assert(fileowner($mount) === 10001 && filegroup($mount) === 10001 && (fileperms($mount) & 0777) === 0700, 're-running Manual Vision preflight must preserve restrictive post-container mount metadata');
+                hub_test_assert(fileowner($mount) === 10001 && filegroup($mount) === 10001 && (fileperms($mount) & 0777) === 0700, 're-running Manual Vision preflight must preserve restrictive post-container mount metadata for another worker UID');
             }
             hub_test_assert(is_array(hub_manual_vision_provisioning_plan($db, $service, $profile, 'windows')) && is_array(hub_manual_vision_acceptance_args($db, $service, $profile, 'windows')) && is_array(hub_manual_vision_wsl_service_compose_command($service, ['up', '-d'], $profile)), 'Manual Vision re-run, acceptance, and resident start plans must remain constructible after post-container mount ownership');
         } finally {
+            unlink($serviceRoot . '/settings');
+            chmod($serviceRoot, 0700);
+            rmdir($serviceRoot);
             foreach (array_reverse($mounts) as $mount) {
                 chmod($mount, 0700);
                 rmdir($mount);
@@ -278,6 +286,7 @@ hub_test('Manual Vision runtime actions use isolated WSL one-shots and a credent
     hub_test_assert(str_contains($residentCompose, '/models/manual-vision:/models/manual-vision:ro'), 'Manual Vision resident API must have a read-only model mount');
     hub_test_assert(str_contains($residentCompose, 'HF_HUB_OFFLINE: "1"'), 'Manual Vision resident API must stay offline');
     hub_test_assert(!str_contains($residentScript . $residentCompose, 'HF_TOKEN') && !str_contains($residentScript . $residentCompose, 'provision.py') && !str_contains($residentScript . $residentCompose, 'acceptance.py'), 'normal Manual Vision start must not receive credentials or run lifecycle one-shots');
+    hub_test_assert(str_contains($residentScript, 'mkdir -p "$service_root" "$models_root" "$cache_root" "$service_data"') && !str_contains($residentScript, 'install -d -m 0775 "$service_root" "$models_root" "$cache_root" "$service_data"'), 'Manual Vision WSL resident preflight must not mutate existing post-container mount modes');
     hub_test_assert(str_contains($residentCompose, 'context: "/DATA/3waAIHub-runtime/packs/vlm-manual-vision/service"') && str_contains($residentCompose, 'dockerfile: "Dockerfile"'), 'Manual Vision WSL compose build must resolve the actual service Dockerfile once');
 
     $wrongPack = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-wrong-pack', 'idempotent' => true, 'provision_runner' => false])['service'];

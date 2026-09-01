@@ -1815,7 +1815,7 @@ function hub_manual_vision_wsl_service_compose_command(array $service, array $ar
         . 'env_sha256=' . hub_wsl_shell_literal(hash('sha256', $env)) . "\n"
         . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
         . 'if [ ! -f "$pack_root/' . (string)$runtime['dockerfile'] . '" ]; then echo "WSL Manual Vision source unavailable. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
-        . 'install -d -m 0775 "$service_root" "$models_root" "$cache_root" "$service_data"' . "\n"
+        . 'mkdir -p "$service_root" "$models_root" "$cache_root" "$service_data"' . "\n"
         . 'if ! command -v sha256sum >/dev/null 2>&1; then echo "WSL sha256sum is unavailable." >&2; exit 2; fi' . "\n"
         . 'settings_tmp="$service_root/.' . HUB_RUNTIME_SETTINGS_FILENAME . '.$$"' . "\n"
         . 'umask 077; printf %s "$env_payload" | base64 -d > "$settings_tmp"; chmod 0600 "$settings_tmp"' . "\n"
