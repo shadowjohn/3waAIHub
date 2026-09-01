@@ -274,18 +274,53 @@ function hub_safe_argv(array $command): array
     return $command;
 }
 
-function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = []): array
+function hub_run_command(array $command, int $timeoutSeconds = 60, array $env = [], ?int $captureLimit = null): array
 {
     hub_cli_only();
 
-    return hub_run_argv_command($command, $timeoutSeconds, $env);
+    return hub_run_argv_command($command, $timeoutSeconds, $env, $captureLimit);
+}
+
+function hub_command_capture_append(string $captured, string $chunk, ?int $captureLimit): string
+{
+    if ($captureLimit === null) {
+        return $captured . $chunk;
+    }
+
+    if ($captureLimit < 1) {
+        return '';
+    }
+
+    $value = $captured . $chunk;
+    if (strlen($value) <= $captureLimit) {
+        return $value;
+    }
+
+    $marker = "[output truncated; tail retained]\n";
+    if ($captureLimit <= strlen($marker)) {
+        return substr($marker, 0, $captureLimit);
+    }
+
+    return $marker . substr($value, -($captureLimit - strlen($marker)));
+}
+
+/** @param resource $pipe */
+function hub_command_capture_pipe($pipe, string $captured, ?int $captureLimit): string
+{
+    while (true) {
+        $chunk = stream_get_contents($pipe, 8192);
+        if ($chunk === false || $chunk === '') {
+            return $captured;
+        }
+        $captured = hub_command_capture_append($captured, $chunk, $captureLimit);
+    }
 }
 
 /**
  * 執行已由呼叫端固定或驗證完成的 argv；不接受 shell command string。
  * Web 呼叫端不得將未驗證的 request 值直接放入 argv。
  */
-function hub_run_argv_command(array $command, int $timeoutSeconds = 60, array $env = []): array
+function hub_run_argv_command(array $command, int $timeoutSeconds = 60, array $env = [], ?int $captureLimit = null): array
 {
     try {
         $command = hub_safe_argv($command);
@@ -312,8 +347,8 @@ function hub_run_argv_command(array $command, int $timeoutSeconds = 60, array $e
     $startedAt = time();
     $observedExitCode = null;
     do {
-        $stdout .= stream_get_contents($pipes[1]);
-        $stderr .= stream_get_contents($pipes[2]);
+        $stdout = hub_command_capture_pipe($pipes[1], $stdout, $captureLimit);
+        $stderr = hub_command_capture_pipe($pipes[2], $stderr, $captureLimit);
         $status = proc_get_status($process);
         if (!$status['running']) {
             $observedExitCode = hub_observed_process_exit_code($status) ?? $observedExitCode;
@@ -321,14 +356,14 @@ function hub_run_argv_command(array $command, int $timeoutSeconds = 60, array $e
         }
         if (time() - $startedAt > $timeoutSeconds) {
             proc_terminate($process);
-            $stderr .= "\nCommand timed out.";
+            $stderr = hub_command_capture_append($stderr, "\nCommand timed out.", $captureLimit);
             break;
         }
         usleep(100000);
     } while (true);
 
-    $stdout .= stream_get_contents($pipes[1]);
-    $stderr .= stream_get_contents($pipes[2]);
+    $stdout = hub_command_capture_pipe($pipes[1], $stdout, $captureLimit);
+    $stderr = hub_command_capture_pipe($pipes[2], $stderr, $captureLimit);
     fclose($pipes[1]);
     fclose($pipes[2]);
     $exitCode = hub_process_exit_code(proc_close($process), $observedExitCode);
@@ -1048,6 +1083,23 @@ function hub_manual_vision_provision_token(PDO $db, array $service): string
     return $token;
 }
 
+/** @return array<string, string> */
+function hub_manual_vision_provision_environment(string $token, bool $wsl, ?string $inheritedWslenv = null): array
+{
+    $environment = ['HF_TOKEN' => $token];
+    if (!$wsl) {
+        return $environment;
+    }
+
+    $wslenv = $inheritedWslenv ?? (string)getenv('WSLENV');
+    if (!in_array('HF_TOKEN/w', explode(':', $wslenv), true)) {
+        $wslenv .= ($wslenv === '' || str_ends_with($wslenv, ':') ? '' : ':') . 'HF_TOKEN/w';
+    }
+    $environment['WSLENV'] = $wslenv;
+
+    return $environment;
+}
+
 /** @return array{command: list<string>} */
 function hub_manual_vision_native_plan(PDO $db, array $service, bool $acceptance): array
 {
@@ -1071,7 +1123,7 @@ function hub_manual_vision_native_plan(PDO $db, array $service, bool $acceptance
         }
         $command = array_merge($command, [hub_service_image_tag($service), '/app/provision.py']);
     } else {
-        $command = array_merge($command, ['--entrypoint', '/app/entrypoint.sh', '--env', 'HF_HUB_OFFLINE=1', '--env', 'TRANSFORMERS_OFFLINE=1', '--env', 'MANUAL_VISION_MODEL_DIR=/models/manual-vision', '--env', 'MANUAL_VISION_CACHE_DIR=/cache/manual-vision', '--env', 'MANUAL_VISION_SERVICE_DATA_DIR=/data/service']);
+        $command = array_merge($command, ['--network', 'none', '--entrypoint', '/app/entrypoint.sh', '--env', 'HF_HUB_OFFLINE=1', '--env', 'TRANSFORMERS_OFFLINE=1', '--env', 'MANUAL_VISION_MODEL_DIR=/models/manual-vision', '--env', 'MANUAL_VISION_CACHE_DIR=/cache/manual-vision', '--env', 'MANUAL_VISION_SERVICE_DATA_DIR=/data/service']);
         foreach ([$models . ':/models/manual-vision:ro', $cache . ':/cache/manual-vision', $data . ':/data/service', (string)$pack['dir'] . '/demo:/demo:ro', (string)$pack['dir'] . '/demo:/app/demo:ro'] as $mount) {
             array_push($command, '--volume', $mount);
         }
@@ -1143,7 +1195,7 @@ function hub_manual_vision_acceptance_args(PDO $db, array $service, ?array $prof
     $cacheRoot = $runtimeRoot . '/cache/manual-vision';
     $demoRoot = $packRoot . '/demo';
     // The resident entrypoint prepares writable mounts then drops to UID/GID 10001; models remain read-only.
-    $docker = 'docker run --rm --pull never --gpus all --entrypoint /app/entrypoint.sh';
+    $docker = 'docker run --rm --pull never --gpus all --network none --entrypoint /app/entrypoint.sh';
     foreach ($environment as $key => $value) {
         $docker .= ' --env ' . hub_wsl_shell_literal($key . '=' . $value);
     }
@@ -1189,7 +1241,8 @@ function hub_run_manual_vision_provision_job(PDO $db, ?array $service, array $jo
     }
     hub_job_progress($db, $job, 'provisioning_model', 10, 'Provisioning the Manual Vision model snapshot.');
     $token = hub_manual_vision_provision_token($db, $service);
-    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 3600, ['HF_TOKEN' => $token]), $token);
+    $environment = hub_manual_vision_provision_environment($token, isset($plan['runtime']));
+    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 3600, $environment, 12000), $token);
     hub_add_service_log($db, (int)$service['id'], 'manual_vision_provision', (string)$result['output'], (int)$result['exit_code']);
     return $result;
 }
@@ -1204,7 +1257,7 @@ function hub_run_manual_vision_acceptance_job(PDO $db, ?array $service, array $j
         return hub_unsupported_runtime_result('windows-wsl2-linux-docker', 'Manual Vision acceptance requires a ready WSL Runtime.');
     }
     hub_job_progress($db, $job, 'manual_vision_acceptance', 10, 'Running Manual Vision CUDA acceptance.');
-    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 1800), '');
+    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 1800, [], 12000), '');
     hub_add_service_log($db, (int)$service['id'], 'manual_vision_acceptance', (string)$result['output'], (int)$result['exit_code']);
     return $result;
 }
