@@ -236,11 +236,40 @@ class ManualVisionTests(unittest.TestCase):
             with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
                 with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
                     vision.verified_snapshot()
-            write_verified_snapshot(root)
+            snapshot = write_verified_snapshot(root)
             snapshot.path.joinpath("tokenizer.model").unlink()
             with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
                 with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
                     vision.verified_snapshot()
+
+    def test_marker_identity_and_snapshot_path_come_from_the_same_atomic_marker_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            first = write_verified_snapshot(root)
+            marker = root / "verified-snapshot.json"
+            first_raw = marker.read_bytes()
+            second_revision = "b" * 40
+            second_snapshot = root / "revisions" / second_revision / "snapshot"
+            second_snapshot.mkdir(parents=True)
+            for source in first.path.iterdir():
+                (second_snapshot / source.name).write_bytes(source.read_bytes())
+            second_manifest = json.loads(first_raw)
+            second_manifest["snapshot"] = f"revisions/{second_revision}/snapshot"
+            replacement = root / ".replacement-marker"
+            replacement.write_text(json.dumps(second_manifest), encoding="utf-8")
+            original_read_text = Path.read_text
+
+            def replace_after_legacy_read(path: Path, *args: object, **kwargs: object) -> str:
+                result = original_read_text(path, *args, **kwargs)
+                if path == marker:
+                    os.replace(replacement, marker)
+                return result
+
+            with patch.object(Path, "read_text", replace_after_legacy_read), \
+                 patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
+                identity = vision.verified_snapshot()
+            self.assertEqual(first.path, identity.path)
+            self.assertEqual(hashlib.sha256(first_raw).hexdigest(), identity.manifest_sha256)
 
     def test_direct_model_and_acceptance_symlinks_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

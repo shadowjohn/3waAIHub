@@ -235,6 +235,26 @@ class ProvisionTests(unittest.TestCase):
             self.assertEqual(0o755, stat.S_IMODE(published.stat().st_mode))
             self.assertEqual(0o644, stat.S_IMODE((published / "snapshot" / "config.json").stat().st_mode))
 
+    def test_post_publish_verification_failure_cannot_remove_the_marker_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            revision = "d" * 40
+            environment = {
+                "MANUAL_VISION_MODEL": provision.MODEL_ID, "MANUAL_VISION_MODEL_REVISION": revision,
+                "MANUAL_VISION_TORCH_DTYPE": "float16", "MANUAL_VISION_DEVICE": "cuda", "HF_TOKEN": "secret",
+                "MANUAL_VISION_MODEL_DIR": str(root),
+            }
+            with patch.object(provision.os, "chown"), \
+                 patch.object(provision, "verify_published_snapshot", side_effect=AssertionError("no post-publish reverify")):
+                published = provision.provision_snapshot(
+                    environment,
+                    snapshot_download=lambda **kwargs: write_downloaded_snapshot(Path(str(kwargs["local_dir"]))),
+                )
+            self.assertEqual(root / "revisions" / revision / "snapshot", published)
+            marker = json.loads((root / "verified-snapshot.json").read_text(encoding="utf-8"))
+            self.assertEqual(f"revisions/{revision}/snapshot", marker["snapshot"])
+            self.assertTrue((root / marker["snapshot"] / "config.json").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

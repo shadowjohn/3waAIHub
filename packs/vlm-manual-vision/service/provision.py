@@ -295,7 +295,7 @@ def provision_snapshot(
             stage.rename(target)
             published = True
             write_verified_marker(root, manifest)
-            return verify_published_snapshot(root)
+            return target / "snapshot"
         except Exception:
             if published and target.exists() and not target.is_symlink():
                 shutil.rmtree(target)

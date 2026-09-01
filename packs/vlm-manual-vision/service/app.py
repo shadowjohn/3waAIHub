@@ -142,7 +142,7 @@ def _snapshot_files(snapshot: Path) -> set[str]:
         raise ServiceError("model_manifest_invalid") from exc
 
 
-def _snapshot_paths() -> tuple[Path, Path]:
+def _snapshot_paths() -> tuple[Path, bytes]:
     root = model_root()
     manifest_path = root / "verified-snapshot.json"
     if root.is_symlink() or manifest_path.is_symlink():
@@ -150,7 +150,8 @@ def _snapshot_paths() -> tuple[Path, Path]:
     if not root.is_dir() or not manifest_path.is_file():
         raise ServiceError("model_not_provisioned")
     try:
-        marker = json.loads(manifest_path.read_text(encoding="utf-8"))
+        raw = manifest_path.read_bytes()
+        marker = json.loads(raw)
         relative = marker["snapshot"]
         if not isinstance(relative, str) or re.fullmatch(r"revisions/[a-f0-9]{40}/snapshot", relative) is None:
             raise ValueError("invalid snapshot")
@@ -163,13 +164,12 @@ def _snapshot_paths() -> tuple[Path, Path]:
         raise ServiceError("model_not_provisioned") from exc
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
         raise ServiceError("model_manifest_invalid") from exc
-    return snapshot, manifest_path
+    return snapshot, raw
 
 
 def _read_snapshot_manifest() -> tuple[VerifiedSnapshot, list[tuple[str, str]]]:
-    snapshot, manifest_path = _snapshot_paths()
+    snapshot, raw = _snapshot_paths()
     try:
-        raw = manifest_path.read_bytes()
         payload = json.loads(raw)
         if (
             not isinstance(payload, dict)
