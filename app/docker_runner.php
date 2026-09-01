@@ -1221,11 +1221,19 @@ function hub_manual_vision_acceptance_args(PDO $db, array $service, ?array $prof
     return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script)];
 }
 
+function hub_manual_vision_provision_capture_limit(string $token): int
+{
+    return 12000 + strlen($token) + 128;
+}
+
 function hub_manual_vision_redact_result(array $result, string $token): array
 {
     foreach (['stdout', 'stderr', 'output'] as $key) {
-        $value = hub_output_tail((string)($result[$key] ?? ''));
-        $result[$key] = $token === '' ? $value : str_replace($token, '[redacted]', $value);
+        $value = (string)($result[$key] ?? '');
+        if ($token !== '') {
+            $value = str_replace($token, '[redacted]', $value);
+        }
+        $result[$key] = trim(hub_command_capture_append('', $value, 12000));
     }
     return $result;
 }
@@ -1242,7 +1250,7 @@ function hub_run_manual_vision_provision_job(PDO $db, ?array $service, array $jo
     hub_job_progress($db, $job, 'provisioning_model', 10, 'Provisioning the Manual Vision model snapshot.');
     $token = hub_manual_vision_provision_token($db, $service);
     $environment = hub_manual_vision_provision_environment($token, isset($plan['runtime']));
-    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 3600, $environment, 12000), $token);
+    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 3600, $environment, hub_manual_vision_provision_capture_limit($token)), $token);
     hub_add_service_log($db, (int)$service['id'], 'manual_vision_provision', (string)$result['output'], (int)$result['exit_code']);
     return $result;
 }

@@ -264,6 +264,22 @@ hub_test('command runner opt-in capture bounds Manual Vision output before redac
     hub_test_assert(str_contains((string)$captured['stdout'], 'output truncated'), 'bounded command capture must mark retained output');
     $redacted = hub_manual_vision_redact_result($captured, $token);
     hub_test_assert(!str_contains((string)$redacted['output'], $token) && str_contains((string)$redacted['output'], '[redacted]'), 'Manual Vision redaction must operate on the bounded captured tail before persistence');
+
+    $boundaryToken = 'secret-boundary-' . str_repeat('Q', 64);
+    $rawLimit = hub_manual_vision_provision_capture_limit($boundaryToken);
+    hub_test_assert($rawLimit >= 12000 + strlen($boundaryToken) + 64, 'provision raw capture must reserve final output, full token, and truncation margin');
+    $marker = "[output truncated; tail retained]\n";
+    $boundary = intdiv(strlen($boundaryToken), 2);
+    $suffix = str_repeat('z', $rawLimit - strlen($marker) - (strlen($boundaryToken) - $boundary) - 1);
+    $crossingScript = 'echo str_repeat("x", 4096) . ' . var_export($boundaryToken, true) . ' . ' . var_export($suffix, true) . ';';
+    $crossingCapture = hub_run_command([PHP_BINARY, '-r', $crossingScript], 10, [], $rawLimit);
+    $trailingFragment = substr($boundaryToken, $boundary);
+    hub_test_assert(str_contains((string)$crossingCapture['stdout'], $trailingFragment), 'raw capture fixture must split the token at its retained-tail boundary');
+    $crossingRedacted = hub_manual_vision_redact_result($crossingCapture, $boundaryToken);
+    foreach (['stdout', 'output'] as $key) {
+        $persisted = (string)$crossingRedacted[$key];
+        hub_test_assert(strlen($persisted) <= 12000 && !str_contains($persisted, $boundaryToken) && !str_contains($persisted, substr($boundaryToken, 0, $boundary)) && !str_contains($persisted, $trailingFragment), 'final persisted Manual Vision ' . $key . ' must retain neither a full token nor a truncation fragment');
+    }
 });
 
 hub_test('command queue admits runtime actions only for runtime-ready Packs', function (): void {
