@@ -229,22 +229,26 @@ hub_test('BreezyVoice metadata-only services refuse lifecycle actions before run
         putenv('MOCK_DOCKER_LOG=' . $dockerLog);
         $build = hub_build_service($db, $service);
         $start = hub_start_service_with_job($db, $service, null);
+        $restart = hub_restart_service($db, $service);
         $after = hub_get_service($db, (int)$service['id']) ?: [];
 
         hub_test_assert(
             (int)($build['exit_code'] ?? 0) !== 0
             && (int)($start['exit_code'] ?? 0) !== 0
+            && (int)($restart['exit_code'] ?? 0) !== 0
             && ($build['error_code'] ?? '') === 'pack_runtime_not_ready'
             && ($start['error_code'] ?? '') === 'pack_runtime_not_ready'
+            && ($restart['error_code'] ?? '') === 'pack_runtime_not_ready'
             && ($build['output'] ?? '') === ($start['output'] ?? '')
+            && ($start['output'] ?? '') === ($restart['output'] ?? '')
             && (string)file_get_contents($composePath) === $composeMarker
             && (string)file_get_contents($settingsPath) === $settingsMarker
             && (int)($after['enabled'] ?? 1) === 0
-            && ($after['status'] ?? '') !== 'running'
+            && ($after['status'] ?? '') === 'stopped'
             && $readyService !== null
             && hub_service_pack_runtime_not_ready_result($readyService) === null
             && !is_file($dockerLog),
-            'metadata-only BreezyVoice lifecycle actions must stop before runtime refresh, enablement, or Docker commands without changing ready Packs'
+            'metadata-only BreezyVoice lifecycle actions must stop before runtime refresh, enablement, restart, or Docker commands without changing ready Packs'
         );
     } finally {
         putenv($previousDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $previousDockerBin);

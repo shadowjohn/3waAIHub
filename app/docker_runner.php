@@ -2246,6 +2246,10 @@ function hub_remove_service(PDO $db, array $service, array $job): array
 
 function hub_restart_service(PDO $db, array $service, ?array $job = null): array
 {
+    $notReady = hub_service_pack_runtime_not_ready_result($service);
+    if ($notReady !== null) {
+        return $notReady;
+    }
     if (hub_service_is_internal_task($service)) {
         $result = hub_internal_task_result('internal_task restart no-op');
         hub_add_service_log($db, (int)$service['id'], 'restart', $result['output'], 0);
