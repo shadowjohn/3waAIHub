@@ -7052,6 +7052,14 @@ hub_test('cluster router pins Breezy preset binding and projects only public met
             'scenes' => ['default'],
             'preset_revision' => 2,
         ];
+        $childPreset = $preset + [
+            'engine' => 'breezyvoice',
+            'pack_id' => 'tts-breezyvoice',
+            'voice_profile_id' => 71,
+            'reference_audio_sha256' => str_repeat('a', 64),
+            'transcript' => '這是 child station 的逐字稿。',
+            'path' => '/data/voice_profiles/breezy_reference.wav',
+        ];
         hub_cluster_voice_preset_store($db, ['member_id' => $memberId], (int)$stationA['id'], $preset);
         $inventory = [
             hub_test_cluster_station_fixture(['id' => (int)$stationA['id'], 'modes' => ['voice_generate']]),
@@ -7067,7 +7075,7 @@ hub_test('cluster router pins Breezy preset binding and projects only public met
             'request_uri' => '/cluster_api.php?mode=voice_generate',
         ]), [
             'refresh_due' => static fn (): array => $inventory,
-            'transport' => static function (array $request) use (&$requests, $stationA, $stationAToken, $preset): array {
+            'transport' => static function (array $request) use (&$requests, $stationA, $stationAToken, $childPreset): array {
                 $requests[] = $request;
                 $body = json_decode((string)($request['body'] ?? ''), true, 16, JSON_THROW_ON_ERROR);
                 hub_test_assert(
@@ -7081,7 +7089,7 @@ hub_test('cluster router pins Breezy preset binding and projects only public met
                     'Breezy binding must relay only to its existing station A route'
                 );
 
-                return hub_gateway_json(200, ['ok' => true, 'preset' => $preset]);
+                return hub_gateway_json(200, ['ok' => true, 'preset' => $childPreset]);
             },
         ]);
         $payload = json_decode((string)$response['body'], true, 32, JSON_THROW_ON_ERROR);
@@ -7095,7 +7103,7 @@ hub_test('cluster router pins Breezy preset binding and projects only public met
             && (int)($stored['station_id'] ?? 0) === (int)$stationA['id'],
             'Breezy binding must preserve its Router preset route and return only public preset metadata'
         );
-        foreach (['pack_id', 'voice_profile_id', 'reference_audio_sha256', 'transcript', 'path'] as $privateField) {
+        foreach (['engine', 'pack_id', 'voice_profile_id', 'reference_audio_sha256', 'transcript', 'path'] as $privateField) {
             hub_test_assert(!str_contains($publicJson, $privateField), 'Breezy public preset response must not expose ' . $privateField);
         }
     });

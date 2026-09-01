@@ -1208,13 +1208,14 @@ hub_test('Breezy preset synthesis rejects multiple candidates before it creates 
         hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
         $profileId = hub_test_breezy_confirmed_profile($db, $memberId);
         hub_test_breezy_preset($db, $memberId, $profileId);
+        $before = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+        hub_test_assert($before === 0, 'Breezy candidate fixture must not create a task');
 
         $bound = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
             'operation' => 'voice_preset_engine_bind',
             'voice_preset' => 'mechanic-dad',
             'engine' => 'breezyvoice',
         ]);
-        $before = (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn();
         $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
             'operation' => 'preset_synthesize',
             'voice_preset' => 'mechanic-dad',
@@ -1224,14 +1225,12 @@ hub_test('Breezy preset synthesis rejects multiple candidates before it creates 
             'text' => '請先檢查機油與火星塞。',
         ]);
         $payload = hub_test_audio_payload($response);
+        $after = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
 
-        hub_test_assert(
-            $bound['status'] === 200
-            && $response['status'] === 400
-            && ($payload['error'] ?? '') === 'voice_preset_candidate_count_unsupported'
-            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn() === $before,
-            'Breezy must reject multi-candidate requests without a VoxCPM2 fallback task'
-        );
+        hub_test_assert($bound['status'] === 200, 'Breezy engine bind must succeed before candidate validation');
+        hub_test_assert($response['status'] === 400, 'Breezy multiple candidates must fail with HTTP 400');
+        hub_test_assert(($payload['error'] ?? '') === 'voice_preset_candidate_count_unsupported', 'Breezy multiple candidates need a stable error code');
+        hub_test_assert($before === 0 && $after === $before, 'Breezy must reject multiple candidates without creating any fallback task');
     });
 });
 
@@ -1248,20 +1247,19 @@ hub_test('Breezy preset binding rejects an unconfirmed source profile without a 
         $db->prepare('UPDATE voice_profiles SET prompt_text_confirmed_at = NULL WHERE id = :id')
             ->execute([':id' => $profileId]);
         hub_test_breezy_preset($db, $memberId, $profileId);
+        $before = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
+        hub_test_assert($before === 0, 'Breezy incompatible fixture must not create a task');
 
-        $before = (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn();
         $response = hub_test_audio_request($db, 'voice_generate', (string)$token['plain_token'], [
             'operation' => 'voice_preset_engine_bind',
             'voice_preset' => 'mechanic-dad',
             'engine' => 'breezyvoice',
         ]);
         $payload = hub_test_audio_payload($response);
+        $after = (int)$db->query('SELECT COUNT(*) FROM tasks')->fetchColumn();
 
-        hub_test_assert(
-            $response['status'] === 409
-            && ($payload['error'] ?? '') === 'voice_preset_engine_incompatible'
-            && (int)$db->query("SELECT COUNT(*) FROM tasks WHERE task_type = 'pack_job'")->fetchColumn() === $before,
-            'an unconfirmed Breezy source must fail without a VoxCPM2 fallback task'
-        );
+        hub_test_assert($response['status'] === 409, 'an unconfirmed Breezy source must fail with HTTP 409');
+        hub_test_assert(($payload['error'] ?? '') === 'voice_preset_engine_incompatible', 'an unconfirmed Breezy source needs a stable error code');
+        hub_test_assert($before === 0 && $after === $before, 'an unconfirmed Breezy source must not create any fallback task');
     });
 });
