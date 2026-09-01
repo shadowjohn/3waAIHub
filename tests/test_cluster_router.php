@@ -6508,6 +6508,7 @@ hub_test('Manual Vision uses the native DocVQA endpoint and standard Token bound
                 'answer_language' => 'en',
                 'contract_revision' => 1,
                 'elapsed_ms' => 7,
+                'request_id' => 'station-native-request-id',
             ]);
         }, [
             'method' => 'POST',
@@ -6529,12 +6530,15 @@ hub_test('Manual Vision uses the native DocVQA endpoint and standard Token bound
     }
 
     $payload = json_decode((string)$response['body'], true, 16, JSON_THROW_ON_ERROR);
+    $requestIdHeaders = array_values(array_filter((array)$response['headers'], static fn (string $header): bool => str_starts_with($header, 'X-3waAIHub-Request-Id: req_')));
     hub_test_assert(
         $response['status'] === 200
-        && array_keys($payload) === ['ok', 'mode', 'operation', 'answer', 'answer_language', 'contract_revision', 'elapsed_ms']
+        && array_keys($payload) === ['ok', 'mode', 'operation', 'answer', 'answer_language', 'contract_revision', 'elapsed_ms', 'request_id']
         && ($payload['mode'] ?? '') === 'manual_vision'
         && ($payload['operation'] ?? '') === 'docvqa'
-        && count(array_filter((array)$response['headers'], static fn (string $header): bool => str_starts_with($header, 'X-3waAIHub-Request-Id: req_'))) === 1
+        && ($payload['request_id'] ?? '') === 'station-native-request-id'
+        && count($requestIdHeaders) === 1
+        && $requestIdHeaders[0] !== 'X-3waAIHub-Request-Id: station-native-request-id'
         && $blocked['status'] === 403
         && str_contains((string)$blocked['body'], 'token_mode_not_allowed')
         && $calls === 1,
@@ -6602,6 +6606,7 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
                     'answer_language' => 'en',
                     'contract_revision' => 1,
                     'elapsed_ms' => 7,
+                    'request_id' => 'station-cluster-request-id',
                 ]);
             },
         ]);
@@ -6615,11 +6620,14 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
         ]);
 
         $payload = json_decode((string)$response['body'], true, 16, JSON_THROW_ON_ERROR);
+        $requestIdHeaders = array_values(array_filter((array)$response['headers'], static fn (string $header): bool => str_starts_with($header, 'X-3waAIHub-Request-Id: req_')));
         hub_test_assert(
             $response['status'] === 200
-            && array_keys($payload) === ['ok', 'mode', 'operation', 'answer', 'answer_language', 'contract_revision', 'elapsed_ms']
+            && array_keys($payload) === ['ok', 'mode', 'operation', 'answer', 'answer_language', 'contract_revision', 'elapsed_ms', 'request_id']
+            && ($payload['request_id'] ?? '') === 'station-cluster-request-id'
             && count($proxied) === 1
-            && count(array_filter((array)$response['headers'], static fn (string $header): bool => str_starts_with($header, 'X-3waAIHub-Request-Id: req_'))) === 1
+            && count($requestIdHeaders) === 1
+            && $requestIdHeaders[0] !== 'X-3waAIHub-Request-Id: station-cluster-request-id'
             && $blocked['status'] === 403
             && str_contains((string)$blocked['body'], 'token_mode_not_allowed')
             && $unavailable['status'] === 503
