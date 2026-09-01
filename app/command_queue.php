@@ -87,6 +87,16 @@ function hub_command_action_requires_ready_runtime(string $action): bool
     ], true);
 }
 
+function hub_command_require_ready_runtime_pack(?array $pack): void
+{
+    if ($pack === null || ($pack['status'] ?? '') !== 'ok') {
+        throw new RuntimeException('pack_not_installed');
+    }
+    if (($pack['manifest']['runtime_ready'] ?? null) !== true) {
+        throw new RuntimeException('pack_runtime_not_ready');
+    }
+}
+
 function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array $args, ?int $requestedBy, ?string $requestedIp): int
 {
     if (!hub_is_valid_job_action($action)) {
@@ -130,10 +140,7 @@ function hub_enqueue_command_job(PDO $db, string $action, ?int $serviceId, array
             throw new InvalidArgumentException('Service not found.');
         }
         if (hub_command_action_requires_ready_runtime($action)) {
-            $pack = hub_get_pack((string)($service['pack_id'] ?? ''));
-            if (($pack['manifest']['runtime_ready'] ?? null) !== true) {
-                throw new RuntimeException('pack_runtime_not_ready');
-            }
+            hub_command_require_ready_runtime_pack(hub_get_pack((string)($service['pack_id'] ?? '')));
         }
         if ($action === 'service_remove') {
             $args['service_updated_at'] = (string)($service['updated_at'] ?? '');

@@ -43,9 +43,23 @@ hub_test('Manual Vision Pack exposes the narrow English DocVQA contract', functi
     hub_test_assert($fields === ['operation', 'image', 'question'], 'Manual Vision fields must be exact');
     $operation = $contract['input']['fields'][0] ?? [];
     hub_test_assert(($operation['enum'] ?? []) === ['docvqa'], 'Manual Vision operation enum must be docvqa only');
+    $image = $contract['input']['fields'][1] ?? [];
+    $question = $contract['input']['fields'][2] ?? [];
+    hub_test_assert(($image['mime_types'] ?? []) === ['image/png', 'image/jpeg'], 'Manual Vision image types must be PNG or JPEG only');
+    hub_test_assert(
+        ($question['max_length'] ?? null) === 400
+        && ($question['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+        'Manual Vision question must be printable ASCII, include English, and stay within 400 characters',
+    );
     hub_test_assert(($contract['output']['required_keys'] ?? []) === [
         'ok', 'mode', 'operation', 'answer', 'answer_language', 'contract_revision', 'elapsed_ms', 'request_id',
     ], 'Manual Vision public output keys must be exact');
+    hub_test_assert(($contract['operations'][0]['output_constants'] ?? []) === [
+        'mode' => 'manual_vision',
+        'operation' => 'docvqa',
+        'answer_language' => 'en',
+        'contract_revision' => 1,
+    ], 'Manual Vision operation output constants must be exact');
     hub_test_assert(($contract['errors'] ?? []) === [
         'bad_request', 'unsupported_operation', 'bad_image', 'file_too_large', 'missing_token', 'token_mode_not_allowed',
         'gpu_unavailable', 'model_not_provisioned', 'model_manifest_invalid', 'runtime_not_ready', 'inference_failed', 'gateway_timeout',

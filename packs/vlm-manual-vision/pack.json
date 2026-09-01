@@ -41,12 +41,17 @@
           "name": "image",
           "type": "file",
           "required": true,
+          "mime_types": ["image/png", "image/jpeg"],
           "max_mb": 50
         },
         {
           "name": "question",
           "type": "string",
-          "required": true
+          "required": true,
+          "max_length": 400,
+          "pattern": "^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$",
+          "example": "What is the document title?",
+          "description": "Printable ASCII only; must contain at least one English letter."
         }
       ]
     },
@@ -60,7 +65,7 @@
         "output_constants": {
           "mode": "manual_vision",
           "operation": "docvqa",
-          "answer_language": "English",
+          "answer_language": "en",
           "contract_revision": 1
         }
       }

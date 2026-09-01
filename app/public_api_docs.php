@@ -980,6 +980,9 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
             $service[$key] = $contract[$key];
         }
     }
+    if (($manifest['id'] ?? '') === 'vlm-manual-vision') {
+        $service = hub_public_api_manual_vision_without_gpu_disclosure($service);
+    }
     $service['examples'] = hub_public_api_examples($service);
     $operationExamples = [];
     foreach ((array)($contract['operations'] ?? []) as $definition) {
@@ -1041,6 +1044,21 @@ function hub_public_api_service_from_contract(string $mode, array $pack, array $
     }
 
     return $service;
+}
+
+function hub_public_api_manual_vision_without_gpu_disclosure(array $contract): array
+{
+    foreach ($contract as $key => $value) {
+        if ($key === 'gpu_required') {
+            unset($contract[$key]);
+            continue;
+        }
+        if (is_array($value)) {
+            $contract[$key] = hub_public_api_manual_vision_without_gpu_disclosure($value);
+        }
+    }
+
+    return $contract;
 }
 
 function hub_public_api_services(

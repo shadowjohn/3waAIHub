@@ -206,10 +206,38 @@ hub_test('command queue admits runtime actions only for runtime-ready Packs', fu
     }
     hub_test_assert((int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn() === 0, 'blocked Manual Vision actions must not be inserted');
 
+    $db->prepare('UPDATE services SET pack_id = :pack_id WHERE id = :id')
+        ->execute([':pack_id' => 'manual-vision-missing-pack', ':id' => (int)$service['id']]);
+    try {
+        hub_enqueue_command_job($db, 'service_start', (int)$service['id'], [], null, '127.0.0.1');
+        hub_test_assert(false, 'missing Pack must not queue a runtime action');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'pack_not_installed', 'missing Pack must use the unavailable Pack error');
+    }
+
     $ready = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-queue-ready', 'idempotent' => true])['service'];
     $jobId = hub_enqueue_command_job($db, 'service_start', (int)$ready['id'], [], null, '127.0.0.1');
     $job = hub_get_command_job($db, $jobId);
     hub_test_assert(($job['action'] ?? '') === 'service_start' && (int)($job['service_id'] ?? 0) === (int)$ready['id'], 'ready API Pack runtime action must queue');
+});
+
+hub_test('runtime command Pack admission distinguishes unavailable and unready Pack states', function (): void {
+    foreach ([null, ['status' => 'error', 'manifest' => ['runtime_ready' => true]]] as $pack) {
+        try {
+            hub_command_require_ready_runtime_pack($pack);
+            hub_test_assert(false, 'missing or invalid Pack must not pass runtime command admission');
+        } catch (RuntimeException $e) {
+            hub_test_assert($e->getMessage() === 'pack_not_installed', 'missing or invalid Pack must use the unavailable Pack error');
+        }
+    }
+
+    try {
+        hub_command_require_ready_runtime_pack(hub_get_pack('vlm-manual-vision'));
+        hub_test_assert(false, 'unready Manual Vision Pack must not pass runtime command admission');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'unready Pack must retain the runtime-ready error');
+    }
+    hub_command_require_ready_runtime_pack(hub_get_pack('hello'));
 });
 
 hub_test('command queue recovers stale running jobs without touching active long jobs', function (): void {

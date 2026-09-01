@@ -50,11 +50,37 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
     $native = array_column(hub_public_api_manifest($db, static fn (array $service): bool => true)['services'], null, 'mode')['manual_vision'] ?? null;
     hub_test_assert(is_array($native) && ($native['name'] ?? '') === 'English DocVQA', 'native Manual Vision contract name missing');
     hub_test_assert(array_column($native['operations'] ?? [], 'operation') === ['docvqa'], 'native Manual Vision operation table mismatch');
+    hub_test_assert(($native['operations'][0]['output_constants'] ?? []) === [
+        'mode' => 'manual_vision',
+        'operation' => 'docvqa',
+        'answer_language' => 'en',
+        'contract_revision' => 1,
+    ], 'native Manual Vision output constants mismatch');
+    $nativeFields = array_column($native['input_fields'] ?? [], null, 'name');
+    hub_test_assert(
+        ($nativeFields['image']['mime_types'] ?? []) === ['image/png', 'image/jpeg']
+        && ($nativeFields['question']['max_length'] ?? null) === 400
+        && ($nativeFields['question']['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+        'native Manual Vision request constraints mismatch',
+    );
+    $nativeSerializedFields = array_column(json_decode(json_encode($native, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR)['input_fields'] ?? [], null, 'name');
+    hub_test_assert(
+        ($nativeSerializedFields['image']['mime_types'] ?? []) === ['image/png', 'image/jpeg']
+        && ($nativeSerializedFields['question']['max_length'] ?? null) === 400
+        && ($nativeSerializedFields['question']['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+        'native serialized Manual Vision contract must preserve request constraints',
+    );
     hub_test_assert(($native['error_codes'] ?? []) === [
         'bad_request', 'unsupported_operation', 'bad_image', 'file_too_large', 'missing_token', 'token_mode_not_allowed',
         'gpu_unavailable', 'model_not_provisioned', 'model_manifest_invalid', 'runtime_not_ready', 'inference_failed', 'gateway_timeout',
     ], 'native Manual Vision error table mismatch');
     hub_test_assert(!array_key_exists('gpu_required', $native) && !str_contains(json_encode($native, JSON_THROW_ON_ERROR), 'gpu_required'), 'native Manual Vision contract must not disclose GPU requirements');
+    $pack = hub_get_pack('vlm-manual-vision');
+    hub_test_assert(is_array($pack), 'native Manual Vision sanitizer fixture missing');
+    $maliciousContract = hub_pack_l5_contract($pack['manifest']);
+    $maliciousContract['operations'][0]['nested'] = ['gpu_required' => true];
+    $sanitizedNative = hub_public_api_service_from_contract('manual_vision', $pack, $pack['manifest'], $maliciousContract);
+    hub_test_assert(!str_contains(json_encode($sanitizedNative, JSON_THROW_ON_ERROR), 'gpu_required'), 'native Manual Vision contract must redact nested GPU requirements');
 
     $previous = getenv('AIHUB_CLUSTER_SECRET_KEY');
     putenv('AIHUB_CLUSTER_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
@@ -87,6 +113,20 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
         $cluster = array_column(hub_cluster_public_manifest($db)['services'], null, 'mode')['manual_vision'] ?? null;
         hub_test_assert(is_array($cluster) && ($cluster['name'] ?? '') === 'English DocVQA', 'Cluster Manual Vision contract name missing');
         hub_test_assert(array_column($cluster['operations'] ?? [], 'operation') === ['docvqa'] && ($cluster['error_codes'] ?? []) === ($native['error_codes'] ?? []), 'Cluster Manual Vision operation/error table mismatch');
+        $clusterFields = array_column($cluster['input_fields'] ?? [], null, 'name');
+        hub_test_assert(
+            ($clusterFields['image']['mime_types'] ?? []) === ['image/png', 'image/jpeg']
+            && ($clusterFields['question']['max_length'] ?? null) === 400
+            && ($clusterFields['question']['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+            'Cluster Manual Vision request constraints mismatch',
+        );
+        $clusterSerializedFields = array_column(json_decode(json_encode($cluster, JSON_THROW_ON_ERROR), true, 512, JSON_THROW_ON_ERROR)['input_fields'] ?? [], null, 'name');
+        hub_test_assert(
+            ($clusterSerializedFields['image']['mime_types'] ?? []) === ['image/png', 'image/jpeg']
+            && ($clusterSerializedFields['question']['max_length'] ?? null) === 400
+            && ($clusterSerializedFields['question']['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
+            'Cluster serialized Manual Vision contract must preserve request constraints',
+        );
         hub_test_assert(!array_key_exists('gpu_required', $cluster) && !str_contains(json_encode($cluster, JSON_THROW_ON_ERROR), 'gpu_required'), 'Cluster Manual Vision contract must not disclose GPU requirements');
         $snapshot = hub_cluster_compact_manifest_snapshot(['services' => [array_replace($native, [
             'gpu_required' => true,
@@ -114,7 +154,12 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
 hub_test('Manual Vision runtime gate blocks installation without affecting ready API Packs', function (): void {
     $db = hub_test_reset_db();
 
-    hub_test_assert(hub_test_throws(static fn () => hub_install_pack($db, 'vlm-manual-vision')), 'contract-only Manual Vision Pack must not install');
+    try {
+        hub_install_pack($db, 'vlm-manual-vision');
+        hub_test_assert(false, 'contract-only Manual Vision Pack must not install');
+    } catch (RuntimeException $e) {
+        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'Manual Vision install must use the runtime-ready gate');
+    }
     hub_test_assert((int)$db->query("SELECT COUNT(*) FROM services WHERE pack_id = 'vlm-manual-vision'")->fetchColumn() === 0, 'blocked Manual Vision install must not create a service or queued install target');
 
     $fixture = hub_get_service_by_mode($db, 'hello');
