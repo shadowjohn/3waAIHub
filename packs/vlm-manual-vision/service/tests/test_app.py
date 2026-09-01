@@ -209,13 +209,15 @@ class ManualVisionTests(unittest.TestCase):
             write_verified_snapshot(root)
             with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
                 try:
-                    (root / "snapshot" / "linked").symlink_to(Path(temporary) / "outside", target_is_directory=True)
+                    outside = Path(temporary) / "outside"
+                    outside.mkdir()
+                    (root / "snapshot" / "linked").symlink_to(outside, target_is_directory=True)
                 except OSError as exc:
                     self.skipTest(f"symlinks unavailable: {exc}")
                 with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
                     vision.verified_snapshot()
 
-    def test_new_verified_manifest_identity_replaces_cached_runtime(self) -> None:
+    def test_new_verified_manifest_identity_requires_restart_without_second_loader(self) -> None:
         class LoadedModel:
             dtype = "float16"
 
@@ -248,11 +250,11 @@ class ManualVisionTests(unittest.TestCase):
                     first = vision.load_runtime(torch_module=torch)
                     second_snapshot = write_verified_snapshot(root, b"second")
                     (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": second_snapshot.manifest_sha256}), encoding="utf-8")
-                    second = vision.load_runtime(torch_module=torch)
+                    with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
+                        vision.load_runtime(torch_module=torch)
                 finally:
                     vision._RUNTIME = None
-        self.assertIsNot(first, second)
-        self.assertEqual(4, len(Loader.calls))
+        self.assertEqual(2, len(Loader.calls))
 
     def test_runtime_guards_and_decode_failure_use_approved_errors(self) -> None:
         snapshot = vision.VerifiedSnapshot(Path("/models/manual-vision/snapshot"), "a" * 64)
