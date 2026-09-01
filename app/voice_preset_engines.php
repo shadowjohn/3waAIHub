@@ -72,8 +72,11 @@ function hub_voice_preset_engine_binding_for_owner(PDO $db, int $memberId, strin
 function hub_voice_preset_breezy_profile_is_compatible(array $profile, int $memberId): bool
 {
     $language = $profile['language'] ?? null;
-    $expiresAt = trim((string)($profile['expires_at'] ?? ''));
-    if ($expiresAt !== '') {
+    $expiresAt = $profile['expires_at'] ?? null;
+    if ($expiresAt !== null && $expiresAt !== '') {
+        if (!is_string($expiresAt)) {
+            return false;
+        }
         $expiresAtValue = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $expiresAt);
         $expiresAtErrors = DateTimeImmutable::getLastErrors();
         if (
