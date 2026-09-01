@@ -77,3 +77,12 @@ hub_test('Manual Vision Pack exposes the narrow English DocVQA contract', functi
     hub_test_assert(($settings['MANUAL_VISION_MAX_UPLOAD_MB']['min'] ?? null) === 1 && ($settings['MANUAL_VISION_MAX_UPLOAD_MB']['max'] ?? null) === 50, 'Manual Vision upload limit range mismatch');
     hub_test_assert(!empty($settings['HF_TOKEN']['secret']) && !empty($settings['HF_TOKEN']['provision_only']), 'Manual Vision token must be provision-only secret');
 });
+
+hub_test('Manual Vision health publishes only verified ready state', function (): void {
+    $source = file_get_contents(HUB_ROOT . '/packs/vlm-manual-vision/service/app.py');
+    hub_test_assert(is_string($source)
+        && str_contains($source, '@app.get("/health")')
+        && str_contains($source, 'snapshot = process_verified_snapshot()')
+        && str_contains($source, 'ready = runtime_accepted(snapshot)')
+        && str_contains($source, 'return {"ok": ready, "ready": ready}'), 'Manual Vision health must publish only verified readiness');
+});

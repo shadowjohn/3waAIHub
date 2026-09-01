@@ -1126,6 +1126,28 @@ function hub_cluster_pack_validation_error_response(array $response, mixed $payl
     ]);
 }
 
+function hub_cluster_manual_vision_relay_response(array $response, mixed $payload): ?array
+{
+    if ((int)($response['status'] ?? 0) !== 400
+        || !is_array($payload)
+        || ($payload['ok'] ?? null) !== false
+        || !is_string($payload['error'] ?? null)
+        || !in_array($payload['error'], ['bad_request', 'unsupported_operation'], true)
+    ) {
+        return null;
+    }
+    foreach (array_keys($payload) as $key) {
+        if (!is_string($key) || !in_array($key, ['ok', 'error', 'request_id'], true)) {
+            return null;
+        }
+    }
+    if (isset($payload['request_id']) && (!is_string($payload['request_id']) || strlen($payload['request_id']) > 128)) {
+        return null;
+    }
+
+    return hub_gateway_error(400, $payload['error'], 'Manual Vision request is invalid');
+}
+
 function hub_cluster_rewrite_voice_generate_contract(array $service, string $mode = 'voice_generate'): array
 {
     if (!hub_is_voice_profile_mode($mode)) {
@@ -1868,6 +1890,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $response = hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable');
         } elseif ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_cluster_pack_validation_error_response($response, $payload)
+                ?? ($mode === 'manual_vision' ? hub_cluster_manual_vision_relay_response($response, $payload) : null)
                 ?? (hub_is_voice_profile_mode($mode) ? hub_cluster_voice_generate_relay_response($response, $payload) : null);
             $response ??= hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
         } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300) {
