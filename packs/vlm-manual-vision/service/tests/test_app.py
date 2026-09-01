@@ -38,8 +38,11 @@ class FakeTensor:
         return self
 
 
-class FakeInputIds:
+class FakeInputIds(FakeTensor):
     shape = (1, 4)
+
+    def __init__(self) -> None:
+        super().__init__(False)
 
 
 class FakeGenerated:
@@ -57,12 +60,13 @@ class FakeProcessor:
         self.calls: list[dict[str, object]] = []
         self.decode_calls: list[object] = []
         self.pixel_values = FakeTensor(True)
+        self.input_ids = FakeInputIds()
         self.attention_mask = FakeTensor(False)
 
     def __call__(self, **kwargs: object) -> dict[str, object]:
         self.calls.append(kwargs)
         return {
-            "input_ids": FakeInputIds(),
+            "input_ids": self.input_ids,
             "pixel_values": self.pixel_values,
             "attention_mask": self.attention_mask,
         }
@@ -157,6 +161,7 @@ class ManualVisionTests(unittest.TestCase):
         self.assertEqual([{"text": "answer en What is the rated capacity?", "images": unittest.mock.ANY, "return_tensors": "pt"}], processor.calls)
         self.assertEqual(17, model.calls[0]["max_new_tokens"])
         self.assertEqual({"device": "cuda", "dtype": "float16"}, processor.pixel_values.calls[0])
+        self.assertEqual({"device": "cuda"}, processor.input_ids.calls[0])
         self.assertEqual({"device": "cuda"}, processor.attention_mask.calls[0])
         self.assertEqual((slice(None), slice(4, None)), model.generated.slices[0])
         self.assertEqual(["continuation"], processor.decode_calls[0])
@@ -203,6 +208,68 @@ class ManualVisionTests(unittest.TestCase):
                 (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
                 self.assertTrue(vision.runtime_accepted(snapshot))
 
+    def test_direct_model_and_acceptance_symlinks_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            data = Path(temporary) / "service"
+            data.mkdir()
+            target = Path(temporary) / "target"
+            target.mkdir()
+            try:
+                root.symlink_to(target, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlinks unavailable: {exc}")
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
+                with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
+                    vision.verified_snapshot()
+
+            root.unlink()
+            snapshot = write_verified_snapshot(root)
+            actual_snapshot = root / "snapshot"
+            actual_snapshot.rename(root / "snapshot-real")
+            actual_snapshot.symlink_to(root / "snapshot-real", target_is_directory=True)
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
+                with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
+                    vision.verified_snapshot()
+            actual_snapshot.unlink()
+            (root / "snapshot-real").rename(actual_snapshot)
+            manifest = root / "verified-snapshot.json"
+            manifest.rename(root / "manifest-real.json")
+            manifest.symlink_to(root / "manifest-real.json")
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
+                with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
+                    vision.verified_snapshot()
+            manifest.unlink()
+            (root / "manifest-real.json").rename(manifest)
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root)}, clear=False):
+                snapshot = vision.verified_snapshot()
+            acceptance_target = Path(temporary) / "acceptance.json"
+            acceptance_target.write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
+            (data / "manual-vision-acceptance.json").symlink_to(acceptance_target)
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
+                with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
+                    vision.runtime_accepted(snapshot)
+            data.rename(Path(temporary) / "service-real")
+            data.symlink_to(Path(temporary) / "service-real", target_is_directory=True)
+            with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False):
+                with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
+                    vision.runtime_accepted(snapshot)
+
+    def test_cached_runtime_uses_manifest_identity_without_rehashing_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "models"
+            data = Path(temporary) / "service"
+            data.mkdir()
+            snapshot = write_verified_snapshot(root)
+            (data / "manual-vision-acceptance.json").write_text(json.dumps({"accepted": True, "manifest_sha256": snapshot.manifest_sha256}), encoding="utf-8")
+            vision._RUNTIME = (snapshot.manifest_sha256, object(), object())
+            try:
+                with patch.dict(os.environ, {"MANUAL_VISION_MODEL_DIR": str(root), "MANUAL_VISION_SERVICE_DATA_DIR": str(data)}, clear=False), \
+                     patch.object(vision, "_hash_file", side_effect=AssertionError("cache must not rehash")):
+                    self.assertEqual(vision._RUNTIME[1:], vision.load_runtime(torch_module=FakeTorch()))
+            finally:
+                vision._RUNTIME = None
+
     def test_snapshot_verifier_rejects_symlinked_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "models"
@@ -221,19 +288,29 @@ class ManualVisionTests(unittest.TestCase):
         class LoadedModel:
             dtype = "float16"
 
+            def __init__(self) -> None:
+                self.device = ""
+                self.evaluated = False
+
             def to(self, _device: str) -> "LoadedModel":
+                self.device = _device
                 return self
 
             def eval(self) -> "LoadedModel":
+                self.evaluated = True
                 return self
 
         class Loader:
-            calls: list[str] = []
+            calls: list[tuple[str, dict[str, object]]] = []
+            model: LoadedModel | None = None
 
             @classmethod
             def from_pretrained(cls, path: str, **_kwargs: object) -> object:
-                cls.calls.append(path)
-                return object() if len(cls.calls) % 2 else LoadedModel()
+                cls.calls.append((path, _kwargs))
+                if len(cls.calls) % 2:
+                    return object()
+                cls.model = LoadedModel()
+                return cls.model
 
         torch = FakeTorch()
         torch.float16 = "float16"
@@ -255,6 +332,9 @@ class ManualVisionTests(unittest.TestCase):
                 finally:
                     vision._RUNTIME = None
         self.assertEqual(2, len(Loader.calls))
+        self.assertEqual({"local_files_only": True}, Loader.calls[0][1])
+        self.assertEqual({"torch_dtype": "float16", "local_files_only": True}, Loader.calls[1][1])
+        self.assertEqual(("cuda", True), (Loader.model.device, Loader.model.evaluated))
 
     def test_runtime_guards_and_decode_failure_use_approved_errors(self) -> None:
         snapshot = vision.VerifiedSnapshot(Path("/models/manual-vision/snapshot"), "a" * 64)
@@ -274,7 +354,7 @@ class ManualVisionTests(unittest.TestCase):
         snapshot = vision.VerifiedSnapshot(Path("/models/manual-vision/snapshot"), "b" * 64)
         vision._RUNTIME = (snapshot.manifest_sha256, object(), object())
         try:
-            with patch.object(vision, "verified_snapshot", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=True):
+            with patch.object(vision, "published_snapshot_identity", return_value=snapshot), patch.object(vision, "runtime_accepted", return_value=True):
                 with self.assertRaisesRegex(vision.ServiceError, "gpu_unavailable"):
                     vision.load_runtime(torch_module=FakeTorch(False))
         finally:
@@ -282,6 +362,9 @@ class ManualVisionTests(unittest.TestCase):
 
     def test_image_requires_png_or_jpeg_signature_and_decode(self) -> None:
         self.assertEqual((2, 2), vision.decode_image(png_bytes()).size)
+        with patch.object(vision, "MAX_DECODED_PIXELS", 3):
+            with self.assertRaisesRegex(vision.ServiceError, "bad_image"):
+                vision.decode_image(png_bytes())
         for data in (b"not an image", b"GIF89a"):
             with self.subTest(data=data):
                 with self.assertRaisesRegex(vision.ServiceError, "bad_image"):

@@ -7,6 +7,7 @@ import os
 import re
 import time
 import uuid
+import warnings
 from contextlib import nullcontext
 from dataclasses import dataclass
 from io import BytesIO
@@ -17,6 +18,9 @@ from PIL import Image
 
 
 ALLOWED_FIELDS = {"operation", "image", "question"}
+MAX_IMAGE_WIDTH = 10_000
+MAX_IMAGE_HEIGHT = 10_000
+MAX_DECODED_PIXELS = 40_000_000
 
 
 class ServiceError(RuntimeError):
@@ -94,8 +98,13 @@ def decode_image(data: bytes) -> Image.Image:
     if not (data.startswith(b"\x89PNG\r\n\x1a\n") or data.startswith(b"\xff\xd8\xff")):
         raise ServiceError("bad_image")
     try:
-        with Image.open(BytesIO(data)) as source:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            source = Image.open(BytesIO(data))
+        with source:
             if source.format not in {"PNG", "JPEG"}:
+                raise ServiceError("bad_image")
+            if source.width > MAX_IMAGE_WIDTH or source.height > MAX_IMAGE_HEIGHT or source.width * source.height > MAX_DECODED_PIXELS:
                 raise ServiceError("bad_image")
             source.load()
             return source.convert("RGB")
@@ -135,13 +144,48 @@ def _snapshot_files(snapshot: Path) -> set[str]:
     return files
 
 
-def verified_snapshot() -> VerifiedSnapshot:
-    """Small fail-closed verifier; Task 3 may strengthen this manifest format."""
+def _snapshot_paths() -> tuple[Path, Path]:
     root = model_root()
     snapshot = root / "snapshot"
     manifest_path = root / "verified-snapshot.json"
-    if not snapshot.is_dir() or not manifest_path.is_file():
+    if root.is_symlink() or snapshot.is_symlink() or manifest_path.is_symlink():
+        raise ServiceError("model_manifest_invalid")
+    if not root.is_dir() or not snapshot.is_dir() or not manifest_path.is_file():
         raise ServiceError("model_not_provisioned")
+    return snapshot, manifest_path
+
+
+def published_snapshot_identity() -> VerifiedSnapshot:
+    snapshot, manifest_path = _snapshot_paths()
+    try:
+        raw = manifest_path.read_bytes()
+        payload = json.loads(raw)
+        if not isinstance(payload, dict) or set(payload) != {"snapshot", "files"} or payload["snapshot"] != "snapshot" or not isinstance(payload["files"], list):
+            raise ValueError("invalid manifest")
+        for row in payload["files"]:
+            if not isinstance(row, dict) or set(row) != {"path", "sha256"}:
+                raise ValueError("invalid manifest file")
+            relative, checksum = row["path"], row["sha256"]
+            if (
+                not isinstance(relative, str)
+                or not relative
+                or relative.startswith("/")
+                or "\\" in relative
+                or ".." in Path(relative).parts
+                or not isinstance(checksum, str)
+                or re.fullmatch(r"[a-f0-9]{64}", checksum) is None
+            ):
+                raise ValueError("invalid manifest file")
+        return VerifiedSnapshot(snapshot, hashlib.sha256(raw).hexdigest())
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ServiceError("model_manifest_invalid") from exc
+
+
+def verified_snapshot() -> VerifiedSnapshot:
+    """Small fail-closed verifier; Task 3 may strengthen this manifest format."""
+    identity = published_snapshot_identity()
+    snapshot = identity.path
+    manifest_path = model_root() / "verified-snapshot.json"
     try:
         raw = manifest_path.read_bytes()
         payload = json.loads(raw)
@@ -172,7 +216,7 @@ def verified_snapshot() -> VerifiedSnapshot:
             listed.add(relative)
         if not listed or "config.json" not in listed or not any(name.endswith(".safetensors") for name in listed) or listed != _snapshot_files(snapshot):
             raise ValueError("incomplete manifest")
-        return VerifiedSnapshot(snapshot, hashlib.sha256(raw).hexdigest())
+        return identity
     except ServiceError:
         raise
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
@@ -182,7 +226,13 @@ def verified_snapshot() -> VerifiedSnapshot:
 def runtime_accepted(snapshot: VerifiedSnapshot) -> bool:
     """Task 3 may replace this bound acceptance record with a signed verifier."""
     try:
-        payload = json.loads((service_data_root() / "manual-vision-acceptance.json").read_text(encoding="utf-8"))
+        root = service_data_root()
+        record = root / "manual-vision-acceptance.json"
+        if root.is_symlink() or record.is_symlink():
+            raise ServiceError("runtime_not_ready")
+        payload = json.loads(record.read_text(encoding="utf-8"))
+    except ServiceError:
+        raise
     except (OSError, ValueError, TypeError):
         return False
     return payload == {"accepted": True, "manifest_sha256": snapshot.manifest_sha256}
@@ -194,7 +244,7 @@ _RUNTIME: tuple[str, Any, Any] | None = None
 def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
     global _RUNTIME
     configured_max_new_tokens()
-    snapshot = verified_snapshot()
+    snapshot = published_snapshot_identity() if _RUNTIME is not None else verified_snapshot()
     if not runtime_accepted(snapshot):
         raise ServiceError("runtime_not_ready")
     if _RUNTIME is not None:
@@ -278,6 +328,7 @@ def create_app() -> Any | None:
     globals()["Request"] = Request
     app = FastAPI(title="3waAIHub Manual Vision", docs_url=None, redoc_url=None, openapi_url=None)
     inference_lock = asyncio.Lock()
+    app.state.inference_lock = inference_lock
 
     def error_response(error: ServiceError) -> JSONResponse:
         status = {
@@ -296,7 +347,7 @@ def create_app() -> Any | None:
     @app.get("/health")
     async def health() -> dict[str, bool]:
         try:
-            snapshot = verified_snapshot()
+            snapshot = published_snapshot_identity()
             ready = runtime_accepted(snapshot)
         except ServiceError:
             ready = False
@@ -308,8 +359,18 @@ def create_app() -> Any | None:
         request_id = f"req_{uuid.uuid4().hex}"
         form: Any | None = None
         try:
+            limit = max_upload_bytes()
             try:
-                form = await request.form()
+                content_length = int(request.headers.get("content-length", "0"))
+            except ValueError as exc:
+                raise ServiceError("bad_request") from exc
+            if content_length > limit:
+                raise ServiceError("file_too_large")
+            try:
+                try:
+                    form = await request.form(max_files=1, max_fields=2, max_part_size=limit)
+                except TypeError:
+                    form = await request.form(max_files=1, max_fields=2)
             except Exception as exc:
                 raise ServiceError("bad_request") from exc
             items = list(form.multi_items())
@@ -319,8 +380,10 @@ def create_app() -> Any | None:
             if not isinstance(image_upload, UploadFile) or image_upload.content_type not in {"image/png", "image/jpeg"}:
                 raise ServiceError("bad_image")
             parsed = parse_request({"operation": values["operation"], "question": values["question"]})
-            limit = max_upload_bytes()
-            data = await image_upload.read(limit + 1)
+            try:
+                data = await image_upload.read(limit + 1)
+            except Exception as exc:
+                raise ServiceError("bad_image") from exc
             if len(data) > limit:
                 raise ServiceError("file_too_large")
             image = decode_image(data)
@@ -333,7 +396,10 @@ def create_app() -> Any | None:
             return error_response(exc)
         finally:
             if form is not None:
-                await form.close()
+                try:
+                    await form.close()
+                except Exception:
+                    pass
 
     return app
 
