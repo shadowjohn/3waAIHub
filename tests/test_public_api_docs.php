@@ -1850,6 +1850,13 @@ hub_test('Manual Vision caller and operator docs preserve the narrow contract', 
     foreach (['answer en {question}', 'not literal OCR', 'PaliGemma2', 'PP-OCRv5', 'pdf2html', '50 MiB', '64', 'manual_vision_provision', 'manual_vision_acceptance', 'HF_TOKEN', '--network none', 'cold', 'warm', 'peak VRAM', '512 MiB', 'CSRF', '3waaihub-manual-vision-main:0.1.0', '3waaihub/vlm-manual-vision:0.1.0', 'raw acceptance JSON', 'sanitized acceptance summary', 'redacted evidence', 'must never enter Git', 'FastAPI endpoint tests were not run', 'Real Docker runtime', 'CUDA/model acceptance', 'does not perform those deployment actions'] as $needle) {
         hub_test_assert(str_contains($operations, $needle), 'Manual Vision runbook missing: ' . $needle);
     }
+    hub_test_assert(
+        str_contains($operations, 'only runtime/model-download step allowed network access')
+        && str_contains($operations, 'only step that receives `HF_TOKEN`')
+        && str_contains($operations, 'Image build may use the package network')
+        && !str_contains($operations, 'only online step'),
+        'Manual Vision runbook must distinguish image-build networking from runtime provisioning',
+    );
 });
 
 hub_test('PhaseDX-3.1 old public docs defaults migrate once only', function (): void {
