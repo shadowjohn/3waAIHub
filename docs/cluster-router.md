@@ -30,6 +30,27 @@ The Router relays `photo_upload` to one eligible node, replaces the child image 
 
 Photo inference uses a 600-second Router response budget to match the Gemma service contract. The Router still applies its normal bounded proxy-transfer admission, so slow Vision calls cannot create unlimited concurrent transfers.
 
+## PaliGemma 2 Vision
+
+`paligemma2` is a GPU-only, synchronous image-to-text mode. A child can publish
+it only after its configured pinned model, CUDA runtime, and fixed-image
+acceptance record all validate. The static Pack metadata deliberately remains a
+pre-acceptance declaration; customers must use the **live Router manifest** as
+the authority for whether `paligemma2` is currently routable.
+
+The Router forwards one multipart image request to a selected eligible station.
+Supported tasks are `caption` and `general`; callers must send
+`real_inference=1`, while the station must independently enable real inference
+in its controlled runtime settings. The response is returned synchronously as
+normal JSON. It has no Router task ID, no artifact download URL, and no ACK
+step. A missing mode or unavailable selected station returns the normal stable
+availability response without exposing GPU, model, node, path, URL, or token
+details.
+
+This first contract is deliberately narrow: it is not OCR, DocVQA, object
+detection, translation, streaming, or a general asynchronous Vision job. Each
+of those needs its own Pack contract and acceptance before it can be published.
+
 # Operator Setup and Recovery
 
 The Hub creates its own `data/cluster.key` the first time a Cluster role needs it. Do not put this key in a table, environment variable, ticket, chat, or log. A legacy `AIHUB_CLUSTER_SECRET_KEY` is migrated into the local key file once, then is no longer required. Move `data/` together with the Hub when preserving an installation; for a new host identity, start with a new key and pair the child nodes again.

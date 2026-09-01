@@ -15,8 +15,15 @@
 - 最大上傳：50 MiB
 
 因此 Marketplace 可以安裝、建置、設定 token 與執行明確的模型 provision，但 API
-`/health` 仍會回報 `acceptance_pending`、manifest `runtime_ready=false`。不可因為
+`/health` 會在尚未驗收時回報 `acceptance_pending`、`runtime_ready=false`。不可因為
 Docker image 建置成功或模型下載完成就將它宣告為 L5 或加入可路由的正式 Vision 能力。
+
+真實 CUDA acceptance 成功後，受控 acceptance 指令會在 service data 建立
+`paligemma2-acceptance.json`。`/health` 只接受其固定 fixture SHA-256、目前釘選
+model/revision、`mock=false`、GPU/VRAM 與真實 inference 設定全數一致時才回
+`ok=true`、`runtime_ready=true`、`runtime_level=L4-real-inference`。這是**本機
+runtime 狀態**，不會把 tracked 的全域 Pack manifest 改成 ready；公開 API 與 Cluster
+只會根據健康服務產生的 live manifest 宣告這個 mode。
 
 第一個真實合約只承諾 `caption` / `general` 單圖推論。OCR、DocVQA、偵測、翻譯都需
 對應 fine-tuned model 與獨立 acceptance，不能把 PT checkpoint 的 import 成功誤當成功能承諾。
@@ -68,9 +75,10 @@ symlink 時，會拒絕執行，不會線上補抓。
 3. `task=caption` 或 `task=general`。
 4. CUDA GPU 存在且 local snapshot 完整。
 
-完成後可在容器內跑 `/app/acceptance.py --image /fixture/sample.png`。它必須輸出
-`ok=true`、`mock=false`、非空文字、GPU 名稱與 peak VRAM；該紀錄才是把 Pack 升為
-runtime-ready 的依據。固定 acceptance fixture 為 `demo/sample.png`（1280×720 RGB，
+完成後由 Marketplace 的 CUDA acceptance job 在容器內跑
+`/app/acceptance.py --image /fixture/sample.png --record-path /data/service/paligemma2-acceptance.json`。
+它必須輸出 `ok=true`、`mock=false`、非空文字、GPU 名稱與 peak VRAM，並原子寫入該
+本機 record；該 record 才是把 host runtime 升為 ready 的依據。固定 acceptance fixture 為 `demo/sample.png`（1280×720 RGB，
 SHA-256：`53170e6afeba5c703e1e858c126a582e4494d137fb9592c0b1372c49f4e91f8c`）；不可用
 1×1 placeholder 取代，否則 PaliGemma image processor 無法可靠判斷 channel 維度。
 
@@ -80,8 +88,8 @@ SHA-256：`53170e6afeba5c703e1e858c126a582e4494d137fb9592c0b1372c49f4e91f8c`）�
 2. Pascal CUDA 11.8 image build、`torch.cuda.is_available()` 與 GPU smoke 均通過。
 3. 對固定圖片完成真實推論，驗證 JSON schema、artifact 與錯誤契約。
 4. 量測 GTX 1080 8 GiB 的 VRAM、延遲與 OOM 邊界，確認和 Whisper／OCR 的駐留排程。
-5. 全部通過後，才可將 manifest 的 `runtime_ready` 改為 `true` 並開放 Cluster
-   manifest 宣告。
+5. 全部通過後，確認 `/health` 的 `ok=true`、`runtime_ready=true`；該健康服務才會被
+   local / Cluster live manifest 宣告。
 
 原則：模型適配 Hub 的生命週期、設定檔與 artifact 契約；不能由未驗收的模型
 反過來放寬 Hub 的路由與 readiness 語意。

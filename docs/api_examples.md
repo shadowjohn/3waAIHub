@@ -127,6 +127,49 @@ php scripts/benchmark.php --pack=ocr-ppocrv5 --case=ocr_mock_image
 php scripts/benchmark.php --service=ocr-main --case=ocr_real_image
 ```
 
+## POST PaliGemma 2 Vision
+
+Status: GPU-only, synchronous Vision inference. `paligemma2` only appears in a
+station or Router's **live manifest** after that host has completed the pinned
+CUDA acceptance. Do not cache the static Pack manifest as proof that a Router
+can currently route this mode.
+
+Local station:
+
+```bash
+curl -X POST "<BASE_URL>?mode=paligemma2" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@sample.png" \
+  -F "prompt=Describe this image in Traditional Chinese." \
+  -F "task=caption" \
+  -F "real_inference=1"
+```
+
+Router entry (use this endpoint for customer traffic, not a child URL):
+
+```bash
+curl -X POST "<CLUSTER_ROUTER_URL>/cluster_api.php?mode=paligemma2" \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "image=@sample.png" \
+  -F "prompt=What is visible in this image?" \
+  -F "task=general" \
+  -F "real_inference=1"
+```
+
+Contract:
+
+- Method: `POST`; Content-Type: `multipart/form-data`
+- Input: `image` file, maximum `50 MiB`; legacy `file` is accepted as an upload alias
+- Tasks: `task=caption` or `task=general` only
+- Real inference: the host setting `PALIGEMMA2_REAL_INFERENCE=1` **and** request `real_inference=1` are both required
+- Optional input: `prompt`, `temperature`, `max_tokens` (`16`–`128`)
+- Response: direct JSON with `ok`, `mock=false`, `runtime_level`, `model`, `text`, `elapsed_ms`; this is synchronous and has no Router `task_id`, artifact, or ACK workflow
+- Errors: `bad_request`, `bad_image`, `file_too_large`, `unsupported_task`, `gpu_unavailable`, `model_not_provisioned`, `model_manifest_invalid`, `inference_failed`, `runtime_not_ready`, `gateway_timeout`
+
+Discover availability from `cluster_manifest.json.php` before choosing the
+mode. A missing `paligemma2` entry means no eligible accepted station is
+currently published; it does not reveal which node is unavailable.
+
 ## POST Translate
 
 Status: L5 benchmark ready. The adapter uses an internal Ollama sidecar, returns mock translation by default, and runs real translation when `real_inference=1`.

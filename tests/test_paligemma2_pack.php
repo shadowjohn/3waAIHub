@@ -49,8 +49,9 @@ hub_test('PaliGemma 2 publishes an honest pre-acceptance Pack contract', functio
     hub_test_assert(!str_contains($gpuSmoke, 'PALIGEMMA2_GPU_REQUIRED'), 'PaliGemma 2 GPU requirement must not be disabled through an environment override');
 
     $app = (string)file_get_contents(HUB_ROOT . '/packs/vlm-paligemma2/service/app.py');
-    hub_test_assert(str_contains($app, 'return "L2-deps-import"'), 'PaliGemma 2 health must report its actual pre-acceptance level');
-    hub_test_assert(str_contains($app, '"runtime_ready": False'), 'PaliGemma 2 health must expose not-ready state');
+    hub_test_assert(str_contains($app, 'return "L2-deps-import"'), 'PaliGemma 2 health must retain its actual pre-acceptance level');
+    hub_test_assert(str_contains($app, 'def accepted_runtime_record()'), 'PaliGemma 2 health must validate a local CUDA acceptance record');
+    hub_test_assert(str_contains($app, '"runtime_ready": ready'), 'PaliGemma 2 health must expose readiness derived from the acceptance record');
     hub_test_assert(str_contains($app, 'env_enabled(real_inference) and env_enabled(os.getenv("PALIGEMMA2_REAL_INFERENCE"))'), 'PaliGemma 2 real inference must require both request and runtime opt-in');
 
     $pascalDockerfile = (string)file_get_contents(HUB_ROOT . '/packs/vlm-paligemma2/service/Dockerfile.pascal-cu118');
@@ -177,4 +178,54 @@ hub_test('PaliGemma 2 is available as an explicit API Playground mode', function
     ] as $needle) {
         hub_test_assert(str_contains($page, $needle), 'PaliGemma 2 Playground is missing ' . $needle);
     }
+});
+
+hub_test('PaliGemma 2 documents its live Cluster Router contract', function (): void {
+    $examples = (string)file_get_contents(HUB_ROOT . '/docs/api_examples.md');
+    $router = (string)file_get_contents(HUB_ROOT . '/docs/cluster-router.md');
+
+    foreach ([
+        '## POST PaliGemma 2 Vision',
+        'cluster_api.php?mode=paligemma2',
+        'task=caption',
+        'task=general',
+        'real_inference=1',
+    ] as $needle) {
+        hub_test_assert(str_contains($examples, $needle), 'PaliGemma 2 API examples are missing ' . $needle);
+    }
+    foreach ([
+        '## PaliGemma 2 Vision',
+        '`paligemma2`',
+        'live Router manifest',
+        'synchronous',
+        'caption',
+        'general',
+    ] as $needle) {
+        hub_test_assert(str_contains($router, $needle), 'PaliGemma 2 Cluster documentation is missing ' . $needle);
+    }
+});
+
+hub_test('PaliGemma 2 live API documentation retains its narrow synchronous contract', function (): void {
+    $db = hub_test_reset_db();
+    $installed = hub_install_pack($db, 'vlm-paligemma2', ['idempotent' => true]);
+    hub_set_service_enabled($db, 'paligemma2', true);
+    hub_update_service_status($db, (int)$installed['service']['id'], 'running');
+
+    $services = array_column(hub_public_api_services($db, static fn (): bool => true), null, 'mode');
+    $service = $services['paligemma2'] ?? null;
+    $fields = is_array($service) ? array_column((array)($service['input_fields'] ?? []), null, 'name') : [];
+    $html = hub_public_api_docs_html($db, null, static fn (): bool => true);
+
+    hub_test_assert(is_array($service)
+        && ($service['method'] ?? '') === 'POST'
+        && ($service['content_type'] ?? '') === 'multipart/form-data'
+        && ($service['execution_type'] ?? '') === 'sync_api'
+        && ($fields['image']['max_mb'] ?? null) === 50
+        && ($fields['task']['enum'] ?? null) === ['caption', 'general']
+        && ($fields['real_inference']['default'] ?? null) === '0'
+        && str_contains($html, 'paligemma2')
+        && str_contains($html, 'caption')
+        && str_contains($html, 'general'),
+        'PaliGemma 2 public and Cluster-derived API docs must retain the accepted synchronous Vision contract'
+    );
 });

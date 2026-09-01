@@ -20,6 +20,8 @@ _PALIGEMMA_PROCESSOR: Any | None = None
 _PALIGEMMA_MODEL_NAME = ""
 _PALIGEMMA_MODEL_REVISION = ""
 _PALIGEMMA_DEVICE = ""
+_ACCEPTANCE_RECORD_NAME = "paligemma2-acceptance.json"
+_ACCEPTANCE_FIXTURE_SHA256 = "53170e6afeba5c703e1e858c126a582e4494d137fb9592c0b1372c49f4e91f8c"
 
 
 def runtime_level() -> str:
@@ -29,6 +31,62 @@ def runtime_level() -> str:
 
 def env_enabled(value: str | None) -> bool:
     return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def accepted_runtime_record() -> dict[str, Any] | None:
+    """Only trust the local record written by the fixed-image CUDA acceptance command."""
+    if not env_enabled(os.getenv("PALIGEMMA2_REAL_INFERENCE")):
+        return None
+    service_data = Path(os.getenv("PALIGEMMA2_SERVICE_DATA_DIR", "/data/service"))
+    record_path = service_data / _ACCEPTANCE_RECORD_NAME
+    if service_data.is_symlink() or not service_data.is_dir() or record_path.is_symlink() or not record_path.is_file():
+        return None
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        from provision import configured_model
+
+        model, revision = configured_model()
+    except (OSError, json.JSONDecodeError, RuntimeError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    required = {
+        "schema_version": 1,
+        "ok": True,
+        "mock": False,
+        "runtime_level": "L4-real-inference",
+        "model": model,
+        "revision": revision,
+        "fixture_sha256": _ACCEPTANCE_FIXTURE_SHA256,
+    }
+    if any(record.get(key) != value for key, value in required.items()):
+        return None
+    if not isinstance(record.get("gpu"), str) or not record["gpu"].strip() or not isinstance(record.get("accepted_at"), str):
+        return None
+    for key in ("vram_total_bytes", "vram_peak_bytes", "elapsed_ms"):
+        value = record.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return None
+    if record["vram_total_bytes"] < 1 or record["vram_peak_bytes"] < 1:
+        return None
+
+    return {
+        "model": model,
+        "revision": revision,
+        "gpu": record["gpu"].strip(),
+        "vram_total_bytes": record["vram_total_bytes"],
+        "vram_peak_bytes": record["vram_peak_bytes"],
+        "elapsed_ms": record["elapsed_ms"],
+        "accepted_at": record["accepted_at"],
+    }
+
+
+def health_readiness(accepted: dict[str, Any] | None, errors: list[str]) -> tuple[bool, str, str]:
+    if errors:
+        return False, "storage_not_ready", runtime_level()
+    if accepted is None:
+        return False, "acceptance_pending", runtime_level()
+    return True, "ready", "L4-real-inference"
 
 
 def configure_paligemma_env() -> None:
@@ -357,16 +415,19 @@ async def health_endpoint() -> JSONResponse:
         snapshot = lightweight_snapshot_status()
     except RuntimeError as exc:
         errors.append(f"model: {exc}")
+    accepted = accepted_runtime_record()
+    ready, status, level = health_readiness(accepted, errors)
 
     return JSONResponse(
         content={
-            "ok": False,
-            "status": "acceptance_pending" if len(errors) == 0 else "storage_not_ready",
-            "runtime_level": runtime_level(),
-            "runtime_ready": False,
+            "ok": ready,
+            "status": status,
+            "runtime_level": level,
+            "runtime_ready": ready,
             "model": os.getenv("PALIGEMMA2_MODEL", "google/paligemma2-3b-pt-224"),
             "model_revision": os.getenv("PALIGEMMA2_MODEL_REVISION", "96eeb174da13ca1a2b247e4d0867436296c36420"),
             "snapshot": None if snapshot is None else {"file_count": snapshot["file_count"], "size_bytes": snapshot["size_bytes"]},
+            "acceptance": accepted,
             "device": device,
             "storage": storage,
             "errors": errors,

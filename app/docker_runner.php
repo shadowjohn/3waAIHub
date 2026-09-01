@@ -1158,6 +1158,7 @@ function hub_paligemma2_acceptance_args(array $service, ?array $profile = null, 
     return [
         'run', '--rm', '-v', $fixture . ':/fixture/sample.png:ro', 'adapter',
         'python3', '/app/acceptance.py', '--image', '/fixture/sample.png', '--prompt', 'caption en',
+        '--record-path', '/data/service/paligemma2-acceptance.json',
     ];
 }
 
