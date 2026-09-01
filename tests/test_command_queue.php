@@ -183,6 +183,35 @@ hub_test('service command contract derives runtime fields from the declared Pack
     hub_test_assert(hub_test_throws(static fn (): array => hub_service_command_contract($db, $tampered)), 'runtime contract must reject a database compose path that is not declared by the Pack');
 });
 
+hub_test('command queue admits runtime actions only for runtime-ready Packs', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_get_service_by_mode($db, 'hello');
+    $pack = hub_get_pack('vlm-manual-vision');
+    hub_test_assert(is_array($service) && is_array($pack), 'Manual Vision queue fixture missing');
+    $db->prepare('UPDATE services SET pack_id = :pack_id, pack_version = :pack_version, mode = :mode WHERE id = :id')
+        ->execute([
+            ':pack_id' => 'vlm-manual-vision',
+            ':pack_version' => (string)$pack['manifest']['version'],
+            ':mode' => 'manual_vision',
+            ':id' => (int)$service['id'],
+        ]);
+
+    foreach (['service_start', 'service_restart', 'service_install', 'service_build', 'service_rebuild'] as $action) {
+        try {
+            hub_enqueue_command_job($db, $action, (int)$service['id'], [], null, '127.0.0.1');
+            hub_test_assert(false, 'contract-only Manual Vision Pack must not queue ' . $action);
+        } catch (RuntimeException $e) {
+            hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'Manual Vision queue gate must reject ' . $action);
+        }
+    }
+    hub_test_assert((int)$db->query('SELECT COUNT(*) FROM command_jobs')->fetchColumn() === 0, 'blocked Manual Vision actions must not be inserted');
+
+    $ready = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-queue-ready', 'idempotent' => true])['service'];
+    $jobId = hub_enqueue_command_job($db, 'service_start', (int)$ready['id'], [], null, '127.0.0.1');
+    $job = hub_get_command_job($db, $jobId);
+    hub_test_assert(($job['action'] ?? '') === 'service_start' && (int)($job['service_id'] ?? 0) === (int)$ready['id'], 'ready API Pack runtime action must queue');
+});
+
 hub_test('command queue recovers stale running jobs without touching active long jobs', function (): void {
     $db = hub_test_reset_db();
     $now = '2030-01-01 12:00:00';

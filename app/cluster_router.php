@@ -1279,7 +1279,7 @@ function hub_cluster_public_manifest(PDO $db): array
         $station = $stations[$stationId];
         $service = $contracts[$stationId][$mode];
         if ($mode === 'manual_vision') {
-            unset($service['gpu_required']);
+            $service = hub_cluster_manual_vision_without_gpu_disclosure($service);
         }
         if (hub_is_voice_profile_mode($mode)) {
             $service = hub_cluster_rewrite_voice_generate_contract($service, $mode);
@@ -5266,6 +5266,21 @@ function hub_cluster_default_station_fetcher(array $request): array
     return ['status' => $status, 'body' => $body];
 }
 
+function hub_cluster_manual_vision_without_gpu_disclosure(array $contract): array
+{
+    foreach ($contract as $key => $value) {
+        if ($key === 'gpu_required') {
+            unset($contract[$key]);
+            continue;
+        }
+        if (is_array($value)) {
+            $contract[$key] = hub_cluster_manual_vision_without_gpu_disclosure($value);
+        }
+    }
+
+    return $contract;
+}
+
 function hub_cluster_refresh_json_payload(mixed $response): ?array
 {
     if (!is_array($response) || (int)($response['status'] ?? 0) !== 200 || !is_string($response['body'] ?? null)) {
@@ -5298,7 +5313,7 @@ function hub_cluster_compact_manifest_snapshot(array $manifest): ?array
             'examples', 'workflow_examples',
         ]));
         if ($mode === 'manual_vision') {
-            unset($services[$mode]['gpu_required']);
+            $services[$mode] = hub_cluster_manual_vision_without_gpu_disclosure($services[$mode]);
         }
     }
 

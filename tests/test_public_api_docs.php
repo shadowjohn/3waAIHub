@@ -9,11 +9,12 @@ function hub_test_make_documentable_pack(PDO $db, string $packId, array $state =
     if (($manifest['runtime_ready'] ?? null) !== true) {
         $service = hub_get_service_by_mode($db, 'hello');
         hub_test_assert(is_array($service), 'contract-only docs fixture requires seeded hello service');
-        $db->prepare('UPDATE services SET pack_id = :pack_id, pack_version = :pack_version, service_key = :service_key WHERE id = :id')
+        $db->prepare('UPDATE services SET pack_id = :pack_id, pack_version = :pack_version, service_key = :service_key, mode = :mode WHERE id = :id')
             ->execute([
                 ':pack_id' => $packId,
                 ':pack_version' => (string)$manifest['version'],
                 ':service_key' => (string)($state['service_key'] ?? $manifest['install']['default_service_key'] ?? ($packId . '-main')),
+                ':mode' => (string)($state['mode'] ?? $manifest['default_mode']),
                 ':id' => (int)$service['id'],
             ]);
         $service = hub_get_service($db, (int)$service['id']) ?: [];
@@ -72,7 +73,13 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
         $now = hub_now();
         $db->prepare('UPDATE cluster_stations SET manifest_json = :manifest, manifest_fetched_at = :now, status_json = :status, status_fetched_at = :now WHERE id = :id')
             ->execute([
-                ':manifest' => json_encode(['services' => [array_replace($native, ['gpu_required' => true])]], JSON_THROW_ON_ERROR),
+                ':manifest' => json_encode(['services' => [array_replace($native, [
+                    'gpu_required' => true,
+                    'operations' => [[
+                        'operation' => 'docvqa',
+                        'nested' => ['gpu_required' => true],
+                    ]],
+                ])]], JSON_THROW_ON_ERROR),
                 ':status' => json_encode(['modes' => ['manual_vision']], JSON_THROW_ON_ERROR),
                 ':now' => $now,
                 ':id' => $stationId,
@@ -81,6 +88,11 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
         hub_test_assert(is_array($cluster) && ($cluster['name'] ?? '') === 'English DocVQA', 'Cluster Manual Vision contract name missing');
         hub_test_assert(array_column($cluster['operations'] ?? [], 'operation') === ['docvqa'] && ($cluster['error_codes'] ?? []) === ($native['error_codes'] ?? []), 'Cluster Manual Vision operation/error table mismatch');
         hub_test_assert(!array_key_exists('gpu_required', $cluster) && !str_contains(json_encode($cluster, JSON_THROW_ON_ERROR), 'gpu_required'), 'Cluster Manual Vision contract must not disclose GPU requirements');
+        $snapshot = hub_cluster_compact_manifest_snapshot(['services' => [array_replace($native, [
+            'gpu_required' => true,
+            'operations' => [['operation' => 'docvqa', 'nested' => ['gpu_required' => true]]],
+        ])]]);
+        hub_test_assert(is_array($snapshot) && !str_contains(json_encode($snapshot, JSON_THROW_ON_ERROR), 'gpu_required'), 'Manual Vision Cluster snapshot must redact nested GPU requirements');
 
         foreach ([hub_public_api_docs_html($db, null, static fn (array $service): bool => true), hub_cluster_public_api_docs_html($db)] as $docs) {
             foreach (['manual_vision', 'English DocVQA', 'docvqa', 'model_not_provisioned', 'gateway_timeout'] as $needle) {
