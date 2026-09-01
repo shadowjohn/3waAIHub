@@ -6714,6 +6714,7 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
 
         foreach ([
             ['status' => 503, 'payload' => ['ok' => false, 'error' => 'bad_request', 'message' => 'service request failed']],
+            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'message' => 'service request failed']],
             ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request']],
             ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'message' => 'private']],
             ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'message' => 'service request failed', 'detail' => 'private']],
@@ -6760,11 +6761,21 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
                         hub_test_assert(($request['form']['files'][$key]['tmp_name'] ?? null) === $file['tmp_name'], 'Router must forward generic Manual Vision file input to the service');
                     }
 
-                    return hub_gateway_json(400, ['ok' => false, 'error' => 'bad_request', 'message' => 'service request failed']);
+                    return hub_gateway_json(400, [
+                        'ok' => false,
+                        'error' => 'bad_request',
+                        'message' => 'service request failed',
+                        'request_id' => 'req_fedcba9876543210fedcba9876543210',
+                    ]);
                 },
             ]);
             $rejectionPayload = json_decode((string)$rejection['body'], true, 16, JSON_THROW_ON_ERROR);
-            hub_test_assert($forwarded && $rejection['status'] === 400 && ($rejectionPayload['error'] ?? '') === 'bad_request', 'Manual Vision invalid multipart input must receive the service stable rejection');
+            hub_test_assert(
+                $forwarded
+                && $rejection['status'] === 400
+                && $rejectionPayload === ['ok' => false, 'error' => 'bad_request', 'request_id' => 'req_fedcba9876543210fedcba9876543210'],
+                'Manual Vision invalid multipart input must receive the service stable rejection'
+            );
         }
 
         foreach (['manual-vision-station-token', 'manual_vision_cluster', 'node', 'paligemma', 'model_revision', 'GPU', '/models/', 'HF_TOKEN'] as $forbidden) {

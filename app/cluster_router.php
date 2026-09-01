@@ -1151,15 +1151,12 @@ function hub_cluster_manual_vision_relay_response(array $response, mixed $payloa
     if ($status === null) {
         return null;
     }
-    $keys = ['ok', 'error', 'message'];
-    if (array_key_exists('request_id', $payload)) {
-        $keys[] = 'request_id';
-    }
+    $keys = ['ok', 'error', 'message', 'request_id'];
     if (count($payload) !== count($keys)
         || array_diff(array_keys($payload), $keys) !== []
         || ($payload['message'] ?? null) !== 'service request failed'
-        || (array_key_exists('request_id', $payload)
-            && (!is_string($payload['request_id']) || preg_match('/\A[A-Za-z0-9_-]{1,128}\z/D', $payload['request_id']) !== 1))
+        || !is_string($payload['request_id'] ?? null)
+        || preg_match('/\A[A-Za-z0-9_-]{1,128}\z/D', $payload['request_id']) !== 1
     ) {
         return hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
     }
@@ -1167,12 +1164,11 @@ function hub_cluster_manual_vision_relay_response(array $response, mixed $payloa
         return hub_gateway_error(502, 'router_response_invalid', 'cluster station response is invalid');
     }
 
-    $public = ['ok' => false, 'error' => $payload['error']];
-    if (isset($payload['request_id'])) {
-        $public['request_id'] = $payload['request_id'];
-    }
-
-    return hub_gateway_json($status, $public);
+    return hub_gateway_json($status, [
+        'ok' => false,
+        'error' => $payload['error'],
+        'request_id' => $payload['request_id'],
+    ]);
 }
 
 function hub_cluster_manual_vision_success_response(array $response, mixed $payload): ?array
