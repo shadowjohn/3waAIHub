@@ -126,10 +126,12 @@ class ManualVisionTests(unittest.TestCase):
     def setUp(self) -> None:
         vision._RUNTIME = None
         vision._VERIFIED_IDENTITY = None
+        vision._TRUSTED_FILES = ()
 
     def tearDown(self) -> None:
         vision._RUNTIME = None
         vision._VERIFIED_IDENTITY = None
+        vision._TRUSTED_FILES = ()
 
     def test_parse_request_trims_ascii_whitespace_and_formats_exact_paligemma1_prompt(self) -> None:
         request = vision.parse_request({"operation": "docvqa", "question": " \tWhat is the rated capacity?\r\n"})
@@ -308,6 +310,16 @@ class ManualVisionTests(unittest.TestCase):
                         self.assertEqual(first, vision.process_verified_snapshot())
                     self.assertGreater(first_calls, 0)
                     self.assertEqual(first_calls, calls)
+                    (root / "snapshot" / "model.safetensors").unlink()
+                    with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
+                        vision.process_verified_snapshot()
+                    vision._VERIFIED_IDENTITY = None
+                    vision._TRUSTED_FILES = ()
+                    write_verified_snapshot(root)
+                    vision.process_verified_snapshot()
+                    (root / "snapshot" / "model.safetensors").write_bytes(b"replaced")
+                    with self.assertRaisesRegex(vision.ServiceError, "model_manifest_invalid"):
+                        vision.process_verified_snapshot()
                     write_verified_snapshot(root, b"changed")
                     with self.assertRaisesRegex(vision.ServiceError, "runtime_not_ready"):
                         vision.process_verified_snapshot()

@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import time
 import uuid
 import warnings
@@ -232,19 +233,51 @@ def runtime_accepted(snapshot: VerifiedSnapshot) -> bool:
 
 _RUNTIME: tuple[str, Any, Any] | None = None
 _VERIFIED_IDENTITY: str | None = None
+_TRUSTED_FILES: tuple[tuple[str, tuple[int, int, int, int, int]], ...] = ()
 _VERIFICATION_LOCK = Lock()
 
 
+def _trusted_file_metadata(snapshot: Path, relative: str) -> tuple[int, int, int, int, int]:
+    try:
+        snapshot_root = snapshot.resolve(strict=True)
+        candidate = snapshot / relative
+        current = candidate
+        while True:
+            if current.is_symlink():
+                raise ServiceError("model_manifest_invalid")
+            if current == snapshot:
+                break
+            current = current.parent
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(snapshot_root)
+        info = candidate.stat(follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode):
+            raise ServiceError("model_manifest_invalid")
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+    except ServiceError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise ServiceError("model_manifest_invalid") from exc
+
+
 def process_verified_snapshot() -> VerifiedSnapshot:
-    global _VERIFIED_IDENTITY
+    global _VERIFIED_IDENTITY, _TRUSTED_FILES
     with _VERIFICATION_LOCK:
         identity = published_snapshot_identity()
         if _VERIFIED_IDENTITY is None:
             verified = verified_snapshot()
+            current, rows = _read_snapshot_manifest()
+            if current.manifest_sha256 != verified.manifest_sha256:
+                raise ServiceError("runtime_not_ready")
+            _TRUSTED_FILES = tuple((relative, _trusted_file_metadata(verified.path, relative)) for relative, _checksum in rows)
             _VERIFIED_IDENTITY = verified.manifest_sha256
             return verified
         if identity.manifest_sha256 != _VERIFIED_IDENTITY:
             raise ServiceError("runtime_not_ready")
+        # ponytail: metadata catches normal replacement/deletion; immutable read-only snapshots are the trust boundary.
+        for relative, trusted in _TRUSTED_FILES:
+            if _trusted_file_metadata(identity.path, relative) != trusted:
+                raise ServiceError("model_manifest_invalid")
         return identity
 
 
