@@ -125,6 +125,8 @@ def _snapshot_files(snapshot: Path) -> set[str]:
     files: set[str] = set()
     for current, directories, names in os.walk(snapshot):
         directories.sort()
+        if any((Path(current) / name).is_symlink() for name in directories):
+            raise ServiceError("model_manifest_invalid")
         for name in sorted(names):
             candidate = Path(current) / name
             if candidate.is_symlink() or not candidate.is_file():
@@ -186,7 +188,7 @@ def runtime_accepted(snapshot: VerifiedSnapshot) -> bool:
     return payload == {"accepted": True, "manifest_sha256": snapshot.manifest_sha256}
 
 
-_RUNTIME: tuple[Any, Any] | None = None
+_RUNTIME: tuple[str, Any, Any] | None = None
 
 
 def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
@@ -199,8 +201,8 @@ def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
         import torch as torch_module
     if not bool(torch_module.cuda.is_available()):
         raise ServiceError("gpu_unavailable")
-    if _RUNTIME is not None:
-        return _RUNTIME
+    if _RUNTIME is not None and _RUNTIME[0] == snapshot.manifest_sha256:
+        return _RUNTIME[1:]
     try:
         from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor
 
@@ -209,8 +211,8 @@ def load_runtime(*, torch_module: Any | None = None) -> tuple[Any, Any]:
             str(snapshot.path), torch_dtype=torch_module.float16, local_files_only=True,
         ).to("cuda")
         model.eval()
-        _RUNTIME = (processor, model)
-        return _RUNTIME
+        _RUNTIME = (snapshot.manifest_sha256, processor, model)
+        return processor, model
     except Exception as exc:
         raise ServiceError("inference_failed") from exc
 
