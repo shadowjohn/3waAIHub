@@ -232,6 +232,7 @@ hub_test('Breezy profile compatibility requires owner private consented transcri
         ['deleted_at' => $now],
         ['expires_at' => '2000-01-01 00:00:00'],
         ['expires_at' => 'not-a-datetime'],
+        ['expires_at' => '2099-02-30 00:00:00'],
     ];
 
     hub_test_assert(

@@ -74,8 +74,17 @@ function hub_voice_preset_breezy_profile_is_compatible(array $profile, int $memb
     $language = $profile['language'] ?? null;
     $expiresAt = trim((string)($profile['expires_at'] ?? ''));
     if ($expiresAt !== '') {
-        $expiresAtTimestamp = strtotime($expiresAt);
-        if ($expiresAtTimestamp === false || $expiresAtTimestamp <= time()) {
+        $expiresAtValue = DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $expiresAt);
+        $expiresAtErrors = DateTimeImmutable::getLastErrors();
+        if (
+            $expiresAtValue === false
+            || ($expiresAtErrors !== false && (
+                ($expiresAtErrors['warning_count'] ?? 0) !== 0
+                || ($expiresAtErrors['error_count'] ?? 0) !== 0
+            ))
+            || $expiresAtValue->format('Y-m-d H:i:s') !== $expiresAt
+            || $expiresAtValue->getTimestamp() <= time()
+        ) {
             return false;
         }
     }
