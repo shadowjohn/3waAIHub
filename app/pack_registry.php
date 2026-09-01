@@ -1815,7 +1815,7 @@ function hub_validate_pack_manifest(array $manifest, string $packDir): array
             $errors[] = 'internal_task runtime requires async_task execution_type.';
         }
     } else {
-        if (!is_file($packDir . '/' . (string)($runtime['compose_file'] ?? ''))) {
+        if (($manifest['runtime_ready'] ?? false) === true && !is_file($packDir . '/' . (string)($runtime['compose_file'] ?? ''))) {
             $errors[] = 'runtime.compose_file not found.';
         }
         if ((int)($runtime['default_internal_port'] ?? 0) <= 0) {

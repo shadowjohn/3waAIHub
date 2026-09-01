@@ -1,0 +1,146 @@
+{
+  "schema_version": "0.1",
+  "id": "vlm-manual-vision",
+  "name": "English DocVQA",
+  "version": "0.1.0",
+  "category": "vision",
+  "provider": "google-paligemma",
+  "type": "api_service",
+  "execution_type": "sync_api",
+  "runtime_level": "L5-contract",
+  "target_level": "L5-contract",
+  "runtime_ready": false,
+  "default_mode": "manual_vision",
+  "capability": "document-question-answering",
+  "description": "English DocVQA for question answering over a document image.",
+  "runtime": {
+    "kind": "docker",
+    "default_internal_port": 8000
+  },
+  "gateway": {
+    "health_path": "/health",
+    "invoke_path": "/vision/docvqa",
+    "methods": ["POST"],
+    "timeout_sec": 120,
+    "max_upload_mb": 50
+  },
+  "l5_contract": {
+    "endpoint": "/vision/docvqa",
+    "method": "POST",
+    "content_type": "multipart/form-data",
+    "input": {
+      "fields": [
+        {
+          "name": "operation",
+          "type": "string",
+          "required": true,
+          "default": "docvqa",
+          "enum": ["docvqa"]
+        },
+        {
+          "name": "image",
+          "type": "file",
+          "required": true,
+          "max_mb": 50
+        },
+        {
+          "name": "question",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    "output": {
+      "required_keys": ["ok", "mode", "operation", "answer", "answer_language", "contract_revision", "elapsed_ms", "request_id"]
+    },
+    "operations": [
+      {
+        "operation": "docvqa",
+        "input_fields": ["operation", "image", "question"],
+        "output_constants": {
+          "mode": "manual_vision",
+          "operation": "docvqa",
+          "answer_language": "English",
+          "contract_revision": 1
+        }
+      }
+    ],
+    "errors": [
+      "bad_request",
+      "unsupported_operation",
+      "bad_image",
+      "file_too_large",
+      "missing_token",
+      "token_mode_not_allowed",
+      "gpu_unavailable",
+      "model_not_provisioned",
+      "model_manifest_invalid",
+      "runtime_not_ready",
+      "inference_failed",
+      "gateway_timeout"
+    ],
+    "error_table": [
+      {"code": "bad_request", "http_status": 400},
+      {"code": "unsupported_operation", "http_status": 400},
+      {"code": "bad_image", "http_status": 400},
+      {"code": "file_too_large", "http_status": 413},
+      {"code": "missing_token", "http_status": 401},
+      {"code": "token_mode_not_allowed", "http_status": 403},
+      {"code": "gpu_unavailable", "http_status": 503},
+      {"code": "model_not_provisioned", "http_status": 503},
+      {"code": "model_manifest_invalid", "http_status": 500},
+      {"code": "runtime_not_ready", "http_status": 503},
+      {"code": "inference_failed", "http_status": 502},
+      {"code": "gateway_timeout", "http_status": 504}
+    ],
+    "limits": {
+      "timeout_sec": 120,
+      "max_upload_mb": 50,
+      "max_concurrency": 1
+    }
+  },
+  "hardware": {
+    "gpu_required": true,
+    "gpu_supported": true,
+    "min_vram_mb": 8192,
+    "cpu_fallback": false,
+    "min_compute_capability": "0.0"
+  },
+  "queue": {
+    "supported": true,
+    "default_queue": "gpu",
+    "max_concurrency": 1
+  },
+  "storage": {
+    "mounts": [
+      {"type": "models", "host_subdir": "manual-vision", "container_path": "/models/manual-vision", "read_only": true},
+      {"type": "cache", "host_subdir": "manual-vision", "container_path": "/cache/manual-vision", "read_only": false},
+      {"type": "service_data", "host_subdir": "", "container_path": "/data/service", "read_only": false}
+    ]
+  },
+  "settings_schema": [
+    {"key": "MANUAL_VISION_MODEL", "label": "Manual Vision model", "type": "text", "default": "google/paligemma-3b-ft-docvqa-448", "required": true, "restart_required": true, "server_only": true},
+    {"key": "MANUAL_VISION_MODEL_REVISION", "label": "Manual Vision revision", "type": "text", "default": "", "required": true, "restart_required": true, "server_only": true},
+    {"key": "MANUAL_VISION_DEVICE", "label": "Manual Vision device", "type": "select", "default": "cuda", "options": ["cuda"], "required": true, "restart_required": true, "server_only": true},
+    {"key": "MANUAL_VISION_TORCH_DTYPE", "label": "Manual Vision dtype", "type": "select", "default": "float16", "options": ["float16"], "required": true, "restart_required": true, "server_only": true},
+    {"key": "MANUAL_VISION_MAX_NEW_TOKENS", "label": "Manual Vision answer limit", "type": "integer", "default": "64", "min": 1, "max": 128, "required": true, "restart_required": false, "server_only": true},
+    {"key": "MANUAL_VISION_MAX_UPLOAD_MB", "label": "Manual Vision upload limit", "type": "integer", "default": "50", "min": 1, "max": 50, "required": true, "restart_required": false, "server_only": true},
+    {"key": "HF_TOKEN", "label": "Provisioning token", "type": "secret", "default": "", "required": false, "restart_required": false, "provision_only": true, "server_only": true}
+  ],
+  "env": [
+    {"name": "MANUAL_VISION_MODEL", "default": "google/paligemma-3b-ft-docvqa-448", "required": true},
+    {"name": "MANUAL_VISION_MODEL_REVISION", "default": "", "required": true},
+    {"name": "MANUAL_VISION_DEVICE", "default": "cuda", "required": true},
+    {"name": "MANUAL_VISION_TORCH_DTYPE", "default": "float16", "required": true},
+    {"name": "MANUAL_VISION_MAX_NEW_TOKENS", "default": "64", "required": true},
+    {"name": "MANUAL_VISION_MAX_UPLOAD_MB", "default": "50", "required": true},
+    {"name": "HF_TOKEN", "default": "", "required": false}
+  ],
+  "preflight": {
+    "checks": ["nvidia_smi", "docker_gpus", "storage"]
+  },
+  "install": {
+    "default_service_key": "manual-vision-main",
+    "compose_project": "3waaihub_manual_vision_main"
+  }
+}

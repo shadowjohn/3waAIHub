@@ -28,6 +28,62 @@ function hub_test_make_documentable_pack(PDO $db, string $packId, array $state =
     return hub_get_service($db, (int)$service['id']) ?: [];
 }
 
+hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract', function (): void {
+    require_once HUB_ROOT . '/app/public_api_docs.php';
+
+    $db = hub_test_reset_db();
+    hub_test_make_documentable_pack($db, 'vlm-manual-vision');
+    $native = array_column(hub_public_api_manifest($db, static fn (array $service): bool => true)['services'], null, 'mode')['manual_vision'] ?? null;
+    hub_test_assert(is_array($native) && ($native['name'] ?? '') === 'English DocVQA', 'native Manual Vision contract name missing');
+    hub_test_assert(array_column($native['operations'] ?? [], 'operation') === ['docvqa'], 'native Manual Vision operation table mismatch');
+    hub_test_assert(($native['error_codes'] ?? []) === [
+        'bad_request', 'unsupported_operation', 'bad_image', 'file_too_large', 'missing_token', 'token_mode_not_allowed',
+        'gpu_unavailable', 'model_not_provisioned', 'model_manifest_invalid', 'runtime_not_ready', 'inference_failed', 'gateway_timeout',
+    ], 'native Manual Vision error table mismatch');
+
+    $previous = getenv('AIHUB_CLUSTER_SECRET_KEY');
+    putenv('AIHUB_CLUSTER_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef');
+    try {
+        hub_set_storage_setting($db, 'AIHUB_CLUSTER_ROUTER_ENABLED', '1');
+        $stationId = hub_cluster_save_paired_station($db, [
+            'station_key' => 'manual_vision_docs',
+            'display_name' => 'Manual Vision Docs',
+            'public_base_url' => 'https://manual-vision.example/aihub',
+            'internal_base_url' => 'https://manual-vision.internal/aihub',
+            'priority' => 1,
+            'enabled' => true,
+            'station_token' => 'manual_vision_docs_token',
+            'modes' => ['manual_vision'],
+        ]);
+        $now = hub_now();
+        $db->prepare('UPDATE cluster_stations SET manifest_json = :manifest, manifest_fetched_at = :now, status_json = :status, status_fetched_at = :now WHERE id = :id')
+            ->execute([
+                ':manifest' => json_encode(['services' => [$native]], JSON_THROW_ON_ERROR),
+                ':status' => json_encode(['modes' => ['manual_vision']], JSON_THROW_ON_ERROR),
+                ':now' => $now,
+                ':id' => $stationId,
+            ]);
+        $cluster = array_column(hub_cluster_public_manifest($db)['services'], null, 'mode')['manual_vision'] ?? null;
+        hub_test_assert(is_array($cluster) && ($cluster['name'] ?? '') === 'English DocVQA', 'Cluster Manual Vision contract name missing');
+        hub_test_assert(array_column($cluster['operations'] ?? [], 'operation') === ['docvqa'] && ($cluster['error_codes'] ?? []) === ($native['error_codes'] ?? []), 'Cluster Manual Vision operation/error table mismatch');
+
+        foreach ([hub_public_api_docs_html($db, null, static fn (array $service): bool => true), hub_cluster_public_api_docs_html($db)] as $docs) {
+            foreach (['manual_vision', 'English DocVQA', 'docvqa', 'model_not_provisioned', 'gateway_timeout'] as $needle) {
+                hub_test_assert(str_contains($docs, $needle), 'Manual Vision docs missing ' . $needle);
+            }
+            foreach (['google/paligemma', 'HF_TOKEN', 'prompt', '"name": "model"', 'GPU', '/models/'] as $forbidden) {
+                hub_test_assert(!str_contains($docs, $forbidden), 'Manual Vision docs leaked ' . $forbidden);
+            }
+        }
+    } finally {
+        if ($previous === false) {
+            putenv('AIHUB_CLUSTER_SECRET_KEY');
+        } else {
+            putenv('AIHUB_CLUSTER_SECRET_KEY=' . $previous);
+        }
+    }
+});
+
 function hub_test_public_api_free_port(): int
 {
     $socket = stream_socket_server('tcp://127.0.0.1:0', $errno, $error);

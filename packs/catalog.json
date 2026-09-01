@@ -74,6 +74,15 @@
       "featured": true
     },
     {
+      "id": "vlm-manual-vision",
+      "name": "English DocVQA",
+      "version": "0.1.0",
+      "category": "vision",
+      "description": "English document question answering service.",
+      "path": "packs/vlm-manual-vision",
+      "featured": true
+    },
+    {
       "id": "sam3",
       "name": "SAM3 Segmentation Service",
       "version": "0.1.0",
