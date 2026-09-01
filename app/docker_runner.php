@@ -589,6 +589,10 @@ function hub_service_runtime_image_tag(array $service, ?array $profile = null): 
     if ($ocr !== null) {
         return (string)$ocr['image'];
     }
+    $manualVision = hub_manual_vision_wsl_runtime_profile($service, $profile);
+    if ($manualVision !== null) {
+        return (string)$manualVision['image'];
+    }
     $paligemma2 = hub_paligemma2_wsl_runtime_profile($service, $profile);
     return $paligemma2 === null ? hub_service_image_tag($service) : (string)$paligemma2['image'];
 }
@@ -955,6 +959,202 @@ function hub_ocr_wsl_runtime_profile(array $service, ?array $profile = null): ?a
         'image' => $image,
         'models_root' => $modelsRoot,
     ];
+}
+
+function hub_manual_vision_wsl_runtime_profile(array $service, ?array $profile = null): ?array
+{
+    if ((string)($service['pack_id'] ?? '') !== 'vlm-manual-vision') {
+        return null;
+    }
+    $resolution = hub_service_runtime_resolution($service, 'windows', $profile);
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $pack = hub_get_pack('vlm-manual-vision');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null) || !is_array($resolution['profile'] ?? null)) {
+        return null;
+    }
+    $profiles = $pack['manifest']['wsl_runtime_profiles'] ?? null;
+    $profileId = (string)($resolution['profile']['pack_profiles']['vlm-manual-vision'] ?? 'default');
+    $selected = is_array($profiles) ? ($profiles[$profileId] ?? null) : null;
+    $dockerfile = is_array($selected) ? (string)($selected['dockerfile'] ?? '') : '';
+    $image = is_array($selected) ? (string)($selected['image'] ?? '') : '';
+    if (
+        !is_array($selected)
+        || ($selected['id'] ?? null) !== $profileId
+        || preg_match('~^service/Dockerfile(?:\.[A-Za-z0-9._-]+)?$~', $dockerfile) !== 1
+        || preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
+    ) {
+        return null;
+    }
+    $modelsRoot = trim((string)($resolution['profile']['models_root'] ?? ''));
+    if ($modelsRoot === '') {
+        $modelsRoot = dirname((string)$runtime['runtime_root']) . '/models';
+    }
+    try {
+        $modelsRoot = hub_container_path($modelsRoot);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+
+    return $runtime + [
+        'profile_id' => $profileId,
+        'dockerfile' => $dockerfile,
+        'image' => $image,
+        'models_root' => $modelsRoot,
+    ];
+}
+
+/** @return array{0: array<string, mixed>, 1: array<string, string>, 2: string} */
+function hub_manual_vision_wsl_settings(PDO $db, array $service, bool $requireProvisioningSettings = false): array
+{
+    $service = hub_service_command_contract($db, $service);
+    $settingsPath = hub_runtime_settings_path(dirname(hub_path((string)$service['compose_file'])));
+    if (!is_file($settingsPath) || is_link($settingsPath)) {
+        throw new RuntimeException('Manual Vision runtime settings file is unavailable.');
+    }
+    $schema = hub_get_pack_settings_schema('vlm-manual-vision');
+    $source = hub_compose_env($service);
+    $environment = [];
+    $token = '';
+    foreach ($schema as $key => $item) {
+        $value = (string)($source[$key] ?? $item['default'] ?? '');
+        if (str_contains($value, "\0") || preg_match('/[\r\n]/', $value) === 1) {
+            throw new RuntimeException('Invalid Manual Vision runtime setting.');
+        }
+        if ($requireProvisioningSettings || $value !== '') {
+            $value = hub_validate_service_setting_value($item, $value);
+        }
+        if ($key === 'HF_TOKEN') {
+            $token = $value;
+        } elseif (empty($item['provision_only'])) {
+            $environment[$key] = $value;
+        }
+    }
+
+    return [$service, $environment, $token];
+}
+
+/** @return array{runtime: array<string, mixed>, command: list<string>, token: string}|null */
+function hub_manual_vision_provisioning_plan(PDO $db, array $service, ?array $profile = null, ?string $platform = null): ?array
+{
+    if (hub_platform_id($platform) !== 'windows') {
+        return null;
+    }
+    $runtime = hub_manual_vision_wsl_runtime_profile($service, $profile);
+    if ($runtime === null) {
+        return null;
+    }
+    [$service, $environment, $token] = hub_manual_vision_wsl_settings($db, $service, true);
+    if ($token === '') {
+        throw new RuntimeException('Manual Vision provisioning token is required.');
+    }
+    $runtimeRoot = (string)$runtime['runtime_root'];
+    $packRoot = $runtimeRoot . '/packs/vlm-manual-vision';
+    $modelsRoot = (string)$runtime['models_root'] . '/manual-vision';
+    $cacheRoot = $runtimeRoot . '/cache/manual-vision';
+    $tokenPayload = base64_encode($token);
+    $docker = 'docker run --rm --pull never --gpus all --user 0:0 --entrypoint /usr/bin/python3';
+    foreach ($environment as $key => $value) {
+        $docker .= ' --env ' . hub_wsl_shell_literal($key . '=' . $value);
+    }
+    $docker .= ' --env HF_HUB_OFFLINE=0 --env TRANSFORMERS_OFFLINE=0 --env HF_TOKEN'
+        . ' --env MANUAL_VISION_MODEL_DIR=/models/manual-vision'
+        . ' --volume ' . hub_wsl_shell_literal($modelsRoot . ':/models/manual-vision')
+        . ' --volume ' . hub_wsl_shell_literal($cacheRoot . ':/cache/manual-vision')
+        . ' ' . hub_wsl_shell_literal((string)$runtime['image']) . ' /app/provision.py';
+    $script = "set -eu\n"
+        . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+        . 'models_root=' . hub_wsl_shell_literal($modelsRoot) . "\n"
+        . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
+        . 'token_payload=' . hub_wsl_shell_literal($tokenPayload) . "\n"
+        . 'test -f "$pack_root/' . (string)$runtime['dockerfile'] . '"' . "\n"
+        . 'install -d -m 0775 "$models_root" "$cache_root"' . "\n"
+        . 'HF_TOKEN="$(printf %s "$token_payload" | base64 -d)"; export HF_TOKEN' . "\n"
+        . 'exec ' . $docker . "\n";
+
+    return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script), 'token' => $token];
+}
+
+/** @return array{runtime: array<string, mixed>, command: list<string>, token: string}|null */
+function hub_manual_vision_acceptance_args(PDO $db, array $service, ?array $profile = null, ?string $platform = null): ?array
+{
+    if (hub_platform_id($platform) !== 'windows') {
+        return null;
+    }
+    $runtime = hub_manual_vision_wsl_runtime_profile($service, $profile);
+    if ($runtime === null) {
+        return null;
+    }
+    [$service, $environment, $token] = hub_manual_vision_wsl_settings($db, $service, true);
+    $runtimeRoot = (string)$runtime['runtime_root'];
+    $packRoot = $runtimeRoot . '/packs/vlm-manual-vision';
+    $serviceRoot = $runtimeRoot . '/services/' . (string)$service['service_key'];
+    $modelsRoot = (string)$runtime['models_root'] . '/manual-vision';
+    $cacheRoot = $runtimeRoot . '/cache/manual-vision';
+    $demoRoot = $packRoot . '/demo';
+    // The resident entrypoint prepares writable mounts then drops to UID/GID 10001; models remain read-only.
+    $docker = 'docker run --rm --pull never --gpus all --entrypoint /app/entrypoint.sh';
+    foreach ($environment as $key => $value) {
+        $docker .= ' --env ' . hub_wsl_shell_literal($key . '=' . $value);
+    }
+    $docker .= ' --env HF_HUB_OFFLINE=1 --env TRANSFORMERS_OFFLINE=1'
+        . ' --env MANUAL_VISION_MODEL_DIR=/models/manual-vision --env MANUAL_VISION_CACHE_DIR=/cache/manual-vision --env MANUAL_VISION_SERVICE_DATA_DIR=/data/service'
+        . ' --volume ' . hub_wsl_shell_literal($modelsRoot . ':/models/manual-vision:ro')
+        . ' --volume ' . hub_wsl_shell_literal($cacheRoot . ':/cache/manual-vision')
+        . ' --volume ' . hub_wsl_shell_literal($serviceRoot . '/data:/data/service')
+        . ' --volume ' . hub_wsl_shell_literal($demoRoot . ':/demo:ro')
+        . ' --volume ' . hub_wsl_shell_literal($demoRoot . ':/app/demo:ro')
+        . ' ' . hub_wsl_shell_literal((string)$runtime['image']) . ' /usr/bin/python3 /app/acceptance.py';
+    $script = "set -eu\n"
+        . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+        . 'models_root=' . hub_wsl_shell_literal($modelsRoot) . "\n"
+        . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
+        . 'service_data=' . hub_wsl_shell_literal($serviceRoot . '/data') . "\n"
+        . 'demo_root=' . hub_wsl_shell_literal($demoRoot) . "\n"
+        . 'test -f "$pack_root/' . (string)$runtime['dockerfile'] . '"' . "\n"
+        . 'test -f "$demo_root/acceptance_cases.json"' . "\n"
+        . 'install -d -m 0775 "$cache_root" "$service_data"' . "\n"
+        . 'exec ' . $docker . "\n";
+
+    return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script), 'token' => $token];
+}
+
+function hub_manual_vision_redact_result(array $result, string $token): array
+{
+    foreach (['stdout', 'stderr', 'output'] as $key) {
+        $value = hub_output_tail((string)($result[$key] ?? ''));
+        $result[$key] = $token === '' ? $value : str_replace($token, '[redacted]', $value);
+    }
+    return $result;
+}
+
+function hub_run_manual_vision_provision_job(PDO $db, ?array $service, array $job): array
+{
+    if ($service === null || (string)($service['pack_id'] ?? '') !== 'vlm-manual-vision') {
+        return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'pack_not_supported'];
+    }
+    $plan = hub_manual_vision_provisioning_plan($db, $service);
+    if ($plan === null) {
+        return hub_unsupported_runtime_result('windows-wsl2-linux-docker', 'Manual Vision provisioning requires a ready WSL Runtime.');
+    }
+    hub_job_progress($db, $job, 'provisioning_model', 10, 'Provisioning the Manual Vision model snapshot.');
+    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 3600), (string)$plan['token']);
+    hub_add_service_log($db, (int)$service['id'], 'manual_vision_provision', (string)$result['output'], (int)$result['exit_code']);
+    return $result;
+}
+
+function hub_run_manual_vision_acceptance_job(PDO $db, ?array $service, array $job): array
+{
+    if ($service === null || (string)($service['pack_id'] ?? '') !== 'vlm-manual-vision') {
+        return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'pack_not_supported'];
+    }
+    $plan = hub_manual_vision_acceptance_args($db, $service);
+    if ($plan === null) {
+        return hub_unsupported_runtime_result('windows-wsl2-linux-docker', 'Manual Vision acceptance requires a ready WSL Runtime.');
+    }
+    hub_job_progress($db, $job, 'manual_vision_acceptance', 10, 'Running Manual Vision CUDA acceptance.');
+    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 1800), (string)$plan['token']);
+    hub_add_service_log($db, (int)$service['id'], 'manual_vision_acceptance', (string)$result['output'], (int)$result['exit_code']);
+    return $result;
 }
 
 /**
@@ -1384,7 +1584,6 @@ function hub_paligemma2_wsl_service_compose_command(array $service, array $args,
     if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1 || $port < 1 || $port > 65535) {
         throw new RuntimeException('Invalid WSL PaliGemma 2 service configuration.');
     }
-
     $environment = [];
     $sourceEnvironment = hub_compose_env($service);
     foreach ((array)($pack['manifest']['env'] ?? []) as $item) {
@@ -1395,13 +1594,11 @@ function hub_paligemma2_wsl_service_compose_command(array $service, array $args,
         }
         $environment[$key] = $value;
     }
-    // 此 Pack 不允許因主機設定錯誤而悄悄回落 CPU；Pascal 亦不能使用 bfloat16。
     $environment['PALIGEMMA2_DEVICE'] = 'cuda';
     if (($runtime['profile_id'] ?? '') === 'pascal-cu118') {
         $environment['PALIGEMMA2_TORCH_DTYPE'] = 'float16';
     }
     $environment[hub_pack_port_env($pack['manifest'])] = (string)$port;
-
     $runtimeRoot = (string)$runtime['runtime_root'];
     $packRoot = $runtimeRoot . '/packs/vlm-paligemma2';
     $packServiceRoot = $packRoot . '/service';
@@ -1413,7 +1610,6 @@ function hub_paligemma2_wsl_service_compose_command(array $service, array $args,
     foreach ($environment as $key => $value) {
         $env .= $key . '=' . $value . "\n";
     }
-
     $composeArgs = array_values($args);
     if (($composeArgs[0] ?? '') === 'build') {
         $dockerCommand = 'DOCKER_BUILDKIT=1 docker build --progress=plain --tag ' . hub_wsl_shell_literal((string)$runtime['image'])
@@ -1453,7 +1649,71 @@ function hub_paligemma2_wsl_service_compose_command(array $service, array $args,
         . 'if [ -e "$service_root/.env" ] || [ -L "$service_root/.env" ]; then if [ -L "$service_root/.env" ] || [ ! -f "$service_root/.env" ]; then echo "Unsafe legacy runtime env file." >&2; exit 2; fi; rm -- "$service_root/.env"; fi' . "\n"
         . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
         . $dockerCommand . "\n";
+    return hub_wsl_script_command($runtime, $script);
+}
 
+function hub_manual_vision_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
+{
+    $runtime = hub_manual_vision_wsl_runtime_profile($service, $profile);
+    $pack = hub_get_pack('vlm-manual-vision');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null)) {
+        throw new RuntimeException('WSL Runtime is not ready for Manual Vision.');
+    }
+    [$service, $environment] = hub_manual_vision_wsl_settings(hub_db(), $service);
+    $serviceKey = (string)($service['service_key'] ?? '');
+    $port = (int)($service['local_port'] ?? 0);
+    if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1 || $port < 1 || $port > 65535) {
+        throw new RuntimeException('Invalid WSL Manual Vision service configuration.');
+    }
+    $environment[hub_pack_port_env($pack['manifest'])] = (string)$port;
+    $runtimeRoot = (string)$runtime['runtime_root'];
+    $packRoot = $runtimeRoot . '/packs/vlm-manual-vision';
+    $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
+    $modelsRoot = (string)$runtime['models_root'] . '/manual-vision';
+    $cacheRoot = $runtimeRoot . '/cache/manual-vision';
+    $serviceData = $serviceRoot . '/data';
+    $compose = "services:\n  vlm-manual-vision:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot . '/service', JSON_UNESCAPED_SLASHES) . "\n      dockerfile: " . json_encode((string)$runtime['dockerfile'], JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    environment:\n      MANUAL_VISION_MODEL_DIR: /models/manual-vision\n      MANUAL_VISION_CACHE_DIR: /cache/manual-vision\n      MANUAL_VISION_SERVICE_DATA_DIR: /data/service\n      HF_HUB_OFFLINE: \"1\"\n      TRANSFORMERS_OFFLINE: \"1\"\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode($modelsRoot . ':/models/manual-vision:ro', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/manual-vision', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
+    $env = '';
+    foreach ($environment as $key => $value) {
+        $env .= $key . '=' . $value . "\n";
+    }
+    $composeArgs = array_values($args);
+    if (($composeArgs[0] ?? '') === 'build') {
+        $dockerCommand = 'DOCKER_BUILDKIT=1 docker build --progress=plain --tag ' . hub_wsl_shell_literal((string)$runtime['image'])
+            . ' --file ' . hub_wsl_shell_literal($packRoot . '/' . (string)$runtime['dockerfile'])
+            . ' ' . hub_wsl_shell_literal($packRoot . '/service');
+    } else {
+        $dockerCommand = 'docker compose';
+        if (($progressIndex = array_search('--progress=plain', $composeArgs, true)) !== false) {
+            unset($composeArgs[$progressIndex]);
+            $composeArgs = array_values($composeArgs);
+            $dockerCommand .= ' --progress=plain';
+        }
+        $dockerCommand .= ' --env-file ' . hub_wsl_shell_literal($serviceRoot . '/' . HUB_RUNTIME_SETTINGS_FILENAME)
+            . ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
+        foreach ($composeArgs as $arg) {
+            $dockerCommand .= ' ' . hub_wsl_shell_literal((string)$arg);
+        }
+    }
+    $script = "set -eu\n"
+        . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
+        . 'models_root=' . hub_wsl_shell_literal($modelsRoot) . "\n"
+        . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
+        . 'service_data=' . hub_wsl_shell_literal($serviceData) . "\n"
+        . 'env_payload=' . hub_wsl_shell_literal(base64_encode($env)) . "\n"
+        . 'env_sha256=' . hub_wsl_shell_literal(hash('sha256', $env)) . "\n"
+        . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
+        . 'if [ ! -f "$pack_root/' . (string)$runtime['dockerfile'] . '" ]; then echo "WSL Manual Vision source unavailable. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
+        . 'install -d -m 0775 "$service_root" "$models_root" "$cache_root" "$service_data"' . "\n"
+        . 'if ! command -v sha256sum >/dev/null 2>&1; then echo "WSL sha256sum is unavailable." >&2; exit 2; fi' . "\n"
+        . 'settings_tmp="$service_root/.' . HUB_RUNTIME_SETTINGS_FILENAME . '.$$"' . "\n"
+        . 'umask 077; printf %s "$env_payload" | base64 -d > "$settings_tmp"; chmod 0600 "$settings_tmp"' . "\n"
+        . 'actual_sha256="$(sha256sum "$settings_tmp" | awk \'{print $1}\')"' . "\n"
+        . 'if [ "$actual_sha256" != "$env_sha256" ]; then rm -f -- "$settings_tmp"; echo "Runtime settings SHA256 verification failed." >&2; exit 2; fi' . "\n"
+        . 'mv -f -- "$settings_tmp" "$service_root/' . HUB_RUNTIME_SETTINGS_FILENAME . '"' . "\n"
+        . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
+        . $dockerCommand . "\n";
     return hub_wsl_script_command($runtime, $script);
 }
 
@@ -1467,6 +1727,9 @@ function hub_wsl_service_compose_command(array $service, array $args, ?array $pr
     }
     if ((string)($service['pack_id'] ?? '') === 'vlm-paligemma2') {
         return hub_paligemma2_wsl_service_compose_command($service, $args, $profile);
+    }
+    if ((string)($service['pack_id'] ?? '') === 'vlm-manual-vision') {
+        return hub_manual_vision_wsl_service_compose_command($service, $args, $profile);
     }
     $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
     $pack = hub_get_pack((string)($service['pack_id'] ?? ''));

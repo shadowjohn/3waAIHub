@@ -137,6 +137,7 @@ Invoke-WslScript -Wsl $wsl.Source -Distro $WslDistro -Script $initScript | Out-N
 
 $profileWriter = Join-Path $PSScriptRoot 'write-runtime-profile.ps1'
 & $profileWriter -InstallRoot $InstallRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot -WslReady -YoloRuntimeProfile ([string]$profile.id) -WhisperRuntimeProfile ([string]$whisperProfile.id) -OcrRuntimeProfile ([string]$ocrProfile.id) -PaliGemma2RuntimeProfile ([string]$paligemma2Profile.id)
+& $profileWriter -InstallRoot $InstallRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot -WslReady -YoloRuntimeProfile ([string]$profile.id) -WhisperRuntimeProfile ([string]$whisperProfile.id) -OcrRuntimeProfile ([string]$ocrProfile.id) -PaliGemma2RuntimeProfile ([string]$paligemma2Profile.id) -ManualVisionRuntimeProfile 'default'
 if (-not $?) { throw 'Failed to write the WSL runtime profile.' }
 
 $agentInstaller = Join-Path $PSScriptRoot 'install-wsl-task-agent.ps1'

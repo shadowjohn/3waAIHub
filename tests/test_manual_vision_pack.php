@@ -35,6 +35,10 @@ hub_test('Manual Vision Pack exposes the narrow English DocVQA contract', functi
     hub_test_assert(($manifest['hardware']['cpu_fallback'] ?? true) === false, 'Manual Vision must not offer CPU fallback');
     hub_test_assert(($manifest['queue']['max_concurrency'] ?? 0) === 1, 'Manual Vision must be single-concurrency');
     hub_test_assert(($manifest['default_mode'] ?? '') === 'manual_vision', 'Manual Vision mode mismatch');
+    hub_test_assert(($manifest['runtime_ready'] ?? false) === true, 'Manual Vision must publish its complete runtime');
+    hub_test_assert(($manifest['runtime']['compose_file'] ?? '') === 'docker-compose.yml', 'Manual Vision runtime compose descriptor missing');
+    hub_test_assert(!empty($manifest['runtime']['windows_wsl_compose']), 'Manual Vision must declare WSL resident compose support');
+    hub_test_assert(($manifest['wsl_runtime_profiles']['default']['dockerfile'] ?? '') === 'service/Dockerfile', 'Manual Vision must reuse its default CUDA Dockerfile on WSL');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/vision/docvqa', 'Manual Vision invoke path mismatch');
     hub_test_assert(($manifest['gateway']['max_upload_mb'] ?? 0) === 50, 'Manual Vision upload limit mismatch');
 

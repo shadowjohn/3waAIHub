@@ -12,6 +12,8 @@ param(
     [string]$OcrRuntimeProfile = 'default',
     [ValidateSet('default', 'pascal-cu118')]
     [string]$PaliGemma2RuntimeProfile = 'default',
+    [ValidateSet('default')]
+    [string]$ManualVisionRuntimeProfile = 'default',
     [switch]$WslReady
 )
 
@@ -24,7 +26,6 @@ $profile = [ordered]@{
     host_platform = 'windows'
     control_plane = [ordered]@{
         supported = $true
-        root = $InstallRoot
     }
     runtime_targets = [ordered]@{
         'windows-native' = [ordered]@{
@@ -43,6 +44,8 @@ $profile = [ordered]@{
                 yolo = $YoloRuntimeProfile
                 'whisper-asr' = $WhisperRuntimeProfile
                 'ocr-ppocrv5' = $OcrRuntimeProfile
+                'vlm-paligemma2' = $PaliGemma2RuntimeProfile
+                'vlm-manual-vision' = $ManualVisionRuntimeProfile
                 'vlm-paligemma2' = $PaliGemma2RuntimeProfile
             }
             reason = if ($WslReady) { $null } else { 'WSL Runtime readiness has not passed' }
