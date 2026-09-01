@@ -1544,7 +1544,7 @@ function hub_pack_job_scrub_private_prompt(string $workspace): void
 {
     $input = realpath($workspace . '/input');
     $requestPath = $workspace . '/input/request.json';
-    if ($input === false || $input !== $workspace . '/input') {
+    if ($input === false || !hub_storage_paths_equal($input, $workspace . '/input')) {
         throw new RuntimeException('workspace_privacy_cleanup_failed');
     }
     if (is_link($requestPath)) {

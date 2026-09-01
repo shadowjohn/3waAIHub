@@ -224,7 +224,6 @@ function hub_test_artifact_breezy_fixture(PDO $db): array
     if (file_put_contents($reference, hub_test_artifact_breezy_wav(), LOCK_EX) === false) {
         throw new RuntimeException('Cannot write BreezyVoice artifact reference fixture.');
     }
-    $confirmedAt = '2026-09-02 13:45:56';
     $prompt = '這是 BreezyVoice artifact 合約測試逐字稿。';
     $profileId = hub_create_voice_profile($db, $memberId, [
         'name' => 'Breezy artifact fixture',
@@ -232,28 +231,34 @@ function hub_test_artifact_breezy_fixture(PDO $db): array
         'reference_audio_sha256' => hash_file('sha256', $reference),
         'reference_contract' => 'generic',
         'prompt_text' => $prompt,
-        'prompt_text_confirmed_at' => $confirmedAt,
         'language' => 'zh-TW',
         'consent_type' => 'self_recorded',
         'usage_scope' => 'private',
         'visibility' => 'private',
     ]);
+    $profile = hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $prompt);
+    $confirmedAt = (string)($profile['prompt_text_confirmed_at'] ?? '');
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $confirmedAt) !== 1) {
+        throw new RuntimeException('BreezyVoice artifact fixture transcript was not confirmed.');
+    }
     $contract = hub_pack_async_job_contract((array)(hub_get_pack('tts-breezyvoice')['manifest'] ?? []), 'synthesize');
     if (!is_array($contract)) {
         throw new RuntimeException('BreezyVoice artifact contract is unavailable.');
     }
     $snapshot = hub_pack_job_contract_snapshot($contract);
-    $taskId = hub_enqueue_owned_pack_job($db, [
+    $route = array_replace($contract, [
         'requested_mode' => 'voice_generate_breezy',
         'pack_id' => 'tts-breezyvoice',
         'pack_version' => '0.1.0',
         'job' => 'synthesize',
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
+        'voice_context' => $contract['voice_context'],
         'runtime_mode' => 'job',
         'accelerator' => 'gpu',
         'route_resolved_at' => hub_now(),
-    ], [
+    ]);
+    $taskId = hub_enqueue_owned_pack_job($db, $route, [
         'text' => '請產生二十四 kHz 單聲道 PCM16 測試音訊。',
         'mode' => 'ultimate_clone',
         'voice_profile_id' => $profileId,
@@ -319,7 +324,9 @@ hub_test('BreezyVoice artifact seam registers exact generated WAV bytes and reje
             },
         ]);
         $task = hub_get_task($db, $fixture['task_id']) ?: [];
-        $artifacts = hub_get_task_artifacts($db, $fixture['task_id']);
+        $artifactStatement = $db->prepare('SELECT * FROM task_artifacts WHERE task_id = :task_id ORDER BY id ASC');
+        $artifactStatement->execute([':task_id' => $fixture['task_id']]);
+        $artifacts = $artifactStatement->fetchAll(PDO::FETCH_ASSOC);
         $audioArtifact = null;
         foreach ($artifacts as $artifact) {
             if (($artifact['artifact_type'] ?? '') === 'generated_audio') {

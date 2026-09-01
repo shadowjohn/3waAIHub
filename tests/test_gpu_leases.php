@@ -84,7 +84,6 @@ function hub_test_gpu_breezy_task(PDO $db): array
     if (file_put_contents($referencePath, hub_test_gpu_breezy_wav(), LOCK_EX) === false) {
         throw new RuntimeException('Cannot write BreezyVoice reference fixture.');
     }
-    $confirmedAt = '2026-09-02 12:34:56';
     $promptText = '這是已確認的 Breeze GPU 測試逐字稿。';
     $profileId = hub_create_voice_profile($db, $memberId, [
         'name' => 'Breezy GPU fixture',
@@ -92,28 +91,33 @@ function hub_test_gpu_breezy_task(PDO $db): array
         'reference_audio_sha256' => hash_file('sha256', $referencePath),
         'reference_contract' => 'generic',
         'prompt_text' => $promptText,
-        'prompt_text_confirmed_at' => $confirmedAt,
         'language' => 'zh-TW',
         'consent_type' => 'self_recorded',
         'usage_scope' => 'private',
         'visibility' => 'private',
     ]);
+    $profile = hub_confirm_voice_profile_prompt($db, $profileId, $memberId, $promptText);
+    $confirmedAt = (string)($profile['prompt_text_confirmed_at'] ?? '');
+    if (preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $confirmedAt) !== 1) {
+        throw new RuntimeException('BreezyVoice GPU fixture transcript was not confirmed.');
+    }
     $contract = hub_pack_async_job_contract((array)(hub_get_pack('tts-breezyvoice')['manifest'] ?? []), 'synthesize');
     if (!is_array($contract)) {
         throw new RuntimeException('BreezyVoice contract fixture is unavailable.');
     }
     $snapshot = hub_pack_job_contract_snapshot($contract);
-    $route = [
+    $route = array_replace($contract, [
         'requested_mode' => 'voice_generate_breezy',
         'pack_id' => 'tts-breezyvoice',
         'pack_version' => '0.1.0',
         'job' => 'synthesize',
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
+        'voice_context' => $contract['voice_context'],
         'runtime_mode' => 'job',
         'accelerator' => 'gpu',
         'route_resolved_at' => hub_now(),
-    ];
+    ]);
     $input = [
         'text' => '請朗讀這段受確認的測試文字。',
         'mode' => 'ultimate_clone',
@@ -176,6 +180,29 @@ function hub_test_gpu_breezy_metadata(array $config, string $audio, bool $mismat
     return $metadata;
 }
 
+hub_test('BreezyVoice private prompt scrub accepts the managed Windows workspace separator form', function (): void {
+    hub_test_reset_db();
+    $workspace = hub_task_result_dir(9001) . '/workspace';
+    $input = $workspace . '/input';
+    if (!mkdir($input, 0700, true) && !is_dir($input)) {
+        throw new RuntimeException('Cannot create BreezyVoice private prompt workspace fixture.');
+    }
+    $requestPath = $input . '/request.json';
+    $prompt = 'BreezyVoice private transcript must be scrubbed.';
+    if (file_put_contents($requestPath, json_encode(['text' => 'safe request', 'prompt_text' => $prompt], JSON_THROW_ON_ERROR), LOCK_EX) === false) {
+        throw new RuntimeException('Cannot write BreezyVoice private prompt fixture.');
+    }
+
+    hub_pack_job_scrub_private_prompt($workspace);
+    $scrubbed = (string)file_get_contents($requestPath);
+
+    hub_test_assert(
+        !str_contains($scrubbed, $prompt)
+        && !array_key_exists('prompt_text', (array)json_decode($scrubbed, true, 32, JSON_THROW_ON_ERROR)),
+        'BreezyVoice private prompt scrub must normalize the managed workspace separator before removing plaintext'
+    );
+});
+
 hub_test('BreezyVoice rejects a changed transcript before it plans any Docker command', function (): void {
     $db = hub_test_reset_db();
     $fixture = hub_test_gpu_breezy_task($db);
@@ -226,6 +253,7 @@ hub_test('BreezyVoice waits on an occupied GPU then plans only its immutable mod
     $waitingTask = hub_get_task($db, $fixture['task_id']) ?: [];
     $waitingRun = $db->query('SELECT state, container_id FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetch();
     $workspace = hub_task_result_dir($fixture['task_id']) . '/workspace';
+    $waitingWorkspaceExists = is_dir($workspace);
     hub_test_assert(hub_runtime_gpu_release($db, $holder, $holderLease), 'BreezyVoice holder must release gpu:0 for retry planning.');
     $db->prepare('UPDATE tasks SET next_attempt_at = :next_attempt_at WHERE id = :id')
         ->execute([':next_attempt_at' => date('Y-m-d H:i:s', time() - 1), ':id' => $fixture['task_id']]);
@@ -262,7 +290,7 @@ hub_test('BreezyVoice waits on an occupied GPU then plans only its immutable mod
         ($waiting['status'] ?? '') === 'waiting_gpu'
         && $executorCalls === 0
         && ($waitingTask['status'] ?? '') === 'waiting_gpu'
-        && !is_dir($workspace)
+        && !$waitingWorkspaceExists
         && ($waitingRun['state'] ?? '') === 'waiting_gpu'
         && ($waitingRun['container_id'] ?? null) === null
         && ($outcome['status'] ?? '') === 'success'
