@@ -77,8 +77,8 @@
       },
       "runner": {
         "image": "3waaihub/tts-breezyvoice:0.1.0-pascal-cu118",
-        "entrypoint": ["/app/breezyvoice-synthesize"],
-        "args": ["--workspace", "{workspace}", "--input", "{input_dir}", "--output", "{output_dir}", "--runner-config", "{input_dir}/runner_config.json"],
+        "entrypoint": ["/app/voice_generate.sh"],
+        "args": ["{workspace}", "{input_dir}", "{output_dir}", "{input_dir}/runner_config.json"],
         "output_dir": "output",
         "accelerator": "gpu",
         "required_vram_mb": 4096,
