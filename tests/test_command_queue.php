@@ -199,6 +199,8 @@ hub_test('Manual Vision runtime actions use isolated WSL one-shots and a credent
         'pack_profiles' => ['vlm-manual-vision' => 'default'],
     ]]];
     hub_test_assert(is_array($service), 'Manual Vision service fixture missing');
+    $residentSettings = hub_generate_service_runtime_settings_for_instance($db, $service);
+    hub_test_assert(!str_contains($residentSettings, 'HF_TOKEN=') && !str_contains($residentSettings, 'private-manual-vision-token'), 'resident runtime settings must exclude provision-only tokens');
     foreach (['manual_vision_provision', 'manual_vision_acceptance'] as $action) {
         $jobId = hub_enqueue_command_job($db, $action, (int)$service['id'], [], null, '127.0.0.1');
         $job = hub_get_command_job($db, $jobId);
@@ -218,6 +220,8 @@ hub_test('Manual Vision runtime actions use isolated WSL one-shots and a credent
     hub_test_assert(str_contains($provisionScript, '/DATA/models/manual-vision:/models/manual-vision') && !str_contains($provisionScript, '/models/manual-vision:ro'), 'Manual Vision provisioning must have the writable model mount');
     hub_test_assert(str_contains($provisionScript, 'HF_HUB_OFFLINE=0') && str_contains($provisionScript, 'HF_TOKEN'), 'Manual Vision provisioning must explicitly enable its token-backed download');
     hub_test_assert(!str_contains(implode(' ', $provision['command']), 'private-manual-vision-token'), 'Manual Vision provisioning command/log transport must redact the token');
+    hub_test_assert(!str_contains($provisionScript, 'private-manual-vision-token') && !str_contains($provisionScript, 'token_payload'), 'Manual Vision WSL payload must not embed token bytes');
+    hub_test_assert(!array_key_exists('token', $provision), 'Manual Vision provisioning plans must not return token bytes');
     hub_test_assert(!str_contains($provisionScript, 'docker compose'), 'Manual Vision provisioning must never invoke the resident compose service');
 
     $acceptance = hub_manual_vision_acceptance_args($db, $service, $profile, 'windows');
@@ -227,6 +231,13 @@ hub_test('Manual Vision runtime actions use isolated WSL one-shots and a credent
     hub_test_assert(str_contains($acceptanceScript, '/models/manual-vision:ro') && str_contains($acceptanceScript, '/cache/manual-vision') && str_contains($acceptanceScript, '/data/service'), 'Manual Vision acceptance mounts must keep models read-only and cache/data writable');
     hub_test_assert(str_contains($acceptanceScript, ':/demo:ro') && str_contains($acceptanceScript, 'HF_HUB_OFFLINE=1'), 'Manual Vision acceptance must mount the committed demo read-only and stay offline');
     hub_test_assert(!str_contains($acceptanceScript, 'HF_TOKEN') && !str_contains($acceptanceScript, 'docker compose'), 'Manual Vision acceptance must not receive a token or invoke the resident compose service');
+    hub_test_assert(!array_key_exists('token', $acceptance), 'Manual Vision acceptance plans must not read or return a token');
+
+    $nativeProvision = hub_manual_vision_provisioning_plan($db, $service, null, 'linux');
+    $nativeAcceptance = hub_manual_vision_acceptance_args($db, $service, null, 'linux');
+    hub_test_assert(is_array($nativeProvision) && is_array($nativeAcceptance), 'Manual Vision must provide native Linux one-shot plans');
+    hub_test_assert(str_contains(implode(' ', $nativeProvision['command']), '--user') && str_contains(implode(' ', $nativeProvision['command']), 'provision.py') && !str_contains(implode(' ', $nativeProvision['command']), '/demo'), 'native provision must bypass the entrypoint as root with no demo mount');
+    hub_test_assert(str_contains(implode(' ', $nativeAcceptance['command']), 'acceptance.py') && str_contains(implode(' ', $nativeAcceptance['command']), ':/models/manual-vision:ro') && str_contains(implode(' ', $nativeAcceptance['command']), ':/demo:ro') && !str_contains(implode(' ', $nativeAcceptance['command']), 'HF_TOKEN'), 'native acceptance must stay offline and mount models/demo read-only');
 
     $resident = hub_manual_vision_wsl_service_compose_command($service, ['up', '-d'], $profile);
     $residentScript = $decode($resident);
@@ -235,6 +246,10 @@ hub_test('Manual Vision runtime actions use isolated WSL one-shots and a credent
     hub_test_assert(str_contains($residentCompose, '/models/manual-vision:/models/manual-vision:ro'), 'Manual Vision resident API must have a read-only model mount');
     hub_test_assert(str_contains($residentCompose, 'HF_HUB_OFFLINE: "1"'), 'Manual Vision resident API must stay offline');
     hub_test_assert(!str_contains($residentScript . $residentCompose, 'HF_TOKEN') && !str_contains($residentScript . $residentCompose, 'provision.py') && !str_contains($residentScript . $residentCompose, 'acceptance.py'), 'normal Manual Vision start must not receive credentials or run lifecycle one-shots');
+    hub_test_assert(str_contains($residentCompose, 'context: "/DATA/3waAIHub-runtime/packs/vlm-manual-vision/service"') && str_contains($residentCompose, 'dockerfile: "Dockerfile"'), 'Manual Vision WSL compose build must resolve the actual service Dockerfile once');
+
+    $wrongPack = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-wrong-pack', 'idempotent' => true, 'provision_runner' => false])['service'];
+    hub_test_assert((hub_run_manual_vision_provision_job($db, $wrongPack, [])['stderr'] ?? '') === 'pack_not_supported', 'Manual Vision provision action must reject another Pack');
 });
 
 hub_test('command queue admits runtime actions only for runtime-ready Packs', function (): void {

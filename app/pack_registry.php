@@ -2152,6 +2152,17 @@ function hub_pack_env_values(array $manifest, array $overrides = []): array
     return $values;
 }
 
+function hub_pack_resident_env_values(array $manifest, array $values): array
+{
+    foreach ((array)($manifest['settings_schema'] ?? []) as $setting) {
+        if (is_array($setting) && !empty($setting['provision_only'])) {
+            unset($values[(string)($setting['key'] ?? '')]);
+        }
+    }
+
+    return $values;
+}
+
 function hub_generate_service_env(array $manifest, array $envValues, string $portEnv, int $localPort, string $runtimeDir, array $storage): string
 {
     $values = array_merge([
@@ -2162,7 +2173,7 @@ function hub_generate_service_env(array $manifest, array $envValues, string $por
         'AIHUB_UPLOADS_DIR' => $storage['AIHUB_UPLOADS_DIR'],
         'AIHUB_RESULTS_DIR' => $storage['AIHUB_RESULTS_DIR'],
         'AIHUB_LOGS_DIR' => $storage['AIHUB_LOGS_DIR'],
-    ], hub_pack_storage_runtime_env($manifest), $envValues);
+    ], hub_pack_storage_runtime_env($manifest), hub_pack_resident_env_values($manifest, $envValues));
 
     $lines = [];
     foreach ($values as $key => $value) {

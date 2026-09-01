@@ -47,6 +47,8 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
 
     $db = hub_test_reset_db();
     hub_test_make_documentable_pack($db, 'vlm-manual-vision');
+    $unaccepted = hub_public_api_manifest($db, static fn (array $service): bool => false)['services'];
+    hub_test_assert(!in_array('manual_vision', array_column($unaccepted, 'mode'), true), 'unaccepted Manual Vision must not publish from compose status alone');
     $native = array_column(hub_public_api_manifest($db, static fn (array $service): bool => true)['services'], null, 'mode')['manual_vision'] ?? null;
     hub_test_assert(is_array($native) && ($native['name'] ?? '') === 'English DocVQA', 'native Manual Vision contract name missing');
     hub_test_assert(array_column($native['operations'] ?? [], 'operation') === ['docvqa'], 'native Manual Vision operation table mismatch');
@@ -151,33 +153,15 @@ hub_test('Public and Cluster docs expose only the Manual Vision DocVQA contract'
     }
 });
 
-hub_test('Manual Vision runtime gate blocks installation without affecting ready API Packs', function (): void {
+hub_test('Manual Vision runtime admission allows installation while retaining a synthetic unready regression', function (): void {
     $db = hub_test_reset_db();
-
+    $manualVision = hub_install_pack($db, 'vlm-manual-vision', ['idempotent' => true, 'provision_runner' => false]);
+    hub_test_assert(($manualVision['service']['pack_id'] ?? '') === 'vlm-manual-vision', 'runtime-ready Manual Vision Pack must install');
     try {
-        hub_install_pack($db, 'vlm-manual-vision');
-        hub_test_assert(false, 'contract-only Manual Vision Pack must not install');
+        hub_command_require_ready_runtime_pack(['status' => 'ok', 'manifest' => ['runtime_ready' => false]]);
+        hub_test_assert(false, 'synthetic unready Pack must remain blocked');
     } catch (RuntimeException $e) {
-        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'Manual Vision install must use the runtime-ready gate');
-    }
-    hub_test_assert((int)$db->query("SELECT COUNT(*) FROM services WHERE pack_id = 'vlm-manual-vision'")->fetchColumn() === 0, 'blocked Manual Vision install must not create a service or queued install target');
-
-    $fixture = hub_get_service_by_mode($db, 'hello');
-    $pack = hub_get_pack('vlm-manual-vision');
-    hub_test_assert(is_array($fixture) && is_array($pack), 'Manual Vision start gate fixture missing');
-    $db->prepare('UPDATE services SET pack_id = :pack_id, pack_version = :pack_version, mode = :mode WHERE id = :id')
-        ->execute([
-            ':pack_id' => 'vlm-manual-vision',
-            ':pack_version' => (string)$pack['manifest']['version'],
-            ':mode' => 'manual_vision',
-            ':id' => (int)$fixture['id'],
-        ]);
-    $fixture = hub_get_service($db, (int)$fixture['id']) ?: [];
-    try {
-        hub_start_service($db, $fixture);
-        hub_test_assert(false, 'contract-only Manual Vision Pack must not start');
-    } catch (RuntimeException $e) {
-        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'Manual Vision start must use the runtime-ready gate');
+        hub_test_assert($e->getMessage() === 'pack_runtime_not_ready', 'synthetic unready Pack must retain its gate');
     }
 
     $ready = hub_install_pack($db, 'hello', ['service_key' => 'manual-vision-ready-gate', 'idempotent' => true]);

@@ -1003,7 +1003,7 @@ function hub_manual_vision_wsl_runtime_profile(array $service, ?array $profile =
     ];
 }
 
-/** @return array{0: array<string, mixed>, 1: array<string, string>, 2: string} */
+/** @return array{0: array<string, mixed>, 1: array<string, string>} */
 function hub_manual_vision_wsl_settings(PDO $db, array $service, bool $requireProvisioningSettings = false): array
 {
     $service = hub_service_command_contract($db, $service);
@@ -1014,8 +1014,10 @@ function hub_manual_vision_wsl_settings(PDO $db, array $service, bool $requirePr
     $schema = hub_get_pack_settings_schema('vlm-manual-vision');
     $source = hub_compose_env($service);
     $environment = [];
-    $token = '';
     foreach ($schema as $key => $item) {
+        if (!empty($item['provision_only'])) {
+            continue;
+        }
         $value = (string)($source[$key] ?? $item['default'] ?? '');
         if (str_contains($value, "\0") || preg_match('/[\r\n]/', $value) === 1) {
             throw new RuntimeException('Invalid Manual Vision runtime setting.');
@@ -1023,19 +1025,67 @@ function hub_manual_vision_wsl_settings(PDO $db, array $service, bool $requirePr
         if ($requireProvisioningSettings || $value !== '') {
             $value = hub_validate_service_setting_value($item, $value);
         }
-        if ($key === 'HF_TOKEN') {
-            $token = $value;
-        } elseif (empty($item['provision_only'])) {
-            $environment[$key] = $value;
-        }
+        $environment[$key] = $value;
     }
 
-    return [$service, $environment, $token];
+    return [$service, $environment];
 }
 
-/** @return array{runtime: array<string, mixed>, command: list<string>, token: string}|null */
+function hub_manual_vision_provision_token(PDO $db, array $service): string
+{
+    $service = hub_service_command_contract($db, $service);
+    $schema = hub_get_pack_settings_schema('vlm-manual-vision');
+    $item = $schema['HF_TOKEN'] ?? null;
+    $settings = hub_ensure_service_settings($db, $service);
+    $token = (string)($settings['HF_TOKEN']['value'] ?? '');
+    if (!is_array($item) || str_contains($token, "\0") || preg_match('/[\r\n]/', $token) === 1) {
+        throw new RuntimeException('Invalid Manual Vision provisioning token.');
+    }
+    $token = hub_validate_service_setting_value($item, $token);
+    if ($token === '') {
+        throw new RuntimeException('Manual Vision provisioning token is required.');
+    }
+    return $token;
+}
+
+/** @return array{command: list<string>} */
+function hub_manual_vision_native_plan(PDO $db, array $service, bool $acceptance): array
+{
+    [$service, $environment] = hub_manual_vision_wsl_settings($db, $service, !$acceptance);
+    $pack = hub_get_pack('vlm-manual-vision');
+    if (!is_array($pack['manifest'] ?? null)) {
+        throw new RuntimeException('Manual Vision Pack is unavailable.');
+    }
+    $storage = hub_get_storage_paths($db);
+    $models = hub_pack_storage_directory((string)$storage['AIHUB_MODELS_DIR'], 'manual-vision');
+    $cache = hub_pack_storage_directory((string)$storage['AIHUB_CACHE_DIR'], 'manual-vision');
+    $data = hub_service_runtime_directory($db, $service);
+    $command = ['docker', 'run', '--rm', '--pull', 'never', '--gpus', 'all'];
+    foreach ($environment as $key => $value) {
+        array_push($command, '--env', $key . '=' . $value);
+    }
+    if (!$acceptance) {
+        $command = array_merge($command, ['--user', '0:0', '--entrypoint', '/usr/bin/python3', '--env', 'HF_HUB_OFFLINE=0', '--env', 'TRANSFORMERS_OFFLINE=0', '--env', 'HF_TOKEN', '--env', 'MANUAL_VISION_MODEL_DIR=/models/manual-vision', '--env', 'MANUAL_VISION_SERVICE_DATA_DIR=/data/service']);
+        foreach ([$models . ':/models/manual-vision', $cache . ':/cache/manual-vision', $data . ':/data/service'] as $mount) {
+            array_push($command, '--volume', $mount);
+        }
+        $command = array_merge($command, [hub_service_image_tag($service), '/app/provision.py']);
+    } else {
+        $command = array_merge($command, ['--entrypoint', '/app/entrypoint.sh', '--env', 'HF_HUB_OFFLINE=1', '--env', 'TRANSFORMERS_OFFLINE=1', '--env', 'MANUAL_VISION_MODEL_DIR=/models/manual-vision', '--env', 'MANUAL_VISION_CACHE_DIR=/cache/manual-vision', '--env', 'MANUAL_VISION_SERVICE_DATA_DIR=/data/service']);
+        foreach ([$models . ':/models/manual-vision:ro', $cache . ':/cache/manual-vision', $data . ':/data/service', (string)$pack['dir'] . '/demo:/demo:ro', (string)$pack['dir'] . '/demo:/app/demo:ro'] as $mount) {
+            array_push($command, '--volume', $mount);
+        }
+        $command = array_merge($command, [hub_service_image_tag($service), '/usr/bin/python3', '/app/acceptance.py']);
+    }
+    return ['command' => $command];
+}
+
+/** @return array{runtime?: array<string, mixed>, command: list<string>}|null */
 function hub_manual_vision_provisioning_plan(PDO $db, array $service, ?array $profile = null, ?string $platform = null): ?array
 {
+    if (hub_platform_id($platform) === 'linux') {
+        return hub_manual_vision_native_plan($db, $service, false);
+    }
     if (hub_platform_id($platform) !== 'windows') {
         return null;
     }
@@ -1043,40 +1093,41 @@ function hub_manual_vision_provisioning_plan(PDO $db, array $service, ?array $pr
     if ($runtime === null) {
         return null;
     }
-    [$service, $environment, $token] = hub_manual_vision_wsl_settings($db, $service, true);
-    if ($token === '') {
-        throw new RuntimeException('Manual Vision provisioning token is required.');
-    }
+    [$service, $environment] = hub_manual_vision_wsl_settings($db, $service, true);
     $runtimeRoot = (string)$runtime['runtime_root'];
     $packRoot = $runtimeRoot . '/packs/vlm-manual-vision';
     $modelsRoot = (string)$runtime['models_root'] . '/manual-vision';
     $cacheRoot = $runtimeRoot . '/cache/manual-vision';
-    $tokenPayload = base64_encode($token);
+    $serviceData = $runtimeRoot . '/services/' . (string)$service['service_key'] . '/data';
     $docker = 'docker run --rm --pull never --gpus all --user 0:0 --entrypoint /usr/bin/python3';
     foreach ($environment as $key => $value) {
         $docker .= ' --env ' . hub_wsl_shell_literal($key . '=' . $value);
     }
     $docker .= ' --env HF_HUB_OFFLINE=0 --env TRANSFORMERS_OFFLINE=0 --env HF_TOKEN'
-        . ' --env MANUAL_VISION_MODEL_DIR=/models/manual-vision'
+        . ' --env MANUAL_VISION_MODEL_DIR=/models/manual-vision --env MANUAL_VISION_SERVICE_DATA_DIR=/data/service'
         . ' --volume ' . hub_wsl_shell_literal($modelsRoot . ':/models/manual-vision')
         . ' --volume ' . hub_wsl_shell_literal($cacheRoot . ':/cache/manual-vision')
+        . ' --volume ' . hub_wsl_shell_literal($serviceData . ':/data/service')
         . ' ' . hub_wsl_shell_literal((string)$runtime['image']) . ' /app/provision.py';
     $script = "set -eu\n"
         . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
         . 'models_root=' . hub_wsl_shell_literal($modelsRoot) . "\n"
         . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
-        . 'token_payload=' . hub_wsl_shell_literal($tokenPayload) . "\n"
+        . 'service_data=' . hub_wsl_shell_literal($serviceData) . "\n"
         . 'test -f "$pack_root/' . (string)$runtime['dockerfile'] . '"' . "\n"
-        . 'install -d -m 0775 "$models_root" "$cache_root"' . "\n"
-        . 'HF_TOKEN="$(printf %s "$token_payload" | base64 -d)"; export HF_TOKEN' . "\n"
+        . 'install -d -m 0775 "$models_root" "$cache_root" "$service_data"' . "\n"
+        . 'test -n "${HF_TOKEN:-}"' . "\n"
         . 'exec ' . $docker . "\n";
 
-    return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script), 'token' => $token];
+    return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script)];
 }
 
-/** @return array{runtime: array<string, mixed>, command: list<string>, token: string}|null */
+/** @return array{runtime?: array<string, mixed>, command: list<string>}|null */
 function hub_manual_vision_acceptance_args(PDO $db, array $service, ?array $profile = null, ?string $platform = null): ?array
 {
+    if (hub_platform_id($platform) === 'linux') {
+        return hub_manual_vision_native_plan($db, $service, true);
+    }
     if (hub_platform_id($platform) !== 'windows') {
         return null;
     }
@@ -1084,7 +1135,7 @@ function hub_manual_vision_acceptance_args(PDO $db, array $service, ?array $prof
     if ($runtime === null) {
         return null;
     }
-    [$service, $environment, $token] = hub_manual_vision_wsl_settings($db, $service, true);
+    [$service, $environment] = hub_manual_vision_wsl_settings($db, $service, true);
     $runtimeRoot = (string)$runtime['runtime_root'];
     $packRoot = $runtimeRoot . '/packs/vlm-manual-vision';
     $serviceRoot = $runtimeRoot . '/services/' . (string)$service['service_key'];
@@ -1115,7 +1166,7 @@ function hub_manual_vision_acceptance_args(PDO $db, array $service, ?array $prof
         . 'install -d -m 0775 "$cache_root" "$service_data"' . "\n"
         . 'exec ' . $docker . "\n";
 
-    return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script), 'token' => $token];
+    return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script)];
 }
 
 function hub_manual_vision_redact_result(array $result, string $token): array
@@ -1137,7 +1188,8 @@ function hub_run_manual_vision_provision_job(PDO $db, ?array $service, array $jo
         return hub_unsupported_runtime_result('windows-wsl2-linux-docker', 'Manual Vision provisioning requires a ready WSL Runtime.');
     }
     hub_job_progress($db, $job, 'provisioning_model', 10, 'Provisioning the Manual Vision model snapshot.');
-    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 3600), (string)$plan['token']);
+    $token = hub_manual_vision_provision_token($db, $service);
+    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 3600, ['HF_TOKEN' => $token]), $token);
     hub_add_service_log($db, (int)$service['id'], 'manual_vision_provision', (string)$result['output'], (int)$result['exit_code']);
     return $result;
 }
@@ -1152,7 +1204,7 @@ function hub_run_manual_vision_acceptance_job(PDO $db, ?array $service, array $j
         return hub_unsupported_runtime_result('windows-wsl2-linux-docker', 'Manual Vision acceptance requires a ready WSL Runtime.');
     }
     hub_job_progress($db, $job, 'manual_vision_acceptance', 10, 'Running Manual Vision CUDA acceptance.');
-    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 1800), (string)$plan['token']);
+    $result = hub_manual_vision_redact_result(hub_run_command($plan['command'], 1800), '');
     hub_add_service_log($db, (int)$service['id'], 'manual_vision_acceptance', (string)$result['output'], (int)$result['exit_code']);
     return $result;
 }
@@ -1672,7 +1724,7 @@ function hub_manual_vision_wsl_service_compose_command(array $service, array $ar
     $modelsRoot = (string)$runtime['models_root'] . '/manual-vision';
     $cacheRoot = $runtimeRoot . '/cache/manual-vision';
     $serviceData = $serviceRoot . '/data';
-    $compose = "services:\n  vlm-manual-vision:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot . '/service', JSON_UNESCAPED_SLASHES) . "\n      dockerfile: " . json_encode((string)$runtime['dockerfile'], JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    environment:\n      MANUAL_VISION_MODEL_DIR: /models/manual-vision\n      MANUAL_VISION_CACHE_DIR: /cache/manual-vision\n      MANUAL_VISION_SERVICE_DATA_DIR: /data/service\n      HF_HUB_OFFLINE: \"1\"\n      TRANSFORMERS_OFFLINE: \"1\"\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode($modelsRoot . ':/models/manual-vision:ro', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/manual-vision', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
+    $compose = "services:\n  vlm-manual-vision:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot . '/service', JSON_UNESCAPED_SLASHES) . "\n      dockerfile: \"Dockerfile\"\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    environment:\n      MANUAL_VISION_MODEL_DIR: /models/manual-vision\n      MANUAL_VISION_CACHE_DIR: /cache/manual-vision\n      MANUAL_VISION_SERVICE_DATA_DIR: /data/service\n      HF_HUB_OFFLINE: \"1\"\n      TRANSFORMERS_OFFLINE: \"1\"\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode($modelsRoot . ':/models/manual-vision:ro', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/manual-vision', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
     $env = '';
     foreach ($environment as $key => $value) {
         $env .= $key . '=' . $value . "\n";

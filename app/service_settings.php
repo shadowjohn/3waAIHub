@@ -556,7 +556,7 @@ function hub_generate_service_runtime_settings_for_instance(PDO $db, array $serv
         $portEnv => (string)$service['local_port'],
         'SERVICE_KEY' => (string)$service['service_key'],
         'MODE' => (string)$service['mode'],
-    ], hub_pack_storage_runtime_env($manifest), hub_service_settings_values($db, $service));
+    ], hub_pack_storage_runtime_env($manifest), hub_pack_resident_env_values($manifest, hub_service_settings_values($db, $service)));
 
     $lines = [];
     foreach ($values as $key => $value) {
