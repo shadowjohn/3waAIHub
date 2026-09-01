@@ -6523,6 +6523,19 @@ hub_test('Manual Vision uses the native DocVQA endpoint and standard Token bound
             'bearer_token' => (string)$denied['plain_token'],
             'client_ip' => '203.0.113.10',
         ]);
+        $gatewayService = hub_get_service_by_mode($db, 'manual_vision');
+        hub_test_assert(is_array($gatewayService), 'Manual Vision service must remain available for gateway boundary checks');
+        hub_test_assert(
+            hub_service_upload_size_allowed($gatewayService, (string)(51 * 1024 * 1024))
+            && !hub_service_upload_size_allowed($gatewayService, (string)(51 * 1024 * 1024 + 1)),
+            'Manual Vision gateway must admit a 50 MiB image plus 1 MiB multipart envelope and reject anything larger'
+        );
+        $_SERVER['CONTENT_LENGTH'] = (string)(51 * 1024 * 1024 + 1);
+        $oversize = hub_gateway_dispatch($db, 'manual_vision', static fn (): array => throw new RuntimeException('oversize Manual Vision request reached the station'), [
+            'method' => 'POST',
+            'bearer_token' => (string)$customer['plain_token'],
+            'client_ip' => '203.0.113.10',
+        ]);
     } finally {
         $_SERVER = $server;
         $_POST = $post;
@@ -6548,8 +6561,10 @@ hub_test('Manual Vision uses the native DocVQA endpoint and standard Token bound
         && $requestIdHeader !== $payload['request_id']
         && $blocked['status'] === 403
         && str_contains((string)$blocked['body'], 'token_mode_not_allowed')
+        && $oversize['status'] === 413
+        && (json_decode((string)$oversize['body'], true)['error'] ?? '') === 'file_too_large'
         && $calls === 1,
-        'Manual Vision native gateway must return only the station contract, attach its request ID, and enforce mode permission'
+        'Manual Vision native gateway must preserve its contract, permission boundary, and file_too_large envelope rejection'
     );
 });
 
@@ -6674,18 +6689,35 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
             'gpu_unavailable' => 503,
             'gateway_timeout' => 504,
         ] as $error => $status) {
+            $stationRequestId = 'req_1234567890abcdef1234567890abcdef';
             $errorResponse = hub_cluster_dispatch($db, 'manual_vision', $baseRequest((string)$customer['plain_token']), [
                 'refresh_due' => static fn (): array => [$accepted],
-                'transport' => static fn (): array => hub_gateway_json($status, ['ok' => false, 'error' => $error]),
+                'transport' => static function () use ($status, $error, $stationRequestId): array {
+                    $wire = hub_gateway_json($status, [
+                        'ok' => false,
+                        'error' => $error,
+                        'message' => 'private service detail',
+                        'request_id' => $stationRequestId,
+                    ]);
+                    $wire['body'] = hub_gateway_public_error_body($wire);
+
+                    return $wire;
+                },
             ]);
             $errorPayload = json_decode((string)$errorResponse['body'], true, 16, JSON_THROW_ON_ERROR);
-            hub_test_assert($errorResponse['status'] === $status && ($errorPayload['error'] ?? '') === $error, 'Manual Vision service error must survive Cluster relay: ' . $error);
+            hub_test_assert(
+                $errorResponse['status'] === $status
+                && $errorPayload === ['ok' => false, 'error' => $error, 'request_id' => $stationRequestId],
+                'Manual Vision public Gateway error must survive Cluster relay without its fixed message: ' . $error
+            );
         }
 
         foreach ([
-            ['status' => 503, 'payload' => ['ok' => false, 'error' => 'bad_request']],
-            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'detail' => 'private']],
-            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'request_id' => null]],
+            ['status' => 503, 'payload' => ['ok' => false, 'error' => 'bad_request', 'message' => 'service request failed']],
+            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request']],
+            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'message' => 'private']],
+            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'message' => 'service request failed', 'detail' => 'private']],
+            ['status' => 400, 'payload' => ['ok' => false, 'error' => 'bad_request', 'message' => 'service request failed', 'request_id' => null]],
             ['status' => 200, 'payload' => ['ok' => true, 'mode' => 'manual_vision', 'operation' => 'docvqa', 'answer' => ['invalid'], 'answer_language' => 'en', 'contract_revision' => 1, 'elapsed_ms' => 7, 'request_id' => 'req_abcdef0123456789abcdef0123456789']],
             ['status' => 200, 'payload' => ['ok' => true, 'mode' => 'manual_vision', 'operation' => 'docvqa', 'answer' => 'Example manual', 'answer_language' => 'en', 'contract_revision' => 1, 'elapsed_ms' => 120001, 'request_id' => 'req_abcdef0123456789abcdef0123456789']],
             ['status' => 200, 'payload' => ['ok' => true, 'mode' => 'manual_vision', 'operation' => 'docvqa', 'answer' => 'Example manual', 'answer_language' => 'en', 'contract_revision' => 1, 'elapsed_ms' => 7, 'request_id' => 'req_abcdef0123456789abcdef0123456789', 'model' => 'private']],
@@ -6728,7 +6760,7 @@ hub_test('Manual Vision Cluster relay keeps DocVQA multipart and service errors 
                         hub_test_assert(($request['form']['files'][$key]['tmp_name'] ?? null) === $file['tmp_name'], 'Router must forward generic Manual Vision file input to the service');
                     }
 
-                    return hub_gateway_json(400, ['ok' => false, 'error' => 'bad_request']);
+                    return hub_gateway_json(400, ['ok' => false, 'error' => 'bad_request', 'message' => 'service request failed']);
                 },
             ]);
             $rejectionPayload = json_decode((string)$rejection['body'], true, 16, JSON_THROW_ON_ERROR);

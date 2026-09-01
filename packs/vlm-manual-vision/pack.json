@@ -35,7 +35,7 @@
     "invoke_path": "/vision/docvqa",
     "methods": ["POST"],
     "timeout_sec": 120,
-    "max_upload_mb": 50
+    "max_upload_mb": 51
   },
   "l5_contract": {
     "endpoint": "/vision/docvqa",

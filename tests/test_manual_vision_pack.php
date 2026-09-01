@@ -40,7 +40,7 @@ hub_test('Manual Vision Pack exposes the narrow English DocVQA contract', functi
     hub_test_assert(!empty($manifest['runtime']['windows_wsl_compose']), 'Manual Vision must declare WSL resident compose support');
     hub_test_assert(($manifest['wsl_runtime_profiles']['default']['dockerfile'] ?? '') === 'service/Dockerfile', 'Manual Vision must reuse its default CUDA Dockerfile on WSL');
     hub_test_assert(($manifest['gateway']['invoke_path'] ?? '') === '/vision/docvqa', 'Manual Vision invoke path mismatch');
-    hub_test_assert(($manifest['gateway']['max_upload_mb'] ?? 0) === 50, 'Manual Vision upload limit mismatch');
+    hub_test_assert(($manifest['gateway']['max_upload_mb'] ?? 0) === 51, 'Manual Vision gateway envelope must reserve 1 MiB above the 50 MiB image limit');
 
     $contract = hub_pack_l5_contract($manifest);
     $fields = array_column($contract['input']['fields'] ?? [], 'name');
@@ -50,6 +50,7 @@ hub_test('Manual Vision Pack exposes the narrow English DocVQA contract', functi
     $image = $contract['input']['fields'][1] ?? [];
     $question = $contract['input']['fields'][2] ?? [];
     hub_test_assert(($image['mime_types'] ?? []) === ['image/png', 'image/jpeg'], 'Manual Vision image types must be PNG or JPEG only');
+    hub_test_assert(($image['max_mb'] ?? 0) === 50 && ($contract['limits']['max_upload_mb'] ?? 0) === 50, 'Manual Vision public image limit must remain exactly 50 MiB');
     hub_test_assert(
         ($question['max_length'] ?? null) === 400
         && ($question['pattern'] ?? '') === '^[\\x20-\\x7E]*[A-Za-z][\\x20-\\x7E]*$',
