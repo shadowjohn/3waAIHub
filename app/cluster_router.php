@@ -1142,7 +1142,7 @@ function hub_cluster_manual_vision_error_rules(): array
     ];
 }
 
-function hub_cluster_manual_vision_relay_response(array $response, mixed $payload): ?array
+function hub_cluster_manual_vision_relay_response(array $response, mixed $payload, bool $trustedSelf): ?array
 {
     if (!is_array($payload) || !is_string($payload['error'] ?? null)) {
         return null;
@@ -1151,10 +1151,10 @@ function hub_cluster_manual_vision_relay_response(array $response, mixed $payloa
     if ($status === null) {
         return null;
     }
-    $keys = ['ok', 'error', 'message', 'request_id'];
+    $keys = $trustedSelf ? ['ok', 'error', 'request_id'] : ['ok', 'error', 'message', 'request_id'];
     if (count($payload) !== count($keys)
         || array_diff(array_keys($payload), $keys) !== []
-        || ($payload['message'] ?? null) !== 'service request failed'
+        || (!$trustedSelf && ($payload['message'] ?? null) !== 'service request failed')
         || !is_string($payload['request_id'] ?? null)
         || preg_match('/\A[A-Za-z0-9_-]{1,128}\z/D', $payload['request_id']) !== 1
     ) {
@@ -1946,7 +1946,7 @@ function hub_cluster_dispatch(PDO $db, string $mode, array $request = [], array 
             $response = hub_gateway_error(503, 'station_unavailable', 'selected cluster station is unavailable');
         } elseif ((int)($response['status'] ?? 0) >= 400 && !hub_cluster_router_is_local_proxy_error($response)) {
             $response = hub_cluster_pack_validation_error_response($response, $payload)
-                ?? ($mode === 'manual_vision' ? hub_cluster_manual_vision_relay_response($response, $payload) : null)
+                ?? ($mode === 'manual_vision' ? hub_cluster_manual_vision_relay_response($response, $payload, $selfStation) : null)
                 ?? (hub_is_voice_profile_mode($mode) ? hub_cluster_voice_generate_relay_response($response, $payload) : null);
             $response ??= hub_gateway_error(502, 'router_response_failed', 'cluster station response failed');
         } elseif ((int)($response['status'] ?? 0) >= 200 && (int)($response['status'] ?? 0) < 300) {
