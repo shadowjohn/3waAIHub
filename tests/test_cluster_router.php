@@ -6860,6 +6860,20 @@ hub_test('Manual Vision self-station dispatch projects child success and error r
                 ]),
             ]);
             $errorPayload = json_decode((string)$errorResponse['body'], true, 16, JSON_THROW_ON_ERROR);
+            $gatewayErrorResponse = hub_cluster_dispatch($db, 'manual_vision', hub_test_cluster_router_request((string)$customer['plain_token'], [
+                'headers' => ['Content-Type' => 'multipart/form-data; boundary=manual-vision-self-gateway-error'],
+                'raw_body' => '',
+                'post' => ['operation' => 'docvqa', 'question' => 'What is the document title?'],
+                'files' => ['image' => ['name' => 'manual.png', 'type' => 'image/png', 'tmp_name' => $image, 'error' => UPLOAD_ERR_OK, 'size' => (int)filesize($image)]],
+                'request_uri' => '/cluster_api.php?mode=manual_vision',
+            ]), [
+                'refresh_due' => static fn (): array => [hub_test_cluster_station_fixture(['id' => (int)$station['id'], 'station_key' => (string)$station['station_key'], 'modes' => ['manual_vision']])],
+                'direct_dispatcher' => static fn (): array => hub_gateway_attach_request_id(
+                    hub_gateway_error(413, 'file_too_large', 'private /models/manual-vision detail'),
+                    'req_self_gateway'
+                ),
+            ]);
+            $gatewayErrorPayload = json_decode((string)$gatewayErrorResponse['body'], true, 16, JSON_THROW_ON_ERROR);
             hub_test_assert(
                 $response['status'] === 200
                 && array_keys($payload) === ['ok', 'mode', 'operation', 'answer', 'answer_language', 'contract_revision', 'elapsed_ms', 'request_id']
@@ -6871,6 +6885,12 @@ hub_test('Manual Vision self-station dispatch projects child success and error r
                 $errorResponse['status'] === 400
                 && $errorPayload === ['ok' => false, 'error' => 'bad_request', 'request_id' => 'req_self_pre_wire'],
                 'Manual Vision self station must project its trusted pre-wire Gateway error'
+            );
+            hub_test_assert(
+                $gatewayErrorResponse['status'] === 413
+                && $gatewayErrorPayload === ['ok' => false, 'error' => 'file_too_large', 'request_id' => 'req_self_gateway']
+                && !str_contains((string)$gatewayErrorResponse['body'], '/models/'),
+                'Manual Vision self station must sanitize and project its Gateway-originated error'
             );
         });
     });

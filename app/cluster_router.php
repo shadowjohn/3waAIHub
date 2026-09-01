@@ -1144,6 +1144,9 @@ function hub_cluster_manual_vision_error_rules(): array
 
 function hub_cluster_manual_vision_relay_response(array $response, mixed $payload, bool $trustedSelf): ?array
 {
+    if ($trustedSelf) {
+        $payload = json_decode(hub_gateway_public_error_body($response), true);
+    }
     if (!is_array($payload) || !is_string($payload['error'] ?? null)) {
         return null;
     }
@@ -1151,10 +1154,10 @@ function hub_cluster_manual_vision_relay_response(array $response, mixed $payloa
     if ($status === null) {
         return null;
     }
-    $keys = $trustedSelf ? ['ok', 'error', 'request_id'] : ['ok', 'error', 'message', 'request_id'];
+    $keys = ['ok', 'error', 'message', 'request_id'];
     if (count($payload) !== count($keys)
         || array_diff(array_keys($payload), $keys) !== []
-        || (!$trustedSelf && ($payload['message'] ?? null) !== 'service request failed')
+        || ($payload['message'] ?? null) !== 'service request failed'
         || !is_string($payload['request_id'] ?? null)
         || preg_match('/\A[A-Za-z0-9_-]{1,128}\z/D', $payload['request_id']) !== 1
     ) {
