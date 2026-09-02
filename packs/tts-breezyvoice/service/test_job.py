@@ -60,13 +60,28 @@ def test_runtime_bakes_g2pw_assets_for_offline_inference() -> None:
     assert "BertTokenizer.from_pretrained('bert-base-chinese')" in dockerfile
 
 
-def test_pascal_image_installs_only_the_whisper_runner_dependency_closure() -> None:
+def test_pascal_image_installs_the_pinned_breezy_runtime_without_interactive_stack() -> None:
     requirements = (Path(__file__).parent / "requirements.pascal-cu118.txt").read_text(encoding="utf-8")
     dockerfile = (Path(__file__).parent / "Dockerfile.pascal-cu118").read_text(encoding="utf-8")
 
-    assert "tiktoken" in requirements
-    assert "more-itertools" in requirements
+    for dependency in (
+        "conformer==0.3.2",
+        "diffusers==0.32.0",
+        "g2pw==0.1.1",
+        "gdown==5.1.0",
+        "HyperPyYAML==1.2.3",
+        "ruamel.yaml==0.18.10",
+        "hydra-core==1.3.2",
+        "lightning==2.2.4",
+        "onnxruntime-gpu==1.16.0",
+        "opencc-python-reimplemented",
+        "WeTextProcessing==1.0.3",
+    ):
+        assert dependency in requirements
     assert "pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117" in dockerfile
+    assert "PYTHONPATH=/opt/breezyvoice:/opt/breezyvoice/third_party/Matcha-TTS" in dockerfile
+    assert "download_model('/opt/breezyvoice/G2PWModel')" in dockerfile
+    assert "HF_HUB_OFFLINE=1" in dockerfile
     assert "gradio" not in requirements
     assert "deepspeed" not in requirements
 

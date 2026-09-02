@@ -2380,9 +2380,27 @@ function hub_pack_job_breezyvoice_persist_failure_diagnostics(PDO $db, array $ta
                 continue;
             }
             $path = $logs . '/runner.' . $stream . '.log';
-            if (file_exists($path) || is_link($path) || file_put_contents($path, $diagnostic . "\n", LOCK_EX) === false
-                || !@chmod($path, 0600) || (fileperms($path) & 0777) !== 0600
-                || realpath($path) !== $path) {
+            if (file_exists($path) || is_link($path) || file_put_contents($path, $diagnostic . "\n", LOCK_EX) === false) {
+                foreach ($paths as $written) {
+                    @unlink($written);
+                }
+                @unlink($path);
+                return;
+            }
+            $resolvedPath = realpath($path);
+            $resolvedParent = $resolvedPath === false ? false : realpath(dirname($resolvedPath));
+            if ($resolvedPath === false || !is_file($resolvedPath) || $resolvedParent === false
+                || !hub_storage_paths_equal($resolvedParent, $logs) || basename($resolvedPath) !== basename($path)) {
+                foreach ($paths as $written) {
+                    @unlink($written);
+                }
+                @unlink($path);
+                return;
+            }
+            // NTFS ACL 是 Windows 的私密邊界；PHP 的 POSIX 0600 回報在 NTFS 不可靠。
+            $permissionsSecured = PHP_OS_FAMILY === 'Windows'
+                || (@chmod($path, 0600) && (((int)@fileperms($path) & 0777) === 0600));
+            if (!$permissionsSecured) {
                 foreach ($paths as $written) {
                     @unlink($written);
                 }

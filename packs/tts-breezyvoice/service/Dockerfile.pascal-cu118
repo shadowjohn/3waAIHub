@@ -22,10 +22,34 @@ RUN set -eu; \
     test "$(git -C /opt/breezyvoice rev-parse HEAD)" = "$BREEZYVOICE_UPSTREAM_REVISION"
 
 COPY service/requirements.pascal-cu118.txt ./requirements.txt
-RUN python3 -m pip install --no-cache-dir -r requirements.txt \
+RUN python3 -m pip install --no-cache-dir --no-build-isolation -r requirements.txt \
     && python3 -m pip check \
-    && python3 -m pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 \
-    && python3 -c 'import whisper; assert callable(whisper.log_mel_spectrogram)'
+    && python3 -m pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117
+
+ENV PYTHONPATH=/opt/breezyvoice:/opt/breezyvoice/third_party/Matcha-TTS \
+    HF_HOME=/opt/huggingface
+
+RUN python3 - <<'PY'
+from g2pw.api import download_model
+from transformers import BertTokenizer
+
+download_model('/opt/breezyvoice/G2PWModel')
+BertTokenizer.from_pretrained('bert-base-chinese')
+PY
+
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+RUN python3 - <<'PY'
+from io import StringIO
+from hyperpyyaml import load_hyperpyyaml
+
+assert load_hyperpyyaml(StringIO('ok: true\n')) == {'ok': True}
+import whisper
+assert callable(whisper.log_mel_spectrogram)
+import runpy
+runpy.run_path('/opt/breezyvoice/single_inference.py')
+PY
 
 COPY service/app.py service/job.py service/provision.py ./
 COPY jobs/voice_generate.sh jobs/provision_models.sh ./
