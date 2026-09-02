@@ -98,6 +98,43 @@ hub_test('BreezyVoice Pascal CUDA 11.8 image can host the managed health API and
     );
 });
 
+hub_test('BreezyVoice provisions its pinned model through an explicit WSL one-shot', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'tts-breezyvoice', [
+        'service_key' => 'breezy-provision',
+        'idempotent' => true,
+        'provision_runner' => false,
+    ])['service'];
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['tts-breezyvoice' => 'pascal-cu118'],
+    ]]];
+    $plan = function_exists('hub_breezyvoice_provisioning_plan')
+        ? hub_breezyvoice_provisioning_plan($db, $service, $profile, 'windows')
+        : null;
+    $payload = is_array($plan) ? hub_test_breezy_wsl_script_payload($plan['command']) : '';
+    $runner = (string)file_get_contents(HUB_ROOT . '/app/docker_runner.php');
+    $worker = (string)file_get_contents(HUB_ROOT . '/scripts/command_worker.php');
+    $marketplace = (string)file_get_contents(HUB_ROOT . '/admin/marketplace.php');
+
+    hub_test_assert(
+        hub_is_valid_job_action('breezyvoice_provision')
+        && is_array($plan)
+        && str_contains($payload, '--network bridge')
+        && str_contains($payload, "--volume '/DATA/models:/models'")
+        && str_contains($payload, '/app/provision_models.sh')
+        && str_contains($payload, "'/models/breezyvoice' 'MediaTek-Research/BreezyVoice' 'e33b502e0ac21c16b0ee0d00df66ac3fa737393d'")
+        && !str_contains($payload, 'docker compose')
+        && str_contains($runner, 'function hub_run_breezyvoice_provision_job')
+        && str_contains($worker, "'breezyvoice_provision' => hub_run_breezyvoice_provision_job")
+        && str_contains($marketplace, "'provision_breezyvoice' => 'breezyvoice_provision'"),
+        'BreezyVoice model download must be an explicit pinned WSL one-shot, not an inference side effect'
+    );
+});
+
 hub_test('BreezyVoice Windows WSL jobs require a dedicated ext4 one-shot executor', function (): void {
     hub_test_assert(
         function_exists('hub_breezyvoice_wsl_execution_plan')

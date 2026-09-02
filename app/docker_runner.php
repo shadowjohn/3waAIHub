@@ -1317,6 +1317,100 @@ function hub_breezyvoice_wsl_runtime_profile(array $service, ?array $profile = n
 }
 
 /**
+ * BreezyVoice 權重只能由受控的一次性 provisioning 動作取得；推論 runner 永遠離線。
+ * 將 models root 而不是 breezyvoice 子目錄掛入，才能在容器內以 rename 原子發布完整快照。
+ *
+ * @return array{runtime?: array<string, mixed>, command: list<string>}|null
+ */
+function hub_breezyvoice_provisioning_plan(PDO $db, array $service, ?array $profile = null, ?string $platform = null): ?array
+{
+    if ((string)($service['pack_id'] ?? '') !== 'tts-breezyvoice') {
+        return null;
+    }
+    $pack = hub_get_pack('tts-breezyvoice');
+    $alias = is_array($pack['manifest']['model_allowlist']['breezyvoice_seed_policy']['aliases']['best_effort'] ?? null)
+        ? $pack['manifest']['model_allowlist']['breezyvoice_seed_policy']['aliases']['best_effort']
+        : null;
+    $modelId = is_array($alias) ? (string)($alias['model'] ?? '') : '';
+    $revision = is_array($alias) ? (string)($alias['model_revision'] ?? '') : '';
+    if (
+        !is_array($pack['manifest'] ?? null)
+        || preg_match('~^[A-Za-z0-9][A-Za-z0-9._-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$~', $modelId) !== 1
+        || preg_match('/^[0-9a-f]{40}$/', $revision) !== 1
+    ) {
+        return null;
+    }
+
+    if (hub_platform_id($platform) === 'windows') {
+        $runtime = hub_breezyvoice_wsl_runtime_profile($service, $profile);
+        if ($runtime === null) {
+            return null;
+        }
+        $modelsRoot = (string)$runtime['models_root'];
+        $packRoot = (string)$runtime['runtime_root'] . '/packs/tts-breezyvoice';
+        $docker = 'docker run --rm --pull never --network bridge --entrypoint /app/provision_models.sh'
+            . ' --volume ' . hub_wsl_shell_literal($modelsRoot . ':/models')
+            . ' ' . hub_wsl_shell_literal((string)$runtime['image'])
+            . ' ' . hub_wsl_shell_literal('/models/breezyvoice')
+            . ' ' . hub_wsl_shell_literal($modelId)
+            . ' ' . hub_wsl_shell_literal($revision);
+        $script = "set -eu\n"
+            . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+            . 'models_root=' . hub_wsl_shell_literal($modelsRoot) . "\n"
+            . 'test -f "$pack_root/' . (string)$runtime['dockerfile'] . '"' . "\n"
+            . 'mkdir -p "$models_root"' . "\n"
+            . 'exec ' . $docker . "\n";
+
+        return ['runtime' => $runtime, 'command' => hub_wsl_script_command($runtime, $script)];
+    }
+
+    $resolution = hub_service_runtime_resolution($service, $platform, $profile);
+    if (empty($resolution['supported']) || ($resolution['target'] ?? '') !== 'linux-docker') {
+        return null;
+    }
+    try {
+        $modelsRoot = hub_container_path(hub_models_root($db));
+    } catch (Throwable) {
+        return null;
+    }
+
+    return ['command' => [
+        'docker', 'run', '--rm', '--pull', 'never', '--network', 'bridge', '--entrypoint', '/app/provision_models.sh',
+        '--volume', $modelsRoot . ':/models', hub_service_image_tag($service),
+        '/models/breezyvoice', $modelId, $revision,
+    ]];
+}
+
+function hub_run_breezyvoice_provision_job(PDO $db, ?array $service, array $job): array
+{
+    if ($service === null || (string)($service['pack_id'] ?? '') !== 'tts-breezyvoice') {
+        return ['exit_code' => 3, 'stdout' => '', 'stderr' => 'pack_not_supported'];
+    }
+    $plan = hub_breezyvoice_provisioning_plan($db, $service);
+    if ($plan === null) {
+        return hub_unsupported_runtime_result(
+            'windows-wsl2-linux-docker',
+            'BreezyVoice provisioning requires a ready WSL Runtime on Windows or a native Linux Docker runtime.'
+        );
+    }
+
+    hub_job_progress($db, $job, 'provisioning_model', 12, 'Provisioning the pinned BreezyVoice model snapshot.');
+    $result = hub_run_command($plan['command'], 7200, [], 16000);
+    if ((int)($result['exit_code'] ?? 1) === 0) {
+        hub_job_progress($db, $job, 'model_snapshot_ready', 98, 'Pinned BreezyVoice model snapshot verified.');
+    }
+    hub_add_service_log(
+        $db,
+        (int)$service['id'],
+        'breezyvoice_provision',
+        trim((string)($result['stdout'] ?? '') . "\n" . (string)($result['stderr'] ?? '')),
+        (int)($result['exit_code'] ?? 1)
+    );
+
+    return $result;
+}
+
+/**
  * PaliGemma 2 是目前第三個需要 CUDA profile 選擇的 WSL service。
  * 先維持明確垂直 slice，避免尚未成熟的 Pack 變成通用 runtime abstraction。
  */

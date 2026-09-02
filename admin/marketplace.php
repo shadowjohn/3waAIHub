@@ -132,6 +132,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             'provision_pascal_ckip' => 'whisper_pascal_ckip_provision',
             'provision_paligemma2' => 'paligemma2_provision',
             'accept_paligemma2' => 'paligemma2_acceptance',
+            'provision_breezyvoice' => 'breezyvoice_provision',
             'provision_manual_vision' => 'manual_vision_provision',
             'accept_manual_vision' => 'manual_vision_acceptance',
         ];
@@ -145,6 +146,7 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST') {
             || ($action === 'provision_pascal_ckip' && hub_whisper_pascal_ckip_provisioning_plan($service) === null)
             || ($action === 'provision_paligemma2' && hub_paligemma2_provisioning_plan($service) === null)
             || ($action === 'accept_paligemma2' && hub_paligemma2_provisioning_plan($service) === null)
+            || ($action === 'provision_breezyvoice' && hub_breezyvoice_provisioning_plan($db, $service) === null)
             || (in_array($action, ['provision_manual_vision', 'accept_manual_vision'], true) && (string)$service['pack_id'] !== 'vlm-manual-vision')
         ) {
             $error = hub_i18n_text('無效的服務操作。');
@@ -277,6 +279,7 @@ $dictionary = [
     'action_whisper_pascal_ckip_provision' => hub_i18n_text('準備 CKIP 字幕資產'),
     'action_paligemma2_provision' => hub_i18n_text('準備 PaliGemma 2 模型'),
     'action_paligemma2_acceptance' => hub_i18n_text('執行 PaliGemma 2 CUDA 驗收'),
+    'action_breezyvoice_provision' => hub_i18n_text('準備 BreezyVoice 模型'),
     'action_manual_vision_provision' => hub_i18n_text('準備 Manual Vision 模型'),
     'action_manual_vision_acceptance' => hub_i18n_text('執行 Manual Vision 驗收'),
     'remove_confirm' => hub_i18n_text('確定移除此服務嗎？服務設定將刪除，模型與既有產物會保留。'),
@@ -649,6 +652,7 @@ hub_admin_header(hub_i18n_text('HubPack 套件'), $user);
                     $runtimeLevel = hub_marketplace_service_runtime_level($service);
                     $pascalCkipPlan = hub_whisper_pascal_ckip_provisioning_plan($service);
                     $paligemmaProvisionPlan = hub_paligemma2_provisioning_plan($service);
+                    $breezyVoiceProvisionPlan = hub_breezyvoice_provisioning_plan($db, $service);
                     $manualVision = (string)$service['pack_id'] === 'vlm-manual-vision';
                     $paligemmaProvisionPlan = hub_paligemma2_provisioning_plan($service);
                     $endpoint = hub_marketplace_service_endpoint($service);
@@ -717,6 +721,9 @@ hub_admin_header(hub_i18n_text('HubPack 套件'), $user);
                                 <?php if ($paligemmaProvisionPlan !== null): ?>
                                     <button name="action" value="provision_paligemma2" type="submit"><?= hub_h(hub_i18n_text('準備 PaliGemma 2 模型')) ?></button>
                                     <button name="action" value="accept_paligemma2" type="submit"><?= hub_h(hub_i18n_text('執行 PaliGemma 2 CUDA 驗收')) ?></button>
+                                <?php endif; ?>
+                                <?php if ($breezyVoiceProvisionPlan !== null): ?>
+                                    <button name="action" value="provision_breezyvoice" type="submit"><?= hub_h(hub_i18n_text('準備 BreezyVoice 模型')) ?></button>
                                 <?php endif; ?>
                                 <?php if ($manualVision): ?>
                                     <button name="action" value="provision_manual_vision" type="submit"><?= hub_h(hub_i18n_text('準備 Manual Vision 模型')) ?></button>

@@ -24,6 +24,7 @@ function hub_allowed_job_actions(): array
         'manual_vision_acceptance',
         'paligemma2_provision',
         'paligemma2_acceptance',
+        'breezyvoice_provision',
     ];
 }
 
@@ -71,6 +72,7 @@ function hub_command_action_label(string $action): string
         'manual_vision_acceptance' => '執行 Manual Vision 驗收',
         'paligemma2_provision' => '準備 PaliGemma 2 模型',
         'paligemma2_acceptance' => '執行 PaliGemma 2 CUDA 驗收',
+        'breezyvoice_provision' => '準備 BreezyVoice 模型',
         'service_install' => '安裝服務',
         'service_logs_collect' => '收集服務記錄',
         'env_probe' => '環境檢測',
@@ -287,6 +289,7 @@ function hub_command_job_stale_after_seconds(string $action): int
         'manual_vision_provision' => 3900,
         'manual_vision_acceptance' => 2100,
         'paligemma2_provision' => 7500,
+        'breezyvoice_provision' => 7500,
         'paligemma2_acceptance' => 900,
         'docker_builder_prune' => 1200,
         default => 900,
