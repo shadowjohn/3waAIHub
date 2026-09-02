@@ -1395,7 +1395,19 @@ function hub_run_breezyvoice_provision_job(PDO $db, ?array $service, array $job)
     }
 
     hub_job_progress($db, $job, 'provisioning_model', 12, 'Provisioning the pinned BreezyVoice model snapshot.');
-    $result = hub_run_command($plan['command'], 7200, [], 16000);
+    // Hugging Face 下載會產生大量進度輸出；Windows 的 proc_open pipe 在 WSL 邊界可能
+    // 直到子程序結束才交付資料。沿用受控 job log 串流，讓工作可持續心跳並可安全回收。
+    $result = hub_run_service_command(
+        $db,
+        $job,
+        (array)$plan['command'],
+        7200,
+        [],
+        'provisioning_model',
+        12,
+        95,
+        false,
+    );
     if ((int)($result['exit_code'] ?? 1) === 0) {
         hub_job_progress($db, $job, 'model_snapshot_ready', 98, 'Pinned BreezyVoice model snapshot verified.');
     }

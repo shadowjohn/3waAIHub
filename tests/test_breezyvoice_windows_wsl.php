@@ -135,6 +135,20 @@ hub_test('BreezyVoice provisions its pinned model through an explicit WSL one-sh
     );
 });
 
+hub_test('BreezyVoice provisioning streams long WSL output through the managed command job logs', function (): void {
+    $runner = (string)file_get_contents(HUB_ROOT . '/app/docker_runner.php');
+    $start = strpos($runner, 'function hub_run_breezyvoice_provision_job');
+    $end = $start === false ? false : strpos($runner, "\n/**", $start);
+    $function = $start === false ? '' : substr($runner, $start, ($end === false ? strlen($runner) : $end) - $start);
+
+    hub_test_assert(
+        str_contains($function, 'hub_run_service_command(')
+        && str_contains($function, "'provisioning_model'")
+        && !str_contains($function, 'hub_run_command($plan[\'command\']'),
+        'BreezyVoice provisioning must stream long WSL download output instead of blocking on Windows process pipes'
+    );
+});
+
 hub_test('BreezyVoice Windows WSL jobs require a dedicated ext4 one-shot executor', function (): void {
     hub_test_assert(
         function_exists('hub_breezyvoice_wsl_execution_plan')
