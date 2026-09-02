@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "${BASH_SOURCE[0]}")/yolo_docker_probe.sh"
+
 mkdir -p "$AIHUB_WORKSPACE/output" "$AIHUB_WORKSPACE/logs" "$AIHUB_WORKSPACE/runs/train/output/weights" "$AIHUB_WORKSPACE/runs/detect/val"
 
 progress() {
@@ -17,9 +19,8 @@ fail_job() {
   local code="$1"
   local error="$2"
   local message="$3"
-  cat > "$AIHUB_RESULT_JSON" <<JSON
-{"ok":false,"mock":false,"pack_id":"yolo","job_key":"yolo_train","runtime_contract":"0.1","error":"$error","message":"$message","artifacts":[]}
-JSON
+  local stderr_detail="${4:-}"
+  yolo_write_failure_result "$AIHUB_RESULT_JSON" "yolo_train" "$error" "$message" "$stderr_detail"
   write_status failed "$code"
   progress failed "$message"
   exit "$code"
@@ -94,13 +95,13 @@ JSON
   exit 0
 fi
 
-if ! command -v docker >/dev/null 2>&1; then
-  fail_job 14 docker_unavailable "docker command is required for YOLO training."
-fi
-
 image="${AIHUB_YOLO_IMAGE:-3waaihub-yolo-main:0.1.0}"
-if ! docker image inspect "$image" >/dev/null 2>&1; then
-  fail_job 15 yolo_image_missing "YOLO Docker image is missing: $image. Build yolo-main first or set AIHUB_YOLO_IMAGE."
+if ! yolo_docker_probe_image "$image"; then
+  probe_exit_code=15
+  if [[ "$YOLO_DOCKER_PROBE_STAGE" == "command" ]]; then
+    probe_exit_code=14
+  fi
+  fail_job "$probe_exit_code" "$YOLO_DOCKER_PROBE_ERROR" "$YOLO_DOCKER_PROBE_MESSAGE" "$YOLO_DOCKER_PROBE_STDERR"
 fi
 
 models_dir="${AIHUB_YOLO_MODELS_DIR:-/DATA/models/yolo}"

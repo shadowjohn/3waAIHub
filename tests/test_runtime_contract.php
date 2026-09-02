@@ -330,3 +330,12 @@ hub_test('Windows aihub-run exits 78 before creating local job state', function 
     hub_test_assert(!is_dir($workspace), 'Windows aihub-run must not create workspace');
     hub_test_assert(!is_file($root . '/runtime.sqlite'), 'Windows aihub-run must not create runtime DB');
 });
+
+hub_test('YOLO local jobs distinguish Docker probe failures and preserve stderr', function (): void {
+    if (hub_platform_id() === 'windows') {
+        hub_test_skip('requires bash');
+    }
+
+    $result = hub_run_command(['bash', HUB_ROOT . '/tests/test_yolo_docker_probe.sh'], 120);
+    hub_test_assert($result['exit_code'] === 0, 'YOLO Docker probe regression test failed: ' . $result['output']);
+});
