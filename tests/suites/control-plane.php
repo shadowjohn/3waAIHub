@@ -4,6 +4,7 @@ declare(strict_types=1);
 return [
     __DIR__ . '/../test_service_health.php',
     __DIR__ . '/../test_command_queue.php',
+    __DIR__ . '/../test_breezyvoice_windows_wsl.php',
     __DIR__ . '/../test_runner_recovery.php',
     __DIR__ . '/../test_cluster_admin.php',
     __DIR__ . '/../test_cluster_router.php',

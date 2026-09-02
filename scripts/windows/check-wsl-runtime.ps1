@@ -159,6 +159,10 @@ $ocrProfile = if ($gpuName -ne '') { Get-WslOcrRuntimeProfile -InstallRoot $Inst
 if ($null -ne $ocrProfile) {
     Write-Check 'PP-OCRv5 GPU profile' $true $ocrProfile.Id
 }
+$breezyVoiceProfile = if ($gpuName -ne '') { Get-WslBreezyVoiceRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName } else { $null }
+if ($null -ne $breezyVoiceProfile) {
+    Write-Check 'BreezyVoice GPU profile' $true $breezyVoiceProfile.Id
+}
 
 $dataFs = Invoke-Captured @($wsl.Source, '-d', $WslDistro, '--', 'sh', '-lc', "findmnt -n -o FSTYPE -T '$LinuxDataRoot' 2>/dev/null")
 $isExt4 = $dataFs.ExitCode -eq 0 -and $dataFs.Output -match 'ext4'

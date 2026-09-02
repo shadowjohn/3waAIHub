@@ -93,6 +93,7 @@ $profile = Get-WslYoloRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName
 $whisperProfile = Get-WslWhisperRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName
 $ocrProfile = Get-WslOcrRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName
 $paligemma2Profile = Get-WslPaliGemma2RuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName
+$breezyVoiceProfile = Get-WslBreezyVoiceRuntimeProfile -InstallRoot $InstallRoot -GpuName $gpuName
 $runtimeRoot = "$LinuxDataRoot/3waAIHub-runtime"
 $runtimeLiteral = ConvertTo-LinuxShellLiteral $runtimeRoot
 $sourceLiteral = ConvertTo-LinuxShellLiteral $sourceRoot
@@ -136,8 +137,7 @@ $initScript = 'php ' + (ConvertTo-LinuxShellLiteral "$runtimeRoot/scripts/init_d
 Invoke-WslScript -Wsl $wsl.Source -Distro $WslDistro -Script $initScript | Out-Null
 
 $profileWriter = Join-Path $PSScriptRoot 'write-runtime-profile.ps1'
-& $profileWriter -InstallRoot $InstallRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot -WslReady -YoloRuntimeProfile ([string]$profile.id) -WhisperRuntimeProfile ([string]$whisperProfile.id) -OcrRuntimeProfile ([string]$ocrProfile.id) -PaliGemma2RuntimeProfile ([string]$paligemma2Profile.id)
-& $profileWriter -InstallRoot $InstallRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot -WslReady -YoloRuntimeProfile ([string]$profile.id) -WhisperRuntimeProfile ([string]$whisperProfile.id) -OcrRuntimeProfile ([string]$ocrProfile.id) -PaliGemma2RuntimeProfile ([string]$paligemma2Profile.id) -ManualVisionRuntimeProfile 'default'
+& $profileWriter -InstallRoot $InstallRoot -WslDistro $WslDistro -LinuxDataRoot $LinuxDataRoot -WslReady -YoloRuntimeProfile ([string]$profile.id) -WhisperRuntimeProfile ([string]$whisperProfile.id) -OcrRuntimeProfile ([string]$ocrProfile.id) -PaliGemma2RuntimeProfile ([string]$paligemma2Profile.id) -BreezyVoiceRuntimeProfile ([string]$breezyVoiceProfile.id) -ManualVisionRuntimeProfile 'default'
 if (-not $?) { throw 'Failed to write the WSL runtime profile.' }
 
 $agentInstaller = Join-Path $PSScriptRoot 'install-wsl-task-agent.ps1'
@@ -150,5 +150,6 @@ Write-Host "YOLO image: $image"
 Write-Host "Whisper profile: $($whisperProfile.id) ($gpuName)"
 Write-Host "PP-OCRv5 profile: $($ocrProfile.id) ($gpuName)"
 Write-Host "PaliGemma 2 profile: $($paligemma2Profile.id) ($gpuName)"
+Write-Host "BreezyVoice profile: $($breezyVoiceProfile.id) ($gpuName)"
 Write-Host 'WSL service jobs: aihub-wsl-worker.service is active; the Windows task only starts it at user logon.'
 exit 0

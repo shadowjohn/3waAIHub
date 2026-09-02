@@ -628,6 +628,10 @@ function hub_service_runtime_image_tag(array $service, ?array $profile = null): 
     if ($manualVision !== null) {
         return (string)$manualVision['image'];
     }
+    $breezyvoice = hub_breezyvoice_wsl_runtime_profile($service, $profile);
+    if ($breezyvoice !== null) {
+        return (string)$breezyvoice['image'];
+    }
     $paligemma2 = hub_paligemma2_wsl_runtime_profile($service, $profile);
     return $paligemma2 === null ? hub_service_image_tag($service) : (string)$paligemma2['image'];
 }
@@ -1268,6 +1272,51 @@ function hub_run_manual_vision_acceptance_job(PDO $db, ?array $service, array $j
 }
 
 /**
+ * BreezyVoice 的 Windows 路徑只能由 WSL profile 決定 image；Pascal 不得重用 Linux CUDA 12 runner。
+ */
+function hub_breezyvoice_wsl_runtime_profile(array $service, ?array $profile = null): ?array
+{
+    if ((string)($service['pack_id'] ?? '') !== 'tts-breezyvoice') {
+        return null;
+    }
+    $resolution = hub_service_runtime_resolution($service, 'windows', $profile);
+    $runtime = hub_wsl_service_runtime($service, 'windows', $profile);
+    $pack = hub_get_pack('tts-breezyvoice');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null) || !is_array($resolution['profile'] ?? null)) {
+        return null;
+    }
+    $profiles = $pack['manifest']['wsl_runtime_profiles'] ?? null;
+    $profileId = (string)($resolution['profile']['pack_profiles']['tts-breezyvoice'] ?? 'default');
+    $selected = is_array($profiles) ? ($profiles[$profileId] ?? null) : null;
+    $dockerfile = is_array($selected) ? (string)($selected['dockerfile'] ?? '') : '';
+    $image = is_array($selected) ? (string)($selected['image'] ?? '') : '';
+    if (
+        !is_array($selected)
+        || ($selected['id'] ?? null) !== $profileId
+        || preg_match('~^service/Dockerfile(?:\.[A-Za-z0-9._-]+)?$~', $dockerfile) !== 1
+        || preg_match('~^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$~', $image) !== 1
+    ) {
+        return null;
+    }
+    $modelsRoot = trim((string)($resolution['profile']['models_root'] ?? ''));
+    if ($modelsRoot === '') {
+        $modelsRoot = dirname((string)$runtime['runtime_root']) . '/models';
+    }
+    try {
+        $modelsRoot = hub_container_path($modelsRoot);
+    } catch (InvalidArgumentException) {
+        return null;
+    }
+
+    return $runtime + [
+        'profile_id' => $profileId,
+        'dockerfile' => $dockerfile,
+        'image' => $image,
+        'models_root' => $modelsRoot,
+    ];
+}
+
+/**
  * PaliGemma 2 是目前第三個需要 CUDA profile 選擇的 WSL service。
  * 先維持明確垂直 slice，避免尚未成熟的 Pack 變成通用 runtime abstraction。
  */
@@ -1682,6 +1731,82 @@ function hub_ocr_wsl_service_compose_command(array $service, array $args, ?array
     return hub_wsl_script_command($runtime, $script);
 }
 
+function hub_breezyvoice_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
+{
+    $runtime = hub_breezyvoice_wsl_runtime_profile($service, $profile);
+    $pack = hub_get_pack('tts-breezyvoice');
+    if ($runtime === null || !is_array($pack['manifest'] ?? null)) {
+        throw new RuntimeException('WSL Runtime is not ready for BreezyVoice.');
+    }
+    $serviceKey = (string)($service['service_key'] ?? '');
+    $port = (int)($service['local_port'] ?? 0);
+    if (preg_match('/^[a-z0-9][a-z0-9_-]*$/', $serviceKey) !== 1 || $port < 1 || $port > 65535) {
+        throw new RuntimeException('Invalid WSL BreezyVoice service configuration.');
+    }
+    $environment = [];
+    $sourceEnvironment = hub_compose_env($service);
+    foreach ((array)($pack['manifest']['env'] ?? []) as $item) {
+        $key = (string)($item['name'] ?? '');
+        $value = (string)($sourceEnvironment[$key] ?? $item['default'] ?? '');
+        if (preg_match('/^[A-Z][A-Z0-9_]*$/', $key) !== 1 || str_contains($value, "\0") || preg_match('/[\r\n]/', $value) === 1) {
+            throw new RuntimeException('Invalid WSL BreezyVoice service environment.');
+        }
+        $environment[$key] = $value;
+    }
+    $environment['BREEZYVOICE_DEVICE'] = 'cuda';
+    $environment[hub_pack_port_env($pack['manifest'])] = (string)$port;
+    $runtimeRoot = (string)$runtime['runtime_root'];
+    $packRoot = $runtimeRoot . '/packs/tts-breezyvoice';
+    $serviceRoot = $runtimeRoot . '/services/' . $serviceKey;
+    $serviceData = $serviceRoot . '/data';
+    $cacheRoot = $runtimeRoot . '/cache/breezyvoice';
+    $compose = "services:\n  breezyvoice:\n    image: " . json_encode((string)$runtime['image'], JSON_UNESCAPED_SLASHES) . "\n    build:\n      context: " . json_encode($packRoot, JSON_UNESCAPED_SLASHES) . "\n      dockerfile: " . json_encode(basename((string)$runtime['dockerfile']), JSON_UNESCAPED_SLASHES) . "\n    env_file:\n      - " . HUB_RUNTIME_SETTINGS_FILENAME . "\n    environment:\n      NVIDIA_VISIBLE_DEVICES: \"all\"\n      NVIDIA_DRIVER_CAPABILITIES: \"compute,utility\"\n    gpus: all\n    ports:\n      - \"127.0.0.1:" . $port . ":8000\"\n    volumes:\n      - " . json_encode((string)$runtime['models_root'] . '/breezyvoice:/models/breezyvoice', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($cacheRoot . ':/cache/breezyvoice', JSON_UNESCAPED_SLASHES) . "\n      - " . json_encode($serviceData . ':/data/service', JSON_UNESCAPED_SLASHES) . "\n    restart: unless-stopped\n";
+    $env = '';
+    foreach ($environment as $key => $value) {
+        $env .= $key . '=' . $value . "\n";
+    }
+    $composeArgs = array_values($args);
+    if (($composeArgs[0] ?? '') === 'build') {
+        $dockerCommand = 'DOCKER_BUILDKIT=1 docker build --progress=plain --tag ' . hub_wsl_shell_literal((string)$runtime['image'])
+            . ' --file ' . hub_wsl_shell_literal($packRoot . '/' . (string)$runtime['dockerfile'])
+            . ' ' . hub_wsl_shell_literal($packRoot);
+    } else {
+        $dockerCommand = 'docker compose';
+        if (($progressIndex = array_search('--progress=plain', $composeArgs, true)) !== false) {
+            unset($composeArgs[$progressIndex]);
+            $composeArgs = array_values($composeArgs);
+            $dockerCommand .= ' --progress=plain';
+        }
+        $dockerCommand .= ' --env-file ' . hub_wsl_shell_literal($serviceRoot . '/' . HUB_RUNTIME_SETTINGS_FILENAME)
+            . ' -p ' . hub_wsl_shell_literal((string)$service['compose_project']) . ' -f ' . hub_wsl_shell_literal($serviceRoot . '/docker-compose.yml');
+        foreach ($composeArgs as $arg) {
+            $dockerCommand .= ' ' . hub_wsl_shell_literal((string)$arg);
+        }
+    }
+    $script = "set -eu\n"
+        . 'pack_root=' . hub_wsl_shell_literal($packRoot) . "\n"
+        . 'service_root=' . hub_wsl_shell_literal($serviceRoot) . "\n"
+        . 'models_root=' . hub_wsl_shell_literal((string)$runtime['models_root']) . "\n"
+        . 'cache_root=' . hub_wsl_shell_literal($cacheRoot) . "\n"
+        . 'service_data=' . hub_wsl_shell_literal($serviceData) . "\n"
+        . 'env_payload=' . hub_wsl_shell_literal(base64_encode($env)) . "\n"
+        . 'env_sha256=' . hub_wsl_shell_literal(hash('sha256', $env)) . "\n"
+        . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
+        . 'if [ ! -f "$pack_root/' . (string)$runtime['dockerfile'] . '" ]; then echo "WSL BreezyVoice source unavailable. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
+        . 'install -d -m 0775 "$service_root" "$models_root/breezyvoice" "$cache_root" "$service_data"' . "\n"
+        . 'if ! command -v sha256sum >/dev/null 2>&1; then echo "WSL sha256sum is unavailable." >&2; exit 2; fi' . "\n"
+        . 'settings_tmp="$service_root/.' . HUB_RUNTIME_SETTINGS_FILENAME . '.$$"' . "\n"
+        . 'umask 077; printf %s "$env_payload" | base64 -d > "$settings_tmp"; chmod 0600 "$settings_tmp"' . "\n"
+        . 'actual_sha256="$(sha256sum "$settings_tmp" | awk \'{print $1}\')"' . "\n"
+        . 'if [ "$actual_sha256" != "$env_sha256" ]; then rm -f -- "$settings_tmp"; echo "Runtime settings SHA256 verification failed." >&2; exit 2; fi' . "\n"
+        . 'mv -f -- "$settings_tmp" "$service_root/' . HUB_RUNTIME_SETTINGS_FILENAME . '"' . "\n"
+        . 'if [ -e "$service_root/.env" ] || [ -L "$service_root/.env" ]; then if [ -L "$service_root/.env" ] || [ ! -f "$service_root/.env" ]; then echo "Unsafe legacy runtime env file." >&2; exit 2; fi; rm -- "$service_root/.env"; fi' . "\n"
+        . 'printf %s "$compose_payload" | base64 -d > "$service_root/docker-compose.yml"' . "\n"
+        . $dockerCommand . "\n";
+
+    return hub_wsl_script_command($runtime, $script);
+}
+
 function hub_paligemma2_wsl_service_compose_command(array $service, array $args, ?array $profile = null): array
 {
     $runtime = hub_paligemma2_wsl_runtime_profile($service, $profile);
@@ -1834,6 +1959,9 @@ function hub_wsl_service_compose_command(array $service, array $args, ?array $pr
     }
     if ((string)($service['pack_id'] ?? '') === 'ocr-ppocrv5') {
         return hub_ocr_wsl_service_compose_command($service, $args, $profile);
+    }
+    if ((string)($service['pack_id'] ?? '') === 'tts-breezyvoice') {
+        return hub_breezyvoice_wsl_service_compose_command($service, $args, $profile);
     }
     if ((string)($service['pack_id'] ?? '') === 'vlm-paligemma2') {
         return hub_paligemma2_wsl_service_compose_command($service, $args, $profile);

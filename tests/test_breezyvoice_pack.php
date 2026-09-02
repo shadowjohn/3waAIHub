@@ -4,6 +4,7 @@ declare(strict_types=1);
 const HUB_TEST_BREEZY_MODEL_REVISION = 'e33b502e0ac21c16b0ee0d00df66ac3fa737393d';
 const HUB_TEST_BREEZY_UPSTREAM_REVISION = 'd592c9d3e8927a0f53f68616387060dcd32a05ea';
 const HUB_TEST_BREEZY_IMAGE = '3waaihub/tts-breezyvoice:0.1.1-cu128';
+const HUB_TEST_BREEZY_PACK_PASCAL_IMAGE = '3waaihub/tts-breezyvoice:0.1.1-pascal-cu118';
 
 hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contract', function (): void {
     $pack = hub_get_pack('tts-breezyvoice');
@@ -32,9 +33,10 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
     );
 
     hub_test_assert(
-        array_keys($targets) === ['linux-docker']
-        && ($targets['linux-docker']['supported'] ?? null) === true,
-        'BreezyVoice must declare only its validated Linux Docker target'
+        array_keys($targets) === ['linux-docker', 'windows-wsl2-linux-docker']
+        && ($targets['linux-docker'] ?? null) === true
+        && ($targets['windows-wsl2-linux-docker'] ?? null) === true,
+        'BreezyVoice must declare direct Linux and explicit Windows WSL targets'
     );
     hub_test_assert(
         ($manifest['lifecycle']['lifecycle'] ?? '') === 'on_demand'
@@ -47,7 +49,7 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
             'gpu_supported' => true,
             'cpu_fallback' => false,
             'min_vram_mb' => 4096,
-            'min_compute_capability' => '12.0',
+            'min_compute_capability' => '6.1',
         ]
         && ($manifest['lifecycle'] ?? null) === [
             'lifecycle' => 'on_demand',
@@ -88,7 +90,22 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
     );
 
     hub_test_assert(
-        !isset($manifest['wsl_runtime_profiles'])
+        ($manifest['wsl_runtime_profiles'] ?? null) === [
+            'default' => [
+                'id' => 'default',
+                'dockerfile' => 'service/Dockerfile',
+                'image' => HUB_TEST_BREEZY_IMAGE,
+                'min_compute_capability' => '12.0',
+                'gpu_name_patterns' => ['RTX 50'],
+            ],
+            'pascal-cu118' => [
+                'id' => 'pascal-cu118',
+                'dockerfile' => 'service/Dockerfile.pascal-cu118',
+                'image' => HUB_TEST_BREEZY_PACK_PASCAL_IMAGE,
+                'min_compute_capability' => '6.1',
+                'gpu_name_patterns' => ['GTX 1050', 'GTX 1060', 'GTX 1070', 'GTX 1080', 'GTX 1080 Ti'],
+            ],
+        ]
         && ($manifest['runner_build'] ?? null) === [
             'context' => '.',
             'dockerfile' => 'service/Dockerfile',

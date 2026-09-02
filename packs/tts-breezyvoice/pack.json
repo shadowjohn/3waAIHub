@@ -16,7 +16,8 @@
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
-    "default_internal_port": 8000
+    "default_internal_port": 8000,
+    "windows_wsl_compose": true
   },
   "runner_build": {
     "context": ".",
@@ -24,7 +25,24 @@
     "image": "3waaihub/tts-breezyvoice:0.1.1-cu128"
   },
   "platform_targets": {
-    "linux-docker": {"supported": true}
+    "linux-docker": true,
+    "windows-wsl2-linux-docker": true
+  },
+  "wsl_runtime_profiles": {
+    "default": {
+      "id": "default",
+      "dockerfile": "service/Dockerfile",
+      "image": "3waaihub/tts-breezyvoice:0.1.1-cu128",
+      "min_compute_capability": "12.0",
+      "gpu_name_patterns": ["RTX 50"]
+    },
+    "pascal-cu118": {
+      "id": "pascal-cu118",
+      "dockerfile": "service/Dockerfile.pascal-cu118",
+      "image": "3waaihub/tts-breezyvoice:0.1.1-pascal-cu118",
+      "min_compute_capability": "6.1",
+      "gpu_name_patterns": ["GTX 1050", "GTX 1060", "GTX 1070", "GTX 1080", "GTX 1080 Ti"]
+    }
   },
   "gateway": {
     "health_path": "/health",
@@ -143,7 +161,7 @@
     "gpu_supported": true,
     "cpu_fallback": false,
     "min_vram_mb": 4096,
-    "min_compute_capability": "12.0"
+    "min_compute_capability": "6.1"
   },
   "lifecycle": {
     "lifecycle": "on_demand",

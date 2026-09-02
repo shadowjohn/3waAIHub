@@ -76,3 +76,14 @@ function Get-WslPaliGemma2RuntimeProfile {
 
     return Get-WslPackRuntimeProfile -InstallRoot $InstallRoot -PackId 'vlm-paligemma2' -GpuName $GpuName
 }
+
+function Get-WslBreezyVoiceRuntimeProfile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$GpuName
+    )
+
+    return Get-WslPackRuntimeProfile -InstallRoot $InstallRoot -PackId 'tts-breezyvoice' -GpuName $GpuName
+}
