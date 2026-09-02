@@ -23,7 +23,9 @@ RUN set -eu; \
 
 COPY service/requirements.pascal-cu118.txt ./requirements.txt
 RUN python3 -m pip install --no-cache-dir -r requirements.txt \
-    && python3 -m pip check
+    && python3 -m pip check \
+    && python3 -m pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117 \
+    && python3 -c 'import whisper; assert callable(whisper.log_mel_spectrogram)'
 
 COPY service/app.py service/job.py service/provision.py ./
 COPY jobs/voice_generate.sh jobs/provision_models.sh ./
