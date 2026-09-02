@@ -17,6 +17,16 @@ MODEL_REVISION = "a" * 40
 UPSTREAM_REVISION = "b" * 40
 
 
+def test_requirements_keep_diffusers_hub_dependency_resolvable() -> None:
+    requirements = (Path(__file__).parent / "requirements.txt").read_text(encoding="utf-8")
+    dockerfile = (Path(__file__).parent / "Dockerfile").read_text(encoding="utf-8")
+    assert "diffusers==0.32.0" in requirements
+    assert "huggingface-hub==0.23.2" in requirements
+    assert "transformers==4.46.3" in requirements
+    assert "openai-whisper==20231117" not in requirements
+    assert "pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117" in dockerfile
+
+
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -33,7 +43,7 @@ def write_pcm16_wav(path: Path) -> None:
     with wave.open(str(path), "wb") as output:
         output.setnchannels(1)
         output.setsampwidth(2)
-        output.setframerate(24000)
+        output.setframerate(22050)
         output.writeframes(b"\x00\x00" * 240)
 
 
@@ -74,26 +84,35 @@ def make_job_fixture(tmp_path: Path) -> dict[str, Path | str]:
         "mode": "ultimate_clone",
         "seed": 123,
         "seed_policy": "best_effort",
+        "prompt_text": transcript,
         "voice_context": {
+            "mode": "ultimate_clone",
+            "voice_profile_id": 41,
             "reference_audio_sha256": reference_hash,
-            "transcript_sha256": transcript_hash,
-            "confirmation_state": "confirmed",
+            "prompt_text_sha256": transcript_hash,
+            "prompt_text_confirmed_at": "2026-09-02 12:00:00",
+            "container_path": "/data/voice_profiles/reference.wav",
         },
     }
     runner_config = {
+        "schema_version": "breezyvoice_runner_config_v1",
         "model": MODEL_ID,
         "model_revision": MODEL_REVISION,
         "upstream_revision": UPSTREAM_REVISION,
         "model_dir": str(model_dir),
+        "voice_profile_id": 41,
+        "reference_audio_sha256": reference_hash,
+        "transcript_sha256": transcript_hash,
+        "prompt_text_confirmed_at": "2026-09-02 12:00:00",
+        "prompt_transcript_confirmed": True,
+        "seed": 123,
+        "seed_applied": False,
+        "reproducibility": "best_effort",
         "max_input_chars": 100,
-        "timeout_seconds": 10,
         "device": "cuda",
-        "voice_profile_snapshot": {
-            "reference_audio_sha256": reference_hash,
-            "transcript": transcript,
-            "transcript_sha256": transcript_hash,
-            "confirmation_state": "confirmed",
-        },
+        "sample_rate": 22050,
+        "channels": 1,
+        "sample_format": "pcm_s16le",
     }
     (input_dir / "request.json").write_text(json.dumps(request), encoding="utf-8")
     (input_dir / "runner_config.json").write_text(json.dumps(runner_config), encoding="utf-8")
@@ -239,8 +258,8 @@ def test_rejects_workspace_escape_mode_and_missing_transcript(tmp_path: Path, mu
         request["mode"] = "clone"
         request_path.write_text(json.dumps(request), encoding="utf-8")
     else:
-        del config["voice_profile_snapshot"]["transcript"]
-        config_path.write_text(json.dumps(config), encoding="utf-8")
+        del request["prompt_text"]
+        request_path.write_text(json.dumps(request), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match=f"^{error_code}$"):
         run_fixture(fixture)
@@ -271,12 +290,20 @@ def test_validates_mocked_wav_and_writes_best_effort_provenance(tmp_path: Path, 
         "--output_path",
         str(output),
     ]
-    assert commands == [(expected, {"cwd": "/opt/breezyvoice", "check": True, "timeout": 10, "shell": False})]
+    assert commands == [(expected, {"cwd": "/opt/breezyvoice", "check": True, "timeout": 7200, "shell": False})]
     assert metadata["seed"] == 123
     assert metadata["seed_applied"] is False
     assert metadata["reproducibility"] == "best_effort"
     assert metadata["reference_audio_sha256"] == metadata["reference_audio_sha256"].lower()
     assert metadata["transcript_sha256"] == metadata["transcript_sha256"].lower()
+    assert metadata["audio_sha256"] == sha256_file(output)
+    assert metadata["audio_size_bytes"] == output.stat().st_size
+    assert metadata["final_format"] == {
+        "mime_type": "audio/wav",
+        "sample_rate": 22050,
+        "channels": 1,
+        "sample_format": "pcm_s16le",
+    }
     assert json.loads((fixture["output_dir"] / "synthesis_metadata.json").read_text(encoding="utf-8")) == metadata
     with wave.open(str(output), "rb") as generated:
-        assert (generated.getnchannels(), generated.getframerate(), generated.getsampwidth()) == (1, 24000, 2)
+        assert (generated.getnchannels(), generated.getframerate(), generated.getsampwidth()) == (1, 22050, 2)

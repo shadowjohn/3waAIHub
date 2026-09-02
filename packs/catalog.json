@@ -13,7 +13,7 @@
     {
       "id": "translate-gemma12b",
       "name": "TranslateGemma 12B Service",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "category": "translation",
       "description": "Local translation service powered by Ollama TranslateGemma 12B Q4_K_M.",
       "path": "packs/translate-gemma12b",
@@ -123,7 +123,7 @@
       "name": "BreezyVoice Taiwan Mandarin Clone",
       "version": "0.1.0",
       "category": "audio",
-      "description": "Metadata-only Taiwan Mandarin private Voice Profile clone contract; runtime acceptance is pending.",
+      "description": "Taiwan Mandarin private Voice Profile clone with a managed Linux CUDA runner.",
       "path": "packs/tts-breezyvoice",
       "featured": true
     },

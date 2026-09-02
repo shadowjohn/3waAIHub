@@ -2,35 +2,29 @@
   "schema_version": "0.1",
   "id": "tts-breezyvoice",
   "name": "BreezyVoice Taiwan Mandarin Clone",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "category": "audio",
   "type": "api_service",
   "execution_type": "async_task",
-  "runtime_level": "L2-deps-import",
+  "runtime_level": "L2-container-runner",
   "target_level": "L5-benchmark-ready",
-  "runtime_ready": false,
+  "runtime_ready": true,
   "default_mode": "voice_generate_breezy",
   "capability": "taiwan_mandarin_voice_clone",
   "tts_modes": ["ultimate_clone"],
-  "description": "Metadata-only BreezyVoice Taiwan Mandarin clone Pack for authorized, transcript-confirmed private Voice Profiles. Runtime inference and model acceptance are not ready.",
+  "description": "BreezyVoice Taiwan Mandarin clone Pack for authorized, transcript-confirmed private Voice Profiles on Linux CUDA 12 GPUs.",
   "runtime": {
     "kind": "docker",
     "compose_file": "docker-compose.yml",
-    "default_internal_port": 8000,
-    "windows_wsl_compose": true
+    "default_internal_port": 8000
+  },
+  "runner_build": {
+    "context": ".",
+    "dockerfile": "service/Dockerfile",
+    "image": "3waaihub/tts-breezyvoice:0.1.1-cu128"
   },
   "platform_targets": {
-    "linux-docker": {"supported": true},
-    "windows-wsl2-linux-docker": {"supported": true}
-  },
-  "wsl_runtime_profiles": {
-    "pascal-cu118": {
-      "id": "pascal-cu118",
-      "dockerfile": "service/Dockerfile.pascal-cu118",
-      "image": "3waaihub/tts-breezyvoice:0.1.0-pascal-cu118",
-      "min_compute_capability": "6.1",
-      "gpu_name_patterns": ["GTX 1050", "GTX 1060", "GTX 1070", "GTX 1080", "GTX 1080 Ti"]
-    }
+    "linux-docker": {"supported": true}
   },
   "gateway": {
     "health_path": "/health",
@@ -45,13 +39,13 @@
       "aliases": {
         "best_effort": {
           "model": "MediaTek-Research/BreezyVoice",
-          "model_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "upstream_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "model_revision": "e33b502e0ac21c16b0ee0d00df66ac3fa737393d",
+          "upstream_revision": "d592c9d3e8927a0f53f68616387060dcd32a05ea",
           "model_dir": "/models/breezyvoice",
           "seed_applied": false,
           "reproducibility": "best_effort",
           "device": "cuda",
-          "sample_rate": 24000,
+          "sample_rate": 22050,
           "channels": 1,
           "sample_format": "pcm_s16le",
           "max_input_chars": 2000
@@ -83,7 +77,7 @@
         }
       },
       "runner": {
-        "image": "3waaihub/tts-breezyvoice:0.1.0-pascal-cu118",
+        "image": "3waaihub/tts-breezyvoice:0.1.1-cu128",
         "entrypoint": ["/app/voice_generate.sh"],
         "args": ["{workspace}", "{input_dir}", "{output_dir}", "{input_dir}/runner_config.json"],
         "output_dir": "output",
@@ -98,16 +92,7 @@
             "storage": "models",
             "host_subdir": "breezyvoice",
             "container_path": "/models/breezyvoice",
-            "required_paths": ["model-manifest.json"],
-            "marker_json": {
-              "path": "model-manifest.json",
-              "required_strings": {
-                "model": "MediaTek-Research/BreezyVoice",
-                "model_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "upstream_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-              },
-              "exact_keys": ["model", "model_revision", "upstream_revision"]
-            }
+            "required_paths": ["model-manifest.json"]
           }
         ]
       },
@@ -158,7 +143,7 @@
     "gpu_supported": true,
     "cpu_fallback": false,
     "min_vram_mb": 4096,
-    "min_compute_capability": "6.1"
+    "min_compute_capability": "12.0"
   },
   "lifecycle": {
     "lifecycle": "on_demand",
@@ -179,12 +164,12 @@
   },
   "env": [
     {"name": "BREEZYVOICE_MODEL_ID", "default": "MediaTek-Research/BreezyVoice", "required": true},
-    {"name": "BREEZYVOICE_MODEL_REVISION", "default": "main", "required": true},
+    {"name": "BREEZYVOICE_MODEL_REVISION", "default": "e33b502e0ac21c16b0ee0d00df66ac3fa737393d", "required": true},
     {"name": "BREEZYVOICE_UPSTREAM_REPOSITORY", "default": "https://github.com/mtkresearch/BreezyVoice.git", "required": true},
-    {"name": "BREEZYVOICE_UPSTREAM_REVISION", "default": "", "required": false},
-    {"name": "BREEZYVOICE_REAL_INFERENCE", "default": "0", "required": true},
+    {"name": "BREEZYVOICE_UPSTREAM_REVISION", "default": "d592c9d3e8927a0f53f68616387060dcd32a05ea", "required": true},
+    {"name": "BREEZYVOICE_REAL_INFERENCE", "default": "1", "required": true},
     {"name": "BREEZYVOICE_DEVICE", "default": "cuda", "required": true},
-    {"name": "BREEZYVOICE_SAMPLE_RATE", "default": "24000", "required": true},
+    {"name": "BREEZYVOICE_SAMPLE_RATE", "default": "22050", "required": true},
     {"name": "BREEZYVOICE_MAX_INPUT_CHARS", "default": "2000", "required": true},
     {"name": "GPU_VISIBLE_DEVICES", "default": "all", "required": true}
   ],

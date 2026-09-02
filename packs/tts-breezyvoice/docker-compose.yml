@@ -1,6 +1,6 @@
 services:
   breezyvoice:
-    image: 3waaihub/tts-breezyvoice:0.1.0-pascal-cu118
+    image: 3waaihub/tts-breezyvoice:0.1.1-cu128
     env_file:
       - runtime-settings.conf
     gpus: all

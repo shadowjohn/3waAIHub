@@ -1,6 +1,10 @@
 <?php
 declare(strict_types=1);
 
+const HUB_TEST_BREEZY_MODEL_REVISION = 'e33b502e0ac21c16b0ee0d00df66ac3fa737393d';
+const HUB_TEST_BREEZY_UPSTREAM_REVISION = 'd592c9d3e8927a0f53f68616387060dcd32a05ea';
+const HUB_TEST_BREEZY_IMAGE = '3waaihub/tts-breezyvoice:0.1.1-cu128';
+
 hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contract', function (): void {
     $pack = hub_get_pack('tts-breezyvoice');
     hub_test_assert($pack !== null && ($pack['status'] ?? '') === 'ok', 'BreezyVoice Pack must be valid');
@@ -15,23 +19,22 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
         ($manifest['schema_version'] ?? '') === '0.1'
         && ($manifest['id'] ?? '') === 'tts-breezyvoice'
         && ($manifest['name'] ?? '') === 'BreezyVoice Taiwan Mandarin Clone'
-        && ($manifest['version'] ?? '') === '0.1.0'
+        && ($manifest['version'] ?? '') === '0.1.1'
         && ($manifest['category'] ?? '') === 'audio'
         && ($manifest['type'] ?? '') === 'api_service'
         && ($manifest['execution_type'] ?? '') === 'async_task'
-        && ($manifest['runtime_level'] ?? '') === 'L2-deps-import'
+        && ($manifest['runtime_level'] ?? '') === 'L2-container-runner'
         && ($manifest['target_level'] ?? '') === 'L5-benchmark-ready'
-        && ($manifest['runtime_ready'] ?? true) === false
+        && ($manifest['runtime_ready'] ?? false) === true
         && ($manifest['default_mode'] ?? '') === 'voice_generate_breezy'
         && ($manifest['capability'] ?? '') === 'taiwan_mandarin_voice_clone',
-        'BreezyVoice must publish the strict non-ready B1 identity'
+        'BreezyVoice must publish the pinned Linux runtime identity'
     );
 
     hub_test_assert(
-        array_keys($targets) === ['linux-docker', 'windows-wsl2-linux-docker']
-        && ($targets['linux-docker']['supported'] ?? null) === true
-        && ($targets['windows-wsl2-linux-docker']['supported'] ?? null) === true,
-        'BreezyVoice must declare only Linux Docker and Windows WSL2 Linux Docker targets'
+        array_keys($targets) === ['linux-docker']
+        && ($targets['linux-docker']['supported'] ?? null) === true,
+        'BreezyVoice must declare only its validated Linux Docker target'
     );
     hub_test_assert(
         ($manifest['lifecycle']['lifecycle'] ?? '') === 'on_demand'
@@ -44,7 +47,7 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
             'gpu_supported' => true,
             'cpu_fallback' => false,
             'min_vram_mb' => 4096,
-            'min_compute_capability' => '6.1',
+            'min_compute_capability' => '12.0',
         ]
         && ($manifest['lifecycle'] ?? null) === [
             'lifecycle' => 'on_demand',
@@ -56,7 +59,7 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
             'default_queue' => 'gpu',
             'max_concurrency' => 1,
         ],
-        'BreezyVoice must reserve one exclusive Pascal-compatible GPU job'
+        'BreezyVoice must reserve one exclusive Blackwell-compatible GPU job'
     );
     hub_test_assert(
         ($manifest['tts_modes'] ?? null) === ['ultimate_clone']
@@ -85,19 +88,30 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
     );
 
     hub_test_assert(
-        ($manifest['wsl_runtime_profiles']['pascal-cu118'] ?? null) === [
-            'id' => 'pascal-cu118',
-            'dockerfile' => 'service/Dockerfile.pascal-cu118',
-            'image' => '3waaihub/tts-breezyvoice:0.1.0-pascal-cu118',
-            'min_compute_capability' => '6.1',
-            'gpu_name_patterns' => ['GTX 1050', 'GTX 1060', 'GTX 1070', 'GTX 1080', 'GTX 1080 Ti'],
+        !isset($manifest['wsl_runtime_profiles'])
+        && ($manifest['runner_build'] ?? null) === [
+            'context' => '.',
+            'dockerfile' => 'service/Dockerfile',
+            'image' => HUB_TEST_BREEZY_IMAGE,
         ]
-        && ($job['runner']['image'] ?? '') === '3waaihub/tts-breezyvoice:0.1.0-pascal-cu118'
+        && ($job['runner']['image'] ?? '') === HUB_TEST_BREEZY_IMAGE
         && ($job['runner']['entrypoint'] ?? null) === ['/app/voice_generate.sh']
         && ($job['runner']['args'] ?? null) === ['{workspace}', '{input_dir}', '{output_dir}', '{input_dir}/runner_config.json']
         && ($job['runner']['accelerator'] ?? '') === 'gpu'
         && ($job['runner']['required_vram_mb'] ?? 0) === 4096,
-        'BreezyVoice must pin its Pascal isolated-GPU runner without a shell'
+        'BreezyVoice must pin its CUDA 12 isolated-GPU runner without a shell'
+    );
+    $generatedCompose = hub_generate_pack_compose($pack, 'breezy-compose-test', 18101);
+    hub_test_assert(
+        str_contains($generatedCompose, 'image: ' . HUB_TEST_BREEZY_IMAGE)
+        && str_contains($generatedCompose, 'context: ' . $pack['dir'] . "\n")
+        && str_contains($generatedCompose, 'dockerfile: service/Dockerfile')
+        && hub_service_image_tag([
+            'pack_id' => 'tts-breezyvoice',
+            'pack_version' => '0.1.1',
+            'service_key' => 'breezy-compose-test',
+        ]) === HUB_TEST_BREEZY_IMAGE,
+        'BreezyVoice managed service must reuse its declared runner image and Pack-root build context'
     );
     $breezyAssetMount = $job['runner']['asset_mounts'] ?? null;
     $breezyTrustedModel = $job['runner_config']['aliases']['best_effort'] ?? null;
@@ -108,30 +122,19 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
             'host_subdir' => 'breezyvoice',
             'container_path' => '/models/breezyvoice',
             'required_paths' => ['model-manifest.json'],
-            'marker_json' => [
-                'path' => 'model-manifest.json',
-                'required_strings' => [
-                    'model' => 'MediaTek-Research/BreezyVoice',
-                    'model_revision' => str_repeat('a', 40),
-                    'upstream_revision' => str_repeat('b', 40),
-                ],
-                'exact_keys' => ['model', 'model_revision', 'upstream_revision'],
-            ],
         ]]
         && ($job['runner_config']['materializer'] ?? null) === 'breezyvoice_ultimate_v1'
         && is_array($breezyTrustedModel)
         && ($breezyTrustedModel['model_dir'] ?? null) === '/models/breezyvoice'
-        && preg_match('/^[a-f0-9]{40}$/', (string)($breezyTrustedModel['model_revision'] ?? '')) === 1
-        && preg_match('/^[a-f0-9]{40}$/', (string)($breezyTrustedModel['upstream_revision'] ?? '')) === 1
-        && !in_array((string)($breezyTrustedModel['model_revision'] ?? ''), ['', 'main'], true)
-        && !in_array((string)($breezyTrustedModel['upstream_revision'] ?? ''), ['', 'main'], true),
+        && ($breezyTrustedModel['model_revision'] ?? '') === HUB_TEST_BREEZY_MODEL_REVISION
+        && ($breezyTrustedModel['upstream_revision'] ?? '') === HUB_TEST_BREEZY_UPSTREAM_REVISION,
         'BreezyVoice runner must mount only the immutable offline model manifest read-only'
     );
 
     $compose = (string)file_get_contents(HUB_ROOT . '/packs/tts-breezyvoice/docker-compose.yml');
     $settings = (string)file_get_contents(HUB_ROOT . '/packs/tts-breezyvoice/runtime-settings.example.conf');
     hub_test_assert(
-        str_contains($compose, 'image: 3waaihub/tts-breezyvoice:0.1.0-pascal-cu118')
+        str_contains($compose, 'image: ' . HUB_TEST_BREEZY_IMAGE)
         && str_contains($compose, '127.0.0.1:18111:8000')
         && str_contains($compose, 'runtime-settings.conf')
         && str_contains($compose, '${AIHUB_MODELS_DIR:-/DATA/models}/breezyvoice:/models/breezyvoice')
@@ -143,15 +146,15 @@ hub_test('BreezyVoice Pack is an on-demand Taiwan Mandarin ultimate clone contra
     );
     hub_test_assert(
         $settings === "BREEZYVOICE_MODEL_ID=MediaTek-Research/BreezyVoice\n"
-            . "BREEZYVOICE_MODEL_REVISION=main\n"
+            . "BREEZYVOICE_MODEL_REVISION=" . HUB_TEST_BREEZY_MODEL_REVISION . "\n"
             . "BREEZYVOICE_UPSTREAM_REPOSITORY=https://github.com/mtkresearch/BreezyVoice.git\n"
-            . "BREEZYVOICE_UPSTREAM_REVISION=\n"
-            . "BREEZYVOICE_REAL_INFERENCE=0\n"
+            . "BREEZYVOICE_UPSTREAM_REVISION=" . HUB_TEST_BREEZY_UPSTREAM_REVISION . "\n"
+            . "BREEZYVOICE_REAL_INFERENCE=1\n"
             . "BREEZYVOICE_DEVICE=cuda\n"
-            . "BREEZYVOICE_SAMPLE_RATE=24000\n"
+            . "BREEZYVOICE_SAMPLE_RATE=22050\n"
             . "BREEZYVOICE_MAX_INPUT_CHARS=2000\n"
             . "GPU_VISIBLE_DEVICES=all\n",
-        'BreezyVoice example settings must keep the unpinned runtime non-ready'
+        'BreezyVoice example settings must keep the exact runnable revisions'
     );
 });
 
@@ -186,8 +189,8 @@ hub_test('BreezyVoice materializes a closed trusted runner config from the confi
     $expected = [
         'schema_version' => 'breezyvoice_runner_config_v1',
         'model' => 'MediaTek-Research/BreezyVoice',
-        'model_revision' => str_repeat('a', 40),
-        'upstream_revision' => str_repeat('b', 40),
+        'model_revision' => HUB_TEST_BREEZY_MODEL_REVISION,
+        'upstream_revision' => HUB_TEST_BREEZY_UPSTREAM_REVISION,
         'model_dir' => '/models/breezyvoice',
         'voice_profile_id' => 41,
         'reference_audio_sha256' => $referenceSha256,
@@ -198,7 +201,7 @@ hub_test('BreezyVoice materializes a closed trusted runner config from the confi
         'seed_applied' => false,
         'reproducibility' => 'best_effort',
         'device' => 'cuda',
-        'sample_rate' => 24000,
+        'sample_rate' => 22050,
         'channels' => 1,
         'sample_format' => 'pcm_s16le',
         'max_input_chars' => 2000,
@@ -224,7 +227,7 @@ hub_test('BreezyVoice materializes a closed trusted runner config from the confi
             && $candidate['prompt_transcript_confirmed'] === true
             && is_int($candidate['seed']) && $candidate['seed'] >= 0
             && $candidate['seed_applied'] === false && $candidate['reproducibility'] === 'best_effort'
-            && $candidate['device'] === 'cuda' && $candidate['sample_rate'] === 24000
+            && $candidate['device'] === 'cuda' && $candidate['sample_rate'] === 22050
             && $candidate['channels'] === 1 && $candidate['sample_format'] === 'pcm_s16le'
             && $candidate['max_input_chars'] === 2000;
     };
@@ -317,60 +320,19 @@ hub_test('BreezyVoice ultimate-only context accepts only the Hub-resolved transc
     );
 });
 
-hub_test('BreezyVoice metadata-only services refuse lifecycle actions before runtime files or Docker commands', function (): void {
+hub_test('BreezyVoice runtime Pack installs a stopped managed service', function (): void {
     $db = hub_test_reset_db();
-    $readyService = hub_get_service_by_mode($db, 'hello');
-    $service = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true])['service'];
+    $installed = hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true, 'provision_runner' => false]);
+    $service = $installed['service'];
     $runtimeDir = hub_pack_runtime_dir($db, (string)$service['service_key']);
-    $composePath = hub_path((string)$service['compose_file']);
-    $settingsPath = hub_runtime_settings_path($runtimeDir);
-    $composeMarker = "# BreezyVoice metadata-only lifecycle marker\n";
-    $settingsMarker = "BREEZYVOICE_LIFECYCLE_MARKER=1\n";
-    file_put_contents($composePath, $composeMarker, LOCK_EX);
-    file_put_contents($settingsPath, $settingsMarker, LOCK_EX);
 
-    $fixtureDir = sys_get_temp_dir() . '/breezyvoice-runtime-guard-' . bin2hex(random_bytes(8));
-    $dockerBin = $fixtureDir . '/docker';
-    $dockerLog = $fixtureDir . '/docker.log';
-    if (!mkdir($fixtureDir, 0700, true)) {
-        throw new RuntimeException('Cannot create BreezyVoice lifecycle command fixture.');
-    }
-    file_put_contents($dockerBin, "#!/bin/sh\nprintf '%s\\n' \"\$*\" >> \"\$MOCK_DOCKER_LOG\"\nexit 0\n", LOCK_EX);
-    chmod($dockerBin, 0755);
-    $previousDockerBin = getenv('AIHUB_TEST_DOCKER_BIN');
-    $previousDockerLog = getenv('MOCK_DOCKER_LOG');
-
-    try {
-        putenv('AIHUB_TEST_DOCKER_BIN=' . $dockerBin);
-        putenv('MOCK_DOCKER_LOG=' . $dockerLog);
-        $build = hub_build_service($db, $service);
-        $start = hub_start_service_with_job($db, $service, null);
-        $restart = hub_restart_service($db, $service);
-        $after = hub_get_service($db, (int)$service['id']) ?: [];
-
-        hub_test_assert(
-            (int)($build['exit_code'] ?? 0) !== 0
-            && (int)($start['exit_code'] ?? 0) !== 0
-            && (int)($restart['exit_code'] ?? 0) !== 0
-            && ($build['error_code'] ?? '') === 'pack_runtime_not_ready'
-            && ($start['error_code'] ?? '') === 'pack_runtime_not_ready'
-            && ($restart['error_code'] ?? '') === 'pack_runtime_not_ready'
-            && ($build['output'] ?? '') === ($start['output'] ?? '')
-            && ($start['output'] ?? '') === ($restart['output'] ?? '')
-            && (string)file_get_contents($composePath) === $composeMarker
-            && (string)file_get_contents($settingsPath) === $settingsMarker
-            && (int)($after['enabled'] ?? 1) === 0
-            && ($after['status'] ?? '') === 'stopped'
-            && $readyService !== null
-            && hub_service_pack_runtime_not_ready_result($readyService) === null
-            && !is_file($dockerLog),
-            'metadata-only BreezyVoice lifecycle actions must stop before runtime refresh, enablement, restart, or Docker commands without changing ready Packs'
-        );
-    } finally {
-        putenv($previousDockerBin === false ? 'AIHUB_TEST_DOCKER_BIN' : 'AIHUB_TEST_DOCKER_BIN=' . $previousDockerBin);
-        putenv($previousDockerLog === false ? 'MOCK_DOCKER_LOG' : 'MOCK_DOCKER_LOG=' . $previousDockerLog);
-        @unlink($dockerBin);
-        @unlink($dockerLog);
-        @rmdir($fixtureDir);
-    }
+    hub_test_assert(
+        ($service['pack_id'] ?? '') === 'tts-breezyvoice'
+        && ($service['pack_version'] ?? '') === '0.1.1'
+        && (int)($service['enabled'] ?? 1) === 0
+        && ($service['status'] ?? '') === 'stopped'
+        && is_file(hub_runtime_settings_path($runtimeDir))
+        && is_file(hub_path((string)$service['compose_file'])),
+        'BreezyVoice runtime Pack must install its stopped managed service without requiring a Docker build in tests'
+    );
 });

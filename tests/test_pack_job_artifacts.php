@@ -203,7 +203,7 @@ function hub_test_artifact_breezy_wav(): string
     $samples = pack('v*', 0, 600, 0xfda8, 0, 300, 0xfed4, 0);
 
     return 'RIFF' . pack('V', 36 + strlen($samples)) . 'WAVEfmt '
-        . pack('VvvVVvv', 16, 1, 1, 24000, 48000, 2, 16)
+        . pack('VvvVVvv', 16, 1, 1, 22050, 44100, 2, 16)
         . 'data' . pack('V', strlen($samples)) . $samples;
 }
 
@@ -249,7 +249,7 @@ function hub_test_artifact_breezy_fixture(PDO $db): array
     $route = array_replace($contract, [
         'requested_mode' => 'voice_generate_breezy',
         'pack_id' => 'tts-breezyvoice',
-        'pack_version' => '0.1.0',
+        'pack_version' => '0.1.1',
         'job' => 'synthesize',
         'job_contract_json' => $snapshot['json'],
         'job_contract_digest' => $snapshot['digest'],
@@ -294,7 +294,7 @@ function hub_test_artifact_breezy_metadata(array $config, string $audio, bool $m
         'seed_applied' => $config['seed_applied'] ?? false,
         'reproducibility' => $config['reproducibility'] ?? 'best_effort',
         'device' => $config['device'] ?? 'cuda',
-        'final_format' => ['mime_type' => 'audio/wav', 'sample_rate' => 24000, 'channels' => 1, 'sample_format' => 'pcm_s16le'],
+        'final_format' => ['mime_type' => 'audio/wav', 'sample_rate' => 22050, 'channels' => 1, 'sample_format' => 'pcm_s16le'],
         'audio_sha256' => $mismatch ? str_repeat('0', 64) : hash('sha256', $audio),
         'audio_size_bytes' => strlen($audio),
     ];
@@ -311,7 +311,7 @@ hub_test('BreezyVoice artifact seam registers exact generated WAV bytes and reje
             'worker_id' => 'breezy-artifact-worker',
             'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
             'pid_inspector' => static fn (): array => [],
-            'audio_probe' => static fn (): array => ['duration_seconds' => 0.001, 'sample_rate' => 24000, 'channels' => 1, 'frames' => 7],
+            'audio_probe' => static fn (): array => ['duration_seconds' => 0.001, 'sample_rate' => 22050, 'channels' => 1, 'frames' => 7],
             'executor' => static function (array $context) use ($audio, $mismatch): array {
                 file_put_contents($context['workspace'] . '/output/generated_audio.wav', $audio, LOCK_EX);
                 file_put_contents(
@@ -341,7 +341,7 @@ hub_test('BreezyVoice artifact seam registers exact generated WAV bytes and reje
                 && is_array($audioArtifact)
                 && ($audioArtifact['sha256'] ?? '') === hash('sha256', $audio)
                 && (int)($audioArtifact['size_bytes'] ?? -1) === strlen($audio),
-                'BreezyVoice must register the exact generated 24 kHz mono PCM16 WAV bytes'
+                'BreezyVoice must register the exact generated 22.05 kHz mono PCM16 WAV bytes'
             );
             continue;
         }

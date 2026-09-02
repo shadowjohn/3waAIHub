@@ -984,7 +984,7 @@ function hub_pack_async_job_breezyvoice_runner_config_model(mixed $model): bool
         && is_string($model['upstream_revision']) && preg_match('/^[a-f0-9]{40}$/', $model['upstream_revision']) === 1
         && $model['model_dir'] === '/models/breezyvoice'
         && $model['seed_applied'] === false && $model['reproducibility'] === 'best_effort'
-        && $model['device'] === 'cuda' && $model['sample_rate'] === 24000
+        && $model['device'] === 'cuda' && $model['sample_rate'] === 22050
         && $model['channels'] === 1 && $model['sample_format'] === 'pcm_s16le'
         && $model['max_input_chars'] === 2000;
 }
@@ -2463,13 +2463,14 @@ function hub_generate_pack_compose(array $pack, string $serviceKey, int $localPo
     $portEnv = hub_pack_port_env($manifest);
     $buildContext = $pack['dir'] . '/service';
     $dockerfile = '';
-    if (in_array(($manifest['id'] ?? ''), ['tts-voxcpm2', 'tts-gpt-sovits', 'whisper-asr'], true)) {
+    if (in_array(($manifest['id'] ?? ''), ['tts-voxcpm2', 'tts-gpt-sovits', 'tts-breezyvoice', 'whisper-asr'], true)) {
         $buildContext = $pack['dir'];
         $dockerfile = "      dockerfile: service/Dockerfile\n";
     }
     $imageTag = match ($manifest['id'] ?? '') {
         'whisper-asr' => '3waaihub/whisper-asr:' . (string)($manifest['version'] ?? 'latest'),
         'tts-gpt-sovits' => (string)($manifest['runner_build']['image'] ?? ''),
+        'tts-breezyvoice' => (string)($manifest['runner_build']['image'] ?? ''),
         default => hub_pack_image_tag($serviceKey, (string)($manifest['version'] ?? 'latest')),
     };
 

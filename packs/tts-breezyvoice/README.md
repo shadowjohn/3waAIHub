@@ -7,21 +7,17 @@ Hokkien. A request is limited to one candidate and accepts only
 
 ## Initial state
 
-This Pack is metadata and dependency declaration only. `runtime_ready` remains
-`false`: no model has been downloaded, no runner implementation or Dockerfile
-is supplied here, and no real inference or acceptance is claimed.
-`BREEZYVOICE_UPSTREAM_REVISION` is empty in the example runtime settings,
-which deliberately keeps the runtime not ready.
+This first runnable profile targets Linux CUDA 12 / Blackwell and pins both
+the upstream source and model snapshot. The 3 GB model is provisioned outside
+the image into the managed models directory; a live task still requires an
+exclusive 4 GB GPU lease and an authorized, transcript-confirmed profile.
 
 Synthesis metadata will declare `seed_applied=false`; a supplied seed is only
 best-effort reproducibility, never a promise of deterministic output.
 
-## Windows + WSL2 GTX 1080
+## Runtime boundary
 
-On Windows, this Pack must use the `windows-wsl2-linux-docker` target. GTX 1080
-Pascal uses the CUDA 11.8 `pascal-cu118` profile. Models, cache, and service
-data stay on WSL ext4 under `/DATA`; do not mount `/mnt/d` or another Windows
-host path.
-
-Runtime settings use `runtime-settings.conf` only. Do not create `.env` files
-or store Hugging Face tokens in this Pack.
+Windows / WSL GTX 1080 is not enabled by this release: its CUDA 11.8 profile
+needs a separate real-inference acceptance run. Runtime settings use
+`runtime-settings.conf` only. Do not create `.env` files or store Hugging Face
+tokens in this Pack.
