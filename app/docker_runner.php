@@ -2243,8 +2243,8 @@ function hub_start_service_with_job(PDO $db, array $service, ?array $job): array
 function hub_service_build_timeout_sec(array $service): int
 {
     $packId = (string)($service['pack_id'] ?? '');
-    if (in_array($packId, ['ocr-ppocrv5', 'vlm-paligemma2'], true)) {
-        // PP-OCRv5 Pascal profile needs to download CUDA wheels and export a multi-GB image through Docker Desktop/WSL.
+    if (in_array($packId, ['ocr-ppocrv5', 'vlm-paligemma2', 'tts-breezyvoice'], true)) {
+        // CUDA Pack 首建可能下載大型 wheel，並由 Docker Desktop/WSL 匯出多 GB image。
         return 2100;
     }
 

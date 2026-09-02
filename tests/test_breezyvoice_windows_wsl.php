@@ -69,6 +69,7 @@ hub_test('BreezyVoice Windows WSL compose selects the Pascal CUDA 11.8 profile',
 
     hub_test_assert(
         ($runtime['profile_id'] ?? '') === 'pascal-cu118'
+        && hub_service_build_timeout_sec(['pack_id' => 'tts-breezyvoice']) === 2100
         && hub_service_runtime_image_tag($service, $profile) === HUB_TEST_BREEZY_PASCAL_IMAGE
         && str_contains($compose, 'dockerfile: "Dockerfile.pascal-cu118"')
         && str_contains($compose, 'image: "' . HUB_TEST_BREEZY_PASCAL_IMAGE . '"')
