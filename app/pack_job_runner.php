@@ -1775,7 +1775,7 @@ function hub_pack_job_breezyvoice_artifact_contract_valid(string $workspace, arr
         }
     }
     if (($metadata['audio_sha256'] ?? null) !== $audioSha256 || ($metadata['audio_size_bytes'] ?? null) !== $audioSize
-        || ($metadata['final_format'] ?? null) !== [
+        || ($metadata['final_format'] ?? null) != [
             'mime_type' => 'audio/wav',
             'sample_rate' => $config['sample_rate'],
             'channels' => $config['channels'],

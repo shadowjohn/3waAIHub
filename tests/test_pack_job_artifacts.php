@@ -281,7 +281,7 @@ function hub_test_artifact_breezy_fixture(PDO $db): array
     return ['task' => $task, 'task_id' => $taskId];
 }
 
-function hub_test_artifact_breezy_metadata(array $config, string $audio, bool $mismatch): array
+function hub_test_artifact_breezy_metadata(array $config, string $audio, bool $mismatch, bool $reorderedFormat = false): array
 {
     $model = is_array($config['model'] ?? null) ? $config['model'] : $config;
     $metadata = [
@@ -298,12 +298,20 @@ function hub_test_artifact_breezy_metadata(array $config, string $audio, bool $m
         'audio_sha256' => $mismatch ? str_repeat('0', 64) : hash('sha256', $audio),
         'audio_size_bytes' => strlen($audio),
     ];
+    if ($reorderedFormat) {
+        $metadata['final_format'] = [
+            'channels' => 1,
+            'mime_type' => 'audio/wav',
+            'sample_format' => 'pcm_s16le',
+            'sample_rate' => 22050,
+        ];
+    }
 
     return $metadata;
 }
 
-hub_test('BreezyVoice artifact seam registers exact generated WAV bytes and rejects mismatched metadata', function (): void {
-    foreach ([false, true] as $mismatch) {
+hub_test('BreezyVoice artifact seam accepts reordered format metadata and rejects mismatched metadata', function (): void {
+    foreach ([[false, false], [false, true], [true, false]] as [$mismatch, $reorderedFormat]) {
         $db = hub_test_reset_db();
         $fixture = hub_test_artifact_breezy_fixture($db);
         $audio = hub_test_artifact_breezy_wav();
@@ -312,11 +320,11 @@ hub_test('BreezyVoice artifact seam registers exact generated WAV bytes and reje
             'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
             'pid_inspector' => static fn (): array => [],
             'audio_probe' => static fn (): array => ['duration_seconds' => 0.001, 'sample_rate' => 22050, 'channels' => 1, 'frames' => 7],
-            'executor' => static function (array $context) use ($audio, $mismatch): array {
+            'executor' => static function (array $context) use ($audio, $mismatch, $reorderedFormat): array {
                 file_put_contents($context['workspace'] . '/output/generated_audio.wav', $audio, LOCK_EX);
                 file_put_contents(
                     $context['workspace'] . '/output/synthesis_metadata.json',
-                    json_encode(hub_test_artifact_breezy_metadata((array)$context['runner']['config'], $audio, $mismatch), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n",
+                    json_encode(hub_test_artifact_breezy_metadata((array)$context['runner']['config'], $audio, $mismatch, $reorderedFormat), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n",
                     LOCK_EX,
                 );
 

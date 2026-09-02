@@ -2901,7 +2901,8 @@ function hub_pack_job_json_semantic_type_matches(mixed $value, string $type): bo
 
 function hub_pack_job_json_semantic_properties_valid(mixed $value, array $properties): bool
 {
-    if (!is_array($value) || array_is_list($value) || array_keys($value) !== array_keys($properties)) {
+    if (!is_array($value) || array_is_list($value)
+        || array_diff_key($value, $properties) !== [] || array_diff_key($properties, $value) !== []) {
         return false;
     }
     foreach ($properties as $name => $type) {
