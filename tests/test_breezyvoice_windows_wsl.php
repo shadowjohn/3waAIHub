@@ -149,6 +149,29 @@ hub_test('BreezyVoice provisioning streams long WSL output through the managed c
     );
 });
 
+hub_test('BreezyVoice WSL compose preserves an already-published model snapshot root', function (): void {
+    $db = hub_test_reset_db();
+    $service = hub_install_pack($db, 'tts-breezyvoice', [
+        'service_key' => 'breezy-existing-model',
+        'idempotent' => true,
+        'provision_runner' => false,
+    ])['service'];
+    $profile = ['runtime_targets' => ['windows-wsl2-linux-docker' => [
+        'supported' => true,
+        'distro' => 'Ubuntu-24.04',
+        'runtime_root' => '/DATA/3waAIHub-runtime',
+        'models_root' => '/DATA/models',
+        'pack_profiles' => ['tts-breezyvoice' => 'pascal-cu118'],
+    ]]];
+    $script = hub_test_breezy_wsl_script_payload(hub_wsl_service_compose_command($service, ['build', '--progress=plain'], $profile));
+
+    hub_test_assert(
+        str_contains($script, 'if [ ! -e "$models_root/breezyvoice" ]; then install -d -m 0775 "$models_root/breezyvoice"; fi')
+        && !str_contains($script, 'install -d -m 0775 "$service_root" "$models_root/breezyvoice" "$cache_root" "$service_data"'),
+        'WSL build and restart must preserve a model snapshot published by the one-shot Docker provisioner'
+    );
+});
+
 hub_test('BreezyVoice Windows WSL jobs require a dedicated ext4 one-shot executor', function (): void {
     hub_test_assert(
         function_exists('hub_breezyvoice_wsl_execution_plan')

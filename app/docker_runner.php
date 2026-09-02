@@ -1899,7 +1899,11 @@ function hub_breezyvoice_wsl_service_compose_command(array $service, array $args
         . 'env_sha256=' . hub_wsl_shell_literal(hash('sha256', $env)) . "\n"
         . 'compose_payload=' . hub_wsl_shell_literal(base64_encode($compose)) . "\n"
         . 'if [ ! -f "$pack_root/' . (string)$runtime['dockerfile'] . '" ]; then echo "WSL BreezyVoice source unavailable. Run install.ps1 -Mode WslRuntime first." >&2; exit 2; fi' . "\n"
-        . 'install -d -m 0775 "$service_root" "$models_root/breezyvoice" "$cache_root" "$service_data"' . "\n"
+        . 'install -d -m 0775 "$service_root" "$cache_root" "$service_data"' . "\n"
+        // Model snapshot 由一次性 Docker provisioner 原子發布，可能是 root 擁有；runtime
+        // 使用者只能在不存在時建立，既有快照一律只驗證型別，不能 chmod 或覆寫。
+        . 'if [ ! -e "$models_root/breezyvoice" ]; then install -d -m 0775 "$models_root/breezyvoice"; fi' . "\n"
+        . 'if [ -L "$models_root/breezyvoice" ] || [ ! -d "$models_root/breezyvoice" ]; then echo "Unsafe BreezyVoice model root." >&2; exit 2; fi' . "\n"
         . 'if ! command -v sha256sum >/dev/null 2>&1; then echo "WSL sha256sum is unavailable." >&2; exit 2; fi' . "\n"
         . 'settings_tmp="$service_root/.' . HUB_RUNTIME_SETTINGS_FILENAME . '.$$"' . "\n"
         . 'umask 077; printf %s "$env_payload" | base64 -d > "$settings_tmp"; chmod 0600 "$settings_tmp"' . "\n"
