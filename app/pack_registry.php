@@ -103,6 +103,7 @@ function hub_pack_job_async_routes(): array
         'speech_transcribe_fast_zh' => ['pack_id' => 'speech-fast-zh', 'job' => 'transcribe', 'accelerator' => 'cpu'],
         'voice_generate' => ['pack_id' => 'tts-voxcpm2', 'job' => 'synthesize', 'accelerator' => 'gpu'],
         'voice_generate_gpt_sovits' => ['pack_id' => 'tts-gpt-sovits', 'job' => 'synthesize', 'accelerator' => 'gpu'],
+        'voice_generate_breezy' => ['pack_id' => 'tts-breezyvoice', 'job' => 'synthesize', 'accelerator' => 'gpu'],
         'edge_tts' => ['pack_id' => 'edge-tts', 'job' => 'synthesize', 'accelerator' => 'cpu'],
         'facebook_crawl' => ['pack_id' => 'facebook-crawler', 'job' => 'crawl', 'accelerator' => 'cpu'],
         'web_capture' => ['pack_id' => 'web-screenshot', 'job' => 'capture', 'accelerator' => 'cpu'],
@@ -111,7 +112,7 @@ function hub_pack_job_async_routes(): array
 
 function hub_voice_profile_modes(): array
 {
-    return ['voice_generate', 'voice_generate_gpt_sovits'];
+    return ['voice_generate', 'voice_generate_gpt_sovits', 'voice_generate_breezy'];
 }
 
 function hub_is_voice_profile_mode(string $mode): bool
@@ -495,7 +496,7 @@ function hub_revalidate_pack_job_async_route(PDO $db, array $snapshot): array
 function hub_audio_async_routes(): array
 {
     $routes = [];
-    foreach (['audio_cleanup', 'speech_transcribe', 'speech_transcribe_fast_zh', 'voice_generate', 'voice_generate_gpt_sovits'] as $mode) {
+    foreach (['audio_cleanup', 'speech_transcribe', 'speech_transcribe_fast_zh', 'voice_generate', 'voice_generate_gpt_sovits', 'voice_generate_breezy'] as $mode) {
         $route = hub_pack_job_async_routes()[$mode];
         $routes[$mode] = ['pack_id' => $route['pack_id'], 'job' => $route['job']];
     }

@@ -22,9 +22,6 @@ function hub_gateway_dispatch(PDO $db, string $mode, ?callable $requester = null
     if ($mode === 'yolo_gpu_internal') {
         return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
     }
-    if ($mode === 'voice_generate_breezy') {
-        return hub_gateway_finish($db, null, $mode, hub_gateway_error(404, 'unknown_mode', 'mode is not registered'), $started, $requestId, [], $requestContext);
-    }
     if ($mode === 'service_health') {
         if ($requestMethod !== 'GET') {
             return hub_gateway_finish($db, null, $mode, hub_gateway_error(405, 'method_not_allowed', 'service health requires GET'), $started, $requestId, [], $requestContext);

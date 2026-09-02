@@ -336,3 +336,77 @@ hub_test('BreezyVoice runtime Pack installs a stopped managed service', function
         'BreezyVoice runtime Pack must install its stopped managed service without requiring a Docker build in tests'
     );
 });
+
+hub_test('BreezyVoice profile API accepts a confirmed WAV, queues Ultimate Clone, and deletes the temporary profile', function (): void {
+    hub_test_audio_isolate(static function (): void {
+        $db = hub_test_reset_db();
+        hub_install_pack($db, 'tts-breezyvoice', ['idempotent' => true, 'provision_runner' => false]);
+        hub_set_service_enabled($db, 'voice_generate_breezy', true);
+        $memberId = hub_create_api_member($db, 'Breezy Profile API Owner');
+        $token = hub_create_api_token($db, $memberId, 'Breezy profile API token', null, null);
+        hub_test_audio_allow($db, [$token], ['voice_generate_breezy']);
+        hub_set_storage_setting($db, 'AIHUB_REQUIRE_API_TOKEN', '1');
+        hub_set_storage_setting($db, 'AIHUB_LOCALHOST_BYPASS_TOKEN', '0');
+        $referenceWav = tempnam(sys_get_temp_dir(), 'breezy-profile-');
+        if ($referenceWav === false) {
+            throw new RuntimeException('Cannot create BreezyVoice Profile WAV fixture.');
+        }
+        file_put_contents($referenceWav, "RIFF" . pack('V', 36) . "WAVEfmt " . pack('VvvVVvv', 16, 1, 1, 16000, 32000, 2, 16) . "data" . pack('V', 0));
+
+        try {
+            $_SERVER['CONTENT_TYPE'] = 'multipart/form-data; boundary=breezy-profile';
+            $prepared = hub_test_audio_request($db, 'voice_generate_breezy', (string)$token['plain_token'], [
+                'operation' => 'profile_prepare',
+                'profile_name' => 'One-time Breezy reference',
+                'consent_type' => 'self_recorded',
+                'prompt_text' => '這是已確認的台灣國語參考逐字稿。',
+                'transcript_confirmed' => 'true',
+                'language' => 'zh-TW',
+                'expires_in_seconds' => '300',
+            ], [], ['reference_wav' => [
+                'name' => 'reference.wav',
+                'type' => 'audio/wav',
+                'tmp_name' => $referenceWav,
+                'error' => UPLOAD_ERR_OK,
+                'size' => filesize($referenceWav),
+            ]]);
+            $preparedPayload = hub_test_audio_payload($prepared);
+            $profileTaskId = (int)($preparedPayload['task_id'] ?? 0);
+            hub_test_assert($prepared['status'] === 200 && $profileTaskId > 0, 'BreezyVoice profile_prepare must enqueue the one-time managed reference WAV');
+
+            $profileTask = hub_claim_next_task($db, ['voice_profile_prepare']);
+            hub_run_voice_profile_prepare_task($db, $profileTask ?? []);
+
+            $_SERVER['CONTENT_TYPE'] = 'application/x-www-form-urlencoded';
+            $synthesis = hub_test_audio_request($db, 'voice_generate_breezy', (string)$token['plain_token'], [
+                'text' => '請以這段已確認的聲音朗讀這句話。',
+                'mode' => 'ultimate_clone',
+                'voice_profile_task_id' => (string)$profileTaskId,
+            ]);
+            $synthesisPayload = hub_test_audio_payload($synthesis);
+            $synthesisTask = hub_get_task($db, (int)($synthesisPayload['task_id'] ?? 0));
+            hub_test_assert(
+                $synthesis['status'] === 200
+                && ($synthesisTask['requested_mode'] ?? '') === 'voice_generate_breezy'
+                && ($synthesisTask['pack_id'] ?? '') === 'tts-breezyvoice'
+                && ($synthesisTask['input']['mode'] ?? '') === 'ultimate_clone',
+                'BreezyVoice must queue the managed profile as an Ultimate Clone Pack job'
+            );
+            hub_finish_task_success($db, $synthesisTask ?? [], []);
+
+            $deleted = hub_test_audio_request($db, 'voice_generate_breezy', (string)$token['plain_token'], [
+                'operation' => 'profile_delete',
+                'voice_profile_task_id' => (string)$profileTaskId,
+            ]);
+            $deletedPayload = hub_test_audio_payload($deleted);
+            hub_test_assert(
+                $deleted['status'] === 200 && ($deletedPayload['profile_status'] ?? '') === 'deleted',
+                'BreezyVoice must allow deletion of the completed one-time Profile'
+            );
+        } finally {
+            if (is_file($referenceWav)) {
+                unlink($referenceWav);
+            }
+        }
+    });
+});

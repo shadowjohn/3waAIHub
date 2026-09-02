@@ -1039,13 +1039,21 @@ hub_test('Public API audio async contracts use normalized job routes', function 
                         'native Ultimate Clone workflow must send control separately without a default role prompt'
                     );
                 }
-            } else {
+            } elseif ($mode === 'voice_generate_gpt_sovits') {
                 hub_test_assert($text !== '' && $voiceMode === 'clone' && $voicePrompt === '', 'GPT-SoVITS examples must use managed clone fields only');
                 hub_test_assert(
                     str_contains((string)$service['examples']['curl'], 'text=' . $text)
                     && str_contains((string)$service['examples']['curl'], 'mode=clone')
                     && !str_contains((string)$service['examples']['curl'], 'voice_prompt='),
                     'GPT-SoVITS multipart example fields must omit design prompt'
+                );
+            } else {
+                hub_test_assert($mode === 'voice_generate_breezy' && $text !== '' && $voiceMode === 'ultimate_clone' && $voicePrompt === '', 'BreezyVoice examples must use managed Ultimate Clone fields only');
+                hub_test_assert(
+                    str_contains((string)$service['examples']['curl'], 'text=' . $text)
+                    && str_contains((string)$service['examples']['curl'], 'mode=ultimate_clone')
+                    && !str_contains((string)$service['examples']['curl'], 'voice_prompt='),
+                    'BreezyVoice multipart example fields must omit design prompt'
                 );
             }
         }
