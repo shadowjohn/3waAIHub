@@ -2949,6 +2949,36 @@ hub_test('cluster router maps pre-run task statuses to queued', function (): voi
     }
 });
 
+hub_test('cluster router relays only a recognized BreezyVoice failure summary', function (): void {
+    $db = hub_test_reset_db();
+    $route = ['route_id' => 'router_task_breezy_failure', 'mode' => 'voice_generate_breezy'];
+    $safe = hub_cluster_router_rewrite_task_payload($db, $route, [
+        'ok' => true,
+        'task_id' => 'remote_task_42',
+        'status' => 'failed',
+        'progress' => 100,
+        'error_code' => 'inference_failed',
+        'error_message' => 'BreezyVoice YAML loader compatibility error (AttributeError).',
+    ], 'cluster_api.php', 'remote_task_42', 'status');
+    $unsafe = hub_cluster_router_rewrite_task_payload($db, $route, [
+        'ok' => true,
+        'task_id' => 'remote_task_42',
+        'status' => 'failed',
+        'progress' => 100,
+        'error_code' => 'inference_failed',
+        'error_message' => 'Traceback /private/reference.wav: secret transcript',
+    ], 'cluster_api.php', 'remote_task_42', 'status');
+
+    hub_test_assert(
+        ($safe['message'] ?? '') === 'BreezyVoice YAML loader compatibility error (AttributeError).'
+        && ($safe['error_code'] ?? '') === 'inference_failed'
+        && ($safe['error_message'] ?? '') === 'BreezyVoice YAML loader compatibility error (AttributeError).'
+        && ($unsafe['message'] ?? '') === 'Failed.'
+        && !isset($unsafe['error_code'], $unsafe['error_message']),
+        'cluster task status must relay only the allowlisted BreezyVoice summary'
+    );
+});
+
 hub_test('cluster router relays bounded GPU wait diagnostics without child details', function (): void {
     $payload = hub_cluster_router_rewrite_task_payload(
         hub_test_reset_db(),

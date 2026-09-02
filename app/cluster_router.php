@@ -2836,7 +2836,12 @@ function hub_cluster_router_rewrite_task_payload(PDO $db, array $route, array $p
                 ? $payload['progress']
                 : 0;
             $waiting = hub_cluster_router_public_waiting_fields($payload);
-            $response['message'] = hub_task_status_message($waiting === [] ? ($status ?? 'queued') : 'waiting_gpu', $waiting['waiting_reason'] ?? null);
+            $failureSummary = hub_task_public_failure_summary($status, $payload['error_code'] ?? null, $payload['error_message'] ?? null);
+            $response['message'] = $failureSummary ?? hub_task_status_message($waiting === [] ? ($status ?? 'queued') : 'waiting_gpu', $waiting['waiting_reason'] ?? null);
+            if ($failureSummary !== null) {
+                $response['error_code'] = 'inference_failed';
+                $response['error_message'] = $failureSummary;
+            }
             $response += $waiting;
         }
         if (in_array($kind, ['status', 'cancel'], true) && is_bool($payload['cancel_requested'] ?? null)) {

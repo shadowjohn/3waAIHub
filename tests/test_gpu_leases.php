@@ -161,7 +161,7 @@ hub_test('BreezyVoice failed runners retain redacted diagnostics in the managed 
         'process_runner' => static fn (): array => [
             'exit_code' => 2,
             'stdout' => "Breezy started: {$text}",
-            'stderr' => "Traceback from Breezy\n{$transcript}\n{$text}\nAIHUB_ERROR_CODE=inference_failed",
+            'stderr' => "Traceback from Breezy\nAttributeError: 'Loader' object has no attribute 'max_depth'\n{$transcript}\n{$text}\nAIHUB_ERROR_CODE=inference_failed",
         ],
     ]);
     $task = hub_get_task($db, $fixture['task_id']) ?: [];
@@ -171,10 +171,23 @@ hub_test('BreezyVoice failed runners retain redacted diagnostics in the managed 
     $stderr = is_string($run['stderr_log_path'] ?? null) && is_file($run['stderr_log_path'])
         ? (string)file_get_contents($run['stderr_log_path']) : '';
     $visible = json_encode([$outcome, $task['status'] ?? null, $task['error_code'] ?? null, $task['error_message'] ?? null], JSON_THROW_ON_ERROR);
+    $logs = hub_list_task_logs($db, $fixture['task_id']);
+    $lastLog = end($logs);
+    $oldGet = $_GET;
+    $_GET = ['task_id' => (string)$fixture['task_id']];
+    try {
+        $statusResponse = hub_api_task_status($db, ['member_id' => (int)($task['owner_member_id'] ?? 0)]);
+    } finally {
+        $_GET = $oldGet;
+    }
+    $statusPayload = json_decode((string)($statusResponse['body'] ?? ''), true, 32, JSON_THROW_ON_ERROR);
 
     hub_test_assert(
         ($outcome['error_code'] ?? '') === 'inference_failed'
         && ($task['status'] ?? '') === 'failed'
+        && ($task['error_message'] ?? '') === 'BreezyVoice YAML loader compatibility error (AttributeError).'
+        && ($lastLog['message'] ?? '') === 'BreezyVoice YAML loader compatibility error (AttributeError).'
+        && ($statusPayload['message'] ?? '') === 'BreezyVoice YAML loader compatibility error (AttributeError).'
         && (int)($run['exit_code'] ?? -1) === 2
         && (int)($run['log_size_bytes'] ?? 0) > 0
         && str_contains($stdout, 'Breezy started: [redacted]')

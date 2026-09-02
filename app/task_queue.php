@@ -47,6 +47,21 @@ function hub_task_status_message(string $status, ?string $waitingReason = null):
     };
 }
 
+function hub_task_public_failure_summary(mixed $status, mixed $errorCode, mixed $errorMessage): ?string
+{
+    if ($status !== 'failed' || $errorCode !== 'inference_failed' || !is_string($errorMessage)) {
+        return null;
+    }
+    if ($errorMessage === 'BreezyVoice YAML loader compatibility error (AttributeError).'
+        || $errorMessage === 'BreezyVoice inference failed.') {
+        return $errorMessage;
+    }
+
+    return preg_match('/\ABreezyVoice runner exception: [A-Za-z_][A-Za-z0-9_]{0,80}\.\z/', $errorMessage) === 1
+        ? $errorMessage
+        : null;
+}
+
 function hub_task_waiting_detail_snapshot(array $detail): array
 {
     $snapshot = [];

@@ -2525,6 +2525,8 @@ function hub_api_task_status(PDO $db, array $authContext = []): array
         return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
     }
 
+    $failureSummary = hub_task_public_failure_summary($task['status'] ?? null, $task['error_code'] ?? null, $task['error_message'] ?? null);
+
     return hub_gateway_json(200, [
         'ok' => true,
         'task_id' => (int)$task['id'],
@@ -2533,7 +2535,7 @@ function hub_api_task_status(PDO $db, array $authContext = []): array
         'priority' => (int)$task['priority'],
         'status' => $task['status'],
         'progress' => (int)$task['progress'],
-        'message' => hub_task_status_message((string)$task['status'], is_string($task['waiting_reason'] ?? null) ? $task['waiting_reason'] : null),
+        'message' => $failureSummary ?? hub_task_status_message((string)$task['status'], is_string($task['waiting_reason'] ?? null) ? $task['waiting_reason'] : null),
         'cancel_requested' => (string)($task['input']['cancel_requested'] ?? '') === '1',
         'error_code' => $task['error_code'],
         'error_message' => $task['error_message'],
@@ -2780,6 +2782,7 @@ function hub_gateway_cluster_child_followup(PDO $db, string $mode, int $taskId, 
     if ($task === null || (int)($task['owner_member_id'] ?? 0) !== $memberId || (int)($task['owner_token_id'] ?? 0) !== $tokenId) {
         return hub_gateway_json(404, ['ok' => false, 'error' => 'task not found']);
     }
+    $failureSummary = hub_task_public_failure_summary($task['status'] ?? null, $task['error_code'] ?? null, $task['error_message'] ?? null);
 
     return match ($mode) {
         'task_status' => hub_gateway_json(200, [
@@ -2788,7 +2791,10 @@ function hub_gateway_cluster_child_followup(PDO $db, string $mode, int $taskId, 
             'status' => (string)($task['status'] ?? ''),
             'progress' => (int)($task['progress'] ?? 0),
             'cancel_requested' => (string)($task['input']['cancel_requested'] ?? '') === '1',
-        ]),
+        ] + ($failureSummary === null ? [] : [
+            'error_code' => 'inference_failed',
+            'error_message' => $failureSummary,
+        ])),
         'task_result' => hub_gateway_cluster_child_task_result($db, $task),
         'task_log' => hub_gateway_json(200, [
             'ok' => true,

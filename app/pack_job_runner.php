@@ -2348,6 +2348,19 @@ function hub_pack_job_breezyvoice_diagnostic_text(mixed $value, array $redaction
     return trim($value);
 }
 
+function hub_pack_job_breezyvoice_failure_summary(mixed $stderr, array $redactions): string
+{
+    $diagnostic = hub_pack_job_breezyvoice_diagnostic_text($stderr, $redactions);
+    if (str_contains($diagnostic, "AttributeError: 'Loader' object has no attribute 'max_depth'")) {
+        return 'BreezyVoice YAML loader compatibility error (AttributeError).';
+    }
+    if (preg_match('/(?:\A|\R)([A-Za-z_][A-Za-z0-9_]{0,80}(?:Error|Exception))(?::|\R)/', $diagnostic, $matches) === 1) {
+        return 'BreezyVoice runner exception: ' . $matches[1] . '.';
+    }
+
+    return 'BreezyVoice inference failed.';
+}
+
 function hub_pack_job_breezyvoice_persist_failure_diagnostics(PDO $db, array $task, array $run, string $workspace, array $result, array $redactions): void
 {
     if ((string)($task['pack_id'] ?? '') !== 'tts-breezyvoice' || (int)($result['exit_code'] ?? 0) === 0) {
@@ -3857,7 +3870,17 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
                 $code = 'runtime_exit_nonzero';
             }
             $terminalErrorCode = $code;
-            return hub_pack_job_adapter_failure($db, $taskId, $run, $code, 'Pack job exited unsuccessfully', $cleanup, $gpuLease, $heartbeatState);
+            $message = (string)($task['pack_id'] ?? '') === 'tts-breezyvoice'
+                ? hub_pack_job_breezyvoice_failure_summary($result['runner_stderr'] ?? null, $breezyDiagnosticRedactions)
+                : 'Pack job exited unsuccessfully';
+            if ($message !== 'Pack job exited unsuccessfully') {
+                try {
+                    hub_add_task_log($db, $taskId, 'error', $message);
+                } catch (Throwable) {
+                    // The terminal task state remains authoritative if best-effort log storage is unavailable.
+                }
+            }
+            return hub_pack_job_adapter_failure($db, $taskId, $run, $code, $message, $cleanup, $gpuLease, $heartbeatState);
         }
         if ((string)($task['pack_id'] ?? '') === 'tts-breezyvoice'
             && (string)($task['job'] ?? '') === 'synthesize'

@@ -27,6 +27,13 @@ def test_requirements_keep_diffusers_hub_dependency_resolvable() -> None:
     assert "pip install --no-cache-dir --no-deps --no-build-isolation openai-whisper==20231117" in dockerfile
 
 
+def test_requirements_pin_the_breezy_yaml_loader_compatibility_pair() -> None:
+    requirements = (Path(__file__).parent / "requirements.txt").read_text(encoding="utf-8")
+
+    assert "HyperPyYAML==1.2.3" in requirements
+    assert "ruamel.yaml==0.18.10" in requirements
+
+
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
