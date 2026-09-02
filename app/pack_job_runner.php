@@ -2330,6 +2330,83 @@ function hub_pack_job_runner_error_code(array $result): ?string
     return $errorCode;
 }
 
+function hub_pack_job_breezyvoice_diagnostic_text(mixed $value, array $redactions): string
+{
+    if (!is_string($value) || $value === '') {
+        return '';
+    }
+    foreach (array_unique($redactions) as $privateText) {
+        if (is_string($privateText) && $privateText !== '') {
+            $value = str_replace($privateText, '[redacted]', $value);
+        }
+    }
+    $maxBytes = 8192;
+    if (strlen($value) > $maxBytes) {
+        $value = "[... truncated ...]\n" . substr($value, -$maxBytes);
+    }
+
+    return trim($value);
+}
+
+function hub_pack_job_breezyvoice_persist_failure_diagnostics(PDO $db, array $task, array $run, string $workspace, array $result, array $redactions): void
+{
+    if ((string)($task['pack_id'] ?? '') !== 'tts-breezyvoice' || (int)($result['exit_code'] ?? 0) === 0) {
+        return;
+    }
+    try {
+        $workspace = realpath($workspace);
+        $logs = $workspace === false ? false : realpath($workspace . '/logs');
+        if ($workspace === false || $logs === false || is_link($logs) || !str_starts_with($logs, $workspace . DIRECTORY_SEPARATOR)) {
+            return;
+        }
+        $paths = [];
+        $size = 0;
+        foreach (['stdout' => 'runner_stdout', 'stderr' => 'runner_stderr'] as $stream => $field) {
+            $diagnostic = hub_pack_job_breezyvoice_diagnostic_text($result[$field] ?? null, $redactions);
+            if ($diagnostic === '') {
+                continue;
+            }
+            $path = $logs . '/runner.' . $stream . '.log';
+            if (file_exists($path) || is_link($path) || file_put_contents($path, $diagnostic . "\n", LOCK_EX) === false
+                || !@chmod($path, 0600) || (fileperms($path) & 0777) !== 0600
+                || realpath($path) !== $path) {
+                foreach ($paths as $written) {
+                    @unlink($written);
+                }
+                @unlink($path);
+                return;
+            }
+            $paths[$stream] = $path;
+            $size += filesize($path) ?: 0;
+        }
+        $stmt = $db->prepare(
+            "UPDATE runtime_runs
+             SET exit_code = :exit_code, log_size_bytes = :log_size_bytes,
+                 stdout_log_path = :stdout_log_path, stderr_log_path = :stderr_log_path
+             WHERE id = :id AND task_id = :task_id AND worker_id = :worker_id AND lease_token = :lease_token
+               AND state IN ('claimed', 'running') AND lease_expires_at IS NOT NULL AND lease_expires_at > :now"
+        );
+        $stmt->execute([
+            ':exit_code' => (int)$result['exit_code'],
+            ':log_size_bytes' => $size,
+            ':stdout_log_path' => $paths['stdout'] ?? null,
+            ':stderr_log_path' => $paths['stderr'] ?? null,
+            ':id' => (int)($run['id'] ?? 0),
+            ':task_id' => (int)($task['id'] ?? 0),
+            ':worker_id' => (string)($run['worker_id'] ?? ''),
+            ':lease_token' => (string)($run['lease_token'] ?? ''),
+            ':now' => hub_now(),
+        ]);
+        if ($stmt->rowCount() !== 1) {
+            foreach ($paths as $path) {
+                @unlink($path);
+            }
+        }
+    } catch (Throwable) {
+        // Diagnostics are best-effort; a log-write failure must not mask the Pack's error code.
+    }
+}
+
 function hub_pack_job_default_executor(array $context, ?callable $commandRunner = null, ?callable $processRunner = null): array
 {
     $execution = hub_pack_job_default_runner_command($context);
@@ -2363,6 +2440,14 @@ function hub_pack_job_default_executor(array $context, ?callable $commandRunner 
     $exitCode = (int)($result['exit_code'] ?? 1);
     $errorCode = $exitCode === 0 ? null : hub_pack_job_runner_error_code($result);
     $cleanup = hub_pack_job_default_container_cleanup($runner, $execution['name'], (int)$context['runner']['timeout_seconds']);
+    $diagnostics = [];
+    if ($exitCode !== 0 && (string)($context['task']['pack_id'] ?? '') === 'tts-breezyvoice') {
+        foreach (['runner_stdout' => 'stdout', 'runner_stderr' => 'stderr'] as $field => $source) {
+            if (is_string($result[$source] ?? null) && $result[$source] !== '') {
+                $diagnostics[$field] = $result[$source];
+            }
+        }
+    }
 
     return [
         'exit_code' => $exitCode,
@@ -2370,6 +2455,7 @@ function hub_pack_job_default_executor(array $context, ?callable $commandRunner 
         'owned_pids' => $cleanup['owned_pids'],
         'cleanup' => $cleanup['cleanup'],
     ] + ($errorCode === null ? [] : ['error_code' => $errorCode])
+        + $diagnostics
         + (isset($result['intent']) ? ['intent' => $result['intent']] : []);
 }
 
@@ -3423,6 +3509,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
     $cleanup = null;
     $terminalErrorCode = null;
     $privatePromptWorkspace = null;
+    $breezyDiagnosticRedactions = [];
     $facebookProfileId = null;
     $scrubPrivatePrompt = static function () use (&$privatePromptWorkspace): void {
         if ($privatePromptWorkspace !== null) {
@@ -3659,6 +3746,14 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
             return hub_pack_job_adapter_failure($db, $taskId, $run, 'facebook_profile_unavailable', 'Managed Facebook profile is unavailable', hub_pack_job_no_work_cleanup(), $gpuLease, $heartbeatState);
         }
         $hasPrivatePrompt = isset($voiceProfileMount['prompt_text']);
+        if ((string)($task['pack_id'] ?? '') === 'tts-breezyvoice') {
+            $taskInput = is_array($task['input'] ?? null) ? $task['input'] : [];
+            foreach ([$taskInput['text'] ?? null, $voiceProfileMount['prompt_text'] ?? null] as $privateText) {
+                if (is_string($privateText) && $privateText !== '') {
+                    $breezyDiagnosticRedactions[] = $privateText;
+                }
+            }
+        }
         $workspace = hub_pack_job_prepare_workspace($db, $task, $contract, $voiceProfileMount);
         if ($hasPrivatePrompt) {
             $privatePromptWorkspace = $workspace;
@@ -3756,6 +3851,7 @@ function hub_run_pack_job_task(PDO $db, array $task, array $options = []): array
         }
         $cleanup = hub_pack_job_cleanup_from_result($result, $details, $pidInspector, $context);
         if ((int)($result['exit_code'] ?? 1) !== 0) {
+            hub_pack_job_breezyvoice_persist_failure_diagnostics($db, $task, $run, $workspace, $result, $breezyDiagnosticRedactions);
             $code = (string)($result['error_code'] ?? 'runtime_exit_nonzero');
             if (preg_match('/^[a-z0-9_:-]{1,120}$/i', $code) !== 1) {
                 $code = 'runtime_exit_nonzero';

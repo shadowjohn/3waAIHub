@@ -148,6 +148,44 @@ function hub_test_gpu_breezy_task(PDO $db): array
     ];
 }
 
+hub_test('BreezyVoice failed runners retain redacted diagnostics in the managed runtime log', function (): void {
+    $db = hub_test_reset_db();
+    $fixture = hub_test_gpu_breezy_task($db);
+    $text = (string)($fixture['task']['input']['text'] ?? '');
+    $transcript = '這是已確認的 Breeze GPU 測試逐字稿。';
+    $outcome = hub_run_pack_job_task($db, $fixture['task'], [
+        'worker_id' => 'breezy-diagnostic-worker',
+        'gpu_probe' => static fn (): array => ['free_vram_mb' => 8192, 'processes' => []],
+        'pid_inspector' => static fn (): array => [],
+        'command_runner' => static fn (): array => ['exit_code' => 1, 'stderr' => 'No such container'],
+        'process_runner' => static fn (): array => [
+            'exit_code' => 2,
+            'stdout' => "Breezy started: {$text}",
+            'stderr' => "Traceback from Breezy\n{$transcript}\n{$text}\nAIHUB_ERROR_CODE=inference_failed",
+        ],
+    ]);
+    $task = hub_get_task($db, $fixture['task_id']) ?: [];
+    $run = $db->query('SELECT * FROM runtime_runs WHERE task_id = ' . (int)$fixture['task_id'])->fetch() ?: [];
+    $stdout = is_string($run['stdout_log_path'] ?? null) && is_file($run['stdout_log_path'])
+        ? (string)file_get_contents($run['stdout_log_path']) : '';
+    $stderr = is_string($run['stderr_log_path'] ?? null) && is_file($run['stderr_log_path'])
+        ? (string)file_get_contents($run['stderr_log_path']) : '';
+    $visible = json_encode([$outcome, $task['status'] ?? null, $task['error_code'] ?? null, $task['error_message'] ?? null], JSON_THROW_ON_ERROR);
+
+    hub_test_assert(
+        ($outcome['error_code'] ?? '') === 'inference_failed'
+        && ($task['status'] ?? '') === 'failed'
+        && (int)($run['exit_code'] ?? -1) === 2
+        && (int)($run['log_size_bytes'] ?? 0) > 0
+        && str_contains($stdout, 'Breezy started: [redacted]')
+        && str_contains($stderr, 'Traceback from Breezy')
+        && str_contains($stderr, 'AIHUB_ERROR_CODE=inference_failed')
+        && !str_contains($stdout . $stderr . $visible, $text)
+        && !str_contains($stdout . $stderr . $visible, $transcript),
+        'Breezy failures must preserve only redacted bounded runtime diagnostics, never task-visible runner output'
+    );
+});
+
 function hub_test_gpu_breezy_metadata(array $config, string $audio, bool $mismatch = false): array
 {
     $model = is_array($config['model'] ?? null) ? $config['model'] : $config;
